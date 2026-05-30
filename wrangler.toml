@@ -1,0 +1,62 @@
+# tax-agent — Self-Improving Tax Agent (separate Worker; see docs/tax-agent-build-plan.md in agent-fleet)
+name = "tax-agent"
+main = "src/index.ts"
+# Aligned to the agent-fleet repo's compatibility_date (review finding cf-arch). nodejs_compat
+# gives us Buffer for safe base64 (fixes the String.fromCharCode stack-overflow, finding H2).
+compatibility_date = "2026-04-01"
+compatibility_flags = ["nodejs_compat"]
+
+[limits]
+cpu_ms = 300000
+
+# --- Durable Object: one TaxAgent instance per tenant (keyed by user_id) ---
+# Uses the Cloudflare Agents SDK ("agents" package — verified npm name, not @cloudflare/agents).
+[[durable_objects.bindings]]
+name = "TaxAgent"
+class_name = "TaxAgent"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["TaxAgent"]
+
+# --- D1: relational system-of-record (tenants, profiles, transactions, corrections, traces, audit) ---
+[[d1_databases]]
+binding = "DB"
+database_name = "tax-agent-db"
+database_id = "PASTE_AFTER_CREATE"   # wrangler d1 create tax-agent-db
+
+# --- R2: receipt images / PDFs (5-year ATO retention; do NOT auto-delete inside the window) ---
+[[r2_buckets]]
+binding = "RECEIPTS"
+bucket_name = "tax-agent-receipts"
+
+# --- KV: nonce dedup (anti-replay), cached ledger account/tax-code lookups, rule packs ---
+[[kv_namespaces]]
+binding = "RULES"
+id = "PASTE_AFTER_CREATE"             # wrangler kv namespace create RULES
+
+# --- Cron: proactive suggestion engine (weekly Mon 08:00 UTC) ---
+[triggers]
+crons = ["0 8 * * 1"]
+
+[vars]
+JURISDICTION = "AU"
+# Inference provider seam (finding: easy model switch). 'anthropic' now (US, +APP-8 consent);
+# flip a tenant's profiles.inference_provider to 'bedrock' for AU residency (ap-southeast-2).
+# This var is only the default for tenants with no explicit provider set.
+DEFAULT_INFERENCE_PROVIDER = "anthropic"
+DEFAULT_INFERENCE_REGION = "ap-southeast-2"
+# QuickBooks base URL: start on sandbox; flip to production when ready.
+QBO_BASE_URL = "https://sandbox-quickbooks.api.intuit.com"
+# prod: https://quickbooks.api.intuit.com
+# NOTE: locationHint:"oc" in code is a LATENCY hint only — it does NOT guarantee AU data
+# residency (review finding B5). Genuine AU residency comes from Bedrock ap-southeast-2.
+
+# --- Secrets (set via `wrangler secret put <name>`; never commit) ---
+# ANTHROPIC_API_KEY        Claude reasoning + vision OCR (US path)
+# QBO_CLIENT_ID            Intuit Developer app — Keys & Credentials
+# QBO_CLIENT_SECRET        Intuit Developer app — Keys & Credentials
+# AWS_ACCESS_KEY_ID        (only when inference_provider=bedrock)
+# AWS_SECRET_ACCESS_KEY    (only when inference_provider=bedrock)
+# NOTE: QBO refresh/access tokens are NOT secrets — they rotate on every use and are
+#       persisted per-tenant in D1 (qbo_connections), seeded by the OAuth connect flow (Stage 5).

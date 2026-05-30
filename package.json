@@ -1,0 +1,23 @@
+{
+  "name": "tax-agent",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "schema": "wrangler d1 execute tax-agent-db --file=schema.sql",
+    "schema:local": "wrangler d1 execute tax-agent-db --local --file=schema.sql"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.40.1",
+    "agents": "^0.0.80",
+    "postal-mime": "^2.4.4",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260401.0",
+    "typescript": "^5.6.3",
+    "wrangler": "^3.90.0"
+  }
+}

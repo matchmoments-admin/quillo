@@ -1,0 +1,7 @@
+# Copy to .dev.vars for `wrangler dev`. Real secrets go via `wrangler secret put` in prod.
+ANTHROPIC_API_KEY="sk-ant-..."
+QBO_CLIENT_ID=""
+QBO_CLIENT_SECRET=""
+# Only needed when a tenant's inference_provider = 'bedrock' (AU residency path):
+AWS_ACCESS_KEY_ID=""
+AWS_SECRET_ACCESS_KEY=""

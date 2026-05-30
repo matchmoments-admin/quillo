@@ -55,7 +55,8 @@ Full design + the critique that shaped this build live in
 | 4 | Corrections (allowlist), hash-chain audit, eval promotion | ✅ done |
 | 5 | QuickBooks REST adapter (token rotation, tax codes) | ⚠️ implemented, **untested** — needs OAuth (Stage 0) |
 | 6 | Proactive cron + self-improvement loop | 🟡 minimal scan in place; eval re-run loop TODO |
-| — | iOS Shortcut / Android app | client-side, see build plan §4c/§7 (not in this repo) |
+| — | **Android app** (share-sheet + quick-snap + optional Wallet self-test) | ✅ scaffolded in [`android/`](android/README.md) — build in Android Studio |
+| — | iOS Shortcut | client-side, see build plan §4c (no app needed) |
 
 ## First-run: create resources, deploy, test
 

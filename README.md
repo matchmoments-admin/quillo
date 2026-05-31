@@ -11,6 +11,19 @@ logs every correction for a self-improvement loop.
 Full design + the critique that shaped this build live in
 `../agent-fleet/docs/tax-agent-build-plan.md`.
 
+## QuickBooks integration: reader/reconciler (NOT writer)
+
+The agent captures and categorises company expenses but **does not auto-create Purchase
+objects in QuickBooks Online**. Bank feeds are the source of truth in QBO: if the agent
+also creates a Purchase, it produces a duplicate posting once the bank feed brings in the
+same transaction. Instead:
+
+- Company-bucket receipts are stored in D1 and a notification is sent for reconciliation.
+- `GET /api/qbo/reconcile` surfaces both captured receipts and recent QBO bank-feed
+  purchases side-by-side so you can match them manually.
+- `QuickBooksAdapter.pushExpense()` is retained in the codebase for genuine cash /
+  non-feed expenses (petty cash, etc.) but is NOT called from the extraction hot path.
+
 ## Architecture decisions (locked)
 
 | Decision | Choice |

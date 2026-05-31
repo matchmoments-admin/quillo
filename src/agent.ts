@@ -141,8 +141,19 @@ export class TaxAgent extends Agent<Env> {
 
     await this.trace(userId, txnId, llm.modelId, system, { parsed, rule: rule?.id ?? null });
 
+    // DESIGN DECISION (reader/reconciler): the agent does NOT auto-create Purchase
+    // objects in QuickBooks for company-bucket transactions. Bank feeds are the
+    // source of truth in QuickBooks Online — auto-creating a Purchase here would
+    // create a duplicate posting against what the bank feed brings in. Instead, we
+    // notify the founder and leave the transaction for reconciliation against the
+    // bank feed in QBO. pushToLedger() is retained below for cash / non-feed
+    // expenses only (see comment on that method).
     if (final.bucket === "company" && final.confidence >= CONFIDENCE_THRESHOLD) {
-      await this.pushToLedger(userId, txnId, final);
+      await this.notify(
+        userId,
+        `Company expense captured: "${final.merchant}" ($${(final.amount_cents / 100).toFixed(2)}, ${final.ato_label}) — will reconcile against your QuickBooks bank feed. Receipt attached. Review at /api/qbo/reconcile.`,
+        txnId,
+      );
     } else if (final.confidence < CONFIDENCE_THRESHOLD) {
       await this.notify(
         userId,
@@ -222,6 +233,14 @@ export class TaxAgent extends Agent<Env> {
   }
 
   // ── ledger push (idempotent, egress-aware) ─────────────────────────────────
+  // RESERVED FOR CASH / NON-FEED EXPENSES ONLY.
+  // This method is intentionally NOT called from extractAndCategorise for company-bucket
+  // transactions. Bank feeds in QuickBooks Online are the source of truth; calling
+  // pushExpense() for a company receipt that will also arrive via the bank feed would
+  // create a duplicate Purchase object. Only call this for genuine cash transactions
+  // (e.g. petty cash) that will never appear in the bank feed.
+  // The reconcile READ path (QuickBooksAdapter.listRecentPurchases + GET /api/qbo/reconcile)
+  // is the correct way to match captured receipts against QBO bank-feed purchases.
   private async pushToLedger(userId: string, txnId: string, parsed: Extracted): Promise<void> {
     const existing = await this.env.DB.prepare(
       `SELECT ledger_ref FROM transactions WHERE id = ?`,

@@ -14,11 +14,16 @@ const TOKEN_URL = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer";
 const ACCOUNT_CACHE_TTL_S = 7 * 24 * 3600; // weekly at most (egress-aware, finding §6.2)
 
 /**
- * QuickBooks Online adapter — the direct REST hot path (NOT MCP: the official
- * Intuit MCP is local-stdio-only and outside Anthropic's ZDR boundary).
+ * QuickBooks Online adapter — READER/RECONCILER only for the company bucket.
+ * Bank feeds are the source of truth in QBO; the agent does NOT auto-create Purchase
+ * objects for receipts that will also arrive via the bank feed (that would double-post).
+ * pushExpense() is reserved for genuine cash / non-feed expenses only (see agent.ts).
+ * The primary read path is listRecentPurchases() used by GET /api/qbo/reconcile.
  *
- * Egress-aware (finding §6.2): writes are free/unmetered, reads are metered — so
- * we write once per confirmed txn and NEVER poll; account lookups are KV-cached.
+ * Not using the official Intuit MCP: it is local-stdio-only and outside Anthropic's ZDR boundary.
+ *
+ * Egress-aware (finding §6.2): reads are metered — so we NEVER poll; account lookups
+ * are KV-cached weekly.
  *
  * Token handling (fix H5): QBO refresh tokens ROTATE on every use. We persist the
  * rotated token to D1 immediately; a static secret would break on first refresh.

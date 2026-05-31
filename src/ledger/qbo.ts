@@ -75,6 +75,27 @@ export class QuickBooksAdapter implements LedgerAdapter {
     return map[atoLabel] ?? map["_default_expense"] ?? "";
   }
 
+  /** Read recent Purchases for the reconcile view (metered CorePlus read — use sparingly, never poll). */
+  async listRecentPurchases(
+    userId: string,
+    maxResults = 20,
+  ): Promise<Array<{ Id: string; TotalAmt: number; TxnDate: string; PrivateNote?: string }>> {
+    const conn = await this.connection(userId);
+    const token = await this.accessToken(conn);
+    const query = encodeURIComponent(
+      `select Id, TotalAmt, TxnDate, PrivateNote from Purchase order by TxnDate desc maxresults ${maxResults}`,
+    );
+    const res = await fetch(
+      `${this.env.QBO_BASE_URL}/v3/company/${conn.realm_id}/query?query=${query}&minorversion=73`,
+      { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } },
+    );
+    if (!res.ok) throw new Error(`QBO purchase query failed: ${res.status}`);
+    const json = (await res.json()) as {
+      QueryResponse?: { Purchase?: Array<{ Id: string; TotalAmt: number; TxnDate: string; PrivateNote?: string }> };
+    };
+    return json.QueryResponse?.Purchase ?? [];
+  }
+
   /**
    * AU GST tax codes are NOT the US "TAX"/"NON" literals (fix H6). They are
    * file-specific ids; we cache the resolved map per tenant. Falls back to the

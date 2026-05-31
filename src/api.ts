@@ -8,6 +8,19 @@ import {
   listNotifications,
   dashboard,
 } from "./lib/queries";
+import {
+  addProperty,
+  updateProperty,
+  addEntity,
+  addRule,
+  deleteRow,
+  listKeys,
+  mintKey,
+  revokeKey,
+} from "./lib/situation-write";
+import { buildConnectUrl, handleCallback, qboStatus } from "./lib/qbo-oauth";
+import { QuickBooksAdapter } from "./ledger/qbo";
+import { buildReport, reportToCsv, currentFyStartYear } from "./lib/report";
 
 const json = (data: unknown, status = 200) =>
   new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json" } });
@@ -93,6 +106,85 @@ export async function handleApi(
     const { text, method } = (await req.json()) as { text: string; method?: string };
     await stub.recordConsent(uid, text, method ?? "web");
     return json({ ok: true });
+  }
+
+  // ── Situation writes (Settings + web onboarding) ──────────────────────────
+  if (resource === "properties") {
+    if (m === "POST") return json({ id: await addProperty(env, uid, await req.json()) });
+    if (m === "PUT" && id) {
+      await updateProperty(env, uid, id, await req.json());
+      return json({ ok: true });
+    }
+    if (m === "DELETE" && id) {
+      await deleteRow(env, uid, "properties", id);
+      return json({ ok: true });
+    }
+  }
+  if (resource === "entities") {
+    if (m === "POST") return json({ id: await addEntity(env, uid, await req.json()) });
+    if (m === "DELETE" && id) {
+      await deleteRow(env, uid, "entities", id);
+      return json({ ok: true });
+    }
+  }
+  if (resource === "rules") {
+    if (m === "POST") return json({ id: await addRule(env, uid, await req.json()) });
+    if (m === "DELETE" && id) {
+      await deleteRow(env, uid, "user_rules", id);
+      return json({ ok: true });
+    }
+  }
+  if (resource === "keys") {
+    if (m === "GET") return json({ keys: await listKeys(env, uid) });
+    if (m === "POST" && !id) {
+      const b = (await req.json().catch(() => ({}))) as { label?: string };
+      return json(await mintKey(env, uid, b.label ?? "web"));
+    }
+    if (m === "POST" && id && sub === "revoke") {
+      await revokeKey(env, uid, id);
+      return json({ ok: true });
+    }
+  }
+
+  // ── QuickBooks (Phase 4) ──────────────────────────────────────────────────
+  if (resource === "qbo") {
+    if (id === "status" && m === "GET") return json(await qboStatus(env, uid));
+    if (id === "connect" && m === "GET") {
+      if (!env.QBO_CLIENT_ID) return json({ error: "QBO_CLIENT_ID not set" }, 400);
+      return Response.redirect(await buildConnectUrl(env, uid, url.origin), 302);
+    }
+    if (id === "callback" && m === "GET") {
+      const r = await handleCallback(env, url, url.origin);
+      return Response.redirect(`${url.origin}/quickbooks?connected=${r.ok ? "1" : "0"}`, 302);
+    }
+    if (id === "reconcile" && m === "GET") {
+      const company = await listTransactions(env, uid, { bucket: "company", limit: 50 });
+      let purchases: unknown[] = [];
+      let connected = false;
+      let err: string | null = null;
+      try {
+        purchases = await new QuickBooksAdapter(env).listRecentPurchases(uid);
+        connected = true;
+      } catch (e) {
+        err = (e as Error).message;
+      }
+      return json({ connected, company, purchases, error: err });
+    }
+  }
+
+  // ── Year-end report (Phase 5) ─────────────────────────────────────────────
+  if (resource === "report" && m === "GET") {
+    const fy = Number(url.searchParams.get("fy")) || currentFyStartYear();
+    const rep = await buildReport(env, uid, fy);
+    if (url.searchParams.get("format") === "csv") {
+      return new Response(reportToCsv(rep), {
+        headers: {
+          "content-type": "text/csv",
+          "content-disposition": `attachment; filename=tax-agent-${rep.fy}.csv`,
+        },
+      });
+    }
+    return json(rep);
   }
 
   return json({ error: "not found" }, 404);

@@ -36,14 +36,19 @@ function toTest(c) {
       threshold: 0.7,
     });
   }
+  // promptfoo's var schema rejects null values — omit optional fields instead of setting null.
+  const vars = {
+    merchant: c.merchant ?? "",
+  };
+  if (c.amount_cents != null) vars.amount_cents = c.amount_cents;
+  if (c.gst_cents != null) vars.gst_cents = c.gst_cents;
+  if (c.txn_date != null) vars.txn_date = c.txn_date;
+  // Optional: situation object (entities, properties, rules) for situation-aware cases.
+  // Passed through to categorise.cjs which renders it like renderSituation() in db.ts.
+  if (c.situation != null) vars.situation = c.situation;
   return {
     description: c.description || `${c.merchant} -> ${c.expected_bucket}`,
-    vars: {
-      merchant: c.merchant ?? "",
-      amount_cents: c.amount_cents ?? null,
-      gst_cents: c.gst_cents ?? null,
-      txn_date: c.txn_date ?? null,
-    },
+    vars,
     assert,
   };
 }

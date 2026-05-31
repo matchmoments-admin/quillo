@@ -1,4 +1,4 @@
 {
   "passRate": 0,
-  "note": "Placeholder. After the first green `npm run eval`, set passRate to the observed rate (0..1) and commit. The CI gate fails a PR whose pass rate regresses below this (minus a small tolerance)."
+  "note": "Eval run attempted (2026-06-01, task3) but promptfoo 0.110.1 crashes with 'FOREIGN KEY constraint failed' in its internal SQLite eval storage (eval.js:142) when using a CJS function-based prompt. This is a pre-existing bug confirmed against the original main-branch code (not caused by the situation-aware changes). Fix: upgrade promptfoo to >=0.121.13 (`npm install promptfoo@latest --save-dev`) then re-run `npm run eval` and update this file with the observed passRate."
 }

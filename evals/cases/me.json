@@ -16,5 +16,97 @@
     "txn_date": "2026-04-06",
     "expected_bucket": "payg",
     "expected_label": "personal:non-deductible"
+  },
+  {
+    "description": "SITUATION-AWARE: strata levy for a rented investment property — needs property context to know it's property_rented not payg",
+    "merchant": "Strata Plus - quarterly levy, Unit 4B",
+    "amount_cents": 87500,
+    "gst_cents": 0,
+    "txn_date": "2026-04-01",
+    "expected_bucket": "property_rented",
+    "expected_label": "rental:strata-levies",
+    "situation": {
+      "entities": [
+        {
+          "kind": "employment",
+          "name": "Acme Corp",
+          "detail": { "employer": "Acme Corp", "payg": true }
+        },
+        {
+          "kind": "company",
+          "name": "Tradie Pty Ltd",
+          "detail": { "abn": "12 345 678 901", "gst_registered": true }
+        }
+      ],
+      "properties": [
+        {
+          "id": "prop-unit4b",
+          "label": "Unit 4B Highrise",
+          "status": "rented"
+        }
+      ],
+      "rules": []
+    }
+  },
+  {
+    "description": "SITUATION-AWARE: council rates on a vacant block — vacant status makes it property_vacant (holding cost, non-deductible) not property_rented",
+    "merchant": "Moreton Bay Regional Council - rates, Lot 7 Vacant Land",
+    "amount_cents": 38000,
+    "gst_cents": null,
+    "txn_date": "2026-04-01",
+    "expected_bucket": "property_vacant",
+    "expected_label": "property:holding-cost-nondeductible",
+    "situation": {
+      "entities": [
+        {
+          "kind": "employment",
+          "name": "Acme Corp",
+          "detail": { "employer": "Acme Corp", "payg": true }
+        }
+      ],
+      "properties": [
+        {
+          "id": "prop-lot7",
+          "label": "Lot 7 Vacant Block",
+          "status": "vacant"
+        },
+        {
+          "id": "prop-rental",
+          "label": "14 Rental St",
+          "status": "rented"
+        }
+      ],
+      "rules": []
+    }
+  },
+  {
+    "description": "SITUATION-AWARE: novated lease tyre replacement — user has a novated lease so running costs are salary-packaged (payg bucket), NOT company expenses",
+    "merchant": "Bob Jane T-Marts - 4x tyres Mazda CX-5",
+    "amount_cents": 96000,
+    "gst_cents": 8727,
+    "txn_date": "2026-04-15",
+    "expected_bucket": "payg",
+    "expected_label": "payg:novated-lease-running-cost",
+    "situation": {
+      "entities": [
+        {
+          "kind": "employment",
+          "name": "Acme Corp",
+          "detail": { "employer": "Acme Corp", "payg": true }
+        },
+        {
+          "kind": "novated_lease",
+          "name": "Mazda CX-5",
+          "detail": { "vehicle": "Mazda CX-5", "provider": "SG Fleet", "pre_tax": true }
+        },
+        {
+          "kind": "company",
+          "name": "Tradie Pty Ltd",
+          "detail": { "abn": "12 345 678 901", "gst_registered": true }
+        }
+      ],
+      "properties": [],
+      "rules": []
+    }
   }
 ]

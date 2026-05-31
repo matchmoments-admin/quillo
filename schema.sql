@@ -132,7 +132,58 @@ CREATE TABLE IF NOT EXISTS qbo_connections (
   updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- ── Tenant situation: who the user is (drives categorisation context) ─────────
+-- The user registers these via scripts/onboard.mjs. They feed buildSystemPrompt so
+-- the agent knows which properties exist, the company/GST status, the novated lease,
+-- and any deterministic per-user rules.
+
+-- Investment / owned properties. Resolves transactions.property_id and drives the
+-- rented-vs-vacant deductibility split.
+CREATE TABLE IF NOT EXISTS properties (
+  id            TEXT PRIMARY KEY,
+  user_id       TEXT NOT NULL,
+  label         TEXT NOT NULL,           -- short name shown to the model, e.g. "14 Rental St"
+  address       TEXT,
+  status        TEXT NOT NULL DEFAULT 'rented',  -- rented|vacant|owner_occupied|sold
+  ownership_pct REAL NOT NULL DEFAULT 100,
+  acquired_date TEXT,
+  notes         TEXT,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- The user's tax entities. detail_json holds kind-specific fields:
+--   employment     -> { employer, payg }
+--   company        -> { name, abn, gst_registered, financial_year }
+--   novated_lease  -> { provider, vehicle, pre_tax, fbt_method }
+CREATE TABLE IF NOT EXISTS entities (
+  id          TEXT PRIMARY KEY,
+  user_id     TEXT NOT NULL,
+  kind        TEXT NOT NULL,             -- employment|company|novated_lease|individual|trust
+  name        TEXT,
+  detail_json TEXT NOT NULL DEFAULT '{}',
+  active      INTEGER NOT NULL DEFAULT 1,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Deterministic per-user categorisation overrides (e.g. "Bunnings -> company tools").
+-- Applied AFTER extraction, BEFORE trusting the model's bucket (highest priority wins).
+CREATE TABLE IF NOT EXISTS user_rules (
+  id          TEXT PRIMARY KEY,
+  user_id     TEXT NOT NULL,
+  match_type  TEXT NOT NULL DEFAULT 'merchant_contains',  -- merchant_contains|merchant_exact
+  pattern     TEXT NOT NULL,
+  bucket      TEXT NOT NULL,
+  ato_label   TEXT NOT NULL,
+  property_id TEXT,                       -- optional: attribute to a property
+  priority    INTEGER NOT NULL DEFAULT 100,
+  active      INTEGER NOT NULL DEFAULT 1,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_txn_user   ON transactions(user_id, status);
 CREATE INDEX IF NOT EXISTS idx_corr_user  ON corrections(user_id);
 CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_log(user_id, seq);
 CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_prop_user  ON properties(user_id);
+CREATE INDEX IF NOT EXISTS idx_ent_user   ON entities(user_id, active);
+CREATE INDEX IF NOT EXISTS idx_rule_user  ON user_rules(user_id, active, priority);

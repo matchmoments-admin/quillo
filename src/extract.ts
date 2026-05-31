@@ -10,6 +10,7 @@ export const Extracted = z.object({
   txn_date: z.string().nullable(),
   bucket: z.enum(["payg", "company", "property_rented", "property_vacant", "unknown"]),
   ato_label: z.string(),
+  property_id: z.string().nullable(),
   confidence: z.number().min(0).max(1),
   reasoning: z.string(),
 });
@@ -25,7 +26,7 @@ const RECORD_TOOL: Anthropic.Tool = {
   input_schema: {
     type: "object",
     additionalProperties: false,
-    required: ["merchant", "amount_cents", "gst_cents", "txn_date", "bucket", "ato_label", "confidence", "reasoning"],
+    required: ["merchant", "amount_cents", "gst_cents", "txn_date", "bucket", "ato_label", "property_id", "confidence", "reasoning"],
     properties: {
       merchant: { type: "string", description: "Merchant / supplier name as printed." },
       amount_cents: { type: "integer", description: "Total amount in cents (GST-inclusive)." },
@@ -34,9 +35,13 @@ const RECORD_TOOL: Anthropic.Tool = {
       bucket: {
         type: "string",
         enum: ["payg", "company", "property_rented", "property_vacant", "unknown"],
-        description: "Which tax bucket this expense belongs to, per the rule pack.",
+        description: "Which tax bucket this expense belongs to, per the rule pack and the user's situation.",
       },
       ato_label: { type: "string", description: "ATO label / ledger category, e.g. company:expense, rental:interest, D5." },
+      property_id: {
+        type: ["string", "null"],
+        description: "When the bucket is property_*, the id of the matching property from the user's situation; otherwise null.",
+      },
       confidence: { type: "number", description: "0..1 confidence in bucket + label." },
       reasoning: { type: "string", description: "One sentence: why this bucket/label." },
     },

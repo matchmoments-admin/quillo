@@ -12,7 +12,9 @@
     "eval:view": "promptfoo view",
     "eval:gate": "node scripts/check-eval-baseline.mjs",
     "eval:export": "node scripts/export-evals.mjs",
-    "rulepack:push": "node scripts/push-rulepack.mjs src/rulepacks/au-v1.json"
+    "rulepack:push": "node scripts/push-rulepack.mjs src/rulepacks/au-v1.json",
+    "onboard": "node scripts/onboard.mjs",
+    "preflight": "node scripts/preflight.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.40.1",

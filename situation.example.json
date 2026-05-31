@@ -1,0 +1,38 @@
+{
+  "tenant": {
+    "user_id": "me",
+    "display_name": "You",
+    "email_localpart": "me"
+  },
+  "profile": {
+    "gst_registered": 1,
+    "ledger_provider": "qbo",
+    "inference_provider": "anthropic",
+    "inference_region": "ap-southeast-2"
+  },
+  "entities": [
+    {
+      "kind": "employment",
+      "name": "Acme Employer Pty Ltd",
+      "detail": { "employer": "Acme Employer Pty Ltd", "payg": true }
+    },
+    {
+      "kind": "novated_lease",
+      "name": "Tesla Model 3",
+      "detail": { "provider": "SG Fleet", "vehicle": "Tesla Model 3", "pre_tax": true, "fbt_method": "ECM" }
+    },
+    {
+      "kind": "company",
+      "name": "Your Co Pty Ltd",
+      "detail": { "name": "Your Co Pty Ltd", "abn": "12 345 678 901", "gst_registered": true, "financial_year": "Jul-Jun" }
+    }
+  ],
+  "properties": [
+    { "label": "14 Rental St", "address": "14 Rental St, Brisbane QLD", "status": "rented", "ownership_pct": 100 },
+    { "label": "Lot 7 Vacant", "address": "Lot 7, Sometown QLD", "status": "vacant", "ownership_pct": 50 }
+  ],
+  "rules": [
+    { "match_type": "merchant_contains", "pattern": "bunnings", "bucket": "company", "ato_label": "company:tools-equipment", "priority": 200 },
+    { "match_type": "merchant_contains", "pattern": "sg fleet", "bucket": "payg", "ato_label": "payg:novated-lease", "priority": 200 }
+  ]
+}

@@ -1,6 +1,6 @@
 import { Agent } from "agents";
 import type { Env } from "./env";
-import { getProfile, type Profile } from "./lib/db";
+import { getProfile, getSituation, renderSituation, type Profile, type Situation, type UserRule } from "./lib/db";
 import { sha256hex } from "./lib/base64";
 import { getLLM } from "./llm";
 import { extractReceipt, type Extracted } from "./extract";
@@ -23,6 +23,21 @@ const CORRECTABLE: Record<string, string> = {
 // Default AU rule pack is the canonical JSON in src/rulepacks/ (single source of truth
 // shared with the eval harness). Overridable per-version via KV `rulepack:<ver>`.
 const DEFAULT_RULE_PACK: RulePack = auV1RulePack;
+
+/**
+ * Deterministic per-user override. Returns the highest-priority rule whose pattern
+ * matches the merchant, or null. Rules are pre-sorted by priority DESC in getSituation.
+ * Pure + side-effect-free so it can be unit-tested without the API.
+ */
+export function applyUserRules(merchant: string, rules: UserRule[]): UserRule | null {
+  const m = (merchant ?? "").toLowerCase();
+  for (const r of rules) {
+    const p = r.pattern.toLowerCase();
+    const hit = r.match_type === "merchant_exact" ? m === p : m.includes(p);
+    if (hit) return r;
+  }
+  return null;
+}
 
 export class TaxAgent extends Agent<Env> {
   // ── 1. INGEST: receipt image/PDF arrives as bytes ──────────────────────────
@@ -87,36 +102,50 @@ export class TaxAgent extends Agent<Env> {
     }
 
     const rulePack = await this.loadRulePack(profile.rule_pack_ver);
-    const system = this.buildSystemPrompt(rulePack, profile, bucketHint);
+    const situation = await getSituation(this.env, userId, profile);
+    const system = this.buildSystemPrompt(rulePack, profile, situation, bucketHint);
     const llm = getLLM(this.env, profile);
 
     const { parsed, raw } = await extractReceipt(llm, system, bytes, mime);
 
+    // Deterministic per-user rule wins over the model's guess (confidence 1.0).
+    const rule = applyUserRules(parsed.merchant, situation.rules);
+    const final: Extracted = rule
+      ? {
+          ...parsed,
+          bucket: rule.bucket as Extracted["bucket"],
+          ato_label: rule.ato_label,
+          property_id: rule.property_id ?? parsed.property_id,
+          confidence: 1,
+        }
+      : parsed;
+
     await this.env.DB.prepare(
       `UPDATE transactions SET status='extracted', merchant=?, amount_cents=?, gst_cents=?,
-              txn_date=?, bucket=?, ato_label=?, confidence=? WHERE id=? AND user_id=?`,
+              txn_date=?, bucket=?, ato_label=?, property_id=?, confidence=? WHERE id=? AND user_id=?`,
     )
       .bind(
-        parsed.merchant,
-        parsed.amount_cents,
-        parsed.gst_cents,
-        parsed.txn_date,
-        parsed.bucket,
-        parsed.ato_label,
-        parsed.confidence,
+        final.merchant,
+        final.amount_cents,
+        final.gst_cents,
+        final.txn_date,
+        final.bucket,
+        final.ato_label,
+        final.property_id,
+        final.confidence,
         txnId,
         userId,
       )
       .run();
 
-    await this.trace(userId, txnId, llm.modelId, system, raw);
+    await this.trace(userId, txnId, llm.modelId, system, { parsed, rule: rule?.id ?? null });
 
-    if (parsed.bucket === "company" && parsed.confidence >= CONFIDENCE_THRESHOLD) {
-      await this.pushToLedger(userId, txnId, parsed);
-    } else if (parsed.confidence < CONFIDENCE_THRESHOLD) {
+    if (final.bucket === "company" && final.confidence >= CONFIDENCE_THRESHOLD) {
+      await this.pushToLedger(userId, txnId, final);
+    } else if (final.confidence < CONFIDENCE_THRESHOLD) {
       await this.notify(
         userId,
-        `Need a hand: is "${parsed.merchant}" ($${(parsed.amount_cents / 100).toFixed(2)}) ${parsed.bucket}? Confirm or correct.`,
+        `Need a hand: is "${final.merchant}" ($${(final.amount_cents / 100).toFixed(2)}) ${final.bucket}? Confirm or correct.`,
         txnId,
       );
     }
@@ -242,6 +271,7 @@ export class TaxAgent extends Agent<Env> {
   private buildSystemPrompt(
     rulePack: typeof DEFAULT_RULE_PACK,
     profile: Profile,
+    situation: Situation,
     bucketHint: string | null,
   ): string {
     const hint = bucketHint ? `\nThe user hinted this is bucket="${bucketHint}" — respect it unless the receipt clearly contradicts.` : "";
@@ -251,6 +281,7 @@ export class TaxAgent extends Agent<Env> {
       `Rule pack ${rulePack.version}:`,
       ...Object.entries(rulePack.buckets).map(([k, v]) => `  - ${k}: ${v}`),
       rulePack.guidance,
+      renderSituation(situation),
       hint,
     ].join("\n");
   }

@@ -60,6 +60,14 @@ Full design + the critique that shaped this build live in
 
 ## First-run: create resources, deploy, test
 
+**See [`SETUP.md`](SETUP.md) for the full ordered config checklist** (Cloudflare resources,
+secrets, onboarding, consent, Email Routing, QuickBooks, CI). Run `npm run preflight` any
+time to see what's still unconfigured.
+
+**Register your situation** (properties, company, employment, novated lease, per-user rules):
+copy `situation.example.json`, edit it, then `node scripts/onboard.mjs --file my-situation.json --with-key`.
+This is what lets the agent pick the right bucket *and* the right property.
+
 **Stage 0 (you, external):** create the QuickBooks Online + Intuit Developer
 accounts and complete OAuth (only needed for Stage 5). Not required to test 1–4.
 

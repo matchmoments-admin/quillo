@@ -6,6 +6,15 @@ main = "src/index.ts"
 compatibility_date = "2026-04-01"
 compatibility_flags = ["nodejs_compat"]
 
+# Branded custom domain (zone quillo.au must be active in Cloudflare). wrangler
+# provisions the proxied DNS record + TLS cert on deploy. The app is also reachable
+# at tax-agent.<account>.workers.dev.
+routes = [
+  { pattern = "app.quillo.au", custom_domain = true },
+]
+# Keep the *.workers.dev URL as a working fallback (esp. while the custom-domain cert provisions).
+workers_dev = true
+
 [limits]
 cpu_ms = 300000
 

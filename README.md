@@ -119,3 +119,41 @@ wrangler d1 execute tax-agent-db --command \
 
 Email ingest: enable Cloudflare Email Routing on your domain and route
 `receipts+me@<yourdomain>` to this Worker (see build plan §4a).
+
+## Feeding expenses in bulk (testing)
+
+`scripts/feed-expenses.mjs` is a batch test client over the signed `/ingest` endpoint.
+Point it at a **folder of receipts** (vision/OCR path) or a **`.txt` of expense lines**
+(typed → Claude categorises each into a bucket), and it prints the resulting
+transactions table.
+
+```bash
+# pull the signing secret for your key, then feed expenses
+SECRET=$(wrangler d1 execute tax-agent-db --remote --json \
+  --command "SELECT secret FROM tenant_keys WHERE key_id='<keyId>'" \
+  | python3 -c "import sys,json;print(json.load(sys.stdin)[0]['results'][0]['secret'])")
+
+# a folder of receipt images/PDFs (jpg/png/webp/gif/pdf):
+node scripts/feed-expenses.mjs https://app.quillo.au <keyId> "$SECRET" ~/receipts
+
+# a text file, one expense per line (e.g. "Officeworks 45.00 printer paper"):
+node scripts/feed-expenses.mjs https://app.quillo.au <keyId> "$SECRET" expenses.txt
+
+# test the conservative bank-alert parser instead of Claude categorisation:
+node scripts/feed-expenses.mjs https://app.quillo.au <keyId> "$SECRET" alerts.txt --alert
+```
+
+Ingest paths (all signed; tenant derived from the key, never a client header):
+
+| Input | `content-type` / header | Handler | Result |
+|---|---|---|---|
+| Receipt image/PDF | `image/*`, `application/pdf` | `ingest` → vision | bucket + ato_label + GST |
+| Typed expense | `text/*` | `ingestCategoriseText` → Claude | bucket + ato_label |
+| Bank-alert text | `text/*` + `x-parse: alert` | `ingestText` → parser | merchant + amount, `needs_review` |
+
+> **HEIC** (default iPhone format) isn't supported by the vision API — convert first:
+> `sips -s format jpeg in.heic --out out.jpg`. The script warns and skips HEIC.
+
+Review/correct in the UI at the app host (`/api/transactions`, `/api/dashboard`,
+`POST /api/correct`). Each correction logs to `corrections` + the `audit_log`
+hash-chain and feeds the self-improvement loop.

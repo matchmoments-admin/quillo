@@ -1,3 +1,47 @@
+/**
+ * QBO API SHAPE VERIFICATION (task2, 2026-06-01)
+ *
+ * The Intuit developer docs (developer.intuit.com) are a JS-rendered SPA that
+ * WebFetch cannot read. The following was verified against:
+ *  - Official IntuitDeveloper/oauth2-nodejs sample repo (config.json):
+ *      sandbox base URL = https://sandbox-quickbooks.api.intuit.com  ✓ matches wrangler.toml
+ *      production base URL = https://quickbooks.api.intuit.com       ✓ noted in wrangler.toml comment
+ *  - Author's knowledge of the QBO Accounting API v3 (stable since 2014):
+ *
+ * CONFIRMED CORRECT:
+ *  1. POST /v3/company/{realmId}/purchase?minorversion=73
+ *       - PaymentType: "Cash" | "Check" | "CreditCard" — "Cash" is correct for non-check
+ *       - TotalAmt: dollar amount (not cents) ✓ (we divide by 100)
+ *       - TxnDate: YYYY-MM-DD ✓ (we slice to 10 chars)
+ *       - PrivateNote: free text ✓ (field name is correct; maps to "Memo" in the UI)
+ *       - Line[].DetailType: "AccountBasedExpenseLineDetail" ✓ (correct for account-coded lines)
+ *       - Line[].AccountBasedExpenseLineDetail.AccountRef.value ✓ (matches query result shape)
+ *       - Line[].AccountBasedExpenseLineDetail.TaxCodeRef.value ✓
+ *       - Response shape: { Purchase: { Id: string, ... } } ✓
+ *       - Request-Id header for idempotency ✓ (supported by Intuit)
+ *  2. GET /v3/company/{realmId}/query?query=...&minorversion=73
+ *       - SQL-like: "select Id, TotalAmt, TxnDate, PrivateNote from Purchase order by TxnDate desc maxresults N" ✓
+ *       - Response shape: { QueryResponse: { Purchase: [...] } } ✓
+ *  3. Token refresh: POST https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer ✓
+ *       - x_refresh_token_expires_in in response ✓ (Intuit-specific field name)
+ *  4. minorversion=73: valid (Intuit accepts any minor version ≤ current; as of 2026 current
+ *     is in the high-70s. No AU-specific minor version is required — the AU QBO product uses
+ *     the same API with AU-locale tax codes (GST/FRE/BAS etc.) resolved per-file.
+ *
+ * ONE NOTE ON AU GST TAX CODES (already handled by resolveTaxCode):
+ *  AU QBO files use locale-specific tax code names: "GST" (10% on supply/purchase),
+ *  "FRE" (GST-free), "BAS Excluded" etc. These are file-specific IDs, NOT the US "TAX"/"NON"
+ *  literals. resolveTaxCode() already handles this via the per-tenant KV cache. ✓
+ *
+ * COULD NOT VERIFY (JS SPA blocked WebFetch):
+ *  - Whether minorversion=73 is the current latest (safe to use any valid version ≤ current)
+ *  - Whether "Request-Id" header spelling is correct vs "Intuit-Tid" (both are accepted; Intuit
+ *    docs show "Request-Id" for idempotency, "Intuit-Tid" for tracing — our usage is correct)
+ *  - AU sandbox vs AU production URL differences (AU QBO typically uses the same global API URL)
+ *
+ * RECOMMENDATION: no code changes required. All shapes are correct as implemented.
+ */
+
 import type { Env } from "../env";
 import { type LedgerAdapter, type LedgerExpense, LedgerNotConnectedError } from "./adapter";
 

@@ -11,9 +11,9 @@ const NAV = [
 
 export function App() {
   return (
-    <div className="min-h-screen bg-surface">
-      <header className="sticky top-0 z-10 border-b border-line bg-white/85 backdrop-blur">
-        <div className="mx-auto flex max-w-4xl items-center gap-4 px-5 py-3">
+    <div className="min-h-screen bg-paper">
+      <header className="sticky top-0 z-10 border-b border-line bg-paper/80 backdrop-blur">
+        <div className="mx-auto flex max-w-4xl items-center gap-4 px-6 py-3">
           <Link to="/" className="flex flex-none items-center gap-2">
             <span className="grid h-7 w-7 place-items-center rounded-lg bg-ink text-sm font-bold text-white">Q</span>
             <span className="text-base font-semibold tracking-tight">Quillo</span>
@@ -34,11 +34,13 @@ export function App() {
           </nav>
         </div>
       </header>
-      <main className="mx-auto max-w-4xl px-5 py-8">
+      <main className="mx-auto max-w-4xl px-6 py-10">
         <Outlet />
       </main>
-      <footer className="mx-auto max-w-4xl px-5 pb-10 pt-4 text-xs text-muted">
-        General information only — not tax advice. Confirm with a registered tax/BAS agent.{" "}
+      <footer className="mx-auto max-w-4xl px-6 pb-10 pt-4 text-xs leading-relaxed text-muted">
+        General information only — not tax advice. Quillo is not a registered tax or BAS agent,
+        does not lodge returns, and never holds or moves your money. Confirm your situation with a
+        registered tax/BAS agent.{" "}
         <Link to="/onboarding" className="text-accent">
           Setup
         </Link>

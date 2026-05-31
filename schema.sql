@@ -187,3 +187,17 @@ CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_prop_user  ON properties(user_id);
 CREATE INDEX IF NOT EXISTS idx_ent_user   ON entities(user_id, active);
 CREATE INDEX IF NOT EXISTS idx_rule_user  ON user_rules(user_id, active, priority);
+
+-- ── Public marketing waitlist (no tenant; pre-signup) ─────────────────────────
+-- Populated by the public POST /waitlist endpoint on the apex (quillo.au). This is
+-- NOT tenant data — it has no user_id and sits outside the Access boundary. We store
+-- a sha-256 hash of the client IP (never the raw IP) so the table stays privacy-clean.
+CREATE TABLE IF NOT EXISTS waitlist (
+  id          TEXT PRIMARY KEY,            -- crypto.randomUUID()
+  email       TEXT NOT NULL UNIQUE,        -- stored lowercased+trimmed; UNIQUE = dedupe
+  source      TEXT,                        -- e.g. 'landing-hero' | 'landing-beta'
+  ip_hash     TEXT,                        -- sha-256 hex of CF-Connecting-IP (no raw IP)
+  user_agent  TEXT,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_waitlist_created ON waitlist(created_at);

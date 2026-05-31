@@ -9,8 +9,15 @@ compatibility_flags = ["nodejs_compat"]
 # Branded custom domain (zone quillo.au must be active in Cloudflare). wrangler
 # provisions the proxied DNS record + TLS cert on deploy. The app is also reachable
 # at tax-agent.<account>.workers.dev.
+# app.quillo.au = the gated app (Cloudflare Access in front). quillo.au + www = the
+# PUBLIC marketing apex (no Access app on these hosts). The Worker branches on Host.
+# apex/www use ZONE ROUTES (not custom_domain) because those hostnames already have
+# proxied DNS records — custom_domain would try to create DNS and refuses when records
+# exist. Zone routes attach the Worker to the existing proxied records instead.
 routes = [
-  { pattern = "app.quillo.au", custom_domain = true },
+  { pattern = "app.quillo.au",   custom_domain = true },
+  { pattern = "quillo.au/*",     zone_name = "quillo.au" },
+  { pattern = "www.quillo.au/*", zone_name = "quillo.au" },
 ]
 # Keep the *.workers.dev URL as a working fallback (esp. while the custom-domain cert provisions).
 workers_dev = true
@@ -51,7 +58,10 @@ id = "037b40a5d83f4982aac49723f34fc407"             # wrangler kv namespace crea
 directory = "./web/dist/"
 binding = "ASSETS"
 not_found_handling = "single-page-application"
-run_worker_first = ["/api/*", "/ingest", "/correct", "/consent", "/healthz", "/agents/*"]
+# "/" and "/waitlist" are listed so the Worker runs first for the apex marketing page
+# and waitlist POST (run_worker_first matches PATH, not host — the in-code Host branch
+# decides what each host returns; on the app host "/" is handed back to ASSETS).
+run_worker_first = ["/", "/waitlist", "/api/*", "/ingest", "/correct", "/consent", "/healthz", "/agents/*"]
 
 # --- Cron: proactive suggestion engine (weekly Mon 08:00 UTC) ---
 [triggers]

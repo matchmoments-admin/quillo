@@ -55,6 +55,7 @@ Full design + the critique that shaped this build live in
 | 4 | Corrections (allowlist), hash-chain audit, eval promotion | ✅ done |
 | 5 | QuickBooks REST adapter (token rotation, tax codes) | ⚠️ implemented, **untested** — needs OAuth (Stage 0) |
 | 6 | Proactive cron + self-improvement loop | 🟡 minimal scan in place; eval re-run loop TODO |
+| — | **Web UI** (review inbox + correct) | ✅ Phase 0+1 in [`web/`](web/) — served from the Worker via `[assets]`, behind Cloudflare Access. Dashboard/settings/QBO/export phases queued |
 | — | **Android app** (share-sheet + quick-snap + optional Wallet self-test) | ✅ scaffolded in [`android/`](android/README.md) — build in Android Studio |
 | — | iOS Shortcut | client-side, see build plan §4c (no app needed) |
 

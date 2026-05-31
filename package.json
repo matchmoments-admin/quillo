@@ -14,11 +14,15 @@
     "eval:export": "node scripts/export-evals.mjs",
     "rulepack:push": "node scripts/push-rulepack.mjs src/rulepacks/au-v1.json",
     "onboard": "node scripts/onboard.mjs",
-    "preflight": "node scripts/preflight.mjs"
+    "preflight": "node scripts/preflight.mjs",
+    "web:install": "cd web && npm install",
+    "web:build": "cd web && npm run build",
+    "web:dev": "cd web && npm run dev"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.40.1",
     "agents": "^0.0.80",
+    "jose": "^5.9.6",
     "postal-mime": "^2.4.4",
     "zod": "^3.23.8"
   },
@@ -26,6 +30,6 @@
     "@cloudflare/workers-types": "^4.20260401.0",
     "promptfoo": "^0.110.0",
     "typescript": "^5.6.3",
-    "wrangler": "^3.90.0"
+    "wrangler": "^4.20.0"
   }
 }

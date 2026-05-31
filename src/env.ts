@@ -7,6 +7,14 @@ export interface Env {
   RECEIPTS: R2Bucket;
   RULES: KVNamespace;
 
+  // Static assets (the web SPA served from this same Worker).
+  ASSETS?: Fetcher;
+
+  // Cloudflare Access (web UI auth). When CF_ACCESS_AUD is unset we're in local dev
+  // and the API falls back to the pilot tenant without verifying a JWT.
+  CF_ACCESS_TEAM_DOMAIN?: string; // e.g. https://yourteam.cloudflareaccess.com
+  CF_ACCESS_AUD?: string; // the Access application AUD tag
+
   // Vars (wrangler.toml [vars])
   JURISDICTION: string;
   DEFAULT_INFERENCE_PROVIDER: string;   // 'anthropic' | 'bedrock'

@@ -3,6 +3,8 @@ import type { Env, TaxAgentRpc } from "./env";
 import { verifyIngest } from "./ingest/auth";
 import { parseEmail } from "./lib/email";
 import { userIdFromLocalpart } from "./lib/db";
+import { requireAccess } from "./auth/access";
+import { handleApi } from "./api";
 
 // The DO class must be exported from the Worker's main module for the binding.
 export { TaxAgent } from "./agent";
@@ -72,6 +74,13 @@ export default {
       };
       await stubFor(env, verified.userId).recordConsent(verified.userId, text, method ?? "web");
       return Response.json({ ok: true });
+    }
+
+    // Web UI API — authenticated via Cloudflare Access, scoped to the verified user.
+    if (url.pathname.startsWith("/api/")) {
+      const user = await requireAccess(req, env);
+      if (!user) return new Response("unauthorized", { status: 401 });
+      return handleApi(req, env, user, stubFor(env, user.userId));
     }
 
     return (await routeAgentRequest(req, env, { cors: true })) ?? new Response("not found", { status: 404 });

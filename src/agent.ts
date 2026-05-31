@@ -18,6 +18,7 @@ const CORRECTABLE: Record<string, string> = {
   ato_label: "ato_label",
   amount_cents: "amount_cents",
   merchant: "merchant",
+  property_id: "property_id",
 };
 
 // Default AU rule pack is the canonical JSON in src/rulepacks/ (single source of truth

@@ -35,12 +35,25 @@ bucket_name = "tax-agent-receipts"
 binding = "RULES"
 id = "PASTE_AFTER_CREATE"             # wrangler kv namespace create RULES
 
+# --- Static assets: the web SPA, served from this same Worker (same-origin, no CORS) ---
+# Requires wrangler v4.20+. The SPA build lands in web/dist; the Worker runs first for the
+# API + device endpoints, assets serve everything else with SPA fallback to index.html.
+[assets]
+directory = "./web/dist/"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*", "/ingest", "/correct", "/consent", "/healthz", "/agents/*"]
+
 # --- Cron: proactive suggestion engine (weekly Mon 08:00 UTC) ---
 [triggers]
 crons = ["0 8 * * 1"]
 
 [vars]
 JURISDICTION = "AU"
+# Cloudflare Access (web UI auth). Leave UNSET for local dev (API falls back to the pilot
+# tenant). For production set these to your Access application's values:
+# CF_ACCESS_TEAM_DOMAIN = "https://yourteam.cloudflareaccess.com"
+# CF_ACCESS_AUD = "<access application AUD tag>"
 # Inference provider seam (finding: easy model switch). 'anthropic' now (US, +APP-8 consent);
 # flip a tenant's profiles.inference_provider to 'bedrock' for AU residency (ap-southeast-2).
 # This var is only the default for tenants with no explicit provider set.

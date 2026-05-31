@@ -48,6 +48,25 @@ only for a specific track.
   `receipts+<localpart>@yourdomain` to the `tax-agent` Worker. The `<localpart>` must match
   your tenant's `email_localpart`.
 
+## 7b. Web UI (review inbox) + Cloudflare Access [now-ish]
+The web app is served from the **same Worker** (Workers Static Assets) — build it before deploy:
+```bash
+npm run web:install      # one-time
+npm run web:build        # -> web/dist (wrangler.toml [assets] serves it)
+npm run deploy
+```
+Local dev: run `npm run web:dev` (Vite, proxies `/api` to `wrangler dev` on :8787) alongside `wrangler dev`.
+
+Gate it with **Cloudflare Access** (Zero Trust → Access → Applications → Self-hosted):
+- Application domain = your Worker's hostname; policy = allow your email.
+- Copy the application **AUD** tag and your team domain, then set them so the Worker verifies the
+  Access JWT (without these two vars the API runs in local-dev mode and skips auth):
+  ```bash
+  wrangler secret put CF_ACCESS_AUD            # or set in [vars]
+  # CF_ACCESS_TEAM_DOMAIN = https://<yourteam>.cloudflareaccess.com  (in [vars])
+  ```
+- Requires **wrangler v4.20+** (already pinned in package.json) for the `run_worker_first` asset routing.
+
 ## 8. QuickBooks (company-bucket track) [later]
 - A **QuickBooks Online subscription** (Simple Start now; $5 Ledger later via an accountant).
 - A free **Intuit Developer** account → create an app → copy **Client ID / Secret**:

@@ -5,6 +5,8 @@ import { sha256hex } from "./lib/base64";
 import { getLLM } from "./llm";
 import { extractReceipt, type Extracted } from "./extract";
 import { getLedger, LedgerNotConnectedError, type LedgerExpense } from "./ledger";
+import { redact } from "./lib/redact";
+import { parseTransactionAlert } from "./lib/bank-parsers";
 import auV1RulePack from "./rulepacks/au-v1.json";
 
 const CONFIDENCE_THRESHOLD = 0.85;
@@ -66,16 +68,50 @@ export class TaxAgent extends Agent<Env> {
     return txnId;
   }
 
-  /** Email-body fallback when an email has no attachment. */
+  /** Email-body fallback when an email has no attachment.
+   *
+   * Attempts to parse the body as a bank/merchant transaction-alert email using the
+   * conservative bank-parsers (no Claude call). If a known alert pattern is matched,
+   * the extracted fields are stored and the status is set to 'extracted' (with confidence
+   * flagged for human review). If no pattern matches, falls back to 'needs_review' as before.
+   *
+   * The body is redacted (card numbers, TFNs, bank BSBs) before any parsing or storage.
+   */
   async ingestText(userId: string, source: string, text: string): Promise<string> {
     const txnId = crypto.randomUUID();
-    await this.env.DB.prepare(
-      `INSERT INTO transactions (id, user_id, source, status) VALUES (?, ?, ?, 'needs_review')`,
-    )
-      .bind(txnId, userId, source)
-      .run();
-    await this.audit(userId, "ingest_text", JSON.stringify({ txnId, source }));
-    await this.notify(userId, "Received an email with no receipt attachment — left for manual review.", txnId);
+
+    // Redact PII from the text before parsing or logging (fix H7 equivalent for email bodies).
+    const safe = redact(text);
+
+    // Try the bank-alert parser (pure, no Claude call, conservative).
+    const parsed = parseTransactionAlert(safe);
+
+    if (parsed) {
+      // Store structured fields; mark as 'extracted' but flag for human review — the
+      // parser is heuristic and the bucket cannot be determined from the alert alone.
+      await this.env.DB.prepare(
+        `INSERT INTO transactions (id, user_id, source, status, merchant, amount_cents, txn_date)
+         VALUES (?, ?, ?, 'needs_review', ?, ?, ?)`,
+      )
+        .bind(txnId, userId, source, parsed.merchant, parsed.amount_cents, parsed.txn_date)
+        .run();
+      await this.audit(userId, "ingest_text_parsed", JSON.stringify({ txnId, source, merchant: parsed.merchant, amount_cents: parsed.amount_cents }));
+      await this.notify(
+        userId,
+        `Spend alert parsed: ${parsed.merchant} $${(parsed.amount_cents / 100).toFixed(2)}${parsed.txn_date ? ` on ${parsed.txn_date}` : ""} — bucket not yet determined. Confirm or upload a receipt for full categorisation.`,
+        txnId,
+      );
+    } else {
+      // No known pattern — store as unstructured and ask for manual review.
+      await this.env.DB.prepare(
+        `INSERT INTO transactions (id, user_id, source, status) VALUES (?, ?, ?, 'needs_review')`,
+      )
+        .bind(txnId, userId, source)
+        .run();
+      await this.audit(userId, "ingest_text", JSON.stringify({ txnId, source }));
+      await this.notify(userId, "Received an email with no receipt attachment — left for manual review.", txnId);
+    }
+
     return txnId;
   }
 

@@ -15,8 +15,8 @@ export function App() {
       <header className="sticky top-0 z-10 border-b border-line bg-white/85 backdrop-blur">
         <div className="mx-auto flex max-w-4xl items-center gap-4 px-5 py-3">
           <Link to="/" className="flex flex-none items-center gap-2">
-            <span className="grid h-7 w-7 place-items-center rounded-lg bg-ink text-sm font-bold text-white">T</span>
-            <span className="text-base font-semibold tracking-tight">Tax Agent</span>
+            <span className="grid h-7 w-7 place-items-center rounded-lg bg-ink text-sm font-bold text-white">Q</span>
+            <span className="text-base font-semibold tracking-tight">Quillo</span>
           </Link>
           <nav className="flex flex-1 items-center gap-1 overflow-x-auto text-sm">
             {NAV.map((n) => (

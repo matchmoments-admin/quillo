@@ -23,7 +23,7 @@ new_sqlite_classes = ["TaxAgent"]
 [[d1_databases]]
 binding = "DB"
 database_name = "tax-agent-db"
-database_id = "PASTE_AFTER_CREATE"   # wrangler d1 create tax-agent-db
+database_id = "76e1c20a-efa2-4042-858a-7e24be4c14ce"   # wrangler d1 create tax-agent-db
 
 # --- R2: receipt images / PDFs (5-year ATO retention; do NOT auto-delete inside the window) ---
 [[r2_buckets]]
@@ -33,7 +33,7 @@ bucket_name = "tax-agent-receipts"
 # --- KV: nonce dedup (anti-replay), cached ledger account/tax-code lookups, rule packs ---
 [[kv_namespaces]]
 binding = "RULES"
-id = "PASTE_AFTER_CREATE"             # wrangler kv namespace create RULES
+id = "037b40a5d83f4982aac49723f34fc407"             # wrangler kv namespace create RULES
 
 # --- Static assets: the web SPA, served from this same Worker (same-origin, no CORS) ---
 # Requires wrangler v4.20+. The SPA build lands in web/dist; the Worker runs first for the

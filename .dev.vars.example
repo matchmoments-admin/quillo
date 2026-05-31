@@ -1,7 +1,17 @@
-# Copy to .dev.vars for `wrangler dev`. Real secrets go via `wrangler secret put` in prod.
+# Copy to `.dev.vars` (gitignored) and fill in. Two distinct credential types below.
+
+# ── Worker runtime secrets ────────────────────────────────────────────────
+# These are the agent's own secrets. Used by `wrangler dev`; for production they
+# are pushed with `wrangler secret put <NAME>` (the tooling reads the values here).
 ANTHROPIC_API_KEY="sk-ant-..."
-QBO_CLIENT_ID=""
-QBO_CLIENT_SECRET=""
-# Only needed when a tenant's inference_provider = 'bedrock' (AU residency path):
+QBO_CLIENT_ID=""            # Intuit Developer app → Keys & Credentials
+QBO_CLIENT_SECRET=""        # Intuit Developer app → Keys & Credentials
+# Only when a tenant uses inference_provider = 'bedrock' (AU residency path):
 AWS_ACCESS_KEY_ID=""
 AWS_SECRET_ACCESS_KEY=""
+
+# ── wrangler CLI auth (control plane — NOT a Worker secret) ───────────────
+# This is wrangler's login to your Cloudflare account, used to create D1/R2/KV and
+# deploy. It is read from the environment by the tooling, not by the Worker.
+CLOUDFLARE_API_TOKEN=""     # token with: Workers Scripts Edit, D1 Edit, KV Edit, R2 Edit
+# CLOUDFLARE_ACCOUNT_ID=""  # only if `wrangler whoami` shows more than one account

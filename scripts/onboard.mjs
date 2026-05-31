@@ -71,7 +71,7 @@ if (withKey) {
 
 const tmp = `/tmp/onboard_${userId}_${randomBytes(3).toString("hex")}.sql`;
 writeFileSync(tmp, stmts.join("\n") + "\n");
-execFileSync("npx", ["wrangler", "d1", "execute", "tax-agent-db", local ? "--local" : "--remote", "--file", tmp], {
+execFileSync("npx", ["wrangler", "d1", "execute", "tax-agent-db", local ? "--local" : "--remote", "-y", "--file", tmp], {
   stdio: "inherit",
 });
 

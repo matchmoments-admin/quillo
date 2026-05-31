@@ -2,8 +2,8 @@ import { Agent } from "agents";
 import type { Env } from "./env";
 import { getProfile, getSituation, renderSituation, type Profile, type Situation, type UserRule } from "./lib/db";
 import { sha256hex } from "./lib/base64";
-import { getLLM } from "./llm";
-import { extractReceipt, type Extracted } from "./extract";
+import { getLLM, type LLM } from "./llm";
+import { extractReceipt, extractFromText, type Extracted } from "./extract";
 import { getLedger, LedgerNotConnectedError, type LedgerExpense } from "./ledger";
 import { redact } from "./lib/redact";
 import { parseTransactionAlert } from "./lib/bank-parsers";
@@ -115,6 +115,32 @@ export class TaxAgent extends Agent<Env> {
     return txnId;
   }
 
+  // ── 1b. INGEST + CATEGORISE typed / free-text expense (no image) ────────────
+  // HTTP entry point: POST /ingest with a text/* content-type (see src/index.ts). Unlike
+  // ingestText (the conservative bank-alert parser, no Claude), this runs the SAME
+  // categorisation as a receipt so a typed line gets a real bucket + ato_label.
+  async ingestCategoriseText(
+    userId: string,
+    source: string,
+    text: string,
+    bucketHint: string | null = null,
+  ): Promise<string> {
+    const txnId = crypto.randomUUID();
+    const safe = redact(text); // strip PII before it reaches the model or logs
+    await this.env.DB.prepare(
+      `INSERT INTO transactions (id, user_id, source, status) VALUES (?, ?, ?, 'needs_extraction')`,
+    )
+      .bind(txnId, userId, source)
+      .run();
+    await this.audit(userId, "ingest_text_categorise", JSON.stringify({ txnId, source }));
+
+    const ctx = await this.prepareCategorisation(userId, txnId, bucketHint);
+    if (!ctx) return txnId; // APP-8 consent gate blocked it
+    const { parsed } = await extractFromText(ctx.llm, ctx.system, safe);
+    await this.finaliseExtraction(userId, txnId, parsed, ctx.situation, ctx.llm, ctx.system);
+    return txnId;
+  }
+
   // ── 2. EXTRACT + CATEGORISE (Claude vision = OCR) ──────────────────────────
   async extractAndCategorise(
     userId: string,
@@ -123,10 +149,26 @@ export class TaxAgent extends Agent<Env> {
     mime: string,
     bucketHint: string | null,
   ): Promise<void> {
+    const ctx = await this.prepareCategorisation(userId, txnId, bucketHint);
+    if (!ctx) return; // APP-8 consent gate blocked it
+    const { parsed } = await extractReceipt(ctx.llm, ctx.system, bytes, mime);
+    await this.finaliseExtraction(userId, txnId, parsed, ctx.situation, ctx.llm, ctx.system);
+  }
+
+  /**
+   * Shared setup for the image and text categorisation paths: enforce the APP-8
+   * cross-border consent gate (fix H7 — a US/anthropic inference call on personal tax
+   * data needs explicit recorded consent; Bedrock/AU does not), then build the
+   * (cacheable) rule-pack + profile + situation system prompt and the inference client.
+   * Returns null when consent blocks the call (txn marked blocked_consent + user notified).
+   */
+  private async prepareCategorisation(
+    userId: string,
+    txnId: string,
+    bucketHint: string | null,
+  ): Promise<{ llm: LLM; system: string; situation: Situation } | null> {
     const profile = await this.requireProfile(userId);
 
-    // APP-8 gate (fix H7): a US (anthropic) inference call on personal tax data
-    // requires explicit, recorded cross-border consent. Bedrock (AU) does not.
     const provider = profile.inference_provider ?? this.env.DEFAULT_INFERENCE_PROVIDER;
     if (provider === "anthropic" && profile.consent_xborder !== 1) {
       await this.markStatus(txnId, "blocked_consent");
@@ -135,17 +177,34 @@ export class TaxAgent extends Agent<Env> {
         "Cross-border processing consent (APP 8) is required before this receipt can be read by the US inference API. Record consent to proceed.",
         txnId,
       );
-      return;
+      return null;
     }
 
     const rulePack = await this.loadRulePack(profile.rule_pack_ver);
     const situation = await getSituation(this.env, userId, profile);
     const system = this.buildSystemPrompt(rulePack, profile, situation, bucketHint);
     const llm = getLLM(this.env, profile);
+    return { llm, system, situation };
+  }
 
-    const { parsed, raw } = await extractReceipt(llm, system, bytes, mime);
-
-    // Deterministic per-user rule wins over the model's guess (confidence 1.0).
+  /**
+   * Persist a categorised expense. A deterministic per-user rule (confidence 1.0) wins
+   * over the model's guess; then write the row, trace, and the company / low-confidence
+   * notifications. Shared by the image and text paths so both behave identically.
+   *
+   * DESIGN DECISION (reader/reconciler): the agent does NOT auto-create Purchase objects
+   * in QuickBooks for company-bucket txns — bank feeds are the source of truth in QBO, so
+   * auto-posting here would duplicate the feed. We notify for reconciliation instead.
+   * pushToLedger() remains for genuine cash / non-feed expenses only.
+   */
+  private async finaliseExtraction(
+    userId: string,
+    txnId: string,
+    parsed: Extracted,
+    situation: Situation,
+    llm: LLM,
+    system: string,
+  ): Promise<void> {
     const rule = applyUserRules(parsed.merchant, situation.rules);
     const final: Extracted = rule
       ? {
@@ -177,13 +236,6 @@ export class TaxAgent extends Agent<Env> {
 
     await this.trace(userId, txnId, llm.modelId, system, { parsed, rule: rule?.id ?? null });
 
-    // DESIGN DECISION (reader/reconciler): the agent does NOT auto-create Purchase
-    // objects in QuickBooks for company-bucket transactions. Bank feeds are the
-    // source of truth in QuickBooks Online — auto-creating a Purchase here would
-    // create a duplicate posting against what the bank feed brings in. Instead, we
-    // notify the founder and leave the transaction for reconciliation against the
-    // bank feed in QBO. pushToLedger() is retained below for cash / non-feed
-    // expenses only (see comment on that method).
     if (final.bucket === "company" && final.confidence >= CONFIDENCE_THRESHOLD) {
       await this.notify(
         userId,

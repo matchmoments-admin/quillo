@@ -112,3 +112,45 @@ export async function extractReceipt(
   }
   return { parsed: Extracted.parse(toolUse.input), raw: toolUse.input };
 }
+
+/**
+ * Categorise a typed / free-text expense (no image). Same forced tool-use, `RECORD_TOOL`
+ * and `Extracted` schema as `extractReceipt`, so the model still returns a schema-valid,
+ * fully-bucketed object — the only difference is the user content is text, not a receipt
+ * image. Used by the text-ingest path so typed expenses get a real bucket + ato_label.
+ */
+export async function extractFromText(
+  llm: LLM,
+  system: string,
+  text: string,
+): Promise<ExtractResult> {
+  const msg = await llm.client.messages.create({
+    model: llm.modelId,
+    max_tokens: 1024,
+    system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
+    tools: [RECORD_TOOL],
+    tool_choice: { type: "tool", name: RECORD_TOOL.name },
+    messages: [
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text:
+              `Expense described as free text (no image): "${text}"\n` +
+              `Extract and categorise it using the rule pack. Convert the amount to cents; ` +
+              `use null for any field not stated (e.g. gst_cents, txn_date). Call record_receipt.`,
+          },
+        ],
+      },
+    ],
+  });
+
+  const toolUse = msg.content.find(
+    (c): c is Anthropic.ToolUseBlock => c.type === "tool_use" && c.name === RECORD_TOOL.name,
+  );
+  if (!toolUse) {
+    throw new Error("model did not return a record_receipt tool call");
+  }
+  return { parsed: Extracted.parse(toolUse.input), raw: toolUse.input };
+}

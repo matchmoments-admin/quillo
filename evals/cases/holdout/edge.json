@@ -1,0 +1,11 @@
+[
+  {
+    "description": "Holdout (validation-split only; not in the CI gate set): mixed-use internet",
+    "merchant": "Aussie Broadband - home internet (part business use)",
+    "amount_cents": 9900,
+    "gst_cents": 900,
+    "txn_date": "2026-04-04",
+    "expected_bucket": "unknown",
+    "expected_label": "unknown"
+  }
+]

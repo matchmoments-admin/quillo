@@ -5,8 +5,11 @@ import { sha256hex } from "./lib/base64";
 import { getLLM } from "./llm";
 import { extractReceipt, type Extracted } from "./extract";
 import { getLedger, LedgerNotConnectedError, type LedgerExpense } from "./ledger";
+import auV1RulePack from "./rulepacks/au-v1.json";
 
 const CONFIDENCE_THRESHOLD = 0.85;
+
+type RulePack = typeof auV1RulePack;
 
 // Corrections may only target these fields. Each maps to a fixed column name, so
 // the field never reaches SQL as interpolated text (fixes blocker B2: injection).
@@ -17,20 +20,9 @@ const CORRECTABLE: Record<string, string> = {
   merchant: "merchant",
 };
 
-// Default AU rule pack (data, not code). Overridable per-version via KV `rulepack:<ver>`.
-const DEFAULT_RULE_PACK = {
-  version: "au-v1",
-  buckets: {
-    payg: "Personal/PAYG individual expense (e.g. work-related deduction D-labels).",
-    company: "Pty Ltd business expense — flows to the ledger.",
-    property_rented: "Expense on a currently-rented investment property (generally deductible).",
-    property_vacant: "Holding cost on a vacant/not-genuinely-available property (often NOT deductible).",
-    unknown: "Cannot determine — ask the user.",
-  },
-  guidance:
-    "Categorise the receipt into exactly one bucket. Prefer 'unknown' (low confidence) over guessing. " +
-    "Only 'company' flows to the ledger. This is general information, not tax advice.",
-};
+// Default AU rule pack is the canonical JSON in src/rulepacks/ (single source of truth
+// shared with the eval harness). Overridable per-version via KV `rulepack:<ver>`.
+const DEFAULT_RULE_PACK: RulePack = auV1RulePack;
 
 export class TaxAgent extends Agent<Env> {
   // ── 1. INGEST: receipt image/PDF arrives as bytes ──────────────────────────

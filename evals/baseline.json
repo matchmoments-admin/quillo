@@ -1,0 +1,4 @@
+{
+  "passRate": 0,
+  "note": "Placeholder. After the first green `npm run eval`, set passRate to the observed rate (0..1) and commit. The CI gate fails a PR whose pass rate regresses below this (minus a small tolerance)."
+}

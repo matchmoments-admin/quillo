@@ -1,0 +1,20 @@
+[
+  {
+    "description": "Per-tenant rule example: this tradie's Bunnings spend is deductible company tools",
+    "merchant": "Bunnings Warehouse - cordless drill, fixings",
+    "amount_cents": 23900,
+    "gst_cents": 2173,
+    "txn_date": "2026-04-11",
+    "expected_bucket": "company",
+    "expected_label": "company:tools-equipment"
+  },
+  {
+    "description": "Personal gym membership -> payg non-deductible",
+    "merchant": "Anytime Fitness - monthly membership",
+    "amount_cents": 6900,
+    "gst_cents": 627,
+    "txn_date": "2026-04-06",
+    "expected_bucket": "payg",
+    "expected_label": "personal:non-deductible"
+  }
+]

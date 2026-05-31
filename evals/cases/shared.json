@@ -1,0 +1,92 @@
+[
+  {
+    "description": "Rental property electricity invoice -> property_rented",
+    "merchant": "AGL Energy - electricity, 14 Rental St tenant-occupied",
+    "amount_cents": 24310,
+    "gst_cents": 2210,
+    "txn_date": "2026-04-12",
+    "expected_bucket": "property_rented",
+    "expected_label": "rental:utilities"
+  },
+  {
+    "description": "Property manager commission -> property_rented",
+    "merchant": "Ray White - monthly property management fee",
+    "amount_cents": 17600,
+    "gst_cents": 1600,
+    "txn_date": "2026-04-01",
+    "expected_bucket": "property_rented",
+    "expected_label": "rental:management-fees"
+  },
+  {
+    "description": "NEGATIVE CONTROL: rates on a vacant lot are a non-deductible holding cost",
+    "merchant": "Brisbane City Council - rates notice, vacant lot 7 (not available for rent)",
+    "amount_cents": 41500,
+    "gst_cents": null,
+    "txn_date": "2026-03-28",
+    "expected_bucket": "property_vacant",
+    "expected_label": "property:holding-cost-nondeductible"
+  },
+  {
+    "description": "NEGATIVE CONTROL: personal groceries are not a business/property expense",
+    "merchant": "Coles Supermarkets - weekly groceries",
+    "amount_cents": 13845,
+    "gst_cents": 420,
+    "txn_date": "2026-04-18",
+    "expected_bucket": "payg",
+    "expected_label": "personal:non-deductible"
+  },
+  {
+    "description": "Company office consumables -> company",
+    "merchant": "Officeworks - printer paper, toner cartridges",
+    "amount_cents": 18990,
+    "gst_cents": 1726,
+    "txn_date": "2026-04-09",
+    "expected_bucket": "company",
+    "expected_label": "company:office-supplies"
+  },
+  {
+    "description": "Company cloud subscription -> company",
+    "merchant": "Cloudflare - Workers Paid plan (business account)",
+    "amount_cents": 800,
+    "gst_cents": 0,
+    "txn_date": "2026-04-02",
+    "expected_bucket": "company",
+    "expected_label": "company:software-subscriptions"
+  },
+  {
+    "description": "Company accounting software -> company",
+    "merchant": "Intuit QuickBooks Online Simple Start subscription",
+    "amount_cents": 3000,
+    "gst_cents": 273,
+    "txn_date": "2026-04-05",
+    "expected_bucket": "company",
+    "expected_label": "company:software-subscriptions"
+  },
+  {
+    "description": "AMBIGUOUS: bare cafe receipt, no business context -> defer to unknown",
+    "merchant": "Corner Cafe - 1 flat white",
+    "amount_cents": 550,
+    "gst_cents": 50,
+    "txn_date": "2026-04-20",
+    "expected_bucket": "unknown",
+    "expected_label": "unknown"
+  },
+  {
+    "description": "Rental property repair -> property_rented",
+    "merchant": "Local Plumbing Co - tap repair, 14 Rental St",
+    "amount_cents": 27500,
+    "gst_cents": 2500,
+    "txn_date": "2026-03-15",
+    "expected_bucket": "property_rented",
+    "expected_label": "rental:repairs-maintenance"
+  },
+  {
+    "description": "Company business phone line -> company",
+    "merchant": "Telstra - mobile plan (company business line)",
+    "amount_cents": 6500,
+    "gst_cents": 591,
+    "txn_date": "2026-04-03",
+    "expected_bucket": "company",
+    "expected_label": "company:telephone"
+  }
+]

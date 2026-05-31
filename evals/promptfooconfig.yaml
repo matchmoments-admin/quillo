@@ -1,0 +1,21 @@
+# Stage 6 — tax-agent categorisation eval. Run: npm run eval (needs ANTHROPIC_API_KEY).
+description: "Tax-agent categorisation (fields -> bucket + ATO label)"
+
+prompts:
+  - file://prompts/categorise.cjs
+
+providers:
+  # Same model the Worker categorises with (src/extract.ts).
+  - id: anthropic:messages:claude-haiku-4-5-20251001
+    config:
+      max_tokens: 512
+      temperature: 0
+
+# Cases generated from the committed fixtures in evals/cases/.
+tests: file://load_cases.cjs
+
+defaultTest:
+  options:
+    # LLM-as-judge grader for model-graded assertions (llm-rubric). A different tier
+    # than the model under test — see evals/README.md for the same-family caveat.
+    provider: anthropic:messages:claude-opus-4-8

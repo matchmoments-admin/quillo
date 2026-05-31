@@ -102,10 +102,21 @@ if (st.isDirectory()) {
 }
 
 // Show how they landed. /ingest awaits extraction synchronously, so the rows are ready.
-const rows = await fetch(`${baseUrl}/api/transactions?limit=25`)
-  .then((r) => r.json())
-  .then((d) => d.transactions ?? [])
-  .catch(() => []);
+// The /api read is gated by Cloudflare Access; if that's enabled this returns HTML/401,
+// so report that rather than silently printing an empty table (the uploads still worked).
+let rows = [];
+try {
+  const res = await fetch(`${baseUrl}/api/transactions?limit=25`);
+  const ct = res.headers.get("content-type") ?? "";
+  if (!res.ok || !ct.includes("application/json")) {
+    console.log(`\n(couldn't read /api/transactions: HTTP ${res.status} ${ct} — Cloudflare Access likely gates it now.`);
+    console.log(` The ${sent} uploads succeeded regardless; review them at ${baseUrl}.)`);
+  } else {
+    rows = (await res.json()).transactions ?? [];
+  }
+} catch (e) {
+  console.log(`\n(couldn't read /api/transactions: ${e.message}. The ${sent} uploads still succeeded.)`);
+}
 
 console.log(`\n=== latest transactions (${sent} sent this run) ===`);
 const pad = (s, n) => String(s ?? "—").padEnd(n).slice(0, n);

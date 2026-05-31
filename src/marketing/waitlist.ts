@@ -1,4 +1,5 @@
 import type { Env } from "../env";
+import { sha256hex } from "../lib/base64";
 
 // Public, un-gated waitlist capture for the marketing apex (quillo.au). This is the
 // landing page's secondary CTA. It never touches tenant data: one row per email in the
@@ -14,11 +15,6 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const json = (status: number, body: Record<string, unknown>): Response =>
   Response.json(body, { status });
-
-async function sha256Hex(input: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
 
 /** Best-effort fixed-window counter in KV. Returns true if the request is over `limit`. */
 async function overLimit(env: Env, key: string, limit: number, ttl: number): Promise<boolean> {
@@ -53,7 +49,7 @@ export async function handleWaitlist(req: Request, env: Env): Promise<Response> 
 
   // Rate limit per hashed IP (raw IP is never stored or logged).
   const ip = req.headers.get("CF-Connecting-IP") ?? "unknown";
-  const ipHash = await sha256Hex(ip);
+  const ipHash = await sha256hex(ip);
   // A coarse minute bucket keeps the window key stable without Date.now() arithmetic
   // leaking precision — KV TTL does the expiry.
   if (await overLimit(env, `wl:rl:min:${ipHash}`, PER_MIN_LIMIT, 60)) {

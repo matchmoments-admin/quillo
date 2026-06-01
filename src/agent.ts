@@ -272,7 +272,7 @@ export class TaxAgent extends Agent<Env> {
     const rulePack = await this.loadRulePack(profile.rule_pack_ver);
     const situation = await getSituation(this.env, userId, profile);
     const system = this.buildSystemPrompt(rulePack, profile, situation, bucketHint);
-    const llm = getLLM(this.env, profile);
+    const llm = await getLLM(this.env, profile);
     return { llm, system, situation };
   }
 

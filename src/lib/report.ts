@@ -26,6 +26,9 @@ export interface Report {
   by_property: { property_id: string; label: string | null; n: number; total_cents: number }[];
   company_quarters: { quarter: string; total_cents: number; gst_cents: number }[];
   undated: { n: number; total_cents: number };
+  undated_detail: { merchant: string | null; total_cents: number }[];
+  abn: string | null;                  // company ABN (for the accountant header)
+  gst_credits_cents: number;           // total GST/ITC captured on company expenses this FY
 }
 
 export async function buildReport(env: Env, userId: string, startYear: number): Promise<Report> {
@@ -84,14 +87,46 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
     company_quarters.push({ quarter: q.quarter, total_cents: row?.total_cents ?? 0, gst_cents: row?.gst_cents ?? 0 });
   }
 
+  // Company ABN for the accountant header (from the company entity's detail_json).
+  let abn: string | null = null;
+  const companyEntity = await env.DB.prepare(
+    `SELECT detail_json FROM entities WHERE user_id = ? AND kind = 'company' AND active = 1 LIMIT 1`,
+  )
+    .bind(userId)
+    .first<{ detail_json: string }>();
+  if (companyEntity) {
+    try {
+      const d = JSON.parse(companyEntity.detail_json) as { abn?: string };
+      abn = d.abn ?? null;
+    } catch {
+      /* ignore */
+    }
+  }
+
+  // The undated receipts themselves (so they can be dated, not just counted).
+  const undatedDetail = await env.DB.prepare(
+    `SELECT merchant, COALESCE(amount_aud_cents, amount_cents) AS total_cents FROM transactions
+      WHERE user_id = ? AND status != 'duplicate'
+        AND (txn_date IS NULL OR txn_date NOT GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]')
+      ORDER BY created_at LIMIT 50`,
+  )
+    .bind(userId)
+    .all<{ merchant: string | null; total_cents: number }>();
+
+  const rows = byBucket.results ?? [];
+  const gstCredits = rows.filter((b) => b.bucket === "company").reduce((s, b) => s + (b.gst_cents ?? 0), 0);
+
   return {
     fy: `${startYear}-${String((startYear + 1) % 100).padStart(2, "0")}`,
     start,
     end,
-    by_bucket: byBucket.results ?? [],
+    by_bucket: rows,
     by_property: byProperty.results ?? [],
     company_quarters,
     undated: { n: undated?.n ?? 0, total_cents: undated?.total_cents ?? 0 },
+    undated_detail: undatedDetail.results ?? [],
+    abn,
+    gst_credits_cents: gstCredits,
   };
 }
 
@@ -105,13 +140,25 @@ export function fyForDate(txnDate: string | null): string | null {
 }
 
 export function reportToCsv(r: Report): string {
-  const lines: string[] = [`Tax Agent summary,FY ${r.fy},${r.start} to ${r.end}`, "", "Bucket,ATO label,Count,Total,GST"];
+  const d = (c: number) => (c / 100).toFixed(2);
+  const lines: string[] = [
+    `Quillo tax summary,FY ${r.fy},${r.start} to ${r.end}`,
+    `ABN,${r.abn ?? "(not set)"}`,
+    `GST credits (ITC) on company expenses,${d(r.gst_credits_cents)}`,
+    "General information only — not tax advice. Confirm with a registered tax/BAS agent.",
+    "",
+    "Bucket,ATO label,Count,Total (AUD),GST",
+  ];
   for (const b of r.by_bucket) {
-    lines.push(`${b.bucket},${b.ato_label ?? ""},${b.n},${(b.total_cents / 100).toFixed(2)},${(b.gst_cents / 100).toFixed(2)}`);
+    lines.push(`${b.bucket},${b.ato_label ?? ""},${b.n},${d(b.total_cents)},${d(b.gst_cents)}`);
   }
-  lines.push("", "Property,Count,Total");
-  for (const p of r.by_property) lines.push(`${(p.label ?? p.property_id).replace(/,/g, " ")},${p.n},${(p.total_cents / 100).toFixed(2)}`);
-  lines.push("", "Company BAS quarter,Total,GST");
-  for (const q of r.company_quarters) lines.push(`${q.quarter},${(q.total_cents / 100).toFixed(2)},${(q.gst_cents / 100).toFixed(2)}`);
+  lines.push("", "Property,Count,Total (AUD)");
+  for (const p of r.by_property) lines.push(`${(p.label ?? p.property_id).replace(/,/g, " ")},${p.n},${d(p.total_cents)}`);
+  lines.push("", "Company BAS quarter,Total (AUD),GST");
+  for (const q of r.company_quarters) lines.push(`${q.quarter},${d(q.total_cents)},${d(q.gst_cents)}`);
+  if (r.undated_detail.length) {
+    lines.push("", "Undated (assign a date so these land in an FY),Amount (AUD)");
+    for (const u of r.undated_detail) lines.push(`${(u.merchant ?? "—").replace(/,/g, " ")},${d(u.total_cents)}`);
+  }
   return lines.join("\n") + "\n";
 }

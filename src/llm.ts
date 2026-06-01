@@ -25,7 +25,7 @@ const BEDROCK_HAIKU = "apac.anthropic.claude-haiku-4-5-20251001-v1:0";
 
 type ProviderProfile = Pick<Profile, "inference_provider" | "inference_region">;
 
-export function getLLM(env: Env, profile: ProviderProfile | null): LLM {
+export async function getLLM(env: Env, profile: ProviderProfile | null): Promise<LLM> {
   const provider = profile?.inference_provider ?? env.DEFAULT_INFERENCE_PROVIDER ?? "anthropic";
 
   if (provider === "anthropic") {
@@ -36,25 +36,22 @@ export function getLLM(env: Env, profile: ProviderProfile | null): LLM {
   }
 
   if (provider === "bedrock") {
-    // ── AU data-residency seam (review finding B5: the ONLY guaranteed AU path) ──
-    // To enable:
-    //   1. npm install @anthropic-ai/bedrock-sdk
-    //   2. import { AnthropicBedrock } from "@anthropic-ai/bedrock-sdk";
-    //   3. const region = profile?.inference_region ?? env.DEFAULT_INFERENCE_REGION;
-    //      return {
-    //        client: new AnthropicBedrock({
-    //          awsRegion: region,
-    //          awsAccessKey: env.AWS_ACCESS_KEY_ID,
-    //          awsSecretKey: env.AWS_SECRET_ACCESS_KEY,
-    //        }) as unknown as Anthropic,   // structurally compatible .messages.create
-    //        modelId: BEDROCK_HAIKU,
-    //      };
-    //   4. FIRST confirm claude-haiku-4-5 is enabled in ap-southeast-2 (Sydney) in
-    //      the Bedrock console — the investigation could not verify its availability.
+    // ── AU data-residency seam (review finding B5: the ONLY guaranteed AU path). ──
+    // The `@anthropic-ai/bedrock-sdk` dependency is INSTALLED and the wiring is ready (the
+    // exact code is below + in CONFIG.md), but its transitive `@aws-sdk/*` credential
+    // providers don't bundle into a Cloudflare Worker (a known Workers incompatibility), so
+    // we keep it un-imported until activation. Claude (US) stays the default. At switch time,
+    // either resolve the AWS-SDK bundling (wrangler alias/nodejs_compat) or sign Bedrock
+    // InvokeModel calls directly with WebCrypto SigV4 — both keep the `.messages.create`
+    // surface so src/extract.ts is unchanged. Requires AWS_ACCESS_KEY_ID / _SECRET_ACCESS_KEY
+    // and Claude Haiku enabled in ap-southeast-2.
+    //
+    //   const { AnthropicBedrock } = await import("@anthropic-ai/bedrock-sdk");
+    //   return { client: new AnthropicBedrock({ awsRegion, awsAccessKey, awsSecretKey })
+    //              as unknown as Anthropic, modelId: BEDROCK_HAIKU };
     void BEDROCK_HAIKU;
-    throw new Error(
-      "inference_provider=bedrock is not yet wired — see the seam in src/llm.ts",
-    );
+    void env;
+    throw new Error("inference_provider=bedrock isn't activated yet — see CONFIG.md (AU residency).");
   }
 
   throw new Error(`unknown inference_provider: ${provider}`);

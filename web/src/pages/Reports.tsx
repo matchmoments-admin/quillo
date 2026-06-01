@@ -39,6 +39,16 @@ export function Reports() {
         <Card className="p-6 text-sm text-muted">Couldn't load: {(error as Error).message}</Card>
       ) : (
         <>
+          <Card className="flex flex-wrap items-center justify-between gap-3 p-4 text-sm">
+            <div>
+              <span className="text-muted">ABN</span> <span className="font-medium">{data!.abn ?? "(not set)"}</span>
+            </div>
+            <div>
+              <span className="text-muted">GST credits (ITC) on company expenses</span>{" "}
+              <span className="font-medium tabular-nums">{money(data!.gst_credits_cents)}</span>
+            </div>
+          </Card>
+
           <Card className="overflow-hidden">
             <Th>By bucket + ATO label</Th>
             <table className="w-full text-sm">
@@ -85,6 +95,22 @@ export function Reports() {
               </tbody>
             </table>
           </Card>
+
+          {data!.undated_detail.length > 0 && (
+            <Card className="overflow-hidden border-warn/40">
+              <Th>Undated — assign a date so these land in an FY ({data!.undated.n})</Th>
+              <table className="w-full text-sm">
+                <tbody>
+                  {data!.undated_detail.map((u, i) => (
+                    <tr key={i} className="border-t border-line">
+                      <td className="px-4 py-2">{u.merchant ?? "—"}</td>
+                      <td className="px-4 py-2 text-right tabular-nums">{money(u.total_cents)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </Card>
+          )}
 
           <p className="text-xs text-muted">
             General information only — not tax advice. Have a registered tax/BAS agent confirm before lodging.

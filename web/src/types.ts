@@ -88,4 +88,7 @@ export interface Report {
   by_property: { property_id: string; label: string | null; n: number; total_cents: number }[];
   company_quarters: { quarter: string; total_cents: number; gst_cents: number }[];
   undated: { n: number; total_cents: number };
+  undated_detail: { merchant: string | null; total_cents: number }[];
+  abn: string | null;
+  gst_credits_cents: number;
 }

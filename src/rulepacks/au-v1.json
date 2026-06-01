@@ -7,5 +7,10 @@
     "property_vacant": "Holding cost on a vacant/not-genuinely-available property (often NOT deductible).",
     "unknown": "Cannot determine — ask the user."
   },
-  "guidance": "Categorise the receipt into exactly one bucket. Prefer 'unknown' (low confidence) over guessing. This is general information, not tax advice."
+  "guidance": "Categorise the receipt into exactly one bucket. Prefer 'unknown' (low confidence) over guessing. This is general information, not tax advice.",
+  "merchant_hints": [
+    { "match": "anthropic, openai, github, gitlab, notion, slack, figma, atlassian, jira, linear, zoom, adobe, canva, microsoft 365, google workspace, dropbox, 1password", "bucket": "company", "ato_label": "company:software-subscriptions", "note": "SaaS / AI tool subscriptions for the business" },
+    { "match": "aws, amazon web services, azure, microsoft azure, google cloud, gcp, cloudflare, vercel, netlify, digitalocean, heroku, render", "bucket": "company", "ato_label": "company:cloud-services", "note": "cloud hosting / infrastructure" },
+    { "match": "godaddy, namecheap, crazy domains, ventraip", "bucket": "company", "ato_label": "company:software-subscriptions", "note": "domains / web services" }
+  ]
 }

@@ -118,6 +118,14 @@ export function TxnDetail() {
             <Field k="Status" v={txn.status} />
           </Card>
 
+          {txn.reasoning && (
+            <Card className="space-y-1 bg-accent-soft/40 p-4">
+              <div className="text-xs font-medium uppercase tracking-wide text-accent">Why this bucket?</div>
+              <p className="text-sm text-ink">{txn.reasoning}</p>
+              <p className="text-xs text-muted">General information only — not tax advice. Confirm with a registered tax/BAS agent.</p>
+            </Card>
+          )}
+
           <Card className="space-y-4 p-4">
             <label className="block">
               <span className="text-xs font-medium uppercase tracking-wide text-muted">Bucket</span>

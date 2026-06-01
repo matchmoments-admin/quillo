@@ -15,6 +15,7 @@ export interface Txn {
   property_id: string | null;
   paid_account: string | null;
   confidence: number | null;
+  reasoning: string | null;
   duplicate_of: string | null;
   ledger_ref: string | null;
   created_at: string;

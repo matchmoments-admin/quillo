@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS transactions (
   property_id  TEXT,                     -- which property, if bucket=property_*
   paid_account TEXT,                     -- 'visa-1234'|'amex'|'cash' — reconcile-vs-push (Phase 3)
   confidence   REAL,
+  reasoning    TEXT,                     -- one-line "why this bucket/label" (teaching moment)
   image_hash   TEXT,                     -- sha-256 of receipt bytes (exact-duplicate detection)
   duplicate_of TEXT,                     -- txn id this duplicates, if flagged
   receipt_keys TEXT,                     -- JSON array of all R2 keys (multi-screenshot receipts)

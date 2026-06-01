@@ -20,6 +20,7 @@ export interface TxnRow {
   property_id: string | null;
   paid_account: string | null;
   confidence: number | null;
+  reasoning: string | null;
   duplicate_of: string | null;
   ledger_ref: string | null;
   created_at: string;
@@ -28,8 +29,8 @@ export interface TxnRow {
 // Columns returned for transaction reads (kept in one place so list + detail agree).
 const TXN_COLS =
   "id, source, status, merchant, amount_cents, currency, amount_aud_cents, fx_rate, fx_date, " +
-  "gst_cents, txn_date, bucket, ato_label, property_id, paid_account, confidence, duplicate_of, " +
-  "ledger_ref, created_at";
+  "gst_cents, txn_date, bucket, ato_label, property_id, paid_account, confidence, reasoning, " +
+  "duplicate_of, ledger_ref, created_at";
 
 export async function listTransactions(
   env: Env,

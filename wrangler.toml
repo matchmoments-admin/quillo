@@ -69,6 +69,8 @@ crons = ["0 8 * * 1"]
 
 [vars]
 JURISDICTION = "AU"
+# Per-user daily cap on model extractions (credit insurance). 0/unset = unlimited.
+MAX_EXTRACTIONS_PER_DAY = "200"
 # Clerk auth (replaces Cloudflare Access). CLERK_ISSUER = the Clerk Frontend API URL
 # (derived from the publishable key). The Worker verifies session JWTs against
 # ${CLERK_ISSUER}/.well-known/jwks.json. Leave CLERK_ISSUER UNSET for local dev (the API

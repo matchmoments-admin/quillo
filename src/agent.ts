@@ -1,6 +1,7 @@
 import { Agent } from "agents";
 import type { Env } from "./env";
 import { getProfile, getSituation, renderSituation, type Profile, type Situation, type UserRule } from "./lib/db";
+import { addRule } from "./lib/situation-write";
 import { sha256hex, sha256hexBytes } from "./lib/base64";
 import { getLLM, type LLM } from "./llm";
 import { extractReceipt, extractReceipts, extractFromText, type Extracted } from "./extract";
@@ -249,6 +250,25 @@ export class TaxAgent extends Agent<Env> {
       return null;
     }
 
+    // Per-user daily extraction cap — credit insurance against a runaway loop / abuse.
+    // Counter lives in the RULES KV (same pattern as the waitlist throttle). 0 = unlimited.
+    const cap = Number(this.env.MAX_EXTRACTIONS_PER_DAY ?? 0);
+    if (cap > 0) {
+      const day = new Date().toISOString().slice(0, 10);
+      const key = `usage:${userId}:${day}`;
+      const used = Number((await this.env.RULES.get(key)) ?? 0);
+      if (used >= cap) {
+        await this.markStatus(txnId, "needs_review");
+        await this.notify(
+          userId,
+          `Daily processing limit reached (${cap}). This receipt is saved for review and will process once the limit resets — or raise MAX_EXTRACTIONS_PER_DAY.`,
+          txnId,
+        );
+        return null;
+      }
+      await this.env.RULES.put(key, String(used + 1), { expirationTtl: 60 * 60 * 26 });
+    }
+
     const rulePack = await this.loadRulePack(profile.rule_pack_ver);
     const situation = await getSituation(this.env, userId, profile);
     const system = this.buildSystemPrompt(rulePack, profile, situation, bucketHint);
@@ -295,7 +315,7 @@ export class TaxAgent extends Agent<Env> {
     await this.env.DB.prepare(
       `UPDATE transactions SET status='extracted', merchant=?, amount_cents=?, currency=?,
               amount_aud_cents=?, fx_rate=?, fx_date=?, gst_cents=?, txn_date=?, bucket=?,
-              ato_label=?, property_id=?, paid_account=?, confidence=? WHERE id=? AND user_id=?`,
+              ato_label=?, property_id=?, paid_account=?, confidence=?, reasoning=? WHERE id=? AND user_id=?`,
     )
       .bind(
         final.merchant,
@@ -311,6 +331,8 @@ export class TaxAgent extends Agent<Env> {
         final.property_id,
         final.paid_account ?? null,
         final.confidence,
+        // Teaching moment: the one-line "why" (note when a deterministic user rule decided it).
+        rule ? `Matched your saved rule for "${final.merchant}". ${final.reasoning}` : final.reasoning,
         txnId,
         userId,
       )
@@ -453,7 +475,10 @@ export class TaxAgent extends Agent<Env> {
     const suggestions: string[] = [];
 
     const uncategorised = await this.env.DB.prepare(
-      `SELECT COUNT(*) AS n FROM transactions WHERE user_id = ? AND bucket IN ('unknown') OR status='needs_review'`,
+      // Parenthesise the OR so BOTH clauses are scoped to this user (prior precedence bug
+      // leaked other tenants' needs_review rows). Duplicates excluded.
+      `SELECT COUNT(*) AS n FROM transactions
+        WHERE user_id = ? AND status != 'duplicate' AND (bucket = 'unknown' OR status = 'needs_review')`,
     )
       .bind(userId)
       .first<{ n: number }>();
@@ -469,6 +494,57 @@ export class TaxAgent extends Agent<Env> {
     if (vacant && vacant.n > 0) {
       suggestions.push(
         `${vacant.n} expense(s) on a vacant property — holding costs may not be deductible. Flag for your registered tax agent.`,
+      );
+    }
+
+    const money = (c: number) => `$${(c / 100).toFixed(2)}`;
+    // Current AU financial year (Jul–Jun) bounds for the FY-scoped nudges.
+    const now = new Date();
+    const fyStart = now.getUTCMonth() >= 6 ? now.getUTCFullYear() : now.getUTCFullYear() - 1;
+    const fyStartDate = `${fyStart}-07-01`;
+    const fyEndDate = `${fyStart + 1}-06-30`;
+
+    // GST credits captured on company expenses this FY (the BAS / reconcile angle).
+    const gst = await this.env.DB.prepare(
+      `SELECT COALESCE(SUM(gst_cents),0) AS g, COUNT(*) AS n FROM transactions
+        WHERE user_id = ? AND bucket = 'company' AND status != 'duplicate'
+          AND txn_date >= ? AND txn_date <= ?`,
+    )
+      .bind(userId, fyStartDate, fyEndDate)
+      .first<{ g: number; n: number }>();
+    if (gst && gst.g > 0) {
+      suggestions.push(
+        `You've captured ${money(gst.g)} in GST credits across ${gst.n} company expense(s) this FY — reconcile them in QuickBooks to claim.`,
+      );
+    }
+
+    // Vehicle/fuel spend → logbook reminder (the logbook method needs a valid 12-week log).
+    const car = await this.env.DB.prepare(
+      `SELECT COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS t FROM transactions
+        WHERE user_id = ? AND status != 'duplicate'
+          AND (lower(ato_label) LIKE '%car%' OR lower(ato_label) LIKE '%vehicle%'
+               OR lower(ato_label) LIKE '%fuel%' OR lower(merchant) LIKE '%petrol%'
+               OR lower(merchant) LIKE '%caltex%' OR lower(merchant) LIKE '%shell%'
+               OR lower(merchant) LIKE '%ampol%')`,
+    )
+      .bind(userId)
+      .first<{ t: number }>();
+    if (car && car.t > 30000) {
+      suggestions.push(
+        `You've logged ${money(car.t)} of vehicle/fuel expenses — to claim these with the logbook method you need a valid 12-week logbook. Keep one if you haven't started.`,
+      );
+    }
+
+    // Low-confidence categorisations — a quick review both fixes them and trains Quillo.
+    const lowConf = await this.env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM transactions
+        WHERE user_id = ? AND status != 'duplicate' AND confidence IS NOT NULL AND confidence < ?`,
+    )
+      .bind(userId, CONFIDENCE_THRESHOLD)
+      .first<{ n: number }>();
+    if (lowConf && lowConf.n > 0) {
+      suggestions.push(
+        `${lowConf.n} categorisation(s) are low-confidence — a quick review fixes them and teaches Quillo your spending.`,
       );
     }
 
@@ -552,12 +628,22 @@ export class TaxAgent extends Agent<Env> {
     bucketHint: string | null,
   ): string {
     const hint = bucketHint ? `\nThe user hinted this is bucket="${bucketHint}" — respect it unless the receipt clearly contradicts.` : "";
+    // Optional merchant hints (e.g. SaaS/cloud) so well-known vendors categorise consistently.
+    const hints = (rulePack as { merchant_hints?: { match: string; bucket: string; ato_label: string; note?: string }[] }).merchant_hints;
+    const hintLines =
+      Array.isArray(hints) && hints.length
+        ? [
+            "Merchant hints (apply when the merchant matches one of these, unless the receipt clearly says otherwise):",
+            ...hints.map((h) => `  - [${h.match}] → bucket=${h.bucket}, ato_label=${h.ato_label}${h.note ? ` (${h.note})` : ""}`),
+          ]
+        : [];
     return [
       "You extract and categorise AU expense receipts. General information only — not tax advice.",
       `Tenant jurisdiction: ${profile.jurisdiction}. GST registered: ${profile.gst_registered ? "yes" : "no"}.`,
       `Rule pack ${rulePack.version}:`,
       ...Object.entries(rulePack.buckets).map(([k, v]) => `  - ${k}: ${v}`),
       rulePack.guidance,
+      ...hintLines,
       renderSituation(situation),
       hint,
     ].join("\n");
@@ -577,11 +663,11 @@ export class TaxAgent extends Agent<Env> {
     if (!count || count.n < 2) return;
 
     const txn = await this.env.DB.prepare(
-      `SELECT merchant, amount_cents, gst_cents, bucket, ato_label, rule_pack_ver
+      `SELECT merchant, amount_cents, gst_cents, bucket, ato_label, property_id, rule_pack_ver
          FROM transactions JOIN profiles USING (user_id) WHERE transactions.id = ?`,
     )
       .bind(txnId)
-      .first<{ merchant: string; amount_cents: number; gst_cents: number | null; bucket: string; ato_label: string; rule_pack_ver: string }>();
+      .first<{ merchant: string; amount_cents: number; gst_cents: number | null; bucket: string; ato_label: string; property_id: string | null; rule_pack_ver: string }>();
     if (!txn) return;
 
     await this.env.DB.prepare(
@@ -597,6 +683,41 @@ export class TaxAgent extends Agent<Env> {
         txn.rule_pack_ver,
       )
       .run();
+
+    await this.autoCreateUserRule(userId, txnId, txn);
+  }
+
+  /**
+   * Self-improvement (Stage 6): once a merchant has been corrected repeatedly to a definite
+   * bucket, turn that into a deterministic per-user rule so future receipts from the same
+   * merchant are categorised at confidence 1.0 without a model call (and without the user
+   * re-correcting). Guarded: skip if a rule already matches the merchant, or the bucket is
+   * unknown. This is the moat — Quillo tunes to YOUR merchants over time.
+   */
+  private async autoCreateUserRule(
+    userId: string,
+    txnId: string,
+    txn: { merchant: string; bucket: string; ato_label: string; property_id: string | null },
+  ): Promise<void> {
+    if (!txn.merchant || !txn.bucket || txn.bucket === "unknown") return;
+    const profile = await this.requireProfile(userId);
+    const situation = await getSituation(this.env, userId, profile);
+    if (applyUserRules(txn.merchant, situation.rules)) return; // a rule already covers this merchant
+
+    const ruleId = await addRule(this.env, userId, {
+      pattern: txn.merchant,
+      match_type: "merchant_contains",
+      bucket: txn.bucket,
+      ato_label: txn.ato_label,
+      property_id: txn.property_id ?? undefined,
+      priority: 100,
+    });
+    await this.audit(userId, "auto_rule", JSON.stringify({ merchant: txn.merchant, bucket: txn.bucket, ruleId }));
+    await this.notify(
+      userId,
+      `Learned — I'll file "${txn.merchant}" as ${txn.bucket} (${txn.ato_label}) from now on. You can edit this rule in Settings.`,
+      txnId,
+    );
   }
 
   private async trace(userId: string, txnId: string, model: string, system: string, output: unknown): Promise<void> {

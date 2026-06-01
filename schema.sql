@@ -65,6 +65,14 @@ CREATE TABLE IF NOT EXISTS transactions (
   paid_account TEXT,                     -- 'visa-1234'|'amex'|'cash' — reconcile-vs-push (Phase 3)
   confidence   REAL,
   reasoning    TEXT,                     -- one-line "why this bucket/label" (teaching moment)
+  -- Multi-source model: a row is either a 'receipt' (evidence) or a 'bank_line' (money).
+  kind         TEXT NOT NULL DEFAULT 'receipt',  -- 'receipt' | 'bank_line'
+  account_id   TEXT,                     -- accounts.id (bank_line, or a reconciled receipt)
+  statement_id TEXT,                     -- statements.id (bank_line imported via a statement)
+  line_fingerprint TEXT,                 -- sha256(account|date|amount|norm desc) — re-upload dedup
+  matched_txn_id TEXT,                   -- on a receipt: the bank_line it is evidence for
+  raw_description TEXT,                   -- original statement line text
+  direction    TEXT DEFAULT 'debit',     -- 'debit' (spend) | 'credit' (income/refund — not counted)
   image_hash   TEXT,                     -- sha-256 of receipt bytes (exact-duplicate detection)
   duplicate_of TEXT,                     -- txn id this duplicates, if flagged
   receipt_keys TEXT,                     -- JSON array of all R2 keys (multi-screenshot receipts)
@@ -72,6 +80,49 @@ CREATE TABLE IF NOT EXISTS transactions (
   created_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_txn_imghash ON transactions(user_id, image_hash);
+-- Statement re-upload de-dup: a bank line is unique per (account, fingerprint). NOT partial
+-- so it's a valid ON CONFLICT target; receipts have NULL fingerprint and NULLs are distinct
+-- in SQLite UNIQUE indexes, so they never collide.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_txn_fingerprint
+  ON transactions(user_id, account_id, line_fingerprint);
+CREATE INDEX IF NOT EXISTS idx_txn_kind     ON transactions(user_id, kind, status);
+CREATE INDEX IF NOT EXISTS idx_txn_matched  ON transactions(user_id, matched_txn_id);
+CREATE INDEX IF NOT EXISTS idx_txn_acct_date ON transactions(user_id, account_id, txn_date);
+
+-- ── Bank / card / investment accounts (per tenant) ────────────────────────────
+-- Each account has ONE canonical money source: a QBO feed OR statement upload — never both
+-- counted. This is the structural guard against feed-vs-statement double counting.
+CREATE TABLE IF NOT EXISTS accounts (
+  id             TEXT PRIMARY KEY,
+  user_id        TEXT NOT NULL,
+  institution    TEXT,                              -- 'CommBank' | 'Westpac' | 'Amex' ...
+  name           TEXT NOT NULL,                     -- user label, e.g. "Westpac Everyday"
+  last4          TEXT,
+  type           TEXT NOT NULL DEFAULT 'transaction', -- transaction|credit_card|loan|investment
+  source         TEXT NOT NULL DEFAULT 'statement',   -- qbo_feed|statement|manual
+  qbo_account_id TEXT,                               -- QBO AccountRef when source='qbo_feed'
+  active         INTEGER NOT NULL DEFAULT 1,
+  created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_acct_user ON accounts(user_id, active);
+
+-- ── Statement import batches (CSV/PDF) ────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS statements (
+  id             TEXT PRIMARY KEY,
+  user_id        TEXT NOT NULL,
+  account_id     TEXT NOT NULL,
+  filename       TEXT,
+  file_key       TEXT,                  -- R2 key of the raw upload (audit)
+  file_hash      TEXT,                  -- sha-256 of raw bytes — exact re-upload short-circuit
+  format         TEXT,                  -- 'csv' | 'pdf'
+  column_map     TEXT,                  -- JSON: inferred {date,amount|debit|credit,description,...}
+  row_count      INTEGER,
+  imported_count INTEGER,
+  status         TEXT NOT NULL DEFAULT 'parsed',  -- parsed|previewed|imported|failed
+  created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_stmt_user ON statements(user_id, account_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_stmt_filehash ON statements(user_id, file_hash);
 
 -- ── User overrides => training signal for self-improvement ────────────────────
 CREATE TABLE IF NOT EXISTS corrections (

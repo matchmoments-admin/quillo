@@ -2,6 +2,7 @@ import type Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
 import type { LLM } from "./llm";
 import { bytesToBase64 } from "./lib/base64";
+import type { ColumnMap } from "./lib/statements";
 
 export const Extracted = z.object({
   merchant: z.string(),
@@ -116,6 +117,53 @@ async function runRecordReceipt(
     throw new Error("model did not return a record_receipt tool call");
   }
   return { parsed: Extracted.parse(toolUse.input), raw: toolUse.input };
+}
+
+// ── Statement CSV column mapping (one cheap Claude call per file) ──────────────
+const COLUMN_MAP_TOOL: Anthropic.Tool = {
+  name: "record_column_map",
+  description: "Map a bank/credit-card statement CSV's columns so the rows can be parsed deterministically.",
+  input_schema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["header_row", "date_col", "description_col", "sign_convention"],
+    properties: {
+      header_row: { type: "integer", description: "0-based index of the header row. Some banks (CommBank) put account metadata rows ABOVE the header — skip them. Use the first data row's index if there is no header." },
+      date_col: { type: "integer", description: "0-based column index of the transaction date." },
+      description_col: { type: "integer", description: "0-based column index of the description / narrative." },
+      amount_col: { type: ["integer", "null"], description: "0-based index of a SINGLE signed amount column, or null if debit & credit are separate columns." },
+      debit_col: { type: ["integer", "null"], description: "0-based index of a separate debit column, or null." },
+      credit_col: { type: ["integer", "null"], description: "0-based index of a separate credit column, or null." },
+      balance_col: { type: ["integer", "null"], description: "0-based index of the running balance column, or null." },
+      sign_convention: { type: "string", enum: ["negative_is_debit", "positive_is_debit", "split"], description: "For a single amount column: is a NEGATIVE number a debit (spend)? Use 'split' when debit/credit are separate columns." },
+    },
+  },
+};
+
+export async function extractColumnMap(llm: LLM, rows: string[][]): Promise<ColumnMap> {
+  const sample = rows.slice(0, 6).map((r, i) => `row ${i}: ${JSON.stringify(r)}`).join("\n");
+  const msg = await llm.client.messages.create({
+    model: llm.modelId,
+    max_tokens: 512,
+    tools: [COLUMN_MAP_TOOL],
+    tool_choice: { type: "tool", name: COLUMN_MAP_TOOL.name },
+    messages: [
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: `Top rows of a bank/credit-card statement CSV (each row is a JSON array of cells). Identify the columns and call record_column_map.\n\n${sample}`,
+          },
+        ],
+      },
+    ],
+  });
+  const toolUse = msg.content.find(
+    (c): c is Anthropic.ToolUseBlock => c.type === "tool_use" && c.name === COLUMN_MAP_TOOL.name,
+  );
+  if (!toolUse) throw new Error("model did not return a column map");
+  return toolUse.input as ColumnMap;
 }
 
 /** Extract + categorise a receipt image/PDF (Claude vision = OCR). */

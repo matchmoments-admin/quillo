@@ -4,6 +4,7 @@ import { UserButton } from "@clerk/clerk-react";
 const NAV = [
   { to: "/", label: "Inbox", end: true },
   { to: "/dashboard", label: "Dashboard" },
+  { to: "/accounts", label: "Accounts" },
   { to: "/reports", label: "Reports" },
   { to: "/notifications", label: "Alerts" },
   { to: "/quickbooks", label: "QuickBooks" },

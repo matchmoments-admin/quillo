@@ -52,7 +52,37 @@ export async function addRule(
   return id;
 }
 
-export async function deleteRow(env: Env, userId: string, table: "properties" | "entities" | "user_rules", id: string): Promise<void> {
+export async function addAccount(
+  env: Env,
+  userId: string,
+  a: { institution?: string; name: string; last4?: string; type?: string; source?: string; qbo_account_id?: string },
+): Promise<string> {
+  const id = uid();
+  await env.DB.prepare(
+    `INSERT INTO accounts (id, user_id, institution, name, last4, type, source, qbo_account_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  )
+    .bind(id, userId, a.institution ?? null, a.name, a.last4 ?? null, a.type ?? "transaction", a.source ?? "statement", a.qbo_account_id ?? null)
+    .run();
+  return id;
+}
+
+export async function updateAccount(
+  env: Env,
+  userId: string,
+  id: string,
+  a: { institution?: string; name?: string; last4?: string; type?: string; source?: string },
+): Promise<void> {
+  await env.DB.prepare(
+    `UPDATE accounts SET institution = COALESCE(?, institution), name = COALESCE(?, name),
+            last4 = COALESCE(?, last4), type = COALESCE(?, type), source = COALESCE(?, source)
+      WHERE id = ? AND user_id = ?`,
+  )
+    .bind(a.institution ?? null, a.name ?? null, a.last4 ?? null, a.type ?? null, a.source ?? null, id, userId)
+    .run();
+}
+
+export async function deleteRow(env: Env, userId: string, table: "properties" | "entities" | "user_rules" | "accounts", id: string): Promise<void> {
   // table is from a fixed allowlist (never user input) — safe to interpolate.
   await env.DB.prepare(`DELETE FROM ${table} WHERE id = ? AND user_id = ?`).bind(id, userId).run();
 }

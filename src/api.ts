@@ -7,12 +7,15 @@ import {
   receiptKeyFor,
   listNotifications,
   dashboard,
+  listAccounts,
 } from "./lib/queries";
 import {
   addProperty,
   updateProperty,
   addEntity,
   addRule,
+  addAccount,
+  updateAccount,
   deleteRow,
   listKeys,
   mintKey,
@@ -171,6 +174,49 @@ export async function handleApi(
       return json({ ok: true });
     }
   }
+  // ── Accounts (bank/card/investment) ───────────────────────────────────────
+  if (resource === "accounts") {
+    if (m === "GET" && !id) return json({ accounts: await listAccounts(env, uid) });
+    if (m === "POST" && !id) return json({ id: await addAccount(env, uid, await req.json()) });
+    if (m === "PUT" && id) {
+      await updateAccount(env, uid, id, await req.json());
+      return json({ ok: true });
+    }
+    if (m === "POST" && id && sub === "source") {
+      const { source } = (await req.json()) as { source: string };
+      await stub.setAccountSource(uid, id, source);
+      return json({ ok: true });
+    }
+    if (m === "DELETE" && id) {
+      await deleteRow(env, uid, "accounts", id);
+      return json({ ok: true });
+    }
+  }
+
+  // ── Statement import (CSV) ─────────────────────────────────────────────────
+  if (resource === "statements") {
+    // POST /api/statements (multipart: file + account_id) → parse + preview (no commit yet)
+    if (m === "POST" && !id) {
+      const form = await req.formData();
+      const entry = form.get("file");
+      const accEntry = form.get("account_id");
+      if (entry == null || typeof entry === "string") return json({ error: "no file" }, 400);
+      if (typeof accEntry !== "string") return json({ error: "no account_id" }, 400);
+      const file = entry as unknown as Blob;
+      const bytes = await file.arrayBuffer();
+      if (bytes.byteLength === 0) return json({ error: "empty file" }, 400);
+      const filename = (entry as unknown as { name?: string }).name ?? "statement.csv";
+      const format = filename.toLowerCase().endsWith(".pdf") ? "pdf" : "csv";
+      const out = await stub.parseStatement(uid, accEntry, filename, bytes, format);
+      return json(out);
+    }
+    // POST /api/statements/:id/confirm [{ columnMap? }] → commit + dedup + categorise
+    if (m === "POST" && id && sub === "confirm") {
+      const body = (await req.json().catch(() => ({}))) as { columnMap?: unknown };
+      return json(await stub.confirmImport(uid, id, body.columnMap));
+    }
+  }
+
   if (resource === "keys") {
     if (m === "GET") return json({ keys: await listKeys(env, uid) });
     if (m === "POST" && !id) {

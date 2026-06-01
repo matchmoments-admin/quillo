@@ -1,4 +1,5 @@
 import type { Env } from "../env";
+import { COUNTABLE } from "./queries";
 
 // Australian FY is Jul–Jun. Given a start year Y, the FY runs Y-07-01 .. (Y+1)-06-30.
 export function currentFyStartYear(now = new Date()): number {
@@ -40,7 +41,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
             COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS total_cents,
             COALESCE(SUM(gst_cents),0) AS gst_cents
        FROM transactions
-      WHERE user_id = ? AND txn_date >= ? AND txn_date <= ? AND bucket IS NOT NULL AND status != 'duplicate'
+      WHERE user_id = ? AND txn_date >= ? AND txn_date <= ? AND bucket IS NOT NULL AND ${COUNTABLE}
       GROUP BY bucket, ato_label ORDER BY bucket, total_cents DESC`,
   )
     .bind(userId, start, end)
@@ -50,7 +51,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
     `SELECT t.property_id, p.label, COUNT(*) AS n,
             COALESCE(SUM(COALESCE(t.amount_aud_cents, t.amount_cents)),0) AS total_cents
        FROM transactions t LEFT JOIN properties p ON p.id = t.property_id
-      WHERE t.user_id = ? AND t.txn_date >= ? AND t.txn_date <= ? AND t.property_id IS NOT NULL AND t.status != 'duplicate'
+      WHERE t.user_id = ? AND t.txn_date >= ? AND t.txn_date <= ? AND t.property_id IS NOT NULL AND ${COUNTABLE.replace(/\b(status|kind|matched_txn_id|direction)\b/g, "t.$1")}
       GROUP BY t.property_id`,
   )
     .bind(userId, start, end)
@@ -61,7 +62,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   const undated = await env.DB.prepare(
     `SELECT COUNT(*) AS n, COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS total_cents
        FROM transactions
-      WHERE user_id = ? AND status != 'duplicate'
+      WHERE user_id = ? AND ${COUNTABLE}
         AND (txn_date IS NULL OR txn_date NOT GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]')`,
   )
     .bind(userId)
@@ -79,7 +80,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
     const row = await env.DB.prepare(
       `SELECT COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS total_cents,
               COALESCE(SUM(gst_cents),0) AS gst_cents
-         FROM transactions WHERE user_id = ? AND bucket = 'company' AND status != 'duplicate'
+         FROM transactions WHERE user_id = ? AND bucket = 'company' AND ${COUNTABLE}
            AND txn_date >= ? AND txn_date <= ?`,
     )
       .bind(userId, q.s, q.e)
@@ -106,7 +107,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   // The undated receipts themselves (so they can be dated, not just counted).
   const undatedDetail = await env.DB.prepare(
     `SELECT merchant, COALESCE(amount_aud_cents, amount_cents) AS total_cents FROM transactions
-      WHERE user_id = ? AND status != 'duplicate'
+      WHERE user_id = ? AND ${COUNTABLE}
         AND (txn_date IS NULL OR txn_date NOT GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]')
       ORDER BY created_at LIMIT 50`,
   )

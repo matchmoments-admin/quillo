@@ -36,6 +36,34 @@ export interface Property {
   status: string;
 }
 
+export interface Account {
+  id: string;
+  institution: string | null;
+  name: string;
+  last4: string | null;
+  type: string; // transaction|credit_card|loan|investment
+  source: string; // qbo_feed|statement|manual
+  qbo_account_id: string | null;
+  line_count?: number;
+  created_at?: string;
+}
+
+export interface StatementLine {
+  date: string | null;
+  amount_cents: number;
+  direction: "debit" | "credit";
+  description: string;
+  raw_description: string;
+}
+
+export interface StatementParse {
+  statementId: string;
+  columnMap: unknown;
+  preview: StatementLine[];
+  rowCount: number;
+  duplicate: boolean;
+}
+
 export interface Situation {
   profile?: { consent_xborder: number; inference_provider: string | null };
   properties: Property[];

@@ -2,9 +2,11 @@ import { Agent } from "agents";
 import type { Env } from "./env";
 import { getProfile, getSituation, renderSituation, type Profile, type Situation, type UserRule } from "./lib/db";
 import { addRule } from "./lib/situation-write";
+import { COUNTABLE } from "./lib/queries";
 import { sha256hex, sha256hexBytes } from "./lib/base64";
 import { getLLM, type LLM } from "./llm";
-import { extractReceipt, extractReceipts, extractFromText, type Extracted } from "./extract";
+import { extractReceipt, extractReceipts, extractFromText, extractColumnMap, type Extracted } from "./extract";
+import { parseCsv, applyColumnMap, lineFingerprint, type ColumnMap } from "./lib/statements";
 import { getLedger, LedgerNotConnectedError, type LedgerExpense } from "./ledger";
 import { redact } from "./lib/redact";
 import { toAud } from "./lib/fx";
@@ -136,6 +138,164 @@ export class TaxAgent extends Agent<Env> {
     const { parsed } = await extractReceipts(ctx.llm, ctx.system, images);
     await this.finaliseExtraction(userId, txnId, parsed, ctx.situation, ctx.llm, ctx.system);
     return txnId;
+  }
+
+  // ── 1c. STATEMENT IMPORT (CSV) — bank lines for un-fed accounts ──────────────
+  // Parse a statement: store the raw file, infer the column map with ONE Claude call,
+  // parse rows, and return a preview (no rows are committed yet). Re-uploading the exact
+  // file short-circuits on file_hash. Refuses accounts whose canonical source is the QBO
+  // feed (avoids feed-vs-statement double counting).
+  async parseStatement(
+    userId: string,
+    accountId: string,
+    filename: string,
+    bytes: ArrayBuffer,
+    format: string,
+  ): Promise<{ statementId: string; columnMap: ColumnMap | null; preview: unknown[]; rowCount: number; duplicate: boolean }> {
+    const account = await this.env.DB.prepare(`SELECT source FROM accounts WHERE id = ? AND user_id = ?`)
+      .bind(accountId, userId)
+      .first<{ source: string }>();
+    if (!account) throw new Error("account not found");
+    if (account.source === "qbo_feed") {
+      throw new Error("This account is reconciled from the QuickBooks feed — don't import statements for it (would double-count).");
+    }
+
+    const fileHash = await sha256hexBytes(bytes);
+    const existing = await this.env.DB.prepare(`SELECT id FROM statements WHERE user_id = ? AND file_hash = ?`)
+      .bind(userId, fileHash)
+      .first<{ id: string }>();
+    if (existing) {
+      return { statementId: existing.id, columnMap: null, preview: [], rowCount: 0, duplicate: true };
+    }
+
+    const statementId = crypto.randomUUID();
+    const fileKey = `${userId}/statements/${statementId}`;
+    await this.env.RECEIPTS.put(fileKey, bytes, { httpMetadata: { contentType: "text/csv" } });
+
+    const text = new TextDecoder().decode(bytes);
+    const rows = parseCsv(text);
+    const profile = await this.requireProfile(userId);
+    const llm = await getLLM(this.env, profile);
+    const columnMap = await extractColumnMap(llm, rows);
+    const lines = applyColumnMap(rows, columnMap);
+
+    await this.env.DB.prepare(
+      `INSERT INTO statements (id, user_id, account_id, filename, file_key, file_hash, format, column_map, row_count, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'parsed')`,
+    )
+      .bind(statementId, userId, accountId, filename, fileKey, fileHash, format, JSON.stringify(columnMap), lines.length)
+      .run();
+    await this.audit(userId, "statement_parsed", JSON.stringify({ statementId, accountId, rows: lines.length }));
+
+    return { statementId, columnMap, preview: lines.slice(0, 25), rowCount: lines.length, duplicate: false };
+  }
+
+  // Commit a parsed statement: re-read the raw file, parse with the (optionally corrected)
+  // column map, de-dup each line by fingerprint, batch-insert the new bank lines, and
+  // categorise deterministically (user rules + merchant hints — FREE; LLM categorisation of
+  // the remainder is a later phase). Returns counts.
+  async confirmImport(userId: string, statementId: string, columnMapOverride?: ColumnMap): Promise<{ imported: number; skipped: number }> {
+    const stmt = await this.env.DB.prepare(`SELECT account_id, file_key, column_map FROM statements WHERE id = ? AND user_id = ?`)
+      .bind(statementId, userId)
+      .first<{ account_id: string; file_key: string; column_map: string }>();
+    if (!stmt) throw new Error("statement not found");
+
+    const obj = await this.env.RECEIPTS.get(stmt.file_key);
+    if (!obj) throw new Error("statement file missing");
+    const rows = parseCsv(await obj.text());
+    const map = columnMapOverride ?? (JSON.parse(stmt.column_map) as ColumnMap);
+    const lines = applyColumnMap(rows, map);
+
+    const profile = await this.requireProfile(userId);
+    const situation = await getSituation(this.env, userId, profile);
+    const rulePack = await this.loadRulePack(profile.rule_pack_ver);
+
+    // Existing fingerprints for this account → skip re-uploaded/overlapping lines.
+    const seen = new Set<string>();
+    const prior = await this.env.DB.prepare(
+      `SELECT line_fingerprint FROM transactions WHERE user_id = ? AND account_id = ? AND line_fingerprint IS NOT NULL`,
+    )
+      .bind(userId, stmt.account_id)
+      .all<{ line_fingerprint: string }>();
+    for (const r of prior.results ?? []) seen.add(r.line_fingerprint);
+
+    const inserts: D1PreparedStatement[] = [];
+    let skipped = 0;
+    for (const line of lines) {
+      const fp = await lineFingerprint(stmt.account_id, line);
+      if (seen.has(fp)) {
+        skipped++;
+        continue;
+      }
+      seen.add(fp);
+      // Deterministic categorisation (no model call): user rule first, then merchant hints.
+      const cat = line.direction === "debit" ? this.deterministicCategorise(line.description, situation.rules, rulePack) : null;
+      inserts.push(
+        this.env.DB.prepare(
+          `INSERT INTO transactions
+             (id, user_id, source, status, kind, account_id, statement_id, line_fingerprint, raw_description,
+              merchant, amount_cents, currency, amount_aud_cents, txn_date, direction, bucket, ato_label, confidence)
+           VALUES (?, ?, 'statement', ?, 'bank_line', ?, ?, ?, ?, ?, ?, 'AUD', ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(user_id, account_id, line_fingerprint) DO NOTHING`,
+        ).bind(
+          crypto.randomUUID(),
+          userId,
+          cat ? "extracted" : line.direction === "credit" ? "extracted" : "needs_review",
+          stmt.account_id,
+          statementId,
+          fp,
+          line.raw_description,
+          line.description,
+          line.amount_cents,
+          line.amount_cents, // AU statement = AUD
+          line.date,
+          line.direction,
+          cat?.bucket ?? null,
+          cat?.ato_label ?? null,
+          cat ? cat.confidence : null,
+        ),
+      );
+    }
+
+    // Batch insert in chunks (D1 bounds params per batch).
+    let imported = 0;
+    for (let i = 0; i < inserts.length; i += 50) {
+      const chunk = inserts.slice(i, i + 50);
+      const res = await this.env.DB.batch(chunk);
+      imported += res.reduce((s, r) => s + (r.meta?.changes ?? 0), 0);
+    }
+
+    await this.env.DB.prepare(`UPDATE statements SET status='imported', imported_count=? WHERE id=?`)
+      .bind(imported, statementId)
+      .run();
+    await this.audit(userId, "statement_imported", JSON.stringify({ statementId, imported, skipped }));
+    await this.notify(userId, `Imported ${imported} transaction(s) from your statement${skipped ? ` (${skipped} already on file)` : ""}.`, null);
+    return { imported, skipped };
+  }
+
+  /** Deterministic categorisation for a statement line: user rule (1.0) then merchant hints (0.8). */
+  private deterministicCategorise(
+    merchant: string,
+    rules: UserRule[],
+    rulePack: typeof DEFAULT_RULE_PACK,
+  ): { bucket: string; ato_label: string; confidence: number } | null {
+    const rule = applyUserRules(merchant, rules);
+    if (rule) return { bucket: rule.bucket, ato_label: rule.ato_label, confidence: 1 };
+    const hints = (rulePack as { merchant_hints?: { match: string; bucket: string; ato_label: string }[] }).merchant_hints;
+    if (Array.isArray(hints)) {
+      const m = merchant.toLowerCase();
+      for (const h of hints) {
+        const terms = h.match.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+        if (terms.some((t) => t && m.includes(t))) return { bucket: h.bucket, ato_label: h.ato_label, confidence: 0.8 };
+      }
+    }
+    return null;
+  }
+
+  /** Set an account's canonical money source (qbo_feed | statement | manual). */
+  async setAccountSource(userId: string, accountId: string, source: string): Promise<void> {
+    await this.env.DB.prepare(`UPDATE accounts SET source = ? WHERE id = ? AND user_id = ?`).bind(source, accountId, userId).run();
+    await this.audit(userId, "account_source", JSON.stringify({ accountId, source }));
   }
 
   /** Email-body fallback when an email has no attachment.
@@ -478,7 +638,7 @@ export class TaxAgent extends Agent<Env> {
       // Parenthesise the OR so BOTH clauses are scoped to this user (prior precedence bug
       // leaked other tenants' needs_review rows). Duplicates excluded.
       `SELECT COUNT(*) AS n FROM transactions
-        WHERE user_id = ? AND status != 'duplicate' AND (bucket = 'unknown' OR status = 'needs_review')`,
+        WHERE user_id = ? AND status NOT IN ('duplicate','ignored','matched_receipt') AND (bucket = 'unknown' OR status = 'needs_review')`,
     )
       .bind(userId)
       .first<{ n: number }>();
@@ -507,7 +667,7 @@ export class TaxAgent extends Agent<Env> {
     // GST credits captured on company expenses this FY (the BAS / reconcile angle).
     const gst = await this.env.DB.prepare(
       `SELECT COALESCE(SUM(gst_cents),0) AS g, COUNT(*) AS n FROM transactions
-        WHERE user_id = ? AND bucket = 'company' AND status != 'duplicate'
+        WHERE user_id = ? AND bucket = 'company' AND ${COUNTABLE}
           AND txn_date >= ? AND txn_date <= ?`,
     )
       .bind(userId, fyStartDate, fyEndDate)
@@ -521,7 +681,7 @@ export class TaxAgent extends Agent<Env> {
     // Vehicle/fuel spend → logbook reminder (the logbook method needs a valid 12-week log).
     const car = await this.env.DB.prepare(
       `SELECT COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS t FROM transactions
-        WHERE user_id = ? AND status != 'duplicate'
+        WHERE user_id = ? AND ${COUNTABLE}
           AND (lower(ato_label) LIKE '%car%' OR lower(ato_label) LIKE '%vehicle%'
                OR lower(ato_label) LIKE '%fuel%' OR lower(merchant) LIKE '%petrol%'
                OR lower(merchant) LIKE '%caltex%' OR lower(merchant) LIKE '%shell%'
@@ -538,7 +698,7 @@ export class TaxAgent extends Agent<Env> {
     // Low-confidence categorisations — a quick review both fixes them and trains Quillo.
     const lowConf = await this.env.DB.prepare(
       `SELECT COUNT(*) AS n FROM transactions
-        WHERE user_id = ? AND status != 'duplicate' AND confidence IS NOT NULL AND confidence < ?`,
+        WHERE user_id = ? AND status NOT IN ('duplicate','ignored','matched_receipt') AND confidence IS NOT NULL AND confidence < ?`,
     )
       .bind(userId, CONFIDENCE_THRESHOLD)
       .first<{ n: number }>();

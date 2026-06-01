@@ -13,6 +13,7 @@ import { Settings } from "./pages/Settings";
 import { Onboarding } from "./pages/Onboarding";
 import { QuickBooks } from "./pages/QuickBooks";
 import { Reports } from "./pages/Reports";
+import { Accounts } from "./pages/Accounts";
 import { setTokenGetter } from "./api";
 
 const PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY as string | undefined;
@@ -72,6 +73,7 @@ const router = createBrowserRouter([
       { index: true, element: <Inbox /> },
       { path: "txn/:id", element: <TxnDetail /> },
       { path: "dashboard", element: <Dashboard /> },
+      { path: "accounts", element: <Accounts /> },
       { path: "notifications", element: <Notifications /> },
       { path: "settings", element: <Settings /> },
       { path: "onboarding", element: <Onboarding /> },

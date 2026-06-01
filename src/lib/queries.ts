@@ -3,6 +3,16 @@ import type { Env } from "../env";
 // Read-side queries for the web API. Reads hit D1 directly from the Worker; audited
 // writes (corrections, consent) go through the Durable Object RPC instead.
 
+// The single "this row is countable spend" predicate, used everywhere money is summed so
+// nothing double-counts across feed / statement / receipt sources:
+//  - drop duplicates and transfers/cc-payments (status 'ignored')
+//  - count bank lines + ONLY receipts that aren't matched to a line (cash / no statement)
+//  - count debits (spend); credits/refunds are stored but excluded.
+export const COUNTABLE =
+  "status NOT IN ('duplicate','ignored') " +
+  "AND (kind = 'bank_line' OR (kind = 'receipt' AND matched_txn_id IS NULL)) " +
+  "AND COALESCE(direction,'debit') = 'debit'";
+
 export interface TxnRow {
   id: string;
   source: string;
@@ -22,6 +32,12 @@ export interface TxnRow {
   confidence: number | null;
   reasoning: string | null;
   duplicate_of: string | null;
+  kind: string;
+  account_id: string | null;
+  statement_id: string | null;
+  matched_txn_id: string | null;
+  direction: string | null;
+  raw_description: string | null;
   ledger_ref: string | null;
   created_at: string;
 }
@@ -30,7 +46,8 @@ export interface TxnRow {
 const TXN_COLS =
   "id, source, status, merchant, amount_cents, currency, amount_aud_cents, fx_rate, fx_date, " +
   "gst_cents, txn_date, bucket, ato_label, property_id, paid_account, confidence, reasoning, " +
-  "duplicate_of, ledger_ref, created_at";
+  "duplicate_of, kind, account_id, statement_id, matched_txn_id, direction, raw_description, " +
+  "ledger_ref, created_at";
 
 export async function listTransactions(
   env: Env,
@@ -87,6 +104,17 @@ export async function receiptKeyFor(env: Env, userId: string, txnId: string): Pr
   return row?.receipt_key ?? null;
 }
 
+export async function listAccounts(env: Env, userId: string) {
+  const res = await env.DB.prepare(
+    `SELECT a.id, a.institution, a.name, a.last4, a.type, a.source, a.qbo_account_id, a.created_at,
+            (SELECT COUNT(*) FROM transactions t WHERE t.account_id = a.id AND t.kind='bank_line') AS line_count
+       FROM accounts a WHERE a.user_id = ? AND a.active = 1 ORDER BY a.created_at`,
+  )
+    .bind(userId)
+    .all();
+  return res.results ?? [];
+}
+
 export async function listNotifications(env: Env, userId: string) {
   const res = await env.DB.prepare(
     `SELECT id, body, txn_id, read_at, created_at FROM notifications
@@ -102,7 +130,7 @@ export async function dashboard(env: Env, userId: string) {
   // so mixed-currency receipts never sum incorrectly. Duplicates are excluded.
   const byBucket = await env.DB.prepare(
     `SELECT bucket, COUNT(*) AS n, COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS total_cents
-       FROM transactions WHERE user_id = ? AND bucket IS NOT NULL AND status != 'duplicate'
+       FROM transactions WHERE user_id = ? AND bucket IS NOT NULL AND ${COUNTABLE}
       GROUP BY bucket ORDER BY total_cents DESC`,
   )
     .bind(userId)
@@ -111,14 +139,15 @@ export async function dashboard(env: Env, userId: string) {
     `SELECT t.property_id, p.label, COUNT(*) AS n,
             COALESCE(SUM(COALESCE(t.amount_aud_cents, t.amount_cents)),0) AS total_cents
        FROM transactions t LEFT JOIN properties p ON p.id = t.property_id
-      WHERE t.user_id = ? AND t.property_id IS NOT NULL AND t.status != 'duplicate'
+      WHERE t.user_id = ? AND t.property_id IS NOT NULL AND ${COUNTABLE.replace(/\b(status|kind|matched_txn_id|direction)\b/g, "t.$1")}
       GROUP BY t.property_id`,
   )
     .bind(userId)
     .all();
   const needsReview = await env.DB.prepare(
     `SELECT COUNT(*) AS n FROM transactions
-      WHERE user_id = ? AND (status IN ('needs_review','needs_extraction','blocked_consent') OR bucket = 'unknown' OR confidence < 0.85)`,
+      WHERE user_id = ? AND status NOT IN ('duplicate','ignored','matched_receipt')
+        AND (status IN ('needs_review','needs_extraction','blocked_consent') OR bucket = 'unknown' OR confidence < 0.85)`,
   )
     .bind(userId)
     .first<{ n: number }>();

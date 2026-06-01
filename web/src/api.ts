@@ -1,4 +1,4 @@
-import type { Txn, TxnDetail, Situation, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report } from "./types";
+import type { Txn, TxnDetail, Situation, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse } from "./types";
 
 // Clerk session token getter, wired from <TokenBridge> inside ClerkProvider (main.tsx).
 // Clerk tokens are short-lived, so we fetch a fresh one per request (getToken caches/refreshes).
@@ -71,6 +71,22 @@ export const api = {
   mintKey: (label: string) => post<{ keyId: string; secret: string }>("/api/keys", { label }),
   revokeKey: (id: string) => post<{ ok: boolean }>(`/api/keys/${id}/revoke`),
   consent: (text: string) => post<{ ok: boolean }>("/api/consent", { text, method: "web" }),
+
+  // Accounts + statement import
+  accounts: () => get<{ accounts: Account[] }>("/api/accounts").then((r) => r.accounts),
+  addAccount: (b: Partial<Account>) => post<{ id: string }>("/api/accounts", b),
+  deleteAccount: (id: string) => send<{ ok: boolean }>("DELETE", `/api/accounts/${id}`),
+  setAccountSource: (id: string, source: string) => post<{ ok: boolean }>(`/api/accounts/${id}/source`, { source }),
+  parseStatement: async (file: File, accountId: string): Promise<StatementParse> => {
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("account_id", accountId);
+    const res = await fetch("/api/statements", { method: "POST", credentials: "include", headers: await authHeaders(), body: fd });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    return res.json();
+  },
+  confirmImport: (statementId: string, columnMap?: unknown) =>
+    post<{ imported: number; skipped: number }>(`/api/statements/${statementId}/confirm`, { columnMap }),
 
   // Phase 4
   qboStatus: () => get<QboStatus>("/api/qbo/status"),

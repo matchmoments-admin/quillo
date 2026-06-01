@@ -47,7 +47,7 @@ const BANK_ALERT_PATTERN =
   /(?:(?:anz|westpac|nab|bankwest|st\.?\s*george|bendigo|suncorp|macquarie)\s*[:\-]?\s*)?(?:card\s+spend|purchase\s+at|you\s+made\s+a)?\s*\$([0-9,]+(?:\.[0-9]{2})?)\s+(?:(?:at|to)\s+)?([A-Za-z0-9 &'\-,.*]+?)\s+(?:on\s+)?([0-9]{1,2}[\/\-][0-9]{1,2}[\/\-][0-9]{4}|[0-9]{4}-[0-9]{2}-[0-9]{2})/i;
 
 /** Parse a dollar amount string like "1,234.56" → cents integer. */
-function parseCents(raw: string): number | null {
+export function parseCents(raw: string): number | null {
   const n = parseFloat(raw.replace(/,/g, ""));
   if (isNaN(n) || n <= 0 || n > 1_000_000) return null;
   return Math.round(n * 100);
@@ -58,7 +58,7 @@ function parseCents(raw: string): number | null {
  * Handles: DD/MM/YYYY, DD-MM-YYYY, YYYY-MM-DD, "01 Jun 2026", "01/Jun/2026".
  * Returns null if the date cannot be parsed with confidence.
  */
-function parseDate(raw: string): string | null {
+export function parseDate(raw: string): string | null {
   raw = raw.trim();
 
   // Already ISO: YYYY-MM-DD
@@ -95,7 +95,7 @@ function parseDate(raw: string): string | null {
 }
 
 /** Trim and normalise a raw merchant string: collapse whitespace, strip trailing digits/punctuation. */
-function cleanMerchant(raw: string): string {
+export function cleanMerchant(raw: string): string {
   return raw
     .trim()
     .replace(/\s+/g, " ")

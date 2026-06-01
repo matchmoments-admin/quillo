@@ -52,6 +52,9 @@ export interface TaxAgentRpc {
   parseStatement(userId: string, accountId: string, filename: string, bytes: ArrayBuffer, format: string): Promise<{ statementId: string; columnMap: unknown; preview: unknown[]; rowCount: number; duplicate: boolean; reconciliation?: unknown }>;
   confirmImport(userId: string, statementId: string, columnMapOverride?: unknown, force?: boolean): Promise<{ imported: number; skipped: number }>;
   setAccountSource(userId: string, accountId: string, source: string): Promise<void>;
+  categoriseStatement(userId: string, statementId: string): Promise<{ categorised: number }>;
+  linkReceipt(userId: string, receiptId: string, lineId: string): Promise<void>;
+  unlinkReceipt(userId: string, receiptId: string): Promise<void>;
   runProactiveScan(userId: string): Promise<void>;
   recordConsent(userId: string, text: string, method: string): Promise<void>;
 }

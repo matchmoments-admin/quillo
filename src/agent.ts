@@ -5,8 +5,8 @@ import { addRule } from "./lib/situation-write";
 import { COUNTABLE } from "./lib/queries";
 import { sha256hex, sha256hexBytes } from "./lib/base64";
 import { getLLM, type LLM } from "./llm";
-import { extractReceipt, extractReceipts, extractFromText, extractColumnMap, extractStatement, type Extracted, type ExtractedStatement } from "./extract";
-import { parseCsv, applyColumnMap, lineFingerprint, deriveBalances, reconcileStatement, type ColumnMap, type Reconciliation, type StatementLine } from "./lib/statements";
+import { extractReceipt, extractReceipts, extractFromText, extractColumnMap, extractStatement, extractBatch, type Extracted, type ExtractedStatement } from "./extract";
+import { parseCsv, applyColumnMap, lineFingerprint, deriveBalances, reconcileStatement, fuzzyMerchant, isTransferLike, type ColumnMap, type Reconciliation, type StatementLine } from "./lib/statements";
 import { cleanMerchant } from "./lib/bank-parsers";
 import { getLedger, LedgerNotConnectedError, type LedgerExpense } from "./ledger";
 import { redact } from "./lib/redact";
@@ -271,8 +271,11 @@ export class TaxAgent extends Agent<Env> {
         continue;
       }
       seen.add(fp);
+      // Transfers / card payments / internal movements are NOT spend → 'ignored' (never counted).
+      const transfer = isTransferLike(line.raw_description);
       // Deterministic categorisation (no model call): user rule first, then merchant hints.
-      const cat = line.direction === "debit" ? this.deterministicCategorise(line.description, situation.rules, rulePack) : null;
+      const cat = !transfer && line.direction === "debit" ? this.deterministicCategorise(line.description, situation.rules, rulePack) : null;
+      const status = transfer ? "ignored" : cat ? "extracted" : line.direction === "credit" ? "extracted" : "needs_review";
       inserts.push(
         this.env.DB.prepare(
           `INSERT INTO transactions
@@ -283,7 +286,7 @@ export class TaxAgent extends Agent<Env> {
         ).bind(
           crypto.randomUUID(),
           userId,
-          cat ? "extracted" : line.direction === "credit" ? "extracted" : "needs_review",
+          status,
           stmt.account_id,
           statementId,
           fp,
@@ -312,8 +315,167 @@ export class TaxAgent extends Agent<Env> {
       .bind(imported, statementId)
       .run();
     await this.audit(userId, "statement_imported", JSON.stringify({ statementId, imported, skipped }));
-    await this.notify(userId, `Imported ${imported} transaction(s) from your statement${skipped ? ` (${skipped} already on file)` : ""}.`, null);
+
+    // Batch-categorise the lines that the deterministic pass (rules+hints) didn't cover.
+    const cat = await this.categoriseStatement(userId, statementId);
+    // Attach any existing receipts to the new lines (stops double-counting + donates GST).
+    await this.matchReceiptsForUser(userId);
+
+    await this.notify(
+      userId,
+      `Imported ${imported} transaction(s)${skipped ? ` (${skipped} already on file)` : ""}${cat.categorised ? `, categorised ${cat.categorised} with Claude` : ""}.`,
+      null,
+    );
     return { imported, skipped };
+  }
+
+  /**
+   * Batch-categorise statement bank lines the deterministic pass left as needs_review.
+   * One Claude call per ~40 lines (not per line); cap-aware (counts lines-sent against
+   * MAX_EXTRACTIONS_PER_DAY) — over the cap, the remainder stays needs_review.
+   */
+  async categoriseStatement(userId: string, statementId: string): Promise<{ categorised: number }> {
+    const rows = await this.env.DB.prepare(
+      `SELECT id, merchant, amount_cents, txn_date FROM transactions
+        WHERE user_id = ? AND statement_id = ? AND kind = 'bank_line' AND status = 'needs_review' AND direction = 'debit'`,
+    )
+      .bind(userId, statementId)
+      .all<{ id: string; merchant: string | null; amount_cents: number | null; txn_date: string | null }>();
+    const items = rows.results ?? [];
+    if (!items.length) return { categorised: 0 };
+
+    const profile = await this.requireProfile(userId);
+    const provider = profile.inference_provider ?? this.env.DEFAULT_INFERENCE_PROVIDER;
+    if (provider === "anthropic" && profile.consent_xborder !== 1) return { categorised: 0 }; // consent gate
+    const rulePack = await this.loadRulePack(profile.rule_pack_ver);
+    const situation = await getSituation(this.env, userId, profile);
+    const system = this.buildSystemPrompt(rulePack, profile, situation, null);
+    const llm = await getLLM(this.env, profile);
+
+    const cap = Number(this.env.MAX_EXTRACTIONS_PER_DAY ?? 0);
+    const day = new Date().toISOString().slice(0, 10);
+    const usageKey = `usage:${userId}:${day}`;
+    let categorised = 0;
+    for (let i = 0; i < items.length; i += 40) {
+      const chunk = items.slice(i, i + 40);
+      if (cap > 0) {
+        const used = Number((await this.env.RULES.get(usageKey)) ?? 0);
+        if (used >= cap) break; // degrade: leave the rest needs_review
+        await this.env.RULES.put(usageKey, String(used + chunk.length), { expirationTtl: 60 * 60 * 26 });
+      }
+      const results = await extractBatch(
+        llm,
+        system,
+        chunk.map((c) => ({ merchant: c.merchant ?? "", amount_cents: c.amount_cents ?? 0, date: c.txn_date })),
+      );
+      const updates: D1PreparedStatement[] = [];
+      for (let j = 0; j < chunk.length; j++) {
+        const r = results[j];
+        if (!r) continue;
+        updates.push(
+          this.env.DB.prepare(
+            `UPDATE transactions SET status='extracted', bucket=?, ato_label=?, confidence=?, reasoning=? WHERE id=? AND user_id=?`,
+          ).bind(r.bucket, r.ato_label, r.confidence, r.reasoning, chunk[j]!.id, userId),
+        );
+        categorised++;
+      }
+      if (updates.length) await this.env.DB.batch(updates);
+    }
+    await this.audit(userId, "statement_categorised", JSON.stringify({ statementId, categorised }));
+    return { categorised };
+  }
+
+  // ── Receipt ↔ bank-line matching: a receipt becomes EVIDENCE on a money line ──
+  // Counted set = bank lines + unmatched receipts, so a matched receipt stops double-counting.
+  // The bank line is the authoritative AUD; the receipt donates its GST/bucket to the line.
+  private async matchReceipt(
+    userId: string,
+    receipt: { id: string; amount_aud_cents: number | null; amount_cents: number | null; txn_date: string | null; merchant: string | null; gst_cents: number | null; bucket: string | null; ato_label: string | null },
+  ): Promise<boolean> {
+    const amt = receipt.amount_aud_cents ?? receipt.amount_cents;
+    if (amt == null || !receipt.txn_date) return false;
+    const tol = Math.max(50, Math.round(amt * 0.01));
+    const cands = await this.env.DB.prepare(
+      `SELECT id, amount_aud_cents, amount_cents, txn_date, raw_description, merchant FROM transactions
+        WHERE user_id = ? AND kind = 'bank_line' AND status NOT IN ('duplicate','ignored') AND matched_txn_id IS NULL
+          AND direction = 'debit'
+          AND ABS(COALESCE(amount_aud_cents, amount_cents) - ?) <= ?
+          AND txn_date BETWEEN date(?, '-4 day') AND date(?, '+4 day')`,
+    )
+      .bind(userId, amt, tol, receipt.txn_date, receipt.txn_date)
+      .all<{ id: string; amount_aud_cents: number | null; amount_cents: number | null; txn_date: string | null; raw_description: string | null; merchant: string | null }>();
+
+    let best: { id: string } | null = null;
+    let bestScore = 0;
+    let second = 0;
+    for (const c of cands.results ?? []) {
+      const camt = c.amount_aud_cents ?? c.amount_cents ?? 0;
+      const amountScore = 1 - Math.abs(camt - amt) / (tol || 1);
+      const dayDiff = Math.abs((Date.parse(c.txn_date ?? "") - Date.parse(receipt.txn_date)) / 86_400_000);
+      const dateScore = 1 - Math.min(Number.isFinite(dayDiff) ? dayDiff : 4, 4) / 4;
+      const mScore = fuzzyMerchant(c.raw_description ?? c.merchant ?? "", receipt.merchant ?? "");
+      const score = 0.5 * amountScore + 0.2 * dateScore + 0.3 * mScore;
+      if (score > bestScore) {
+        second = bestScore;
+        bestScore = score;
+        best = { id: c.id };
+      } else if (score > second) second = score;
+    }
+    if (best && bestScore >= 0.8 && bestScore - second > 0.15) {
+      await this.linkReceiptToLine(userId, receipt.id, best.id, receipt);
+      return true;
+    }
+    return false;
+  }
+
+  private async linkReceiptToLine(
+    userId: string,
+    receiptId: string,
+    lineId: string,
+    receipt?: { gst_cents: number | null; bucket: string | null; ato_label: string | null },
+  ): Promise<void> {
+    await this.env.DB.prepare(`UPDATE transactions SET matched_txn_id = ?, status = 'matched_receipt' WHERE id = ? AND user_id = ? AND kind = 'receipt'`)
+      .bind(lineId, receiptId, userId)
+      .run();
+    // The line is authoritative AUD; take the receipt's GST/bucket where the line lacked them.
+    if (receipt) {
+      await this.env.DB.prepare(
+        `UPDATE transactions SET gst_cents = COALESCE(gst_cents, ?), bucket = COALESCE(bucket, ?),
+                ato_label = COALESCE(ato_label, ?), status = CASE WHEN bucket IS NULL THEN 'extracted' ELSE status END
+          WHERE id = ? AND user_id = ?`,
+      )
+        .bind(receipt.gst_cents, receipt.bucket, receipt.ato_label, lineId, userId)
+        .run();
+    }
+    await this.audit(userId, "match", JSON.stringify({ receiptId, lineId }));
+    await this.notify(userId, `Matched a receipt to a statement line — counted once now.`, lineId);
+  }
+
+  /** Manual link (user clicks): attach a receipt to a bank line as evidence. */
+  async linkReceipt(userId: string, receiptId: string, lineId: string): Promise<void> {
+    const r = await this.env.DB.prepare(`SELECT gst_cents, bucket, ato_label FROM transactions WHERE id = ? AND user_id = ?`)
+      .bind(receiptId, userId)
+      .first<{ gst_cents: number | null; bucket: string | null; ato_label: string | null }>();
+    await this.linkReceiptToLine(userId, receiptId, lineId, r ?? undefined);
+  }
+
+  /** Manual unlink: detach a receipt so it counts standalone again. */
+  async unlinkReceipt(userId: string, receiptId: string): Promise<void> {
+    await this.env.DB.prepare(`UPDATE transactions SET matched_txn_id = NULL, status = 'extracted' WHERE id = ? AND user_id = ? AND kind = 'receipt'`)
+      .bind(receiptId, userId)
+      .run();
+    await this.audit(userId, "unmatch", JSON.stringify({ receiptId }));
+  }
+
+  /** After a statement import, try to match each unmatched receipt to a new line. */
+  private async matchReceiptsForUser(userId: string): Promise<void> {
+    const rows = await this.env.DB.prepare(
+      `SELECT id, amount_aud_cents, amount_cents, txn_date, merchant, gst_cents, bucket, ato_label FROM transactions
+        WHERE user_id = ? AND kind = 'receipt' AND status NOT IN ('duplicate') AND matched_txn_id IS NULL AND txn_date IS NOT NULL`,
+    )
+      .bind(userId)
+      .all<{ id: string; amount_aud_cents: number | null; amount_cents: number | null; txn_date: string | null; merchant: string | null; gst_cents: number | null; bucket: string | null; ato_label: string | null }>();
+    for (const r of rows.results ?? []) await this.matchReceipt(userId, r);
   }
 
   /** Map a Claude-extracted PDF statement to the shared StatementLine shape. */
@@ -568,6 +730,18 @@ export class TaxAgent extends Agent<Env> {
         txnId,
       );
     }
+
+    // If this receipt matches a statement/feed bank line, attach it as evidence (no double count).
+    await this.matchReceipt(userId, {
+      id: txnId,
+      amount_aud_cents: fx.amount_aud_cents,
+      amount_cents: final.amount_cents,
+      txn_date: final.txn_date,
+      merchant: final.merchant,
+      gst_cents: gstCents,
+      bucket: final.bucket,
+      ato_label: final.ato_label,
+    });
   }
 
   // ── 3. CORRECTION: user overrides a field -> training signal ───────────────

@@ -34,6 +34,23 @@ export function signedCents(line: { amount_cents: number; direction: "debit" | "
   return line.direction === "debit" ? -line.amount_cents : line.amount_cents;
 }
 
+/** 0..1 token-overlap similarity between two merchant/description strings (for receipt↔line matching). */
+export function fuzzyMerchant(a: string, b: string): number {
+  const toks = (s: string) =>
+    new Set(
+      cleanMerchant(s)
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .filter((t) => t.length >= 3),
+    );
+  const A = toks(a);
+  const B = toks(b);
+  if (A.size === 0 || B.size === 0) return 0;
+  let overlap = 0;
+  for (const t of A) if (B.has(t)) overlap++;
+  return overlap / Math.min(A.size, B.size);
+}
+
 /** Minimal RFC-4180-ish CSV parser: handles quoted fields, escaped quotes, embedded commas/newlines. */
 export function parseCsv(text: string): string[][] {
   const rows: string[][] = [];
@@ -120,6 +137,19 @@ export function applyColumnMap(rows: string[][], map: ColumnMap): StatementLine[
     });
   }
   return out;
+}
+
+// Internal movements / card payments are NOT spend — counting them would double-count (the
+// card's purchases are the real expenses). DELIBERATELY conservative: wrongly dropping a real
+// expense is worse than occasionally counting a transfer (the user can mark it ignored).
+// So we only flag (a) credit-card bill payments and (b) clearly-internal transfers to one's
+// own savings. NOT BPAY/Osko/PayAnyone — those pay real third parties (deductible bills).
+const CARD_PAYMENT_RE = /\b(credit\s?card\s?payment|card\s?member\s?payment|payment\s?to\s?card|mastercard\s?payment|visa\s?payment|amex\s?payment|cardmember\s?payment)\b/i;
+const INTERNAL_RE = /\b(to\s?savings|from\s?savings|own\s?account|internal\s?transfer|netbank\s?transfer|transfer\s?to\s?savings)\b/i;
+
+export function isTransferLike(description: string): boolean {
+  const s = description ?? "";
+  return CARD_PAYMENT_RE.test(s) || INTERNAL_RE.test(s);
 }
 
 /** Per-line fingerprint for re-upload de-dup (account-scoped). Includes balance when present. */

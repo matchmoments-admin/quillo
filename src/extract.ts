@@ -259,6 +259,73 @@ export async function extractReceipts(
   ]);
 }
 
+// ── Batch categorisation of statement lines (one Claude call per ~50 lines) ────
+const BATCH_TOOL: Anthropic.Tool = {
+  name: "record_batch",
+  description: "Categorise EACH statement line in order. Return exactly one result per input line.",
+  input_schema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["items"],
+    properties: {
+      items: {
+        type: "array",
+        description: "One categorisation per input line, in the SAME order as the input.",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["bucket", "ato_label", "confidence", "reasoning"],
+          properties: {
+            bucket: { type: "string", enum: ["payg", "company", "property_rented", "property_vacant", "unknown"] },
+            ato_label: { type: "string" },
+            confidence: { type: "number" },
+            reasoning: { type: "string", description: "One short clause: why this bucket." },
+          },
+        },
+      },
+    },
+  },
+};
+
+export interface BatchItem {
+  bucket: string;
+  ato_label: string;
+  confidence: number;
+  reasoning: string;
+}
+
+/** Categorise many statement lines in one call. Returns one result per input line (by index). */
+export async function extractBatch(
+  llm: LLM,
+  system: string,
+  items: { merchant: string; amount_cents: number; date: string | null }[],
+): Promise<BatchItem[]> {
+  const list = items
+    .map((it, i) => `${i + 1}. ${it.merchant} | $${(it.amount_cents / 100).toFixed(2)}${it.date ? ` | ${it.date}` : ""}`)
+    .join("\n");
+  const msg = await llm.client.messages.create({
+    model: llm.modelId,
+    max_tokens: 4096,
+    system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
+    tools: [BATCH_TOOL],
+    tool_choice: { type: "tool", name: BATCH_TOOL.name },
+    messages: [
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: `Categorise each of these ${items.length} bank/card statement lines into a bucket + ATO label, in order (one result per line). These are descriptions only (no receipt), so prefer 'unknown' when genuinely unclear.\n\n${list}\n\nCall record_batch with exactly ${items.length} items.`,
+          },
+        ],
+      },
+    ],
+  });
+  const toolUse = msg.content.find((c): c is Anthropic.ToolUseBlock => c.type === "tool_use" && c.name === BATCH_TOOL.name);
+  if (!toolUse) throw new Error("model did not return a batch");
+  return ((toolUse.input as { items: BatchItem[] }).items ?? []).slice(0, items.length);
+}
+
 /**
  * Categorise a typed / free-text expense (no image) — same tool + schema as
  * `extractReceipt`, so a typed line still gets a fully-bucketed result. Used by the

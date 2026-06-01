@@ -221,6 +221,20 @@ export async function handleApi(
     }
   }
 
+  // ── Manual receipt ↔ bank-line matching ───────────────────────────────────
+  if (resource === "match" && m === "POST") {
+    if (id === "link") {
+      const { receiptId, lineId } = (await req.json()) as { receiptId: string; lineId: string };
+      await stub.linkReceipt(uid, receiptId, lineId);
+      return json({ ok: true });
+    }
+    if (id === "unlink") {
+      const { receiptId } = (await req.json()) as { receiptId: string };
+      await stub.unlinkReceipt(uid, receiptId);
+      return json({ ok: true });
+    }
+  }
+
   if (resource === "keys") {
     if (m === "GET") return json({ keys: await listKeys(env, uid) });
     if (m === "POST" && !id) {

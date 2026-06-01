@@ -8,6 +8,7 @@ import { getLLM, type LLM } from "./llm";
 import { extractReceipt, extractReceipts, extractFromText, extractColumnMap, extractStatement, extractBatch, type Extracted, type ExtractedStatement } from "./extract";
 import { parseCsv, applyColumnMap, lineFingerprint, deriveBalances, reconcileStatement, fuzzyMerchant, isTransferLike, type ColumnMap, type Reconciliation, type StatementLine } from "./lib/statements";
 import { cleanMerchant } from "./lib/bank-parsers";
+import { pdfPageCount, splitPdf } from "./lib/pdf";
 import { getLedger, LedgerNotConnectedError, type LedgerExpense } from "./ledger";
 import { redact } from "./lib/redact";
 import { toAud } from "./lib/fx";
@@ -182,17 +183,35 @@ export class TaxAgent extends Agent<Env> {
     let recon: Reconciliation;
 
     if (format === "pdf") {
-      // PDF: Claude transcribes the table. Reconcile; if it doesn't balance, re-extract ONCE
-      // (a fresh pass) and keep the one that reconciles. Reconciliation catches truncation.
-      const attempt = async () => {
+      // PDF: Claude transcribes the table. Reconcile; if it doesn't balance, escalate —
+      // re-extract once for small PDFs, or CHUNK by page for multi-page ones (bounds the
+      // per-call output so nothing truncates). The stitched result is reconciled end-to-end,
+      // so a dropped page anywhere breaks the running balance and is flagged.
+      const single = async () => {
         const ext = await extractStatement(llm, bytes, "application/pdf");
         const ls = this.pdfLines(ext);
         return { ls, recon: reconcileStatement(ls, ext.opening_cents, ext.closing_cents) };
       };
-      let a = await attempt();
+      let a = await single();
       if (a.recon.available && !a.recon.ok) {
-        const b = await attempt(); // double-check
-        if (b.recon.ok || (b.recon.available && Math.abs(b.recon.diff_cents) < Math.abs(a.recon.diff_cents))) a = b;
+        const pages = await pdfPageCount(bytes);
+        if (pages > 2) {
+          const chunks = await splitPdf(bytes, 3);
+          const all: StatementLine[] = [];
+          let opening: number | null = null;
+          let closing: number | null = null;
+          for (let k = 0; k < chunks.length; k++) {
+            const ext = await extractStatement(llm, chunks[k]!, "application/pdf");
+            all.push(...this.pdfLines(ext));
+            if (k === 0) opening = ext.opening_cents;
+            closing = ext.closing_cents;
+          }
+          const recon2 = reconcileStatement(all, opening, closing);
+          if (recon2.ok || (recon2.available && Math.abs(recon2.diff_cents) < Math.abs(a.recon.diff_cents))) a = { ls: all, recon: recon2 };
+        } else {
+          const b = await single(); // small PDF: just a fresh re-extract
+          if (b.recon.ok || (b.recon.available && Math.abs(b.recon.diff_cents) < Math.abs(a.recon.diff_cents))) a = b;
+        }
       }
       lines = a.ls;
       recon = a.recon;

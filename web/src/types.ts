@@ -101,6 +101,13 @@ export interface DashboardData {
   needs_review: number;
 }
 
+export interface UsageData {
+  today_cents: number;
+  month_cents: number;
+  calls: number;
+  by_feature: { feature: string | null; calls: number; cost_cents: number }[];
+}
+
 export interface KeyRow {
   key_id: string;
   label: string | null;

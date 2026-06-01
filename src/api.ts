@@ -8,6 +8,7 @@ import {
   listNotifications,
   dashboard,
   listAccounts,
+  usageSummary,
 } from "./lib/queries";
 import {
   addProperty,
@@ -132,6 +133,11 @@ export async function handleApi(
   // GET /api/dashboard — aggregates.
   if (resource === "dashboard" && m === "GET") {
     return json(await dashboard(env, uid));
+  }
+
+  // GET /api/usage — measured inference cost (today / month / by feature).
+  if (resource === "usage" && m === "GET") {
+    return json(await usageSummary(env, uid));
   }
 
   // POST /api/correct  { txnId, field, value } — audited write via the DO.

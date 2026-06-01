@@ -115,6 +115,33 @@ export async function listAccounts(env: Env, userId: string) {
   return res.results ?? [];
 }
 
+export async function usageSummary(env: Env, userId: string) {
+  const today = new Date().toISOString().slice(0, 10);
+  const month = today.slice(0, 7);
+  const totals = await env.DB.prepare(
+    `SELECT
+       COALESCE(SUM(CASE WHEN substr(created_at,1,10) = ? THEN cost_cents END),0) AS today_cents,
+       COALESCE(SUM(CASE WHEN substr(created_at,1,7)  = ? THEN cost_cents END),0) AS month_cents,
+       COUNT(*) AS calls
+     FROM llm_usage WHERE user_id = ?`,
+  )
+    .bind(today, month, userId)
+    .first<{ today_cents: number; month_cents: number; calls: number }>();
+  const byFeature = await env.DB.prepare(
+    `SELECT feature, COUNT(*) AS calls, COALESCE(SUM(cost_cents),0) AS cost_cents
+       FROM llm_usage WHERE user_id = ? AND substr(created_at,1,7) = ?
+      GROUP BY feature ORDER BY cost_cents DESC`,
+  )
+    .bind(userId, month)
+    .all();
+  return {
+    today_cents: totals?.today_cents ?? 0,
+    month_cents: totals?.month_cents ?? 0,
+    calls: totals?.calls ?? 0,
+    by_feature: byFeature.results ?? [],
+  };
+}
+
 export async function listNotifications(env: Env, userId: string) {
   const res = await env.DB.prepare(
     `SELECT id, body, txn_id, read_at, created_at FROM notifications

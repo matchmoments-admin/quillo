@@ -100,15 +100,19 @@ async function runRecordReceipt(
   llm: LLM,
   system: string,
   content: Anthropic.ContentBlockParam[],
+  feature: string,
 ): Promise<ExtractResult> {
-  const msg = await llm.client.messages.create({
-    model: llm.modelId,
-    max_tokens: 1024,
-    system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
-    tools: [RECORD_TOOL],
-    tool_choice: { type: "tool", name: RECORD_TOOL.name },
-    messages: [{ role: "user", content }],
-  });
+  const msg = await llm.create(
+    {
+      model: llm.modelId,
+      max_tokens: 1024,
+      system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
+      tools: [RECORD_TOOL],
+      tool_choice: { type: "tool", name: RECORD_TOOL.name },
+      messages: [{ role: "user", content }],
+    },
+    feature,
+  );
 
   const toolUse = msg.content.find(
     (c): c is Anthropic.ToolUseBlock => c.type === "tool_use" && c.name === RECORD_TOOL.name,
@@ -160,7 +164,7 @@ const STATEMENT_TOOL: Anthropic.Tool = {
 
 /** Extract a full statement from a PDF (or image) via Claude document input. */
 export async function extractStatement(llm: LLM, bytes: ArrayBuffer, mime: string): Promise<ExtractedStatement> {
-  const msg = await llm.client.messages.create({
+  const msg = await llm.create({
     model: llm.modelId,
     max_tokens: 8192,
     tools: [STATEMENT_TOOL],
@@ -174,7 +178,7 @@ export async function extractStatement(llm: LLM, bytes: ArrayBuffer, mime: strin
         ],
       },
     ],
-  });
+  }, "statement_pdf");
   const toolUse = msg.content.find((c): c is Anthropic.ToolUseBlock => c.type === "tool_use" && c.name === STATEMENT_TOOL.name);
   if (!toolUse) throw new Error("model did not return a statement");
   return toolUse.input as ExtractedStatement;
@@ -203,7 +207,7 @@ const COLUMN_MAP_TOOL: Anthropic.Tool = {
 
 export async function extractColumnMap(llm: LLM, rows: string[][]): Promise<ColumnMap> {
   const sample = rows.slice(0, 6).map((r, i) => `row ${i}: ${JSON.stringify(r)}`).join("\n");
-  const msg = await llm.client.messages.create({
+  const msg = await llm.create({
     model: llm.modelId,
     max_tokens: 512,
     tools: [COLUMN_MAP_TOOL],
@@ -219,7 +223,7 @@ export async function extractColumnMap(llm: LLM, rows: string[][]): Promise<Colu
         ],
       },
     ],
-  });
+  }, "statement_columns");
   const toolUse = msg.content.find(
     (c): c is Anthropic.ToolUseBlock => c.type === "tool_use" && c.name === COLUMN_MAP_TOOL.name,
   );
@@ -234,10 +238,12 @@ export async function extractReceipt(
   bytes: ArrayBuffer,
   mime: string,
 ): Promise<ExtractResult> {
-  return runRecordReceipt(llm, system, [
-    receiptBlock(bytes, mime),
-    { type: "text", text: "Extract this receipt and categorise it using the rule pack. Call record_receipt." },
-  ]);
+  return runRecordReceipt(
+    llm,
+    system,
+    [receiptBlock(bytes, mime), { type: "text", text: "Extract this receipt and categorise it using the rule pack. Call record_receipt." }],
+    "receipt",
+  );
 }
 
 /**
@@ -250,13 +256,15 @@ export async function extractReceipts(
   system: string,
   images: { bytes: ArrayBuffer; mime: string }[],
 ): Promise<ExtractResult> {
-  return runRecordReceipt(llm, system, [
-    ...images.map((im) => receiptBlock(im.bytes, im.mime)),
-    {
-      type: "text",
-      text: `These ${images.length} images are parts/pages of ONE receipt. Combine them into a single record_receipt call (one merchant, one total).`,
-    },
-  ]);
+  return runRecordReceipt(
+    llm,
+    system,
+    [
+      ...images.map((im) => receiptBlock(im.bytes, im.mime)),
+      { type: "text", text: `These ${images.length} images are parts/pages of ONE receipt. Combine them into a single record_receipt call (one merchant, one total).` },
+    ],
+    "receipt",
+  );
 }
 
 // ── Batch categorisation of statement lines (one Claude call per ~50 lines) ────
@@ -303,7 +311,7 @@ export async function extractBatch(
   const list = items
     .map((it, i) => `${i + 1}. ${it.merchant} | $${(it.amount_cents / 100).toFixed(2)}${it.date ? ` | ${it.date}` : ""}`)
     .join("\n");
-  const msg = await llm.client.messages.create({
+  const msg = await llm.create({
     model: llm.modelId,
     max_tokens: 4096,
     system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
@@ -320,7 +328,7 @@ export async function extractBatch(
         ],
       },
     ],
-  });
+  }, "statement_batch");
   const toolUse = msg.content.find((c): c is Anthropic.ToolUseBlock => c.type === "tool_use" && c.name === BATCH_TOOL.name);
   if (!toolUse) throw new Error("model did not return a batch");
   return ((toolUse.input as { items: BatchItem[] }).items ?? []).slice(0, items.length);
@@ -336,13 +344,18 @@ export async function extractFromText(
   system: string,
   text: string,
 ): Promise<ExtractResult> {
-  return runRecordReceipt(llm, system, [
-    {
-      type: "text",
-      text:
-        `Expense described as free text (no image): "${text}"\n` +
-        `Extract and categorise it using the rule pack. Convert the amount to cents; ` +
-        `use null for any field not stated (e.g. gst_cents, txn_date). Call record_receipt.`,
-    },
-  ]);
+  return runRecordReceipt(
+    llm,
+    system,
+    [
+      {
+        type: "text",
+        text:
+          `Expense described as free text (no image): "${text}"\n` +
+          `Extract and categorise it using the rule pack. Convert the amount to cents; ` +
+          `use null for any field not stated (e.g. gst_cents, txn_date). Call record_receipt.`,
+      },
+    ],
+    "text",
+  );
 }

@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { Env } from "./env";
 import type { Profile } from "./lib/db";
+import { recordUsage } from "./lib/usage";
 
 /**
  * Inference factory — the single seam through which ALL Claude calls go.
@@ -16,6 +17,16 @@ import type { Profile } from "./lib/db";
 export interface LLM {
   client: Anthropic;
   modelId: string;
+  /**
+   * Metered message create — the single seam where EVERY model call is measured + costed.
+   * Pass a `feature` tag (receipt | text | statement_pdf | statement_batch | ...). Usage is
+   * recorded only when a userId context was supplied to getLLM (skipped in offline/eval use).
+   */
+  create(params: Anthropic.MessageCreateParamsNonStreaming, feature: string): Promise<Anthropic.Message>;
+}
+
+export interface LLMContext {
+  userId: string;
 }
 
 const ANTHROPIC_HAIKU = "claude-haiku-4-5-20251001";
@@ -25,14 +36,30 @@ const BEDROCK_HAIKU = "apac.anthropic.claude-haiku-4-5-20251001-v1:0";
 
 type ProviderProfile = Pick<Profile, "inference_provider" | "inference_region">;
 
-export async function getLLM(env: Env, profile: ProviderProfile | null): Promise<LLM> {
+// Wraps a client + model into a metered LLM. `create` records usage after each call.
+function meter(env: Env, ctx: LLMContext | undefined, client: Anthropic, modelId: string): LLM {
+  return {
+    client,
+    modelId,
+    async create(params, feature) {
+      const msg = await client.messages.create(params);
+      if (ctx?.userId && msg.usage) {
+        try {
+          await recordUsage(env, ctx.userId, feature, modelId, msg.usage);
+        } catch {
+          /* never let metering break a real call */
+        }
+      }
+      return msg;
+    },
+  };
+}
+
+export async function getLLM(env: Env, profile: ProviderProfile | null, ctx?: LLMContext): Promise<LLM> {
   const provider = profile?.inference_provider ?? env.DEFAULT_INFERENCE_PROVIDER ?? "anthropic";
 
   if (provider === "anthropic") {
-    return {
-      client: new Anthropic({ apiKey: env.ANTHROPIC_API_KEY }),
-      modelId: ANTHROPIC_HAIKU,
-    };
+    return meter(env, ctx, new Anthropic({ apiKey: env.ANTHROPIC_API_KEY }), ANTHROPIC_HAIKU);
   }
 
   if (provider === "bedrock") {

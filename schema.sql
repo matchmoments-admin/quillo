@@ -253,6 +253,20 @@ CREATE INDEX IF NOT EXISTS idx_prop_user  ON properties(user_id);
 CREATE INDEX IF NOT EXISTS idx_ent_user   ON entities(user_id, active);
 CREATE INDEX IF NOT EXISTS idx_rule_user  ON user_rules(user_id, active, priority);
 
+-- ── Inference cost accounting (every Claude call records real token usage + cost) ─────
+CREATE TABLE IF NOT EXISTS llm_usage (
+  id                TEXT PRIMARY KEY,
+  user_id           TEXT NOT NULL,
+  feature           TEXT,                 -- receipt|text|statement_columns|statement_pdf|statement_batch
+  model             TEXT,
+  input_tokens      INTEGER,
+  output_tokens     INTEGER,
+  cache_read_tokens INTEGER,
+  cost_cents        REAL,
+  created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_usage_user ON llm_usage(user_id, created_at);
+
 -- ── Public marketing waitlist (no tenant; pre-signup) ─────────────────────────
 -- Populated by the public POST /waitlist endpoint on the apex (quillo.au). This is
 -- NOT tenant data — it has no user_id and sits outside the Access boundary. We store

@@ -69,8 +69,10 @@ crons = ["0 8 * * 1"]
 
 [vars]
 JURISDICTION = "AU"
-# Per-user daily cap on model extractions (credit insurance). 0/unset = unlimited.
-MAX_EXTRACTIONS_PER_DAY = "200"
+# Per-user daily AI-spend budget in cents (measured, credit insurance). 0/unset = unlimited.
+# e.g. 500 = $5/day. Replaces the old count cap; over budget → receipts queue as needs_review.
+MAX_DAILY_COST_CENTS = "500"
+MAX_EXTRACTIONS_PER_DAY = "200"  # legacy coarse backstop (unused once the budget is set)
 # Clerk auth (replaces Cloudflare Access). CLERK_ISSUER = the Clerk Frontend API URL
 # (derived from the publishable key). The Worker verifies session JWTs against
 # ${CLERK_ISSUER}/.well-known/jwks.json. Leave CLERK_ISSUER UNSET for local dev (the API

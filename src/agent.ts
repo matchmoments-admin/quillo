@@ -11,6 +11,7 @@ import { cleanMerchant } from "./lib/bank-parsers";
 import { getLedger, LedgerNotConnectedError, type LedgerExpense } from "./ledger";
 import { redact } from "./lib/redact";
 import { toAud } from "./lib/fx";
+import { spentTodayCents } from "./lib/usage";
 import { parseTransactionAlert } from "./lib/bank-parsers";
 import auV1RulePack from "./rulepacks/au-v1.json";
 
@@ -174,7 +175,7 @@ export class TaxAgent extends Agent<Env> {
     await this.env.RECEIPTS.put(fileKey, bytes, { httpMetadata: { contentType: format === "pdf" ? "application/pdf" : "text/csv" } });
 
     const profile = await this.requireProfile(userId);
-    const llm = await getLLM(this.env, profile);
+    const llm = await getLLM(this.env, profile, { userId });
 
     let lines: StatementLine[];
     let columnMap: ColumnMap | null = null;
@@ -350,19 +351,13 @@ export class TaxAgent extends Agent<Env> {
     const rulePack = await this.loadRulePack(profile.rule_pack_ver);
     const situation = await getSituation(this.env, userId, profile);
     const system = this.buildSystemPrompt(rulePack, profile, situation, null);
-    const llm = await getLLM(this.env, profile);
+    const llm = await getLLM(this.env, profile, { userId });
 
-    const cap = Number(this.env.MAX_EXTRACTIONS_PER_DAY ?? 0);
-    const day = new Date().toISOString().slice(0, 10);
-    const usageKey = `usage:${userId}:${day}`;
     let categorised = 0;
     for (let i = 0; i < items.length; i += 40) {
       const chunk = items.slice(i, i + 40);
-      if (cap > 0) {
-        const used = Number((await this.env.RULES.get(usageKey)) ?? 0);
-        if (used >= cap) break; // degrade: leave the rest needs_review
-        await this.env.RULES.put(usageKey, String(used + chunk.length), { expirationTtl: 60 * 60 * 26 });
-      }
+      // Stop categorising once the daily $ budget is hit; the rest stays needs_review.
+      if (!(await this.withinBudget(userId, null))) break;
       const results = await extractBatch(
         llm,
         system,
@@ -627,29 +622,14 @@ export class TaxAgent extends Agent<Env> {
       return null;
     }
 
-    // Per-user daily extraction cap — credit insurance against a runaway loop / abuse.
-    // Counter lives in the RULES KV (same pattern as the waitlist throttle). 0 = unlimited.
-    const cap = Number(this.env.MAX_EXTRACTIONS_PER_DAY ?? 0);
-    if (cap > 0) {
-      const day = new Date().toISOString().slice(0, 10);
-      const key = `usage:${userId}:${day}`;
-      const used = Number((await this.env.RULES.get(key)) ?? 0);
-      if (used >= cap) {
-        await this.markStatus(txnId, "needs_review");
-        await this.notify(
-          userId,
-          `Daily processing limit reached (${cap}). This receipt is saved for review and will process once the limit resets — or raise MAX_EXTRACTIONS_PER_DAY.`,
-          txnId,
-        );
-        return null;
-      }
-      await this.env.RULES.put(key, String(used + 1), { expirationTtl: 60 * 60 * 26 });
-    }
+    // Per-user daily $ budget — credit insurance, measured (not a count guess). The metered
+    // LLM seam keeps cost:<userId>:<day> in KV; over budget → degrade to needs_review.
+    if (!(await this.withinBudget(userId, txnId))) return null;
 
     const rulePack = await this.loadRulePack(profile.rule_pack_ver);
     const situation = await getSituation(this.env, userId, profile);
     const system = this.buildSystemPrompt(rulePack, profile, situation, bucketHint);
-    const llm = await getLLM(this.env, profile);
+    const llm = await getLLM(this.env, profile, { userId });
     return { llm, system, situation };
   }
 
@@ -1040,6 +1020,37 @@ export class TaxAgent extends Agent<Env> {
 
   private async markStatus(txnId: string, status: string): Promise<void> {
     await this.env.DB.prepare(`UPDATE transactions SET status = ? WHERE id = ?`).bind(status, txnId).run();
+  }
+
+  /**
+   * Daily $-budget guard (measured spend, not a count). Returns false when today's spend has
+   * hit MAX_DAILY_COST_CENTS — caller degrades to needs_review. Emits a one-time soft alert at
+   * 80%. 0/unset budget = unlimited.
+   */
+  private async withinBudget(userId: string, txnId: string | null): Promise<boolean> {
+    const budget = Number(this.env.MAX_DAILY_COST_CENTS ?? 0);
+    if (budget <= 0) return true;
+    const spent = await spentTodayCents(this.env, userId);
+    if (spent >= budget) {
+      if (txnId) {
+        await this.markStatus(txnId, "needs_review");
+        await this.notify(
+          userId,
+          `Daily AI budget reached ($${(budget / 100).toFixed(2)}). Saved for review — it'll process after the daily reset, or raise MAX_DAILY_COST_CENTS.`,
+          txnId,
+        );
+      }
+      return false;
+    }
+    if (spent >= budget * 0.8) {
+      const day = new Date().toISOString().slice(0, 10);
+      const flag = `costalert:${userId}:${day}`;
+      if (!(await this.env.RULES.get(flag))) {
+        await this.env.RULES.put(flag, "1", { expirationTtl: 60 * 60 * 26 });
+        await this.notify(userId, `Heads up: today's AI spend is $${(spent / 100).toFixed(2)} of the $${(budget / 100).toFixed(2)} daily budget.`, null);
+      }
+    }
+    return true;
   }
 
   private async promoteToEvalCase(userId: string, txnId: string): Promise<void> {

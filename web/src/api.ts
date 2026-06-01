@@ -1,4 +1,4 @@
-import type { Txn, TxnDetail, Situation, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse } from "./types";
+import type { Txn, TxnDetail, Situation, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse, UsageData } from "./types";
 
 // Clerk session token getter, wired from <TokenBridge> inside ClerkProvider (main.tsx).
 // Clerk tokens are short-lived, so we fetch a fresh one per request (getToken caches/refreshes).
@@ -57,6 +57,7 @@ export const api = {
 
   // Phase 2
   dashboard: () => get<DashboardData>("/api/dashboard"),
+  usage: () => get<UsageData>("/api/usage"),
   notifications: () => get<{ notifications: Notification[] }>("/api/notifications").then((r) => r.notifications),
   markRead: (id: string) => post<{ ok: boolean }>(`/api/notifications/${id}/read`),
 

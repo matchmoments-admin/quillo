@@ -4,12 +4,23 @@ import type { ReactNode } from "react";
 import { api } from "../api";
 import { Card, Spinner, money, BUCKET_LABEL } from "../components/ui";
 
+const FEATURE_LABEL: Record<string, string> = {
+  receipt: "Receipts",
+  text: "Typed expenses",
+  statement_columns: "Statement column-map",
+  statement_pdf: "PDF statements",
+  statement_batch: "Statement categorisation",
+};
+const cents = (c: number) => `$${(c / 100).toFixed(c < 100 ? 4 : 2)}`;
+
 export function Dashboard() {
   const { data, isLoading, error } = useQuery({ queryKey: ["dashboard"], queryFn: () => api.dashboard() });
+  const usage = useQuery({ queryKey: ["usage"], queryFn: () => api.usage() });
   if (isLoading) return <Spinner />;
   if (error) return <Card className="p-6 text-sm text-muted">Couldn't load: {(error as Error).message}</Card>;
   const d = data!;
   const total = d.by_bucket.reduce((s, b) => s + b.total_cents, 0);
+  const u = usage.data;
 
   return (
     <div className="space-y-6">
@@ -37,6 +48,23 @@ export function Dashboard() {
           <Empty />
         )}
       </Card>
+
+      {u && (
+        <Card className="divide-y divide-line">
+          <SectionTitle>AI cost (measured)</SectionTitle>
+          <div className="flex items-center justify-between px-4 py-2.5 text-sm">
+            <span className="text-muted">Today</span>
+            <span className="font-medium tabular-nums">{cents(u.today_cents)}</span>
+          </div>
+          <div className="flex items-center justify-between px-4 py-2.5 text-sm">
+            <span className="text-muted">This month · {u.calls} calls</span>
+            <span className="font-medium tabular-nums">{cents(u.month_cents)}</span>
+          </div>
+          {u.by_feature.map((f) => (
+            <Line key={f.feature ?? "?"} k={FEATURE_LABEL[f.feature ?? ""] ?? f.feature ?? "—"} n={f.calls} v={cents(f.cost_cents)} />
+          ))}
+        </Card>
+      )}
 
       <p className="text-sm text-muted">
         Year-end totals + BAS quarters are on the <Link to="/reports" className="text-accent">Reports</Link> page.

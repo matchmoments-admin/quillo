@@ -354,8 +354,8 @@ export class TaxAgent extends Agent<Env> {
 
   /**
    * Batch-categorise statement bank lines the deterministic pass left as needs_review.
-   * One Claude call per ~40 lines (not per line); cap-aware (counts lines-sent against
-   * MAX_EXTRACTIONS_PER_DAY) — over the cap, the remainder stays needs_review.
+   * One Claude call per ~40 lines (not per line); budget-aware (stops at MAX_DAILY_COST_CENTS
+   * via withinBudget) — over budget the remainder stays needs_review. Bulk jobs go async (Batch API).
    */
   async categoriseStatement(userId: string, statementId: string): Promise<{ categorised: number }> {
     const rows = await this.env.DB.prepare(
@@ -445,24 +445,40 @@ export class TaxAgent extends Agent<Env> {
   /** Poll this user's submitted batch jobs; apply finished ones (metered at the half rate). */
   async pollBatchJobs(userId: string): Promise<{ applied: number }> {
     const jobs = await this.env.DB.prepare(
-      `SELECT id, statement_id, batch_id, chunk_map FROM batch_jobs WHERE user_id = ? AND status = 'submitted'`,
+      `SELECT id, statement_id, batch_id, chunk_map, created_at FROM batch_jobs WHERE user_id = ? AND status = 'submitted'`,
     )
       .bind(userId)
-      .all<{ id: string; statement_id: string; batch_id: string; chunk_map: string }>();
+      .all<{ id: string; statement_id: string; batch_id: string; chunk_map: string; created_at: string }>();
     if (!(jobs.results ?? []).length) return { applied: 0 };
 
     const profile = await this.requireProfile(userId);
     const llm = await getLLM(this.env, profile, { userId });
     let appliedTotal = 0;
+    const failJob = async (job: { id: string; statement_id: string }, why: string) => {
+      await this.env.DB.prepare(`UPDATE batch_jobs SET status='failed' WHERE id=?`).bind(job.id).run();
+      await this.env.DB.prepare(`UPDATE statements SET status='failed' WHERE id=?`).bind(job.statement_id).run();
+      await this.audit(userId, "batch_failed", JSON.stringify({ jobId: job.id, why }));
+      await this.notify(userId, `Background categorisation didn't finish (${why}). The lines are imported — review/categorise them manually.`, null);
+    };
+
     for (const job of jobs.results ?? []) {
+      // Stale guard: never leave a 'submitted' job zombied — fail it after 24h.
+      if (Date.parse(job.created_at + "Z") && Date.now() - Date.parse(job.created_at + "Z") > 24 * 60 * 60 * 1000) {
+        await failJob(job, "timed out after 24h");
+        continue;
+      }
       try {
         const batch = await llm.client.messages.batches.retrieve(job.batch_id);
-        if (batch.processing_status !== "ended") continue;
+        if (batch.processing_status !== "ended") continue; // still in progress / canceling
         const chunkMap = JSON.parse(job.chunk_map) as Record<string, string[]>;
         let applied = 0;
+        let errored = 0;
         const stream = await llm.client.messages.batches.results(job.batch_id);
         for await (const res of stream) {
-          if (res.result.type !== "succeeded") continue;
+          if (res.result.type !== "succeeded") {
+            errored++;
+            continue;
+          }
           const msg = res.result.message;
           if (msg.usage) await recordUsage(this.env, userId, "statement_batch", llm.modelId, msg.usage, 0.5);
           const lineIds = chunkMap[res.custom_id] ?? [];
@@ -482,11 +498,22 @@ export class TaxAgent extends Agent<Env> {
           for (let k = 0; k < updates.length; k += 50) await this.env.DB.batch(updates.slice(k, k + 50));
         }
         await this.env.DB.prepare(`UPDATE batch_jobs SET status='applied' WHERE id=?`).bind(job.id).run();
-        await this.env.DB.prepare(`UPDATE statements SET status='imported' WHERE id=?`).bind(job.statement_id).run();
-        await this.audit(userId, "batch_applied", JSON.stringify({ batchId: job.batch_id, applied }));
-        await this.notify(userId, `Finished categorising ${applied} transactions from your statement.`, null);
+        // If every chunk errored and nothing applied, the import succeeded but categorisation
+        // failed — mark the statement so the lines don't look stuck 'categorising'.
+        await this.env.DB.prepare(`UPDATE statements SET status=? WHERE id=?`)
+          .bind(applied === 0 && errored > 0 ? "failed" : "imported", job.statement_id)
+          .run();
+        await this.audit(userId, "batch_applied", JSON.stringify({ batchId: job.batch_id, applied, errored }));
+        await this.notify(
+          userId,
+          applied > 0
+            ? `Finished categorising ${applied} transactions from your statement.`
+            : `Background categorisation failed for your statement — the lines are imported; review them manually.`,
+          null,
+        );
         appliedTotal += applied;
       } catch (e) {
+        // Transient error: leave 'submitted' for the next poll; the 24h stale guard is the backstop.
         await this.audit(userId, "batch_poll_error", JSON.stringify({ jobId: job.id, error: (e as Error).message }));
       }
     }
@@ -969,7 +996,7 @@ export class TaxAgent extends Agent<Env> {
     }
 
     const vacant = await this.env.DB.prepare(
-      `SELECT COUNT(*) AS n FROM transactions WHERE user_id = ? AND bucket = 'property_vacant'`,
+      `SELECT COUNT(*) AS n FROM transactions WHERE user_id = ? AND bucket = 'property_vacant' AND ${COUNTABLE}`,
     )
       .bind(userId)
       .first<{ n: number }>();

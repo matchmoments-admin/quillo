@@ -1,11 +1,12 @@
 import { Agent } from "agents";
 import type { Env } from "./env";
 import { getProfile, getSituation, renderSituation, type Profile, type Situation, type UserRule } from "./lib/db";
-import { sha256hex } from "./lib/base64";
-import { getLLM } from "./llm";
-import { extractReceipt, type Extracted } from "./extract";
+import { sha256hex, sha256hexBytes } from "./lib/base64";
+import { getLLM, type LLM } from "./llm";
+import { extractReceipt, extractReceipts, extractFromText, type Extracted } from "./extract";
 import { getLedger, LedgerNotConnectedError, type LedgerExpense } from "./ledger";
 import { redact } from "./lib/redact";
+import { toAud } from "./lib/fx";
 import { parseTransactionAlert } from "./lib/bank-parsers";
 import auV1RulePack from "./rulepacks/au-v1.json";
 
@@ -19,8 +20,13 @@ const CORRECTABLE: Record<string, string> = {
   bucket: "bucket",
   ato_label: "ato_label",
   amount_cents: "amount_cents",
+  amount_aud_cents: "amount_aud_cents", // the reconciled AUD value (e.g. from the bank feed)
+  currency: "currency",
+  gst_cents: "gst_cents",
+  txn_date: "txn_date", // lets undated receipts be fixed so they land in an FY
   merchant: "merchant",
   property_id: "property_id",
+  paid_account: "paid_account", // drives reconcile-vs-push in Phase 3
 };
 
 // Default AU rule pack is the canonical JSON in src/rulepacks/ (single source of truth
@@ -54,17 +60,80 @@ export class TaxAgent extends Agent<Env> {
     const txnId = crypto.randomUUID();
     const key = `${userId}/${txnId}`;
     await this.env.RECEIPTS.put(key, bytes, { httpMetadata: { contentType: mime } });
-    await this.env.DB.prepare(
-      `INSERT INTO transactions (id, user_id, source, status, receipt_key)
-       VALUES (?, ?, ?, 'needs_extraction', ?)`,
+
+    // Exact-duplicate detection: identical bytes ⇒ same receipt. If we've already captured
+    // this image, record a 'duplicate' row (linked to the original) and SKIP the Claude
+    // call — saves cost and stops double-counting. The user can delete it.
+    const imageHash = await sha256hexBytes(bytes);
+    const prior = await this.env.DB.prepare(
+      `SELECT id, merchant FROM transactions
+        WHERE user_id = ? AND image_hash = ? AND status <> 'duplicate' ORDER BY created_at LIMIT 1`,
     )
-      .bind(txnId, userId, source, key)
+      .bind(userId, imageHash)
+      .first<{ id: string; merchant: string | null }>();
+    if (prior) {
+      await this.env.DB.prepare(
+        `INSERT INTO transactions (id, user_id, source, status, receipt_key, image_hash, duplicate_of)
+         VALUES (?, ?, ?, 'duplicate', ?, ?, ?)`,
+      )
+        .bind(txnId, userId, source, key, imageHash, prior.id)
+        .run();
+      await this.audit(userId, "ingest_duplicate", JSON.stringify({ txnId, duplicateOf: prior.id }));
+      await this.notify(
+        userId,
+        `Looks like a duplicate of a receipt you already uploaded${prior.merchant ? ` (${prior.merchant})` : ""} — skipped re-reading it. Delete it if it's the same expense.`,
+        txnId,
+      );
+      return txnId;
+    }
+
+    await this.env.DB.prepare(
+      `INSERT INTO transactions (id, user_id, source, status, receipt_key, image_hash)
+       VALUES (?, ?, ?, 'needs_extraction', ?, ?)`,
+    )
+      .bind(txnId, userId, source, key, imageHash)
       .run();
     await this.audit(userId, "ingest", JSON.stringify({ txnId, source, bucketHint }));
 
     // Run extraction within the DO's active lifetime (NOT ctx.waitUntil — that is a
     // no-op in Durable Objects, finding H3). Awaiting keeps the DO alive for the call.
     await this.extractAndCategorise(userId, txnId, bytes, mime, bucketHint);
+    return txnId;
+  }
+
+  /**
+   * Ingest a receipt that spans MULTIPLE images (several screenshots / multi-page PDF) as
+   * ONE transaction: store every image in R2, then run a single multi-image extraction.
+   */
+  async ingestImages(
+    userId: string,
+    source: string,
+    images: { bytes: ArrayBuffer; mime: string }[],
+    bucketHint: string | null = null,
+  ): Promise<string> {
+    const first = images[0];
+    if (!first) throw new Error("no images provided");
+    const txnId = crypto.randomUUID();
+    const keys: string[] = [];
+    let i = 0;
+    for (const im of images) {
+      const k = `${userId}/${txnId}-${i++}`;
+      await this.env.RECEIPTS.put(k, im.bytes, { httpMetadata: { contentType: im.mime } });
+      keys.push(k);
+    }
+    const imageHash = await sha256hexBytes(first.bytes);
+    await this.env.DB.prepare(
+      `INSERT INTO transactions (id, user_id, source, status, receipt_key, receipt_keys, image_hash)
+       VALUES (?, ?, ?, 'needs_extraction', ?, ?, ?)`,
+    )
+      .bind(txnId, userId, source, keys[0] ?? null, JSON.stringify(keys), imageHash)
+      .run();
+    await this.audit(userId, "ingest_multi", JSON.stringify({ txnId, source, count: images.length }));
+
+    const ctx = await this.prepareCategorisation(userId, txnId, bucketHint);
+    if (!ctx) return txnId; // consent gate blocked
+    const { parsed } = await extractReceipts(ctx.llm, ctx.system, images);
+    await this.finaliseExtraction(userId, txnId, parsed, ctx.situation, ctx.llm, ctx.system);
     return txnId;
   }
 
@@ -115,6 +184,32 @@ export class TaxAgent extends Agent<Env> {
     return txnId;
   }
 
+  // ── 1b. INGEST + CATEGORISE typed / free-text expense (no image) ────────────
+  // HTTP entry point: POST /ingest with a text/* content-type (see src/index.ts). Unlike
+  // ingestText (the conservative bank-alert parser, no Claude), this runs the SAME
+  // categorisation as a receipt so a typed line gets a real bucket + ato_label.
+  async ingestCategoriseText(
+    userId: string,
+    source: string,
+    text: string,
+    bucketHint: string | null = null,
+  ): Promise<string> {
+    const txnId = crypto.randomUUID();
+    const safe = redact(text); // strip PII before it reaches the model or logs
+    await this.env.DB.prepare(
+      `INSERT INTO transactions (id, user_id, source, status) VALUES (?, ?, ?, 'needs_extraction')`,
+    )
+      .bind(txnId, userId, source)
+      .run();
+    await this.audit(userId, "ingest_text_categorise", JSON.stringify({ txnId, source }));
+
+    const ctx = await this.prepareCategorisation(userId, txnId, bucketHint);
+    if (!ctx) return txnId; // APP-8 consent gate blocked it
+    const { parsed } = await extractFromText(ctx.llm, ctx.system, safe);
+    await this.finaliseExtraction(userId, txnId, parsed, ctx.situation, ctx.llm, ctx.system);
+    return txnId;
+  }
+
   // ── 2. EXTRACT + CATEGORISE (Claude vision = OCR) ──────────────────────────
   async extractAndCategorise(
     userId: string,
@@ -123,10 +218,26 @@ export class TaxAgent extends Agent<Env> {
     mime: string,
     bucketHint: string | null,
   ): Promise<void> {
+    const ctx = await this.prepareCategorisation(userId, txnId, bucketHint);
+    if (!ctx) return; // APP-8 consent gate blocked it
+    const { parsed } = await extractReceipt(ctx.llm, ctx.system, bytes, mime);
+    await this.finaliseExtraction(userId, txnId, parsed, ctx.situation, ctx.llm, ctx.system);
+  }
+
+  /**
+   * Shared setup for the image and text categorisation paths: enforce the APP-8
+   * cross-border consent gate (fix H7 — a US/anthropic inference call on personal tax
+   * data needs explicit recorded consent; Bedrock/AU does not), then build the
+   * (cacheable) rule-pack + profile + situation system prompt and the inference client.
+   * Returns null when consent blocks the call (txn marked blocked_consent + user notified).
+   */
+  private async prepareCategorisation(
+    userId: string,
+    txnId: string,
+    bucketHint: string | null,
+  ): Promise<{ llm: LLM; system: string; situation: Situation } | null> {
     const profile = await this.requireProfile(userId);
 
-    // APP-8 gate (fix H7): a US (anthropic) inference call on personal tax data
-    // requires explicit, recorded cross-border consent. Bedrock (AU) does not.
     const provider = profile.inference_provider ?? this.env.DEFAULT_INFERENCE_PROVIDER;
     if (provider === "anthropic" && profile.consent_xborder !== 1) {
       await this.markStatus(txnId, "blocked_consent");
@@ -135,17 +246,34 @@ export class TaxAgent extends Agent<Env> {
         "Cross-border processing consent (APP 8) is required before this receipt can be read by the US inference API. Record consent to proceed.",
         txnId,
       );
-      return;
+      return null;
     }
 
     const rulePack = await this.loadRulePack(profile.rule_pack_ver);
     const situation = await getSituation(this.env, userId, profile);
     const system = this.buildSystemPrompt(rulePack, profile, situation, bucketHint);
     const llm = getLLM(this.env, profile);
+    return { llm, system, situation };
+  }
 
-    const { parsed, raw } = await extractReceipt(llm, system, bytes, mime);
-
-    // Deterministic per-user rule wins over the model's guess (confidence 1.0).
+  /**
+   * Persist a categorised expense. A deterministic per-user rule (confidence 1.0) wins
+   * over the model's guess; then write the row, trace, and the company / low-confidence
+   * notifications. Shared by the image and text paths so both behave identically.
+   *
+   * DESIGN DECISION (reader/reconciler): the agent does NOT auto-create Purchase objects
+   * in QuickBooks for company-bucket txns — bank feeds are the source of truth in QBO, so
+   * auto-posting here would duplicate the feed. We notify for reconciliation instead.
+   * pushToLedger() remains for genuine cash / non-feed expenses only.
+   */
+  private async finaliseExtraction(
+    userId: string,
+    txnId: string,
+    parsed: Extracted,
+    situation: Situation,
+    llm: LLM,
+    system: string,
+  ): Promise<void> {
     const rule = applyUserRules(parsed.merchant, situation.rules);
     const final: Extracted = rule
       ? {
@@ -157,18 +285,31 @@ export class TaxAgent extends Agent<Env> {
         }
       : parsed;
 
+    // Currency: AU GST only applies to AUD supplies — force null for anything foreign
+    // (defensive, on top of the prompt rule). Convert to AUD for reporting (estimate; the
+    // authoritative AUD is the reconciled bank-feed line).
+    const currency = (final.currency ?? "AUD").trim().toUpperCase();
+    const gstCents = currency === "AUD" ? final.gst_cents : null;
+    const fx = await toAud(this.env, final.amount_cents, currency, final.txn_date);
+
     await this.env.DB.prepare(
-      `UPDATE transactions SET status='extracted', merchant=?, amount_cents=?, gst_cents=?,
-              txn_date=?, bucket=?, ato_label=?, property_id=?, confidence=? WHERE id=? AND user_id=?`,
+      `UPDATE transactions SET status='extracted', merchant=?, amount_cents=?, currency=?,
+              amount_aud_cents=?, fx_rate=?, fx_date=?, gst_cents=?, txn_date=?, bucket=?,
+              ato_label=?, property_id=?, paid_account=?, confidence=? WHERE id=? AND user_id=?`,
     )
       .bind(
         final.merchant,
         final.amount_cents,
-        final.gst_cents,
+        currency,
+        fx.amount_aud_cents,
+        fx.fx_rate,
+        fx.fx_date,
+        gstCents,
         final.txn_date,
         final.bucket,
         final.ato_label,
         final.property_id,
+        final.paid_account ?? null,
         final.confidence,
         txnId,
         userId,
@@ -177,13 +318,6 @@ export class TaxAgent extends Agent<Env> {
 
     await this.trace(userId, txnId, llm.modelId, system, { parsed, rule: rule?.id ?? null });
 
-    // DESIGN DECISION (reader/reconciler): the agent does NOT auto-create Purchase
-    // objects in QuickBooks for company-bucket transactions. Bank feeds are the
-    // source of truth in QuickBooks Online — auto-creating a Purchase here would
-    // create a duplicate posting against what the bank feed brings in. Instead, we
-    // notify the founder and leave the transaction for reconciliation against the
-    // bank feed in QBO. pushToLedger() is retained below for cash / non-feed
-    // expenses only (see comment on that method).
     if (final.bucket === "company" && final.confidence >= CONFIDENCE_THRESHOLD) {
       await this.notify(
         userId,
@@ -225,6 +359,93 @@ export class TaxAgent extends Agent<Env> {
 
     await this.promoteToEvalCase(userId, txnId);
     await this.audit(userId, "correction", JSON.stringify({ txnId, field, newValue }));
+  }
+
+  /**
+   * Hard-delete a transaction (e.g. a duplicate upload). Removes the row and its R2
+   * receipt image(s), but writes an audit_log breadcrumb so the hash-chain records WHAT was
+   * deleted even though the data is gone (honours "deleted means deleted").
+   */
+  async deleteTransaction(userId: string, txnId: string): Promise<void> {
+    const row = await this.env.DB.prepare(
+      `SELECT merchant, amount_cents, currency, receipt_key, receipt_keys
+         FROM transactions WHERE id = ? AND user_id = ?`,
+    )
+      .bind(txnId, userId)
+      .first<{
+        merchant: string | null;
+        amount_cents: number | null;
+        currency: string | null;
+        receipt_key: string | null;
+        receipt_keys: string | null;
+      }>();
+    if (!row) throw new Error("transaction not found");
+
+    // Collect every R2 key (primary + any multi-image keys) and delete the objects.
+    const keys = new Set<string>();
+    if (row.receipt_key) keys.add(row.receipt_key);
+    if (row.receipt_keys) {
+      try {
+        for (const k of JSON.parse(row.receipt_keys) as string[]) if (k) keys.add(k);
+      } catch {
+        /* ignore malformed json */
+      }
+    }
+    for (const k of keys) await this.env.RECEIPTS.delete(k);
+
+    await this.env.DB.prepare(`DELETE FROM corrections WHERE txn_id = ? AND user_id = ?`).bind(txnId, userId).run();
+    await this.env.DB.prepare(`DELETE FROM transactions WHERE id = ? AND user_id = ?`).bind(txnId, userId).run();
+    await this.audit(
+      userId,
+      "delete",
+      JSON.stringify({ txnId, merchant: row.merchant, amount_cents: row.amount_cents, currency: row.currency }),
+    );
+  }
+
+  /**
+   * Push a company expense to QuickBooks as a Purchase — USER-TRIGGERED, for NON-FEED
+   * expenses only (cash, or a card not connected to QBO like a separate Amex). Fed
+   * accounts must NOT be pushed: the bank feed already posts them, and a Purchase here
+   * would double-count (the reader/reconciler rule). Idempotent via `ledger_ref`. Posts
+   * the AUD amount (`amount_aud_cents`), matching QBO's home currency.
+   */
+  async pushToQuickBooks(userId: string, txnId: string): Promise<{ ok: boolean; ledgerRef?: string; error?: string }> {
+    const row = await this.env.DB.prepare(
+      `SELECT merchant, amount_cents, amount_aud_cents, gst_cents, txn_date, ato_label, bucket, ledger_ref
+         FROM transactions WHERE id = ? AND user_id = ?`,
+    )
+      .bind(txnId, userId)
+      .first<{
+        merchant: string | null;
+        amount_cents: number | null;
+        amount_aud_cents: number | null;
+        gst_cents: number | null;
+        txn_date: string | null;
+        ato_label: string | null;
+        bucket: string | null;
+        ledger_ref: string | null;
+      }>();
+    if (!row) throw new Error("transaction not found");
+    if (row.ledger_ref) return { ok: true, ledgerRef: row.ledger_ref }; // already posted
+    if (row.bucket !== "company") return { ok: false, error: "only company-bucket expenses post to QuickBooks" };
+
+    // pushToLedger reads amount_cents/gst_cents/txn_date/merchant/ato_label — feed it the
+    // AUD amount so QBO records the home-currency value.
+    const parsed = {
+      merchant: row.merchant ?? "",
+      amount_cents: row.amount_aud_cents ?? row.amount_cents ?? 0,
+      gst_cents: row.gst_cents,
+      txn_date: row.txn_date,
+      ato_label: row.ato_label ?? "company:expense",
+    } as Extracted;
+    await this.pushToLedger(userId, txnId, parsed);
+
+    const after = await this.env.DB.prepare(`SELECT ledger_ref FROM transactions WHERE id = ?`)
+      .bind(txnId)
+      .first<{ ledger_ref: string | null }>();
+    return after?.ledger_ref
+      ? { ok: true, ledgerRef: after.ledger_ref }
+      : { ok: false, error: "QuickBooks not connected — connect it first, then push." };
   }
 
   // ── 4. PROACTIVE engine (called by cron) ───────────────────────────────────

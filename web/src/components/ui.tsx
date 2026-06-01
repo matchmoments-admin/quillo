@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { ButtonHTMLAttributes, ReactNode } from "react";
 
 export const money = (cents: number | null): string =>
   cents == null ? "—" : `$${(cents / 100).toLocaleString("en-AU", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -35,7 +35,29 @@ export function ConfidencePill({ value }: { value: number | null }) {
 }
 
 export function Card({ children, className = "" }: { children: ReactNode; className?: string }) {
-  return <div className={`rounded-2xl border border-line bg-white shadow-card ${className}`}>{children}</div>;
+  return <div className={`rounded-2xl border border-line/70 bg-white shadow-card ${className}`}>{children}</div>;
+}
+
+// Shared button language with the public landing page (primary = bg-ink, ghost = bordered).
+// Pages can adopt this incrementally; it keeps the app and the marketing site speaking the
+// same visual dialect.
+export function Button({
+  children,
+  variant = "primary",
+  className = "",
+  ...props
+}: { children: ReactNode; variant?: "primary" | "ghost" } & ButtonHTMLAttributes<HTMLButtonElement>) {
+  const base =
+    "inline-flex h-10 items-center justify-center gap-2 rounded-xl px-4 text-sm font-semibold transition disabled:opacity-50";
+  const tone =
+    variant === "ghost"
+      ? "border border-line bg-transparent text-ink hover:bg-surface"
+      : "bg-ink text-white hover:bg-ink/90";
+  return (
+    <button className={`${base} ${tone} ${className}`} {...props}>
+      {children}
+    </button>
+  );
 }
 
 export function Spinner() {

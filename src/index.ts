@@ -3,8 +3,10 @@ import type { Env, TaxAgentRpc } from "./env";
 import { verifyIngest } from "./ingest/auth";
 import { parseEmail } from "./lib/email";
 import { userIdFromLocalpart } from "./lib/db";
-import { requireAccess } from "./auth/access";
+import { requireClerk } from "./auth/clerk";
 import { handleApi } from "./api";
+import { marketingResponse } from "./marketing/landing";
+import { handleWaitlist } from "./marketing/waitlist";
 
 // The DO class must be exported from the Worker's main module for the binding.
 export { TaxAgent } from "./agent";
@@ -27,6 +29,25 @@ export default {
       return Response.json({ ok: true });
     }
 
+    // ── Host branch: public marketing apex vs the gated app host ────────────────
+    // The marketing page (quillo.au) lives outside Cloudflare Access; only the app
+    // host (app.quillo.au) gets an Access application in front. We read the Host
+    // header (not just url.hostname) so `curl -H 'Host: quillo.au'` exercises the
+    // apex path under `wrangler dev`, where url.hostname is always localhost.
+    const host = (req.headers.get("host") ?? url.hostname).split(":")[0]?.toLowerCase() ?? "";
+    if (host === "www.quillo.au") {
+      url.protocol = "https:";
+      url.hostname = "quillo.au";
+      url.port = "";
+      return Response.redirect(url.toString(), 301); // canonical apex
+    }
+    if (host === "quillo.au") {
+      if (url.pathname === "/" && req.method === "GET") return marketingResponse();
+      if (url.pathname === "/waitlist" && req.method === "POST") return handleWaitlist(req, env);
+      // Keep the apex tiny — anything else belongs to the app.
+      return Response.redirect("https://app.quillo.au" + url.pathname + url.search, 302);
+    }
+
     // (a) Web upload + (c) iOS Shortcut + (d) Android app all POST signed bytes here.
     // Tenant identity is DERIVED from the verifying key — never a client header (B1).
     if (url.pathname === "/ingest" && req.method === "POST") {
@@ -37,13 +58,21 @@ export default {
       const source = req.headers.get("x-source") ?? "upload";
       const mime = req.headers.get("content-type") ?? "image/jpeg";
       const bucketHint = req.headers.get("x-bucket");
-      const txnId = await stubFor(env, verified.userId).ingest(
-        verified.userId,
-        source,
-        body,
-        mime,
-        bucketHint,
-      );
+      const stub = stubFor(env, verified.userId);
+
+      // Typed / free-text expense (content-type text/*). `x-parse: alert` runs the
+      // conservative bank-alert parser (ingestText, no Claude); otherwise the text is
+      // categorised like a receipt (ingestCategoriseText → real bucket + ato_label).
+      if (mime.startsWith("text/")) {
+        const text = new TextDecoder().decode(body);
+        const txnId =
+          req.headers.get("x-parse") === "alert"
+            ? await stub.ingestText(verified.userId, source, text)
+            : await stub.ingestCategoriseText(verified.userId, source, text, bucketHint);
+        return Response.json({ ok: true, txnId });
+      }
+
+      const txnId = await stub.ingest(verified.userId, source, body, mime, bucketHint);
       return Response.json({ ok: true, txnId });
     }
 
@@ -76,14 +105,25 @@ export default {
       return Response.json({ ok: true });
     }
 
-    // Web UI API — authenticated via Cloudflare Access, scoped to the verified user.
+    // Web UI API — authenticated via Clerk, gated to the founder's user until launch.
     if (url.pathname.startsWith("/api/")) {
-      const user = await requireAccess(req, env);
-      if (!user) return new Response("unauthorized", { status: 401 });
-      return handleApi(req, env, user, stubFor(env, user.userId));
+      const auth = await requireClerk(req, env);
+      if (!auth.ok) {
+        const msg = auth.status === 403 ? "not yet available" : "unauthorized";
+        return new Response(msg, { status: auth.status });
+      }
+      return handleApi(req, env, auth.user, stubFor(env, auth.user.userId));
     }
 
-    return (await routeAgentRequest(req, env, { cors: true })) ?? new Response("not found", { status: 404 });
+    // Agents SDK routes (/agents/*) + websocket upgrades.
+    const agentRes = await routeAgentRequest(req, env, { cors: true });
+    if (agentRes) return agentRes;
+
+    // Static assets / SPA. Now that "/" is in run_worker_first, the Worker runs for
+    // the app host's "/" too, so it must hand back to the assets binding (which honours
+    // the single-page-application fallback to index.html).
+    if (env.ASSETS) return env.ASSETS.fetch(req);
+    return new Response("not found", { status: 404 });
   },
 
   // (b) EMAIL ingest — Cloudflare Email Routing delivers here. Tenant is derived

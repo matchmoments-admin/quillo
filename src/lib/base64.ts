@@ -33,3 +33,9 @@ export async function sha256hex(input: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", data);
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
+
+/** SHA-256 hex digest of raw bytes (used for exact-duplicate receipt detection). */
+export async function sha256hexBytes(buf: ArrayBuffer): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", buf);
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}

@@ -6,11 +6,13 @@ import { bytesToBase64 } from "./lib/base64";
 export const Extracted = z.object({
   merchant: z.string(),
   amount_cents: z.number().int(),
+  currency: z.string().default("AUD"),
   gst_cents: z.number().int().nullable(),
   txn_date: z.string().nullable(),
   bucket: z.enum(["payg", "company", "property_rented", "property_vacant", "unknown"]),
   ato_label: z.string(),
   property_id: z.string().nullable(),
+  paid_account: z.string().nullable(),
   confidence: z.number().min(0).max(1),
   reasoning: z.string(),
 });
@@ -26,11 +28,16 @@ const RECORD_TOOL: Anthropic.Tool = {
   input_schema: {
     type: "object",
     additionalProperties: false,
-    required: ["merchant", "amount_cents", "gst_cents", "txn_date", "bucket", "ato_label", "property_id", "confidence", "reasoning"],
+    required: ["merchant", "amount_cents", "currency", "gst_cents", "txn_date", "bucket", "ato_label", "property_id", "paid_account", "confidence", "reasoning"],
     properties: {
       merchant: { type: "string", description: "Merchant / supplier name as printed." },
-      amount_cents: { type: "integer", description: "Total amount in cents (GST-inclusive)." },
-      gst_cents: { type: ["integer", "null"], description: "GST component in cents, or null if not shown." },
+      amount_cents: { type: "integer", description: "Total amount in cents, in the ORIGINAL currency shown on the receipt (GST-inclusive)." },
+      currency: { type: "string", description: "ISO-4217 code of the amount as printed (e.g. AUD, USD, EUR). Default AUD only if no currency/symbol indicates otherwise; '$' alone on an Australian receipt means AUD, but USD/US$/a US merchant means USD." },
+      gst_cents: {
+        type: ["integer", "null"],
+        description:
+          "Australian GST component in cents — ONLY if the receipt shows a GST/tax line AND the supplier is Australian (has an ABN). For overseas suppliers or any non-AUD currency, GST does not apply: return null. Never assume 10%.",
+      },
       txn_date: { type: ["string", "null"], description: "ISO date (YYYY-MM-DD) or null if illegible." },
       bucket: {
         type: "string",
@@ -41,6 +48,11 @@ const RECORD_TOOL: Anthropic.Tool = {
       property_id: {
         type: ["string", "null"],
         description: "When the bucket is property_*, the id of the matching property from the user's situation; otherwise null.",
+      },
+      paid_account: {
+        type: ["string", "null"],
+        description:
+          "Payment method/account if visible on the receipt (e.g. 'visa-1234' from masked card digits, 'amex', 'paypal', 'cash'); otherwise null.",
       },
       confidence: { type: "number", description: "0..1 confidence in bucket + label." },
       reasoning: { type: "string", description: "One sentence: why this bucket/label." },
@@ -78,14 +90,15 @@ export interface ExtractResult {
 }
 
 /**
- * Run extraction + categorisation against a receipt image/PDF.
- * `system` is the (stable, cacheable) rule-pack + profile prompt.
+ * Single forced-tool-use call against `RECORD_TOOL`: the model must return exactly one
+ * schema-valid `record_receipt` call (no prose, no markdown — finding H4). The image and
+ * text entry points differ only in the user `content`, so they share this. `system` is
+ * the stable, cacheable rule-pack + profile prompt.
  */
-export async function extractReceipt(
+async function runRecordReceipt(
   llm: LLM,
   system: string,
-  bytes: ArrayBuffer,
-  mime: string,
+  content: Anthropic.ContentBlockParam[],
 ): Promise<ExtractResult> {
   const msg = await llm.client.messages.create({
     model: llm.modelId,
@@ -93,15 +106,7 @@ export async function extractReceipt(
     system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
     tools: [RECORD_TOOL],
     tool_choice: { type: "tool", name: RECORD_TOOL.name },
-    messages: [
-      {
-        role: "user",
-        content: [
-          receiptBlock(bytes, mime),
-          { type: "text", text: "Extract this receipt and categorise it using the rule pack. Call record_receipt." },
-        ],
-      },
-    ],
+    messages: [{ role: "user", content }],
   });
 
   const toolUse = msg.content.find(
@@ -111,4 +116,57 @@ export async function extractReceipt(
     throw new Error("model did not return a record_receipt tool call");
   }
   return { parsed: Extracted.parse(toolUse.input), raw: toolUse.input };
+}
+
+/** Extract + categorise a receipt image/PDF (Claude vision = OCR). */
+export async function extractReceipt(
+  llm: LLM,
+  system: string,
+  bytes: ArrayBuffer,
+  mime: string,
+): Promise<ExtractResult> {
+  return runRecordReceipt(llm, system, [
+    receiptBlock(bytes, mime),
+    { type: "text", text: "Extract this receipt and categorise it using the rule pack. Call record_receipt." },
+  ]);
+}
+
+/**
+ * Extract + categorise a receipt that spans MULTIPLE images (e.g. several screenshots
+ * or a multi-page PDF) as ONE transaction. All image blocks go into a single tool call so
+ * the model combines them into one record.
+ */
+export async function extractReceipts(
+  llm: LLM,
+  system: string,
+  images: { bytes: ArrayBuffer; mime: string }[],
+): Promise<ExtractResult> {
+  return runRecordReceipt(llm, system, [
+    ...images.map((im) => receiptBlock(im.bytes, im.mime)),
+    {
+      type: "text",
+      text: `These ${images.length} images are parts/pages of ONE receipt. Combine them into a single record_receipt call (one merchant, one total).`,
+    },
+  ]);
+}
+
+/**
+ * Categorise a typed / free-text expense (no image) — same tool + schema as
+ * `extractReceipt`, so a typed line still gets a fully-bucketed result. Used by the
+ * text-ingest path so typed expenses get a real bucket + ato_label.
+ */
+export async function extractFromText(
+  llm: LLM,
+  system: string,
+  text: string,
+): Promise<ExtractResult> {
+  return runRecordReceipt(llm, system, [
+    {
+      type: "text",
+      text:
+        `Expense described as free text (no image): "${text}"\n` +
+        `Extract and categorise it using the rule pack. Convert the amount to cents; ` +
+        `use null for any field not stated (e.g. gst_cents, txn_date). Call record_receipt.`,
+    },
+  ]);
 }

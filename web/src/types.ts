@@ -4,12 +4,18 @@ export interface Txn {
   status: string;
   merchant: string | null;
   amount_cents: number | null;
+  currency: string | null;
+  amount_aud_cents: number | null;
+  fx_rate: number | null;
+  fx_date: string | null;
   gst_cents: number | null;
   txn_date: string | null;
   bucket: string | null;
   ato_label: string | null;
   property_id: string | null;
+  paid_account: string | null;
   confidence: number | null;
+  duplicate_of: string | null;
   ledger_ref: string | null;
   created_at: string;
 }
@@ -80,4 +86,5 @@ export interface Report {
   by_bucket: { bucket: string; ato_label: string | null; n: number; total_cents: number; gst_cents: number }[];
   by_property: { property_id: string; label: string | null; n: number; total_cents: number }[];
   company_quarters: { quarter: string; total_cents: number; gst_cents: number }[];
+  undated: { n: number; total_cents: number };
 }

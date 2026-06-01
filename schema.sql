@@ -52,16 +52,25 @@ CREATE TABLE IF NOT EXISTS transactions (
   status       TEXT NOT NULL DEFAULT 'needs_extraction',
   receipt_key  TEXT,                     -- R2 object key
   merchant     TEXT,
-  amount_cents INTEGER,
-  gst_cents    INTEGER,
+  amount_cents INTEGER,                  -- amount in the ORIGINAL currency
+  currency     TEXT DEFAULT 'AUD',       -- ISO-4217 of amount_cents
+  amount_aud_cents INTEGER,              -- converted to AUD for reporting (= amount_cents when AUD)
+  fx_rate      REAL,                     -- rate used (1 foreign unit -> AUD); null for AUD
+  fx_date      TEXT,                     -- date the rate applies to
+  gst_cents    INTEGER,                  -- AU GST component; null for overseas/foreign supplies
   txn_date     TEXT,
   bucket       TEXT,                     -- payg|company|property_rented|property_vacant|unknown
   ato_label    TEXT,                     -- e.g. D5, rental:interest, company:expense
   property_id  TEXT,                     -- which property, if bucket=property_*
+  paid_account TEXT,                     -- 'visa-1234'|'amex'|'cash' — reconcile-vs-push (Phase 3)
   confidence   REAL,
+  image_hash   TEXT,                     -- sha-256 of receipt bytes (exact-duplicate detection)
+  duplicate_of TEXT,                     -- txn id this duplicates, if flagged
+  receipt_keys TEXT,                     -- JSON array of all R2 keys (multi-screenshot receipts)
   ledger_ref   TEXT,                     -- ledger-side id once pushed (idempotency)
   created_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE INDEX IF NOT EXISTS idx_txn_imghash ON transactions(user_id, image_hash);
 
 -- ── User overrides => training signal for self-improvement ────────────────────
 CREATE TABLE IF NOT EXISTS corrections (
@@ -187,3 +196,17 @@ CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_prop_user  ON properties(user_id);
 CREATE INDEX IF NOT EXISTS idx_ent_user   ON entities(user_id, active);
 CREATE INDEX IF NOT EXISTS idx_rule_user  ON user_rules(user_id, active, priority);
+
+-- ── Public marketing waitlist (no tenant; pre-signup) ─────────────────────────
+-- Populated by the public POST /waitlist endpoint on the apex (quillo.au). This is
+-- NOT tenant data — it has no user_id and sits outside the Access boundary. We store
+-- a sha-256 hash of the client IP (never the raw IP) so the table stays privacy-clean.
+CREATE TABLE IF NOT EXISTS waitlist (
+  id          TEXT PRIMARY KEY,            -- crypto.randomUUID()
+  email       TEXT NOT NULL UNIQUE,        -- stored lowercased+trimmed; UNIQUE = dedupe
+  source      TEXT,                        -- e.g. 'landing-hero' | 'landing-beta'
+  ip_hash     TEXT,                        -- sha-256 hex of CF-Connecting-IP (no raw IP)
+  user_agent  TEXT,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_waitlist_created ON waitlist(created_at);

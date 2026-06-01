@@ -26,7 +26,12 @@ export interface StatementLine {
   direction: "debit" | "credit";
   description: string; // cleaned
   raw_description: string;
-  balance: string | null;
+  balance_cents: number | null; // running balance after this line, if the statement shows it
+}
+
+/** Signed amount in cents: debits reduce the balance, credits increase it. */
+export function signedCents(line: { amount_cents: number; direction: "debit" | "credit" }): number {
+  return line.direction === "debit" ? -line.amount_cents : line.amount_cents;
 }
 
 /** Minimal RFC-4180-ish CSV parser: handles quoted fields, escaped quotes, embedded commas/newlines. */
@@ -104,13 +109,14 @@ export function applyColumnMap(rows: string[][], map: ColumnMap): StatementLine[
     }
     if (amount_cents == null || amount_cents <= 0) continue; // skip unparseable / zero rows
 
+    const balRaw = map.balance_col != null ? num(r[map.balance_col]) : null;
     out.push({
       date,
       amount_cents,
       direction,
       description: cleanMerchant(rawDesc) || rawDesc,
       raw_description: rawDesc,
-      balance: map.balance_col != null ? (r[map.balance_col] ?? "").trim() || null : null,
+      balance_cents: balRaw != null ? Math.round(balRaw * 100) : null,
     });
   }
   return out;
@@ -119,6 +125,56 @@ export function applyColumnMap(rows: string[][], map: ColumnMap): StatementLine[
 /** Per-line fingerprint for re-upload de-dup (account-scoped). Includes balance when present. */
 export function lineFingerprint(accountId: string, line: StatementLine): Promise<string> {
   const norm = cleanMerchant(line.raw_description).toLowerCase();
-  const bal = line.balance ? `|${line.balance}` : "";
+  const bal = line.balance_cents != null ? `|${line.balance_cents}` : "";
   return sha256hex(`${accountId}|${line.date}|${line.amount_cents}|${norm}${bal}`);
+}
+
+export interface Reconciliation {
+  available: boolean; // false when the statement carries no balances to check against
+  ok: boolean; // expected closing == stated closing (to the cent) AND continuity holds
+  opening_cents: number | null;
+  closing_cents: number | null;
+  expected_cents: number | null; // opening + Σ signed amounts
+  diff_cents: number; // expected - closing (0 when ok)
+  txn_count: number;
+  first_bad_line: number | null; // 0-based index of the first line whose running balance breaks
+}
+
+/**
+ * Derive opening/closing from per-line balances (CSV). The balance shown is AFTER the line,
+ * so opening = first line's balance − its signed amount; closing = last line's balance.
+ */
+export function deriveBalances(lines: StatementLine[]): { opening_cents: number; closing_cents: number } | null {
+  const withBal = lines.filter((l) => l.balance_cents != null);
+  if (withBal.length < 1 || lines[0]?.balance_cents == null || lines[lines.length - 1]?.balance_cents == null) return null;
+  const first = lines[0]!;
+  const last = lines[lines.length - 1]!;
+  return { opening_cents: (first.balance_cents as number) - signedCents(first), closing_cents: last.balance_cents as number };
+}
+
+/**
+ * Balance reconciliation — the mathematical proof an import is complete + accurate.
+ * Checks opening + Σ(signed amounts) == closing, and per-line running-balance continuity to
+ * pinpoint the first broken line. `available:false` when the statement has no balances.
+ */
+export function reconcileStatement(
+  lines: StatementLine[],
+  opening_cents: number | null,
+  closing_cents: number | null,
+): Reconciliation {
+  const txn_count = lines.length;
+  if (opening_cents == null || closing_cents == null) {
+    return { available: false, ok: false, opening_cents, closing_cents, expected_cents: null, diff_cents: 0, txn_count, first_bad_line: null };
+  }
+  let running = opening_cents;
+  let first_bad_line: number | null = null;
+  for (let i = 0; i < lines.length; i++) {
+    running += signedCents(lines[i]!);
+    const bal = lines[i]!.balance_cents;
+    if (first_bad_line === null && bal != null && Math.abs(running - bal) > 1) first_bad_line = i;
+  }
+  const expected_cents = running;
+  const diff_cents = expected_cents - closing_cents;
+  const ok = Math.abs(diff_cents) <= 1 && first_bad_line === null;
+  return { available: true, ok, opening_cents, closing_cents, expected_cents, diff_cents, txn_count, first_bad_line };
 }

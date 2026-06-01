@@ -85,8 +85,8 @@ export const api = {
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
     return res.json();
   },
-  confirmImport: (statementId: string, columnMap?: unknown) =>
-    post<{ imported: number; skipped: number }>(`/api/statements/${statementId}/confirm`, { columnMap }),
+  confirmImport: (statementId: string, force?: boolean, columnMap?: unknown) =>
+    post<{ imported: number; skipped: number }>(`/api/statements/${statementId}/confirm`, { columnMap, force }),
 
   // Phase 4
   qboStatus: () => get<QboStatus>("/api/qbo/status"),

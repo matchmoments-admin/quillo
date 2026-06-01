@@ -49,8 +49,8 @@ export interface TaxAgentRpc {
   applyCorrection(userId: string, txnId: string, field: string, value: string): Promise<void>;
   deleteTransaction(userId: string, txnId: string): Promise<void>;
   pushToQuickBooks(userId: string, txnId: string): Promise<{ ok: boolean; ledgerRef?: string; error?: string }>;
-  parseStatement(userId: string, accountId: string, filename: string, bytes: ArrayBuffer, format: string): Promise<{ statementId: string; columnMap: unknown; preview: unknown[]; rowCount: number; duplicate: boolean }>;
-  confirmImport(userId: string, statementId: string, columnMapOverride?: unknown): Promise<{ imported: number; skipped: number }>;
+  parseStatement(userId: string, accountId: string, filename: string, bytes: ArrayBuffer, format: string): Promise<{ statementId: string; columnMap: unknown; preview: unknown[]; rowCount: number; duplicate: boolean; reconciliation?: unknown }>;
+  confirmImport(userId: string, statementId: string, columnMapOverride?: unknown, force?: boolean): Promise<{ imported: number; skipped: number }>;
   setAccountSource(userId: string, accountId: string, source: string): Promise<void>;
   runProactiveScan(userId: string): Promise<void>;
   recordConsent(userId: string, text: string, method: string): Promise<void>;

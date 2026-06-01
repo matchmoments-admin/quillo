@@ -6,7 +6,7 @@ import { COUNTABLE } from "./lib/queries";
 import { sha256hex, sha256hexBytes } from "./lib/base64";
 import { getLLM, type LLM } from "./llm";
 import { extractReceipt, extractReceipts, extractFromText, extractColumnMap, type Extracted } from "./extract";
-import { parseCsv, applyColumnMap, lineFingerprint, type ColumnMap } from "./lib/statements";
+import { parseCsv, applyColumnMap, lineFingerprint, deriveBalances, reconcileStatement, type ColumnMap, type Reconciliation } from "./lib/statements";
 import { getLedger, LedgerNotConnectedError, type LedgerExpense } from "./ledger";
 import { redact } from "./lib/redact";
 import { toAud } from "./lib/fx";
@@ -151,7 +151,7 @@ export class TaxAgent extends Agent<Env> {
     filename: string,
     bytes: ArrayBuffer,
     format: string,
-  ): Promise<{ statementId: string; columnMap: ColumnMap | null; preview: unknown[]; rowCount: number; duplicate: boolean }> {
+  ): Promise<{ statementId: string; columnMap: ColumnMap | null; preview: unknown[]; rowCount: number; duplicate: boolean; reconciliation?: Reconciliation }> {
     const account = await this.env.DB.prepare(`SELECT source FROM accounts WHERE id = ? AND user_id = ?`)
       .bind(accountId, userId)
       .first<{ source: string }>();
@@ -179,22 +179,33 @@ export class TaxAgent extends Agent<Env> {
     const columnMap = await extractColumnMap(llm, rows);
     const lines = applyColumnMap(rows, columnMap);
 
-    await this.env.DB.prepare(
-      `INSERT INTO statements (id, user_id, account_id, filename, file_key, file_hash, format, column_map, row_count, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'parsed')`,
-    )
-      .bind(statementId, userId, accountId, filename, fileKey, fileHash, format, JSON.stringify(columnMap), lines.length)
-      .run();
-    await this.audit(userId, "statement_parsed", JSON.stringify({ statementId, accountId, rows: lines.length }));
+    // Balance reconciliation — the proof the import is complete + accurate.
+    const bal = deriveBalances(lines);
+    const recon = reconcileStatement(lines, bal?.opening_cents ?? null, bal?.closing_cents ?? null);
+    if (recon.available && !recon.ok) {
+      await this.audit(userId, "statement_recon_fail", JSON.stringify({ statementId, diff: recon.diff_cents, bad: recon.first_bad_line }));
+    }
 
-    return { statementId, columnMap, preview: lines.slice(0, 25), rowCount: lines.length, duplicate: false };
+    await this.env.DB.prepare(
+      `INSERT INTO statements (id, user_id, account_id, filename, file_key, file_hash, format, column_map, row_count,
+         opening_cents, closing_cents, reconciled, recon_diff_cents, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'parsed')`,
+    )
+      .bind(
+        statementId, userId, accountId, filename, fileKey, fileHash, format, JSON.stringify(columnMap), lines.length,
+        recon.opening_cents, recon.closing_cents, recon.available ? (recon.ok ? 1 : 0) : null, recon.available ? recon.diff_cents : null,
+      )
+      .run();
+    await this.audit(userId, "statement_parsed", JSON.stringify({ statementId, accountId, rows: lines.length, reconciled: recon.ok }));
+
+    return { statementId, columnMap, preview: lines.slice(0, 25), rowCount: lines.length, duplicate: false, reconciliation: recon };
   }
 
   // Commit a parsed statement: re-read the raw file, parse with the (optionally corrected)
   // column map, de-dup each line by fingerprint, batch-insert the new bank lines, and
   // categorise deterministically (user rules + merchant hints — FREE; LLM categorisation of
   // the remainder is a later phase). Returns counts.
-  async confirmImport(userId: string, statementId: string, columnMapOverride?: ColumnMap): Promise<{ imported: number; skipped: number }> {
+  async confirmImport(userId: string, statementId: string, columnMapOverride?: ColumnMap, force?: boolean): Promise<{ imported: number; skipped: number }> {
     const stmt = await this.env.DB.prepare(`SELECT account_id, file_key, column_map FROM statements WHERE id = ? AND user_id = ?`)
       .bind(statementId, userId)
       .first<{ account_id: string; file_key: string; column_map: string }>();
@@ -205,6 +216,15 @@ export class TaxAgent extends Agent<Env> {
     const rows = parseCsv(await obj.text());
     const map = columnMapOverride ?? (JSON.parse(stmt.column_map) as ColumnMap);
     const lines = applyColumnMap(rows, map);
+
+    // Reconciliation gate: refuse to import a statement that doesn't balance unless the user
+    // explicitly overrides after reviewing the flagged line(s). This is the proof of completeness.
+    const bal = deriveBalances(lines);
+    const recon = reconcileStatement(lines, bal?.opening_cents ?? null, bal?.closing_cents ?? null);
+    if (recon.available && !recon.ok && !force) {
+      const off = `$${Math.abs(recon.diff_cents / 100).toFixed(2)}`;
+      throw new Error(`Statement doesn't reconcile (off by ${off}${recon.first_bad_line != null ? `, first wrong around line ${recon.first_bad_line + 1}` : ""}). Review the lines, then import anyway to override.`);
+    }
 
     const profile = await this.requireProfile(userId);
     const situation = await getSituation(this.env, userId, profile);

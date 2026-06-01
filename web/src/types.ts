@@ -54,6 +54,18 @@ export interface StatementLine {
   direction: "debit" | "credit";
   description: string;
   raw_description: string;
+  balance_cents?: number | null;
+}
+
+export interface Reconciliation {
+  available: boolean;
+  ok: boolean;
+  opening_cents: number | null;
+  closing_cents: number | null;
+  expected_cents: number | null;
+  diff_cents: number;
+  txn_count: number;
+  first_bad_line: number | null;
 }
 
 export interface StatementParse {
@@ -62,6 +74,7 @@ export interface StatementParse {
   preview: StatementLine[];
   rowCount: number;
   duplicate: boolean;
+  reconciliation?: Reconciliation;
 }
 
 export interface Situation {

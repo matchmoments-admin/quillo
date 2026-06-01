@@ -102,7 +102,7 @@ function AccountRow({ account }: { account: Account }) {
   });
 
   const doConfirm = useMutation({
-    mutationFn: () => api.confirmImport(parse!.statementId),
+    mutationFn: (force?: boolean) => api.confirmImport(parse!.statementId, force),
     onSuccess: (r) => {
       setNote(`Imported ${r.imported} transaction(s)${r.skipped ? ` (${r.skipped} already on file)` : ""}.`);
       setParse(null);
@@ -157,37 +157,62 @@ function AccountRow({ account }: { account: Account }) {
 
         {note && <p className="mt-2 text-sm text-muted">{note}</p>}
 
-        {parse && (
-          <div className="mt-3 space-y-2">
-            <div className="text-sm">
-              Found <span className="font-medium">{parse.rowCount}</span> transactions. Preview (first {parse.preview.length}):
-            </div>
-            <div className="max-h-64 overflow-auto rounded-lg border border-line">
-              <table className="w-full text-sm">
-                <tbody>
-                  {parse.preview.map((l, i) => (
-                    <tr key={i} className="border-t border-line first:border-0">
-                      <td className="px-3 py-1.5 text-muted">{l.date ?? "—"}</td>
-                      <td className="px-3 py-1.5">{l.description}</td>
-                      <td className={`px-3 py-1.5 text-right tabular-nums ${l.direction === "credit" ? "text-safe" : ""}`}>
-                        {l.direction === "credit" ? "+" : ""}
-                        {money(l.amount_cents)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <div className="flex gap-2">
-              <Button onClick={() => doConfirm.mutate()} disabled={doConfirm.isPending}>
-                {doConfirm.isPending ? "Importing…" : `Import ${parse.rowCount} transactions`}
-              </Button>
-              <Button variant="ghost" onClick={() => setParse(null)}>
-                Cancel
-              </Button>
-            </div>
-          </div>
-        )}
+        {parse &&
+          (() => {
+            const recon = parse.reconciliation;
+            const balanced = recon?.available && recon.ok;
+            const mismatch = recon?.available && !recon.ok;
+            return (
+              <div className="mt-3 space-y-2">
+                {/* Reconciliation verdict — the proof the import is complete + accurate. */}
+                {recon?.available ? (
+                  balanced ? (
+                    <div className="rounded-lg bg-safe/10 px-3 py-2 text-sm text-safe">✓ Balances — {parse.rowCount} transactions reconcile to the statement total.</div>
+                  ) : (
+                    <div className="rounded-lg bg-danger/10 px-3 py-2 text-sm text-danger">
+                      ⚠ Doesn't reconcile — off by {money(Math.abs(recon.diff_cents))}
+                      {recon.first_bad_line != null ? `, first wrong around line ${recon.first_bad_line + 1}` : ""}. Review below before importing.
+                    </div>
+                  )
+                ) : (
+                  <div className="rounded-lg bg-warn/10 px-3 py-2 text-sm text-warn">No running balance on this statement — couldn't self-verify. Please eyeball the rows.</div>
+                )}
+                <div className="text-sm">
+                  Found <span className="font-medium">{parse.rowCount}</span> transactions. Preview (first {parse.preview.length}):
+                </div>
+                <div className="max-h-64 overflow-auto rounded-lg border border-line">
+                  <table className="w-full text-sm">
+                    <tbody>
+                      {parse.preview.map((l, i) => (
+                        <tr key={i} className={`border-t border-line first:border-0 ${recon?.first_bad_line === i ? "bg-danger/5" : ""}`}>
+                          <td className="px-3 py-1.5 text-muted">{l.date ?? "—"}</td>
+                          <td className="px-3 py-1.5">{l.description}</td>
+                          <td className={`px-3 py-1.5 text-right tabular-nums ${l.direction === "credit" ? "text-safe" : ""}`}>
+                            {l.direction === "credit" ? "+" : ""}
+                            {money(l.amount_cents)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="flex gap-2">
+                  {!mismatch ? (
+                    <Button onClick={() => doConfirm.mutate(false)} disabled={doConfirm.isPending}>
+                      {doConfirm.isPending ? "Importing…" : `Import ${parse.rowCount} transactions`}
+                    </Button>
+                  ) : (
+                    <Button variant="ghost" onClick={() => doConfirm.mutate(true)} disabled={doConfirm.isPending} className="border-danger/40 text-danger">
+                      {doConfirm.isPending ? "Importing…" : "Import anyway (override)"}
+                    </Button>
+                  )}
+                  <Button variant="ghost" onClick={() => setParse(null)}>
+                    Cancel
+                  </Button>
+                </div>
+              </div>
+            );
+          })()}
       </Card>
     </li>
   );

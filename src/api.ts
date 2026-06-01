@@ -210,10 +210,14 @@ export async function handleApi(
       const out = await stub.parseStatement(uid, accEntry, filename, bytes, format);
       return json(out);
     }
-    // POST /api/statements/:id/confirm [{ columnMap? }] → commit + dedup + categorise
+    // POST /api/statements/:id/confirm [{ columnMap?, force? }] → commit + dedup + categorise
     if (m === "POST" && id && sub === "confirm") {
-      const body = (await req.json().catch(() => ({}))) as { columnMap?: unknown };
-      return json(await stub.confirmImport(uid, id, body.columnMap));
+      const body = (await req.json().catch(() => ({}))) as { columnMap?: unknown; force?: boolean };
+      try {
+        return json(await stub.confirmImport(uid, id, body.columnMap, body.force));
+      } catch (e) {
+        return json({ error: (e as Error).message }, 409); // e.g. reconciliation gate
+      }
     }
   }
 

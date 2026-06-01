@@ -118,6 +118,10 @@ CREATE TABLE IF NOT EXISTS statements (
   column_map     TEXT,                  -- JSON: inferred {date,amount|debit|credit,description,...}
   row_count      INTEGER,
   imported_count INTEGER,
+  opening_cents  INTEGER,               -- balance reconciliation (self-check)
+  closing_cents  INTEGER,
+  reconciled     INTEGER,               -- 1 ok, 0 mismatch, NULL = no balances to check
+  recon_diff_cents INTEGER,             -- expected - closing
   status         TEXT NOT NULL DEFAULT 'parsed',  -- parsed|previewed|imported|failed
   created_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );

@@ -75,8 +75,8 @@ JURISDICTION = "AU"
 # falls back to the pilot tenant, like the old Access seam).
 CLERK_ISSUER = "https://obliging-eel-28.clerk.accounts.dev"
 # Single-user lockdown until launch: ONLY these Clerk user ids (comma-separated) may use
-# /api/*. Empty = deny everyone (credit-safe). Set to your user_… after first sign-in.
-CLERK_ALLOWED_USERS = ""
+# /api/*. Empty = deny everyone (credit-safe). Founder (brendan.milton1211@gmail.com):
+CLERK_ALLOWED_USERS = "user_3EX9q24hvBuYNz3Hk6Pg6O5FfBq"
 # Cloudflare Access (web UI auth). Leave UNSET for local dev (API falls back to the pilot
 # tenant). For production set these to your Access application's values:
 # CF_ACCESS_TEAM_DOMAIN = "https://yourteam.cloudflareaccess.com"

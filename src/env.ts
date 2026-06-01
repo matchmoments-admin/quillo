@@ -54,6 +54,7 @@ export interface TaxAgentRpc {
   confirmImport(userId: string, statementId: string, columnMapOverride?: unknown, force?: boolean): Promise<{ imported: number; skipped: number }>;
   setAccountSource(userId: string, accountId: string, source: string): Promise<void>;
   categoriseStatement(userId: string, statementId: string): Promise<{ categorised: number }>;
+  pollBatchJobs(userId: string): Promise<{ applied: number }>;
   linkReceipt(userId: string, receiptId: string, lineId: string): Promise<void>;
   unlinkReceipt(userId: string, receiptId: string): Promise<void>;
   runProactiveScan(userId: string): Promise<void>;

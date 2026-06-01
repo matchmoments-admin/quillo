@@ -5,18 +5,21 @@ import { addRule } from "./lib/situation-write";
 import { COUNTABLE } from "./lib/queries";
 import { sha256hex, sha256hexBytes } from "./lib/base64";
 import { getLLM, type LLM } from "./llm";
-import { extractReceipt, extractReceipts, extractFromText, extractColumnMap, extractStatement, extractBatch, type Extracted, type ExtractedStatement } from "./extract";
+import { extractReceipt, extractReceipts, extractFromText, extractColumnMap, extractStatement, extractBatch, batchParams, parseBatchMessage, type Extracted, type ExtractedStatement } from "./extract";
 import { parseCsv, applyColumnMap, lineFingerprint, deriveBalances, reconcileStatement, fuzzyMerchant, isTransferLike, type ColumnMap, type Reconciliation, type StatementLine } from "./lib/statements";
 import { cleanMerchant } from "./lib/bank-parsers";
 import { pdfPageCount, splitPdf } from "./lib/pdf";
 import { getLedger, LedgerNotConnectedError, type LedgerExpense } from "./ledger";
 import { redact } from "./lib/redact";
 import { toAud } from "./lib/fx";
-import { spentTodayCents } from "./lib/usage";
+import { spentTodayCents, recordUsage } from "./lib/usage";
 import { parseTransactionAlert } from "./lib/bank-parsers";
 import auV1RulePack from "./rulepacks/au-v1.json";
 
 const CONFIDENCE_THRESHOLD = 0.85;
+// Above this many to-categorise lines, route to the async Message Batches API (~50% cheaper);
+// at or below, categorise synchronously so normal imports stay instant.
+const BATCH_THRESHOLD = 60;
 
 type RulePack = typeof auV1RulePack;
 
@@ -372,6 +375,12 @@ export class TaxAgent extends Agent<Env> {
     const system = this.buildSystemPrompt(rulePack, profile, situation, null);
     const llm = await getLLM(this.env, profile, { userId });
 
+    // Bulk → Message Batches API (async, ~50% cheaper). Small imports stay synchronous (instant).
+    if (items.length > BATCH_THRESHOLD) {
+      await this.submitBatchCategorisation(userId, statementId, items, system, llm);
+      return { categorised: 0 };
+    }
+
     let categorised = 0;
     for (let i = 0; i < items.length; i += 40) {
       const chunk = items.slice(i, i + 40);
@@ -397,6 +406,91 @@ export class TaxAgent extends Agent<Env> {
     }
     await this.audit(userId, "statement_categorised", JSON.stringify({ statementId, categorised }));
     return { categorised };
+  }
+
+  /**
+   * Submit a large categorisation job to the Anthropic Message Batches API (~50% cheaper,
+   * async). One request per ~40-line chunk; custom_id = the chunk index, with the ordered
+   * line ids stored in chunk_map so results can be applied. Polled by the cron / on demand.
+   */
+  private async submitBatchCategorisation(
+    userId: string,
+    statementId: string,
+    items: { id: string; merchant: string | null; amount_cents: number | null; txn_date: string | null }[],
+    system: string,
+    llm: LLM,
+  ): Promise<void> {
+    const chunkMap: Record<string, string[]> = {};
+    const requests: { custom_id: string; params: ReturnType<typeof batchParams> }[] = [];
+    let idx = 0;
+    for (let i = 0; i < items.length; i += 40, idx++) {
+      const chunk = items.slice(i, i + 40);
+      chunkMap[String(idx)] = chunk.map((c) => c.id);
+      requests.push({
+        custom_id: String(idx),
+        params: batchParams(llm.modelId, system, chunk.map((c) => ({ merchant: c.merchant ?? "", amount_cents: c.amount_cents ?? 0, date: c.txn_date }))),
+      });
+    }
+    const batch = await llm.client.messages.batches.create({ requests });
+    await this.env.DB.prepare(
+      `INSERT INTO batch_jobs (id, user_id, statement_id, batch_id, status, chunk_map) VALUES (?, ?, ?, ?, 'submitted', ?)`,
+    )
+      .bind(crypto.randomUUID(), userId, statementId, batch.id, JSON.stringify(chunkMap))
+      .run();
+    await this.env.DB.prepare(`UPDATE statements SET status='categorising' WHERE id=?`).bind(statementId).run();
+    await this.audit(userId, "batch_submitted", JSON.stringify({ statementId, batchId: batch.id, chunks: requests.length }));
+    await this.notify(userId, `Categorising ${items.length} transactions in the background (cheaper batch mode) — they'll fill in shortly.`, null);
+  }
+
+  /** Poll this user's submitted batch jobs; apply finished ones (metered at the half rate). */
+  async pollBatchJobs(userId: string): Promise<{ applied: number }> {
+    const jobs = await this.env.DB.prepare(
+      `SELECT id, statement_id, batch_id, chunk_map FROM batch_jobs WHERE user_id = ? AND status = 'submitted'`,
+    )
+      .bind(userId)
+      .all<{ id: string; statement_id: string; batch_id: string; chunk_map: string }>();
+    if (!(jobs.results ?? []).length) return { applied: 0 };
+
+    const profile = await this.requireProfile(userId);
+    const llm = await getLLM(this.env, profile, { userId });
+    let appliedTotal = 0;
+    for (const job of jobs.results ?? []) {
+      try {
+        const batch = await llm.client.messages.batches.retrieve(job.batch_id);
+        if (batch.processing_status !== "ended") continue;
+        const chunkMap = JSON.parse(job.chunk_map) as Record<string, string[]>;
+        let applied = 0;
+        const stream = await llm.client.messages.batches.results(job.batch_id);
+        for await (const res of stream) {
+          if (res.result.type !== "succeeded") continue;
+          const msg = res.result.message;
+          if (msg.usage) await recordUsage(this.env, userId, "statement_batch", llm.modelId, msg.usage, 0.5);
+          const lineIds = chunkMap[res.custom_id] ?? [];
+          const cats = parseBatchMessage(msg);
+          const updates: D1PreparedStatement[] = [];
+          for (let j = 0; j < lineIds.length; j++) {
+            const it = cats[j];
+            if (!it) continue;
+            updates.push(
+              this.env.DB.prepare(
+                // only touch still-pending lines (a receipt-matched line is already categorised)
+                `UPDATE transactions SET status='extracted', bucket=?, ato_label=?, confidence=?, reasoning=? WHERE id=? AND user_id=? AND status='needs_review'`,
+              ).bind(it.bucket, it.ato_label, it.confidence, it.reasoning, lineIds[j], userId),
+            );
+            applied++;
+          }
+          for (let k = 0; k < updates.length; k += 50) await this.env.DB.batch(updates.slice(k, k + 50));
+        }
+        await this.env.DB.prepare(`UPDATE batch_jobs SET status='applied' WHERE id=?`).bind(job.id).run();
+        await this.env.DB.prepare(`UPDATE statements SET status='imported' WHERE id=?`).bind(job.statement_id).run();
+        await this.audit(userId, "batch_applied", JSON.stringify({ batchId: job.batch_id, applied }));
+        await this.notify(userId, `Finished categorising ${applied} transactions from your statement.`, null);
+        appliedTotal += applied;
+      } catch (e) {
+        await this.audit(userId, "batch_poll_error", JSON.stringify({ jobId: job.id, error: (e as Error).message }));
+      }
+    }
+    return { applied: appliedTotal };
   }
 
   // ── Receipt ↔ bank-line matching: a receipt becomes EVIDENCE on a money line ──

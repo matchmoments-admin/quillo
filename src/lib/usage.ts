@@ -43,8 +43,9 @@ export async function recordUsage(
   feature: string,
   model: string,
   usage: Usage,
+  discount = 1, // Message Batches bill at 50% → pass 0.5
 ): Promise<number> {
-  const cents = costCents(model, usage);
+  const cents = costCents(model, usage) * discount;
   const day = new Date().toISOString().slice(0, 10);
   const key = `cost:${userId}:${day}`;
   const cur = Number((await env.RULES.get(key)) ?? 0);

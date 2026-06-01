@@ -302,17 +302,17 @@ export interface BatchItem {
   reasoning: string;
 }
 
-/** Categorise many statement lines in one call. Returns one result per input line (by index). */
-export async function extractBatch(
-  llm: LLM,
+/** Build the message params for one categorisation batch (reused by sync + async/Batch API). */
+export function batchParams(
+  modelId: string,
   system: string,
   items: { merchant: string; amount_cents: number; date: string | null }[],
-): Promise<BatchItem[]> {
+): Anthropic.MessageCreateParamsNonStreaming {
   const list = items
     .map((it, i) => `${i + 1}. ${it.merchant} | $${(it.amount_cents / 100).toFixed(2)}${it.date ? ` | ${it.date}` : ""}`)
     .join("\n");
-  const msg = await llm.create({
-    model: llm.modelId,
+  return {
+    model: modelId,
     max_tokens: 4096,
     system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
     tools: [BATCH_TOOL],
@@ -328,10 +328,23 @@ export async function extractBatch(
         ],
       },
     ],
-  }, "statement_batch");
+  };
+}
+
+/** Pull the categorisation array out of a record_batch message. */
+export function parseBatchMessage(msg: Anthropic.Message): BatchItem[] {
   const toolUse = msg.content.find((c): c is Anthropic.ToolUseBlock => c.type === "tool_use" && c.name === BATCH_TOOL.name);
-  if (!toolUse) throw new Error("model did not return a batch");
-  return ((toolUse.input as { items: BatchItem[] }).items ?? []).slice(0, items.length);
+  return toolUse ? ((toolUse.input as { items: BatchItem[] }).items ?? []) : [];
+}
+
+/** Categorise many statement lines in one call (synchronous path). One result per line. */
+export async function extractBatch(
+  llm: LLM,
+  system: string,
+  items: { merchant: string; amount_cents: number; date: string | null }[],
+): Promise<BatchItem[]> {
+  const msg = await llm.create(batchParams(llm.modelId, system, items), "statement_batch");
+  return parseBatchMessage(msg).slice(0, items.length);
 }
 
 /**

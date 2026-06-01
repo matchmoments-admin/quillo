@@ -146,11 +146,17 @@ export default {
     }
   },
 
-  // Cron — proactive suggestions for every tenant.
-  async scheduled(_evt: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
-    const users = await env.DB.prepare(`SELECT user_id FROM profiles`).all<{ user_id: string }>();
-    for (const u of users.results) {
-      await stubFor(env, u.user_id).runProactiveScan(u.user_id);
+  // Cron — two schedules (see wrangler.toml):
+  //  - frequent (*/10): poll + apply finished async categorisation batches.
+  //  - weekly (Mon 08:00): proactive suggestions for every tenant.
+  async scheduled(evt: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
+    if (evt.cron === "0 8 * * 1") {
+      const users = await env.DB.prepare(`SELECT user_id FROM profiles`).all<{ user_id: string }>();
+      for (const u of users.results) await stubFor(env, u.user_id).runProactiveScan(u.user_id);
+      return;
     }
+    // Frequent: only users with a pending batch job (cheap query, no per-tenant fan-out).
+    const pending = await env.DB.prepare(`SELECT DISTINCT user_id FROM batch_jobs WHERE status = 'submitted'`).all<{ user_id: string }>();
+    for (const u of pending.results) await stubFor(env, u.user_id).pollBatchJobs(u.user_id);
   },
 } satisfies ExportedHandler<Env>;

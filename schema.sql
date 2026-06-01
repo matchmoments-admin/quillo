@@ -267,6 +267,19 @@ CREATE TABLE IF NOT EXISTS llm_usage (
 );
 CREATE INDEX IF NOT EXISTS idx_usage_user ON llm_usage(user_id, created_at);
 
+-- ── Async categorisation jobs (Anthropic Message Batches, ~50% off, for bulk imports) ─
+CREATE TABLE IF NOT EXISTS batch_jobs (
+  id           TEXT PRIMARY KEY,
+  user_id      TEXT NOT NULL,
+  statement_id TEXT,
+  batch_id     TEXT,                  -- Anthropic message-batch id
+  status       TEXT NOT NULL DEFAULT 'submitted', -- submitted|applied|failed
+  chunk_map    TEXT,                  -- JSON { "<custom_id index>": [ordered line ids] }
+  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_batch_status ON batch_jobs(status);
+CREATE INDEX IF NOT EXISTS idx_batch_user ON batch_jobs(user_id, status);
+
 -- ── Public marketing waitlist (no tenant; pre-signup) ─────────────────────────
 -- Populated by the public POST /waitlist endpoint on the apex (quillo.au). This is
 -- NOT tenant data — it has no user_id and sits outside the Access boundary. We store

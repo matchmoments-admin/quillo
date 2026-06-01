@@ -130,8 +130,10 @@ export async function handleApi(
     return json(s);
   }
 
-  // GET /api/dashboard — aggregates.
+  // GET /api/dashboard — aggregates. Opportunistically apply any finished async batch jobs
+  // (cheap no-op when there are none) so results land without waiting for the cron.
   if (resource === "dashboard" && m === "GET") {
+    await stub.pollBatchJobs(uid);
     return json(await dashboard(env, uid));
   }
 

@@ -65,7 +65,8 @@ run_worker_first = ["/", "/waitlist", "/api/*", "/ingest", "/correct", "/consent
 
 # --- Cron: proactive suggestion engine (weekly Mon 08:00 UTC) ---
 [triggers]
-crons = ["0 8 * * 1"]
+# Mon 08:00 UTC: proactive scan. Every 10 min: poll + apply finished async categorisation batches.
+crons = ["0 8 * * 1", "*/10 * * * *"]
 
 [vars]
 JURISDICTION = "AU"

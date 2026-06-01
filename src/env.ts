@@ -10,10 +10,16 @@ export interface Env {
   // Static assets (the web SPA served from this same Worker).
   ASSETS?: Fetcher;
 
-  // Cloudflare Access (web UI auth). When CF_ACCESS_AUD is unset we're in local dev
-  // and the API falls back to the pilot tenant without verifying a JWT.
-  CF_ACCESS_TEAM_DOMAIN?: string; // e.g. https://yourteam.cloudflareaccess.com
-  CF_ACCESS_AUD?: string; // the Access application AUD tag
+  // Cloudflare Access (legacy web UI auth — superseded by Clerk, kept for the seam).
+  CF_ACCESS_TEAM_DOMAIN?: string;
+  CF_ACCESS_AUD?: string;
+
+  // Clerk auth. CLERK_ISSUER = Clerk Frontend API URL (JWKS lives under it). When unset we
+  // are in local dev and the API falls back to the pilot tenant. CLERK_ALLOWED_USERS is a
+  // comma-separated allowlist of Clerk user ids that may use /api/* (single-user lockdown
+  // until launch; empty = deny everyone).
+  CLERK_ISSUER?: string;
+  CLERK_ALLOWED_USERS?: string;
 
   // Vars (wrangler.toml [vars])
   JURISDICTION: string;

@@ -69,6 +69,14 @@ crons = ["0 8 * * 1"]
 
 [vars]
 JURISDICTION = "AU"
+# Clerk auth (replaces Cloudflare Access). CLERK_ISSUER = the Clerk Frontend API URL
+# (derived from the publishable key). The Worker verifies session JWTs against
+# ${CLERK_ISSUER}/.well-known/jwks.json. Leave CLERK_ISSUER UNSET for local dev (the API
+# falls back to the pilot tenant, like the old Access seam).
+CLERK_ISSUER = "https://obliging-eel-28.clerk.accounts.dev"
+# Single-user lockdown until launch: ONLY these Clerk user ids (comma-separated) may use
+# /api/*. Empty = deny everyone (credit-safe). Set to your user_… after first sign-in.
+CLERK_ALLOWED_USERS = ""
 # Cloudflare Access (web UI auth). Leave UNSET for local dev (API falls back to the pilot
 # tenant). For production set these to your Access application's values:
 # CF_ACCESS_TEAM_DOMAIN = "https://yourteam.cloudflareaccess.com"

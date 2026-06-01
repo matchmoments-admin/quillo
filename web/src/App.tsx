@@ -1,4 +1,5 @@
 import { Link, NavLink, Outlet } from "react-router-dom";
+import { UserButton } from "@clerk/clerk-react";
 
 const NAV = [
   { to: "/", label: "Inbox", end: true },
@@ -32,6 +33,9 @@ export function App() {
               </NavLink>
             ))}
           </nav>
+          <div className="flex-none">
+            <UserButton afterSignOutUrl="/sign-in" />
+          </div>
         </div>
       </header>
       <main className="mx-auto max-w-4xl px-6 py-10">

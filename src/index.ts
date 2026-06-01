@@ -3,7 +3,7 @@ import type { Env, TaxAgentRpc } from "./env";
 import { verifyIngest } from "./ingest/auth";
 import { parseEmail } from "./lib/email";
 import { userIdFromLocalpart } from "./lib/db";
-import { requireAccess } from "./auth/access";
+import { requireClerk } from "./auth/clerk";
 import { handleApi } from "./api";
 import { marketingResponse } from "./marketing/landing";
 import { handleWaitlist } from "./marketing/waitlist";
@@ -105,11 +105,14 @@ export default {
       return Response.json({ ok: true });
     }
 
-    // Web UI API — authenticated via Cloudflare Access, scoped to the verified user.
+    // Web UI API — authenticated via Clerk, gated to the founder's user until launch.
     if (url.pathname.startsWith("/api/")) {
-      const user = await requireAccess(req, env);
-      if (!user) return new Response("unauthorized", { status: 401 });
-      return handleApi(req, env, user, stubFor(env, user.userId));
+      const auth = await requireClerk(req, env);
+      if (!auth.ok) {
+        const msg = auth.status === 403 ? "not yet available" : "unauthorized";
+        return new Response(msg, { status: auth.status });
+      }
+      return handleApi(req, env, auth.user, stubFor(env, auth.user.userId));
     }
 
     // Agents SDK routes (/agents/*) + websocket upgrades.

@@ -105,14 +105,22 @@ function Row({ txn }: { txn: Txn }) {
           <div className="mt-1 flex items-center gap-2 text-sm text-muted">
             <BucketPill bucket={txn.bucket} />
             <span>·</span>
-            <span>{txn.txn_date ?? "no date"}</span>
+            <span className={txn.txn_date ? "" : "text-warn"}>{txn.txn_date ?? "undated"}</span>
+            {txn.duplicate_of && <span className="rounded-full bg-warn/10 px-2 py-0.5 text-xs font-medium text-warn">duplicate</span>}
             <span>·</span>
             <span className="capitalize">{txn.source}</span>
           </div>
         </div>
         <div className="flex-none text-right">
-          <div className="font-semibold tabular-nums">{money(txn.amount_cents)}</div>
-          {txn.gst_cents != null && <div className="text-xs text-muted">GST {money(txn.gst_cents)}</div>}
+          <div className="font-semibold tabular-nums">
+            {money(txn.amount_cents)}
+            {txn.currency && txn.currency !== "AUD" && <span className="ml-1 text-xs text-muted">{txn.currency}</span>}
+          </div>
+          {txn.currency && txn.currency !== "AUD" ? (
+            <div className="text-xs text-muted">≈ {money(txn.amount_aud_cents)} AUD</div>
+          ) : (
+            txn.gst_cents != null && <div className="text-xs text-muted">GST {money(txn.gst_cents)}</div>
+          )}
         </div>
       </Card>
     </Link>

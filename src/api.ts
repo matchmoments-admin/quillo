@@ -56,6 +56,12 @@ export async function handleApi(
     return json({ transactions: rows });
   }
 
+  // DELETE /api/transactions/:id — hard-delete (e.g. a duplicate), audited via the DO.
+  if (resource === "transactions" && id && m === "DELETE") {
+    await stub.deleteTransaction(uid, id);
+    return json({ ok: true });
+  }
+
   // POST /api/upload — snap-and-upload a receipt from the browser / phone camera.
   // Multipart form-data: `file` (image/PDF) [+ optional `bucket` hint]. Access has already
   // authenticated the user (scoped to uid), so no HMAC signing is needed here — that's

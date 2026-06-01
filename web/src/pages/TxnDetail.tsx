@@ -16,14 +16,18 @@ export function TxnDetail() {
   const [bucket, setBucket] = useState<string>("");
   const [label, setLabel] = useState<string>("");
   const [propertyId, setPropertyId] = useState<string>("");
+  const [date, setDate] = useState<string>("");
+  const [seeded, setSeeded] = useState(false);
   const [dirty, setDirty] = useState(false);
 
   const txn = txnQ.data;
   // Seed local state once the txn loads.
-  if (txn && !dirty && bucket === "" && txn.bucket) {
-    setBucket(txn.bucket);
+  if (txn && !seeded) {
+    setBucket(txn.bucket ?? "");
     setLabel(txn.ato_label ?? "");
     setPropertyId(txn.property_id ?? "");
+    setDate(txn.txn_date ?? "");
+    setSeeded(true);
   }
 
   const save = useMutation({
@@ -33,13 +37,24 @@ export function TxnDetail() {
       if (bucket && bucket !== txn.bucket) ops.push(api.correct(id, "bucket", bucket));
       if (label !== (txn.ato_label ?? "")) ops.push(api.correct(id, "ato_label", label));
       if (propertyId !== (txn.property_id ?? "")) ops.push(api.correct(id, "property_id", propertyId));
+      if (date !== (txn.txn_date ?? "")) ops.push(api.correct(id, "txn_date", date));
       // "Confirm as-is" when nothing changed: record acceptance of the current bucket.
       if (ops.length === 0 && txn.bucket) ops.push(api.correct(id, "bucket", txn.bucket));
       await Promise.all(ops);
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["transactions"] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
       qc.invalidateQueries({ queryKey: ["txn", id] });
+      navigate("/");
+    },
+  });
+
+  const del = useMutation({
+    mutationFn: () => api.deleteTxn(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["transactions"] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
       navigate("/");
     },
   });
@@ -69,10 +84,26 @@ export function TxnDetail() {
             <ConfidencePill value={txn.confidence} />
           </div>
 
+          {txn.duplicate_of && (
+            <Card className="border-warn/40 bg-warn/5 p-3 text-sm text-warn">
+              Possible duplicate of an earlier receipt. Delete it below if it's the same expense.
+            </Card>
+          )}
+
           <Card className="divide-y divide-line text-sm">
-            <Field k="Amount" v={money(txn.amount_cents)} />
-            <Field k="GST" v={money(txn.gst_cents)} />
-            <Field k="Date" v={txn.txn_date ?? "—"} />
+            <Field
+              k="Amount"
+              v={`${money(txn.amount_cents)}${txn.currency && txn.currency !== "AUD" ? ` ${txn.currency}` : ""}`}
+            />
+            {txn.currency && txn.currency !== "AUD" && (
+              <Field
+                k="AUD (est.)"
+                v={`${money(txn.amount_aud_cents)}${txn.fx_rate ? ` @ ${txn.fx_rate.toFixed(4)}` : " — set manually"}`}
+              />
+            )}
+            <Field k="GST" v={txn.currency && txn.currency !== "AUD" ? "n/a (overseas)" : money(txn.gst_cents)} />
+            <Field k="Date" v={`${txn.txn_date ?? "— undated —"}${fyLabel(txn.txn_date) ? `  ·  FY ${fyLabel(txn.txn_date)}` : ""}`} />
+            {txn.paid_account && <Field k="Paid via" v={txn.paid_account} />}
             <Field k="Source" v={txn.source} />
             <Field k="Status" v={txn.status} />
           </Card>
@@ -131,6 +162,21 @@ export function TxnDetail() {
               </label>
             )}
 
+            <label className="block">
+              <span className="text-xs font-medium uppercase tracking-wide text-muted">
+                Date {date ? `· FY ${fyLabel(date) ?? "?"}` : "· undated — set one so it lands in a tax year"}
+              </span>
+              <input
+                type="date"
+                value={date}
+                onChange={(e) => {
+                  setDate(e.target.value);
+                  setDirty(true);
+                }}
+                className="mt-1 w-full rounded-lg border border-line bg-white px-3 py-2"
+              />
+            </label>
+
             <button
               onClick={() => save.mutate()}
               disabled={save.isPending}
@@ -140,6 +186,17 @@ export function TxnDetail() {
             </button>
             {save.isError && <p className="text-sm text-danger">Couldn't save: {(save.error as Error).message}</p>}
           </Card>
+
+          <button
+            onClick={() => {
+              if (confirm("Delete this receipt permanently? This removes the image and can't be undone.")) del.mutate();
+            }}
+            disabled={del.isPending}
+            className="w-full rounded-lg border border-danger/30 py-2 text-sm font-medium text-danger transition hover:bg-danger/5 disabled:opacity-50"
+          >
+            {del.isPending ? "Deleting…" : "Delete receipt"}
+          </button>
+          {del.isError && <p className="text-sm text-danger">Couldn't delete: {(del.error as Error).message}</p>}
 
           {txn.corrections.length > 0 && (
             <Card className="p-4 text-sm">
@@ -157,6 +214,15 @@ export function TxnDetail() {
       </div>
     </div>
   );
+}
+
+// AU financial year (Jul–Jun) label for a YYYY-MM-DD date, or null if missing/unparseable.
+function fyLabel(d: string | null): string | null {
+  if (!d || !/^\d{4}-\d{2}-\d{2}$/.test(d)) return null;
+  const y = Number(d.slice(0, 4));
+  const mo = Number(d.slice(5, 7));
+  const startYear = mo >= 7 ? y : y - 1;
+  return `${startYear}-${String((startYear + 1) % 100).padStart(2, "0")}`;
 }
 
 function Field({ k, v }: { k: string; v: string }) {

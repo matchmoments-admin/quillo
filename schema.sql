@@ -52,16 +52,25 @@ CREATE TABLE IF NOT EXISTS transactions (
   status       TEXT NOT NULL DEFAULT 'needs_extraction',
   receipt_key  TEXT,                     -- R2 object key
   merchant     TEXT,
-  amount_cents INTEGER,
-  gst_cents    INTEGER,
+  amount_cents INTEGER,                  -- amount in the ORIGINAL currency
+  currency     TEXT DEFAULT 'AUD',       -- ISO-4217 of amount_cents
+  amount_aud_cents INTEGER,              -- converted to AUD for reporting (= amount_cents when AUD)
+  fx_rate      REAL,                     -- rate used (1 foreign unit -> AUD); null for AUD
+  fx_date      TEXT,                     -- date the rate applies to
+  gst_cents    INTEGER,                  -- AU GST component; null for overseas/foreign supplies
   txn_date     TEXT,
   bucket       TEXT,                     -- payg|company|property_rented|property_vacant|unknown
   ato_label    TEXT,                     -- e.g. D5, rental:interest, company:expense
   property_id  TEXT,                     -- which property, if bucket=property_*
+  paid_account TEXT,                     -- 'visa-1234'|'amex'|'cash' — reconcile-vs-push (Phase 3)
   confidence   REAL,
+  image_hash   TEXT,                     -- sha-256 of receipt bytes (exact-duplicate detection)
+  duplicate_of TEXT,                     -- txn id this duplicates, if flagged
+  receipt_keys TEXT,                     -- JSON array of all R2 keys (multi-screenshot receipts)
   ledger_ref   TEXT,                     -- ledger-side id once pushed (idempotency)
   created_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE INDEX IF NOT EXISTS idx_txn_imghash ON transactions(user_id, image_hash);
 
 -- ── User overrides => training signal for self-improvement ────────────────────
 CREATE TABLE IF NOT EXISTS corrections (

@@ -25,29 +25,44 @@ export interface Report {
   by_bucket: ReportRow[];
   by_property: { property_id: string; label: string | null; n: number; total_cents: number }[];
   company_quarters: { quarter: string; total_cents: number; gst_cents: number }[];
+  undated: { n: number; total_cents: number };
 }
 
 export async function buildReport(env: Env, userId: string, startYear: number): Promise<Report> {
   const { start, end } = fyBounds(startYear);
 
+  // AUD totals (fall back to original when already AUD / pre-migration). Exclude duplicates.
   const byBucket = await env.DB.prepare(
-    `SELECT bucket, ato_label, COUNT(*) AS n, COALESCE(SUM(amount_cents),0) AS total_cents,
+    `SELECT bucket, ato_label, COUNT(*) AS n,
+            COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS total_cents,
             COALESCE(SUM(gst_cents),0) AS gst_cents
        FROM transactions
-      WHERE user_id = ? AND txn_date >= ? AND txn_date <= ? AND bucket IS NOT NULL
+      WHERE user_id = ? AND txn_date >= ? AND txn_date <= ? AND bucket IS NOT NULL AND status != 'duplicate'
       GROUP BY bucket, ato_label ORDER BY bucket, total_cents DESC`,
   )
     .bind(userId, start, end)
     .all<ReportRow>();
 
   const byProperty = await env.DB.prepare(
-    `SELECT t.property_id, p.label, COUNT(*) AS n, COALESCE(SUM(t.amount_cents),0) AS total_cents
+    `SELECT t.property_id, p.label, COUNT(*) AS n,
+            COALESCE(SUM(COALESCE(t.amount_aud_cents, t.amount_cents)),0) AS total_cents
        FROM transactions t LEFT JOIN properties p ON p.id = t.property_id
-      WHERE t.user_id = ? AND t.txn_date >= ? AND t.txn_date <= ? AND t.property_id IS NOT NULL
+      WHERE t.user_id = ? AND t.txn_date >= ? AND t.txn_date <= ? AND t.property_id IS NOT NULL AND t.status != 'duplicate'
       GROUP BY t.property_id`,
   )
     .bind(userId, start, end)
     .all<{ property_id: string; label: string | null; n: number; total_cents: number }>();
+
+  // Receipts with no (or unparseable) date can't be assigned to any FY — surface them
+  // explicitly instead of letting the date filter silently drop them from every report.
+  const undated = await env.DB.prepare(
+    `SELECT COUNT(*) AS n, COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS total_cents
+       FROM transactions
+      WHERE user_id = ? AND status != 'duplicate'
+        AND (txn_date IS NULL OR txn_date NOT GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]')`,
+  )
+    .bind(userId)
+    .first<{ n: number; total_cents: number }>();
 
   // BAS quarters for the company bucket.
   const quarters = [
@@ -59,8 +74,10 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   const company_quarters: Report["company_quarters"] = [];
   for (const q of quarters) {
     const row = await env.DB.prepare(
-      `SELECT COALESCE(SUM(amount_cents),0) AS total_cents, COALESCE(SUM(gst_cents),0) AS gst_cents
-         FROM transactions WHERE user_id = ? AND bucket = 'company' AND txn_date >= ? AND txn_date <= ?`,
+      `SELECT COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS total_cents,
+              COALESCE(SUM(gst_cents),0) AS gst_cents
+         FROM transactions WHERE user_id = ? AND bucket = 'company' AND status != 'duplicate'
+           AND txn_date >= ? AND txn_date <= ?`,
     )
       .bind(userId, q.s, q.e)
       .first<{ total_cents: number; gst_cents: number }>();
@@ -74,7 +91,17 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
     by_bucket: byBucket.results ?? [],
     by_property: byProperty.results ?? [],
     company_quarters,
+    undated: { n: undated?.n ?? 0, total_cents: undated?.total_cents ?? 0 },
   };
+}
+
+/** AU financial-year label for a date, e.g. "2025-26". null when the date is missing/unparseable. */
+export function fyForDate(txnDate: string | null): string | null {
+  if (!txnDate || !/^\d{4}-\d{2}-\d{2}$/.test(txnDate)) return null;
+  const y = Number(txnDate.slice(0, 4));
+  const mo = Number(txnDate.slice(5, 7));
+  const startYear = mo >= 7 ? y : y - 1;
+  return `${startYear}-${String((startYear + 1) % 100).padStart(2, "0")}`;
 }
 
 export function reportToCsv(r: Report): string {

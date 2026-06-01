@@ -39,6 +39,7 @@ export interface TaxAgentRpc {
   ingestText(userId: string, source: string, text: string): Promise<string>;
   ingestCategoriseText(userId: string, source: string, text: string, bucketHint?: string | null): Promise<string>;
   applyCorrection(userId: string, txnId: string, field: string, value: string): Promise<void>;
+  deleteTransaction(userId: string, txnId: string): Promise<void>;
   runProactiveScan(userId: string): Promise<void>;
   recordConsent(userId: string, text: string, method: string): Promise<void>;
 }

@@ -9,15 +9,27 @@ export interface TxnRow {
   status: string;
   merchant: string | null;
   amount_cents: number | null;
+  currency: string | null;
+  amount_aud_cents: number | null;
+  fx_rate: number | null;
+  fx_date: string | null;
   gst_cents: number | null;
   txn_date: string | null;
   bucket: string | null;
   ato_label: string | null;
   property_id: string | null;
+  paid_account: string | null;
   confidence: number | null;
+  duplicate_of: string | null;
   ledger_ref: string | null;
   created_at: string;
 }
+
+// Columns returned for transaction reads (kept in one place so list + detail agree).
+const TXN_COLS =
+  "id, source, status, merchant, amount_cents, currency, amount_aud_cents, fx_rate, fx_date, " +
+  "gst_cents, txn_date, bucket, ato_label, property_id, paid_account, confidence, duplicate_of, " +
+  "ledger_ref, created_at";
 
 export async function listTransactions(
   env: Env,
@@ -37,8 +49,7 @@ export async function listTransactions(
   const limit = Math.min(Math.max(opts.limit ?? 100, 1), 500);
   // Low-confidence + needs-review first, then newest.
   const res = await env.DB.prepare(
-    `SELECT id, source, status, merchant, amount_cents, gst_cents, txn_date, bucket,
-            ato_label, property_id, confidence, ledger_ref, created_at
+    `SELECT ${TXN_COLS}
        FROM transactions WHERE ${where.join(" AND ")}
       ORDER BY (confidence IS NULL) DESC, confidence ASC, created_at DESC
       LIMIT ?`,
@@ -50,8 +61,7 @@ export async function listTransactions(
 
 export async function getTransaction(env: Env, userId: string, id: string) {
   const txn = await env.DB.prepare(
-    `SELECT id, source, status, merchant, amount_cents, gst_cents, txn_date, bucket,
-            ato_label, property_id, confidence, ledger_ref, receipt_key, created_at
+    `SELECT ${TXN_COLS}, receipt_key
        FROM transactions WHERE id = ? AND user_id = ?`,
   )
     .bind(id, userId)
@@ -87,17 +97,20 @@ export async function listNotifications(env: Env, userId: string) {
 }
 
 export async function dashboard(env: Env, userId: string) {
+  // Totals use the AUD value (falling back to the original when it's already AUD / pre-migration),
+  // so mixed-currency receipts never sum incorrectly. Duplicates are excluded.
   const byBucket = await env.DB.prepare(
-    `SELECT bucket, COUNT(*) AS n, COALESCE(SUM(amount_cents),0) AS total_cents
-       FROM transactions WHERE user_id = ? AND bucket IS NOT NULL
+    `SELECT bucket, COUNT(*) AS n, COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS total_cents
+       FROM transactions WHERE user_id = ? AND bucket IS NOT NULL AND status != 'duplicate'
       GROUP BY bucket ORDER BY total_cents DESC`,
   )
     .bind(userId)
     .all();
   const byProperty = await env.DB.prepare(
-    `SELECT t.property_id, p.label, COUNT(*) AS n, COALESCE(SUM(t.amount_cents),0) AS total_cents
+    `SELECT t.property_id, p.label, COUNT(*) AS n,
+            COALESCE(SUM(COALESCE(t.amount_aud_cents, t.amount_cents)),0) AS total_cents
        FROM transactions t LEFT JOIN properties p ON p.id = t.property_id
-      WHERE t.user_id = ? AND t.property_id IS NOT NULL
+      WHERE t.user_id = ? AND t.property_id IS NOT NULL AND t.status != 'duplicate'
       GROUP BY t.property_id`,
   )
     .bind(userId)

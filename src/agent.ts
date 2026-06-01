@@ -6,6 +6,7 @@ import { getLLM, type LLM } from "./llm";
 import { extractReceipt, extractFromText, type Extracted } from "./extract";
 import { getLedger, LedgerNotConnectedError, type LedgerExpense } from "./ledger";
 import { redact } from "./lib/redact";
+import { toAud } from "./lib/fx";
 import { parseTransactionAlert } from "./lib/bank-parsers";
 import auV1RulePack from "./rulepacks/au-v1.json";
 
@@ -19,8 +20,13 @@ const CORRECTABLE: Record<string, string> = {
   bucket: "bucket",
   ato_label: "ato_label",
   amount_cents: "amount_cents",
+  amount_aud_cents: "amount_aud_cents", // the reconciled AUD value (e.g. from the bank feed)
+  currency: "currency",
+  gst_cents: "gst_cents",
+  txn_date: "txn_date", // lets undated receipts be fixed so they land in an FY
   merchant: "merchant",
   property_id: "property_id",
+  paid_account: "paid_account", // drives reconcile-vs-push in Phase 3
 };
 
 // Default AU rule pack is the canonical JSON in src/rulepacks/ (single source of truth
@@ -216,18 +222,31 @@ export class TaxAgent extends Agent<Env> {
         }
       : parsed;
 
+    // Currency: AU GST only applies to AUD supplies — force null for anything foreign
+    // (defensive, on top of the prompt rule). Convert to AUD for reporting (estimate; the
+    // authoritative AUD is the reconciled bank-feed line).
+    const currency = (final.currency ?? "AUD").trim().toUpperCase();
+    const gstCents = currency === "AUD" ? final.gst_cents : null;
+    const fx = await toAud(this.env, final.amount_cents, currency, final.txn_date);
+
     await this.env.DB.prepare(
-      `UPDATE transactions SET status='extracted', merchant=?, amount_cents=?, gst_cents=?,
-              txn_date=?, bucket=?, ato_label=?, property_id=?, confidence=? WHERE id=? AND user_id=?`,
+      `UPDATE transactions SET status='extracted', merchant=?, amount_cents=?, currency=?,
+              amount_aud_cents=?, fx_rate=?, fx_date=?, gst_cents=?, txn_date=?, bucket=?,
+              ato_label=?, property_id=?, paid_account=?, confidence=? WHERE id=? AND user_id=?`,
     )
       .bind(
         final.merchant,
         final.amount_cents,
-        final.gst_cents,
+        currency,
+        fx.amount_aud_cents,
+        fx.fx_rate,
+        fx.fx_date,
+        gstCents,
         final.txn_date,
         final.bucket,
         final.ato_label,
         final.property_id,
+        final.paid_account ?? null,
         final.confidence,
         txnId,
         userId,
@@ -277,6 +296,47 @@ export class TaxAgent extends Agent<Env> {
 
     await this.promoteToEvalCase(userId, txnId);
     await this.audit(userId, "correction", JSON.stringify({ txnId, field, newValue }));
+  }
+
+  /**
+   * Hard-delete a transaction (e.g. a duplicate upload). Removes the row and its R2
+   * receipt image(s), but writes an audit_log breadcrumb so the hash-chain records WHAT was
+   * deleted even though the data is gone (honours "deleted means deleted").
+   */
+  async deleteTransaction(userId: string, txnId: string): Promise<void> {
+    const row = await this.env.DB.prepare(
+      `SELECT merchant, amount_cents, currency, receipt_key, receipt_keys
+         FROM transactions WHERE id = ? AND user_id = ?`,
+    )
+      .bind(txnId, userId)
+      .first<{
+        merchant: string | null;
+        amount_cents: number | null;
+        currency: string | null;
+        receipt_key: string | null;
+        receipt_keys: string | null;
+      }>();
+    if (!row) throw new Error("transaction not found");
+
+    // Collect every R2 key (primary + any multi-image keys) and delete the objects.
+    const keys = new Set<string>();
+    if (row.receipt_key) keys.add(row.receipt_key);
+    if (row.receipt_keys) {
+      try {
+        for (const k of JSON.parse(row.receipt_keys) as string[]) if (k) keys.add(k);
+      } catch {
+        /* ignore malformed json */
+      }
+    }
+    for (const k of keys) await this.env.RECEIPTS.delete(k);
+
+    await this.env.DB.prepare(`DELETE FROM corrections WHERE txn_id = ? AND user_id = ?`).bind(txnId, userId).run();
+    await this.env.DB.prepare(`DELETE FROM transactions WHERE id = ? AND user_id = ?`).bind(txnId, userId).run();
+    await this.audit(
+      userId,
+      "delete",
+      JSON.stringify({ txnId, merchant: row.merchant, amount_cents: row.amount_cents, currency: row.currency }),
+    );
   }
 
   // ── 4. PROACTIVE engine (called by cron) ───────────────────────────────────

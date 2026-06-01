@@ -38,6 +38,7 @@ export const api = {
   situation: () => get<Situation>("/api/situation"),
   receiptUrl: (id: string) => `/api/receipt/${id}`,
   correct: (txnId: string, field: string, value: string) => post<{ ok: boolean }>("/api/correct", { txnId, field, value }),
+  deleteTxn: (id: string) => send<{ ok: boolean }>("DELETE", `/api/transactions/${id}`),
 
   // Phase 2
   dashboard: () => get<DashboardData>("/api/dashboard"),

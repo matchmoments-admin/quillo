@@ -56,6 +56,27 @@ export async function handleApi(
     return json({ transactions: rows });
   }
 
+  // POST /api/upload — snap-and-upload a receipt from the browser / phone camera.
+  // Multipart form-data: `file` (image/PDF) [+ optional `bucket` hint]. Access has already
+  // authenticated the user (scoped to uid), so no HMAC signing is needed here — that's
+  // only for the unauthenticated device endpoint /ingest. ingest() awaits extraction, so
+  // the response returns once the receipt is categorised.
+  if (resource === "upload" && m === "POST") {
+    const form = await req.formData();
+    const entry = form.get("file");
+    // FormData entries are File | string at runtime; a missing/text entry means no upload.
+    // (workers-types under-types get() as string|null, so cast the file case through Blob.)
+    if (entry == null || typeof entry === "string") return json({ error: "no file" }, 400);
+    const file = entry as unknown as Blob;
+    const bytes = await file.arrayBuffer();
+    if (bytes.byteLength === 0) return json({ error: "empty file" }, 400);
+    const mime = file.type || "image/jpeg";
+    const bucketEntry = form.get("bucket");
+    const bucketHint = typeof bucketEntry === "string" ? bucketEntry : null;
+    const txnId = await stub.ingest(uid, "web", bytes, mime, bucketHint);
+    return json({ ok: true, txnId });
+  }
+
   // GET /api/receipt/:txnId — stream the R2 object for thumbnails / preview.
   if (resource === "receipt" && id && m === "GET") {
     const key = await receiptKeyFor(env, uid, id);

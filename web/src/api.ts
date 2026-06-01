@@ -26,6 +26,15 @@ export const api = {
   transactions: (status?: string) =>
     get<{ transactions: Txn[] }>(`/api/transactions${status ? `?status=${status}` : ""}`).then((r) => r.transactions),
   transaction: (id: string) => get<TxnDetail>(`/api/transactions/${id}`),
+  upload: async (file: File, bucket?: string): Promise<{ ok: boolean; txnId: string }> => {
+    const fd = new FormData();
+    fd.append("file", file);
+    if (bucket) fd.append("bucket", bucket);
+    const res = await fetch("/api/upload", { method: "POST", credentials: "include", body: fd });
+    if (res.status === 401) throw new Error("unauthorized");
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    return res.json();
+  },
   situation: () => get<Situation>("/api/situation"),
   receiptUrl: (id: string) => `/api/receipt/${id}`,
   correct: (txnId: string, field: string, value: string) => post<{ ok: boolean }>("/api/correct", { txnId, field, value }),

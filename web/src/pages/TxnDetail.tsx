@@ -59,6 +59,16 @@ export function TxnDetail() {
     },
   });
 
+  const [pushMsg, setPushMsg] = useState<string | null>(null);
+  const push = useMutation({
+    mutationFn: () => api.qboPush(id),
+    onSuccess: (r) => {
+      setPushMsg(r.ok ? `Pushed to QuickBooks ✓ (${r.ledgerRef})` : (r.error ?? "Push failed"));
+      if (r.ok) qc.invalidateQueries({ queryKey: ["txn", id] });
+    },
+    onError: (e) => setPushMsg((e as Error).message),
+  });
+
   if (txnQ.isLoading) return <Spinner />;
   if (!txn) return <Card className="p-6 text-sm text-muted">Transaction not found.</Card>;
 
@@ -186,6 +196,33 @@ export function TxnDetail() {
             </button>
             {save.isError && <p className="text-sm text-danger">Couldn't save: {(save.error as Error).message}</p>}
           </Card>
+
+          {/* QuickBooks: reconcile-vs-push. Fed accounts reconcile (don't push); use this
+              only for a NON-FEED company expense (cash / a card not connected to QBO). */}
+          {txn.bucket === "company" && (
+            <Card className="space-y-2 p-4 text-sm">
+              <div className="text-xs font-medium uppercase tracking-wide text-muted">QuickBooks</div>
+              {txn.ledger_ref ? (
+                <p className="text-safe">Posted to QuickBooks · {txn.ledger_ref}</p>
+              ) : (
+                <>
+                  <p className="text-muted">
+                    If this is on a <span className="font-medium text-ink">connected</span> account, leave it — your bank
+                    feed posts it and you reconcile. Only push if it's <span className="font-medium text-ink">not</span>{" "}
+                    in your QuickBooks feed (cash, a separate Amex).
+                  </p>
+                  <button
+                    onClick={() => push.mutate()}
+                    disabled={push.isPending}
+                    className="rounded-lg border border-line px-3 py-2 font-medium transition hover:bg-surface disabled:opacity-50"
+                  >
+                    {push.isPending ? "Pushing…" : "Push to QuickBooks (non-feed)"}
+                  </button>
+                  {pushMsg && <p className="text-muted">{pushMsg}</p>}
+                </>
+              )}
+            </Card>
+          )}
 
           <button
             onClick={() => {

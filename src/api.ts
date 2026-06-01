@@ -69,17 +69,27 @@ export async function handleApi(
   // the response returns once the receipt is categorised.
   if (resource === "upload" && m === "POST") {
     const form = await req.formData();
-    const entry = form.get("file");
-    // FormData entries are File | string at runtime; a missing/text entry means no upload.
-    // (workers-types under-types get() as string|null, so cast the file case through Blob.)
-    if (entry == null || typeof entry === "string") return json({ error: "no file" }, 400);
-    const file = entry as unknown as Blob;
-    const bytes = await file.arrayBuffer();
-    if (bytes.byteLength === 0) return json({ error: "empty file" }, 400);
-    const mime = file.type || "image/jpeg";
+    // One or more `file` parts (multi-screenshot = one receipt). workers-types under-types
+    // FormData, so cast the entries through Blob and drop any stray text fields.
+    const blobs = (form.getAll("file") as unknown as Array<Blob | string>).filter(
+      (f): f is Blob => typeof f !== "string",
+    );
+    if (blobs.length === 0) return json({ error: "no file" }, 400);
     const bucketEntry = form.get("bucket");
     const bucketHint = typeof bucketEntry === "string" ? bucketEntry : null;
-    const txnId = await stub.ingest(uid, "web", bytes, mime, bucketHint);
+
+    const images: { bytes: ArrayBuffer; mime: string }[] = [];
+    for (const b of blobs) {
+      const bytes = await b.arrayBuffer();
+      if (bytes.byteLength > 0) images.push({ bytes, mime: b.type || "image/jpeg" });
+    }
+    if (images.length === 0) return json({ error: "empty file" }, 400);
+
+    const first = images[0]!;
+    const txnId =
+      images.length === 1
+        ? await stub.ingest(uid, "web", first.bytes, first.mime, bucketHint)
+        : await stub.ingestImages(uid, "web", images, bucketHint);
     return json({ ok: true, txnId });
   }
 
@@ -176,6 +186,8 @@ export async function handleApi(
   // ── QuickBooks (Phase 4) ──────────────────────────────────────────────────
   if (resource === "qbo") {
     if (id === "status" && m === "GET") return json(await qboStatus(env, uid));
+    // POST /api/qbo/push/:txnId — user-triggered push of a NON-FEED company expense.
+    if (id === "push" && sub && m === "POST") return json(await stub.pushToQuickBooks(uid, sub));
     if (id === "connect" && m === "GET") {
       if (!env.QBO_CLIENT_ID) return json({ error: "QBO_CLIENT_ID not set" }, 400);
       return Response.redirect(await buildConnectUrl(env, uid, url.origin), 302);

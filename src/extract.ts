@@ -132,6 +132,25 @@ export async function extractReceipt(
 }
 
 /**
+ * Extract + categorise a receipt that spans MULTIPLE images (e.g. several screenshots
+ * or a multi-page PDF) as ONE transaction. All image blocks go into a single tool call so
+ * the model combines them into one record.
+ */
+export async function extractReceipts(
+  llm: LLM,
+  system: string,
+  images: { bytes: ArrayBuffer; mime: string }[],
+): Promise<ExtractResult> {
+  return runRecordReceipt(llm, system, [
+    ...images.map((im) => receiptBlock(im.bytes, im.mime)),
+    {
+      type: "text",
+      text: `These ${images.length} images are parts/pages of ONE receipt. Combine them into a single record_receipt call (one merchant, one total).`,
+    },
+  ]);
+}
+
+/**
  * Categorise a typed / free-text expense (no image) — same tool + schema as
  * `extractReceipt`, so a typed line still gets a fully-bucketed result. Used by the
  * text-ingest path so typed expenses get a real bucket + ato_label.

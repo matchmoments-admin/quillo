@@ -1,9 +1,9 @@
 import { Agent } from "agents";
 import type { Env } from "./env";
 import { getProfile, getSituation, renderSituation, type Profile, type Situation, type UserRule } from "./lib/db";
-import { sha256hex } from "./lib/base64";
+import { sha256hex, sha256hexBytes } from "./lib/base64";
 import { getLLM, type LLM } from "./llm";
-import { extractReceipt, extractFromText, type Extracted } from "./extract";
+import { extractReceipt, extractReceipts, extractFromText, type Extracted } from "./extract";
 import { getLedger, LedgerNotConnectedError, type LedgerExpense } from "./ledger";
 import { redact } from "./lib/redact";
 import { toAud } from "./lib/fx";
@@ -60,17 +60,80 @@ export class TaxAgent extends Agent<Env> {
     const txnId = crypto.randomUUID();
     const key = `${userId}/${txnId}`;
     await this.env.RECEIPTS.put(key, bytes, { httpMetadata: { contentType: mime } });
-    await this.env.DB.prepare(
-      `INSERT INTO transactions (id, user_id, source, status, receipt_key)
-       VALUES (?, ?, ?, 'needs_extraction', ?)`,
+
+    // Exact-duplicate detection: identical bytes ⇒ same receipt. If we've already captured
+    // this image, record a 'duplicate' row (linked to the original) and SKIP the Claude
+    // call — saves cost and stops double-counting. The user can delete it.
+    const imageHash = await sha256hexBytes(bytes);
+    const prior = await this.env.DB.prepare(
+      `SELECT id, merchant FROM transactions
+        WHERE user_id = ? AND image_hash = ? AND status <> 'duplicate' ORDER BY created_at LIMIT 1`,
     )
-      .bind(txnId, userId, source, key)
+      .bind(userId, imageHash)
+      .first<{ id: string; merchant: string | null }>();
+    if (prior) {
+      await this.env.DB.prepare(
+        `INSERT INTO transactions (id, user_id, source, status, receipt_key, image_hash, duplicate_of)
+         VALUES (?, ?, ?, 'duplicate', ?, ?, ?)`,
+      )
+        .bind(txnId, userId, source, key, imageHash, prior.id)
+        .run();
+      await this.audit(userId, "ingest_duplicate", JSON.stringify({ txnId, duplicateOf: prior.id }));
+      await this.notify(
+        userId,
+        `Looks like a duplicate of a receipt you already uploaded${prior.merchant ? ` (${prior.merchant})` : ""} — skipped re-reading it. Delete it if it's the same expense.`,
+        txnId,
+      );
+      return txnId;
+    }
+
+    await this.env.DB.prepare(
+      `INSERT INTO transactions (id, user_id, source, status, receipt_key, image_hash)
+       VALUES (?, ?, ?, 'needs_extraction', ?, ?)`,
+    )
+      .bind(txnId, userId, source, key, imageHash)
       .run();
     await this.audit(userId, "ingest", JSON.stringify({ txnId, source, bucketHint }));
 
     // Run extraction within the DO's active lifetime (NOT ctx.waitUntil — that is a
     // no-op in Durable Objects, finding H3). Awaiting keeps the DO alive for the call.
     await this.extractAndCategorise(userId, txnId, bytes, mime, bucketHint);
+    return txnId;
+  }
+
+  /**
+   * Ingest a receipt that spans MULTIPLE images (several screenshots / multi-page PDF) as
+   * ONE transaction: store every image in R2, then run a single multi-image extraction.
+   */
+  async ingestImages(
+    userId: string,
+    source: string,
+    images: { bytes: ArrayBuffer; mime: string }[],
+    bucketHint: string | null = null,
+  ): Promise<string> {
+    const first = images[0];
+    if (!first) throw new Error("no images provided");
+    const txnId = crypto.randomUUID();
+    const keys: string[] = [];
+    let i = 0;
+    for (const im of images) {
+      const k = `${userId}/${txnId}-${i++}`;
+      await this.env.RECEIPTS.put(k, im.bytes, { httpMetadata: { contentType: im.mime } });
+      keys.push(k);
+    }
+    const imageHash = await sha256hexBytes(first.bytes);
+    await this.env.DB.prepare(
+      `INSERT INTO transactions (id, user_id, source, status, receipt_key, receipt_keys, image_hash)
+       VALUES (?, ?, ?, 'needs_extraction', ?, ?, ?)`,
+    )
+      .bind(txnId, userId, source, keys[0] ?? null, JSON.stringify(keys), imageHash)
+      .run();
+    await this.audit(userId, "ingest_multi", JSON.stringify({ txnId, source, count: images.length }));
+
+    const ctx = await this.prepareCategorisation(userId, txnId, bucketHint);
+    if (!ctx) return txnId; // consent gate blocked
+    const { parsed } = await extractReceipts(ctx.llm, ctx.system, images);
+    await this.finaliseExtraction(userId, txnId, parsed, ctx.situation, ctx.llm, ctx.system);
     return txnId;
   }
 
@@ -337,6 +400,52 @@ export class TaxAgent extends Agent<Env> {
       "delete",
       JSON.stringify({ txnId, merchant: row.merchant, amount_cents: row.amount_cents, currency: row.currency }),
     );
+  }
+
+  /**
+   * Push a company expense to QuickBooks as a Purchase — USER-TRIGGERED, for NON-FEED
+   * expenses only (cash, or a card not connected to QBO like a separate Amex). Fed
+   * accounts must NOT be pushed: the bank feed already posts them, and a Purchase here
+   * would double-count (the reader/reconciler rule). Idempotent via `ledger_ref`. Posts
+   * the AUD amount (`amount_aud_cents`), matching QBO's home currency.
+   */
+  async pushToQuickBooks(userId: string, txnId: string): Promise<{ ok: boolean; ledgerRef?: string; error?: string }> {
+    const row = await this.env.DB.prepare(
+      `SELECT merchant, amount_cents, amount_aud_cents, gst_cents, txn_date, ato_label, bucket, ledger_ref
+         FROM transactions WHERE id = ? AND user_id = ?`,
+    )
+      .bind(txnId, userId)
+      .first<{
+        merchant: string | null;
+        amount_cents: number | null;
+        amount_aud_cents: number | null;
+        gst_cents: number | null;
+        txn_date: string | null;
+        ato_label: string | null;
+        bucket: string | null;
+        ledger_ref: string | null;
+      }>();
+    if (!row) throw new Error("transaction not found");
+    if (row.ledger_ref) return { ok: true, ledgerRef: row.ledger_ref }; // already posted
+    if (row.bucket !== "company") return { ok: false, error: "only company-bucket expenses post to QuickBooks" };
+
+    // pushToLedger reads amount_cents/gst_cents/txn_date/merchant/ato_label — feed it the
+    // AUD amount so QBO records the home-currency value.
+    const parsed = {
+      merchant: row.merchant ?? "",
+      amount_cents: row.amount_aud_cents ?? row.amount_cents ?? 0,
+      gst_cents: row.gst_cents,
+      txn_date: row.txn_date,
+      ato_label: row.ato_label ?? "company:expense",
+    } as Extracted;
+    await this.pushToLedger(userId, txnId, parsed);
+
+    const after = await this.env.DB.prepare(`SELECT ledger_ref FROM transactions WHERE id = ?`)
+      .bind(txnId)
+      .first<{ ledger_ref: string | null }>();
+    return after?.ledger_ref
+      ? { ok: true, ledgerRef: after.ledger_ref }
+      : { ok: false, error: "QuickBooks not connected — connect it first, then push." };
   }
 
   // ── 4. PROACTIVE engine (called by cron) ───────────────────────────────────

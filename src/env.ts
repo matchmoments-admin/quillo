@@ -36,10 +36,12 @@ export interface Env {
  */
 export interface TaxAgentRpc {
   ingest(userId: string, source: string, bytes: ArrayBuffer, mime: string, bucketHint?: string | null): Promise<string>;
+  ingestImages(userId: string, source: string, images: { bytes: ArrayBuffer; mime: string }[], bucketHint?: string | null): Promise<string>;
   ingestText(userId: string, source: string, text: string): Promise<string>;
   ingestCategoriseText(userId: string, source: string, text: string, bucketHint?: string | null): Promise<string>;
   applyCorrection(userId: string, txnId: string, field: string, value: string): Promise<void>;
   deleteTransaction(userId: string, txnId: string): Promise<void>;
+  pushToQuickBooks(userId: string, txnId: string): Promise<{ ok: boolean; ledgerRef?: string; error?: string }>;
   runProactiveScan(userId: string): Promise<void>;
   recordConsent(userId: string, text: string, method: string): Promise<void>;
 }

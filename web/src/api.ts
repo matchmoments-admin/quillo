@@ -26,9 +26,9 @@ export const api = {
   transactions: (status?: string) =>
     get<{ transactions: Txn[] }>(`/api/transactions${status ? `?status=${status}` : ""}`).then((r) => r.transactions),
   transaction: (id: string) => get<TxnDetail>(`/api/transactions/${id}`),
-  upload: async (file: File, bucket?: string): Promise<{ ok: boolean; txnId: string }> => {
+  upload: async (files: File | File[], bucket?: string): Promise<{ ok: boolean; txnId: string }> => {
     const fd = new FormData();
-    fd.append("file", file);
+    for (const f of Array.isArray(files) ? files : [files]) fd.append("file", f);
     if (bucket) fd.append("bucket", bucket);
     const res = await fetch("/api/upload", { method: "POST", credentials: "include", body: fd });
     if (res.status === 401) throw new Error("unauthorized");
@@ -59,6 +59,7 @@ export const api = {
 
   // Phase 4
   qboStatus: () => get<QboStatus>("/api/qbo/status"),
+  qboPush: (txnId: string) => post<{ ok: boolean; ledgerRef?: string; error?: string }>(`/api/qbo/push/${txnId}`),
   reconcile: () => get<Reconcile>("/api/qbo/reconcile"),
   qboConnectUrl: "/api/qbo/connect",
 

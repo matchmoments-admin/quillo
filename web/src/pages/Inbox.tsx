@@ -12,8 +12,9 @@ export function Inbox() {
   const { data, isLoading, error } = useQuery({ queryKey: ["transactions"], queryFn: () => api.transactions() });
 
   const upload = useMutation({
-    mutationFn: (file: File) => api.upload(file),
-    onMutate: () => setNote("Reading your receipt with Claude…"),
+    mutationFn: (files: File[]) => api.upload(files),
+    onMutate: (files) =>
+      setNote(files.length > 1 ? `Reading ${files.length} images as one receipt…` : "Reading your receipt with Claude…"),
     onSuccess: () => {
       setNote("Receipt added and categorised ✓");
       qc.invalidateQueries({ queryKey: ["transactions"] });
@@ -58,11 +59,11 @@ export function Inbox() {
         ref={fileRef}
         type="file"
         accept="image/*,application/pdf"
-        capture="environment"
+        multiple
         className="hidden"
         onChange={(e) => {
-          const f = e.target.files?.[0];
-          if (f) upload.mutate(f);
+          const fs = Array.from(e.target.files ?? []);
+          if (fs.length) upload.mutate(fs);
           e.currentTarget.value = "";
         }}
       />

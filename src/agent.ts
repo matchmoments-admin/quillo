@@ -5,8 +5,9 @@ import { addRule } from "./lib/situation-write";
 import { COUNTABLE } from "./lib/queries";
 import { sha256hex, sha256hexBytes } from "./lib/base64";
 import { getLLM, type LLM } from "./llm";
-import { extractReceipt, extractReceipts, extractFromText, extractColumnMap, type Extracted } from "./extract";
-import { parseCsv, applyColumnMap, lineFingerprint, deriveBalances, reconcileStatement, type ColumnMap, type Reconciliation } from "./lib/statements";
+import { extractReceipt, extractReceipts, extractFromText, extractColumnMap, extractStatement, type Extracted, type ExtractedStatement } from "./extract";
+import { parseCsv, applyColumnMap, lineFingerprint, deriveBalances, reconcileStatement, type ColumnMap, type Reconciliation, type StatementLine } from "./lib/statements";
+import { cleanMerchant } from "./lib/bank-parsers";
 import { getLedger, LedgerNotConnectedError, type LedgerExpense } from "./ledger";
 import { redact } from "./lib/redact";
 import { toAud } from "./lib/fx";
@@ -170,18 +171,40 @@ export class TaxAgent extends Agent<Env> {
 
     const statementId = crypto.randomUUID();
     const fileKey = `${userId}/statements/${statementId}`;
-    await this.env.RECEIPTS.put(fileKey, bytes, { httpMetadata: { contentType: "text/csv" } });
+    await this.env.RECEIPTS.put(fileKey, bytes, { httpMetadata: { contentType: format === "pdf" ? "application/pdf" : "text/csv" } });
 
-    const text = new TextDecoder().decode(bytes);
-    const rows = parseCsv(text);
     const profile = await this.requireProfile(userId);
     const llm = await getLLM(this.env, profile);
-    const columnMap = await extractColumnMap(llm, rows);
-    const lines = applyColumnMap(rows, columnMap);
 
-    // Balance reconciliation — the proof the import is complete + accurate.
-    const bal = deriveBalances(lines);
-    const recon = reconcileStatement(lines, bal?.opening_cents ?? null, bal?.closing_cents ?? null);
+    let lines: StatementLine[];
+    let columnMap: ColumnMap | null = null;
+    let recon: Reconciliation;
+
+    if (format === "pdf") {
+      // PDF: Claude transcribes the table. Reconcile; if it doesn't balance, re-extract ONCE
+      // (a fresh pass) and keep the one that reconciles. Reconciliation catches truncation.
+      const attempt = async () => {
+        const ext = await extractStatement(llm, bytes, "application/pdf");
+        const ls = this.pdfLines(ext);
+        return { ls, recon: reconcileStatement(ls, ext.opening_cents, ext.closing_cents) };
+      };
+      let a = await attempt();
+      if (a.recon.available && !a.recon.ok) {
+        const b = await attempt(); // double-check
+        if (b.recon.ok || (b.recon.available && Math.abs(b.recon.diff_cents) < Math.abs(a.recon.diff_cents))) a = b;
+      }
+      lines = a.ls;
+      recon = a.recon;
+    } else {
+      const rows = parseCsv(new TextDecoder().decode(bytes));
+      columnMap = await extractColumnMap(llm, rows);
+      lines = applyColumnMap(rows, columnMap);
+      const bal = deriveBalances(lines);
+      recon = reconcileStatement(lines, bal?.opening_cents ?? null, bal?.closing_cents ?? null);
+    }
+
+    // Store the normalised lines beside the raw file so confirmImport never re-extracts.
+    await this.env.RECEIPTS.put(`${fileKey}.lines`, JSON.stringify(lines), { httpMetadata: { contentType: "application/json" } });
     if (recon.available && !recon.ok) {
       await this.audit(userId, "statement_recon_fail", JSON.stringify({ statementId, diff: recon.diff_cents, bad: recon.first_bad_line }));
     }
@@ -205,22 +228,22 @@ export class TaxAgent extends Agent<Env> {
   // column map, de-dup each line by fingerprint, batch-insert the new bank lines, and
   // categorise deterministically (user rules + merchant hints — FREE; LLM categorisation of
   // the remainder is a later phase). Returns counts.
-  async confirmImport(userId: string, statementId: string, columnMapOverride?: ColumnMap, force?: boolean): Promise<{ imported: number; skipped: number }> {
-    const stmt = await this.env.DB.prepare(`SELECT account_id, file_key, column_map FROM statements WHERE id = ? AND user_id = ?`)
+  async confirmImport(userId: string, statementId: string, _columnMapOverride?: ColumnMap, force?: boolean): Promise<{ imported: number; skipped: number }> {
+    const stmt = await this.env.DB.prepare(
+      `SELECT account_id, file_key, opening_cents, closing_cents FROM statements WHERE id = ? AND user_id = ?`,
+    )
       .bind(statementId, userId)
-      .first<{ account_id: string; file_key: string; column_map: string }>();
+      .first<{ account_id: string; file_key: string; opening_cents: number | null; closing_cents: number | null }>();
     if (!stmt) throw new Error("statement not found");
 
-    const obj = await this.env.RECEIPTS.get(stmt.file_key);
-    if (!obj) throw new Error("statement file missing");
-    const rows = parseCsv(await obj.text());
-    const map = columnMapOverride ?? (JSON.parse(stmt.column_map) as ColumnMap);
-    const lines = applyColumnMap(rows, map);
+    // Use the normalised lines stored at parse time (so a PDF is never re-extracted).
+    const sidecar = await this.env.RECEIPTS.get(`${stmt.file_key}.lines`);
+    if (!sidecar) throw new Error("parsed lines missing — re-upload the statement");
+    const lines = JSON.parse(await sidecar.text()) as StatementLine[];
 
     // Reconciliation gate: refuse to import a statement that doesn't balance unless the user
     // explicitly overrides after reviewing the flagged line(s). This is the proof of completeness.
-    const bal = deriveBalances(lines);
-    const recon = reconcileStatement(lines, bal?.opening_cents ?? null, bal?.closing_cents ?? null);
+    const recon = reconcileStatement(lines, stmt.opening_cents, stmt.closing_cents);
     if (recon.available && !recon.ok && !force) {
       const off = `$${Math.abs(recon.diff_cents / 100).toFixed(2)}`;
       throw new Error(`Statement doesn't reconcile (off by ${off}${recon.first_bad_line != null ? `, first wrong around line ${recon.first_bad_line + 1}` : ""}). Review the lines, then import anyway to override.`);
@@ -291,6 +314,18 @@ export class TaxAgent extends Agent<Env> {
     await this.audit(userId, "statement_imported", JSON.stringify({ statementId, imported, skipped }));
     await this.notify(userId, `Imported ${imported} transaction(s) from your statement${skipped ? ` (${skipped} already on file)` : ""}.`, null);
     return { imported, skipped };
+  }
+
+  /** Map a Claude-extracted PDF statement to the shared StatementLine shape. */
+  private pdfLines(ext: ExtractedStatement): StatementLine[] {
+    return ext.lines.map((l) => ({
+      date: l.date,
+      amount_cents: Math.abs(l.amount_cents),
+      direction: l.direction === "credit" ? "credit" : "debit",
+      description: cleanMerchant(l.description) || l.description,
+      raw_description: l.description,
+      balance_cents: l.balance_cents ?? null,
+    }));
   }
 
   /** Deterministic categorisation for a statement line: user rule (1.0) then merchant hints (0.8). */

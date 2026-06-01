@@ -137,12 +137,12 @@ function AccountRow({ account }: { account: Account }) {
           {!isFeed && (
             <div className="flex-none">
               <Button variant="ghost" onClick={() => fileRef.current?.click()} disabled={doParse.isPending}>
-                {doParse.isPending ? "Reading…" : "Upload statement (CSV)"}
+                {doParse.isPending ? "Reading…" : "Upload statement (CSV/PDF)"}
               </Button>
               <input
                 ref={fileRef}
                 type="file"
-                accept=".csv,text/csv"
+                accept=".csv,text/csv,.pdf,application/pdf"
                 className="hidden"
                 onChange={(e) => {
                   const f = e.target.files?.[0];

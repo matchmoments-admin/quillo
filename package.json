@@ -12,6 +12,7 @@
     "eval:view": "promptfoo view",
     "eval:gate": "node scripts/check-eval-baseline.mjs",
     "eval:export": "node scripts/export-evals.mjs",
+    "eval:statements": "tsx scripts/check-statements.ts",
     "rulepack:push": "node scripts/push-rulepack.mjs src/rulepacks/au-v1.json",
     "onboard": "node scripts/onboard.mjs",
     "preflight": "node scripts/preflight.mjs",
@@ -30,6 +31,7 @@
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260401.0",
     "promptfoo": "^0.110.0",
+    "tsx": "^4.19.0",
     "typescript": "^5.6.3",
     "wrangler": "^4.20.0"
   }

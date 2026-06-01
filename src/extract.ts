@@ -119,6 +119,67 @@ async function runRecordReceipt(
   return { parsed: Extracted.parse(toolUse.input), raw: toolUse.input };
 }
 
+// ── PDF statement extraction (Claude document → structured lines + balances) ───
+export interface ExtractedStatement {
+  lines: { date: string | null; description: string; amount_cents: number; direction: "debit" | "credit"; balance_cents: number | null }[];
+  opening_cents: number | null;
+  closing_cents: number | null;
+  currency: string;
+}
+
+const STATEMENT_TOOL: Anthropic.Tool = {
+  name: "record_statement",
+  description: "Record EVERY transaction line from a bank/credit-card statement, plus the opening and closing balances, so the import can be reconciled.",
+  input_schema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["lines", "opening_cents", "closing_cents", "currency"],
+    properties: {
+      opening_cents: { type: ["integer", "null"], description: "Opening balance in cents (start of the statement period)." },
+      closing_cents: { type: ["integer", "null"], description: "Closing balance in cents (end of the statement period)." },
+      currency: { type: "string", description: "ISO-4217 currency of the statement (usually AUD)." },
+      lines: {
+        type: "array",
+        description: "Every transaction line, in statement order. Do NOT skip, merge or invent rows — completeness matters (it is reconciled against the balances).",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["date", "description", "amount_cents", "direction", "balance_cents"],
+          properties: {
+            date: { type: ["string", "null"], description: "ISO date YYYY-MM-DD, or null if not shown." },
+            description: { type: "string", description: "Transaction description / narrative as printed." },
+            amount_cents: { type: "integer", description: "Absolute amount in cents." },
+            direction: { type: "string", enum: ["debit", "credit"], description: "'debit' = money out (spend), 'credit' = money in." },
+            balance_cents: { type: ["integer", "null"], description: "Running balance after this line in cents, or null if the statement has no balance column." },
+          },
+        },
+      },
+    },
+  },
+};
+
+/** Extract a full statement from a PDF (or image) via Claude document input. */
+export async function extractStatement(llm: LLM, bytes: ArrayBuffer, mime: string): Promise<ExtractedStatement> {
+  const msg = await llm.client.messages.create({
+    model: llm.modelId,
+    max_tokens: 8192,
+    tools: [STATEMENT_TOOL],
+    tool_choice: { type: "tool", name: STATEMENT_TOOL.name },
+    messages: [
+      {
+        role: "user",
+        content: [
+          receiptBlock(bytes, mime),
+          { type: "text", text: "Transcribe EVERY transaction from this statement (across all pages) plus the opening and closing balances. Call record_statement once." },
+        ],
+      },
+    ],
+  });
+  const toolUse = msg.content.find((c): c is Anthropic.ToolUseBlock => c.type === "tool_use" && c.name === STATEMENT_TOOL.name);
+  if (!toolUse) throw new Error("model did not return a statement");
+  return toolUse.input as ExtractedStatement;
+}
+
 // ── Statement CSV column mapping (one cheap Claude call per file) ──────────────
 const COLUMN_MAP_TOOL: Anthropic.Tool = {
   name: "record_column_map",

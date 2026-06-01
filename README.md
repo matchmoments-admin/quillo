@@ -157,3 +157,22 @@ Ingest paths (all signed; tenant derived from the key, never a client header):
 Review/correct in the UI at the app host (`/api/transactions`, `/api/dashboard`,
 `POST /api/correct`). Each correction logs to `corrections` + the `audit_log`
 hash-chain and feeds the self-improvement loop.
+
+## Handling the messy cases
+
+- **Foreign currency.** Extraction captures the original `currency` + amount; a daily ECB
+  rate (`src/lib/fx.ts`, KV-cached) gives an AUD estimate (`amount_aud_cents`). Reports sum
+  AUD so currencies never mix. The authoritative AUD is the reconciled QBO bank-feed line.
+  Overseas / non-AUD supplies carry **no AU GST** (no more hallucinated 10%).
+- **Duplicates.** Identical receipt bytes are detected by `image_hash`; the repeat is marked
+  `duplicate` (linked to the original) and skips the model call. Delete it from the inbox.
+- **Multi-screenshot / multi-page.** Select several images in one upload → one transaction
+  (`ingestImages` → a single multi-image extract). Same path covers multi-page PDFs.
+- **Delete.** `DELETE /api/transactions/:id` hard-deletes the row + R2 image(s), keeping an
+  `audit_log` breadcrumb.
+- **Dates / tax year.** AU FY (Jul–Jun) is derived from `txn_date`; undated receipts are
+  surfaced (never silently dropped) and the date is editable so they land in an FY.
+- **QuickBooks (reader/reconciler).** Company expenses on a **connected** account are
+  reconciled against the bank feed (never auto-posted — avoids duplicates). For a **non-feed**
+  expense (cash, an Amex not in QBO), `POST /api/qbo/push/:txnId` posts a Purchase
+  (user-triggered, idempotent, AUD). Connect first via `/api/qbo/connect`.

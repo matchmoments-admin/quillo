@@ -106,6 +106,37 @@ export interface Situation {
 export const BUCKETS = ["payg", "company", "property_rented", "property_vacant", "unknown"] as const;
 export type Bucket = (typeof BUCKETS)[number];
 
+// Onboarding conversational-intake draft (POST /api/situation/draft). A best-effort
+// extraction the wizard pre-fills for the user to confirm; never persisted as-is.
+export interface EntityDetail {
+  abn?: string | null;
+  gst_registered?: boolean | null;
+  employer?: string | null;
+  vehicle?: string | null;
+  provider?: string | null;
+}
+export interface DraftEntity {
+  kind: "company" | "employment" | "novated_lease" | "individual" | "trust";
+  name: string | null;
+  detail: EntityDetail;
+}
+export interface DraftProperty {
+  label: string;
+  address: string | null;
+  status: "rented" | "vacant" | "owner_occupied" | "sold";
+  ownership_pct: number | null;
+}
+export interface DraftRule {
+  pattern: string;
+  bucket: Bucket;
+  ato_label: string;
+}
+export interface SituationDraft {
+  entities: DraftEntity[];
+  properties: DraftProperty[];
+  rules: DraftRule[];
+}
+
 export interface Notification {
   id: string;
   body: string;
@@ -138,10 +169,12 @@ export interface QboStatus {
   connected: boolean;
   realm_id: string | null;
   updated_at: string | null;
+  needs_reconnect?: boolean;
 }
 
 export interface Reconcile {
   connected: boolean;
+  needsReconnect?: boolean;
   company: Txn[];
   purchases: { Id: string; TotalAmt: number; TxnDate: string; PrivateNote?: string }[];
   error: string | null;

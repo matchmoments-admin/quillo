@@ -15,5 +15,5 @@ export function getLedger(env: Env, ledgerProvider: string): LedgerAdapter {
   }
 }
 
-export { LedgerNotConnectedError } from "./adapter";
+export { LedgerNotConnectedError, LedgerReauthError } from "./adapter";
 export type { LedgerAdapter, LedgerExpense } from "./adapter";

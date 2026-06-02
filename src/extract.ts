@@ -372,3 +372,155 @@ export async function extractFromText(
     "text",
   );
 }
+
+// ── Onboarding: free-text "tell me about yourself" → structured situation draft ──
+// The wizard turns this draft into entities/properties/rules the user then CONFIRMS —
+// nothing here is persisted directly. Shapes mirror the addEntity/addProperty/addRule
+// request bodies so the UI can submit them verbatim after confirmation.
+export const SituationDraft = z.object({
+  entities: z
+    .array(
+      z.object({
+        kind: z.enum(["company", "employment", "novated_lease", "individual", "trust"]),
+        name: z.string().nullable().default(null),
+        detail: z
+          .object({
+            abn: z.string().nullable().optional(),
+            gst_registered: z.boolean().nullable().optional(),
+            employer: z.string().nullable().optional(),
+            vehicle: z.string().nullable().optional(),
+            provider: z.string().nullable().optional(),
+          })
+          .default({}),
+      }),
+    )
+    .default([]),
+  properties: z
+    .array(
+      z.object({
+        label: z.string(),
+        address: z.string().nullable().default(null),
+        status: z.enum(["rented", "vacant", "owner_occupied", "sold"]).default("rented"),
+        ownership_pct: z.number().nullable().default(null),
+      }),
+    )
+    .default([]),
+  rules: z
+    .array(
+      z.object({
+        pattern: z.string(),
+        bucket: z.enum(["payg", "company", "property_rented", "property_vacant", "unknown"]),
+        ato_label: z.string(),
+      }),
+    )
+    .default([]),
+});
+export type SituationDraft = z.infer<typeof SituationDraft>;
+
+const SITUATION_TOOL: Anthropic.Tool = {
+  name: "record_situation",
+  description:
+    "Record the user's tax situation as structured entities, properties and (optionally) categorisation rules. " +
+    "Call exactly once. NEVER invent data the user didn't state — leave ABN/address/ownership null when unstated.",
+  input_schema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["entities", "properties", "rules"],
+    properties: {
+      entities: {
+        type: "array",
+        description: "Tax entities the user mentioned (company, PAYG employment, novated lease, etc.). Empty array if none.",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["kind", "name", "detail"],
+          properties: {
+            kind: { type: "string", enum: ["company", "employment", "novated_lease", "individual", "trust"] },
+            name: { type: ["string", "null"], description: "Company/trust name, or employer name for employment, or a label for a lease." },
+            detail: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                abn: { type: ["string", "null"], description: "11-digit ABN if stated; else null. Do not guess." },
+                gst_registered: { type: ["boolean", "null"], description: "True only if the user says GST-registered." },
+                employer: { type: ["string", "null"], description: "Employer name for kind=employment." },
+                vehicle: { type: ["string", "null"], description: "Vehicle for kind=novated_lease." },
+                provider: { type: ["string", "null"], description: "Lease provider for kind=novated_lease." },
+              },
+            },
+          },
+        },
+      },
+      properties: {
+        type: "array",
+        description: "Investment/owned properties the user mentioned. Empty array if none.",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["label", "address", "status", "ownership_pct"],
+          properties: {
+            label: { type: "string", description: "Short label, e.g. 'Rental 1' or a suburb if no name given." },
+            address: { type: ["string", "null"], description: "Full address if stated; else null." },
+            status: { type: "string", enum: ["rented", "vacant", "owner_occupied", "sold"] },
+            ownership_pct: { type: ["number", "null"], description: "User's ownership share 1-100 if stated; else null." },
+          },
+        },
+      },
+      rules: {
+        type: "array",
+        description: "Optional obvious merchant→bucket rules the user implied (e.g. 'Ray White is my rental agent'). Empty array if none.",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["pattern", "bucket", "ato_label"],
+          properties: {
+            pattern: { type: "string", description: "Merchant-contains substring." },
+            bucket: { type: "string", enum: ["payg", "company", "property_rented", "property_vacant", "unknown"] },
+            ato_label: { type: "string" },
+          },
+        },
+      },
+    },
+  },
+};
+
+const SITUATION_SYSTEM =
+  "You are an onboarding assistant for an Australian tax-categorisation app. The user describes their work and " +
+  "property situation in free text. Extract it into structured entities, properties and (optionally) rules by " +
+  "calling record_situation exactly once. Only record facts the user actually stated — never fabricate an ABN, " +
+  "address, GST status or ownership percentage. The user will review and confirm everything before it is saved.";
+
+/**
+ * Best-effort extraction of a tax situation from free text, for the onboarding wizard's
+ * conversational front door. Returns a DRAFT — the caller must have the user confirm it
+ * before persisting. Metered under the "onboarding" feature. Forced tool-use (no prose).
+ */
+export async function extractSituationDraft(llm: LLM, message: string): Promise<SituationDraft> {
+  const msg = await llm.create(
+    {
+      model: llm.modelId,
+      max_tokens: 1024,
+      system: [{ type: "text", text: SITUATION_SYSTEM, cache_control: { type: "ephemeral" } }],
+      tools: [SITUATION_TOOL],
+      tool_choice: { type: "tool", name: SITUATION_TOOL.name },
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: `The user described their situation:\n"${message}"\n\nExtract it and call record_situation. Leave any field the user did not state as null.`,
+            },
+          ],
+        },
+      ],
+    },
+    "onboarding",
+  );
+
+  const toolUse = msg.content.find(
+    (c): c is Anthropic.ToolUseBlock => c.type === "tool_use" && c.name === SITUATION_TOOL.name,
+  );
+  if (!toolUse) throw new Error("model did not return a record_situation tool call");
+  return SituationDraft.parse(toolUse.input);
+}

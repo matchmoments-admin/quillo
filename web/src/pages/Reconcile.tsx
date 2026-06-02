@@ -50,7 +50,7 @@ export function Reconcile() {
                 <li key={r.id}>
                   <button
                     onClick={() => setPicked(picked?.id === r.id ? null : r)}
-                    className={`flex w-full items-center justify-between px-4 py-2.5 text-left text-sm ${picked?.id === r.id ? "bg-accent-soft" : "hover:bg-surface"}`}
+                    className={`flex w-full items-center justify-between px-4 py-2.5 text-left text-sm ${picked?.id === r.id ? "bg-surface" : "hover:bg-surface"}`}
                   >
                     <span className="min-w-0">
                       <span className="block truncate font-medium">{r.merchant ?? "Unknown"}</span>

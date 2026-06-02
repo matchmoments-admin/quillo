@@ -25,13 +25,13 @@ export function Notifications() {
           {items.map((n) => (
             <li key={n.id}>
               <Card className={`flex items-start gap-3 p-4 ${n.read_at ? "opacity-60" : ""}`}>
-                <span className={`mt-1.5 h-2 w-2 flex-none rounded-full ${n.read_at ? "bg-line" : "bg-accent"}`} />
+                <span className={`mt-1.5 h-2 w-2 flex-none rounded-full ${n.read_at ? "bg-line" : "bg-yellow"}`} />
                 <div className="min-w-0 flex-1">
                   <p className="whitespace-pre-line text-sm">{n.body}</p>
                   <div className="mt-1 flex gap-3 text-xs text-muted">
                     <span>{new Date(n.created_at + "Z").toLocaleString("en-AU")}</span>
                     {n.txn_id && (
-                      <Link to={`/txn/${n.txn_id}`} className="text-accent">
+                      <Link to={`/txn/${n.txn_id}`} className="text-ink underline underline-offset-2">
                         view receipt
                       </Link>
                     )}

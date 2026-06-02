@@ -175,7 +175,7 @@ function AccountRow({ account, statements }: { account: Account; statements: Sta
               <span>·</span>
               <span className="capitalize">{account.type.replace("_", " ")}</span>
               <span>·</span>
-              <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${isFeed ? "bg-accent-soft text-accent" : "bg-slate-100 text-ink"}`}>
+              <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${isFeed ? "bg-ink/5 text-ink" : "bg-surface text-ink"}`}>
                 {SOURCE_LABEL[account.source] ?? account.source}
               </span>
               {account.line_count ? <span className="text-xs">· {account.line_count} lines</span> : null}

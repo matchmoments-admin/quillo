@@ -24,8 +24,9 @@ import {
   mintKey,
   revokeKey,
 } from "./lib/situation-write";
-import { buildConnectUrl, handleCallback, qboStatus } from "./lib/qbo-oauth";
+import { buildConnectUrl, qboStatus } from "./lib/qbo-oauth";
 import { QuickBooksAdapter } from "./ledger/qbo";
+import { LedgerReauthError } from "./ledger";
 import { buildReport, reportToCsv, currentFyStartYear } from "./lib/report";
 
 const json = (data: unknown, status = 200) =>
@@ -127,11 +128,24 @@ export async function handleApi(
   }
 
   // GET /api/situation — profile + properties + entities + rules (for dropdowns/settings).
-  if (resource === "situation" && m === "GET") {
+  if (resource === "situation" && !id && m === "GET") {
     const profile = await getProfile(env, uid);
     if (!profile) return json({ error: "no profile" }, 404);
     const s = await getSituation(env, uid, profile);
     return json(s);
+  }
+
+  // POST /api/situation/draft  { message } — onboarding conversational front door. Returns a
+  // structured DRAFT (entities/properties/rules) for the wizard to confirm; writes nothing.
+  if (resource === "situation" && id === "draft" && m === "POST") {
+    const { message } = (await req.json()) as { message?: string };
+    if (!message || !message.trim()) return json({ error: "empty message" }, 400);
+    try {
+      return json(await stub.draftSituation(uid, message));
+    } catch (e) {
+      if ((e as Error).message === "consent_required") return json({ error: "consent_required" }, 403);
+      throw e;
+    }
   }
 
   // GET /api/dashboard — aggregates. Opportunistically apply any finished async batch jobs
@@ -277,13 +291,13 @@ export async function handleApi(
     if (id === "sync-accounts" && m === "POST") return json(await stub.syncQboAccounts(uid));
     // POST /api/qbo/push/:txnId — user-triggered push of a NON-FEED company expense.
     if (id === "push" && sub && m === "POST") return json(await stub.pushToQuickBooks(uid, sub));
+    // Returns the Intuit authorize URL as JSON (NOT a redirect): the SPA fetches this with
+    // its Bearer token, then navigates the browser to Intuit. A plain <a href> here would be
+    // a top-level navigation with no Authorization header → requireClerk 401. The OAuth
+    // callback is handled as a PUBLIC route in index.ts (Intuit can't send our Bearer token).
     if (id === "connect" && m === "GET") {
-      if (!env.QBO_CLIENT_ID) return json({ error: "QBO_CLIENT_ID not set" }, 400);
-      return Response.redirect(await buildConnectUrl(env, uid, url.origin), 302);
-    }
-    if (id === "callback" && m === "GET") {
-      const r = await handleCallback(env, url, url.origin);
-      return Response.redirect(`${url.origin}/quickbooks?connected=${r.ok ? "1" : "0"}`, 302);
+      if (!env.QBO_CLIENT_ID) return json({ error: "QuickBooks is not configured (QBO_CLIENT_ID missing)." }, 400);
+      return json({ url: await buildConnectUrl(env, uid, url.origin) });
     }
     if (id === "reconcile" && m === "GET") {
       // Only receipts are candidate QBO purchases — statement bank_lines come from the
@@ -291,14 +305,21 @@ export async function handleApi(
       const company = await listTransactions(env, uid, { bucket: "company", kind: "receipt", limit: 50 });
       let purchases: unknown[] = [];
       let connected = false;
+      let needsReconnect = false;
       let err: string | null = null;
       try {
         purchases = await new QuickBooksAdapter(env).listRecentPurchases(uid);
         connected = true;
       } catch (e) {
-        err = (e as Error).message;
+        // A dead refresh token surfaces as LedgerReauthError → tell the UI to prompt reconnect.
+        if (e instanceof LedgerReauthError) {
+          needsReconnect = true;
+          err = "QuickBooks needs reconnecting — your authorisation expired.";
+        } else {
+          err = (e as Error).message;
+        }
       }
-      return json({ connected, company, purchases, error: err });
+      return json({ connected, needsReconnect, company, purchases, error: err });
     }
   }
 

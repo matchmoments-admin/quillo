@@ -4,6 +4,10 @@
 // regression guards for the rules we keep re-learning. Run: npm run test:units
 import { reconcileStatement, deriveBalances, isTransferLike, signedCents, lineFingerprint, type StatementLine } from "../src/lib/statements";
 import { batchStatementStatus, isStaleBatch, BATCH_MAX_AGE_MS } from "../src/lib/batch";
+import { extractSituationDraft } from "../src/extract";
+import type { LLM } from "../src/llm";
+import { isValidAbn, normaliseAbn } from "../web/src/lib/abn";
+import type Anthropic from "@anthropic-ai/sdk";
 
 let pass = 0,
   fail = 0;
@@ -101,6 +105,62 @@ console.log("lineFingerprint");
   check("different amount → different fingerprint", fa !== fc);
   const fOther = await lineFingerprint("acct2", a);
   check("account-scoped: same line, different account → different fingerprint", fa !== fOther);
+}
+
+// ── ABN checksum (onboarding inline validation) ──────────────────────────────
+console.log("isValidAbn");
+{
+  check("ATO example 51 824 753 556 is valid", isValidAbn("51824753556"));
+  check("tolerates spaces in a valid ABN", isValidAbn("51 824 753 556"));
+  check("last-digit typo is rejected", !isValidAbn("51824753557"));
+  check("wrong length is rejected", !isValidAbn("123456789"));
+  check("empty is rejected", !isValidAbn(""));
+  check("normaliseAbn strips spaces and punctuation", normaliseAbn("51 824 753 556") === "51824753556");
+}
+
+// ── Onboarding draft extraction: tool_use payload → validated SituationDraft ──
+// Stub the LLM so this stays offline (no Claude call). We only assert the mapping +
+// zod validation around the forced record_situation tool call.
+console.log("extractSituationDraft");
+{
+  const stubLLM = (input: unknown): LLM => ({
+    client: {} as Anthropic,
+    modelId: "stub",
+    async create() {
+      return {
+        content: [{ type: "tool_use", id: "t1", name: "record_situation", input }],
+      } as unknown as Anthropic.Message;
+    },
+  });
+
+  const draft = await extractSituationDraft(
+    stubLLM({
+      entities: [
+        { kind: "company", name: "Acme Pty Ltd", detail: { abn: "51824753556", gst_registered: true } },
+        { kind: "employment", name: "BigCo", detail: { employer: "BigCo" } },
+      ],
+      properties: [{ label: "Rental 1", address: "14 Rental St, Sydney NSW", status: "rented", ownership_pct: 50 }],
+      rules: [{ pattern: "Ray White", bucket: "property_rented", ato_label: "rental:mgmt" }],
+    }),
+    "I run Acme, employed at BigCo, one rental.",
+  );
+  check("maps both entities", draft.entities.length === 2);
+  check("preserves company ABN + GST flag", draft.entities[0].detail.abn === "51824753556" && draft.entities[0].detail.gst_registered === true);
+  check("maps the property with ownership %", draft.properties.length === 1 && draft.properties[0].ownership_pct === 50);
+  check("maps the suggested rule", draft.rules.length === 1 && draft.rules[0].bucket === "property_rented");
+
+  // Defaults: empty arrays when the model returns nothing, missing detail → {}.
+  const empty = await extractSituationDraft(stubLLM({ entities: [], properties: [], rules: [] }), "n/a");
+  check("empty draft yields empty arrays", empty.entities.length === 0 && empty.properties.length === 0 && empty.rules.length === 0);
+
+  // A bad enum value must be rejected by zod (guards against silent garbage).
+  let threw = false;
+  try {
+    await extractSituationDraft(stubLLM({ entities: [{ kind: "bogus", name: "x", detail: {} }], properties: [], rules: [] }), "x");
+  } catch {
+    threw = true;
+  }
+  check("invalid entity kind is rejected by schema", threw);
 }
 
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);

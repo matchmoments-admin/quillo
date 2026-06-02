@@ -26,3 +26,15 @@ export class LedgerNotConnectedError extends Error {
     this.name = "LedgerNotConnectedError";
   }
 }
+
+/**
+ * Raised when the stored credentials are dead and the user must re-authorise (e.g. the QBO
+ * refresh token expired after ~100 days, or the bank returned invalid_grant). Distinct from
+ * LedgerNotConnectedError so callers can surface a "Reconnect" prompt specifically.
+ */
+export class LedgerReauthError extends Error {
+  constructor(public readonly userId: string, message: string) {
+    super(message);
+    this.name = "LedgerReauthError";
+  }
+}

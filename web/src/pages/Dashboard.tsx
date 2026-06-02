@@ -67,7 +67,7 @@ export function Dashboard() {
       )}
 
       <p className="text-sm text-muted">
-        Year-end totals + BAS quarters are on the <Link to="/reports" className="text-accent">Reports</Link> page.
+        Year-end totals + BAS quarters are on the <Link to="/reports" className="text-ink underline underline-offset-2">Reports</Link> page.
       </p>
     </div>
   );

@@ -3,19 +3,19 @@
 @tailwind utilities;
 
 @layer base {
-  html {
-    font-feature-settings: "cv05", "cv08", "cv11", "ss01";
-  }
   body {
     @apply bg-paper text-ink antialiased;
     font-family: theme("fontFamily.sans");
     line-height: 1.55;
   }
-  /* Stronger, tighter heading hierarchy — shared visual language with the landing page. */
+  /* Spectral serif display headings — one visual language with the landing page.
+     Body and dense data stay on Hanken Grotesk (the sans). */
   h1,
   h2,
   h3 {
-    letter-spacing: -0.022em;
-    line-height: 1.15;
+    font-family: theme("fontFamily.serif");
+    font-weight: 500;
+    letter-spacing: -0.01em;
+    line-height: 1.1;
   }
 }

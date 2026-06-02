@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import { BUCKETS } from "../types";
 import { Card, Spinner, BUCKET_LABEL } from "../components/ui";
+import { EntityFields, PropertyFields, entityToBody, propertyToBody, emptyEntity, emptyProperty, type EntityValue, type PropertyValue } from "../components/SituationFields";
 
 const input = "rounded-lg border border-line bg-white px-3 py-2 text-sm";
 const btn = "rounded-lg bg-ink px-3 py-2 text-sm font-medium text-white hover:bg-ink/90 disabled:opacity-50";
@@ -120,31 +121,20 @@ function EditableProperty({ property, onDone }: { property: { id: string; label:
 }
 
 function AddProperty({ onDone }: { onDone: () => void }) {
-  const [label, setLabel] = useState("");
-  const [address, setAddress] = useState("");
-  const [status, setStatus] = useState("rented");
-  const [ownership, setOwnership] = useState("100");
+  const [value, setValue] = useState<PropertyValue>(emptyProperty());
   const m = useMutation({
-    mutationFn: () =>
-      api.addProperty({ label, address: address || undefined, status, ownership_pct: Number(ownership) || 100 }),
+    mutationFn: () => api.addProperty(propertyToBody(value)),
     onSuccess: () => {
-      setLabel("");
-      setAddress("");
+      setValue(emptyProperty());
       onDone();
     },
   });
   return (
-    <div className="flex flex-wrap gap-2 pt-2">
-      <input className={`${input} flex-1`} placeholder="Label e.g. Rental 1" value={label} onChange={(e) => setLabel(e.target.value)} />
-      <input className={`${input} flex-1`} placeholder="Address e.g. 14 Rental St, Sydney NSW" value={address} onChange={(e) => setAddress(e.target.value)} />
-      <select className={input} value={status} onChange={(e) => setStatus(e.target.value)}>
-        <option value="rented">rented</option>
-        <option value="vacant">vacant</option>
-        <option value="owner_occupied">owner-occupied</option>
-        <option value="sold">sold</option>
-      </select>
-      <input className={`${input} w-24`} type="number" min="1" max="100" placeholder="Own %" value={ownership} onChange={(e) => setOwnership(e.target.value)} title="Your ownership share %" />
-      <button className={btn} disabled={!label || m.isPending} onClick={() => m.mutate()}>
+    <div className="flex flex-wrap items-start gap-2 pt-2">
+      <div className="flex-1">
+        <PropertyFields value={value} onChange={setValue} />
+      </div>
+      <button className={btn} disabled={!value.label || m.isPending} onClick={() => m.mutate()}>
         Add
       </button>
     </div>
@@ -174,60 +164,22 @@ function entityLabel(e: { kind: string; name: string | null; detail_json?: strin
 }
 
 function AddEntity({ onDone }: { onDone: () => void }) {
-  const [kind, setKind] = useState("company");
-  const [name, setName] = useState("");
-  const [abn, setAbn] = useState("");
-  const [gst, setGst] = useState(true);
-  const [vehicle, setVehicle] = useState("");
-  const [provider, setProvider] = useState("");
-  const buildDetail = () => {
-    if (kind === "company") return { abn: abn || undefined, gst_registered: gst };
-    if (kind === "employment") return { employer: name || undefined };
-    if (kind === "novated_lease") return { vehicle: vehicle || undefined, provider: provider || undefined };
-    return {};
-  };
+  const [value, setValue] = useState<EntityValue>(emptyEntity());
   const m = useMutation({
-    mutationFn: () => api.addEntity({ kind, name, detail: buildDetail() }),
+    mutationFn: () => api.addEntity(entityToBody(value)),
     onSuccess: () => {
-      setName("");
-      setAbn("");
-      setVehicle("");
-      setProvider("");
+      setValue(emptyEntity(value.kind));
       onDone();
     },
   });
-  const namePlaceholder =
-    kind === "company" ? "Company name e.g. Acme Pty Ltd" : kind === "employment" ? "Employer name" : kind === "novated_lease" ? "Label e.g. Tesla lease" : "Name";
   return (
-    <div className="space-y-2 pt-2">
-      <div className="flex flex-wrap gap-2">
-        <select className={input} value={kind} onChange={(e) => setKind(e.target.value)}>
-          <option value="company">company</option>
-          <option value="employment">employment (PAYG)</option>
-          <option value="novated_lease">novated_lease</option>
-          <option value="individual">individual</option>
-          <option value="trust">trust</option>
-        </select>
-        <input className={`${input} flex-1`} placeholder={namePlaceholder} value={name} onChange={(e) => setName(e.target.value)} />
-        <button className={btn} disabled={!name || m.isPending} onClick={() => m.mutate()}>
-          Add
-        </button>
+    <div className="flex flex-wrap items-start gap-2 pt-2">
+      <div className="flex-1">
+        <EntityFields value={value} onChange={setValue} />
       </div>
-      {kind === "company" && (
-        <div className="flex flex-wrap items-center gap-3 pl-1 text-sm">
-          <input className={`${input} w-56`} placeholder="ABN (11 digits)" value={abn} onChange={(e) => setAbn(e.target.value)} />
-          <label className="flex items-center gap-1.5 text-muted">
-            <input type="checkbox" checked={gst} onChange={(e) => setGst(e.target.checked)} />
-            GST registered (lets the agent claim GST credits)
-          </label>
-        </div>
-      )}
-      {kind === "novated_lease" && (
-        <div className="flex flex-wrap gap-2 pl-1">
-          <input className={`${input} flex-1`} placeholder="Vehicle e.g. Tesla Model 3" value={vehicle} onChange={(e) => setVehicle(e.target.value)} />
-          <input className={`${input} flex-1`} placeholder="Lease provider" value={provider} onChange={(e) => setProvider(e.target.value)} />
-        </div>
-      )}
+      <button className={btn} disabled={!value.name || m.isPending} onClick={() => m.mutate()}>
+        Add
+      </button>
     </div>
   );
 }

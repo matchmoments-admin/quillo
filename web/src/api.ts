@@ -1,4 +1,4 @@
-import type { Txn, TxnDetail, Situation, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse, UsageData, StatementInfo } from "./types";
+import type { Txn, TxnDetail, Situation, SituationDraft, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse, UsageData, StatementInfo } from "./types";
 
 // Clerk session token getter, wired from <TokenBridge> inside ClerkProvider (main.tsx).
 // Clerk tokens are short-lived, so we fetch a fresh one per request (getToken caches/refreshes).
@@ -63,6 +63,7 @@ export const api = {
     return res.json();
   },
   situation: () => get<Situation>("/api/situation"),
+  draftSituation: (message: string) => post<SituationDraft>("/api/situation/draft", { message }),
   receiptUrl: (id: string) => `/api/receipt/${id}`,
   correct: (txnId: string, field: string, value: string) => post<{ ok: boolean }>("/api/correct", { txnId, field, value }),
   deleteTxn: (id: string) => send<{ ok: boolean }>("DELETE", `/api/transactions/${id}`),
@@ -108,7 +109,10 @@ export const api = {
   qboStatus: () => get<QboStatus>("/api/qbo/status"),
   qboPush: (txnId: string) => post<{ ok: boolean; ledgerRef?: string; error?: string }>(`/api/qbo/push/${txnId}`),
   reconcile: () => get<Reconcile>("/api/qbo/reconcile"),
-  qboConnectUrl: "/api/qbo/connect",
+  // Fetches the Intuit authorize URL (Bearer-authed); the caller then navigates the browser
+  // to it. A plain <a href> to /api/qbo/connect would 401 (no Authorization header on a
+  // top-level navigation).
+  qboConnect: () => get<{ url: string }>("/api/qbo/connect"),
 
   // Phase 5
   report: (fy?: number) => get<Report>(`/api/report${fy ? `?fy=${fy}` : ""}`),

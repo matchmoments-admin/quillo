@@ -13,6 +13,8 @@
 // with fallback colours so nothing looks broken if a URL hiccups; swap for brand photos
 // later. Testimonial tiles are Google-review PLACEHOLDERS, ready for real reviews.
 
+import { cssRootVars } from "../../design/tokens.mjs";
+
 const APP_URL = "https://app.quillo.au";
 
 const HTML = /* html */ `<!doctype html>
@@ -31,24 +33,9 @@ const HTML = /* html */ `<!doctype html>
      Editorial "Quill" system: warm cream canvas, bright yellow
      accent, classical serif display, clean grotesque body.
      ============================================================ */
-  :root {
-    --paper:   #fbfaf6;   /* page canvas */
-    --paper-2: #f1efe7;   /* soft panel */
-    --ink:     #14130f;   /* near-black text */
-    --ink-2:   #514d44;   /* secondary text */
-    --ink-3:   #8c8678;   /* muted */
-    --line:    #e4e1d6;
-    --yellow:  #f1e740;   /* signature accent */
-    --yellow-d:#e7dc2a;
-    --card:    #ffffff;
-
-    --serif: "Spectral", Georgia, "Times New Roman", serif;
-    --sans:  "Hanken Grotesk", system-ui, -apple-system, sans-serif;
-
-    --maxw: 1240px;
-    --gutter: 40px;
-    --radius: 14px;
-  }
+  /* :root custom properties are generated from the centralised token source
+     (design/tokens.mjs) so the marketing page and the dashboard share one palette. */
+  ${cssRootVars()}
 
   * { box-sizing: border-box; }
   html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
@@ -237,7 +224,7 @@ const HTML = /* html */ `<!doctype html>
   /* ============================================================ PHONE MOCKUP (built in HTML) ============================================================ */
   .phone {
     width: 300px; margin: 0 auto;
-    background: #14130f; border-radius: 42px; padding: 11px;
+    background: var(--ink); border-radius: 42px; padding: 11px;
     box-shadow: 0 40px 80px -30px rgba(20,19,15,.5), 0 0 0 1px rgba(0,0,0,.06);
     position: relative;
   }
@@ -247,7 +234,7 @@ const HTML = /* html */ `<!doctype html>
   }
   .phone-notch {
     position: absolute; top: 20px; left: 50%; transform: translateX(-50%);
-    width: 96px; height: 24px; background: #14130f; border-radius: 0 0 14px 14px; z-index: 3;
+    width: 96px; height: 24px; background: var(--ink); border-radius: 0 0 14px 14px; z-index: 3;
   }
   .scr-top {
     display: flex; align-items: center; justify-content: space-between;
@@ -663,7 +650,7 @@ const HTML = /* html */ `<!doctype html>
       </div>
       <div>
         <h4>Legal</h4>
-        <ul><li><a href="#">Terms</a></li><li><a href="#">Privacy</a></li><li><a href="#">Cookies</a></li></ul>
+        <ul><li><a href="/terms">Terms</a></li><li><a href="/privacy">Privacy</a></li></ul>
       </div>
     </div>
     <div class="footer-foot">

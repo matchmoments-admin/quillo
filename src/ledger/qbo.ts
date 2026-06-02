@@ -43,7 +43,8 @@
  */
 
 import type { Env } from "../env";
-import { type LedgerAdapter, type LedgerExpense, LedgerNotConnectedError } from "./adapter";
+import { type LedgerAdapter, type LedgerExpense, LedgerNotConnectedError, LedgerReauthError } from "./adapter";
+import { getEndpoints } from "../lib/qbo-oauth";
 
 interface QboConnection {
   user_id: string;
@@ -53,9 +54,20 @@ interface QboConnection {
   refresh_token: string;
   refresh_expires_at: string | null;
 }
-
-const TOKEN_URL = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer";
 const ACCOUNT_CACHE_TTL_S = 7 * 24 * 3600; // weekly at most (egress-aware, finding §6.2)
+
+/** Build an error that captures Intuit's `intuit_tid` trace id (from the response header) so
+ *  support can correlate the failure — Intuit recommends logging this on every error. */
+async function qboError(res: Response, label: string): Promise<Error> {
+  const tid = res.headers.get("intuit_tid") ?? "n/a";
+  let body = "";
+  try {
+    body = await res.text();
+  } catch {
+    /* body already consumed / empty */
+  }
+  return new Error(`${label}: ${res.status} intuit_tid=${tid} ${body}`);
+}
 
 /**
  * QuickBooks Online adapter — READER/RECONCILER only for the company bucket.
@@ -113,7 +125,7 @@ export class QuickBooksAdapter implements LedgerAdapter {
       },
     );
     if (!res.ok) {
-      throw new Error(`QBO purchase failed: ${res.status} ${await res.text()}`);
+      throw await qboError(res, "QBO purchase failed");
     }
     const json = (await res.json()) as { Purchase?: { Id?: string } };
     return { ledgerRef: json.Purchase?.Id ?? "" };
@@ -138,7 +150,7 @@ export class QuickBooksAdapter implements LedgerAdapter {
       `${this.env.QBO_BASE_URL}/v3/company/${conn.realm_id}/query?query=${query}&minorversion=73`,
       { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } },
     );
-    if (!res.ok) throw new Error(`QBO purchase query failed: ${res.status}`);
+    if (!res.ok) throw await qboError(res, "QBO purchase query failed");
     const json = (await res.json()) as {
       QueryResponse?: { Purchase?: Array<{ Id: string; TotalAmt: number; TxnDate: string; PrivateNote?: string }> };
     };
@@ -153,7 +165,7 @@ export class QuickBooksAdapter implements LedgerAdapter {
     const res = await fetch(`${this.env.QBO_BASE_URL}/v3/company/${conn.realm_id}/query?query=${query}&minorversion=73`, {
       headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
     });
-    if (!res.ok) throw new Error(`QBO account query failed: ${res.status}`);
+    if (!res.ok) throw await qboError(res, "QBO account query failed");
     const json = (await res.json()) as { QueryResponse?: { Account?: Array<{ Id: string; Name: string; AccountType: string }> } };
     return json.QueryResponse?.Account ?? [];
   }
@@ -196,8 +208,9 @@ export class QuickBooksAdapter implements LedgerAdapter {
   }
 
   private async refresh(conn: QboConnection): Promise<string> {
+    const { token_endpoint } = await getEndpoints(this.env);
     const basic = btoa(`${this.env.QBO_CLIENT_ID}:${this.env.QBO_CLIENT_SECRET}`);
-    const res = await fetch(TOKEN_URL, {
+    const res = await fetch(token_endpoint, {
       method: "POST",
       headers: {
         Authorization: `Basic ${basic}`,
@@ -210,7 +223,21 @@ export class QuickBooksAdapter implements LedgerAdapter {
       }),
     });
     if (!res.ok) {
-      throw new Error(`QBO token refresh failed: ${res.status} ${await res.text()}`);
+      const tid = res.headers.get("intuit_tid") ?? "n/a";
+      const body = await res.text();
+      // A 400 / invalid_grant means the refresh token is dead (expired ~100 days, revoked, or
+      // rotated-then-lost). Mark the connection as needing re-auth so qboStatus reports
+      // needs_reconnect and the UI shows a Reconnect prompt instead of silently failing.
+      if (res.status === 400 || body.includes("invalid_grant")) {
+        await this.env.DB.prepare(
+          `UPDATE qbo_connections SET access_token = NULL, access_expires_at = NULL,
+                  refresh_expires_at = datetime('now'), updated_at = datetime('now') WHERE user_id = ?`,
+        )
+          .bind(conn.user_id)
+          .run();
+        throw new LedgerReauthError(conn.user_id, `QBO refresh token rejected — reconnect required (intuit_tid=${tid})`);
+      }
+      throw new Error(`QBO token refresh failed: ${res.status} intuit_tid=${tid} ${body}`);
     }
     const tok = (await res.json()) as {
       access_token: string;
@@ -261,7 +288,7 @@ export class QuickBooksAdapter implements LedgerAdapter {
       { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } },
     );
     if (!res.ok) {
-      throw new Error(`QBO account query failed: ${res.status} ${await res.text()}`);
+      throw await qboError(res, "QBO account query failed");
     }
     const json = (await res.json()) as { QueryResponse?: { Account?: Array<{ Id: string; Name: string }> } };
     const accounts = json.QueryResponse?.Account ?? [];

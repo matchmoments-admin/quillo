@@ -1,5 +1,8 @@
-import { Link, NavLink, Outlet } from "react-router-dom";
+import { useEffect } from "react";
+import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { UserButton } from "@clerk/clerk-react";
+import { useQuery } from "@tanstack/react-query";
+import { api } from "./api";
 
 const NAV = [
   { to: "/", label: "Inbox", end: true },
@@ -12,9 +15,27 @@ const NAV = [
   { to: "/settings", label: "Settings" },
 ];
 
+// First-run gate: a brand-new tenant (no consent AND no entities) is sent to the onboarding
+// wizard once. We don't redirect once either is satisfied, so users can always navigate away.
+// Reuses the shared ["situation"] query (no extra fetch).
+function FirstRunGate() {
+  const navigate = useNavigate();
+  const { pathname } = useLocation();
+  const sit = useQuery({ queryKey: ["situation"], queryFn: () => api.situation() });
+  useEffect(() => {
+    if (sit.isLoading || !sit.data || pathname === "/onboarding") return;
+    const p = sit.data;
+    const hasConsent = (p.profile?.consent_xborder ?? 0) === 1 || p.profile?.inference_provider === "bedrock";
+    const hasEntities = (p.entities?.length ?? 0) > 0;
+    if (!hasConsent && !hasEntities) navigate("/onboarding", { replace: true });
+  }, [sit.isLoading, sit.data, pathname, navigate]);
+  return null;
+}
+
 export function App() {
   return (
     <div className="min-h-screen bg-paper">
+      <FirstRunGate />
       <header className="sticky top-0 z-10 border-b border-line bg-paper/80 backdrop-blur">
         <div className="mx-auto flex max-w-4xl items-center gap-4 px-6 py-3">
           <Link to="/" className="flex flex-none items-center gap-2">
@@ -47,9 +68,13 @@ export function App() {
         General information only — not tax advice. Quillo is not a registered tax or BAS agent,
         does not lodge returns, and never holds or moves your money. Confirm your situation with a
         registered tax/BAS agent.{" "}
-        <Link to="/onboarding" className="text-accent">
+        <Link to="/onboarding" className="text-ink underline underline-offset-2">
           Setup
         </Link>
+        {" · "}
+        <a href="mailto:hello@quillo.au?subject=Quillo%20support" className="text-ink underline underline-offset-2">
+          Contact support
+        </a>
       </footer>
     </div>
   );

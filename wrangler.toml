@@ -61,7 +61,7 @@ not_found_handling = "single-page-application"
 # "/" and "/waitlist" are listed so the Worker runs first for the apex marketing page
 # and waitlist POST (run_worker_first matches PATH, not host — the in-code Host branch
 # decides what each host returns; on the app host "/" is handed back to ASSETS).
-run_worker_first = ["/", "/waitlist", "/api/*", "/ingest", "/correct", "/consent", "/healthz", "/agents/*"]
+run_worker_first = ["/", "/waitlist", "/terms", "/privacy", "/api/*", "/ingest", "/correct", "/consent", "/healthz", "/agents/*"]
 
 # --- Cron: proactive suggestion engine (weekly Mon 08:00 UTC) ---
 [triggers]
@@ -91,7 +91,7 @@ CLERK_ALLOWED_USERS = "user_3EX9q24hvBuYNz3Hk6Pg6O5FfBq"
 DEFAULT_INFERENCE_PROVIDER = "anthropic"
 DEFAULT_INFERENCE_REGION = "ap-southeast-2"
 # QuickBooks base URL: start on sandbox; flip to production when ready.
-QBO_BASE_URL = "https://sandbox-quickbooks.api.intuit.com"
+QBO_BASE_URL = "https://quickbooks.api.intuit.com"
 # prod: https://quickbooks.api.intuit.com
 # NOTE: locationHint:"oc" in code is a LATENCY hint only — it does NOT guarantee AU data
 # residency (review finding B5). Genuine AU residency comes from Bedrock ap-southeast-2.

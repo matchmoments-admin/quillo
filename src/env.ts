@@ -59,4 +59,5 @@ export interface TaxAgentRpc {
   unlinkReceipt(userId: string, receiptId: string): Promise<void>;
   runProactiveScan(userId: string): Promise<void>;
   recordConsent(userId: string, text: string, method: string): Promise<void>;
+  draftSituation(userId: string, message: string): Promise<import("./extract").SituationDraft>;
 }

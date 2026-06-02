@@ -1,16 +1,24 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import { api } from "../api";
-import { Card, Spinner, money } from "../components/ui";
+import { Card, Spinner, Button, money } from "../components/ui";
 
 export function QuickBooks() {
   const [params] = useSearchParams();
   const justConnected = params.get("connected");
   const status = useQuery({ queryKey: ["qbo-status"], queryFn: () => api.qboStatus() });
   const recon = useQuery({ queryKey: ["qbo-reconcile"], queryFn: () => api.reconcile(), enabled: status.data?.connected === true });
+  // Fetch the Intuit authorize URL (Bearer-authed), then hand the browser to Intuit.
+  const connect = useMutation({
+    mutationFn: () => api.qboConnect(),
+    onSuccess: ({ url }) => {
+      window.location.href = url;
+    },
+  });
 
   if (status.isLoading) return <Spinner />;
-  const connected = status.data?.connected;
+  const needsReconnect = status.data?.needs_reconnect || recon.data?.needsReconnect;
+  const connected = status.data?.connected && !needsReconnect;
 
   return (
     <div className="space-y-6">
@@ -34,12 +42,17 @@ export function QuickBooks() {
           matched lines and attaches your receipt — it never posts duplicate purchases.
         </p>
         {!connected && (
-          <a
-            href={api.qboConnectUrl}
-            className="mt-3 inline-block rounded-lg bg-ink px-4 py-2 text-sm font-medium text-white hover:bg-ink/90"
-          >
-            Connect QuickBooks
-          </a>
+          <div className="mt-3 space-y-2">
+            {needsReconnect && (
+              <p className="text-sm text-warn">Your QuickBooks authorisation expired — reconnect to resume reconciliation.</p>
+            )}
+            <Button onClick={() => connect.mutate()} disabled={connect.isPending}>
+              {connect.isPending ? "Redirecting…" : needsReconnect ? "Reconnect QuickBooks" : "Connect QuickBooks"}
+            </Button>
+            {connect.isError && (
+              <p className="text-sm text-danger">Couldn't start QuickBooks connect: {(connect.error as Error).message}</p>
+            )}
+          </div>
         )}
       </Card>
 

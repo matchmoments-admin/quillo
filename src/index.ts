@@ -5,7 +5,9 @@ import { parseEmail } from "./lib/email";
 import { userIdFromLocalpart } from "./lib/db";
 import { requireClerk } from "./auth/clerk";
 import { handleApi } from "./api";
+import { handleCallback } from "./lib/qbo-oauth";
 import { marketingResponse } from "./marketing/landing";
+import { legalResponse } from "./marketing/legal";
 import { handleWaitlist } from "./marketing/waitlist";
 
 // The DO class must be exported from the Worker's main module for the binding.
@@ -44,6 +46,9 @@ export default {
     if (host === "quillo.au") {
       if (url.pathname === "/" && req.method === "GET") return marketingResponse();
       if (url.pathname === "/waitlist" && req.method === "POST") return handleWaitlist(req, env);
+      // Public legal pages (required by Intuit for production QuickBooks keys, good practice generally).
+      if (url.pathname === "/terms" && req.method === "GET") return legalResponse("terms");
+      if (url.pathname === "/privacy" && req.method === "GET") return legalResponse("privacy");
       // Keep the apex tiny — anything else belongs to the app.
       return Response.redirect("https://app.quillo.au" + url.pathname + url.search, 302);
     }
@@ -103,6 +108,15 @@ export default {
       };
       await stubFor(env, verified.userId).recordConsent(verified.userId, text, method ?? "web");
       return Response.json({ ok: true });
+    }
+
+    // QuickBooks OAuth callback — Intuit redirects the BROWSER here (top-level navigation,
+    // no Authorization header), so it cannot sit behind the Clerk /api gate. It authenticates
+    // via the `state` nonce (KV → userId), set when the SPA initiated connect, not the app
+    // session — the standard OAuth CSRF protection. Must be matched BEFORE the /api/ gate.
+    if (url.pathname === "/api/qbo/callback" && req.method === "GET") {
+      const r = await handleCallback(env, url, url.origin);
+      return Response.redirect(`${url.origin}/quickbooks?connected=${r.ok ? "1" : "0"}`, 302);
     }
 
     // Web UI API — authenticated via Clerk, gated to the founder's user until launch.

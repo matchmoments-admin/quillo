@@ -6,12 +6,12 @@ import { QuickBooksAdapter } from "./ledger/qbo";
 import { COUNTABLE } from "./lib/queries";
 import { sha256hex, sha256hexBytes } from "./lib/base64";
 import { getLLM, type LLM } from "./llm";
-import { extractReceipt, extractReceipts, extractFromText, extractColumnMap, extractStatement, extractBatch, batchParams, parseBatchMessage, type Extracted, type ExtractedStatement } from "./extract";
+import { extractReceipt, extractReceipts, extractFromText, extractColumnMap, extractStatement, extractBatch, extractSituationDraft, batchParams, parseBatchMessage, type Extracted, type ExtractedStatement, type SituationDraft } from "./extract";
 import { parseCsv, applyColumnMap, lineFingerprint, deriveBalances, reconcileStatement, fuzzyMerchant, isTransferLike, type ColumnMap, type Reconciliation, type StatementLine } from "./lib/statements";
 import { batchStatementStatus, isStaleBatch } from "./lib/batch";
 import { cleanMerchant } from "./lib/bank-parsers";
 import { pdfPageCount, splitPdf } from "./lib/pdf";
-import { getLedger, LedgerNotConnectedError, type LedgerExpense } from "./ledger";
+import { getLedger, LedgerNotConnectedError, LedgerReauthError, type LedgerExpense } from "./ledger";
 import { redact } from "./lib/redact";
 import { toAud } from "./lib/fx";
 import { spentTodayCents, recordUsage } from "./lib/usage";
@@ -1143,6 +1143,11 @@ export class TaxAgent extends Agent<Env> {
         await this.audit(userId, "ledger_skip_unconnected", JSON.stringify({ txnId }));
         return;
       }
+      if (err instanceof LedgerReauthError) {
+        await this.notify(userId, "A company expense is ready, but your QuickBooks authorisation expired — reconnect QuickBooks to resume.", txnId);
+        await this.audit(userId, "ledger_skip_reauth", JSON.stringify({ txnId }));
+        return;
+      }
       throw err;
     }
   }
@@ -1152,6 +1157,29 @@ export class TaxAgent extends Agent<Env> {
     const p = await getProfile(this.env, userId);
     if (!p) throw new Error(`no profile for tenant ${userId}`);
     return p;
+  }
+
+  /**
+   * Onboarding conversational front door: turn a free-text situation description into a
+   * structured DRAFT (entities/properties/rules) the wizard pre-fills for the user to
+   * CONFIRM. Persists nothing. Enforces the same APP-8 cross-border consent gate as
+   * categorisation — sending the user's free text to the US inference API is itself a
+   * cross-border disclosure, so anthropic+no-consent is refused (Bedrock/AU is fine).
+   */
+  async draftSituation(userId: string, message: string): Promise<SituationDraft> {
+    const profile = await this.requireProfile(userId);
+    const provider = profile.inference_provider ?? this.env.DEFAULT_INFERENCE_PROVIDER;
+    if (provider === "anthropic" && profile.consent_xborder !== 1) {
+      throw new Error("consent_required");
+    }
+    const llm = await getLLM(this.env, profile, { userId });
+    const draft = await extractSituationDraft(llm, message.slice(0, 4000));
+    await this.audit(
+      userId,
+      "onboarding_draft",
+      JSON.stringify({ entities: draft.entities.length, properties: draft.properties.length, rules: draft.rules.length }),
+    );
+    return draft;
   }
 
   private async loadRulePack(ver: string): Promise<typeof DEFAULT_RULE_PACK> {

@@ -36,7 +36,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "Quillo \u2014 architecture + testing plan (per process)",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a0"
     },
     {
       "id": "3515880f0e32",
@@ -71,7 +72,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "Live app: app.quillo.au   \u00b7   Public site: quillo.au   \u00b7   Worker: tax-agent.matchmoments.workers.dev   \u00b7   Full guidance: diagrams/TESTING.md",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a1"
     },
     {
       "id": "334389d470a5",
@@ -106,7 +108,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "ARCHITECTURE \u2014 money flows through ONE pipe per account (no double-count)",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a2"
     },
     {
       "id": "523e7e3bd688",
@@ -135,7 +138,8 @@
       "boundElements": [],
       "updated": 1,
       "link": null,
-      "locked": false
+      "locked": false,
+      "index": "a3"
     },
     {
       "id": "b991754a5fec",
@@ -170,7 +174,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "Capture\nphoto \u00b7 email \u00b7 CSV/PDF \u00b7 QBO",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a4"
     },
     {
       "id": "1dd7bd7cfcbf",
@@ -214,7 +219,8 @@
       "startBinding": null,
       "endBinding": null,
       "startArrowhead": null,
-      "endArrowhead": "arrow"
+      "endArrowhead": "arrow",
+      "index": "a5"
     },
     {
       "id": "d0c9ecebbba4",
@@ -243,7 +249,8 @@
       "boundElements": [],
       "updated": 1,
       "link": null,
-      "locked": false
+      "locked": false,
+      "index": "a6"
     },
     {
       "id": "67f931bc2d60",
@@ -278,7 +285,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "Clerk auth\nsingle-user lockdown",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a7"
     },
     {
       "id": "e9dc8e205d1e",
@@ -322,7 +330,8 @@
       "startBinding": null,
       "endBinding": null,
       "startArrowhead": null,
-      "endArrowhead": "arrow"
+      "endArrowhead": "arrow",
+      "index": "a8"
     },
     {
       "id": "baeaa1d1a45b",
@@ -351,7 +360,8 @@
       "boundElements": [],
       "updated": 1,
       "link": null,
-      "locked": false
+      "locked": false,
+      "index": "a9"
     },
     {
       "id": "ca2eaadf7263",
@@ -386,7 +396,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "Ingest \u2192 R2\nstore raw",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a10"
     },
     {
       "id": "d91d5a08d9e7",
@@ -430,7 +441,8 @@
       "startBinding": null,
       "endBinding": null,
       "startArrowhead": null,
-      "endArrowhead": "arrow"
+      "endArrowhead": "arrow",
+      "index": "a11"
     },
     {
       "id": "fcd532996030",
@@ -459,7 +471,8 @@
       "boundElements": [],
       "updated": 1,
       "link": null,
-      "locked": false
+      "locked": false,
+      "index": "a12"
     },
     {
       "id": "91c25877b8a7",
@@ -494,7 +507,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "Extract (Claude)\nmerchant\u00b7amt\u00b7GST\u00b7fx",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a13"
     },
     {
       "id": "521cf3dbdb66",
@@ -538,7 +552,8 @@
       "startBinding": null,
       "endBinding": null,
       "startArrowhead": null,
-      "endArrowhead": "arrow"
+      "endArrowhead": "arrow",
+      "index": "a14"
     },
     {
       "id": "870c510136fa",
@@ -567,7 +582,8 @@
       "boundElements": [],
       "updated": 1,
       "link": null,
-      "locked": false
+      "locked": false,
+      "index": "a15"
     },
     {
       "id": "51f7ebf15686",
@@ -602,7 +618,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "Categorise\nrules(KV)+Claude",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a16"
     },
     {
       "id": "2f8ff10d7db4",
@@ -646,7 +663,8 @@
       "startBinding": null,
       "endBinding": null,
       "startArrowhead": null,
-      "endArrowhead": "arrow"
+      "endArrowhead": "arrow",
+      "index": "a17"
     },
     {
       "id": "999a1b43bef4",
@@ -675,7 +693,8 @@
       "boundElements": [],
       "updated": 1,
       "link": null,
-      "locked": false
+      "locked": false,
+      "index": "a18"
     },
     {
       "id": "400609438e57",
@@ -710,7 +729,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "Reconcile/Match\nbalance + receipt\u2194line",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a19"
     },
     {
       "id": "538c1d2a11a5",
@@ -754,7 +774,8 @@
       "startBinding": null,
       "endBinding": null,
       "startArrowhead": null,
-      "endArrowhead": "arrow"
+      "endArrowhead": "arrow",
+      "index": "a20"
     },
     {
       "id": "a7cb6f7f79da",
@@ -783,7 +804,8 @@
       "boundElements": [],
       "updated": 1,
       "link": null,
-      "locked": false
+      "locked": false,
+      "index": "a21"
     },
     {
       "id": "c5df23574806",
@@ -818,7 +840,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "Store \u2192 D1\n+ audit chain",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a22"
     },
     {
       "id": "c262d2e167a4",
@@ -847,7 +870,8 @@
       "boundElements": [],
       "updated": 1,
       "link": null,
-      "locked": false
+      "locked": false,
+      "index": "a23"
     },
     {
       "id": "86558d6199c4",
@@ -882,7 +906,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "D1 \u00b7 R2 \u00b7 KV\nReview UI + Reports",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a24"
     },
     {
       "id": "8cb78e4329bf",
@@ -917,7 +942,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "TESTING PLAN \u2014 one card per process (cards are clickable \u2192 open the relevant screen)",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a25"
     },
     {
       "id": "527790299c74",
@@ -946,7 +972,8 @@
       "boundElements": [],
       "updated": 1,
       "link": null,
-      "locked": false
+      "locked": false,
+      "index": "a26"
     },
     {
       "id": "f168725f9f82",
@@ -981,7 +1008,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "Auth \u2014 single-user lockdown",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a27"
     },
     {
       "id": "763ac245c705",
@@ -1016,7 +1044,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "Clerk JWT (jose/JWKS); only CLERK_ALLOWED_USERS reach /api/*. Public apex stays open.",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a28"
     },
     {
       "id": "0717b09f3d9f",
@@ -1060,7 +1089,8 @@
       "startBinding": null,
       "endBinding": null,
       "startArrowhead": null,
-      "endArrowhead": "arrow"
+      "endArrowhead": "arrow",
+      "index": "a29"
     },
     {
       "id": "81ae3157bd9d",
@@ -1095,7 +1125,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "test",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a30"
     },
     {
       "id": "1a595465e8f8",
@@ -1124,7 +1155,8 @@
       "boundElements": [],
       "updated": 1,
       "link": "https://app.quillo.au",
-      "locked": false
+      "locked": false,
+      "index": "a31"
     },
     {
       "id": "b0824c8b77a6",
@@ -1159,7 +1191,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "How to test  \u00b7  https://app.quillo.au",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a32"
     },
     {
       "id": "ebdf507e6006",
@@ -1194,7 +1227,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "\u2022  curl -s -o /dev/null -w '%{http_code}' https://tax-agent.matchmoments.workers.dev/api/usage  \u2192 401\n\u2022  Sign in at app.quillo.au with your Clerk user \u2192 /api/* works.\n\u2022  Open quillo.au in a private window \u2192 public, no auth.",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a33"
     },
     {
       "id": "199a47eb0e7d",
@@ -1223,7 +1257,8 @@
       "boundElements": [],
       "updated": 1,
       "link": null,
-      "locked": false
+      "locked": false,
+      "index": "a34"
     },
     {
       "id": "8bab25f4a157",
@@ -1258,7 +1293,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "Receipt capture + extract",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a35"
     },
     {
       "id": "cd373e4f667f",
@@ -1293,7 +1329,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "Photo \u2192 R2 \u2192 Claude vision \u2192 merchant\u00b7amount\u00b7GST\u00b7date\u00b7bucket. Confidence gates auto-file vs review.",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a36"
     },
     {
       "id": "10f9a5aa26d0",
@@ -1337,7 +1374,8 @@
       "startBinding": null,
       "endBinding": null,
       "startArrowhead": null,
-      "endArrowhead": "arrow"
+      "endArrowhead": "arrow",
+      "index": "a37"
     },
     {
       "id": "a92287cbb8e2",
@@ -1372,7 +1410,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "test",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a38"
     },
     {
       "id": "3a3dbd76d908",
@@ -1401,7 +1440,8 @@
       "boundElements": [],
       "updated": 1,
       "link": "https://app.quillo.au",
-      "locked": false
+      "locked": false,
+      "index": "a39"
     },
     {
       "id": "bbaade7fc14c",
@@ -1436,7 +1476,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "How to test  \u00b7  https://app.quillo.au",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a40"
     },
     {
       "id": "d0eb41a1db2c",
@@ -1471,7 +1512,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "\u2022  On phone: app.quillo.au \u2192 '+ Add receipt' \u2192 snap. Expect merchant/amount/GST within ~5s.\n\u2022  Bulk/offline: node scripts/feed-expenses.mjs <folder|file>.\n\u2022  Verify in Inbox \u2192 tap row \u2192 fields + receipt image + confidence.",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a41"
     },
     {
       "id": "7181d842c7db",
@@ -1500,7 +1542,8 @@
       "boundElements": [],
       "updated": 1,
       "link": null,
-      "locked": false
+      "locked": false,
+      "index": "a42"
     },
     {
       "id": "0c58feda53e3",
@@ -1535,7 +1578,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "Edge cases \u2014 multi-shot \u00b7 USD \u00b7 duplicates",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a43"
     },
     {
       "id": "33b9b94e37ff",
@@ -1570,7 +1614,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "Multiple screenshots = one receipt; foreign currency \u2192 amount_aud_cents via fx; re-upload de-duped.",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a44"
     },
     {
       "id": "b10d3efb31dc",
@@ -1614,7 +1659,8 @@
       "startBinding": null,
       "endBinding": null,
       "startArrowhead": null,
-      "endArrowhead": "arrow"
+      "endArrowhead": "arrow",
+      "index": "a45"
     },
     {
       "id": "6042e0e88e20",
@@ -1649,7 +1695,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "test",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a46"
     },
     {
       "id": "600730abff66",
@@ -1678,7 +1725,8 @@
       "boundElements": [],
       "updated": 1,
       "link": "https://app.quillo.au",
-      "locked": false
+      "locked": false,
+      "index": "a47"
     },
     {
       "id": "0072553c2603",
@@ -1713,7 +1761,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "How to test  \u00b7  https://app.quillo.au",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a48"
     },
     {
       "id": "3c7096b9c76d",
@@ -1748,7 +1797,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "\u2022  Share 2-3 screenshots together \u2192 one transaction, not three.\n\u2022  Upload a USD receipt (e.g. Anthropic) \u2192 currency=USD + AUD amount shown.\n\u2022  Re-upload the same file \u2192 marked duplicate, not double-counted.",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a49"
     },
     {
       "id": "c88eef73f1f9",
@@ -1777,7 +1827,8 @@
       "boundElements": [],
       "updated": 1,
       "link": null,
-      "locked": false
+      "locked": false,
+      "index": "a50"
     },
     {
       "id": "e3487fb3b7f9",
@@ -1812,7 +1863,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "Categorise + correction learning",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a51"
     },
     {
       "id": "21254e1c84e4",
@@ -1847,7 +1899,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "Deterministic rule pack (KV) first, Claude fallback. A correction writes a per-user rule.",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a52"
     },
     {
       "id": "e1d3700b4f4e",
@@ -1891,7 +1944,8 @@
       "startBinding": null,
       "endBinding": null,
       "startArrowhead": null,
-      "endArrowhead": "arrow"
+      "endArrowhead": "arrow",
+      "index": "a53"
     },
     {
       "id": "689260a5fb7c",
@@ -1926,7 +1980,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "test",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a54"
     },
     {
       "id": "80feccd79767",
@@ -1955,7 +2010,8 @@
       "boundElements": [],
       "updated": 1,
       "link": "https://app.quillo.au/settings",
-      "locked": false
+      "locked": false,
+      "index": "a55"
     },
     {
       "id": "d512666c0ba7",
@@ -1990,7 +2046,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "How to test  \u00b7  https://app.quillo.au/settings",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a56"
     },
     {
       "id": "2c49544cfcd6",
@@ -2025,7 +2082,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "\u2022  Inbox \u2192 correct a bucket/ATO label \u2192 corrections + audit_log row.\n\u2022  Upload a similar merchant again \u2192 now auto-categorised (rule learned).\n\u2022  Settings \u2192 Per-user rules: confirm the new rule; edit/delete works.",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a57"
     },
     {
       "id": "8fd3731b214f",
@@ -2054,7 +2112,8 @@
       "boundElements": [],
       "updated": 1,
       "link": null,
-      "locked": false
+      "locked": false,
+      "index": "a58"
     },
     {
       "id": "335b1d383136",
@@ -2089,7 +2148,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "Statement import + reconciliation",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a59"
     },
     {
       "id": "58752843ea58",
@@ -2124,7 +2184,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "CSV/PDF \u2192 parsed lines \u2192 opening+\u03a3signed==closing proof. \u2713 balances or \u26a0 off-by-$X w/ first bad line.",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a60"
     },
     {
       "id": "385b79c83bd3",
@@ -2168,7 +2229,8 @@
       "startBinding": null,
       "endBinding": null,
       "startArrowhead": null,
-      "endArrowhead": "arrow"
+      "endArrowhead": "arrow",
+      "index": "a61"
     },
     {
       "id": "77edc41e8149",
@@ -2203,7 +2265,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "test",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a62"
     },
     {
       "id": "7ee057b490ed",
@@ -2232,7 +2295,8 @@
       "boundElements": [],
       "updated": 1,
       "link": "https://app.quillo.au/accounts",
-      "locked": false
+      "locked": false,
+      "index": "a63"
     },
     {
       "id": "0c330bbf7d14",
@@ -2267,7 +2331,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "How to test  \u00b7  https://app.quillo.au/accounts",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a64"
     },
     {
       "id": "8c28a834f46d",
@@ -2302,7 +2367,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "\u2022  Accounts \u2192 add account \u2192 'Upload statement (CSV/PDF)'.\n\u2022  Expect a green \u2713 'Balances' OR a red \u26a0 with the exact diff + bad line.\n\u2022  Offline harness: npm run eval:statements (westpac \u2713, mismatch \u2717).",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a65"
     },
     {
       "id": "cecbc7f01a4a",
@@ -2331,7 +2397,8 @@
       "boundElements": [],
       "updated": 1,
       "link": null,
-      "locked": false
+      "locked": false,
+      "index": "a66"
     },
     {
       "id": "cb273c63a453",
@@ -2366,7 +2433,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "Receipt \u2194 bank-line matching",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a67"
     },
     {
       "id": "60f5ff8c20db",
@@ -2401,7 +2469,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "Unmatched receipts vs unmatched bank lines; link hides the receipt from counting (no double-count).",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a68"
     },
     {
       "id": "3d7a9f1fc22e",
@@ -2445,7 +2514,8 @@
       "startBinding": null,
       "endBinding": null,
       "startArrowhead": null,
-      "endArrowhead": "arrow"
+      "endArrowhead": "arrow",
+      "index": "a69"
     },
     {
       "id": "18c637c7edfa",
@@ -2480,7 +2550,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "test",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a70"
     },
     {
       "id": "cc7315809f32",
@@ -2509,7 +2580,8 @@
       "boundElements": [],
       "updated": 1,
       "link": "https://app.quillo.au/reconcile",
-      "locked": false
+      "locked": false,
+      "index": "a71"
     },
     {
       "id": "ad60a9ad78c8",
@@ -2544,7 +2616,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "How to test  \u00b7  https://app.quillo.au/reconcile",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a72"
     },
     {
       "id": "b6cfdb46595a",
@@ -2579,7 +2652,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "\u2022  Reconcile page: pick a receipt + its bank line \u2192 Link.\n\u2022  Linked receipt disappears from 'needs review'; Unlink restores it.\n\u2022  Dashboard total unchanged after linking (counted once).",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a73"
     },
     {
       "id": "b8b7eaabde1b",
@@ -2608,7 +2682,8 @@
       "boundElements": [],
       "updated": 1,
       "link": null,
-      "locked": false
+      "locked": false,
+      "index": "a74"
     },
     {
       "id": "d41a43fb56cc",
@@ -2643,7 +2718,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "QBO feed sync \u2014 no double-count",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a75"
     },
     {
       "id": "7bf831a80863",
@@ -2678,7 +2754,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "Sync registers QBO bank/card accounts as source=qbo_feed; those refuse statement uploads + are excluded from reconcile.",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a76"
     },
     {
       "id": "d81047d4ff1f",
@@ -2722,7 +2799,8 @@
       "startBinding": null,
       "endBinding": null,
       "startArrowhead": null,
-      "endArrowhead": "arrow"
+      "endArrowhead": "arrow",
+      "index": "a77"
     },
     {
       "id": "a87e07e32683",
@@ -2757,7 +2835,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "test",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a78"
     },
     {
       "id": "646f212f542e",
@@ -2786,7 +2865,8 @@
       "boundElements": [],
       "updated": 1,
       "link": "https://app.quillo.au/accounts",
-      "locked": false
+      "locked": false,
+      "index": "a79"
     },
     {
       "id": "79ab8f0fbd4a",
@@ -2821,7 +2901,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "How to test  \u00b7  https://app.quillo.au/accounts",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a80"
     },
     {
       "id": "62a86e46f3d6",
@@ -2856,7 +2937,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "\u2022  Connect QuickBooks (Settings/QuickBooks), then Accounts \u2192 'Sync accounts from QuickBooks'.\n\u2022  A qbo_feed account shows no 'Upload statement' button (guard active).\n\u2022  QuickBooks reconcile lists only receipt expenses, never bank lines.",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a81"
     },
     {
       "id": "af9680329cd0",
@@ -2885,7 +2967,8 @@
       "boundElements": [],
       "updated": 1,
       "link": null,
-      "locked": false
+      "locked": false,
+      "index": "a82"
     },
     {
       "id": "04da0f7dff08",
@@ -2920,7 +3003,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "Async batch categorisation + failure handling",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a83"
     },
     {
       "id": "c3b6d09de27d",
@@ -2955,7 +3039,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "Large statements (>60 lines) \u2192 Message Batches API (50% off). Zombie-proof: all-errored\u2192failed, >24h\u2192failed+notify.",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a84"
     },
     {
       "id": "43ff6f37cbee",
@@ -2999,7 +3084,8 @@
       "startBinding": null,
       "endBinding": null,
       "startArrowhead": null,
-      "endArrowhead": "arrow"
+      "endArrowhead": "arrow",
+      "index": "a85"
     },
     {
       "id": "7e959f4ec13d",
@@ -3034,7 +3120,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "test",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a86"
     },
     {
       "id": "7478b0327fd3",
@@ -3063,7 +3150,8 @@
       "boundElements": [],
       "updated": 1,
       "link": "https://app.quillo.au/accounts",
-      "locked": false
+      "locked": false,
+      "index": "a87"
     },
     {
       "id": "116769ff417c",
@@ -3098,7 +3186,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "How to test  \u00b7  https://app.quillo.au/accounts",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a88"
     },
     {
       "id": "e157c8a0dab4",
@@ -3133,7 +3222,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "\u2022  Import a big statement \u2192 account shows 'categorising\u2026', then 'imported (n)'.\n\u2022  Status polls every 5s while categorising; failure \u2192 red 'failed' + alert.\n\u2022  Unit guard: npm run test:units (batchStatementStatus / isStaleBatch).",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a89"
     },
     {
       "id": "e0ae66505861",
@@ -3162,7 +3252,8 @@
       "boundElements": [],
       "updated": 1,
       "link": null,
-      "locked": false
+      "locked": false,
+      "index": "a90"
     },
     {
       "id": "3ba1b381891a",
@@ -3197,7 +3288,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "Cost / budget meter",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a91"
     },
     {
       "id": "4fdd81465793",
@@ -3232,7 +3324,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "Per-call usage + $ logged; MAX_DAILY_COST_CENTS caps spend; Batch API halves async cost.",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a92"
     },
     {
       "id": "f03320e6a713",
@@ -3276,7 +3369,8 @@
       "startBinding": null,
       "endBinding": null,
       "startArrowhead": null,
-      "endArrowhead": "arrow"
+      "endArrowhead": "arrow",
+      "index": "a93"
     },
     {
       "id": "6958e9ab0280",
@@ -3311,7 +3405,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "test",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a94"
     },
     {
       "id": "22267952fee5",
@@ -3340,7 +3435,8 @@
       "boundElements": [],
       "updated": 1,
       "link": "https://app.quillo.au/settings",
-      "locked": false
+      "locked": false,
+      "index": "a95"
     },
     {
       "id": "68abb0be49f8",
@@ -3375,7 +3471,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "How to test  \u00b7  https://app.quillo.au/settings",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a96"
     },
     {
       "id": "22ce45f839a4",
@@ -3410,7 +3507,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "\u2022  GET /api/usage \u2192 today/month cents + by-feature breakdown.\n\u2022  1 receipt \u2248 $0.0028; 300-row statement \u2248 2.9\u00a2 (verified).\n\u2022  Set MAX_DAILY_COST_CENTS low to confirm the cap blocks further calls.",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a97"
     },
     {
       "id": "eeffd42edf42",
@@ -3439,7 +3537,8 @@
       "boundElements": [],
       "updated": 1,
       "link": null,
-      "locked": false
+      "locked": false,
+      "index": "a98"
     },
     {
       "id": "64af9caec4dd",
@@ -3474,7 +3573,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "Offline regression net",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a99"
     },
     {
       "id": "5f6331ad125c",
@@ -3509,7 +3609,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "No worker/Claude needed \u2014 deterministic guards on the invariants we keep re-learning.",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a100"
     },
     {
       "id": "3ef9e2c695bd",
@@ -3553,7 +3654,8 @@
       "startBinding": null,
       "endBinding": null,
       "startArrowhead": null,
-      "endArrowhead": "arrow"
+      "endArrowhead": "arrow",
+      "index": "a101"
     },
     {
       "id": "89a54822e3d3",
@@ -3588,7 +3690,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "test",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a102"
     },
     {
       "id": "1412b03e4ef3",
@@ -3617,7 +3720,8 @@
       "boundElements": [],
       "updated": 1,
       "link": "https://github.com/consulting-brendan",
-      "locked": false
+      "locked": false,
+      "index": "a103"
     },
     {
       "id": "596852c0910c",
@@ -3652,7 +3756,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "How to test  \u00b7  https://github.com/consulting-brendan",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a104"
     },
     {
       "id": "3a344eb8f70e",
@@ -3687,7 +3792,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "\u2022  npm test  \u2192 25 unit assertions + 2 statement cases, exit 0.\n\u2022  npm run test:units \u2192 reconcile, transfer-conservatism, fingerprint, batch.\n\u2022  npm run eval:statements \u2192 line accuracy + reconcile pass-rate.",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a105"
     },
     {
       "id": "56551d51d678",
@@ -3716,7 +3822,8 @@
       "boundElements": [],
       "updated": 1,
       "link": null,
-      "locked": false
+      "locked": false,
+      "index": "a106"
     },
     {
       "id": "4fe20f1950b3",
@@ -3751,7 +3858,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "Dashboard + Reports",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a107"
     },
     {
       "id": "7375d5d40f87",
@@ -3786,7 +3894,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "Aggregates by bucket/property; FY report + CSV export for your tax/BAS agent.",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a108"
     },
     {
       "id": "61ad8cb327ce",
@@ -3830,7 +3939,8 @@
       "startBinding": null,
       "endBinding": null,
       "startArrowhead": null,
-      "endArrowhead": "arrow"
+      "endArrowhead": "arrow",
+      "index": "a109"
     },
     {
       "id": "6050fcdc25d8",
@@ -3865,7 +3975,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "test",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a110"
     },
     {
       "id": "88c973200c39",
@@ -3894,7 +4005,8 @@
       "boundElements": [],
       "updated": 1,
       "link": "https://app.quillo.au/reports",
-      "locked": false
+      "locked": false,
+      "index": "a111"
     },
     {
       "id": "9d56d03bcba4",
@@ -3929,7 +4041,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "How to test  \u00b7  https://app.quillo.au/reports",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a112"
     },
     {
       "id": "fe1f96f1ec81",
@@ -3964,7 +4077,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "\u2022  Dashboard \u2192 totals by bucket match the ledger.\n\u2022  Reports \u2192 pick FY \u2192 company quarters, rental schedule, GST credits.\n\u2022  Export CSV \u2192 hand to your registered agent (Quillo never lodges).",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a113"
     },
     {
       "id": "3295c3f58606",
@@ -3999,7 +4113,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "BACKGROUND (cron */10 + Mon 08:00)",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a114"
     },
     {
       "id": "7286d2c2e7c1",
@@ -4028,7 +4143,8 @@
       "boundElements": [],
       "updated": 1,
       "link": null,
-      "locked": false
+      "locked": false,
+      "index": "a115"
     },
     {
       "id": "d210b165c357",
@@ -4063,7 +4179,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "Proactive scan\nvacant-property + uncategorised nudges (COUNTABLE-filtered)",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a116"
     },
     {
       "id": "e794398eb664",
@@ -4098,7 +4215,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "scan: weekly + on /dashboard",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a117"
     },
     {
       "id": "8645008d31a2",
@@ -4127,7 +4245,8 @@
       "boundElements": [],
       "updated": 1,
       "link": null,
-      "locked": false
+      "locked": false,
+      "index": "a118"
     },
     {
       "id": "84d53735e31b",
@@ -4162,7 +4281,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "Batch poll\napply finished categorisations; fail zombies >24h",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a119"
     },
     {
       "id": "af0d99a61ed9",
@@ -4197,7 +4317,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "cron */10 + opportunistic",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a120"
     },
     {
       "id": "1980cf7eab0e",
@@ -4226,7 +4347,8 @@
       "boundElements": [],
       "updated": 1,
       "link": null,
-      "locked": false
+      "locked": false,
+      "index": "a121"
     },
     {
       "id": "14d9dc94a8a5",
@@ -4261,7 +4383,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "Budget meter\nrolling $ spend in KV; blocks over cap",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a122"
     },
     {
       "id": "801e9cce70d3",
@@ -4296,7 +4419,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "every inference call",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a123"
     },
     {
       "id": "bd52ad4e2902",
@@ -4331,7 +4455,8 @@
       "verticalAlign": "top",
       "containerId": null,
       "originalText": "Note: live click-throughs need your Clerk login (single-user lockdown). Offline gates (npm test) run anywhere. macOS 12.6 can't run workerd locally \u2192 deploy is the live test path.",
-      "lineHeight": 1.25
+      "lineHeight": 1.25,
+      "index": "a124"
     }
   ],
   "appState": {

@@ -215,8 +215,49 @@ text(40, by + 120,
      "macOS 12.6 can't run workerd locally → deploy is the live test path.",
      11, "#868e96")
 
+# Excalidraw needs a fractional `index` on every element in newer versions, else the
+# canvas can render blank. Assign monotonic ones (a0, a1, ...).
+for i, e in enumerate(els):
+    e["index"] = f"a{i}"
+
 doc = {"type": "excalidraw", "version": 2, "source": "quillo", "elements": els,
        "appState": {"gridSize": None, "viewBackgroundColor": "#ffffff"}, "files": {}}
 with open("diagrams/quillo-test-arch.excalidraw", "w") as f:
     json.dump(doc, f, indent=2)
 print(f"wrote diagrams/quillo-test-arch.excalidraw with {len(els)} elements")
+
+# ── Also emit a plain SVG (faithful render of the same elements) so it can be opened
+#    directly in any browser/Preview without Excalidraw. ───────────────────────────────
+def esc(s):
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+xs = [e["x"] for e in els] + [e["x"] + e.get("width", 0) for e in els]
+ys = [e["y"] for e in els] + [e["y"] + e.get("height", 0) for e in els]
+minx, miny, maxx, maxy = min(xs) - 30, min(ys) - 30, max(xs) + 30, max(ys) + 30
+W, H = maxx - minx, maxy - miny
+svg = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="{minx} {miny} {W} {H}" '
+       f'width="{W}" height="{H}" font-family="Helvetica,Arial,sans-serif">',
+       f'<rect x="{minx}" y="{miny}" width="{W}" height="{H}" fill="#ffffff"/>',
+       '<defs><marker id="arw" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">'
+       '<path d="M0,0 L6,3 L0,6 Z" fill="#868e96"/></marker></defs>']
+for e in els:
+    t = e["type"]
+    if t == "rectangle":
+        svg.append(f'<rect x="{e["x"]}" y="{e["y"]}" width="{e["width"]}" height="{e["height"]}" '
+                   f'rx="8" fill="{e["backgroundColor"]}" stroke="{e["strokeColor"]}" stroke-width="2"/>')
+    elif t == "arrow":
+        p = e["points"]
+        x1, y1 = e["x"] + p[0][0], e["y"] + p[0][1]
+        x2, y2 = e["x"] + p[1][0], e["y"] + p[1][1]
+        svg.append(f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" stroke="{e["strokeColor"]}" '
+                   f'stroke-width="2" marker-end="url(#arw)"/>')
+    elif t == "text":
+        fs = e["fontSize"]
+        weight = "bold" if e.get("fontFamily") == 3 else "normal"
+        for j, line in enumerate(e["text"].split("\n")):
+            svg.append(f'<text x="{e["x"]}" y="{e["y"] + fs + j * fs * 1.25:.0f}" font-size="{fs}" '
+                       f'fill="{e["strokeColor"]}" font-weight="{weight}">{esc(line)}</text>')
+svg.append("</svg>")
+with open("diagrams/quillo-test-arch.svg", "w") as f:
+    f.write("\n".join(svg))
+print(f"wrote diagrams/quillo-test-arch.svg ({int(W)}x{int(H)})")

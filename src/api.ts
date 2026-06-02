@@ -272,6 +272,9 @@ export async function handleApi(
   // ── QuickBooks (Phase 4) ──────────────────────────────────────────────────
   if (resource === "qbo") {
     if (id === "status" && m === "GET") return json(await qboStatus(env, uid));
+    // POST /api/qbo/sync-accounts — register QBO bank/card accounts as source='qbo_feed'
+    // (activates the feed-vs-statement dedup guard).
+    if (id === "sync-accounts" && m === "POST") return json(await stub.syncQboAccounts(uid));
     // POST /api/qbo/push/:txnId — user-triggered push of a NON-FEED company expense.
     if (id === "push" && sub && m === "POST") return json(await stub.pushToQuickBooks(uid, sub));
     if (id === "connect" && m === "GET") {
@@ -283,7 +286,9 @@ export async function handleApi(
       return Response.redirect(`${url.origin}/quickbooks?connected=${r.ok ? "1" : "0"}`, 302);
     }
     if (id === "reconcile" && m === "GET") {
-      const company = await listTransactions(env, uid, { bucket: "company", limit: 50 });
+      // Only receipts are candidate QBO purchases — statement bank_lines come from the
+      // bank feed QBO already has, so excluding them keeps the two pipes from overlapping.
+      const company = await listTransactions(env, uid, { bucket: "company", kind: "receipt", limit: 50 });
       let purchases: unknown[] = [];
       let connected = false;
       let err: string | null = null;

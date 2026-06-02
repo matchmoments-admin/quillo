@@ -99,8 +99,8 @@ export interface StatementInfo {
 export interface Situation {
   profile?: { consent_xborder: number; inference_provider: string | null };
   properties: Property[];
-  entities: { kind: string; name: string | null }[];
-  rules: { pattern: string; bucket: string; ato_label: string }[];
+  entities: { id: string; kind: string; name: string | null }[];
+  rules: { id: string; pattern: string; bucket: string; ato_label: string }[];
 }
 
 export const BUCKETS = ["payg", "company", "property_rented", "property_vacant", "unknown"] as const;

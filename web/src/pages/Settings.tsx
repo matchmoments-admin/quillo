@@ -25,23 +25,23 @@ export function Settings() {
       {/* Properties */}
       <Section title="Properties">
         {s.properties.map((p) => (
-          <Row key={p.id} label={`${p.label} — ${p.status}`} onDelete={() => api.deleteProperty(p.id).then(invalidate)} />
+          <EditableProperty key={p.id} property={p} onDone={invalidate} />
         ))}
         <AddProperty onDone={invalidate} />
       </Section>
 
       {/* Entities */}
       <Section title="Entities (employment · company · novated lease)">
-        {s.entities.map((e, i) => (
-          <Row key={i} label={`${e.kind}${e.name ? ` — ${e.name}` : ""}`} />
+        {s.entities.map((e) => (
+          <Row key={e.id} label={`${e.kind}${e.name ? ` — ${e.name}` : ""}`} onDelete={() => api.deleteEntity(e.id).then(invalidate)} />
         ))}
         <AddEntity onDone={invalidate} />
       </Section>
 
       {/* Rules */}
       <Section title="Per-user rules">
-        {s.rules.map((r, i) => (
-          <Row key={i} label={`"${r.pattern}" → ${BUCKET_LABEL[r.bucket] ?? r.bucket} · ${r.ato_label}`} />
+        {s.rules.map((r) => (
+          <Row key={r.id} label={`"${r.pattern}" → ${BUCKET_LABEL[r.bucket] ?? r.bucket} · ${r.ato_label}`} onDelete={() => api.deleteRule(r.id).then(invalidate)} />
         ))}
         <AddRule onDone={invalidate} />
       </Section>
@@ -84,6 +84,37 @@ function Row({ label, onDelete, deleteLabel = "delete" }: { label: string; onDel
           {deleteLabel}
         </button>
       )}
+    </div>
+  );
+}
+
+function EditableProperty({ property, onDone }: { property: { id: string; label: string; status: string }; onDone: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const [label, setLabel] = useState(property.label);
+  const [status, setStatus] = useState(property.status);
+  const save = useMutation({ mutationFn: () => api.updateProperty(property.id, { label, status }), onSuccess: () => { setEditing(false); onDone(); } });
+  if (!editing) {
+    return (
+      <div className="flex items-center justify-between rounded-lg bg-surface px-3 py-2 text-sm">
+        <span className="truncate">{property.label} — {property.status}</span>
+        <div className="flex flex-none gap-3">
+          <button onClick={() => setEditing(true)} className={del}>edit</button>
+          <button onClick={() => api.deleteProperty(property.id).then(onDone)} className={del}>delete</button>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="flex flex-wrap gap-2 rounded-lg bg-surface px-3 py-2">
+      <input className={`${input} flex-1`} value={label} onChange={(e) => setLabel(e.target.value)} />
+      <select className={input} value={status} onChange={(e) => setStatus(e.target.value)}>
+        <option value="rented">rented</option>
+        <option value="vacant">vacant</option>
+        <option value="owner_occupied">owner-occupied</option>
+        <option value="sold">sold</option>
+      </select>
+      <button className={btn} disabled={!label || save.isPending} onClick={() => save.mutate()}>Save</button>
+      <button className={del} onClick={() => setEditing(false)}>cancel</button>
     </div>
   );
 }

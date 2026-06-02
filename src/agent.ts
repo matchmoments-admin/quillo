@@ -1,7 +1,8 @@
 import { Agent } from "agents";
 import type { Env } from "./env";
 import { getProfile, getSituation, renderSituation, type Profile, type Situation, type UserRule } from "./lib/db";
-import { addRule } from "./lib/situation-write";
+import { addRule, addAccount } from "./lib/situation-write";
+import { QuickBooksAdapter } from "./ledger/qbo";
 import { COUNTABLE } from "./lib/queries";
 import { sha256hex, sha256hexBytes } from "./lib/base64";
 import { getLLM, type LLM } from "./llm";
@@ -642,6 +643,33 @@ export class TaxAgent extends Agent<Env> {
       }
     }
     return null;
+  }
+
+  /**
+   * Register the QuickBooks Bank/Credit-Card accounts as Quillo accounts with
+   * source='qbo_feed'. This is what ACTIVATES the feed-vs-statement dedup guard: a qbo_feed
+   * account refuses statement imports and is excluded from reconcile, so a real account is
+   * counted through exactly one pipe (the QBO feed) — never twice.
+   */
+  async syncQboAccounts(userId: string): Promise<{ synced: number }> {
+    const accounts = await new QuickBooksAdapter(this.env).listBankAccounts(userId);
+    let synced = 0;
+    for (const a of accounts) {
+      const exists = await this.env.DB.prepare(`SELECT id FROM accounts WHERE user_id = ? AND qbo_account_id = ?`)
+        .bind(userId, a.Id)
+        .first<{ id: string }>();
+      if (exists) continue;
+      await addAccount(this.env, userId, {
+        name: a.Name,
+        institution: "QuickBooks",
+        type: a.AccountType === "Credit Card" ? "credit_card" : "transaction",
+        source: "qbo_feed",
+        qbo_account_id: a.Id,
+      });
+      synced++;
+    }
+    await this.audit(userId, "qbo_accounts_synced", JSON.stringify({ synced }));
+    return { synced };
   }
 
   /** Set an account's canonical money source (qbo_feed | statement | manual). */

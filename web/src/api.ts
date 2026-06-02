@@ -75,6 +75,7 @@ export const api = {
 
   // Phase 3
   addProperty: (b: unknown) => post<{ id: string }>("/api/properties", b),
+  updateProperty: (id: string, b: unknown) => send<{ ok: boolean }>("PUT", `/api/properties/${id}`, b),
   deleteProperty: (id: string) => send<{ ok: boolean }>("DELETE", `/api/properties/${id}`),
   addEntity: (b: unknown) => post<{ id: string }>("/api/entities", b),
   deleteEntity: (id: string) => send<{ ok: boolean }>("DELETE", `/api/entities/${id}`),
@@ -88,8 +89,10 @@ export const api = {
   // Accounts + statement import
   accounts: () => get<{ accounts: Account[] }>("/api/accounts").then((r) => r.accounts),
   addAccount: (b: Partial<Account>) => post<{ id: string }>("/api/accounts", b),
+  updateAccount: (id: string, b: Partial<Account>) => send<{ ok: boolean }>("PUT", `/api/accounts/${id}`, b),
   deleteAccount: (id: string) => send<{ ok: boolean }>("DELETE", `/api/accounts/${id}`),
   setAccountSource: (id: string, source: string) => post<{ ok: boolean }>(`/api/accounts/${id}/source`, { source }),
+  syncQboAccounts: () => post<{ synced: number }>("/api/qbo/sync-accounts"),
   parseStatement: async (file: File, accountId: string): Promise<StatementParse> => {
     const fd = new FormData();
     fd.append("file", file);

@@ -145,6 +145,19 @@ export class QuickBooksAdapter implements LedgerAdapter {
     return json.QueryResponse?.Purchase ?? [];
   }
 
+  /** List the QBO Bank + Credit Card accounts (to register them as source='qbo_feed' in Quillo). */
+  async listBankAccounts(userId: string): Promise<Array<{ Id: string; Name: string; AccountType: string }>> {
+    const conn = await this.connection(userId);
+    const token = await this.accessToken(conn);
+    const query = encodeURIComponent(`select Id, Name, AccountType from Account where AccountType in ('Bank', 'Credit Card') maxresults 100`);
+    const res = await fetch(`${this.env.QBO_BASE_URL}/v3/company/${conn.realm_id}/query?query=${query}&minorversion=73`, {
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+    });
+    if (!res.ok) throw new Error(`QBO account query failed: ${res.status}`);
+    const json = (await res.json()) as { QueryResponse?: { Account?: Array<{ Id: string; Name: string; AccountType: string }> } };
+    return json.QueryResponse?.Account ?? [];
+  }
+
   /**
    * AU GST tax codes are NOT the US "TAX"/"NON" literals (fix H6). They are
    * file-specific ids; we cache the resolved map per tenant. Falls back to the

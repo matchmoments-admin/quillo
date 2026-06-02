@@ -127,7 +127,8 @@ const HTML = /* html */ `<!doctype html>
   /* ============================================================ HERO ============================================================ */
   .hero {
     position: relative;
-    margin: 10px var(--gutter) 0;
+    /* horizontal inset comes from the shared .wrap container so the hero lines up with all content below */
+    margin: 10px 0 0;
     border-radius: 22px;
     overflow: hidden;
     height: clamp(460px, 64vh, 660px);
@@ -189,7 +190,8 @@ const HTML = /* html */ `<!doctype html>
   .band .star-em { font-style: italic; }
 
   /* ============================================================ SECTION SHELL ============================================================ */
-  .sec { padding: 84px 0; }
+  /* vertical only — leave .wrap's horizontal gutter intact so content aligns with the hero */
+  .sec { padding-top: 84px; padding-bottom: 84px; }
   .sec-head { margin-bottom: 40px; }
   .sec-head h2 { font-size: clamp(30px, 4vw, 48px); }
   .sec-head p { color: var(--ink-2); max-width: 540px; margin-top: 14px; }
@@ -341,8 +343,8 @@ const HTML = /* html */ `<!doctype html>
   .twin-card p { color: #46420f; margin: 16px 0 0; max-width: 360px; }
 
   /* ============================================================ FOOTER ============================================================ */
-  .footer { background: var(--ink); color: #cfccc2; padding: 64px var(--gutter) 36px; }
-  .footer-in { max-width: var(--maxw); margin: 0 auto; }
+  .footer { background: var(--ink); color: #cfccc2; padding: 64px 0 36px; }
+  .footer-in { max-width: var(--maxw); margin: 0 auto; padding: 0 var(--gutter); }
   .footer-cols { display: grid; grid-template-columns: 1.6fr 1fr 1fr 1fr 1fr; gap: 30px; }
   .footer .brand { color: #fff; }
   .footer .f-tag { color: #908c82; font-size: 14px; margin-top: 14px; max-width: 260px; }
@@ -402,6 +404,7 @@ const HTML = /* html */ `<!doctype html>
 <main id="top">
 
 <!-- ============ HERO ============ -->
+<div class="wrap">
 <section class="hero">
   <div class="ph" style="--fallback:#2c2a25; background-image:url('https://images.unsplash.com/photo-1521737711867-e3b97375f902?auto=format&fit=crop&w=1900&q=80');"></div>
   <div class="hero-content">
@@ -409,6 +412,7 @@ const HTML = /* html */ `<!doctype html>
   </div>
   <a class="btn btn-yellow hero-pill" href="${APP_URL}">Ask Quillo</a>
 </section>
+</div>
 
 <!-- ============ TRUST STRIP ============ -->
 <section class="trust">
@@ -420,7 +424,6 @@ const HTML = /* html */ `<!doctype html>
       </span>
     </div>
     <div class="trust-logo">256-bit&nbsp;Secure</div>
-    <div class="trust-logo">Xero</div>
     <div class="trust-logo grotesk">QuickBooks</div>
     <div class="trust-logo grotesk">Read-only&nbsp;feeds</div>
     <div class="trust-logo">Private&nbsp;by&nbsp;design</div>

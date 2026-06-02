@@ -13,6 +13,8 @@
     "eval:gate": "node scripts/check-eval-baseline.mjs",
     "eval:export": "node scripts/export-evals.mjs",
     "eval:statements": "tsx scripts/check-statements.ts",
+    "test:units": "tsx scripts/check-units.ts",
+    "test": "npm run test:units && npm run eval:statements",
     "rulepack:push": "node scripts/push-rulepack.mjs src/rulepacks/au-v1.json",
     "onboard": "node scripts/onboard.mjs",
     "preflight": "node scripts/preflight.mjs",

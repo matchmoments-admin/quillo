@@ -8,6 +8,7 @@ import { sha256hex, sha256hexBytes } from "./lib/base64";
 import { getLLM, type LLM } from "./llm";
 import { extractReceipt, extractReceipts, extractFromText, extractColumnMap, extractStatement, extractBatch, batchParams, parseBatchMessage, type Extracted, type ExtractedStatement } from "./extract";
 import { parseCsv, applyColumnMap, lineFingerprint, deriveBalances, reconcileStatement, fuzzyMerchant, isTransferLike, type ColumnMap, type Reconciliation, type StatementLine } from "./lib/statements";
+import { batchStatementStatus, isStaleBatch } from "./lib/batch";
 import { cleanMerchant } from "./lib/bank-parsers";
 import { pdfPageCount, splitPdf } from "./lib/pdf";
 import { getLedger, LedgerNotConnectedError, type LedgerExpense } from "./ledger";
@@ -464,7 +465,7 @@ export class TaxAgent extends Agent<Env> {
 
     for (const job of jobs.results ?? []) {
       // Stale guard: never leave a 'submitted' job zombied — fail it after 24h.
-      if (Date.parse(job.created_at + "Z") && Date.now() - Date.parse(job.created_at + "Z") > 24 * 60 * 60 * 1000) {
+      if (isStaleBatch(job.created_at, Date.now())) {
         await failJob(job, "timed out after 24h");
         continue;
       }
@@ -502,7 +503,7 @@ export class TaxAgent extends Agent<Env> {
         // If every chunk errored and nothing applied, the import succeeded but categorisation
         // failed — mark the statement so the lines don't look stuck 'categorising'.
         await this.env.DB.prepare(`UPDATE statements SET status=? WHERE id=?`)
-          .bind(applied === 0 && errored > 0 ? "failed" : "imported", job.statement_id)
+          .bind(batchStatementStatus(applied, errored), job.statement_id)
           .run();
         await this.audit(userId, "batch_applied", JSON.stringify({ batchId: job.batch_id, applied, errored }));
         await this.notify(

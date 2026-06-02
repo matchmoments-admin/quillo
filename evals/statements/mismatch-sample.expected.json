@@ -1,0 +1,13 @@
+{
+  "_comment": "Same lines as westpac-sample, but the BUNNINGS row's running balance is tampered by $10 (4324.50 should be 4334.50). The lines still parse identically, but reconciliation MUST fail — this guards the balance-mismatch detection path.",
+  "columnMap": { "header_row": 0, "date_col": 0, "description_col": 1, "debit_col": 2, "credit_col": 3, "balance_col": 4, "sign_convention": "split" },
+  "opening_cents": 100000,
+  "closing_cents": 382450,
+  "reconcile_ok": false,
+  "lines": [
+    { "date": "2026-05-02", "amount_cents": 4500, "direction": "debit" },
+    { "date": "2026-05-03", "amount_cents": 350000, "direction": "credit" },
+    { "date": "2026-05-05", "amount_cents": 12050, "direction": "debit" },
+    { "date": "2026-05-07", "amount_cents": 50000, "direction": "debit" }
+  ]
+}

@@ -20,7 +20,10 @@ import { setTokenGetter } from "./api";
 const PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY as string | undefined;
 
 const queryClient = new QueryClient({
-  defaultOptions: { queries: { refetchOnWindowFocus: true, staleTime: 10_000 } },
+  // refetchOnWindowFocus was causing visible flashing: every time the tab regained focus
+  // (e.g. switching back from the Intuit dashboard) ALL queries refetched at once. Off by
+  // default; pages that genuinely need polling opt in explicitly (e.g. Accounts statements).
+  defaultOptions: { queries: { refetchOnWindowFocus: false, staleTime: 30_000 } },
 });
 
 // Bridges Clerk's getToken into the plain api.ts module so every /api call is Bearer-authed.

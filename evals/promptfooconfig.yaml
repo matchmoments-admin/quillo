@@ -16,6 +16,13 @@ tests: file://load_cases.cjs
 
 defaultTest:
   options:
+    # Newer Haiku wraps its JSON in ```json fences despite the prompt asking it not to.
+    # Extract the first {...} object so is-json + JSON.parse(output) assertions see clean
+    # JSON regardless of fences or stray prose. Runs before per-assertion transforms.
+    transform: "output.match(/\\{[\\s\\S]*\\}/) ? output.match(/\\{[\\s\\S]*\\}/)[0] : output"
     # LLM-as-judge grader for model-graded assertions (llm-rubric). A different tier
     # than the model under test — see evals/README.md for the same-family caveat.
-    provider: anthropic:messages:claude-opus-4-8
+    # NB: Opus 4.8 rejects the `temperature` param promptfoo's provider always sends
+    # ("temperature is deprecated for this model"), so the grader is Sonnet 4.6 — still
+    # a stronger/different tier than the Haiku 4.5 target, and accepts temperature.
+    provider: anthropic:messages:claude-sonnet-4-6

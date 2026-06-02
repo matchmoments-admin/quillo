@@ -5,7 +5,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const CASES_DIR = path.join(__dirname, "cases");
-const GRADER = "anthropic:messages:claude-opus-4-8"; // different tier than the model under test
+const GRADER = "anthropic:messages:claude-sonnet-4-6"; // different tier than the model under test (Opus 4.8 rejects promptfoo's temperature param)
 
 function caseFiles() {
   return fs

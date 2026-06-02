@@ -99,14 +99,27 @@ clickable). This file holds the longer guidance the diagram cards summarise.
 
 ---
 
-## Known tooling blocker (promptfoo eval gate)
-`npm run eval` / `eval:gate` (the promptfoo categorisation eval) currently **cannot run** in this
-environment:
-- `npx promptfoo@latest` fails with npm cache `EACCES` (`~/.npm/_cacache` permission) and a node
-  engine mismatch (promptfoo wants `node ^20.20 || >=22.22`; env has `22.15.1`).
-- **Mitigation:** the deterministic `npm test` (units + `eval:statements`) is the live regression
-  gate. To restore promptfoo later: fix npm cache perms (`sudo chown -R $(whoami) ~/.npm`) and use
-  a node ≥ 22.22, then `npm run eval`.
+## promptfoo categorisation eval gate (now working)
+`npm run eval && npm run eval:gate` runs the LLM categorisation eval against the committed
+fixtures and checks the pass rate against `evals/baseline.json`. It needs `ANTHROPIC_API_KEY` in
+the environment (locally: sourced from `.dev.vars`). Three issues were fixed to make it run:
+- **FK crash** — promptfoo 0.110.1 threw `FOREIGN KEY constraint failed` writing its internal
+  eval-history SQLite. The `eval` script now passes `--no-write` (we only need the `--output`
+  JSON for the gate). *(The earlier `npx promptfoo@latest` route is a dead end — npm-cache
+  `EACCES` + node engine mismatch; use the pinned local install via `npm run eval`.)*
+- **Fenced JSON** — newer Haiku wraps replies in ` ```json ` fences; a `defaultTest` output
+  transform extracts the first `{...}` so the `is-json`/`JSON.parse` assertions parse.
+- **Deprecated `temperature`** — the grader was `claude-opus-4-8`, which 400s on the
+  `temperature` param promptfoo always sends. Grader is now `claude-sonnet-4-6` (different/stronger
+  tier than the Haiku 4.5 target, accepts temperature).
+
+Current baseline: **58.3% (7/12)**. The 5 "failures" are honest signal — those cases expect a
+definite bucket from a bare merchant with **no situation context**, and Haiku 4.5 correctly
+returns `unknown` instead of guessing. Follow-up (separate): give those cases situation context or
+strengthen common-merchant inference, then raise the baseline.
+
+The deterministic `npm test` (units + `eval:statements`) remains the fast offline gate that needs
+no API key.
 
 ## Regenerate the diagram
 `python3 diagrams/gen_test_arch.py` (rewrites `quillo-test-arch.excalidraw`).

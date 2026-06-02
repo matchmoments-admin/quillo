@@ -1,4 +1,6 @@
 {
-  "passRate": 0,
-  "note": "Eval run attempted (2026-06-01, task3) but promptfoo 0.110.1 crashes with 'FOREIGN KEY constraint failed' in its internal SQLite eval storage (eval.js:142) when using a CJS function-based prompt. This is a pre-existing bug confirmed against the original main-branch code (not caused by the situation-aware changes). Fix: upgrade promptfoo to >=0.121.13 (`npm install promptfoo@latest --save-dev`) then re-run `npm run eval` and update this file with the observed passRate."
+  "passRate": 0.58,
+  "observed": "7/12",
+  "date": "2026-06-02",
+  "note": "promptfoo eval gate now RUNS (was crashing). Three fixes: (1) `--no-write` in the eval script bypasses promptfoo 0.110.1's internal SQLite write that throws 'FOREIGN KEY constraint failed' (eval.js:142) — we only need the --output JSON for the gate, not the eval-history DB; (2) a defaultTest output transform extracts the first {...} object so newer Haiku's ```json-fenced replies parse (is-json + JSON.parse assertions); (3) the llm-rubric grader moved from claude-opus-4-8 (which 400s on the deprecated `temperature` param promptfoo always sends) to claude-sonnet-4-6 (still a stronger/different tier than the Haiku 4.5 target, and accepts temperature). The 5 failing cases are HONEST signal, not gate breakage: they expect a definite bucket (company/property_rented/payg) from a bare merchant with NO situation context, and Haiku 4.5 correctly returns 'unknown' rather than guessing. Follow-up (separate from this fix): either add situation context to those cases or strengthen the rulepack's common-merchant inference, then re-run and raise this baseline."
 }

@@ -99,7 +99,7 @@ export interface StatementInfo {
 export interface Situation {
   profile?: { consent_xborder: number; inference_provider: string | null };
   properties: Property[];
-  entities: { id: string; kind: string; name: string | null }[];
+  entities: { id: string; kind: string; name: string | null; detail_json?: string | null }[];
   rules: { id: string; pattern: string; bucket: string; ato_label: string }[];
 }
 

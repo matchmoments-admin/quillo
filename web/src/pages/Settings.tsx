@@ -33,7 +33,7 @@ export function Settings() {
       {/* Entities */}
       <Section title="Entities (employment · company · novated lease)">
         {s.entities.map((e) => (
-          <Row key={e.id} label={`${e.kind}${e.name ? ` — ${e.name}` : ""}`} onDelete={() => api.deleteEntity(e.id).then(invalidate)} />
+          <Row key={e.id} label={entityLabel(e)} onDelete={() => api.deleteEntity(e.id).then(invalidate)} />
         ))}
         <AddEntity onDone={invalidate} />
       </Section>
@@ -121,17 +121,29 @@ function EditableProperty({ property, onDone }: { property: { id: string; label:
 
 function AddProperty({ onDone }: { onDone: () => void }) {
   const [label, setLabel] = useState("");
+  const [address, setAddress] = useState("");
   const [status, setStatus] = useState("rented");
-  const m = useMutation({ mutationFn: () => api.addProperty({ label, status }), onSuccess: () => { setLabel(""); onDone(); } });
+  const [ownership, setOwnership] = useState("100");
+  const m = useMutation({
+    mutationFn: () =>
+      api.addProperty({ label, address: address || undefined, status, ownership_pct: Number(ownership) || 100 }),
+    onSuccess: () => {
+      setLabel("");
+      setAddress("");
+      onDone();
+    },
+  });
   return (
     <div className="flex flex-wrap gap-2 pt-2">
-      <input className={`${input} flex-1`} placeholder="Label e.g. 14 Rental St" value={label} onChange={(e) => setLabel(e.target.value)} />
+      <input className={`${input} flex-1`} placeholder="Label e.g. Rental 1" value={label} onChange={(e) => setLabel(e.target.value)} />
+      <input className={`${input} flex-1`} placeholder="Address e.g. 14 Rental St, Sydney NSW" value={address} onChange={(e) => setAddress(e.target.value)} />
       <select className={input} value={status} onChange={(e) => setStatus(e.target.value)}>
         <option value="rented">rented</option>
         <option value="vacant">vacant</option>
         <option value="owner_occupied">owner-occupied</option>
         <option value="sold">sold</option>
       </select>
+      <input className={`${input} w-24`} type="number" min="1" max="100" placeholder="Own %" value={ownership} onChange={(e) => setOwnership(e.target.value)} title="Your ownership share %" />
       <button className={btn} disabled={!label || m.isPending} onClick={() => m.mutate()}>
         Add
       </button>
@@ -139,23 +151,83 @@ function AddProperty({ onDone }: { onDone: () => void }) {
   );
 }
 
+// Render an entity's stored detail (ABN/GST/employer/vehicle) so you can confirm what the
+// categoriser actually knows about you. Mirrors the fields renderSituation() reads in db.ts.
+function entityLabel(e: { kind: string; name: string | null; detail_json?: string | null }): string {
+  let d: Record<string, unknown> = {};
+  try {
+    d = e.detail_json ? (JSON.parse(e.detail_json) as Record<string, unknown>) : {};
+  } catch {
+    /* ignore */
+  }
+  const bits = [e.kind, e.name].filter(Boolean);
+  if (e.kind === "company") {
+    if (d.abn) bits.push(`ABN ${d.abn}`);
+    bits.push(d.gst_registered ? "GST registered" : "not GST registered");
+  } else if (e.kind === "employment" && (d.employer || e.name)) {
+    // name already shown
+  } else if (e.kind === "novated_lease") {
+    if (d.vehicle) bits.push(String(d.vehicle));
+    if (d.provider) bits.push(`via ${d.provider}`);
+  }
+  return bits.join(" — ");
+}
+
 function AddEntity({ onDone }: { onDone: () => void }) {
   const [kind, setKind] = useState("company");
   const [name, setName] = useState("");
-  const m = useMutation({ mutationFn: () => api.addEntity({ kind, name }), onSuccess: () => { setName(""); onDone(); } });
+  const [abn, setAbn] = useState("");
+  const [gst, setGst] = useState(true);
+  const [vehicle, setVehicle] = useState("");
+  const [provider, setProvider] = useState("");
+  const buildDetail = () => {
+    if (kind === "company") return { abn: abn || undefined, gst_registered: gst };
+    if (kind === "employment") return { employer: name || undefined };
+    if (kind === "novated_lease") return { vehicle: vehicle || undefined, provider: provider || undefined };
+    return {};
+  };
+  const m = useMutation({
+    mutationFn: () => api.addEntity({ kind, name, detail: buildDetail() }),
+    onSuccess: () => {
+      setName("");
+      setAbn("");
+      setVehicle("");
+      setProvider("");
+      onDone();
+    },
+  });
+  const namePlaceholder =
+    kind === "company" ? "Company name e.g. Acme Pty Ltd" : kind === "employment" ? "Employer name" : kind === "novated_lease" ? "Label e.g. Tesla lease" : "Name";
   return (
-    <div className="flex flex-wrap gap-2 pt-2">
-      <select className={input} value={kind} onChange={(e) => setKind(e.target.value)}>
-        <option value="company">company</option>
-        <option value="employment">employment</option>
-        <option value="novated_lease">novated_lease</option>
-        <option value="individual">individual</option>
-        <option value="trust">trust</option>
-      </select>
-      <input className={`${input} flex-1`} placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} />
-      <button className={btn} disabled={m.isPending} onClick={() => m.mutate()}>
-        Add
-      </button>
+    <div className="space-y-2 pt-2">
+      <div className="flex flex-wrap gap-2">
+        <select className={input} value={kind} onChange={(e) => setKind(e.target.value)}>
+          <option value="company">company</option>
+          <option value="employment">employment (PAYG)</option>
+          <option value="novated_lease">novated_lease</option>
+          <option value="individual">individual</option>
+          <option value="trust">trust</option>
+        </select>
+        <input className={`${input} flex-1`} placeholder={namePlaceholder} value={name} onChange={(e) => setName(e.target.value)} />
+        <button className={btn} disabled={!name || m.isPending} onClick={() => m.mutate()}>
+          Add
+        </button>
+      </div>
+      {kind === "company" && (
+        <div className="flex flex-wrap items-center gap-3 pl-1 text-sm">
+          <input className={`${input} w-56`} placeholder="ABN (11 digits)" value={abn} onChange={(e) => setAbn(e.target.value)} />
+          <label className="flex items-center gap-1.5 text-muted">
+            <input type="checkbox" checked={gst} onChange={(e) => setGst(e.target.checked)} />
+            GST registered (lets the agent claim GST credits)
+          </label>
+        </div>
+      )}
+      {kind === "novated_lease" && (
+        <div className="flex flex-wrap gap-2 pl-1">
+          <input className={`${input} flex-1`} placeholder="Vehicle e.g. Tesla Model 3" value={vehicle} onChange={(e) => setVehicle(e.target.value)} />
+          <input className={`${input} flex-1`} placeholder="Lease provider" value={provider} onChange={(e) => setProvider(e.target.value)} />
+        </div>
+      )}
     </div>
   );
 }

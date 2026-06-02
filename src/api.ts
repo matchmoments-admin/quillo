@@ -297,7 +297,11 @@ export async function handleApi(
     // callback is handled as a PUBLIC route in index.ts (Intuit can't send our Bearer token).
     if (id === "connect" && m === "GET") {
       if (!env.QBO_CLIENT_ID) return json({ error: "QuickBooks is not configured (QBO_CLIENT_ID missing)." }, 400);
-      return json({ url: await buildConnectUrl(env, uid, url.origin) });
+      const connectUrl = await buildConnectUrl(env, uid, url.origin);
+      // Log the exact authorize URL we hand the browser so `wrangler tail` can confirm the
+      // redirect_uri we send Intuit (diagnostic for the production connect issue).
+      console.log(`qbo connect: redirect_uri=${url.origin}/api/qbo/callback authorize=${connectUrl}`);
+      return json({ url: connectUrl });
     }
     if (id === "reconcile" && m === "GET") {
       // Only receipts are candidate QBO purchases — statement bank_lines come from the

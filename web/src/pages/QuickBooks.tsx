@@ -25,7 +25,11 @@ export function QuickBooks() {
       <h1 className="text-2xl font-semibold tracking-tight">QuickBooks</h1>
 
       {justConnected === "1" && <Card className="bg-safe/5 p-3 text-sm text-safe">Connected to QuickBooks.</Card>}
-      {justConnected === "0" && <Card className="bg-danger/5 p-3 text-sm text-danger">Connection failed — try again.</Card>}
+      {justConnected === "0" && (
+        <Card className="bg-danger/5 p-3 text-sm text-danger">
+          Connection failed{params.get("reason") ? `: ${params.get("reason")}` : " — try again."}
+        </Card>
+      )}
 
       <Card className="p-4">
         <p className="text-sm">

@@ -116,7 +116,13 @@ export default {
     // session — the standard OAuth CSRF protection. Must be matched BEFORE the /api/ gate.
     if (url.pathname === "/api/qbo/callback" && req.method === "GET") {
       const r = await handleCallback(env, url, url.origin);
-      return Response.redirect(`${url.origin}/quickbooks?connected=${r.ok ? "1" : "0"}`, 302);
+      // Surface the failure reason to the UI (and logs) so a failed callback isn't a silent
+      // connected=0. Note: the "redirect_uri invalid" error happens on Intuit's authorize
+      // page BEFORE this callback ever runs, so it won't appear here — that's an Intuit-side
+      // registration/propagation issue, not something our server sees.
+      if (!r.ok) console.warn(`qbo callback failed: ${r.error}`);
+      const reason = r.ok ? "" : `&reason=${encodeURIComponent(r.error ?? "unknown")}`;
+      return Response.redirect(`${url.origin}/quickbooks?connected=${r.ok ? "1" : "0"}${reason}`, 302);
     }
 
     // Web UI API — authenticated via Clerk, gated to the founder's user until launch.

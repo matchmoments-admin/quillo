@@ -9,6 +9,8 @@ import {
   dashboard,
   listAccounts,
   usageSummary,
+  listStatements,
+  reconcilePairs,
 } from "./lib/queries";
 import {
   addProperty,
@@ -55,7 +57,9 @@ export async function handleApi(
     const rows = await listTransactions(env, uid, {
       status: url.searchParams.get("status") ?? undefined,
       bucket: url.searchParams.get("bucket") ?? undefined,
+      kind: url.searchParams.get("kind") ?? undefined,
       limit: Number(url.searchParams.get("limit")) || undefined,
+      offset: Number(url.searchParams.get("offset")) || undefined,
     });
     return json({ transactions: rows });
   }
@@ -227,6 +231,16 @@ export async function handleApi(
         return json({ error: (e as Error).message }, 409); // e.g. reconciliation gate
       }
     }
+  }
+
+  // GET /api/reconcile — unmatched receipts vs unmatched bank lines (for the Reconcile page).
+  if (resource === "reconcile" && m === "GET") {
+    return json(await reconcilePairs(env, uid));
+  }
+
+  // GET /api/statements?account_id= — statement import status per account.
+  if (resource === "statements" && m === "GET" && !id) {
+    return json({ statements: await listStatements(env, uid, url.searchParams.get("account_id") ?? undefined) });
   }
 
   // ── Manual receipt ↔ bank-line matching ───────────────────────────────────

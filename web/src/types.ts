@@ -17,6 +17,12 @@ export interface Txn {
   confidence: number | null;
   reasoning: string | null;
   duplicate_of: string | null;
+  kind?: string;
+  account_id?: string | null;
+  statement_id?: string | null;
+  matched_txn_id?: string | null;
+  direction?: string | null;
+  raw_description?: string | null;
   ledger_ref: string | null;
   created_at: string;
 }
@@ -75,6 +81,19 @@ export interface StatementParse {
   rowCount: number;
   duplicate: boolean;
   reconciliation?: Reconciliation;
+}
+
+export interface StatementInfo {
+  id: string;
+  account_id: string;
+  filename: string | null;
+  format: string | null;
+  status: string; // parsed|categorising|imported|failed
+  row_count: number | null;
+  imported_count: number | null;
+  reconciled: number | null;
+  recon_diff_cents: number | null;
+  created_at: string;
 }
 
 export interface Situation {

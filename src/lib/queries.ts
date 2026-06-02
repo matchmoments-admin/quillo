@@ -52,7 +52,7 @@ const TXN_COLS =
 export async function listTransactions(
   env: Env,
   userId: string,
-  opts: { status?: string; bucket?: string; limit?: number } = {},
+  opts: { status?: string; bucket?: string; kind?: string; limit?: number; offset?: number } = {},
 ): Promise<TxnRow[]> {
   const where: string[] = ["user_id = ?"];
   const binds: unknown[] = [userId];
@@ -64,17 +64,58 @@ export async function listTransactions(
     where.push("bucket = ?");
     binds.push(opts.bucket);
   }
-  const limit = Math.min(Math.max(opts.limit ?? 100, 1), 500);
+  if (opts.kind) {
+    where.push("kind = ?");
+    binds.push(opts.kind);
+  }
+  // Matched receipts are evidence on a bank line — shown in Reconcile, not the review inbox.
+  where.push("status != 'matched_receipt'");
+  const limit = Math.min(Math.max(opts.limit ?? 50, 1), 500);
+  const offset = Math.max(opts.offset ?? 0, 0);
   // Low-confidence + needs-review first, then newest.
   const res = await env.DB.prepare(
     `SELECT ${TXN_COLS}
        FROM transactions WHERE ${where.join(" AND ")}
       ORDER BY (confidence IS NULL) DESC, confidence ASC, created_at DESC
-      LIMIT ?`,
+      LIMIT ? OFFSET ?`,
   )
-    .bind(...binds, limit)
+    .bind(...binds, limit, offset)
     .all<TxnRow>();
   return res.results ?? [];
+}
+
+/** Statements for an account (or all), with their reconcile/import status — for the Accounts page. */
+export async function listStatements(env: Env, userId: string, accountId?: string) {
+  const where = accountId ? "user_id = ? AND account_id = ?" : "user_id = ?";
+  const binds = accountId ? [userId, accountId] : [userId];
+  const res = await env.DB.prepare(
+    `SELECT id, account_id, filename, format, status, row_count, imported_count, reconciled, recon_diff_cents, created_at
+       FROM statements WHERE ${where} ORDER BY created_at DESC LIMIT 50`,
+  )
+    .bind(...binds)
+    .all();
+  return res.results ?? [];
+}
+
+/** Unmatched receipts + unmatched bank lines, for the manual Reconcile page. */
+export async function reconcilePairs(env: Env, userId: string) {
+  const receipts = await env.DB.prepare(
+    `SELECT ${TXN_COLS} FROM transactions
+      WHERE user_id = ? AND kind = 'receipt' AND status NOT IN ('duplicate') AND matched_txn_id IS NULL
+        AND amount_cents IS NOT NULL
+      ORDER BY created_at DESC LIMIT 100`,
+  )
+    .bind(userId)
+    .all<TxnRow>();
+  const lines = await env.DB.prepare(
+    `SELECT ${TXN_COLS} FROM transactions t
+      WHERE user_id = ? AND kind = 'bank_line' AND status NOT IN ('duplicate','ignored') AND direction = 'debit'
+        AND id NOT IN (SELECT matched_txn_id FROM transactions WHERE user_id = ? AND matched_txn_id IS NOT NULL)
+      ORDER BY txn_date DESC LIMIT 200`,
+  )
+    .bind(userId, userId)
+    .all<TxnRow>();
+  return { receipts: receipts.results ?? [], lines: lines.results ?? [] };
 }
 
 export async function getTransaction(env: Env, userId: string, id: string) {

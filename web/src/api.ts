@@ -1,4 +1,4 @@
-import type { Txn, TxnDetail, Situation, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse, UsageData } from "./types";
+import type { Txn, TxnDetail, Situation, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse, UsageData, StatementInfo } from "./types";
 
 // Clerk session token getter, wired from <TokenBridge> inside ClerkProvider (main.tsx).
 // Clerk tokens are short-lived, so we fetch a fresh one per request (getToken caches/refreshes).
@@ -37,8 +37,20 @@ async function send<T>(method: string, path: string, body?: unknown): Promise<T>
 const post = <T>(path: string, body?: unknown) => send<T>("POST", path, body);
 
 export const api = {
-  transactions: (status?: string) =>
-    get<{ transactions: Txn[] }>(`/api/transactions${status ? `?status=${status}` : ""}`).then((r) => r.transactions),
+  transactions: (opts: { status?: string; kind?: string; offset?: number; limit?: number } = {}) => {
+    const q = new URLSearchParams();
+    if (opts.status) q.set("status", opts.status);
+    if (opts.kind) q.set("kind", opts.kind);
+    if (opts.offset) q.set("offset", String(opts.offset));
+    if (opts.limit) q.set("limit", String(opts.limit));
+    const qs = q.toString();
+    return get<{ transactions: Txn[] }>(`/api/transactions${qs ? `?${qs}` : ""}`).then((r) => r.transactions);
+  },
+  reconcilePairs: () => get<{ receipts: Txn[]; lines: Txn[] }>("/api/reconcile"),
+  statements: (accountId?: string) =>
+    get<{ statements: StatementInfo[] }>(`/api/statements${accountId ? `?account_id=${accountId}` : ""}`).then((r) => r.statements),
+  matchLink: (receiptId: string, lineId: string) => post<{ ok: boolean }>("/api/match/link", { receiptId, lineId }),
+  matchUnlink: (receiptId: string) => post<{ ok: boolean }>("/api/match/unlink", { receiptId }),
   transaction: (id: string) => get<TxnDetail>(`/api/transactions/${id}`),
   upload: async (files: File | File[], bucket?: string): Promise<{ ok: boolean; txnId: string }> => {
     const fd = new FormData();

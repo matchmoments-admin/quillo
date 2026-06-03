@@ -179,7 +179,26 @@ const STATEMENT_TOOL: Anthropic.Tool = {
 };
 
 /** Extract a full statement from a PDF (or image) via Claude document input. */
-export async function extractStatement(llm: LLM, bytes: ArrayBuffer, mime: string): Promise<ExtractedStatement> {
+export async function extractStatement(
+  llm: LLM,
+  bytes: ArrayBuffer,
+  mime: string,
+  opts: { isLiability?: boolean } = {},
+): Promise<ExtractedStatement> {
+  // Credit-card / loan statements need extra guidance: payments are printed with a trailing
+  // minus, and they carry non-transaction tables (rewards/points, a "regular payments" summary,
+  // interest-rate rows) that must NOT be transcribed or they double-count the real lines.
+  const liabilityNote = opts.isLiability
+    ? " This is a CREDIT-CARD / loan statement: a purchase is direction \"debit\" (it increases the balance owed); a payment or refund is direction \"credit\" (it reduces it)."
+    : "";
+  const instructions =
+    "Transcribe EVERY money transaction from this statement's dated transaction table (across all pages), " +
+    "plus the opening and closing balances shown in the statement summary. Rules:\n" +
+    "- An amount printed with a trailing or leading minus (e.g. \"2,500.00-\" or \"-2,500.00\") is money IN → direction \"credit\"; a plain positive amount is money OUT → direction \"debit\"." +
+    liabilityNote +
+    "\n- amount_cents is ALWAYS the absolute value in cents (never negative).\n" +
+    "- EXCLUDE everything that is not a dated money transaction: rewards/points lines and summaries, any \"regular payments\" / \"helping you identify your regular payments\" list, interest-rate summary rows, and marketing text. Only transcribe rows that have a date and a dollar amount in the transaction table.\n" +
+    "Call record_statement once.";
   let msg: Anthropic.Message;
   try {
     msg = await llm.create({
@@ -192,7 +211,7 @@ export async function extractStatement(llm: LLM, bytes: ArrayBuffer, mime: strin
           role: "user",
           content: [
             receiptBlock(bytes, mime),
-            { type: "text", text: "Transcribe EVERY transaction from this statement (across all pages) plus the opening and closing balances. Call record_statement once." },
+            { type: "text", text: instructions },
           ],
         },
       ],

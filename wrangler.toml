@@ -25,6 +25,11 @@ workers_dev = true
 [limits]
 cpu_ms = 300000
 
+# Persist console logs + uncaught exceptions to Workers Logs so a failed upload is queryable
+# after the fact (this incident had to be guessed at because nothing was logged).
+[observability]
+enabled = true
+
 # --- Durable Object: one TaxAgent instance per tenant (keyed by user_id) ---
 # Uses the Cloudflare Agents SDK ("agents" package — verified npm name, not @cloudflare/agents).
 [[durable_objects.bindings]]

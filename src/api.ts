@@ -261,8 +261,13 @@ export async function handleApi(
       if (bytes.byteLength === 0) return json({ error: "empty file" }, 400);
       const filename = (entry as unknown as { name?: string }).name ?? "statement.csv";
       const format = filename.toLowerCase().endsWith(".pdf") ? "pdf" : "csv";
-      const out = await stub.parseStatement(uid, accEntry, filename, bytes, format);
-      return json(out);
+      try {
+        return json(await stub.parseStatement(uid, accEntry, filename, bytes, format));
+      } catch (e) {
+        const msg = (e as Error).message;
+        if (msg === "consent_required") return json({ error: "consent_required" }, 403);
+        return json({ error: msg }, 422); // unreadable statement / extraction failure — show the reason
+      }
     }
     // POST /api/statements/:id/confirm [{ columnMap?, force? }] → commit + dedup + categorise
     if (m === "POST" && id && sub === "confirm") {

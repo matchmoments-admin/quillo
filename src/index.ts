@@ -132,7 +132,16 @@ export default {
         const msg = auth.status === 403 ? "not yet available" : "unauthorized";
         return new Response(msg, { status: auth.status });
       }
-      return handleApi(req, env, auth.user, stubFor(env, auth.user.userId));
+      // Error boundary: a throw inside any /api handler must become a readable JSON 500,
+      // never a raw Cloudflare 1101 ("Worker threw exception") HTML page that the UI then
+      // shows verbatim. Log with method+path so Workers Logs pinpoint the failing route.
+      try {
+        return await handleApi(req, env, auth.user, stubFor(env, auth.user.userId));
+      } catch (e) {
+        const err = e as Error;
+        console.error(`api error: ${req.method} ${url.pathname}: ${err?.stack ?? err?.message ?? err}`);
+        return Response.json({ error: err?.message ?? "internal error" }, { status: 500 });
+      }
     }
 
     // Agents SDK routes (/agents/*) + websocket upgrades.

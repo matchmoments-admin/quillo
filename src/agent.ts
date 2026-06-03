@@ -14,7 +14,7 @@ import { matchClaimRules, suggestionText, type ClaimRule, type ClaimContext } fr
 import { parseCsv, applyColumnMap, lineFingerprint, deriveBalances, reconcileStatement, isLiabilityAccount, fuzzyMerchant, isTransferLike, type ColumnMap, type Reconciliation, type StatementLine } from "./lib/statements";
 import { batchStatementStatus, isStaleBatch } from "./lib/batch";
 import { cleanMerchant } from "./lib/bank-parsers";
-import { pdfPageCount, splitPdf } from "./lib/pdf";
+import { pdfPageCount, splitPdf, normalizePdf } from "./lib/pdf";
 import { getLedger, LedgerNotConnectedError, LedgerReauthError, type LedgerExpense } from "./ledger";
 import { redact } from "./lib/redact";
 import { toAud } from "./lib/fx";
@@ -208,8 +208,11 @@ export class TaxAgent extends Agent<Env> {
       // truncates to an empty table — a single whole-PDF shot over a long statement returned
       // nothing. The stitched result is reconciled end-to-end (liability-aware), so a dropped
       // page breaks the balance and is flagged.
+      // Decrypt once up front (bank PDFs are encrypted) so both Claude and splitPdf see clean
+      // bytes; the original encrypted file is what we retain in R2.
+      const pdfBytes = await normalizePdf(bytes);
       const extractChunked = async (perChunk: number) => {
-        const chunks = await splitPdf(bytes, perChunk);
+        const chunks = await splitPdf(pdfBytes, perChunk);
         const all: StatementLine[] = [];
         let opening: number | null = null;
         let closing: number | null = null;
@@ -222,11 +225,11 @@ export class TaxAgent extends Agent<Env> {
         return { ls: all, recon: reconcileStatement(all, opening, closing, isLiability) };
       };
       const extractWhole = async () => {
-        const ext = await extractStatement(llm, bytes, "application/pdf", { isLiability });
+        const ext = await extractStatement(llm, pdfBytes, "application/pdf", { isLiability });
         const ls = this.pdfLines(ext);
         return { ls, recon: reconcileStatement(ls, ext.opening_cents, ext.closing_cents, isLiability) };
       };
-      const pages = await pdfPageCount(bytes);
+      const pages = await pdfPageCount(pdfBytes);
       let a = pages > 2 ? await extractChunked(3) : await extractWhole();
       if (a.recon.available && !a.recon.ok) {
         // Didn't balance — retry with tighter chunks (re-reads pages, bounds output further).

@@ -34,6 +34,14 @@ export function signedCents(line: { amount_cents: number; direction: "debit" | "
   return line.direction === "debit" ? -line.amount_cents : line.amount_cents;
 }
 
+// Liability accounts (credit cards, loans) move the OPPOSITE way to an asset account: a debit
+// (purchase / draw-down) INCREASES the balance owed and a credit (payment / refund) reduces it.
+// Reconciliation flips the running-balance sign for these so opening + Σ moves == closing holds.
+const LIABILITY_ACCOUNT_TYPES = new Set(["credit_card", "loan"]);
+export function isLiabilityAccount(type: string | null | undefined): boolean {
+  return type != null && LIABILITY_ACCOUNT_TYPES.has(type);
+}
+
 /** 0..1 token-overlap similarity between two merchant/description strings (for receipt↔line matching). */
 export function fuzzyMerchant(a: string, b: string): number {
   const toks = (s: string) =>
@@ -191,15 +199,19 @@ export function reconcileStatement(
   lines: StatementLine[],
   opening_cents: number | null,
   closing_cents: number | null,
+  isLiability = false,
 ): Reconciliation {
   const txn_count = lines.length;
   if (opening_cents == null || closing_cents == null) {
     return { available: false, ok: false, opening_cents, closing_cents, expected_cents: null, diff_cents: 0, txn_count, first_bad_line: null };
   }
+  // Asset accounts: debit reduces the balance. Liability accounts (credit card / loan): debit
+  // INCREASES the balance owed — so flip the sign of every signed move for those.
+  const dir = isLiability ? -1 : 1;
   let running = opening_cents;
   let first_bad_line: number | null = null;
   for (let i = 0; i < lines.length; i++) {
-    running += signedCents(lines[i]!);
+    running += dir * signedCents(lines[i]!);
     const bal = lines[i]!.balance_cents;
     if (first_bad_line === null && bal != null && Math.abs(running - bal) > 1) first_bad_line = i;
   }

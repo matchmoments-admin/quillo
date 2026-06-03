@@ -58,6 +58,18 @@ console.log("reconcileStatement");
   // No balances → unavailable, not a false pass.
   const noBal = reconcileStatement([line({ amount_cents: 100, direction: "debit" })], null, null);
   check("no-balance statement reports available=false", !noBal.available && !noBal.ok);
+
+  // Liability (credit card): debits INCREASE the balance owed, credits reduce it. Real figures
+  // from a CommBank Ultimate Awards statement: opening $1,866.14, purchases $8,528.99,
+  // payments $8,800.00 → closing $1,595.13. With the default (asset) sign it would NOT balance.
+  const cc: StatementLine[] = [
+    line({ amount_cents: 852899, direction: "debit", description: "purchases" }),
+    line({ amount_cents: 880000, direction: "credit", description: "payments" }),
+  ];
+  const ccOk = reconcileStatement(cc, 186614, 159513, true);
+  check("credit-card statement reconciles when liability-aware", ccOk.ok && ccOk.available && ccOk.diff_cents === 0);
+  const ccAsset = reconcileStatement(cc, 186614, 159513, false);
+  check("same credit-card statement does NOT balance under asset sign", !ccAsset.ok && ccAsset.diff_cents === 54202);
 }
 
 // ── Transfer detection: conservative (never drop a real expense) ─────────────

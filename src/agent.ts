@@ -11,7 +11,7 @@ import { fyForDate } from "./lib/report";
 import { fyLabel } from "./lib/ledger-totals";
 import { rollSchedule, balancingAdjustment, fyStartYearOf, type DepAsset } from "./lib/depreciation";
 import { matchClaimRules, suggestionText, type ClaimRule, type ClaimContext } from "./lib/claimability";
-import { parseCsv, applyColumnMap, lineFingerprint, deriveBalances, reconcileStatement, fuzzyMerchant, isTransferLike, type ColumnMap, type Reconciliation, type StatementLine } from "./lib/statements";
+import { parseCsv, applyColumnMap, lineFingerprint, deriveBalances, reconcileStatement, isLiabilityAccount, fuzzyMerchant, isTransferLike, type ColumnMap, type Reconciliation, type StatementLine } from "./lib/statements";
 import { batchStatementStatus, isStaleBatch } from "./lib/batch";
 import { cleanMerchant } from "./lib/bank-parsers";
 import { pdfPageCount, splitPdf } from "./lib/pdf";
@@ -165,13 +165,14 @@ export class TaxAgent extends Agent<Env> {
     bytes: ArrayBuffer,
     format: string,
   ): Promise<{ statementId: string; columnMap: ColumnMap | null; preview: unknown[]; rowCount: number; duplicate: boolean; reconciliation?: Reconciliation }> {
-    const account = await this.env.DB.prepare(`SELECT source FROM accounts WHERE id = ? AND user_id = ?`)
+    const account = await this.env.DB.prepare(`SELECT source, type FROM accounts WHERE id = ? AND user_id = ?`)
       .bind(accountId, userId)
-      .first<{ source: string }>();
+      .first<{ source: string; type: string }>();
     if (!account) throw new Error("account not found");
     if (account.source === "qbo_feed") {
       throw new Error("This account is reconciled from the QuickBooks feed — don't import statements for it (would double-count).");
     }
+    const isLiability = isLiabilityAccount(account.type); // credit card / loan: debits increase the balance owed
 
     // APP-8 cross-border consent gate — parsing a statement sends the user's financial data to
     // the US inference API (a cross-border disclosure), so it needs recorded consent just like
@@ -201,35 +202,36 @@ export class TaxAgent extends Agent<Env> {
     let recon: Reconciliation;
 
     if (format === "pdf") {
-      // PDF: Claude transcribes the table. Reconcile; if it doesn't balance, escalate —
-      // re-extract once for small PDFs, or CHUNK by page for multi-page ones (bounds the
-      // per-call output so nothing truncates). The stitched result is reconciled end-to-end,
-      // so a dropped page anywhere breaks the running balance and is flagged.
-      const single = async () => {
-        const ext = await extractStatement(llm, bytes, "application/pdf");
-        const ls = this.pdfLines(ext);
-        return { ls, recon: reconcileStatement(ls, ext.opening_cents, ext.closing_cents) };
-      };
-      let a = await single();
-      if (a.recon.available && !a.recon.ok) {
-        const pages = await pdfPageCount(bytes);
-        if (pages > 2) {
-          const chunks = await splitPdf(bytes, 3);
-          const all: StatementLine[] = [];
-          let opening: number | null = null;
-          let closing: number | null = null;
-          for (let k = 0; k < chunks.length; k++) {
-            const ext = await extractStatement(llm, chunks[k]!, "application/pdf");
-            all.push(...this.pdfLines(ext));
-            if (k === 0) opening = ext.opening_cents;
-            closing = ext.closing_cents;
-          }
-          const recon2 = reconcileStatement(all, opening, closing);
-          if (recon2.ok || (recon2.available && Math.abs(recon2.diff_cents) < Math.abs(a.recon.diff_cents))) a = { ls: all, recon: recon2 };
-        } else {
-          const b = await single(); // small PDF: just a fresh re-extract
-          if (b.recon.ok || (b.recon.available && Math.abs(b.recon.diff_cents) < Math.abs(a.recon.diff_cents))) a = b;
+      // PDF: Claude transcribes the dated transaction table + the summary's opening/closing
+      // balances. Multi-page statements (a credit card runs ~150 lines over 8 pages) are
+      // extracted in PAGE CHUNKS up front so the per-call output never approaches max_tokens and
+      // truncates to an empty table — a single whole-PDF shot over a long statement returned
+      // nothing. The stitched result is reconciled end-to-end (liability-aware), so a dropped
+      // page breaks the balance and is flagged.
+      const extractChunked = async (perChunk: number) => {
+        const chunks = await splitPdf(bytes, perChunk);
+        const all: StatementLine[] = [];
+        let opening: number | null = null;
+        let closing: number | null = null;
+        for (let k = 0; k < chunks.length; k++) {
+          const ext = await extractStatement(llm, chunks[k]!, "application/pdf", { isLiability });
+          all.push(...this.pdfLines(ext));
+          if (opening == null && ext.opening_cents != null) opening = ext.opening_cents; // first page that carries it
+          if (ext.closing_cents != null) closing = ext.closing_cents; // last page that carries it wins
         }
+        return { ls: all, recon: reconcileStatement(all, opening, closing, isLiability) };
+      };
+      const extractWhole = async () => {
+        const ext = await extractStatement(llm, bytes, "application/pdf", { isLiability });
+        const ls = this.pdfLines(ext);
+        return { ls, recon: reconcileStatement(ls, ext.opening_cents, ext.closing_cents, isLiability) };
+      };
+      const pages = await pdfPageCount(bytes);
+      let a = pages > 2 ? await extractChunked(3) : await extractWhole();
+      if (a.recon.available && !a.recon.ok) {
+        // Didn't balance — retry with tighter chunks (re-reads pages, bounds output further).
+        const b = await extractChunked(pages > 2 ? 2 : 3);
+        if (b.recon.ok || (b.recon.available && Math.abs(b.recon.diff_cents) < Math.abs(a.recon.diff_cents))) a = b;
       }
       lines = a.ls;
       recon = a.recon;
@@ -238,7 +240,7 @@ export class TaxAgent extends Agent<Env> {
       columnMap = await extractColumnMap(llm, rows);
       lines = applyColumnMap(rows, columnMap);
       const bal = deriveBalances(lines);
-      recon = reconcileStatement(lines, bal?.opening_cents ?? null, bal?.closing_cents ?? null);
+      recon = reconcileStatement(lines, bal?.opening_cents ?? null, bal?.closing_cents ?? null, isLiability);
     }
 
     // Zero lines means the extractor found no transaction table (unrecognised layout, scanned
@@ -278,11 +280,15 @@ export class TaxAgent extends Agent<Env> {
   // categorise deterministically (user rules + merchant hints — FREE; LLM categorisation of
   // the remainder is a later phase). Returns counts.
   async confirmImport(userId: string, statementId: string, _columnMapOverride?: ColumnMap, force?: boolean): Promise<{ imported: number; skipped: number }> {
+    // LEFT JOIN (not INNER) so a statement whose account was later deleted is still found — the
+    // null account_type just falls through to the asset reconcile sign via isLiabilityAccount.
     const stmt = await this.env.DB.prepare(
-      `SELECT account_id, file_key, opening_cents, closing_cents FROM statements WHERE id = ? AND user_id = ?`,
+      `SELECT s.account_id, s.file_key, s.opening_cents, s.closing_cents, a.type AS account_type
+         FROM statements s LEFT JOIN accounts a ON a.id = s.account_id AND a.user_id = s.user_id
+        WHERE s.id = ? AND s.user_id = ?`,
     )
       .bind(statementId, userId)
-      .first<{ account_id: string; file_key: string; opening_cents: number | null; closing_cents: number | null }>();
+      .first<{ account_id: string; file_key: string; opening_cents: number | null; closing_cents: number | null; account_type: string | null }>();
     if (!stmt) throw new Error("statement not found");
 
     // Use the normalised lines stored at parse time (so a PDF is never re-extracted).
@@ -292,7 +298,7 @@ export class TaxAgent extends Agent<Env> {
 
     // Reconciliation gate: refuse to import a statement that doesn't balance unless the user
     // explicitly overrides after reviewing the flagged line(s). This is the proof of completeness.
-    const recon = reconcileStatement(lines, stmt.opening_cents, stmt.closing_cents);
+    const recon = reconcileStatement(lines, stmt.opening_cents, stmt.closing_cents, isLiabilityAccount(stmt.account_type));
     if (recon.available && !recon.ok && !force) {
       const off = `$${Math.abs(recon.diff_cents / 100).toFixed(2)}`;
       throw new Error(`Statement doesn't reconcile (off by ${off}${recon.first_bad_line != null ? `, first wrong around line ${recon.first_bad_line + 1}` : ""}). Review the lines, then import anyway to override.`);

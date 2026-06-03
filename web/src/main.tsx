@@ -13,6 +13,7 @@ import { Settings } from "./pages/Settings";
 import { Onboarding } from "./pages/Onboarding";
 import { QuickBooks } from "./pages/QuickBooks";
 import { Reports } from "./pages/Reports";
+import { Filing } from "./pages/Filing";
 import { Accounts } from "./pages/Accounts";
 import { Reconcile } from "./pages/Reconcile";
 import { Income } from "./pages/Income";
@@ -90,6 +91,7 @@ const router = createBrowserRouter([
       { path: "onboarding", element: <Onboarding /> },
       { path: "quickbooks", element: <QuickBooks /> },
       { path: "reports", element: <Reports /> },
+      { path: "filing", element: <Filing /> },
     ],
   },
 ]);

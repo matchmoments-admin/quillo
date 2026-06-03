@@ -14,6 +14,7 @@ const NAV = [
   { to: "/accounts", label: "Accounts" },
   { to: "/reconcile", label: "Reconcile" },
   { to: "/reports", label: "Reports" },
+  { to: "/filing", label: "File" },
   { to: "/notifications", label: "Alerts" },
   { to: "/quickbooks", label: "QuickBooks" },
   { to: "/settings", label: "Settings" },

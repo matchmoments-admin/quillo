@@ -7,8 +7,9 @@ import { COUNTABLE } from "./lib/queries";
 import { sha256hex, sha256hexBytes } from "./lib/base64";
 import { getLLM, type LLM } from "./llm";
 import { extractReceipt, extractReceipts, extractFromText, extractColumnMap, extractStatement, extractBatch, extractSituationDraft, classifyDocument, extractPayslip, extractAgentStatement, extractDepreciationSchedule, extractDividend, batchParams, parseBatchMessage, type Extracted, type ExtractedStatement, type SituationDraft } from "./extract";
-import { fyForDate } from "./lib/report";
-import { fyLabel } from "./lib/ledger-totals";
+import { fyForDate, buildReport } from "./lib/report";
+import { fyLabel, fyBounds } from "./lib/ledger-totals";
+import { assessReadiness, type FilingReadiness, type FilingReadinessSignals } from "./lib/readiness";
 import { rollSchedule, balancingAdjustment, fyStartYearOf, type DepAsset } from "./lib/depreciation";
 import { matchClaimRules, suggestionText, type ClaimRule, type ClaimContext } from "./lib/claimability";
 import { parseCsv, applyColumnMap, lineFingerprint, deriveBalances, reconcileStatement, isLiabilityAccount, fuzzyMerchant, isTransferLike, type ColumnMap, type Reconciliation, type StatementLine } from "./lib/statements";
@@ -1550,6 +1551,77 @@ export class TaxAgent extends Agent<Env> {
     }
     if (n) await this.audit(userId, "claims_suggested", JSON.stringify({ txnId: refs.txnId, assetId: refs.assetId, n }));
     return n;
+  }
+
+  // ── FILING READINESS: compose the report + rules + signals into a capstone view ──
+  /**
+   * Read-only synthesis for the "File" page: an INDICATIVE position with reasoning, plus a
+   * deterministic "things to double-check" list. Composes buildReport + the situation + matched
+   * claimability rules + a few D1 signal counts, then runs the pure assessReadiness() engine. Makes
+   * no LLM call (the v2 narrative layer does, behind the APP-8 gate) and mutates nothing — viewing
+   * the page must never change the ledger. Writes one audit row.
+   */
+  async assessFilingReadiness(userId: string, startYear: number): Promise<FilingReadiness> {
+    const profile = await this.requireProfile(userId);
+    const fy = fyLabel(startYear);
+    const { start, end } = fyBounds(startYear);
+    const [report, situation] = await Promise.all([buildReport(this.env, userId, startYear), getSituation(this.env, userId, profile)]);
+
+    // Matched situation-level claim rules (defer-to-agent ones become "judgement" findings). Iterate
+    // distinct property statuses since the context carries a single property_status; occupation/
+    // entity rules match regardless. Merchant-scoped rules can't fire here (no merchant) — intended.
+    const pack = await this.loadRulePack(profile.rule_pack_ver);
+    const packRules = ((pack as { claimability?: ClaimRule[] }).claimability ?? []) as ClaimRule[];
+    const d1Rules = (
+      await this.env.DB.prepare(
+        `SELECT id, scope_type, scope_value, merchant_hint, ato_label, claim_type, default_method, general_info_note, defer_to_agent
+           FROM claimability_rules WHERE rule_pack_ver = ?`,
+      ).bind(profile.rule_pack_ver).all<ClaimRule>()
+    ).results ?? [];
+    const allRules = [...packRules, ...d1Rules];
+    const occupations = situation.persons.map((p) => p.occupation).filter((o): o is string => !!o);
+    const entity_kinds = situation.entities.map((e) => e.kind);
+    const statuses = [...new Set(situation.properties.map((p) => p.status))];
+    const matchedById = new Map<string, ClaimRule>();
+    for (const st of statuses.length ? statuses : [null]) {
+      for (const r of matchClaimRules(allRules, { property_status: st, occupations, entity_kinds })) {
+        matchedById.set(r.id ?? `${r.scope_type}:${r.scope_value}`, r);
+      }
+    }
+
+    // Pre-counted impure signals handed to the pure engine.
+    const unknownRow = report.by_bucket.find((b) => b.bucket === "unknown");
+    const confidenceFloor = 0.6;
+    const [needsIncome, needsAssets, lowConf, divDoc, agentSummaryProps, disposed] = await Promise.all([
+      this.env.DB.prepare(`SELECT COUNT(*) AS n FROM income WHERE user_id = ? AND fy = ? AND needs_review = 1`).bind(userId, fy).first<{ n: number }>(),
+      this.env.DB.prepare(`SELECT COUNT(*) AS n FROM assets WHERE user_id = ? AND needs_review = 1 AND status = 'active'`).bind(userId).first<{ n: number }>(),
+      this.env.DB.prepare(`SELECT COUNT(*) AS n FROM transactions WHERE user_id = ? AND confidence IS NOT NULL AND confidence < ? AND txn_date >= ? AND txn_date <= ? AND ${COUNTABLE}`).bind(userId, confidenceFloor, start, end).first<{ n: number }>(),
+      this.env.DB.prepare(`SELECT COUNT(*) AS n FROM documents WHERE user_id = ? AND doc_type IN ('dividend_statement','managed_fund_amma') AND (fy = ? OR fy IS NULL)`).bind(userId, fy).first<{ n: number }>(),
+      this.env.DB.prepare(`SELECT DISTINCT property_id FROM documents WHERE user_id = ? AND doc_type = 'agent_rental_summary' AND property_id IS NOT NULL`).bind(userId).all<{ property_id: string }>(),
+      this.env.DB.prepare(`SELECT COUNT(*) AS n FROM assets WHERE user_id = ? AND disposed_date IS NOT NULL AND disposed_date >= ? AND disposed_date <= ?`).bind(userId, start, end).first<{ n: number }>(),
+    ]);
+    const haveSummaryFor = new Set((agentSummaryProps.results ?? []).map((r) => r.property_id));
+    const rentalPropsMissingSummary = report.per_property
+      .filter((p) => p.income_cents > 0 && !haveSummaryFor.has(p.property_id))
+      .map((p) => ({ property_id: p.property_id, label: p.label }));
+
+    const thresholds = (pack as { thresholds_by_fy?: Record<string, { instant_asset_write_off_cents?: number }> }).thresholds_by_fy ?? {};
+    const signals: FilingReadinessSignals = {
+      unknownBucketCents: unknownRow?.total_cents ?? 0,
+      unknownBucketN: unknownRow?.n ?? 0,
+      lowConfidenceN: lowConf?.n ?? 0,
+      needsReviewIncomeN: needsIncome?.n ?? 0,
+      needsReviewAssetsN: needsAssets?.n ?? 0,
+      hasDividendStatementDoc: (divDoc?.n ?? 0) > 0,
+      rentalPropsMissingSummary,
+      disposedAssetsN: disposed?.n ?? 0,
+      instantAssetWriteOffCentsThisFy: thresholds[fy]?.instant_asset_write_off_cents ?? null,
+      instantAssetWriteOffCentsPrevFy: thresholds[fyLabel(startYear - 1)]?.instant_asset_write_off_cents ?? null,
+    };
+
+    const readiness = assessReadiness({ report, situation, claimMatches: [...matchedById.values()], signals, generatedAt: new Date().toISOString() });
+    await this.audit(userId, "readiness_assessed", JSON.stringify({ fy, blockers: readiness.readiness_score.blockers, review: readiness.readiness_score.review, findings: readiness.findings.length }));
+    return readiness;
   }
 
   /** Update a claim suggestion's status (suggested|accepted|dismissed). */

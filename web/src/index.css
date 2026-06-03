@@ -8,14 +8,38 @@
     font-family: theme("fontFamily.sans");
     line-height: 1.55;
   }
-  /* Spectral serif display headings — one visual language with the landing page.
-     Body and dense data stay on Hanken Grotesk (the sans). */
+  /* Anton condensed display headings — one visual language with the green landing.
+     Body and dense data stay on Inter (the sans). Anton ships a single weight (400)
+     and reads best in caps, so headings are uppercased + lightly tracked. */
   h1,
   h2,
   h3 {
     font-family: theme("fontFamily.serif");
-    font-weight: 500;
-    letter-spacing: -0.01em;
-    line-height: 1.1;
+    font-weight: 400;
+    letter-spacing: 0.01em;
+    line-height: 1.0;
+    text-transform: uppercase;
+  }
+  ::selection {
+    background: theme("colors.forest");
+    color: theme("colors.cream");
+  }
+}
+
+@layer utilities {
+  .tnum {
+    font-variant-numeric: tabular-nums;
+  }
+  /* Subtle film-grain overlay used by the app shell for the tactile "paper" feel.
+     z-index sits above page content but below interactive overlays (mobile drawer z-50,
+     backdrop z-40, top bar z-30, sonner toasts) so it never veils modals or toasts. */
+  .grain {
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+    pointer-events: none;
+    opacity: 0.04;
+    mix-blend-mode: multiply;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
   }
 }

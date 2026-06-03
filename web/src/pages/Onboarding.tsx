@@ -131,7 +131,7 @@ export function Onboarding() {
             next steps; you confirm everything. Or skip and fill it in manually.
           </p>
           <textarea
-            className="h-32 w-full rounded-lg border border-line bg-white px-3 py-2 text-sm"
+            className="h-32 w-full rounded-lg border border-line bg-card px-3 py-2 text-sm"
             placeholder="e.g. I run Acme Pty Ltd (ABN 51 824 753 556), GST registered. I'm also PAYG-employed at BigCo. I have one rental at 14 Rental St, Sydney — I own 50%."
             value={intake}
             onChange={(e) => setIntake(e.target.value)}

@@ -13,21 +13,31 @@ export default {
         ink: color.ink,
         "ink-2": color.ink2,
         "ink-3": color.ink3,
-        muted: color.ink2, // the app's long-standing "muted" → warm secondary ink
+        muted: color.ink2, // the app's long-standing "muted" → secondary forest ink
         line: color.line,
         surface: color.paper2, // soft panels / hover fills
         paper: color.paper,
         card: color.card,
-        yellow: color.yellow, // signature highlight — CTAs/emphasis only
+        yellow: color.yellow, // back-compat alias → sage (signature accent)
         "yellow-d": color.yellowD,
+        // Named greens for the sidebar / feature surfaces.
+        forest: color.forest,
+        green: color.green,
+        "green-d": color.greenD,
+        sage: color.sage,
+        olive: color.olive,
+        moss: color.moss,
+        cream: color.cream,
         safe: color.safe,
         warn: color.warn,
         danger: color.danger,
+        info: color.info,
       },
       fontFamily: {
         // Strings already include the full fallback stack.
         sans: font.sans,
         serif: font.serif,
+        display: font.serif, // Anton — explicit alias for big display headings/numbers
       },
       // NOTE: we intentionally do NOT remap Tailwind's default radius scale
       // (rounded-lg/xl/2xl) — the dashboard relies on those exact sizes for dense

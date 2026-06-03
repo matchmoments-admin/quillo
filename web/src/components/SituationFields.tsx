@@ -3,7 +3,7 @@ import { isValidAbn, normaliseAbn } from "../lib/abn";
 
 // Shared input styling — kept here so the Settings forms and the onboarding wizard render
 // identical controls (single source of truth for the situation fields the categoriser reads).
-export const fieldInput = "rounded-lg border border-line bg-white px-3 py-2 text-sm";
+export const fieldInput = "rounded-lg border border-line bg-card px-3 py-2 text-sm";
 
 export const ENTITY_KINDS = ["company", "employment", "novated_lease", "individual", "trust"] as const;
 

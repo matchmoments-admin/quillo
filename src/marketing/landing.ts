@@ -1,19 +1,20 @@
 // Self-contained public marketing page served by the Worker for the apex host
 // (quillo.au). No framework, no build step — one HTML string with inline CSS. The
-// visual system is the editorial "Quill" design (cream canvas, signature yellow accent,
-// Spectral serif display + Hanken Grotesk body) ported from the Claude Design handoff.
+// visual system is the "Organic-Brutalist" GREEN design (deep forest + sage + cream,
+// massive Anton display type, Inter body, film-grain, fluid reveals) ported from the
+// Claude Design "Claim Better" handoff. It is intentionally decoupled from the app's
+// design/tokens.mjs: this page inlines its own green :root.
 //
 // Copy discipline (Quillo "stay in your lane" rules): non-custodial, NOT a registered
-// tax agent, does NOT lodge. No fabricated user/savings numbers, no invented pricing or
-// testimonials. The footer disclaimer is mandatory and kept verbatim-matched to the app
-// footer. The design mock's copy claimed the opposite (registered agent, TPB number,
-// lodging, $ savings, fake reviews) — all of that is deliberately stripped here.
+// tax agent, does NOT lodge. No fabricated refund/savings numbers, no invented pricing,
+// no fake reviews, no TPB number. The footer disclaimer is mandatory and kept
+// verbatim-matched to the app footer. The design mock's copy claimed the opposite
+// (registered agent, TPB number, an "estimated refund $3,210", "generate my return") —
+// all of that is deliberately stripped here.
 //
-// CTAs ("Log in" / "Get started") point at the gated app. Imagery is hotlinked Unsplash
-// with fallback colours so nothing looks broken if a URL hiccups; swap for brand photos
-// later. Testimonial tiles are Google-review PLACEHOLDERS, ready for real reviews.
-
-import { cssRootVars } from "../../design/tokens.mjs";
+// CTAs ("Sign in" / "Sign up") point at the gated app. The "Join the tax movement"
+// email form posts to the existing /waitlist endpoint. Imagery is hotlinked Unsplash
+// with a fallback colour; swap for brand photos later.
 
 const APP_URL = "https://app.quillo.au";
 
@@ -22,655 +23,529 @@ const HTML = /* html */ `<!doctype html>
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Quillo — the tax brain that sees your whole picture</title>
-<meta name="description" content="Quillo sits above your salary, your side company and your properties, reasoning across all of them against current ATO rules. General information only — not a tax agent, never holds your money." />
+<title>Quillo — Claim Better</title>
+<meta name="description" content="Australian tax, sorted for you. Capture every receipt and segment every statement line, categorised against current ATO rules — all year. General information only; not a tax agent, never holds your money." />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700;800&family=Spectral:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500;1,600&display=swap" rel="stylesheet" />
+<link href="https://fonts.googleapis.com/css2?family=Anton&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
 <style>
   /* ============================================================
-     Quillo — landing page
-     Editorial "Quill" system: warm cream canvas, bright yellow
-     accent, classical serif display, clean grotesque body.
+     Quillo — "Claim Better" landing
+     Organic-Brutalist / Nature-Inspired system: deep forest greens
+     + earthy sage + cream, massive Anton editorial type, ultra-rounded
+     blocks, film-grain overlay, fluid reveal animations.
+     Text is never pure black.
      ============================================================ */
-  /* :root custom properties are generated from the centralised token source
-     (design/tokens.mjs) so the marketing page and the dashboard share one palette. */
-  ${cssRootVars()}
+  :root {
+    --forest:  #0c3f26;   /* deep forest — wordmark, footer, dark text */
+    --green:   #15643a;   /* mid green — buttons / accents */
+    --green-2: #1c7a48;   /* hover */
+    --sage:    #c9d2a8;   /* hero canvas */
+    --olive:   #e8ecca;   /* claim-better canvas */
+    --cream:   #f4f3dd;   /* lightest paper */
+    --moss:    #97a86f;
+
+    --ease: cubic-bezier(0.16, 1, 0.3, 1);
+    --anton: "Anton", Impact, sans-serif;
+    --inter: "Inter", system-ui, -apple-system, sans-serif;
+  }
 
   * { box-sizing: border-box; }
-  html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+  html { scroll-behavior: smooth; }
   body {
     margin: 0;
-    background: var(--paper);
-    color: var(--ink);
-    font-family: var(--sans);
-    font-size: 17px;
-    line-height: 1.5;
+    background: var(--forest);
+    color: var(--forest);
+    font-family: var(--inter);
+    font-size: 16px; line-height: 1.5;
     -webkit-font-smoothing: antialiased;
-    text-rendering: optimizeLegibility;
+    overflow-x: hidden;
   }
   img { display: block; max-width: 100%; }
   a { color: inherit; text-decoration: none; }
-  ::selection { background: var(--yellow); color: var(--ink); }
+  ::selection { background: var(--forest); color: var(--cream); }
 
-  .wrap { max-width: var(--maxw); margin: 0 auto; padding: 0 var(--gutter); }
+  .label {
+    font-family: var(--inter); font-weight: 700;
+    font-size: 11px; letter-spacing: 0.26em; text-transform: uppercase;
+  }
+  .label.sm { font-size: 10px; letter-spacing: 0.2em; }
+  .dot { color: var(--green); }
 
-  /* photo backgrounds with safe fallback colour */
-  .ph {
-    background-size: cover;
-    background-position: center;
-    background-repeat: no-repeat;
-    background-color: var(--fallback, #d8d3c6);
+  /* film-grain overlay */
+  .grain {
+    position: fixed; inset: 0; z-index: 9999; pointer-events: none;
+    opacity: 0.05; mix-blend-mode: multiply;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
   }
 
-  /* ---- display type ---- */
-  .serif { font-family: var(--serif); }
-  h1, h2, h3 { margin: 0; font-family: var(--serif); font-weight: 500; letter-spacing: -0.01em; line-height: 1.04; }
-  .eyebrow {
-    font-family: var(--sans);
-    font-size: 12px; font-weight: 700;
-    letter-spacing: 0.14em; text-transform: uppercase;
-    color: var(--ink-3);
-  }
-
-  /* ---- buttons ---- */
-  .btn {
-    display: inline-flex; align-items: center; gap: 9px;
-    font-family: var(--sans); font-weight: 600; font-size: 14.5px;
-    padding: 12px 22px; border-radius: 999px;
-    border: 1px solid transparent; cursor: pointer;
-    transition: transform .15s ease, background .15s ease, color .15s ease;
-  }
-  .btn:hover { transform: translateY(-1px); }
-  .btn-dark   { background: var(--ink); color: var(--paper); }
-  .btn-dark:hover { background: #2b2820; }
-  .btn-yellow { background: var(--yellow); color: var(--ink); }
-  .btn-yellow:hover { background: var(--yellow-d); }
-  .btn-light  { background: var(--paper); color: var(--ink); border-color: var(--line); }
-  .btn-light:hover { background: #fff; }
-  .btn-ghost  { background: transparent; color: var(--ink); border-color: rgba(20,19,15,.22); }
-  .btn-ghost:hover { background: var(--ink); color: var(--paper); border-color: var(--ink); }
-  .btn-pill-sm { padding: 7px 15px; font-size: 13px; }
-
-  .arrow-btn {
-    display: inline-flex; align-items: center; gap: 10px;
-    font-weight: 600; font-size: 15px; color: var(--ink);
-  }
-  .arrow-btn .circ {
-    width: 34px; height: 34px; border-radius: 50%;
-    display: grid; place-items: center;
-    background: var(--ink); color: var(--paper);
-    transition: transform .15s ease;
-  }
-  .arrow-btn:hover .circ { transform: translate(2px,-2px); }
+  /* reveal-on-scroll */
+  .reveal { opacity: 0; transform: translateY(46px); transition: opacity 1s var(--ease), transform 1s var(--ease); }
+  .reveal.in { opacity: 1; transform: none; }
+  .reveal.d1 { transition-delay: .08s; }
+  .reveal.d2 { transition-delay: .16s; }
+  .reveal.d3 { transition-delay: .24s; }
+  @media (prefers-reduced-motion: reduce) { .reveal { opacity: 1; transform: none; transition: none; } }
 
   /* ============================================================ NAV ============================================================ */
   .nav {
-    position: sticky; top: 0; z-index: 50;
-    background: color-mix(in oklab, var(--paper) 88%, transparent);
-    backdrop-filter: blur(10px);
-    border-bottom: 1px solid transparent;
-  }
-  .nav.scrolled { border-bottom-color: var(--line); }
-  .nav-in {
-    max-width: var(--maxw); margin: 0 auto;
-    padding: 16px var(--gutter);
+    position: fixed; top: 20px; left: 0; right: 0; z-index: 1000;
     display: grid; grid-template-columns: 1fr auto 1fr; align-items: center;
+    padding: 0 28px;
   }
-  .brand { font-family: var(--serif); font-size: 23px; font-weight: 600; letter-spacing: -0.02em; }
-  .brand .star { color: var(--ink); }
-  .nav-links { display: flex; gap: 30px; justify-content: center; }
-  .nav-links a { font-size: 14.5px; font-weight: 500; color: var(--ink-2); transition: color .15s; }
-  .nav-links a:hover { color: var(--ink); }
-  .nav-right { display: flex; gap: 12px; justify-content: flex-end; align-items: center; }
+  .nav-logo { font-family: var(--anton); font-size: 24px; letter-spacing: 0.04em; color: var(--forest); text-transform: uppercase; }
+  .nav-pill {
+    justify-self: center;
+    display: flex; gap: 4px; align-items: center;
+    padding: 7px; border-radius: 999px;
+    background: rgba(12,63,38,0.08);
+    backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+    border: 1px solid rgba(12,63,38,0.14);
+  }
+  .nav-pill a {
+    font-weight: 700; font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase;
+    color: var(--forest); padding: 9px 16px; border-radius: 999px; transition: background .3s var(--ease), color .3s var(--ease);
+  }
+  .nav-pill a:hover, .nav-pill a.on { background: var(--forest); color: var(--cream); }
+  .nav-right { justify-self: end; display: flex; align-items: center; gap: 14px; }
+  .nav-signin {
+    font-weight: 700; font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase;
+    color: var(--forest); padding: 12px 18px; border-radius: 999px;
+    border: 1.5px solid rgba(12,63,38,0.3);
+    transition: background .3s var(--ease), color .3s var(--ease);
+  }
+  .nav-signin:hover { background: var(--forest); color: var(--cream); border-color: var(--forest); }
+  .nav-cta {
+    display: inline-flex; align-items: center; gap: 9px;
+    padding: 12px 20px; border-radius: 999px;
+    background: var(--forest); color: var(--cream);
+    font-weight: 700; font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase;
+    transition: transform .4s var(--ease), background .3s var(--ease);
+  }
+  .nav-cta:hover { transform: translateY(-2px); background: var(--green); }
+  .nav-cta .badge { background: var(--cream); color: var(--forest); border-radius: 999px; padding: 2px 9px; font-size: 10px; }
 
-  /* ============================================================ HERO ============================================================ */
+  /* ============================================================ HERO (sage) ============================================================ */
   .hero {
-    position: relative;
-    /* horizontal inset comes from the shared .wrap container so the hero lines up with all content below */
-    margin: 10px 0 0;
-    border-radius: 22px;
+    position: relative; background: var(--sage);
+    min-height: 100vh;
+    display: flex; flex-direction: column; justify-content: flex-end;
+    padding: 130px 28px 40px;
+    border-radius: 0 0 44px 44px;
     overflow: hidden;
-    height: clamp(460px, 64vh, 660px);
-    --fallback: #2c2a25;
   }
-  .hero .ph { position: absolute; inset: 0; }
-  .hero::after {
-    content: ""; position: absolute; inset: 0;
-    background: linear-gradient(180deg, rgba(15,14,11,.45) 0%, rgba(15,14,11,.12) 42%, rgba(15,14,11,.55) 100%);
+  .hero-stage { position: relative; flex: 1; display: flex; align-items: center; justify-content: center; }
+  .hero-photo {
+    position: absolute; top: 4%; left: 2%;
+    width: clamp(220px, 30vw, 420px); aspect-ratio: 4/3;
+    border-radius: 26px; overflow: hidden;
+    transform: rotate(-4deg);
+    box-shadow: 0 40px 80px -30px rgba(12,63,38,0.5);
+    z-index: 1;
   }
-  .hero-content {
-    position: relative; z-index: 2;
-    height: 100%;
-    display: flex; flex-direction: column; align-items: center; justify-content: center;
-    text-align: center; color: #fff;
-    padding: 40px;
+  .hero-photo img { width: 100%; height: 100%; object-fit: cover; }
+  .hero-photo::after { content: ""; position: absolute; inset: 0; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.25); border-radius: 26px; }
+  .hero-word {
+    position: relative; z-index: 2; margin: 0;
+    font-family: var(--anton); color: var(--forest);
+    font-size: clamp(92px, 23vw, 360px); line-height: 0.82;
+    letter-spacing: 0.005em; text-align: center;
+    text-transform: uppercase;
   }
-  .hero h1 {
-    color: #fff;
-    font-size: clamp(44px, 6.6vw, 92px);
-    font-weight: 500;
-    letter-spacing: -0.02em;
-    text-shadow: 0 2px 30px rgba(0,0,0,.25);
+  .hero-word .dot { color: var(--green); }
+  .hero-base {
+    position: relative; z-index: 3;
+    display: flex; justify-content: space-between; align-items: flex-end; gap: 30px;
+    flex-wrap: wrap; margin-top: 18px;
   }
-  .hero h1 em { font-style: italic; }
-  .hero-pill {
-    position: absolute; left: 50%; bottom: 34px; transform: translateX(-50%);
-    z-index: 3;
+  .hero-tag { font-family: var(--anton); font-size: clamp(18px, 2vw, 26px); line-height: 1.1; max-width: 460px; text-transform: uppercase; letter-spacing: 0.01em; }
+  .hero-tag span { color: var(--green); }
+  .hero-meta { text-align: right; }
+  .hero-meta .m-k { font-family: var(--anton); font-size: 15px; letter-spacing: 0.04em; text-transform: uppercase; }
+  .hero-meta .m-s { margin-top: 6px; }
+  .hero-scroll {
+    position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%);
+    display: flex; flex-direction: column; align-items: center; gap: 6px;
+    color: var(--forest); opacity: .6; z-index: 3;
   }
+  .hero-scroll .arr { animation: bob 1.8s var(--ease) infinite; }
+  @keyframes bob { 0%,100%{ transform: translateY(0);} 50%{ transform: translateY(6px);} }
 
-  /* ============================================================ TRUST STRIP ============================================================ */
-  .trust {
-    padding: 30px var(--gutter) 14px;
-    max-width: var(--maxw); margin: 0 auto;
+  /* ============================================================ CLAIM BETTER (olive) ============================================================ */
+  .claim {
+    position: relative; background: var(--olive);
+    padding: 96px 28px 110px;
+    border-radius: 44px; margin-top: -24px;
   }
-  .trust-row {
-    display: flex; align-items: center; justify-content: space-between;
-    gap: 28px; flex-wrap: wrap;
+  .claim-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 30px; flex-wrap: wrap; }
+  .claim-eyebrow { color: var(--green); }
+  .claim h2 {
+    font-family: var(--anton); color: var(--forest); margin: 10px 0 0;
+    font-size: clamp(64px, 13vw, 200px); line-height: 0.82; letter-spacing: 0.005em; text-transform: uppercase;
   }
-  .trust-badge { display: flex; align-items: center; gap: 10px; color: var(--ink-2); }
-  .trust-badge .seal {
-    width: 38px; height: 38px; border-radius: 50%;
-    border: 1.5px solid var(--ink); display: grid; place-items: center;
-    font-family: var(--serif); font-weight: 600; font-size: 17px; flex: 0 0 auto;
+  .claim h2 .dot { color: var(--green); }
+  .claim-cta {
+    display: inline-flex; align-items: center; gap: 10px; margin-top: 16px;
+    padding: 15px 26px; border-radius: 999px; background: var(--forest); color: var(--cream);
+    font-weight: 700; font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase;
+    transition: transform .4s var(--ease), background .3s var(--ease);
   }
-  .trust-badge .tb-k { font-family: var(--serif); font-size: 15px; line-height: 1.15; font-weight: 600; }
-  .trust-logo { font-family: var(--serif); font-weight: 600; font-size: 20px; color: var(--ink); opacity: .82; letter-spacing: -0.01em; }
-  .trust-logo.grotesk { font-family: var(--sans); font-weight: 800; letter-spacing: -0.02em; }
+  .claim-cta:hover { transform: translateY(-2px); background: var(--green); }
+  .claim-intro { max-width: 460px; margin-top: 22px; font-size: 17px; color: var(--forest); }
 
-  /* ============================================================ YELLOW BAND ============================================================ */
-  .band {
-    background: var(--yellow);
-    margin: 26px 0 0;
-    padding: 54px var(--gutter);
-  }
-  .band-in { max-width: 760px; margin: 0 auto; text-align: center; }
-  .band h2 { font-size: clamp(30px, 4vw, 46px); font-weight: 500; }
-  .band p { color: #3c3914; max-width: 560px; margin: 14px auto 24px; font-size: 16px; }
-  .band .star-em { font-style: italic; }
+  /* three step phones */
+  .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 30px; margin-top: 64px; }
+  .step { display: flex; flex-direction: column; align-items: center; }
+  .step-tag { align-self: stretch; display: flex; align-items: baseline; gap: 12px; margin-bottom: 22px; padding-bottom: 14px; border-bottom: 1.5px solid rgba(12,63,38,0.18); }
+  .step-no { font-family: var(--anton); font-size: 30px; color: var(--green); line-height: 1; }
+  .step-info .s-k { font-family: var(--anton); font-size: 19px; text-transform: uppercase; letter-spacing: 0.01em; line-height: 1.05; }
+  .step-info .s-s { font-size: 13.5px; color: var(--forest); opacity: .72; margin-top: 3px; }
 
-  /* ============================================================ SECTION SHELL ============================================================ */
-  /* vertical only — leave .wrap's horizontal gutter intact so content aligns with the hero */
-  .sec { padding-top: 84px; padding-bottom: 84px; }
-  .sec-head { margin-bottom: 40px; }
-  .sec-head h2 { font-size: clamp(30px, 4vw, 48px); }
-  .sec-head p { color: var(--ink-2); max-width: 540px; margin-top: 14px; }
-
-  /* ---- "in your pocket" cards ---- */
-  .pocket-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 30px; }
-  .pcard .pcard-img { height: 230px; border-radius: var(--radius); overflow: hidden; }
-  .pcard h3 { font-size: 23px; margin: 20px 0 8px; }
-  .pcard p { color: var(--ink-2); font-size: 15px; margin: 0 0 16px; }
-
-  /* ============================================================ REAL STORY — Q&A ============================================================ */
-  .story-intro { max-width: 540px; }
-  .story-intro h2 { font-size: clamp(30px, 4vw, 48px); }
-  .story-intro p { color: var(--ink-2); margin-top: 16px; }
-  .story-intro .btn { margin-top: 22px; }
-
-  .qa-layout {
-    display: grid; grid-template-columns: 0.92fr 1.08fr; gap: 60px;
-    margin-top: 56px; align-items: start;
-  }
-  .qa-sticky { position: sticky; top: 96px; }
-  .qa-list { display: flex; flex-direction: column; }
-  .qa-item { padding: 40px 0; border-top: 1px solid var(--line); }
-  .qa-item:first-child { border-top: none; padding-top: 0; }
-  .qa-item q { display: block; quotes: none; }
-  .qa-item .qa-q {
-    font-family: var(--serif); font-weight: 500;
-    font-size: clamp(28px, 3.4vw, 42px); line-height: 1.05; letter-spacing: -0.01em;
-  }
-  .qa-item .qa-a { color: var(--ink-2); margin-top: 16px; max-width: 440px; font-size: 16px; }
-
-  /* ============================================================ PHONE MOCKUP (built in HTML) ============================================================ */
+  /* ---- phone ---- */
   .phone {
-    width: 300px; margin: 0 auto;
-    background: var(--ink); border-radius: 42px; padding: 11px;
-    box-shadow: 0 40px 80px -30px rgba(20,19,15,.5), 0 0 0 1px rgba(0,0,0,.06);
+    width: 100%; max-width: 282px;
+    background: var(--forest); border-radius: 40px; padding: 10px;
+    box-shadow: 0 50px 90px -34px rgba(12,63,38,0.55), 0 0 0 1px rgba(12,63,38,0.4);
     position: relative;
   }
-  .phone-screen {
-    background: var(--paper); border-radius: 32px; overflow: hidden;
-    aspect-ratio: 9 / 19; display: flex; flex-direction: column;
-  }
-  .phone-notch {
-    position: absolute; top: 20px; left: 50%; transform: translateX(-50%);
-    width: 96px; height: 24px; background: var(--ink); border-radius: 0 0 14px 14px; z-index: 3;
-  }
-  .scr-top {
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 16px 18px 10px; font-size: 11px; font-weight: 600; color: var(--ink-2);
-  }
-  .scr-body { flex: 1; padding: 6px 16px 18px; overflow: hidden; }
-  .scr-brand { font-family: var(--serif); font-weight: 600; font-size: 18px; }
-  .scr-h { font-family: var(--serif); font-size: 20px; font-weight: 600; margin: 4px 0 2px; }
-  .scr-sub { font-size: 12px; color: var(--ink-2); margin-bottom: 14px; }
+  .phone::before { content: ""; position: absolute; top: 18px; left: 50%; transform: translateX(-50%); width: 86px; height: 22px; background: var(--forest); border-radius: 0 0 13px 13px; z-index: 4; }
+  .scr { background: var(--cream); border-radius: 31px; overflow: hidden; aspect-ratio: 9/19.2; display: flex; flex-direction: column; }
+  .scr-top { display: flex; align-items: center; justify-content: space-between; padding: 15px 18px 8px; font-size: 11px; font-weight: 700; color: var(--forest); }
+  .scr-body { flex: 1; padding: 6px 15px 16px; display: flex; flex-direction: column; overflow: hidden; }
+  .scr-brand { font-family: var(--anton); font-size: 17px; text-transform: uppercase; letter-spacing: 0.03em; color: var(--forest); }
+  .scr-brand .dot { color: var(--green); }
+  .scr-h { font-family: var(--anton); font-size: 21px; text-transform: uppercase; line-height: 1.02; margin: 8px 0 3px; color: var(--forest); }
+  .scr-sub { font-size: 12px; color: var(--forest); opacity: .68; margin-bottom: 13px; }
 
-  .scr-rcpt {
-    background: var(--card); border: 1px solid var(--line); border-radius: 12px;
-    padding: 12px; display: flex; gap: 11px; align-items: center; margin-bottom: 10px;
-  }
-  .scr-rcpt .ic {
-    width: 38px; height: 38px; border-radius: 9px; flex: 0 0 auto;
-    background: var(--paper-2); display: grid; place-items: center;
-    font-family: var(--serif); font-weight: 700; font-size: 15px; color: var(--ink-2);
-  }
-  .scr-rcpt .rc-name { font-weight: 700; font-size: 13px; }
-  .scr-rcpt .rc-cat { font-size: 11px; color: var(--ink-3); margin-top: 1px; }
-  .scr-rcpt .rc-amt { margin-left: auto; font-weight: 700; font-size: 13px; }
-  .scr-rcpt .rc-flag {
-    margin-left: auto; font-size: 10px; font-weight: 700; color: #a8631a;
-    background: #f8ecd3; padding: 3px 8px; border-radius: 999px;
-  }
-  .scr-cta {
-    margin-top: 6px; background: var(--yellow); border-radius: 12px;
-    padding: 13px 14px; text-align: center; font-weight: 700; font-size: 13px;
-  }
+  /* progress dots */
+  .wiz-steps { display: flex; gap: 5px; margin-bottom: 14px; }
+  .wiz-steps i { height: 4px; flex: 1; border-radius: 2px; background: rgba(12,63,38,0.16); }
+  .wiz-steps i.on { background: var(--green); }
 
-  /* ============================================================ WHY PANEL ============================================================ */
-  .why { background: var(--paper-2); padding: 84px 0; }
-  .why .sec-head h2 { font-size: clamp(30px, 4vw, 48px); }
-  .why-stage {
-    margin-top: 48px; position: relative;
-    display: flex; justify-content: center;
-    padding: 20px 0 0;
-  }
-  .float {
-    position: absolute; background: var(--card);
-    border: 1px solid var(--line); border-radius: 12px;
-    box-shadow: 0 24px 50px -24px rgba(20,19,15,.28);
-    padding: 12px 14px;
-  }
-  .float .fl-k { font-size: 11px; color: var(--ink-3); }
-  .float .fl-v { font-family: var(--serif); font-weight: 600; font-size: 16px; }
-  .float.f1 { left: 7%;  top: 60px; }
-  .float.f2 { right: 6%; top: 130px; }
-  .float.f3 { right: 11%; bottom: 60px; }
-  .float.seal { display: flex; align-items: center; gap: 11px; max-width: 250px; }
-  .float.seal .seal-ic {
-    width: 40px; height: 40px; border-radius: 50%; border: 1.5px solid var(--ink);
-    display: grid; place-items: center; font-family: var(--serif); font-weight: 700; flex: 0 0 auto;
-  }
-  .float.seal .seal-tx { font-size: 11px; color: var(--ink-2); line-height: 1.3; }
-  .why-stats {
-    display: grid; grid-template-columns: repeat(4,1fr);
-    border-top: 1px solid var(--line); margin-top: 56px;
-  }
-  .why-stats .ws { padding: 22px 18px; border-left: 1px solid var(--line); }
-  .why-stats .ws:first-child { border-left: none; padding-left: 0; }
-  .why-stats .ws-k { font-family: var(--serif); font-weight: 600; font-size: 17px; }
-  .why-stats .ws-s { font-size: 13px; color: var(--ink-2); margin-top: 4px; }
+  /* bucket toggle rows */
+  .brow { display: flex; align-items: center; gap: 10px; padding: 11px 12px; border-radius: 13px; background: #fff; border: 1px solid rgba(12,63,38,0.10); margin-bottom: 8px; }
+  .brow .bk-sw { width: 9px; height: 9px; border-radius: 3px; flex: 0 0 auto; }
+  .brow .bk-nm { font-weight: 700; font-size: 13px; color: var(--forest); }
+  .brow .bk-ct { font-size: 11px; color: var(--forest); opacity: .6; }
+  .brow .tgl { margin-left: auto; width: 32px; height: 19px; border-radius: 999px; background: rgba(12,63,38,0.16); position: relative; flex: 0 0 auto; }
+  .brow .tgl::after { content: ""; position: absolute; top: 2px; left: 2px; width: 15px; height: 15px; border-radius: 50%; background: #fff; transition: left .2s; }
+  .brow.on .tgl { background: var(--green); }
+  .brow.on .tgl::after { left: 15px; }
 
-  /* ============================================================ PROOF — testimonials ============================================================ */
-  .proof-grid {
-    display: grid; grid-template-columns: repeat(4, 1fr);
-    grid-auto-rows: 200px; gap: 20px; margin-top: 44px;
-  }
-  .tile { border-radius: var(--radius); overflow: hidden; position: relative; }
-  .tile.img { --fallback: #cfc9bb; }
-  .tile.span2 { grid-column: span 2; }
-  .tile.row2 { grid-row: span 2; }
-  .tile.quote {
-    background: var(--card); border: 1px solid var(--line);
-    padding: 24px; display: flex; flex-direction: column; justify-content: space-between;
-  }
-  .tile.quote.yellow { background: var(--yellow); border-color: transparent; }
-  .tile .q-mark { font-family: var(--serif); font-size: 40px; line-height: .6; color: var(--ink); opacity: .35; }
-  .tile .q-text { font-family: var(--serif); font-size: clamp(15px,1.4vw,19px); line-height: 1.32; margin: 12px 0; }
-  .tile .q-by { font-size: 12px; }
-  .tile .q-by b { display: block; font-weight: 700; }
-  .tile .q-by span { color: var(--ink-2); }
-  .tile.quote.yellow .q-by span { color: #4a4612; }
-  /* Google-review chrome (placeholder tiles) */
-  .g-top { display: flex; align-items: center; gap: 8px; }
-  .g-mark {
-    width: 22px; height: 22px; border-radius: 50%; flex: 0 0 auto;
-    display: grid; place-items: center; background: #fff; border: 1px solid var(--line);
-    font-family: var(--sans); font-weight: 800; font-size: 13px; color: #4285F4;
-  }
-  .g-via { font-size: 11px; font-weight: 700; letter-spacing: .04em; color: var(--ink-3); text-transform: uppercase; }
-  .g-stars { margin-left: auto; color: #f0b400; font-size: 13px; letter-spacing: 1px; }
-  .tile.quote.yellow .g-mark { background: #fff; }
+  /* upload / segment screen */
+  .drop { border: 1.5px dashed rgba(12,63,38,0.3); border-radius: 15px; padding: 18px 12px; text-align: center; margin-bottom: 12px; background: #fff; }
+  .drop .di { width: 34px; height: 34px; margin: 0 auto 8px; border-radius: 10px; background: var(--olive); display: grid; place-items: center; }
+  .drop .dk { font-weight: 700; font-size: 12.5px; color: var(--forest); }
+  .drop .ds { font-size: 11px; color: var(--forest); opacity: .6; margin-top: 2px; }
+  .seg-row { display: flex; align-items: center; gap: 9px; padding: 9px 11px; background: #fff; border: 1px solid rgba(12,63,38,0.10); border-radius: 12px; margin-bottom: 7px; }
+  .seg-row .sg-ic { width: 26px; height: 26px; border-radius: 7px; background: var(--olive); display: grid; place-items: center; font-family: var(--anton); font-size: 11px; color: var(--forest); flex: 0 0 auto; }
+  .seg-row .sg-nm { font-weight: 700; font-size: 12px; color: var(--forest); }
+  .seg-row .sg-tag { font-size: 10px; color: var(--green); font-weight: 700; }
+  .seg-row .sg-amt { margin-left: auto; font-weight: 700; font-size: 12px; color: var(--forest); }
+  .seg-prog { margin-top: auto; padding-top: 10px; }
+  .seg-bar { height: 6px; border-radius: 3px; background: rgba(12,63,38,0.14); overflow: hidden; }
+  .seg-bar i { display: block; height: 100%; width: 72%; background: var(--green); border-radius: 3px; }
+  .seg-lbl { display: flex; justify-content: space-between; font-size: 11px; color: var(--forest); opacity: .7; margin-top: 7px; font-weight: 600; }
 
-  /* ============================================================ TWIN CTA CARDS ============================================================ */
-  .twin { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; padding-bottom: 84px; }
-  .twin-card {
-    background: var(--yellow); border-radius: 20px; padding: 44px;
-    min-height: 280px; display: flex; flex-direction: column; justify-content: space-between;
-  }
-  .twin-card h2 { font-size: clamp(28px, 3.4vw, 44px); }
-  .twin-card p { color: #46420f; margin: 16px 0 0; max-width: 360px; }
+  /* ready to claim screen */
+  .ready-hero { background: var(--forest); color: var(--cream); border-radius: 16px; padding: 15px 16px; margin-bottom: 12px; }
+  .ready-hero .rk { font-size: 11px; opacity: .7; letter-spacing: 0.04em; text-transform: uppercase; font-weight: 700; }
+  .ready-hero .rv { font-family: var(--anton); font-size: 26px; margin-top: 5px; text-transform: uppercase; letter-spacing: 0.01em; }
+  .ready-hero .rs { font-size: 11px; opacity: .72; margin-top: 4px; }
+  .chk { display: flex; align-items: center; gap: 10px; padding: 9px 4px; font-size: 12.5px; color: var(--forest); font-weight: 600; }
+  .chk .ck { width: 19px; height: 19px; border-radius: 50%; background: var(--green); display: grid; place-items: center; flex: 0 0 auto; }
+  .chk.todo .ck { background: rgba(12,63,38,0.14); }
+  .scr-cta { margin-top: auto; background: var(--green); color: var(--cream); border-radius: 13px; padding: 13px; text-align: center; font-weight: 700; font-size: 12.5px; letter-spacing: 0.02em; }
 
-  /* ============================================================ FOOTER ============================================================ */
-  .footer { background: var(--ink); color: #cfccc2; padding: 64px 0 36px; }
-  .footer-in { max-width: var(--maxw); margin: 0 auto; padding: 0 var(--gutter); }
-  .footer-cols { display: grid; grid-template-columns: 1.6fr 1fr 1fr 1fr 1fr; gap: 30px; }
-  .footer .brand { color: #fff; }
-  .footer .f-tag { color: #908c82; font-size: 14px; margin-top: 14px; max-width: 260px; }
-  .footer h4 { font-family: var(--sans); font-size: 12px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: #908c82; margin: 0 0 14px; }
-  .footer ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
-  .footer ul a { color: #cfccc2; font-size: 14px; }
-  .footer ul a:hover { color: #fff; }
-  .footer-foot {
-    margin-top: 48px; padding-top: 26px; border-top: 1px solid #2c2a23;
-    display: flex; justify-content: space-between; align-items: center; gap: 20px; flex-wrap: wrap;
+  /* ============================================================ JOIN THE TAX MOVEMENT (forest footer) ============================================================ */
+  .movement {
+    background: var(--forest); color: var(--cream);
+    padding: 110px 28px 44px;
+    border-radius: 44px 44px 0 0; margin-top: -24px;
+    position: relative;
   }
-  .footer-foot .fine { font-size: 12px; color: #807c72; max-width: 640px; line-height: 1.5; }
-  .footer-foot .f-seal { display: flex; gap: 18px; align-items: center; opacity: .8; }
-  .footer-foot .f-seal span { font-family: var(--serif); font-size: 15px; color: #cfccc2; }
+  .move-grid { display: grid; grid-template-columns: 1.4fr 1fr 1fr; gap: 40px; }
+  .move-h { font-family: var(--anton); font-size: clamp(48px, 8vw, 116px); line-height: 0.86; text-transform: uppercase; color: var(--cream); margin: 0; }
+  .move-h .dot { color: var(--sage); }
+  .move-sign { margin-top: 28px; max-width: 380px; }
+  .move-sign .ms-k { font-size: 13px; opacity: .75; margin-bottom: 12px; }
+  .signup { display: flex; align-items: center; gap: 10px; border-bottom: 1.5px solid rgba(244,243,221,0.4); padding-bottom: 10px; }
+  .signup input { flex: 1; background: transparent; border: none; outline: none; color: var(--cream); font-family: var(--inter); font-size: 15px; }
+  .signup input::placeholder { color: rgba(244,243,221,0.5); }
+  .signup button { background: transparent; border: none; color: var(--cream); font-weight: 700; font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; cursor: pointer; display: inline-flex; align-items: center; gap: 7px; }
+  .signup button:hover { color: var(--sage); }
+  .signup button:disabled { opacity: .5; cursor: default; }
+  .move-note { margin-top: 12px; font-size: 12px; opacity: 0; transition: opacity .3s var(--ease); min-height: 16px; }
+  .move-note.show { opacity: .8; }
+
+  .move-col h4 { color: rgba(244,243,221,0.55); font-size: 10px; letter-spacing: 0.2em; text-transform: uppercase; font-weight: 700; margin: 0 0 18px; }
+  .move-col ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 13px; }
+  .move-col a { font-size: 14.5px; color: var(--cream); transition: opacity .3s var(--ease); }
+  .move-col a:hover { opacity: .55; }
+
+  .move-foot {
+    margin-top: 80px; padding-top: 24px; border-top: 1px solid rgba(244,243,221,0.18);
+    display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; flex-wrap: wrap;
+  }
+  .move-foot .ff { font-size: 11px; letter-spacing: 0.04em; opacity: .62; line-height: 1.55; max-width: 640px; }
+  .move-foot .ff-links { display: flex; gap: 22px; flex: 0 0 auto; }
+  .move-foot .ff-links a { font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; opacity: .7; font-weight: 600; }
+
+  /* big watermark behind movement */
+  .move-mark {
+    font-family: var(--anton); font-size: clamp(120px, 30vw, 520px);
+    text-transform: uppercase; color: rgba(244,243,221,0.05);
+    position: absolute; left: 0; right: 0; bottom: -4%; text-align: center; line-height: 0.8;
+    pointer-events: none; z-index: 0; letter-spacing: 0.02em;
+  }
+  .movement > * { position: relative; z-index: 1; }
 
   /* ============================================================ RESPONSIVE ============================================================ */
-  @media (max-width: 980px) {
-    .nav-links { display: none; }
-    .nav-in { grid-template-columns: 1fr auto; }
-    .pocket-grid { grid-template-columns: 1fr; }
-    .qa-layout { grid-template-columns: 1fr; gap: 30px; }
-    .qa-sticky { position: static; }
-    .proof-grid { grid-template-columns: repeat(2, 1fr); }
-    .tile.span2 { grid-column: span 2; }
-    .twin { grid-template-columns: 1fr; }
-    .footer-cols { grid-template-columns: 1fr 1fr; }
-    .why-stats { grid-template-columns: 1fr 1fr; }
-    .float { display: none; }
+  @media (max-width: 940px) {
+    .nav-pill { display: none; }
+    .steps { grid-template-columns: 1fr; max-width: 320px; margin-left: auto; margin-right: auto; }
+    .step { margin-bottom: 14px; }
+    .move-grid { grid-template-columns: 1fr; gap: 30px; }
+    .hero-photo { display: none; }
   }
   @media (max-width: 560px) {
-    :root { --gutter: 20px; }
-    .proof-grid { grid-template-columns: 1fr; grid-auto-rows: 180px; }
-    .tile.span2 { grid-column: span 1; }
-    .trust-row { gap: 16px; justify-content: center; }
+    .hero-base { flex-direction: column; align-items: flex-start; }
+    .hero-meta { text-align: left; }
+    .nav-signin { display: none; }
   }
 </style>
 </head>
 <body>
+<div class="grain"></div>
 
 <!-- ============ NAV ============ -->
-<header class="nav" id="nav">
-  <div class="nav-in">
-    <a class="brand" href="#top">Quillo<span class="star">*</span></a>
-    <nav class="nav-links">
-      <a href="#pocket">How it works</a>
-      <a href="#story">The real story</a>
-      <a href="#why">Why Quillo</a>
-      <a href="#proof">Reviews</a>
-    </nav>
-    <div class="nav-right">
-      <a class="btn btn-light btn-pill-sm" href="${APP_URL}">Log in</a>
-      <a class="btn btn-dark btn-pill-sm" href="${APP_URL}">Get started</a>
-    </div>
+<header class="nav">
+  <a class="nav-logo" href="#top">Quillo</a>
+  <nav class="nav-pill">
+    <a href="#top" class="on">Home</a>
+    <a href="#claim">How it works</a>
+    <a href="#movement">Join</a>
+  </nav>
+  <div class="nav-right">
+    <a class="nav-signin" href="${APP_URL}">Sign in</a>
+    <a class="nav-cta" href="${APP_URL}">Sign up <span class="badge">free</span></a>
   </div>
 </header>
 
 <main id="top">
 
 <!-- ============ HERO ============ -->
-<div class="wrap">
 <section class="hero">
-  <div class="ph" style="--fallback:#2c2a25; background-image:url('https://images.unsplash.com/photo-1521737711867-e3b97375f902?auto=format&fit=crop&w=1900&q=80');"></div>
-  <div class="hero-content">
-    <h1>Tax that sorts<br/>itself. <em>Finally.</em></h1>
-  </div>
-  <a class="btn btn-yellow hero-pill" href="${APP_URL}">Ask Quillo</a>
-</section>
-</div>
-
-<!-- ============ TRUST STRIP ============ -->
-<section class="trust">
-  <div class="trust-row">
-    <div class="trust-badge">
-      <span class="seal">Q</span>
-      <span>
-        <span class="tb-k">Australian<br/>made</span>
-      </span>
+  <div class="hero-stage">
+    <div class="hero-photo reveal">
+      <img src="https://images.unsplash.com/photo-1521737711867-e3b97375f902?auto=format&fit=crop&w=1100&q=80" alt="Working through receipts at a desk" />
     </div>
-    <div class="trust-logo">256-bit&nbsp;Secure</div>
-    <div class="trust-logo grotesk">QuickBooks</div>
-    <div class="trust-logo grotesk">Read-only&nbsp;feeds</div>
-    <div class="trust-logo">Private&nbsp;by&nbsp;design</div>
+    <h1 class="hero-word reveal d1">Quillo<span class="dot">.</span></h1>
+  </div>
+  <div class="hero-base">
+    <p class="hero-tag reveal d2">Australian tax, <span>sorted for you.</span> Capture every receipt, segment every statement line.</p>
+    <div class="hero-meta reveal d3">
+      <div class="m-k">Built in Australia</div>
+      <div class="m-s label sm">Read-only bank feeds · QuickBooks · 256-bit secure</div>
+    </div>
+  </div>
+  <div class="hero-scroll">
+    <span class="label sm">Scroll</span>
+    <svg class="arr" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 2v12M3 9l5 5 5-5"/></svg>
   </div>
 </section>
 
-<!-- ============ YELLOW BAND ============ -->
-<section class="band" id="band">
-  <div class="band-in">
-    <h2>The tax help you <span class="star-em">actually</span> asked for</h2>
-    <p>Built for working Australians with a complicated income — Quillo sits above your salary, your side company and your properties, capturing every receipt and reasoning across all of them against current ATO rules. All year.</p>
-    <a class="btn btn-dark" href="${APP_URL}">Get started</a>
-  </div>
-</section>
-
-<!-- ============ HOW IT WORKS ============ -->
-<section class="sec wrap" id="pocket">
-  <div class="sec-head">
-    <h2>Quillo in your pocket</h2>
-  </div>
-  <div class="pocket-grid">
-    <article class="pcard">
-      <div class="pcard-img ph" style="--fallback:#cdc5b2; background-image:url('https://images.unsplash.com/photo-1554224155-6726b3ff858f?auto=format&fit=crop&w=900&q=80');"></div>
-      <h3>Snap it, forget it</h3>
-      <p>Photograph a receipt, forward an email, or link a read-only bank feed. Quillo reads it and files it to the right ATO category in seconds.</p>
-      <a class="btn btn-light btn-pill-sm" href="#story">How it works</a>
-    </article>
-    <article class="pcard">
-      <div class="pcard-img ph" style="--fallback:#bcae93; background-image:url('https://images.unsplash.com/photo-1512941937669-90a1b58e7e9c?auto=format&fit=crop&w=900&q=80');"></div>
-      <h3>Sees your whole picture</h3>
-      <p>Most tools look at one entity at a time. Quillo reasons across your PAYG salary, your company and each property together — where the real mistakes hide.</p>
-      <a class="btn btn-light btn-pill-sm" href="#why">Why it matters</a>
-    </article>
-    <article class="pcard">
-      <div class="pcard-img ph" style="--fallback:#c7bfae; background-image:url('https://images.unsplash.com/photo-1517502884422-41eaead166d4?auto=format&fit=crop&w=900&q=80');"></div>
-      <h3>100% in your corner</h3>
-      <p>Every item is checked against current ATO rules. When something's unclear, Quillo flags it for a human — and never guesses on your behalf.</p>
-      <a class="btn btn-light btn-pill-sm" href="#why">Our promise</a>
-    </article>
-  </div>
-</section>
-
-<!-- ============ THE REAL STORY (Q&A) ============ -->
-<section class="sec wrap" id="story">
-  <div class="story-intro">
-    <span class="eyebrow">The real story</span>
-    <h2 style="margin-top:14px;">Most Australians overpay.</h2>
-    <p>Not because they earn too much — because deductions slip through the cracks all year, and tax time is a panicked scramble through a shoebox of receipts. Quillo changes that.</p>
-    <a class="btn btn-ghost" href="${APP_URL}">See how →</a>
+<!-- ============ CLAIM BETTER ============ -->
+<section class="claim" id="claim">
+  <div class="claim-head">
+    <div>
+      <div class="claim-eyebrow label">How Quillo works</div>
+      <h2>Claim<br/>Better<span class="dot">.</span></h2>
+      <p class="claim-intro reveal">Three simple steps. Set up your buckets once, drop in your receipts and statements, and Quillo gets everything categorised and evidence-ready — no shoebox, no scramble.</p>
+    </div>
+    <a class="claim-cta reveal d1" href="#movement">See how it works
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 8h10M9 4l4 4-4 4"/></svg>
+    </a>
   </div>
 
-  <div class="qa-layout">
-    <div class="qa-sticky">
+  <div class="steps">
+    <!-- STEP 1 — define buckets in wizard -->
+    <div class="step reveal">
+      <div class="step-tag">
+        <span class="step-no">01</span>
+        <span class="step-info"><span class="s-k">Define your buckets</span><span class="s-s">A quick wizard, tailored to you</span></span>
+      </div>
       <div class="phone">
-        <div class="phone-notch"></div>
-        <div class="phone-screen">
-          <div class="scr-top"><span>9:41</span><span>Quillo</span><span>●●●</span></div>
+        <div class="scr">
+          <div class="scr-top"><span>9:41</span><span>Setup</span><span>●●●</span></div>
           <div class="scr-body">
-            <div class="scr-brand">Quillo<span style="color:var(--ink)">*</span></div>
-            <div class="scr-h">Review</div>
-            <div class="scr-sub">3 receipts need a quick look</div>
-
-            <div class="scr-rcpt">
-              <span class="ic">B</span>
-              <span><span class="rc-name">Bunnings Warehouse</span><span class="rc-cat">Rental · Repairs</span></span>
-              <span class="rc-amt">$248.50</span>
-            </div>
-            <div class="scr-rcpt">
-              <span class="ic">A</span>
-              <span><span class="rc-name">AGL Energy</span><span class="rc-cat">Which property?</span></span>
-              <span class="rc-flag">Check</span>
-            </div>
-            <div class="scr-rcpt">
-              <span class="ic">O</span>
-              <span><span class="rc-name">Officeworks</span><span class="rc-cat">Office supplies</span></span>
-              <span class="rc-amt">$89.95</span>
-            </div>
-            <div class="scr-cta">Confirm all &amp; file →</div>
+            <div class="scr-brand">Quillo<span class="dot">.</span></div>
+            <div class="scr-h">Set up your buckets</div>
+            <div class="scr-sub">Pick what applies — Quillo files the rest.</div>
+            <div class="wiz-steps"><i class="on"></i><i class="on"></i><i></i><i></i></div>
+            <div class="brow on"><span class="bk-sw" style="background:#3f6bd6"></span><span><div class="bk-nm">PAYG · work-related</div><div class="bk-ct">Salary &amp; wages</div></span><span class="tgl"></span></div>
+            <div class="brow on"><span class="bk-sw" style="background:#15643a"></span><span><div class="bk-nm">Rental property</div><div class="bk-ct">104 Womerah Ave</div></span><span class="tgl"></span></div>
+            <div class="brow on"><span class="bk-sw" style="background:#caa53d"></span><span><div class="bk-nm">Company</div><div class="bk-ct">Young Milton Pty Ltd</div></span><span class="tgl"></span></div>
+            <div class="brow"><span class="bk-sw" style="background:#9356c4"></span><span><div class="bk-nm">Novated lease</div><div class="bk-ct">Optional</div></span><span class="tgl"></span></div>
+            <div class="scr-cta">Continue →</div>
           </div>
         </div>
       </div>
     </div>
 
-    <div class="qa-list">
-      <div class="qa-item">
-        <q class="qa-q">"I don't know what I can claim."</q>
-        <p class="qa-a">That's the whole problem with tax. Quillo learns how you actually earn — PAYG salary, an early Pty Ltd, a rental or two — and surfaces the deductions that apply to <em>you</em>. No guesswork, no generic checklists.</p>
+    <!-- STEP 2 — upload receipts & segments -->
+    <div class="step reveal d1">
+      <div class="step-tag">
+        <span class="step-no">02</span>
+        <span class="step-info"><span class="s-k">Upload &amp; segment</span><span class="s-s">Receipts, PDFs &amp; bank statements</span></span>
       </div>
-      <div class="qa-item">
-        <q class="qa-q">"What if I get it wrong?"</q>
-        <p class="qa-a">Every transaction shows a confidence score and a plain-English reason. The uncertain ones float to the top for a quick look. You always make the final call — Quillo just does the heavy lifting.</p>
-      </div>
-      <div class="qa-item">
-        <q class="qa-q">"What if I get audited?"</q>
-        <p class="qa-a">Quillo keeps a tidy, timestamped record of every receipt and category — exactly the kind of evidence the ATO asks for. Need to show your working? Export the lot in one tap.</p>
-      </div>
-      <div class="qa-item">
-        <q class="qa-q">"Is it actually worth it?"</q>
-        <p class="qa-a">When your income spans a payslip, a company and a property, deductions slip through the cracks — un-apportioned property costs, missing logbooks, GST edge cases. Quillo's whole job is to make sure they don't.</p>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- ============ WHY QUILLO ============ -->
-<section class="why" id="why">
-  <div class="wrap">
-    <div class="sec-head">
-      <span class="eyebrow">Why Quillo</span>
-      <h2 style="margin-top:14px;">Built to be boringly trustworthy.</h2>
-    </div>
-
-    <div class="why-stage">
-      <div class="float seal f1">
-        <span class="seal-ic">Q</span>
-        <span class="seal-tx">Built in Australia for Australian rules. Your data is never sold and never trains anyone else's model.</span>
-      </div>
-      <div class="float f2">
-        <div class="fl-k">Receipts filed</div>
-        <div class="fl-v">42 this year</div>
-      </div>
-      <div class="float f3">
-        <div class="fl-k">FY25 status</div>
-        <div class="fl-v">On track ✦</div>
-      </div>
-
       <div class="phone">
-        <div class="phone-notch"></div>
-        <div class="phone-screen">
-          <div class="scr-top"><span>9:41</span><span>Quillo</span><span>●●●</span></div>
+        <div class="scr">
+          <div class="scr-top"><span>9:41</span><span>Capture</span><span>●●●</span></div>
           <div class="scr-body">
-            <div class="scr-brand">Quillo<span style="color:var(--ink)">*</span></div>
-            <div class="scr-h">Welcome back, Jo</div>
-            <div class="scr-sub">Your FY25 picture is on track</div>
-            <div class="scr-rcpt"><span class="ic">✓</span><span><span class="rc-name">42 receipts filed</span><span class="rc-cat">All categorised</span></span></div>
-            <div class="scr-rcpt"><span class="ic">≈</span><span><span class="rc-name">3 income types</span><span class="rc-cat">PAYG · company · property</span></span></div>
-            <div class="scr-rcpt"><span class="ic">!</span><span><span class="rc-name">2 to review</span><span class="rc-cat">Low confidence</span></span><span class="rc-flag">Review</span></div>
-            <div class="scr-cta">Open my picture →</div>
+            <div class="scr-brand">Quillo<span class="dot">.</span></div>
+            <div class="scr-h">Add your records</div>
+            <div class="scr-sub">Quillo reads &amp; segments each line.</div>
+            <div class="drop">
+              <div class="di"><svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="#0c3f26" stroke-width="1.6"><path d="M9 12V3M5.5 6.5L9 3l3.5 3.5M3 13.5h12"/></svg></div>
+              <div class="dk">Drop receipts &amp; statements</div>
+              <div class="ds">Snap, forward, or link your bank</div>
+            </div>
+            <div class="seg-row"><span class="sg-ic">B</span><span><div class="sg-nm">Bunnings</div><div class="sg-tag">Rental · Repairs</div></span><span class="sg-amt">$248.50</span></div>
+            <div class="seg-row"><span class="sg-ic">O</span><span><div class="sg-nm">Officeworks</div><div class="sg-tag">Company · Supplies</div></span><span class="sg-amt">$89.95</span></div>
+            <div class="seg-row"><span class="sg-ic">CB</span><span><div class="sg-nm">CommBank PDF</div><div class="sg-tag">32 lines segmented</div></span><span class="sg-amt">→</span></div>
+            <div class="seg-prog">
+              <div class="seg-bar"><i></i></div>
+              <div class="seg-lbl"><span>Segmenting statements…</span><span>23 / 32</span></div>
+            </div>
           </div>
         </div>
       </div>
     </div>
 
-    <div class="why-stats">
-      <div class="ws"><div class="ws-k">Bank-grade security</div><div class="ws-s">256-bit encryption, read-only bank feeds.</div></div>
-      <div class="ws"><div class="ws-k">Shows its working</div><div class="ws-s">Every decision keeps an audit trail you can read.</div></div>
-      <div class="ws"><div class="ws-k">Private by design</div><div class="ws-s">Your data is yours. Never sold, never shared.</div></div>
-      <div class="ws"><div class="ws-k">Built in Australia</div><div class="ws-s">For Australian rules, by people who get them.</div></div>
+    <!-- STEP 3 — get ready to claim (compliant: no predicted refund, no "lodge") -->
+    <div class="step reveal d2">
+      <div class="step-tag">
+        <span class="step-no">03</span>
+        <span class="step-info"><span class="s-k">Get claim-ready</span><span class="s-s">Categorised &amp; evidence-kept, all year</span></span>
+      </div>
+      <div class="phone">
+        <div class="scr">
+          <div class="scr-top"><span>9:41</span><span>Claim</span><span>●●●</span></div>
+          <div class="scr-body">
+            <div class="scr-brand">Quillo<span class="dot">.</span></div>
+            <div class="scr-h">You're claim-ready</div>
+            <div class="scr-sub">FY25 · everything's categorised.</div>
+            <div class="ready-hero">
+              <div class="rk">This financial year</div>
+              <div class="rv">Claim-ready</div>
+              <div class="rs">Every receipt categorised and the evidence kept for you.</div>
+            </div>
+            <div class="chk"><span class="ck"><svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="#f4f3dd" stroke-width="2"><path d="M2.5 6.5l2.5 2.5 4.5-5.5"/></svg></span> 882 receipts categorised</div>
+            <div class="chk"><span class="ck"><svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="#f4f3dd" stroke-width="2"><path d="M2.5 6.5l2.5 2.5 4.5-5.5"/></svg></span> Depreciation calculated</div>
+            <div class="chk todo"><span class="ck"><svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="#0c3f26" stroke-width="2"><path d="M2.5 6.5l2.5 2.5 4.5-5.5"/></svg></span> Review 2 low-confidence</div>
+            <div class="scr-cta">Open my summary →</div>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 </section>
 
-<!-- ============ PROOF ============ -->
-<!--
-  PLACEHOLDER testimonials. The quote tiles below are styled as Google-review cards but
-  carry generic placeholder copy — they are NOT real customer reviews. Swap in real
-  Google reviews (text, reviewer name, role) before relying on this section publicly.
--->
-<section class="sec wrap" id="proof">
-  <div class="sec-head">
-    <h2>What people are saying</h2>
-    <p>Real Google reviews will appear here as Quillo's early users share how it's working for them.</p>
-  </div>
-  <div class="proof-grid">
-    <div class="tile img row2 span2 ph" style="--fallback:#bdb6a4; background-image:url('https://images.unsplash.com/photo-1573164713988-8665fc963095?auto=format&fit=crop&w=1100&q=80');"></div>
-    <div class="tile quote span2">
-      <div class="g-top"><span class="g-mark">G</span><span class="g-via">via Google</span><span class="g-stars">★★★★★</span></div>
-      <div class="q-text">Your Google review will appear here — a few honest words from someone who's used Quillo across their salary, company and rentals.</div>
-      <div class="q-by"><b>Reviewer name</b><span>Verified Google review · placeholder</span></div>
-    </div>
-    <div class="tile img ph" style="--fallback:#a89c82; background-image:url('https://images.unsplash.com/photo-1556742049-0cfed4f6a45d?auto=format&fit=crop&w=700&q=80');"></div>
-    <div class="tile quote yellow">
-      <div class="g-top"><span class="g-mark">G</span><span class="g-via">via Google</span><span class="g-stars">★★★★★</span></div>
-      <div class="q-text">A short, punchy review goes here once real ones land.</div>
-      <div class="q-by"><b>Reviewer name</b><span>Verified Google review · placeholder</span></div>
-    </div>
-    <div class="tile img ph" style="--fallback:#9fa4ac; background-image:url('https://images.unsplash.com/photo-1600880292203-757bb62b4baf?auto=format&fit=crop&w=700&q=80');"></div>
-
-    <div class="tile quote span2">
-      <div class="g-top"><span class="g-mark">G</span><span class="g-via">via Google</span><span class="g-stars">★★★★★</span></div>
-      <div class="q-text">Another verified Google review will sit here — placeholder text until the real one is pulled in.</div>
-      <div class="q-by"><b>Reviewer name</b><span>Verified Google review · placeholder</span></div>
-    </div>
-    <div class="tile img span2 ph" style="--fallback:#c2bba9; background-image:url('https://images.unsplash.com/photo-1521737604893-d14cc237f11d?auto=format&fit=crop&w=1100&q=80');"></div>
-  </div>
-</section>
-
-<!-- ============ TWIN CTA ============ -->
-<section class="wrap twin">
-  <div class="twin-card">
+<!-- ============ JOIN THE TAX MOVEMENT ============ -->
+<footer class="movement" id="movement">
+  <div class="move-mark" aria-hidden="true">Quillo</div>
+  <div class="move-grid">
     <div>
-      <h2>See your whole<br/>picture.</h2>
-      <p>One brain over your salary, your company and your properties — reasoning across all of them against current ATO rules.</p>
+      <h2 class="move-h reveal">Join the<br/>tax<br/>movement<span class="dot">.</span></h2>
+      <div class="move-sign reveal d1">
+        <div class="ms-k">Get early access &amp; tax tips that actually help.</div>
+        <form class="signup" id="signup">
+          <input type="email" id="signup-email" placeholder="your@email.com" aria-label="Email address" required />
+          <button type="submit" id="signup-btn">Submit
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 8h10M9 4l4 4-4 4"/></svg>
+          </button>
+        </form>
+        <div class="move-note" id="signup-note" role="status"></div>
+      </div>
     </div>
-    <a class="arrow-btn" href="${APP_URL}"><span class="circ">→</span> Get started</a>
+    <div class="move-col reveal d1">
+      <h4>Explore</h4>
+      <ul>
+        <li><a href="#claim">How it works</a></li>
+        <li><a href="${APP_URL}">Sign in</a></li>
+        <li><a href="${APP_URL}">Get started</a></li>
+        <li><a href="/privacy">Privacy</a></li>
+        <li><a href="/terms">Terms</a></li>
+      </ul>
+    </div>
+    <div class="move-col reveal d2">
+      <h4>Follow</h4>
+      <ul>
+        <li><a href="#">Instagram</a></li>
+        <li><a href="#">LinkedIn</a></li>
+        <li><a href="#">X / Twitter</a></li>
+        <li><a href="#">TikTok</a></li>
+      </ul>
+    </div>
   </div>
-  <div class="twin-card">
-    <div>
-      <h2>The Quillo Story</h2>
-      <p>Or, if you're into reading nerdy tax stuff, here's exactly why we built Quillo — and who's behind it.</p>
-    </div>
-    <a class="arrow-btn" href="#story"><span class="circ">→</span> Our story</a>
-  </div>
-</section>
 
-</main>
-
-<!-- ============ FOOTER ============ -->
-<footer class="footer">
-  <div class="footer-in">
-    <div class="footer-cols">
-      <div>
-        <div class="brand">Quillo<span class="star">*</span></div>
-        <p class="f-tag">The tax brain that sees your whole picture. Capture, categorise and reason across it all — in your pocket.</p>
-      </div>
-      <div>
-        <h4>About</h4>
-        <ul><li><a href="#story">Purpose</a></li><li><a href="#why">Mission</a></li><li><a href="#why">Values</a></li></ul>
-      </div>
-      <div>
-        <h4>Support</h4>
-        <ul><li><a href="#">Contact</a></li><li><a href="#">FAQ</a></li><li><a href="#">Help centre</a></li></ul>
-      </div>
-      <div>
-        <h4>Social</h4>
-        <ul><li><a href="#">Instagram</a></li><li><a href="#">LinkedIn</a></li><li><a href="#">X / Twitter</a></li></ul>
-      </div>
-      <div>
-        <h4>Legal</h4>
-        <ul><li><a href="/terms">Terms</a></li><li><a href="/privacy">Privacy</a></li></ul>
-      </div>
-    </div>
-    <div class="footer-foot">
-      <p class="fine">General information only — not tax advice. Quillo is not a registered tax or BAS agent, does not lodge returns, and never holds or moves your money. Confirm your situation with a registered tax/BAS agent.</p>
-      <div class="f-seal">
-        <span>256-bit</span><span>AU</span><span>Private</span>
-      </div>
-    </div>
+  <div class="move-foot">
+    <span class="ff">General information only — not tax advice. Quillo is not a registered tax or BAS agent, does not lodge returns, and never holds or moves your money. Confirm your situation with a registered tax/BAS agent. © 2026 Quillo.</span>
+    <span class="ff-links">
+      <a href="/privacy">Privacy</a>
+      <a href="/terms">Terms</a>
+    </span>
   </div>
 </footer>
 
+</main>
+
 <script>
-  // nav border on scroll
-  const nav = document.getElementById('nav');
-  const onScroll = () => nav.classList.toggle('scrolled', window.scrollY > 8);
-  window.addEventListener('scroll', onScroll, { passive: true });
-  onScroll();
+  // reveal-on-scroll
+  const io = new IntersectionObserver((entries) => {
+    entries.forEach((e) => { if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, { threshold: 0.15, rootMargin: '0px 0px -8% 0px' });
+  document.querySelectorAll('.reveal').forEach((el) => io.observe(el));
+
+  // subtle parallax on the hero photo
+  const photo = document.querySelector('.hero-photo');
+  window.addEventListener('scroll', () => {
+    const y = window.scrollY;
+    if (photo && y < window.innerHeight) photo.style.transform = 'rotate(-4deg) translateY(' + (y * 0.12) + 'px)';
+  }, { passive: true });
+
+  // waitlist signup → POST /waitlist (existing un-gated endpoint)
+  const form = document.getElementById('signup');
+  const note = document.getElementById('signup-note');
+  const btn = document.getElementById('signup-btn');
+  const emailEl = document.getElementById('signup-email');
+  const showNote = (msg) => { note.textContent = msg; note.classList.add('show'); };
+  form.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const email = (emailEl.value || '').trim();
+    if (!email) return;
+    btn.disabled = true;
+    showNote('Adding you…');
+    try {
+      const res = await fetch('/waitlist', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email, source: 'landing' }),
+      });
+      if (res.ok) {
+        form.style.display = 'none';
+        showNote("You're on the list — we'll be in touch.");
+      } else {
+        const data = await res.json().catch(() => ({}));
+        showNote(data && data.error === 'invalid_email' ? 'That email looks off — try again.' : "Couldn't add you just now — try again shortly.");
+        btn.disabled = false;
+      }
+    } catch {
+      showNote("Couldn't add you just now — check your connection.");
+      btn.disabled = false;
+    }
+  });
 </script>
 </body>
 </html>`;

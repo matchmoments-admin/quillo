@@ -1,13 +1,17 @@
 {
   "version": "au-v1",
   "buckets": {
-    "payg": "Personal/PAYG individual expense (e.g. work-related deduction D-labels).",
-    "company": "Pty Ltd business expense — the company books of record.",
-    "property_rented": "Expense on a currently-rented investment property (generally deductible).",
-    "property_vacant": "Holding cost on a vacant/not-genuinely-available property (often NOT deductible).",
+    "payg": "Personal/PAYG individual CONTEXT for spend (money out). NOT a deductibility claim — deductibility is decided later at year-end review.",
+    "company": "Pty Ltd business expense (money out) — the company books of record.",
+    "property_rented": "Expense (money out) on a currently-rented investment property.",
+    "property_vacant": "Holding cost (money out) on a vacant/not-genuinely-available property.",
+    "income_business": "Money IN (a credit) that is business revenue received by the Pty Ltd — sales, fees, invoices paid.",
+    "income_property": "Money IN (a credit) that is rent received on an investment property (pair with the property).",
+    "income_personal": "Money IN (a credit) that is personal income — salary/PAYG, interest, dividends received personally.",
+    "refund": "Money IN (a credit) that REVERSES a prior expense (a refund/reversal) — nets against spend, it is NOT income.",
     "unknown": "Cannot determine — ask the user."
   },
-  "guidance": "Categorise the receipt into exactly one bucket. Prefer 'unknown' (low confidence) over guessing. This is general information, not tax advice.",
+  "guidance": "Categorise each line into exactly one bucket. A line marked money OUT (a debit / spend) takes an expense bucket (payg, company, property_*). A line marked money IN (a credit) takes an income bucket (income_business, income_property, income_personal) or 'refund' if it reverses an expense. Prefer 'unknown' over guessing — income misclassification is costly. This is general information, not tax advice; never assert deductibility.",
   "merchant_hints": [
     { "match": "anthropic, openai, github, gitlab, notion, slack, figma, atlassian, jira, linear, zoom, adobe, canva, microsoft 365, google workspace, dropbox, 1password", "bucket": "company", "ato_label": "company:software-subscriptions", "note": "SaaS / AI tool subscriptions for the business" },
     { "match": "aws, amazon web services, azure, microsoft azure, google cloud, gcp, cloudflare, vercel, netlify, digitalocean, heroku, render", "bucket": "company", "ato_label": "company:cloud-services", "note": "cloud hosting / infrastructure" },

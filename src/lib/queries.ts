@@ -13,6 +13,15 @@ export const COUNTABLE =
   "AND (kind = 'bank_line' OR (kind = 'receipt' AND matched_txn_id IS NULL)) " +
   "AND COALESCE(direction,'debit') = 'debit'";
 
+// The income counterpart of COUNTABLE: same dedup/transfer exclusions, but the CREDIT side
+// (money in). Reported separately from the `income` table (document-sourced income); the two
+// are de-duplicated in a later phase, so credit income is shown as its own section, not folded
+// into the headline income total yet.
+export const COUNTABLE_INCOME =
+  "status NOT IN ('duplicate','ignored') " +
+  "AND (kind = 'bank_line' OR (kind = 'receipt' AND matched_txn_id IS NULL)) " +
+  "AND direction = 'credit'";
+
 // Rows that warrant the user's attention — defined ONCE so the Dashboard "needs review" counter
 // and the Inbox "Needs review" tab can't drift (previously the dashboard counted unknown/low-conf
 // rows the inbox tab — filtering only status='needs_review' — never surfaced, so a "882 needs
@@ -358,6 +367,15 @@ export async function dashboard(env: Env, userId: string) {
   )
     .bind(userId)
     .all();
+  // Income from bank credits, grouped by income bucket (separate from the document-sourced
+  // `income` table — see COUNTABLE_INCOME). 'refund' is excluded: it nets against spend.
+  const incomeByBucket = await env.DB.prepare(
+    `SELECT bucket, COUNT(*) AS n, COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS total_cents
+       FROM transactions WHERE user_id = ? AND bucket IN ('income_business','income_property','income_personal') AND ${COUNTABLE_INCOME}
+      GROUP BY bucket ORDER BY total_cents DESC`,
+  )
+    .bind(userId)
+    .all();
   const needsReview = await env.DB.prepare(
     `SELECT COUNT(*) AS n FROM transactions WHERE user_id = ? AND ${NEEDS_REVIEW}`,
   )
@@ -365,6 +383,7 @@ export async function dashboard(env: Env, userId: string) {
     .first<{ n: number }>();
   return {
     by_bucket: byBucket.results ?? [],
+    income_by_bucket: incomeByBucket.results ?? [],
     by_property: byProperty.results ?? [],
     needs_review: needsReview?.n ?? 0,
   };

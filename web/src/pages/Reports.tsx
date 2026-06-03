@@ -123,6 +123,24 @@ export function Reports() {
             </table>
           </Card>
 
+          {data!.income_by_bucket.length > 0 && (
+            <Card className="overflow-hidden">
+              <Th>Income from bank credits (separate from documented income above)</Th>
+              <table className="w-full text-sm">
+                <tbody>
+                  {data!.income_by_bucket.map((b, i) => (
+                    <tr key={i} className="border-t border-line">
+                      <td className="px-4 py-2">{BUCKET_LABEL[b.bucket] ?? b.bucket}</td>
+                      <td className="px-4 py-2 text-muted">{b.ato_label ?? "—"}</td>
+                      <td className="px-4 py-2 text-right tabular-nums">{money(b.total_cents)}</td>
+                      <td className="px-4 py-2"></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </Card>
+          )}
+
           <Card className="overflow-hidden">
             <Th>Rental schedule (by property)</Th>
             <table className="w-full text-sm">

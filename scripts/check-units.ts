@@ -7,6 +7,9 @@ import { batchStatementStatus, isStaleBatch, BATCH_MAX_AGE_MS } from "../src/lib
 import { extractSituationDraft } from "../src/extract";
 import type { LLM } from "../src/llm";
 import { isValidAbn, normaliseAbn } from "../web/src/lib/abn";
+import { BUCKETS } from "../src/lib/taxonomy";
+import fs from "node:fs";
+import path from "node:path";
 import type Anthropic from "@anthropic-ai/sdk";
 
 let pass = 0,
@@ -399,6 +402,23 @@ console.log("readiness");
     ...r.position.lines.flatMap((l) => [l.basis, l.why]),
   ]);
   check("no generated text predicts tax payable / refund / rate", !generatedText.some((t) => denylist.test(t)));
+}
+
+// ── Taxonomy ↔ rule pack ↔ UI agree (no silent bucket drift) ─────────────────
+console.log("bucket taxonomy");
+{
+  const root = process.cwd();
+  const rulePack = JSON.parse(fs.readFileSync(path.join(root, "src", "rulepacks", "au-v1.json"), "utf8")) as { buckets: Record<string, string> };
+  const uiSource = fs.readFileSync(path.join(root, "web", "src", "components", "ui.tsx"), "utf8");
+  const taxonomy = [...BUCKETS].sort();
+  const rulepackKeys = Object.keys(rulePack.buckets).sort();
+  // Read BUCKET_LABEL keys textually (avoids importing TSX into the node test).
+  const start = uiSource.indexOf("BUCKET_LABEL");
+  const labelBlock = uiSource.slice(start, uiSource.indexOf("};", start));
+  const uiKeys = [...labelBlock.matchAll(/^\s*([a-z_]+):/gm)].map((m) => m[1]!);
+  check("rule-pack buckets match the taxonomy", JSON.stringify(taxonomy) === JSON.stringify(rulepackKeys));
+  check("UI BUCKET_LABEL covers every taxonomy bucket", taxonomy.every((b) => uiKeys.includes(b)));
+  check("income + refund buckets present", ["income_business", "income_property", "income_personal", "refund"].every((b) => taxonomy.includes(b)));
 }
 
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);

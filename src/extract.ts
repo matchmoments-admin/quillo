@@ -387,10 +387,15 @@ export interface BatchItem {
 export function batchParams(
   modelId: string,
   system: string,
-  items: { merchant: string; amount_cents: number; date: string | null }[],
+  items: { merchant: string; amount_cents: number; date: string | null; direction?: "debit" | "credit" | null }[],
 ): Anthropic.MessageCreateParamsNonStreaming {
+  // Mark each line money OUT/IN so the model picks an expense bucket for debits and an
+  // income_* / refund bucket for credits (direction is known from the statement, not guessed).
   const list = items
-    .map((it, i) => `${i + 1}. ${it.merchant} | $${(it.amount_cents / 100).toFixed(2)}${it.date ? ` | ${it.date}` : ""}`)
+    .map(
+      (it, i) =>
+        `${i + 1}. [${it.direction === "credit" ? "IN" : "OUT"}] ${it.merchant} | $${(it.amount_cents / 100).toFixed(2)}${it.date ? ` | ${it.date}` : ""}`,
+    )
     .join("\n");
   return {
     model: modelId,
@@ -404,7 +409,7 @@ export function batchParams(
         content: [
           {
             type: "text",
-            text: `Categorise each of these ${items.length} bank/card statement lines into a bucket + ATO label, in order (one result per line). These are descriptions only (no receipt), so prefer 'unknown' when genuinely unclear.\n\n${list}\n\nCall record_batch with exactly ${items.length} items.`,
+            text: `Categorise each of these ${items.length} bank/card statement lines into a bucket + ATO label, in order (one result per line). [OUT] = money out (spend) → an expense bucket; [IN] = money in → an income_* bucket, or 'refund' if it reverses a prior expense. These are descriptions only (no receipt), so prefer 'unknown' when genuinely unclear.\n\n${list}\n\nCall record_batch with exactly ${items.length} items.`,
           },
         ],
       },
@@ -422,7 +427,7 @@ export function parseBatchMessage(msg: Anthropic.Message): BatchItem[] {
 export async function extractBatch(
   llm: LLM,
   system: string,
-  items: { merchant: string; amount_cents: number; date: string | null }[],
+  items: { merchant: string; amount_cents: number; date: string | null; direction?: "debit" | "credit" | null }[],
 ): Promise<BatchItem[]> {
   const msg = await llm.create(batchParams(llm.modelId, system, items), "statement_batch");
   return parseBatchMessage(msg).slice(0, items.length);

@@ -10,9 +10,27 @@
 // Adding/removing a category is a one-file change. Keep the tuples as the ONLY place a
 // literal category string is written.
 
-/** Expense/deduction buckets — which tax "pocket" an expense belongs to. */
-export const BUCKETS = ["payg", "company", "property_rented", "property_vacant", "unknown"] as const;
+/** Buckets — which tax "pocket" a transaction belongs to. Income buckets only ever apply to
+ * credits (money in); `refund` is a credit that reverses a prior expense (netted, not income). */
+export const BUCKETS = [
+  "payg",
+  "company",
+  "property_rented",
+  "property_vacant",
+  "income_business",
+  "income_property",
+  "income_personal",
+  "refund",
+  "unknown",
+] as const;
 export type Bucket = (typeof BUCKETS)[number];
+
+/** The income buckets (subset of BUCKETS) — credits that are assessable income. `refund` is
+ * deliberately NOT here: it reverses an expense, it is not income. */
+export const INCOME_BUCKETS = ["income_business", "income_property", "income_personal"] as const;
+export function isIncomeBucket(bucket: string | null | undefined): boolean {
+  return bucket != null && (INCOME_BUCKETS as readonly string[]).includes(bucket);
+}
 
 /** First-class income kinds (income is modelled, never inferred from bank credits). */
 export const INCOME_TYPES = [

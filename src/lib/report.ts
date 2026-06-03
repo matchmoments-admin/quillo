@@ -1,5 +1,5 @@
 import type { Env } from "../env";
-import { COUNTABLE } from "./queries";
+import { COUNTABLE, COUNTABLE_INCOME } from "./queries";
 import { incomeTotals, depreciationTotals, type IncomeTotals } from "./ledger-totals";
 
 // Australian FY is Jul–Jun. Given a start year Y, the FY runs Y-07-01 .. (Y+1)-06-30.
@@ -36,6 +36,7 @@ export interface Report {
   start: string;
   end: string;
   by_bucket: ReportRow[];
+  income_by_bucket: ReportRow[];        // money-in (bank credits) grouped by income bucket — informational, see note
   by_property: { property_id: string; label: string | null; n: number; total_cents: number }[];
   company_quarters: { quarter: string; total_cents: number; gst_cents: number }[];
   undated: { n: number; total_cents: number };
@@ -61,6 +62,21 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
             COALESCE(SUM(gst_cents),0) AS gst_cents
        FROM transactions
       WHERE user_id = ? AND txn_date >= ? AND txn_date <= ? AND bucket IS NOT NULL AND ${COUNTABLE}
+      GROUP BY bucket, ato_label ORDER BY bucket, total_cents DESC`,
+  )
+    .bind(userId, start, end)
+    .all<ReportRow>();
+
+  // Income captured from bank credits this FY, grouped by income bucket. Shown as its own
+  // section — NOT folded into total_income_cents yet (it would double-count a salary that also
+  // arrived via a payslip in the income table; de-dup is a later phase). 'refund' is excluded.
+  const incomeByBucket = await env.DB.prepare(
+    `SELECT bucket, ato_label, COUNT(*) AS n,
+            COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS total_cents,
+            COALESCE(SUM(gst_cents),0) AS gst_cents
+       FROM transactions
+      WHERE user_id = ? AND txn_date >= ? AND txn_date <= ?
+        AND bucket IN ('income_business','income_property','income_personal') AND ${COUNTABLE_INCOME}
       GROUP BY bucket, ato_label ORDER BY bucket, total_cents DESC`,
   )
     .bind(userId, start, end)
@@ -187,6 +203,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
     start,
     end,
     by_bucket: rows,
+    income_by_bucket: incomeByBucket.results ?? [],
     by_property: expenseByProp,
     company_quarters,
     undated: { n: undated?.n ?? 0, total_cents: undated?.total_cents ?? 0 },

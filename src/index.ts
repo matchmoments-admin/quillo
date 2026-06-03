@@ -202,5 +202,19 @@ export default {
     // Frequent: only users with a pending batch job (cheap query, no per-tenant fan-out).
     const pending = await env.DB.prepare(`SELECT DISTINCT user_id FROM batch_jobs WHERE status = 'submitted'`).all<{ user_id: string }>();
     for (const u of pending.results) await stubFor(env, u.user_id).pollBatchJobs(u.user_id);
+
+    // One-time backfill: re-categorise data imported before the income/asset buckets existed, so
+    // stranded credits get income buckets and capital purchases link to assets. Guarded by a KV
+    // flag per user (cheap get) so it runs exactly once; scoped to the allow-listed tenant(s).
+    for (const uid of (env.CLERK_ALLOWED_USERS ?? "").split(",").map((s) => s.trim()).filter(Boolean)) {
+      const flag = `backfill:income-assets:${uid}`;
+      if (await env.RULES.get(flag)) continue;
+      try {
+        await stubFor(env, uid).recategorise(uid);
+        await env.RULES.put(flag, "done");
+      } catch (e) {
+        console.error(`backfill recategorise failed for ${uid}: ${(e as Error).message}`);
+      }
+    }
   },
 } satisfies ExportedHandler<Env>;

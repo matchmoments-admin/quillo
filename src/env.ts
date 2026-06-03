@@ -67,6 +67,7 @@ export interface TaxAgentRpc {
   syncQboAccounts(userId: string): Promise<{ synced: number }>;
   categoriseStatement(userId: string, statementId: string): Promise<{ categorised: number }>;
   pollBatchJobs(userId: string): Promise<{ applied: number }>;
+  recategorise(userId: string): Promise<{ requeued: number; statements: number }>;
   linkReceipt(userId: string, receiptId: string, lineId: string): Promise<void>;
   unlinkReceipt(userId: string, receiptId: string): Promise<void>;
   runProactiveScan(userId: string): Promise<void>;

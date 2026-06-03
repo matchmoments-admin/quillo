@@ -456,6 +456,42 @@ export class TaxAgent extends Agent<Env> {
   }
 
   /**
+   * Backfill: re-categorise bank lines imported under OLDER rules so the new buckets (income_*,
+   * refund, asset) apply. Only the clearly-mishandled rows are re-queued — credits stranded with
+   * no bucket (they were invisible) and 'unknown' lines — then the normal per-statement pipeline
+   * runs (sync or async batch) and capital purchases link to assets. Already-categorised expense
+   * lines (company/payg/property_*) are left untouched: no silent re-judgement of correct rows.
+   * Idempotent enough to re-run (it just re-queues anything still credit-null / unknown).
+   */
+  async recategorise(userId: string): Promise<{ requeued: number; statements: number }> {
+    const requeue = await this.env.DB.prepare(
+      `UPDATE transactions SET status = 'needs_review'
+        WHERE user_id = ? AND kind = 'bank_line'
+          AND status NOT IN ('ignored','duplicate','matched_receipt')
+          AND ((direction = 'credit' AND bucket IS NULL) OR bucket = 'unknown')`,
+    )
+      .bind(userId)
+      .run();
+    const requeued = requeue.meta?.changes ?? 0;
+    if (!requeued) return { requeued: 0, statements: 0 };
+
+    const stmts = await this.env.DB.prepare(
+      `SELECT DISTINCT statement_id FROM transactions
+        WHERE user_id = ? AND kind = 'bank_line' AND status = 'needs_review' AND statement_id IS NOT NULL`,
+    )
+      .bind(userId)
+      .all<{ statement_id: string }>();
+    let count = 0;
+    for (const s of stmts.results ?? []) {
+      await this.categoriseStatement(userId, s.statement_id); // sync small / async batch large
+      count++;
+    }
+    await this.linkAssetsForUser(userId); // link any capital purchases the sync path just bucketed
+    await this.audit(userId, "recategorise", JSON.stringify({ requeued, statements: count }));
+    return { requeued, statements: count };
+  }
+
+  /**
    * Submit a large categorisation job to the Anthropic Message Batches API (~50% cheaper,
    * async). One request per ~40-line chunk; custom_id = the chunk index, with the ordered
    * line ids stored in chunk_map so results can be applied. Polled by the cron / on demand.

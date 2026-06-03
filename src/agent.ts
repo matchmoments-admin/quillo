@@ -1007,17 +1007,81 @@ export class TaxAgent extends Agent<Env> {
   }
 
   /** Best-effort property resolution from free-text hint (address/label substring match). */
+  // Canonicalise an address into comparable tokens: lowercase, drop punctuation, fold common
+  // street-type abbreviations (Avenue↔Ave), and drop state/country noise. This is what lets a
+  // doc's "104 Womerah Avenue, Darlinghurst, NSW 2010" match a stored "104 Womerah Ave Darlinghurst
+  // 2010" — naive substring matching missed it on "Avenue"/commas/"NSW".
+  private static readonly STREET_TYPES: Record<string, string> = {
+    avenue: "ave", ave: "ave", street: "st", st: "st", road: "rd", rd: "rd",
+    drive: "dr", dr: "dr", court: "ct", ct: "ct", place: "pl", pl: "pl",
+    lane: "ln", ln: "ln", parade: "pde", pde: "pde", crescent: "cres", cres: "cres",
+    boulevard: "blvd", blvd: "blvd", terrace: "tce", tce: "tce", highway: "hwy", hwy: "hwy",
+    close: "cl", cl: "cl", circuit: "cct", cct: "cct",
+  };
+  private static readonly STREET_TYPE_VALUES = new Set(Object.values(TaxAgent.STREET_TYPES));
+  private static readonly ADDRESS_NOISE = new Set(["nsw", "vic", "qld", "sa", "wa", "tas", "act", "nt", "australia", "unit", "apt"]);
+
+  private normalizeAddress(s: string): string[] {
+    return s
+      .toLowerCase()
+      .replace(/[.,/#-]/g, " ")
+      .split(/\s+/)
+      .map((t) => t.trim())
+      .filter(Boolean)
+      .map((t) => TaxAgent.STREET_TYPES[t] ?? t)
+      .filter((t) => !TaxAgent.ADDRESS_NOISE.has(t));
+  }
+
+  // The street/unit number (e.g. "104", "104a", "2/15"→"2") — the first numeric token that ISN'T a
+  // 4-digit AU postcode. Skipping the postcode matters: a hint that omits the street number must not
+  // fall back to comparing postcodes as if they were street numbers.
+  private static streetNumber(tokens: string[]): string | null {
+    return tokens.find((t) => /\d/.test(t) && !/^\d{4}$/.test(t)) ?? null;
+  }
+  // The "name" words — street name + suburb (not numeric, not a generic street-type like ave/st/rd).
+  // These are what actually disambiguate a property; sharing only a street-type or postcode is noise.
+  private static nameWords(tokens: string[]): Set<string> {
+    return new Set(tokens.filter((t) => !/\d/.test(t) && !TaxAgent.STREET_TYPE_VALUES.has(t)));
+  }
+
+  /**
+   * Resolve a free-text property hint (as printed on a doc) to one of the user's property rows.
+   * Token-overlap, not substring: tolerant of "Avenue"/"Ave", commas and "NSW". A match requires
+   * (a) at least one shared NAME word (street/suburb — not a generic "St" or a shared postcode) and
+   * (b) when both sides carry a street number, an EXACT number match (so 104 never collides with
+   * 104A or 34A). Score favours a number match; a tie at the top returns null so the income row
+   * flags for a manual set rather than silently mis-attributing rent/expenses to the wrong property.
+   */
   private async resolvePropertyByHint(userId: string, hint: string | null): Promise<string | null> {
     if (!hint) return null;
-    const h = hint.toLowerCase();
+    const hintTokens = this.normalizeAddress(hint);
+    if (!hintTokens.length) return null;
+    const hintNumber = TaxAgent.streetNumber(hintTokens);
+    const hintNames = TaxAgent.nameWords(hintTokens);
+    if (!hintNames.size) return null; // nothing but numbers/street-types — too weak to resolve
+
     const rows = await this.env.DB.prepare(`SELECT id, label, address FROM properties WHERE user_id = ?`)
       .bind(userId)
       .all<{ id: string; label: string | null; address: string | null }>();
+
+    const scored: { id: string; score: number }[] = [];
     for (const p of rows.results ?? []) {
-      const hay = `${p.label ?? ""} ${p.address ?? ""}`.toLowerCase();
-      if (hay && (hay.includes(h) || h.includes((p.label ?? "").toLowerCase()))) return p.id;
+      const pTokens = this.normalizeAddress(`${p.label ?? ""} ${p.address ?? ""}`);
+      if (!pTokens.length) continue;
+      const pNumber = TaxAgent.streetNumber(pTokens);
+      if (hintNumber && pNumber && hintNumber !== pNumber) continue; // 104 ≠ 104a ≠ 34a — never match across numbers
+      const pNames = TaxAgent.nameWords(pTokens);
+      let sharedNames = 0;
+      for (const t of hintNames) if (pNames.has(t)) sharedNames++;
+      if (sharedNames < 1) continue; // must agree on a real street/suburb word, not just "St"/postcode
+      const numberMatch = hintNumber && pNumber && hintNumber === pNumber ? 2 : 0;
+      scored.push({ id: p.id, score: sharedNames + numberMatch });
     }
-    return null;
+    scored.sort((a, b) => b.score - a.score);
+    const [best, runnerUp] = scored;
+    if (!best) return null;
+    if (runnerUp && best.score === runnerUp.score) return null; // ambiguous → flag, don't guess
+    return best.id;
   }
 
   // ── SMART INBOX: capture → consent → CLASSIFY → dispatch ────────────────────

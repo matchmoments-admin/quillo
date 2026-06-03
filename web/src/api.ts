@@ -142,7 +142,16 @@ export const api = {
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
     return res.json();
   },
-  documentDownloadUrl: (id: string) => `/api/documents/${id}/download`,
+  // Fetches the stored document WITH the Clerk Bearer token and hands back a same-origin
+  // blob: URL the caller can open in a new tab. A plain <a href> to the download route is a
+  // top-level navigation with no Authorization header → 401 "unauthorized" (see src/api.ts
+  // download route). The caller is responsible for URL.revokeObjectURL once the tab has loaded.
+  documentBlobUrl: async (id: string): Promise<string> => {
+    const res = await fetch(`/api/documents/${id}/download`, { credentials: "include", headers: await authHeaders() });
+    if (res.status === 401) throw new Error("unauthorized");
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    return URL.createObjectURL(await res.blob());
+  },
 
   // v2 — Assets & depreciation
   assets: (fy?: string) => get<{ assets: AssetRow[] }>(`/api/assets${fy ? `?fy=${fy}` : ""}`).then((r) => r.assets),

@@ -25,6 +25,28 @@ export function Documents() {
   const [note, setNote] = useState<string | null>(null);
   const { data, isLoading, error } = useQuery({ queryKey: ["documents"], queryFn: () => api.documents() });
 
+  // The download route is Bearer-authed, so a raw <a href> opens a tab with no Clerk token →
+  // "unauthorized". Open a blank tab synchronously (keeps it inside the user gesture so popup
+  // blockers allow it), fetch the file with auth, then point the tab at the blob: URL.
+  const [opening, setOpening] = useState<string | null>(null);
+  async function openDoc(id: string) {
+    const tab = window.open("about:blank", "_blank");
+    if (!tab) { setNote("Couldn't open the document — allow pop-ups for this site and try again."); return; }
+    setOpening(id);
+    try {
+      const url = await api.documentBlobUrl(id);
+      tab.location.href = url;
+      // Revoke once the tab has had time to load. (No reliable cross-tab load signal for a blob:
+      // URL, so use a generous timer — long enough for a large PDF on a slow link.)
+      setTimeout(() => URL.revokeObjectURL(url), 120_000);
+    } catch (e) {
+      tab.close();
+      setNote((e as Error).message);
+    } finally {
+      setOpening(null);
+    }
+  }
+
   const upload = useMutation({
     mutationFn: (file: File) => api.uploadDocument(file),
     onSuccess: (r) => {
@@ -84,7 +106,7 @@ export function Documents() {
                   <td className="px-4 py-2 text-muted">{d.issuer ?? "—"}</td>
                   <td className="px-4 py-2 text-muted tabular-nums">{d.doc_date ?? "—"}</td>
                   <td className="px-4 py-2 text-muted tabular-nums">{d.classification_confidence == null ? "—" : `${Math.round(d.classification_confidence * 100)}%`}</td>
-                  <td className="px-4 py-2 text-right"><a className="text-xs text-ink underline" href={api.documentDownloadUrl(d.id)} target="_blank" rel="noreferrer">open</a></td>
+                  <td className="px-4 py-2 text-right"><button type="button" className="text-xs text-ink underline disabled:opacity-50" onClick={() => openDoc(d.id)} disabled={opening === d.id}>{opening === d.id ? "opening…" : "open"}</button></td>
                 </tr>
               ))}
               {!(data ?? []).length && (

@@ -5,7 +5,7 @@ import { BUCKETS } from "../types";
 import { Card, Spinner, BUCKET_LABEL } from "../components/ui";
 import { EntityFields, PropertyFields, entityToBody, propertyToBody, emptyEntity, emptyProperty, OWNED_STATUSES, TENANT_STATUSES, propertyStatusLabel, type EntityValue, type PropertyValue } from "../components/SituationFields";
 
-const input = "rounded-lg border border-line bg-white px-3 py-2 text-sm";
+const input = "rounded-lg border border-line bg-card px-3 py-2 text-sm";
 const btn = "rounded-lg bg-ink px-3 py-2 text-sm font-medium text-white hover:bg-ink/90 disabled:opacity-50";
 const del = "text-xs text-muted hover:text-danger";
 

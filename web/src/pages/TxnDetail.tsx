@@ -90,7 +90,9 @@ export function TxnDetail() {
         {/* Extracted fields + correction form */}
         <div className="space-y-4">
           <div className="flex items-center justify-between">
-            <h1 className="truncate text-xl font-semibold tracking-tight">{txn.merchant ?? "Unknown merchant"}</h1>
+            {/* Not an <h1>: the global heading rule forces Anton-uppercase, which would distort
+                a user-supplied merchant name. Keep merchant data in mixed-case sans. */}
+            <div className="truncate text-xl font-semibold tracking-tight">{txn.merchant ?? "Unknown merchant"}</div>
             <ConfidencePill value={txn.confidence} />
           </div>
 
@@ -135,7 +137,7 @@ export function TxnDetail() {
                   setBucket(e.target.value);
                   setDirty(true);
                 }}
-                className="mt-1 w-full rounded-lg border border-line bg-white px-3 py-2"
+                className="mt-1 w-full rounded-lg border border-line bg-card px-3 py-2"
               >
                 <option value="">— choose —</option>
                 {BUCKETS.map((b) => (
@@ -155,7 +157,7 @@ export function TxnDetail() {
                   setDirty(true);
                 }}
                 placeholder="e.g. company:office-supplies"
-                className="mt-1 w-full rounded-lg border border-line bg-white px-3 py-2"
+                className="mt-1 w-full rounded-lg border border-line bg-card px-3 py-2"
               />
             </label>
 
@@ -168,7 +170,7 @@ export function TxnDetail() {
                     setPropertyId(e.target.value);
                     setDirty(true);
                   }}
-                  className="mt-1 w-full rounded-lg border border-line bg-white px-3 py-2"
+                  className="mt-1 w-full rounded-lg border border-line bg-card px-3 py-2"
                 >
                   <option value="">— choose —</option>
                   {props.map((p) => (
@@ -191,7 +193,7 @@ export function TxnDetail() {
                   setDate(e.target.value);
                   setDirty(true);
                 }}
-                className="mt-1 w-full rounded-lg border border-line bg-white px-3 py-2"
+                className="mt-1 w-full rounded-lg border border-line bg-card px-3 py-2"
               />
             </label>
 

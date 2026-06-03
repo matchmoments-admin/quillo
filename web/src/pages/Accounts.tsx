@@ -119,7 +119,7 @@ function AddAccount({ onAdded }: { onAdded: () => void }) {
       </label>
       <label className="min-w-[9rem]">
         <span className="text-xs font-medium uppercase tracking-wide text-muted">Type</span>
-        <select value={type} onChange={(e) => setType(e.target.value)} className="mt-1 w-full rounded-lg border border-line bg-white px-3 py-2">
+        <select value={type} onChange={(e) => setType(e.target.value)} className="mt-1 w-full rounded-lg border border-line bg-card px-3 py-2">
           <option value="transaction">Transaction</option>
           <option value="credit_card">Credit card</option>
           <option value="loan">Loan</option>
@@ -357,7 +357,7 @@ function EditAccount({
     onSuccess: onSaved,
   });
   return (
-    <div className="mt-3 space-y-3 rounded-lg border border-line bg-slate-50 p-3">
+    <div className="mt-3 space-y-3 rounded-lg border border-line bg-surface p-3">
       <div className="flex flex-wrap items-end gap-3">
         <label className="flex-1 min-w-[9rem]">
           <span className="text-xs font-medium uppercase tracking-wide text-muted">Name</span>
@@ -373,7 +373,7 @@ function EditAccount({
         </label>
         <label className="min-w-[8rem]">
           <span className="text-xs font-medium uppercase tracking-wide text-muted">Type</span>
-          <select value={type} onChange={(e) => setType(e.target.value)} className="mt-1 w-full rounded-lg border border-line bg-white px-3 py-2">
+          <select value={type} onChange={(e) => setType(e.target.value)} className="mt-1 w-full rounded-lg border border-line bg-card px-3 py-2">
             <option value="transaction">Transaction</option>
             <option value="credit_card">Credit card</option>
             <option value="loan">Loan</option>
@@ -392,7 +392,7 @@ function EditAccount({
             value={account.source}
             onChange={(e) => onSource(e.target.value)}
             disabled={sourcePending}
-            className="rounded-lg border border-line bg-white px-3 py-1.5"
+            className="rounded-lg border border-line bg-card px-3 py-1.5"
           >
             <option value="statement">Statement upload</option>
             <option value="qbo_feed">QuickBooks feed</option>

@@ -1,23 +1,47 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
+import type { ReactNode } from "react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { UserButton } from "@clerk/clerk-react";
 import { useQuery } from "@tanstack/react-query";
 import { Toaster } from "sonner";
 import { api } from "./api";
 
-const NAV = [
-  { to: "/", label: "Inbox", end: true },
-  { to: "/dashboard", label: "Dashboard" },
-  { to: "/income", label: "Income" },
-  { to: "/assets", label: "Assets" },
-  { to: "/documents", label: "Documents" },
-  { to: "/accounts", label: "Accounts" },
-  { to: "/reconcile", label: "Reconcile" },
-  { to: "/reports", label: "Reports" },
-  { to: "/filing", label: "File" },
-  { to: "/notifications", label: "Alerts" },
-  { to: "/quickbooks", label: "QuickBooks" },
-  { to: "/settings", label: "Settings" },
+type NavItem = { to: string; label: string; icon: IconName; end?: boolean; badge?: boolean };
+type NavGroup = { label: string; items: NavItem[] };
+
+// Grouped destinations — the forest sidebar that replaced the old cramped 12-tab top nav.
+const GROUPS: NavGroup[] = [
+  {
+    label: "Overview",
+    items: [
+      { to: "/", label: "Inbox", icon: "inbox", end: true, badge: true },
+      { to: "/dashboard", label: "Dashboard", icon: "grid" },
+    ],
+  },
+  {
+    label: "Records",
+    items: [
+      { to: "/income", label: "Income", icon: "income" },
+      { to: "/assets", label: "Assets", icon: "shield" },
+      { to: "/documents", label: "Documents", icon: "doc" },
+      { to: "/accounts", label: "Accounts", icon: "card" },
+    ],
+  },
+  {
+    label: "Work",
+    items: [
+      { to: "/reconcile", label: "Reconcile", icon: "swap" },
+      { to: "/reports", label: "Reports", icon: "bars" },
+      { to: "/filing", label: "File", icon: "file" },
+    ],
+  },
+  {
+    label: "Connections",
+    items: [
+      { to: "/quickbooks", label: "QuickBooks", icon: "check" },
+      { to: "/notifications", label: "Alerts", icon: "bell" },
+    ],
+  },
 ];
 
 // First-run gate: a brand-new tenant (no consent AND no entities) is sent to the onboarding
@@ -38,50 +62,241 @@ function FirstRunGate() {
 }
 
 export function App() {
+  const [drawer, setDrawer] = useState(false);
+  const { pathname } = useLocation();
+  // Inbox review badge — reuses the shared ["dashboard"] query (the Dashboard page uses the
+  // same key, so this is a cache hit there). App is the persistent layout, so this fetches once
+  // on load (not per navigation); a staleTime keeps focus-refetch from re-polling the DO (the
+  // /api/dashboard handler does a pollBatchJobs round-trip) just to refresh a badge number.
+  const dash = useQuery({ queryKey: ["dashboard"], queryFn: () => api.dashboard(), staleTime: 60_000 });
+  const needsReview = dash.data?.needs_review ?? 0;
+
+  // Close the mobile drawer on navigation.
+  useEffect(() => setDrawer(false), [pathname]);
+
   return (
-    <div className="min-h-screen bg-paper">
+    <div className="min-h-screen bg-paper text-ink">
+      <div className="grain" aria-hidden />
       <FirstRunGate />
       <Toaster position="bottom-right" richColors closeButton toastOptions={{ duration: 6000 }} />
-      <header className="sticky top-0 z-10 border-b border-line bg-paper/80 backdrop-blur">
-        <div className="mx-auto flex max-w-4xl items-center gap-4 px-6 py-3">
-          <Link to="/" className="flex flex-none items-center gap-2">
-            <span className="grid h-7 w-7 place-items-center rounded-lg bg-ink text-sm font-bold text-white">Q</span>
-            <span className="text-base font-semibold tracking-tight">Quillo</span>
-          </Link>
-          <nav className="flex flex-1 items-center gap-1 overflow-x-auto text-sm">
-            {NAV.map((n) => (
+
+      {/* Mobile top bar */}
+      <div className="sticky top-0 z-30 flex items-center gap-3 border-b border-line bg-paper/90 px-4 py-3 backdrop-blur lg:hidden">
+        <button
+          type="button"
+          onClick={() => setDrawer(true)}
+          aria-label="Open menu"
+          className="grid h-9 w-9 place-items-center rounded-xl border border-ink/15 text-forest"
+        >
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.8">
+            <path d="M3 5h12M3 9h12M3 13h12" />
+          </svg>
+        </button>
+        <Brand />
+        <span className="flex-1" />
+        <UserButton afterSignOutUrl="/sign-in" />
+      </div>
+
+      <div className="lg:grid lg:grid-cols-[252px_1fr]">
+        {/* Backdrop for the mobile drawer */}
+        {drawer && (
+          <button
+            type="button"
+            aria-label="Close menu"
+            onClick={() => setDrawer(false)}
+            className="fixed inset-0 z-40 bg-forest/40 lg:hidden"
+          />
+        )}
+        <Sidebar needsReview={needsReview} open={drawer} />
+
+        <div className="flex min-h-screen flex-col">
+          <main className="flex-1">
+            <div className="mx-auto max-w-5xl px-5 py-8 sm:px-8">
+              <Outlet />
+            </div>
+          </main>
+          <footer className="mx-auto max-w-5xl px-5 pb-10 pt-4 text-xs leading-relaxed text-muted sm:px-8">
+            General information only — not tax advice. Quillo is not a registered tax or BAS agent,
+            does not lodge returns, and never holds or moves your money. Confirm your situation with a
+            registered tax/BAS agent.{" "}
+            <Link to="/onboarding" className="text-ink underline underline-offset-2">
+              Setup
+            </Link>
+            {" · "}
+            <a href="mailto:hello@quillo.au?subject=Quillo%20support" className="text-ink underline underline-offset-2">
+              Contact support
+            </a>
+          </footer>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Brand() {
+  return (
+    <Link to="/" className="flex flex-none items-center gap-2.5">
+      <span className="grid h-9 w-9 place-items-center rounded-xl bg-sage font-display text-lg text-forest">Q</span>
+      <span className="font-display text-xl tracking-wide text-forest">
+        Quillo<span className="text-green">.</span>
+      </span>
+    </Link>
+  );
+}
+
+function Sidebar({ needsReview, open }: { needsReview: number; open: boolean }) {
+  return (
+    <aside
+      className={`fixed inset-y-0 left-0 z-50 flex w-[252px] flex-col bg-forest px-4 py-5 text-cream transition-transform lg:sticky lg:top-0 lg:z-auto lg:h-screen lg:translate-x-0 ${
+        open ? "translate-x-0" : "-translate-x-full"
+      }`}
+    >
+      <div className="flex items-center gap-2.5 px-2 pb-5">
+        <span className="grid h-9 w-9 place-items-center rounded-xl bg-sage font-display text-lg text-forest">Q</span>
+        <span className="font-display text-xl tracking-wide text-cream">
+          Quillo<span className="text-sage">.</span>
+        </span>
+      </div>
+
+      <nav className="-mx-1 flex-1 overflow-y-auto px-1">
+        {GROUPS.map((g) => (
+          <div key={g.label} className="mt-5 first:mt-1">
+            <div className="px-3 pb-2 text-[10px] font-bold uppercase tracking-[0.2em] text-cream/45">{g.label}</div>
+            {g.items.map((it) => (
               <NavLink
-                key={n.to}
-                to={n.to}
-                end={n.end}
+                key={it.to}
+                to={it.to}
+                end={it.end}
                 className={({ isActive }) =>
-                  `whitespace-nowrap rounded-lg px-2.5 py-1.5 ${isActive ? "bg-ink text-white" : "text-muted hover:text-ink"}`
+                  `flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold transition ${
+                    isActive ? "bg-sage text-forest" : "text-cream/70 hover:bg-cream/10 hover:text-cream"
+                  }`
                 }
               >
-                {n.label}
+                {({ isActive }) => (
+                  <>
+                    <Icon name={it.icon} />
+                    <span>{it.label}</span>
+                    {it.badge && needsReview > 0 && (
+                      <span
+                        className={`ml-auto rounded-full px-2 py-0.5 text-[11px] font-bold tnum ${
+                          isActive ? "bg-forest text-sage" : "bg-green text-cream"
+                        }`}
+                      >
+                        {needsReview}
+                      </span>
+                    )}
+                  </>
+                )}
               </NavLink>
             ))}
-          </nav>
-          <div className="flex-none">
-            <UserButton afterSignOutUrl="/sign-in" />
           </div>
+        ))}
+      </nav>
+
+      <div className="mt-4 border-t border-cream/15 pt-3">
+        <NavLink
+          to="/settings"
+          className={({ isActive }) =>
+            `flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold transition ${
+              isActive ? "bg-sage text-forest" : "text-cream/70 hover:bg-cream/10 hover:text-cream"
+            }`
+          }
+        >
+          <Icon name="gear" />
+          <span>Settings</span>
+        </NavLink>
+        <div className="mt-1 flex items-center gap-3 rounded-xl px-2 py-2">
+          <UserButton afterSignOutUrl="/sign-in" />
+          <span className="text-[11px] text-cream/55">Account &amp; sign out</span>
         </div>
-      </header>
-      <main className="mx-auto max-w-4xl px-6 py-10">
-        <Outlet />
-      </main>
-      <footer className="mx-auto max-w-4xl px-6 pb-10 pt-4 text-xs leading-relaxed text-muted">
-        General information only — not tax advice. Quillo is not a registered tax or BAS agent,
-        does not lodge returns, and never holds or moves your money. Confirm your situation with a
-        registered tax/BAS agent.{" "}
-        <Link to="/onboarding" className="text-ink underline underline-offset-2">
-          Setup
-        </Link>
-        {" · "}
-        <a href="mailto:hello@quillo.au?subject=Quillo%20support" className="text-ink underline underline-offset-2">
-          Contact support
-        </a>
-      </footer>
-    </div>
+      </div>
+    </aside>
+  );
+}
+
+type IconName =
+  | "grid"
+  | "inbox"
+  | "income"
+  | "shield"
+  | "doc"
+  | "card"
+  | "swap"
+  | "bars"
+  | "file"
+  | "check"
+  | "bell"
+  | "gear";
+
+function Icon({ name }: { name: IconName }) {
+  const p: Record<IconName, ReactNode> = {
+    grid: (
+      <>
+        <rect x="2.5" y="2.5" width="5.5" height="5.5" rx="1.2" />
+        <rect x="10" y="2.5" width="5.5" height="5.5" rx="1.2" />
+        <rect x="2.5" y="10" width="5.5" height="5.5" rx="1.2" />
+        <rect x="10" y="10" width="5.5" height="5.5" rx="1.2" />
+      </>
+    ),
+    inbox: (
+      <>
+        <path d="M2.5 5.5l6.5 4 6.5-4" />
+        <rect x="2.5" y="3.5" width="13" height="11" rx="1.6" />
+      </>
+    ),
+    income: <path d="M9 2.5v13M5.5 6h5a2 2 0 010 4h-3a2 2 0 000 4h5" />,
+    shield: <path d="M9 2l6 3v4c0 3.5-2.5 6-6 7-3.5-1-6-3.5-6-7V5l6-3z" />,
+    doc: (
+      <>
+        <path d="M4 2.5h6l4 4v9a1 1 0 01-1 1H4a1 1 0 01-1-1v-12a1 1 0 011-1z" />
+        <path d="M10 2.5V6h4" />
+      </>
+    ),
+    card: (
+      <>
+        <rect x="2.5" y="4" width="13" height="10" rx="1.6" />
+        <path d="M2.5 7.5h13" />
+      </>
+    ),
+    swap: <path d="M3 6.5h9M9.5 3.5l3 3-3 3M15 11.5H6M8.5 8.5l-3 3 3 3" />,
+    bars: <path d="M4 14.5v-5M9 14.5v-9M14 14.5v-3" />,
+    file: (
+      <>
+        <path d="M4 2.5h7l3.5 3.5V15a.5.5 0 01-.5.5H4a.5.5 0 01-.5-.5v-12A.5.5 0 014 2.5z" />
+        <path d="M6.5 9h5M6.5 11.5h5" />
+      </>
+    ),
+    check: (
+      <>
+        <rect x="2.5" y="2.5" width="13" height="13" rx="2.5" />
+        <path d="M6 9.5l2 2 4-4.5" />
+      </>
+    ),
+    bell: (
+      <>
+        <path d="M9 2.5a4 4 0 014 4c0 4 1.5 5 1.5 5h-11s1.5-1 1.5-5a4 4 0 014-4z" />
+        <path d="M7.5 14.5a1.6 1.6 0 003 0" />
+      </>
+    ),
+    gear: (
+      <>
+        <circle cx="9" cy="9" r="2.5" />
+        <path d="M9 1.5v2M9 14.5v2M16.5 9h-2M3.5 9h-2M14.3 3.7l-1.4 1.4M5.1 12.9l-1.4 1.4M14.3 14.3l-1.4-1.4M5.1 5.1L3.7 3.7" />
+      </>
+    ),
+  };
+  return (
+    <svg
+      width="17"
+      height="17"
+      viewBox="0 0 18 18"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      className="flex-none opacity-90"
+    >
+      {p[name]}
+    </svg>
   );
 }

@@ -183,6 +183,131 @@ export async function usageSummary(env: Env, userId: string) {
   };
 }
 
+/** Income rows for the Income page, optionally scoped by FY / person / property. */
+export async function listIncome(
+  env: Env,
+  userId: string,
+  opts: { fy?: string; personId?: string; propertyId?: string } = {},
+) {
+  const where: string[] = ["user_id = ?"];
+  const binds: unknown[] = [userId];
+  if (opts.fy) {
+    where.push("fy = ?");
+    binds.push(opts.fy);
+  }
+  if (opts.personId) {
+    where.push("person_id = ?");
+    binds.push(opts.personId);
+  }
+  if (opts.propertyId) {
+    where.push("property_id = ?");
+    binds.push(opts.propertyId);
+  }
+  const res = await env.DB.prepare(
+    `SELECT id, person_id, entity_id, property_id, income_type, ato_label, fy, gross_cents, net_cents,
+            withholding_cents, franking_credit_cents, foreign_tax_paid_cents, currency, amount_aud_cents,
+            txn_date, source_doc_id, needs_review, created_at
+       FROM income WHERE ${where.join(" AND ")} ORDER BY txn_date DESC, created_at DESC LIMIT 500`,
+  )
+    .bind(...binds)
+    .all();
+  return res.results ?? [];
+}
+
+/**
+ * Documents shelf. Unions the canonical `documents` registry with LEGACY receipts (tracked only
+ * on transactions.receipt_key, pre-0007) so nothing disappears before the backfill — the
+ * forward-only registry decision. doc_type 'receipt' (legacy) is synthesised for those rows.
+ */
+export async function listDocuments(env: Env, userId: string, opts: { type?: string; fy?: string; propertyId?: string } = {}) {
+  const where: string[] = ["user_id = ?"];
+  const binds: unknown[] = [userId];
+  if (opts.type) {
+    where.push("doc_type = ?");
+    binds.push(opts.type);
+  }
+  if (opts.fy) {
+    where.push("fy = ?");
+    binds.push(opts.fy);
+  }
+  if (opts.propertyId) {
+    where.push("property_id = ?");
+    binds.push(opts.propertyId);
+  }
+  const docs = await env.DB.prepare(
+    `SELECT id, doc_type, fy, property_id, entity_id, issuer, doc_date, classification_confidence,
+            needs_review, created_at, r2_key
+       FROM documents WHERE ${where.join(" AND ")} ORDER BY created_at DESC LIMIT 500`,
+  )
+    .bind(...binds)
+    .all();
+  // Legacy receipts (synthesised fy=NULL, no registry row) are only meaningful in the UNFILTERED
+  // view — an FY or property filter would otherwise leak unrelated receipts under the wrong scope.
+  const includeLegacy = (!opts.type || opts.type === "receipt") && !opts.fy && !opts.propertyId;
+  const legacy = includeLegacy
+    ? await env.DB.prepare(
+        `SELECT id, 'receipt' AS doc_type, NULL AS fy, property_id, NULL AS entity_id, merchant AS issuer,
+                txn_date AS doc_date, confidence AS classification_confidence, 0 AS needs_review,
+                created_at, receipt_key AS r2_key
+           FROM transactions
+          WHERE user_id = ? AND kind = 'receipt' AND receipt_key IS NOT NULL AND document_id IS NULL
+          ORDER BY created_at DESC LIMIT 200`,
+      )
+        .bind(userId)
+        .all()
+    : { results: [] };
+  return [...(docs.results ?? []), ...(legacy.results ?? [])];
+}
+
+/** Assets with this-FY decline-in-value joined from the schedule (for the Assets page). */
+export async function listAssets(env: Env, userId: string, fy?: string) {
+  const res = await env.DB.prepare(
+    `SELECT a.id, a.label, a.asset_class, a.cost_cents, a.acquired_date, a.method, a.effective_life_years,
+            a.property_id, a.entity_id, a.is_second_hand, a.status, a.needs_review,
+            (SELECT deduction_cents FROM depreciation_schedule d WHERE d.asset_id = a.id AND d.fy = COALESCE(?, d.fy) ORDER BY d.fy DESC LIMIT 1) AS this_fy_deduction_cents,
+            (SELECT closing_adjustable_value_cents FROM depreciation_schedule d WHERE d.asset_id = a.id ORDER BY d.fy DESC LIMIT 1) AS adjustable_value_cents
+       FROM assets a WHERE a.user_id = ? ORDER BY a.created_at DESC LIMIT 500`,
+  )
+    .bind(fy ?? null, userId)
+    .all();
+  return res.results ?? [];
+}
+
+/** The full multi-FY schedule for one asset (for the asset detail view). */
+export async function listDepreciation(env: Env, userId: string, assetId: string) {
+  const res = await env.DB.prepare(
+    `SELECT fy, opening_adjustable_value_cents, days_held, deduction_cents, closing_adjustable_value_cents, method_applied
+       FROM depreciation_schedule WHERE user_id = ? AND asset_id = ? ORDER BY fy`,
+  )
+    .bind(userId, assetId)
+    .all();
+  return res.results ?? [];
+}
+
+/** FY checklist items (kickoff/wrap-up), newest-open first. */
+export async function listChecklist(env: Env, userId: string, fy?: string) {
+  const where = fy ? "user_id = ? AND fy = ?" : "user_id = ?";
+  const binds = fy ? [userId, fy] : [userId];
+  const res = await env.DB.prepare(
+    `SELECT id, fy, item_key, title, rationale, status, trigger_bucket, due_hint, created_at
+       FROM fy_checklist WHERE ${where} ORDER BY (status='open') DESC, created_at LIMIT 200`,
+  )
+    .bind(...binds)
+    .all();
+  return res.results ?? [];
+}
+
+/** Claim suggestions (GENERAL-INFO), newest open first — for the Inbox/Dashboard nudge. */
+export async function listClaims(env: Env, userId: string) {
+  const res = await env.DB.prepare(
+    `SELECT id, txn_id, asset_id, rule_id, suggestion, claim_type, estimated_deduction_cents, status, created_at
+       FROM claim_suggestions WHERE user_id = ? ORDER BY (status='suggested') DESC, created_at DESC LIMIT 100`,
+  )
+    .bind(userId)
+    .all();
+  return res.results ?? [];
+}
+
 export async function listNotifications(env: Env, userId: string) {
   const res = await env.DB.prepare(
     `SELECT id, body, txn_id, read_at, created_at FROM notifications

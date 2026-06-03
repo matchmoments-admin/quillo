@@ -13,6 +13,9 @@ const secret = randomBytes(32).toString("base64url");
 const sql = [
   `INSERT INTO tenants (user_id, display_name, email_localpart) VALUES ('${userId}','${userId}','${localpart}');`,
   `INSERT INTO profiles (user_id, gst_registered, ledger_provider) VALUES ('${userId}', 1, 'qbo');`,
+  // Self person (apportionment root). Deterministic id matches 0006_persons.sql's backfill +
+  // the selfPersonId() default used by addProperty/addEntity, so those always resolve.
+  `INSERT INTO persons (id, user_id, display_name, role) VALUES ('person_self_${userId}','${userId}','${userId}','self');`,
   `INSERT INTO tenant_keys (key_id, user_id, secret, label) VALUES ('${keyId}','${userId}','${secret}','${label}');`,
 ].join("\n");
 

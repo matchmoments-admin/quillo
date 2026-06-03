@@ -15,6 +15,9 @@ import { QuickBooks } from "./pages/QuickBooks";
 import { Reports } from "./pages/Reports";
 import { Accounts } from "./pages/Accounts";
 import { Reconcile } from "./pages/Reconcile";
+import { Income } from "./pages/Income";
+import { Documents } from "./pages/Documents";
+import { Assets } from "./pages/Assets";
 import { setTokenGetter } from "./api";
 
 const PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY as string | undefined;
@@ -77,6 +80,9 @@ const router = createBrowserRouter([
       { index: true, element: <Inbox /> },
       { path: "txn/:id", element: <TxnDetail /> },
       { path: "dashboard", element: <Dashboard /> },
+      { path: "income", element: <Income /> },
+      { path: "assets", element: <Assets /> },
+      { path: "documents", element: <Documents /> },
       { path: "accounts", element: <Accounts /> },
       { path: "reconcile", element: <Reconcile /> },
       { path: "notifications", element: <Notifications /> },

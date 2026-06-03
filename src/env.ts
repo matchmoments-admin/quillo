@@ -46,6 +46,17 @@ export interface TaxAgentRpc {
   ingestImages(userId: string, source: string, images: { bytes: ArrayBuffer; mime: string }[], bucketHint?: string | null): Promise<string>;
   ingestText(userId: string, source: string, text: string): Promise<string>;
   ingestCategoriseText(userId: string, source: string, text: string, bucketHint?: string | null): Promise<string>;
+  classifyAndRoute(userId: string, source: string, bytes: ArrayBuffer, mime: string): Promise<{ docId: string; doc_type: string; routed: boolean }>;
+  recordIncome(userId: string, inc: { income_type: string; gross_cents: number; person_id?: string | null; entity_id?: string | null; property_id?: string | null; ato_label?: string | null; fy?: string | null; net_cents?: number | null; withholding_cents?: number | null; franking_credit_cents?: number | null; foreign_tax_paid_cents?: number | null; currency?: string | null; source_doc_id?: string | null; txn_date?: string | null; detail_json?: string | null; needs_review?: number }): Promise<string>;
+  createAsset(userId: string, a: { label: string; asset_class: string; cost_cents: number; acquired_date: string; property_id?: string | null; entity_id?: string | null; effective_life_years?: number | null; method?: string | null; div43_rate?: number | null; dv_rate_pct?: number | null; is_second_hand?: boolean; business_use_pct?: number | null; source_doc_id?: string | null; needs_review?: number }): Promise<string>;
+  computeDepreciation(userId: string, assetId: string, toStartYear?: number): Promise<{ rows: number }>;
+  rollForward(userId: string, toStartYear: number): Promise<{ assets: number }>;
+  disposeAsset(userId: string, assetId: string, disposedDate: string, disposalValueCents: number): Promise<{ balancing_adjustment_cents: number }>;
+  importDepreciationSchedule(userId: string, docId: string, bytes: ArrayBuffer, mime: string): Promise<{ created: number }>;
+  generateChecklist(userId: string, fy?: string): Promise<{ items: number }>;
+  setChecklistStatus(userId: string, id: string, status: string): Promise<void>;
+  setClaimStatus(userId: string, id: string, status: string): Promise<void>;
+  computeCgt(userId: string, propertyId: string): Promise<import("./lib/cgt").CgtResult & { property_id: string }>;
   applyCorrection(userId: string, txnId: string, field: string, value: string): Promise<void>;
   deleteTransaction(userId: string, txnId: string): Promise<void>;
   pushToQuickBooks(userId: string, txnId: string): Promise<{ ok: boolean; ledgerRef?: string; error?: string }>;

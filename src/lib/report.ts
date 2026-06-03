@@ -1,5 +1,6 @@
 import type { Env } from "../env";
 import { COUNTABLE } from "./queries";
+import { incomeTotals, depreciationTotals, type IncomeTotals } from "./ledger-totals";
 
 // Australian FY is Jul–Jun. Given a start year Y, the FY runs Y-07-01 .. (Y+1)-06-30.
 export function currentFyStartYear(now = new Date()): number {
@@ -19,6 +20,17 @@ export interface ReportRow {
   gst_cents: number;
 }
 
+// Per-property tax position (the negative-gearing figure): rent income − rental deductions −
+// decline in value. net_cents < 0 = a rental loss that offsets other income.
+export interface PropertyPosition {
+  property_id: string;
+  label: string | null;
+  income_cents: number;
+  deduction_cents: number;
+  depreciation_cents: number;
+  net_cents: number;
+}
+
 export interface Report {
   fy: string;
   start: string;
@@ -30,6 +42,13 @@ export interface Report {
   undated_detail: { merchant: string | null; total_cents: number }[];
   abn: string | null;                  // company ABN (for the accountant header)
   gst_credits_cents: number;           // total GST/ITC captured on company expenses this FY
+  // ── tax position (income − deductions − depreciation) ──
+  income: IncomeTotals;
+  depreciation_cents: number;
+  per_property: PropertyPosition[];
+  total_income_cents: number;
+  total_deductions_cents: number;      // all countable deductions this FY
+  taxable_position_cents: number;      // total_income − total_deductions − depreciation (indicative)
 }
 
 export async function buildReport(env: Env, userId: string, startYear: number): Promise<Report> {
@@ -117,17 +136,65 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   const rows = byBucket.results ?? [];
   const gstCredits = rows.filter((b) => b.bucket === "company").reduce((s, b) => s + (b.gst_cents ?? 0), 0);
 
+  // ── Tax position via the money seam: income − deductions − depreciation ──
+  const income = await incomeTotals(env, userId, { startYear });
+  const dep = await depreciationTotals(env, userId, startYear);
+  const expenseByProp = byProperty.results ?? [];
+  const expMap = new Map(expenseByProp.map((p) => [p.property_id, p]));
+  const depByProp = new Map(dep.by_property.filter((d) => d.property_id).map((d) => [d.property_id as string, d.deduction_cents]));
+  const rentByProp = new Map<string, number>();
+  // Rental income per property (rent + foreign_rent attributed to a property this FY).
+  const rentRows = await env.DB.prepare(
+    `SELECT property_id, COALESCE(SUM(COALESCE(amount_aud_cents, gross_cents)),0) AS gross_cents
+       FROM income WHERE user_id = ? AND fy = ? AND property_id IS NOT NULL
+        AND income_type IN ('rent','foreign_rent') GROUP BY property_id`,
+  )
+    .bind(userId, `${startYear}-${String((startYear + 1) % 100).padStart(2, "0")}`)
+    .all<{ property_id: string; gross_cents: number }>();
+  for (const r of rentRows.results ?? []) rentByProp.set(r.property_id, r.gross_cents);
+
+  // Property labels for ids that have income/depreciation but no expense transactions this FY.
+  const labelRows = await env.DB.prepare(`SELECT id, label FROM properties WHERE user_id = ?`).bind(userId).all<{ id: string; label: string | null }>();
+  const labelMap = new Map((labelRows.results ?? []).map((r) => [r.id, r.label]));
+
+  // Union of every property that has income, deductions OR depreciation — so an agent-managed
+  // rental whose only deductions are depreciation still shows its negative-gearing position.
+  const propIds = new Set<string>([...expMap.keys(), ...rentByProp.keys(), ...depByProp.keys()]);
+  const per_property: PropertyPosition[] = [...propIds].map((pid) => {
+    const incomeC = rentByProp.get(pid) ?? 0;
+    const deductionC = expMap.get(pid)?.total_cents ?? 0;
+    const depreciationC = depByProp.get(pid) ?? 0;
+    return {
+      property_id: pid,
+      label: labelMap.get(pid) ?? expMap.get(pid)?.label ?? null,
+      income_cents: incomeC,
+      deduction_cents: deductionC,
+      depreciation_cents: depreciationC,
+      net_cents: incomeC - deductionC - depreciationC,
+    };
+  });
+
+  // 'unknown'-bucket spend is not a sanctioned deduction — exclude it from the indicative position.
+  const total_deductions_cents = rows.filter((b) => b.bucket !== "unknown").reduce((s, b) => s + (b.total_cents ?? 0), 0);
+  const taxable_position_cents = income.gross_cents - total_deductions_cents - dep.total_cents;
+
   return {
     fy: `${startYear}-${String((startYear + 1) % 100).padStart(2, "0")}`,
     start,
     end,
     by_bucket: rows,
-    by_property: byProperty.results ?? [],
+    by_property: expenseByProp,
     company_quarters,
     undated: { n: undated?.n ?? 0, total_cents: undated?.total_cents ?? 0 },
     undated_detail: undatedDetail.results ?? [],
     abn,
     gst_credits_cents: gstCredits,
+    income,
+    depreciation_cents: dep.total_cents,
+    per_property,
+    total_income_cents: income.gross_cents,
+    total_deductions_cents,
+    taxable_position_cents,
   };
 }
 
@@ -148,13 +215,25 @@ export function reportToCsv(r: Report): string {
     `GST credits (ITC) on company expenses,${d(r.gst_credits_cents)}`,
     "General information only — not tax advice. Confirm with a registered tax/BAS agent.",
     "",
-    "Bucket,ATO label,Count,Total (AUD),GST",
+    "Tax position (indicative),Amount (AUD)",
+    `Total income (gross),${d(r.total_income_cents)}`,
+    `Total deductions,${d(r.total_deductions_cents)}`,
+    `Decline in value (depreciation),${d(r.depreciation_cents)}`,
+    `Indicative taxable position,${d(r.taxable_position_cents)}`,
+    "",
+    "Income type,Count,Gross (AUD),Withholding,Franking credit,Foreign tax paid",
   ];
+  for (const it of r.income.by_type) {
+    lines.push(`${it.income_type},${it.n},${d(it.gross_cents)},${d(it.withholding_cents)},${d(it.franking_credit_cents)},${d(it.foreign_tax_paid_cents)}`);
+  }
+  lines.push("", "Bucket,ATO label,Count,Total (AUD),GST");
   for (const b of r.by_bucket) {
     lines.push(`${b.bucket},${b.ato_label ?? ""},${b.n},${d(b.total_cents)},${d(b.gst_cents)}`);
   }
-  lines.push("", "Property,Count,Total (AUD)");
-  for (const p of r.by_property) lines.push(`${(p.label ?? p.property_id).replace(/,/g, " ")},${p.n},${d(p.total_cents)}`);
+  lines.push("", "Property,Rent income (AUD),Deductions,Depreciation,Net (negative gearing)");
+  for (const p of r.per_property) {
+    lines.push(`${(p.label ?? p.property_id).replace(/,/g, " ")},${d(p.income_cents)},${d(p.deduction_cents)},${d(p.depreciation_cents)},${d(p.net_cents)}`);
+  }
   lines.push("", "Company BAS quarter,Total (AUD),GST");
   for (const q of r.company_quarters) lines.push(`${q.quarter},${d(q.total_cents)},${d(q.gst_cents)}`);
   if (r.undated_detail.length) {

@@ -5,34 +5,91 @@ import type { Env } from "../env";
 // uuid helper (Workers runtime provides crypto.randomUUID).
 const uid = () => crypto.randomUUID();
 
-export async function addProperty(
+// The deterministic self-person id seeded by 0006_persons.sql. New properties/entities default
+// to it so a single-person tenant never has to think about persons.
+const selfPersonId = (userId: string) => `person_self_${userId}`;
+
+export async function addPerson(
   env: Env,
   userId: string,
-  p: { label: string; address?: string; status?: string; ownership_pct?: number; acquired_date?: string; notes?: string },
+  p: { display_name: string; role?: string; occupation?: string; tax_residency?: string; tfn_last4?: string },
 ): Promise<string> {
   const id = uid();
   await env.DB.prepare(
-    `INSERT INTO properties (id, user_id, label, address, status, ownership_pct, acquired_date, notes)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO persons (id, user_id, display_name, role, occupation, tax_residency, tfn_last4)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
   )
-    .bind(id, userId, p.label, p.address ?? null, p.status ?? "rented", p.ownership_pct ?? 100, p.acquired_date ?? null, p.notes ?? null)
+    .bind(id, userId, p.display_name, p.role ?? "other", p.occupation ?? null, p.tax_residency ?? "AU", p.tfn_last4 ?? null)
     .run();
   return id;
 }
 
-export async function updateProperty(env: Env, userId: string, id: string, p: { label?: string; status?: string; ownership_pct?: number }): Promise<void> {
+export async function updatePerson(
+  env: Env,
+  userId: string,
+  id: string,
+  p: { display_name?: string; role?: string; occupation?: string; tax_residency?: string; tfn_last4?: string },
+): Promise<void> {
   await env.DB.prepare(
-    `UPDATE properties SET label = COALESCE(?, label), status = COALESCE(?, status),
-            ownership_pct = COALESCE(?, ownership_pct) WHERE id = ? AND user_id = ?`,
+    `UPDATE persons SET display_name = COALESCE(?, display_name), role = COALESCE(?, role),
+            occupation = COALESCE(?, occupation), tax_residency = COALESCE(?, tax_residency),
+            tfn_last4 = COALESCE(?, tfn_last4) WHERE id = ? AND user_id = ?`,
   )
-    .bind(p.label ?? null, p.status ?? null, p.ownership_pct ?? null, id, userId)
+    .bind(p.display_name ?? null, p.role ?? null, p.occupation ?? null, p.tax_residency ?? null, p.tfn_last4 ?? null, id, userId)
     .run();
 }
 
-export async function addEntity(env: Env, userId: string, e: { kind: string; name?: string; detail?: unknown }): Promise<string> {
+export async function addProperty(
+  env: Env,
+  userId: string,
+  p: { label: string; address?: string; status?: string; ownership_pct?: number; acquired_date?: string; notes?: string; person_id?: string },
+): Promise<string> {
   const id = uid();
-  await env.DB.prepare(`INSERT INTO entities (id, user_id, kind, name, detail_json) VALUES (?, ?, ?, ?, ?)`)
-    .bind(id, userId, e.kind, e.name ?? null, JSON.stringify(e.detail ?? {}))
+  await env.DB.prepare(
+    `INSERT INTO properties (id, user_id, label, address, status, ownership_pct, acquired_date, notes, person_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  )
+    .bind(id, userId, p.label, p.address ?? null, p.status ?? "rented", p.ownership_pct ?? 100, p.acquired_date ?? null, p.notes ?? null, p.person_id ?? selfPersonId(userId))
+    .run();
+  return id;
+}
+
+export async function updateProperty(
+  env: Env,
+  userId: string,
+  id: string,
+  p: {
+    label?: string;
+    status?: string;
+    ownership_pct?: number;
+    jurisdiction?: string;
+    cost_base_cents?: number;
+    disposal_proceeds_cents?: number;
+    disposal_date?: string;
+    acquired_date?: string;
+    main_residence_flag?: number;
+  },
+): Promise<void> {
+  await env.DB.prepare(
+    `UPDATE properties SET label = COALESCE(?, label), status = COALESCE(?, status),
+            ownership_pct = COALESCE(?, ownership_pct), jurisdiction = COALESCE(?, jurisdiction),
+            cost_base_cents = COALESCE(?, cost_base_cents), disposal_proceeds_cents = COALESCE(?, disposal_proceeds_cents),
+            disposal_date = COALESCE(?, disposal_date), acquired_date = COALESCE(?, acquired_date),
+            main_residence_flag = COALESCE(?, main_residence_flag)
+      WHERE id = ? AND user_id = ?`,
+  )
+    .bind(
+      p.label ?? null, p.status ?? null, p.ownership_pct ?? null, p.jurisdiction ?? null,
+      p.cost_base_cents ?? null, p.disposal_proceeds_cents ?? null, p.disposal_date ?? null,
+      p.acquired_date ?? null, p.main_residence_flag ?? null, id, userId,
+    )
+    .run();
+}
+
+export async function addEntity(env: Env, userId: string, e: { kind: string; name?: string; detail?: unknown; person_id?: string }): Promise<string> {
+  const id = uid();
+  await env.DB.prepare(`INSERT INTO entities (id, user_id, kind, name, detail_json, person_id) VALUES (?, ?, ?, ?, ?, ?)`)
+    .bind(id, userId, e.kind, e.name ?? null, JSON.stringify(e.detail ?? {}), e.person_id ?? selfPersonId(userId))
     .run();
   return id;
 }
@@ -82,7 +139,7 @@ export async function updateAccount(
     .run();
 }
 
-export async function deleteRow(env: Env, userId: string, table: "properties" | "entities" | "user_rules" | "accounts", id: string): Promise<void> {
+export async function deleteRow(env: Env, userId: string, table: "properties" | "entities" | "user_rules" | "accounts" | "persons" | "income" | "assets", id: string): Promise<void> {
   // table is from a fixed allowlist (never user input) — safe to interpolate.
   await env.DB.prepare(`DELETE FROM ${table} WHERE id = ? AND user_id = ?`).bind(id, userId).run();
 }

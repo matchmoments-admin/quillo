@@ -1,4 +1,4 @@
-import type { Txn, TxnDetail, Situation, SituationDraft, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse, UsageData, StatementInfo } from "./types";
+import type { Txn, TxnDetail, Situation, SituationDraft, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse, UsageData, StatementInfo, IncomeRow, DocRow, AssetRow, ScheduleRow, ChecklistItem, ClaimSuggestion } from "./types";
 
 // Clerk session token getter, wired from <TokenBridge> inside ClerkProvider (main.tsx).
 // Clerk tokens are short-lived, so we fetch a fresh one per request (getToken caches/refreshes).
@@ -117,4 +117,52 @@ export const api = {
   // Phase 5
   report: (fy?: number) => get<Report>(`/api/report${fy ? `?fy=${fy}` : ""}`),
   reportCsvUrl: (fy?: number) => `/api/report?format=csv${fy ? `&fy=${fy}` : ""}`,
+
+  // v2 — Income + Documents (Smart Inbox)
+  income: (opts: { fy?: string; property_id?: string } = {}) => {
+    const q = new URLSearchParams();
+    if (opts.fy) q.set("fy", opts.fy);
+    if (opts.property_id) q.set("property_id", opts.property_id);
+    const qs = q.toString();
+    return get<{ income: IncomeRow[] }>(`/api/income${qs ? `?${qs}` : ""}`).then((r) => r.income);
+  },
+  addIncome: (b: Partial<IncomeRow>) => post<{ id: string }>("/api/income", b),
+  deleteIncome: (id: string) => send<{ ok: boolean }>("DELETE", `/api/income/${id}`),
+  documents: (opts: { type?: string; fy?: string } = {}) => {
+    const q = new URLSearchParams();
+    if (opts.type) q.set("type", opts.type);
+    if (opts.fy) q.set("fy", opts.fy);
+    const qs = q.toString();
+    return get<{ documents: DocRow[] }>(`/api/documents${qs ? `?${qs}` : ""}`).then((r) => r.documents);
+  },
+  uploadDocument: async (file: File): Promise<{ docId: string; doc_type: string; routed: boolean }> => {
+    const fd = new FormData();
+    fd.append("file", file);
+    const res = await fetch("/api/documents/upload", { method: "POST", credentials: "include", headers: await authHeaders(), body: fd });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    return res.json();
+  },
+  documentDownloadUrl: (id: string) => `/api/documents/${id}/download`,
+
+  // v2 — Assets & depreciation
+  assets: (fy?: string) => get<{ assets: AssetRow[] }>(`/api/assets${fy ? `?fy=${fy}` : ""}`).then((r) => r.assets),
+  addAsset: (b: Partial<AssetRow>) => post<{ id: string }>("/api/assets", b),
+  assetSchedule: (id: string) => get<{ schedule: ScheduleRow[] }>(`/api/assets/${id}/schedule`).then((r) => r.schedule),
+  computeAsset: (id: string) => post<{ rows: number }>(`/api/assets/${id}/compute`),
+  disposeAsset: (id: string, disposed_date: string, disposal_value_cents: number) =>
+    post<{ balancing_adjustment_cents: number }>(`/api/assets/${id}/dispose`, { disposed_date, disposal_value_cents }),
+  deleteAsset: (id: string) => send<{ ok: boolean }>("DELETE", `/api/assets/${id}`),
+
+  // v2 — FY checklist
+  checklist: (fy?: string) => get<{ checklist: ChecklistItem[] }>(`/api/checklist${fy ? `?fy=${fy}` : ""}`).then((r) => r.checklist),
+  generateChecklist: (fy?: string) => post<{ items: number }>(`/api/checklist/generate${fy ? `?fy=${fy}` : ""}`),
+  setChecklistStatus: (id: string, status: string) => send<{ ok: boolean }>("PATCH", `/api/checklist/${id}`, { status }),
+
+  // v2 — Claimability suggestions
+  claims: () => get<{ claims: ClaimSuggestion[] }>("/api/claims").then((r) => r.claims),
+  setClaimStatus: (id: string, status: string) => send<{ ok: boolean }>("PATCH", `/api/claims/${id}`, { status }),
+
+  // v2 — CGT on a disposed property (Phase 5)
+  cgt: (propertyId: string) =>
+    get<{ property_id: string; cost_base_cents: number; gross_gain_cents: number; is_capital_loss: boolean; discount_applied: boolean; discount_cents: number; net_gain_cents: number }>(`/api/properties/${propertyId}/cgt`),
 };

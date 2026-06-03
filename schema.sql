@@ -77,6 +77,12 @@ CREATE TABLE IF NOT EXISTS transactions (
   duplicate_of TEXT,                     -- txn id this duplicates, if flagged
   receipt_keys TEXT,                     -- JSON array of all R2 keys (multi-screenshot receipts)
   ledger_ref   TEXT,                     -- ledger-side id once pushed (idempotency)
+  -- 0007: forward-only link to the canonical documents registry.
+  document_id  TEXT,
+  -- 0008: capital classification + the asset a capital receipt created.
+  is_capital   INTEGER DEFAULT 0,        -- capital vs immediate repair/maintenance
+  asset_id     TEXT,                     -- FK assets.id if this receipt created an asset
+  capital_class TEXT,                    -- repair|div40|div43|initial_repair
   created_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_txn_imghash ON transactions(user_id, image_hash);
@@ -202,6 +208,31 @@ CREATE TABLE IF NOT EXISTS qbo_connections (
 -- the agent knows which properties exist, the company/GST status, the novated lease,
 -- and any deterministic per-user rules.
 
+-- Persons (0006): the taxpayer abstraction above entities/properties — the apportionment
+-- root for income, deductions and depreciation. One 'self' person is seeded per tenant.
+CREATE TABLE IF NOT EXISTS persons (
+  id            TEXT PRIMARY KEY,                 -- 'person_self_<user_id>' for the self person
+  user_id       TEXT NOT NULL,
+  display_name  TEXT NOT NULL,
+  role          TEXT NOT NULL DEFAULT 'self',     -- self|spouse|dependent|other
+  occupation    TEXT,                             -- ATO occupation guide key
+  tax_residency TEXT NOT NULL DEFAULT 'AU',       -- drives rule-pack selection (Phase 5)
+  tfn_last4     TEXT,                             -- never store the full TFN
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_persons_user ON persons(user_id);
+
+-- Joint ownership (many persons : one property). Overrides properties.ownership_pct when present.
+CREATE TABLE IF NOT EXISTS property_owners (
+  id            TEXT PRIMARY KEY,
+  user_id       TEXT NOT NULL,
+  property_id   TEXT NOT NULL,
+  person_id     TEXT NOT NULL,
+  ownership_pct REAL NOT NULL DEFAULT 100.0,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_property_owners ON property_owners(user_id, property_id);
+
 -- Investment / owned properties. Resolves transactions.property_id and drives the
 -- rented-vs-vacant deductibility split.
 CREATE TABLE IF NOT EXISTS properties (
@@ -210,9 +241,18 @@ CREATE TABLE IF NOT EXISTS properties (
   label         TEXT NOT NULL,           -- short name shown to the model, e.g. "14 Rental St"
   address       TEXT,
   status        TEXT NOT NULL DEFAULT 'rented',  -- rented|vacant|owner_occupied|sold
-  ownership_pct REAL NOT NULL DEFAULT 100,
+  ownership_pct REAL NOT NULL DEFAULT 100, -- single-owner fast path; property_owners overrides when present
   acquired_date TEXT,
   notes         TEXT,
+  -- 0006_persons.sql: owner + jurisdiction + CGT/cost-base fields.
+  person_id     TEXT,                    -- primary owner (FK persons.id)
+  jurisdiction  TEXT DEFAULT 'AU',
+  cost_base_cents INTEGER,               -- purchase price + incidental capital costs
+  acquired_cost_detail_json TEXT,        -- stamp duty, legals (capital, not deductible)
+  disposal_date TEXT,
+  disposal_proceeds_cents INTEGER,
+  first_income_date TEXT,                -- 'home first used to produce income' rule
+  main_residence_flag INTEGER DEFAULT 0,
   created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -227,6 +267,8 @@ CREATE TABLE IF NOT EXISTS entities (
   name        TEXT,
   detail_json TEXT NOT NULL DEFAULT '{}',
   active      INTEGER NOT NULL DEFAULT 1,
+  person_id   TEXT,                      -- 0006_persons.sql: owning taxpayer (FK persons.id)
+  jurisdiction TEXT DEFAULT 'AU',        -- 0006_persons.sql
   created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -279,6 +321,149 @@ CREATE TABLE IF NOT EXISTS batch_jobs (
 );
 CREATE INDEX IF NOT EXISTS idx_batch_status ON batch_jobs(status);
 CREATE INDEX IF NOT EXISTS idx_batch_user ON batch_jobs(user_id, status);
+
+-- ── Income (0007): first-class, not "counted credits" ─────────────────────────
+CREATE TABLE IF NOT EXISTS income (
+  id            TEXT PRIMARY KEY,
+  user_id       TEXT NOT NULL,
+  person_id     TEXT,
+  entity_id     TEXT,
+  property_id   TEXT,
+  income_type   TEXT NOT NULL,                 -- salary_payg|rent|interest|dividend|managed_fund_distribution|foreign_pension|foreign_rent|other
+  ato_label     TEXT,
+  fy            TEXT NOT NULL,                 -- '2025-26'
+  gross_cents   INTEGER NOT NULL,
+  net_cents     INTEGER,
+  withholding_cents INTEGER DEFAULT 0,
+  franking_credit_cents INTEGER DEFAULT 0,
+  foreign_tax_paid_cents INTEGER DEFAULT 0,
+  currency      TEXT NOT NULL DEFAULT 'AUD',
+  amount_aud_cents INTEGER,
+  fx_rate       REAL,
+  source_doc_id TEXT,
+  txn_date      TEXT,
+  detail_json   TEXT,
+  needs_review  INTEGER DEFAULT 0,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_income_user_fy  ON income(user_id, fy);
+CREATE INDEX IF NOT EXISTS idx_income_property ON income(user_id, property_id);
+CREATE INDEX IF NOT EXISTS idx_income_person   ON income(user_id, person_id);
+
+-- ── Documents (0007): canonical R2-object registry / Smart-Inbox sink ──────────
+CREATE TABLE IF NOT EXISTS documents (
+  id            TEXT PRIMARY KEY,
+  user_id       TEXT NOT NULL,
+  person_id     TEXT,
+  doc_type      TEXT NOT NULL,
+  fy            TEXT,
+  property_id   TEXT,
+  entity_id     TEXT,
+  r2_key        TEXT NOT NULL,
+  image_hash    TEXT,
+  issuer        TEXT,
+  doc_date      TEXT,
+  extracted_json TEXT,
+  classification_confidence REAL,
+  needs_review  INTEGER DEFAULT 0,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_documents_user ON documents(user_id, doc_type, fy);
+
+-- ── Assets & depreciation (0008) ──────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS assets (
+  id            TEXT PRIMARY KEY,
+  user_id       TEXT NOT NULL,
+  person_id     TEXT,
+  property_id   TEXT,
+  entity_id     TEXT,
+  label         TEXT NOT NULL,
+  asset_class   TEXT NOT NULL,                 -- div40_plant|div43_capital_works|business_asset|low_value_pool|immediate
+  cost_cents    INTEGER NOT NULL,
+  acquired_date TEXT NOT NULL,
+  effective_life_years REAL,
+  method        TEXT,                          -- diminishing_value|prime_cost
+  dv_rate_pct   REAL DEFAULT 200,              -- 200 (post 10 May 2006) | 150 (pre)
+  div43_rate    REAL,
+  construction_date TEXT,
+  is_second_hand INTEGER DEFAULT 0,
+  ownership_pct REAL DEFAULT 100.0,
+  business_use_pct REAL DEFAULT 100.0,
+  disposed_date TEXT,
+  disposal_value_cents INTEGER,
+  source_doc_id TEXT,
+  status        TEXT DEFAULT 'active',
+  needs_review  INTEGER DEFAULT 0,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_assets_user ON assets(user_id, status);
+CREATE INDEX IF NOT EXISTS idx_assets_property ON assets(user_id, property_id);
+
+CREATE TABLE IF NOT EXISTS depreciation_schedule (
+  id              TEXT PRIMARY KEY,
+  user_id         TEXT NOT NULL,
+  asset_id        TEXT NOT NULL,
+  fy              TEXT NOT NULL,
+  opening_adjustable_value_cents INTEGER NOT NULL,
+  days_held       INTEGER NOT NULL,
+  deduction_cents INTEGER NOT NULL,
+  closing_adjustable_value_cents INTEGER NOT NULL,
+  method_applied  TEXT NOT NULL,
+  computed_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(asset_id, fy)
+);
+CREATE INDEX IF NOT EXISTS idx_depsched_user_fy ON depreciation_schedule(user_id, fy);
+
+-- ── FY checklist (0009): bucket-driven kickoff/wrap-up items ───────────────────
+CREATE TABLE IF NOT EXISTS fy_checklist (
+  id          TEXT PRIMARY KEY,
+  user_id     TEXT NOT NULL,
+  person_id   TEXT NOT NULL,
+  fy          TEXT NOT NULL,
+  item_key    TEXT NOT NULL,
+  title       TEXT NOT NULL,
+  rationale   TEXT,
+  status      TEXT NOT NULL DEFAULT 'open',
+  trigger_bucket TEXT,
+  due_hint    TEXT,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(user_id, person_id, fy, item_key)
+);
+CREATE INDEX IF NOT EXISTS idx_checklist_user_fy ON fy_checklist(user_id, fy, status);
+
+-- ── Claimability brain (0010): deterministic rules + per-user suggestion log ───
+CREATE TABLE IF NOT EXISTS claimability_rules (
+  id            TEXT PRIMARY KEY,
+  rule_pack_ver TEXT NOT NULL,
+  jurisdiction  TEXT NOT NULL DEFAULT 'AU',
+  scope_type    TEXT NOT NULL,               -- occupation|bucket|entity_kind|property_status
+  scope_value   TEXT NOT NULL,
+  merchant_hint TEXT,
+  ato_label     TEXT,
+  claim_type    TEXT NOT NULL,               -- immediate|div40|div43|apportioned|not_deductible
+  default_method TEXT,
+  confidence_floor REAL DEFAULT 0.7,
+  general_info_note TEXT NOT NULL,
+  defer_to_agent INTEGER DEFAULT 0,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_claimrules_ver ON claimability_rules(rule_pack_ver, scope_type, scope_value);
+
+CREATE TABLE IF NOT EXISTS claim_suggestions (
+  id            TEXT PRIMARY KEY,
+  user_id       TEXT NOT NULL,
+  person_id     TEXT,
+  txn_id        TEXT,
+  asset_id      TEXT,
+  rule_id       TEXT,
+  suggestion    TEXT NOT NULL,
+  claim_type    TEXT,
+  estimated_deduction_cents INTEGER,
+  llm_explanation TEXT,
+  status        TEXT DEFAULT 'suggested',
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_claimsug_user ON claim_suggestions(user_id, status);
 
 -- ── Public marketing waitlist (no tenant; pre-signup) ─────────────────────────
 -- Populated by the public POST /waitlist endpoint on the apex (quillo.au). This is

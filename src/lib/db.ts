@@ -25,6 +25,15 @@ export async function getProfile(env: Env, userId: string): Promise<Profile | nu
     .first<Profile>();
 }
 
+export interface Person {
+  id: string;
+  user_id: string;
+  display_name: string;
+  role: string; // self|spouse|dependent|other
+  occupation: string | null; // ATO occupation guide key (drives the claimability brain)
+  tax_residency: string; // AU|UK|...
+}
+
 export interface Property {
   id: string;
   user_id: string;
@@ -32,6 +41,7 @@ export interface Property {
   address: string | null;
   status: string; // rented|vacant|owner_occupied|sold
   ownership_pct: number;
+  person_id: string | null; // primary owner (FK persons.id)
 }
 
 export interface Entity {
@@ -55,6 +65,7 @@ export interface UserRule {
 
 export interface Situation {
   profile: Profile;
+  persons: Person[];
   properties: Property[];
   entities: Entity[];
   rules: UserRule[];
@@ -62,9 +73,12 @@ export interface Situation {
 
 /** Load everything the categoriser needs to know about who this tenant is. */
 export async function getSituation(env: Env, userId: string, profile: Profile): Promise<Situation> {
-  const [props, ents, rules] = await Promise.all([
+  const [persons, props, ents, rules] = await Promise.all([
     env.DB.prepare(
-      `SELECT id, user_id, label, address, status, ownership_pct FROM properties WHERE user_id = ?`,
+      `SELECT id, user_id, display_name, role, occupation, tax_residency FROM persons WHERE user_id = ? ORDER BY role = 'self' DESC, created_at`,
+    ).bind(userId).all<Person>(),
+    env.DB.prepare(
+      `SELECT id, user_id, label, address, status, ownership_pct, person_id FROM properties WHERE user_id = ?`,
     ).bind(userId).all<Property>(),
     env.DB.prepare(
       `SELECT id, user_id, kind, name, detail_json FROM entities WHERE user_id = ? AND active = 1`,
@@ -76,6 +90,7 @@ export async function getSituation(env: Env, userId: string, profile: Profile): 
   ]);
   return {
     profile,
+    persons: persons.results ?? [],
     properties: props.results ?? [],
     entities: ents.results ?? [],
     rules: rules.results ?? [],
@@ -85,6 +100,14 @@ export async function getSituation(env: Env, userId: string, profile: Profile): 
 /** Compact, model-facing description of the tenant's situation for the system prompt. */
 export function renderSituation(s: Situation): string {
   const lines: string[] = ["Your situation:"];
+
+  // Taxpayers first — occupation seeds occupation-specific deduction guidance (claimability).
+  if (s.persons.length) {
+    for (const p of s.persons) {
+      const bits = [p.occupation ? `occupation ${p.occupation}` : null, p.tax_residency !== "AU" ? `tax residency ${p.tax_residency}` : null].filter(Boolean);
+      lines.push(`  - Taxpayer: ${p.display_name}${p.role !== "self" ? ` (${p.role})` : ""}${bits.length ? ` — ${bits.join(", ")}` : ""}.`);
+    }
+  }
 
   for (const e of s.entities) {
     let d: Record<string, unknown> = {};

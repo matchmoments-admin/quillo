@@ -12,5 +12,40 @@
     { "match": "anthropic, openai, github, gitlab, notion, slack, figma, atlassian, jira, linear, zoom, adobe, canva, microsoft 365, google workspace, dropbox, 1password", "bucket": "company", "ato_label": "company:software-subscriptions", "note": "SaaS / AI tool subscriptions for the business" },
     { "match": "aws, amazon web services, azure, microsoft azure, google cloud, gcp, cloudflare, vercel, netlify, digitalocean, heroku, render", "bucket": "company", "ato_label": "company:cloud-services", "note": "cloud hosting / infrastructure" },
     { "match": "godaddy, namecheap, crazy domains, ventraip", "bucket": "company", "ato_label": "company:software-subscriptions", "note": "domains / web services" }
-  ]
+  ],
+  "claimability": [
+    { "scope_type": "bucket", "scope_value": "property_rented", "merchant_hint": "plumber,plumbing,electrician,handyman,repair,bunnings,hardware,mitre 10", "ato_label": "rental:repairs", "claim_type": "immediate", "general_info_note": "Repairs that restore a rented property to working condition are generally deductible in the year paid (improvements are not).", "defer_to_agent": 0 },
+    { "scope_type": "bucket", "scope_value": "property_rented", "merchant_hint": "dishwasher,oven,fridge,refrigerator,air conditioner,hot water,appliance,carpet,blinds,washing machine", "ato_label": "rental:decline-in-value", "claim_type": "div40", "default_method": "diminishing_value", "general_info_note": "A new appliance in a rented property is generally a depreciating asset (Div 40), claimed over its effective life — not immediately.", "defer_to_agent": 0 },
+    { "scope_type": "property_status", "scope_value": "vacant", "ato_label": "rental:holding-costs", "claim_type": "apportioned", "general_info_note": "Holding costs are only deductible while the property is genuinely available for rent; vacant land holding costs are generally not deductible since 1 July 2019.", "defer_to_agent": 1 },
+    { "scope_type": "entity_kind", "scope_value": "novated_lease", "ato_label": "car:novated", "claim_type": "not_deductible", "general_info_note": "Car expenses on a novated lease are not deductible to the employee — the employer leases the car. The reportable fringe benefits amount (RFBA) is reportable.", "defer_to_agent": 1 },
+    { "scope_type": "occupation", "scope_value": "nurse", "merchant_hint": "uniform,scrubs,union,nursing,ahpra", "ato_label": "D3/D5", "claim_type": "immediate", "general_info_note": "Compulsory uniforms, union/professional fees and CPD self-education are commonly deductible for nurses. The initial cost of getting registered is not deductible.", "defer_to_agent": 0 },
+    { "scope_type": "occupation", "scope_value": "it_professional", "merchant_hint": "home office,internet,computer,monitor,keyboard,laptop", "ato_label": "D5", "claim_type": "apportioned", "default_method": "diminishing_value", "general_info_note": "Home-office running costs can be claimed at the 70c/hr fixed rate for 2024-25 and 2025-26; a work computer over $300 is depreciated rather than claimed immediately.", "defer_to_agent": 0 }
+  ],
+  "thresholds_by_fy": {
+    "_note": "All dollar thresholds in CENTS. These change yearly and are policy-dependent — the depreciation engine + claimability brain read them per FY, never inline. Confirm against ATO before relying on them.",
+    "2024-25": {
+      "instant_asset_write_off_cents": 2000000,
+      "car_limit_cents": 6920900,
+      "low_value_pool_threshold_cents": 100000,
+      "immediate_non_business_cents": 30000,
+      "super_concessional_cap_cents": 3000000,
+      "wfh_fixed_rate_cents_per_hour": 70
+    },
+    "2025-26": {
+      "instant_asset_write_off_cents": 2000000,
+      "car_limit_cents": 6967400,
+      "low_value_pool_threshold_cents": 100000,
+      "immediate_non_business_cents": 30000,
+      "super_concessional_cap_cents": 3000000,
+      "wfh_fixed_rate_cents_per_hour": 70
+    },
+    "2026-27": {
+      "instant_asset_write_off_cents": 100000,
+      "car_limit_cents": 6967400,
+      "low_value_pool_threshold_cents": 100000,
+      "immediate_non_business_cents": 30000,
+      "super_concessional_cap_cents": 3250000,
+      "wfh_fixed_rate_cents_per_hour": 70
+    }
+  }
 }

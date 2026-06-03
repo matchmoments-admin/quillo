@@ -6,7 +6,11 @@ import { QuickBooksAdapter } from "./ledger/qbo";
 import { COUNTABLE } from "./lib/queries";
 import { sha256hex, sha256hexBytes } from "./lib/base64";
 import { getLLM, type LLM } from "./llm";
-import { extractReceipt, extractReceipts, extractFromText, extractColumnMap, extractStatement, extractBatch, extractSituationDraft, batchParams, parseBatchMessage, type Extracted, type ExtractedStatement, type SituationDraft } from "./extract";
+import { extractReceipt, extractReceipts, extractFromText, extractColumnMap, extractStatement, extractBatch, extractSituationDraft, classifyDocument, extractPayslip, extractAgentStatement, extractDepreciationSchedule, extractDividend, batchParams, parseBatchMessage, type Extracted, type ExtractedStatement, type SituationDraft } from "./extract";
+import { fyForDate } from "./lib/report";
+import { fyLabel } from "./lib/ledger-totals";
+import { rollSchedule, balancingAdjustment, fyStartYearOf, type DepAsset } from "./lib/depreciation";
+import { matchClaimRules, suggestionText, type ClaimRule, type ClaimContext } from "./lib/claimability";
 import { parseCsv, applyColumnMap, lineFingerprint, deriveBalances, reconcileStatement, fuzzyMerchant, isTransferLike, type ColumnMap, type Reconciliation, type StatementLine } from "./lib/statements";
 import { batchStatementStatus, isStaleBatch } from "./lib/batch";
 import { cleanMerchant } from "./lib/bank-parsers";
@@ -17,6 +21,7 @@ import { toAud } from "./lib/fx";
 import { spentTodayCents, recordUsage } from "./lib/usage";
 import { parseTransactionAlert } from "./lib/bank-parsers";
 import auV1RulePack from "./rulepacks/au-v1.json";
+import { assertBucketKeys } from "./lib/taxonomy";
 
 const CONFIDENCE_THRESHOLD = 0.85;
 // Above this many to-categorise lines, route to the async Message Batches API (~50% cheaper);
@@ -891,6 +896,631 @@ export class TaxAgent extends Agent<Env> {
       bucket: final.bucket,
       ato_label: final.ato_label,
     });
+
+    // Claimability brain (rules-first): surface any GENERAL-INFO claim guidance for this item.
+    // Best-effort — a claimability failure (e.g. 0010 not yet applied) must never fail the upload,
+    // which has already been persisted, notified and matched above.
+    try {
+      const propStatus = final.property_id ? situation.properties.find((p) => p.id === final.property_id)?.status ?? null : null;
+      const occupations = situation.persons.map((p) => p.occupation).filter((o): o is string => !!o);
+      await this.suggestClaims(
+        userId,
+        { bucket: final.bucket, merchant: final.merchant, property_status: propStatus, occupations, entity_kinds: situation.entities.map((e) => e.kind) },
+        { txnId, estimatedDeductionCents: fx.amount_aud_cents ?? final.amount_cents },
+      );
+    } catch (e) {
+      await this.audit(userId, "claims_error", JSON.stringify({ txnId, error: (e as Error).message }));
+    }
+  }
+
+  // ── INCOME: first-class income record (modelled, not inferred from credits) ──
+  /**
+   * Persist one income record. Income is modelled because credits are unreliable (agent
+   * statements are net; salary is gross-with-withholding). Converts the gross to AUD for
+   * reporting (the seam reads amount_aud_cents). Returns the new income id.
+   */
+  async recordIncome(
+    userId: string,
+    inc: {
+      person_id?: string | null;
+      entity_id?: string | null;
+      property_id?: string | null;
+      income_type: string;
+      ato_label?: string | null;
+      fy?: string | null;
+      gross_cents: number;
+      net_cents?: number | null;
+      withholding_cents?: number | null;
+      franking_credit_cents?: number | null;
+      foreign_tax_paid_cents?: number | null;
+      currency?: string | null;
+      source_doc_id?: string | null;
+      txn_date?: string | null;
+      detail_json?: string | null;
+      needs_review?: number;
+    },
+  ): Promise<string> {
+    const id = crypto.randomUUID();
+    const currency = (inc.currency ?? "AUD").trim().toUpperCase();
+    const fy = inc.fy ?? fyForDate(inc.txn_date ?? null) ?? this.currentFyLabel();
+    const fx = await toAud(this.env, inc.gross_cents, currency, inc.txn_date ?? null);
+    // Convert the non-gross money columns to AUD with the SAME rate as gross, so the reporting
+    // seam (which sums these columns directly) never mixes currencies. AUD income → rate 1 (no-op).
+    // Franking credits are an AU imputation amount, always AUD, so they're never converted.
+    const rate = currency === "AUD" ? 1 : fx.fx_rate ?? 1;
+    const toAudCents = (c: number | null | undefined): number | null => (c == null ? null : Math.round(c * rate));
+    await this.env.DB.prepare(
+      `INSERT INTO income (id, user_id, person_id, entity_id, property_id, income_type, ato_label, fy,
+         gross_cents, net_cents, withholding_cents, franking_credit_cents, foreign_tax_paid_cents,
+         currency, amount_aud_cents, fx_rate, source_doc_id, txn_date, detail_json, needs_review)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+      .bind(
+        id, userId, inc.person_id ?? `person_self_${userId}`, inc.entity_id ?? null, inc.property_id ?? null,
+        inc.income_type, inc.ato_label ?? null, fy, inc.gross_cents, toAudCents(inc.net_cents),
+        toAudCents(inc.withholding_cents) ?? 0, inc.franking_credit_cents ?? 0, toAudCents(inc.foreign_tax_paid_cents) ?? 0,
+        currency, fx.amount_aud_cents, fx.fx_rate, inc.source_doc_id ?? null, inc.txn_date ?? null,
+        inc.detail_json ?? null, inc.needs_review ?? 0,
+      )
+      .run();
+    await this.audit(userId, "income_recorded", JSON.stringify({ id, type: inc.income_type, gross: inc.gross_cents, fy }));
+    return id;
+  }
+
+  /** Current AU FY label, e.g. '2025-26' (Jul–Jun). */
+  private currentFyLabel(): string {
+    const now = new Date();
+    const sy = now.getUTCMonth() >= 6 ? now.getUTCFullYear() : now.getUTCFullYear() - 1;
+    return fyLabel(sy);
+  }
+
+  /** Write a row into the canonical documents registry. */
+  private async fileDocument(
+    userId: string,
+    doc: {
+      id: string;
+      doc_type: string;
+      r2_key: string;
+      image_hash?: string | null;
+      person_id?: string | null;
+      property_id?: string | null;
+      entity_id?: string | null;
+      fy?: string | null;
+      issuer?: string | null;
+      doc_date?: string | null;
+      extracted_json?: string | null;
+      classification_confidence?: number | null;
+      needs_review?: number;
+    },
+  ): Promise<void> {
+    await this.env.DB.prepare(
+      `INSERT INTO documents (id, user_id, person_id, doc_type, fy, property_id, entity_id, r2_key,
+         image_hash, issuer, doc_date, extracted_json, classification_confidence, needs_review)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+      .bind(
+        doc.id, userId, doc.person_id ?? null, doc.doc_type, doc.fy ?? null, doc.property_id ?? null,
+        doc.entity_id ?? null, doc.r2_key, doc.image_hash ?? null, doc.issuer ?? null, doc.doc_date ?? null,
+        doc.extracted_json ?? null, doc.classification_confidence ?? null, doc.needs_review ?? 0,
+      )
+      .run();
+  }
+
+  /** Best-effort property resolution from free-text hint (address/label substring match). */
+  private async resolvePropertyByHint(userId: string, hint: string | null): Promise<string | null> {
+    if (!hint) return null;
+    const h = hint.toLowerCase();
+    const rows = await this.env.DB.prepare(`SELECT id, label, address FROM properties WHERE user_id = ?`)
+      .bind(userId)
+      .all<{ id: string; label: string | null; address: string | null }>();
+    for (const p of rows.results ?? []) {
+      const hay = `${p.label ?? ""} ${p.address ?? ""}`.toLowerCase();
+      if (hay && (hay.includes(h) || h.includes((p.label ?? "").toLowerCase()))) return p.id;
+    }
+    return null;
+  }
+
+  // ── SMART INBOX: capture → consent → CLASSIFY → dispatch ────────────────────
+  /**
+   * The Smart-Inbox front door for AMBIGUOUS uploads (email-in, the documents shelf). Cost-aware:
+   * contextual "snap a receipt" uploads keep using ingest() (hint=receipt, no classify call), so
+   * the common path stays a single model call. Here we capture (model-free), enforce the APP-8
+   * consent gate BEFORE any model call (classification is itself a cross-border disclosure), then
+   * classify and dispatch to the right typed extractor. Low-confidence is held in needs_review.
+   */
+  async classifyAndRoute(userId: string, source: string, bytes: ArrayBuffer, mime: string): Promise<{ docId: string; doc_type: string; routed: boolean }> {
+    const docId = crypto.randomUUID();
+    const r2key = `${userId}/docs/${docId}`;
+    await this.env.RECEIPTS.put(r2key, bytes, { httpMetadata: { contentType: mime } });
+    const imageHash = await sha256hexBytes(bytes);
+
+    // Exact-duplicate guard: identical bytes ⇒ same document. Without this, a re-sent email
+    // (reply-all, re-delivery) would double-count income/expenses AND re-bill the model call —
+    // the old ingest() path deduped on image_hash and this path must too.
+    const dupDoc = await this.env.DB.prepare(`SELECT id, doc_type FROM documents WHERE user_id = ? AND image_hash = ? LIMIT 1`)
+      .bind(userId, imageHash)
+      .first<{ id: string; doc_type: string }>();
+    if (dupDoc) {
+      await this.audit(userId, "classify_duplicate", JSON.stringify({ duplicateOf: dupDoc.id }));
+      await this.notify(userId, `Looks like a document you already uploaded (${dupDoc.doc_type}) — skipped re-reading it.`, null);
+      return { docId: dupDoc.id, doc_type: dupDoc.doc_type, routed: false };
+    }
+
+    const profile = await this.requireProfile(userId);
+    const provider = profile.inference_provider ?? this.env.DEFAULT_INFERENCE_PROVIDER;
+    if (provider === "anthropic" && profile.consent_xborder !== 1) {
+      await this.fileDocument(userId, { id: docId, doc_type: "unknown", r2_key: r2key, image_hash: imageHash, needs_review: 1 });
+      await this.notify(userId, "Cross-border processing consent (APP 8) is required before the US inference API can read this document. Record consent to proceed.", null);
+      return { docId, doc_type: "unknown", routed: false };
+    }
+    if (!(await this.withinBudget(userId, null))) {
+      await this.fileDocument(userId, { id: docId, doc_type: "unknown", r2_key: r2key, image_hash: imageHash, needs_review: 1 });
+      return { docId, doc_type: "unknown", routed: false };
+    }
+
+    const llm = await getLLM(this.env, profile, { userId });
+    const cls = await classifyDocument(llm, bytes, mime);
+    const propertyId = await this.resolvePropertyByHint(userId, cls.likely_property_hint);
+    const lowConf = cls.confidence < 0.6;
+    await this.fileDocument(userId, {
+      id: docId,
+      doc_type: cls.doc_type,
+      r2_key: r2key,
+      image_hash: imageHash,
+      property_id: propertyId,
+      fy: fyForDate(cls.doc_date ?? null),
+      issuer: cls.issuer,
+      doc_date: cls.doc_date,
+      extracted_json: JSON.stringify(cls),
+      classification_confidence: cls.confidence,
+      needs_review: lowConf ? 1 : 0,
+    });
+    await this.audit(userId, "classify", JSON.stringify({ docId, doc_type: cls.doc_type, confidence: cls.confidence }));
+
+    // <0.6 → hold entirely for human confirm (defence-in-depth against ~2% misroute).
+    if (lowConf) {
+      await this.notify(userId, `Filed a document I wasn't sure about (${cls.doc_type}, ${(cls.confidence * 100).toFixed(0)}%). Review it in Documents.`, null);
+      return { docId, doc_type: cls.doc_type, routed: false };
+    }
+
+    // The typed extractors below make a SECOND model call; re-check the daily budget so the cap
+    // isn't bypassed (the receipt/invoice branch self-guards via extractAndCategorise).
+    if (cls.doc_type !== "receipt" && cls.doc_type !== "invoice" && !(await this.withinBudget(userId, null))) {
+      await this.notify(userId, `Filed a ${cls.doc_type} to Documents — daily AI budget reached, it'll extract after the reset.`, null);
+      return { docId, doc_type: cls.doc_type, routed: false };
+    }
+
+    // Dispatch by type. Unhandled types are filed to the shelf for review.
+    switch (cls.doc_type) {
+      case "receipt":
+      case "invoice": {
+        // Route through the existing receipt extractor as a transaction linked to this document.
+        const txnId = crypto.randomUUID();
+        await this.env.DB.prepare(
+          `INSERT INTO transactions (id, user_id, source, status, receipt_key, image_hash, document_id)
+           VALUES (?, ?, ?, 'needs_extraction', ?, ?, ?)`,
+        ).bind(txnId, userId, source, r2key, imageHash, docId).run();
+        await this.extractAndCategorise(userId, txnId, bytes, mime, null);
+        return { docId, doc_type: cls.doc_type, routed: true };
+      }
+      case "payslip": {
+        const p = await extractPayslip(llm, bytes, mime);
+        await this.recordIncome(userId, {
+          entity_id: null,
+          income_type: "salary_payg",
+          ato_label: "1-salary",
+          gross_cents: p.gross_cents,
+          withholding_cents: p.tax_withheld_cents,
+          net_cents: p.gross_cents - p.tax_withheld_cents,
+          currency: p.currency,
+          txn_date: p.pay_date,
+          source_doc_id: docId,
+          detail_json: JSON.stringify({ employer: p.employer, super_cents: p.super_cents, rfba_cents: p.rfba_cents }),
+          needs_review: p.confidence < CONFIDENCE_THRESHOLD ? 1 : 0,
+        });
+        await this.notify(userId, `Payslip from ${p.employer}: gross $${(p.gross_cents / 100).toFixed(2)}, PAYG withheld $${(p.tax_withheld_cents / 100).toFixed(2)}.${p.rfba_cents ? " RFBA captured (reportable fringe benefit)." : ""}`, null);
+        return { docId, doc_type: cls.doc_type, routed: true };
+      }
+      case "agent_rental_summary": {
+        await this.decomposeAgentStatement(userId, docId, propertyId, bytes, mime, llm);
+        return { docId, doc_type: cls.doc_type, routed: true };
+      }
+      case "depreciation_schedule": {
+        await this.importDepreciationSchedule(userId, docId, bytes, mime);
+        return { docId, doc_type: cls.doc_type, routed: true };
+      }
+      case "dividend_statement": {
+        const dv = await extractDividend(llm, bytes, mime);
+        const gross = dv.franked_cents + dv.unfranked_cents;
+        await this.recordIncome(userId, {
+          income_type: "dividend",
+          ato_label: "11-dividends",
+          gross_cents: gross,
+          franking_credit_cents: dv.franking_credit_cents,
+          currency: dv.currency,
+          txn_date: dv.payment_date,
+          source_doc_id: docId,
+          detail_json: JSON.stringify({ payer: dv.payer, franked_cents: dv.franked_cents, unfranked_cents: dv.unfranked_cents }),
+          needs_review: dv.confidence < CONFIDENCE_THRESHOLD ? 1 : 0,
+        });
+        await this.notify(userId, `Dividend from ${dv.payer ?? "issuer"}: $${(gross / 100).toFixed(2)}${dv.franking_credit_cents ? `, franking credit $${(dv.franking_credit_cents / 100).toFixed(2)}` : ""}.`, null);
+        return { docId, doc_type: cls.doc_type, routed: true };
+      }
+      default: {
+        await this.notify(userId, `Filed a ${cls.doc_type} to your Documents shelf.`, null);
+        return { docId, doc_type: cls.doc_type, routed: true };
+      }
+    }
+  }
+
+  /**
+   * Decompose an agent rental summary into 1 rent income row + N expense transactions, attributed
+   * to a property, with a reconciliation assertion (Σrent − Σexpenses = net disbursed). Sub-threshold
+   * extraction or a failed reconcile flags the income row needs_review rather than dropping it.
+   */
+  async decomposeAgentStatement(
+    userId: string,
+    docId: string,
+    propertyId: string | null,
+    bytes: ArrayBuffer,
+    mime: string,
+    llm: LLM,
+  ): Promise<void> {
+    const ext = await extractAgentStatement(llm, bytes, mime);
+    const sumIncome = ext.income_lines.reduce((s, l) => s + Math.abs(l.amount_cents), 0);
+    const sumExpense = ext.expense_lines.reduce((s, l) => s + Math.abs(l.amount_cents), 0);
+    // Reconciliation: rent − expenses should equal the net disbursed (proof of completeness).
+    const reconOk =
+      ext.net_disbursed_cents == null
+        ? true
+        : Math.abs(sumIncome - sumExpense - ext.net_disbursed_cents) <= Math.max(100, Math.round(sumIncome * 0.01));
+    const fy = fyForDate(ext.period_end ?? ext.period_start ?? null) ?? this.currentFyLabel();
+    const needsReview = !reconOk || ext.confidence < CONFIDENCE_THRESHOLD ? 1 : 0;
+
+    await this.recordIncome(userId, {
+      property_id: propertyId,
+      income_type: "rent",
+      ato_label: "13R-rent",
+      fy,
+      gross_cents: sumIncome,
+      net_cents: ext.net_disbursed_cents,
+      txn_date: ext.period_end,
+      source_doc_id: docId,
+      detail_json: JSON.stringify({ agent: ext.agent_name, lines: ext.income_lines }),
+      needs_review: needsReview,
+    });
+
+    // Each agent-deducted expense becomes a property_rented transaction (evidence + deduction).
+    for (const e of ext.expense_lines) {
+      await this.env.DB.prepare(
+        `INSERT INTO transactions (id, user_id, source, status, kind, merchant, amount_cents, currency,
+           amount_aud_cents, txn_date, bucket, ato_label, property_id, document_id, confidence, reasoning, is_capital)
+         VALUES (?, ?, 'agent_statement', ?, 'receipt', ?, ?, 'AUD', ?, ?, 'property_rented', ?, ?, ?, ?, ?, 0)`,
+      )
+        .bind(
+          crypto.randomUUID(), userId, needsReview ? "needs_review" : "extracted", e.description,
+          Math.abs(e.amount_cents), Math.abs(e.amount_cents), e.date ?? ext.period_end ?? null,
+          `rental:${e.category ?? "expense"}`, propertyId, docId, ext.confidence,
+          `From agent statement (${ext.agent_name ?? "agent"}).`,
+        )
+        .run();
+    }
+
+    await this.audit(userId, "agent_statement_decomposed", JSON.stringify({ docId, propertyId, rent: sumIncome, expenses: sumExpense, net: ext.net_disbursed_cents, reconOk }));
+    await this.notify(
+      userId,
+      `Agent statement processed: rent $${(sumIncome / 100).toFixed(2)}, expenses $${(sumExpense / 100).toFixed(2)}, net $${((ext.net_disbursed_cents ?? sumIncome - sumExpense) / 100).toFixed(2)}.${reconOk ? "" : " ⚠️ Didn't reconcile — review the income row."}${propertyId ? "" : " Couldn't match a property — set it in the income row."}`,
+      null,
+    );
+  }
+
+  // ── ASSETS & DEPRECIATION (deterministic; engine in lib/depreciation.ts) ────
+  /** Create a depreciating asset and materialise its carry-forward schedule up to the current FY. */
+  async createAsset(
+    userId: string,
+    a: {
+      label: string;
+      asset_class: string;
+      cost_cents: number;
+      acquired_date: string;
+      property_id?: string | null;
+      entity_id?: string | null;
+      effective_life_years?: number | null;
+      method?: string | null;
+      div43_rate?: number | null;
+      dv_rate_pct?: number | null;
+      is_second_hand?: boolean;
+      business_use_pct?: number | null;
+      source_doc_id?: string | null;
+      needs_review?: number;
+    },
+  ): Promise<string> {
+    const id = crypto.randomUUID();
+    await this.env.DB.prepare(
+      `INSERT INTO assets (id, user_id, person_id, property_id, entity_id, label, asset_class, cost_cents,
+         acquired_date, effective_life_years, method, dv_rate_pct, div43_rate, is_second_hand, business_use_pct,
+         source_doc_id, status, needs_review)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)`,
+    )
+      .bind(
+        id, userId, `person_self_${userId}`, a.property_id ?? null, a.entity_id ?? null, a.label, a.asset_class,
+        a.cost_cents, a.acquired_date, a.effective_life_years ?? null, a.method ?? null, a.dv_rate_pct ?? 200, a.div43_rate ?? null,
+        a.is_second_hand ? 1 : 0, a.business_use_pct ?? 100, a.source_doc_id ?? null, a.needs_review ?? 0,
+      )
+      .run();
+    await this.audit(userId, "asset_created", JSON.stringify({ id, class: a.asset_class, cost: a.cost_cents }));
+    await this.computeDepreciation(userId, id);
+    return id;
+  }
+
+  /** Map an assets row into the engine's DepAsset shape. */
+  private toDepAsset(row: {
+    asset_class: string; cost_cents: number; acquired_date: string; effective_life_years: number | null;
+    method: string | null; div43_rate: number | null; dv_rate_pct?: number | null; is_second_hand: number;
+    business_use_pct: number | null; disposed_date: string | null;
+  }): DepAsset {
+    return {
+      asset_class: row.asset_class as DepAsset["asset_class"],
+      cost_cents: row.cost_cents,
+      acquired_date: row.acquired_date,
+      effective_life_years: row.effective_life_years,
+      method: (row.method as DepAsset["method"]) ?? null,
+      div43_rate: row.div43_rate,
+      dv_rate_pct: row.dv_rate_pct ?? 200,
+      is_second_hand: !!row.is_second_hand,
+      business_use_pct: row.business_use_pct ?? 100,
+      disposed_date: row.disposed_date,
+    };
+  }
+
+  /**
+   * Materialise (or refresh) an asset's depreciation_schedule up to `toStartYear` (default: the
+   * current FY). Deterministic — re-running yields identical rows (UNIQUE(asset_id, fy) upsert).
+   */
+  async computeDepreciation(userId: string, assetId: string, toStartYear?: number): Promise<{ rows: number }> {
+    const row = await this.env.DB.prepare(
+      `SELECT asset_class, cost_cents, acquired_date, effective_life_years, method, dv_rate_pct, div43_rate,
+              is_second_hand, business_use_pct, disposed_date FROM assets WHERE id = ? AND user_id = ?`,
+    )
+      .bind(assetId, userId)
+      .first<{ asset_class: string; cost_cents: number; acquired_date: string; effective_life_years: number | null; method: string | null; dv_rate_pct: number | null; div43_rate: number | null; is_second_hand: number; business_use_pct: number | null; disposed_date: string | null }>();
+    if (!row) throw new Error("asset not found");
+
+    const target = toStartYear ?? Number(this.currentFyLabel().slice(0, 4));
+    const schedule = rollSchedule(this.toDepAsset(row), target);
+    const stmts = schedule.map((s) =>
+      this.env.DB.prepare(
+        `INSERT INTO depreciation_schedule (id, user_id, asset_id, fy, opening_adjustable_value_cents,
+           days_held, deduction_cents, closing_adjustable_value_cents, method_applied)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(asset_id, fy) DO UPDATE SET
+           opening_adjustable_value_cents=excluded.opening_adjustable_value_cents,
+           days_held=excluded.days_held, deduction_cents=excluded.deduction_cents,
+           closing_adjustable_value_cents=excluded.closing_adjustable_value_cents,
+           method_applied=excluded.method_applied, computed_at=datetime('now')`,
+      ).bind(crypto.randomUUID(), userId, assetId, s.fy, s.opening_adjustable_value_cents, s.days_held, s.deduction_cents, s.closing_adjustable_value_cents, s.method_applied),
+    );
+    for (let i = 0; i < stmts.length; i += 50) await this.env.DB.batch(stmts.slice(i, i + 50));
+    await this.audit(userId, "depreciation_computed", JSON.stringify({ assetId, throughFy: fyLabel(target), rows: schedule.length }));
+    return { rows: schedule.length };
+  }
+
+  /** Batch: roll every active asset's schedule into a new FY (called by the FY-rollover cron). */
+  async rollForward(userId: string, toStartYear: number): Promise<{ assets: number }> {
+    const assets = await this.env.DB.prepare(`SELECT id FROM assets WHERE user_id = ? AND status = 'active'`)
+      .bind(userId)
+      .all<{ id: string }>();
+    let n = 0;
+    for (const a of assets.results ?? []) {
+      await this.computeDepreciation(userId, a.id, toStartYear);
+      n++;
+    }
+    await this.audit(userId, "depreciation_rollforward", JSON.stringify({ toFy: fyLabel(toStartYear), assets: n }));
+    return { assets: n };
+  }
+
+  /** Parse a quantity-surveyor depreciation schedule (PDF) → bulk-create assets + first schedules. */
+  async importDepreciationSchedule(userId: string, docId: string, bytes: ArrayBuffer, mime: string): Promise<{ created: number }> {
+    const profile = await this.requireProfile(userId);
+    const provider = profile.inference_provider ?? this.env.DEFAULT_INFERENCE_PROVIDER;
+    if (provider === "anthropic" && profile.consent_xborder !== 1) throw new Error("consent_required");
+    const llm = await getLLM(this.env, profile, { userId });
+    const doc = await this.env.DB.prepare(`SELECT property_id FROM documents WHERE id = ? AND user_id = ?`)
+      .bind(docId, userId)
+      .first<{ property_id: string | null }>();
+    const ext = await extractDepreciationSchedule(llm, bytes, mime);
+    let created = 0;
+    for (const a of ext.assets) {
+      await this.createAsset(userId, {
+        label: a.label,
+        asset_class: a.asset_class,
+        cost_cents: a.cost_cents,
+        acquired_date: a.acquired_date,
+        property_id: doc?.property_id ?? null,
+        effective_life_years: a.effective_life_years,
+        method: a.method,
+        div43_rate: a.div43_rate,
+        is_second_hand: a.is_second_hand,
+        source_doc_id: docId,
+        needs_review: ext.confidence < CONFIDENCE_THRESHOLD ? 1 : 0,
+      });
+      created++;
+    }
+    await this.audit(userId, "depreciation_schedule_imported", JSON.stringify({ docId, created }));
+    await this.notify(userId, `Imported ${created} asset(s) from the depreciation schedule — decline-in-value will appear in your report.`, null);
+    return { created };
+  }
+
+  /** Dispose of an asset: record the termination value + a balancing adjustment vs adjustable value. */
+  async disposeAsset(userId: string, assetId: string, disposedDate: string, disposalValueCents: number): Promise<{ balancing_adjustment_cents: number }> {
+    // Set the disposal first so the engine caps days-held in the disposal FY, then materialise the
+    // schedule THROUGH that FY — otherwise the adjustable value omits the disposal-year decline and
+    // the balancing adjustment is computed against a stale (too-high) value.
+    await this.env.DB.prepare(
+      `UPDATE assets SET status='disposed', disposed_date=?, disposal_value_cents=? WHERE id=? AND user_id=?`,
+    )
+      .bind(disposedDate, disposalValueCents, assetId, userId)
+      .run();
+    const dyStart = fyStartYearOf(disposedDate);
+    await this.computeDepreciation(userId, assetId, dyStart);
+    const last = await this.env.DB.prepare(
+      `SELECT closing_adjustable_value_cents FROM depreciation_schedule WHERE asset_id = ? AND user_id = ? AND fy = ?`,
+    )
+      .bind(assetId, userId, fyLabel(dyStart))
+      .first<{ closing_adjustable_value_cents: number }>();
+    const adjustable = last?.closing_adjustable_value_cents ?? 0;
+    const bal = balancingAdjustment(adjustable, disposalValueCents);
+    await this.audit(userId, "asset_disposed", JSON.stringify({ assetId, disposedDate, disposalValueCents, balancing: bal }));
+    await this.notify(
+      userId,
+      `Asset disposed. Balancing adjustment ${bal >= 0 ? "assessable +" : "deductible "}$${(Math.abs(bal) / 100).toFixed(2)} (termination value − adjustable value). Confirm with a registered tax agent.`,
+      null,
+    );
+    return { balancing_adjustment_cents: bal };
+  }
+
+  // ── CGT: capital gain on a disposed property (Phase 5, cross-border) ────────
+  /**
+   * Compute the indicative CGT position on a disposed property. Div 43 capital-works deductions
+   * claimed against the property reduce its cost base; the 50% discount applies to a resident
+   * individual who held >12 months; a main-residence flag gives full exemption. GENERAL-INFO —
+   * residency + main-residence are judgement calls for a registered tax agent.
+   */
+  async computeCgt(userId: string, propertyId: string): Promise<import("./lib/cgt").CgtResult & { property_id: string }> {
+    const { computeCapitalGain } = await import("./lib/cgt");
+    const prop = await this.env.DB.prepare(
+      `SELECT p.cost_base_cents, p.disposal_proceeds_cents, p.disposal_date, p.acquired_date,
+              p.main_residence_flag, COALESCE(pe.tax_residency, 'AU') AS tax_residency
+         FROM properties p LEFT JOIN persons pe ON pe.id = p.person_id
+        WHERE p.id = ? AND p.user_id = ?`,
+    )
+      .bind(propertyId, userId)
+      .first<{ cost_base_cents: number | null; disposal_proceeds_cents: number | null; disposal_date: string | null; acquired_date: string | null; main_residence_flag: number; tax_residency: string }>();
+    if (!prop) throw new Error("property not found");
+    if (prop.cost_base_cents == null || prop.disposal_proceeds_cents == null || !prop.disposal_date || !prop.acquired_date) {
+      throw new Error("property is missing cost base, proceeds, acquired or disposal date");
+    }
+    // Div 43 capital-works deductions claimed against this property reduce the cost base.
+    const div43 = await this.env.DB.prepare(
+      `SELECT COALESCE(SUM(d.deduction_cents),0) AS total FROM depreciation_schedule d
+         JOIN assets a ON a.id = d.asset_id
+        WHERE d.user_id = ? AND a.property_id = ? AND d.method_applied = 'div43'`,
+    )
+      .bind(userId, propertyId)
+      .first<{ total: number }>();
+    const result = computeCapitalGain({
+      cost_base_cents: prop.cost_base_cents,
+      proceeds_cents: prop.disposal_proceeds_cents,
+      div43_claimed_cents: div43?.total ?? 0,
+      acquired_date: prop.acquired_date,
+      disposal_date: prop.disposal_date,
+      is_resident_individual: prop.tax_residency === "AU",
+      main_residence_exempt: prop.main_residence_flag === 1,
+    });
+    await this.audit(userId, "cgt_computed", JSON.stringify({ propertyId, net_gain: result.net_gain_cents }));
+    return { ...result, property_id: propertyId };
+  }
+
+  // ── CLAIMABILITY: deterministic rules → claim_suggestions (rules-first) ─────
+  /**
+   * Run the deterministic claimability rules against a context and log any matched
+   * suggestions. Rules-first: the rules (from the versioned rule pack + any per-tenant D1
+   * overrides) are the source of truth; defer_to_agent rules append the "confirm with a
+   * registered tax agent" disclaimer. The LLM is never used to assert a deduction here.
+   */
+  async suggestClaims(
+    userId: string,
+    ctx: ClaimContext,
+    refs: { txnId?: string | null; assetId?: string | null; estimatedDeductionCents?: number | null } = {},
+  ): Promise<number> {
+    const profile = await this.requireProfile(userId);
+    const pack = await this.loadRulePack(profile.rule_pack_ver);
+    const packRules = ((pack as { claimability?: ClaimRule[] }).claimability ?? []) as ClaimRule[];
+    const d1 = await this.env.DB.prepare(
+      `SELECT id, scope_type, scope_value, merchant_hint, ato_label, claim_type, default_method, general_info_note, defer_to_agent
+         FROM claimability_rules WHERE rule_pack_ver = ?`,
+    )
+      .bind(profile.rule_pack_ver)
+      .all<ClaimRule>();
+    const matched = matchClaimRules([...packRules, ...(d1.results ?? [])], ctx);
+    let n = 0;
+    for (const r of matched) {
+      await this.env.DB.prepare(
+        `INSERT INTO claim_suggestions (id, user_id, person_id, txn_id, asset_id, rule_id, suggestion, claim_type, estimated_deduction_cents)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+        .bind(
+          crypto.randomUUID(), userId, `person_self_${userId}`, refs.txnId ?? null, refs.assetId ?? null,
+          r.id ?? `${r.scope_type}:${r.scope_value}`, suggestionText(r), r.claim_type, refs.estimatedDeductionCents ?? null,
+        )
+        .run();
+      n++;
+    }
+    if (n) await this.audit(userId, "claims_suggested", JSON.stringify({ txnId: refs.txnId, assetId: refs.assetId, n }));
+    return n;
+  }
+
+  /** Update a claim suggestion's status (suggested|accepted|dismissed). */
+  async setClaimStatus(userId: string, id: string, status: string): Promise<void> {
+    await this.env.DB.prepare(`UPDATE claim_suggestions SET status = ? WHERE id = ? AND user_id = ?`).bind(status, id, userId).run();
+    await this.audit(userId, "claim_status", JSON.stringify({ id, status }));
+  }
+
+  // ── FY CHECKLIST: bucket-driven kickoff/wrap-up items ──────────────────────
+  /**
+   * Generate the FY checklist from the tenant's situation (buckets/entities/properties).
+   * Idempotent — re-running only inserts items that aren't already present for the FY (the
+   * UNIQUE(user_id, person_id, fy, item_key) key + ON CONFLICT DO NOTHING). GENERAL-INFO only.
+   */
+  async generateChecklist(userId: string, fy?: string): Promise<{ items: number }> {
+    const profile = await this.requireProfile(userId);
+    const situation = await getSituation(this.env, userId, profile);
+    const targetFy = fy ?? this.currentFyLabel();
+    const personId = `person_self_${userId}`;
+    const hasRented = situation.properties.some((p) => p.status === "rented");
+    const hasVacant = situation.properties.some((p) => p.status === "vacant");
+    const hasProperty = situation.properties.length > 0;
+    const hasCompany = situation.entities.some((e) => e.kind === "company");
+    let buckets: string[] = [];
+    try {
+      buckets = JSON.parse(profile.buckets) as string[];
+    } catch {
+      /* ignore */
+    }
+    const hasInvestments = buckets.includes("investments") || buckets.includes("shares");
+
+    const items: { item_key: string; title: string; rationale: string; trigger_bucket: string; due_hint: string }[] = [];
+    if (hasRented)
+      items.push({ item_key: "rental_eofy_summary", title: "Upload this year's agent EOFY rental summary + repair receipts", rationale: "Rent received and agent-deducted expenses come from the EOFY statement — the Smart Inbox will split it per property.", trigger_bucket: "property_rented", due_hint: "After 30 June" });
+    if (hasVacant)
+      items.push({ item_key: "vacant_holding_costs", title: "Confirm the vacant property was genuinely available for rent; capture holding costs", rationale: "Holding costs are only deductible while the property is genuinely available for rent. Vacant land holding costs are generally not deductible since 1 July 2019.", trigger_bucket: "property_vacant", due_hint: "Before lodging" });
+    if (hasProperty)
+      items.push({ item_key: "qs_dep_schedule", title: "Get a quantity-surveyor depreciation schedule if you don't have one", rationale: "A QS schedule unlocks Div 40 and Div 43 deductions that carry forward each year. Upload it from Documents to bulk-import the assets.", trigger_bucket: "property_rented", due_hint: "Anytime" });
+    if (hasCompany)
+      items.push({ item_key: "company_equipment_review", title: "Review company equipment to depreciate (check this FY's instant asset write-off threshold)", rationale: "Eligible assets may be written off immediately or pooled. The threshold changes yearly — confirm the current-FY figure.", trigger_bucket: "company", due_hint: "Before 30 June" });
+    if (hasInvestments || hasCompany)
+      items.push({ item_key: "dividend_statements", title: "Upload dividend / managed-fund (AMMA) statements", rationale: "Franking credits and distribution components are captured from these — drop them in Documents.", trigger_bucket: "payg", due_hint: "After 30 June" });
+    items.push({ item_key: "super_notice_of_intent", title: "Lodge your Notice of intent to claim a personal super deduction (and get the fund's acknowledgment)", rationale: "A personal super contribution is only deductible with a valid Notice of intent acknowledged by the fund — lodge before you lodge your return or by 30 June of the following year.", trigger_bucket: "payg", due_hint: "Before lodging" });
+
+    let n = 0;
+    for (const it of items) {
+      const res = await this.env.DB.prepare(
+        `INSERT INTO fy_checklist (id, user_id, person_id, fy, item_key, title, rationale, trigger_bucket, due_hint)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(user_id, person_id, fy, item_key) DO NOTHING`,
+      )
+        .bind(crypto.randomUUID(), userId, personId, targetFy, it.item_key, it.title, it.rationale, it.trigger_bucket, it.due_hint)
+        .run();
+      n += res.meta?.changes ?? 0;
+    }
+    await this.audit(userId, "checklist_generated", JSON.stringify({ fy: targetFy, added: n }));
+    return { items: n };
+  }
+
+  /** Update a checklist item's status (open|done|dismissed|not_applicable). */
+  async setChecklistStatus(userId: string, id: string, status: string): Promise<void> {
+    await this.env.DB.prepare(`UPDATE fy_checklist SET status = ? WHERE id = ? AND user_id = ?`).bind(status, id, userId).run();
+    await this.audit(userId, "checklist_status", JSON.stringify({ id, status }));
   }
 
   // ── 3. CORRECTION: user overrides a field -> training signal ───────────────
@@ -1184,7 +1814,10 @@ export class TaxAgent extends Agent<Env> {
 
   private async loadRulePack(ver: string): Promise<typeof DEFAULT_RULE_PACK> {
     const override = await this.env.RULES.get(`rulepack:${ver}`, "json");
-    return (override as typeof DEFAULT_RULE_PACK | null) ?? DEFAULT_RULE_PACK;
+    const pack = (override as typeof DEFAULT_RULE_PACK | null) ?? DEFAULT_RULE_PACK;
+    // Warn (don't throw) if a KV override drifted from the taxonomy's known buckets.
+    if (pack?.buckets) assertBucketKeys(pack.buckets);
+    return pack;
   }
 
   private buildSystemPrompt(

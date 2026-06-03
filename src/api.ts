@@ -11,8 +11,16 @@ import {
   usageSummary,
   listStatements,
   reconcilePairs,
+  listIncome,
+  listDocuments,
+  listAssets,
+  listDepreciation,
+  listChecklist,
+  listClaims,
 } from "./lib/queries";
 import {
+  addPerson,
+  updatePerson,
   addProperty,
   updateProperty,
   addEntity,
@@ -175,8 +183,28 @@ export async function handleApi(
   }
 
   // ── Situation writes (Settings + web onboarding) ──────────────────────────
+  // Persons (taxpayers). The list is returned by GET /api/situation (getSituation).
+  if (resource === "persons") {
+    if (m === "POST" && !id) return json({ id: await addPerson(env, uid, await req.json()) });
+    if (m === "PUT" && id) {
+      await updatePerson(env, uid, id, await req.json());
+      return json({ ok: true });
+    }
+    if (m === "DELETE" && id) {
+      await deleteRow(env, uid, "persons", id);
+      return json({ ok: true });
+    }
+  }
   if (resource === "properties") {
     if (m === "POST") return json({ id: await addProperty(env, uid, await req.json()) });
+    // GET /api/properties/:id/cgt — indicative CGT on a disposed property.
+    if (m === "GET" && id && sub === "cgt") {
+      try {
+        return json(await stub.computeCgt(uid, id));
+      } catch (e) {
+        return json({ error: (e as Error).message }, 400);
+      }
+    }
     if (m === "PUT" && id) {
       await updateProperty(env, uid, id, await req.json());
       return json({ ok: true });
@@ -244,6 +272,105 @@ export async function handleApi(
       } catch (e) {
         return json({ error: (e as Error).message }, 409); // e.g. reconciliation gate
       }
+    }
+  }
+
+  // ── Income (first-class) ──────────────────────────────────────────────────
+  if (resource === "income") {
+    if (m === "GET" && !id) {
+      return json({
+        income: await listIncome(env, uid, {
+          fy: url.searchParams.get("fy") ?? undefined,
+          personId: url.searchParams.get("person_id") ?? undefined,
+          propertyId: url.searchParams.get("property_id") ?? undefined,
+        }),
+      });
+    }
+    if (m === "POST" && !id) return json({ id: await stub.recordIncome(uid, await req.json()) });
+    if (m === "DELETE" && id) {
+      await deleteRow(env, uid, "income", id);
+      return json({ ok: true });
+    }
+  }
+
+  // ── Assets & depreciation ─────────────────────────────────────────────────
+  if (resource === "assets") {
+    if (m === "GET" && !id) return json({ assets: await listAssets(env, uid, url.searchParams.get("fy") ?? undefined) });
+    if (m === "POST" && !id) return json({ id: await stub.createAsset(uid, await req.json()) });
+    if (m === "GET" && id && sub === "schedule") return json({ schedule: await listDepreciation(env, uid, id) });
+    if (m === "POST" && id && sub === "compute") {
+      const fy = Number(url.searchParams.get("fy")) || undefined;
+      return json(await stub.computeDepreciation(uid, id, fy));
+    }
+    if (m === "POST" && id && sub === "dispose") {
+      const { disposed_date, disposal_value_cents } = (await req.json()) as { disposed_date: string; disposal_value_cents: number };
+      return json(await stub.disposeAsset(uid, id, disposed_date, disposal_value_cents));
+    }
+    if (m === "DELETE" && id) {
+      await deleteRow(env, uid, "assets", id);
+      return json({ ok: true });
+    }
+  }
+  // POST /api/depreciation/rollforward?fy= — batch roll every active asset into a new FY.
+  if (resource === "depreciation" && id === "rollforward" && m === "POST") {
+    const fy = Number(url.searchParams.get("fy")) || new Date().getFullYear();
+    return json(await stub.rollForward(uid, fy));
+  }
+
+  // ── FY checklist ──────────────────────────────────────────────────────────
+  if (resource === "checklist") {
+    if (m === "GET" && !id) return json({ checklist: await listChecklist(env, uid, url.searchParams.get("fy") ?? undefined) });
+    if (m === "POST" && id === "generate") return json(await stub.generateChecklist(uid, url.searchParams.get("fy") ?? undefined));
+    if (m === "PATCH" && id) {
+      const { status } = (await req.json()) as { status: string };
+      await stub.setChecklistStatus(uid, id, status);
+      return json({ ok: true });
+    }
+  }
+
+  // ── Claim suggestions (claimability brain) ────────────────────────────────
+  if (resource === "claims") {
+    if (m === "GET" && !id) return json({ claims: await listClaims(env, uid) });
+    if (m === "PATCH" && id) {
+      const { status } = (await req.json()) as { status: string };
+      await stub.setClaimStatus(uid, id, status);
+      return json({ ok: true });
+    }
+  }
+
+  // ── Documents shelf (Smart-Inbox sink + registry) ─────────────────────────
+  if (resource === "documents") {
+    if (m === "GET" && !id) {
+      return json({
+        documents: await listDocuments(env, uid, {
+          type: url.searchParams.get("type") ?? undefined,
+          fy: url.searchParams.get("fy") ?? undefined,
+          propertyId: url.searchParams.get("property_id") ?? undefined,
+        }),
+      });
+    }
+    // POST /api/documents/upload (multipart: file) → classify + route via the Smart Inbox.
+    if (m === "POST" && id === "upload") {
+      const form = await req.formData();
+      const entry = form.get("file");
+      if (entry == null || typeof entry === "string") return json({ error: "no file" }, 400);
+      const file = entry as unknown as Blob;
+      const bytes = await file.arrayBuffer();
+      if (bytes.byteLength === 0) return json({ error: "empty file" }, 400);
+      const out = await stub.classifyAndRoute(uid, "web", bytes, file.type || "application/octet-stream");
+      return json(out);
+    }
+    // GET /api/documents/:id/download — stream the R2 object (scoped to the tenant).
+    if (m === "GET" && id && sub === "download") {
+      const row = await env.DB.prepare(`SELECT r2_key FROM documents WHERE id = ? AND user_id = ?`)
+        .bind(id, uid)
+        .first<{ r2_key: string | null }>();
+      if (!row?.r2_key) return json({ error: "not found" }, 404);
+      const obj = await env.RECEIPTS.get(row.r2_key);
+      if (!obj) return json({ error: "not found" }, 404);
+      return new Response(obj.body, {
+        headers: { "content-type": obj.httpMetadata?.contentType ?? "application/octet-stream", "cache-control": "private, max-age=60" },
+      });
     }
   }
 

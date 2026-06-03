@@ -49,6 +49,57 @@ export function Reports() {
             </div>
           </Card>
 
+          <Card className="grid grid-cols-2 gap-4 p-4 sm:grid-cols-4">
+            <Stat label="Total income" value={money(data!.total_income_cents)} />
+            <Stat label="Deductions" value={money(data!.total_deductions_cents)} />
+            <Stat label="Depreciation" value={money(data!.depreciation_cents)} />
+            <Stat label="Indicative position" value={money(data!.taxable_position_cents)} />
+          </Card>
+
+          {(data!.income.franking_credit_cents > 0 || data!.income.foreign_tax_paid_cents > 0) && (
+            <Card className="grid grid-cols-2 gap-4 p-4 sm:grid-cols-3">
+              <Stat label="PAYG withheld" value={money(data!.income.withholding_cents)} />
+              <Stat label="Franking credits" value={money(data!.income.franking_credit_cents)} />
+              <Stat label="Foreign tax offset (FITO)" value={money(data!.income.foreign_tax_paid_cents)} />
+            </Card>
+          )}
+
+          {data!.income.by_type.length > 0 && (
+            <Card className="overflow-hidden">
+              <Th>Income</Th>
+              <table className="w-full text-sm">
+                <tbody>
+                  {data!.income.by_type.map((it, i) => (
+                    <tr key={i} className="border-t border-line">
+                      <td className="px-4 py-2">{it.income_type}</td>
+                      <td className="px-4 py-2 text-right tabular-nums">{money(it.gross_cents)}</td>
+                      <td className="px-4 py-2 text-right tabular-nums text-muted">withheld {money(it.withholding_cents)}</td>
+                      <td className="px-4 py-2 text-right tabular-nums text-muted">franking {money(it.franking_credit_cents)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </Card>
+          )}
+
+          {data!.per_property.length > 0 && (
+            <Card className="overflow-hidden">
+              <Th>Per-property position (rent − deductions − depreciation)</Th>
+              <table className="w-full text-sm">
+                <tbody>
+                  {data!.per_property.map((p) => (
+                    <tr key={p.property_id} className="border-t border-line">
+                      <td className="px-4 py-2">{p.label ?? p.property_id}</td>
+                      <td className="px-4 py-2 text-right tabular-nums text-muted">rent {money(p.income_cents)}</td>
+                      <td className="px-4 py-2 text-right tabular-nums text-muted">−{money(p.deduction_cents)} −{money(p.depreciation_cents)}</td>
+                      <td className={`px-4 py-2 text-right tabular-nums font-medium ${p.net_cents < 0 ? "text-danger" : ""}`}>{money(p.net_cents)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </Card>
+          )}
+
           <Card className="overflow-hidden">
             <Th>By bucket + ATO label</Th>
             <table className="w-full text-sm">
@@ -123,6 +174,14 @@ export function Reports() {
 
 function Th({ children }: { children: React.ReactNode }) {
   return <div className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-muted">{children}</div>;
+}
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <div className="text-xs uppercase tracking-wide text-muted">{label}</div>
+      <div className="mt-1 text-lg font-semibold tabular-nums">{value}</div>
+    </div>
+  );
 }
 function Empty({ cols }: { cols: number }) {
   return (

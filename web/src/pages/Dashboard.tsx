@@ -1,8 +1,9 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import type { ReactNode } from "react";
 import { api } from "../api";
-import { Card, Spinner, money, BUCKET_LABEL } from "../components/ui";
+import { Card, Spinner, Button, money, BUCKET_LABEL } from "../components/ui";
+import type { ChecklistItem } from "../types";
 
 const FEATURE_LABEL: Record<string, string> = {
   receipt: "Receipts",
@@ -30,6 +31,9 @@ export function Dashboard() {
         <Stat label="Needs review" value={String(d.needs_review)} tone={d.needs_review ? "warn" : "safe"} to="/" />
         <Stat label="Buckets used" value={String(d.by_bucket.length)} />
       </div>
+
+      <ChecklistCard />
+      <ClaimsCard />
 
       <Card className="divide-y divide-line">
         <SectionTitle>By bucket</SectionTitle>
@@ -70,6 +74,78 @@ export function Dashboard() {
         Year-end totals + BAS quarters are on the <Link to="/reports" className="text-ink underline underline-offset-2">Reports</Link> page.
       </p>
     </div>
+  );
+}
+
+function ChecklistCard() {
+  const qc = useQueryClient();
+  const { data, isLoading } = useQuery({ queryKey: ["checklist"], queryFn: () => api.checklist() });
+  const gen = useMutation({ mutationFn: () => api.generateChecklist(), onSuccess: () => qc.invalidateQueries({ queryKey: ["checklist"] }) });
+  const setStatus = useMutation({
+    mutationFn: ({ id, status }: { id: string; status: string }) => api.setChecklistStatus(id, status),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["checklist"] }),
+  });
+  const items = (data ?? []) as ChecklistItem[];
+  const open = items.filter((i) => i.status === "open");
+  return (
+    <Card className="divide-y divide-line">
+      <div className="flex items-center justify-between px-4 py-2.5">
+        <SectionTitle>This year's checklist {items.length ? `· ${open.length} open` : ""}</SectionTitle>
+        <Button variant="ghost" className="h-8 px-3 text-xs" onClick={() => gen.mutate()} disabled={gen.isPending}>
+          {gen.isPending ? "…" : items.length ? "Refresh" : "Generate"}
+        </Button>
+      </div>
+      {isLoading ? (
+        <div className="px-4 py-4"><Spinner /></div>
+      ) : !items.length ? (
+        <div className="px-4 py-4 text-sm text-muted">Generate a checklist tailored to your situation (rental, company, super, investments).</div>
+      ) : (
+        items.map((i) => (
+          <div key={i.id} className="flex items-start justify-between gap-3 px-4 py-2.5">
+            <label className="flex items-start gap-2 text-sm">
+              <input type="checkbox" className="mt-1" checked={i.status === "done"} onChange={(e) => setStatus.mutate({ id: i.id, status: e.target.checked ? "done" : "open" })} />
+              <span className={i.status !== "open" ? "text-muted line-through" : ""}>
+                {i.title}
+                {i.due_hint ? <span className="ml-2 rounded-full bg-surface px-2 py-0.5 text-xs text-muted">{i.due_hint}</span> : null}
+                {i.rationale ? <span className="mt-0.5 block text-xs text-muted">{i.rationale}</span> : null}
+              </span>
+            </label>
+            {i.status === "open" && (
+              <button className="flex-none text-xs text-muted hover:underline" onClick={() => setStatus.mutate({ id: i.id, status: "dismissed" })}>dismiss</button>
+            )}
+          </div>
+        ))
+      )}
+    </Card>
+  );
+}
+
+function ClaimsCard() {
+  const qc = useQueryClient();
+  const { data } = useQuery({ queryKey: ["claims"], queryFn: () => api.claims() });
+  const setStatus = useMutation({
+    mutationFn: ({ id, status }: { id: string; status: string }) => api.setClaimStatus(id, status),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["claims"] }),
+  });
+  const open = (data ?? []).filter((c) => c.status === "suggested");
+  if (!open.length) return null;
+  return (
+    <Card className="divide-y divide-line">
+      <SectionTitle>Claim guidance · {open.length}</SectionTitle>
+      {open.slice(0, 6).map((c) => (
+        <div key={c.id} className="flex items-start justify-between gap-3 px-4 py-2.5 text-sm">
+          <span>
+            {c.suggestion}
+            {c.claim_type ? <span className="ml-2 rounded-full bg-surface px-2 py-0.5 text-xs text-muted">{c.claim_type}</span> : null}
+          </span>
+          <div className="flex flex-none gap-2 text-xs">
+            <button className="text-safe hover:underline" onClick={() => setStatus.mutate({ id: c.id, status: "accepted" })}>keep</button>
+            <button className="text-muted hover:underline" onClick={() => setStatus.mutate({ id: c.id, status: "dismissed" })}>dismiss</button>
+          </div>
+        </div>
+      ))}
+      <div className="px-4 py-2 text-xs text-muted">General information only — not tax advice.</div>
+    </Card>
   );
 }
 

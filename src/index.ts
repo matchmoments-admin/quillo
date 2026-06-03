@@ -161,8 +161,10 @@ export default {
       await stub.ingestText(userId, "email", parsed.text);
       return;
     }
+    // Emailed attachments are ambiguous (payslip? agent summary? receipt?) — route through the
+    // Smart Inbox classifier rather than assuming a receipt.
     for (const att of parsed.attachments) {
-      await stub.ingest(userId, "email", att.bytes, att.mime, null);
+      await stub.classifyAndRoute(userId, "email", att.bytes, att.mime);
     }
   },
 
@@ -171,8 +173,21 @@ export default {
   //  - weekly (Mon 08:00): proactive suggestions for every tenant.
   async scheduled(evt: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
     if (evt.cron === "0 8 * * 1") {
+      // Current AU FY start year (Jul–Jun) for the depreciation roll-forward.
+      const now = new Date();
+      const fyStart = now.getUTCMonth() >= 6 ? now.getUTCFullYear() : now.getUTCFullYear() - 1;
       const users = await env.DB.prepare(`SELECT user_id FROM profiles`).all<{ user_id: string }>();
-      for (const u of users.results) await stubFor(env, u.user_id).runProactiveScan(u.user_id);
+      for (const u of users.results) {
+        // Isolate per-tenant failures — one tenant's bad asset/data must not abort the sweep for all.
+        try {
+          const stub = stubFor(env, u.user_id);
+          await stub.runProactiveScan(u.user_id);
+          // Keep each tenant's depreciation_schedule materialised through the current FY (carry-forward).
+          await stub.rollForward(u.user_id, fyStart);
+        } catch (e) {
+          console.error(`weekly cron failed for ${u.user_id}: ${(e as Error).message}`);
+        }
+      }
       return;
     }
     // Frequent: only users with a pending batch job (cheap query, no per-tenant fan-out).

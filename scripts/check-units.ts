@@ -163,5 +163,142 @@ console.log("extractSituationDraft");
   check("invalid entity kind is rejected by schema", threw);
 }
 
+// ── Depreciation engine: exact-cents golden tests (the deterministic core) ────
+import { computeFyDeduction, rollSchedule, daysInFy, daysHeldInFy, balancingAdjustment, type DepAsset } from "../src/lib/depreciation";
+
+console.log("depreciation: Div 40 diminishing value (ATO worked example $80k, 5yr life)");
+{
+  const a: DepAsset = { asset_class: "div40_plant", cost_cents: 8_000_000, acquired_date: "2025-07-01", effective_life_years: 5, method: "diminishing_value" };
+  const y1 = computeFyDeduction(a, 2025, 8_000_000); // full non-leap year (2026 not leap)
+  check("DV year 1 = $32,000 exactly", y1.deduction_cents === 3_200_000);
+  check("DV year 1 closing = $48,000", y1.closing_cents === 4_800_000);
+  const y2 = computeFyDeduction(a, 2026, y1.closing_cents);
+  check("DV year 2 = $19,200 exactly", y2.deduction_cents === 1_920_000);
+}
+
+console.log("depreciation: Div 40 prime cost (straight line)");
+{
+  const a: DepAsset = { asset_class: "div40_plant", cost_cents: 8_000_000, acquired_date: "2025-07-01", effective_life_years: 5, method: "prime_cost" };
+  const y1 = computeFyDeduction(a, 2025, 8_000_000);
+  const y2 = computeFyDeduction(a, 2026, y1.closing_cents);
+  check("PC year 1 = $16,000", y1.deduction_cents === 1_600_000);
+  check("PC year 2 = $16,000 (constant on cost)", y2.deduction_cents === 1_600_000);
+}
+
+console.log("depreciation: leap-year days + part-year");
+{
+  check("FY 2027-28 spans 29 Feb 2028 → 366 days", daysInFy(2027) === 366);
+  check("FY 2025-26 → 365 days", daysInFy(2025) === 365);
+  // Acquired 1 Jan 2026 → held 1 Jan..30 Jun = 181 days in FY 2025.
+  const a: DepAsset = { asset_class: "div40_plant", cost_cents: 8_000_000, acquired_date: "2026-01-01", effective_life_years: 5, method: "prime_cost" };
+  check("part-year days held = 181", daysHeldInFy(a, 2025) === 181);
+  const part = computeFyDeduction(a, 2025, 8_000_000);
+  // 8,000,000 × 181/365 × 0.2 = 793,424.66 → 793,425 cents.
+  check("part-year PC deduction rounds to $7,934.25", part.deduction_cents === 793_425);
+}
+
+console.log("depreciation: Div 43 capital works 2.5%");
+{
+  const a: DepAsset = { asset_class: "div43_capital_works", cost_cents: 20_000_000, acquired_date: "2025-07-01", div43_rate: 0.025 };
+  const y1 = computeFyDeduction(a, 2025, 20_000_000);
+  check("Div43 = $5,000/yr (2.5% of $200k)", y1.deduction_cents === 500_000);
+}
+
+console.log("depreciation: low-value pool 18.75% then 37.5%");
+{
+  const a: DepAsset = { asset_class: "low_value_pool", cost_cents: 80_000, acquired_date: "2025-07-01" };
+  const y1 = computeFyDeduction(a, 2025, 80_000);
+  check("LVP year 1 = 18.75% = $150", y1.deduction_cents === 15_000);
+  const y2 = computeFyDeduction(a, 2026, y1.closing_cents);
+  check("LVP year 2 = 37.5% of $650 = $243.75", y2.deduction_cents === 24_375);
+}
+
+console.log("depreciation: second-hand residential Div40 lockout");
+{
+  const a: DepAsset = { asset_class: "div40_plant", cost_cents: 100_000, acquired_date: "2025-07-01", effective_life_years: 5, method: "diminishing_value", is_second_hand: true };
+  const y1 = computeFyDeduction(a, 2025, 100_000);
+  check("second-hand Div40 deduction blocked (0)", y1.deduction_cents === 0);
+  check("second-hand Div40 keeps adjustable value (CGT)", y1.closing_cents === 100_000 && y1.method_applied === "div40_locked");
+}
+
+console.log("depreciation: business-use apportionment + carry-forward roll");
+{
+  const a: DepAsset = { asset_class: "div40_plant", cost_cents: 8_000_000, acquired_date: "2025-07-01", effective_life_years: 5, method: "diminishing_value", business_use_pct: 50 };
+  const y1 = computeFyDeduction(a, 2025, 8_000_000);
+  check("50% business use halves the deduction ($16,000)", y1.deduction_cents === 1_600_000);
+  check("apportionment does NOT change adjustable value", y1.closing_cents === 4_800_000);
+  const sched = rollSchedule({ asset_class: "div40_plant", cost_cents: 8_000_000, acquired_date: "2025-07-01", effective_life_years: 5, method: "prime_cost" }, 2027);
+  check("roll produces one row per FY (2025,2026,2027)", sched.length === 3 && sched[0].fy === "2025-26" && sched[2].fy === "2027-28");
+  check("roll opening chains from prior closing", sched[1].opening_adjustable_value_cents === sched[0].closing_adjustable_value_cents);
+}
+
+console.log("depreciation: balancing adjustment on disposal");
+{
+  check("termination > adjustable → assessable (+)", balancingAdjustment(4_800_000, 5_000_000) === 200_000);
+  check("termination < adjustable → deductible (−)", balancingAdjustment(4_800_000, 3_000_000) === -1_800_000);
+}
+
+// ── Claimability matcher: rules-first, defer gating ───────────────────────────
+import { matchClaimRules, suggestionText, type ClaimRule } from "../src/lib/claimability";
+import rulePack from "../src/rulepacks/au-v1.json" assert { type: "json" };
+
+console.log("claimability");
+{
+  const rules = rulePack.claimability as ClaimRule[];
+  // A plumbing repair on a rented property → immediate rental repairs.
+  const repair = matchClaimRules(rules, { bucket: "property_rented", merchant: "Joe's Plumbing", property_status: "rented" });
+  check("rented + plumber → immediate repair", repair.some((r) => r.claim_type === "immediate" && r.ato_label === "rental:repairs"));
+  // A dishwasher on a rented property → Div 40 (not immediate).
+  const appliance = matchClaimRules(rules, { bucket: "property_rented", merchant: "The Good Guys dishwasher" });
+  check("rented + appliance → div40", appliance.some((r) => r.claim_type === "div40"));
+  // Vacant property → defer_to_agent rule fires.
+  const vacant = matchClaimRules(rules, { property_status: "vacant" });
+  check("vacant → defer_to_agent", vacant.some((r) => r.defer_to_agent === 1));
+  check("defer rules append the registered-agent disclaimer", suggestionText(vacant.find((r) => r.defer_to_agent === 1)!).includes("registered tax agent"));
+  // Novated lease entity → car not deductible + defer.
+  const lease = matchClaimRules(rules, { entity_kinds: ["novated_lease"] });
+  check("novated lease → not_deductible + defer", lease.some((r) => r.claim_type === "not_deductible" && r.defer_to_agent === 1));
+  // Occupation gate: nurse uniform matches; a random merchant for an IT pro does not over-fire.
+  const nurse = matchClaimRules(rules, { occupations: ["nurse"], merchant: "Scrubs uniform shop" });
+  check("nurse + uniform → immediate D3/D5", nurse.some((r) => r.ato_label === "D3/D5"));
+  const noOcc = matchClaimRules(rules, { occupations: [], merchant: "Scrubs uniform shop" });
+  check("no occupation → occupation rules do NOT fire", !noOcc.some((r) => r.scope_type === "occupation"));
+  // A plain company receipt with no matching hint → no overreach.
+  const plain = matchClaimRules(rules, { bucket: "company", merchant: "Random Cafe" });
+  check("company cafe → no claimability overreach", plain.length === 0);
+}
+
+// ── CGT: cost-base, Div43 reduction, 50% discount, main-residence, losses ─────
+import { computeCapitalGain } from "../src/lib/cgt";
+
+console.log("cgt");
+{
+  // $500k cost base, $700k proceeds, held >12mo, resident → $200k gain, 50% discount = $100k net.
+  const g = computeCapitalGain({ cost_base_cents: 50_000_000, proceeds_cents: 70_000_000, acquired_date: "2015-01-01", disposal_date: "2025-01-01", is_resident_individual: true });
+  check("gross gain = $200,000", g.gross_gain_cents === 20_000_000);
+  check("50% discount applied (resident, >12mo)", g.discount_applied && g.discount_cents === 10_000_000);
+  check("net gain = $100,000", g.net_gain_cents === 10_000_000);
+
+  // Div 43 claimed reduces the cost base → larger gain (per the ATO note).
+  const d = computeCapitalGain({ cost_base_cents: 50_000_000, proceeds_cents: 70_000_000, div43_claimed_cents: 4_000_000, acquired_date: "2015-01-01", disposal_date: "2025-01-01", is_resident_individual: true });
+  check("Div43 $40k reduces cost base → gain up by $40k", d.gross_gain_cents === 24_000_000);
+
+  // Held < 12 months → no discount.
+  const short = computeCapitalGain({ cost_base_cents: 50_000_000, proceeds_cents: 60_000_000, acquired_date: "2024-07-01", disposal_date: "2025-01-01", is_resident_individual: true });
+  check("held <12mo → no discount", !short.discount_applied && short.net_gain_cents === 10_000_000);
+
+  // Main residence → fully exempt.
+  const home = computeCapitalGain({ cost_base_cents: 50_000_000, proceeds_cents: 90_000_000, acquired_date: "2010-01-01", disposal_date: "2025-01-01", is_resident_individual: true, main_residence_exempt: true });
+  check("main residence → net gain 0", home.net_gain_cents === 0);
+
+  // Capital loss → surfaced, never discounted.
+  const loss = computeCapitalGain({ cost_base_cents: 50_000_000, proceeds_cents: 45_000_000, acquired_date: "2015-01-01", disposal_date: "2025-01-01", is_resident_individual: true });
+  check("loss surfaced (−$50k), not discounted", loss.is_capital_loss && loss.net_gain_cents === -5_000_000);
+
+  // Foreign resident → no 50% discount.
+  const foreign = computeCapitalGain({ cost_base_cents: 50_000_000, proceeds_cents: 70_000_000, acquired_date: "2015-01-01", disposal_date: "2025-01-01", is_resident_individual: false });
+  check("foreign resident → no discount", !foreign.discount_applied && foreign.net_gain_cents === 20_000_000);
+}
+
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);
 process.exit(fail === 0 ? 0 : 1);

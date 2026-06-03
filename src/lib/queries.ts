@@ -86,11 +86,22 @@ export async function listTransactions(
 
 /** Statements for an account (or all), with their reconcile/import status — for the Accounts page. */
 export async function listStatements(env: Env, userId: string, accountId?: string) {
-  const where = accountId ? "user_id = ? AND account_id = ?" : "user_id = ?";
+  const where = accountId ? "s.user_id = ? AND s.account_id = ?" : "s.user_id = ?";
   const binds = accountId ? [userId, accountId] : [userId];
+  // total_lines / categorised_count drive the live "X / N categorised" progress while an async
+  // batch fills in: a bank line is "done" once it's 'extracted' (categorised) or 'ignored'
+  // (transfer); 'needs_review' lines are still pending. One cheap aggregate join — no new columns.
   const res = await env.DB.prepare(
-    `SELECT id, account_id, filename, format, status, row_count, imported_count, reconciled, recon_diff_cents, created_at
-       FROM statements WHERE ${where} ORDER BY created_at DESC LIMIT 50`,
+    `SELECT s.id, s.account_id, s.filename, s.format, s.status, s.row_count, s.imported_count,
+            s.reconciled, s.recon_diff_cents, s.created_at,
+            COUNT(t.id) AS total_lines,
+            COALESCE(SUM(CASE WHEN t.status IN ('extracted', 'ignored') THEN 1 ELSE 0 END), 0) AS categorised_count
+       FROM statements s
+       LEFT JOIN transactions t
+         ON t.statement_id = s.id AND t.user_id = s.user_id AND t.kind = 'bank_line'
+      WHERE ${where}
+      GROUP BY s.id
+      ORDER BY s.created_at DESC LIMIT 50`,
   )
     .bind(...binds)
     .all();

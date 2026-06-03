@@ -94,6 +94,8 @@ export interface StatementInfo {
   reconciled: number | null;
   recon_diff_cents: number | null;
   created_at: string;
+  total_lines?: number | null; // bank lines imported from this statement
+  categorised_count?: number | null; // of those, how many are categorised/ignored (vs needs_review)
 }
 
 export interface Person {

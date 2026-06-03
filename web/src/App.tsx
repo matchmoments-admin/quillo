@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { UserButton } from "@clerk/clerk-react";
 import { useQuery } from "@tanstack/react-query";
+import { Toaster } from "sonner";
 import { api } from "./api";
 
 const NAV = [
@@ -39,6 +40,7 @@ export function App() {
   return (
     <div className="min-h-screen bg-paper">
       <FirstRunGate />
+      <Toaster position="bottom-right" richColors closeButton toastOptions={{ duration: 6000 }} />
       <header className="sticky top-0 z-10 border-b border-line bg-paper/80 backdrop-blur">
         <div className="mx-auto flex max-w-4xl items-center gap-4 px-6 py-3">
           <Link to="/" className="flex flex-none items-center gap-2">

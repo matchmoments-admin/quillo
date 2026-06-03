@@ -9,9 +9,10 @@
     "income_property": "Money IN (a credit) that is rent received on an investment property (pair with the property).",
     "income_personal": "Money IN (a credit) that is personal income — salary/PAYG, interest, dividends received personally.",
     "refund": "Money IN (a credit) that REVERSES a prior expense (a refund/reversal) — nets against spend, it is NOT income.",
+    "asset": "Money OUT (a debit) for a CAPITAL purchase — equipment/plant or a capital improvement that DEPRECIATES over its life. NOT an immediate deduction; it becomes a depreciating asset and is flagged for review. Use for clearly capital items (e.g. a laptop/computer, machinery, furniture, an appliance for a rental).",
     "unknown": "Cannot determine — ask the user."
   },
-  "guidance": "Categorise each line into exactly one bucket. A line marked money OUT (a debit / spend) takes an expense bucket (payg, company, property_*). A line marked money IN (a credit) takes an income bucket (income_business, income_property, income_personal) or 'refund' if it reverses an expense. Prefer 'unknown' over guessing — income misclassification is costly. This is general information, not tax advice; never assert deductibility.",
+  "guidance": "Categorise each line into exactly one bucket. A line marked money OUT (a debit / spend) takes an expense bucket (payg, company, property_*), or 'asset' if it is a clearly capital purchase that depreciates (large equipment, computers, machinery, furniture). A line marked money IN (a credit) takes an income bucket (income_business, income_property, income_personal) or 'refund' if it reverses an expense. Prefer 'unknown' over guessing — income and capital misclassification are costly. This is general information, not tax advice; never assert deductibility.",
   "merchant_hints": [
     { "match": "anthropic, openai, github, gitlab, notion, slack, figma, atlassian, jira, linear, zoom, adobe, canva, microsoft 365, google workspace, dropbox, 1password", "bucket": "company", "ato_label": "company:software-subscriptions", "note": "SaaS / AI tool subscriptions for the business" },
     { "match": "aws, amazon web services, azure, microsoft azure, google cloud, gcp, cloudflare, vercel, netlify, digitalocean, heroku, render", "bucket": "company", "ato_label": "company:cloud-services", "note": "cloud hosting / infrastructure" },

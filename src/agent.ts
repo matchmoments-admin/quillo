@@ -385,6 +385,9 @@ export class TaxAgent extends Agent<Env> {
 
     // Batch-categorise the lines that the deterministic pass (rules+hints) didn't cover.
     const cat = await this.categoriseStatement(userId, statementId);
+    // Any line a rule deterministically bucketed 'asset' becomes a depreciating asset now (the
+    // LLM-categorised ones are linked when their batch applies — see categoriseStatement / poll).
+    await this.linkAssetsForUser(userId);
     // Attach any existing receipts to the new lines (stops double-counting + donates GST).
     await this.matchReceiptsForUser(userId);
 
@@ -548,6 +551,9 @@ export class TaxAgent extends Agent<Env> {
           .bind(batchStatementStatus(applied, errored), job.statement_id)
           .run();
         await this.audit(userId, "batch_applied", JSON.stringify({ batchId: job.batch_id, applied, errored }));
+        // Async-categorised capital purchases become depreciating assets now (their bucket only
+        // just landed). Idempotent — links only newly-bucketed 'asset' lines.
+        await this.linkAssetsForUser(userId);
         await this.notify(
           userId,
           applied > 0
@@ -1359,6 +1365,45 @@ export class TaxAgent extends Agent<Env> {
     return id;
   }
 
+  /**
+   * Turn every capital-purchase transaction (bucket='asset') into a depreciating asset and link
+   * it, so the cost depreciates via the assets table instead of being claimed as an immediate
+   * deduction. Defaults are placeholders the user confirms in the Assets page (needs_review=1):
+   * Div 40 plant, diminishing value, a generic effective life, 100% business use ("work out %
+   * later"). IDEMPOTENT — only touches asset txns not yet linked — so it's safe to call after any
+   * categorise / batch-apply / correction. Skips undated or zero-cost lines (can't depreciate).
+   */
+  private async linkAssetsForUser(userId: string): Promise<void> {
+    const rows = await this.env.DB.prepare(
+      `SELECT id, merchant, COALESCE(amount_aud_cents, amount_cents) AS cost, txn_date, property_id
+         FROM transactions
+        WHERE user_id = ? AND bucket = 'asset' AND asset_id IS NULL AND status NOT IN ('duplicate','ignored')
+          AND COALESCE(direction,'debit') = 'debit'  -- a capital purchase is money OUT; never an asset from a credit
+          AND txn_date IS NOT NULL AND COALESCE(amount_aud_cents, amount_cents) > 0`,
+    )
+      .bind(userId)
+      .all<{ id: string; merchant: string | null; cost: number; txn_date: string; property_id: string | null }>();
+    for (const r of rows.results ?? []) {
+      const assetId = await this.createAsset(userId, {
+        label: r.merchant ? `${r.merchant} (${r.txn_date})` : `Capital asset (${r.txn_date})`,
+        asset_class: "div40_plant", // sensible default; user picks div43/pool/immediate in review
+        cost_cents: r.cost,
+        acquired_date: r.txn_date,
+        property_id: r.property_id,
+        effective_life_years: 5, // placeholder — user sets the TR 2022/1 effective life in review
+        method: "diminishing_value",
+        business_use_pct: 100, // work out apportionment % later
+        needs_review: 1,
+      });
+      await this.env.DB.prepare(
+        `UPDATE transactions SET asset_id = ?, is_capital = 1, capital_class = 'div40' WHERE id = ? AND user_id = ?`,
+      )
+        .bind(assetId, r.id, userId)
+        .run();
+      await this.audit(userId, "asset_linked", JSON.stringify({ txnId: r.id, assetId, cost: r.cost }));
+    }
+  }
+
   /** Map an assets row into the engine's DepAsset shape. */
   private toDepAsset(row: {
     asset_class: string; cost_cents: number; acquired_date: string; effective_life_years: number | null;
@@ -1725,6 +1770,9 @@ export class TaxAgent extends Agent<Env> {
     )
       .bind(crypto.randomUUID(), userId, txnId, field, row.old, newValue)
       .run();
+
+    // If the user re-bucketed a line to 'asset', create + link its depreciating asset now.
+    if (field === "bucket" && newValue === "asset") await this.linkAssetsForUser(userId);
 
     await this.promoteToEvalCase(userId, txnId);
     await this.audit(userId, "correction", JSON.stringify({ txnId, field, newValue }));

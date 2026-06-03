@@ -8,6 +8,10 @@ export const BUCKET_LABEL: Record<string, string> = {
   company: "Company",
   property_rented: "Property · rented",
   property_vacant: "Property · vacant",
+  income_business: "Income · business",
+  income_property: "Income · rent",
+  income_personal: "Income · personal",
+  refund: "Refund",
   unknown: "Unknown",
 };
 

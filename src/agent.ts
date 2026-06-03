@@ -336,9 +336,13 @@ export class TaxAgent extends Agent<Env> {
       seen.add(fp);
       // Transfers / card payments / internal movements are NOT spend → 'ignored' (never counted).
       const transfer = isTransferLike(line.raw_description);
-      // Deterministic categorisation (no model call): user rule first, then merchant hints.
-      const cat = !transfer && line.direction === "debit" ? this.deterministicCategorise(line.description, situation.rules, rulePack) : null;
-      const status = transfer ? "ignored" : cat ? "extracted" : line.direction === "credit" ? "extracted" : "needs_review";
+      // Deterministic categorisation (no model call): user rule first, then merchant hints (debits
+      // only). Credits run user rules but skip expense hints, then fall to the LLM (which is told
+      // the direction so it picks an income_* / refund bucket). Both directions now get a bucket.
+      const cat = transfer
+        ? null
+        : this.deterministicCategorise(line.description, situation.rules, rulePack, { skipHints: line.direction === "credit" });
+      const status = transfer ? "ignored" : cat ? "extracted" : "needs_review";
       inserts.push(
         this.env.DB.prepare(
           `INSERT INTO transactions
@@ -399,11 +403,11 @@ export class TaxAgent extends Agent<Env> {
    */
   async categoriseStatement(userId: string, statementId: string): Promise<{ categorised: number }> {
     const rows = await this.env.DB.prepare(
-      `SELECT id, merchant, amount_cents, txn_date FROM transactions
-        WHERE user_id = ? AND statement_id = ? AND kind = 'bank_line' AND status = 'needs_review' AND direction = 'debit'`,
+      `SELECT id, merchant, amount_cents, txn_date, direction FROM transactions
+        WHERE user_id = ? AND statement_id = ? AND kind = 'bank_line' AND status = 'needs_review'`,
     )
       .bind(userId, statementId)
-      .all<{ id: string; merchant: string | null; amount_cents: number | null; txn_date: string | null }>();
+      .all<{ id: string; merchant: string | null; amount_cents: number | null; txn_date: string | null; direction: string | null }>();
     const items = rows.results ?? [];
     if (!items.length) return { categorised: 0 };
 
@@ -429,7 +433,7 @@ export class TaxAgent extends Agent<Env> {
       const results = await extractBatch(
         llm,
         system,
-        chunk.map((c) => ({ merchant: c.merchant ?? "", amount_cents: c.amount_cents ?? 0, date: c.txn_date })),
+        chunk.map((c) => ({ merchant: c.merchant ?? "", amount_cents: c.amount_cents ?? 0, date: c.txn_date, direction: c.direction as "debit" | "credit" | null })),
       );
       const updates: D1PreparedStatement[] = [];
       for (let j = 0; j < chunk.length; j++) {
@@ -456,7 +460,7 @@ export class TaxAgent extends Agent<Env> {
   private async submitBatchCategorisation(
     userId: string,
     statementId: string,
-    items: { id: string; merchant: string | null; amount_cents: number | null; txn_date: string | null }[],
+    items: { id: string; merchant: string | null; amount_cents: number | null; txn_date: string | null; direction?: string | null }[],
     system: string,
     llm: LLM,
   ): Promise<void> {
@@ -468,7 +472,7 @@ export class TaxAgent extends Agent<Env> {
       chunkMap[String(idx)] = chunk.map((c) => c.id);
       requests.push({
         custom_id: String(idx),
-        params: batchParams(llm.modelId, system, chunk.map((c) => ({ merchant: c.merchant ?? "", amount_cents: c.amount_cents ?? 0, date: c.txn_date }))),
+        params: batchParams(llm.modelId, system, chunk.map((c) => ({ merchant: c.merchant ?? "", amount_cents: c.amount_cents ?? 0, date: c.txn_date, direction: c.direction as "debit" | "credit" | null }))),
       });
     }
     const batch = await llm.client.messages.batches.create({ requests });
@@ -670,9 +674,14 @@ export class TaxAgent extends Agent<Env> {
     merchant: string,
     rules: UserRule[],
     rulePack: typeof DEFAULT_RULE_PACK,
+    opts: { skipHints?: boolean } = {},
   ): { bucket: string; ato_label: string; confidence: number } | null {
     const rule = applyUserRules(merchant, rules);
     if (rule) return { bucket: rule.bucket, ato_label: rule.ato_label, confidence: 1 };
+    // Merchant hints are EXPENSE-oriented (SaaS, cloud, hardware) — never apply them to a credit
+    // line or a refund from a SaaS vendor would be mis-bucketed as a company expense. Credits get
+    // only user rules deterministically; the LLM (direction-aware) handles the rest.
+    if (opts.skipHints) return null;
     const hints = (rulePack as { merchant_hints?: { match: string; bucket: string; ato_label: string }[] }).merchant_hints;
     if (Array.isArray(hints)) {
       const m = merchant.toLowerCase();

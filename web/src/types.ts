@@ -159,6 +159,7 @@ export interface Notification {
 
 export interface DashboardData {
   by_bucket: { bucket: string; n: number; total_cents: number }[];
+  income_by_bucket: { bucket: string; n: number; total_cents: number }[];
   by_property: { property_id: string; label: string | null; n: number; total_cents: number }[];
   needs_review: number;
 }
@@ -216,6 +217,7 @@ export interface Report {
   start: string;
   end: string;
   by_bucket: { bucket: string; ato_label: string | null; n: number; total_cents: number; gst_cents: number }[];
+  income_by_bucket: { bucket: string; ato_label: string | null; n: number; total_cents: number; gst_cents: number }[];
   by_property: { property_id: string; label: string | null; n: number; total_cents: number }[];
   company_quarters: { quarter: string; total_cents: number; gst_cents: number }[];
   undated: { n: number; total_cents: number };

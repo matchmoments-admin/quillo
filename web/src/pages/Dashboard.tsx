@@ -44,6 +44,15 @@ export function Dashboard() {
         )}
       </Card>
 
+      {d.income_by_bucket.length > 0 && (
+        <Card className="divide-y divide-line">
+          <SectionTitle>Income (from bank credits)</SectionTitle>
+          {d.income_by_bucket.map((b) => (
+            <Line key={b.bucket} k={BUCKET_LABEL[b.bucket] ?? b.bucket} n={b.n} v={money(b.total_cents)} />
+          ))}
+        </Card>
+      )}
+
       <Card className="divide-y divide-line">
         <SectionTitle>By property</SectionTitle>
         {d.by_property.length ? (

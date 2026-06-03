@@ -1,4 +1,5 @@
 import type { Env } from "../env";
+import { BUCKETS } from "./taxonomy";
 
 // Situation mutations for the Settings + onboarding-web flows. These rows are not
 // hash-chained (unlike corrections/consent/audit), so they're written directly to D1.
@@ -99,6 +100,11 @@ export async function addRule(
   userId: string,
   r: { match_type?: string; pattern: string; bucket: string; ato_label: string; property_id?: string; priority?: number },
 ): Promise<string> {
+  // Reject buckets the taxonomy doesn't know — an unknown bucket would store but never match a
+  // model output, silently failing to categorise. (Previously any string was accepted.)
+  if (!(BUCKETS as readonly string[]).includes(r.bucket)) {
+    throw new Error(`unknown bucket '${r.bucket}' — must be one of: ${BUCKETS.join(", ")}`);
+  }
   const id = uid();
   await env.DB.prepare(
     `INSERT INTO user_rules (id, user_id, match_type, pattern, bucket, ato_label, property_id, priority)

@@ -8,7 +8,7 @@ import type { Txn } from "../types";
 const TABS = [
   { key: "receipts", label: "Receipts", opts: { kind: "receipt" } },
   { key: "bank_lines", label: "Bank lines", opts: { kind: "bank_line" } },
-  { key: "needs_review", label: "Needs review", opts: { status: "needs_review" } },
+  { key: "needs_review", label: "Needs review", opts: { review: true } },
 ] as const;
 
 export function Inbox() {

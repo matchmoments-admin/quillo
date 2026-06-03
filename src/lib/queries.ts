@@ -13,6 +13,14 @@ export const COUNTABLE =
   "AND (kind = 'bank_line' OR (kind = 'receipt' AND matched_txn_id IS NULL)) " +
   "AND COALESCE(direction,'debit') = 'debit'";
 
+// Rows that warrant the user's attention — defined ONCE so the Dashboard "needs review" counter
+// and the Inbox "Needs review" tab can't drift (previously the dashboard counted unknown/low-conf
+// rows the inbox tab — filtering only status='needs_review' — never surfaced, so a "882 needs
+// review" badge sat next to an empty queue).
+export const NEEDS_REVIEW =
+  "status NOT IN ('duplicate','ignored','matched_receipt') " +
+  "AND (status IN ('needs_review','needs_extraction','blocked_consent') OR bucket = 'unknown' OR confidence < 0.85)";
+
 export interface TxnRow {
   id: string;
   source: string;
@@ -52,7 +60,7 @@ const TXN_COLS =
 export async function listTransactions(
   env: Env,
   userId: string,
-  opts: { status?: string; bucket?: string; kind?: string; limit?: number; offset?: number } = {},
+  opts: { status?: string; bucket?: string; kind?: string; review?: boolean; limit?: number; offset?: number } = {},
 ): Promise<TxnRow[]> {
   const where: string[] = ["user_id = ?"];
   const binds: unknown[] = [userId];
@@ -68,6 +76,8 @@ export async function listTransactions(
     where.push("kind = ?");
     binds.push(opts.kind);
   }
+  // "Needs review" queue: the SAME predicate the dashboard counts, so the badge and the list agree.
+  if (opts.review) where.push(`(${NEEDS_REVIEW})`);
   // Matched receipts are evidence on a bank line — shown in Reconcile, not the review inbox.
   where.push("status != 'matched_receipt'");
   const limit = Math.min(Math.max(opts.limit ?? 50, 1), 500);
@@ -349,9 +359,7 @@ export async function dashboard(env: Env, userId: string) {
     .bind(userId)
     .all();
   const needsReview = await env.DB.prepare(
-    `SELECT COUNT(*) AS n FROM transactions
-      WHERE user_id = ? AND status NOT IN ('duplicate','ignored','matched_receipt')
-        AND (status IN ('needs_review','needs_extraction','blocked_consent') OR bucket = 'unknown' OR confidence < 0.85)`,
+    `SELECT COUNT(*) AS n FROM transactions WHERE user_id = ? AND ${NEEDS_REVIEW}`,
   )
     .bind(userId)
     .first<{ n: number }>();

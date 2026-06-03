@@ -51,10 +51,16 @@ export function Reports() {
 
           <Card className="grid grid-cols-2 gap-4 p-4 sm:grid-cols-4">
             <Stat label="Total income" value={money(data!.total_income_cents)} />
-            <Stat label="Deductions" value={money(data!.total_deductions_cents)} />
+            {/* This is captured spend in deductible-context buckets, NOT a confirmed claimable
+                figure — deductibility is decided at year-end review (see the caveat below). */}
+            <Stat label="Tracked spend (pending review)" value={money(data!.total_deductions_cents)} />
             <Stat label="Depreciation" value={money(data!.depreciation_cents)} />
             <Stat label="Indicative position" value={money(data!.taxable_position_cents)} />
           </Card>
+          <p className="px-1 text-xs text-muted">
+            "Tracked spend" is what you've captured in deductible-context buckets — not a claimable amount.
+            Deductibility is finalised in your year-end review with your registered tax agent.
+          </p>
 
           {(data!.income.franking_credit_cents > 0 || data!.income.foreign_tax_paid_cents > 0) && (
             <Card className="grid grid-cols-2 gap-4 p-4 sm:grid-cols-3">

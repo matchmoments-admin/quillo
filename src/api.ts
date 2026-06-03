@@ -67,6 +67,7 @@ export async function handleApi(
       status: url.searchParams.get("status") ?? undefined,
       bucket: url.searchParams.get("bucket") ?? undefined,
       kind: url.searchParams.get("kind") ?? undefined,
+      review: url.searchParams.get("review") === "1" || undefined,
       limit: Number(url.searchParams.get("limit")) || undefined,
       offset: Number(url.searchParams.get("offset")) || undefined,
     });

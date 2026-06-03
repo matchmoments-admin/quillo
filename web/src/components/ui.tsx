@@ -12,6 +12,7 @@ export const BUCKET_LABEL: Record<string, string> = {
   income_property: "Income · rent",
   income_personal: "Income · personal",
   refund: "Refund",
+  asset: "Asset · capital",
   unknown: "Unknown",
 };
 

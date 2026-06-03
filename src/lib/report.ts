@@ -198,7 +198,11 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   // 'unknown'-bucket spend is not a sanctioned deduction — exclude it from the indicative position.
   // NOTE: total_deductions_cents is CAPTURED tracked spend (pending review), not a claimable figure
   // — deductibility is resolved at year-end review (the UI labels it "tracked spend").
-  const total_deductions_cents = rows.filter((b) => b.bucket !== "unknown").reduce((s, b) => s + (b.total_cents ?? 0), 0);
+  // Exclude 'unknown' (unsanctioned) and 'asset' (capital — it depreciates via the assets table,
+  // counting it as spend would double-count against decline-in-value).
+  const total_deductions_cents = rows
+    .filter((b) => b.bucket !== "unknown" && b.bucket !== "asset")
+    .reduce((s, b) => s + (b.total_cents ?? 0), 0);
   const taxable_position_cents = income.gross_cents - total_deductions_cents - dep.total_cents;
 
   // Resolved-deductible: only spend a year-end review has CONFIRMED deductible (deductibility set

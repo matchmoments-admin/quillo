@@ -21,6 +21,7 @@ export const BUCKETS = [
   "income_property",
   "income_personal",
   "refund",
+  "asset",
   "unknown",
 ] as const;
 export type Bucket = (typeof BUCKETS)[number];

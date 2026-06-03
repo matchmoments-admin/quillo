@@ -173,6 +173,15 @@ export class TaxAgent extends Agent<Env> {
       throw new Error("This account is reconciled from the QuickBooks feed — don't import statements for it (would double-count).");
     }
 
+    // APP-8 cross-border consent gate — parsing a statement sends the user's financial data to
+    // the US inference API (a cross-border disclosure), so it needs recorded consent just like
+    // every other anthropic model path. Bedrock/AU residency does not. Gate BEFORE storing the
+    // file or any work (mirrors the receipt/inbox paths) so a refusal leaves nothing orphaned in
+    // R2; the API layer maps consent_required to a 403.
+    const profile = await this.requireProfile(userId);
+    const provider = profile.inference_provider ?? this.env.DEFAULT_INFERENCE_PROVIDER;
+    if (provider === "anthropic" && profile.consent_xborder !== 1) throw new Error("consent_required");
+
     const fileHash = await sha256hexBytes(bytes);
     const existing = await this.env.DB.prepare(`SELECT id FROM statements WHERE user_id = ? AND file_hash = ?`)
       .bind(userId, fileHash)
@@ -185,7 +194,6 @@ export class TaxAgent extends Agent<Env> {
     const fileKey = `${userId}/statements/${statementId}`;
     await this.env.RECEIPTS.put(fileKey, bytes, { httpMetadata: { contentType: format === "pdf" ? "application/pdf" : "text/csv" } });
 
-    const profile = await this.requireProfile(userId);
     const llm = await getLLM(this.env, profile, { userId });
 
     let lines: StatementLine[];
@@ -231,6 +239,17 @@ export class TaxAgent extends Agent<Env> {
       lines = applyColumnMap(rows, columnMap);
       const bal = deriveBalances(lines);
       recon = reconcileStatement(lines, bal?.opening_cents ?? null, bal?.closing_cents ?? null);
+    }
+
+    // Zero lines means the extractor found no transaction table (unrecognised layout, scanned
+    // image with no text, wrong file). Surface that as a clear "unreadable" error rather than
+    // storing a phantom 0-row statement the user can pointlessly "confirm".
+    if (lines.length === 0) {
+      throw new Error(
+        format === "pdf"
+          ? "couldn't read any transactions from this PDF — it may be a scan/unusual layout; try a CSV export instead"
+          : "couldn't read any transactions from this CSV — check it's a transaction export (not a summary)",
+      );
     }
 
     // Store the normalised lines beside the raw file so confirmImport never re-extracts.
@@ -622,7 +641,7 @@ export class TaxAgent extends Agent<Env> {
 
   /** Map a Claude-extracted PDF statement to the shared StatementLine shape. */
   private pdfLines(ext: ExtractedStatement): StatementLine[] {
-    return ext.lines.map((l) => ({
+    return (ext.lines ?? []).map((l) => ({
       date: l.date,
       amount_cents: Math.abs(l.amount_cents),
       direction: l.direction === "credit" ? "credit" : "debit",

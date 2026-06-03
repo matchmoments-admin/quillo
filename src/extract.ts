@@ -125,12 +125,27 @@ async function runRecordReceipt(
 }
 
 // ── PDF statement extraction (Claude document → structured lines + balances) ───
-export interface ExtractedStatement {
-  lines: { date: string | null; description: string; amount_cents: number; direction: "debit" | "credit"; balance_cents: number | null }[];
-  opening_cents: number | null;
-  closing_cents: number | null;
-  currency: string;
-}
+// Validate the model's tool input with Zod (like every other extractor) rather than blind-
+// casting: a credit-card PDF with no balance column / an unfamiliar table shape can make
+// Haiku emit a malformed or empty tool call, and an unchecked `input as ExtractedStatement`
+// then crashes downstream (`ext.lines.map` on undefined) as an uncaught Worker exception.
+export const ExtractedStatementSchema = z.object({
+  lines: z
+    .array(
+      z.object({
+        date: z.string().nullable().default(null),
+        description: z.string().default(""),
+        amount_cents: z.number().int(),
+        direction: z.enum(["debit", "credit"]),
+        balance_cents: z.number().int().nullable().default(null),
+      }),
+    )
+    .default([]),
+  opening_cents: z.number().int().nullable().default(null),
+  closing_cents: z.number().int().nullable().default(null),
+  currency: z.string().default("AUD"),
+});
+export type ExtractedStatement = z.infer<typeof ExtractedStatementSchema>;
 
 const STATEMENT_TOOL: Anthropic.Tool = {
   name: "record_statement",
@@ -165,24 +180,34 @@ const STATEMENT_TOOL: Anthropic.Tool = {
 
 /** Extract a full statement from a PDF (or image) via Claude document input. */
 export async function extractStatement(llm: LLM, bytes: ArrayBuffer, mime: string): Promise<ExtractedStatement> {
-  const msg = await llm.create({
-    model: llm.modelId,
-    max_tokens: 8192,
-    tools: [STATEMENT_TOOL],
-    tool_choice: { type: "tool", name: STATEMENT_TOOL.name },
-    messages: [
-      {
-        role: "user",
-        content: [
-          receiptBlock(bytes, mime),
-          { type: "text", text: "Transcribe EVERY transaction from this statement (across all pages) plus the opening and closing balances. Call record_statement once." },
-        ],
-      },
-    ],
-  }, "statement_pdf");
+  let msg: Anthropic.Message;
+  try {
+    msg = await llm.create({
+      model: llm.modelId,
+      max_tokens: 8192,
+      tools: [STATEMENT_TOOL],
+      tool_choice: { type: "tool", name: STATEMENT_TOOL.name },
+      messages: [
+        {
+          role: "user",
+          content: [
+            receiptBlock(bytes, mime),
+            { type: "text", text: "Transcribe EVERY transaction from this statement (across all pages) plus the opening and closing balances. Call record_statement once." },
+          ],
+        },
+      ],
+    }, "statement_pdf");
+  } catch (e) {
+    // Translate Anthropic API failures (PDF too large/unsupported, rate-limit, overload) into
+    // a message the upload UI can show, instead of letting the SDK error bubble as a 1101.
+    const status = (e as { status?: number }).status;
+    throw new Error(`couldn't read this PDF statement${status ? ` (inference error ${status})` : ""} — try a CSV export, or a clearer/smaller PDF`);
+  }
   const toolUse = msg.content.find((c): c is Anthropic.ToolUseBlock => c.type === "tool_use" && c.name === STATEMENT_TOOL.name);
-  if (!toolUse) throw new Error("model did not return a statement");
-  return toolUse.input as ExtractedStatement;
+  if (!toolUse) throw new Error("couldn't read the transaction table from this PDF — try a CSV export instead");
+  const result = ExtractedStatementSchema.safeParse(toolUse.input);
+  if (!result.success) throw new Error("couldn't read the transaction table from this PDF — the layout wasn't recognised; try a CSV export instead");
+  return result.data;
 }
 
 // ── Statement CSV column mapping (one cheap Claude call per file) ──────────────

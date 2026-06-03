@@ -1,5 +1,6 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { api } from "../api";
 import { Button, Card, Spinner, money } from "../components/ui";
 import type { Account, StatementInfo, StatementParse } from "../types";
@@ -26,6 +27,26 @@ export function Accounts() {
     queryFn: () => api.statements(),
     refetchInterval: (q) => ((q.state.data ?? []).some((s) => s.status === "categorising") ? 5000 : false),
   });
+  // Toast when a statement finishes background categorisation (categorising → imported), so the
+  // user gets closure even if they've navigated away from the upload. Seed the prior-status map
+  // on first load so already-imported statements don't fire a stale toast on mount.
+  const prevStatus = useRef<Map<string, string>>(new Map());
+  const seeded = useRef(false);
+  useEffect(() => {
+    if (!statements) return;
+    if (seeded.current) {
+      for (const s of statements) {
+        if (prevStatus.current.get(s.id) === "categorising" && s.status === "imported") {
+          const n = s.categorised_count ?? s.total_lines ?? s.imported_count;
+          toast.success("Categorisation complete", {
+            description: `${s.filename ?? "Statement"} — ${n != null ? `${n} ` : ""}transactions categorised.`,
+          });
+        }
+      }
+    }
+    prevStatus.current = new Map(statements.map((s) => [s.id, s.status]));
+    seeded.current = true;
+  }, [statements]);
   const sync = useMutation({
     mutationFn: () => api.syncQboAccounts(),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["accounts"] }),
@@ -136,7 +157,10 @@ function AccountRow({ account, statements }: { account: Account; statements: Sta
         setParse(p);
       }
     },
-    onError: (e) => setNote(`Couldn't read: ${(e as Error).message}`),
+    onError: (e) => {
+      setNote(`Couldn't read: ${(e as Error).message}`);
+      toast.error(`Couldn't read ${account.name}'s statement`, { description: (e as Error).message });
+    },
   });
 
   const doConfirm = useMutation({
@@ -147,8 +171,14 @@ function AccountRow({ account, statements }: { account: Account; statements: Sta
       invalidate();
       qc.invalidateQueries({ queryKey: ["transactions"] });
       qc.invalidateQueries({ queryKey: ["dashboard"] });
+      toast.success(`Imported ${r.imported} transaction(s)`, {
+        description: "Categorising in the background — you can keep working or upload another statement.",
+      });
     },
-    onError: (e) => setNote(`Import failed: ${(e as Error).message}`),
+    onError: (e) => {
+      setNote(`Import failed: ${(e as Error).message}`);
+      toast.error("Import failed", { description: (e as Error).message });
+    },
   });
 
   const setSource = useMutation({
@@ -185,6 +215,7 @@ function AccountRow({ account, statements }: { account: Account; statements: Sta
                 {statements.map((s) => (
                   <span key={s.id} className={s.status === "failed" ? "text-danger" : s.status === "categorising" ? "text-warn" : ""}>
                     {s.filename ?? s.format ?? "statement"}: {STATUS_LABEL[s.status] ?? s.status}
+                    {s.status === "categorising" && s.total_lines ? ` ${s.categorised_count ?? 0} / ${s.total_lines}` : ""}
                     {s.status === "imported" && s.imported_count != null ? ` (${s.imported_count})` : ""}
                   </span>
                 ))}

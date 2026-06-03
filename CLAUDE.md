@@ -1,0 +1,59 @@
+# CLAUDE.md — Quillo (tax-agent) working agreement
+
+> How Claude Code should work in this repo. The build spec for the v2 feature work lives in
+> the commit history / `/Users/brendanmilton/.claude/plans/`. This file is the **operating
+> manual**: orientation + the ship workflow. Keep it short; link out, don't inline.
+
+## What this is
+Quillo is an Australian tax-evidence assistant on **Cloudflare**: a Worker (`src/`) + a
+per-tenant `TaxAgent` Durable Object, D1 (`tax-agent-db`), R2 (`tax-agent-receipts`), KV
+(`RULES`), and a React/Vite SPA (`web/`) served by the same Worker. It captures receipts,
+bank lines, income, assets/depreciation and documents; categorises with Claude; and produces
+a tax-position report. **General information only — never tax advice.**
+
+## Commands
+- `npm run typecheck` — server (tsc). `npm --prefix web exec tsc -- --noEmit` — SPA.
+- `npm test` — unit goldens (`scripts/check-units.ts`) + statement reconciliation. `npm run test:units` for just units.
+- `npm run eval` / `npm run eval:gate` — promptfoo categorisation eval (this is what CI runs: `.github/workflows/evals.yml`).
+- `npm run web:build` — build the SPA. `npm run deploy` (`wrangler deploy`) — deploy the Worker.
+- Migrations: `npx wrangler d1 execute tax-agent-db --remote --file=migrations/NNNN_x.sql` (in order).
+- `npm run rulepack:push` — push `src/rulepacks/au-v1.json` to KV `rulepack:au-v1` (**do this whenever the rule pack changes** — KV shadows the bundled default).
+
+## Non-negotiable invariants
+- **Multi-tenant**: every table has `user_id`; identity is derived server-side (verified HMAC key / Clerk / mailbox), **never** a client header.
+- **One canonical money source per account** (QBO feed XOR statement) — never double-count. QBO is reader/reconciler; never auto-post what a feed already provides.
+- **APP-8 consent gate**: any US/`anthropic` inference on personal data needs recorded consent; the gate runs **before** any model call. Bedrock/AU is the residency path.
+- **Migrations are additive + apply-once**: `CREATE TABLE/INDEX IF NOT EXISTS`, `ALTER TABLE ADD COLUMN`, idempotent backfills (`INSERT OR IGNORE`, guarded `UPDATE`). New migrations continue the `00NN_` sequence; keep `schema.sql` in lockstep.
+- **GENERAL-INFO framing** on every suggestion; `defer_to_agent` rules say "confirm with a registered tax agent"; never predict a refund amount.
+- **Local runtime is deploy-only** (macOS 12.6 can't run workerd) — verify via typecheck + `npm test`, then deploy to test live.
+
+---
+
+## Ship workflow — default to shipping (the autonomy contract)
+
+**When a unit of work is complete and green, drive it all the way to production without
+pausing for step-by-step approval.** The owner wants to test working changes in prod, not
+babysit branching. Do the due diligence below, then ship.
+
+### The loop (run end-to-end, autonomously)
+1. **Branch** off `main` for anything non-trivial: `git checkout main && git pull --ff-only && git checkout -b <scope>/<short-name>`. (Trivial one-line fixes may go straight on a branch too — just never commit on `main`.)
+2. **Build green** — `npm run typecheck` + web tsc + `npm test`. All must pass before going further. If a change touches the rule pack, also reason about the eval gate.
+3. **Quick review, proportional to risk** — read your own diff; for anything touching **money/tax math, migrations, auth, or the ingest/report path**, run `/code-review` (high effort, like the v2 pass). For small UI/copy/config, a self-read is enough.
+4. **Fix confirmed findings** in the same branch; re-run the gates. Note genuinely low/edge deferrals in the PR body rather than fixing everything.
+5. **Commit** — explicit, descriptive message (WHY, not just what), end with the `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>` trailer. Prefer staging the specific files you changed.
+6. **Push + open a PR** — `git push -u origin <branch>` then `gh pr create --base main`. PR body: what changed, migrations touched + whether applied, the review verdict, and any deferred items.
+7. **Migrate** — apply new migrations to remote D1 **in order**, then verify (`SELECT name FROM sqlite_master …`, spot-check a backfill). Migrations must be additive/idempotent.
+8. **Merge** — `gh pr merge --squash --delete-branch` (or a fast-forward merge to `main`), then push `main`.
+9. **Deploy** — `npm run web:build && npm run deploy`; push the rule pack to KV if it changed; `curl -s https://app.quillo.au/healthz` and smoke-test the touched surface.
+10. **Report** — a tight summary: what shipped, what's live (note the single-user Clerk gate + APP-8 consent), migrations applied, review findings fixed/deferred, and any follow-ups.
+
+CI (`evals.yml`) runs the categorisation eval on PRs — it's a signal, not a deploy gate (deploys are manual via wrangler). Don't block a merge on an unrelated pre-existing eval drift; flag it instead.
+
+### When to STOP and ask (do not auto-ship)
+- A migration is **destructive or non-additive** (DROP/rename/data rewrite) — needs an explicit go + a reverse plan.
+- The change would alter **money/tax outputs** in a way that's a genuine product/judgement call, not a clear bug fix.
+- A review finding is real but the **fix is ambiguous** or trades off behaviour the owner should choose.
+- An **outward-facing action beyond deploy** (emailing users, public marketing/landing changes, anything touching the waitlist or third-party registrations).
+- A **due-diligence gate fails** and you can't resolve it cleanly.
+
+In those cases, surface the decision crisply (use AskUserQuestion for real forks) and hold. Otherwise: ship, then tell me what you did.

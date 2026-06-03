@@ -48,7 +48,8 @@ export interface Report {
   depreciation_cents: number;
   per_property: PropertyPosition[];
   total_income_cents: number;
-  total_deductions_cents: number;      // all countable deductions this FY
+  total_deductions_cents: number;      // CAPTURED tracked spend this FY (pending review — NOT claimable yet)
+  resolved_deductible_cents: number;   // spend a year-end review has CONFIRMED deductible (~0 until review)
   taxable_position_cents: number;      // total_income − total_deductions − depreciation (indicative)
 }
 
@@ -195,8 +196,23 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   });
 
   // 'unknown'-bucket spend is not a sanctioned deduction — exclude it from the indicative position.
+  // NOTE: total_deductions_cents is CAPTURED tracked spend (pending review), not a claimable figure
+  // — deductibility is resolved at year-end review (the UI labels it "tracked spend").
   const total_deductions_cents = rows.filter((b) => b.bucket !== "unknown").reduce((s, b) => s + (b.total_cents ?? 0), 0);
   const taxable_position_cents = income.gross_cents - total_deductions_cents - dep.total_cents;
+
+  // Resolved-deductible: only spend a year-end review has CONFIRMED deductible (deductibility set
+  // to a resolved state, with the apportioned amount when present). ~$0 until a review runs — by
+  // design: mid-year we capture, we don't claim.
+  const resolved = await env.DB.prepare(
+    `SELECT COALESCE(SUM(COALESCE(deductible_amount_cents, amount_aud_cents, amount_cents)),0) AS total
+       FROM transactions
+      WHERE user_id = ? AND txn_date >= ? AND txn_date <= ? AND ${COUNTABLE}
+        AND deductibility IN ('likely_deductible','confirmed_deductible')`,
+  )
+    .bind(userId, start, end)
+    .first<{ total: number }>();
+  const resolved_deductible_cents = resolved?.total ?? 0;
 
   return {
     fy: `${startYear}-${String((startYear + 1) % 100).padStart(2, "0")}`,
@@ -215,6 +231,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
     per_property,
     total_income_cents: income.gross_cents,
     total_deductions_cents,
+    resolved_deductible_cents,
     taxable_position_cents,
   };
 }

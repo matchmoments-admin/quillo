@@ -59,7 +59,9 @@ export function Reports() {
           </Card>
           <p className="px-1 text-xs text-muted">
             "Tracked spend" is what you've captured in deductible-context buckets — not a claimable amount.
-            Deductibility is finalised in your year-end review with your registered tax agent.
+            Deductibility is finalised in your year-end review with your registered tax agent. Confirmed
+            deductible so far: <span className="font-medium text-ink">{money(data!.resolved_deductible_cents)}</span>
+            {data!.resolved_deductible_cents === 0 ? " (no review run yet)." : "."}
           </p>
 
           {(data!.income.franking_credit_cents > 0 || data!.income.foreign_tax_paid_cents > 0) && (

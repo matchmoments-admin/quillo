@@ -83,6 +83,9 @@ CREATE TABLE IF NOT EXISTS transactions (
   is_capital   INTEGER DEFAULT 0,        -- capital vs immediate repair/maintenance
   asset_id     TEXT,                     -- FK assets.id if this receipt created an asset
   capital_class TEXT,                    -- repair|div40|div43|initial_repair
+  -- 0011: deductibility is DEFERRED to year-end review — captured/bucketed mid-year, resolved once.
+  deductibility TEXT DEFAULT 'undetermined', -- undetermined|likely_deductible|likely_not|needs_apportionment|confirmed_deductible|confirmed_not
+  deductible_amount_cents INTEGER,       -- apportioned claimable amount (cents), resolved at review; NULL until then
   created_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_txn_imghash ON transactions(user_id, image_hash);

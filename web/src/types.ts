@@ -230,6 +230,40 @@ export interface Report {
   taxable_position_cents: number;
 }
 
+// Mirror of FilingReadiness in src/lib/readiness.ts — keep in sync.
+export interface ReadinessFinding {
+  id: string;
+  category: string;
+  severity: "blocker" | "review" | "info";
+  title: string;
+  general_info_note: string;
+  defer_to_agent: boolean;
+  evidence_refs: { kind: string; id?: string; label?: string; count?: number }[];
+}
+export interface PositionLine {
+  group: "income" | "deduction" | "depreciation" | "property";
+  label: string;
+  amount_cents: number;
+  basis: string;
+  why: string;
+}
+export interface FilingReadiness {
+  fy: string;
+  generated_at: string;
+  position: {
+    indicative_taxable_position_cents: number;
+    caption: string;
+    lines: PositionLine[];
+    credits: { withholding_cents: number; franking_credit_cents: number; foreign_tax_paid_cents: number; gst_credits_cents: number };
+    per_property: PropertyPosition[];
+  };
+  findings: ReadinessFinding[];
+  handoff: { abn: string | null; situation_summary: string };
+  readiness_score: { blockers: number; review: number; info: number; ready: boolean };
+  narrative: { position_plain_english: string; accountant_notes: string[] } | null;
+  disclaimer: string;
+}
+
 export interface IncomeRow {
   id: string;
   person_id: string | null;

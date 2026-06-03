@@ -54,6 +54,7 @@ export interface TaxAgentRpc {
   disposeAsset(userId: string, assetId: string, disposedDate: string, disposalValueCents: number): Promise<{ balancing_adjustment_cents: number }>;
   importDepreciationSchedule(userId: string, docId: string, bytes: ArrayBuffer, mime: string): Promise<{ created: number }>;
   generateChecklist(userId: string, fy?: string): Promise<{ items: number }>;
+  assessFilingReadiness(userId: string, startYear: number): Promise<import("./lib/readiness").FilingReadiness>;
   setChecklistStatus(userId: string, id: string, status: string): Promise<void>;
   setClaimStatus(userId: string, id: string, status: string): Promise<void>;
   computeCgt(userId: string, propertyId: string): Promise<import("./lib/cgt").CgtResult & { property_id: string }>;

@@ -329,5 +329,77 @@ console.log("cgt");
   check("foreign resident → no discount", !foreign.discount_applied && foreign.net_gain_cents === 20_000_000);
 }
 
+// ── FILING READINESS: deterministic engine + the no-tax-advice invariant ──────
+import { assessReadiness, type FilingReadinessSignals } from "../src/lib/readiness";
+import type { Report } from "../src/lib/report";
+import type { Situation } from "../src/lib/db";
+
+console.log("readiness");
+{
+  const mkReport = (p: Partial<Report> = {}): Report => ({
+    fy: "2025-26", start: "2025-07-01", end: "2026-06-30",
+    by_bucket: [], by_property: [], company_quarters: [],
+    undated: { n: 0, total_cents: 0 }, undated_detail: [], abn: null, gst_credits_cents: 0,
+    income: { by_type: [], gross_cents: 0, withholding_cents: 0, franking_credit_cents: 0, foreign_tax_paid_cents: 0 },
+    depreciation_cents: 0, per_property: [], total_income_cents: 0, total_deductions_cents: 0, taxable_position_cents: 0,
+    ...p,
+  });
+  const mkSituation = (p: Partial<Situation> = {}): Situation => ({
+    profile: {} as Situation["profile"], persons: [], properties: [], entities: [], rules: [], ...p,
+  });
+  const noSignals = (p: Partial<FilingReadinessSignals> = {}): FilingReadinessSignals => ({
+    unknownBucketCents: 0, unknownBucketN: 0, lowConfidenceN: 0, needsReviewIncomeN: 0, needsReviewAssetsN: 0,
+    hasDividendStatementDoc: true, rentalPropsMissingSummary: [], disposedAssetsN: 0,
+    instantAssetWriteOffCentsThisFy: null, instantAssetWriteOffCentsPrevFy: null, ...p,
+  });
+  const run = (r: Report, sig: FilingReadinessSignals, claimMatches: ClaimRule[] = [], sit = mkSituation()) =>
+    assessReadiness({ report: r, situation: sit, claimMatches, signals: sig, generatedAt: "2026-06-03T00:00:00Z" });
+
+  // Clean PAYG-only return → ready, zero findings, position mirrors the report exactly.
+  const clean = run(mkReport({ income: { by_type: [{ income_type: "salary_payg", n: 1, gross_cents: 9_000_000, net_cents: 7_000_000, withholding_cents: 2_000_000, franking_credit_cents: 0, foreign_tax_paid_cents: 0 }], gross_cents: 9_000_000, withholding_cents: 2_000_000, franking_credit_cents: 0, foreign_tax_paid_cents: 0 }, total_income_cents: 9_000_000, taxable_position_cents: 9_000_000 }), noSignals());
+  check("clean PAYG → ready, no findings", clean.readiness_score.ready && clean.findings.length === 0);
+  check("position mirrors report taxable position", clean.position.indicative_taxable_position_cents === 9_000_000);
+
+  // Unknown-bucket spend → review finding.
+  const unknown = run(mkReport({ by_bucket: [{ bucket: "unknown", ato_label: null, n: 3, total_cents: 50_000, gst_cents: 0 }] }), noSignals({ unknownBucketN: 3, unknownBucketCents: 50_000 }));
+  check("unknown bucket → review finding", unknown.findings.some((f) => f.id === "unknown_bucket" && f.severity === "review"));
+
+  // Franking credits but no dividend statement on file → review finding.
+  const franking = run(mkReport({ income: { by_type: [], gross_cents: 0, withholding_cents: 0, franking_credit_cents: 30_000, foreign_tax_paid_cents: 0 } }), noSignals({ hasDividendStatementDoc: false }));
+  check("franking + no doc → finding", franking.findings.some((f) => f.id === "franking_no_doc"));
+
+  // Rental income but no agent summary doc → review finding (+ no-depreciation info finding).
+  const rental = run(mkReport({ per_property: [{ property_id: "p1", label: "Unit 1", income_cents: 2_000_000, deduction_cents: 100_000, depreciation_cents: 0, net_cents: 1_900_000 }] }), noSignals({ rentalPropsMissingSummary: [{ property_id: "p1", label: "Unit 1" }] }));
+  check("rental income + no agent summary → finding", rental.findings.some((f) => f.id === "rental_no_summary:p1"));
+  check("rental income + no depreciation → info finding", rental.findings.some((f) => f.id === "no_depreciation:p1" && f.severity === "info"));
+
+  // IAWO threshold change → info + defer.
+  const iawo = run(mkReport(), noSignals({ instantAssetWriteOffCentsThisFy: 10_000_000, instantAssetWriteOffCentsPrevFy: 200_000_000 }));
+  check("IAWO threshold change → defer finding", iawo.findings.some((f) => f.id === "iawo_threshold_changed" && f.defer_to_agent));
+  // Same threshold → no finding.
+  check("IAWO unchanged → no finding", !run(mkReport(), noSignals({ instantAssetWriteOffCentsThisFy: 200_000_000, instantAssetWriteOffCentsPrevFy: 200_000_000 })).findings.some((f) => f.id === "iawo_threshold_changed"));
+
+  // Disposed asset → review + defer.
+  const disposed = run(mkReport(), noSignals({ disposedAssetsN: 1 }));
+  check("disposed asset → defer review finding", disposed.findings.some((f) => f.id === "disposed_assets" && f.defer_to_agent && f.severity === "review"));
+
+  // Defer-to-agent claim rule passthrough → judgement finding using the rule's note verbatim.
+  const deferRule: ClaimRule = { scope_type: "property_status", scope_value: "vacant", claim_type: "apportioned", general_info_note: "Holding costs are only deductible while genuinely available for rent.", defer_to_agent: 1 };
+  const judged = run(mkReport(), noSignals(), [deferRule]);
+  check("defer claim rule → judgement finding", judged.findings.some((f) => f.category === "judgement" && f.general_info_note.includes("registered tax agent")));
+  // Non-defer rule → NOT surfaced as a judgement finding (avoid noise).
+  check("non-defer rule → no judgement finding", run(mkReport(), noSignals(), [{ ...deferRule, defer_to_agent: 0 }]).findings.length === 0);
+
+  // THE INVARIANT: no generated finding/position text asserts tax payable, a refund, or a rate.
+  // (The fixed position caption intentionally NEGATES those words and is excluded — it's a vetted constant.)
+  const denylist = /refund|tax payable|marginal rate|\b\d{1,2}%\s*(tax|bracket)/i;
+  const everything = [unknown, franking, rental, iawo, disposed, judged, clean];
+  const generatedText = everything.flatMap((r) => [
+    ...r.findings.flatMap((f) => [f.title, f.general_info_note]),
+    ...r.position.lines.flatMap((l) => [l.basis, l.why]),
+  ]);
+  check("no generated text predicts tax payable / refund / rate", !generatedText.some((t) => denylist.test(t)));
+}
+
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);
 process.exit(fail === 0 ? 0 : 1);

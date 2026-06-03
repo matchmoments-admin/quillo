@@ -474,5 +474,11 @@ export async function handleApi(
     return json(rep);
   }
 
+  // ── Filing readiness (capstone) ───────────────────────────────────────────
+  if (resource === "filing-readiness" && m === "GET") {
+    const fy = Number(url.searchParams.get("fy")) || currentFyStartYear();
+    return json(await stub.assessFilingReadiness(uid, fy));
+  }
+
   return json({ error: "not found" }, 404);
 }

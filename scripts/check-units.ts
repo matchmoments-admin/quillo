@@ -266,6 +266,23 @@ console.log("claimability");
   // A plain company receipt with no matching hint → no overreach.
   const plain = matchClaimRules(rules, { bucket: "company", merchant: "Random Cafe" });
   check("company cafe → no claimability overreach", plain.length === 0);
+
+  // Tenant renting their home → rent is generally NOT deductible + defer.
+  const rentHome = matchClaimRules(rules, { property_status: "renting_residence" });
+  check("renting_residence → not_deductible + defer", rentHome.some((r) => r.claim_type === "not_deductible" && r.defer_to_agent === 1));
+
+  // Tenant renting business premises (no entity) → the base business:rent rule fires; the
+  // company-gated rule does NOT (requires_entity_kind: company).
+  const rentBizNoEntity = matchClaimRules(rules, { property_status: "renting_business" });
+  check("renting_business → business:rent fires", rentBizNoEntity.some((r) => r.ato_label === "business:rent"));
+  check("renting_business without company → company:rent gate does NOT fire", !rentBizNoEntity.some((r) => r.ato_label === "company:rent"));
+
+  // Same status WITH a company entity → the requires_entity_kind gate now lets company:rent through.
+  const rentBizCompany = matchClaimRules(rules, { property_status: "renting_business", entity_kinds: ["company"] });
+  check("renting_business + company → company:rent fires", rentBizCompany.some((r) => r.ato_label === "company:rent"));
+
+  // The new gate must not regress existing rules (no requires_entity_kind ⇒ still matches).
+  check("entity gate doesn't break ungated rules", matchClaimRules(rules, { property_status: "vacant" }).length >= 1);
 }
 
 // ── CGT: cost-base, Div43 reduction, 50% discount, main-residence, losses ─────

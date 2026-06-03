@@ -130,7 +130,13 @@ export function renderSituation(s: Situation): string {
   if (s.properties.length) {
     lines.push("  - Properties (use property_id when the bucket is a property bucket):");
     for (const p of s.properties) {
-      const bucket = p.status === "rented" ? "property_rented" : p.status === "vacant" ? "property_vacant" : "payg";
+      // Tenant statuses (renting_*) → 'unknown' = HELD, deliberately NOT auto-counted as a deduction.
+      // Tenant home rent is generally private; business-premises rent is deductible only by the right
+      // entity and only the apportioned business-use portion — both need confirmation. Routing to a
+      // counted bucket (company/payg) would over-claim the gross rent or fabricate a company BAS for a
+      // sole trader. The apportioned deduction is computed in the phase-2 tax-return wizard.
+      const bucket =
+        p.status === "rented" ? "property_rented" : p.status === "vacant" ? "property_vacant" : p.status.startsWith("renting_") ? "unknown" : "payg";
       lines.push(`      · id=${p.id} "${p.label}" — ${p.status} -> ${bucket}`);
     }
   }

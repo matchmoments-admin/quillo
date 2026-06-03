@@ -1543,7 +1543,9 @@ export class TaxAgent extends Agent<Env> {
     const personId = `person_self_${userId}`;
     const hasRented = situation.properties.some((p) => p.status === "rented");
     const hasVacant = situation.properties.some((p) => p.status === "vacant");
-    const hasProperty = situation.properties.length > 0;
+    // OWNED property only — a tenant (renting_*) has no cost base, so Div 40/43 depreciation and a QS
+    // schedule don't apply to them.
+    const hasOwnedProperty = situation.properties.some((p) => !p.status.startsWith("renting_"));
     const hasCompany = situation.entities.some((e) => e.kind === "company");
     let buckets: string[] = [];
     try {
@@ -1558,7 +1560,7 @@ export class TaxAgent extends Agent<Env> {
       items.push({ item_key: "rental_eofy_summary", title: "Upload this year's agent EOFY rental summary + repair receipts", rationale: "Rent received and agent-deducted expenses come from the EOFY statement — the Smart Inbox will split it per property.", trigger_bucket: "property_rented", due_hint: "After 30 June" });
     if (hasVacant)
       items.push({ item_key: "vacant_holding_costs", title: "Confirm the vacant property was genuinely available for rent; capture holding costs", rationale: "Holding costs are only deductible while the property is genuinely available for rent. Vacant land holding costs are generally not deductible since 1 July 2019.", trigger_bucket: "property_vacant", due_hint: "Before lodging" });
-    if (hasProperty)
+    if (hasOwnedProperty)
       items.push({ item_key: "qs_dep_schedule", title: "Get a quantity-surveyor depreciation schedule if you don't have one", rationale: "A QS schedule unlocks Div 40 and Div 43 deductions that carry forward each year. Upload it from Documents to bulk-import the assets.", trigger_bucket: "property_rented", due_hint: "Anytime" });
     if (hasCompany)
       items.push({ item_key: "company_equipment_review", title: "Review company equipment to depreciate (check this FY's instant asset write-off threshold)", rationale: "Eligible assets may be written off immediately or pooled. The threshold changes yearly — confirm the current-FY figure.", trigger_bucket: "company", due_hint: "Before 30 June" });

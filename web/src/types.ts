@@ -132,7 +132,8 @@ export interface DraftEntity {
 export interface DraftProperty {
   label: string;
   address: string | null;
-  status: "rented" | "vacant" | "owner_occupied" | "sold";
+  // Mirror of PROPERTY_STATUSES (src/lib/taxonomy.ts). The onboarding extractor emits any of these.
+  status: "rented" | "vacant" | "owner_occupied" | "sold" | "renting_residence" | "renting_business";
   ownership_pct: number | null;
 }
 export interface DraftRule {

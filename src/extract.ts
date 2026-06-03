@@ -125,52 +125,69 @@ async function runRecordReceipt(
 }
 
 // ── PDF statement extraction (Claude document → structured lines + balances) ───
-// Validate the model's tool input with Zod (like every other extractor) rather than blind-
-// casting: a credit-card PDF with no balance column / an unfamiliar table shape can make
-// Haiku emit a malformed or empty tool call, and an unchecked `input as ExtractedStatement`
-// then crashes downstream (`ext.lines.map` on undefined) as an uncaught Worker exception.
-export const ExtractedStatementSchema = z.object({
+// The model returns each amount as a NATURAL DOLLAR value (exactly as printed) plus a semantic
+// debit/credit direction — far more reliable over ~150 lines than asking it to pre-multiply to
+// integer cents (a frequent slip — it would emit 19.28 and fail an int() schema, rejecting the
+// whole statement). We convert to absolute cents + sign ourselves. Zod validates and is lenient
+// (coerce numbers, normalise the direction word, default odd rows) so one bad row never kills
+// the import; the cents-based shape below is what the rest of the pipeline consumes.
+export interface ExtractedStatement {
+  lines: { date: string | null; description: string; amount_cents: number; direction: "debit" | "credit"; balance_cents: number | null }[];
+  opening_cents: number | null;
+  closing_cents: number | null;
+  currency: string;
+}
+
+const DIRECTION_WORDS: Record<string, "debit" | "credit"> = {
+  debit: "debit", dr: "debit", d: "debit", charge: "debit", purchase: "debit", out: "debit", withdrawal: "debit",
+  credit: "credit", cr: "credit", c: "credit", payment: "credit", refund: "credit", in: "credit", deposit: "credit",
+};
+
+// Dollar-denominated tool input the model fills; converted to the cents ExtractedStatement above.
+const StatementToolInput = z.object({
   lines: z
     .array(
       z.object({
         date: z.string().nullable().default(null),
         description: z.string().default(""),
-        amount_cents: z.number().int(),
-        direction: z.enum(["debit", "credit"]),
-        balance_cents: z.number().int().nullable().default(null),
+        amount: z.coerce.number(), // dollars as printed, absolute
+        direction: z.preprocess(
+          (v) => (typeof v === "string" ? (DIRECTION_WORDS[v.trim().toLowerCase()] ?? v.trim().toLowerCase()) : v),
+          z.enum(["debit", "credit"]).catch("debit"),
+        ),
+        balance: z.coerce.number().nullable().default(null), // running balance in dollars, or null
       }),
     )
     .default([]),
-  opening_cents: z.number().int().nullable().default(null),
-  closing_cents: z.number().int().nullable().default(null),
+  opening_balance: z.coerce.number().nullable().default(null),
+  closing_balance: z.coerce.number().nullable().default(null),
   currency: z.string().default("AUD"),
 });
-export type ExtractedStatement = z.infer<typeof ExtractedStatementSchema>;
 
 const STATEMENT_TOOL: Anthropic.Tool = {
   name: "record_statement",
-  description: "Record EVERY transaction line from a bank/credit-card statement, plus the opening and closing balances, so the import can be reconciled.",
+  description: "Record EVERY dated money transaction from a bank/credit-card statement, plus the opening and closing balances, so the import can be reconciled.",
   input_schema: {
     type: "object",
     additionalProperties: false,
-    required: ["lines", "opening_cents", "closing_cents", "currency"],
+    required: ["lines", "opening_balance", "closing_balance", "currency"],
     properties: {
-      opening_cents: { type: ["integer", "null"], description: "Opening balance in cents (start of the statement period)." },
-      closing_cents: { type: ["integer", "null"], description: "Closing balance in cents (end of the statement period)." },
+      opening_balance: { type: ["number", "null"], description: "Opening balance in DOLLARS (start of the statement period) as printed in the summary, or null if not shown." },
+      closing_balance: { type: ["number", "null"], description: "Closing balance in DOLLARS (end of the statement period) as printed in the summary, or null if not shown." },
       currency: { type: "string", description: "ISO-4217 currency of the statement (usually AUD)." },
       lines: {
         type: "array",
-        description: "Every transaction line, in statement order. Do NOT skip, merge or invent rows — completeness matters (it is reconciled against the balances).",
+        description: "Every dated money transaction, in statement order. Do NOT skip, merge or invent rows — completeness matters (it is reconciled against the balances). EXCLUDE rewards/points lines, any 'regular payments' summary list, interest-rate summary rows, and marketing text.",
         items: {
           type: "object",
           additionalProperties: false,
-          required: ["date", "description", "amount_cents", "direction", "balance_cents"],
+          required: ["date", "description", "amount", "direction", "balance"],
           properties: {
             date: { type: ["string", "null"], description: "ISO date YYYY-MM-DD, or null if not shown." },
             description: { type: "string", description: "Transaction description / narrative as printed." },
-            amount_cents: { type: "integer", description: "Absolute amount in cents." },
-            direction: { type: "string", enum: ["debit", "credit"], description: "'debit' = money out (spend), 'credit' = money in." },
-            balance_cents: { type: ["integer", "null"], description: "Running balance after this line in cents, or null if the statement has no balance column." },
+            amount: { type: "number", description: "Amount in DOLLARS exactly as printed, as a positive number (e.g. 19.28). Never negative." },
+            direction: { type: "string", enum: ["debit", "credit"], description: "'debit' = money out (a purchase or charge); 'credit' = money in (a payment or refund, often printed with a trailing minus)." },
+            balance: { type: ["number", "null"], description: "Running balance after this line in DOLLARS, or null if the statement has no per-line balance column." },
           },
         },
       },
@@ -194,10 +211,10 @@ export async function extractStatement(
   const instructions =
     "Transcribe EVERY money transaction from this statement's dated transaction table (across all pages), " +
     "plus the opening and closing balances shown in the statement summary. Rules:\n" +
-    "- An amount printed with a trailing or leading minus (e.g. \"2,500.00-\" or \"-2,500.00\") is money IN → direction \"credit\"; a plain positive amount is money OUT → direction \"debit\"." +
+    "- amount is the value in DOLLARS exactly as printed, as a POSITIVE number (e.g. 19.28) — never negative, never in cents.\n" +
+    "- direction: \"debit\" = money out (a purchase or charge); \"credit\" = money in (a payment or refund, often printed with a trailing minus like \"2,500.00-\")." +
     liabilityNote +
-    "\n- amount_cents is ALWAYS the absolute value in cents (never negative).\n" +
-    "- EXCLUDE everything that is not a dated money transaction: rewards/points lines and summaries, any \"regular payments\" / \"helping you identify your regular payments\" list, interest-rate summary rows, and marketing text. Only transcribe rows that have a date and a dollar amount in the transaction table.\n" +
+    "\n- EXCLUDE everything that is not a dated money transaction: rewards/points lines and summaries, any \"regular payments\" / \"helping you identify your regular payments\" list, interest-rate summary rows, and marketing text. Only transcribe rows that have a date and a dollar amount in the transaction table.\n" +
     "Call record_statement once.";
   let msg: Anthropic.Message;
   try {
@@ -224,9 +241,28 @@ export async function extractStatement(
   }
   const toolUse = msg.content.find((c): c is Anthropic.ToolUseBlock => c.type === "tool_use" && c.name === STATEMENT_TOOL.name);
   if (!toolUse) throw new Error("couldn't read the transaction table from this PDF — try a CSV export instead");
-  const result = ExtractedStatementSchema.safeParse(toolUse.input);
-  if (!result.success) throw new Error("couldn't read the transaction table from this PDF — the layout wasn't recognised; try a CSV export instead");
-  return result.data;
+  const parsed = StatementToolInput.safeParse(toolUse.input);
+  if (!parsed.success) {
+    // Log WHY so a future mismatch is diagnosable from Workers Logs (don't guess again).
+    console.error(`statement schema mismatch: ${JSON.stringify(parsed.error.issues).slice(0, 600)}`);
+    throw new Error("couldn't read the transaction table from this PDF — the layout wasn't recognised; try a CSV export instead");
+  }
+  const d = parsed.data;
+  const cents = (n: number) => Math.round(n * 100);
+  return {
+    lines: d.lines
+      .filter((l) => Number.isFinite(l.amount) && l.amount !== 0) // drop $0 "fee saved" rows and any unparseable amount
+      .map((l) => ({
+        date: l.date,
+        description: l.description,
+        amount_cents: Math.abs(cents(l.amount)),
+        direction: l.direction,
+        balance_cents: l.balance != null && Number.isFinite(l.balance) ? cents(l.balance) : null,
+      })),
+    opening_cents: d.opening_balance != null && Number.isFinite(d.opening_balance) ? cents(d.opening_balance) : null,
+    closing_cents: d.closing_balance != null && Number.isFinite(d.closing_balance) ? cents(d.closing_balance) : null,
+    currency: d.currency,
+  };
 }
 
 // ── Statement CSV column mapping (one cheap Claude call per file) ──────────────

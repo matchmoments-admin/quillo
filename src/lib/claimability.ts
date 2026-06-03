@@ -8,6 +8,7 @@ export interface ClaimRule {
   scope_type: string;   // bucket|property_status|entity_kind|occupation
   scope_value: string;
   merchant_hint?: string | null;
+  requires_entity_kind?: string | null; // optional AND-gate: rule only fires if the tenant has this entity kind
   ato_label?: string | null;
   claim_type: string;   // immediate|div40|div43|apportioned|not_deductible
   default_method?: string | null;
@@ -34,6 +35,14 @@ function merchantMatches(hint: string | null | undefined, merchant: string): boo
     .some((t) => m.includes(t));
 }
 
+// Optional AND-gate: a rule may additionally require the tenant to have a given entity kind (e.g. a
+// 'renting_business' rule that only applies when a 'company' is registered). Absent ⇒ always passes,
+// so existing rules are unaffected.
+function entityGate(required: string | null | undefined, kinds: string[]): boolean {
+  if (!required) return true;
+  return kinds.includes(required);
+}
+
 /**
  * Return every rule whose scope (and optional merchant hint) matches the context. Deterministic;
  * order-preserving. The caller decides what to do with multiple matches (typically surface all).
@@ -42,6 +51,7 @@ export function matchClaimRules(rules: ClaimRule[], ctx: ClaimContext): ClaimRul
   const merchant = ctx.merchant ?? "";
   return rules.filter((r) => {
     if (!merchantMatches(r.merchant_hint, merchant)) return false;
+    if (!entityGate(r.requires_entity_kind, ctx.entity_kinds ?? [])) return false;
     switch (r.scope_type) {
       case "bucket":
         return !!ctx.bucket && ctx.bucket === r.scope_value;

@@ -65,8 +65,16 @@ export type DocType = (typeof DOC_TYPES)[number];
 export const ENTITY_KINDS = ["employment", "company", "novated_lease", "individual", "trust"] as const;
 export type EntityKind = (typeof ENTITY_KINDS)[number];
 
-/** Property status — drives the rented-vs-vacant deductibility split. */
-export const PROPERTY_STATUSES = ["rented", "vacant", "owner_occupied", "sold"] as const;
+/**
+ * Property status — captures the user's RELATIONSHIP to a property, which drives deductibility.
+ * Landlord/owner side: rented (you let it out), vacant, owner_occupied, sold. Tenant side:
+ * renting_residence (you rent your home — generally private/non-deductible), renting_business
+ * (you rent business/commercial premises — generally deductible). The tenant statuses fall through
+ * src/lib/db.ts categoriser hints and src/lib/report.ts per-property logic.
+ * NOTE: this tuple is hand-mirrored in web/src/components/SituationFields.tsx (PROPERTY_STATUSES +
+ * propertyStatusLabel) — keep them in sync.
+ */
+export const PROPERTY_STATUSES = ["rented", "vacant", "owner_occupied", "sold", "renting_residence", "renting_business"] as const;
 export type PropertyStatus = (typeof PROPERTY_STATUSES)[number];
 
 /** Taxpayer roles under a tenant (persons are the apportionment root). */

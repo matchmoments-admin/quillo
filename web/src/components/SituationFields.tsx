@@ -6,7 +6,21 @@ import { isValidAbn, normaliseAbn } from "../lib/abn";
 export const fieldInput = "rounded-lg border border-line bg-white px-3 py-2 text-sm";
 
 export const ENTITY_KINDS = ["company", "employment", "novated_lease", "individual", "trust"] as const;
-export const PROPERTY_STATUSES = ["rented", "vacant", "owner_occupied", "sold"] as const;
+
+// Hand-mirror of PROPERTY_STATUSES in src/lib/taxonomy.ts — keep in sync. Two relationship groups:
+// "own" (landlord/occupier) vs "rent" (tenant). Tenant statuses have no cost base / CGT / ownership %.
+export const PROPERTY_STATUSES = ["rented", "vacant", "owner_occupied", "sold", "renting_residence", "renting_business"] as const;
+export const OWNED_STATUSES = ["rented", "vacant", "owner_occupied", "sold"] as const;
+export const TENANT_STATUSES = ["renting_residence", "renting_business"] as const;
+export const isTenantStatus = (s: string): boolean => s.startsWith("renting_");
+export function propertyStatusLabel(s: string): string {
+  switch (s) {
+    case "owner_occupied": return "owner-occupied";
+    case "renting_residence": return "renting — home";
+    case "renting_business": return "renting — business premises";
+    default: return s;
+  }
+}
 
 export interface EntityValue {
   kind: string;
@@ -122,7 +136,10 @@ export function entityToBody(v: EntityValue): { kind: string; name: string; deta
 /** Controlled editor for one property. Caller owns layout + submission. */
 export function PropertyFields({ value, onChange }: { value: PropertyValue; onChange: (v: PropertyValue) => void }) {
   const set = (patch: Partial<PropertyValue>) => onChange({ ...value, ...patch });
-  const addressMissing = value.status === "rented" && !value.address.trim();
+  const tenant = isTenantStatus(value.status);
+  // Address matters for attributing expenses on a let property or rented business premises; a private
+  // rented home needs nothing claimable yet, so we don't nag for its address.
+  const addressMissing = (value.status === "rented" || value.status === "renting_business") && !value.address.trim();
   return (
     <div className="space-y-1">
       <div className="flex flex-wrap gap-2">
@@ -134,24 +151,38 @@ export function PropertyFields({ value, onChange }: { value: PropertyValue; onCh
           onChange={(e) => set({ address: e.target.value })}
         />
         <select className={fieldInput} value={value.status} onChange={(e) => set({ status: e.target.value })}>
-          {PROPERTY_STATUSES.map((s) => (
-            <option key={s} value={s}>
-              {s === "owner_occupied" ? "owner-occupied" : s}
-            </option>
-          ))}
+          <optgroup label="You own this">
+            {OWNED_STATUSES.map((s) => (
+              <option key={s} value={s}>{propertyStatusLabel(s)}</option>
+            ))}
+          </optgroup>
+          <optgroup label="You rent this (tenant)">
+            {TENANT_STATUSES.map((s) => (
+              <option key={s} value={s}>{propertyStatusLabel(s)}</option>
+            ))}
+          </optgroup>
         </select>
-        <input
-          className={`${fieldInput} w-24`}
-          type="number"
-          min="1"
-          max="100"
-          placeholder="Own %"
-          value={value.ownership_pct}
-          onChange={(e) => set({ ownership_pct: e.target.value })}
-          title="Your ownership share %"
-        />
+        {/* Ownership % is meaningless for a tenant — they don't own the premises. */}
+        {!tenant && (
+          <input
+            className={`${fieldInput} w-24`}
+            type="number"
+            min="1"
+            max="100"
+            placeholder="Own %"
+            value={value.ownership_pct}
+            onChange={(e) => set({ ownership_pct: e.target.value })}
+            title="Your ownership share %"
+          />
+        )}
       </div>
       {addressMissing && <span className="pl-1 text-xs text-warn">Add the address so rental expenses attribute to the right property.</span>}
+      {value.status === "renting_residence" && (
+        <span className="pl-1 text-xs text-muted">Rent on your home is generally not deductible — only a sole trader with a genuine place of business can claim a portion. General info only.</span>
+      )}
+      {value.status === "renting_business" && (
+        <span className="pl-1 text-xs text-muted">Business/commercial premises rent is generally deductible, but only the business-use portion if it's partly private — confirm the amount with a registered tax agent. General info only.</span>
+      )}
     </div>
   );
 }

@@ -153,13 +153,17 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
     .all<{ property_id: string; gross_cents: number }>();
   for (const r of rentRows.results ?? []) rentByProp.set(r.property_id, r.gross_cents);
 
-  // Property labels for ids that have income/depreciation but no expense transactions this FY.
-  const labelRows = await env.DB.prepare(`SELECT id, label FROM properties WHERE user_id = ?`).bind(userId).all<{ id: string; label: string | null }>();
+  // Property labels + status for ids that have income/depreciation but no expense transactions this FY.
+  const labelRows = await env.DB.prepare(`SELECT id, label, status FROM properties WHERE user_id = ?`).bind(userId).all<{ id: string; label: string | null; status: string | null }>();
   const labelMap = new Map((labelRows.results ?? []).map((r) => [r.id, r.label]));
+  // Tenant ("renting_*") properties don't own a negative-gearing position — the user rents them, so
+  // they have no rent received, no cost base and no CGT. Any business-premises rent still counts in
+  // the company-bucket totals; it just shouldn't render as a per-property landlord position.
+  const tenantPropIds = new Set((labelRows.results ?? []).filter((r) => (r.status ?? "").startsWith("renting_")).map((r) => r.id));
 
   // Union of every property that has income, deductions OR depreciation — so an agent-managed
   // rental whose only deductions are depreciation still shows its negative-gearing position.
-  const propIds = new Set<string>([...expMap.keys(), ...rentByProp.keys(), ...depByProp.keys()]);
+  const propIds = new Set<string>([...expMap.keys(), ...rentByProp.keys(), ...depByProp.keys()].filter((id) => !tenantPropIds.has(id)));
   const per_property: PropertyPosition[] = [...propIds].map((pid) => {
     const incomeC = rentByProp.get(pid) ?? 0;
     const deductionC = expMap.get(pid)?.total_cents ?? 0;

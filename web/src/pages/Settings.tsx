@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import { BUCKETS } from "../types";
 import { Card, Spinner, BUCKET_LABEL } from "../components/ui";
-import { EntityFields, PropertyFields, entityToBody, propertyToBody, emptyEntity, emptyProperty, type EntityValue, type PropertyValue } from "../components/SituationFields";
+import { EntityFields, PropertyFields, entityToBody, propertyToBody, emptyEntity, emptyProperty, OWNED_STATUSES, TENANT_STATUSES, propertyStatusLabel, type EntityValue, type PropertyValue } from "../components/SituationFields";
 
 const input = "rounded-lg border border-line bg-white px-3 py-2 text-sm";
 const btn = "rounded-lg bg-ink px-3 py-2 text-sm font-medium text-white hover:bg-ink/90 disabled:opacity-50";
@@ -97,7 +97,7 @@ function EditableProperty({ property, onDone }: { property: { id: string; label:
   if (!editing) {
     return (
       <div className="flex items-center justify-between rounded-lg bg-surface px-3 py-2 text-sm">
-        <span className="truncate">{property.label} — {property.status}</span>
+        <span className="truncate">{property.label} — {propertyStatusLabel(property.status)}</span>
         <div className="flex flex-none gap-3">
           <button onClick={() => setEditing(true)} className={del}>edit</button>
           <button onClick={() => api.deleteProperty(property.id).then(onDone)} className={del}>delete</button>
@@ -109,10 +109,12 @@ function EditableProperty({ property, onDone }: { property: { id: string; label:
     <div className="flex flex-wrap gap-2 rounded-lg bg-surface px-3 py-2">
       <input className={`${input} flex-1`} value={label} onChange={(e) => setLabel(e.target.value)} />
       <select className={input} value={status} onChange={(e) => setStatus(e.target.value)}>
-        <option value="rented">rented</option>
-        <option value="vacant">vacant</option>
-        <option value="owner_occupied">owner-occupied</option>
-        <option value="sold">sold</option>
+        <optgroup label="You own this">
+          {OWNED_STATUSES.map((s) => <option key={s} value={s}>{propertyStatusLabel(s)}</option>)}
+        </optgroup>
+        <optgroup label="You rent this (tenant)">
+          {TENANT_STATUSES.map((s) => <option key={s} value={s}>{propertyStatusLabel(s)}</option>)}
+        </optgroup>
       </select>
       <button className={btn} disabled={!label || save.isPending} onClick={() => save.mutate()}>Save</button>
       <button className={del} onClick={() => setEditing(false)}>cancel</button>

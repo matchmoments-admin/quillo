@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api } from "../api";
 import { Button, Card, Spinner, money } from "../components/ui";
@@ -139,6 +139,9 @@ function AccountRow({ account, statements }: { account: Account; statements: Sta
   const [parse, setParse] = useState<StatementParse | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
+  // A parse holds the single per-tenant Durable Object; let only one run at a time so a second
+  // upload doesn't queue behind it and time out (the 502). True while ANY row is parsing.
+  const anyParsing = useIsMutating({ mutationKey: ["parseStatement"] }) > 0;
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ["accounts"] });
@@ -146,6 +149,7 @@ function AccountRow({ account, statements }: { account: Account; statements: Sta
   };
 
   const doParse = useMutation({
+    mutationKey: ["parseStatement"], // shared key so all rows can see when ANY parse is in flight
     mutationFn: (file: File) => api.parseStatement(file, account.id),
     onMutate: () => setNote("Reading your statement…"),
     onSuccess: (p) => {
@@ -226,8 +230,8 @@ function AccountRow({ account, statements }: { account: Account; statements: Sta
           <div className="flex flex-none items-center gap-1">
             {!isFeed && (
               <>
-                <Button variant="ghost" onClick={() => fileRef.current?.click()} disabled={doParse.isPending}>
-                  {doParse.isPending ? "Reading…" : "Upload statement (CSV/PDF)"}
+                <Button variant="ghost" onClick={() => fileRef.current?.click()} disabled={anyParsing}>
+                  {doParse.isPending ? "Reading…" : anyParsing ? "Waiting…" : "Upload statement (CSV/PDF)"}
                 </Button>
                 <input
                   ref={fileRef}

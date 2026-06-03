@@ -214,11 +214,15 @@ export class TaxAgent extends Agent<Env> {
       const pdfBytes = await normalizePdf(bytes);
       const extractChunked = async (perChunk: number) => {
         const chunks = await splitPdf(pdfBytes, perChunk);
+        // Extract chunks CONCURRENTLY (each is an independent sub-PDF) — running them in a
+        // sequential loop made a multi-page statement do N back-to-back model calls (~90s with a
+        // retry), long enough for Cloudflare's gateway to 502 the request. Promise.all preserves
+        // order, so the opening/closing stitching and reconciliation are unchanged.
+        const exts = await Promise.all(chunks.map((c) => extractStatement(llm, c, "application/pdf", { isLiability })));
         const all: StatementLine[] = [];
         let opening: number | null = null;
         let closing: number | null = null;
-        for (let k = 0; k < chunks.length; k++) {
-          const ext = await extractStatement(llm, chunks[k]!, "application/pdf", { isLiability });
+        for (const ext of exts) {
           all.push(...this.pdfLines(ext));
           if (opening == null && ext.opening_cents != null) opening = ext.opening_cents; // first page that carries it
           if (ext.closing_cents != null) closing = ext.closing_cents; // last page that carries it wins

@@ -37,10 +37,11 @@ async function send<T>(method: string, path: string, body?: unknown): Promise<T>
 const post = <T>(path: string, body?: unknown) => send<T>("POST", path, body);
 
 export const api = {
-  transactions: (opts: { status?: string; kind?: string; offset?: number; limit?: number } = {}) => {
+  transactions: (opts: { status?: string; kind?: string; review?: boolean; offset?: number; limit?: number } = {}) => {
     const q = new URLSearchParams();
     if (opts.status) q.set("status", opts.status);
     if (opts.kind) q.set("kind", opts.kind);
+    if (opts.review) q.set("review", "1");
     if (opts.offset) q.set("offset", String(opts.offset));
     if (opts.limit) q.set("limit", String(opts.limit));
     const qs = q.toString();

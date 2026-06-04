@@ -62,6 +62,13 @@ export function Reports() {
             Deductibility is finalised in your year-end review with your registered tax agent. Confirmed
             deductible so far: <span className="font-medium text-ink">{money(data!.resolved_deductible_cents)}</span>
             {data!.resolved_deductible_cents === 0 ? " (no review run yet)." : "."}
+            {data!.refunds_cents > 0 && (
+              <>
+                {" "}Refunds/reimbursements of{" "}
+                <span className="font-medium text-ink">{money(data!.refunds_cents)}</span>{" "}
+                have been netted against tracked spend.
+              </>
+            )}
           </p>
 
           {(data!.income.franking_credit_cents > 0 || data!.income.foreign_tax_paid_cents > 0) && (

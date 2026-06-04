@@ -5,8 +5,9 @@ import { UserButton } from "@clerk/clerk-react";
 import { useQuery } from "@tanstack/react-query";
 import { Toaster } from "sonner";
 import { api } from "./api";
+import { useFeatures } from "./lib/features";
 
-type NavItem = { to: string; label: string; icon: IconName; end?: boolean; badge?: boolean };
+type NavItem = { to: string; label: string; icon: IconName; end?: boolean; badge?: boolean; flag?: string };
 type NavGroup = { label: string; items: NavItem[] };
 
 // Grouped destinations — the forest sidebar that replaced the old cramped 12-tab top nav.
@@ -32,6 +33,7 @@ const GROUPS: NavGroup[] = [
     items: [
       { to: "/reconcile", label: "Reconcile", icon: "swap" },
       { to: "/reports", label: "Reports", icon: "bars" },
+      { to: "/review", label: "Review", icon: "check", flag: "deductibility_review" },
       { to: "/filing", label: "File", icon: "file" },
     ],
   },
@@ -145,6 +147,7 @@ function Brand() {
 }
 
 function Sidebar({ needsReview, open }: { needsReview: number; open: boolean }) {
+  const { has } = useFeatures();
   return (
     <aside
       className={`fixed inset-y-0 left-0 z-50 flex w-[252px] flex-col bg-forest px-4 py-5 text-cream transition-transform lg:sticky lg:top-0 lg:z-auto lg:h-screen lg:translate-x-0 ${
@@ -162,7 +165,7 @@ function Sidebar({ needsReview, open }: { needsReview: number; open: boolean }) 
         {GROUPS.map((g) => (
           <div key={g.label} className="mt-5 first:mt-1">
             <div className="px-3 pb-2 text-[10px] font-bold uppercase tracking-[0.2em] text-cream/45">{g.label}</div>
-            {g.items.map((it) => (
+            {g.items.filter((it) => !it.flag || has(it.flag)).map((it) => (
               <NavLink
                 key={it.to}
                 to={it.to}

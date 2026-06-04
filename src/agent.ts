@@ -1203,6 +1203,93 @@ export class TaxAgent extends Agent<Env> {
     await this.audit(userId, "income_unlinked", JSON.stringify({ txnId }));
   }
 
+  // ── Year-end deductibility review ───────────────────────────────────────────
+  // During the year we capture + bucket spend but DON'T judge deductibility (0011). The review
+  // resolves it once, per (bucket, ato_label), with apportionment — writing the resolved set that
+  // feeds resolved_deductible_cents in the report. GENERAL INFO ONLY — not tax advice.
+
+  /** Resolved deductibility states (0011). 'undetermined' is the captured default; the rest are written by review. */
+  private static readonly DEDUCTIBILITY_STATES = new Set([
+    "undetermined", "likely_deductible", "likely_not", "needs_apportionment", "confirmed_deductible", "confirmed_not",
+  ]);
+
+  private fyBoundsFor(fy?: string): { fy: string; start: string; end: string } {
+    const label = fy ?? this.currentFyLabel();
+    const sy = Number(label.slice(0, 4));
+    return { fy: label, start: `${sy}-07-01`, end: `${sy + 1}-06-30` };
+  }
+
+  /**
+   * Year-end review summary: countable deductible-context spend for the FY, grouped by bucket +
+   * ato_label + current deductibility, with the captured total and the would-be resolved amount.
+   * Drives the Review UI's per-label resolution. Read-only.
+   */
+  async reviewSummary(
+    userId: string,
+    fy?: string,
+  ): Promise<{ fy: string; rows: { bucket: string; ato_label: string | null; deductibility: string; n: number; total_cents: number; resolved_cents: number }[] }> {
+    const { fy: label, start, end } = this.fyBoundsFor(fy);
+    const rows = await this.env.DB.prepare(
+      `SELECT bucket, ato_label, COALESCE(deductibility,'undetermined') AS deductibility,
+              COUNT(*) AS n,
+              COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS total_cents,
+              COALESCE(SUM(COALESCE(deductible_amount_cents, amount_aud_cents, amount_cents)),0) AS resolved_cents
+         FROM transactions
+        WHERE user_id = ? AND txn_date >= ? AND txn_date <= ? AND ${COUNTABLE}
+          AND bucket IN ('payg','company','property_rented','property_vacant')
+        GROUP BY bucket, ato_label, deductibility
+        ORDER BY bucket, total_cents DESC`,
+    )
+      .bind(userId, start, end)
+      .all<{ bucket: string; ato_label: string | null; deductibility: string; n: number; total_cents: number; resolved_cents: number }>();
+    return { fy: label, rows: rows.results ?? [] };
+  }
+
+  /** Resolve deductibility for specific transactions (with an optional apportioned amount). Audited. */
+  async setDeductibility(userId: string, txnIds: string[], state: string, deductibleAmountCents?: number | null): Promise<{ updated: number }> {
+    if (!TaxAgent.DEDUCTIBILITY_STATES.has(state)) throw new Error(`invalid deductibility state: ${state}`);
+    if (!txnIds.length) return { updated: 0 };
+    const amt = deductibleAmountCents ?? null;
+    const stmts = txnIds.map((id) =>
+      this.env.DB.prepare(`UPDATE transactions SET deductibility = ?, deductible_amount_cents = ? WHERE id = ? AND user_id = ?`)
+        .bind(state, amt, id, userId),
+    );
+    let updated = 0;
+    for (let i = 0; i < stmts.length; i += 50) {
+      const res = await this.env.DB.batch(stmts.slice(i, i + 50));
+      updated += res.reduce((s, r) => s + (r.meta?.changes ?? 0), 0);
+    }
+    await this.audit(userId, "deductibility_resolved", JSON.stringify({ txnIds: txnIds.length, state, deductibleAmountCents: amt }));
+    return { updated };
+  }
+
+  /**
+   * Bulk-resolve every countable txn in a (bucket, ato_label) for the FY. With businessUsePct the
+   * apportioned claimable amount is computed per row (amount × pct%); without it the amount stays
+   * NULL (the report falls back to the full amount for a 100%-deductible label). Audited.
+   */
+  async resolveByLabel(
+    userId: string,
+    opts: { fy?: string; bucket: string; atoLabel?: string | null; state: string; businessUsePct?: number | null },
+  ): Promise<{ updated: number }> {
+    if (!TaxAgent.DEDUCTIBILITY_STATES.has(opts.state)) throw new Error(`invalid deductibility state: ${opts.state}`);
+    const { start, end } = this.fyBoundsFor(opts.fy);
+    const pct = opts.businessUsePct == null ? null : Math.max(0, Math.min(100, opts.businessUsePct));
+    const res = await this.env.DB.prepare(
+      `UPDATE transactions
+          SET deductibility = ?,
+              deductible_amount_cents = CASE WHEN ? IS NULL THEN NULL
+                ELSE CAST(ROUND(COALESCE(amount_aud_cents, amount_cents) * ? / 100.0) AS INTEGER) END
+        WHERE user_id = ? AND txn_date >= ? AND txn_date <= ? AND ${COUNTABLE}
+          AND bucket = ? AND COALESCE(ato_label,'') = COALESCE(?,'')`,
+    )
+      .bind(opts.state, pct, pct, userId, start, end, opts.bucket, opts.atoLabel ?? null)
+      .run();
+    const updated = res.meta?.changes ?? 0;
+    await this.audit(userId, "deductibility_resolved", JSON.stringify({ bucket: opts.bucket, atoLabel: opts.atoLabel ?? null, state: opts.state, businessUsePct: pct, updated }));
+    return { updated };
+  }
+
   /** Current AU FY label, e.g. '2025-26' (Jul–Jun). */
   private currentFyLabel(): string {
     const now = new Date();

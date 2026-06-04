@@ -505,6 +505,26 @@ export async function handleApi(
     return json(rep);
   }
 
+  // ── Year-end deductibility review (flag deductibility_review) ─────────────
+  if (resource === "review") {
+    if (!featureOn(env, "deductibility_review")) return json({ error: "not found" }, 404);
+    // GET /api/review/summary?fy= — countable spend grouped by bucket+label+deductibility.
+    if (m === "GET" && id === "summary") {
+      return json(await stub.reviewSummary(uid, url.searchParams.get("fy") ?? undefined));
+    }
+  }
+  // POST /api/deductibility — resolve deductibility, by txnIds OR by (bucket, ato_label, fy).
+  if (resource === "deductibility" && m === "POST") {
+    if (!featureOn(env, "deductibility_review")) return json({ error: "not found" }, 404);
+    const b = (await req.json()) as {
+      state: string; deductibleAmountCents?: number | null; txnIds?: string[];
+      fy?: string; bucket?: string; atoLabel?: string | null; businessUsePct?: number | null;
+    };
+    if (b.txnIds?.length) return json(await stub.setDeductibility(uid, b.txnIds, b.state, b.deductibleAmountCents));
+    if (b.bucket) return json(await stub.resolveByLabel(uid, { fy: b.fy, bucket: b.bucket, atoLabel: b.atoLabel, state: b.state, businessUsePct: b.businessUsePct }));
+    return json({ error: "provide txnIds or a bucket" }, 400);
+  }
+
   // ── Filing readiness (capstone) ───────────────────────────────────────────
   if (resource === "filing-readiness" && m === "GET") {
     const fy = Number(url.searchParams.get("fy")) || currentFyStartYear();

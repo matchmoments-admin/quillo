@@ -7,6 +7,8 @@ import { Toaster } from "sonner";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import { api } from "./api";
 import { useFeatures } from "./lib/features";
+import { NextActionBar } from "./components/NextAction";
+import { TabGuide } from "./components/TabGuide";
 
 type NavItem = { to: string; label: string; icon: IconName; end?: boolean; badge?: boolean; flag?: string };
 type NavGroup = { label: string; items: NavItem[] };
@@ -116,6 +118,15 @@ export function App() {
         <div className="flex min-h-screen flex-col">
           <main className="flex-1">
             <div className="mx-auto max-w-5xl px-5 py-8 sm:px-8">
+              {/* Clarity spine + per-tab guide — hidden on the full-screen onboarding wizard. */}
+              {pathname !== "/onboarding" && (
+                <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <NextActionBar />
+                  </div>
+                  <TabGuide pathname={pathname} />
+                </div>
+              )}
               <Outlet />
             </div>
           </main>

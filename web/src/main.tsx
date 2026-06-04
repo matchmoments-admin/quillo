@@ -1,6 +1,6 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, MutationCache } from "@tanstack/react-query";
 import { createBrowserRouter, RouterProvider } from "react-router-dom";
 import { ClerkProvider, SignIn, SignUp, SignedIn, SignedOut, RedirectToSignIn, useAuth } from "@clerk/clerk-react";
 import "./index.css";
@@ -25,7 +25,14 @@ import { setTokenGetter } from "./api";
 
 const PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY as string | undefined;
 
-const queryClient = new QueryClient({
+const queryClient: QueryClient = new QueryClient({
+  // The completion spine + per-tab guides read ["progress"]. Any successful mutation (confirming
+  // a category, dating an item, importing a statement, linking income…) can change that derived
+  // state, so refresh it once, centrally, after every write — rather than refetching on every
+  // navigation. onSuccess runs after queryClient is assigned, so the closure reference is safe.
+  mutationCache: new MutationCache({
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["progress"] }),
+  }),
   // refetchOnWindowFocus was causing visible flashing: every time the tab regained focus
   // (e.g. switching back from the Intuit dashboard) ALL queries refetched at once. Off by
   // default; pages that genuinely need polling opt in explicitly (e.g. Accounts statements).

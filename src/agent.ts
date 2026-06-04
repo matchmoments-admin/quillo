@@ -23,6 +23,7 @@ import { spentTodayCents, recordUsage } from "./lib/usage";
 import { parseTransactionAlert } from "./lib/bank-parsers";
 import auV1RulePack from "./rulepacks/au-v1.json";
 import { assertBucketKeys } from "./lib/taxonomy";
+import { featureOn } from "./lib/features";
 
 const CONFIDENCE_THRESHOLD = 0.85;
 // Above this many to-categorise lines, route to the async Message Batches API (~50% cheaper);
@@ -1424,25 +1425,65 @@ export class TaxAgent extends Agent<Env> {
     )
       .bind(userId)
       .all<{ id: string; merchant: string | null; cost: number; txn_date: string; property_id: string | null }>();
+    if (!rows.results?.length) return;
+    // `asset_defaults` flag: classify the capital purchase by merchant against the rule pack's
+    // asset_class_hints and seed a sensible TR 2022/1-style effective life/method (still
+    // needs_review). Off → legacy flat default (div40_plant, 5y, DV). Only load the rule pack when
+    // on, so the flag-off path keeps its original cost (no extra read).
+    const rulePack = featureOn(this.env, "asset_defaults")
+      ? await this.loadRulePack((await this.requireProfile(userId)).rule_pack_ver)
+      : null;
     for (const r of rows.results ?? []) {
+      const d = this.assetDefaultsFor(r.merchant, rulePack);
       const assetId = await this.createAsset(userId, {
         label: r.merchant ? `${r.merchant} (${r.txn_date})` : `Capital asset (${r.txn_date})`,
-        asset_class: "div40_plant", // sensible default; user picks div43/pool/immediate in review
+        asset_class: d.asset_class, // seeded from hints when asset_defaults is on; else div40_plant
         cost_cents: r.cost,
         acquired_date: r.txn_date,
         property_id: r.property_id,
-        effective_life_years: 5, // placeholder — user sets the TR 2022/1 effective life in review
-        method: "diminishing_value",
+        effective_life_years: d.effective_life_years, // sensible default — user confirms in review
+        method: d.method,
         business_use_pct: 100, // work out apportionment % later
         needs_review: 1,
       });
+      const capitalClass = d.asset_class === "div43_capital_works" ? "div43" : "div40";
       await this.env.DB.prepare(
-        `UPDATE transactions SET asset_id = ?, is_capital = 1, capital_class = 'div40' WHERE id = ? AND user_id = ?`,
+        `UPDATE transactions SET asset_id = ?, is_capital = 1, capital_class = ? WHERE id = ? AND user_id = ?`,
       )
-        .bind(assetId, r.id, userId)
+        .bind(assetId, capitalClass, r.id, userId)
         .run();
       await this.audit(userId, "asset_linked", JSON.stringify({ txnId: r.id, assetId, cost: r.cost }));
     }
+  }
+
+  /**
+   * Pick the asset class + default effective life/method for an auto-created capital asset. With
+   * `rulePack` (asset_defaults flag on) it matches the merchant against asset_class_hints, falling
+   * back to the pack's asset_class_default; with null it returns the legacy flat default. The
+   * asset still lands needs_review — these are GENERAL-INFO starting points, not a tax decision.
+   */
+  private assetDefaultsFor(
+    merchant: string | null,
+    rulePack: typeof DEFAULT_RULE_PACK | null,
+  ): { asset_class: string; effective_life_years: number; method: string } {
+    const legacy = { asset_class: "div40_plant", effective_life_years: 5, method: "diminishing_value" };
+    if (!rulePack) return legacy;
+    // KV-override packs may predate these keys, so guard at runtime even though the bundled type has them.
+    const def = rulePack.asset_class_default;
+    const fallback = def
+      ? { asset_class: def.asset_class, effective_life_years: def.effective_life_years, method: def.method }
+      : legacy;
+    const hints = rulePack.asset_class_hints;
+    const m = (merchant ?? "").toLowerCase();
+    if (m && Array.isArray(hints)) {
+      for (const h of hints) {
+        const terms = h.match.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+        if (terms.some((t) => t && m.includes(t))) {
+          return { asset_class: h.asset_class, effective_life_years: h.effective_life_years, method: h.method };
+        }
+      }
+    }
+    return fallback;
   }
 
   /** Map an assets row into the engine's DepAsset shape. */

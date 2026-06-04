@@ -27,6 +27,7 @@ export interface Env {
   DEFAULT_INFERENCE_PROVIDER: string;   // 'anthropic' | 'bedrock'
   DEFAULT_INFERENCE_REGION: string;     // e.g. 'ap-southeast-2'
   QBO_BASE_URL: string;                 // sandbox or production
+  FEATURES?: string;                    // comma-separated enabled feature flags (see lib/features.ts)
 
   // Secrets
   ANTHROPIC_API_KEY: string;

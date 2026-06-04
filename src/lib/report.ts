@@ -1,6 +1,7 @@
 import type { Env } from "../env";
 import { COUNTABLE, COUNTABLE_INCOME } from "./queries";
 import { incomeTotals, depreciationTotals, type IncomeTotals } from "./ledger-totals";
+import { featureOn } from "./features";
 
 // Australian FY is Jul–Jun. Given a start year Y, the FY runs Y-07-01 .. (Y+1)-06-30.
 export function currentFyStartYear(now = new Date()): number {
@@ -49,6 +50,7 @@ export interface Report {
   per_property: PropertyPosition[];
   total_income_cents: number;
   total_deductions_cents: number;      // CAPTURED tracked spend this FY (pending review — NOT claimable yet)
+  refunds_cents: number;               // refund/reimbursement credits this FY (0 unless refund_netting is on)
   resolved_deductible_cents: number;   // spend a year-end review has CONFIRMED deductible (~0 until review)
   taxable_position_cents: number;      // total_income − total_deductions − depreciation (indicative)
 }
@@ -200,9 +202,27 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   // — deductibility is resolved at year-end review (the UI labels it "tracked spend").
   // Exclude 'unknown' (unsanctioned) and 'asset' (capital — it depreciates via the assets table,
   // counting it as spend would double-count against decline-in-value).
-  const total_deductions_cents = rows
+  const gross_deductions_cents = rows
     .filter((b) => b.bucket !== "unknown" && b.bucket !== "asset")
     .reduce((s, b) => s + (b.total_cents ?? 0), 0);
+
+  // Refund netting (flag `refund_netting`): a refund/reimbursement is a CREDIT, so it's already
+  // excluded from the debit-only deduction sum above — but it reduces real spend (e.g. a $200
+  // refund on a $500 purchase = $300 net deductible). v1 nets globally: subtract total refund
+  // credits from total deductions (floored at 0). Per-expense pairing is a later refinement.
+  // When the flag is off, refunds_cents stays 0 and deductions are byte-identical to before.
+  let refunds_cents = 0;
+  if (featureOn(env, "refund_netting")) {
+    const refundRow = await env.DB.prepare(
+      `SELECT COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS total
+         FROM transactions
+        WHERE user_id = ? AND txn_date >= ? AND txn_date <= ? AND bucket = 'refund' AND ${COUNTABLE_INCOME}`,
+    )
+      .bind(userId, start, end)
+      .first<{ total: number }>();
+    refunds_cents = refundRow?.total ?? 0;
+  }
+  const total_deductions_cents = Math.max(0, gross_deductions_cents - refunds_cents);
   const taxable_position_cents = income.gross_cents - total_deductions_cents - dep.total_cents;
 
   // Resolved-deductible: only spend a year-end review has CONFIRMED deductible (deductibility set
@@ -235,6 +255,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
     per_property,
     total_income_cents: income.gross_cents,
     total_deductions_cents,
+    refunds_cents,
     resolved_deductible_cents,
     taxable_position_cents,
   };
@@ -259,7 +280,8 @@ export function reportToCsv(r: Report): string {
     "",
     "Tax position (indicative),Amount (AUD)",
     `Total income (gross),${d(r.total_income_cents)}`,
-    `Total deductions,${d(r.total_deductions_cents)}`,
+    ...(r.refunds_cents > 0 ? [`Refunds/reimbursements (netted against deductions),${d(r.refunds_cents)}`] : []),
+    `Total deductions${r.refunds_cents > 0 ? " (net of refunds)" : ""},${d(r.total_deductions_cents)}`,
     `Decline in value (depreciation),${d(r.depreciation_cents)}`,
     `Indicative taxable position,${d(r.taxable_position_cents)}`,
     "",

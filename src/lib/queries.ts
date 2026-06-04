@@ -1,4 +1,5 @@
 import type { Env } from "../env";
+import { enabledFeatures } from "./features";
 
 // Read-side queries for the web API. Reads hit D1 directly from the Worker; audited
 // writes (corrections, consent) go through the Durable Object RPC instead.
@@ -386,5 +387,6 @@ export async function dashboard(env: Env, userId: string) {
     income_by_bucket: incomeByBucket.results ?? [],
     by_property: byProperty.results ?? [],
     needs_review: needsReview?.n ?? 0,
+    features: enabledFeatures(env), // SPA gates nav/UI on the enabled flags (loaded once on mount)
   };
 }

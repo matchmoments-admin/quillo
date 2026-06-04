@@ -162,6 +162,7 @@ export interface DashboardData {
   income_by_bucket: { bucket: string; n: number; total_cents: number }[];
   by_property: { property_id: string; label: string | null; n: number; total_cents: number }[];
   needs_review: number;
+  features: string[]; // enabled feature flags — gate nav/UI on these
 }
 
 export interface UsageData {
@@ -229,6 +230,7 @@ export interface Report {
   per_property: PropertyPosition[];
   total_income_cents: number;
   total_deductions_cents: number;
+  refunds_cents: number;
   resolved_deductible_cents: number;
   taxable_position_cents: number;
 }

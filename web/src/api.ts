@@ -97,6 +97,8 @@ export const api = {
   },
   // APP 13 erasure: purge all of the tenant's data across every store.
   purgeData: () => send<{ tables: number; rowsDeleted: number; r2Objects: number; kvKeys: number; qboRevoked: boolean }>("DELETE", "/api/account/data"),
+  // Server-side UI state (no localStorage): merge a patch (e.g. {tour_seen:true}).
+  setUiState: (patch: Record<string, unknown>) => send<Record<string, unknown>>("PATCH", "/api/ui-state", { patch }),
 
   // Accounts + statement import
   accounts: () => get<{ accounts: Account[] }>("/api/accounts").then((r) => r.accounts),

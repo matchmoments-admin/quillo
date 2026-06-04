@@ -28,7 +28,7 @@ function draftPropertyToValue(p: SituationDraft["properties"][number]): Property
   return { label: p.label, address: p.address ?? "", status: p.status, ownership_pct: String(p.ownership_pct ?? 100) };
 }
 
-type StepKey = "consent" | "intake" | "entities" | "properties" | "rules" | "confirm";
+type StepKey = "welcome" | "consent" | "intake" | "entities" | "properties" | "rules" | "confirm";
 
 export function Onboarding() {
   const qc = useQueryClient();
@@ -65,14 +65,21 @@ export function Onboarding() {
     },
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: ["situation"] });
-      navigate("/");
+      // Land on the PRIMED first action (import → review → … → File) rather than a bare dashboard.
+      try {
+        const p = await api.progress();
+        navigate(p.next_action.href);
+      } catch {
+        navigate("/");
+      }
     },
   });
 
-  const [step, setStep] = useState<StepKey>("consent");
+  const [step, setStep] = useState<StepKey>("welcome");
+  const [showFullConsent, setShowFullConsent] = useState(false);
 
   const stepKeys = useMemo<StepKey[]>(
-    () => ["consent", "intake", "entities", "properties", ...(rules.length ? (["rules"] as StepKey[]) : []), "confirm"],
+    () => ["welcome", "consent", "intake", "entities", "properties", ...(rules.length ? (["rules"] as StepKey[]) : []), "confirm"],
     [rules.length],
   );
 
@@ -104,6 +111,23 @@ export function Onboarding() {
         ))}
       </div>
 
+      {step === "welcome" && (
+        <Card className="p-5">
+          <StepHead n={idx + 1} total={stepKeys.length} title="Welcome to Quillo" />
+          <p className="text-sm text-ink-2">
+            Quillo turns your receipts, statements and accounts into tidy, ATO-ready categories — so a financial year is
+            ready to hand to your tax agent. You stay in control and confirm everything; Quillo never lodges your return
+            and never moves your money.
+          </p>
+          <div className="mt-3 rounded-lg bg-surface p-3 text-xs text-muted">
+            <span className="font-medium text-ink">Your privacy:</span> to read and categorise your records we use AI. Today
+            that runs on secure servers in the USA (Anthropic) — we'll ask your explicit consent next — or you can switch to
+            Australian-resident processing. We never sell your data or use it to train anyone's model.
+          </div>
+          <NavRow onNext={goNext} />
+        </Card>
+      )}
+
       {step === "consent" && (
         <Card className="p-5">
           <StepHead n={idx + 1} total={stepKeys.length} title={<>Cross-border processing consent (APP 8) <InfoTip k="app8" /></>} />
@@ -113,10 +137,25 @@ export function Onboarding() {
             <p className="text-sm text-safe">Consent recorded — you're good to go.</p>
           ) : (
             <>
-              <p className="mb-3 text-sm text-muted">{CONSENT_TEXT}</p>
-              <Button onClick={() => consent.mutate()} disabled={consent.isPending}>
-                {consent.isPending ? "Recording…" : "I consent"}
-              </Button>
+              {/* Layered consent: a plain-language summary, with the full APP-8 wording behind "Read more". */}
+              <p className="mb-2 text-sm text-ink-2">
+                We send your receipt &amp; transaction content to Anthropic (USA) to read and categorise it. This is a
+                cross-border disclosure under APP 8 — consenting means APP 8.1 protections won't apply to that US transfer.
+                You can withdraw any time in Settings, or switch to Australian processing.
+              </p>
+              <button
+                type="button"
+                onClick={() => setShowFullConsent((v) => !v)}
+                className="mb-2 text-xs font-semibold text-ink-3 underline underline-offset-2 hover:text-ink"
+              >
+                {showFullConsent ? "Hide" : "Read more"}
+              </button>
+              {showFullConsent && <p className="mb-3 rounded-lg bg-surface p-3 text-xs text-muted">{CONSENT_TEXT}</p>}
+              <div>
+                <Button onClick={() => consent.mutate()} disabled={consent.isPending}>
+                  {consent.isPending ? "Recording…" : "I consent"}
+                </Button>
+              </div>
             </>
           )}
           <NavRow onNext={goNext} nextDisabled={!hasConsent} />

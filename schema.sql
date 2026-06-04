@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS profiles (
   consent_xborder_method TEXT,
   consent_xborder_text   TEXT,
   retention_years        INTEGER NOT NULL DEFAULT 5,  -- data-retention window for the flag sweep (lib/retention.ts)
+  ui_state               TEXT,                        -- per-tenant UI state JSON (e.g. walkthrough seen) — no localStorage
   created_at         TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

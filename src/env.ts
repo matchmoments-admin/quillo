@@ -85,6 +85,7 @@ export interface TaxAgentRpc {
   purgeTenant(userId: string): Promise<{ tables: number; rowsDeleted: number; r2Objects: number; kvKeys: number; qboRevoked: boolean }>;
   exportTenant(userId: string): Promise<Record<string, unknown>>;
   flagOldData(userId: string): Promise<{ flagged: boolean }>;
+  setUiState(userId: string, patch: Record<string, unknown>): Promise<Record<string, unknown>>;
   categoriseStatement(userId: string, statementId: string): Promise<{ categorised: number }>;
   pollBatchJobs(userId: string): Promise<{ applied: number }>;
   recategorise(userId: string): Promise<{ requeued: number; statements: number }>;

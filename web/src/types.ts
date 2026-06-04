@@ -131,6 +131,7 @@ export interface Situation {
     consent_xborder_text?: string | null;
     inference_provider: string | null;
     inference_region?: string | null;
+    ui_state?: string | null;
   };
   persons?: Person[];
   properties: Property[];

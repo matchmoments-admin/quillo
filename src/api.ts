@@ -287,6 +287,11 @@ export async function handleApi(
         return json({ error: (e as Error).message }, 409); // e.g. reconciliation gate
       }
     }
+    // DELETE /api/statements/:id → remove a stuck/failed upload record (+ R2 sidecar). Keeps any
+    // already-imported transactions (they're the ledger).
+    if (m === "DELETE" && id) {
+      return json(await stub.deleteStatement(uid, id));
+    }
   }
 
   // ── Income (first-class) ──────────────────────────────────────────────────

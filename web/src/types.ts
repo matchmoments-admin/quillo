@@ -235,6 +235,20 @@ export interface Report {
   taxable_position_cents: number;
 }
 
+// Year-end deductibility review summary (mirror of TaxAgent.reviewSummary).
+export interface ReviewSummaryRow {
+  bucket: string;
+  ato_label: string | null;
+  deductibility: string;
+  n: number;
+  total_cents: number;
+  resolved_cents: number;
+}
+export interface ReviewSummary {
+  fy: string;
+  rows: ReviewSummaryRow[];
+}
+
 // Mirror of FilingReadiness in src/lib/readiness.ts — keep in sync.
 export interface ReadinessFinding {
   id: string;

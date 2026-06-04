@@ -1,4 +1,4 @@
-import type { Txn, TxnDetail, Situation, SituationDraft, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse, UsageData, StatementInfo, IncomeRow, DocRow, AssetRow, ScheduleRow, ChecklistItem, ClaimSuggestion, FilingReadiness } from "./types";
+import type { Txn, TxnDetail, Situation, SituationDraft, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse, UsageData, StatementInfo, IncomeRow, DocRow, AssetRow, ScheduleRow, ChecklistItem, ClaimSuggestion, FilingReadiness, ReviewSummary } from "./types";
 
 // Clerk session token getter, wired from <TokenBridge> inside ClerkProvider (main.tsx).
 // Clerk tokens are short-lived, so we fetch a fresh one per request (getToken caches/refreshes).
@@ -142,6 +142,9 @@ export const api = {
     }>("/api/income/matches"),
   linkIncome: (txnId: string, incomeId: string) => post<{ ok: boolean }>("/api/income/link", { txnId, incomeId }),
   unlinkIncome: (txnId: string) => post<{ ok: boolean }>("/api/income/unlink", { txnId }),
+  reviewSummary: (fy?: string) => get<ReviewSummary>(`/api/review/summary${fy ? `?fy=${fy}` : ""}`),
+  resolveDeductibility: (b: { state: string; fy?: string; bucket?: string; atoLabel?: string | null; businessUsePct?: number | null; txnIds?: string[]; deductibleAmountCents?: number | null }) =>
+    post<{ updated: number }>("/api/deductibility", b),
   documents: (opts: { type?: string; fy?: string } = {}) => {
     const q = new URLSearchParams();
     if (opts.type) q.set("type", opts.type);

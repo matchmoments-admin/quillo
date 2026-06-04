@@ -484,5 +484,51 @@ console.log("progress next-action engine");
   check("all cleared with data → done", isDone(cleared) === true && buildProgress(cleared).done === true);
 }
 
+// ── QBO token envelope encryption: seal/open round-trip + dual-read (offline, real WebCrypto) ─
+import { sealToken, openToken, readToken, tokenEncryptionEnabled } from "../src/lib/token-crypto";
+import type { Env } from "../src/env";
+
+console.log("token-crypto (QBO envelope encryption)");
+{
+  const env = { QBO_TOKEN_KEY: "unit-test-secret-key" } as Env;
+  const plain = "AB11657891234567.refresh.tok-abc123_def456";
+
+  const sealed = await sealToken(env, plain);
+  check("sealed value does not contain the plaintext", sealed !== plain && !sealed.includes(plain));
+  check("seal → open round-trips to the original token", (await openToken(env, sealed)) === plain);
+
+  const sealed2 = await sealToken(env, plain);
+  check("random IV → two seals of the same token differ", sealed !== sealed2);
+  check("…but both decrypt to the same plaintext", (await openToken(env, sealed2)) === plain);
+
+  // Dual-read: enc_ver 0 (or null) = legacy plaintext passthrough; 1 = decrypt; null value = null.
+  check("readToken enc_ver=0 returns the stored plaintext as-is", (await readToken(env, plain, 0)) === plain);
+  check("readToken enc_ver=null treated as legacy plaintext", (await readToken(env, plain, null)) === plain);
+  check("readToken enc_ver=1 decrypts a sealed value", (await readToken(env, sealed, 1)) === plain);
+  check("readToken null value → null (cleared access token)", (await readToken(env, null, 1)) === null);
+
+  // Graceful activation: no key → encryption disabled (writes stay plaintext).
+  check("tokenEncryptionEnabled false without QBO_TOKEN_KEY", tokenEncryptionEnabled({} as Env) === false);
+  check("tokenEncryptionEnabled true with QBO_TOKEN_KEY", tokenEncryptionEnabled(env) === true);
+
+  // A different key must NOT decrypt (GCM auth tag) — the secret is load-bearing.
+  let threw = false;
+  try {
+    await openToken({ QBO_TOKEN_KEY: "a-different-secret" } as Env, sealed);
+  } catch {
+    threw = true;
+  }
+  check("a wrong key cannot decrypt (GCM authentication tag)", threw);
+
+  // Reading an encrypted row with the key UNSET fails with a clear message, not an opaque crypto throw.
+  let clearMsg = "";
+  try {
+    await readToken({} as Env, sealed, 1);
+  } catch (e) {
+    clearMsg = (e as Error).message;
+  }
+  check("enc_ver=1 with no key → actionable error", clearMsg.includes("QBO_TOKEN_KEY"));
+}
+
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);
 process.exit(fail === 0 ? 0 : 1);

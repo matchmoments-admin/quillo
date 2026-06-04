@@ -20,7 +20,14 @@ feed; only *non-feed* expenses (cash, an Amex not in QBO) are pushed (user-trigg
    ```bash
    npx wrangler secret put QBO_CLIENT_ID
    npx wrangler secret put QBO_CLIENT_SECRET
+   # Optional but recommended — envelope-encrypts the stored OAuth tokens at rest in D1
+   # (AES-256-GCM, app-held key). Any high-entropy string; rotating it makes existing rows
+   # unreadable until each tenant reconnects, so set it once before connecting.
+   npx wrangler secret put QBO_TOKEN_KEY
    ```
+   Without `QBO_TOKEN_KEY` set, tokens are stored plaintext (still encrypted at rest by
+   Cloudflare); setting it switches new writes to app-layer encryption transparently, and the
+   next token refresh upgrades each existing row.
 4. **Sandbox vs production** — `wrangler.toml` `QBO_BASE_URL` defaults to the **sandbox**.
    Test against a sandbox company first; flip to `https://quickbooks.api.intuit.com` for prod.
 5. **Connect** — sign in to the app → open `https://app.quillo.au/api/qbo/connect` →

@@ -209,6 +209,7 @@ CREATE TABLE IF NOT EXISTS qbo_connections (
   access_expires_at   TEXT,
   refresh_token       TEXT NOT NULL,
   refresh_expires_at  TEXT,
+  enc_ver             INTEGER NOT NULL DEFAULT 0,  -- 0=plaintext (legacy), 1=AES-GCM sealed (QBO_TOKEN_KEY); see lib/token-crypto.ts
   updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

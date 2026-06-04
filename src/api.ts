@@ -470,6 +470,8 @@ export async function handleApi(
     // POST /api/qbo/sync-accounts — register QBO bank/card accounts as source='qbo_feed'
     // (activates the feed-vs-statement dedup guard).
     if (id === "sync-accounts" && m === "POST") return json(await stub.syncQboAccounts(uid));
+    // POST /api/qbo/disconnect — revoke the token at Intuit + delete the stored connection.
+    if (id === "disconnect" && m === "POST") return json(await stub.disconnectQuickBooks(uid));
     // POST /api/qbo/push/:txnId — user-triggered push of a NON-FEED company expense.
     if (id === "push" && sub && m === "POST") return json(await stub.pushToQuickBooks(uid, sub));
     // Returns the Intuit authorize URL as JSON (NOT a redirect): the SPA fetches this with

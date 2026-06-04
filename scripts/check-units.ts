@@ -449,5 +449,40 @@ console.log("billableCents");
   check("negative/garbage inputs floor at 0", billableCents(-100, -5, -5) === 0);
 }
 
+// ── Progress / next-action engine: the "what do I do now" precedence (pure, offline) ─────────
+import { nextAction, isDone, buildProgress, type ProgressCounts } from "../src/lib/progress";
+
+console.log("progress next-action engine");
+{
+  const base: ProgressCounts = {
+    imported_statements: 0, imported_transactions: 0, categorised: 0,
+    needs_review: 0, undated: 0, unreconciled_receipts: 0, has_qbo: false,
+  };
+  // Precedence branch 1: nothing imported → import (→ /accounts).
+  check("nothing imported → import (/accounts)", nextAction(base).kind === "import" && nextAction(base).href === "/accounts");
+  check("empty tenant is NOT 'done' (no data)", isDone(base) === false);
+
+  const imported: ProgressCounts = { ...base, imported_statements: 3, imported_transactions: 412, categorised: 412 };
+
+  // The spec's worked example: imported, no receipts, 6 low-confidence + 2 undated.
+  const work: ProgressCounts = { ...imported, needs_review: 6, undated: 2 };
+  check("needs_review>0 → review (/), count 6", nextAction(work).kind === "review" && nextAction(work).count === 6 && nextAction(work).href === "/");
+  check("outstanding exceptions → not done", isDone(work) === false);
+  const wp = buildProgress(work);
+  check("progress surfaces 6 review / 2 undated, done=false", wp.needs_review === 6 && wp.undated === 2 && wp.done === false);
+
+  // Precedence branch 2: review cleared, undated remains → date (→ /reports).
+  const dated: ProgressCounts = { ...imported, needs_review: 0, undated: 2 };
+  check("review cleared, undated>0 → date (/reports), count 2", nextAction(dated).kind === "date" && nextAction(dated).count === 2 && nextAction(dated).href === "/reports");
+
+  // Precedence branch 3: needs_review takes priority over undated.
+  check("needs_review precedes undated", nextAction({ ...imported, needs_review: 1, undated: 5 }).kind === "review");
+
+  // Precedence branch 4: everything cleared → export (→ /filing, the lodge-ready finish line).
+  const cleared: ProgressCounts = { ...imported, needs_review: 0, undated: 0 };
+  check("all cleared → export (/filing)", nextAction(cleared).kind === "export" && nextAction(cleared).href === "/filing");
+  check("all cleared with data → done", isDone(cleared) === true && buildProgress(cleared).done === true);
+}
+
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);
 process.exit(fail === 0 ? 0 : 1);

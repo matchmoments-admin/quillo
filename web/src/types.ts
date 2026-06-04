@@ -36,6 +36,24 @@ export interface Correction {
 
 export type TxnDetail = Txn & { receipt_key: string | null; corrections: Correction[] };
 
+// Derived completion state (GET /api/progress) — drives the cross-tab spine + per-tab guides.
+export interface NextActionData {
+  kind: "import" | "review" | "date" | "export";
+  count: number;
+  label: string;
+  href: string;
+}
+export interface Progress {
+  imported: { statements: number; transactions: number };
+  categorised: number;
+  needs_review: number;
+  undated: number;
+  unreconciled_receipts: number;
+  has_qbo: boolean;
+  done: boolean;
+  next_action: NextActionData;
+}
+
 export interface Property {
   id: string;
   label: string;

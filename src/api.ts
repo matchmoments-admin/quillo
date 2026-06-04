@@ -36,6 +36,7 @@ import { buildConnectUrl, qboStatus } from "./lib/qbo-oauth";
 import { QuickBooksAdapter } from "./ledger/qbo";
 import { LedgerReauthError } from "./ledger";
 import { buildReport, reportToCsv, currentFyStartYear } from "./lib/report";
+import { getProgress } from "./lib/progress";
 import { featureOn } from "./lib/features";
 
 const json = (data: unknown, status = 200) =>
@@ -168,6 +169,12 @@ export async function handleApi(
   // GET /api/usage — measured inference cost (today / month / by feature).
   if (resource === "usage" && m === "GET") {
     return json(await usageSummary(env, uid));
+  }
+
+  // GET /api/progress — derived completion state + the single next action that drives the
+  // cross-tab spine and per-tab guides. Read-only (counts only); reuses COUNTABLE / NEEDS_REVIEW.
+  if (resource === "progress" && m === "GET") {
+    return json(await getProgress(env, uid));
   }
 
   // POST /api/correct  { txnId, field, value } — audited write via the DO.

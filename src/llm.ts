@@ -2,6 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import type { Env } from "./env";
 import type { Profile } from "./lib/db";
 import { recordUsage } from "./lib/usage";
+import { signBedrockInvoke } from "./lib/sigv4";
 
 /**
  * Inference factory — the single seam through which ALL Claude calls go.
@@ -30,8 +31,10 @@ export interface LLMContext {
 }
 
 const ANTHROPIC_HAIKU = "claude-haiku-4-5-20251001";
-// Bedrock uses a different model-id format (region / cross-region inference profile).
-// Confirm the exact id in the Bedrock console for ap-southeast-2 at switch time.
+// Bedrock uses an inference-profile id (region / geographic cross-region profile). For AU data
+// residency use the Australia/Asia-Pacific profile in ap-southeast-2. Confirm the EXACT id in the
+// Bedrock console at activation (an `au.` profile keeps the lifecycle inside Australia; `apac.`
+// spans the wider Asia-Pacific geography). Kept here so it's a one-line change at switch time.
 const BEDROCK_HAIKU = "apac.anthropic.claude-haiku-4-5-20251001-v1:0";
 
 type ProviderProfile = Pick<Profile, "inference_provider" | "inference_region">;
@@ -63,22 +66,54 @@ export async function getLLM(env: Env, profile: ProviderProfile | null, ctx?: LL
   }
 
   if (provider === "bedrock") {
-    // ── AU data-residency seam (review finding B5: the ONLY guaranteed AU path). ──
-    // The `@anthropic-ai/bedrock-sdk` dependency is INSTALLED and the wiring is ready (the
-    // exact code is below + in CONFIG.md), but its transitive `@aws-sdk/*` credential
-    // providers don't bundle into a Cloudflare Worker (a known Workers incompatibility), so
-    // we keep it un-imported until activation. Claude (US) stays the default. At switch time,
-    // either resolve the AWS-SDK bundling (wrangler alias/nodejs_compat) or sign Bedrock
-    // InvokeModel calls directly with WebCrypto SigV4 — both keep the `.messages.create`
-    // surface so src/extract.ts is unchanged. Requires AWS_ACCESS_KEY_ID / _SECRET_ACCESS_KEY
-    // and Claude Haiku enabled in ap-southeast-2.
-    //
-    //   const { AnthropicBedrock } = await import("@anthropic-ai/bedrock-sdk");
-    //   return { client: new AnthropicBedrock({ awsRegion, awsAccessKey, awsSecretKey })
-    //              as unknown as Anthropic, modelId: BEDROCK_HAIKU };
-    void BEDROCK_HAIKU;
-    void env;
-    throw new Error("inference_provider=bedrock isn't activated yet — see CONFIG.md (AU residency).");
+    // ── AU data-residency path (the ONLY guaranteed-AU option). ──
+    // Fully wired but FLAG-GATED: inert until a tenant is on inference_provider='bedrock' AND the
+    // AWS secrets are configured. We sign Bedrock InvokeModel directly with WebCrypto SigV4 (NO
+    // @aws-sdk/*, which doesn't bundle into workerd), preserving the `.messages.create` surface so
+    // src/extract.ts is unchanged. Requires Claude Haiku enabled in ap-southeast-2. See CONFIG.md.
+    const region = profile?.inference_region ?? env.DEFAULT_INFERENCE_REGION ?? "ap-southeast-2";
+    const accessKeyId = env.AWS_ACCESS_KEY_ID;
+    const secretAccessKey = env.AWS_SECRET_ACCESS_KEY;
+    if (!accessKeyId || !secretAccessKey) {
+      // Inert: the default Claude path is untouched; flipping a tenant to bedrock without secrets
+      // fails loudly here rather than silently falling back to the US provider.
+      throw new Error(
+        "inference_provider=bedrock requires AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY secrets — see CONFIG.md (AU residency).",
+      );
+    }
+    const modelId = BEDROCK_HAIKU;
+    // Only the Anthropic Batch API reaches `.client` directly (agent.ts) — Bedrock has no equivalent,
+    // so categoriseStatement routes Bedrock tenants to live mode. This stub throws clearly if a batch
+    // path is ever hit on Bedrock, instead of a confusing undefined-property error.
+    const client = new Proxy({} as Anthropic, {
+      get() {
+        throw new Error("Bedrock provider supports metered create() only — the Anthropic Batch API isn't available; use live categorisation.");
+      },
+    });
+    return {
+      client,
+      modelId,
+      async create(params, feature) {
+        // Bedrock's body is the Anthropic Messages payload WITHOUT `model` (it's in the URL) and WITH
+        // the bedrock anthropic_version marker.
+        const { model: _model, ...rest } = params as Anthropic.MessageCreateParamsNonStreaming & { model?: string };
+        const body = JSON.stringify({ anthropic_version: "bedrock-2023-05-31", ...rest });
+        const signed = await signBedrockInvoke({ region, accessKeyId, secretAccessKey, modelId, body });
+        const res = await fetch(signed.url, { method: "POST", headers: signed.headers, body: signed.body });
+        if (!res.ok) {
+          throw new Error(`Bedrock InvokeModel ${res.status}: ${await res.text()}`);
+        }
+        const msg = (await res.json()) as Anthropic.Message;
+        if (ctx?.userId && msg.usage) {
+          try {
+            await recordUsage(env, ctx.userId, feature, modelId, msg.usage);
+          } catch {
+            /* never let metering break a real call */
+          }
+        }
+        return msg;
+      },
+    };
   }
 
   throw new Error(`unknown inference_provider: ${provider}`);

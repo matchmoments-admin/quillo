@@ -550,5 +550,39 @@ console.log("retention PURGE_TABLES completeness");
   check("PURGE_TABLES has no table missing from schema", purges.every((t) => tenantTables.includes(t)));
 }
 
+// ── Bedrock SigV4 signer: structure + determinism (offline, real WebCrypto) ──────────────────
+import { signBedrockInvoke, sha256Hex } from "../src/lib/sigv4";
+
+console.log("sigv4 (Bedrock InvokeModel signer)");
+{
+  // Known SHA-256 of the empty string validates the WebCrypto primitive.
+  check("sha256Hex('') matches the known vector", (await sha256Hex("")) === "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+
+  const fixed = new Date("2026-06-05T01:02:03.456Z");
+  const opts = {
+    region: "ap-southeast-2",
+    accessKeyId: "AKIATESTKEY",
+    secretAccessKey: "secretKey/with+special",
+    modelId: "apac.anthropic.claude-haiku-4-5-20251001-v1:0",
+    body: JSON.stringify({ anthropic_version: "bedrock-2023-05-31", max_tokens: 10, messages: [] }),
+    now: fixed,
+  };
+  const s = await signBedrockInvoke(opts);
+
+  // AWS convention: LITERAL path on the wire, %3A only in the signed canonical path.
+  check("wire URL keeps the literal model id (colon NOT encoded)", s.url === "https://bedrock-runtime.ap-southeast-2.amazonaws.com/model/apac.anthropic.claude-haiku-4-5-20251001-v1:0/invoke");
+  check("x-amz-date is YYYYMMDDTHHMMSSZ", s.headers["x-amz-date"] === "20260605T010203Z");
+  check("Authorization has the right scope", s.headers.authorization.includes("Credential=AKIATESTKEY/20260605/ap-southeast-2/bedrock/aws4_request"));
+  check("SignedHeaders are the four we sign", s.headers.authorization.includes("SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-date"));
+  check("signature is 64 hex chars", /Signature=[0-9a-f]{64}$/.test(s.headers.authorization));
+  check("payload hash header matches sha256(body)", s.headers["x-amz-content-sha256"] === (await sha256Hex(opts.body)));
+
+  // Deterministic for fixed inputs; sensitive to the body.
+  const again = await signBedrockInvoke(opts);
+  check("same inputs + clock → identical signature", again.headers.authorization === s.headers.authorization);
+  const other = await signBedrockInvoke({ ...opts, body: JSON.stringify({ anthropic_version: "bedrock-2023-05-31", max_tokens: 11, messages: [] }) });
+  check("different body → different signature", other.headers.authorization !== s.headers.authorization);
+}
+
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);
 process.exit(fail === 0 ? 0 : 1);

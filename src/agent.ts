@@ -454,6 +454,12 @@ export class TaxAgent extends Agent<Env> {
       .bind(statementId, userId)
       .first<{ file_key: string | null; status: string }>();
     if (!stmt) return { deleted: false };
+    // Only a stuck upload (parsed) or a failed parse can be removed. Refuse for 'imported'/
+    // 'categorising' — deleting those would strip the R2 sidecar of lines that are (or are
+    // becoming) the ledger, and fingerprint de-dup would then block ever re-importing them.
+    if (stmt.status !== "parsed" && stmt.status !== "failed") {
+      throw new Error("only a parsed or failed statement can be removed (imported transactions stay on the ledger)");
+    }
     if (stmt.file_key) {
       // Best-effort R2 cleanup: the original upload + the normalised-lines sidecar parse wrote.
       await this.env.RECEIPTS.delete(stmt.file_key).catch(() => {});
@@ -1183,6 +1189,7 @@ export class TaxAgent extends Agent<Env> {
         if (!best || days < best.days) best = { inc, days };
       }
       if (best) {
+        claimed.add(best.inc.id); // don't offer this same income row to a later credit in this pass
         suggestions.push({ txn_id: c.id, merchant: c.merchant, txn_amount_cents: amt, txn_date: c.txn_date, bucket: c.bucket, income_id: best.inc.id, income_type: best.inc.income_type, income_gross_cents: best.inc.gross_cents, income_net_cents: best.inc.net_cents, income_date: best.inc.txn_date });
       }
     }

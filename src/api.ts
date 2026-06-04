@@ -288,9 +288,13 @@ export async function handleApi(
       }
     }
     // DELETE /api/statements/:id → remove a stuck/failed upload record (+ R2 sidecar). Keeps any
-    // already-imported transactions (they're the ledger).
+    // already-imported transactions (they're the ledger); refuses to delete an imported statement.
     if (m === "DELETE" && id) {
-      return json(await stub.deleteStatement(uid, id));
+      try {
+        return json(await stub.deleteStatement(uid, id));
+      } catch (e) {
+        return json({ error: (e as Error).message }, 409);
+      }
     }
   }
 
@@ -313,13 +317,15 @@ export async function handleApi(
     }
     if (m === "POST" && id === "link") {
       if (!featureOn(env, "income_dedupe")) return json({ error: "not found" }, 404);
-      const { txnId, incomeId } = (await req.json()) as { txnId: string; incomeId: string };
+      const { txnId, incomeId } = (await req.json().catch(() => ({}))) as { txnId?: string; incomeId?: string };
+      if (!txnId || !incomeId) return json({ error: "txnId and incomeId are required" }, 400);
       await stub.linkIncome(uid, txnId, incomeId);
       return json({ ok: true });
     }
     if (m === "POST" && id === "unlink") {
       if (!featureOn(env, "income_dedupe")) return json({ error: "not found" }, 404);
-      const { txnId } = (await req.json()) as { txnId: string };
+      const { txnId } = (await req.json().catch(() => ({}))) as { txnId?: string };
+      if (!txnId) return json({ error: "txnId is required" }, 400);
       await stub.unlinkIncome(uid, txnId);
       return json({ ok: true });
     }
@@ -521,10 +527,11 @@ export async function handleApi(
   // POST /api/deductibility — resolve deductibility, by txnIds OR by (bucket, ato_label, fy).
   if (resource === "deductibility" && m === "POST") {
     if (!featureOn(env, "deductibility_review")) return json({ error: "not found" }, 404);
-    const b = (await req.json()) as {
-      state: string; deductibleAmountCents?: number | null; txnIds?: string[];
+    const b = (await req.json().catch(() => ({}))) as {
+      state?: string; deductibleAmountCents?: number | null; txnIds?: string[];
       fy?: string; bucket?: string; atoLabel?: string | null; businessUsePct?: number | null;
     };
+    if (!b.state) return json({ error: "state is required" }, 400);
     if (b.txnIds?.length) return json(await stub.setDeductibility(uid, b.txnIds, b.state, b.deductibleAmountCents));
     if (b.bucket) return json(await stub.resolveByLabel(uid, { fy: b.fy, bucket: b.bucket, atoLabel: b.atoLabel, state: b.state, businessUsePct: b.businessUsePct }));
     return json({ error: "provide txnIds or a bucket" }, 400);

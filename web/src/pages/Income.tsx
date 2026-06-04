@@ -113,6 +113,7 @@ function IncomeDedupe() {
   const refresh = () => {
     qc.invalidateQueries({ queryKey: ["income-matches"] });
     qc.invalidateQueries({ queryKey: ["dashboard"] });
+    qc.invalidateQueries({ queryKey: ["report"] }); // dedupe changes the report's income section
   };
   const link = useMutation({
     mutationFn: (v: { txnId: string; incomeId: string }) => api.linkIncome(v.txnId, v.incomeId),

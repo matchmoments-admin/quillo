@@ -160,11 +160,22 @@ export function isTransferLike(description: string): boolean {
   return CARD_PAYMENT_RE.test(s) || INTERNAL_RE.test(s);
 }
 
-/** Per-line fingerprint for re-upload de-dup (account-scoped). Includes balance when present. */
-export function lineFingerprint(accountId: string, line: StatementLine): Promise<string> {
+/**
+ * Per-line fingerprint for re-upload de-dup (account-scoped). Includes balance when present.
+ *
+ * `direction` is part of the key so a charge and its same-day same-amount refund never collide
+ * (amount_cents is stored unsigned). `occurrence` distinguishes genuine repeats — two identical
+ * lines on the same day (common on credit cards, which carry no running balance to separate them):
+ * the Nth such line gets a `#N` suffix so it isn't silently dropped by the unique-fingerprint guard.
+ * Occurrence is assigned by the caller in parse order, so an exact re-upload reproduces the same
+ * fingerprints (idempotent); only the first occurrence is unsuffixed to keep unique lines stable.
+ */
+export function lineFingerprint(accountId: string, line: StatementLine, occurrence = 0): Promise<string> {
   const norm = cleanMerchant(line.raw_description).toLowerCase();
   const bal = line.balance_cents != null ? `|${line.balance_cents}` : "";
-  return sha256hex(`${accountId}|${line.date}|${line.amount_cents}|${norm}${bal}`);
+  const dir = line.direction ?? "debit";
+  const occ = occurrence > 0 ? `|#${occurrence}` : "";
+  return sha256hex(`${accountId}|${line.date}|${line.amount_cents}|${dir}|${norm}${bal}${occ}`);
 }
 
 export interface Reconciliation {

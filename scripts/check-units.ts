@@ -120,6 +120,21 @@ console.log("lineFingerprint");
   check("different amount → different fingerprint", fa !== fc);
   const fOther = await lineFingerprint("acct2", a);
   check("account-scoped: same line, different account → different fingerprint", fa !== fOther);
+
+  // Credit-card (balance-less) collisions the fingerprint must NOT merge:
+  // a charge and its same-day same-amount refund (direction differs), and genuine repeat charges.
+  const charge = line({ amount_cents: 9854, direction: "debit", raw_description: "SPLIT MY FARE MORPETH" });
+  const refund = line({ amount_cents: 9854, direction: "credit", raw_description: "SPLIT MY FARE MORPETH" });
+  const [fCharge, fRefund] = await Promise.all([lineFingerprint("cc", charge), lineFingerprint("cc", refund)]);
+  check("charge vs same-day same-amount refund → different fingerprint (direction in key)", fCharge !== fRefund);
+  const dup = line({ amount_cents: 1080, direction: "debit", raw_description: "CITY OF YARRA PARKING" });
+  const [occ0, occ1, occ0b] = await Promise.all([
+    lineFingerprint("cc", dup, 0),
+    lineFingerprint("cc", dup, 1),
+    lineFingerprint("cc", dup, 0),
+  ]);
+  check("two identical same-day lines → distinct fingerprints by occurrence", occ0 !== occ1);
+  check("occurrence is deterministic → re-upload reproduces the same fingerprint", occ0 === occ0b);
 }
 
 // ── ABN checksum (onboarding inline validation) ──────────────────────────────

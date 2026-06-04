@@ -23,6 +23,15 @@ export function Settings() {
     <div className="space-y-8">
       <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
 
+      {/* Privacy & AI processing (APP-8 consent dashboard) */}
+      <PrivacyPanel
+        profile={s.profile}
+        onChange={() => {
+          invalidate();
+          qc.invalidateQueries({ queryKey: ["progress"] });
+        }}
+      />
+
       {/* Properties */}
       <Section title={<>Properties <InfoTip k="property_status" /></>}>
         {s.properties.map((p) => (
@@ -64,6 +73,89 @@ export function Settings() {
         <MintKey onDone={() => qc.invalidateQueries({ queryKey: ["keys"] })} />
       </Section>
     </div>
+  );
+}
+
+// APP-8 consent dashboard: shows current cross-border processing state + the recorded consent text
+// and date, and lets the user withdraw consent (which re-arms the gate on the US/Anthropic path).
+// Bedrock/AU tenants process in Australia, so no cross-border consent is required.
+function PrivacyPanel({
+  profile,
+  onChange,
+}: {
+  profile?: { consent_xborder: number; consent_xborder_at?: string | null; consent_xborder_text?: string | null; inference_provider: string | null; inference_region?: string | null };
+  onChange: () => void;
+}) {
+  const onBedrock = profile?.inference_provider === "bedrock";
+  const consented = (profile?.consent_xborder ?? 0) === 1;
+  const withdraw = useMutation({ mutationFn: () => api.withdrawConsent(), onSuccess: onChange });
+
+  return (
+    <Card className="p-4">
+      <div className="mb-3 text-xs font-medium uppercase tracking-wide text-muted">
+        Privacy &amp; AI processing <InfoTip k="app8" />
+      </div>
+
+      {onBedrock ? (
+        <div className="rounded-lg bg-safe/5 p-3 text-sm">
+          <p className="font-medium text-safe">Processed in Australia 🇦🇺</p>
+          <p className="mt-1 text-muted">
+            Your records are processed by an Australian-resident model (Amazon Bedrock, Sydney), so cross-border
+            consent isn't required.
+          </p>
+        </div>
+      ) : consented ? (
+        <div className="space-y-3">
+          <div className="rounded-lg bg-surface p-3 text-sm">
+            <p>
+              <span className="font-medium">Cross-border AI processing:</span> consented
+              {profile?.consent_xborder_at ? ` on ${profile.consent_xborder_at} (UTC)` : ""}.
+            </p>
+            <p className="mt-1 text-muted">
+              Receipt &amp; transaction content is sent to Anthropic (USA) for OCR and categorisation. Suggestions are
+              human-reviewed — you confirm everything.
+            </p>
+            {profile?.consent_xborder_text && (
+              <p className="mt-2 border-l-2 border-line pl-3 text-xs italic text-muted">
+                “{profile.consent_xborder_text}”
+              </p>
+            )}
+          </div>
+          <button
+            onClick={() => {
+              if (window.confirm("Withdraw consent? Quillo will stop sending records to the US AI provider, and new items won't be categorised until you re-consent or switch to Australian processing.")) {
+                withdraw.mutate();
+              }
+            }}
+            disabled={withdraw.isPending}
+            className="rounded-lg border border-danger/40 px-3 py-2 text-sm font-medium text-danger transition hover:bg-danger/5 disabled:opacity-50"
+          >
+            {withdraw.isPending ? "Withdrawing…" : "Withdraw consent"}
+          </button>
+        </div>
+      ) : (
+        <div className="rounded-lg bg-warn/10 p-3 text-sm">
+          <p className="font-medium text-warn">Cross-border AI processing not enabled.</p>
+          <p className="mt-1 text-muted">
+            New items won't be categorised until you consent to US processing (during onboarding) or switch to
+            Australian-resident processing.
+          </p>
+        </div>
+      )}
+
+      <p className="mt-3 text-xs text-muted">
+        Read our{" "}
+        <a href="/privacy" target="_blank" rel="noreferrer" className="underline underline-offset-2">
+          Privacy Policy
+        </a>
+        . Under the Australian Privacy Principles you can request access to, correction of, or deletion of your data —
+        email{" "}
+        <a href="mailto:hello@quillo.au" className="underline underline-offset-2">
+          hello@quillo.au
+        </a>
+        .
+      </p>
+    </Card>
   );
 }
 

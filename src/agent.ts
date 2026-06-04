@@ -204,6 +204,7 @@ export class TaxAgent extends Agent<Env> {
     await this.env.RECEIPTS.put(fileKey, bytes, { httpMetadata: { contentType: format === "pdf" ? "application/pdf" : "text/csv" } });
 
     const llm = await getLLM(this.env, profile, { userId });
+    await this.auditXborderInference(userId, provider, "parse_statement", llm.modelId);
 
     let lines: StatementLine[];
     let columnMap: ColumnMap | null = null;
@@ -530,6 +531,7 @@ export class TaxAgent extends Agent<Env> {
     const situation = await getSituation(this.env, userId, profile);
     const system = this.buildSystemPrompt(rulePack, profile, situation, null);
     const llm = await getLLM(this.env, profile, { userId });
+    await this.auditXborderInference(userId, provider, "categorise_statement", llm.modelId);
 
     // Route between synchronous "live" and the async Batch API. Per-tenant `categorise_mode` (or the
     // CATEGORISE_MODE env default) can force either path so we can A/B the UX and compare measured
@@ -1029,6 +1031,7 @@ export class TaxAgent extends Agent<Env> {
     const situation = await getSituation(this.env, userId, profile);
     const system = this.buildSystemPrompt(rulePack, profile, situation, bucketHint);
     const llm = await getLLM(this.env, profile, { userId });
+    await this.auditXborderInference(userId, provider, "categorise", llm.modelId);
     return { llm, system, situation };
   }
 
@@ -1538,6 +1541,7 @@ export class TaxAgent extends Agent<Env> {
     }
 
     const llm = await getLLM(this.env, profile, { userId });
+    await this.auditXborderInference(userId, provider, "classify_document", llm.modelId);
     const cls = await classifyDocument(llm, bytes, mime);
     const propertyId = await this.resolvePropertyByHint(userId, cls.likely_property_hint);
     const lowConf = cls.confidence < 0.6;
@@ -1883,6 +1887,7 @@ export class TaxAgent extends Agent<Env> {
     const provider = profile.inference_provider ?? this.env.DEFAULT_INFERENCE_PROVIDER;
     if (provider === "anthropic" && profile.consent_xborder !== 1) throw new Error("consent_required");
     const llm = await getLLM(this.env, profile, { userId });
+    await this.auditXborderInference(userId, provider, "import_depreciation_schedule", llm.modelId);
     const doc = await this.env.DB.prepare(`SELECT property_id FROM documents WHERE id = ? AND user_id = ?`)
       .bind(docId, userId)
       .first<{ property_id: string | null }>();
@@ -2267,9 +2272,11 @@ export class TaxAgent extends Agent<Env> {
     const after = await this.env.DB.prepare(`SELECT ledger_ref FROM transactions WHERE id = ?`)
       .bind(txnId)
       .first<{ ledger_ref: string | null }>();
-    return after?.ledger_ref
-      ? { ok: true, ledgerRef: after.ledger_ref }
-      : { ok: false, error: "QuickBooks not connected — connect it first, then push." };
+    if (after?.ledger_ref) {
+      await this.audit(userId, "qbo_push", JSON.stringify({ txnId, ledgerRef: after.ledger_ref }));
+      return { ok: true, ledgerRef: after.ledger_ref };
+    }
+    return { ok: false, error: "QuickBooks not connected — connect it first, then push." };
   }
 
   // ── 4. PROACTIVE engine (called by cron) ───────────────────────────────────
@@ -2367,6 +2374,29 @@ export class TaxAgent extends Agent<Env> {
     await this.audit(userId, "consent_xborder", JSON.stringify({ method }));
   }
 
+  /**
+   * Withdraw APP-8 cross-border consent. Clears the flag (the consent gate then blocks the
+   * anthropic path again) but keeps the recorded text/timestamp as an audit trail of what was
+   * previously agreed. Audited.
+   */
+  async withdrawConsent(userId: string): Promise<{ ok: boolean }> {
+    await this.env.DB.prepare(`UPDATE profiles SET consent_xborder = 0 WHERE user_id = ?`).bind(userId).run();
+    await this.audit(userId, "consent_withdrawn", JSON.stringify({ method: "web" }));
+    return { ok: true };
+  }
+
+  /**
+   * Record that a cross-border (US/Anthropic) inference disclosure occurred — once per operation,
+   * with the feature + model id, NEVER any payload. No-op on the AU/Bedrock path (no disclosure to
+   * audit). Keeps the hash-chained audit_log as the APP-8 disclosure record. Called inside the DO so
+   * appends stay serialized.
+   */
+  private async auditXborderInference(userId: string, provider: string, feature: string, model: string): Promise<void> {
+    if (provider === "anthropic") {
+      await this.audit(userId, "xborder_inference", JSON.stringify({ feature, model }));
+    }
+  }
+
   // ── ledger push (idempotent, egress-aware) ─────────────────────────────────
   // RESERVED FOR CASH / NON-FEED EXPENSES ONLY.
   // This method is intentionally NOT called from extractAndCategorise for company-bucket
@@ -2437,6 +2467,7 @@ export class TaxAgent extends Agent<Env> {
       throw new Error("consent_required");
     }
     const llm = await getLLM(this.env, profile, { userId });
+    await this.auditXborderInference(userId, provider, "onboarding_draft", llm.modelId);
     const draft = await extractSituationDraft(llm, message.slice(0, 4000));
     await this.audit(
       userId,

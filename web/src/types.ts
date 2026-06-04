@@ -125,7 +125,13 @@ export interface Person {
 }
 
 export interface Situation {
-  profile?: { consent_xborder: number; inference_provider: string | null };
+  profile?: {
+    consent_xborder: number;
+    consent_xborder_at?: string | null;
+    consent_xborder_text?: string | null;
+    inference_provider: string | null;
+    inference_region?: string | null;
+  };
   persons?: Person[];
   properties: Property[];
   entities: { id: string; kind: string; name: string | null; detail_json?: string | null }[];

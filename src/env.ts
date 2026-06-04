@@ -81,6 +81,7 @@ export interface TaxAgentRpc {
   setAccountSource(userId: string, accountId: string, source: string): Promise<void>;
   syncQboAccounts(userId: string): Promise<{ synced: number }>;
   disconnectQuickBooks(userId: string): Promise<{ ok: boolean; revoked: boolean }>;
+  withdrawConsent(userId: string): Promise<{ ok: boolean }>;
   categoriseStatement(userId: string, statementId: string): Promise<{ categorised: number }>;
   pollBatchJobs(userId: string): Promise<{ applied: number }>;
   recategorise(userId: string): Promise<{ requeued: number; statements: number }>;

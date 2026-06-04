@@ -12,6 +12,8 @@ export interface Profile {
   categorise_mode: string | null; // 'auto' | 'live' | 'batch' | null (=> env default)
   consent_xborder: number;
   consent_xborder_at: string | null;
+  consent_xborder_method: string | null;
+  consent_xborder_text: string | null;
 }
 
 /** Load a tenant profile; returns null if the tenant has no profile row yet. */
@@ -19,7 +21,7 @@ export async function getProfile(env: Env, userId: string): Promise<Profile | nu
   return env.DB.prepare(
     `SELECT user_id, jurisdiction, rule_pack_ver, gst_registered, buckets,
             ledger_provider, inference_provider, inference_region, categorise_mode,
-            consent_xborder, consent_xborder_at
+            consent_xborder, consent_xborder_at, consent_xborder_method, consent_xborder_text
        FROM profiles WHERE user_id = ?`
   )
     .bind(userId)

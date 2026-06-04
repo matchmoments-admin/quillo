@@ -205,15 +205,21 @@ export default {
 
     // One-time backfill: re-categorise data imported before the income/asset buckets existed, so
     // stranded credits get income buckets and capital purchases link to assets. Guarded by a KV
-    // flag per user (cheap get) so it runs exactly once; scoped to the allow-listed tenant(s).
-    for (const uid of (env.CLERK_ALLOWED_USERS ?? "").split(",").map((s) => s.trim()).filter(Boolean)) {
-      const flag = `backfill:income-assets:${uid}`;
+    // flag per tenant (cheap get) so it runs exactly once.
+    //
+    // Iterate REAL tenants from `profiles` (like the weekly scan), NOT CLERK_ALLOWED_USERS: the
+    // allow-list holds Clerk subject ids (e.g. user_3EX9…), but the founder's data lives under the
+    // mapped tenant id "me" (see src/auth/clerk.ts). The earlier v1 backfill keyed off the Clerk id,
+    // so its UPDATE matched 0 rows and silently no-op'd — hence the v2 flag key here.
+    const tenants = await env.DB.prepare(`SELECT user_id FROM profiles`).all<{ user_id: string }>();
+    for (const t of tenants.results ?? []) {
+      const flag = `backfill:income-assets-v2:${t.user_id}`;
       if (await env.RULES.get(flag)) continue;
       try {
-        await stubFor(env, uid).recategorise(uid);
+        await stubFor(env, t.user_id).recategorise(t.user_id);
         await env.RULES.put(flag, "done");
       } catch (e) {
-        console.error(`backfill recategorise failed for ${uid}: ${(e as Error).message}`);
+        console.error(`backfill recategorise failed for ${t.user_id}: ${(e as Error).message}`);
       }
     }
   },

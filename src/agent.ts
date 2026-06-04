@@ -473,7 +473,12 @@ export class TaxAgent extends Agent<Env> {
       .bind(userId)
       .run();
     const requeued = requeue.meta?.changes ?? 0;
-    if (!requeued) return { requeued: 0, statements: 0 };
+    if (!requeued) {
+      // Nothing mishandled to re-queue — record it so a no-op run is observable, not silent
+      // (the v1 backfill silently matched 0 rows because it ran against the wrong tenant id).
+      await this.audit(userId, "recategorise", JSON.stringify({ requeued: 0, statements: 0 }));
+      return { requeued: 0, statements: 0 };
+    }
 
     const stmts = await this.env.DB.prepare(
       `SELECT DISTINCT statement_id FROM transactions

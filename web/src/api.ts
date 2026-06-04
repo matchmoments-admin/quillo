@@ -88,6 +88,7 @@ export const api = {
   mintKey: (label: string) => post<{ keyId: string; secret: string }>("/api/keys", { label }),
   revokeKey: (id: string) => post<{ ok: boolean }>(`/api/keys/${id}/revoke`),
   consent: (text: string) => post<{ ok: boolean }>("/api/consent", { text, method: "web" }),
+  withdrawConsent: () => post<{ ok: boolean }>("/api/consent/withdraw"),
 
   // Accounts + statement import
   accounts: () => get<{ accounts: Account[] }>("/api/accounts").then((r) => r.accounts),

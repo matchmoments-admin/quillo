@@ -165,9 +165,11 @@ const PRIVACY_BODY = /* html */ `
   encrypted and used only for the access you authorised.</p>
 
   <h2>7. Retention &amp; your rights</h2>
-  <p>We keep your data while your account is active and as needed for your records. Under the APPs you may request access
-  to, correction of, or deletion of your personal information — email <a href="mailto:${CONTACT}">${CONTACT}</a>.
-  Disconnecting QuickBooks revokes our access to it.</p>
+  <p>We keep your tax records while your account is active and, by default, aligned to the ATO record-keeping rule —
+  <strong>five years from the date the relevant return is lodged</strong> (longer for capital-gains and depreciating
+  assets). Under the APPs you may request access to, correction of, or deletion of your personal information — from
+  <strong>Settings → Privacy</strong>, or email <a href="mailto:${CONTACT}">${CONTACT}</a>. You can withdraw
+  cross-border AI-processing consent at any time in Settings, and disconnecting QuickBooks revokes our access to it.</p>
 
   <h2>8. Complaints</h2>
   <p>Contact us first at <a href="mailto:${CONTACT}">${CONTACT}</a>. If unresolved, you may complain to the Office of the

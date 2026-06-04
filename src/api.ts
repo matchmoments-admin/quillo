@@ -185,7 +185,9 @@ export async function handleApi(
   }
 
   // POST /api/consent  { text, method } — records APP-8 consent via the DO.
+  // POST /api/consent/withdraw — clears cross-border consent (re-arms the gate); audited.
   if (resource === "consent" && m === "POST") {
+    if (id === "withdraw") return json(await stub.withdrawConsent(uid));
     const { text, method } = (await req.json()) as { text: string; method?: string };
     await stub.recordConsent(uid, text, method ?? "web");
     return json({ ok: true });

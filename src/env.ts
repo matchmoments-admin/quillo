@@ -28,6 +28,9 @@ export interface Env {
   DEFAULT_INFERENCE_REGION: string;     // e.g. 'ap-southeast-2'
   QBO_BASE_URL: string;                 // sandbox or production
   FEATURES?: string;                    // comma-separated enabled feature flags (see lib/features.ts)
+  CATEGORISE_MODE?: string;             // 'auto' | 'live' | 'batch' — default categorisation path (per-tenant override: profiles.categorise_mode)
+  COST_MARKUP_PCT?: string;             // markup % over measured AI cost for the billable figure, e.g. '30' = +30% (display only today)
+  APP_FEE_CENTS?: string;               // flat application fee in cents added on top of marked-up AI cost (display only today)
 
   // Secrets
   ANTHROPIC_API_KEY: string;

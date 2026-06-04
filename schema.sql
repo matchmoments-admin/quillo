@@ -35,6 +35,9 @@ CREATE TABLE IF NOT EXISTS profiles (
   -- Inference seam (finding: easy model switch): 'anthropic' (US) | 'bedrock' (AU residency)
   inference_provider TEXT,                            -- NULL => env default
   inference_region   TEXT,                            -- e.g. 'ap-southeast-2'
+  -- Categorisation path override: 'auto' | 'live' | 'batch'. NULL => env default (CATEGORISE_MODE,
+  -- itself 'auto'). Lets us force live/batch per tenant to A/B the UX + measure cost (migration 0013).
+  categorise_mode    TEXT,
   -- APP 8 cross-border consent must be EXPLICIT + dated (fix H7) — a bare default=1
   -- does not satisfy the principle. Recorded only via recordConsent().
   consent_xborder        INTEGER NOT NULL DEFAULT 0,

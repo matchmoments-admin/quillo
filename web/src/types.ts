@@ -170,6 +170,11 @@ export interface UsageData {
   month_cents: number;
   calls: number;
   by_feature: { feature: string | null; calls: number; cost_cents: number }[];
+  // Per Australian financial year — the tax-time billing rollup. billable_cents = measured cost
+  // marked up by the pricing policy (display only today; no charging wired up).
+  by_fy: { fy: string; calls: number; cost_cents: number; billable_cents: number }[];
+  markup_pct: number;
+  app_fee_cents: number;
 }
 
 export interface KeyRow {

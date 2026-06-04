@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { api } from "../api";
+import { useFeatures } from "../lib/features";
 import { Card, Spinner, Button, Input, money } from "../components/ui";
 import type { IncomeRow } from "../types";
 
@@ -62,6 +64,8 @@ export function Income() {
         <Card className="p-4"><div className="text-xs uppercase tracking-wide text-muted">Franking credits</div><div className="mt-1 text-xl font-semibold tabular-nums">{money(franking)}</div></Card>
       </div>
 
+      <IncomeDedupe />
+
       <div>
         <Button variant="ghost" onClick={() => setAdding((v) => !v)}>{adding ? "Cancel" : "+ Add income manually"}</Button>
       </div>
@@ -95,6 +99,62 @@ export function Income() {
       )}
       <p className="text-xs text-muted">General information only — not tax advice.</p>
     </div>
+  );
+}
+
+// Income de-dup (flag income_dedupe): surfaces credit bank-lines that look like a documented
+// income row so the user can confirm the pair counts once (not double). Suggest-only — nothing is
+// merged until the user clicks Link. Hidden when the flag is off or there's nothing to reconcile.
+function IncomeDedupe() {
+  const { has } = useFeatures();
+  const qc = useQueryClient();
+  const enabled = has("income_dedupe");
+  const { data } = useQuery({ queryKey: ["income-matches"], queryFn: () => api.incomeMatches(), enabled });
+  const refresh = () => {
+    qc.invalidateQueries({ queryKey: ["income-matches"] });
+    qc.invalidateQueries({ queryKey: ["dashboard"] });
+  };
+  const link = useMutation({
+    mutationFn: (v: { txnId: string; incomeId: string }) => api.linkIncome(v.txnId, v.incomeId),
+    onSuccess: () => { toast.success("Linked — counted once in your reports."); refresh(); },
+    onError: (e) => toast.error("Couldn't link", { description: (e as Error).message }),
+  });
+  const unlink = useMutation({
+    mutationFn: (txnId: string) => api.unlinkIncome(txnId),
+    onSuccess: () => { toast.success("Unlinked — the credit counts on its own again."); refresh(); },
+    onError: (e) => toast.error("Couldn't unlink", { description: (e as Error).message }),
+  });
+  if (!enabled || !data || (!data.suggestions.length && !data.matched.length)) return null;
+  return (
+    <Card className="space-y-3 p-4">
+      <div className="text-sm font-semibold">Possible duplicate income</div>
+      <p className="text-xs text-muted">
+        A bank credit that looks like a payslip/documented income row would otherwise count twice.
+        Link a pair so it counts once. General information only — confirm with a registered tax agent.
+      </p>
+      {data.suggestions.map((s) => (
+        <div key={s.txn_id} className="flex flex-wrap items-center justify-between gap-2 border-t border-line pt-2 text-sm">
+          <div>
+            <span className="font-medium">{s.merchant ?? "Bank credit"}</span>{" "}
+            <span className="tabular-nums">{money(s.txn_amount_cents)}</span>{" "}
+            <span className="text-muted">{s.txn_date ?? ""}</span>
+            <span className="text-muted"> ≈ {s.income_type} {money(s.income_gross_cents)}{s.income_date ? ` (${s.income_date})` : ""}</span>
+          </div>
+          <Button onClick={() => link.mutate({ txnId: s.txn_id, incomeId: s.income_id })} disabled={link.isPending}>
+            Link (count once)
+          </Button>
+        </div>
+      ))}
+      {data.matched.map((m) => (
+        <div key={m.txn_id} className="flex flex-wrap items-center justify-between gap-2 border-t border-line pt-2 text-sm text-muted">
+          <div>
+            Linked: <span className="font-medium text-ink">{m.merchant ?? "Bank credit"}</span>{" "}
+            <span className="tabular-nums">{money(m.txn_amount_cents)}</span> ↔ {m.income_type} {money(m.income_gross_cents)}
+          </div>
+          <Button variant="ghost" onClick={() => unlink.mutate(m.txn_id)} disabled={unlink.isPending}>Unlink</Button>
+        </div>
+      ))}
+    </Card>
   );
 }
 

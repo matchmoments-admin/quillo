@@ -1101,6 +1101,108 @@ export class TaxAgent extends Agent<Env> {
     return id;
   }
 
+  /**
+   * Income de-dup: surface likely duplicate pairs (a credit bank-line that looks like a documented
+   * income row) and the already-confirmed links. SUGGEST ONLY — a credit is matched to an income
+   * row only when the user confirms (linkIncome), because a wrong auto-match would silently corrupt
+   * income. A bank salary credit is usually NET pay, so a credit is offered as a match when its
+   * amount is within tolerance of EITHER the income row's net or gross, in the same FY.
+   */
+  async incomeMatches(userId: string): Promise<{
+    suggestions: { txn_id: string; merchant: string | null; txn_amount_cents: number; txn_date: string | null; bucket: string | null; income_id: string; income_type: string; income_gross_cents: number; income_net_cents: number | null; income_date: string | null }[];
+    matched: { txn_id: string; merchant: string | null; txn_amount_cents: number; txn_date: string | null; income_id: string; income_type: string; income_gross_cents: number }[];
+  }> {
+    const credits = await this.env.DB.prepare(
+      `SELECT id, merchant, COALESCE(amount_aud_cents, amount_cents) AS amt, txn_date, bucket, matched_income_id
+         FROM transactions
+        WHERE user_id = ? AND kind = 'bank_line' AND direction = 'credit'
+          AND bucket IN ('income_business','income_property','income_personal')
+          AND status NOT IN ('duplicate','ignored')`,
+    )
+      .bind(userId)
+      .all<{ id: string; merchant: string | null; amt: number | null; txn_date: string | null; bucket: string | null; matched_income_id: string | null }>();
+    const incomes = await this.env.DB.prepare(
+      `SELECT id, income_type, gross_cents, net_cents, COALESCE(amount_aud_cents, gross_cents) AS gross_aud, txn_date, fy
+         FROM income WHERE user_id = ?`,
+    )
+      .bind(userId)
+      .all<{ id: string; income_type: string; gross_cents: number; net_cents: number | null; gross_aud: number; txn_date: string | null; fy: string }>();
+    const incomeRows = incomes.results ?? [];
+    const incomeById = new Map(incomeRows.map((r) => [r.id, r]));
+    // An income row already claimed by another credit is not offered again (one income → one credit),
+    // so two near-identical fortnightly credits can't both link to one monthly payslip and under-count.
+    const claimed = new Set((credits.results ?? []).map((c) => c.matched_income_id).filter(Boolean) as string[]);
+
+    const within = (a: number, b: number): boolean => Math.abs(a - b) <= Math.max(100, Math.round(b * 0.01)); // ±$1 or ±1%
+    const daysApart = (a: string | null, b: string | null): number => {
+      if (!a || !b) return 9999;
+      return Math.abs((Date.parse(a) - Date.parse(b)) / 86_400_000);
+    };
+
+    const suggestions: Awaited<ReturnType<TaxAgent["incomeMatches"]>>["suggestions"] = [];
+    const matched: Awaited<ReturnType<TaxAgent["incomeMatches"]>>["matched"] = [];
+    for (const c of credits.results ?? []) {
+      const amt = c.amt ?? 0;
+      if (c.matched_income_id) {
+        const inc = incomeById.get(c.matched_income_id);
+        if (inc) matched.push({ txn_id: c.id, merchant: c.merchant, txn_amount_cents: amt, txn_date: c.txn_date, income_id: inc.id, income_type: inc.income_type, income_gross_cents: inc.gross_cents });
+        continue;
+      }
+      // Best candidate: same FY, amount matches net or gross, closest date wins. The FY gate keeps
+      // a pair from spanning two financial years (the income row counts in its FY; excluding the
+      // credit by its own FY near 30 Jun would otherwise drop it from one year entirely).
+      const creditFy = fyForDate(c.txn_date);
+      let best: { inc: (typeof incomeRows)[number]; days: number } | null = null;
+      for (const inc of incomeRows) {
+        if (claimed.has(inc.id)) continue; // already linked to another credit
+        if (!creditFy || creditFy !== inc.fy) continue; // same financial year only
+        const amountMatch = within(amt, inc.gross_aud) || (inc.net_cents != null && within(amt, inc.net_cents));
+        if (!amountMatch) continue;
+        const days = daysApart(c.txn_date, inc.txn_date);
+        if (days > 14) continue; // a pay credit lands within a fortnight of the documented date
+        if (!best || days < best.days) best = { inc, days };
+      }
+      if (best) {
+        suggestions.push({ txn_id: c.id, merchant: c.merchant, txn_amount_cents: amt, txn_date: c.txn_date, bucket: c.bucket, income_id: best.inc.id, income_type: best.inc.income_type, income_gross_cents: best.inc.gross_cents, income_net_cents: best.inc.net_cents, income_date: best.inc.txn_date });
+      }
+    }
+    return { suggestions, matched };
+  }
+
+  /** Confirm a credit bank-line duplicates a documented income row → count the pair once. Audited. */
+  async linkIncome(userId: string, txnId: string, incomeId: string): Promise<void> {
+    const inc = await this.env.DB.prepare(`SELECT id, fy FROM income WHERE id = ? AND user_id = ?`).bind(incomeId, userId).first<{ id: string; fy: string }>();
+    if (!inc) throw new Error("income row not found");
+    // One income row → one credit (else two credits both excluded but one row counted = under-count).
+    const taken = await this.env.DB.prepare(
+      `SELECT id FROM transactions WHERE user_id = ? AND matched_income_id = ? AND id != ?`,
+    )
+      .bind(userId, incomeId, txnId)
+      .first<{ id: string }>();
+    if (taken) throw new Error("that income row is already linked to another transaction");
+    // Scope to an income-bucket credit in the SAME financial year as the income row.
+    const txn = await this.env.DB.prepare(
+      `SELECT txn_date FROM transactions WHERE id = ? AND user_id = ? AND kind = 'bank_line' AND direction = 'credit'
+         AND bucket IN ('income_business','income_property','income_personal')`,
+    )
+      .bind(txnId, userId)
+      .first<{ txn_date: string | null }>();
+    if (!txn) throw new Error("income credit not found");
+    if (fyForDate(txn.txn_date) !== inc.fy) throw new Error("the credit and the income row are in different financial years");
+    await this.env.DB.prepare(`UPDATE transactions SET matched_income_id = ? WHERE id = ? AND user_id = ?`)
+      .bind(incomeId, txnId, userId)
+      .run();
+    await this.audit(userId, "income_linked", JSON.stringify({ txnId, incomeId }));
+  }
+
+  /** Undo an income match (the credit counts on its own again). Audited. */
+  async unlinkIncome(userId: string, txnId: string): Promise<void> {
+    await this.env.DB.prepare(`UPDATE transactions SET matched_income_id = NULL WHERE id = ? AND user_id = ?`)
+      .bind(txnId, userId)
+      .run();
+    await this.audit(userId, "income_unlinked", JSON.stringify({ txnId }));
+  }
+
   /** Current AU FY label, e.g. '2025-26' (Jul–Jun). */
   private currentFyLabel(): string {
     const now = new Date();

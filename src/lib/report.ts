@@ -71,15 +71,18 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
     .all<ReportRow>();
 
   // Income captured from bank credits this FY, grouped by income bucket. Shown as its own
-  // section — NOT folded into total_income_cents yet (it would double-count a salary that also
-  // arrived via a payslip in the income table; de-dup is a later phase). 'refund' is excluded.
+  // section — NOT folded into total_income_cents (it would double-count a salary that also
+  // arrived via a payslip in the income table). 'refund' is excluded. When income_dedupe is on,
+  // credits the user has confirmed duplicate a documented income row (matched_income_id set) are
+  // excluded here so the pair is counted once (via the income table).
+  const dedupeClause = featureOn(env, "income_dedupe") ? " AND matched_income_id IS NULL" : "";
   const incomeByBucket = await env.DB.prepare(
     `SELECT bucket, ato_label, COUNT(*) AS n,
             COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS total_cents,
             COALESCE(SUM(gst_cents),0) AS gst_cents
        FROM transactions
       WHERE user_id = ? AND txn_date >= ? AND txn_date <= ?
-        AND bucket IN ('income_business','income_property','income_personal') AND ${COUNTABLE_INCOME}
+        AND bucket IN ('income_business','income_property','income_personal') AND ${COUNTABLE_INCOME}${dedupeClause}
       GROUP BY bucket, ato_label ORDER BY bucket, total_cents DESC`,
   )
     .bind(userId, start, end)

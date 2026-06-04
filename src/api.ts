@@ -301,7 +301,29 @@ export async function handleApi(
       });
     }
     if (m === "POST" && !id) return json({ id: await stub.recordIncome(uid, await req.json()) });
+    // Income de-dup (flag income_dedupe): suggest + confirm/undo credit↔income links.
+    if (m === "GET" && id === "matches") {
+      if (!featureOn(env, "income_dedupe")) return json({ suggestions: [], matched: [] });
+      return json(await stub.incomeMatches(uid));
+    }
+    if (m === "POST" && id === "link") {
+      if (!featureOn(env, "income_dedupe")) return json({ error: "not found" }, 404);
+      const { txnId, incomeId } = (await req.json()) as { txnId: string; incomeId: string };
+      await stub.linkIncome(uid, txnId, incomeId);
+      return json({ ok: true });
+    }
+    if (m === "POST" && id === "unlink") {
+      if (!featureOn(env, "income_dedupe")) return json({ error: "not found" }, 404);
+      const { txnId } = (await req.json()) as { txnId: string };
+      await stub.unlinkIncome(uid, txnId);
+      return json({ ok: true });
+    }
     if (m === "DELETE" && id) {
+      // Clear any credit linked to this income row first, or it would stay excluded from income
+      // forever with no row left to unlink it (silent under-count).
+      await env.DB.prepare(`UPDATE transactions SET matched_income_id = NULL WHERE user_id = ? AND matched_income_id = ?`)
+        .bind(uid, id)
+        .run();
       await deleteRow(env, uid, "income", id);
       return json({ ok: true });
     }

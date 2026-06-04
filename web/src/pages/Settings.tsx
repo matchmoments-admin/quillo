@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import { BUCKETS } from "../types";
-import { Card, Spinner, BUCKET_LABEL } from "../components/ui";
+import { Card, Spinner, BUCKET_LABEL, InfoTip } from "../components/ui";
 import { EntityFields, PropertyFields, entityToBody, propertyToBody, emptyEntity, emptyProperty, OWNED_STATUSES, TENANT_STATUSES, propertyStatusLabel, type EntityValue, type PropertyValue } from "../components/SituationFields";
 
 const input = "rounded-lg border border-line bg-card px-3 py-2 text-sm";
@@ -24,7 +24,7 @@ export function Settings() {
       <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
 
       {/* Properties */}
-      <Section title="Properties">
+      <Section title={<>Properties <InfoTip k="property_status" /></>}>
         {s.properties.map((p) => (
           <EditableProperty key={p.id} property={p} onDone={invalidate} />
         ))}
@@ -32,7 +32,7 @@ export function Settings() {
       </Section>
 
       {/* Entities */}
-      <Section title="Entities (employment · company · novated lease)">
+      <Section title={<>Entities (employment · company · novated lease) <InfoTip k="entities" /></>}>
         {s.entities.map((e) => (
           <Row key={e.id} label={entityLabel(e)} onDelete={() => api.deleteEntity(e.id).then(invalidate)} />
         ))}
@@ -40,7 +40,7 @@ export function Settings() {
       </Section>
 
       {/* Rules */}
-      <Section title="Per-user rules">
+      <Section title={<>Per-user rules <InfoTip k="user_rules" /></>}>
         {s.rules.map((r) => (
           <Row key={r.id} label={`"${r.pattern}" → ${BUCKET_LABEL[r.bucket] ?? r.bucket} · ${r.ato_label}`} onDelete={() => api.deleteRule(r.id).then(invalidate)} />
         ))}
@@ -48,7 +48,7 @@ export function Settings() {
       </Section>
 
       {/* Devices / keys */}
-      <Section title="Devices (ingest keys)">
+      <Section title={<>Devices (ingest keys) <InfoTip k="devices" /></>}>
         {keys.isLoading ? (
           <Spinner />
         ) : (
@@ -67,7 +67,7 @@ export function Settings() {
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({ title, children }: { title: React.ReactNode; children: React.ReactNode }) {
   return (
     <Card className="p-4">
       <div className="mb-3 text-xs font-medium uppercase tracking-wide text-muted">{title}</div>

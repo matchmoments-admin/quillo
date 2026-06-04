@@ -1,8 +1,8 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api";
-import { Card, Spinner, Button, BUCKET_LABEL } from "../components/ui";
+import { Card, Spinner, Button, BUCKET_LABEL, InfoTip, Term } from "../components/ui";
 import {
   EntityFields,
   PropertyFields,
@@ -106,7 +106,7 @@ export function Onboarding() {
 
       {step === "consent" && (
         <Card className="p-5">
-          <StepHead n={idx + 1} total={stepKeys.length} title="Cross-border processing consent (APP 8)" />
+          <StepHead n={idx + 1} total={stepKeys.length} title={<>Cross-border processing consent (APP 8) <InfoTip k="app8" /></>} />
           {usingBedrock ? (
             <p className="text-sm text-muted">You're on AU-resident inference (Bedrock) — no US consent needed.</p>
           ) : hasConsent ? (
@@ -127,8 +127,9 @@ export function Onboarding() {
         <Card className="p-5">
           <StepHead n={idx + 1} total={stepKeys.length} title="Tell me about your situation" />
           <p className="mb-3 text-sm text-muted">
-            In your own words — your work, any company (with ABN), investment properties, novated lease. I'll pre-fill the
-            next steps; you confirm everything. Or skip and fill it in manually.
+            In your own words — your work, any company (with <Term k="abn">ABN</Term>), investment properties,{" "}
+            <Term k="novated_lease">novated lease</Term>. I'll pre-fill the next steps; you confirm everything. Or skip and
+            fill it in manually.
           </p>
           <textarea
             className="h-32 w-full rounded-lg border border-line bg-card px-3 py-2 text-sm"
@@ -155,7 +156,7 @@ export function Onboarding() {
 
       {step === "entities" && (
         <Card className="p-5">
-          <StepHead n={idx + 1} total={stepKeys.length} title="Your entities" />
+          <StepHead n={idx + 1} total={stepKeys.length} title={<>Your entities <InfoTip k="entities" /></>} />
           <p className="mb-3 text-sm text-muted">Company, PAYG employment, novated lease. Confirm or edit what I drafted; add any I missed.</p>
           <ExistingList items={(s?.entities ?? []).map((e) => `${e.kind}${e.name ? ` — ${e.name}` : ""}`)} />
           <div className="space-y-3">
@@ -177,7 +178,7 @@ export function Onboarding() {
 
       {step === "properties" && (
         <Card className="p-5">
-          <StepHead n={idx + 1} total={stepKeys.length} title="Your properties" />
+          <StepHead n={idx + 1} total={stepKeys.length} title={<>Your properties <InfoTip k="property_status" /></>} />
           <p className="mb-3 text-sm text-muted">Each investment property so expenses attribute correctly. Address matters for rentals.</p>
           <ExistingList items={(s?.properties ?? []).map((p) => `${p.label} — ${p.status}`)} />
           <div className="space-y-3">
@@ -199,7 +200,7 @@ export function Onboarding() {
 
       {step === "rules" && (
         <Card className="p-5">
-          <StepHead n={idx + 1} total={stepKeys.length} title="Suggested rules" />
+          <StepHead n={idx + 1} total={stepKeys.length} title={<>Suggested rules <InfoTip k="user_rules" /></>} />
           <p className="mb-3 text-sm text-muted">I spotted a few merchant rules. Keep the ones that look right.</p>
           <div className="space-y-2">
             {rules.map((r, i) => (
@@ -244,7 +245,7 @@ export function Onboarding() {
   );
 }
 
-function StepHead({ n, total, title }: { n: number; total: number; title: string }) {
+function StepHead({ n, total, title }: { n: number; total: number; title: ReactNode }) {
   return (
     <div className="mb-3">
       <div className="text-xs font-medium uppercase tracking-wide text-muted">

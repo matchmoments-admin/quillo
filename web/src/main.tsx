@@ -20,6 +20,7 @@ import { Reconcile } from "./pages/Reconcile";
 import { Income } from "./pages/Income";
 import { Documents } from "./pages/Documents";
 import { Assets } from "./pages/Assets";
+import { Glossary } from "./pages/Glossary";
 import { setTokenGetter } from "./api";
 
 const PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY as string | undefined;
@@ -94,6 +95,7 @@ const router = createBrowserRouter([
       { path: "reports", element: <Reports /> },
       { path: "review", element: <Review /> },
       { path: "filing", element: <Filing /> },
+      { path: "glossary", element: <Glossary /> },
     ],
   },
 ]);

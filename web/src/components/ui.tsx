@@ -1,4 +1,6 @@
 import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode } from "react";
+import * as Tooltip from "@radix-ui/react-tooltip";
+import { GLOSSARY, type GlossaryKey } from "../content/glossary";
 
 export const money = (cents: number | null): string =>
   cents == null ? "—" : `$${(cents / 100).toLocaleString("en-AU", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -165,5 +167,88 @@ export function Meter({ frac, className = "bg-green" }: { frac: number; classNam
     <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-surface">
       <div className={`h-full rounded-full ${className}`} style={{ width: `${pct}%` }} />
     </div>
+  );
+}
+
+// ============================================================================
+// Educational "What's this?" tooltips (Radix — accessible on hover AND keyboard
+// focus). Copy is the single source of truth in content/glossary.ts. Provider is
+// mounted once in App.tsx. Tooltips are an ENHANCEMENT: never the only path to
+// essential info, and every deductibility-adjacent tip defers to the year-end
+// review + a registered agent (the softener lives in the glossary copy).
+// ============================================================================
+
+/** Resolve a tip body from an explicit node or a glossary key. */
+function tipBody(k?: GlossaryKey, tip?: ReactNode): ReactNode | null {
+  return tip ?? (k ? GLOSSARY[k].short : null);
+}
+
+/** The floating bubble — shared by InfoTip and Term. Card surface, ink text, above everything. */
+function TipBubble({ children }: { children: ReactNode }) {
+  return (
+    <Tooltip.Portal>
+      <Tooltip.Content
+        side="top"
+        align="center"
+        sideOffset={6}
+        collisionPadding={12}
+        className="z-[70] max-w-[18rem] select-none rounded-xl border border-line bg-card px-3 py-2.5 text-xs leading-relaxed text-ink-2 shadow-card"
+      >
+        {children}
+        <Tooltip.Arrow className="fill-card" width={11} height={6} />
+      </Tooltip.Content>
+    </Tooltip.Portal>
+  );
+}
+
+/**
+ * A small ⓘ trigger that reveals an educational snippet on hover/focus. Use next to headings,
+ * stat labels and table headers. Pass a glossary `k` (preferred — keeps copy central) or an
+ * explicit `tip`. Renders nothing if neither resolves, so call sites stay clean.
+ */
+export function InfoTip({ k, tip, label, className = "" }: { k?: GlossaryKey; tip?: ReactNode; label?: string; className?: string }) {
+  const body = tipBody(k, tip);
+  if (!body) return null;
+  return (
+    <Tooltip.Root>
+      <Tooltip.Trigger asChild>
+        <button
+          type="button"
+          aria-label={label ?? (k ? `What's this? ${GLOSSARY[k].term}` : "What's this?")}
+          // Many tips sit inside a <label>; without this, clicking the ⓘ would activate the label's
+          // control (e.g. toggle a checkbox). Inert click — the tip already shows on hover/focus.
+          onClick={(e) => e.preventDefault()}
+          className={`inline-grid h-[15px] w-[15px] flex-none translate-y-[-1px] place-items-center rounded-full border border-ink-3/40 align-middle text-[10px] font-bold leading-none text-ink-3 transition hover:border-ink/50 hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-ink/25 ${className}`}
+        >
+          i
+        </button>
+      </Tooltip.Trigger>
+      <TipBubble>{body}</TipBubble>
+    </Tooltip.Root>
+  );
+}
+
+/**
+ * Inline dotted-underline term for jargon mid-sentence. Children are the visible text (defaults
+ * to the glossary term); the tip body comes from `k` or an explicit `tip`. Falls back to plain
+ * text when no tip resolves, so it never breaks a sentence.
+ */
+export function Term({ k, tip, children }: { k?: GlossaryKey; tip?: ReactNode; children?: ReactNode }) {
+  const body = tipBody(k, tip);
+  const text = children ?? (k ? GLOSSARY[k].term : null);
+  if (!body) return <>{text}</>;
+  return (
+    <Tooltip.Root>
+      <Tooltip.Trigger asChild>
+        <button
+          type="button"
+          onClick={(e) => e.preventDefault()}
+          className="cursor-help rounded-sm underline decoration-dotted decoration-ink-3/60 underline-offset-2 transition hover:decoration-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-ink/25"
+        >
+          {text}
+        </button>
+      </Tooltip.Trigger>
+      <TipBubble>{body}</TipBubble>
+    </Tooltip.Root>
   );
 }

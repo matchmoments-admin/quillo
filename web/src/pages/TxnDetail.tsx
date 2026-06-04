@@ -3,7 +3,8 @@ import { useParams, useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import { BUCKETS } from "../types";
-import { BUCKET_LABEL, Card, Spinner, money, ConfidencePill } from "../components/ui";
+import { BUCKET_LABEL, Card, Spinner, money, ConfidencePill, InfoTip } from "../components/ui";
+import { GLOSSARY, type GlossaryKey } from "../content/glossary";
 
 export function TxnDetail() {
   const { id = "" } = useParams();
@@ -113,16 +114,16 @@ export function TxnDetail() {
                 v={`${money(txn.amount_aud_cents)}${txn.fx_rate ? ` @ ${txn.fx_rate.toFixed(4)}` : " — set manually"}`}
               />
             )}
-            <Field k="GST" v={txn.currency && txn.currency !== "AUD" ? "n/a (overseas)" : money(txn.gst_cents)} />
-            <Field k="Date" v={`${txn.txn_date ?? "— undated —"}${fyLabel(txn.txn_date) ? `  ·  FY ${fyLabel(txn.txn_date)}` : ""}`} />
-            {txn.paid_account && <Field k="Paid via" v={txn.paid_account} />}
+            <Field k="GST" tipKey="gst" v={txn.currency && txn.currency !== "AUD" ? "n/a (overseas)" : money(txn.gst_cents)} />
+            <Field k="Date" tipKey="fy" v={`${txn.txn_date ?? "— undated —"}${fyLabel(txn.txn_date) ? `  ·  FY ${fyLabel(txn.txn_date)}` : ""}`} />
+            {txn.paid_account && <Field k="Paid via" tipKey="paid_via" v={txn.paid_account} />}
             <Field k="Source" v={txn.source} />
             <Field k="Status" v={txn.status} />
           </Card>
 
           {txn.reasoning && (
             <Card className="space-y-1 bg-surface p-4">
-              <div className="text-xs font-medium uppercase tracking-wide text-ink-3">Why this bucket?</div>
+              <div className="text-xs font-medium uppercase tracking-wide text-ink-3">Why this bucket? <InfoTip k="reasoning" /></div>
               <p className="text-sm text-ink">{txn.reasoning}</p>
               <p className="text-xs text-muted">General information only — not tax advice. Confirm with a registered tax/BAS agent.</p>
             </Card>
@@ -130,7 +131,17 @@ export function TxnDetail() {
 
           <Card className="space-y-4 p-4">
             <label className="block">
-              <span className="text-xs font-medium uppercase tracking-wide text-muted">Bucket</span>
+              <span className="text-xs font-medium uppercase tracking-wide text-muted">
+                Bucket{" "}
+                <InfoTip
+                  tip={
+                    <>
+                      {GLOSSARY[(bucket && bucket in GLOSSARY ? bucket : "bucket") as GlossaryKey].short} Changing this teaches Quillo your
+                      preferences for similar future transactions.
+                    </>
+                  }
+                />
+              </span>
               <select
                 value={bucket}
                 onChange={(e) => {
@@ -149,7 +160,7 @@ export function TxnDetail() {
             </label>
 
             <label className="block">
-              <span className="text-xs font-medium uppercase tracking-wide text-muted">ATO label</span>
+              <span className="text-xs font-medium uppercase tracking-wide text-muted">ATO label <InfoTip k="ato_label" /></span>
               <input
                 value={label}
                 onChange={(e) => {
@@ -163,7 +174,7 @@ export function TxnDetail() {
 
             {(bucket === "property_rented" || bucket === "property_vacant") && (
               <label className="block">
-                <span className="text-xs font-medium uppercase tracking-wide text-muted">Property</span>
+                <span className="text-xs font-medium uppercase tracking-wide text-muted">Property <InfoTip tip="Which of your investment properties this cost belongs to, so per-property totals stay accurate." /></span>
                 <select
                   value={propertyId}
                   onChange={(e) => {
@@ -272,10 +283,13 @@ function fyLabel(d: string | null): string | null {
   return `${startYear}-${String((startYear + 1) % 100).padStart(2, "0")}`;
 }
 
-function Field({ k, v }: { k: string; v: string }) {
+function Field({ k, v, tipKey }: { k: string; v: string; tipKey?: GlossaryKey }) {
   return (
     <div className="flex items-center justify-between px-4 py-2.5">
-      <span className="text-muted">{k}</span>
+      <span className="text-muted">
+        {k}
+        {tipKey ? <> <InfoTip k={tipKey} /></> : null}
+      </span>
       <span className="font-medium tabular-nums">{v}</span>
     </div>
   );

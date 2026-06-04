@@ -23,12 +23,17 @@ import { spentTodayCents, recordUsage } from "./lib/usage";
 import { parseTransactionAlert } from "./lib/bank-parsers";
 import auV1RulePack from "./rulepacks/au-v1.json";
 import { assertBucketKeys } from "./lib/taxonomy";
-import { featureOn } from "./lib/features";
+import { featureOn, categoriseMode } from "./lib/features";
 
 const CONFIDENCE_THRESHOLD = 0.85;
 // Above this many to-categorise lines, route to the async Message Batches API (~50% cheaper);
-// at or below, categorise synchronously so normal imports stay instant.
+// at or below, categorise synchronously so normal imports stay instant. Used in `auto` mode.
 const BATCH_THRESHOLD = 60;
+// Safety ceiling for forced `live` mode: a synchronous run does one ~5–15s Claude call per 40-line
+// chunk, sequentially, inside a single DO request. Past this many lines that risks DO CPU/time/
+// subrequest limits (e.g. a 1,500-line backfill ≈ 38 calls), so we fall back to batch and record the
+// override rather than time out mid-run. Not a silent cap — the fallback is audited + notified.
+const LIVE_MAX_LINES = 200;
 
 type RulePack = typeof auV1RulePack;
 
@@ -507,7 +512,7 @@ export class TaxAgent extends Agent<Env> {
    * One Claude call per ~40 lines (not per line); budget-aware (stops at MAX_DAILY_COST_CENTS
    * via withinBudget) — over budget the remainder stays needs_review. Bulk jobs go async (Batch API).
    */
-  async categoriseStatement(userId: string, statementId: string): Promise<{ categorised: number }> {
+  async categoriseStatement(userId: string, statementId: string, opts?: { bulk?: boolean }): Promise<{ categorised: number }> {
     const rows = await this.env.DB.prepare(
       `SELECT id, merchant, amount_cents, txn_date, direction FROM transactions
         WHERE user_id = ? AND statement_id = ? AND kind = 'bank_line' AND status = 'needs_review'`,
@@ -525,8 +530,24 @@ export class TaxAgent extends Agent<Env> {
     const system = this.buildSystemPrompt(rulePack, profile, situation, null);
     const llm = await getLLM(this.env, profile, { userId });
 
-    // Bulk → Message Batches API (async, ~50% cheaper). Small imports stay synchronous (instant).
-    if (items.length > BATCH_THRESHOLD) {
+    // Route between synchronous "live" and the async Batch API. Per-tenant `categorise_mode` (or the
+    // CATEGORISE_MODE env default) can force either path so we can A/B the UX and compare measured
+    // cost; `auto` keeps the size-based default. Forced `live` does ONE sequential ~5-15s Claude call
+    // per 40-line chunk inside a single DO request, so two cases fall back to the async batch path to
+    // avoid exhausting the DO mid-run: (1) an oversized single upload (>LIVE_MAX_LINES), and (2) the
+    // bulk re-categorisation backfill (recategorise loops this over many statements in one request —
+    // many sub-cap statements still sum to thousands of lines). Bulk recategorisation IS what batch is
+    // for, so it stays quiet; only the interactive oversized upload tells the user why.
+    const mode = categoriseMode(this.env, profile);
+    let useBatch = mode === "batch" || (mode === "auto" && items.length > BATCH_THRESHOLD);
+    if (mode === "live" && (opts?.bulk || items.length > LIVE_MAX_LINES)) {
+      useBatch = true;
+      if (!opts?.bulk) {
+        await this.audit(userId, "categorise_mode_fallback", JSON.stringify({ statementId, lines: items.length, from: "live", to: "batch", limit: LIVE_MAX_LINES }));
+        await this.notify(userId, `That import (${items.length} lines) is too large to categorise live, so it ran in the cheaper background batch instead — results will fill in shortly.`, null);
+      }
+    }
+    if (useBatch) {
       await this.submitBatchCategorisation(userId, statementId, items, system, llm);
       return { categorised: 0 };
     }
@@ -591,7 +612,7 @@ export class TaxAgent extends Agent<Env> {
       .all<{ statement_id: string }>();
     let count = 0;
     for (const s of stmts.results ?? []) {
-      await this.categoriseStatement(userId, s.statement_id); // sync small / async batch large
+      await this.categoriseStatement(userId, s.statement_id, { bulk: true }); // bulk → batch (never long sync runs)
       count++;
     }
     await this.linkAssetsForUser(userId); // link any capital purchases the sync path just bucketed

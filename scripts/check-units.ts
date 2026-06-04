@@ -7,6 +7,7 @@ import { batchStatementStatus, isStaleBatch, BATCH_MAX_AGE_MS } from "../src/lib
 import { extractSituationDraft } from "../src/extract";
 import type { LLM } from "../src/llm";
 import { isValidAbn, normaliseAbn } from "../web/src/lib/abn";
+import { billableCents } from "../src/lib/billing";
 import { BUCKETS } from "../src/lib/taxonomy";
 import fs from "node:fs";
 import path from "node:path";
@@ -434,6 +435,18 @@ console.log("bucket taxonomy");
   check("rule-pack buckets match the taxonomy", JSON.stringify(taxonomy) === JSON.stringify(rulepackKeys));
   check("UI BUCKET_LABEL covers every taxonomy bucket", taxonomy.every((b) => uiKeys.includes(b)));
   check("income + refund buckets present", ["income_business", "income_property", "income_personal", "refund"].every((b) => taxonomy.includes(b)));
+}
+
+// ── Billing: marked-up "billable" figure is pure + sane (the per-user cost-billing seam) ─────
+console.log("billableCents");
+{
+  check("zero usage → zero billable (no flat fee on nothing)", billableCents(0, 30, 50) === 0);
+  check("markup only: 100c +30% → 130c", billableCents(100, 30, 0) === 130);
+  check("markup + flat fee: 100c +30% +50c → 180c", billableCents(100, 30, 50) === 180);
+  check("zero policy is a pass-through (100c → 100c)", billableCents(100, 0, 0) === 100);
+  check("rounds to whole cents (33c +30% = 42.9 → 43)", billableCents(33, 30, 0) === 43);
+  check("never bills less than measured cost (markup ≥ 0)", billableCents(250, 0, 0) >= 250);
+  check("negative/garbage inputs floor at 0", billableCents(-100, -5, -5) === 0);
 }
 
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);

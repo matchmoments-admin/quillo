@@ -1,5 +1,6 @@
 import type { Env } from "../env";
 import { enabledFeatures } from "./features";
+import { billingPolicy, billableCents } from "./billing";
 
 // Read-side queries for the web API. Reads hit D1 directly from the Worker; audited
 // writes (corrections, consent) go through the Durable Object RPC instead.
@@ -206,11 +207,36 @@ export async function usageSummary(env: Env, userId: string) {
   )
     .bind(userId, month)
     .all();
+  // Per Australian financial year (1 Jul–30 Jun): a row's FY-start year is its calendar year, minus
+  // one if the month is Jan–Jun. Grouped here for the tax-time billing rollup (uses the existing
+  // (user_id, created_at) index). billable = measured cost marked up by the env pricing policy —
+  // display only today (see lib/billing.ts). NOTE: the boundary is computed on the UTC created_at, so
+  // usage in the ~10h window after AEST midnight on 1 Jul lands in the prior FY; acceptable for a
+  // display rollup, but apply a proper AU-local offset before this drives a real charge.
+  const policy = billingPolicy(env);
+  const byFyRows = await env.DB.prepare(
+    `SELECT CAST(substr(created_at,1,4) AS INTEGER)
+              - (CASE WHEN CAST(substr(created_at,6,2) AS INTEGER) >= 7 THEN 0 ELSE 1 END) AS fy_start,
+            COUNT(*) AS calls, COALESCE(SUM(cost_cents),0) AS cost_cents
+       FROM llm_usage WHERE user_id = ?
+      GROUP BY fy_start ORDER BY fy_start DESC`,
+  )
+    .bind(userId)
+    .all<{ fy_start: number; calls: number; cost_cents: number }>();
+  const by_fy = (byFyRows.results ?? []).map((r) => ({
+    fy: `${r.fy_start}-${String((r.fy_start + 1) % 100).padStart(2, "0")}`, // e.g. "2025-26"
+    calls: r.calls,
+    cost_cents: r.cost_cents,
+    billable_cents: billableCents(r.cost_cents, policy.markupPct, policy.appFeeCents),
+  }));
   return {
     today_cents: totals?.today_cents ?? 0,
     month_cents: totals?.month_cents ?? 0,
     calls: totals?.calls ?? 0,
     by_feature: byFeature.results ?? [],
+    by_fy,
+    markup_pct: policy.markupPct,
+    app_fee_cents: policy.appFeeCents,
   };
 }
 

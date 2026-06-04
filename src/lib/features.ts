@@ -36,3 +36,19 @@ export function enabledFeatures(env: Env): FeatureKey[] {
   const on = enabledSet(env);
   return FEATURE_KEYS.filter((k) => on.has(k));
 }
+
+/**
+ * How statement categorisation should run. `live` = synchronous Claude calls (instant, full price);
+ * `batch` = the async Message Batches API (~50% cheaper, applied by the cron); `auto` = today's
+ * size-based routing (>BATCH_THRESHOLD lines → batch, else live). Resolution order, narrowest first:
+ * per-tenant `profiles.categorise_mode` → env `CATEGORISE_MODE` → `auto`. Same single-call-site shape
+ * as `featureOn`, so the per-tenant override lands with no churn at the call site (it already passes
+ * the profile). An unrecognised value degrades safely to `auto`.
+ */
+export const CATEGORISE_MODES = ["auto", "live", "batch"] as const;
+export type CategoriseMode = (typeof CATEGORISE_MODES)[number];
+
+export function categoriseMode(env: Env, profile?: { categorise_mode?: string | null }): CategoriseMode {
+  const raw = (profile?.categorise_mode ?? env.CATEGORISE_MODE ?? "auto").trim().toLowerCase();
+  return (CATEGORISE_MODES as readonly string[]).includes(raw) ? (raw as CategoriseMode) : "auto";
+}

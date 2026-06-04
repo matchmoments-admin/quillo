@@ -9,6 +9,7 @@ export interface Profile {
   ledger_provider: string;
   inference_provider: string | null;
   inference_region: string | null;
+  categorise_mode: string | null; // 'auto' | 'live' | 'batch' | null (=> env default)
   consent_xborder: number;
   consent_xborder_at: string | null;
 }
@@ -17,7 +18,7 @@ export interface Profile {
 export async function getProfile(env: Env, userId: string): Promise<Profile | null> {
   return env.DB.prepare(
     `SELECT user_id, jurisdiction, rule_pack_ver, gst_registered, buckets,
-            ledger_provider, inference_provider, inference_region,
+            ledger_provider, inference_provider, inference_region, categorise_mode,
             consent_xborder, consent_xborder_at
        FROM profiles WHERE user_id = ?`
   )

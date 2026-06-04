@@ -133,6 +133,27 @@ export function Dashboard() {
               <SimpleRow key={f.feature ?? "?"} k={FEATURE_LABEL[f.feature ?? ""] ?? f.feature ?? "—"} sub={`${f.calls}`} v={cents(f.cost_cents)} />
             ))}
           </div>
+          {u.by_fy.length > 0 && (
+            <div className="mt-4">
+              <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-ink-3">
+                By financial year{u.markup_pct > 0 ? ` · billable incl. ${u.markup_pct}% fee` : ""}
+              </div>
+              <div className="divide-y divide-line">
+                {u.by_fy.map((f) => (
+                  <SimpleRow
+                    key={f.fy}
+                    k={`FY ${f.fy}`}
+                    sub={`${f.calls} calls · ${cents(f.cost_cents)} cost`}
+                    v={cents(f.billable_cents)}
+                  />
+                ))}
+              </div>
+              <p className="mt-2 text-xs text-muted">
+                Billable = measured AI cost{u.markup_pct > 0 ? ` + ${u.markup_pct}%` : ""}
+                {u.app_fee_cents > 0 ? ` + ${cents(u.app_fee_cents)} fee` : ""}. Shown for transparency — not yet charged.
+              </p>
+            </div>
+          )}
         </Panel>
       )}
 

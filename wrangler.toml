@@ -81,6 +81,17 @@ FEATURES = "refund_netting,income_dedupe,asset_defaults,bulk_import,deductibilit
 # Per-user daily AI-spend budget in cents (measured, credit insurance). 0/unset = unlimited.
 # e.g. 500 = $5/day. Replaces the old count cap; over budget → receipts queue as needs_review.
 MAX_DAILY_COST_CENTS = "500"
+# Default statement-categorisation path (per-tenant override: profiles.categorise_mode).
+#   auto  → size-based: >60 lines go to the async Batch API (~50% cheaper), else synchronous live.
+#   live  → always synchronous Claude calls (instant, full price). Huge jobs fall back to batch.
+#   batch → always the async Message Batches API (cheapest, applied by the */10 cron).
+# Set to live/batch to A/B the UX and compare measured cost in llm_usage. 'auto' = today's behaviour.
+CATEGORISE_MODE = "auto"
+# AI-cost billing seam (DISPLAY ONLY today — no charging wired up). The "billable" figure shown to a
+# tenant = measured AI cost × (1 + COST_MARKUP_PCT/100) + APP_FEE_CENTS. Verify the usage.ts pricing
+# table against live Anthropic rates before turning any of this into a real charge.
+COST_MARKUP_PCT = "30"
+APP_FEE_CENTS = "0"
 # Clerk auth (replaces Cloudflare Access). CLERK_ISSUER = the Clerk Frontend API URL
 # (derived from the publishable key). The Worker verifies session JWTs against
 # ${CLERK_ISSUER}/.well-known/jwks.json. Leave CLERK_ISSUER UNSET for local dev (the API

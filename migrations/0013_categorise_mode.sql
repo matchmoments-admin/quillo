@@ -1,0 +1,12 @@
+-- 0013_categorise_mode.sql
+-- Per-tenant override for HOW statement categorisation runs, so we can A/B the UX and measure the
+-- real cost difference between the two paths:
+--   live  → synchronous Claude calls per ~40-line chunk (instant, full price)
+--   batch → Anthropic Message Batches API (async, ~50% cheaper, applied by the */10 cron)
+--   auto  → today's behaviour: size-based (>BATCH_THRESHOLD lines → batch, else live)
+-- Apply: wrangler d1 execute tax-agent-db --remote --file=migrations/0013_categorise_mode.sql
+--
+-- Additive + apply-once: ADD COLUMN, nullable. NULL => inherit the env default (CATEGORISE_MODE),
+-- which itself defaults to 'auto' — so existing tenants keep exactly today's behaviour until a
+-- value is explicitly set. Resolved server-side via categoriseMode(env, profile) in lib/features.ts.
+ALTER TABLE profiles ADD COLUMN categorise_mode TEXT;

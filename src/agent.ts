@@ -551,6 +551,9 @@ export class TaxAgent extends Agent<Env> {
         await this.notify(userId, `That import (${items.length} lines) is too large to categorise live, so it ran in the cheaper background batch instead — results will fill in shortly.`, null);
       }
     }
+    // Bedrock has no Anthropic Batch API — always categorise live (sequential per-chunk) for those
+    // tenants, regardless of size/mode. This guard wins over every useBatch path above.
+    if (provider === "bedrock") useBatch = false;
     if (useBatch) {
       await this.submitBatchCategorisation(userId, statementId, items, system, llm);
       return { categorised: 0 };

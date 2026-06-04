@@ -18,6 +18,18 @@
     { "match": "aws, amazon web services, azure, microsoft azure, google cloud, gcp, cloudflare, vercel, netlify, digitalocean, heroku, render", "bucket": "company", "ato_label": "company:cloud-services", "note": "cloud hosting / infrastructure" },
     { "match": "godaddy, namecheap, crazy domains, ventraip", "bucket": "company", "ato_label": "company:software-subscriptions", "note": "domains / web services" }
   ],
+  "_asset_class_note": "GENERAL-INFO effective-life defaults for auto-created depreciating assets. Approximations aligned with common ATO TR 2022/1 lives — a sensible starting point only. Auto-created assets still land needs_review for the user to confirm the class, effective life, method and business-use % with a registered tax agent.",
+  "asset_class_hints": [
+    { "match": "laptop, macbook, notebook, computer, desktop, pc, imac, mac mini, workstation", "asset_class": "div40_plant", "effective_life_years": 4, "method": "diminishing_value", "note": "computers / laptops ~4 years" },
+    { "match": "iphone, ipad, phone, smartphone, tablet, mobile, galaxy, pixel", "asset_class": "div40_plant", "effective_life_years": 3, "method": "diminishing_value", "note": "phones / tablets ~3 years" },
+    { "match": "monitor, screen, display, dock, docking, keyboard, mouse, webcam, headset, ssd, hard drive, router, ups", "asset_class": "div40_plant", "effective_life_years": 4, "method": "diminishing_value", "note": "computer peripherals ~4 years" },
+    { "match": "printer, scanner, projector, shredder, label printer", "asset_class": "div40_plant", "effective_life_years": 5, "method": "diminishing_value", "note": "office machines ~5 years" },
+    { "match": "camera, lens, dslr, mirrorless, microphone, lighting, gimbal, tripod", "asset_class": "div40_plant", "effective_life_years": 6, "method": "diminishing_value", "note": "photography / AV gear ~6 years" },
+    { "match": "desk, chair, table, cabinet, drawers, bookcase, shelving, furniture, sofa, couch", "asset_class": "div40_plant", "effective_life_years": 10, "method": "diminishing_value", "note": "office / home furniture ~10 years" },
+    { "match": "fridge, refrigerator, washing machine, dryer, dishwasher, oven, cooktop, air conditioner, hot water, microwave, appliance", "asset_class": "div40_plant", "effective_life_years": 10, "method": "diminishing_value", "note": "appliances (e.g. rental) ~10 years" },
+    { "match": "drill, saw, tools, toolkit, machinery, generator, compressor, mower, ladder, equipment", "asset_class": "div40_plant", "effective_life_years": 5, "method": "diminishing_value", "note": "tools / equipment ~5 years" }
+  ],
+  "asset_class_default": { "asset_class": "div40_plant", "effective_life_years": 5, "method": "diminishing_value", "note": "fallback when no asset_class_hint matches" },
   "claimability": [
     { "scope_type": "bucket", "scope_value": "property_rented", "merchant_hint": "plumber,plumbing,electrician,handyman,repair,bunnings,hardware,mitre 10", "ato_label": "rental:repairs", "claim_type": "immediate", "general_info_note": "Repairs that restore a rented property to working condition are generally deductible in the year paid (improvements are not).", "defer_to_agent": 0 },
     { "scope_type": "bucket", "scope_value": "property_rented", "merchant_hint": "dishwasher,oven,fridge,refrigerator,air conditioner,hot water,appliance,carpet,blinds,washing machine", "ato_label": "rental:decline-in-value", "claim_type": "div40", "default_method": "diminishing_value", "general_info_note": "A new appliance in a rented property is generally a depreciating asset (Div 40), claimed over its effective life — not immediately.", "defer_to_agent": 0 },

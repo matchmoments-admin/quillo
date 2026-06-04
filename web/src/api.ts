@@ -110,6 +110,7 @@ export const api = {
       "/api/statements/confirm-batch",
       opts ?? {},
     ),
+  deleteStatement: (id: string) => send<{ deleted: boolean }>("DELETE", `/api/statements/${id}`),
 
   // Phase 4
   qboStatus: () => get<QboStatus>("/api/qbo/status"),

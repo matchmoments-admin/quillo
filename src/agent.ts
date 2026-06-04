@@ -445,6 +445,26 @@ export class TaxAgent extends Agent<Env> {
   }
 
   /**
+   * Remove a statement record + its parsed-lines sidecar in R2. Used to clear a stuck "ready to
+   * import" (parsed) upload or a failed parse. Imported transactions are NOT touched — they're the
+   * ledger; this only removes the upload record + its R2 artifacts. Scoped to the tenant. Audited.
+   */
+  async deleteStatement(userId: string, statementId: string): Promise<{ deleted: boolean }> {
+    const stmt = await this.env.DB.prepare(`SELECT file_key, status FROM statements WHERE id = ? AND user_id = ?`)
+      .bind(statementId, userId)
+      .first<{ file_key: string | null; status: string }>();
+    if (!stmt) return { deleted: false };
+    if (stmt.file_key) {
+      // Best-effort R2 cleanup: the original upload + the normalised-lines sidecar parse wrote.
+      await this.env.RECEIPTS.delete(stmt.file_key).catch(() => {});
+      await this.env.RECEIPTS.delete(`${stmt.file_key}.lines`).catch(() => {});
+    }
+    await this.env.DB.prepare(`DELETE FROM statements WHERE id = ? AND user_id = ?`).bind(statementId, userId).run();
+    await this.audit(userId, "statement_deleted", JSON.stringify({ statementId, status: stmt.status }));
+    return { deleted: true };
+  }
+
+  /**
    * Batch-categorise statement bank lines the deterministic pass left as needs_review.
    * One Claude call per ~40 lines (not per line); budget-aware (stops at MAX_DAILY_COST_CENTS
    * via withinBudget) — over budget the remainder stays needs_review. Bulk jobs go async (Batch API).

@@ -237,13 +237,9 @@ function AccountRow({ account, statements }: { account: Account; statements: Sta
               {account.line_count ? <span className="text-xs">· {account.line_count} lines</span> : null}
             </div>
             {statements.length > 0 && (
-              <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted">
+              <div className="mt-1 flex flex-col gap-1 text-xs text-muted">
                 {statements.map((s) => (
-                  <span key={s.id} className={s.status === "failed" ? "text-danger" : s.status === "categorising" ? "text-warn" : ""}>
-                    {s.filename ?? s.format ?? "statement"}: {STATUS_LABEL[s.status] ?? s.status}
-                    {s.status === "categorising" && s.total_lines ? ` ${s.categorised_count ?? 0} / ${s.total_lines}` : ""}
-                    {s.status === "imported" && s.imported_count != null ? ` (${s.imported_count})` : ""}
-                  </span>
+                  <StatementChip key={s.id} statement={s} onChange={invalidate} />
                 ))}
               </div>
             )}
@@ -352,6 +348,60 @@ function AccountRow({ account, statements }: { account: Account; statements: Sta
           })()}
       </Card>
     </li>
+  );
+}
+
+// One row in an account's statement list. A persisted 'parsed' ("ready to import") statement gets
+// Import + Remove actions (the in-session confirm only existed right after upload, so a parsed
+// statement was previously stuck); a reconcile-gate failure offers "Import anyway" (force). A
+// 'failed' parse can be removed. Imported transactions are never touched by Remove.
+function StatementChip({ statement: s, onChange }: { statement: StatementInfo; onChange: () => void }) {
+  const qc = useQueryClient();
+  const [err, setErr] = useState<string | null>(null);
+  const imp = useMutation({
+    mutationFn: (force?: boolean) => api.confirmImport(s.id, force),
+    onSuccess: (r) => {
+      setErr(null);
+      toast.success(`Imported ${r.imported} transaction(s)`, { description: r.skipped ? `${r.skipped} already on file.` : "Categorising in the background." });
+      onChange();
+      qc.invalidateQueries({ queryKey: ["transactions"] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+    onError: (e) => setErr((e as Error).message),
+  });
+  const del = useMutation({
+    mutationFn: () => api.deleteStatement(s.id),
+    onSuccess: () => { toast.success("Statement removed"); onChange(); },
+    onError: (e) => toast.error("Couldn't remove statement", { description: (e as Error).message }),
+  });
+  const progress = s.status === "categorising" && s.total_lines ? ` ${s.categorised_count ?? 0} / ${s.total_lines}` : "";
+  const count = s.status === "imported" && s.imported_count != null ? ` (${s.imported_count})` : "";
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <span className={s.status === "failed" ? "text-danger" : s.status === "categorising" ? "text-warn" : ""}>
+        {s.filename ?? s.format ?? "statement"}: {STATUS_LABEL[s.status] ?? s.status}{progress}{count}
+      </span>
+      {s.status === "parsed" && (
+        <button onClick={() => imp.mutate(false)} disabled={imp.isPending} className="font-medium text-ink underline underline-offset-2 hover:text-green">
+          {imp.isPending ? "Importing…" : "Import"}
+        </button>
+      )}
+      {(s.status === "parsed" || s.status === "failed") && (
+        <button
+          onClick={() => { if (confirm("Remove this statement upload? Any already-imported transactions stay.")) del.mutate(); }}
+          disabled={del.isPending}
+          className="underline underline-offset-2 hover:text-danger"
+        >
+          {del.isPending ? "Removing…" : "Remove"}
+        </button>
+      )}
+      {err && (
+        <span className="text-danger">
+          {err}{" "}
+          <button onClick={() => imp.mutate(true)} disabled={imp.isPending} className="font-medium underline underline-offset-2">Import anyway</button>
+        </span>
+      )}
+    </div>
   );
 }
 

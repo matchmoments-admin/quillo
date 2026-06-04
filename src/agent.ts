@@ -452,20 +452,45 @@ export class TaxAgent extends Agent<Env> {
   }
 
   /**
-   * Remove a statement record + its parsed-lines sidecar in R2. Used to clear a stuck "ready to
-   * import" (parsed) upload or a failed parse. Imported transactions are NOT touched — they're the
-   * ledger; this only removes the upload record + its R2 artifacts. Scoped to the tenant. Audited.
+   * Remove a statement record + its parsed-lines sidecar in R2.
+   *
+   * Default (purge=false): only a stuck 'parsed' or 'failed' upload can be removed, and imported
+   * transactions are never touched — this just clears the upload record.
+   *
+   * purge=true: also delete this statement's imported bank_lines (and un-match any receipts that
+   * pointed at them), so the statement can be cleanly RE-UPLOADED — the recovery path for the
+   * credit-card de-dup fix, where past imports dropped genuine repeat/refund lines. Destructive:
+   * re-importing re-runs categorisation and loses manual corrections on those lines. Audited.
    */
-  async deleteStatement(userId: string, statementId: string): Promise<{ deleted: boolean }> {
+  async deleteStatement(userId: string, statementId: string, purge = false): Promise<{ deleted: boolean; linesRemoved: number }> {
     const stmt = await this.env.DB.prepare(`SELECT file_key, status FROM statements WHERE id = ? AND user_id = ?`)
       .bind(statementId, userId)
       .first<{ file_key: string | null; status: string }>();
-    if (!stmt) return { deleted: false };
-    // Only a stuck upload (parsed) or a failed parse can be removed. Refuse for 'imported'/
-    // 'categorising' — deleting those would strip the R2 sidecar of lines that are (or are
-    // becoming) the ledger, and fingerprint de-dup would then block ever re-importing them.
-    if (stmt.status !== "parsed" && stmt.status !== "failed") {
-      throw new Error("only a parsed or failed statement can be removed (imported transactions stay on the ledger)");
+    if (!stmt) return { deleted: false, linesRemoved: 0 };
+    const imported = stmt.status !== "parsed" && stmt.status !== "failed";
+    // An imported/categorising statement can only be removed with an explicit purge (which also
+    // deletes its lines) — a bare remove would strip the R2 sidecar while leaving the ledger rows,
+    // and the de-dup guard would then block re-importing them.
+    if (imported && !purge) {
+      throw new Error("this statement is imported — use 'Remove + re-import' to delete its transactions and re-upload");
+    }
+    let linesRemoved = 0;
+    if (purge) {
+      // Un-match receipts attached to these lines so they don't dangle (restore them to extracted),
+      // then delete the bank_lines. Done before the row delete so the ids are still resolvable.
+      await this.env.DB.prepare(
+        `UPDATE transactions SET matched_txn_id = NULL, status = 'extracted'
+          WHERE user_id = ? AND kind = 'receipt' AND matched_txn_id IN
+            (SELECT id FROM transactions WHERE user_id = ? AND statement_id = ? AND kind = 'bank_line')`,
+      )
+        .bind(userId, userId, statementId)
+        .run();
+      const del = await this.env.DB.prepare(
+        `DELETE FROM transactions WHERE user_id = ? AND statement_id = ? AND kind = 'bank_line'`,
+      )
+        .bind(userId, statementId)
+        .run();
+      linesRemoved = del.meta?.changes ?? 0;
     }
     if (stmt.file_key) {
       // Best-effort R2 cleanup: the original upload + the normalised-lines sidecar parse wrote.
@@ -473,8 +498,8 @@ export class TaxAgent extends Agent<Env> {
       await this.env.RECEIPTS.delete(`${stmt.file_key}.lines`).catch(() => {});
     }
     await this.env.DB.prepare(`DELETE FROM statements WHERE id = ? AND user_id = ?`).bind(statementId, userId).run();
-    await this.audit(userId, "statement_deleted", JSON.stringify({ statementId, status: stmt.status }));
-    return { deleted: true };
+    await this.audit(userId, "statement_deleted", JSON.stringify({ statementId, status: stmt.status, purge, linesRemoved }));
+    return { deleted: true, linesRemoved };
   }
 
   /**

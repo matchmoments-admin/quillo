@@ -71,7 +71,7 @@ export interface TaxAgentRpc {
   parseStatement(userId: string, accountId: string, filename: string, bytes: ArrayBuffer, format: string): Promise<{ statementId: string; columnMap: unknown; preview: unknown[]; rowCount: number; duplicate: boolean; reconciliation?: unknown }>;
   confirmImport(userId: string, statementId: string, columnMapOverride?: unknown, force?: boolean, quiet?: boolean): Promise<{ imported: number; skipped: number }>;
   confirmImportBulk(userId: string, opts?: { statementIds?: string[]; force?: boolean }): Promise<{ statements: number; imported: number; skipped: number; errors: { statementId: string; error: string }[] }>;
-  deleteStatement(userId: string, statementId: string): Promise<{ deleted: boolean }>;
+  deleteStatement(userId: string, statementId: string, purge?: boolean): Promise<{ deleted: boolean; linesRemoved: number }>;
   setAccountSource(userId: string, accountId: string, source: string): Promise<void>;
   syncQboAccounts(userId: string): Promise<{ synced: number }>;
   categoriseStatement(userId: string, statementId: string): Promise<{ categorised: number }>;

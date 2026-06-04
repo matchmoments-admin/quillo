@@ -287,11 +287,11 @@ export async function handleApi(
         return json({ error: (e as Error).message }, 409); // e.g. reconciliation gate
       }
     }
-    // DELETE /api/statements/:id → remove a stuck/failed upload record (+ R2 sidecar). Keeps any
-    // already-imported transactions (they're the ledger); refuses to delete an imported statement.
+    // DELETE /api/statements/:id[?purge=1] → remove a stuck/failed upload (keeps imported txns), or
+    // with purge=1 delete an imported statement's lines too so it can be cleanly re-uploaded.
     if (m === "DELETE" && id) {
       try {
-        return json(await stub.deleteStatement(uid, id));
+        return json(await stub.deleteStatement(uid, id, url.searchParams.get("purge") === "1"));
       } catch (e) {
         return json({ error: (e as Error).message }, 409);
       }

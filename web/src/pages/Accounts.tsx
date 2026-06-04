@@ -370,10 +370,18 @@ function StatementChip({ statement: s, onChange }: { statement: StatementInfo; o
     onError: (e) => setErr((e as Error).message),
   });
   const del = useMutation({
-    mutationFn: () => api.deleteStatement(s.id),
-    onSuccess: () => { toast.success("Statement removed"); onChange(); },
+    mutationFn: (purge?: boolean) => api.deleteStatement(s.id, purge),
+    onSuccess: (r) => {
+      toast.success(r.linesRemoved ? `Removed (${r.linesRemoved} transactions deleted) — re-upload to re-import` : "Statement removed");
+      onChange();
+      if (r.linesRemoved) {
+        qc.invalidateQueries({ queryKey: ["transactions"] });
+        qc.invalidateQueries({ queryKey: ["dashboard"] });
+      }
+    },
     onError: (e) => toast.error("Couldn't remove statement", { description: (e as Error).message }),
   });
+  const imported = s.status === "imported" || s.status === "categorising";
   const progress = s.status === "categorising" && s.total_lines ? ` ${s.categorised_count ?? 0} / ${s.total_lines}` : "";
   const count = s.status === "imported" && s.imported_count != null ? ` (${s.imported_count})` : "";
   return (
@@ -388,11 +396,24 @@ function StatementChip({ statement: s, onChange }: { statement: StatementInfo; o
       )}
       {(s.status === "parsed" || s.status === "failed") && (
         <button
-          onClick={() => { if (confirm("Remove this statement upload? Any already-imported transactions stay.")) del.mutate(); }}
+          onClick={() => { if (confirm("Remove this statement upload? Any already-imported transactions stay.")) del.mutate(false); }}
           disabled={del.isPending}
           className="underline underline-offset-2 hover:text-danger"
         >
           {del.isPending ? "Removing…" : "Remove"}
+        </button>
+      )}
+      {imported && (
+        <button
+          onClick={() => {
+            if (confirm(`Remove + re-import "${s.filename ?? "this statement"}"?\n\nThis DELETES its ${s.imported_count ?? ""} imported transactions (and any manual categorisation on them) so you can re-upload the PDF and re-import cleanly with the de-dup fix. Receipts stay, just un-matched.`))
+              del.mutate(true);
+          }}
+          disabled={del.isPending}
+          className="underline underline-offset-2 hover:text-danger"
+          title="Delete this statement's transactions so you can re-upload it"
+        >
+          {del.isPending ? "Removing…" : "Remove + re-import"}
         </button>
       )}
       {err && (

@@ -224,5 +224,19 @@ export default {
         console.error(`backfill recategorise failed for ${t.user_id}: ${(e as Error).message}`);
       }
     }
+
+    // One-time statement repair: recover lines dropped by the old credit-card de-dup bug (re-import
+    // from the stored R2 sidecar with the fixed fingerprint) and correct stale imported_count /
+    // reconciled flags. Idempotent; KV-guarded so it runs once per tenant.
+    for (const t of tenants.results ?? []) {
+      const flag = `repair:statements-v1:${t.user_id}`;
+      if (await env.RULES.get(flag)) continue;
+      try {
+        await stubFor(env, t.user_id).repairStatements(t.user_id);
+        await env.RULES.put(flag, "done");
+      } catch (e) {
+        console.error(`statement repair failed for ${t.user_id}: ${(e as Error).message}`);
+      }
+    }
   },
 } satisfies ExportedHandler<Env>;

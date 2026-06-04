@@ -394,10 +394,17 @@ export class TaxAgent extends Agent<Env> {
       imported += res.reduce((s, r) => s + (r.meta?.changes ?? 0), 0);
     }
 
-    await this.env.DB.prepare(`UPDATE statements SET status='imported', imported_count=? WHERE id=?`)
-      .bind(imported, statementId)
+    // imported_count = the statement's ACTUAL posted line count, not just this run's inserts —
+    // re-confirming a statement dedup-skips every line (delta 0) and previously zeroed a correct
+    // count. Also persist the reconcile result computed above so the flag reflects this import, not
+    // a stale parse-time value.
+    const posted = (await this.env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM transactions WHERE user_id = ? AND statement_id = ? AND kind = 'bank_line'`,
+    ).bind(userId, statementId).first<{ n: number }>())?.n ?? imported;
+    await this.env.DB.prepare(`UPDATE statements SET status='imported', imported_count=?, reconciled=?, recon_diff_cents=? WHERE id=?`)
+      .bind(posted, recon.available ? (recon.ok ? 1 : 0) : null, recon.available ? recon.diff_cents : null, statementId)
       .run();
-    await this.audit(userId, "statement_imported", JSON.stringify({ statementId, imported, skipped }));
+    await this.audit(userId, "statement_imported", JSON.stringify({ statementId, imported, skipped, posted }));
 
     // Batch-categorise the lines that the deterministic pass (rules+hints) didn't cover.
     const cat = await this.categoriseStatement(userId, statementId);
@@ -508,6 +515,89 @@ export class TaxAgent extends Agent<Env> {
     await this.env.DB.prepare(`DELETE FROM statements WHERE id = ? AND user_id = ?`).bind(statementId, userId).run();
     await this.audit(userId, "statement_deleted", JSON.stringify({ statementId, status: stmt.status, purge, linesRemoved }));
     return { deleted: true, linesRemoved };
+  }
+
+  /**
+   * One-time repair of statements imported before fixes landed (run once via a KV-guarded cron):
+   *  - statements that DROPPED lines under the old credit-card de-dup bug (actual bank_lines <
+   *    row_count) are re-imported from their stored R2 sidecar with the fixed direction+occurrence
+   *    fingerprint (purge existing lines + un-match receipts, then confirmImport(force,quiet)) —
+   *    recovering the dropped repeats, no re-upload needed;
+   *  - every other statement just has stale flags corrected in place: imported_count set to the
+   *    actual line count (fixes a 0 left by a re-confirm), and a reconciled=0 flag recomputed from
+   *    the sidecar (parse-time value may predate the reconcile fixes).
+   * Idempotent: once actual == row_count and flags are set, a re-run changes nothing.
+   */
+  async repairStatements(userId: string): Promise<{ statements: number; recovered: number; flagsFixed: number }> {
+    const stmts = await this.env.DB.prepare(
+      `SELECT s.id, s.file_key, s.row_count, s.imported_count, s.reconciled, s.opening_cents, s.closing_cents,
+              a.type AS account_type
+         FROM statements s LEFT JOIN accounts a ON a.id = s.account_id AND a.user_id = s.user_id
+        WHERE s.user_id = ? AND s.status = 'imported'`,
+    )
+      .bind(userId)
+      .all<{ id: string; file_key: string | null; row_count: number; imported_count: number | null; reconciled: number | null; opening_cents: number | null; closing_cents: number | null; account_type: string | null }>();
+    let statements = 0;
+    let recovered = 0;
+    let flagsFixed = 0;
+    for (const s of stmts.results ?? []) {
+      const actual = (await this.env.DB.prepare(
+        `SELECT COUNT(*) AS n FROM transactions WHERE user_id = ? AND statement_id = ? AND kind = 'bank_line'`,
+      ).bind(userId, s.id).first<{ n: number }>())?.n ?? 0;
+
+      // Read + validate the sidecar ONCE, up front. Purging before confirming the sidecar is
+      // readable/parseable would risk an empty statement if the re-read later failed — so the gap
+      // branch only deletes after we hold good lines here.
+      let sidecarLines: StatementLine[] | null = null;
+      if (s.file_key) {
+        const sc = await this.env.RECEIPTS.get(`${s.file_key}.lines`);
+        if (sc) {
+          try {
+            const parsed = JSON.parse(await sc.text());
+            if (Array.isArray(parsed)) sidecarLines = parsed as StatementLine[];
+          } catch {
+            /* unreadable sidecar → leave the statement untouched */
+          }
+        }
+      }
+
+      if (sidecarLines && sidecarLines.length && actual < s.row_count) {
+        // Dropped lines → re-import from the sidecar with the fixed fingerprint. Purge existing lines
+        // (un-matching any receipts first) but KEEP the record + sidecar, then confirmImport re-reads it.
+        await this.env.DB.prepare(
+          `UPDATE transactions SET matched_txn_id = NULL, status = 'extracted'
+            WHERE user_id = ? AND kind = 'receipt' AND matched_txn_id IN
+              (SELECT id FROM transactions WHERE user_id = ? AND statement_id = ? AND kind = 'bank_line')`,
+        )
+          .bind(userId, userId, s.id)
+          .run();
+        await this.env.DB.prepare(
+          `DELETE FROM transactions WHERE user_id = ? AND statement_id = ? AND kind = 'bank_line'`,
+        )
+          .bind(userId, s.id)
+          .run();
+        const r = await this.confirmImport(userId, s.id, undefined, true, true); // force past the gate, quiet
+        recovered += Math.max(0, r.imported - actual);
+        statements++;
+      } else {
+        // No missing lines (or no sidecar to recover from) — correct stale counters/flags in place.
+        let fixed = false;
+        if ((s.imported_count ?? -1) !== actual) {
+          await this.env.DB.prepare(`UPDATE statements SET imported_count = ? WHERE id = ? AND user_id = ?`).bind(actual, s.id, userId).run();
+          fixed = true;
+        }
+        if (s.reconciled !== 1 && sidecarLines) {
+          const recon = reconcileStatement(sidecarLines, s.opening_cents, s.closing_cents, isLiabilityAccount(s.account_type));
+          await this.env.DB.prepare(`UPDATE statements SET reconciled = ?, recon_diff_cents = ? WHERE id = ? AND user_id = ?`)
+            .bind(recon.available ? (recon.ok ? 1 : 0) : null, recon.available ? recon.diff_cents : null, s.id, userId)
+            .run();
+          fixed = true;
+        }
+        if (fixed) flagsFixed++;
+      }
+    }
+    await this.audit(userId, "statements_repaired", JSON.stringify({ statements, recovered, flagsFixed }));
+    return { statements, recovered, flagsFixed };
   }
 
   /**

@@ -135,6 +135,13 @@ export const api = {
   },
   addIncome: (b: Partial<IncomeRow>) => post<{ id: string }>("/api/income", b),
   deleteIncome: (id: string) => send<{ ok: boolean }>("DELETE", `/api/income/${id}`),
+  incomeMatches: () =>
+    get<{
+      suggestions: { txn_id: string; merchant: string | null; txn_amount_cents: number; txn_date: string | null; bucket: string | null; income_id: string; income_type: string; income_gross_cents: number; income_net_cents: number | null; income_date: string | null }[];
+      matched: { txn_id: string; merchant: string | null; txn_amount_cents: number; txn_date: string | null; income_id: string; income_type: string; income_gross_cents: number }[];
+    }>("/api/income/matches"),
+  linkIncome: (txnId: string, incomeId: string) => post<{ ok: boolean }>("/api/income/link", { txnId, incomeId }),
+  unlinkIncome: (txnId: string) => post<{ ok: boolean }>("/api/income/unlink", { txnId }),
   documents: (opts: { type?: string; fy?: string } = {}) => {
     const q = new URLSearchParams();
     if (opts.type) q.set("type", opts.type);

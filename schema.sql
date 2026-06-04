@@ -86,6 +86,8 @@ CREATE TABLE IF NOT EXISTS transactions (
   -- 0011: deductibility is DEFERRED to year-end review — captured/bucketed mid-year, resolved once.
   deductibility TEXT DEFAULT 'undetermined', -- undetermined|likely_deductible|likely_not|needs_apportionment|confirmed_deductible|confirmed_not
   deductible_amount_cents INTEGER,       -- apportioned claimable amount (cents), resolved at review; NULL until then
+  -- 0012: a credit bank-line manually linked to the income row it duplicates (de-dup); NULL = unmatched.
+  matched_income_id TEXT,
   created_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_txn_imghash ON transactions(user_id, image_hash);
@@ -97,6 +99,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_txn_fingerprint
 CREATE INDEX IF NOT EXISTS idx_txn_kind     ON transactions(user_id, kind, status);
 CREATE INDEX IF NOT EXISTS idx_txn_matched  ON transactions(user_id, matched_txn_id);
 CREATE INDEX IF NOT EXISTS idx_txn_acct_date ON transactions(user_id, account_id, txn_date);
+CREATE INDEX IF NOT EXISTS idx_txn_matched_income ON transactions(user_id, matched_income_id);
 
 -- ── Bank / card / investment accounts (per tenant) ────────────────────────────
 -- Each account has ONE canonical money source: a QBO feed OR statement upload — never both

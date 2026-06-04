@@ -370,6 +370,9 @@ export async function dashboard(env: Env, userId: string) {
     .all();
   // Income from bank credits, grouped by income bucket (separate from the document-sourced
   // `income` table — see COUNTABLE_INCOME). 'refund' is excluded: it nets against spend.
+  // NOTE: dedupe (matched_income_id) is intentionally NOT applied here — the dashboard shows this
+  // credit glance WITHOUT the income table beside it, so hiding matched credits would make income
+  // look like it vanished. De-dup is applied in the formal Report, where both sections coexist.
   const incomeByBucket = await env.DB.prepare(
     `SELECT bucket, COUNT(*) AS n, COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS total_cents
        FROM transactions WHERE user_id = ? AND bucket IN ('income_business','income_property','income_personal') AND ${COUNTABLE_INCOME}

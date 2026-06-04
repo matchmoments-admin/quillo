@@ -36,6 +36,7 @@ import { buildConnectUrl, qboStatus } from "./lib/qbo-oauth";
 import { QuickBooksAdapter } from "./ledger/qbo";
 import { LedgerReauthError } from "./ledger";
 import { buildReport, reportToCsv, currentFyStartYear } from "./lib/report";
+import { featureOn } from "./lib/features";
 
 const json = (data: unknown, status = 200) =>
   new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json" } });
@@ -269,6 +270,13 @@ export async function handleApi(
         if (msg === "consent_required") return json({ error: "consent_required" }, 403);
         return json({ error: msg }, 422); // unreadable statement / extraction failure — show the reason
       }
+    }
+    // POST /api/statements/confirm-batch [{ statementIds?, force? }] → bulk-confirm all parsed
+    // statements (or a given subset). Flag-gated; 404 when off so behaviour is unchanged.
+    if (m === "POST" && id === "confirm-batch") {
+      if (!featureOn(env, "bulk_import")) return json({ error: "not found" }, 404);
+      const body = (await req.json().catch(() => ({}))) as { statementIds?: string[]; force?: boolean };
+      return json(await stub.confirmImportBulk(uid, { statementIds: body.statementIds, force: body.force }));
     }
     // POST /api/statements/:id/confirm [{ columnMap?, force? }] → commit + dedup + categorise
     if (m === "POST" && id && sub === "confirm") {

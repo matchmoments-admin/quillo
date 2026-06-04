@@ -288,7 +288,7 @@ export class TaxAgent extends Agent<Env> {
   // column map, de-dup each line by fingerprint, batch-insert the new bank lines, and
   // categorise deterministically (user rules + merchant hints — FREE; LLM categorisation of
   // the remainder is a later phase). Returns counts.
-  async confirmImport(userId: string, statementId: string, _columnMapOverride?: ColumnMap, force?: boolean): Promise<{ imported: number; skipped: number }> {
+  async confirmImport(userId: string, statementId: string, _columnMapOverride?: ColumnMap, force?: boolean, quiet?: boolean): Promise<{ imported: number; skipped: number }> {
     // LEFT JOIN (not INNER) so a statement whose account was later deleted is still found — the
     // null account_type just falls through to the asset reconcile sign via isLiabilityAccount.
     const stmt = await this.env.DB.prepare(
@@ -392,12 +392,56 @@ export class TaxAgent extends Agent<Env> {
     // Attach any existing receipts to the new lines (stops double-counting + donates GST).
     await this.matchReceiptsForUser(userId);
 
+    if (!quiet) {
+      await this.notify(
+        userId,
+        `Imported ${imported} transaction(s)${skipped ? ` (${skipped} already on file)` : ""}${cat.categorised ? `, categorised ${cat.categorised} with Claude` : ""}.`,
+        null,
+      );
+    }
+    return { imported, skipped };
+  }
+
+  /**
+   * Bulk-confirm every statement still awaiting import (status='parsed'), or a given subset. Reuses
+   * confirmImport per statement (quiet — one summary notification instead of N), isolating per-
+   * statement failures: a statement that doesn't reconcile throws and is reported in `errors`, the
+   * rest still import (so "import all reconciled" naturally skips the ones that don't balance).
+   */
+  async confirmImportBulk(
+    userId: string,
+    opts?: { statementIds?: string[]; force?: boolean },
+  ): Promise<{ statements: number; imported: number; skipped: number; errors: { statementId: string; error: string }[] }> {
+    let ids = opts?.statementIds ?? [];
+    if (!ids.length) {
+      const pending = await this.env.DB.prepare(
+        `SELECT id FROM statements WHERE user_id = ? AND status = 'parsed' ORDER BY created_at`,
+      )
+        .bind(userId)
+        .all<{ id: string }>();
+      ids = (pending.results ?? []).map((r) => r.id);
+    }
+    let imported = 0;
+    let skipped = 0;
+    let statements = 0;
+    const errors: { statementId: string; error: string }[] = [];
+    for (const sid of ids) {
+      try {
+        const r = await this.confirmImport(userId, sid, undefined, opts?.force, true);
+        imported += r.imported;
+        skipped += r.skipped;
+        statements++;
+      } catch (e) {
+        errors.push({ statementId: sid, error: (e as Error).message });
+      }
+    }
+    await this.audit(userId, "statement_imported_bulk", JSON.stringify({ statements, imported, skipped, errors: errors.length }));
     await this.notify(
       userId,
-      `Imported ${imported} transaction(s)${skipped ? ` (${skipped} already on file)` : ""}${cat.categorised ? `, categorised ${cat.categorised} with Claude` : ""}.`,
+      `Imported ${statements} statement(s): ${imported} transaction(s)${skipped ? `, ${skipped} already on file` : ""}${errors.length ? `. ${errors.length} couldn't import (e.g. didn't reconcile) — review them.` : "."}`,
       null,
     );
-    return { imported, skipped };
+    return { statements, imported, skipped, errors };
   }
 
   /**

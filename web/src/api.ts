@@ -105,6 +105,11 @@ export const api = {
   },
   confirmImport: (statementId: string, force?: boolean, columnMap?: unknown) =>
     post<{ imported: number; skipped: number }>(`/api/statements/${statementId}/confirm`, { columnMap, force }),
+  confirmImportBulk: (opts?: { statementIds?: string[]; force?: boolean }) =>
+    post<{ statements: number; imported: number; skipped: number; errors: { statementId: string; error: string }[] }>(
+      "/api/statements/confirm-batch",
+      opts ?? {},
+    ),
 
   // Phase 4
   qboStatus: () => get<QboStatus>("/api/qbo/status"),

@@ -115,6 +115,43 @@ export async function addRule(
   return id;
 }
 
+export async function updateEntity(
+  env: Env,
+  userId: string,
+  id: string,
+  e: { kind?: string; name?: string; detail?: unknown },
+): Promise<void> {
+  // detail_json is replaced wholesale when `detail` is supplied (the edit form always sends the full
+  // kind-aware detail); kind/name COALESCE so a partial patch leaves the rest intact. Scoped + active.
+  await env.DB.prepare(
+    `UPDATE entities SET kind = COALESCE(?, kind), name = COALESCE(?, name),
+            detail_json = COALESCE(?, detail_json)
+      WHERE id = ? AND user_id = ? AND active = 1`,
+  )
+    .bind(e.kind ?? null, e.name ?? null, e.detail !== undefined ? JSON.stringify(e.detail) : null, id, userId)
+    .run();
+}
+
+export async function updateRule(
+  env: Env,
+  userId: string,
+  id: string,
+  r: { match_type?: string; pattern?: string; bucket?: string; ato_label?: string; property_id?: string; priority?: number },
+): Promise<void> {
+  // Same taxonomy guard as addRule — an unknown bucket would store but never match.
+  if (r.bucket !== undefined && !(BUCKETS as readonly string[]).includes(r.bucket)) {
+    throw new Error(`unknown bucket '${r.bucket}' — must be one of: ${BUCKETS.join(", ")}`);
+  }
+  await env.DB.prepare(
+    `UPDATE user_rules SET match_type = COALESCE(?, match_type), pattern = COALESCE(?, pattern),
+            bucket = COALESCE(?, bucket), ato_label = COALESCE(?, ato_label),
+            property_id = COALESCE(?, property_id), priority = COALESCE(?, priority)
+      WHERE id = ? AND user_id = ?`,
+  )
+    .bind(r.match_type ?? null, r.pattern ?? null, r.bucket ?? null, r.ato_label ?? null, r.property_id ?? null, r.priority ?? null, id, userId)
+    .run();
+}
+
 export async function addAccount(
   env: Env,
   userId: string,

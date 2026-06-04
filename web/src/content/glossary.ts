@@ -109,6 +109,11 @@ export const GLOSSARY = {
     short:
       "Australian Privacy Principle 8 covers sending personal data overseas. The AI runs in the US, so we ask your consent first — or you can switch to Australian-based processing instead.",
   },
+  persons: {
+    term: "People (taxpayers)",
+    short:
+      "The taxpayers in your situation — you, and a spouse if relevant. Your occupation tailors the deduction hints Quillo suggests; your tax residency affects which rules apply.",
+  },
   entities: {
     term: "Entities",
     short:

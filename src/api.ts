@@ -24,7 +24,9 @@ import {
   addProperty,
   updateProperty,
   addEntity,
+  updateEntity,
   addRule,
+  updateRule,
   addAccount,
   updateAccount,
   deleteRow,
@@ -215,10 +217,20 @@ export async function handleApi(
   if (resource === "persons") {
     if (m === "POST" && !id) return json({ id: await addPerson(env, uid, await req.json()) });
     if (m === "PUT" && id) {
-      await updatePerson(env, uid, id, await req.json());
+      const body = (await req.json()) as { role?: string };
+      // Don't let an edit reassign the 'self' role (would orphan the anchor or create two selves).
+      if (body.role !== undefined) {
+        const cur = await env.DB.prepare(`SELECT role FROM persons WHERE id = ? AND user_id = ?`).bind(id, uid).first<{ role: string }>();
+        if ((cur?.role === "self") !== (body.role === "self")) return json({ error: "the primary taxpayer role can't be reassigned" }, 409);
+      }
+      await updatePerson(env, uid, id, body);
       return json({ ok: true });
     }
     if (m === "DELETE" && id) {
+      // The 'self' person anchors entities/properties/income (person_id FK) — never delete it,
+      // even via a direct API call (the UI already hides the button).
+      const p = await env.DB.prepare(`SELECT role FROM persons WHERE id = ? AND user_id = ?`).bind(id, uid).first<{ role: string }>();
+      if (p?.role === "self") return json({ error: "the primary taxpayer can't be deleted" }, 409);
       await deleteRow(env, uid, "persons", id);
       return json({ ok: true });
     }
@@ -244,6 +256,10 @@ export async function handleApi(
   }
   if (resource === "entities") {
     if (m === "POST") return json({ id: await addEntity(env, uid, await req.json()) });
+    if (m === "PUT" && id) {
+      await updateEntity(env, uid, id, await req.json());
+      return json({ ok: true });
+    }
     if (m === "DELETE" && id) {
       await deleteRow(env, uid, "entities", id);
       return json({ ok: true });
@@ -251,6 +267,14 @@ export async function handleApi(
   }
   if (resource === "rules") {
     if (m === "POST") return json({ id: await addRule(env, uid, await req.json()) });
+    if (m === "PUT" && id) {
+      try {
+        await updateRule(env, uid, id, await req.json());
+        return json({ ok: true });
+      } catch (e) {
+        return json({ error: (e as Error).message }, 400); // unknown bucket
+      }
+    }
     if (m === "DELETE" && id) {
       await deleteRow(env, uid, "user_rules", id);
       return json({ ok: true });

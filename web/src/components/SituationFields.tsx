@@ -120,6 +120,17 @@ export function EntityFields({ value, onChange }: { value: EntityValue; onChange
   );
 }
 
+/** Seed an EntityValue for the edit form from a stored entity (parses detail_json). */
+export function entityToValue(e: { kind: string; name: string | null; detail_json?: string | null }): EntityValue {
+  let detail: EntityDetail = {};
+  try {
+    detail = e.detail_json ? (JSON.parse(e.detail_json) as EntityDetail) : {};
+  } catch {
+    /* malformed detail → start blank */
+  }
+  return { kind: e.kind, name: e.name ?? "", detail };
+}
+
 /** Build the addEntity request body from an EntityValue (employment stores employer in detail). */
 export function entityToBody(v: EntityValue): { kind: string; name: string; detail: EntityDetail } {
   const detail: EntityDetail = {};
@@ -187,6 +198,60 @@ export function PropertyFields({ value, onChange }: { value: PropertyValue; onCh
       )}
     </div>
   );
+}
+
+// ── Persons (taxpayers) ──────────────────────────────────────────────────────
+// occupation drives the claimability hints the categoriser applies (e.g. nurse, IT professional),
+// so surfacing it here improves accuracy. tfn_last4 is deliberately NOT editable in the UI.
+export const PERSON_ROLES = ["self", "spouse", "dependent", "other"] as const;
+
+export interface PersonValue {
+  display_name: string;
+  role: string;
+  occupation: string;
+  tax_residency: string;
+}
+
+export const emptyPerson = (): PersonValue => ({ display_name: "", role: "spouse", occupation: "", tax_residency: "AU" });
+
+export function personToValue(p: { display_name: string; role: string; occupation: string | null; tax_residency: string }): PersonValue {
+  return { display_name: p.display_name, role: p.role, occupation: p.occupation ?? "", tax_residency: p.tax_residency || "AU" };
+}
+
+/** Controlled editor for one taxpayer. Caller owns layout + submission. `lockRole` for the self person. */
+export function PersonFields({ value, onChange, lockRole = false }: { value: PersonValue; onChange: (v: PersonValue) => void; lockRole?: boolean }) {
+  const set = (patch: Partial<PersonValue>) => onChange({ ...value, ...patch });
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap gap-2">
+        <input className={`${fieldInput} flex-1`} placeholder="Name" value={value.display_name} onChange={(e) => set({ display_name: e.target.value })} />
+        <select className={fieldInput} value={value.role} disabled={lockRole} onChange={(e) => set({ role: e.target.value })}>
+          {PERSON_ROLES.map((r) => (
+            <option key={r} value={r}>{r}</option>
+          ))}
+        </select>
+        <select className={fieldInput} value={value.tax_residency} onChange={(e) => set({ tax_residency: e.target.value })} title="Tax residency">
+          <option value="AU">AU resident</option>
+          <option value="foreign">Foreign resident</option>
+        </select>
+      </div>
+      <input
+        className={`${fieldInput} w-full`}
+        placeholder="Occupation e.g. nurse, it_professional, teacher — helps tailor deduction hints"
+        value={value.occupation}
+        onChange={(e) => set({ occupation: e.target.value })}
+      />
+    </div>
+  );
+}
+
+export function personToBody(v: PersonValue): { display_name: string; role: string; occupation: string | null; tax_residency: string } {
+  return {
+    display_name: v.display_name.trim() || "Taxpayer",
+    role: v.role,
+    occupation: v.occupation.trim() || null,
+    tax_residency: v.tax_residency || "AU",
+  };
 }
 
 /** Build the addProperty request body from a PropertyValue. */

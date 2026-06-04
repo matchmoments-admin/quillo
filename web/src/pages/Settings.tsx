@@ -3,7 +3,8 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import { BUCKETS } from "../types";
 import { Card, Spinner, BUCKET_LABEL, InfoTip } from "../components/ui";
-import { EntityFields, PropertyFields, entityToBody, propertyToBody, emptyEntity, emptyProperty, OWNED_STATUSES, TENANT_STATUSES, propertyStatusLabel, type EntityValue, type PropertyValue } from "../components/SituationFields";
+import { EntityFields, PropertyFields, PersonFields, entityToBody, entityToValue, propertyToBody, personToBody, personToValue, emptyEntity, emptyProperty, emptyPerson, OWNED_STATUSES, TENANT_STATUSES, propertyStatusLabel, type EntityValue, type PersonValue, type PropertyValue } from "../components/SituationFields";
+import type { Person } from "../types";
 
 const input = "rounded-lg border border-line bg-card px-3 py-2 text-sm";
 const btn = "rounded-lg bg-ink px-3 py-2 text-sm font-medium text-white hover:bg-ink/90 disabled:opacity-50";
@@ -32,28 +33,44 @@ export function Settings() {
         }}
       />
 
+      {/* People (taxpayers) — occupation/residency drive deduction hints */}
+      <Section title={<>People (taxpayers) <InfoTip k="persons" /></>}>
+        {(s.persons ?? []).map((p) => (
+          <EditablePerson key={p.id} person={p} onDone={invalidate} />
+        ))}
+        {!(s.persons ?? []).length && <Empty>No people yet. Add yourself (and a spouse, if relevant) — your occupation tailors the deduction hints Quillo suggests.</Empty>}
+        <AddPerson onDone={invalidate} />
+      </Section>
+
       {/* Properties */}
       <Section title={<>Properties <InfoTip k="property_status" /></>}>
         {s.properties.map((p) => (
           <EditableProperty key={p.id} property={p} onDone={invalidate} />
         ))}
+        {!s.properties.length && <Empty>No properties yet. Add an investment or rented property so its expenses attribute correctly.</Empty>}
         <AddProperty onDone={invalidate} />
       </Section>
 
       {/* Entities */}
       <Section title={<>Entities (employment · company · novated lease) <InfoTip k="entities" /></>}>
         {s.entities.map((e) => (
-          <Row key={e.id} label={entityLabel(e)} onDelete={() => api.deleteEntity(e.id).then(invalidate)} />
+          <EditableEntity key={e.id} entity={e} onDone={invalidate} />
         ))}
+        {!s.entities.length && <Empty>No entities yet. Add your employer, company (with ABN), or a novated lease so spend routes to the right tax "hat".</Empty>}
         <AddEntity onDone={invalidate} />
       </Section>
 
       {/* Rules */}
       <Section title={<>Per-user rules <InfoTip k="user_rules" /></>}>
         {s.rules.map((r) => (
-          <Row key={r.id} label={`"${r.pattern}" → ${BUCKET_LABEL[r.bucket] ?? r.bucket} · ${r.ato_label}`} onDelete={() => api.deleteRule(r.id).then(invalidate)} />
+          <EditableRule key={r.id} rule={r} onDone={invalidate} />
         ))}
+        {!s.rules.length && <Empty>No rules yet. Add a shortcut like "Ray White → rental agent" — or just correct the same merchant twice and Quillo will offer to learn it for you.</Empty>}
         <AddRule onDone={invalidate} />
+        <p className="px-1 pt-1 text-xs text-muted">
+          Matching is case-insensitive and matches any merchant <em>containing</em> the text; the highest-priority rule wins.
+          Quillo also auto-learns a rule when you correct the same merchant twice — you'll get an alert when it does.
+        </p>
       </Section>
 
       {/* Devices / keys */}
@@ -279,6 +296,104 @@ function AddProperty({ onDone }: { onDone: () => void }) {
       <button className={btn} disabled={!value.label || m.isPending} onClick={() => m.mutate()}>
         Add
       </button>
+    </div>
+  );
+}
+
+function Empty({ children }: { children: React.ReactNode }) {
+  return <p className="px-1 text-xs text-muted">{children}</p>;
+}
+
+function EditablePerson({ person, onDone }: { person: Person; onDone: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState<PersonValue>(() => personToValue(person));
+  const isSelf = person.role === "self";
+  const save = useMutation({ mutationFn: () => api.updatePerson(person.id, personToBody(value)), onSuccess: () => { setEditing(false); onDone(); } });
+  if (!editing) {
+    const bits = [person.display_name, person.role, person.occupation].filter(Boolean);
+    return (
+      <div className="flex items-center justify-between rounded-lg bg-surface px-3 py-2 text-sm">
+        <span className="truncate">{bits.join(" · ")}{person.tax_residency && person.tax_residency !== "AU" ? " · foreign resident" : ""}</span>
+        <div className="flex flex-none gap-3">
+          <button onClick={() => { setValue(personToValue(person)); setEditing(true); }} className={del}>edit</button>
+          {/* The 'self' person anchors entities/properties/income — never deletable here. */}
+          {!isSelf && <button onClick={() => api.deletePerson(person.id).then(onDone)} className={del}>delete</button>}
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="flex flex-wrap items-start gap-2 rounded-lg bg-surface px-3 py-2">
+      <div className="flex-1"><PersonFields value={value} onChange={setValue} lockRole={isSelf} /></div>
+      <button className={btn} disabled={save.isPending} onClick={() => save.mutate()}>Save</button>
+      <button className={del} onClick={() => setEditing(false)}>cancel</button>
+    </div>
+  );
+}
+
+function AddPerson({ onDone }: { onDone: () => void }) {
+  const [value, setValue] = useState<PersonValue>(emptyPerson());
+  const m = useMutation({ mutationFn: () => api.addPerson(personToBody(value)), onSuccess: () => { setValue(emptyPerson()); onDone(); } });
+  return (
+    <div className="flex flex-wrap items-start gap-2 pt-2">
+      <div className="flex-1"><PersonFields value={value} onChange={setValue} /></div>
+      <button className={btn} disabled={!value.display_name || m.isPending} onClick={() => m.mutate()}>Add</button>
+    </div>
+  );
+}
+
+function EditableEntity({ entity, onDone }: { entity: { id: string; kind: string; name: string | null; detail_json?: string | null }; onDone: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState<EntityValue>(() => entityToValue(entity));
+  const save = useMutation({ mutationFn: () => api.updateEntity(entity.id, entityToBody(value)), onSuccess: () => { setEditing(false); onDone(); } });
+  if (!editing) {
+    return (
+      <div className="flex items-center justify-between rounded-lg bg-surface px-3 py-2 text-sm">
+        <span className="truncate">{entityLabel(entity)}</span>
+        <div className="flex flex-none gap-3">
+          <button onClick={() => { setValue(entityToValue(entity)); setEditing(true); }} className={del}>edit</button>
+          <button onClick={() => api.deleteEntity(entity.id).then(onDone)} className={del}>delete</button>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="flex flex-wrap items-start gap-2 rounded-lg bg-surface px-3 py-2">
+      <div className="flex-1"><EntityFields value={value} onChange={setValue} /></div>
+      <button className={btn} disabled={!value.name || save.isPending} onClick={() => save.mutate()}>Save</button>
+      <button className={del} onClick={() => setEditing(false)}>cancel</button>
+    </div>
+  );
+}
+
+function EditableRule({ rule, onDone }: { rule: { id: string; pattern: string; bucket: string; ato_label: string }; onDone: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const [pattern, setPattern] = useState(rule.pattern);
+  const [bucket, setBucket] = useState(rule.bucket);
+  const [label, setLabel] = useState(rule.ato_label);
+  const save = useMutation({ mutationFn: () => api.updateRule(rule.id, { pattern, bucket, ato_label: label }), onSuccess: () => { setEditing(false); onDone(); } });
+  if (!editing) {
+    return (
+      <div className="flex items-center justify-between rounded-lg bg-surface px-3 py-2 text-sm">
+        <span className="truncate">"{rule.pattern}" → {BUCKET_LABEL[rule.bucket] ?? rule.bucket} · {rule.ato_label}</span>
+        <div className="flex flex-none gap-3">
+          <button onClick={() => { setPattern(rule.pattern); setBucket(rule.bucket); setLabel(rule.ato_label); setEditing(true); }} className={del}>edit</button>
+          <button onClick={() => api.deleteRule(rule.id).then(onDone)} className={del}>delete</button>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="flex flex-wrap gap-2 rounded-lg bg-surface px-3 py-2">
+      <input className={`${input} flex-1`} value={pattern} onChange={(e) => setPattern(e.target.value)} />
+      <select className={input} value={bucket} onChange={(e) => setBucket(e.target.value)}>
+        {BUCKETS.map((b) => (
+          <option key={b} value={b}>{BUCKET_LABEL[b]}</option>
+        ))}
+      </select>
+      <input className={`${input} flex-1`} value={label} onChange={(e) => setLabel(e.target.value)} />
+      <button className={btn} disabled={!pattern || !label || save.isPending} onClick={() => save.mutate()}>Save</button>
+      <button className={del} onClick={() => setEditing(false)}>cancel</button>
     </div>
   );
 }

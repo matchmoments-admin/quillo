@@ -139,7 +139,22 @@ export interface Situation {
   rules: { id: string; pattern: string; bucket: string; ato_label: string }[];
 }
 
-export const BUCKETS = ["payg", "company", "property_rented", "property_vacant", "unknown"] as const;
+// Mirror of the server taxonomy (src/lib/taxonomy.ts BUCKETS) — keep in sync. Drives the rule
+// bucket <select> (Settings) and the per-transaction correction dropdown (TxnDetail). Previously
+// stale at 5, which silently hid income_*/refund/asset from both the rule editor and corrections
+// even though the server validates/accepts them (and correcting to 'asset' auto-creates an asset).
+export const BUCKETS = [
+  "payg",
+  "company",
+  "property_rented",
+  "property_vacant",
+  "income_business",
+  "income_property",
+  "income_personal",
+  "refund",
+  "asset",
+  "unknown",
+] as const;
 export type Bucket = (typeof BUCKETS)[number];
 
 // Onboarding conversational-intake draft (POST /api/situation/draft). A best-effort

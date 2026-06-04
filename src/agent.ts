@@ -3,6 +3,7 @@ import type { Env } from "./env";
 import { getProfile, getSituation, renderSituation, type Profile, type Situation, type UserRule } from "./lib/db";
 import { addRule, addAccount } from "./lib/situation-write";
 import { QuickBooksAdapter } from "./ledger/qbo";
+import { revokeAndDisconnect } from "./lib/qbo-oauth";
 import { COUNTABLE } from "./lib/queries";
 import { sha256hex, sha256hexBytes } from "./lib/base64";
 import { getLLM, type LLM } from "./llm";
@@ -889,6 +890,17 @@ export class TaxAgent extends Agent<Env> {
     }
     await this.audit(userId, "qbo_accounts_synced", JSON.stringify({ synced }));
     return { synced };
+  }
+
+  /**
+   * Disconnect QuickBooks: revoke the token at Intuit + delete the stored connection (and cached
+   * account map), then audit it. Audited write → goes through the DO. Records only whether the
+   * remote revoke succeeded, never any token value.
+   */
+  async disconnectQuickBooks(userId: string): Promise<{ ok: boolean; revoked: boolean }> {
+    const r = await revokeAndDisconnect(this.env, userId);
+    await this.audit(userId, "qbo_disconnect", JSON.stringify({ revoked: r.revoked }));
+    return r;
   }
 
   /** Set an account's canonical money source (qbo_feed | statement | manual). */

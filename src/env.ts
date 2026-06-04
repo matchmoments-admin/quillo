@@ -36,6 +36,9 @@ export interface Env {
   ANTHROPIC_API_KEY: string;
   QBO_CLIENT_ID: string;
   QBO_CLIENT_SECRET: string;
+  // Optional: when set, QuickBooks OAuth tokens are AES-GCM envelope-encrypted at rest in D1
+  // (see lib/token-crypto.ts). Absent = tokens stay plaintext (graceful, backward-compatible).
+  QBO_TOKEN_KEY?: string;
   // Only present when a tenant uses inference_provider=bedrock:
   AWS_ACCESS_KEY_ID?: string;
   AWS_SECRET_ACCESS_KEY?: string;
@@ -77,6 +80,7 @@ export interface TaxAgentRpc {
   deleteStatement(userId: string, statementId: string, purge?: boolean): Promise<{ deleted: boolean; linesRemoved: number }>;
   setAccountSource(userId: string, accountId: string, source: string): Promise<void>;
   syncQboAccounts(userId: string): Promise<{ synced: number }>;
+  disconnectQuickBooks(userId: string): Promise<{ ok: boolean; revoked: boolean }>;
   categoriseStatement(userId: string, statementId: string): Promise<{ categorised: number }>;
   pollBatchJobs(userId: string): Promise<{ applied: number }>;
   recategorise(userId: string): Promise<{ requeued: number; statements: number }>;

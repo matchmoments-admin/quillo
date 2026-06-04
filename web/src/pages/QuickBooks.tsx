@@ -1,10 +1,12 @@
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
+import { toast } from "sonner";
 import { api } from "../api";
 import { Card, Spinner, Button, money } from "../components/ui";
 
 export function QuickBooks() {
   const [params] = useSearchParams();
+  const qc = useQueryClient();
   const justConnected = params.get("connected");
   const status = useQuery({ queryKey: ["qbo-status"], queryFn: () => api.qboStatus() });
   const recon = useQuery({ queryKey: ["qbo-reconcile"], queryFn: () => api.reconcile(), enabled: status.data?.connected === true });
@@ -15,10 +17,27 @@ export function QuickBooks() {
       window.location.href = url;
     },
   });
+  // Disconnect revokes the token at Intuit and deletes the stored (encrypted) connection.
+  const disconnect = useMutation({
+    mutationFn: () => api.qboDisconnect(),
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ["qbo-status"] });
+      qc.invalidateQueries({ queryKey: ["qbo-reconcile"] });
+      toast.success(r.revoked ? "Disconnected from QuickBooks." : "Disconnected. (Intuit revoke could not be confirmed.)");
+    },
+    onError: (e) => toast.error(`Couldn't disconnect: ${(e as Error).message}`),
+  });
+  const doDisconnect = () => {
+    if (window.confirm("Disconnect QuickBooks? This revokes Quillo's access and removes the stored tokens. You can reconnect any time.")) {
+      disconnect.mutate();
+    }
+  };
 
   if (status.isLoading) return <Spinner />;
   const needsReconnect = status.data?.needs_reconnect || recon.data?.needsReconnect;
   const connected = status.data?.connected && !needsReconnect;
+  // A dead-but-stored connection (refresh token expired) can still be cleared/revoked.
+  const hasStoredConnection = status.data?.connected || status.data?.needs_reconnect;
 
   return (
     <div className="space-y-6">
@@ -56,6 +75,14 @@ export function QuickBooks() {
             {connect.isError && (
               <p className="text-sm text-danger">Couldn't start QuickBooks connect: {(connect.error as Error).message}</p>
             )}
+          </div>
+        )}
+        {hasStoredConnection && (
+          <div className="mt-3 border-t border-line pt-3">
+            <Button variant="ghost" onClick={doDisconnect} disabled={disconnect.isPending}>
+              {disconnect.isPending ? "Disconnecting…" : "Disconnect QuickBooks"}
+            </Button>
+            <p className="mt-2 text-xs text-muted">Revokes Quillo's access at Intuit and deletes the stored tokens.</p>
           </div>
         )}
       </Card>

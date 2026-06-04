@@ -45,6 +45,7 @@
 import type { Env } from "../env";
 import { type LedgerAdapter, type LedgerExpense, LedgerNotConnectedError, LedgerReauthError } from "./adapter";
 import { getEndpoints } from "../lib/qbo-oauth";
+import { sealToken, readToken, tokenEncryptionEnabled } from "../lib/token-crypto";
 
 interface QboConnection {
   user_id: string;
@@ -53,6 +54,7 @@ interface QboConnection {
   access_expires_at: string | null;
   refresh_token: string;
   refresh_expires_at: string | null;
+  enc_ver: number | null;
 }
 const ACCOUNT_CACHE_TTL_S = 7 * 24 * 3600; // weekly at most (egress-aware, finding §6.2)
 
@@ -186,7 +188,7 @@ export class QuickBooksAdapter implements LedgerAdapter {
 
   private async connection(userId: string): Promise<QboConnection> {
     const conn = await this.env.DB.prepare(
-      `SELECT user_id, realm_id, access_token, access_expires_at, refresh_token, refresh_expires_at
+      `SELECT user_id, realm_id, access_token, access_expires_at, refresh_token, refresh_expires_at, enc_ver
          FROM qbo_connections WHERE user_id = ?`,
     )
       .bind(userId)
@@ -194,6 +196,10 @@ export class QuickBooksAdapter implements LedgerAdapter {
     if (!conn) {
       throw new LedgerNotConnectedError(userId, "QuickBooks is not connected for this tenant");
     }
+    // Decrypt at the edge of the read so the rest of the adapter works with plaintext tokens. The
+    // dual-read honours enc_ver (0 = legacy plaintext, 1 = AES-GCM sealed).
+    conn.access_token = await readToken(this.env, conn.access_token, conn.enc_ver);
+    conn.refresh_token = (await readToken(this.env, conn.refresh_token, conn.enc_ver)) as string;
     return conn;
   }
 
@@ -251,14 +257,19 @@ export class QuickBooksAdapter implements LedgerAdapter {
       Date.now() + tok.x_refresh_token_expires_in * 1000,
     ).toISOString();
 
-    // Persist the ROTATED refresh token immediately — the next refresh fails otherwise.
+    // Persist the ROTATED refresh token immediately — the next refresh fails otherwise. Re-seal
+    // under the current key when encryption is enabled (also upgrades a legacy plaintext row to
+    // enc_ver=1 on its first refresh). Tokens are never logged.
+    const enc = tokenEncryptionEnabled(this.env);
+    const accessVal = enc ? await sealToken(this.env, tok.access_token) : tok.access_token;
+    const refreshVal = enc ? await sealToken(this.env, tok.refresh_token) : tok.refresh_token;
     await this.env.DB.prepare(
       `UPDATE qbo_connections
           SET access_token = ?, access_expires_at = ?, refresh_token = ?,
-              refresh_expires_at = ?, updated_at = datetime('now')
+              refresh_expires_at = ?, enc_ver = ?, updated_at = datetime('now')
         WHERE user_id = ?`,
     )
-      .bind(tok.access_token, accessExpires, tok.refresh_token, refreshExpires, conn.user_id)
+      .bind(accessVal, accessExpires, refreshVal, refreshExpires, enc ? 1 : 0, conn.user_id)
       .run();
 
     return tok.access_token;

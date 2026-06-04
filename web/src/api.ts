@@ -122,6 +122,7 @@ export const api = {
   // to it. A plain <a href> to /api/qbo/connect would 401 (no Authorization header on a
   // top-level navigation).
   qboConnect: () => get<{ url: string }>("/api/qbo/connect"),
+  qboDisconnect: () => post<{ ok: boolean; revoked: boolean }>("/api/qbo/disconnect"),
 
   // Phase 5
   report: (fy?: number) => get<Report>(`/api/report${fy ? `?fy=${fy}` : ""}`),

@@ -14,6 +14,7 @@ export interface Profile {
   consent_xborder_at: string | null;
   consent_xborder_method: string | null;
   consent_xborder_text: string | null;
+  retention_years: number;
 }
 
 /** Load a tenant profile; returns null if the tenant has no profile row yet. */
@@ -21,7 +22,8 @@ export async function getProfile(env: Env, userId: string): Promise<Profile | nu
   return env.DB.prepare(
     `SELECT user_id, jurisdiction, rule_pack_ver, gst_registered, buckets,
             ledger_provider, inference_provider, inference_region, categorise_mode,
-            consent_xborder, consent_xborder_at, consent_xborder_method, consent_xborder_text
+            consent_xborder, consent_xborder_at, consent_xborder_method, consent_xborder_text,
+            retention_years
        FROM profiles WHERE user_id = ?`
   )
     .bind(userId)

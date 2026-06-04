@@ -89,6 +89,14 @@ export const api = {
   revokeKey: (id: string) => post<{ ok: boolean }>(`/api/keys/${id}/revoke`),
   consent: (text: string) => post<{ ok: boolean }>("/api/consent", { text, method: "web" }),
   withdrawConsent: () => post<{ ok: boolean }>("/api/consent/withdraw"),
+  // APP 12 export: fetch the tenant's data (Bearer-authed) as a downloadable Blob.
+  exportData: async (): Promise<Blob> => {
+    const res = await fetch("/api/account/export", { credentials: "include", headers: await authHeaders() });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    return res.blob();
+  },
+  // APP 13 erasure: purge all of the tenant's data across every store.
+  purgeData: () => send<{ tables: number; rowsDeleted: number; r2Objects: number; kvKeys: number; qboRevoked: boolean }>("DELETE", "/api/account/data"),
 
   // Accounts + statement import
   accounts: () => get<{ accounts: Account[] }>("/api/accounts").then((r) => r.accounts),

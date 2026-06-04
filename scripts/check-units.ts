@@ -530,5 +530,25 @@ console.log("token-crypto (QBO envelope encryption)");
   check("enc_ver=1 with no key → actionable error", clearMsg.includes("QBO_TOKEN_KEY"));
 }
 
+// ── Retention purge list completeness: every tenant table is erased (except audit_log) ──────
+import { PURGE_TABLES } from "../src/lib/retention";
+
+console.log("retention PURGE_TABLES completeness");
+{
+  const schema = fs.readFileSync(path.join(process.cwd(), "schema.sql"), "utf8");
+  const re = /CREATE TABLE IF NOT EXISTS (\w+)\s*\(([\s\S]*?)\n\);/g;
+  let m: RegExpExecArray | null;
+  const tenantTables: string[] = [];
+  while ((m = re.exec(schema))) {
+    if (/\buser_id\b/.test(m[2]!)) tenantTables.push(m[1]!);
+  }
+  // Every user_id table must be purged EXCEPT audit_log (the deliberate deletion breadcrumb).
+  const shouldPurge = tenantTables.filter((t) => t !== "audit_log").sort();
+  const purges = [...PURGE_TABLES].sort();
+  check("PURGE_TABLES covers every tenant table except audit_log", JSON.stringify(purges) === JSON.stringify(shouldPurge));
+  check("PURGE_TABLES never includes audit_log (breadcrumb is kept)", !purges.includes("audit_log"));
+  check("PURGE_TABLES has no table missing from schema", purges.every((t) => tenantTables.includes(t)));
+}
+
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);
 process.exit(fail === 0 ? 0 : 1);

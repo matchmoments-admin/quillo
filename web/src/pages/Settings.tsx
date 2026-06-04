@@ -90,6 +90,31 @@ function PrivacyPanel({
   const consented = (profile?.consent_xborder ?? 0) === 1;
   const withdraw = useMutation({ mutationFn: () => api.withdrawConsent(), onSuccess: onChange });
 
+  const exportData = useMutation({
+    mutationFn: () => api.exportData(),
+    onSuccess: (blob) => {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "quillo-export.json";
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 30_000);
+    },
+  });
+  const purge = useMutation({
+    mutationFn: () => api.purgeData(),
+    onSuccess: () => {
+      // Everything's gone (including the profile) — bounce to a clean re-onboard.
+      window.location.href = "/";
+    },
+  });
+  const confirmPurge = () => {
+    const typed = window.prompt(
+      "This permanently deletes ALL your data — transactions, statements, receipts, income, assets, documents and your QuickBooks connection. This cannot be undone.\n\nType DELETE to confirm.",
+    );
+    if (typed === "DELETE") purge.mutate();
+  };
+
   return (
     <Card className="p-4">
       <div className="mb-3 text-xs font-medium uppercase tracking-wide text-muted">
@@ -143,9 +168,32 @@ function PrivacyPanel({
         </div>
       )}
 
+      {/* APP 12 / APP 13 — your data */}
+      <div className="mt-4 border-t border-line pt-3">
+        <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted">Your data</div>
+        <div className="flex flex-wrap gap-2">
+          <button
+            onClick={() => exportData.mutate()}
+            disabled={exportData.isPending}
+            className="rounded-lg border border-ink/25 px-3 py-2 text-sm font-medium text-ink transition hover:bg-ink/5 disabled:opacity-50"
+          >
+            {exportData.isPending ? "Preparing…" : "Export my data (JSON)"}
+          </button>
+          <button
+            onClick={confirmPurge}
+            disabled={purge.isPending}
+            className="rounded-lg border border-danger/40 px-3 py-2 text-sm font-medium text-danger transition hover:bg-danger/5 disabled:opacity-50"
+          >
+            {purge.isPending ? "Deleting…" : "Delete my account & data"}
+          </button>
+        </div>
+        {exportData.isError && <p className="mt-2 text-xs text-danger">Export failed: {(exportData.error as Error).message}</p>}
+        {purge.isError && <p className="mt-2 text-xs text-danger">Delete failed: {(purge.error as Error).message}</p>}
+      </div>
+
       <p className="mt-3 text-xs text-muted">
         Read our{" "}
-        <a href="/privacy" target="_blank" rel="noreferrer" className="underline underline-offset-2">
+        <a href="https://quillo.au/privacy" target="_blank" rel="noreferrer" className="underline underline-offset-2">
           Privacy Policy
         </a>
         . Under the Australian Privacy Principles you can request access to, correction of, or deletion of your data —

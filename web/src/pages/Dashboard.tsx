@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api } from "../api";
-import { Panel, PanelHead, KpiCard, Meter, Pill, Spinner, Button, money, BUCKET_LABEL } from "../components/ui";
+import { Panel, PanelHead, KpiCard, Meter, Pill, Spinner, Button, money, BUCKET_LABEL, InfoTip } from "../components/ui";
 import type { ChecklistItem } from "../types";
 
 const FEATURE_LABEL: Record<string, string> = {
@@ -66,7 +66,7 @@ export function Dashboard() {
       {/* Breakdowns */}
       <div className="grid gap-5 lg:grid-cols-2">
         <Panel>
-          <PanelHead title="By bucket" sub={d.by_bucket.length ? `${d.by_bucket.length} categories` : undefined} />
+          <PanelHead title={<>By bucket <InfoTip k="bucket" /></>} sub={d.by_bucket.length ? `${d.by_bucket.length} categories` : undefined} />
           {d.by_bucket.length ? (
             <div className="divide-y divide-line">
               {d.by_bucket.map((b, i) => (
@@ -86,7 +86,7 @@ export function Dashboard() {
         </Panel>
 
         <Panel>
-          <PanelHead title="By property" />
+          <PanelHead title={<>By property <InfoTip tip="Costs attributed to each investment property, so each one's position is clear at tax time. Whether a cost is claimable is confirmed in your year-end review." /></>} />
           {d.by_property.length ? (
             <div className="divide-y divide-line">
               {d.by_property.map((p, i) => (
@@ -107,7 +107,7 @@ export function Dashboard() {
 
       {d.income_by_bucket.length > 0 && (
         <Panel>
-          <PanelHead title="Income" sub="from bank credits" />
+          <PanelHead title={<>Income <InfoTip tip="Money coming in, detected from bank credits and grouped by source. Tracked separately from spending so your income side is complete at year-end." /></>} sub="from bank credits" />
           <div className="divide-y divide-line">
             {d.income_by_bucket.map((b, i) => (
               <BreakdownRow
@@ -125,7 +125,7 @@ export function Dashboard() {
 
       {u && (
         <Panel>
-          <PanelHead title="AI cost" sub="measured" />
+          <PanelHead title={<>AI cost <InfoTip k="ai_cost" /></>} sub="measured" />
           <div className="divide-y divide-line">
             <SimpleRow k="Today" v={cents(u.today_cents)} />
             <SimpleRow k={`This month · ${u.calls} calls`} v={cents(u.month_cents)} />

@@ -1,5 +1,6 @@
 import type { EntityDetail } from "../types";
 import { isValidAbn, normaliseAbn } from "../lib/abn";
+import { InfoTip } from "./ui";
 
 // Shared input styling — kept here so the Settings forms and the onboarding wizard render
 // identical controls (single source of truth for the situation fields the categoriser reads).
@@ -93,13 +94,14 @@ export function EntityFields({ value, onChange }: { value: EntityValue; onChange
               checked={value.detail.gst_registered ?? false}
               onChange={(e) => setDetail({ gst_registered: e.target.checked })}
             />
-            GST registered (lets the agent claim GST credits)
+            GST registered (lets the agent claim GST credits) <InfoTip k="gst_registered" />
           </label>
         </div>
       )}
 
       {value.kind === "novated_lease" && (
-        <div className="flex flex-wrap gap-2 pl-1">
+        <div className="flex flex-wrap items-center gap-2 pl-1">
+          <InfoTip k="novated_lease" />
           <input
             className={`${fieldInput} flex-1`}
             placeholder="Vehicle e.g. Tesla Model 3"

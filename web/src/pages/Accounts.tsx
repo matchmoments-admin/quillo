@@ -3,7 +3,7 @@ import { useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/
 import { toast } from "sonner";
 import { api } from "../api";
 import { useFeatures } from "../lib/features";
-import { Button, Card, Spinner, money } from "../components/ui";
+import { Button, Card, Spinner, money, InfoTip } from "../components/ui";
 import type { Account, StatementInfo, StatementParse } from "../types";
 
 const SOURCE_LABEL: Record<string, string> = {
@@ -140,7 +140,7 @@ function AddAccount({ onAdded }: { onAdded: () => void }) {
         <input value={institution} onChange={(e) => setInstitution(e.target.value)} placeholder="Westpac" className="mt-1 w-full rounded-lg border border-line px-3 py-2" />
       </label>
       <label className="min-w-[9rem]">
-        <span className="text-xs font-medium uppercase tracking-wide text-muted">Type</span>
+        <span className="text-xs font-medium uppercase tracking-wide text-muted">Type <InfoTip k="account_type" /></span>
         <select value={type} onChange={(e) => setType(e.target.value)} className="mt-1 w-full rounded-lg border border-line bg-card px-3 py-2">
           <option value="transaction">Transaction</option>
           <option value="credit_card">Credit card</option>
@@ -234,6 +234,7 @@ function AccountRow({ account, statements }: { account: Account; statements: Sta
               <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${isFeed ? "bg-ink/5 text-ink" : "bg-surface text-ink"}`}>
                 {SOURCE_LABEL[account.source] ?? account.source}
               </span>
+              <InfoTip k="account_source" />
               {account.line_count ? <span className="text-xs">· {account.line_count} lines</span> : null}
             </div>
             {statements.length > 0 && (
@@ -311,7 +312,7 @@ function AccountRow({ account, statements }: { account: Account; statements: Sta
                   <div className="rounded-lg bg-warn/10 px-3 py-2 text-sm text-warn">No running balance on this statement — couldn't self-verify. Please eyeball the rows.</div>
                 )}
                 <div className="text-sm">
-                  Found <span className="font-medium">{parse.rowCount}</span> transactions. Preview (first {parse.preview.length}):
+                  Found <span className="font-medium">{parse.rowCount}</span> transactions <InfoTip k="reconcile" />. Preview (first {parse.preview.length}):
                 </div>
                 <div className="max-h-64 overflow-auto rounded-lg border border-line">
                   <table className="w-full text-sm">
@@ -465,7 +466,7 @@ function EditAccount({
           <input value={last4} onChange={(e) => setLast4(e.target.value)} maxLength={4} className="mt-1 w-full rounded-lg border border-line px-3 py-2" />
         </label>
         <label className="min-w-[8rem]">
-          <span className="text-xs font-medium uppercase tracking-wide text-muted">Type</span>
+          <span className="text-xs font-medium uppercase tracking-wide text-muted">Type <InfoTip k="account_type" /></span>
           <select value={type} onChange={(e) => setType(e.target.value)} className="mt-1 w-full rounded-lg border border-line bg-card px-3 py-2">
             <option value="transaction">Transaction</option>
             <option value="credit_card">Credit card</option>
@@ -480,7 +481,7 @@ function EditAccount({
 
       <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line pt-3">
         <label className="flex items-center gap-2 text-sm">
-          <span className="text-xs font-medium uppercase tracking-wide text-muted">Money source</span>
+          <span className="text-xs font-medium uppercase tracking-wide text-muted">Money source <InfoTip k="account_source" /></span>
           <select
             value={account.source}
             onChange={(e) => onSource(e.target.value)}

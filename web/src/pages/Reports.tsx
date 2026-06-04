@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../api";
-import { Card, Spinner, money, BUCKET_LABEL } from "../components/ui";
+import { Card, Spinner, money, BUCKET_LABEL, InfoTip } from "../components/ui";
 
 function defaultFyStart(): number {
   const now = new Date();
@@ -15,13 +15,17 @@ export function Reports() {
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold tracking-tight">Year-end report</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">
+          Year-end report{" "}
+          <InfoTip tip="A full-financial-year summary to hand to your registered tax agent. General information — Quillo doesn't lodge for you." />
+        </h1>
         <div className="flex items-center gap-2 text-sm">
           <button className="rounded-lg border border-line px-2 py-1" onClick={() => setFy((y) => y - 1)}>
             ←
           </button>
-          <span className="tabular-nums">
+          <span className="inline-flex items-center gap-1 tabular-nums">
             FY {fy}–{String((fy + 1) % 100).padStart(2, "0")}
+            <InfoTip k="fy" />
           </span>
           <button className="rounded-lg border border-line px-2 py-1" onClick={() => setFy((y) => y + 1)}>
             →
@@ -41,10 +45,10 @@ export function Reports() {
         <>
           <Card className="flex flex-wrap items-center justify-between gap-3 p-4 text-sm">
             <div>
-              <span className="text-muted">ABN</span> <span className="font-medium">{data!.abn ?? "(not set)"}</span>
+              <span className="text-muted">ABN</span> <InfoTip k="abn" /> <span className="font-medium">{data!.abn ?? "(not set)"}</span>
             </div>
             <div>
-              <span className="text-muted">GST credits (ITC) on company expenses</span>{" "}
+              <span className="text-muted">GST credits (ITC) on company expenses</span> <InfoTip k="itc" />{" "}
               <span className="font-medium tabular-nums">{money(data!.gst_credits_cents)}</span>
             </div>
           </Card>
@@ -53,7 +57,7 @@ export function Reports() {
             <Stat label="Total income" value={money(data!.total_income_cents)} />
             {/* This is captured spend in deductible-context buckets, NOT a confirmed claimable
                 figure — deductibility is decided at year-end review (see the caveat below). */}
-            <Stat label="Tracked spend (pending review)" value={money(data!.total_deductions_cents)} />
+            <Stat label={<>Tracked spend (pending review) <InfoTip k="deductible_vs_claimable" /></>} value={money(data!.total_deductions_cents)} />
             <Stat label="Depreciation" value={money(data!.depreciation_cents)} />
             <Stat label="Indicative position" value={money(data!.taxable_position_cents)} />
           </Card>
@@ -116,7 +120,7 @@ export function Reports() {
           )}
 
           <Card className="overflow-hidden">
-            <Th>By bucket + ATO label</Th>
+            <Th>By bucket + ATO label <InfoTip k="ato_label" /></Th>
             <table className="w-full text-sm">
               <tbody>
                 {data!.by_bucket.map((b, i) => (
@@ -151,7 +155,7 @@ export function Reports() {
           )}
 
           <Card className="overflow-hidden">
-            <Th>Rental schedule (by property)</Th>
+            <Th>Rental schedule (by property) <InfoTip tip="Per-property totals, mirroring how rental income and expenses are reported separately for each property on a tax return." /></Th>
             <table className="w-full text-sm">
               <tbody>
                 {data!.by_property.map((p) => (
@@ -166,7 +170,7 @@ export function Reports() {
           </Card>
 
           <Card className="overflow-hidden">
-            <Th>Company BAS quarters</Th>
+            <Th>Company BAS quarters <InfoTip k="bas" /></Th>
             <table className="w-full text-sm">
               <tbody>
                 {data!.company_quarters.map((q) => (
@@ -182,7 +186,7 @@ export function Reports() {
 
           {data!.undated_detail.length > 0 && (
             <Card className="overflow-hidden border-warn/40">
-              <Th>Undated — assign a date so these land in an FY ({data!.undated.n})</Th>
+              <Th>Undated — assign a date so these land in an FY ({data!.undated.n}) <InfoTip tip="Receipts with no readable date can't be placed in a financial year. Add a date so they're counted in the right year." /></Th>
               <table className="w-full text-sm">
                 <tbody>
                   {data!.undated_detail.map((u, i) => (
@@ -208,7 +212,7 @@ export function Reports() {
 function Th({ children }: { children: React.ReactNode }) {
   return <div className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-muted">{children}</div>;
 }
-function Stat({ label, value }: { label: string; value: string }) {
+function Stat({ label, value }: { label: React.ReactNode; value: string }) {
   return (
     <div>
       <div className="text-xs uppercase tracking-wide text-muted">{label}</div>

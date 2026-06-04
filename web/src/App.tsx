@@ -4,6 +4,7 @@ import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-do
 import { UserButton } from "@clerk/clerk-react";
 import { useQuery } from "@tanstack/react-query";
 import { Toaster } from "sonner";
+import * as Tooltip from "@radix-ui/react-tooltip";
 import { api } from "./api";
 import { useFeatures } from "./lib/features";
 
@@ -77,6 +78,7 @@ export function App() {
   useEffect(() => setDrawer(false), [pathname]);
 
   return (
+    <Tooltip.Provider delayDuration={200} skipDelayDuration={400}>
     <div className="min-h-screen bg-paper text-ink">
       <div className="grain" aria-hidden />
       <FirstRunGate />
@@ -125,6 +127,10 @@ export function App() {
               Setup
             </Link>
             {" · "}
+            <Link to="/glossary" className="text-ink underline underline-offset-2">
+              Glossary
+            </Link>
+            {" · "}
             <a href="mailto:hello@quillo.au?subject=Quillo%20support" className="text-ink underline underline-offset-2">
               Contact support
             </a>
@@ -132,6 +138,7 @@ export function App() {
         </div>
       </div>
     </div>
+    </Tooltip.Provider>
   );
 }
 

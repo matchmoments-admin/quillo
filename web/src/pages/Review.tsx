@@ -3,7 +3,6 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api } from "../api";
 import { Card, Spinner, Button, Input, money, BUCKET_LABEL } from "../components/ui";
-import type { ReviewSummaryRow } from "../types";
 
 const DEDUCTIBLE_STATES = new Set(["likely_deductible", "confirmed_deductible"]);
 

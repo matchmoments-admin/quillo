@@ -6,6 +6,7 @@ import { QuickBooksAdapter } from "./ledger/qbo";
 import { revokeAndDisconnect } from "./lib/qbo-oauth";
 import { purgeTenant as purgeTenantData, exportTenant as exportTenantData, flagOldData as flagOldDataSweep, type PurgeResult } from "./lib/retention";
 import { COUNTABLE } from "./lib/queries";
+import { applyUserRules, RULE_CREDIT_BUCKETS } from "./lib/rules";
 import { sha256hex, sha256hexBytes } from "./lib/base64";
 import { getLLM, type LLM } from "./llm";
 import { extractReceipt, extractReceipts, extractFromText, extractColumnMap, extractStatement, extractBatch, extractSituationDraft, classifyDocument, extractPayslip, extractAgentStatement, extractDepreciationSchedule, extractDividend, batchParams, parseBatchMessage, type Extracted, type ExtractedStatement, type SituationDraft } from "./extract";
@@ -63,15 +64,7 @@ const DEFAULT_RULE_PACK: RulePack = auV1RulePack;
  * matches the merchant, or null. Rules are pre-sorted by priority DESC in getSituation.
  * Pure + side-effect-free so it can be unit-tested without the API.
  */
-export function applyUserRules(merchant: string, rules: UserRule[]): UserRule | null {
-  const m = (merchant ?? "").toLowerCase();
-  for (const r of rules) {
-    const p = r.pattern.toLowerCase();
-    const hit = r.match_type === "merchant_exact" ? m === p : m.includes(p);
-    if (hit) return r;
-  }
-  return null;
-}
+// applyUserRules + the direction guard live in ./lib/rules (pure → unit-tested).
 
 export class TaxAgent extends Agent<Env> {
   // ── 1. INGEST: receipt image/PDF arrives as bytes ──────────────────────────
@@ -357,7 +350,7 @@ export class TaxAgent extends Agent<Env> {
       // the direction so it picks an income_* / refund bucket). Both directions now get a bucket.
       const cat = transfer
         ? null
-        : this.deterministicCategorise(line.description, situation.rules, rulePack, { skipHints: line.direction === "credit" });
+        : this.deterministicCategorise(line.description, situation.rules, rulePack, { skipHints: line.direction === "credit", direction: line.direction });
       const status = transfer ? "ignored" : cat ? "extracted" : "needs_review";
       inserts.push(
         this.env.DB.prepare(
@@ -942,9 +935,9 @@ export class TaxAgent extends Agent<Env> {
     merchant: string,
     rules: UserRule[],
     rulePack: typeof DEFAULT_RULE_PACK,
-    opts: { skipHints?: boolean } = {},
+    opts: { skipHints?: boolean; direction?: string | null } = {},
   ): { bucket: string; ato_label: string; confidence: number } | null {
-    const rule = applyUserRules(merchant, rules);
+    const rule = applyUserRules(merchant, rules, opts.direction);
     if (rule) return { bucket: rule.bucket, ato_label: rule.ato_label, confidence: 1 };
     // Merchant hints are EXPENSE-oriented (SaaS, cloud, hardware) — never apply them to a credit
     // line or a refund from a SaaS vendor would be mis-bucketed as a company expense. Credits get
@@ -1147,7 +1140,7 @@ export class TaxAgent extends Agent<Env> {
     llm: LLM,
     system: string,
   ): Promise<void> {
-    const rule = applyUserRules(parsed.merchant, situation.rules);
+    const rule = applyUserRules(parsed.merchant, situation.rules, "debit"); // a receipt is spend
     const final: Extracted = rule
       ? {
           ...parsed,
@@ -2741,7 +2734,10 @@ export class TaxAgent extends Agent<Env> {
     if (!txn.merchant || !txn.bucket || txn.bucket === "unknown") return;
     const profile = await this.requireProfile(userId);
     const situation = await getSituation(this.env, userId, profile);
-    if (applyUserRules(txn.merchant, situation.rules)) return; // a rule already covers this merchant
+    // Dedup against a direction-compatible rule only: a debit→company rule shouldn't block learning a
+    // credit→refund rule for the same merchant (the new rule's direction follows its bucket).
+    const dir = RULE_CREDIT_BUCKETS.has(txn.bucket) ? "credit" : "debit";
+    if (applyUserRules(txn.merchant, situation.rules, dir)) return; // a rule already covers this merchant
 
     const ruleId = await addRule(this.env, userId, {
       pattern: txn.merchant,

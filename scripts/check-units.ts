@@ -9,6 +9,8 @@ import type { LLM } from "../src/llm";
 import { isValidAbn, normaliseAbn } from "../web/src/lib/abn";
 import { billableCents } from "../src/lib/billing";
 import { BUCKETS } from "../src/lib/taxonomy";
+import { applyUserRules } from "../src/lib/rules";
+import type { UserRule } from "../src/lib/db";
 import fs from "node:fs";
 import path from "node:path";
 import type Anthropic from "@anthropic-ai/sdk";
@@ -421,6 +423,21 @@ console.log("readiness");
 }
 
 // ── Taxonomy ↔ rule pack ↔ UI agree (no silent bucket drift) ─────────────────
+console.log("applyUserRules (direction-aware)");
+{
+  const mk = (pattern: string, bucket: string, match_type = "merchant_contains"): UserRule => ({
+    id: pattern, user_id: "me", match_type, pattern, bucket, ato_label: `${bucket}:x`, property_id: null, priority: 100,
+  });
+  const rules = [mk("bunnings", "company"), mk("stripe", "income_business")];
+  check("expense rule fires on a debit", applyUserRules("Bunnings Richmond", rules, "debit")?.bucket === "company");
+  check("expense rule does NOT fire on a credit (refund stays for the LLM)", applyUserRules("Bunnings Richmond", rules, "credit") === null);
+  check("income rule fires on a credit", applyUserRules("Stripe payout", rules, "credit")?.bucket === "income_business");
+  check("income rule does NOT fire on a debit (no mis-bucketed expense)", applyUserRules("Stripe fee", rules, "debit") === null);
+  check("direction-less call stays unconstrained (back-compat)", applyUserRules("Bunnings", rules)?.bucket === "company");
+  check("merchant_exact respects exact match", applyUserRules("bunnings", [mk("bunnings", "company", "merchant_exact")], "debit")?.bucket === "company");
+  check("merchant_exact no partial match", applyUserRules("bunnings warehouse", [mk("bunnings", "company", "merchant_exact")], "debit") === null);
+}
+
 console.log("bucket taxonomy");
 {
   const root = process.cwd();
@@ -435,6 +452,13 @@ console.log("bucket taxonomy");
   check("rule-pack buckets match the taxonomy", JSON.stringify(taxonomy) === JSON.stringify(rulepackKeys));
   check("UI BUCKET_LABEL covers every taxonomy bucket", taxonomy.every((b) => uiKeys.includes(b)));
   check("income + refund buckets present", ["income_business", "income_property", "income_personal", "refund"].every((b) => taxonomy.includes(b)));
+  // web types.ts BUCKETS drives the rule editor + the transaction-correction dropdown — it must
+  // offer exactly the taxonomy (it was silently stale at 5, hiding income_*/refund/asset).
+  const typesSource = fs.readFileSync(path.join(root, "web", "src", "types.ts"), "utf8");
+  const tStart = typesSource.indexOf("export const BUCKETS");
+  const tBlock = typesSource.slice(tStart, typesSource.indexOf("]", tStart));
+  const webBuckets = [...tBlock.matchAll(/"([a-z_]+)"/g)].map((m) => m[1]!).sort();
+  check("web types BUCKETS match the taxonomy", JSON.stringify(webBuckets) === JSON.stringify(taxonomy));
 }
 
 // ── Billing: marked-up "billable" figure is pure + sane (the per-user cost-billing seam) ─────

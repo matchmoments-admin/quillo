@@ -328,8 +328,15 @@ export class TaxAgent extends Agent<Env> {
 
     const inserts: D1PreparedStatement[] = [];
     let skipped = 0;
+    // Occurrence counter per (date, amount, direction, merchant): genuine same-day repeat lines on a
+    // balance-less statement (credit cards) must each get a distinct fingerprint, or the unique-key
+    // guard silently drops all but the first. Counted in parse order so a re-upload reproduces them.
+    const occ = new Map<string, number>();
     for (const line of lines) {
-      const fp = await lineFingerprint(stmt.account_id, line);
+      const base = `${line.date}|${line.amount_cents}|${line.direction ?? "debit"}|${cleanMerchant(line.raw_description).toLowerCase()}`;
+      const occurrence = occ.get(base) ?? 0;
+      occ.set(base, occurrence + 1);
+      const fp = await lineFingerprint(stmt.account_id, line, occurrence);
       if (seen.has(fp)) {
         skipped++;
         continue;

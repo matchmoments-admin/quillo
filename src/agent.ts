@@ -4,6 +4,7 @@ import { getProfile, getSituation, renderSituation, type Profile, type Situation
 import { addRule, addAccount } from "./lib/situation-write";
 import { QuickBooksAdapter } from "./ledger/qbo";
 import { revokeAndDisconnect } from "./lib/qbo-oauth";
+import { purgeTenant as purgeTenantData, exportTenant as exportTenantData, flagOldData as flagOldDataSweep, type PurgeResult } from "./lib/retention";
 import { COUNTABLE } from "./lib/queries";
 import { sha256hex, sha256hexBytes } from "./lib/base64";
 import { getLLM, type LLM } from "./llm";
@@ -2383,6 +2384,30 @@ export class TaxAgent extends Agent<Env> {
     await this.env.DB.prepare(`UPDATE profiles SET consent_xborder = 0 WHERE user_id = ?`).bind(userId).run();
     await this.audit(userId, "consent_withdrawn", JSON.stringify({ method: "web" }));
     return { ok: true };
+  }
+
+  /**
+   * APP 13 erasure: purge ALL of a tenant's data across D1 / R2 / KV + revoke QuickBooks, leaving
+   * only an audit_log breadcrumb. Audited before (intent) and after (result) — both survive because
+   * audit_log is the one table the purge skips. Scoped to the requesting tenant only.
+   */
+  async purgeTenant(userId: string): Promise<PurgeResult> {
+    await this.audit(userId, "account_purge_requested", JSON.stringify({}));
+    const r = await purgeTenantData(this.env, userId);
+    await this.audit(userId, "account_purged", JSON.stringify(r));
+    return r;
+  }
+
+  /** APP 12 access: the tenant's data as JSON, audited. */
+  async exportTenant(userId: string): Promise<Record<string, unknown>> {
+    const data = await exportTenantData(this.env, userId);
+    await this.audit(userId, "data_exported", JSON.stringify({}));
+    return data;
+  }
+
+  /** Weekly retention FLAG sweep (cron) — surfaces a nudge for records past the window; never deletes. */
+  async flagOldData(userId: string): Promise<{ flagged: boolean }> {
+    return { flagged: await flagOldDataSweep(this.env, userId) };
   }
 
   /**

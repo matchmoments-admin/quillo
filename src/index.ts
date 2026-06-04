@@ -193,6 +193,8 @@ export default {
           await stub.runProactiveScan(u.user_id);
           // Keep each tenant's depreciation_schedule materialised through the current FY (carry-forward).
           await stub.rollForward(u.user_id, fyStart);
+          // Retention: flag (never delete) records past the tenant's window.
+          await stub.flagOldData(u.user_id);
         } catch (e) {
           console.error(`weekly cron failed for ${u.user_id}: ${(e as Error).message}`);
         }

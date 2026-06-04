@@ -82,6 +82,9 @@ export interface TaxAgentRpc {
   syncQboAccounts(userId: string): Promise<{ synced: number }>;
   disconnectQuickBooks(userId: string): Promise<{ ok: boolean; revoked: boolean }>;
   withdrawConsent(userId: string): Promise<{ ok: boolean }>;
+  purgeTenant(userId: string): Promise<{ tables: number; rowsDeleted: number; r2Objects: number; kvKeys: number; qboRevoked: boolean }>;
+  exportTenant(userId: string): Promise<Record<string, unknown>>;
+  flagOldData(userId: string): Promise<{ flagged: boolean }>;
   categoriseStatement(userId: string, statementId: string): Promise<{ categorised: number }>;
   pollBatchJobs(userId: string): Promise<{ applied: number }>;
   recategorise(userId: string): Promise<{ requeued: number; statements: number }>;

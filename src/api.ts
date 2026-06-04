@@ -177,6 +177,17 @@ export async function handleApi(
     return json(await getProgress(env, uid));
   }
 
+  // ── Account data (APP 12 export / APP 13 erasure) ─────────────────────────
+  if (resource === "account" && id === "export" && m === "GET") {
+    const data = await stub.exportTenant(uid);
+    return new Response(JSON.stringify(data, null, 2), {
+      headers: { "content-type": "application/json", "content-disposition": "attachment; filename=quillo-export.json" },
+    });
+  }
+  if (resource === "account" && id === "data" && m === "DELETE") {
+    return json(await stub.purgeTenant(uid));
+  }
+
   // POST /api/correct  { txnId, field, value } — audited write via the DO.
   if (resource === "correct" && m === "POST") {
     const { txnId, field, value } = (await req.json()) as { txnId: string; field: string; value: string };

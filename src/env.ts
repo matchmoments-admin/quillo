@@ -63,7 +63,8 @@ export interface TaxAgentRpc {
   deleteTransaction(userId: string, txnId: string): Promise<void>;
   pushToQuickBooks(userId: string, txnId: string): Promise<{ ok: boolean; ledgerRef?: string; error?: string }>;
   parseStatement(userId: string, accountId: string, filename: string, bytes: ArrayBuffer, format: string): Promise<{ statementId: string; columnMap: unknown; preview: unknown[]; rowCount: number; duplicate: boolean; reconciliation?: unknown }>;
-  confirmImport(userId: string, statementId: string, columnMapOverride?: unknown, force?: boolean): Promise<{ imported: number; skipped: number }>;
+  confirmImport(userId: string, statementId: string, columnMapOverride?: unknown, force?: boolean, quiet?: boolean): Promise<{ imported: number; skipped: number }>;
+  confirmImportBulk(userId: string, opts?: { statementIds?: string[]; force?: boolean }): Promise<{ statements: number; imported: number; skipped: number; errors: { statementId: string; error: string }[] }>;
   setAccountSource(userId: string, accountId: string, source: string): Promise<void>;
   syncQboAccounts(userId: string): Promise<{ synced: number }>;
   categoriseStatement(userId: string, statementId: string): Promise<{ categorised: number }>;

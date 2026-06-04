@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api } from "../api";
+import { useFeatures } from "../lib/features";
 import { Button, Card, Spinner, money } from "../components/ui";
 import type { Account, StatementInfo, StatementParse } from "../types";
 
@@ -51,6 +52,22 @@ export function Accounts() {
     mutationFn: () => api.syncQboAccounts(),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["accounts"] }),
   });
+  // Bulk-confirm every parsed-but-not-imported statement in one click (flag `bulk_import`).
+  const { has } = useFeatures();
+  const parsedCount = (statements ?? []).filter((s) => s.status === "parsed").length;
+  const bulkImport = useMutation({
+    mutationFn: () => api.confirmImportBulk(),
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ["statements"] });
+      qc.invalidateQueries({ queryKey: ["accounts"] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+      const errs = r.errors.length ? ` ${r.errors.length} couldn't import (e.g. didn't reconcile).` : "";
+      toast.success(`Imported ${r.statements} statement(s)`, {
+        description: `${r.imported} transaction(s)${r.skipped ? `, ${r.skipped} already on file` : ""}.${errs}`,
+      });
+    },
+    onError: (e) => toast.error("Bulk import failed", { description: (e as Error).message }),
+  });
 
   if (isLoading) return <Spinner />;
   if (error) return <Card className="p-6 text-sm text-muted">Couldn't load accounts: {(error as Error).message}</Card>;
@@ -77,6 +94,11 @@ export function Accounts() {
         </Button>
         {sync.isSuccess && <span className="text-sm text-muted">Added {sync.data.synced} feed account(s).</span>}
         {sync.isError && <span className="text-sm text-danger">{(sync.error as Error).message}</span>}
+        {has("bulk_import") && parsedCount > 0 && (
+          <Button onClick={() => bulkImport.mutate()} disabled={bulkImport.isPending}>
+            {bulkImport.isPending ? "Importing…" : `Import all reconciled (${parsedCount})`}
+          </Button>
+        )}
       </div>
 
       {accounts.length === 0 ? (

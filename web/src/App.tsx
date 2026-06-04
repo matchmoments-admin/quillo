@@ -9,6 +9,7 @@ import { api } from "./api";
 import { useFeatures } from "./lib/features";
 import { NextActionBar } from "./components/NextAction";
 import { TabGuide } from "./components/TabGuide";
+import { Coachmarks } from "./components/Coachmarks";
 
 type NavItem = { to: string; label: string; icon: IconName; end?: boolean; badge?: boolean; flag?: string };
 type NavGroup = { label: string; items: NavItem[] };
@@ -84,6 +85,7 @@ export function App() {
     <div className="min-h-screen bg-paper text-ink">
       <div className="grain" aria-hidden />
       <FirstRunGate />
+      <Coachmarks pathname={pathname} />
       <Toaster position="bottom-right" richColors closeButton toastOptions={{ duration: 6000 }} />
 
       {/* Mobile top bar */}

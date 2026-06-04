@@ -2414,6 +2414,32 @@ export class TaxAgent extends Agent<Env> {
   }
 
   /**
+   * Merge a patch into the tenant's ui_state JSON (e.g. {tour_seen:true}) and persist it — the
+   * server-side store for UI flags (no localStorage). UI prefs, not PII, so not audited; written via
+   * the DO like every other profile mutation. Tolerates a malformed/empty existing value.
+   */
+  async setUiState(userId: string, patch: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const row = await this.env.DB.prepare(`SELECT ui_state FROM profiles WHERE user_id = ?`)
+      .bind(userId)
+      .first<{ ui_state: string | null }>();
+    let current: Record<string, unknown> = {};
+    try {
+      current = row?.ui_state ? (JSON.parse(row.ui_state) as Record<string, unknown>) : {};
+    } catch {
+      current = {};
+    }
+    const merged = { ...current, ...patch };
+    const serialized = JSON.stringify(merged);
+    // ui_state is for small UI flags only — cap it so a tenant can't bloat their own hot-path
+    // profile row with an oversized PATCH.
+    if (serialized.length > 8192) throw new Error("ui_state too large");
+    await this.env.DB.prepare(`UPDATE profiles SET ui_state = ? WHERE user_id = ?`)
+      .bind(serialized, userId)
+      .run();
+    return merged;
+  }
+
+  /**
    * Record that a cross-border (US/Anthropic) inference disclosure occurred — once per operation,
    * with the feature + model id, NEVER any payload. No-op on the AU/Bedrock path (no disclosure to
    * audit). Keeps the hash-chained audit_log as the APP-8 disclosure record. Called inside the DO so

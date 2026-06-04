@@ -188,6 +188,12 @@ export async function handleApi(
     return json(await stub.purgeTenant(uid));
   }
 
+  // PATCH /api/ui-state { patch } — merge UI flags (walkthrough seen, etc.) into profiles.ui_state.
+  if (resource === "ui-state" && m === "PATCH") {
+    const { patch } = (await req.json().catch(() => ({}))) as { patch?: Record<string, unknown> };
+    return json(await stub.setUiState(uid, patch ?? {}));
+  }
+
   // POST /api/correct  { txnId, field, value } — audited write via the DO.
   if (resource === "correct" && m === "POST") {
     const { txnId, field, value } = (await req.json()) as { txnId: string; field: string; value: string };

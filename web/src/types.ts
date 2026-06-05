@@ -307,6 +307,7 @@ export interface Report {
   per_property: PropertyPosition[];
   total_income_cents: number;
   total_deductions_cents: number;
+  company_tracked_cents: number;
   refunds_cents: number;
   resolved_deductible_cents: number;
   taxable_position_cents: number;

@@ -47,7 +47,7 @@ export function Reports() {
                 figure — deductibility is decided at year-end review (see the caveat below). */}
             <Stat label={<>Tracked spend (pending review) <InfoTip k="deductible_vs_claimable" /></>} value={money(data!.total_deductions_cents)} />
             <Stat label="Depreciation" value={money(data!.depreciation_cents)} />
-            <Stat label="Indicative position" value={money(data!.taxable_position_cents)} />
+            <Stat label="Indicative position (individual)" value={money(data!.taxable_position_cents)} />
           </Card>
           <p className="px-1 text-xs text-muted">
             "Tracked spend" is what you've captured in deductible-context buckets — not a claimable amount.
@@ -59,6 +59,14 @@ export function Reports() {
                 {" "}Refunds/reimbursements of{" "}
                 <span className="font-medium text-ink">{money(data!.refunds_cents)}</span>{" "}
                 have been netted against tracked spend.
+              </>
+            )}
+            {data!.company_tracked_cents > 0 && (
+              <>
+                {" "}Business/company spend of{" "}
+                <span className="font-medium text-ink">{money(data!.company_tracked_cents)}</span>{" "}
+                is tracked separately and is <span className="font-medium text-ink">not</span> included in the
+                individual position above (entity positions are computed separately).
               </>
             )}
           </p>

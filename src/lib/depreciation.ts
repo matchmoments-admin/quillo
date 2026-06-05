@@ -17,6 +17,11 @@ export interface DepAsset {
   is_second_hand?: boolean;           // post-9-May-2017 second-hand residential Div40 lockout
   business_use_pct?: number | null;   // apportionment applied to the deduction
   disposed_date?: string | null;
+  // Per-FY policy thresholds for the asset's FIRST-USE year, supplied by the caller from the rule
+  // pack (this module never hardcodes a policy number). Both optional → when absent, no cap applies.
+  instant_asset_write_off_cents?: number | null; // immediate write-off only if cost <= this
+  is_car?: boolean;                   // a car (carries <1t / <9 passengers) → first-element cost base capped
+  car_limit_cents?: number | null;    // Div 40 car cost limit for the first-use FY
 }
 
 export interface ScheduleRow {
@@ -76,6 +81,18 @@ function apportion(deductionCents: number, asset: DepAsset): number {
 }
 
 /**
+ * The depreciable first-element cost base. For a car (Div 40), it's capped at the car cost limit for
+ * the first-use FY — a $90k ute depreciates only on the ~$69k limit, not the full price. Non-cars
+ * (or when no limit was supplied) use the full cost. This is the single place the cap is applied, so
+ * every method (prime cost, diminishing value, the rolled opening value) sees the same base.
+ */
+export function depreciableCostCents(asset: DepAsset): number {
+  return asset.is_car && asset.car_limit_cents != null
+    ? Math.min(asset.cost_cents, asset.car_limit_cents)
+    : asset.cost_cents;
+}
+
+/**
  * Decline in value for ONE FY given the opening adjustable value. Pure + deterministic.
  * Caps the deduction at the opening value (never depreciates below zero). Returns the
  * pre-apportionment closing value (CGT cost base tracks the full decline) and the
@@ -90,6 +107,7 @@ export function computeFyDeduction(
   const acquiredFy = fyStartYearOf(asset.acquired_date);
   const firstYear = startYear === acquiredFy;
   const life = asset.effective_life_years ?? 0;
+  const cost = depreciableCostCents(asset); // car-limit-capped first-element cost base
 
   // Second-hand residential plant: Div 40 decline is NOT deductible (applied at CGT instead).
   if (asset.is_second_hand && asset.asset_class === "div40_plant") {
@@ -104,7 +122,7 @@ export function computeFyDeduction(
       if (life <= 0 || days <= 0) break;
       if (asset.method === "prime_cost") {
         // Prime cost: cost × days/365 × 100%/life (constant on original cost).
-        rawDeduction = (asset.cost_cents * days * 100) / (365 * 100 * life);
+        rawDeduction = (cost * days * 100) / (365 * 100 * life);
         method = "prime_cost";
       } else {
         // Diminishing value: base value × days/365 × rate%/life.
@@ -117,7 +135,7 @@ export function computeFyDeduction(
     case "div43_capital_works": {
       // Construction expenditure × rate × days/365.
       const rate = asset.div43_rate ?? 0.025;
-      rawDeduction = asset.cost_cents * rate * (days / 365);
+      rawDeduction = cost * rate * (days / 365);
       method = "div43";
       break;
     }
@@ -134,9 +152,33 @@ export function computeFyDeduction(
       break;
     }
     case "immediate": {
-      // Full write-off in the year first used (e.g. <$300 or instant asset write-off).
-      rawDeduction = firstYear ? openingCents : 0;
-      method = "immediate";
+      // Immediate write-off (e.g. <$300, or under the per-FY instant-asset-write-off threshold) is
+      // only valid when the cost is AT OR UNDER that threshold. A pricier asset can't be expensed in
+      // one year — it must decline over its effective life — so enforce the cap instead of writing
+      // off the full cost regardless (the bug: a $50k asset expensed in year 1).
+      const iawo = asset.instant_asset_write_off_cents;
+      // Eligibility tests the asset's actual first-element cost (raw), not the car-limit-capped base.
+      const eligible = iawo == null || asset.cost_cents <= iawo;
+      if (eligible) {
+        rawDeduction = firstYear ? cost : 0;
+        method = "immediate";
+      } else if (life > 0 && days > 0) {
+        // Over threshold → can't expense in one year; decline over the effective life, honouring the
+        // taxpayer's prime-cost election when they made one (otherwise diminishing value).
+        if (asset.method === "prime_cost") {
+          rawDeduction = (cost * days * 100) / (365 * 100 * life);
+          method = "immediate_over_threshold_pc";
+        } else {
+          const ratePct = asset.dv_rate_pct ?? 200;
+          rawDeduction = (openingCents * days * ratePct) / (365 * 100 * life);
+          method = "immediate_over_threshold_dv";
+        }
+      } else {
+        // Over threshold but no effective life to depreciate against → claim nothing and signal a
+        // review (method label) rather than over-claim a full write-off the asset isn't entitled to.
+        rawDeduction = 0;
+        method = "immediate_over_threshold_review";
+      }
       break;
     }
   }
@@ -155,7 +197,7 @@ export function computeFyDeduction(
 export function rollSchedule(asset: DepAsset, toStartYear: number): ScheduleRow[] {
   const rows: ScheduleRow[] = [];
   const fromYear = fyStartYearOf(asset.acquired_date);
-  let opening = asset.cost_cents;
+  let opening = depreciableCostCents(asset); // first FY opens at the (car-limit-capped) cost
   for (let y = fromYear; y <= toStartYear; y++) {
     const r = computeFyDeduction(asset, y, opening);
     rows.push({

@@ -203,7 +203,7 @@ console.log("extractSituationDraft");
 }
 
 // ── Depreciation engine: exact-cents golden tests (the deterministic core) ────
-import { computeFyDeduction, rollSchedule, daysInFy, daysHeldInFy, balancingAdjustment, type DepAsset } from "../src/lib/depreciation";
+import { computeFyDeduction, rollSchedule, daysInFy, daysHeldInFy, balancingAdjustment, depreciableCostCents, type DepAsset } from "../src/lib/depreciation";
 
 console.log("depreciation: Div 40 diminishing value (ATO worked example $80k, 5yr life)");
 {
@@ -269,6 +269,52 @@ console.log("depreciation: business-use apportionment + carry-forward roll");
   const sched = rollSchedule({ asset_class: "div40_plant", cost_cents: 8_000_000, acquired_date: "2025-07-01", effective_life_years: 5, method: "prime_cost" }, 2027);
   check("roll produces one row per FY (2025,2026,2027)", sched.length === 3 && sched[0].fy === "2025-26" && sched[2].fy === "2027-28");
   check("roll opening chains from prior closing", sched[1].opening_adjustable_value_cents === sched[0].closing_adjustable_value_cents);
+}
+
+console.log("depreciation: instant-asset-write-off threshold enforced (review High #2)");
+{
+  const IAWO = 2_000_000; // $20,000 threshold for the first-use FY
+  // Under threshold → full immediate write-off in year 1 (unchanged behaviour).
+  const small: DepAsset = { asset_class: "immediate", cost_cents: 30_000, acquired_date: "2025-07-01", instant_asset_write_off_cents: IAWO };
+  check("under threshold → full write-off year 1", computeFyDeduction(small, 2025, 30_000).deduction_cents === 30_000);
+  check("under threshold → method 'immediate'", computeFyDeduction(small, 2025, 30_000).method_applied === "immediate");
+  // Over threshold WITH an effective life → declines as Div40 DV, NOT a full expense.
+  const big: DepAsset = { asset_class: "immediate", cost_cents: 5_000_000, acquired_date: "2025-07-01", effective_life_years: 5, instant_asset_write_off_cents: IAWO };
+  const y1 = computeFyDeduction(big, 2025, 5_000_000);
+  check("over threshold is NOT fully expensed", y1.deduction_cents !== 5_000_000);
+  check("over threshold → DV ($5m × 40% = $20,000)", y1.deduction_cents === 2_000_000);
+  check("over threshold → method flags the fallback", y1.method_applied === "immediate_over_threshold_dv");
+  // Over threshold WITH a prime-cost election → declines by prime cost, not forced to DV.
+  const bigPc: DepAsset = { asset_class: "immediate", cost_cents: 5_000_000, acquired_date: "2025-07-01", effective_life_years: 5, method: "prime_cost", instant_asset_write_off_cents: IAWO };
+  const pc = computeFyDeduction(bigPc, 2025, 5_000_000);
+  check("over threshold + prime cost → PC ($5m × 1/5 = $10,000)", pc.deduction_cents === 1_000_000);
+  check("over threshold + prime cost → method flags PC fallback", pc.method_applied === "immediate_over_threshold_pc");
+  // Over threshold but no effective life → claim nothing + flag review (don't over-claim).
+  const orphan: DepAsset = { asset_class: "immediate", cost_cents: 5_000_000, acquired_date: "2025-07-01", instant_asset_write_off_cents: IAWO };
+  const o = computeFyDeduction(orphan, 2025, 5_000_000);
+  check("over threshold w/o life → $0 claimed", o.deduction_cents === 0);
+  check("over threshold w/o life → review flag", o.method_applied === "immediate_over_threshold_review");
+  // No threshold supplied → unchanged (full write-off) so existing assets aren't disturbed.
+  const noThresh: DepAsset = { asset_class: "immediate", cost_cents: 5_000_000, acquired_date: "2025-07-01" };
+  check("no threshold supplied → full write-off (back-compat)", computeFyDeduction(noThresh, 2025, 5_000_000).deduction_cents === 5_000_000);
+}
+
+console.log("depreciation: car cost-limit caps the depreciable base (review High #2)");
+{
+  const CAR_LIMIT = 6_920_900; // $69,209
+  // A $90k car, prime cost, 8yr life: depreciate on the $69,209 cap, not the full $90k.
+  const car: DepAsset = { asset_class: "div40_plant", cost_cents: 9_000_000, acquired_date: "2025-07-01", effective_life_years: 8, method: "prime_cost", is_car: true, car_limit_cents: CAR_LIMIT };
+  check("car base capped at the limit", depreciableCostCents(car) === CAR_LIMIT);
+  // PC year1 = 6,920,900 × 365/365 × (1/8) = 865,112.5 → 865,113.
+  check("car PC year1 uses capped base ($8,651.13)", computeFyDeduction(car, 2025, CAR_LIMIT).deduction_cents === 865_113);
+  // A cheaper car under the limit → full cost (no cap).
+  const cheap: DepAsset = { asset_class: "div40_plant", cost_cents: 4_000_000, acquired_date: "2025-07-01", effective_life_years: 8, method: "prime_cost", is_car: true, car_limit_cents: CAR_LIMIT };
+  check("car under the limit uses full cost", depreciableCostCents(cheap) === 4_000_000);
+  // Non-car ignores the limit entirely.
+  const plant: DepAsset = { asset_class: "div40_plant", cost_cents: 9_000_000, acquired_date: "2025-07-01", effective_life_years: 8, method: "prime_cost", car_limit_cents: CAR_LIMIT };
+  check("non-car ignores the car limit", depreciableCostCents(plant) === 9_000_000);
+  // rollSchedule seeds the opening value from the capped base.
+  check("roll opens at the capped base", rollSchedule(car, 2025)[0].opening_adjustable_value_cents === CAR_LIMIT);
 }
 
 console.log("depreciation: balancing adjustment on disposal");
@@ -368,7 +414,7 @@ console.log("readiness");
     by_bucket: [], by_property: [], company_quarters: [],
     undated: { n: 0, total_cents: 0 }, undated_detail: [], abn: null, gst_credits_cents: 0,
     income: { by_type: [], gross_cents: 0, withholding_cents: 0, franking_credit_cents: 0, foreign_tax_paid_cents: 0 },
-    depreciation_cents: 0, per_property: [], total_income_cents: 0, total_deductions_cents: 0, taxable_position_cents: 0,
+    depreciation_cents: 0, per_property: [], total_income_cents: 0, total_deductions_cents: 0, company_tracked_cents: 0, taxable_position_cents: 0,
     ...p,
   });
   const mkSituation = (p: Partial<Situation> = {}): Situation => ({
@@ -387,9 +433,18 @@ console.log("readiness");
   check("clean PAYG → ready, no findings", clean.readiness_score.ready && clean.findings.length === 0);
   check("position mirrors report taxable position", clean.position.indicative_taxable_position_cents === 9_000_000);
 
-  // Unknown-bucket spend → review finding.
+  // Unknown-bucket spend → BLOCKER finding + NOT ready (review Medium: the gate used to be vacuous).
   const unknown = run(mkReport({ by_bucket: [{ bucket: "unknown", ato_label: null, n: 3, total_cents: 50_000, gst_cents: 0 }] }), noSignals({ unknownBucketN: 3, unknownBucketCents: 50_000 }));
-  check("unknown bucket → review finding", unknown.findings.some((f) => f.id === "unknown_bucket" && f.severity === "review"));
+  check("unknown bucket → blocker finding", unknown.findings.some((f) => f.id === "unknown_bucket" && f.severity === "blocker"));
+  check("unknown bucket → NOT ready", !unknown.readiness_score.ready && unknown.readiness_score.blockers === 1);
+
+  // Undated receipts that hit the report → BLOCKER + NOT ready.
+  const undated = run(mkReport({ undated: { n: 2, total_cents: 12_345 } }), noSignals());
+  check("undated receipts → blocker finding", undated.findings.some((f) => f.id === "undated_receipts" && f.severity === "blocker"));
+  check("undated receipts → NOT ready", !undated.readiness_score.ready);
+  // A review/info-only finding still leaves the user ready (only blockers gate readiness).
+  const infoOnly = run(mkReport(), noSignals({ disposedAssetsN: 1 }));
+  check("review/info findings alone still → ready", infoOnly.readiness_score.ready && infoOnly.readiness_score.blockers === 0);
 
   // Franking credits but no dividend statement on file → review finding.
   const franking = run(mkReport({ income: { by_type: [], gross_cents: 0, withholding_cents: 0, franking_credit_cents: 30_000, foreign_tax_paid_cents: 0 } }), noSignals({ hasDividendStatementDoc: false }));

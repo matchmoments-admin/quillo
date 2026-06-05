@@ -50,6 +50,7 @@ export interface Report {
   per_property: PropertyPosition[];
   total_income_cents: number;
   total_deductions_cents: number;      // CAPTURED tracked spend this FY (pending review — NOT claimable yet)
+  company_tracked_cents: number;       // BUSINESS/'company'-bucket spend this FY — tracked, NOT in the individual position
   refunds_cents: number;               // refund/reimbursement credits this FY (0 unless refund_netting is on)
   resolved_deductible_cents: number;   // spend a year-end review has CONFIRMED deductible (~0 until review)
   taxable_position_cents: number;      // total_income − total_deductions − depreciation (indicative)
@@ -205,8 +206,15 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   // — deductibility is resolved at year-end review (the UI labels it "tracked spend").
   // Exclude 'unknown' (unsanctioned) and 'asset' (capital — it depreciates via the assets table,
   // counting it as spend would double-count against decline-in-value).
+  // 'company' is BUSINESS/entity spend — it must NOT reduce the INDIVIDUAL's indicative position
+  // (business income isn't in the personal income total either, so subtracting business expenses
+  // produced a wrong, misleadingly-low personal headline for business users — review High #3). Track
+  // it separately so the figure is still visible; full per-entity position scoping is a roadmap item.
+  const company_tracked_cents = rows
+    .filter((b) => b.bucket === "company")
+    .reduce((s, b) => s + (b.total_cents ?? 0), 0);
   const gross_deductions_cents = rows
-    .filter((b) => b.bucket !== "unknown" && b.bucket !== "asset")
+    .filter((b) => b.bucket !== "unknown" && b.bucket !== "asset" && b.bucket !== "company")
     .reduce((s, b) => s + (b.total_cents ?? 0), 0);
 
   // Refund netting (flag `refund_netting`): a refund/reimbursement is a CREDIT, so it's already
@@ -258,6 +266,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
     per_property,
     total_income_cents: income.gross_cents,
     total_deductions_cents,
+    company_tracked_cents,
     refunds_cents,
     resolved_deductible_cents,
     taxable_position_cents,
@@ -286,7 +295,8 @@ export function reportToCsv(r: Report): string {
     ...(r.refunds_cents > 0 ? [`Refunds/reimbursements (netted against deductions),${d(r.refunds_cents)}`] : []),
     `Total deductions${r.refunds_cents > 0 ? " (net of refunds)" : ""},${d(r.total_deductions_cents)}`,
     `Decline in value (depreciation),${d(r.depreciation_cents)}`,
-    `Indicative taxable position,${d(r.taxable_position_cents)}`,
+    `Indicative taxable position (individual),${d(r.taxable_position_cents)}`,
+    ...(r.company_tracked_cents > 0 ? [`Business/company spend (tracked separately — not in the individual position),${d(r.company_tracked_cents)}`] : []),
     "",
     "Income type,Count,Gross (AUD),Withholding,Franking credit,Foreign tax paid",
   ];

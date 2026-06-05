@@ -1,15 +1,11 @@
-import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../api";
+import { useActiveFy } from "../lib/activeFy";
 import { Card, Spinner, money, BUCKET_LABEL, InfoTip } from "../components/ui";
 
-function defaultFyStart(): number {
-  const now = new Date();
-  return now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear() - 1;
-}
-
 export function Reports() {
-  const [fy, setFy] = useState(defaultFyStart());
+  // Driven by the global active-FY switcher (in the app header); change the year there.
+  const { fy, label } = useActiveFy();
   const { data, isLoading, error } = useQuery({ queryKey: ["report", fy], queryFn: () => api.report(fy) });
 
   return (
@@ -19,18 +15,10 @@ export function Reports() {
           Year-end report{" "}
           <InfoTip tip="A full-financial-year summary to hand to your registered tax agent. General information — Quillo doesn't lodge for you." />
         </h1>
-        <div className="flex items-center gap-2 text-sm">
-          <button className="rounded-lg border border-line px-2 py-1" onClick={() => setFy((y) => y - 1)}>
-            ←
-          </button>
-          <span className="inline-flex items-center gap-1 tabular-nums">
-            FY {fy}–{String((fy + 1) % 100).padStart(2, "0")}
-            <InfoTip k="fy" />
-          </span>
-          <button className="rounded-lg border border-line px-2 py-1" onClick={() => setFy((y) => y + 1)}>
-            →
-          </button>
-        </div>
+        <span className="inline-flex items-center gap-1 text-sm tabular-nums text-muted">
+          FY {label}
+          <InfoTip k="fy" />
+        </span>
       </div>
 
       <a href={api.reportCsvUrl(fy)} className="inline-block rounded-lg bg-ink px-4 py-2 text-sm font-medium text-white hover:bg-ink/90">

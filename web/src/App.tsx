@@ -7,6 +7,7 @@ import { Toaster } from "sonner";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import { api } from "./api";
 import { useFeatures } from "./lib/features";
+import { FySwitcher } from "./lib/activeFy";
 import { NextActionBar } from "./components/NextAction";
 import { TabGuide } from "./components/TabGuide";
 import { Coachmarks } from "./components/Coachmarks";
@@ -126,7 +127,10 @@ export function App() {
                   <div className="min-w-0 flex-1">
                     <NextActionBar />
                   </div>
-                  <TabGuide pathname={pathname} />
+                  <div className="flex flex-none items-center gap-3">
+                    <FySwitcher />
+                    <TabGuide pathname={pathname} />
+                  </div>
                 </div>
               )}
               <Outlet />

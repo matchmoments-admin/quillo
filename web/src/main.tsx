@@ -22,6 +22,7 @@ import { Documents } from "./pages/Documents";
 import { Assets } from "./pages/Assets";
 import { Glossary } from "./pages/Glossary";
 import { setTokenGetter } from "./api";
+import { ActiveFyProvider } from "./lib/activeFy";
 
 const PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY as string | undefined;
 
@@ -57,7 +58,9 @@ function Protected() {
     <>
       <SignedIn>
         <TokenBridge />
-        <App />
+        <ActiveFyProvider>
+          <App />
+        </ActiveFyProvider>
       </SignedIn>
       <SignedOut>
         <RedirectToSignIn />

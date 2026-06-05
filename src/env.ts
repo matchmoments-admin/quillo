@@ -24,6 +24,7 @@ export interface Env {
   // Vars (wrangler.toml [vars])
   JURISDICTION: string;
   MAX_DAILY_COST_CENTS?: string;        // per-user daily AI spend budget in cents (0/unset = unlimited)
+  MAX_DAILY_COST_CENTS_GLOBAL?: string; // platform-wide daily AI spend ceiling across ALL tenants (0/unset = unlimited)
   DEFAULT_INFERENCE_PROVIDER: string;   // 'anthropic' | 'bedrock'
   DEFAULT_INFERENCE_REGION: string;     // e.g. 'ap-southeast-2'
   QBO_BASE_URL: string;                 // sandbox or production

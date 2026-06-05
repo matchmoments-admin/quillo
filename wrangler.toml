@@ -81,6 +81,9 @@ FEATURES = "refund_netting,income_dedupe,asset_defaults,bulk_import,deductibilit
 # Per-user daily AI-spend budget in cents (measured, credit insurance). 0/unset = unlimited.
 # e.g. 500 = $5/day. Replaces the old count cap; over budget → receipts queue as needs_review.
 MAX_DAILY_COST_CENTS = "500"
+# Platform-wide daily AI-spend ceiling across ALL tenants (the multi-tenant backstop). 0/unset =
+# unlimited. e.g. 2500 = $25/day total; over it, new AI work degrades to needs_review for everyone.
+MAX_DAILY_COST_CENTS_GLOBAL = "2500"
 # Default statement-categorisation path (per-tenant override: profiles.categorise_mode).
 #   auto  → size-based: >60 lines go to the async Batch API (~50% cheaper), else synchronous live.
 #   live  → always synchronous Claude calls (instant, full price). Huge jobs fall back to batch.

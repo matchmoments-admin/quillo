@@ -50,6 +50,11 @@ export async function recordUsage(
   const key = `cost:${userId}:${day}`;
   const cur = Number((await env.RULES.get(key)) ?? 0);
   await env.RULES.put(key, String(cur + cents), { expirationTtl: 60 * 60 * 26 });
+  // Platform-wide counter too, so the global daily ceiling (across ALL tenants) is enforceable —
+  // N testers × the per-tenant cap would otherwise be unbounded.
+  const gkey = `cost:global:${day}`;
+  const gcur = Number((await env.RULES.get(gkey)) ?? 0);
+  await env.RULES.put(gkey, String(gcur + cents), { expirationTtl: 60 * 60 * 26 });
   await env.DB.prepare(
     `INSERT INTO llm_usage (id, user_id, feature, model, input_tokens, output_tokens, cache_read_tokens, cost_cents)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -72,4 +77,10 @@ export async function recordUsage(
 export async function spentTodayCents(env: Env, userId: string): Promise<number> {
   const day = new Date().toISOString().slice(0, 10);
   return Number((await env.RULES.get(`cost:${userId}:${day}`)) ?? 0);
+}
+
+/** Today's platform-wide spend in cents (all tenants) — for the global daily ceiling. */
+export async function spentTodayGlobalCents(env: Env): Promise<number> {
+  const day = new Date().toISOString().slice(0, 10);
+  return Number((await env.RULES.get(`cost:global:${day}`)) ?? 0);
 }

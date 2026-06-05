@@ -3,23 +3,17 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api } from "../api";
 import { Card, Spinner, Button, Input, money, BUCKET_LABEL } from "../components/ui";
+import { useActiveFy, FySwitcher } from "../lib/activeFy";
 
 const DEDUCTIBLE_STATES = new Set(["likely_deductible", "confirmed_deductible"]);
-
-function fyLabel(startYear: number): string {
-  return `${startYear}-${String((startYear + 1) % 100).padStart(2, "0")}`;
-}
-function defaultFyStart(): number {
-  const now = new Date();
-  return now.getUTCMonth() >= 6 ? now.getUTCFullYear() : now.getUTCFullYear() - 1;
-}
 
 // A (bucket, ato_label) aggregated across its deductibility rows.
 type Label = { bucket: string; ato_label: string | null; n: number; total_cents: number; resolved_cents: number; states: string[] };
 
 export function Review() {
-  const [fyStart, setFyStart] = useState(defaultFyStart());
-  const fy = fyLabel(fyStart);
+  // Use the app-wide active FY (persisted per tenant) instead of a local stepper, so Review stays in
+  // sync with Reports/Filing/Checklist — previously its own stepper silently desynced from the global one.
+  const { label: fy } = useActiveFy();
   const { data, isLoading, error } = useQuery({ queryKey: ["review", fy], queryFn: () => api.reviewSummary(fy) });
 
   const labels = useMemo<Label[]>(() => {
@@ -44,11 +38,7 @@ export function Review() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold tracking-tight">Year-end review</h1>
-        <div className="flex items-center gap-2 text-sm">
-          <button className="rounded-lg border border-line px-2 py-1" onClick={() => setFyStart((y) => y - 1)}>←</button>
-          <span className="tabular-nums">FY {fy}</span>
-          <button className="rounded-lg border border-line px-2 py-1" onClick={() => setFyStart((y) => y + 1)}>→</button>
-        </div>
+        <FySwitcher />
       </div>
 
       <Card className="grid grid-cols-3 gap-4 p-4">

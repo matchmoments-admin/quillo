@@ -18,17 +18,21 @@ export function TxnDetail() {
   const [label, setLabel] = useState<string>("");
   const [propertyId, setPropertyId] = useState<string>("");
   const [date, setDate] = useState<string>("");
-  const [seeded, setSeeded] = useState(false);
+  const [seededId, setSeededId] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
 
   const txn = txnQ.data;
-  // Seed local state once the txn loads.
-  if (txn && !seeded) {
+  // Re-seed the form whenever a DIFFERENT txn loads. This route reuses the same component instance
+  // across :id changes (React Router doesn't remount on a param change), so a one-time `seeded` flag
+  // left the previous txn's bucket/label/date in the form when navigating txn→txn — and a "Save"
+  // would then write those STALE values against the new txn's id. Keying the seed on `id` fixes it.
+  if (txn && seededId !== id) {
     setBucket(txn.bucket ?? "");
     setLabel(txn.ato_label ?? "");
     setPropertyId(txn.property_id ?? "");
     setDate(txn.txn_date ?? "");
-    setSeeded(true);
+    setDirty(false);
+    setSeededId(id);
   }
 
   const save = useMutation({

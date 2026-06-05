@@ -10,6 +10,24 @@ const uid = () => crypto.randomUUID();
 // to it so a single-person tenant never has to think about persons.
 const selfPersonId = (userId: string) => `person_self_${userId}`;
 
+/**
+ * Bootstrap a brand-new tenant on first authed request: an empty profile (AU / au-v1 / no consent
+ * defaults) + the 'self' person. Idempotent (`INSERT OR IGNORE`) and KV-flag-gated so it costs one
+ * cheap KV read per request after the first. Without this a new Clerk user would hit "no profile for
+ * tenant X"; the existing onboarding wizard + APP-8 consent flow take over once the profile exists.
+ */
+export async function ensureTenant(env: Env, userId: string): Promise<void> {
+  const flag = `tenant:init:${userId}`;
+  if (await env.RULES.get(flag)) return;
+  await env.DB.prepare(`INSERT OR IGNORE INTO profiles (user_id) VALUES (?)`).bind(userId).run();
+  await env.DB.prepare(
+    `INSERT OR IGNORE INTO persons (id, user_id, display_name, role) VALUES (?, ?, 'You', 'self')`,
+  )
+    .bind(selfPersonId(userId), userId)
+    .run();
+  await env.RULES.put(flag, "1");
+}
+
 export async function addPerson(
   env: Env,
   userId: string,

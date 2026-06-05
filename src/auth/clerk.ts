@@ -28,6 +28,10 @@ const ALLOWED_AZP = new Set([
   "http://localhost:8787", // wrangler dev
 ]);
 
+// The founder's Clerk sub maps to the legacy pilot tenant "me". Hard default (overridable via
+// CLERK_FOUNDER_SUB) so an empty/missing var can never collapse other testers onto "me".
+const FOUNDER_SUB_DEFAULT = "user_3EX9q24hvBuYNz3Hk6Pg6O5FfBq";
+
 export type ClerkAuthResult =
   | { ok: true; user: AuthedUser }
   | { ok: false; status: 401 | 403 };
@@ -75,6 +79,11 @@ export async function requireClerk(req: Request, env: Env): Promise<ClerkAuthRes
     return { ok: false, status: 403 };
   }
 
-  // Allowed founder → existing pilot tenant "me" (data carries over). Multi-tenant later.
-  return { ok: true, user: { email, userId: "me" } };
+  // Per-tenant identity, fail-CLOSED for isolation: ONLY the founder's sub maps to the pilot tenant
+  // "me" (data continuity); every other allow-listed user always gets their OWN tenant keyed by their
+  // Clerk sub — they can never collide on "me". The founder sub defaults to the known literal so a
+  // missing/empty CLERK_FOUNDER_SUB can't silently merge two humans into "me".
+  const founderSub = env.CLERK_FOUNDER_SUB?.trim() || FOUNDER_SUB_DEFAULT;
+  const userId = sub === founderSub ? "me" : sub;
+  return { ok: true, user: { email, userId } };
 }

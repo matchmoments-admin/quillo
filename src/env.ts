@@ -20,6 +20,7 @@ export interface Env {
   // until launch; empty = deny everyone).
   CLERK_ISSUER?: string;
   CLERK_ALLOWED_USERS?: string;
+  CLERK_FOUNDER_SUB?: string;           // the founder's Clerk sub → mapped to the pilot tenant "me"; others get their own tenant
 
   // Vars (wrangler.toml [vars])
   JURISDICTION: string;

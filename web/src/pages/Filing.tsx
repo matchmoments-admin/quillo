@@ -1,14 +1,9 @@
-import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../api";
+import { useActiveFy } from "../lib/activeFy";
 import { Card, Spinner, money } from "../components/ui";
 import type { PositionLine, ReadinessFinding } from "../types";
-
-function defaultFyStart(): number {
-  const now = new Date();
-  return now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear() - 1;
-}
 
 const SEVERITY_ORDER: ReadinessFinding["severity"][] = ["blocker", "review", "info"];
 const SEVERITY_LABEL: Record<ReadinessFinding["severity"], string> = { blocker: "Must fix", review: "Review", info: "Good to know" };
@@ -20,18 +15,15 @@ const SEVERITY_CLASS: Record<ReadinessFinding["severity"], string> = {
 const GROUP_LABEL: Record<PositionLine["group"], string> = { income: "Income", deduction: "Deductions", depreciation: "Depreciation", property: "Per-property position" };
 
 export function Filing() {
-  const [fy, setFy] = useState(defaultFyStart());
+  // Driven by the global active-FY switcher (in the app header).
+  const { fy, label } = useActiveFy();
   const { data, isLoading, error } = useQuery({ queryKey: ["filing-readiness", fy], queryFn: () => api.filingReadiness(fy) });
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between print:hidden">
         <h1 className="text-2xl font-semibold tracking-tight">File your return</h1>
-        <div className="flex items-center gap-2 text-sm">
-          <button className="rounded-lg border border-line px-2 py-1" onClick={() => setFy((y) => y - 1)}>←</button>
-          <span className="tabular-nums">FY {fy}–{String((fy + 1) % 100).padStart(2, "0")}</span>
-          <button className="rounded-lg border border-line px-2 py-1" onClick={() => setFy((y) => y + 1)}>→</button>
-        </div>
+        <span className="text-sm tabular-nums text-muted">FY {label}</span>
       </div>
 
       <p className="text-sm text-muted print:hidden">

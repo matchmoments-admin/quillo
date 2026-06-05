@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api } from "../api";
+import { useActiveFy } from "../lib/activeFy";
 import { Panel, PanelHead, KpiCard, Meter, Pill, Spinner, Button, money, BUCKET_LABEL, InfoTip } from "../components/ui";
 import type { ChecklistItem } from "../types";
 
@@ -170,11 +171,13 @@ export function Dashboard() {
 
 function ChecklistCard() {
   const qc = useQueryClient();
-  const { data, isLoading } = useQuery({ queryKey: ["checklist"], queryFn: () => api.checklist() });
-  const gen = useMutation({ mutationFn: () => api.generateChecklist(), onSuccess: () => qc.invalidateQueries({ queryKey: ["checklist"] }) });
+  const { label } = useActiveFy();
+  const invalidate = () => qc.invalidateQueries({ queryKey: ["checklist", label] });
+  const { data, isLoading } = useQuery({ queryKey: ["checklist", label], queryFn: () => api.checklist(label) });
+  const gen = useMutation({ mutationFn: () => api.generateChecklist(label), onSuccess: invalidate });
   const setStatus = useMutation({
     mutationFn: ({ id, status }: { id: string; status: string }) => api.setChecklistStatus(id, status),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["checklist"] }),
+    onSuccess: invalidate,
   });
   const items = (data ?? []) as ChecklistItem[];
   const open = items.filter((i) => i.status === "open");
@@ -189,7 +192,7 @@ function ChecklistCard() {
           </svg>
         </span>
         <div className="min-w-0">
-          <div className="font-display text-lg text-forest">This year's checklist</div>
+          <div className="font-display text-lg text-forest">FY {label} checklist</div>
           <div className="text-[13px] text-forest/70">A to-do list tailored to your situation — rental, company, super &amp; investments.</div>
         </div>
         <span className="flex-1" />
@@ -203,7 +206,7 @@ function ChecklistCard() {
   return (
     <Panel>
       <PanelHead
-        title="This year's checklist"
+        title={`FY ${label} checklist`}
         sub={items.length ? `${open.length} open` : undefined}
         right={
           <Button variant="ghost" className="h-8 px-3 text-xs uppercase tracking-wide" onClick={() => gen.mutate()} disabled={gen.isPending}>

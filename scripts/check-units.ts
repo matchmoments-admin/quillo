@@ -8,6 +8,7 @@ import { extractSituationDraft } from "../src/extract";
 import type { LLM } from "../src/llm";
 import { isValidAbn, normaliseAbn } from "../web/src/lib/abn";
 import { billableCents } from "../src/lib/billing";
+import { costCents } from "../src/lib/usage";
 import { BUCKETS } from "../src/lib/taxonomy";
 import { applyUserRules } from "../src/lib/rules";
 import type { UserRule } from "../src/lib/db";
@@ -462,6 +463,16 @@ console.log("bucket taxonomy");
 }
 
 // ── Billing: marked-up "billable" figure is pure + sane (the per-user cost-billing seam) ─────
+console.log("costCents (AI spend pricing)");
+{
+  const H = "claude-haiku-4-5-20251001";
+  check("input priced at $1/M (1M → 100c)", Math.round(costCents(H, { input_tokens: 1_000_000 })) === 100);
+  check("output priced at $5/M (1M → 500c)", Math.round(costCents(H, { output_tokens: 1_000_000 })) === 500);
+  check("cache-read 10× cheaper than input", costCents(H, { cache_read_input_tokens: 1_000_000 }) === 10);
+  check("unknown model falls back to Haiku rate", costCents("unknown-model", { input_tokens: 1_000_000 }) === 100);
+  check("empty usage → 0c", costCents(H, {}) === 0);
+}
+
 console.log("billableCents");
 {
   check("zero usage → zero billable (no flat fee on nothing)", billableCents(0, 30, 50) === 0);

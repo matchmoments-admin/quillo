@@ -22,7 +22,7 @@ import { pdfPageCount, splitPdf, normalizePdf } from "./lib/pdf";
 import { getLedger, LedgerNotConnectedError, LedgerReauthError, type LedgerExpense } from "./ledger";
 import { redact } from "./lib/redact";
 import { toAud } from "./lib/fx";
-import { spentTodayCents, recordUsage } from "./lib/usage";
+import { spentTodayCents, spentTodayGlobalCents, recordUsage } from "./lib/usage";
 import { parseTransactionAlert } from "./lib/bank-parsers";
 import auV1RulePack from "./rulepacks/au-v1.json";
 import { assertBucketKeys } from "./lib/taxonomy";
@@ -2603,6 +2603,8 @@ export class TaxAgent extends Agent<Env> {
     if (provider === "anthropic" && profile.consent_xborder !== 1) {
       throw new Error("consent_required");
     }
+    // Budget gate (per-tenant + global) — this free-text LLM call could otherwise be spammed.
+    if (!(await this.withinBudget(userId, null))) throw new Error("ai_budget_reached");
     const llm = await getLLM(this.env, profile, { userId });
     await this.auditXborderInference(userId, provider, "onboarding_draft", llm.modelId);
     const draft = await extractSituationDraft(llm, message.slice(0, 4000));
@@ -2660,6 +2662,16 @@ export class TaxAgent extends Agent<Env> {
    * 80%. 0/unset budget = unlimited.
    */
   private async withinBudget(userId: string, txnId: string | null): Promise<boolean> {
+    // Global daily ceiling across ALL tenants — the multi-tenant backstop (N testers × the per-tenant
+    // cap would otherwise be unbounded). Over it, stop spending and degrade (the app still works).
+    const globalBudget = Number(this.env.MAX_DAILY_COST_CENTS_GLOBAL ?? 0);
+    if (globalBudget > 0 && (await spentTodayGlobalCents(this.env)) >= globalBudget) {
+      if (txnId) {
+        await this.markStatus(txnId, "needs_review");
+        await this.notify(userId, "AI is paused for today (the platform's daily limit was reached). Saved for review — it'll process after the daily reset.", txnId);
+      }
+      return false;
+    }
     const budget = Number(this.env.MAX_DAILY_COST_CENTS ?? 0);
     if (budget <= 0) return true;
     const spent = await spentTodayCents(this.env, userId);

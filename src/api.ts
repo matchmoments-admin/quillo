@@ -156,7 +156,9 @@ export async function handleApi(
     try {
       return json(await stub.draftSituation(uid, message));
     } catch (e) {
-      if ((e as Error).message === "consent_required") return json({ error: "consent_required" }, 403);
+      const msg = (e as Error).message;
+      if (msg === "consent_required") return json({ error: "consent_required" }, 403);
+      if (msg === "ai_budget_reached") return json({ error: "AI is paused for today (daily limit reached) — try again after the reset, or fill the form in manually." }, 429);
       throw e;
     }
   }

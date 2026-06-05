@@ -203,7 +203,25 @@ console.log("extractSituationDraft");
 }
 
 // ── Depreciation engine: exact-cents golden tests (the deterministic core) ────
-import { computeFyDeduction, rollSchedule, daysInFy, daysHeldInFy, balancingAdjustment, depreciableCostCents, type DepAsset } from "../src/lib/depreciation";
+import { computeFyDeduction, rollSchedule, daysInFy, daysHeldInFy, balancingAdjustment, depreciableCostCents, isLowCostAsset, looksLikePersonalTransfer, type DepAsset } from "../src/lib/depreciation";
+
+console.log("asset auto-classification heuristics (isLowCostAsset / looksLikePersonalTransfer)");
+{
+  const T = 30000; // $300 immediate-deduction threshold, in cents
+  check("$100 (≤ $300) is low-cost → immediate", isLowCostAsset(10000, T) === true);
+  check("$200 (≤ $300) is low-cost → immediate", isLowCostAsset(20000, T) === true);
+  check("exactly $300 is low-cost (boundary inclusive)", isLowCostAsset(30000, T) === true);
+  check("$472 (> $300) is NOT low-cost → depreciate", isLowCostAsset(47200, T) === false);
+  check("no threshold known → never low-cost (don't mis-expense)", isLowCostAsset(10000, null) === false);
+  check("zero/negative cost is not low-cost", isLowCostAsset(0, T) === false);
+  // looksLikePersonalTransfer — catches P2P transfers, not real shop names.
+  check("'Transfer To MATTHEW PETERS - Sofa Deposit' is a personal transfer", looksLikePersonalTransfer("Transfer To MATTHEW PETERS - Sofa Deposit") === true);
+  check("Osko / PayID lines are personal transfers", looksLikePersonalTransfer("OSKO PAYMENT to John") === true && looksLikePersonalTransfer("PayID transfer") === true);
+  check("'JB Hi Fi Prahran' is NOT a transfer (real shop)", looksLikePersonalTransfer("JB Hi Fi Prahran") === false);
+  check("'IKEA Tempe NS AUS' is NOT a transfer (real shop)", looksLikePersonalTransfer("IKEA Tempe NS AUS") === false);
+  check("a bare 'deposit' (e.g. rental bond) is NOT matched on its own", looksLikePersonalTransfer("Rental bond deposit") === false);
+  check("empty/null merchant is not a transfer", looksLikePersonalTransfer(null) === false && looksLikePersonalTransfer("") === false);
+}
 
 console.log("depreciation: Div 40 diminishing value (ATO worked example $80k, 5yr life)");
 {

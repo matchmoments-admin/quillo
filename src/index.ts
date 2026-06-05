@@ -239,6 +239,22 @@ export default {
     const pending = await env.DB.prepare(`SELECT DISTINCT user_id FROM batch_jobs WHERE status = 'submitted'`).all<{ user_id: string }>();
     for (const u of pending.results) await stubFor(env, u.user_id).pollBatchJobs(u.user_id);
 
+    // One-time backfill (NON-spendy — no model call, so it runs BEFORE the AI-cost gate below):
+    // repair auto-created needs_review assets the v1 linker mis-handled — unwind personal transfers
+    // wrongly depreciated, and reclass low-cost (≤$300) items from a multi-year schedule to an
+    // immediate write-off. Guarded per tenant (claim-before-work, bounded) so it runs once. Iterate
+    // REAL tenants from `profiles` (founder's data lives under "me", not a Clerk id).
+    const assetFixTenants = await env.DB.prepare(`SELECT user_id FROM profiles`).all<{ user_id: string }>();
+    for (const t of assetFixTenants.results ?? []) {
+      try {
+        await runOnceGuarded(env, `backfill:reclass-lowcost-assets-v1:${t.user_id}`, 3, () =>
+          stubFor(env, t.user_id).reclassMisbucketedAssets(t.user_id).then(() => undefined),
+        );
+      } catch (e) {
+        console.error(`asset reclass backfill failed for ${t.user_id}: ${(e as Error).message}`);
+      }
+    }
+
     // Cost-safety gate for the SPENDY backfills below (C1): recategorise/repairStatements submit NEW
     // batch jobs (Anthropic bills at submission). If the platform's daily ceiling is already hit,
     // skip them this tick — they're one-time backfills with no deadline, so deferring to a day with

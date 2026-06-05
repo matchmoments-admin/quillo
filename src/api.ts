@@ -624,6 +624,37 @@ export async function handleApi(
     return json(await stub.assessFilingReadiness(uid, fy));
   }
 
+  // ── Find My Claims (flag claim_review) — 404 when off ─────────────────────
+  // GET  /api/claim-review?fy=         → read-only situational sweep (3 groups + uncovered occupations)
+  // POST /api/claim-review/draft       → AI gap-fill candidate rules for an uncovered occupation
+  // POST /api/claim-review/rules       → persist user-confirmed candidate rules (defer_to_agent forced)
+  if (resource === "claim-review") {
+    if (!featureOn(env, "claim_review")) return json({ error: "not available" }, 404);
+    if (m === "GET" && !id) {
+      const fy = Number(url.searchParams.get("fy")) || currentFyStartYear();
+      return json(await stub.reviewClaims(uid, fy));
+    }
+    if (m === "POST" && id === "draft") {
+      const { occupation } = (await req.json().catch(() => ({}))) as { occupation?: string };
+      if (!occupation || !occupation.trim()) return json({ error: "missing occupation" }, 400);
+      try {
+        return json(await stub.draftOccupationRules(uid, occupation));
+      } catch (e) {
+        const msg = (e as Error).message;
+        if (msg === "consent_required") return json({ error: "consent_required" }, 403);
+        if (msg === "ai_budget_reached") return json({ error: "AI is paused for today (daily limit reached) — try again after the reset." }, 429);
+        throw e;
+      }
+    }
+    if (m === "POST" && id === "rules") {
+      const { rules } = (await req.json().catch(() => ({}))) as {
+        rules?: { scope_type: string; scope_value: string; merchant_hint?: string | null; ato_label?: string | null; claim_type: string; default_method?: string | null; general_info_note: string }[];
+      };
+      if (!Array.isArray(rules)) return json({ error: "rules must be an array" }, 400);
+      return json(await stub.addClaimabilityRules(uid, rules));
+    }
+  }
+
   // ── Admin (founder only — cross-tenant) ───────────────────────────────────
   // Every admin route requires the caller's profile to hold the 'admin' role; the cross-tenant
   // reads hit D1 directly (the per-tenant DO is the wrong place for platform aggregates).

@@ -473,9 +473,11 @@ CREATE TABLE IF NOT EXISTS claimability_rules (
   confidence_floor REAL DEFAULT 0.7,
   general_info_note TEXT NOT NULL,
   defer_to_agent INTEGER DEFAULT 0,
+  user_id       TEXT,                          -- NULL = global pack override; set = per-tenant rule (AI gap-fill)
   created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_claimrules_ver ON claimability_rules(rule_pack_ver, scope_type, scope_value);
+CREATE INDEX IF NOT EXISTS idx_claimrules_user ON claimability_rules(rule_pack_ver, user_id);
 
 CREATE TABLE IF NOT EXISTS claim_suggestions (
   id            TEXT PRIMARY KEY,
@@ -489,6 +491,7 @@ CREATE TABLE IF NOT EXISTS claim_suggestions (
   estimated_deduction_cents INTEGER,
   llm_explanation TEXT,
   status        TEXT DEFAULT 'suggested',
+  source        TEXT NOT NULL DEFAULT 'ingest',  -- 'ingest' = per-transaction suggestClaims; 'review' = Find My Claims sweep
   created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_claimsug_user ON claim_suggestions(user_id, status);

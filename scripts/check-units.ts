@@ -324,7 +324,7 @@ console.log("depreciation: balancing adjustment on disposal");
 }
 
 // ── Claimability matcher: rules-first, defer gating ───────────────────────────
-import { matchClaimRules, suggestionText, type ClaimRule } from "../src/lib/claimability";
+import { matchClaimRules, suggestionText, enumerateSituationClaims, classifyClaim, uncoveredOccupations, ruleKey, type ClaimRule, type ClaimSituation } from "../src/lib/claimability";
 import rulePack from "../src/rulepacks/au-v1.json" assert { type: "json" };
 
 console.log("claimability");
@@ -368,6 +368,107 @@ console.log("claimability");
 
   // The new gate must not regress existing rules (no requires_entity_kind ⇒ still matches).
   check("entity gate doesn't break ungated rules", matchClaimRules(rules, { property_status: "vacant" }).length >= 1);
+}
+
+// ── "Find My Claims" situational helpers: enumerate / classify / uncovered ────
+// These answer "what could this person claim given who they are" BEFORE any matching transaction
+// is ingested — so they ignore merchant_hint. classifyClaim then buckets each into the 3 groups
+// the File page renders: Already capturing / Worth checking / Confirm with your agent.
+console.log("claimability situational sweep (enumerateSituationClaims / classifyClaim / uncoveredOccupations)");
+{
+  const rules = rulePack.claimability as ClaimRule[];
+
+  // enumerateSituationClaims: a nurse with a rented property surfaces BOTH the occupation rule and
+  // the property_status rules — across all of the situation's occupations/entities/statuses.
+  const nurseRenter: ClaimSituation = { occupations: ["nurse"], entity_kinds: [], property_statuses: ["renting_residence"] };
+  const enumerated = enumerateSituationClaims(rules, nurseRenter);
+  check("enumerate surfaces the nurse occupation rule", enumerated.some((r) => r.scope_type === "occupation" && r.scope_value === "nurse"));
+  check("enumerate surfaces the renting_residence status rule", enumerated.some((r) => r.scope_type === "property_status" && r.scope_value === "renting_residence"));
+  // Merchant is ignored: the nurse uniform rule shows up with NO merchant supplied (situational).
+  check("enumerate ignores merchant_hint (situational, not transactional)", enumerated.some((r) => r.ato_label === "D3/D5"));
+  // Bucket-scoped rules are NOT situational on their own → excluded from the sweep.
+  check("enumerate excludes bucket-scoped rules", !enumerated.some((r) => r.scope_type === "bucket"));
+  // De-dupe by ruleKey: feeding the same rule twice yields one row.
+  const nurseRule = rules.find((r) => r.scope_type === "occupation" && r.scope_value === "nurse")!;
+  const deduped = enumerateSituationClaims([nurseRule, { ...nurseRule }], { occupations: ["nurse"], entity_kinds: [], property_statuses: [] });
+  check("enumerate de-dupes by ruleKey", deduped.length === 1);
+
+  // Every pack rule must carry a UNIQUE id — ruleKey() de-dupes by it, so two rules sharing a key
+  // would silently collapse (the bug where 6 'all' generics + the teacher/tradie/rent pairs all shared
+  // 'occupation:all' / 'scope:value' and only the first survived the sweep).
+  const keys = rules.map(ruleKey);
+  check("every pack rule has a unique ruleKey (no collision drops)", new Set(keys).size === keys.length);
+
+  // 'all' is the cross-occupation wildcard: generics (WFH/donations/tax-agent fees/…) must surface
+  // for EVERY tenant, even one whose occupation is unauthored — regression guard for the bug where
+  // scope_value 'all' silently never fired because no occupation list contains "all".
+  const teacherSweep = enumerateSituationClaims(rules, { occupations: ["teacher"], entity_kinds: [], property_statuses: [] });
+  const genericCount = rules.filter((r) => r.scope_value === "all").length;
+  check("enumerate surfaces ALL 'all' generics (not just the first) for any occupation",
+    teacherSweep.filter((r) => r.scope_value === "all").length === genericCount && genericCount >= 6);
+  check("enumerate surfaces 'all' generics even with NO occupation set",
+    enumerateSituationClaims(rules, { occupations: [], entity_kinds: [], property_statuses: [] })
+      .some((r) => r.scope_value === "all"));
+  // Both teacher rules (supplies + renewals) survive — they no longer collapse to one 'occupation:teacher' key.
+  check("enumerate surfaces BOTH teacher rules (distinct ids, no collapse)",
+    teacherSweep.filter((r) => r.scope_type === "occupation" && r.scope_value === "teacher").length === 2);
+  // matchClaimRules (per-transaction path) also honours the 'all' wildcard, gated by merchant_hint.
+  check("matchClaimRules fires an 'all' generic on a matching merchant for any occupation",
+    matchClaimRules(rules, { bucket: "payg", merchant: "tax agent fees", occupations: ["teacher"] })
+      .some((r) => r.scope_value === "all"));
+  check("matchClaimRules does NOT fire an 'all' generic when the merchant doesn't match",
+    !matchClaimRules(rules, { bucket: "payg", merchant: "woolworths groceries", occupations: ["teacher"] })
+      .some((r) => r.scope_value === "all"));
+
+  // requires_entity_kind AND-gate still honoured. Use synthetic rules with distinct ids so the gate
+  // is tested in isolation (the bundled business:rent/company:rent pair share a scope pair and so —
+  // correctly, per the ruleKey contract — collapse under de-dupe when neither carries a D1 id).
+  const ungated: ClaimRule = { id: "g-base", scope_type: "property_status", scope_value: "renting_business", claim_type: "apportioned", general_info_note: "Business rent is generally deductible.", defer_to_agent: 1 };
+  const gated: ClaimRule = { id: "g-company", scope_type: "property_status", scope_value: "renting_business", requires_entity_kind: "company", claim_type: "apportioned", general_info_note: "Company rent.", defer_to_agent: 1 };
+  const gateRules = [ungated, gated];
+  const bizNoCo = enumerateSituationClaims(gateRules, { occupations: [], entity_kinds: [], property_statuses: ["renting_business"] });
+  check("enumerate respects requires_entity_kind gate (no company → gated rule excluded)", bizNoCo.some((r) => r.id === "g-base") && !bizNoCo.some((r) => r.id === "g-company"));
+  const bizCo = enumerateSituationClaims(gateRules, { occupations: [], entity_kinds: ["company"], property_statuses: ["renting_business"] });
+  check("enumerate lets gated rule through with the entity (company → gated rule included)", bizCo.some((r) => r.id === "g-company"));
+
+  // classifyClaim — the 3-way bucketing.
+  const noSpend = { bucketsWithSpend: [] as string[], firedRuleIds: [] as string[], dismissedRuleIds: [] as string[] };
+
+  // nurse uniform rule, no uniform spend, never fired → "Worth checking".
+  check("nurse with no uniform spend → check", classifyClaim(nurseRule, noSpend) === "check");
+
+  // rental decline-in-value (Div40) rule, no depreciation spend → "Worth checking".
+  const rentalDep = rules.find((r) => r.ato_label === "rental:decline-in-value")!;
+  check("rental with no depreciation spend → check", classifyClaim(rentalDep, noSpend) === "check");
+
+  // novated lease → defer_to_agent → "Confirm with your agent".
+  const novated = rules.find((r) => r.scope_value === "novated_lease")!;
+  check("novated_lease → defer", classifyClaim(novated, noSpend) === "defer");
+
+  // A bucket-scoped rule whose bucket HAS spend → "Already capturing".
+  const rentalRepairs = rules.find((r) => r.ato_label === "rental:repairs")!; // scope_value: property_rented
+  check("covered-with-spend → capturing", classifyClaim(rentalRepairs, { ...noSpend, bucketsWithSpend: ["property_rented"] }) === "capturing");
+  // Same rule, no spend in its bucket → falls back to "check".
+  check("same bucket rule with no spend → check", classifyClaim(rentalRepairs, noSpend) === "check");
+
+  // A rule whose suggestion already FIRED (by ruleKey) → "Already capturing", even with no bucket spend.
+  check("rule that already fired a suggestion → capturing", classifyClaim(nurseRule, { ...noSpend, firedRuleIds: [ruleKey(nurseRule)] }) === "capturing");
+
+  // Dismissed filtering is the CALLER's job: classifyClaim does NOT treat a dismissed id specially.
+  // A dismissed-but-fired rule still reads 'capturing' (it's covered); the caller must drop dismissed
+  // rows BEFORE classifying so they never resurface as 'check'. Assert that contract explicitly.
+  check("a dismissed rule is excluded by the caller (classify ignores dismissedRuleIds)",
+    classifyClaim(nurseRule, { ...noSpend, firedRuleIds: [ruleKey(nurseRule)], dismissedRuleIds: [ruleKey(nurseRule)] }) === "capturing");
+
+  // Set inputs work as well as arrays (the DO passes Sets).
+  check("classifyClaim accepts Set inputs", classifyClaim(rentalRepairs, { bucketsWithSpend: new Set(["property_rented"]), firedRuleIds: new Set<string>(), dismissedRuleIds: new Set<string>() }) === "capturing");
+
+  // uncoveredOccupations: nurse is authored; a bogus occupation never in the pack is uncovered → it
+  // alone is returned (this is the trigger for the AI occupation gap-fill step).
+  check("uncoveredOccupations flags the unauthored occupation", JSON.stringify(uncoveredOccupations(rules, ["nurse", "definitely_not_authored"])) === '["definitely_not_authored"]');
+  check("uncoveredOccupations returns none when all are authored", uncoveredOccupations(rules, ["nurse", "it_professional"]).length === 0);
+  // Foreign/non-AU residency is handled by the CALLER (surface as defer, never assert AU deductions) —
+  // these pure helpers stay AU-rule-pack agnostic; nothing here asserts a deduction or a $ figure.
 }
 
 // ── CGT: cost-base, Div43 reduction, 50% discount, main-residence, losses ─────

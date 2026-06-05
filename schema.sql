@@ -324,6 +324,19 @@ CREATE TABLE IF NOT EXISTS llm_usage (
 );
 CREATE INDEX IF NOT EXISTS idx_usage_user ON llm_usage(user_id, created_at);
 
+-- Race-free daily AI-spend rollup (backs the budget gate). scope = 'global' or a tenant id;
+-- incremented atomically via INSERT … ON CONFLICT DO UPDATE SET cents = cents + excluded.cents
+-- (SQLite serialises writes, so the global tally can't lose concurrent increments). See 0019.
+-- Keyed by `scope` (not a user_id column), so retention purges its per-tenant rows explicitly
+-- by scope in purgeTenant — it's outside the user_id-column completeness check.
+CREATE TABLE IF NOT EXISTS daily_cost (
+  scope      TEXT NOT NULL,   -- 'global' OR a tenant id
+  day        TEXT NOT NULL,   -- YYYY-MM-DD (UTC)
+  cents      REAL NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (scope, day)
+);
+
 -- ── Async categorisation jobs (Anthropic Message Batches, ~50% off, for bulk imports) ─
 CREATE TABLE IF NOT EXISTS batch_jobs (
   id           TEXT PRIMARY KEY,

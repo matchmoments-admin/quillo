@@ -60,6 +60,22 @@ export type AssetClass = (typeof ASSET_CLASSES)[number];
 export const CLAIM_TYPES = ["immediate", "div40", "div43", "apportioned", "not_deductible"] as const;
 export type ClaimType = (typeof CLAIM_TYPES)[number];
 
+/**
+ * Per-transaction deductibility state (0011). 'undetermined' is the captured default; the rest are
+ * written by the rules-first matcher (src/lib/deductibility.ts) at ingest and by the year-end review.
+ * The indicative position EXCLUDES 'likely_not'/'confirmed_not' (and, for payg, 'undetermined' —
+ * deny-by-default) — see src/lib/report.ts deductionGroupForRow.
+ */
+export const DEDUCTIBILITY_STATES = [
+  "undetermined",
+  "likely_deductible",
+  "likely_not",
+  "needs_apportionment",
+  "confirmed_deductible",
+  "confirmed_not",
+] as const;
+export type DeductibilityState = (typeof DEDUCTIBILITY_STATES)[number];
+
 /** Capital classification stamped on a transaction that creates/relates to an asset. */
 export const CAPITAL_CLASSES = ["repair", "div40", "div43", "initial_repair"] as const;
 export type CapitalClass = (typeof CAPITAL_CLASSES)[number];

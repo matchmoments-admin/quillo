@@ -13,6 +13,7 @@
 // it trips the tax-advice denylist.
 
 import type { Report } from "./report";
+import { deductionGroupForRow } from "./report";
 import type { Situation } from "./db";
 import { suggestionText, type ClaimRule } from "./claimability";
 
@@ -42,7 +43,9 @@ export interface ReadinessFinding {
 // One explained line of the indicative position. `why` is template/rulepack-sourced, never a freely
 // authored per-number assertion.
 export interface PositionLine {
-  group: "income" | "deduction" | "depreciation" | "property";
+  // "excluded" = captured but NOT in the indicative position (private/non-deductible, capital, or
+  // unresolved); "company" = a separate taxpayer's spend, tracked apart from the individual position.
+  group: "income" | "deduction" | "depreciation" | "property" | "excluded" | "company";
   label: string;
   amount_cents: number;
   basis: string;
@@ -102,11 +105,25 @@ function incomeTypeWhy(incomeType: string): string {
 
 function bucketWhy(bucket: string): string {
   switch (bucket) {
-    case "payg": return "Work-related / personal deductions you recorded (the D-labels). Each still needs to satisfy its own deductibility test.";
+    case "payg": return "Work-related deductions you recorded (the D-labels). Each still needs to satisfy its own deductibility test.";
     case "company": return "Business expenses recorded against your company's books.";
     case "property_rented": return "Expenses on a currently-let property — generally deductible while it's genuinely available for rent.";
     case "property_vacant": return "Holding costs on a property not currently let — often NOT deductible; confirm it was genuinely available for rent.";
     default: return "Categorised spend for this year.";
+  }
+}
+
+// Why a captured row is EXCLUDED from the indicative position (or tracked as company). GENERAL-INFO.
+function excludedWhy(bucket: string, deductibility: string | null | undefined): string {
+  if (bucket === "asset") return "Capital purchase — claimed over time as decline in value (Div 40 / Div 43), not as an immediate deduction, so it isn't counted here.";
+  switch (deductibility) {
+    case "likely_not":
+    case "confirmed_not":
+      return "Private or non-deductible spend (e.g. groceries, personal living costs, entertainment) — generally not deductible under s8-1(2)(b), so it's excluded from your position.";
+    case "needs_apportionment":
+      return "Work-related but needs an apportionment (e.g. work-use %, or your hours for working-from-home) before any amount can be claimed — excluded until you resolve it.";
+    default:
+      return "Not yet confirmed as work-related — excluded by default until you confirm it relates to earning your income. Review it in the Inbox.";
   }
 }
 
@@ -120,8 +137,10 @@ export function assessReadiness(input: {
   claimMatches: ClaimRule[];
   signals: FilingReadinessSignals;
   generatedAt: string;
+  excludeNonDeductible?: boolean; // mirrors the `position_excludes_nondeductible` flag (default off = legacy)
 }): FilingReadiness {
   const { report, situation, claimMatches, signals, generatedAt } = input;
+  const excludeNonDeductible = input.excludeNonDeductible ?? false;
   const findings: ReadinessFinding[] = [];
 
   // ── (1) position with reasoning — straight from the report, no new maths ──
@@ -129,9 +148,21 @@ export function assessReadiness(input: {
   for (const it of report.income.by_type) {
     lines.push({ group: "income", label: it.income_type, amount_cents: it.gross_cents, basis: `${it.n} income record(s)`, why: incomeTypeWhy(it.income_type) });
   }
-  for (const b of report.by_bucket) {
-    if (b.bucket === "unknown") continue; // not a sanctioned deduction; excluded from the position
-    lines.push({ group: "deduction", label: b.ato_label ? `${b.bucket} · ${b.ato_label}` : b.bucket, amount_cents: b.total_cents, basis: `${b.n} countable transaction(s)`, why: bucketWhy(b.bucket) });
+  // Deduction lines come from the deductibility-split breakdown so the SAME classifier that computed
+  // the headline routes each row to its section ("deduction" sums to the headline; "excluded"/"company"
+  // are shown apart). This both fixes the number AND explains what dropped out and why.
+  let paygUnresolvedCents = 0;
+  let paygUnresolvedN = 0;
+  for (const b of report.deduction_breakdown) {
+    if (b.bucket === "unknown") continue; // surfaced via the unknown_bucket blocker, not as a line
+    const group = deductionGroupForRow(b.bucket, b.deductibility, excludeNonDeductible);
+    const label = b.ato_label ? `${b.bucket} · ${b.ato_label}` : b.bucket;
+    const why = group === "deduction" ? bucketWhy(b.bucket) : group === "company" ? bucketWhy("company") : excludedWhy(b.bucket, b.deductibility);
+    lines.push({ group, label, amount_cents: b.total_cents, basis: `${b.n} countable transaction(s)`, why });
+    if (excludeNonDeductible && b.bucket === "payg" && (b.deductibility ?? "undetermined") === "undetermined") {
+      paygUnresolvedCents += b.total_cents;
+      paygUnresolvedN += b.n;
+    }
   }
   if (report.depreciation_cents > 0) {
     lines.push({ group: "depreciation", label: "Decline in value", amount_cents: report.depreciation_cents, basis: "from your depreciation schedule (Div 40 / Div 43)", why: "Capital allowances carried forward from your asset schedule for this year." });
@@ -148,6 +179,14 @@ export function assessReadiness(input: {
     findings.push(f("unknown_bucket", "completeness", "blocker", `${signals.unknownBucketN} transaction(s) aren't categorised yet`,
       `These total ${money(signals.unknownBucketCents)} and are excluded from the indicative position until you categorise them — so the position is incomplete. Categorise them in the Inbox before relying on the numbers.`, false,
       [{ kind: "transaction", count: signals.unknownBucketN }]));
+  }
+  // Deny-by-default: payg spend we couldn't positively classify is excluded from the position until
+  // the user confirms it's work-related. Surface it with a clear path so the headline isn't silently
+  // understated. Only meaningful (and only emitted) when the exclusion is actually in effect.
+  if (excludeNonDeductible && paygUnresolvedN > 0) {
+    findings.push(f("payg_unresolved", "classification", "review", `${paygUnresolvedN} personal/work transaction(s) need a deductibility decision`,
+      `These total ${money(paygUnresolvedCents)} and are excluded from the indicative position by default until you confirm they relate to earning your income (work-related). Private spend stays excluded; mark the work-related ones in the Inbox.`, false,
+      [{ kind: "transaction", count: paygUnresolvedN }]));
   }
   if (report.undated.n > 0) {
     findings.push(f("undated_receipts", "completeness", "blocker", `${report.undated.n} receipt(s) have no usable date`,

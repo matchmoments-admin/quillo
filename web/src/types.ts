@@ -338,7 +338,7 @@ export interface ReadinessFinding {
   evidence_refs: { kind: string; id?: string; label?: string; count?: number }[];
 }
 export interface PositionLine {
-  group: "income" | "deduction" | "depreciation" | "property";
+  group: "income" | "deduction" | "depreciation" | "property" | "excluded" | "company";
   label: string;
   amount_cents: number;
   basis: string;

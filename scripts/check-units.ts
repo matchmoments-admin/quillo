@@ -512,7 +512,7 @@ console.log("readiness");
 {
   const mkReport = (p: Partial<Report> = {}): Report => ({
     fy: "2025-26", start: "2025-07-01", end: "2026-06-30",
-    by_bucket: [], by_property: [], company_quarters: [],
+    by_bucket: [], deduction_breakdown: [], by_property: [], company_quarters: [],
     undated: { n: 0, total_cents: 0 }, undated_detail: [], abn: null, gst_credits_cents: 0,
     income: { by_type: [], gross_cents: 0, withholding_cents: 0, franking_credit_cents: 0, foreign_tax_paid_cents: 0 },
     depreciation_cents: 0, per_property: [], total_income_cents: 0, total_deductions_cents: 0, company_tracked_cents: 0, taxable_position_cents: 0,
@@ -582,6 +582,77 @@ console.log("readiness");
     ...r.position.lines.flatMap((l) => [l.basis, l.why]),
   ]);
   check("no generated text predicts tax payable / refund / rate", !generatedText.some((t) => denylist.test(t)));
+}
+
+// ── DEDUCTIBILITY: deny-by-default matcher + the headline/display reconciliation ──
+import { verdictForTxn } from "../src/lib/deductibility";
+import { deductionGroupForRow } from "../src/lib/report";
+
+console.log("deductibility (deny-by-default)");
+{
+  const section = (rulePack as { payg_deductibility?: Parameters<typeof verdictForTxn>[3] }).payg_deductibility;
+  // verdictForTxn: only payg is classified; precedence deny → apportion → allow → undetermined.
+  check("groceries → likely_not", verdictForTxn("payg", "payg:groceries", "Coles", section).deductibility === "likely_not");
+  check("personal-spend → likely_not", verdictForTxn("payg", "payg:personal-spend", null, section).deductibility === "likely_not");
+  check("loan repayment → likely_not", verdictForTxn("payg", "payg:loan-repayment", null, section).deductibility === "likely_not");
+  check("meals-entertainment → likely_not", verdictForTxn("payg", "payg:meals-entertainment", null, section).deductibility === "likely_not");
+  check("wfh electricity → needs_apportionment", verdictForTxn("payg", "payg:utilities", "Origin Energy electricity", section).deductibility === "needs_apportionment");
+  // Matcher NEVER auto-asserts a positive deduction: clearly-deductible payg (union/tax-affairs) stays
+  // undetermined → excluded by deny-by-default → surfaced for the user to confirm (resolved stays ~$0).
+  check("union fees → undetermined (not auto-claimed)", verdictForTxn("payg", "payg:union-fees", "ASU membership", section).deductibility === "undetermined");
+  check("unclassified payg → undetermined (deny-by-default excludes it)", verdictForTxn("payg", "payg:other", "Mystery Shop", section).deductibility === "undetermined");
+  check("non-payg bucket → undetermined (handled by bucket)", verdictForTxn("company", "company:software", "Anthropic", section).deductibility === "undetermined");
+  check("asset → undetermined (handled by bucket)", verdictForTxn("asset", "asset:furniture", "Officeworks", section).deductibility === "undetermined");
+
+  // deductionGroupForRow: flag OFF = legacy (payg/property count; asset/unknown excluded; company apart).
+  check("OFF: payg undetermined counts", deductionGroupForRow("payg", "undetermined", false) === "deduction");
+  check("OFF: asset excluded", deductionGroupForRow("asset", "undetermined", false) === "excluded");
+  check("OFF: company apart", deductionGroupForRow("company", "undetermined", false) === "company");
+  // flag ON = deny-by-default.
+  check("ON: payg undetermined excluded", deductionGroupForRow("payg", "undetermined", true) === "excluded");
+  check("ON: payg likely_deductible counts", deductionGroupForRow("payg", "likely_deductible", true) === "deduction");
+  check("ON: payg likely_not excluded", deductionGroupForRow("payg", "likely_not", true) === "excluded");
+  check("ON: needs_apportionment excluded", deductionGroupForRow("payg", "needs_apportionment", true) === "excluded");
+  check("ON: property_rented undetermined still counts (capture-now preserved)", deductionGroupForRow("property_rented", "undetermined", true) === "deduction");
+  check("ON: property_rented confirmed_not excluded", deductionGroupForRow("property_rented", "confirmed_not", true) === "excluded");
+
+  // RECONCILIATION: the readiness "Deductions" lines sum to the same gross the headline math uses,
+  // and private/capital/company spend lands in the excluded/company sections — not under Deductions.
+  const breakdown = [
+    { bucket: "payg", ato_label: "payg:union-fees", deductibility: "likely_deductible", n: 1, total_cents: 50_000, gst_cents: 0 },
+    { bucket: "payg", ato_label: "payg:groceries", deductibility: "likely_not", n: 3, total_cents: 323_035, gst_cents: 0 },
+    { bucket: "payg", ato_label: "payg:other", deductibility: "undetermined", n: 2, total_cents: 120_000, gst_cents: 0 },
+    { bucket: "property_rented", ato_label: "rental:mgmt", deductibility: "undetermined", n: 1, total_cents: 200_000, gst_cents: 0 },
+    { bucket: "company", ato_label: "company:software", deductibility: "undetermined", n: 1, total_cents: 300_000, gst_cents: 0 },
+    { bucket: "asset", ato_label: "asset:furniture", deductibility: "likely_not", n: 1, total_cents: 30_000, gst_cents: 0 },
+    { bucket: "unknown", ato_label: null, deductibility: "undetermined", n: 1, total_cents: 9_999, gst_cents: 0 },
+  ];
+  // Local builders (the readiness block's helpers are block-scoped). Cast is runtime-safe: assessReadiness
+  // only reads the fields set here (tsx strips types; this script isn't part of `npm run typecheck`).
+  const mkR = (bd: typeof breakdown): Report => ({
+    fy: "2025-26", income: { by_type: [], gross_cents: 0, withholding_cents: 0, franking_credit_cents: 0, foreign_tax_paid_cents: 0 },
+    deduction_breakdown: bd, per_property: [], depreciation_cents: 0, undated: { n: 0, total_cents: 0 }, gst_credits_cents: 0, abn: null, taxable_position_cents: 0,
+  } as unknown as Report);
+  const mkS = (): Situation => ({ profile: {}, persons: [], properties: [], entities: [], rules: [] } as unknown as Situation);
+  const mkSig = (): FilingReadinessSignals => ({
+    unknownBucketCents: 0, unknownBucketN: 0, lowConfidenceN: 0, needsReviewIncomeN: 0, needsReviewAssetsN: 0,
+    hasDividendStatementDoc: true, rentalPropsMissingSummary: [], disposedAssetsN: 0, instantAssetWriteOffCentsThisFy: null, instantAssetWriteOffCentsPrevFy: null,
+  });
+  const headlineGross = breakdown.filter((b) => deductionGroupForRow(b.bucket, b.deductibility, true) === "deduction").reduce((s, b) => s + b.total_cents, 0);
+  const ready = assessReadiness({ report: mkR(breakdown), situation: mkS(), claimMatches: [], signals: mkSig(), generatedAt: "2026-06-03T00:00:00Z", excludeNonDeductible: true });
+  const deductionLineSum = ready.position.lines.filter((l) => l.group === "deduction").reduce((s, l) => s + l.amount_cents, 0);
+  check("ON: deduction lines == headline gross (union + rental only)", deductionLineSum === headlineGross && deductionLineSum === 250_000);
+  check("ON: groceries + asset land in 'excluded'", ready.position.lines.some((l) => l.group === "excluded" && l.label.includes("groceries")) && ready.position.lines.some((l) => l.group === "excluded" && l.label.includes("asset")));
+  check("ON: company spend in its own 'company' group", ready.position.lines.some((l) => l.group === "company" && l.label.includes("company")));
+  check("ON: unresolved payg → review finding", ready.findings.some((fd) => fd.id === "payg_unresolved" && fd.severity === "review"));
+  check("ON: unknown never rendered as a deduction line", !ready.position.lines.some((l) => l.label.includes("unknown")));
+  check("ON: excluded/company copy doesn't trip the tax-advice denylist", !ready.position.lines.flatMap((l) => [l.why, l.basis]).concat(ready.findings.flatMap((fd) => [fd.title, fd.general_info_note])).some((t) => /refund|tax payable|marginal rate|\b\d{1,2}%\s*(tax|bracket)/i.test(t)));
+
+  // Flag OFF: byte-identical basis — payg + property all count; no deny-by-default finding.
+  const legacy = assessReadiness({ report: mkR(breakdown), situation: mkS(), claimMatches: [], signals: mkSig(), generatedAt: "2026-06-03T00:00:00Z" });
+  const legacyDeduction = legacy.position.lines.filter((l) => l.group === "deduction").reduce((s, l) => s + l.amount_cents, 0);
+  check("OFF: payg + property all count (legacy basis)", legacyDeduction === 50_000 + 323_035 + 120_000 + 200_000);
+  check("OFF: no payg_unresolved finding", !legacy.findings.some((fd) => fd.id === "payg_unresolved"));
 }
 
 // ── Taxonomy ↔ rule pack ↔ UI agree (no silent bucket drift) ─────────────────

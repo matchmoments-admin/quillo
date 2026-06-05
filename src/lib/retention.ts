@@ -35,6 +35,25 @@ export const PURGE_TABLES = [
   "claim_suggestions",
 ] as const;
 
+// Columns that must NEVER leave the system in an APP-12 export, even though the row belongs to the
+// tenant: the HMAC ingest secret and the live QuickBooks OAuth tokens. Everything else in those
+// tables (key_id, label, realm_id, expiries…) is fine to return.
+const SECRET_COLUMNS: Record<string, readonly string[]> = {
+  tenant_keys: ["secret"],
+  qbo_connections: ["access_token", "refresh_token"],
+};
+
+/** Strip the secret columns (if any) from a table's rows before they leave the system in an export. */
+export function redactSecrets(table: string, rows: Record<string, unknown>[]): Record<string, unknown>[] {
+  const secrets = SECRET_COLUMNS[table];
+  if (!secrets?.length) return rows;
+  return rows.map((row) => {
+    const copy = { ...row };
+    for (const s of secrets) delete copy[s];
+    return copy;
+  });
+}
+
 export interface PurgeResult {
   tables: number;
   rowsDeleted: number;
@@ -50,7 +69,15 @@ export interface PurgeResult {
  * (written by the caller). Scoped to user_id throughout — never a cross-tenant delete.
  */
 export async function purgeTenant(env: Env, userId: string): Promise<PurgeResult> {
-  // 1. Revoke + delete the QuickBooks connection first (also clears its KV account cache).
+  // Ordering matters (APP-13 integrity): erase the EXTERNAL stores (R2 bytes, KV caches) BEFORE the
+  // D1 wipe, and let their failures PROPAGATE. Previously D1 was wiped first and R2/KV were best-
+  // effort, so a mid-stream store error left receipt bytes orphaned while the caller still audited the
+  // purge as "complete". Now a store failure aborts before D1 is touched — the tenant's data is intact
+  // and the delete is simply retried (every step is idempotent), and the caller never records a
+  // false "complete". The D1 wipe is last so nothing references bytes that are already gone.
+
+  // 1. Revoke + delete the QuickBooks connection (also clears its KV account cache). Best-effort: a
+  // remote revoke failure must not block the local erasure, and the token ROW is wiped by the D1 step.
   let qboRevoked = false;
   try {
     const r = await revokeAndDisconnect(env, userId);
@@ -59,60 +86,53 @@ export async function purgeTenant(env: Env, userId: string): Promise<PurgeResult
     /* best-effort — never block the erasure on a remote revoke */
   }
 
-  // 2. D1: delete every tenant table except audit_log, in one batch. daily_cost is keyed by `scope`
-  // (not user_id), so it's purged explicitly by scope here rather than via the user_id list — this
-  // erases the tenant's per-day AI-spend rows; the 'global' platform tally is untouched.
-  const stmts = [
+  // 2. R2: every object is keyed `${userId}/…` — list + bulk-delete in pages. Throws on failure so we
+  // don't proceed to wipe D1 (and falsely report success) while bytes remain.
+  let r2Objects = 0;
+  let cursor: string | undefined;
+  do {
+    const page = await env.RECEIPTS.list({ prefix: `${userId}/`, cursor, limit: 1000 });
+    const keys = page.objects.map((o) => o.key);
+    if (keys.length) {
+      await env.RECEIPTS.delete(keys);
+      r2Objects += keys.length;
+    }
+    cursor = page.truncated ? page.cursor : undefined;
+  } while (cursor);
+
+  // 3. KV: per-tenant caches — single keys + the day-bucketed cost keys (prefix list). Also throws.
+  let kvKeys = 0;
+  for (const k of [`accounts:${userId}`, `taxcodes:${userId}`]) {
+    await env.RULES.delete(k);
+    kvKeys++;
+  }
+  let kvCursor: string | undefined;
+  do {
+    const page = await env.RULES.list({ prefix: `cost:${userId}:`, cursor: kvCursor });
+    for (const k of page.keys) {
+      await env.RULES.delete(k.name);
+      kvKeys++;
+    }
+    kvCursor = page.list_complete ? undefined : page.cursor;
+  } while (kvCursor);
+
+  // 4. D1 (LAST): delete every tenant table except audit_log AND re-seat a clean empty profile, in ONE
+  // atomic batch. daily_cost is keyed by `scope` (not user_id), so it's purged explicitly by scope —
+  // this erases the tenant's per-day AI-spend rows; the 'global' platform tally is untouched. The
+  // empty-profile reseat is in the SAME batch (after the profiles DELETE) so the tenant is never left
+  // profile-less between wipe and reseat (requireProfile throws without one → bricked). They get a
+  // brand-new empty account and go back through onboarding; full identity removal (Clerk) is separate.
+  // INSERT OR IGNORE keeps a re-run on an already-purged tenant from hitting a PRIMARY KEY conflict.
+  const deletes = [
     ...PURGE_TABLES.map((t) => env.DB.prepare(`DELETE FROM ${t} WHERE user_id = ?`).bind(userId)),
     env.DB.prepare(`DELETE FROM daily_cost WHERE scope = ?`).bind(userId),
   ];
-  const results = await env.DB.batch(stmts);
-  const rowsDeleted = results.reduce((n, r) => n + (r.meta?.changes ?? 0), 0);
-
-  // Re-seat a CLEAN, empty profile (all columns default: consent reset to 0, no PII). Profiles are
-  // only ever created by the onboarding scripts, and requireProfile throws without one — so without
-  // this, a tenant who deletes their data would be bricked. Instead they get a brand-new empty
-  // account and are sent back through onboarding. Full identity removal (Clerk) is a separate step.
-  await env.DB.prepare(`INSERT INTO profiles (user_id) VALUES (?)`).bind(userId).run();
-
-  // 3. R2: every object is keyed `${userId}/…` — list + bulk-delete in pages. Best-effort: the D1
-  // wipe has already committed, so a transient store error must NOT reject (which would skip the
-  // post-audit and report a failure for an account that's effectively gone).
-  let r2Objects = 0;
-  try {
-    let cursor: string | undefined;
-    do {
-      const page = await env.RECEIPTS.list({ prefix: `${userId}/`, cursor, limit: 1000 });
-      const keys = page.objects.map((o) => o.key);
-      if (keys.length) {
-        await env.RECEIPTS.delete(keys);
-        r2Objects += keys.length;
-      }
-      cursor = page.truncated ? page.cursor : undefined;
-    } while (cursor);
-  } catch (e) {
-    console.warn(`purge: R2 cleanup incomplete for ${userId}: ${(e as Error).message}`);
-  }
-
-  // 4. KV: per-tenant caches. Single keys + the day-bucketed cost keys (prefix list). Best-effort.
-  let kvKeys = 0;
-  try {
-    for (const k of [`accounts:${userId}`, `taxcodes:${userId}`]) {
-      await env.RULES.delete(k);
-      kvKeys++;
-    }
-    let kvCursor: string | undefined;
-    do {
-      const page = await env.RULES.list({ prefix: `cost:${userId}:`, cursor: kvCursor });
-      for (const k of page.keys) {
-        await env.RULES.delete(k.name);
-        kvKeys++;
-      }
-      kvCursor = page.list_complete ? undefined : page.cursor;
-    } while (kvCursor);
-  } catch (e) {
-    console.warn(`purge: KV cleanup incomplete for ${userId}: ${(e as Error).message}`);
-  }
+  const results = await env.DB.batch([
+    ...deletes,
+    env.DB.prepare(`INSERT OR IGNORE INTO profiles (user_id) VALUES (?)`).bind(userId),
+  ]);
+  // Count only the DELETE results (exclude the trailing reseat INSERT) so rowsDeleted stays truthful.
+  const rowsDeleted = results.slice(0, deletes.length).reduce((n, r) => n + (r.meta?.changes ?? 0), 0);
 
   return { tables: PURGE_TABLES.length, rowsDeleted, r2Objects, kvKeys, qboRevoked };
 }
@@ -124,41 +144,29 @@ export async function purgeTenant(env: Env, userId: string): Promise<PurgeResult
 export async function exportTenant(env: Env, userId: string): Promise<Record<string, unknown>> {
   const profile = await getProfile(env, userId);
   const situation = profile ? await getSituation(env, userId, profile) : null;
-  // Dump every record table in FULL (no UI list caps / no matched-receipt filter) so the access
-  // request is complete. Each is scoped to user_id.
-  const dump = async (table: string): Promise<unknown[]> => {
-    const r = await env.DB.prepare(`SELECT * FROM ${table} WHERE user_id = ?`).bind(userId).all();
-    return r.results ?? [];
+
+  // The export is the DUAL of the purge: dump every table the purge erases, plus audit_log (kept, not
+  // purged, but it's the tenant's own trail) — so the access request is complete and can't silently
+  // omit a table that deletion would destroy. Secret columns (HMAC ingest secret, live QBO tokens)
+  // are STRIPPED — they belong to the tenant's row but must never leave the system. (Previously the
+  // export hand-listed ~11 tables and used SELECT *, so it both omitted data and would dump secrets.)
+  const dumpByUser = async (table: string): Promise<unknown[]> => {
+    const r = await env.DB.prepare(`SELECT * FROM ${table} WHERE user_id = ?`).bind(userId).all<Record<string, unknown>>();
+    return redactSecrets(table, r.results ?? []);
   };
-  const [transactions, income, assets, depreciation, documents, statements, accounts, corrections, notifications, claims, checklist] =
-    await Promise.all([
-      dump("transactions"),
-      dump("income"),
-      dump("assets"),
-      dump("depreciation_schedule"),
-      dump("documents"),
-      dump("statements"),
-      dump("accounts"),
-      dump("corrections"),
-      dump("notifications"),
-      dump("claim_suggestions"),
-      dump("fy_checklist"),
-    ]);
+
+  const entries = await Promise.all(PURGE_TABLES.map(async (t) => [t, await dumpByUser(t)] as const));
+  const tables: Record<string, unknown[]> = Object.fromEntries(entries);
+  // daily_cost is scope-keyed (not user_id); audit_log is kept rather than purged but is the tenant's
+  // record. Both are part of a complete access request.
+  tables.daily_cost = ((await env.DB.prepare(`SELECT * FROM daily_cost WHERE scope = ?`).bind(userId).all()).results ?? []);
+  tables.audit_log = ((await env.DB.prepare(`SELECT * FROM audit_log WHERE user_id = ?`).bind(userId).all()).results ?? []);
+
   return {
     exported_at: new Date().toISOString(),
     user_id: userId,
-    situation,
-    transactions,
-    income,
-    assets,
-    depreciation,
-    documents,
-    statements,
-    accounts,
-    corrections,
-    notifications,
-    claims,
-    checklist,
+    situation, // friendly structured view (persons/properties/entities/rules); raw rows are in `tables`
+    tables,
   };
 }
 

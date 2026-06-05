@@ -1,7 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { Env } from "./env";
 import type { Profile } from "./lib/db";
-import { recordUsage } from "./lib/usage";
+import { recordUsage, noteMeteringError } from "./lib/usage";
 import { signBedrockInvoke } from "./lib/sigv4";
 
 /**
@@ -49,8 +49,10 @@ function meter(env: Env, ctx: LLMContext | undefined, client: Anthropic, modelId
       if (ctx?.userId && msg.usage) {
         try {
           await recordUsage(env, ctx.userId, feature, modelId, msg.usage);
-        } catch {
-          /* never let metering break a real call */
+        } catch (e) {
+          // Never let metering break a real call — but don't swallow the SIGNAL: the cost was
+          // really incurred, so log + bump the cost_errors counter so the gap is visible/alertable.
+          await noteMeteringError(env, ctx.userId, e);
         }
       }
       return msg;
@@ -107,8 +109,10 @@ export async function getLLM(env: Env, profile: ProviderProfile | null, ctx?: LL
         if (ctx?.userId && msg.usage) {
           try {
             await recordUsage(env, ctx.userId, feature, modelId, msg.usage);
-          } catch {
-            /* never let metering break a real call */
+          } catch (e) {
+            // Never break the real call, but surface the signal (same as the Anthropic path) — the
+            // cost was incurred, so log + bump the cost_errors counter instead of swallowing it.
+            await noteMeteringError(env, ctx.userId, e);
           }
         }
         return msg;

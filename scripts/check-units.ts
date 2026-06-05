@@ -508,6 +508,20 @@ console.log("costCents (AI spend pricing)");
   check("cache-read 10× cheaper than input", costCents(H, { cache_read_input_tokens: 1_000_000 }) === 10);
   check("unknown model falls back to Haiku rate", costCents("unknown-model", { input_tokens: 1_000_000 }) === 100);
   check("empty usage → 0c", costCents(H, {}) === 0);
+
+  // C5: a real ~40-line chunk is sub-cent. Quantising to 4dp must PRESERVE the fraction — rounding
+  // to whole cents would floor it to 0 and the daily budget counter would never move (silent free
+  // inference past the cap). 1500 in + 200 out = (1500×1 + 200×5)/1e6×100 = 0.25c.
+  const chunk = costCents(H, { input_tokens: 1500, output_tokens: 200 });
+  check("sub-cent call keeps its value (0.25c, not floored to 0)", chunk === 0.25);
+  check("a tiny call is non-zero (300 in → 0.03c)", costCents(H, { input_tokens: 300 }) === 0.03);
+  // Deterministic accumulation: summing N identical sub-cent calls is exact (no float drift blowup),
+  // so the running KV total the gate reads stays trustworthy.
+  let total = 0;
+  for (let i = 0; i < 1000; i++) total = Math.round((total + chunk) * 10_000) / 10_000;
+  check("1000 × 0.25c sums to exactly 250c (no drift)", total === 250);
+  // Quantisation is bounded to 4 decimal places (1e-4 cents) — never a long float tail.
+  check("cost is quantised to ≤4 decimal places", Number.isInteger(costCents(H, { input_tokens: 333, output_tokens: 77 }) * 10_000));
 }
 
 console.log("billableCents");

@@ -346,6 +346,7 @@ export async function handleApi(
       } catch (e) {
         const msg = (e as Error).message;
         if (msg === "consent_required") return json({ error: "consent_required" }, 403);
+        if (msg === "ai_budget_reached") return json({ error: "AI is paused for today (daily limit reached) — try again after the reset." }, 429);
         return json({ error: msg }, 422); // unreadable statement / extraction failure — show the reason
       }
     }

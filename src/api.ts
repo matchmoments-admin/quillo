@@ -188,7 +188,10 @@ export async function handleApi(
   // (cheap no-op when there are none) so results land without waiting for the cron.
   if (resource === "dashboard" && m === "GET") {
     await stub.pollBatchJobs(uid);
-    return json(await dashboard(env, uid));
+    // FY-scoped (Jul–Jun); the SPA always sends ?fy=<start year> from the active-FY switcher.
+    // Absent/garbage → default to the current FY so a bare /api/dashboard still works.
+    const fy = Number(url.searchParams.get("fy")) || currentFyStartYear();
+    return json(await dashboard(env, uid, fy));
   }
 
   // GET /api/usage — measured inference cost (today / month / by feature).
@@ -199,6 +202,8 @@ export async function handleApi(
   // GET /api/progress — derived completion state + the single next action that drives the
   // cross-tab spine and per-tab guides. Read-only (counts only); reuses COUNTABLE / NEEDS_REVIEW.
   if (resource === "progress" && m === "GET") {
+    // All-time on purpose: the spine + nav badge are a single cross-year work backlog that must match
+    // the (un-FY-scoped) Inbox/Reconcile queues they link to. Only the dashboard's MONEY cards are per-FY.
     return json(await getProgress(env, uid));
   }
 

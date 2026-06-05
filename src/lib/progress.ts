@@ -1,11 +1,5 @@
 import type { Env } from "../env";
-import { COUNTABLE, NEEDS_REVIEW } from "./queries";
-
-// "This row can't be assigned to any FY" — the SAME null/unparseable-date predicate the report
-// uses (src/lib/report.ts), kept verbatim so the progress "undated" count can't drift from the
-// report's `undated` section.
-const UNDATED_CLAUSE =
-  "(txn_date IS NULL OR txn_date NOT GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]')";
+import { COUNTABLE, NEEDS_REVIEW, UNDATED_CLAUSE } from "./queries";
 
 export type NextActionKind = "import" | "review" | "date" | "export";
 
@@ -84,6 +78,11 @@ export function buildProgress(c: ProgressCounts): Progress {
  */
 export async function getProgress(env: Env, userId: string): Promise<Progress> {
   const q = (sql: string) => env.DB.prepare(sql).bind(userId);
+  // Every count here is ALL-TIME by design. These drive the cross-year work spine (NextAction) and
+  // the nav review badge, which sit beside an Inbox/Reconcile queue that is itself NOT FY-scoped —
+  // so an FY-scoped count here would diverge from the queue it links to (and a txn_date range would
+  // silently drop the undated rows that most need attention). The dashboard's MONEY cards are
+  // per-FY (see queries.dashboard); the review queue stays a single all-time backlog.
   const rows = await env.DB.batch<{ n: number }>([
     // Only statements that have actually been imported (status flips 'parsed'→'imported' on
     // confirmImport) — a parsed-but-unconfirmed or failed upload must NOT read as "your

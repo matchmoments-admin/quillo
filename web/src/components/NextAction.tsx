@@ -4,10 +4,11 @@ import { api } from "../api";
 
 // The cross-tab "where am I / what's next" spine. Ambient (always visible, never modal), oriented
 // to one goal: getting the year lodge-ready. Reads the shared ["progress"] query so it can't drift
-// from the per-tab guides. Clicking the next action routes to it. Freshness after a write is
-// handled globally (a MutationCache hook in main.tsx invalidates ["progress"] on any successful
-// mutation) — so the spine updates when the user confirms/dates an item, without a refetch storm
-// on every navigation.
+// from the per-tab guides (and TabGuide reads the same key). It's an ALL-TIME cross-year backlog —
+// deliberately not FY-scoped — so it matches the Inbox/Reconcile queues it routes to (those aren't
+// FY-scoped either). Clicking the next action routes to it. Freshness after a write is handled
+// globally (a MutationCache hook in main.tsx invalidates ["progress"] on any successful mutation),
+// so the spine updates when the user confirms/dates an item, without a refetch storm on navigation.
 export function NextActionBar() {
   const navigate = useNavigate();
   const { data } = useQuery({ queryKey: ["progress"], queryFn: () => api.progress() });

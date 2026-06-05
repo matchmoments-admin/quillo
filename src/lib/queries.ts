@@ -3,6 +3,7 @@ import { enabledFeatures } from "./features";
 import { billingPolicy, billableCents } from "./billing";
 import { getProfile } from "./db";
 import { isAdmin } from "./roles";
+import { fyBounds } from "./ledger-totals";
 
 // Read-side queries for the web API. Reads hit D1 directly from the Worker; audited
 // writes (corrections, consent) go through the Durable Object RPC instead.
@@ -33,6 +34,12 @@ export const COUNTABLE_INCOME =
 export const NEEDS_REVIEW =
   "status NOT IN ('duplicate','ignored','matched_receipt') " +
   "AND (status IN ('needs_review','needs_extraction','blocked_consent') OR bucket = 'unknown' OR confidence < 0.85)";
+
+// "This row can't be assigned to any FY" — a NULL or non-ISO txn_date. Defined here (the shared
+// query module) so the dashboard's undated chip, the progress "to date" count and the report's
+// `undated` section all read the SAME predicate and can never drift. (progress.ts imports it.)
+export const UNDATED_CLAUSE =
+  "(txn_date IS NULL OR txn_date NOT GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]')";
 
 export interface TxnRow {
   id: string;
@@ -377,48 +384,73 @@ export async function listNotifications(env: Env, userId: string) {
   return res.results ?? [];
 }
 
-export async function dashboard(env: Env, userId: string) {
-  // Totals use the AUD value (falling back to the original when it's already AUD / pre-migration),
-  // so mixed-currency receipts never sum incorrectly. Duplicates are excluded.
-  const byBucket = await env.DB.prepare(
-    `SELECT bucket, COUNT(*) AS n, COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS total_cents
-       FROM transactions WHERE user_id = ? AND bucket IS NOT NULL AND ${COUNTABLE}
-      GROUP BY bucket ORDER BY total_cents DESC`,
-  )
-    .bind(userId)
-    .all();
-  const byProperty = await env.DB.prepare(
-    `SELECT t.property_id, p.label, COUNT(*) AS n,
-            COALESCE(SUM(COALESCE(t.amount_aud_cents, t.amount_cents)),0) AS total_cents
-       FROM transactions t LEFT JOIN properties p ON p.id = t.property_id
-      WHERE t.user_id = ? AND t.property_id IS NOT NULL AND ${COUNTABLE.replace(/\b(status|kind|matched_txn_id|direction)\b/g, "t.$1")}
-      GROUP BY t.property_id`,
-  )
-    .bind(userId)
-    .all();
-  // Income from bank credits, grouped by income bucket (separate from the document-sourced
-  // `income` table — see COUNTABLE_INCOME). 'refund' is excluded: it nets against spend.
-  // NOTE: dedupe (matched_income_id) is intentionally NOT applied here — the dashboard shows this
-  // credit glance WITHOUT the income table beside it, so hiding matched credits would make income
-  // look like it vanished. De-dup is applied in the formal Report, where both sections coexist.
-  const incomeByBucket = await env.DB.prepare(
-    `SELECT bucket, COUNT(*) AS n, COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS total_cents
-       FROM transactions WHERE user_id = ? AND bucket IN ('income_business','income_property','income_personal') AND ${COUNTABLE_INCOME}
-      GROUP BY bucket ORDER BY total_cents DESC`,
-  )
-    .bind(userId)
-    .all();
-  const needsReview = await env.DB.prepare(
-    `SELECT COUNT(*) AS n FROM transactions WHERE user_id = ? AND ${NEEDS_REVIEW}`,
-  )
-    .bind(userId)
-    .first<{ n: number }>();
-  const profile = await getProfile(env, userId);
+export async function dashboard(env: Env, userId: string, startYear: number) {
+  // Every figure is scoped to the active financial year (Jul–Jun): tax is reported per FY, so the
+  // "tracked tax position" is a single-year view that follows the header FY switcher. The date
+  // bounds are appended to each query (NOT baked into the COUNTABLE predicate) so the by_property
+  // column-aliasing replace below stays isolated. Undated rows (no FY) are reported separately so
+  // FY-scoping never silently hides them.
+  const { start, end } = fyBounds(startYear);
+  // The MONEY figures (tracked total, by-property, income) are scoped to the active FY — bounds are
+  // appended per-query (NOT into the COUNTABLE predicate) so the by_property column-aliasing replace
+  // below stays isolated. `needs_review` is deliberately ALL-TIME: it's the review-queue backlog and
+  // must match the Inbox (which isn't FY-scoped) and the all-time NextAction spine. Undated rows
+  // (no FY) are reported separately so FY-scoping the totals never silently hides them. The reads are
+  // independent → run them concurrently (D1 pipelines them) instead of six serial round-trips.
+  const [byBucket, byProperty, incomeByBucket, needsReview, undated, profile] = await Promise.all([
+    // Totals use the AUD value (falling back to the original when it's already AUD / pre-migration),
+    // so mixed-currency receipts never sum incorrectly. Duplicates are excluded.
+    env.DB.prepare(
+      `SELECT bucket, COUNT(*) AS n, COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS total_cents
+         FROM transactions WHERE user_id = ? AND bucket IS NOT NULL AND ${COUNTABLE}
+          AND txn_date >= ? AND txn_date <= ?
+        GROUP BY bucket ORDER BY total_cents DESC`,
+    )
+      .bind(userId, start, end)
+      .all(),
+    env.DB.prepare(
+      `SELECT t.property_id, p.label, COUNT(*) AS n,
+              COALESCE(SUM(COALESCE(t.amount_aud_cents, t.amount_cents)),0) AS total_cents
+         FROM transactions t LEFT JOIN properties p ON p.id = t.property_id
+        WHERE t.user_id = ? AND t.property_id IS NOT NULL AND ${COUNTABLE.replace(/\b(status|kind|matched_txn_id|direction)\b/g, "t.$1")}
+          AND t.txn_date >= ? AND t.txn_date <= ?
+        GROUP BY t.property_id`,
+    )
+      .bind(userId, start, end)
+      .all(),
+    // Income from bank credits, grouped by income bucket (separate from the document-sourced
+    // `income` table — see COUNTABLE_INCOME). 'refund' is excluded: it nets against spend.
+    // NOTE: dedupe (matched_income_id) is intentionally NOT applied here — the dashboard shows this
+    // credit glance WITHOUT the income table beside it, so hiding matched credits would make income
+    // look like it vanished. De-dup is applied in the formal Report, where both sections coexist.
+    env.DB.prepare(
+      `SELECT bucket, COUNT(*) AS n, COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS total_cents
+         FROM transactions WHERE user_id = ? AND bucket IN ('income_business','income_property','income_personal') AND ${COUNTABLE_INCOME}
+          AND txn_date >= ? AND txn_date <= ?
+        GROUP BY bucket ORDER BY total_cents DESC`,
+    )
+      .bind(userId, start, end)
+      .all(),
+    env.DB.prepare(`SELECT COUNT(*) AS n FROM transactions WHERE user_id = ? AND ${NEEDS_REVIEW}`)
+      .bind(userId)
+      .first<{ n: number }>(),
+    // Undated countable spend (belongs to no FY) — surfaced as an actionable chip so the FY totals
+    // above can be trusted as complete-for-the-year. Same predicate as the report's `undated` section.
+    env.DB.prepare(
+      `SELECT COUNT(*) AS n, COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS total_cents
+         FROM transactions WHERE user_id = ? AND ${COUNTABLE} AND ${UNDATED_CLAUSE}`,
+    )
+      .bind(userId)
+      .first<{ n: number; total_cents: number }>(),
+    getProfile(env, userId),
+  ]);
   return {
+    fy: startYear, // the FY these figures are scoped to (start year; label derived client-side)
     by_bucket: byBucket.results ?? [],
     income_by_bucket: incomeByBucket.results ?? [],
     by_property: byProperty.results ?? [],
     needs_review: needsReview?.n ?? 0,
+    undated: { n: undated?.n ?? 0, total_cents: undated?.total_cents ?? 0 },
     features: enabledFeatures(env), // SPA gates nav/UI on the enabled flags (loaded once on mount)
     is_admin: isAdmin(profile), // gates the Admin page/nav (founder only)
   };

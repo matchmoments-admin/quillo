@@ -7,7 +7,7 @@ import { Toaster } from "sonner";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import { api } from "./api";
 import { useFeatures, useAdminAccess } from "./lib/features";
-import { FySwitcher } from "./lib/activeFy";
+import { FySwitcher, useActiveFy } from "./lib/activeFy";
 import { NextActionBar } from "./components/NextAction";
 import { TabGuide } from "./components/TabGuide";
 import { Coachmarks } from "./components/Coachmarks";
@@ -75,11 +75,14 @@ function FirstRunGate() {
 export function App() {
   const [drawer, setDrawer] = useState(false);
   const { pathname } = useLocation();
-  // Inbox review badge — reuses the shared ["dashboard"] query (the Dashboard page uses the
-  // same key, so this is a cache hit there). App is the persistent layout, so this fetches once
-  // on load (not per navigation); a staleTime keeps focus-refetch from re-polling the DO (the
-  // /api/dashboard handler does a pollBatchJobs round-trip) just to refresh a badge number.
-  const dash = useQuery({ queryKey: ["dashboard"], queryFn: () => api.dashboard(), staleTime: 60_000 });
+  // Inbox review badge — reuses the shared ["dashboard", fy] query (the Dashboard page + feature
+  // hooks use the same key, so this is one cache entry / one fetch per FY). `needs_review` itself is
+  // all-time (a cross-year backlog that matches the Inbox), so the badge value doesn't change with
+  // the FY — we key on fy only to share the page's fetch. App is the persistent layout, so this
+  // fetches once per FY (not per navigation); a staleTime keeps focus-refetch from re-polling the DO
+  // (the /api/dashboard handler does a pollBatchJobs round-trip) just to refresh a badge number.
+  const { fy } = useActiveFy();
+  const dash = useQuery({ queryKey: ["dashboard", fy], queryFn: () => api.dashboard(fy), staleTime: 60_000 });
   const needsReview = dash.data?.needs_review ?? 0;
 
   // Close the mobile drawer on navigation.

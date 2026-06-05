@@ -15,6 +15,8 @@ import type { UserRule } from "../src/lib/db";
 import { parseRoles, hasRole, isAdmin, normaliseRoles, ROLES } from "../src/lib/roles";
 import { buildGuidePrompt } from "../src/lib/guide";
 import type { Progress } from "../src/lib/progress";
+import { fyBounds, fyLabel } from "../src/lib/ledger-totals";
+import { currentFyStartYear } from "../src/lib/report";
 import fs from "node:fs";
 import path from "node:path";
 import type Anthropic from "@anthropic-ai/sdk";
@@ -652,6 +654,26 @@ console.log("sigv4 (Bedrock InvokeModel signer)");
   check("same inputs + clock → identical signature", again.headers.authorization === s.headers.authorization);
   const other = await signBedrockInvoke({ ...opts, body: JSON.stringify({ anthropic_version: "bedrock-2023-05-31", max_tokens: 11, messages: [] }) });
   check("different body → different signature", other.headers.authorization !== s.headers.authorization);
+}
+
+// ── FY bounds: the per-FY dashboard/progress scoping math ────────────────────
+// The dashboard, summary bar and report all scope `WHERE txn_date BETWEEN start AND end` to the
+// active FY. These guard the Jul–Jun boundary the SQL string-compares against (txn_date is ISO
+// YYYY-MM-DD), and the current-FY default the API falls back to when ?fy= is absent.
+console.log("fyBounds / currentFyStartYear (per-FY scoping)");
+{
+  const b = fyBounds(2024);
+  check("FY 2024 starts 1 Jul 2024", b.start === "2024-07-01");
+  check("FY 2024 ends 30 Jun 2025", b.end === "2025-06-30");
+  // ISO YYYY-MM-DD string comparison must place real txns inside/outside the range correctly.
+  check("1 Jul 2024 is in range (>= start)", "2024-07-01" >= b.start && "2024-07-01" <= b.end);
+  check("30 Jun 2025 is in range (<= end)", "2025-06-30" >= b.start && "2025-06-30" <= b.end);
+  check("30 Jun 2024 is BEFORE the FY (prior year)", !("2024-06-30" >= b.start));
+  check("1 Jul 2025 is AFTER the FY (next year)", !("2025-07-01" <= b.end));
+  check("label matches the start year", fyLabel(2024) === "2024-25");
+  // currentFyStartYear: AU FY rolls over on 1 July. June → prior start year; July → new start year.
+  check("30 Jun 2026 → FY start 2025", currentFyStartYear(new Date("2026-06-30T00:00:00Z")) === 2025);
+  check("1 Jul 2026 → FY start 2026", currentFyStartYear(new Date("2026-07-01T00:00:00Z")) === 2026);
 }
 
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);

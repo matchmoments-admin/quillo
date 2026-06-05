@@ -1,4 +1,3 @@
-import { routeAgentRequest } from "agents";
 import type { Env, TaxAgentRpc } from "./env";
 import { verifyIngest } from "./ingest/auth";
 import { parseEmail } from "./lib/email";
@@ -173,9 +172,13 @@ export default {
       }
     }
 
-    // Agents SDK routes (/agents/*) + websocket upgrades.
-    const agentRes = await routeAgentRequest(req, env, { cors: true });
-    if (agentRes) return agentRes;
+    // NOTE: the Agents-SDK transport (`routeAgentRequest`, which maps /agents/:ns/:name/* straight
+    // to TaxAgent.idFromName(name)) is deliberately NOT mounted. It carries no auth hook, so it
+    // would expose every tenant's Durable Object unauthenticated + cross-origin, bypassing the
+    // Clerk gate on /api/* (review CRITICAL). The SPA only ever reaches the DO via server-side
+    // stubFor() RPC after requireClerk maps sub→tenant, so the public route is unused. If a direct
+    // client transport is ever needed, gate it behind requireClerk, assert :name === the
+    // authenticated tenant, drop cors, and add an onBeforeConnect/onBeforeRequest auth hook.
 
     // Static assets / SPA. Now that "/" is in run_worker_first, the Worker runs for
     // the app host's "/" too, so it must hand back to the assets binding (which honours

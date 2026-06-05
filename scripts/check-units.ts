@@ -4,7 +4,7 @@
 // regression guards for the rules we keep re-learning. Run: npm run test:units
 import { reconcileStatement, deriveBalances, isTransferLike, signedCents, lineFingerprint, type StatementLine } from "../src/lib/statements";
 import { batchStatementStatus, isStaleBatch, BATCH_MAX_AGE_MS } from "../src/lib/batch";
-import { extractSituationDraft } from "../src/extract";
+import { extractSituationDraft, parseBatchMessage, mapBatchItems, type BatchItem } from "../src/extract";
 import type { LLM } from "../src/llm";
 import { isValidAbn, normaliseAbn } from "../web/src/lib/abn";
 import { billableCents } from "../src/lib/billing";
@@ -692,6 +692,52 @@ console.log("fyBounds / currentFyStartYear (per-FY scoping)");
   // currentFyStartYear: AU FY rolls over on 1 July. June → prior start year; July → new start year.
   check("30 Jun 2026 → FY start 2025", currentFyStartYear(new Date("2026-06-30T00:00:00Z")) === 2025);
   check("1 Jul 2026 → FY start 2026", currentFyStartYear(new Date("2026-07-01T00:00:00Z")) === 2026);
+}
+
+// ── Batch AI categorisation: validation + id-mapping (review High #1 + the index-vs-id bug) ──
+// The batch path used to cast the model's tool output straight to the DB and match results to
+// transactions by ARRAY INDEX. These guard the two fixes: (1) parseBatchMessage validates/sanitises
+// (drops hallucinated buckets, hygienes ato_label, clamps confidence); (2) mapBatchItems matches by
+// the model-echoed line number and refuses to positionally mis-map when items were dropped.
+console.log("parseBatchMessage (validate + sanitise batch output)");
+{
+  const msg = (items: unknown[]) =>
+    ({ content: [{ type: "tool_use", name: "record_batch", input: { items } }] }) as unknown as Anthropic.Message;
+  const parsed = parseBatchMessage(
+    msg([
+      { line: 1, bucket: "payg", ato_label: "D5", confidence: 0.9, reasoning: "ok" },
+      { line: 2, bucket: "not_a_bucket", ato_label: "x", confidence: 0.5, reasoning: "bad" }, // dropped
+      { line: 3, bucket: "company", ato_label: "x".repeat(200), confidence: 5, reasoning: "z" }, // sanitised
+    ]),
+  );
+  check("drops the item with a hallucinated bucket", parsed.length === 2);
+  check("keeps valid buckets only", parsed.every((p) => p.bucket === "payg" || p.bucket === "company"));
+  check("junk/over-long ato_label falls back to the bucket name", parsed[1]!.ato_label === "company");
+  check("confidence is clamped to 0..1", parsed[1]!.confidence === 1);
+  check("non-tool / empty message yields []", parseBatchMessage({ content: [] } as unknown as Anthropic.Message).length === 0);
+}
+
+console.log("mapBatchItems (match results to line ids by echoed line, not array index)");
+{
+  const it = (line: number | null, bucket = "payg"): BatchItem => ({ line, bucket, ato_label: bucket, confidence: 1, reasoning: "" });
+  const ids = ["a", "b", "c"];
+  // Reordered items still land on the right id by line number.
+  const reordered = mapBatchItems(ids, [it(3, "company"), it(1, "payg"), it(2, "asset")]);
+  check("maps by line number regardless of order", reordered.find((r) => r.id === "c")!.item.bucket === "company");
+  check("line 1 → first id", reordered.find((r) => r.id === "a")!.item.bucket === "payg");
+  // A dropped middle item (length mismatch, others still lined) must NOT shift the tail positionally.
+  const dropped = mapBatchItems(ids, [it(1, "payg"), it(3, "company")]); // line 2 missing
+  check("dropped item costs only itself (no positional shift)", dropped.length === 2 && dropped.find((r) => r.id === "b") === undefined);
+  check("surviving lines keep their correct id", dropped.find((r) => r.id === "c")!.item.bucket === "company");
+  // No line numbers at all but exact length → positional fallback (back-compat).
+  const positional = mapBatchItems(ids, [it(null, "payg"), it(null, "company"), it(null, "asset")]);
+  check("falls back to positional only when lengths match exactly", positional.length === 3 && positional[1]!.id === "b");
+  // No lines AND length mismatch → refuse to positionally guess (map nothing).
+  const refuse = mapBatchItems(ids, [it(null, "payg"), it(null, "company")]);
+  check("refuses positional mapping when items were dropped", refuse.length === 0);
+  // Duplicate line claim is ignored (first wins).
+  const dup = mapBatchItems(ids, [it(1, "payg"), it(1, "company"), it(2, "asset")]);
+  check("duplicate line claim ignored", dup.filter((r) => r.id === "a").length === 1);
 }
 
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);

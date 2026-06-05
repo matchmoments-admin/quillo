@@ -107,6 +107,27 @@ export function isBucket(b: string): b is Bucket {
   return BUCKET_SET.has(b);
 }
 
+// ── ato_label hygiene ────────────────────────────────────────────────────────
+// ato_label is intentionally free-text (e.g. "company:expense", "rental:interest", "D5") — there
+// is no closed enum. But it is a ledger-grouping key written from BOTH the model (receipt + batch
+// categorisation) and direct user corrections, so an unconstrained string lets a hallucinated/
+// pasted blob become a permanent label and fragment the report. Cap length + restrict to a safe
+// token charset; this is the single place that hygiene is defined.
+export const ATO_LABEL_MAX = 48;
+const ATO_LABEL_RE = /^[A-Za-z0-9 :._\-/]{1,48}$/;
+
+/** True when `s` is a well-formed ato_label (short, safe ledger token). */
+export function isAtoLabel(s: string): boolean {
+  return ATO_LABEL_RE.test(s);
+}
+
+/** Trim + validate an ato_label; returns the clean token, or null if it can't be salvaged. */
+export function normalizeAtoLabel(s: string | null | undefined): string | null {
+  if (typeof s !== "string") return null;
+  const t = s.trim();
+  return isAtoLabel(t) ? t : null;
+}
+
 /**
  * Non-throwing drift check for a loaded rule pack: warns if it declares a bucket key the
  * taxonomy doesn't know about (so a stale KV override surfaces in logs without breaking

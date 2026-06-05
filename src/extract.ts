@@ -3,21 +3,27 @@ import { z } from "zod";
 import type { LLM } from "./llm";
 import { bytesToBase64 } from "./lib/base64";
 import type { ColumnMap } from "./lib/statements";
-import { BUCKETS, ENTITY_KINDS, PROPERTY_STATUSES, DOC_TYPES, ASSET_CLASSES } from "./lib/taxonomy";
+import { BUCKETS, ENTITY_KINDS, PROPERTY_STATUSES, DOC_TYPES, ASSET_CLASSES, ATO_LABEL_MAX, isBucket, normalizeAtoLabel } from "./lib/taxonomy";
 
-export const Extracted = z.object({
-  merchant: z.string(),
-  amount_cents: z.number().int(),
-  currency: z.string().default("AUD"),
-  gst_cents: z.number().int().nullable(),
-  txn_date: z.string().nullable(),
-  bucket: z.enum(BUCKETS),
-  ato_label: z.string(),
-  property_id: z.string().nullable(),
-  paid_account: z.string().nullable(),
-  confidence: z.number().min(0).max(1),
-  reasoning: z.string(),
-});
+export const Extracted = z
+  .object({
+    merchant: z.string(),
+    amount_cents: z.number().int(),
+    currency: z.string().default("AUD"),
+    gst_cents: z.number().int().nullable(),
+    txn_date: z.string().nullable(),
+    bucket: z.enum(BUCKETS),
+    ato_label: z.string(),
+    property_id: z.string().nullable(),
+    paid_account: z.string().nullable(),
+    confidence: z.number().min(0).max(1),
+    reasoning: z.string(),
+  })
+  // Apply the SAME ato_label hygiene the batch + correction paths use (taxonomy.normalizeAtoLabel:
+  // cap length + safe charset), falling back to the bucket name when the model emits a junk/blob
+  // label. The receipt path is the highest-volume model writer, so it must go through this too —
+  // otherwise the "single place hygiene is defined" guarantee would leak on the main ingest path.
+  .transform((e) => ({ ...e, ato_label: normalizeAtoLabel(e.ato_label) ?? e.bucket }));
 export type Extracted = z.infer<typeof Extracted>;
 
 // Forced tool-use guarantees a schema-valid object with no prose and no markdown
@@ -359,12 +365,13 @@ const BATCH_TOOL: Anthropic.Tool = {
     properties: {
       items: {
         type: "array",
-        description: "One categorisation per input line, in the SAME order as the input.",
+        description: "One categorisation per input line. Echo each line's number in `line`.",
         items: {
           type: "object",
           additionalProperties: false,
-          required: ["bucket", "ato_label", "confidence", "reasoning"],
+          required: ["line", "bucket", "ato_label", "confidence", "reasoning"],
           properties: {
+            line: { type: "integer", description: "The 1-based line number from the input list this categorisation is for." },
             bucket: { type: "string", enum: [...BUCKETS] },
             ato_label: { type: "string" },
             confidence: { type: "number" },
@@ -377,10 +384,38 @@ const BATCH_TOOL: Anthropic.Tool = {
 };
 
 export interface BatchItem {
-  bucket: string;
+  line: number | null; // 1-based input line the model says this is for (null if it omitted it)
+  bucket: string;      // guaranteed a valid BUCKETS member (invalid ones are dropped)
   ato_label: string;
   confidence: number;
   reasoning: string;
+}
+
+/**
+ * Validate + sanitise ONE raw batch categorisation from the model. The batch path used to cast the
+ * tool output straight to the DB (the receipt path Zod-validates), so a hallucinated bucket could
+ * flow into money totals and even be promoted into a permanent user rule (review High #1). We now:
+ *  - DROP the item if `bucket` isn't a real BUCKETS member (money-affecting → leave the line
+ *    needs_review rather than mis-bucket it),
+ *  - sanitise `ato_label` to a safe ledger token (fall back to the bucket name) — label sprawl,
+ *  - clamp `confidence` to 0..1 and cap `reasoning`.
+ */
+function coerceBatchItem(raw: unknown): BatchItem | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  const bucket = typeof r.bucket === "string" ? r.bucket : "";
+  if (!isBucket(bucket)) return null; // unknown/hallucinated bucket — drop, don't guess
+  const line = typeof r.line === "number" && Number.isInteger(r.line) ? r.line : null;
+  const label = normalizeAtoLabel(typeof r.ato_label === "string" ? r.ato_label : null);
+  const conf = typeof r.confidence === "number" && Number.isFinite(r.confidence) ? r.confidence : 0;
+  const reasoning = typeof r.reasoning === "string" ? r.reasoning.slice(0, 280) : "";
+  return {
+    line,
+    bucket,
+    ato_label: (label ?? bucket).slice(0, ATO_LABEL_MAX),
+    confidence: Math.max(0, Math.min(1, conf)),
+    reasoning,
+  };
 }
 
 /** Build the message params for one categorisation batch (reused by sync + async/Batch API). */
@@ -409,7 +444,7 @@ export function batchParams(
         content: [
           {
             type: "text",
-            text: `Categorise each of these ${items.length} bank/card statement lines into a bucket + ATO label, in order (one result per line). [OUT] = money out (spend) → an expense bucket; [IN] = money in → an income_* bucket, or 'refund' if it reverses a prior expense. These are descriptions only (no receipt), so prefer 'unknown' when genuinely unclear.\n\n${list}\n\nCall record_batch with exactly ${items.length} items.`,
+            text: `Categorise each of these ${items.length} bank/card statement lines into a bucket + ATO label (one result per line). For each result set \`line\` to the line number shown (1..${items.length}). [OUT] = money out (spend) → an expense bucket; [IN] = money in → an income_* bucket, or 'refund' if it reverses a prior expense. These are descriptions only (no receipt), so prefer 'unknown' when genuinely unclear.\n\n${list}\n\nCall record_batch with exactly ${items.length} items.`,
           },
         ],
       },
@@ -417,10 +452,52 @@ export function batchParams(
   };
 }
 
-/** Pull the categorisation array out of a record_batch message. */
+/** Pull the categorisation array out of a record_batch message, validated + sanitised. */
 export function parseBatchMessage(msg: Anthropic.Message): BatchItem[] {
   const toolUse = msg.content.find((c): c is Anthropic.ToolUseBlock => c.type === "tool_use" && c.name === BATCH_TOOL.name);
-  return toolUse ? ((toolUse.input as { items: BatchItem[] }).items ?? []) : [];
+  const rawItems = toolUse ? ((toolUse.input as { items?: unknown[] }).items ?? []) : [];
+  if (!Array.isArray(rawItems)) return [];
+  const out: BatchItem[] = [];
+  for (const raw of rawItems) {
+    const item = coerceBatchItem(raw);
+    if (item) out.push(item);
+  }
+  return out;
+}
+
+/**
+ * Match validated batch categorisations back to the input line ids. Prefers the model-echoed
+ * 1-based `line` number so a dropped/reordered item mis-assigns at most ITSELF — not the whole
+ * tail, as positional matching did (review Medium: "batch results map to lines by array index").
+ * Falls back to positional order only when the model omitted line numbers entirely.
+ */
+export function mapBatchItems<T>(lineIds: T[], items: BatchItem[]): { id: T; item: BatchItem }[] {
+  const inRange = (n: number | null): n is number => n != null && n >= 1 && n <= lineIds.length;
+  const out: { id: T; item: BatchItem }[] = [];
+  const seen = new Set<number>();
+  const byLine = (it: BatchItem) => {
+    const idx = it.line! - 1;
+    if (seen.has(idx)) return; // ignore a duplicate line claim
+    seen.add(idx);
+    out.push({ id: lineIds[idx]!, item: it });
+  };
+
+  if (items.length > 0 && items.every((it) => inRange(it.line))) {
+    // Every item carries a valid line → map by it (a dropped/reordered item costs only itself).
+    for (const it of items) byLine(it);
+    return out;
+  }
+  // Some items lack a usable line. Positional matching is ONLY safe when the model returned exactly
+  // one item per input line with nothing dropped/added — otherwise positions are shifted and would
+  // silently assign a categorisation to the WRONG transaction. (parseBatchMessage drops invalid-
+  // bucket items, so a length mismatch is realistic.) When positions are untrustworthy, map only the
+  // items that DID carry a valid line and leave the rest needs_review rather than mis-bucket money.
+  if (items.length === lineIds.length) {
+    for (let j = 0; j < lineIds.length; j++) out.push({ id: lineIds[j]!, item: items[j]! });
+    return out;
+  }
+  for (const it of items) if (inRange(it.line)) byLine(it);
+  return out;
 }
 
 /** Categorise many statement lines in one call (synchronous path). One result per line. */
@@ -430,7 +507,7 @@ export async function extractBatch(
   items: { merchant: string; amount_cents: number; date: string | null; direction?: "debit" | "credit" | null }[],
 ): Promise<BatchItem[]> {
   const msg = await llm.create(batchParams(llm.modelId, system, items), "statement_batch");
-  return parseBatchMessage(msg).slice(0, items.length);
+  return parseBatchMessage(msg);
 }
 
 /**

@@ -51,6 +51,47 @@ function bumpDailyCost(env: Env, scope: string, day: string, cents: number) {
   ).bind(scope, day, cents);
 }
 
+/**
+ * Build (but DON'T execute) the prepared statements that record one call's usage: the atomic
+ * per-user + global daily-cost UPSERTs and the llm_usage history row. Returned so a caller can
+ * compose them into a LARGER transaction — e.g. the batch poller meters the whole job in the SAME
+ * `DB.batch` that flips the job to 'applied', so a mid-stream crash can never meter without
+ * applying (or vice-versa) and re-polling never double-charges. `recordUsage` is the run-it-now
+ * convenience wrapper used by every single-call site.
+ */
+export function usageStatements(
+  env: Env,
+  userId: string,
+  feature: string,
+  model: string,
+  usage: Usage,
+  discount = 1, // Message Batches bill at 50% → pass 0.5
+): { cents: number; stmts: D1PreparedStatement[] } {
+  const round4 = (n: number) => Math.round(n * 10_000) / 10_000; // bound float drift to 4dp
+  const cents = round4(costCents(model, usage) * discount);
+  const day = new Date().toISOString().slice(0, 10);
+  return {
+    cents,
+    stmts: [
+      bumpDailyCost(env, userId, day, cents),
+      bumpDailyCost(env, "global", day, cents),
+      env.DB.prepare(
+        `INSERT INTO llm_usage (id, user_id, feature, model, input_tokens, output_tokens, cache_read_tokens, cost_cents)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).bind(
+        crypto.randomUUID(),
+        userId,
+        feature,
+        model,
+        usage.input_tokens ?? 0,
+        usage.output_tokens ?? 0,
+        usage.cache_read_input_tokens ?? 0,
+        cents,
+      ),
+    ],
+  };
+}
+
 /** Record one call's usage: atomic per-user + global daily-cost counters + a D1 history row. */
 export async function recordUsage(
   env: Env,
@@ -60,30 +101,10 @@ export async function recordUsage(
   usage: Usage,
   discount = 1, // Message Batches bill at 50% → pass 0.5
 ): Promise<number> {
-  const round4 = (n: number) => Math.round(n * 10_000) / 10_000; // bound float drift to 4dp
-  const cents = round4(costCents(model, usage) * discount);
-  const day = new Date().toISOString().slice(0, 10);
-  // One transactional round-trip: bump the per-user tally, the platform-wide tally (the global
-  // daily ceiling across ALL tenants), and append the history row. Both tallies are atomic UPSERTs,
-  // so the gate's MEASURED spend can't be under-counted by concurrent writers (fixes the old racy
-  // KV read-compute-write). billing reads llm_usage, so the history row stays the source of truth.
-  await env.DB.batch([
-    bumpDailyCost(env, userId, day, cents),
-    bumpDailyCost(env, "global", day, cents),
-    env.DB.prepare(
-      `INSERT INTO llm_usage (id, user_id, feature, model, input_tokens, output_tokens, cache_read_tokens, cost_cents)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).bind(
-      crypto.randomUUID(),
-      userId,
-      feature,
-      model,
-      usage.input_tokens ?? 0,
-      usage.output_tokens ?? 0,
-      usage.cache_read_input_tokens ?? 0,
-      cents,
-    ),
-  ]);
+  // One transactional round-trip (both tallies are atomic UPSERTs, so the gate's MEASURED spend
+  // can't be under-counted by concurrent writers; billing reads llm_usage as the source of truth).
+  const { cents, stmts } = usageStatements(env, userId, feature, model, usage, discount);
+  await env.DB.batch(stmts);
   return cents;
 }
 

@@ -9,7 +9,7 @@ import { COUNTABLE } from "./lib/queries";
 import { applyUserRules, RULE_CREDIT_BUCKETS } from "./lib/rules";
 import { sha256hex, sha256hexBytes } from "./lib/base64";
 import { getLLM, type LLM } from "./llm";
-import { extractReceipt, extractReceipts, extractFromText, extractColumnMap, extractStatement, extractBatch, extractSituationDraft, extractGuide, classifyDocument, extractPayslip, extractAgentStatement, extractDepreciationSchedule, extractDividend, batchParams, parseBatchMessage, type Extracted, type ExtractedStatement, type SituationDraft } from "./extract";
+import { extractReceipt, extractReceipts, extractFromText, extractColumnMap, extractStatement, extractBatch, extractSituationDraft, extractGuide, classifyDocument, extractPayslip, extractAgentStatement, extractDepreciationSchedule, extractDividend, batchParams, parseBatchMessage, mapBatchItems, type Extracted, type ExtractedStatement, type SituationDraft } from "./extract";
 import { fyForDate, buildReport } from "./lib/report";
 import { getProgress } from "./lib/progress";
 import { buildGuidePrompt } from "./lib/guide";
@@ -24,10 +24,10 @@ import { pdfPageCount, splitPdf, normalizePdf } from "./lib/pdf";
 import { getLedger, LedgerNotConnectedError, LedgerReauthError, type LedgerExpense } from "./ledger";
 import { redact } from "./lib/redact";
 import { toAud } from "./lib/fx";
-import { spentTodayCents, spentTodayGlobalCents, recordUsage, noteMeteringError } from "./lib/usage";
+import { spentTodayCents, spentTodayGlobalCents, noteMeteringError, usageStatements } from "./lib/usage";
 import { parseTransactionAlert } from "./lib/bank-parsers";
 import auV1RulePack from "./rulepacks/au-v1.json";
-import { assertBucketKeys } from "./lib/taxonomy";
+import { assertBucketKeys, isBucket, normalizeAtoLabel } from "./lib/taxonomy";
 import { featureOn, categoriseMode } from "./lib/features";
 
 const CONFIDENCE_THRESHOLD = 0.85;
@@ -680,13 +680,11 @@ export class TaxAgent extends Agent<Env> {
         chunk.map((c) => ({ merchant: c.merchant ?? "", amount_cents: c.amount_cents ?? 0, date: c.txn_date, direction: c.direction as "debit" | "credit" | null })),
       );
       const updates: D1PreparedStatement[] = [];
-      for (let j = 0; j < chunk.length; j++) {
-        const r = results[j];
-        if (!r) continue;
+      for (const { id, item } of mapBatchItems(chunk.map((c) => c.id), results)) {
         updates.push(
           this.env.DB.prepare(
             `UPDATE transactions SET status='extracted', bucket=?, ato_label=?, confidence=?, reasoning=? WHERE id=? AND user_id=?`,
-          ).bind(r.bucket, r.ato_label, r.confidence, r.reasoning, chunk[j]!.id, userId),
+          ).bind(item.bucket, item.ato_label, item.confidence, item.reasoning, id, userId),
         );
         categorised++;
       }
@@ -810,6 +808,13 @@ export class TaxAgent extends Agent<Env> {
         const chunkMap = JSON.parse(job.chunk_map) as Record<string, string[]>;
         let applied = 0;
         let errored = 0;
+        // Accumulate the WHOLE job's token usage and meter it ONCE, atomically with the status flip
+        // below — never per-result. The Batch API already billed at submission; this only feeds the
+        // spend counter/budget gate. The apply UPDATEs are idempotent (status='needs_review' guard),
+        // so if a poll crashes mid-stream the job stays 'submitted', the next poll re-streams + re-
+        // applies harmlessly, and metering lands exactly once when the job finally reaches 'applied'.
+        // (Old code metered per-result BEFORE the flip → a mid-stream crash re-charged the batch.)
+        const jobUsage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
         const stream = await llm.client.messages.batches.results(job.batch_id);
         for await (const res of stream) {
           if (res.result.type !== "succeeded") {
@@ -817,37 +822,43 @@ export class TaxAgent extends Agent<Env> {
             continue;
           }
           const msg = res.result.message;
-          // Meter the (already-incurred) batch cost, but don't let a transient KV/D1 write failure
-          // abort applying the results — surface the signal instead of silently dropping the spend.
           if (msg.usage) {
-            try {
-              await recordUsage(this.env, userId, "statement_batch", llm.modelId, msg.usage, 0.5);
-            } catch (e) {
-              await noteMeteringError(this.env, userId, e);
-            }
+            jobUsage.input_tokens += msg.usage.input_tokens ?? 0;
+            jobUsage.output_tokens += msg.usage.output_tokens ?? 0;
+            jobUsage.cache_read_input_tokens += msg.usage.cache_read_input_tokens ?? 0;
+            jobUsage.cache_creation_input_tokens += msg.usage.cache_creation_input_tokens ?? 0;
           }
           const lineIds = chunkMap[res.custom_id] ?? [];
-          const cats = parseBatchMessage(msg);
           const updates: D1PreparedStatement[] = [];
-          for (let j = 0; j < lineIds.length; j++) {
-            const it = cats[j];
-            if (!it) continue;
+          for (const { id, item } of mapBatchItems(lineIds, parseBatchMessage(msg))) {
             updates.push(
               this.env.DB.prepare(
                 // only touch still-pending lines (a receipt-matched line is already categorised)
                 `UPDATE transactions SET status='extracted', bucket=?, ato_label=?, confidence=?, reasoning=? WHERE id=? AND user_id=? AND status='needs_review'`,
-              ).bind(it.bucket, it.ato_label, it.confidence, it.reasoning, lineIds[j], userId),
+              ).bind(item.bucket, item.ato_label, item.confidence, item.reasoning, id, userId),
             );
             applied++;
           }
           for (let k = 0; k < updates.length; k += 50) await this.env.DB.batch(updates.slice(k, k + 50));
         }
-        await this.env.DB.prepare(`UPDATE batch_jobs SET status='applied' WHERE id=?`).bind(job.id).run();
-        // If every chunk errored and nothing applied, the import succeeded but categorisation
-        // failed — mark the statement so the lines don't look stuck 'categorising'.
-        await this.env.DB.prepare(`UPDATE statements SET status=? WHERE id=?`)
-          .bind(batchStatementStatus(applied, errored), job.statement_id)
-          .run();
+        // Meter (if any cost was incurred) + flip the job to 'applied' + resolve the statement
+        // status, all in ONE transaction. Bundling the statement update in (instead of a separate
+        // .run() after the flip) closes a stuck-state window: previously a throw between the flip
+        // and the statement update left the job 'applied' (never re-polled) but the statement on
+        // 'categorising' forever. If the batch fails, leave the job 'submitted' to retry cleanly.
+        const { cents, stmts } = usageStatements(this.env, userId, "statement_batch", llm.modelId, jobUsage, 0.5);
+        try {
+          await this.env.DB.batch([
+            ...(cents > 0 ? stmts : []),
+            this.env.DB.prepare(`UPDATE batch_jobs SET status='applied' WHERE id=?`).bind(job.id),
+            // If every chunk errored and nothing applied, the import succeeded but categorisation
+            // failed — mark the statement so the lines don't look stuck 'categorising'.
+            this.env.DB.prepare(`UPDATE statements SET status=? WHERE id=?`).bind(batchStatementStatus(applied, errored), job.statement_id),
+          ]);
+        } catch (e) {
+          await noteMeteringError(this.env, userId, e);
+          continue; // job stays 'submitted' — retry on the next poll (no double-charge: nothing metered)
+        }
         await this.audit(userId, "batch_applied", JSON.stringify({ batchId: job.batch_id, applied, errored }));
         // Async-categorised capital purchases become depreciating assets now (their bucket only
         // just landed). Idempotent — links only newly-bucketed 'asset' lines.
@@ -2293,6 +2304,17 @@ export class TaxAgent extends Agent<Env> {
   async applyCorrection(userId: string, txnId: string, field: string, newValue: string): Promise<void> {
     const column = CORRECTABLE[field];
     if (!column) throw new Error(`field not correctable: ${field}`);
+
+    // Validate categorical fields before they're written — a correction is auto-promoted into a
+    // permanent per-user rule after 2 repeats, so an invalid bucket / junk label would otherwise
+    // become a sticky mis-categorisation. bucket must be a known taxonomy member; ato_label must be
+    // a short, safe ledger token (same hygiene the model output goes through).
+    if (field === "bucket" && !isBucket(newValue)) throw new Error(`invalid bucket: ${newValue}`);
+    if (field === "ato_label") {
+      const clean = normalizeAtoLabel(newValue);
+      if (!clean) throw new Error(`invalid ato_label: ${newValue}`);
+      newValue = clean;
+    }
 
     const row = await this.env.DB.prepare(
       `SELECT ${column} AS old FROM transactions WHERE id = ? AND user_id = ?`,

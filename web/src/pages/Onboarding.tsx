@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api";
@@ -6,12 +6,17 @@ import { Card, Spinner, Button, BUCKET_LABEL, InfoTip, Term } from "../component
 import {
   EntityFields,
   PropertyFields,
+  PersonFields,
   entityToBody,
   propertyToBody,
+  personToBody,
+  personToValue,
   emptyEntity,
   emptyProperty,
+  emptyPerson,
   type EntityValue,
   type PropertyValue,
+  type PersonValue,
 } from "../components/SituationFields";
 import type { DraftRule, SituationDraft } from "../types";
 
@@ -28,7 +33,7 @@ function draftPropertyToValue(p: SituationDraft["properties"][number]): Property
   return { label: p.label, address: p.address ?? "", status: p.status, ownership_pct: String(p.ownership_pct ?? 100) };
 }
 
-type StepKey = "welcome" | "consent" | "intake" | "entities" | "properties" | "rules" | "confirm";
+type StepKey = "welcome" | "consent" | "intake" | "people" | "entities" | "properties" | "rules" | "confirm";
 
 export function Onboarding() {
   const qc = useQueryClient();
@@ -42,6 +47,26 @@ export function Onboarding() {
   const [rules, setRules] = useState<(DraftRule & { accept: boolean })[]>([]);
   const [intake, setIntake] = useState("");
 
+  // The taxpayer (self) + any spouse/dependants. Occupation + residency are the single biggest
+  // inputs to the claimability engine, yet onboarding never used to ask for them (review High #5) —
+  // users reached the categoriser with occupation NULL and residency silently defaulted to AU.
+  const [self, setSelf] = useState<PersonValue>(emptyPerson());
+  const [selfId, setSelfId] = useState<string | null>(null);
+  const [extraPersons, setExtraPersons] = useState<PersonValue[]>([]);
+  const [seeded, setSeeded] = useState(false);
+  // Seed the self person from the row ensureTenant created, once the situation loads.
+  useEffect(() => {
+    if (seeded || !sit.data) return;
+    const me = (sit.data.persons ?? []).find((p) => p.role === "self");
+    if (me) {
+      setSelfId(me.id);
+      setSelf({ ...personToValue(me), role: "self" });
+    } else {
+      setSelf({ ...emptyPerson(), role: "self" });
+    }
+    setSeeded(true);
+  }, [sit.data, seeded]);
+
   const consent = useMutation({
     mutationFn: () => api.consent(CONSENT_TEXT),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["situation"] }),
@@ -53,12 +78,17 @@ export function Onboarding() {
       setEntities(d.entities.map(draftEntityToValue));
       setProperties(d.properties.map(draftPropertyToValue));
       setRules(d.rules.map((r) => ({ ...r, accept: true })));
-      setStep("entities");
+      setStep("people");
     },
   });
 
   const save = useMutation({
     mutationFn: async () => {
+      // Persist the taxpayer's occupation/residency first — it drives categorisation. Update the
+      // existing self row if there is one; otherwise create it.
+      if (selfId) await api.updatePerson(selfId, personToBody(self));
+      else await api.addPerson(personToBody({ ...self, role: "self" }));
+      for (const p of extraPersons) if (p.display_name.trim()) await api.addPerson(personToBody(p));
       for (const e of entities) if (e.name.trim()) await api.addEntity(entityToBody(e));
       for (const p of properties) if (p.label.trim()) await api.addProperty(propertyToBody(p));
       for (const r of rules) if (r.accept) await api.addRule({ pattern: r.pattern, bucket: r.bucket, ato_label: r.ato_label });
@@ -79,7 +109,7 @@ export function Onboarding() {
   const [showFullConsent, setShowFullConsent] = useState(false);
 
   const stepKeys = useMemo<StepKey[]>(
-    () => ["welcome", "consent", "intake", "entities", "properties", ...(rules.length ? (["rules"] as StepKey[]) : []), "confirm"],
+    () => ["welcome", "consent", "intake", "people", "entities", "properties", ...(rules.length ? (["rules"] as StepKey[]) : []), "confirm"],
     [rules.length],
   );
 
@@ -193,6 +223,36 @@ export function Onboarding() {
         </Card>
       )}
 
+      {step === "people" && (
+        <Card className="p-5">
+          <StepHead n={idx + 1} total={stepKeys.length} title="You & your household" />
+          <p className="mb-3 text-sm text-muted">
+            Your occupation and tax residency shape which deductions the agent suggests, so it's worth getting right.
+            Add a spouse/dependant only if their tax affairs sit alongside yours.
+          </p>
+          <div className="rounded-lg bg-surface p-3">
+            <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted">You (the taxpayer)</div>
+            <PersonFields value={self} onChange={setSelf} lockRole />
+          </div>
+          {extraPersons.length > 0 && (
+            <div className="mt-3 space-y-3">
+              {extraPersons.map((p, i) => (
+                <div key={i} className="rounded-lg bg-surface p-3">
+                  <PersonFields value={p} onChange={(v) => setExtraPersons((xs) => xs.map((x, j) => (j === i ? v : x)))} />
+                  <button className="mt-2 text-xs text-muted hover:text-danger" onClick={() => setExtraPersons((xs) => xs.filter((_, j) => j !== i))}>
+                    remove
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          <button className="mt-3 text-sm text-ink underline underline-offset-2" onClick={() => setExtraPersons((xs) => [...xs, emptyPerson()])}>
+            + Add a spouse or dependant
+          </button>
+          <NavRow onBack={goBack} onNext={goNext} />
+        </Card>
+      )}
+
       {step === "entities" && (
         <Card className="p-5">
           <StepHead n={idx + 1} total={stepKeys.length} title={<>Your entities <InfoTip k="entities" /></>} />
@@ -264,6 +324,7 @@ export function Onboarding() {
           <StepHead n={idx + 1} total={stepKeys.length} title="What the agent will know" />
           <p className="mb-3 text-sm text-muted">Review before saving. This is exactly the context the categoriser uses.</p>
           <Summary
+            persons={[self, ...extraPersons.filter((p) => p.display_name.trim())]}
             entities={entities.filter((e) => e.name.trim())}
             properties={properties.filter((p) => p.label.trim())}
             rules={rules.filter((r) => r.accept)}
@@ -328,11 +389,13 @@ function ExistingList({ items }: { items: string[] }) {
 }
 
 function Summary({
+  persons,
   entities,
   properties,
   rules,
   hasConsent,
 }: {
+  persons: PersonValue[];
   entities: EntityValue[];
   properties: PropertyValue[];
   rules: (DraftRule & { accept: boolean })[];
@@ -341,6 +404,15 @@ function Summary({
   return (
     <div className="space-y-3 text-sm">
       <Line label="Consent" value={hasConsent ? "Recorded" : "Not yet — required for categorisation"} ok={hasConsent} />
+      <div>
+        <div className="text-xs font-medium uppercase tracking-wide text-muted">People ({persons.length})</div>
+        {persons.map((p, i) => (
+          <div key={i}>
+            • {p.display_name || (p.role === "self" ? "You" : "Taxpayer")} — {p.role}
+            {p.occupation ? ` · ${p.occupation}` : " · occupation not set"} · {p.tax_residency === "foreign" ? "foreign resident" : "AU resident"}
+          </div>
+        ))}
+      </div>
       <div>
         <div className="text-xs font-medium uppercase tracking-wide text-muted">Entities ({entities.length})</div>
         {entities.length ? (

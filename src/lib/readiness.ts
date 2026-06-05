@@ -141,14 +141,17 @@ export function assessReadiness(input: {
   }
 
   // ── (2) deterministic "things to double-check" findings ──
+  // BLOCKERS: these materially distort the indicative position (money silently left out), so they
+  // must drop `ready` to false — the old engine only ever emitted review/info, so a user with
+  // uncategorised + undated spend was told they were ready (review Medium). Severity is now "blocker".
   if (signals.unknownBucketN > 0) {
-    findings.push(f("unknown_bucket", "completeness", "review", `${signals.unknownBucketN} transaction(s) aren't categorised yet`,
-      `These total ${money(signals.unknownBucketCents)} and are excluded from the indicative position until you categorise them. Review them in the Inbox.`, false,
+    findings.push(f("unknown_bucket", "completeness", "blocker", `${signals.unknownBucketN} transaction(s) aren't categorised yet`,
+      `These total ${money(signals.unknownBucketCents)} and are excluded from the indicative position until you categorise them — so the position is incomplete. Categorise them in the Inbox before relying on the numbers.`, false,
       [{ kind: "transaction", count: signals.unknownBucketN }]));
   }
   if (report.undated.n > 0) {
-    findings.push(f("undated_receipts", "completeness", "review", `${report.undated.n} receipt(s) have no usable date`,
-      `Without a date these can't be placed in a financial year, so they're left out of this year's totals. Add a date so they land in the right year.`, false,
+    findings.push(f("undated_receipts", "completeness", "blocker", `${report.undated.n} receipt(s) have no usable date`,
+      `Without a date these can't be placed in a financial year, so they're left out of this year's totals — the position is incomplete. Add a date so they land in the right year.`, false,
       [{ kind: "transaction", count: report.undated.n }]));
   }
   if (signals.needsReviewIncomeN > 0) {

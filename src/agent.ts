@@ -61,6 +61,35 @@ const CORRECTABLE: Record<string, string> = {
 // shared with the eval harness). Overridable per-version via KV `rulepack:<ver>`.
 const DEFAULT_RULE_PACK: RulePack = auV1RulePack;
 
+// Per-FY policy thresholds (instant-asset-write-off + car limit) read from the BUNDLED pack — these
+// are AU policy shipped in code, used by the depreciation engine. Reading them from the bundle (not
+// per-tenant KV) keeps depreciation decoupled from a loaded profile, so a single-asset schedule
+// compute can't throw just because the profile row is missing (e.g. mid-deletion).
+type FyThreshold = { instant_asset_write_off_cents?: number; car_limit_cents?: number };
+const FY_THRESHOLDS: Record<string, FyThreshold> =
+  (DEFAULT_RULE_PACK as { thresholds_by_fy?: Record<string, FyThreshold> }).thresholds_by_fy ?? {};
+
+/**
+ * The IAWO / car-limit thresholds for an FY. Falls back to the NEAREST known FY (by start year) when
+ * the exact FY isn't in the pack, so an asset acquired outside the table's window is still BOUNDED
+ * rather than fully expensed (the bug this guards). NOTE: historical "temporary full expensing"
+ * (2020–2023) isn't modelled — a pre-window asset is conservatively bounded, not unbounded; refining
+ * the historical timeline is a tracked follow-up.
+ */
+function thresholdForFy(fy: string): FyThreshold | undefined {
+  if (FY_THRESHOLDS[fy]) return FY_THRESHOLDS[fy];
+  const years = Object.keys(FY_THRESHOLDS);
+  if (!years.length) return undefined;
+  const target = Number(fy.slice(0, 4));
+  let best: string | undefined;
+  let bestDist = Infinity;
+  for (const y of years) {
+    const dist = Math.abs(Number(y.slice(0, 4)) - target);
+    if (dist < bestDist) { bestDist = dist; best = y; }
+  }
+  return best ? FY_THRESHOLDS[best] : undefined;
+}
+
 /**
  * Deterministic per-user override. Returns the highest-priority rule whose pattern
  * matches the merchant, or null. Rules are pre-sorted by priority DESC in getSituation.
@@ -1956,12 +1985,18 @@ export class TaxAgent extends Agent<Env> {
     return fallback;
   }
 
-  /** Map an assets row into the engine's DepAsset shape. */
+  /**
+   * Map an assets row into the engine's DepAsset shape, attaching the per-FY policy numbers
+   * (instant-asset-write-off + car limit) for the asset's FIRST-USE FY so the engine can enforce the
+   * IAWO cap / car limit. The engine never hardcodes a policy number — it's all supplied here, from
+   * the bundled rule pack (no profile / KV dependency, so this can't throw mid-deletion).
+   */
   private toDepAsset(row: {
     asset_class: string; cost_cents: number; acquired_date: string; effective_life_years: number | null;
     method: string | null; div43_rate: number | null; dv_rate_pct?: number | null; is_second_hand: number;
     business_use_pct: number | null; disposed_date: string | null;
   }): DepAsset {
+    const t = thresholdForFy(fyLabel(fyStartYearOf(row.acquired_date)));
     return {
       asset_class: row.asset_class as DepAsset["asset_class"],
       cost_cents: row.cost_cents,
@@ -1973,6 +2008,10 @@ export class TaxAgent extends Agent<Env> {
       is_second_hand: !!row.is_second_hand,
       business_use_pct: row.business_use_pct ?? 100,
       disposed_date: row.disposed_date,
+      instant_asset_write_off_cents: t?.instant_asset_write_off_cents ?? null,
+      car_limit_cents: t?.car_limit_cents ?? null,
+      // is_car activation (column + UI) is a follow-up; until then the car cap stays inert (is_car
+      // defaults false) — the engine supports it, it's just not fed yet.
     };
   }
 

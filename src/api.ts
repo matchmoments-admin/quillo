@@ -29,6 +29,7 @@ import {
   updateRule,
   addAccount,
   updateAccount,
+  ensureTenant,
   deleteRow,
   listKeys,
   mintKey,
@@ -60,6 +61,8 @@ export async function handleApi(
   const [resource, id, sub] = parts;
   const m = req.method;
   const uid = user.userId;
+  // Bootstrap a fresh tenant (profile + self person) on first authed touch — idempotent + KV-gated.
+  await ensureTenant(env, uid);
 
   // GET /api/transactions  ·  GET /api/transactions/:id
   if (resource === "transactions" && m === "GET") {

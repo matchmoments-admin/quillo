@@ -14,12 +14,28 @@ async function authHeaders(extra?: Record<string, string>): Promise<Record<strin
   return headers;
 }
 
+// Turn a non-2xx response into a clean Error. The Worker returns `{ error: "<message>" }` JSON, so
+// surface just that message (shown verbatim in toasts) instead of a raw `429 {"error":"…"}` blob.
+// Falls back to the raw body / status text when the response isn't the expected shape. NOTE: callers
+// that match on a code (e.g. TabGuide checks `.includes("consent_required")`) still work — the parsed
+// message is exactly that string.
+async function errFrom(res: Response): Promise<Error> {
+  const text = await res.text();
+  try {
+    const body = JSON.parse(text) as { error?: unknown };
+    if (typeof body?.error === "string" && body.error) return new Error(body.error);
+  } catch {
+    /* not JSON — fall through to the raw text */
+  }
+  return new Error(text || `${res.status} ${res.statusText}`);
+}
+
 // Same-origin: the SPA is served by the Worker, so /api/* needs no base URL.
 // In dev, Vite proxies /api to the local Worker (see vite.config.ts).
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(path, { credentials: "include", headers: await authHeaders() });
   if (res.status === 401) throw new Error("unauthorized");
-  if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  if (!res.ok) throw await errFrom(res);
   return res.json() as Promise<T>;
 }
 
@@ -31,7 +47,7 @@ async function send<T>(method: string, path: string, body?: unknown): Promise<T>
     body: body ? JSON.stringify(body) : undefined,
   });
   if (res.status === 401) throw new Error("unauthorized");
-  if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  if (!res.ok) throw await errFrom(res);
   return res.json() as Promise<T>;
 }
 const post = <T>(path: string, body?: unknown) => send<T>("POST", path, body);
@@ -60,7 +76,7 @@ export const api = {
     // Don't set content-type — the browser adds the multipart boundary. Just add auth.
     const res = await fetch("/api/upload", { method: "POST", credentials: "include", headers: await authHeaders(), body: fd });
     if (res.status === 401) throw new Error("unauthorized");
-    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    if (!res.ok) throw await errFrom(res);
     return res.json();
   },
   situation: () => get<Situation>("/api/situation"),
@@ -98,7 +114,7 @@ export const api = {
   // APP 12 export: fetch the tenant's data (Bearer-authed) as a downloadable Blob.
   exportData: async (): Promise<Blob> => {
     const res = await fetch("/api/account/export", { credentials: "include", headers: await authHeaders() });
-    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    if (!res.ok) throw await errFrom(res);
     return res.blob();
   },
   // APP 13 erasure: purge all of the tenant's data across every store.
@@ -118,7 +134,7 @@ export const api = {
     fd.append("file", file);
     fd.append("account_id", accountId);
     const res = await fetch("/api/statements", { method: "POST", credentials: "include", headers: await authHeaders(), body: fd });
-    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    if (!res.ok) throw await errFrom(res);
     return res.json();
   },
   confirmImport: (statementId: string, force?: boolean, columnMap?: unknown) =>
@@ -177,7 +193,7 @@ export const api = {
     const fd = new FormData();
     fd.append("file", file);
     const res = await fetch("/api/documents/upload", { method: "POST", credentials: "include", headers: await authHeaders(), body: fd });
-    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    if (!res.ok) throw await errFrom(res);
     return res.json();
   },
   // Fetches the stored document WITH the Clerk Bearer token and hands back a same-origin
@@ -187,7 +203,7 @@ export const api = {
   documentBlobUrl: async (id: string): Promise<string> => {
     const res = await fetch(`/api/documents/${id}/download`, { credentials: "include", headers: await authHeaders() });
     if (res.status === 401) throw new Error("unauthorized");
-    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    if (!res.ok) throw await errFrom(res);
     return URL.createObjectURL(await res.blob());
   },
 

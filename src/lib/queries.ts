@@ -1,6 +1,8 @@
 import type { Env } from "../env";
 import { enabledFeatures } from "./features";
 import { billingPolicy, billableCents } from "./billing";
+import { getProfile } from "./db";
+import { isAdmin } from "./roles";
 
 // Read-side queries for the web API. Reads hit D1 directly from the Worker; audited
 // writes (corrections, consent) go through the Durable Object RPC instead.
@@ -411,11 +413,51 @@ export async function dashboard(env: Env, userId: string) {
   )
     .bind(userId)
     .first<{ n: number }>();
+  const profile = await getProfile(env, userId);
   return {
     by_bucket: byBucket.results ?? [],
     income_by_bucket: incomeByBucket.results ?? [],
     by_property: byProperty.results ?? [],
     needs_review: needsReview?.n ?? 0,
     features: enabledFeatures(env), // SPA gates nav/UI on the enabled flags (loaded once on mount)
+    is_admin: isAdmin(profile), // gates the Admin page/nav (founder only)
+  };
+}
+
+/** Cross-tenant admin: every tenant with signup + activity + AI-spend summary (newest first). */
+export async function listTenantsAdmin(env: Env) {
+  const res = await env.DB.prepare(
+    `SELECT p.user_id, p.email, p.roles, p.created_at,
+            (SELECT COUNT(*) FROM transactions t WHERE t.user_id = p.user_id) AS txn_count,
+            (SELECT COALESCE(SUM(cost_cents),0) FROM llm_usage u WHERE u.user_id = p.user_id) AS cost_cents,
+            (SELECT MAX(created_at) FROM audit_log a WHERE a.user_id = p.user_id) AS last_activity
+       FROM profiles p ORDER BY p.created_at DESC LIMIT 500`,
+  ).all();
+  return res.results ?? [];
+}
+
+/** Cross-tenant admin: platform headline metrics. */
+export async function platformOverview(env: Env) {
+  const day = new Date().toISOString().slice(0, 10);
+  const month = day.slice(0, 7);
+  const m = await env.DB.prepare(
+    `SELECT
+       (SELECT COUNT(*) FROM profiles) AS tenants,
+       (SELECT COUNT(*) FROM profiles WHERE created_at >= datetime('now','-7 days')) AS signups_7d,
+       (SELECT COUNT(*) FROM profiles WHERE created_at >= datetime('now','-30 days')) AS signups_30d,
+       (SELECT COALESCE(SUM(cost_cents),0) FROM llm_usage WHERE substr(created_at,1,10) = ?) AS spend_today_cents,
+       (SELECT COALESCE(SUM(cost_cents),0) FROM llm_usage WHERE substr(created_at,1,7) = ?) AS spend_month_cents,
+       (SELECT COALESCE(SUM(cost_cents),0) FROM llm_usage) AS spend_all_cents`,
+  )
+    .bind(day, month)
+    .first<{ tenants: number; signups_7d: number; signups_30d: number; spend_today_cents: number; spend_month_cents: number; spend_all_cents: number }>();
+  return {
+    tenants: m?.tenants ?? 0,
+    signups_7d: m?.signups_7d ?? 0,
+    signups_30d: m?.signups_30d ?? 0,
+    spend_today_cents: m?.spend_today_cents ?? 0,
+    spend_month_cents: m?.spend_month_cents ?? 0,
+    spend_all_cents: m?.spend_all_cents ?? 0,
+    daily_cap_cents: Number(env.MAX_DAILY_COST_CENTS_GLOBAL ?? 0),
   };
 }

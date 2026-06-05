@@ -15,6 +15,7 @@ import { QuickBooks } from "./pages/QuickBooks";
 import { Reports } from "./pages/Reports";
 import { Review } from "./pages/Review";
 import { Filing } from "./pages/Filing";
+import { Admin } from "./pages/Admin";
 import { Accounts } from "./pages/Accounts";
 import { Reconcile } from "./pages/Reconcile";
 import { Income } from "./pages/Income";
@@ -105,6 +106,7 @@ const router = createBrowserRouter([
       { path: "reports", element: <Reports /> },
       { path: "review", element: <Review /> },
       { path: "filing", element: <Filing /> },
+      { path: "admin", element: <Admin /> },
       { path: "glossary", element: <Glossary /> },
     ],
   },

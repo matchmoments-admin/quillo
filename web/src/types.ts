@@ -203,6 +203,36 @@ export interface DashboardData {
   by_property: { property_id: string; label: string | null; n: number; total_cents: number }[];
   needs_review: number;
   features: string[]; // enabled feature flags — gate nav/UI on these
+  is_admin?: boolean; // founder/admin — gates the Admin page
+}
+
+// Platform roles (mirror of src/lib/roles.ts ROLES). 'individual' is the default.
+export const ROLES = ["individual", "admin", "accountant", "bookkeeper", "support"] as const;
+export type Role = (typeof ROLES)[number];
+export const ROLE_LABEL: Record<Role, string> = {
+  individual: "Individual",
+  admin: "Admin",
+  accountant: "Accountant / tax agent",
+  bookkeeper: "Bookkeeper",
+  support: "Support",
+};
+export interface AdminTenant {
+  user_id: string;
+  email: string | null;
+  roles: string; // JSON array
+  created_at: string;
+  txn_count: number;
+  cost_cents: number;
+  last_activity: string | null;
+}
+export interface AdminOverview {
+  tenants: number;
+  signups_7d: number;
+  signups_30d: number;
+  spend_today_cents: number;
+  spend_month_cents: number;
+  spend_all_cents: number;
+  daily_cap_cents: number;
 }
 
 export interface UsageData {

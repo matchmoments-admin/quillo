@@ -46,6 +46,8 @@ CREATE TABLE IF NOT EXISTS profiles (
   consent_xborder_text   TEXT,
   retention_years        INTEGER NOT NULL DEFAULT 5,  -- data-retention window for the flag sweep (lib/retention.ts)
   ui_state               TEXT,                        -- per-tenant UI state JSON (e.g. walkthrough seen) — no localStorage
+  roles              TEXT NOT NULL DEFAULT '["individual"]', -- 0017: platform roles JSON (admin|accountant|bookkeeper|support|individual)
+  email              TEXT,                            -- 0017: signup email (from Clerk JWT) for the admin signups list
   created_at         TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

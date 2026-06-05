@@ -70,7 +70,7 @@ export const api = {
   deleteTxn: (id: string) => send<{ ok: boolean }>("DELETE", `/api/transactions/${id}`),
 
   // Phase 2
-  dashboard: () => get<DashboardData>("/api/dashboard"),
+  dashboard: (fy?: number) => get<DashboardData>(`/api/dashboard${fy ? `?fy=${fy}` : ""}`),
   progress: () => get<Progress>("/api/progress"),
   guideMe: (tab: string) => post<{ headline: string; steps: string[] }>("/api/guide", { tab }),
   usage: () => get<UsageData>("/api/usage"),

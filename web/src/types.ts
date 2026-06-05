@@ -198,10 +198,12 @@ export interface Notification {
 }
 
 export interface DashboardData {
+  fy: number; // FY start year these figures are scoped to (Jul–Jun)
   by_bucket: { bucket: string; n: number; total_cents: number }[];
   income_by_bucket: { bucket: string; n: number; total_cents: number }[];
   by_property: { property_id: string; label: string | null; n: number; total_cents: number }[];
   needs_review: number;
+  undated: { n: number; total_cents: number }; // countable spend with no date → in no FY's totals
   features: string[]; // enabled feature flags — gate nav/UI on these
   is_admin?: boolean; // founder/admin — gates the Admin page
 }

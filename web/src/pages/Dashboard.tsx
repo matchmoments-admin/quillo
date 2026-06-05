@@ -18,7 +18,8 @@ const cents = (c: number) => `$${(c / 100).toFixed(c < 100 ? 4 : 2)}`;
 const SWATCH = ["#0c3f26", "#15643a", "#1c7a48", "#97a86f", "#2f6bd6", "#9a6712"];
 
 export function Dashboard() {
-  const { data, isLoading, error } = useQuery({ queryKey: ["dashboard"], queryFn: () => api.dashboard() });
+  const { fy, label } = useActiveFy();
+  const { data, isLoading, error } = useQuery({ queryKey: ["dashboard", fy], queryFn: () => api.dashboard(fy) });
   const usage = useQuery({ queryKey: ["usage"], queryFn: () => api.usage() });
   if (isLoading) return <Spinner />;
   if (error) return <Panel className="text-sm text-muted">Couldn't load: {(error as Error).message}</Panel>;
@@ -33,7 +34,7 @@ export function Dashboard() {
       <div className="flex flex-wrap items-end gap-4">
         <div>
           <h1 className="font-display text-4xl text-forest">Dashboard</h1>
-          <div className="mt-1.5 text-xs font-medium text-ink-3">Your tracked tax position · across all records</div>
+          <div className="mt-1.5 text-xs font-medium text-ink-3">Your tracked tax position · FY {label}</div>
         </div>
         <span className="flex-1" />
         <Link to="/reports">
@@ -60,6 +61,19 @@ export function Dashboard() {
         <KpiCard label="Deduction buckets" value={String(d.by_bucket.length)} foot="Categories in use" />
         <KpiCard label="Income tracked" value={money(income)} foot="From bank credits" />
       </div>
+
+      {/* Undated spend belongs to no FY, so it's excluded from the figures above — surface it so the
+          per-year totals can be trusted as complete, with a one-click route to add the dates. */}
+      {d.undated.n > 0 && (
+        <Link
+          to="/reports"
+          className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-xl border border-line bg-card px-3 py-2 text-sm text-ink-2 shadow-card transition hover:border-ink/40"
+        >
+          <span className="font-semibold text-ink">{d.undated.n} undated {d.undated.n === 1 ? "item" : "items"}</span>
+          <span className="text-ink-3">({money(d.undated.total_cents)}) aren't in any year's totals —</span>
+          <span className="font-semibold text-forest">add dates to include them →</span>
+        </Link>
+      )}
 
       <ChecklistCard />
       <ClaimsCard />

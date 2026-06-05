@@ -107,6 +107,7 @@ CREATE INDEX IF NOT EXISTS idx_txn_kind     ON transactions(user_id, kind, statu
 CREATE INDEX IF NOT EXISTS idx_txn_matched  ON transactions(user_id, matched_txn_id);
 CREATE INDEX IF NOT EXISTS idx_txn_acct_date ON transactions(user_id, account_id, txn_date);
 CREATE INDEX IF NOT EXISTS idx_txn_matched_income ON transactions(user_id, matched_income_id);
+CREATE INDEX IF NOT EXISTS idx_txn_user_date ON transactions(user_id, txn_date); -- per-FY dashboard/progress range scans (migration 0018)
 
 -- ── Bank / card / investment accounts (per tenant) ────────────────────────────
 -- Each account has ONE canonical money source: a QBO feed OR statement upload — never both

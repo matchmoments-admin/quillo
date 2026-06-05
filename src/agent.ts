@@ -9,14 +9,14 @@ import { COUNTABLE } from "./lib/queries";
 import { applyUserRules, RULE_CREDIT_BUCKETS } from "./lib/rules";
 import { sha256hex, sha256hexBytes } from "./lib/base64";
 import { getLLM, type LLM } from "./llm";
-import { extractReceipt, extractReceipts, extractFromText, extractColumnMap, extractStatement, extractBatch, extractSituationDraft, extractGuide, classifyDocument, extractPayslip, extractAgentStatement, extractDepreciationSchedule, extractDividend, batchParams, parseBatchMessage, mapBatchItems, type Extracted, type ExtractedStatement, type SituationDraft } from "./extract";
+import { extractReceipt, extractReceipts, extractFromText, extractColumnMap, extractStatement, extractBatch, extractSituationDraft, extractOccupationRules, extractGuide, classifyDocument, extractPayslip, extractAgentStatement, extractDepreciationSchedule, extractDividend, batchParams, parseBatchMessage, mapBatchItems, type Extracted, type ExtractedStatement, type SituationDraft, type OccupationRulesDraft } from "./extract";
 import { fyForDate, buildReport } from "./lib/report";
 import { getProgress } from "./lib/progress";
 import { buildGuidePrompt } from "./lib/guide";
 import { fyLabel, fyBounds } from "./lib/ledger-totals";
 import { assessReadiness, type FilingReadiness, type FilingReadinessSignals } from "./lib/readiness";
 import { rollSchedule, balancingAdjustment, fyStartYearOf, type DepAsset } from "./lib/depreciation";
-import { matchClaimRules, suggestionText, type ClaimRule, type ClaimContext } from "./lib/claimability";
+import { matchClaimRules, suggestionText, enumerateSituationClaims, classifyClaim, uncoveredOccupations, ruleKey, type ClaimRule, type ClaimContext, type ClaimSituation } from "./lib/claimability";
 import { parseCsv, applyColumnMap, lineFingerprint, deriveBalances, reconcileStatement, isLiabilityAccount, fuzzyMerchant, isTransferLike, type ColumnMap, type Reconciliation, type StatementLine } from "./lib/statements";
 import { batchStatementStatus, isStaleBatch } from "./lib/batch";
 import { cleanMerchant } from "./lib/bank-parsers";
@@ -41,6 +41,27 @@ const BATCH_THRESHOLD = 60;
 const LIVE_MAX_LINES = 200;
 
 type RulePack = typeof auV1RulePack;
+
+// ── "Find My Claims" return shape (reviewClaims) ───────────────────────────────
+// A single situational claim, GENERAL-INFO framed. `rule_id` is the stable ruleKey (D1 id or
+// scope pair). No dollar figure is ever carried — this answers "what could you claim", not "how much".
+export interface ClaimReviewItem {
+  rule_id: string;
+  scope_type: string;
+  scope_value: string;
+  ato_label: string | null;
+  claim_type: string;
+  defer_to_agent: number;
+  suggestion: string;
+  why_applies: string;
+}
+export interface ClaimReview {
+  fy: string;
+  capturing: ClaimReviewItem[];
+  check: ClaimReviewItem[];
+  defer: ClaimReviewItem[];
+  uncovered_occupations: string[];
+}
 
 // Corrections may only target these fields. Each maps to a fixed column name, so
 // the field never reaches SQL as interpolated text (fixes blocker B2: injection).
@@ -2171,21 +2192,32 @@ export class TaxAgent extends Agent<Env> {
    * overrides) are the source of truth; defer_to_agent rules append the "confirm with a
    * registered tax agent" disclaimer. The LLM is never used to assert a deduction here.
    */
+  /**
+   * The tenant's claim-rule set: the bundled/KV rule pack ∪ per-tenant D1 rows. D1 rows are scoped so
+   * a global pack override (user_id IS NULL) applies to everyone, while AI gap-fill rows written by
+   * addClaimabilityRules stay tenant-private — without this scope one tenant's confirmed rules would
+   * leak into every tenant on the same rule_pack_ver. Single source for suggestClaims / reviewClaims /
+   * assessFilingReadiness so the column list + tenant scope can't drift across the three call sites.
+   */
+  private async loadClaimRules(userId: string, rulePackVer: string): Promise<ClaimRule[]> {
+    const pack = await this.loadRulePack(rulePackVer);
+    const packRules = ((pack as { claimability?: ClaimRule[] }).claimability ?? []) as ClaimRule[];
+    const d1 = (
+      await this.env.DB.prepare(
+        `SELECT id, scope_type, scope_value, merchant_hint, requires_entity_kind, ato_label, claim_type, default_method, general_info_note, defer_to_agent
+           FROM claimability_rules WHERE rule_pack_ver = ? AND (user_id IS NULL OR user_id = ?)`,
+      ).bind(rulePackVer, userId).all<ClaimRule>()
+    ).results ?? [];
+    return [...packRules, ...d1];
+  }
+
   async suggestClaims(
     userId: string,
     ctx: ClaimContext,
     refs: { txnId?: string | null; assetId?: string | null; estimatedDeductionCents?: number | null } = {},
   ): Promise<number> {
     const profile = await this.requireProfile(userId);
-    const pack = await this.loadRulePack(profile.rule_pack_ver);
-    const packRules = ((pack as { claimability?: ClaimRule[] }).claimability ?? []) as ClaimRule[];
-    const d1 = await this.env.DB.prepare(
-      `SELECT id, scope_type, scope_value, merchant_hint, ato_label, claim_type, default_method, general_info_note, defer_to_agent
-         FROM claimability_rules WHERE rule_pack_ver = ?`,
-    )
-      .bind(profile.rule_pack_ver)
-      .all<ClaimRule>();
-    const matched = matchClaimRules([...packRules, ...(d1.results ?? [])], ctx);
+    const matched = matchClaimRules(await this.loadClaimRules(userId, profile.rule_pack_ver), ctx);
     let n = 0;
     for (const r of matched) {
       await this.env.DB.prepare(
@@ -2201,6 +2233,181 @@ export class TaxAgent extends Agent<Env> {
     }
     if (n) await this.audit(userId, "claims_suggested", JSON.stringify({ txnId: refs.txnId, assetId: refs.assetId, n }));
     return n;
+  }
+
+  // ── FIND MY CLAIMS: situational sweep + AI gap-fill + rule write path ──────────
+  /**
+   * READ-ONLY situational claim sweep for the "Find My Claims" button. Assembles the rule set the
+   * tenant's *situation* could trigger (occupation/entity/property-status — merchant ignored), then
+   * classifies each rule against FY spend + existing suggestions into three groups:
+   *   - capturing : already has evidence (bucket spend or a fired suggestion) — on top of it.
+   *   - check     : eligible but no evidence yet — "worth checking".
+   *   - defer     : needs a registered tax agent's judgement (defer_to_agent rules).
+   * Genuinely-new 'check' items are upserted into claim_suggestions (status='suggested',
+   * source='review', estimated_deduction_cents=NULL) — idempotent on (rule_id, source='review') and
+   * NEVER resurrecting a dismissed row. Mutates NO ledger table. GENERAL-INFO only; no $/refund.
+   */
+  async reviewClaims(userId: string, startYear: number): Promise<ClaimReview> {
+    const profile = await this.requireProfile(userId);
+    const fy = fyLabel(startYear);
+    const [report, situation] = await Promise.all([
+      buildReport(this.env, userId, startYear),
+      getSituation(this.env, userId, profile),
+    ]);
+
+    // Rule set = bundled pack ∪ per-tenant D1 rows (tenant-scoped — see loadClaimRules).
+    const allRules = await this.loadClaimRules(userId, profile.rule_pack_ver);
+
+    // Situation projection (a tenant can be non-AU resident — those rules still surface, framed defer).
+    const occupations = situation.persons.map((p) => p.occupation).filter((o): o is string => !!o);
+    const claimSituation: ClaimSituation = {
+      occupations,
+      entity_kinds: situation.entities.map((e) => e.kind),
+      property_statuses: [...new Set(situation.properties.map((p) => p.status))],
+    };
+
+    // AU-only rule pack: if the taxpayer isn't an Australian resident, AU deductions can't be asserted —
+    // every eligible rule is pushed to 'defer' (confirm with an agent) rather than framed as claimable.
+    const selfResidency = situation.persons.find((p) => p.role === "self")?.tax_residency ?? "AU";
+    const nonAuResident = selfResidency.toUpperCase() !== "AU";
+
+    // Impure signals for classification: which buckets have FY spend, and which rule ids already fired
+    // from REAL evidence (a per-transaction 'ingest' suggestion) vs are dismissed. Review-sourced rows
+    // are excluded — the sweep's own 'check' writes must NOT later read back as 'capturing' (no evidence
+    // was added), or items would silently migrate from "worth checking" to "already capturing" on re-run.
+    const bucketsWithSpend = new Set(report.by_bucket.filter((b) => b.total_cents > 0).map((b) => b.bucket));
+    const suggestionRows = (
+      await this.env.DB.prepare(
+        `SELECT rule_id, status, source FROM claim_suggestions WHERE user_id = ?`,
+      ).bind(userId).all<{ rule_id: string | null; status: string | null; source: string | null }>()
+    ).results ?? [];
+    const firedRuleIds = new Set(suggestionRows.filter((r) => r.status !== "dismissed" && r.source !== "review" && r.rule_id).map((r) => r.rule_id as string));
+    const dismissedRuleIds = new Set(suggestionRows.filter((r) => r.status === "dismissed" && r.rule_id).map((r) => r.rule_id as string));
+    // Existing review-sourced rows keep the upsert idempotent (don't re-insert what's already there).
+    const reviewSourced = new Set(suggestionRows.filter((r) => r.source === "review" && r.rule_id).map((r) => r.rule_id as string));
+
+    // Why a rule applies, in plain language (drives the UI "because you're a teacher" line).
+    const whyApplies = (rule: ClaimRule): string => {
+      switch (rule.scope_type) {
+        case "occupation":
+          return rule.scope_value === "all"
+            ? "A common deduction many taxpayers can check."
+            : `Because your occupation is ${rule.scope_value}.`;
+        case "property_status":
+          return `Because you have a property that is ${rule.scope_value.replace(/_/g, " ")}.`;
+        case "entity_kind":
+          return `Because you have a ${rule.scope_value.replace(/_/g, " ")} entity.`;
+        default:
+          return "Based on your situation.";
+      }
+    };
+
+    const enumerated = enumerateSituationClaims(allRules, claimSituation);
+    const capturing: ClaimReviewItem[] = [];
+    const check: ClaimReviewItem[] = [];
+    const defer: ClaimReviewItem[] = [];
+    for (const rule of enumerated) {
+      const key = ruleKey(rule);
+      // Drop dismissed rules before classifying so they never resurface (helper contract).
+      if (dismissedRuleIds.has(key)) continue;
+      // Non-AU residents: force defer (the AU rule pack can't sanction a claim for them).
+      const group = nonAuResident ? "defer" : classifyClaim(rule, { bucketsWithSpend, firedRuleIds, dismissedRuleIds });
+      const item: ClaimReviewItem = {
+        rule_id: key,
+        scope_type: rule.scope_type,
+        scope_value: rule.scope_value,
+        ato_label: rule.ato_label ?? null,
+        claim_type: rule.claim_type,
+        defer_to_agent: nonAuResident ? 1 : (rule.defer_to_agent ?? 0),
+        suggestion: nonAuResident
+          ? `${rule.general_info_note} Your tax residency isn't set to Australia — confirm with a registered tax agent whether Australian deductions apply to you.`
+          : suggestionText(rule),
+        why_applies: whyApplies(rule),
+      };
+      if (group === "capturing") capturing.push(item);
+      else if (group === "defer") defer.push(item);
+      else check.push(item);
+    }
+
+    // Persist genuinely-new 'check' items so the Dashboard ClaimsCard syncs. Idempotent on
+    // (rule_id, source='review'); estimated_deduction_cents stays NULL (situational, never a $ figure).
+    let inserted = 0;
+    for (const item of check) {
+      if (reviewSourced.has(item.rule_id)) continue;
+      await this.env.DB.prepare(
+        `INSERT INTO claim_suggestions (id, user_id, person_id, rule_id, suggestion, claim_type, estimated_deduction_cents, status, source)
+         VALUES (?, ?, ?, ?, ?, ?, NULL, 'suggested', 'review')`,
+      )
+        .bind(crypto.randomUUID(), userId, `person_self_${userId}`, item.rule_id, item.suggestion, item.claim_type)
+        .run();
+      inserted++;
+    }
+
+    const uncovered = uncoveredOccupations(allRules, occupations);
+    await this.audit(
+      userId,
+      "claims_reviewed",
+      JSON.stringify({ fy, capturing: capturing.length, check: check.length, defer: defer.length, inserted, uncovered: uncovered.length }),
+    );
+    return { fy, capturing, check, defer, uncovered_occupations: uncovered };
+  }
+
+  /**
+   * AI gap-fill for "Find My Claims": draft CANDIDATE deduction rules for an occupation that has no
+   * authored rule. Clones draftSituation's gates EXACTLY — APP-8 cross-border consent + per-tenant/
+   * global budget + audited cross-border inference. WRITES NOTHING: returns a draft the user confirms
+   * via addClaimabilityRules. The DO will force defer_to_agent=1 on every confirmed row. GENERAL-INFO.
+   */
+  async draftOccupationRules(userId: string, occupation: string): Promise<OccupationRulesDraft> {
+    const profile = await this.requireProfile(userId);
+    const provider = profile.inference_provider ?? this.env.DEFAULT_INFERENCE_PROVIDER;
+    if (provider === "anthropic" && profile.consent_xborder !== 1) {
+      throw new Error("consent_required");
+    }
+    if (!(await this.withinBudget(userId, null))) throw new Error("ai_budget_reached");
+    const llm = await getLLM(this.env, profile, { userId });
+    await this.auditXborderInference(userId, provider, "claim_review_draft", llm.modelId);
+    const draft = await extractOccupationRules(llm, occupation.slice(0, 200));
+    await this.audit(userId, "claim_review_draft", JSON.stringify({ occupation, rules: draft.rules.length }));
+    return draft;
+  }
+
+  /**
+   * The MISSING write path: persist user-confirmed claimability rules. Each row's rule_pack_ver is
+   * pinned to the tenant's (stays au-v1), defer_to_agent is FORCED to 1 (these are AI-sourced candidates
+   * the user accepted — they always defer to a registered tax agent), and a fresh id is generated.
+   * confidence_floor takes the column default. INSERT only — never updates or deletes existing rows.
+   */
+  async addClaimabilityRules(
+    userId: string,
+    rules: { scope_type: string; scope_value: string; merchant_hint?: string | null; ato_label?: string | null; claim_type: string; default_method?: string | null; general_info_note: string }[],
+  ): Promise<{ inserted: number; ids: string[] }> {
+    const profile = await this.requireProfile(userId);
+    const ids: string[] = [];
+    for (const r of rules ?? []) {
+      const id = crypto.randomUUID();
+      await this.env.DB.prepare(
+        `INSERT INTO claimability_rules (id, rule_pack_ver, jurisdiction, scope_type, scope_value, merchant_hint, ato_label, claim_type, default_method, general_info_note, defer_to_agent, user_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+      )
+        .bind(
+          id,
+          profile.rule_pack_ver,
+          profile.jurisdiction ?? "AU",
+          r.scope_type,
+          r.scope_value,
+          r.merchant_hint ?? null,
+          r.ato_label ?? null,
+          r.claim_type,
+          r.default_method ?? null,
+          r.general_info_note,
+          userId, // tenant-private — never a global override
+        )
+        .run();
+      ids.push(id);
+    }
+    if (ids.length) await this.audit(userId, "claim_rules_added", JSON.stringify({ count: ids.length }));
+    return { inserted: ids.length, ids };
   }
 
   // ── FILING READINESS: compose the report + rules + signals into a capstone view ──
@@ -2220,15 +2427,8 @@ export class TaxAgent extends Agent<Env> {
     // Matched situation-level claim rules (defer-to-agent ones become "judgement" findings). Iterate
     // distinct property statuses since the context carries a single property_status; occupation/
     // entity rules match regardless. Merchant-scoped rules can't fire here (no merchant) — intended.
-    const pack = await this.loadRulePack(profile.rule_pack_ver);
-    const packRules = ((pack as { claimability?: ClaimRule[] }).claimability ?? []) as ClaimRule[];
-    const d1Rules = (
-      await this.env.DB.prepare(
-        `SELECT id, scope_type, scope_value, merchant_hint, ato_label, claim_type, default_method, general_info_note, defer_to_agent
-           FROM claimability_rules WHERE rule_pack_ver = ?`,
-      ).bind(profile.rule_pack_ver).all<ClaimRule>()
-    ).results ?? [];
-    const allRules = [...packRules, ...d1Rules];
+    const pack = await this.loadRulePack(profile.rule_pack_ver); // for thresholds_by_fy below
+    const allRules = await this.loadClaimRules(userId, profile.rule_pack_ver);
     const occupations = situation.persons.map((p) => p.occupation).filter((o): o is string => !!o);
     const entity_kinds = situation.entities.map((e) => e.kind);
     const statuses = [...new Set(situation.properties.map((p) => p.status))];

@@ -393,6 +393,41 @@ export interface ClaimSuggestion {
   created_at: string;
 }
 
+// "Find My Claims" — mirror of ClaimReviewItem / ClaimReview in src/agent.ts. A single situational
+// claim, GENERAL-INFO framed. NEVER carries a dollar figure — answers "what could you claim", not
+// "how much".
+export interface ClaimReviewItem {
+  rule_id: string;
+  scope_type: string;
+  scope_value: string;
+  ato_label: string | null;
+  claim_type: string;
+  defer_to_agent: number;
+  suggestion: string;
+  why_applies: string;
+}
+export interface ClaimReview {
+  fy: string;
+  capturing: ClaimReviewItem[];
+  check: ClaimReviewItem[];
+  defer: ClaimReviewItem[];
+  uncovered_occupations: string[];
+}
+
+// AI gap-fill candidate rule (mirror of OccupationRulesDraft in src/extract.ts). A draft the user
+// confirms before anything is persisted; the server forces defer_to_agent=1 on every confirmed row.
+export interface OccupationRuleCandidate {
+  scope_type: "occupation";
+  scope_value: string;
+  merchant_hint: string | null;
+  ato_label: string | null;
+  claim_type: string;
+  general_info_note: string;
+}
+export interface OccupationRulesDraft {
+  rules: OccupationRuleCandidate[];
+}
+
 export interface ChecklistItem {
   id: string;
   fy: string;

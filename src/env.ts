@@ -98,4 +98,7 @@ export interface TaxAgentRpc {
   recordConsent(userId: string, text: string, method: string): Promise<void>;
   draftSituation(userId: string, message: string): Promise<import("./extract").SituationDraft>;
   guideMe(userId: string, tab: string): Promise<{ headline: string; steps: string[] }>;
+  reviewClaims(userId: string, startYear: number): Promise<import("./agent").ClaimReview>;
+  draftOccupationRules(userId: string, occupation: string): Promise<import("./extract").OccupationRulesDraft>;
+  addClaimabilityRules(userId: string, rules: { scope_type: string; scope_value: string; merchant_hint?: string | null; ato_label?: string | null; claim_type: string; default_method?: string | null; general_info_note: string }[]): Promise<{ inserted: number; ids: string[] }>;
 }

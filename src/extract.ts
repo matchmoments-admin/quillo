@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { LLM } from "./llm";
 import { bytesToBase64 } from "./lib/base64";
 import type { ColumnMap } from "./lib/statements";
-import { BUCKETS, ENTITY_KINDS, PROPERTY_STATUSES, DOC_TYPES, ASSET_CLASSES, ATO_LABEL_MAX, isBucket, normalizeAtoLabel } from "./lib/taxonomy";
+import { BUCKETS, ENTITY_KINDS, PROPERTY_STATUSES, DOC_TYPES, ASSET_CLASSES, ATO_LABEL_MAX, CLAIM_TYPES, isBucket, normalizeAtoLabel } from "./lib/taxonomy";
 
 export const Extracted = z
   .object({
@@ -1002,6 +1002,109 @@ export async function extractSituationDraft(llm: LLM, message: string): Promise<
   );
   if (!toolUse) throw new Error("model did not return a record_situation tool call");
   return SituationDraft.parse(toolUse.input);
+}
+
+// ── "Find My Claims" — AI gap-fill for occupations with no authored rule ────────────────────────
+// The deterministic sweep (reviewClaims) covers authored occupations. Where the tenant's occupation
+// has NO scope_type='occupation' rule, this drafts CANDIDATE rules from ATO general guidance for the
+// user to CONFIRM — the LLM never asserts a deduction. Every candidate is GENERAL-INFO, carries no $
+// figure, and is forced to defer_to_agent=1 server-side (the model is told not to emit that field).
+
+// A single drafted candidate rule. defer_to_agent is DELIBERATELY absent from the model schema — the
+// DO forces it to 1 on every row before anything is persisted (rules-first: the model never decides
+// deductibility). scope_type is pinned to 'occupation' so a draft can only ever broaden occupation cover.
+export const OccupationRulesDraft = z.object({
+  rules: z
+    .array(
+      z.object({
+        scope_type: z.literal("occupation"),
+        scope_value: z.string(),
+        merchant_hint: z.string().nullable().default(null),
+        ato_label: z.string().nullable().default(null),
+        claim_type: z.enum(CLAIM_TYPES),
+        general_info_note: z.string(),
+      }),
+    )
+    .default([]),
+});
+export type OccupationRulesDraft = z.infer<typeof OccupationRulesDraft>;
+
+const OCCUPATION_RULES_TOOL: Anthropic.Tool = {
+  name: "draft_occupation_rules",
+  description:
+    "Draft CANDIDATE deduction-category rules for an Australian occupation, for the user to confirm. " +
+    "Call exactly once. Output candidates only — NEVER assert a dollar amount, NEVER guarantee " +
+    "deductibility. The user reviews and confirms every rule before it is used.",
+  input_schema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["rules"],
+    properties: {
+      rules: {
+        type: "array",
+        description: "Candidate occupation deduction categories. Empty array if you can't list any.",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["scope_type", "scope_value", "merchant_hint", "ato_label", "claim_type", "general_info_note"],
+          properties: {
+            scope_type: { type: "string", enum: ["occupation"], description: "Always 'occupation'." },
+            scope_value: { type: "string", description: "The occupation key these rules apply to (echo the one given)." },
+            merchant_hint: { type: ["string", "null"], description: "Optional comma-separated merchant substrings, or null." },
+            ato_label: { type: ["string", "null"], description: "ATO deduction label (e.g. 'D5 Other work-related expenses'), or null." },
+            claim_type: { type: "string", enum: [...CLAIM_TYPES], description: "How the claim is treated; use 'immediate' for ordinary work expenses." },
+            general_info_note: { type: "string", description: "One GENERAL-INFO sentence describing the category. No dollar figures. No guarantee of deductibility." },
+          },
+        },
+      },
+    },
+  },
+};
+
+function occupationRulesSystem(occupation: string): string {
+  return (
+    `You list the COMMON, ATO-published, GENERAL-INFO deduction categories that an Australian ${occupation} ` +
+    "may be able to claim. Call draft_occupation_rules exactly once with candidate rules only. " +
+    "NEVER assert or imply a dollar amount, and NEVER guarantee that anything is deductible — these are " +
+    "candidates the user must confirm with a registered tax agent before relying on them. " +
+    "Keep each general_info_note to one plain sentence describing the category (e.g. 'work-related " +
+    "clothing and laundry for compulsory uniforms'). Output nothing the ATO would not publish as general guidance."
+  );
+}
+
+/**
+ * Draft candidate occupation deduction rules for the "Find My Claims" gap-fill step. Returns a DRAFT —
+ * the DO forces defer_to_agent=1 on every row and the user confirms before anything is persisted.
+ * Forced tool-use (no prose), ephemeral-cached system prompt, metered under "claim_review".
+ */
+export async function extractOccupationRules(llm: LLM, occupation: string): Promise<OccupationRulesDraft> {
+  const msg = await llm.create(
+    {
+      model: llm.modelId,
+      max_tokens: 1024,
+      system: [{ type: "text", text: occupationRulesSystem(occupation), cache_control: { type: "ephemeral" } }],
+      tools: [OCCUPATION_RULES_TOOL],
+      tool_choice: { type: "tool", name: OCCUPATION_RULES_TOOL.name },
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: `Occupation: "${occupation}". List the common ATO deduction categories for this occupation and call draft_occupation_rules. Echo "${occupation}" as scope_value on every rule.`,
+            },
+          ],
+        },
+      ],
+    },
+    "claim_review",
+  );
+
+  const toolUse = msg.content.find(
+    (c): c is Anthropic.ToolUseBlock => c.type === "tool_use" && c.name === OCCUPATION_RULES_TOOL.name,
+  );
+  if (!toolUse) throw new Error("model did not return a draft_occupation_rules tool call");
+  return OccupationRulesDraft.parse(toolUse.input);
 }
 
 // ── "Guide me" — personalised in-app walkthrough (forced tool-use → a clean steps array) ─────────

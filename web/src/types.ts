@@ -475,3 +475,22 @@ export interface DocRow {
   needs_review: number;
   created_at: string;
 }
+
+// Stage A — deterministic non-spend movement clean-up
+export type MovementClass = "internal_transfer" | "card_payment" | "loan_repayment" | "investment_deposit" | "none";
+export interface MovementCandidate {
+  id: string;
+  merchant: string | null;
+  raw_description: string | null;
+  amount_cents: number | null;
+  amount_aud_cents: number | null;
+  direction: string | null;
+  txn_date: string | null;
+  klass: MovementClass;
+  reason: string;
+}
+export interface MovementSweep {
+  ignorable: MovementCandidate[];
+  property_loan_review: MovementCandidate[];
+  summary: { ignorable_n: number; ignorable_total_cents: number; review_n: number };
+}

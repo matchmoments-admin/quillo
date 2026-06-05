@@ -17,7 +17,7 @@ import { fyLabel, fyBounds } from "./lib/ledger-totals";
 import { assessReadiness, type FilingReadiness, type FilingReadinessSignals } from "./lib/readiness";
 import { rollSchedule, balancingAdjustment, fyStartYearOf, isLowCostAsset, looksLikePersonalTransfer, type DepAsset } from "./lib/depreciation";
 import { matchClaimRules, suggestionText, enumerateSituationClaims, classifyClaim, uncoveredOccupations, ruleKey, type ClaimRule, type ClaimContext, type ClaimSituation } from "./lib/claimability";
-import { parseCsv, applyColumnMap, lineFingerprint, deriveBalances, reconcileStatement, isLiabilityAccount, fuzzyMerchant, isTransferLike, type ColumnMap, type Reconciliation, type StatementLine } from "./lib/statements";
+import { parseCsv, applyColumnMap, lineFingerprint, deriveBalances, reconcileStatement, isLiabilityAccount, fuzzyMerchant, isTransferLike, classifyMovement, movementTreatment, type ColumnMap, type Reconciliation, type StatementLine, type MovementClass } from "./lib/statements";
 import { batchStatementStatus, isStaleBatch } from "./lib/batch";
 import { cleanMerchant } from "./lib/bank-parsers";
 import { pdfPageCount, splitPdf, normalizePdf } from "./lib/pdf";
@@ -42,6 +42,31 @@ const BATCH_THRESHOLD = 60;
 const LIVE_MAX_LINES = 200;
 
 type RulePack = typeof auV1RulePack;
+
+// ── Stage A return shapes (sweepMovements) ─────────────────────────────────────
+// A captured bank line the deterministic matcher believes is a non-spend MOVEMENT. No verdict is
+// applied until the user confirms — these are presented PRE-CHECKED for one-tap sign-off.
+export interface MovementCandidate {
+  id: string;
+  merchant: string | null;
+  raw_description: string | null;
+  amount_cents: number | null;
+  amount_aud_cents: number | null;
+  direction: string | null;
+  txn_date: string | null;
+  klass: MovementClass;
+  reason: string;
+}
+export interface MovementSweep {
+  // Pre-checked confirm list: safe transfers/card payments, investment deposits, and non-property
+  // loan repayments → excluding these as 'ignored' won't drop a deductible amount.
+  ignorable: MovementCandidate[];
+  // Loan/mortgage lines tied to (or plausibly tied to) a rental property — these may carry a
+  // DEDUCTIBLE investment-loan interest component (s8-1), so they are surfaced for review and are
+  // NEVER offered for one-tap exclusion (B3).
+  property_loan_review: MovementCandidate[];
+  summary: { ignorable_n: number; ignorable_total_cents: number; review_n: number };
+}
 
 // ── "Find My Claims" return shape (reviewClaims) ───────────────────────────────
 // A single situational claim, GENERAL-INFO framed. `rule_id` is the stable ruleKey (D1 id or
@@ -2712,6 +2737,100 @@ export class TaxAgent extends Agent<Env> {
 
     await this.promoteToEvalCase(userId, txnId);
     await this.audit(userId, "correction", JSON.stringify({ txnId, field, newValue }));
+  }
+
+  // ── STAGE A: deterministic non-spend MOVEMENT clean-up (no LLM, no consent) ──
+  /**
+   * Scan the tenant's captured bank lines for non-spend movements (internal transfers, card
+   * payments, loan/mortgage repayments, investment-app deposits) with the pure classifyMovement
+   * matcher. Returns a PRE-CHECKED confirm list (the user signs off before anything is excluded)
+   * plus a separate review list for loan lines that may carry a DEDUCTIBLE investment-loan interest
+   * component — those are never offered for one-tap exclusion (B3). Read-only.
+   */
+  async sweepMovements(userId: string): Promise<MovementSweep> {
+    // Candidates: captured bank lines not already excluded/confirmed, still uncategorised or
+    // low-confidence — so a row the user has confirmed (corrected / high-confidence) is never reclassified.
+    const rows = await this.env.DB.prepare(
+      `SELECT id, merchant, raw_description, amount_cents, amount_aud_cents, direction, txn_date
+         FROM transactions
+        WHERE user_id = ? AND kind = 'bank_line'
+          AND status NOT IN ('ignored','duplicate','matched_receipt','corrected')
+          AND (bucket IS NULL OR bucket = 'unknown' OR confidence IS NULL OR confidence < 0.85)`,
+    )
+      .bind(userId)
+      .all<{ id: string; merchant: string | null; raw_description: string | null; amount_cents: number | null; amount_aud_cents: number | null; direction: string | null; txn_date: string | null }>();
+    const ignorable: MovementCandidate[] = [];
+    const property_loan_review: MovementCandidate[] = [];
+    for (const r of rows.results ?? []) {
+      const v = classifyMovement(r.raw_description ?? r.merchant ?? "");
+      const treatment = movementTreatment(v.klass, r.direction);
+      if (treatment === "skip") continue;
+      const cand: MovementCandidate = {
+        id: r.id,
+        merchant: r.merchant,
+        raw_description: r.raw_description,
+        amount_cents: r.amount_cents,
+        amount_aud_cents: r.amount_aud_cents,
+        direction: r.direction,
+        txn_date: r.txn_date,
+        klass: v.klass,
+        reason: v.reason,
+      };
+      if (treatment === "review") property_loan_review.push(cand);
+      else ignorable.push(cand);
+    }
+    const ignorable_total_cents = ignorable.reduce((s, c) => s + (c.amount_aud_cents ?? c.amount_cents ?? 0), 0);
+    return { ignorable, property_loan_review, summary: { ignorable_n: ignorable.length, ignorable_total_cents, review_n: property_loan_review.length } };
+  }
+
+  /**
+   * Apply a Stage-A clean-up: mark the confirmed txn ids 'ignored' (non-spend). The server
+   * RE-VERIFIES each id is genuinely movement-classified (defence in depth — a client can't ignore
+   * arbitrary spend) and refuses any property-routed loan line, writes a per-txn correction
+   * breadcrumb + an audit row. Idempotent (already-ignored rows are a no-op).
+   */
+  async applyMovementSweep(userId: string, txnIds: string[]): Promise<{ ignored: number; skipped: number }> {
+    if (!Array.isArray(txnIds) || txnIds.length === 0) return { ignored: 0, skipped: 0 };
+    const ids = txnIds.slice(0, 1000);
+    let ignored = 0;
+    let skipped = 0;
+    const stmts: D1PreparedStatement[] = [];
+    for (const txnId of ids) {
+      const row = await this.env.DB.prepare(
+        `SELECT raw_description, merchant, status, direction FROM transactions WHERE id = ? AND user_id = ?`,
+      )
+        .bind(txnId, userId)
+        .first<{ raw_description: string | null; merchant: string | null; status: string; direction: string | null }>();
+      if (!row) {
+        skipped++;
+        continue;
+      }
+      if (row.status === "ignored") {
+        ignored++; // idempotent: already excluded
+        continue;
+      }
+      // Re-verify server-side with the SAME shared treatment rule the read path used — only the
+      // one-tap "ignorable" class may be excluded here. Loan lines (review) and income credits
+      // (skip) are refused even if a client sends their ids (defence in depth — B3).
+      const v = classifyMovement(row.raw_description ?? row.merchant ?? "");
+      if (movementTreatment(v.klass, row.direction) !== "ignorable") {
+        skipped++;
+        continue;
+      }
+      stmts.push(
+        this.env.DB.prepare(`UPDATE transactions SET status='ignored' WHERE id = ? AND user_id = ?`).bind(txnId, userId),
+        this.env.DB.prepare(
+          `INSERT INTO corrections (id, user_id, txn_id, field, old_value, new_value) VALUES (?, ?, ?, 'status', ?, 'ignored')`,
+        ).bind(crypto.randomUUID(), userId, txnId, row.status),
+      );
+      ignored++;
+    }
+    // Chunk size is even and each ignored txn pushes exactly 2 statements (UPDATE then its
+    // corrections INSERT), so a txn's pair is never split across two .batch() calls. Re-runs are
+    // idempotent (already-'ignored' rows are a no-op above), so a partial failure is safe to retry.
+    for (let i = 0; i < stmts.length; i += 50) await this.env.DB.batch(stmts.slice(i, i + 50));
+    await this.audit(userId, "movement_sweep", JSON.stringify({ ignored, skipped }));
+    return { ignored, skipped };
   }
 
   /**

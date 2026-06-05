@@ -1,4 +1,4 @@
-import type { Txn, TxnDetail, Situation, SituationDraft, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse, UsageData, StatementInfo, IncomeRow, DocRow, AssetRow, ScheduleRow, ChecklistItem, ClaimSuggestion, FilingReadiness, ReviewSummary, Progress, AdminTenant, AdminOverview, ClaimReview, OccupationRulesDraft, OccupationRuleCandidate } from "./types";
+import type { Txn, TxnDetail, Situation, SituationDraft, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse, UsageData, StatementInfo, IncomeRow, DocRow, AssetRow, ScheduleRow, ChecklistItem, ClaimSuggestion, FilingReadiness, ReviewSummary, Progress, AdminTenant, AdminOverview, ClaimReview, OccupationRulesDraft, OccupationRuleCandidate, MovementSweep } from "./types";
 
 // Clerk session token getter, wired from <TokenBridge> inside ClerkProvider (main.tsx).
 // Clerk tokens are short-lived, so we fetch a fresh one per request (getToken caches/refreshes).
@@ -235,6 +235,10 @@ export const api = {
   // v2 — CGT on a disposed property (Phase 5)
   cgt: (propertyId: string) =>
     get<{ property_id: string; cost_base_cents: number; gross_gain_cents: number; is_capital_loss: boolean; discount_applied: boolean; discount_cents: number; net_gain_cents: number }>(`/api/properties/${propertyId}/cgt`),
+
+  // Stage A — deterministic non-spend movement clean-up (no LLM, no consent)
+  sweepMovements: () => get<MovementSweep>("/api/movements/sweep"),
+  applyMovementSweep: (ids: string[]) => post<{ ignored: number; skipped: number }>("/api/movements/apply", { ids }),
 
   // Admin (founder only — server enforces the 'admin' role)
   adminOverview: () => get<AdminOverview>("/api/admin/overview"),

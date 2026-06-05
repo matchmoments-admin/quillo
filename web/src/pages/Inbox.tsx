@@ -3,6 +3,7 @@ import { useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api";
 import { BucketPill, Button, ConfidencePill, Card, Spinner, money } from "../components/ui";
+import { MovementSweepCard } from "../components/MovementSweepCard";
 import type { Txn } from "../types";
 
 const TABS = [
@@ -61,6 +62,10 @@ export function Inbox() {
           </Button>
         </div>
       </div>
+
+      {/* Stage A: deterministic non-spend clean-up (transfers / repayments / deposits). Renders
+          nothing when there's nothing to clean up. */}
+      <MovementSweepCard />
 
       {/* Filter tabs — separates receipts from imported bank lines so a statement import
           doesn't flood the receipt review. */}

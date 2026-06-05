@@ -2,7 +2,7 @@
 // Offline unit tests for the pure invariants that underpin statement import + async
 // categorisation. No worker runtime / D1 / Claude — these are the fast, deterministic
 // regression guards for the rules we keep re-learning. Run: npm run test:units
-import { reconcileStatement, deriveBalances, isTransferLike, signedCents, lineFingerprint, type StatementLine } from "../src/lib/statements";
+import { reconcileStatement, deriveBalances, isTransferLike, classifyMovement, movementTreatment, signedCents, lineFingerprint, type StatementLine } from "../src/lib/statements";
 import { batchStatementStatus, isStaleBatch, BATCH_MAX_AGE_MS } from "../src/lib/batch";
 import { extractSituationDraft, parseBatchMessage, mapBatchItems, type BatchItem } from "../src/extract";
 import type { LLM } from "../src/llm";
@@ -93,6 +93,46 @@ console.log("isTransferLike");
   check("does NOT flag BPAY Origin Energy (real bill)", !isTransferLike("BPAY Origin Energy 12345"));
   check("does NOT flag Osko payment to a person", !isTransferLike("Osko Payment John Smith"));
   check("does NOT flag a normal merchant", !isTransferLike("WOOLWORTHS 1234 SYDNEY"));
+}
+
+// ── Stage A movement classifier: auto-ignore safe set vs CONFIRM/REVIEW set (B3) ─
+console.log("classifyMovement");
+{
+  // ONLY card payments + keyword-internal transfers are auto-ignore-safe (ingest byte-identical to legacy).
+  check("card payment → card_payment, auto-ignore safe", classifyMovement("CREDIT CARD PAYMENT THANK YOU").klass === "card_payment" && classifyMovement("CREDIT CARD PAYMENT THANK YOU").autoIgnoreSafe);
+  check("to-savings → internal_transfer, auto-ignore safe", classifyMovement("Transfer to Savings").klass === "internal_transfer" && classifyMovement("Transfer to Savings").autoIgnoreSafe);
+  // Masked own-account transfer is internal but CONFIRM-only (NOT auto-ignored at ingest).
+  check("masked 'Transfer to xx6819 CommBank app' → internal_transfer, NOT auto-ignore", classifyMovement("Transfer to xx6819 CommBank app").klass === "internal_transfer" && classifyMovement("Transfer to xx6819 CommBank app").autoIgnoreSafe === false);
+  // NAMED transfer (rental income!) and bare-BSB PayAnyone (real third-party payment) are NOT movements.
+  check("NAMED 'Transfer From Catherine Soper' is NOT a movement (it's rental income)", classifyMovement("Transfer From Catherine Soper").klass === "none");
+  check("PayAnyone 'Transfer To 062000 12345678 Joe Tradie' is NOT a movement (real third party)", classifyMovement("Transfer To 062000 12345678 Joe Tradie").klass === "none");
+  check("'Transfer To The App Company Payroll' is NOT a movement (vendor named 'app')", classifyMovement("Transfer To The App Company Payroll").klass === "none");
+  check("bare-BSB transfer is NOT auto-ignored at ingest", !isTransferLike("Transfer To 062000 12345678 Joe Tradie") && !isTransferLike("Transfer To The App Company Payroll"));
+  // B3: loan/mortgage repayments are detected but NEVER auto-ignored AND never one-tap excluded.
+  check("'Loan Repayment LN REPAY' → loan_repayment, NOT auto-ignore", classifyMovement("Loan Repayment LN REPAY 12345").klass === "loan_repayment" && classifyMovement("Loan Repayment LN REPAY 12345").autoIgnoreSafe === false);
+  check("'Investment Loan Interest' is detected as loan_repayment", classifyMovement("Investment Loan Interest Charge").klass === "loan_repayment");
+  check("loan repayment is NOT swept by isTransferLike (ingest leaves it captured)", !isTransferLike("Loan Repayment LN REPAY 12345"));
+  // Investment-app deposits.
+  check("'PayTo Stakeshop Deposit to Stake' → investment_deposit, NOT auto-ignore", classifyMovement("PayTo Stakeshop Pty Deposit to Stake").klass === "investment_deposit" && classifyMovement("PayTo Stakeshop Pty Deposit to Stake").autoIgnoreSafe === false);
+  // Regressions: real third-party bills/merchants are NEVER classed as movements.
+  check("BPAY Origin Energy is none", classifyMovement("BPAY Origin Energy 12345").klass === "none");
+  check("Woolworths is none", classifyMovement("WOOLWORTHS 1234 SYDNEY").klass === "none");
+  check("Osko to a person is none", classifyMovement("Osko Payment John Smith").klass === "none");
+}
+
+// ── Stage A movement treatment: ignorable vs review vs skip (B3 + income guard) ─
+console.log("movementTreatment");
+{
+  // Loan lines are ALWAYS review-only — never one-tap excluded, regardless of rental status (B3).
+  check("loan_repayment (debit) → review, never ignorable", movementTreatment("loan_repayment", "debit") === "review");
+  check("loan_repayment (credit) → review", movementTreatment("loan_repayment", "credit") === "review");
+  // An investment-app DEBIT is a capital movement (ignorable); a CREDIT is likely income → skip.
+  check("investment_deposit DEBIT → ignorable", movementTreatment("investment_deposit", "debit") === "ignorable");
+  check("investment_deposit CREDIT → skip (likely dividend/return = income)", movementTreatment("investment_deposit", "credit") === "skip");
+  // Transfers / card payments are non-income movements either direction.
+  check("internal_transfer either direction → ignorable", movementTreatment("internal_transfer", "credit") === "ignorable" && movementTreatment("internal_transfer", "debit") === "ignorable");
+  check("card_payment → ignorable", movementTreatment("card_payment", "debit") === "ignorable");
+  check("none → skip", movementTreatment("none", "debit") === "skip");
 }
 
 // ── signedCents ──────────────────────────────────────────────────────────────

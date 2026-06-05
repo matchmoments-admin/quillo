@@ -150,14 +150,86 @@ export function applyColumnMap(rows: string[][], map: ColumnMap): StatementLine[
 // Internal movements / card payments are NOT spend — counting them would double-count (the
 // card's purchases are the real expenses). DELIBERATELY conservative: wrongly dropping a real
 // expense is worse than occasionally counting a transfer (the user can mark it ignored).
-// So we only flag (a) credit-card bill payments and (b) clearly-internal transfers to one's
+// So we only AUTO-flag (a) credit-card bill payments and (b) clearly-internal transfers to one's
 // own savings. NOT BPAY/Osko/PayAnyone — those pay real third parties (deductible bills).
 const CARD_PAYMENT_RE = /\b(credit\s?card\s?payment|card\s?member\s?payment|payment\s?to\s?card|mastercard\s?payment|visa\s?payment|amex\s?payment|cardmember\s?payment)\b/i;
 const INTERNAL_RE = /\b(to\s?savings|from\s?savings|own\s?account|internal\s?transfer|netbank\s?transfer|transfer\s?to\s?savings)\b/i;
+// A MASKED own-account transfer, e.g. "Transfer to xx6819", "Transfer from xx6819 CommBank app".
+// Deliberately MATCHES ONLY the masked xx#### form banks render for one's OWN linked accounts — NOT
+// a bare BSB/account number (PayAnyone like "Transfer To 062000 12345678 Joe Tradie" is a real
+// third-party payment) and NOT a name ("Transfer From Catherine Soper" is rental income). Because
+// even a masked transfer can occasionally be ambiguous, this class is NEVER auto-ignored at ingest —
+// it rides the Stage-A pre-checked CONFIRM list (autoIgnoreSafe stays false).
+const NUMBERED_TRANSFER_RE = /\btransfer\s+(?:to|from)\b[^a-z]*x{2,4}\d{2,}/i;
+// Loan / mortgage repayments and redraws. These can hide a DEDUCTIBLE investment-loan INTEREST
+// component (s8-1), so they are NEVER auto-ignored AND never offered for one-tap exclusion — only
+// surfaced for review (Stage A B3). The bare "loan" token is intentionally broad: false positives
+// only land in the review list (no one-tap exclude), so over-matching can't silently drop spend.
+const LOAN_REPAYMENT_RE = /\b(loan|ln\s?repay|mortgage|redraw)\b/i;
+// Deposits into investment / brokerage / micro-invest apps — capital movements (money OUT), not
+// spend. Only treated as a movement on a DEBIT (a credit from one of these is likely a dividend /
+// capital return = assessable income, never swept) — see movementTreatment.
+const INVESTMENT_DEPOSIT_RE = /\b(stake(?:shop)?|commsec|pearler|spaceship|raiz|superhero|selfwealth|vanguard\s?personal|sharesight)\b/i;
 
-export function isTransferLike(description: string): boolean {
+/** What a bank line really is, for the deterministic Stage-A clean-up sweep. */
+export type MovementClass =
+  | "internal_transfer" // own-account / to savings / masked numbered transfer
+  | "card_payment" // credit-card bill payment
+  | "loan_repayment" // loan/mortgage/redraw — REVIEW only (may hide deductible interest)
+  | "investment_deposit" // deposit into a brokerage / micro-invest app
+  | "none";
+
+export interface MovementVerdict {
+  /** The detected class of non-spend movement (or "none"). */
+  klass: MovementClass;
+  /** True ONLY for the conservative legacy set safe to auto-ignore at INGEST (no user confirm). */
+  autoIgnoreSafe: boolean;
+  /** GENERAL-INFO phrasing for the confirm list (why this looks like a non-spend movement). */
+  reason: string;
+}
+
+/**
+ * Classify a bank line as a non-spend MOVEMENT (transfer / card payment / loan repayment /
+ * investment deposit) or "none". Pure + unit-tested. ONLY the conservative legacy set — card
+ * payments and keyword-internal transfers — is `autoIgnoreSafe` (used at ingest, byte-identical to
+ * the old isTransferLike). Masked numbered transfers, loan repayments and investment deposits are
+ * detected but are NEVER auto-ignored — they ride the Stage-A pre-checked confirm/review surface,
+ * so a deductible component can't be silently dropped from the position/review queue.
+ */
+export function classifyMovement(description: string): MovementVerdict {
   const s = description ?? "";
-  return CARD_PAYMENT_RE.test(s) || INTERNAL_RE.test(s);
+  if (CARD_PAYMENT_RE.test(s))
+    return { klass: "card_payment", autoIgnoreSafe: true, reason: "Looks like a credit-card bill payment (the card's purchases are the real expenses)." };
+  if (INTERNAL_RE.test(s))
+    return { klass: "internal_transfer", autoIgnoreSafe: true, reason: "Looks like a transfer between your own accounts (not spend)." };
+  if (NUMBERED_TRANSFER_RE.test(s))
+    return { klass: "internal_transfer", autoIgnoreSafe: false, reason: "Looks like a transfer to one of your own linked accounts (not spend) — confirm before excluding." };
+  if (LOAN_REPAYMENT_RE.test(s))
+    return { klass: "loan_repayment", autoIgnoreSafe: false, reason: "Looks like a loan/mortgage repayment. Review before excluding — any investment-loan interest may be deductible." };
+  if (INVESTMENT_DEPOSIT_RE.test(s))
+    return { klass: "investment_deposit", autoIgnoreSafe: false, reason: "Looks like a deposit into an investment/brokerage app (a capital movement, not spend)." };
+  return { klass: "none", autoIgnoreSafe: false, reason: "" };
+}
+
+/** Conservative auto-ignore predicate used at ingest — byte-identical to the legacy set (card payments + keyword-internal transfers). */
+export function isTransferLike(description: string): boolean {
+  return classifyMovement(description).autoIgnoreSafe;
+}
+
+/**
+ * How the Stage-A sweep should treat a classified line, given its direction. Shared by the read
+ * (sweepMovements) and write (applyMovementSweep) paths so they can never disagree:
+ *  - "ignorable" → safe to offer for one-tap exclusion (pre-checked confirm list);
+ *  - "review"    → surfaced read-only, NEVER one-tap excluded (loan lines — possible deductible interest, B3);
+ *  - "skip"      → not a sweepable movement (e.g. a credit that may be income).
+ */
+export function movementTreatment(klass: MovementClass, direction: string | null | undefined): "ignorable" | "review" | "skip" {
+  if (klass === "none") return "skip";
+  if (klass === "loan_repayment") return "review"; // B3 — may carry deductible interest; never one-tap exclude
+  // A credit into an investment/brokerage app is likely a dividend / capital return = assessable
+  // income; only a DEBIT (money out to invest) is a sweepable capital movement.
+  if (klass === "investment_deposit") return direction === "debit" ? "ignorable" : "skip";
+  return "ignorable"; // internal_transfer / card_payment — non-income movements either direction
 }
 
 /**

@@ -672,7 +672,7 @@ console.log("token-crypto (QBO envelope encryption)");
 }
 
 // ── Retention purge list completeness: every tenant table is erased (except audit_log) ──────
-import { PURGE_TABLES } from "../src/lib/retention";
+import { PURGE_TABLES, redactSecrets } from "../src/lib/retention";
 
 console.log("retention PURGE_TABLES completeness");
 {
@@ -693,6 +693,20 @@ console.log("retention PURGE_TABLES completeness");
   // purgeTenant still erases the tenant's per-day spend rows by scope (regression guard).
   const retentionSrc = fs.readFileSync(path.join(process.cwd(), "src", "lib", "retention.ts"), "utf8");
   check("purgeTenant erases daily_cost by scope", /DELETE FROM daily_cost WHERE scope = \?/.test(retentionSrc));
+  // purgeTenant erases external stores BEFORE the D1 wipe (so a store failure can't leave orphaned
+  // bytes audited as "complete"). Guard the ordering: the R2 list+delete must appear before the D1 batch.
+  check("purge deletes R2 before the D1 wipe", retentionSrc.indexOf("RECEIPTS.delete") < retentionSrc.indexOf("env.DB.batch("));
+  check("purge reseats the empty profile atomically (OR IGNORE, in-batch)", /INSERT OR IGNORE INTO profiles/.test(retentionSrc));
+
+  // APP-12 export strips secret columns but keeps the rest of the row (review Medium).
+  const tk = redactSecrets("tenant_keys", [{ key_id: "k1", secret: "shhh", label: "web" }]);
+  check("export strips tenant_keys.secret", tk[0]!.secret === undefined && tk[0]!.key_id === "k1" && tk[0]!.label === "web");
+  const qbo = redactSecrets("qbo_connections", [{ realm_id: "r1", access_token: "a", refresh_token: "b", enc_ver: 1 }]);
+  check("export strips QBO access+refresh tokens", qbo[0]!.access_token === undefined && qbo[0]!.refresh_token === undefined && qbo[0]!.realm_id === "r1");
+  const plain = redactSecrets("transactions", [{ id: "t1", merchant: "X" }]);
+  check("export leaves non-secret tables untouched", plain[0]!.merchant === "X");
+  // The export now drives off PURGE_TABLES (dual of purge), so it can't omit a purged table.
+  check("export covers every purged table", /PURGE_TABLES\.map\(async \(t\)/.test(retentionSrc));
 }
 
 // ── Bedrock SigV4 signer: structure + determinism (offline, real WebCrypto) ──────────────────

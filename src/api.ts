@@ -169,6 +169,21 @@ export async function handleApi(
     }
   }
 
+  // POST /api/guide { tab } — live "Guide me" AI walkthrough (flag guide_me). 404 when off.
+  if (resource === "guide" && m === "POST") {
+    if (!featureOn(env, "guide_me")) return json({ error: "not available" }, 404);
+    const { tab } = (await req.json().catch(() => ({}))) as { tab?: string };
+    if (!tab) return json({ error: "missing tab" }, 400);
+    try {
+      return json(await stub.guideMe(uid, tab));
+    } catch (e) {
+      const msg = (e as Error).message;
+      if (msg === "consent_required") return json({ error: "consent_required" }, 403);
+      if (msg === "ai_budget_reached") return json({ error: "AI is paused for today (daily limit reached) — try again after the reset." }, 429);
+      throw e;
+    }
+  }
+
   // GET /api/dashboard — aggregates. Opportunistically apply any finished async batch jobs
   // (cheap no-op when there are none) so results land without waiting for the cron.
   if (resource === "dashboard" && m === "GET") {

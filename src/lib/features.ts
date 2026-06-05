@@ -13,6 +13,7 @@ export const FEATURE_KEYS = [
   "asset_defaults",
   "bulk_import",
   "deductibility_review",
+  "guide_me",
 ] as const;
 
 export type FeatureKey = (typeof FEATURE_KEYS)[number];

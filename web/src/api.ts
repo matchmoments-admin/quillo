@@ -72,6 +72,7 @@ export const api = {
   // Phase 2
   dashboard: () => get<DashboardData>("/api/dashboard"),
   progress: () => get<Progress>("/api/progress"),
+  guideMe: (tab: string) => post<{ headline: string; steps: string[] }>("/api/guide", { tab }),
   usage: () => get<UsageData>("/api/usage"),
   notifications: () => get<{ notifications: Notification[] }>("/api/notifications").then((r) => r.notifications),
   markRead: (id: string) => post<{ ok: boolean }>(`/api/notifications/${id}/read`),

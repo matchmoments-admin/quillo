@@ -11,3 +11,9 @@ export function useFeatures(): { has: (key: string) => boolean; loaded: boolean 
   const features = q.data?.features ?? [];
   return { has: (key: string) => features.includes(key), loaded: !q.isLoading && !!q.data };
 }
+
+/** Whether the signed-in tenant holds the 'admin' role — gates the Admin page/nav. Same cached query. */
+export function useAdminAccess(): { isAdmin: boolean; loaded: boolean } {
+  const q = useQuery({ queryKey: ["dashboard"], queryFn: () => api.dashboard(), staleTime: 60_000 });
+  return { isAdmin: q.data?.is_admin ?? false, loaded: !q.isLoading && !!q.data };
+}

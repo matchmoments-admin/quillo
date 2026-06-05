@@ -12,6 +12,7 @@ import { costCents } from "../src/lib/usage";
 import { BUCKETS } from "../src/lib/taxonomy";
 import { applyUserRules } from "../src/lib/rules";
 import type { UserRule } from "../src/lib/db";
+import { parseRoles, hasRole, isAdmin, normaliseRoles, ROLES } from "../src/lib/roles";
 import fs from "node:fs";
 import path from "node:path";
 import type Anthropic from "@anthropic-ai/sdk";
@@ -437,6 +438,24 @@ console.log("applyUserRules (direction-aware)");
   check("direction-less call stays unconstrained (back-compat)", applyUserRules("Bunnings", rules)?.bucket === "company");
   check("merchant_exact respects exact match", applyUserRules("bunnings", [mk("bunnings", "company", "merchant_exact")], "debit")?.bucket === "company");
   check("merchant_exact no partial match", applyUserRules("bunnings warehouse", [mk("bunnings", "company", "merchant_exact")], "debit") === null);
+}
+
+console.log("roles");
+{
+  const p = (roles: string) => ({ roles }) as { roles: string };
+  check("no roles → default individual", JSON.stringify(parseRoles(null)) === '["individual"]');
+  check("hasRole reads the array", hasRole(p('["admin","individual"]'), "admin"));
+  check("isAdmin true for admin", isAdmin(p('["admin"]')));
+  check("isAdmin false for individual-only", !isAdmin(p('["individual"]')));
+  check("malformed JSON → individual", JSON.stringify(parseRoles(p("not json"))) === '["individual"]');
+  check("normaliseRoles drops unknowns", JSON.stringify(normaliseRoles(["admin", "bogus", "accountant"])) === '["admin","accountant"]');
+  check("normaliseRoles empty → individual", JSON.stringify(normaliseRoles([])) === '["individual"]');
+  // web mirror (web/src/types.ts ROLES) must match the server taxonomy.
+  const webRolesSrc = fs.readFileSync(path.join(process.cwd(), "web", "src", "types.ts"), "utf8");
+  const rStart = webRolesSrc.indexOf("export const ROLES");
+  const rBlock = webRolesSrc.slice(rStart, webRolesSrc.indexOf("]", rStart));
+  const webRoles = [...rBlock.matchAll(/"([a-z_]+)"/g)].map((m) => m[1]!);
+  check("web ROLES match the server taxonomy", JSON.stringify(webRoles) === JSON.stringify([...ROLES]));
 }
 
 console.log("bucket taxonomy");

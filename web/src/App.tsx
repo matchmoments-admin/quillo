@@ -6,13 +6,13 @@ import { useQuery } from "@tanstack/react-query";
 import { Toaster } from "sonner";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import { api } from "./api";
-import { useFeatures } from "./lib/features";
+import { useFeatures, useAdminAccess } from "./lib/features";
 import { FySwitcher } from "./lib/activeFy";
 import { NextActionBar } from "./components/NextAction";
 import { TabGuide } from "./components/TabGuide";
 import { Coachmarks } from "./components/Coachmarks";
 
-type NavItem = { to: string; label: string; icon: IconName; end?: boolean; badge?: boolean; flag?: string };
+type NavItem = { to: string; label: string; icon: IconName; end?: boolean; badge?: boolean; flag?: string; admin?: boolean };
 type NavGroup = { label: string; items: NavItem[] };
 
 // Grouped destinations — the forest sidebar that replaced the old cramped 12-tab top nav.
@@ -48,6 +48,10 @@ const GROUPS: NavGroup[] = [
       { to: "/quickbooks", label: "QuickBooks", icon: "check" },
       { to: "/notifications", label: "Alerts", icon: "bell" },
     ],
+  },
+  {
+    label: "Platform",
+    items: [{ to: "/admin", label: "Admin", icon: "gear", admin: true }],
   },
 ];
 
@@ -172,6 +176,7 @@ function Brand() {
 
 function Sidebar({ needsReview, open }: { needsReview: number; open: boolean }) {
   const { has } = useFeatures();
+  const { isAdmin } = useAdminAccess();
   return (
     <aside
       className={`fixed inset-y-0 left-0 z-50 flex w-[252px] flex-col bg-forest px-4 py-5 text-cream transition-transform lg:sticky lg:top-0 lg:z-auto lg:h-screen lg:translate-x-0 ${
@@ -186,10 +191,13 @@ function Sidebar({ needsReview, open }: { needsReview: number; open: boolean }) 
       </div>
 
       <nav className="-mx-1 flex-1 overflow-y-auto px-1">
-        {GROUPS.map((g) => (
+        {GROUPS.map((g) => {
+          const items = g.items.filter((it) => (!it.flag || has(it.flag)) && (!it.admin || isAdmin));
+          if (!items.length) return null; // hide a group whose every item is gated off (e.g. Platform for non-admins)
+          return (
           <div key={g.label} className="mt-5 first:mt-1">
             <div className="px-3 pb-2 text-[10px] font-bold uppercase tracking-[0.2em] text-cream/45">{g.label}</div>
-            {g.items.filter((it) => !it.flag || has(it.flag)).map((it) => (
+            {items.map((it) => (
               <NavLink
                 key={it.to}
                 to={it.to}
@@ -218,7 +226,8 @@ function Sidebar({ needsReview, open }: { needsReview: number; open: boolean }) 
               </NavLink>
             ))}
           </div>
-        ))}
+          );
+        })}
       </nav>
 
       <div className="mt-4 border-t border-cream/15 pt-3">

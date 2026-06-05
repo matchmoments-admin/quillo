@@ -16,7 +16,7 @@ const selfPersonId = (userId: string) => `person_self_${userId}`;
  * cheap KV read per request after the first. Without this a new Clerk user would hit "no profile for
  * tenant X"; the existing onboarding wizard + APP-8 consent flow take over once the profile exists.
  */
-export async function ensureTenant(env: Env, userId: string): Promise<void> {
+export async function ensureTenant(env: Env, userId: string, email?: string): Promise<void> {
   const flag = `tenant:init:${userId}`;
   if (await env.RULES.get(flag)) return;
   await env.DB.prepare(`INSERT OR IGNORE INTO profiles (user_id) VALUES (?)`).bind(userId).run();
@@ -25,6 +25,8 @@ export async function ensureTenant(env: Env, userId: string): Promise<void> {
   )
     .bind(selfPersonId(userId), userId)
     .run();
+  // Record the signup email (from the Clerk JWT) once, so the admin signups list can show who joined.
+  if (email) await env.DB.prepare(`UPDATE profiles SET email = ? WHERE user_id = ? AND email IS NULL`).bind(email, userId).run();
   await env.RULES.put(flag, "1");
 }
 

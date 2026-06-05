@@ -17,7 +17,10 @@ import {
   listDepreciation,
   listChecklist,
   listClaims,
+  listTenantsAdmin,
+  platformOverview,
 } from "./lib/queries";
+import { isAdmin, normaliseRoles } from "./lib/roles";
 import {
   addPerson,
   updatePerson,
@@ -61,8 +64,8 @@ export async function handleApi(
   const [resource, id, sub] = parts;
   const m = req.method;
   const uid = user.userId;
-  // Bootstrap a fresh tenant (profile + self person) on first authed touch — idempotent + KV-gated.
-  await ensureTenant(env, uid);
+  // Bootstrap a fresh tenant (profile + self person + signup email) on first authed touch.
+  await ensureTenant(env, uid, user.email);
 
   // GET /api/transactions  ·  GET /api/transactions/:id
   if (resource === "transactions" && m === "GET") {
@@ -598,6 +601,26 @@ export async function handleApi(
   if (resource === "filing-readiness" && m === "GET") {
     const fy = Number(url.searchParams.get("fy")) || currentFyStartYear();
     return json(await stub.assessFilingReadiness(uid, fy));
+  }
+
+  // ── Admin (founder only — cross-tenant) ───────────────────────────────────
+  // Every admin route requires the caller's profile to hold the 'admin' role; the cross-tenant
+  // reads hit D1 directly (the per-tenant DO is the wrong place for platform aggregates).
+  if (resource === "admin") {
+    if (!isAdmin(await getProfile(env, uid))) return json({ error: "forbidden" }, 403);
+    if (m === "GET" && id === "overview") return json(await platformOverview(env));
+    if (m === "GET" && id === "tenants") return json({ tenants: await listTenantsAdmin(env) });
+    // PUT /api/admin/tenants/:tenantId/roles { roles: [...] } — assign platform roles.
+    if (m === "PUT" && id === "tenants" && sub && parts[3] === "roles") {
+      const target = sub;
+      const { roles } = (await req.json().catch(() => ({}))) as { roles?: unknown };
+      const next = normaliseRoles(roles);
+      // Lock-out guard: you can't strip your own 'admin' (mirrors the self-person guard).
+      if (target === uid && !next.includes("admin")) return json({ error: "you can't remove your own admin role" }, 409);
+      const res = await env.DB.prepare(`UPDATE profiles SET roles = ? WHERE user_id = ?`).bind(JSON.stringify(next), target).run();
+      if (!res.meta?.changes) return json({ error: "tenant not found" }, 404);
+      return json({ ok: true, roles: next });
+    }
   }
 
   return json({ error: "not found" }, 404);

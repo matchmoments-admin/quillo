@@ -15,7 +15,7 @@ import { getProgress } from "./lib/progress";
 import { buildGuidePrompt } from "./lib/guide";
 import { fyLabel, fyBounds } from "./lib/ledger-totals";
 import { assessReadiness, type FilingReadiness, type FilingReadinessSignals } from "./lib/readiness";
-import { rollSchedule, balancingAdjustment, fyStartYearOf, type DepAsset } from "./lib/depreciation";
+import { rollSchedule, balancingAdjustment, fyStartYearOf, isLowCostAsset, looksLikePersonalTransfer, type DepAsset } from "./lib/depreciation";
 import { matchClaimRules, suggestionText, enumerateSituationClaims, classifyClaim, uncoveredOccupations, ruleKey, type ClaimRule, type ClaimContext, type ClaimSituation } from "./lib/claimability";
 import { parseCsv, applyColumnMap, lineFingerprint, deriveBalances, reconcileStatement, isLiabilityAccount, fuzzyMerchant, isTransferLike, type ColumnMap, type Reconciliation, type StatementLine } from "./lib/statements";
 import { batchStatementStatus, isStaleBatch } from "./lib/batch";
@@ -87,7 +87,7 @@ const DEFAULT_RULE_PACK: RulePack = auV1RulePack;
 // are AU policy shipped in code, used by the depreciation engine. Reading them from the bundle (not
 // per-tenant KV) keeps depreciation decoupled from a loaded profile, so a single-asset schedule
 // compute can't throw just because the profile row is missing (e.g. mid-deletion).
-type FyThreshold = { instant_asset_write_off_cents?: number; car_limit_cents?: number };
+type FyThreshold = { instant_asset_write_off_cents?: number; car_limit_cents?: number; immediate_non_business_cents?: number };
 const FY_THRESHOLDS: Record<string, FyThreshold> =
   (DEFAULT_RULE_PACK as { thresholds_by_fy?: Record<string, FyThreshold> }).thresholds_by_fy ?? {};
 
@@ -2016,26 +2016,88 @@ export class TaxAgent extends Agent<Env> {
       ? await this.loadRulePack((await this.requireProfile(userId)).rule_pack_ver)
       : null;
     for (const r of rows.results ?? []) {
+      // A person-to-person transfer isn't a capital asset — don't depreciate it. Send it back to
+      // 'unknown' + needs_review so the user categorises it properly (this is the user's call, not ours).
+      if (looksLikePersonalTransfer(r.merchant)) {
+        await this.env.DB.prepare(
+          `UPDATE transactions SET bucket = 'unknown', status = 'needs_review' WHERE id = ? AND user_id = ?`,
+        ).bind(r.id, userId).run();
+        await this.audit(userId, "asset_skipped_transfer", JSON.stringify({ txnId: r.id, merchant: r.merchant }));
+        continue;
+      }
       const d = this.assetDefaultsFor(r.merchant, rulePack);
+      // Low-cost (≤ the FY's ~$300 immediate-deduction threshold) → write off in year one, not a
+      // multi-year Div 40 schedule. Falls back to the merchant-hinted class when over the threshold.
+      const immediateThreshold = thresholdForFy(fyLabel(fyStartYearOf(r.txn_date)))?.immediate_non_business_cents ?? null;
+      const lowCost = isLowCostAsset(r.cost, immediateThreshold);
+      const asset_class = lowCost ? "immediate" : d.asset_class;
       const assetId = await this.createAsset(userId, {
         label: r.merchant ? `${r.merchant} (${r.txn_date})` : `Capital asset (${r.txn_date})`,
-        asset_class: d.asset_class, // seeded from hints when asset_defaults is on; else div40_plant
+        asset_class, // 'immediate' for low-cost; else hint-seeded (asset_defaults on) or div40_plant
         cost_cents: r.cost,
         acquired_date: r.txn_date,
         property_id: r.property_id,
-        effective_life_years: d.effective_life_years, // sensible default — user confirms in review
-        method: d.method,
+        effective_life_years: lowCost ? null : d.effective_life_years, // immediate has no effective life
+        method: lowCost ? null : d.method, // the engine derives 'immediate' from the class
         business_use_pct: 100, // work out apportionment % later
         needs_review: 1,
       });
-      const capitalClass = d.asset_class === "div43_capital_works" ? "div43" : "div40";
+      const capitalClass = asset_class === "div43_capital_works" ? "div43" : "div40";
       await this.env.DB.prepare(
         `UPDATE transactions SET asset_id = ?, is_capital = 1, capital_class = ? WHERE id = ? AND user_id = ?`,
       )
         .bind(assetId, capitalClass, r.id, userId)
         .run();
-      await this.audit(userId, "asset_linked", JSON.stringify({ txnId: r.id, assetId, cost: r.cost }));
+      await this.audit(userId, "asset_linked", JSON.stringify({ txnId: r.id, assetId, cost: r.cost, asset_class }));
     }
+  }
+
+  /**
+   * One-time backfill (run once per tenant from the cron via runOnceGuarded): repair already
+   * auto-created, still-needs_review assets that the v1 linker mis-handled — (a) person-to-person
+   * transfers wrongly turned into depreciating assets, and (b) low-cost (≤ $300) items put on a
+   * multi-year Div 40 schedule instead of an immediate write-off. Only ever touches needs_review=1
+   * (auto-created, unconfirmed) rows — never a user-confirmed asset. Idempotent: a second run finds
+   * nothing left to change. Makes NO model call. Reversible: re-categorising recreates assets.
+   */
+  async reclassMisbucketedAssets(userId: string): Promise<{ removed: number; reclassed: number }> {
+    const rows = (
+      await this.env.DB.prepare(
+        `SELECT a.id, a.cost_cents, a.acquired_date, a.asset_class, t.id AS txn_id, t.merchant
+           FROM assets a LEFT JOIN transactions t ON t.asset_id = a.id AND t.user_id = a.user_id
+          WHERE a.user_id = ? AND a.needs_review = 1`,
+      ).bind(userId).all<{ id: string; cost_cents: number; acquired_date: string; asset_class: string; txn_id: string | null; merchant: string | null }>()
+    ).results ?? [];
+    let removed = 0;
+    let reclassed = 0;
+    for (const r of rows) {
+      if (looksLikePersonalTransfer(r.merchant)) {
+        // Not a capital asset — unwind it and send the txn back to review.
+        await this.env.DB.batch([
+          this.env.DB.prepare(`DELETE FROM depreciation_schedule WHERE asset_id = ? AND user_id = ?`).bind(r.id, userId),
+          this.env.DB.prepare(`DELETE FROM assets WHERE id = ? AND user_id = ?`).bind(r.id, userId),
+          ...(r.txn_id
+            ? [this.env.DB.prepare(`UPDATE transactions SET asset_id = NULL, is_capital = 0, capital_class = NULL, bucket = 'unknown', status = 'needs_review' WHERE id = ? AND user_id = ?`).bind(r.txn_id, userId)]
+            : []),
+        ]);
+        await this.audit(userId, "asset_backfill_removed", JSON.stringify({ assetId: r.id, txnId: r.txn_id, merchant: r.merchant }));
+        removed++;
+        continue;
+      }
+      const immediateThreshold = thresholdForFy(fyLabel(fyStartYearOf(r.acquired_date)))?.immediate_non_business_cents ?? null;
+      if (r.asset_class !== "immediate" && isLowCostAsset(r.cost_cents, immediateThreshold)) {
+        // Low-cost → immediate write-off. Reclass, drop the old multi-year schedule, then recompute
+        // via the engine (computeDepreciation upserts but won't delete now-orphaned future-FY rows).
+        await this.env.DB.batch([
+          this.env.DB.prepare(`UPDATE assets SET asset_class = 'immediate', method = NULL, effective_life_years = NULL WHERE id = ? AND user_id = ?`).bind(r.id, userId),
+          this.env.DB.prepare(`DELETE FROM depreciation_schedule WHERE asset_id = ? AND user_id = ?`).bind(r.id, userId),
+        ]);
+        await this.computeDepreciation(userId, r.id);
+        await this.audit(userId, "asset_backfill_reclassed", JSON.stringify({ assetId: r.id, cost: r.cost_cents }));
+        reclassed++;
+      }
+    }
+    return { removed, reclassed };
   }
 
   /**

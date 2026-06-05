@@ -54,6 +54,28 @@ export function fyStartYearOf(dateIso: string): number {
   return (m ?? 1) >= 7 ? (y ?? 0) : (y ?? 0) - 1;
 }
 
+/**
+ * A low-cost depreciating asset (cost at/under the FY's immediate-deduction threshold, ~$300 for a
+ * non-business individual) is written off in year one, NOT depreciated over its effective life — so
+ * the auto-classifier should class it 'immediate' rather than div40_plant. Pure.
+ */
+export function isLowCostAsset(costCents: number, immediateThresholdCents: number | null | undefined): boolean {
+  return immediateThresholdCents != null && costCents > 0 && costCents <= immediateThresholdCents;
+}
+
+/**
+ * Heuristic: a line that reads like a person-to-person transfer (a bank "Transfer to <name>", Osko/
+ * PayID/Pay-Anyone) is generally NOT a capital-asset purchase — it shouldn't be auto-depreciated.
+ * Conservative on purpose (anchored payment-rail phrasing) so it won't swallow real shop names like
+ * "JB Hi-Fi" or "IKEA". A bare "deposit" is intentionally NOT matched (rental bonds, term deposits…);
+ * it only trips when it rides on a transfer phrase. Pure.
+ */
+export function looksLikePersonalTransfer(merchant: string | null | undefined): boolean {
+  const m = (merchant ?? "").toLowerCase();
+  if (!m) return false;
+  return /\btransfer to\b|\bosko\b|\bpay\s?id\b|\bpay\s?anyone\b/.test(m);
+}
+
 function utcDays(dateIso: string): number {
   const [y, m, d] = dateIso.split("-").map(Number);
   return Math.floor(Date.UTC(y ?? 1970, (m ?? 1) - 1, d ?? 1) / 86_400_000);

@@ -66,6 +66,7 @@ export interface TaxAgentRpc {
   createAsset(userId: string, a: { label: string; asset_class: string; cost_cents: number; acquired_date: string; property_id?: string | null; entity_id?: string | null; effective_life_years?: number | null; method?: string | null; div43_rate?: number | null; dv_rate_pct?: number | null; is_second_hand?: boolean; business_use_pct?: number | null; source_doc_id?: string | null; needs_review?: number }): Promise<string>;
   computeDepreciation(userId: string, assetId: string, toStartYear?: number): Promise<{ rows: number }>;
   rollForward(userId: string, toStartYear: number): Promise<{ assets: number }>;
+  reclassMisbucketedAssets(userId: string): Promise<{ removed: number; reclassed: number }>;
   disposeAsset(userId: string, assetId: string, disposedDate: string, disposalValueCents: number): Promise<{ balancing_adjustment_cents: number }>;
   importDepreciationSchedule(userId: string, docId: string, bytes: ArrayBuffer, mime: string): Promise<{ created: number }>;
   generateChecklist(userId: string, fy?: string): Promise<{ items: number }>;

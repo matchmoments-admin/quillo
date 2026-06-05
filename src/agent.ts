@@ -24,7 +24,7 @@ import { pdfPageCount, splitPdf, normalizePdf } from "./lib/pdf";
 import { getLedger, LedgerNotConnectedError, LedgerReauthError, type LedgerExpense } from "./ledger";
 import { redact } from "./lib/redact";
 import { toAud } from "./lib/fx";
-import { spentTodayCents, spentTodayGlobalCents, recordUsage } from "./lib/usage";
+import { spentTodayCents, spentTodayGlobalCents, recordUsage, noteMeteringError } from "./lib/usage";
 import { parseTransactionAlert } from "./lib/bank-parsers";
 import auV1RulePack from "./rulepacks/au-v1.json";
 import { assertBucketKeys } from "./lib/taxonomy";
@@ -187,6 +187,12 @@ export class TaxAgent extends Agent<Env> {
     const provider = profile.inference_provider ?? this.env.DEFAULT_INFERENCE_PROVIDER;
     if (provider === "anthropic" && profile.consent_xborder !== 1) throw new Error("consent_required");
 
+    // Daily AI-budget gate BEFORE storing the file or making the column-map / extraction calls — a
+    // statement parse is one or more model calls (a multi-page PDF fans out per chunk), so refuse
+    // cleanly when the per-user or global cap is hit instead of spending past it (C9). txnId is null
+    // (no row to mark yet); the API layer maps this message to a 429.
+    if (!(await this.withinBudget(userId, null))) throw new Error("ai_budget_reached");
+
     const fileHash = await sha256hexBytes(bytes);
     const existing = await this.env.DB.prepare(`SELECT id FROM statements WHERE user_id = ? AND file_hash = ?`)
       .bind(userId, fileHash)
@@ -197,9 +203,12 @@ export class TaxAgent extends Agent<Env> {
 
     const statementId = crypto.randomUUID();
     const fileKey = `${userId}/statements/${statementId}`;
-    await this.env.RECEIPTS.put(fileKey, bytes, { httpMetadata: { contentType: format === "pdf" ? "application/pdf" : "text/csv" } });
 
+    // Resolve the LLM (validates the inference provider + any required secrets) BEFORE writing the
+    // file to R2 — a misconfigured Bedrock tenant throws here, and doing it first means a config
+    // error leaves nothing orphaned in R2 (S3). Anthropic path is a cheap client construct, no I/O.
     const llm = await getLLM(this.env, profile, { userId });
+    await this.env.RECEIPTS.put(fileKey, bytes, { httpMetadata: { contentType: format === "pdf" ? "application/pdf" : "text/csv" } });
     await this.auditXborderInference(userId, provider, "parse_statement", llm.modelId);
 
     let lines: StatementLine[];
@@ -627,19 +636,35 @@ export class TaxAgent extends Agent<Env> {
     // bulk re-categorisation backfill (recategorise loops this over many statements in one request —
     // many sub-cap statements still sum to thousands of lines). Bulk recategorisation IS what batch is
     // for, so it stays quiet; only the interactive oversized upload tells the user why.
+    // Bedrock has no Anthropic Batch API — those tenants always categorise live (sequential
+    // per-chunk), regardless of size/mode. Resolve this FIRST so the user-facing copy below tells
+    // the truth: a Bedrock tenant must not be told their oversized import "ran in the cheaper batch"
+    // when it actually ran live at full price (S2).
+    const canBatch = provider !== "bedrock";
     const mode = categoriseMode(this.env, profile);
-    let useBatch = mode === "batch" || (mode === "auto" && items.length > BATCH_THRESHOLD);
+    let useBatch = canBatch && (mode === "batch" || (mode === "auto" && items.length > BATCH_THRESHOLD));
     if (mode === "live" && (opts?.bulk || items.length > LIVE_MAX_LINES)) {
-      useBatch = true;
+      useBatch = canBatch;
       if (!opts?.bulk) {
-        await this.audit(userId, "categorise_mode_fallback", JSON.stringify({ statementId, lines: items.length, from: "live", to: "batch", limit: LIVE_MAX_LINES }));
-        await this.notify(userId, `That import (${items.length} lines) is too large to categorise live, so it ran in the cheaper background batch instead — results will fill in shortly.`, null);
+        await this.audit(userId, "categorise_mode_fallback", JSON.stringify({ statementId, lines: items.length, from: "live", to: useBatch ? "batch" : "live_chunked", limit: LIVE_MAX_LINES }));
+        await this.notify(
+          userId,
+          useBatch
+            ? `That import (${items.length} lines) is too large to categorise live, so it ran in the cheaper background batch instead — results will fill in shortly.`
+            : `That import (${items.length} lines) is large, so it's categorising in the background — results will fill in shortly.`,
+          null,
+        );
       }
     }
-    // Bedrock has no Anthropic Batch API — always categorise live (sequential per-chunk) for those
-    // tenants, regardless of size/mode. This guard wins over every useBatch path above.
-    if (provider === "bedrock") useBatch = false;
     if (useBatch) {
+      // Budget gate guards the async path too — Anthropic bills the Batch API at SUBMISSION, so an
+      // un-gated submit spends real money even though results land later. Over budget, leave the
+      // lines needs_review; the next run (after the daily reset) re-queues them. This is also what
+      // makes the cron-driven recategorise backfill budget-aware (it loops this per statement).
+      if (!(await this.withinBudget(userId, null))) {
+        await this.audit(userId, "categorise_skipped_budget", JSON.stringify({ statementId, lines: items.length }));
+        return { categorised: 0 };
+      }
       await this.submitBatchCategorisation(userId, statementId, items, system, llm);
       return { categorised: 0 };
     }
@@ -696,9 +721,17 @@ export class TaxAgent extends Agent<Env> {
       return { requeued: 0, statements: 0 };
     }
 
+    // Skip statements that already have an in-flight batch (status 'submitted'): re-submitting their
+    // lines would create a SECOND batch and Anthropic bills per submission, so the same work is paid
+    // for twice (C6). The pending batch will categorise these lines; a later backfill tick re-queues
+    // anything it leaves behind once the job has been applied/failed.
     const stmts = await this.env.DB.prepare(
-      `SELECT DISTINCT statement_id FROM transactions
-        WHERE user_id = ? AND kind = 'bank_line' AND status = 'needs_review' AND statement_id IS NOT NULL`,
+      `SELECT DISTINCT t.statement_id FROM transactions t
+        WHERE t.user_id = ? AND t.kind = 'bank_line' AND t.status = 'needs_review' AND t.statement_id IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM batch_jobs b
+             WHERE b.user_id = t.user_id AND b.statement_id = t.statement_id AND b.status = 'submitted'
+          )`,
     )
       .bind(userId)
       .all<{ statement_id: string }>();
@@ -784,7 +817,15 @@ export class TaxAgent extends Agent<Env> {
             continue;
           }
           const msg = res.result.message;
-          if (msg.usage) await recordUsage(this.env, userId, "statement_batch", llm.modelId, msg.usage, 0.5);
+          // Meter the (already-incurred) batch cost, but don't let a transient KV/D1 write failure
+          // abort applying the results — surface the signal instead of silently dropping the spend.
+          if (msg.usage) {
+            try {
+              await recordUsage(this.env, userId, "statement_batch", llm.modelId, msg.usage, 0.5);
+            } catch (e) {
+              await noteMeteringError(this.env, userId, e);
+            }
+          }
           const lineIds = chunkMap[res.custom_id] ?? [];
           const cats = parseBatchMessage(msg);
           const updates: D1PreparedStatement[] = [];
@@ -2695,12 +2736,27 @@ export class TaxAgent extends Agent<Env> {
     // Global daily ceiling across ALL tenants — the multi-tenant backstop (N testers × the per-tenant
     // cap would otherwise be unbounded). Over it, stop spending and degrade (the app still works).
     const globalBudget = Number(this.env.MAX_DAILY_COST_CENTS_GLOBAL ?? 0);
-    if (globalBudget > 0 && (await spentTodayGlobalCents(this.env)) >= globalBudget) {
-      if (txnId) {
-        await this.markStatus(txnId, "needs_review");
-        await this.notify(userId, "AI is paused for today (the platform's daily limit was reached). Saved for review — it'll process after the daily reset.", txnId);
+    if (globalBudget > 0) {
+      const gspent = await spentTodayGlobalCents(this.env);
+      if (gspent >= globalBudget) {
+        if (txnId) {
+          await this.markStatus(txnId, "needs_review");
+          await this.notify(userId, "AI is paused for today (the platform's daily limit was reached). Saved for review — it'll process after the daily reset.", txnId);
+        }
+        return false;
       }
-      return false;
+      // Interim soft alert for the racy global counter (see recordUsage): warn ONCE/day when platform
+      // spend crosses 80% of the ceiling, so a spike is visible in logs/audit before the hard cap
+      // pauses every tenant. Cheap KV once-guard keeps it from spamming on every call.
+      if (gspent >= globalBudget * 0.8) {
+        const day = new Date().toISOString().slice(0, 10);
+        const gflag = `costalert:global:${day}`;
+        if (!(await this.env.RULES.get(gflag))) {
+          await this.env.RULES.put(gflag, "1", { expirationTtl: 60 * 60 * 26 });
+          console.warn(`platform AI spend $${(gspent / 100).toFixed(2)} of $${(globalBudget / 100).toFixed(2)} global daily ceiling (≥80%)`);
+          await this.audit(userId, "global_cost_alert", JSON.stringify({ gspent_cents: gspent, ceiling_cents: globalBudget }));
+        }
+      }
     }
     const budget = Number(this.env.MAX_DAILY_COST_CENTS ?? 0);
     if (budget <= 0) return true;

@@ -27,7 +27,8 @@ import { toAud } from "./lib/fx";
 import { spentTodayCents, spentTodayGlobalCents, noteMeteringError, usageStatements } from "./lib/usage";
 import { parseTransactionAlert } from "./lib/bank-parsers";
 import auV1RulePack from "./rulepacks/au-v1.json";
-import { assertBucketKeys, isBucket, normalizeAtoLabel } from "./lib/taxonomy";
+import { assertBucketKeys, isBucket, normalizeAtoLabel, DEDUCTIBILITY_STATES } from "./lib/taxonomy";
+import { verdictForTxn } from "./lib/deductibility";
 import { featureOn, categoriseMode } from "./lib/features";
 
 const CONFIDENCE_THRESHOLD = 0.85;
@@ -465,6 +466,10 @@ export class TaxAgent extends Agent<Env> {
     // Any line a rule deterministically bucketed 'asset' becomes a depreciating asset now (the
     // LLM-categorised ones are linked when their batch applies — see categoriseStatement / poll).
     await this.linkAssetsForUser(userId);
+    // Deny-by-default deductibility on deterministically-bucketed payg lines (LLM/batch-bucketed
+    // lines are stamped when their batch applies — see pollBatchJobs). Covers the no-LLM-items and
+    // consent-gated paths where categoriseStatement returns early before stamping.
+    await this.stampDeductibility(userId);
     // Attach any existing receipts to the new lines (stops double-counting + donates GST).
     await this.matchReceiptsForUser(userId);
 
@@ -741,6 +746,9 @@ export class TaxAgent extends Agent<Env> {
       if (updates.length) await this.env.DB.batch(updates);
     }
     await this.audit(userId, "statement_categorised", JSON.stringify({ statementId, categorised }));
+    // Deny-by-default deductibility on the freshly-categorised payg lines (statement spend is where
+    // the founder's private living costs land in bulk). Scans this tenant's still-undetermined payg.
+    await this.stampDeductibility(userId);
     return { categorised };
   }
 
@@ -913,6 +921,8 @@ export class TaxAgent extends Agent<Env> {
         // Async-categorised capital purchases become depreciating assets now (their bucket only
         // just landed). Idempotent — links only newly-bucketed 'asset' lines.
         await this.linkAssetsForUser(userId);
+        // Deny-by-default deductibility on the payg lines this batch just bucketed.
+        await this.stampDeductibility(userId);
         await this.notify(
           userId,
           applied > 0
@@ -1290,6 +1300,11 @@ export class TaxAgent extends Agent<Env> {
 
     await this.trace(userId, txnId, llm.modelId, system, { parsed, rule: rule?.id ?? null });
 
+    // Deny-by-default deductibility: stamp a capture verdict on this payg line so the indicative
+    // position can exclude clearly-private spend now (not just at year-end review). No-op for
+    // non-payg buckets. Guarded so it never overrides a user's prior decision.
+    await this.stampDeductibility(userId, { txnIds: [txnId] });
+
     if (final.bucket === "company" && final.confidence >= CONFIDENCE_THRESHOLD) {
       await this.notify(
         userId,
@@ -1494,10 +1509,8 @@ export class TaxAgent extends Agent<Env> {
   // resolves it once, per (bucket, ato_label), with apportionment — writing the resolved set that
   // feeds resolved_deductible_cents in the report. GENERAL INFO ONLY — not tax advice.
 
-  /** Resolved deductibility states (0011). 'undetermined' is the captured default; the rest are written by review. */
-  private static readonly DEDUCTIBILITY_STATES = new Set([
-    "undetermined", "likely_deductible", "likely_not", "needs_apportionment", "confirmed_deductible", "confirmed_not",
-  ]);
+  /** Resolved deductibility states (0011). 'undetermined' is the captured default; the rest are written by the matcher / review. */
+  private static readonly DEDUCTIBILITY_STATES = new Set<string>(DEDUCTIBILITY_STATES);
 
   private fyBoundsFor(fy?: string): { fy: string; start: string; end: string } {
     const label = fy ?? this.currentFyLabel();
@@ -1574,6 +1587,55 @@ export class TaxAgent extends Agent<Env> {
     const updated = res.meta?.changes ?? 0;
     await this.audit(userId, "deductibility_resolved", JSON.stringify({ bucket: opts.bucket, atoLabel: opts.atoLabel ?? null, state: opts.state, businessUsePct: pct, updated }));
     return { updated };
+  }
+
+  /**
+   * Stamp a deny-by-default deductibility verdict on captured 'payg' spend (the catch-all where
+   * private living spend lands), using the pure, rules-first matcher (src/lib/deductibility.ts).
+   * This is what lets the indicative position EXCLUDE clearly-private spend at capture time instead
+   * of waiting for the year-end review. Called after every ingest/categorise pass and after a
+   * re-bucket correction.
+   *
+   * GUARD: never clobbers a user's explicit year-end decision. By default it only touches
+   * 'undetermined' rows; with {reResolve:true} (used after a correction changes the bucket/label) it
+   * also re-evaluates the matcher's own prior auto-verdicts (likely_x / needs_apportionment) but still
+   * leaves user-confirmed states (confirmed_deductible/confirmed_not) untouched. Best-effort: a
+   * failure here must never fail the upload/correction that already persisted.
+   */
+  private async stampDeductibility(userId: string, opts?: { txnIds?: string[]; reResolve?: boolean }): Promise<{ stamped: number }> {
+    try {
+      const pack = await this.loadRulePack((await this.requireProfile(userId)).rule_pack_ver);
+      const section = (pack as { payg_deductibility?: Parameters<typeof verdictForTxn>[3] }).payg_deductibility ?? null;
+      if (!section) return { stamped: 0 };
+      // Only payg is classified; the guard limits what we may overwrite (see method doc).
+      const guard = opts?.reResolve
+        ? "deductibility NOT IN ('confirmed_deductible','confirmed_not')"
+        : "(deductibility IS NULL OR deductibility = 'undetermined')";
+      const idFilter = opts?.txnIds?.length ? ` AND id IN (${opts.txnIds.map(() => "?").join(",")})` : "";
+      const rows = await this.env.DB.prepare(
+        `SELECT id, bucket, ato_label, merchant FROM transactions
+          WHERE user_id = ? AND bucket = 'payg' AND ${guard}${idFilter}`,
+      )
+        .bind(userId, ...(opts?.txnIds ?? []))
+        .all<{ id: string; bucket: string; ato_label: string | null; merchant: string | null }>();
+      const updates: D1PreparedStatement[] = [];
+      for (const r of rows.results ?? []) {
+        const v = verdictForTxn(r.bucket, r.ato_label, r.merchant, section);
+        if (v.deductibility === "undetermined") continue; // nothing positively classified → leave as-is
+        // deductible_amount_cents: 0 for a denied row (explicitly $0 claimable); NULL otherwise so the
+        // report falls back to the full amount for a 100%-deductible label (matches resolveByLabel).
+        const amt = v.deductibility === "likely_not" ? 0 : null;
+        updates.push(
+          this.env.DB.prepare(`UPDATE transactions SET deductibility = ?, deductible_amount_cents = ? WHERE id = ? AND user_id = ?`)
+            .bind(v.deductibility, amt, r.id, userId),
+        );
+      }
+      for (let i = 0; i < updates.length; i += 50) await this.env.DB.batch(updates.slice(i, i + 50));
+      return { stamped: updates.length };
+    } catch (e) {
+      await this.audit(userId, "deductibility_stamp_error", JSON.stringify({ error: (e as Error).message }));
+      return { stamped: 0 };
+    }
   }
 
   /** Current AU FY label, e.g. '2025-26' (Jul–Jun). */
@@ -2471,7 +2533,7 @@ export class TaxAgent extends Agent<Env> {
       instantAssetWriteOffCentsPrevFy: thresholds[fyLabel(startYear - 1)]?.instant_asset_write_off_cents ?? null,
     };
 
-    const readiness = assessReadiness({ report, situation, claimMatches: [...matchedById.values()], signals, generatedAt: new Date().toISOString() });
+    const readiness = assessReadiness({ report, situation, claimMatches: [...matchedById.values()], signals, generatedAt: new Date().toISOString(), excludeNonDeductible: featureOn(this.env, "position_excludes_nondeductible") });
     await this.audit(userId, "readiness_assessed", JSON.stringify({ fy, blockers: readiness.readiness_score.blockers, review: readiness.readiness_score.review, findings: readiness.findings.length }));
     return readiness;
   }
@@ -2578,6 +2640,13 @@ export class TaxAgent extends Agent<Env> {
 
     // If the user re-bucketed a line to 'asset', create + link its depreciating asset now.
     if (field === "bucket" && newValue === "asset") await this.linkAssetsForUser(userId);
+
+    // Re-evaluate deny-by-default deductibility when the inputs to the matcher change. reResolve so a
+    // prior AUTO verdict is refreshed (e.g. re-bucketing groceries→payg:union-fees flips it from
+    // denied to deductible), while a user's year-end confirmed_* state is preserved by the guard.
+    if (field === "bucket" || field === "ato_label" || field === "merchant") {
+      await this.stampDeductibility(userId, { txnIds: [txnId], reResolve: true });
+    }
 
     await this.promoteToEvalCase(userId, txnId);
     await this.audit(userId, "correction", JSON.stringify({ txnId, field, newValue }));
@@ -2980,6 +3049,7 @@ export class TaxAgent extends Agent<Env> {
       `Rule pack ${rulePack.version}:`,
       ...Object.entries(rulePack.buckets).map(([k, v]) => `  - ${k}: ${v}`),
       rulePack.guidance,
+      "When a payg/individual line is clearly private living spend (groceries, personal shopping, ordinary meals, personal loan/credit-card repayments, gym/health), still use bucket=payg but give it a descriptive ato_label (e.g. payg:groceries, payg:personal-spend) so it can be recognised as private. Prefer 'unknown' over guessing a work-related label — deductibility is decided later; never assert it.",
       ...hintLines,
       renderSituation(situation),
       hint,

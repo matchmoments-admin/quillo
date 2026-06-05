@@ -91,6 +91,9 @@ CREATE TABLE IF NOT EXISTS transactions (
   asset_id     TEXT,                     -- FK assets.id if this receipt created an asset
   capital_class TEXT,                    -- repair|div40|div43|initial_repair
   -- 0011: deductibility is DEFERRED to year-end review — captured/bucketed mid-year, resolved once.
+  -- 0021: a rules-first matcher (src/lib/deductibility.ts) now stamps a DENY-BY-DEFAULT verdict on
+  --       'payg' spend at ingest so the indicative position can exclude private/non-deductible spend
+  --       (s8-1) without waiting for review; 0021 backfills clearly-private existing payg rows. No DDL.
   deductibility TEXT DEFAULT 'undetermined', -- undetermined|likely_deductible|likely_not|needs_apportionment|confirmed_deductible|confirmed_not
   deductible_amount_cents INTEGER,       -- apportioned claimable amount (cents), resolved at review; NULL until then
   -- 0012: a credit bank-line manually linked to the income row it duplicates (de-dup); NULL = unmatched.

@@ -14,7 +14,7 @@ const SEVERITY_CLASS: Record<ReadinessFinding["severity"], string> = {
   review: "bg-warn/10 text-warn",
   info: "bg-ink/5 text-ink",
 };
-const GROUP_LABEL: Record<PositionLine["group"], string> = { income: "Income", deduction: "Deductions", depreciation: "Depreciation", property: "Per-property position" };
+const GROUP_LABEL: Record<PositionLine["group"], string> = { income: "Income", deduction: "Deductions", depreciation: "Depreciation", property: "Per-property position", company: "Company (separate return — not in your position)", excluded: "Excluded as private / non-deductible" };
 
 export function Filing() {
   // Driven by the global active-FY switcher (in the app header).
@@ -78,7 +78,7 @@ export function Filing() {
           {SEVERITY_ORDER.length > 0 && data.position.lines.length > 0 && (
             <Card className="overflow-hidden">
               <div className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-muted">How that's made up — and why</div>
-              {(["income", "deduction", "depreciation", "property"] as PositionLine["group"][]).map((g) => {
+              {(["income", "deduction", "depreciation", "property", "company", "excluded"] as PositionLine["group"][]).map((g) => {
                 const rows = data.position.lines.filter((l) => l.group === g);
                 if (!rows.length) return null;
                 return (

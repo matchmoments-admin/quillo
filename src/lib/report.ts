@@ -19,6 +19,38 @@ export interface ReportRow {
   n: number;
   total_cents: number;
   gst_cents: number;
+  deductibility?: string | null; // set on deduction_breakdown rows; absent on collapsed by_bucket/income rows
+}
+
+/**
+ * Which section of the indicative position a captured expense row belongs to. The SINGLE source of
+ * truth for "does this reduce the headline" — used by both buildReport (to sum gross_deductions) and
+ * readiness.ts (to render the matching breakdown line), so the number and its explanation can never
+ * drift. See scripts/check-units.ts for the reconciliation golden.
+ *
+ *  - "company"  → a company is a SEPARATE taxpayer; its spend never nets against the individual.
+ *  - "excluded" → not an immediate individual deduction: capital ('asset'), uncategorised ('unknown'),
+ *                 private/non-deductible (likely_not/confirmed_not), or pending apportionment. When
+ *                 excludeNonDeductible is on, unresolved payg ('undetermined') is excluded too
+ *                 (deny-by-default, s8-1).
+ *  - "deduction" → counts toward the indicative position.
+ *
+ * When excludeNonDeductible is OFF the result is byte-identical to the legacy behaviour (only
+ * company/asset/unknown were excluded; everything else counted).
+ */
+export type DeductionGroup = "deduction" | "excluded" | "company";
+export function deductionGroupForRow(
+  bucket: string,
+  deductibility: string | null | undefined,
+  excludeNonDeductible: boolean,
+): DeductionGroup {
+  if (bucket === "company") return "company";
+  if (bucket === "asset" || bucket === "unknown") return "excluded";
+  if (!excludeNonDeductible) return "deduction"; // legacy: payg + property_* all counted
+  const d = deductibility ?? "undetermined";
+  if (d === "likely_not" || d === "confirmed_not" || d === "needs_apportionment") return "excluded";
+  if (bucket === "payg" && d === "undetermined") return "excluded"; // deny-by-default for unresolved payg
+  return "deduction";
 }
 
 // Per-property tax position (the negative-gearing figure): rent income − rental deductions −
@@ -36,7 +68,8 @@ export interface Report {
   fy: string;
   start: string;
   end: string;
-  by_bucket: ReportRow[];
+  by_bucket: ReportRow[];               // expense buckets collapsed by (bucket, ato_label) — legacy display/CSV shape
+  deduction_breakdown: ReportRow[];     // same rows split by deductibility (carries `deductibility`) — drives the position lines
   income_by_bucket: ReportRow[];        // money-in (bank credits) grouped by income bucket — informational, see note
   by_property: { property_id: string; label: string | null; n: number; total_cents: number }[];
   company_quarters: { quarter: string; total_cents: number; gst_cents: number }[];
@@ -60,13 +93,15 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   const { start, end } = fyBounds(startYear);
 
   // AUD totals (fall back to original when already AUD / pre-migration). Exclude duplicates.
+  // Grouped by (bucket, ato_label, deductibility) so the deductibility-aware position can filter per
+  // row; the legacy `by_bucket` shape is rebuilt by collapsing the deductibility dimension below.
   const byBucket = await env.DB.prepare(
-    `SELECT bucket, ato_label, COUNT(*) AS n,
+    `SELECT bucket, ato_label, COALESCE(deductibility,'undetermined') AS deductibility, COUNT(*) AS n,
             COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS total_cents,
             COALESCE(SUM(gst_cents),0) AS gst_cents
        FROM transactions
       WHERE user_id = ? AND txn_date >= ? AND txn_date <= ? AND bucket IS NOT NULL AND ${COUNTABLE}
-      GROUP BY bucket, ato_label ORDER BY bucket, total_cents DESC`,
+      GROUP BY bucket, ato_label, deductibility ORDER BY bucket, total_cents DESC`,
   )
     .bind(userId, start, end)
     .all<ReportRow>();
@@ -89,15 +124,15 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
     .bind(userId, start, end)
     .all<ReportRow>();
 
-  const byProperty = await env.DB.prepare(
-    `SELECT t.property_id, p.label, COUNT(*) AS n,
+  const byPropertyRaw = await env.DB.prepare(
+    `SELECT t.property_id, p.label, COALESCE(t.deductibility,'undetermined') AS deductibility, COUNT(*) AS n,
             COALESCE(SUM(COALESCE(t.amount_aud_cents, t.amount_cents)),0) AS total_cents
        FROM transactions t LEFT JOIN properties p ON p.id = t.property_id
       WHERE t.user_id = ? AND t.txn_date >= ? AND t.txn_date <= ? AND t.property_id IS NOT NULL AND ${COUNTABLE.replace(/\b(status|kind|matched_txn_id|direction)\b/g, "t.$1")}
-      GROUP BY t.property_id`,
+      GROUP BY t.property_id, deductibility`,
   )
     .bind(userId, start, end)
-    .all<{ property_id: string; label: string | null; n: number; total_cents: number }>();
+    .all<{ property_id: string; label: string | null; deductibility: string; n: number; total_cents: number }>();
 
   // Receipts with no (or unparseable) date can't be assigned to any FY — surface them
   // explicitly instead of letting the date filter silently drop them from every report.
@@ -156,14 +191,52 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
     .bind(userId)
     .all<{ merchant: string | null; total_cents: number }>();
 
-  const rows = byBucket.results ?? [];
+  const breakdown = byBucket.results ?? [];
+  // Legacy by_bucket: collapse the deductibility split back to one row per (bucket, ato_label) so the
+  // CSV/dashboard parity and any existing consumer see the same shape as before.
+  const collapsed = new Map<string, ReportRow>();
+  for (const b of breakdown) {
+    const key = `${b.bucket} ${b.ato_label ?? ""}`;
+    const prev = collapsed.get(key);
+    if (prev) {
+      prev.n += b.n;
+      prev.total_cents += b.total_cents;
+      prev.gst_cents += b.gst_cents;
+    } else {
+      collapsed.set(key, { bucket: b.bucket, ato_label: b.ato_label, n: b.n, total_cents: b.total_cents, gst_cents: b.gst_cents });
+    }
+  }
+  const rows = [...collapsed.values()];
   const gstCredits = rows.filter((b) => b.bucket === "company").reduce((s, b) => s + (b.gst_cents ?? 0), 0);
+
+  // Deny-by-default deductions: when ON, only the classifier's "deduction" rows reduce the position
+  // (private/non-deductible payg, capital and company spend drop out). OFF = byte-identical to legacy.
+  const excludeNonDeductible = featureOn(env, "position_excludes_nondeductible");
 
   // ── Tax position via the money seam: income − deductions − depreciation ──
   const income = await incomeTotals(env, userId, { startYear });
   const dep = await depreciationTotals(env, userId, startYear);
-  const expenseByProp = byProperty.results ?? [];
-  const expMap = new Map(expenseByProp.map((p) => [p.property_id, p]));
+  // Collapse the per-property deductibility split: `expenseByProp` keeps the legacy by_property shape
+  // (all spend per property); `expMap` holds only the DEDUCTIBLE portion (used for the negative-
+  // gearing net) — when excludeNonDeductible is on, likely_not/confirmed_not/needs_apportionment drop
+  // out (property 'undetermined' still counts, so a let property is unaffected by deny-by-default).
+  const expenseByProp: { property_id: string; label: string | null; n: number; total_cents: number }[] = [];
+  const expSeen = new Map<string, { property_id: string; label: string | null; n: number; total_cents: number }>();
+  const expDeductMap = new Map<string, number>();
+  for (const r of byPropertyRaw.results ?? []) {
+    const prev = expSeen.get(r.property_id);
+    if (prev) {
+      prev.n += r.n;
+      prev.total_cents += r.total_cents;
+    } else {
+      const row = { property_id: r.property_id, label: r.label, n: r.n, total_cents: r.total_cents };
+      expSeen.set(r.property_id, row);
+      expenseByProp.push(row);
+    }
+    const counts = !excludeNonDeductible || !(r.deductibility === "likely_not" || r.deductibility === "confirmed_not" || r.deductibility === "needs_apportionment");
+    if (counts) expDeductMap.set(r.property_id, (expDeductMap.get(r.property_id) ?? 0) + r.total_cents);
+  }
+  const expMap = expSeen;
   const depByProp = new Map(dep.by_property.filter((d) => d.property_id).map((d) => [d.property_id as string, d.deduction_cents]));
   const rentByProp = new Map<string, number>();
   // Rental income per property (rent + foreign_rent attributed to a property this FY).
@@ -189,7 +262,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   const propIds = new Set<string>([...expMap.keys(), ...rentByProp.keys(), ...depByProp.keys()].filter((id) => !tenantPropIds.has(id)));
   const per_property: PropertyPosition[] = [...propIds].map((pid) => {
     const incomeC = rentByProp.get(pid) ?? 0;
-    const deductionC = expMap.get(pid)?.total_cents ?? 0;
+    const deductionC = expDeductMap.get(pid) ?? 0;
     const depreciationC = depByProp.get(pid) ?? 0;
     return {
       property_id: pid,
@@ -213,8 +286,11 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   const company_tracked_cents = rows
     .filter((b) => b.bucket === "company")
     .reduce((s, b) => s + (b.total_cents ?? 0), 0);
-  const gross_deductions_cents = rows
-    .filter((b) => b.bucket !== "unknown" && b.bucket !== "asset" && b.bucket !== "company")
+  // Deny-by-default deductions: only rows the shared classifier puts in the "deduction" group count.
+  // The breakdown carries deductibility; the same classifier drives the readiness display lines so
+  // the headline == the sum of the "Deductions" lines (asserted by the reconciliation golden).
+  const gross_deductions_cents = breakdown
+    .filter((b) => deductionGroupForRow(b.bucket, b.deductibility, excludeNonDeductible) === "deduction")
     .reduce((s, b) => s + (b.total_cents ?? 0), 0);
 
   // Refund netting (flag `refund_netting`): a refund/reimbursement is a CREDIT, so it's already
@@ -254,6 +330,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
     start,
     end,
     by_bucket: rows,
+    deduction_breakdown: breakdown,
     income_by_bucket: incomeByBucket.results ?? [],
     by_property: expenseByProp,
     company_quarters,

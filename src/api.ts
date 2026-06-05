@@ -655,6 +655,18 @@ export async function handleApi(
     }
   }
 
+  // ── Stage A: deterministic non-spend movement clean-up (no LLM, no consent) ─
+  // GET  /api/movements/sweep        → read-only pre-checked confirm list + property-loan review list
+  // POST /api/movements/apply { ids } → mark confirmed ids 'ignored' (server re-verifies each)
+  if (resource === "movements") {
+    if (m === "GET" && id === "sweep") return json(await stub.sweepMovements(uid));
+    if (m === "POST" && id === "apply") {
+      const { ids } = (await req.json().catch(() => ({}))) as { ids?: unknown };
+      if (!Array.isArray(ids) || ids.some((x) => typeof x !== "string")) return json({ error: "ids must be an array of strings" }, 400);
+      return json(await stub.applyMovementSweep(uid, ids as string[]));
+    }
+  }
+
   // ── Admin (founder only — cross-tenant) ───────────────────────────────────
   // Every admin route requires the caller's profile to hold the 'admin' role; the cross-tenant
   // reads hit D1 directly (the per-tenant DO is the wrong place for platform aggregates).

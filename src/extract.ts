@@ -487,12 +487,14 @@ export function mapBatchItems<T>(lineIds: T[], items: BatchItem[]): { id: T; ite
     for (const it of items) byLine(it);
     return out;
   }
-  // Some items lack a usable line. Positional matching is ONLY safe when the model returned exactly
-  // one item per input line with nothing dropped/added — otherwise positions are shifted and would
-  // silently assign a categorisation to the WRONG transaction. (parseBatchMessage drops invalid-
-  // bucket items, so a length mismatch is realistic.) When positions are untrustworthy, map only the
-  // items that DID carry a valid line and leave the rest needs_review rather than mis-bucket money.
-  if (items.length === lineIds.length) {
+  // Positional matching is ONLY safe when the model omitted line numbers ENTIRELY (legacy/back-compat)
+  // AND returned exactly one item per input line. If ANY item carries a usable line, the model IS
+  // using line numbers, so a position-based map would silently mis-assign whenever items are reordered
+  // or one is dropped (parseBatchMessage drops invalid-bucket items, so a length match can still hide a
+  // reorder). In the mixed/partial case, map only the items that DID carry a valid line and leave the
+  // rest needs_review rather than mis-bucket money against the wrong transaction.
+  const anyLined = items.some((it) => inRange(it.line));
+  if (!anyLined && items.length === lineIds.length) {
     for (let j = 0; j < lineIds.length; j++) out.push({ id: lineIds[j]!, item: items[j]! });
     return out;
   }

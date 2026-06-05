@@ -804,6 +804,11 @@ console.log("mapBatchItems (match results to line ids by echoed line, not array 
   // No lines AND length mismatch → refuse to positionally guess (map nothing).
   const refuse = mapBatchItems(ids, [it(null, "payg"), it(null, "company")]);
   check("refuses positional mapping when items were dropped", refuse.length === 0);
+  // MIXED: some items carry valid lines, one is null, lengths happen to match → must NOT fall back to
+  // positional (that would mis-bucket every line); map the lined items by line, skip the line-less one.
+  const mixed = mapBatchItems(ids, [it(3, "company"), it(1, "payg"), it(null, "asset")]);
+  check("mixed line info maps by line, not position", mixed.find((r) => r.id === "a")!.item.bucket === "payg" && mixed.find((r) => r.id === "c")!.item.bucket === "company");
+  check("mixed line info leaves the line-less item unmapped", mixed.find((r) => r.id === "b") === undefined);
   // Duplicate line claim is ignored (first wins).
   const dup = mapBatchItems(ids, [it(1, "payg"), it(1, "company"), it(2, "asset")]);
   check("duplicate line claim ignored", dup.filter((r) => r.id === "a").length === 1);

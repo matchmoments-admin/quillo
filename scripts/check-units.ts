@@ -634,6 +634,10 @@ console.log("retention PURGE_TABLES completeness");
   check("PURGE_TABLES covers every tenant table except audit_log", JSON.stringify(purges) === JSON.stringify(shouldPurge));
   check("PURGE_TABLES never includes audit_log (breadcrumb is kept)", !purges.includes("audit_log"));
   check("PURGE_TABLES has no table missing from schema", purges.every((t) => tenantTables.includes(t)));
+  // daily_cost is keyed by `scope` (not a user_id column) so it's outside the list above — assert
+  // purgeTenant still erases the tenant's per-day spend rows by scope (regression guard).
+  const retentionSrc = fs.readFileSync(path.join(process.cwd(), "src", "lib", "retention.ts"), "utf8");
+  check("purgeTenant erases daily_cost by scope", /DELETE FROM daily_cost WHERE scope = \?/.test(retentionSrc));
 }
 
 // ── Bedrock SigV4 signer: structure + determinism (offline, real WebCrypto) ──────────────────

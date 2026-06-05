@@ -59,10 +59,13 @@ export async function purgeTenant(env: Env, userId: string): Promise<PurgeResult
     /* best-effort — never block the erasure on a remote revoke */
   }
 
-  // 2. D1: delete every tenant table except audit_log, in one batch.
-  const stmts = PURGE_TABLES.map((t) =>
-    env.DB.prepare(`DELETE FROM ${t} WHERE user_id = ?`).bind(userId),
-  );
+  // 2. D1: delete every tenant table except audit_log, in one batch. daily_cost is keyed by `scope`
+  // (not user_id), so it's purged explicitly by scope here rather than via the user_id list — this
+  // erases the tenant's per-day AI-spend rows; the 'global' platform tally is untouched.
+  const stmts = [
+    ...PURGE_TABLES.map((t) => env.DB.prepare(`DELETE FROM ${t} WHERE user_id = ?`).bind(userId)),
+    env.DB.prepare(`DELETE FROM daily_cost WHERE scope = ?`).bind(userId),
+  ];
   const results = await env.DB.batch(stmts);
   const rowsDeleted = results.reduce((n, r) => n + (r.meta?.changes ?? 0), 0);
 

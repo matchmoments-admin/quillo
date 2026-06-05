@@ -13,6 +13,8 @@ import { BUCKETS } from "../src/lib/taxonomy";
 import { applyUserRules } from "../src/lib/rules";
 import type { UserRule } from "../src/lib/db";
 import { parseRoles, hasRole, isAdmin, normaliseRoles, ROLES } from "../src/lib/roles";
+import { buildGuidePrompt } from "../src/lib/guide";
+import type { Progress } from "../src/lib/progress";
 import fs from "node:fs";
 import path from "node:path";
 import type Anthropic from "@anthropic-ai/sdk";
@@ -438,6 +440,20 @@ console.log("applyUserRules (direction-aware)");
   check("direction-less call stays unconstrained (back-compat)", applyUserRules("Bunnings", rules)?.bucket === "company");
   check("merchant_exact respects exact match", applyUserRules("bunnings", [mk("bunnings", "company", "merchant_exact")], "debit")?.bucket === "company");
   check("merchant_exact no partial match", applyUserRules("bunnings warehouse", [mk("bunnings", "company", "merchant_exact")], "debit") === null);
+}
+
+console.log("buildGuidePrompt (Guide me)");
+{
+  const progress = {
+    imported: { statements: 2, transactions: 338 }, categorised: 300, needs_review: 12, undated: 0,
+    unreconciled_receipts: 0, has_qbo: false, done: false, next_action: { kind: "review", count: 12, label: "x", href: "/" },
+  } as unknown as Progress;
+  const { system, user } = buildGuidePrompt("inbox", progress, "Taxpayer: nurse");
+  check("system names the tab's purpose", system.includes("review queue"));
+  check("system carries the GENERAL-INFO guardrail", system.toLowerCase().includes("never tax advice"));
+  check("user embeds the live numbers", user.includes('"needs_review":12') && user.includes("338"));
+  check("user embeds the situation summary", user.includes("Taxpayer: nurse"));
+  check("unknown tab degrades gracefully", buildGuidePrompt("bogus", progress, "").system.includes('"bogus"'));
 }
 
 console.log("roles");

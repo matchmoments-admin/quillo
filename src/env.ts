@@ -97,4 +97,5 @@ export interface TaxAgentRpc {
   runProactiveScan(userId: string): Promise<void>;
   recordConsent(userId: string, text: string, method: string): Promise<void>;
   draftSituation(userId: string, message: string): Promise<import("./extract").SituationDraft>;
+  guideMe(userId: string, tab: string): Promise<{ headline: string; steps: string[] }>;
 }

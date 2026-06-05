@@ -9,8 +9,10 @@ import { COUNTABLE } from "./lib/queries";
 import { applyUserRules, RULE_CREDIT_BUCKETS } from "./lib/rules";
 import { sha256hex, sha256hexBytes } from "./lib/base64";
 import { getLLM, type LLM } from "./llm";
-import { extractReceipt, extractReceipts, extractFromText, extractColumnMap, extractStatement, extractBatch, extractSituationDraft, classifyDocument, extractPayslip, extractAgentStatement, extractDepreciationSchedule, extractDividend, batchParams, parseBatchMessage, type Extracted, type ExtractedStatement, type SituationDraft } from "./extract";
+import { extractReceipt, extractReceipts, extractFromText, extractColumnMap, extractStatement, extractBatch, extractSituationDraft, extractGuide, classifyDocument, extractPayslip, extractAgentStatement, extractDepreciationSchedule, extractDividend, batchParams, parseBatchMessage, type Extracted, type ExtractedStatement, type SituationDraft } from "./extract";
 import { fyForDate, buildReport } from "./lib/report";
+import { getProgress } from "./lib/progress";
+import { buildGuidePrompt } from "./lib/guide";
 import { fyLabel, fyBounds } from "./lib/ledger-totals";
 import { assessReadiness, type FilingReadiness, type FilingReadinessSignals } from "./lib/readiness";
 import { rollSchedule, balancingAdjustment, fyStartYearOf, type DepAsset } from "./lib/depreciation";
@@ -2614,6 +2616,34 @@ export class TaxAgent extends Agent<Env> {
       JSON.stringify({ entities: draft.entities.length, properties: draft.properties.length, rules: draft.rules.length }),
     );
     return draft;
+  }
+
+  /**
+   * "Guide me": a personalised, data-grounded walkthrough for the screen the user is on. Mirrors the
+   * draftSituation gates (consent + budget, metered, audited). Cached per (tab, progress signature)
+   * for ~30 min so re-clicking the same screen state doesn't re-bill. GENERAL INFO ONLY.
+   */
+  async guideMe(userId: string, tab: string): Promise<{ headline: string; steps: string[] }> {
+    const profile = await this.requireProfile(userId);
+    const provider = profile.inference_provider ?? this.env.DEFAULT_INFERENCE_PROVIDER;
+    if (provider === "anthropic" && profile.consent_xborder !== 1) throw new Error("consent_required");
+
+    const progress = await getProgress(this.env, userId);
+    // Signature = the progress numbers that change the advice; re-clicking an unchanged screen is free.
+    const sig = [progress.imported.transactions, progress.categorised, progress.needs_review, progress.undated, progress.unreconciled_receipts, progress.has_qbo ? 1 : 0, progress.done ? 1 : 0].join("-");
+    const cacheKey = `guide:${userId}:${tab}:${sig}`;
+    const cached = await this.env.RULES.get(cacheKey, "json");
+    if (cached) return cached as { headline: string; steps: string[] };
+
+    if (!(await this.withinBudget(userId, null))) throw new Error("ai_budget_reached");
+    const llm = await getLLM(this.env, profile, { userId });
+    await this.auditXborderInference(userId, provider, "guide_me", llm.modelId);
+    const situation = await getSituation(this.env, userId, profile);
+    const { system, user } = buildGuidePrompt(tab, progress, redact(renderSituation(situation)));
+    const result = await extractGuide(llm, system, user);
+    await this.env.RULES.put(cacheKey, JSON.stringify(result), { expirationTtl: 60 * 30 });
+    await this.audit(userId, "guide_me", JSON.stringify({ tab, steps: result.steps.length }));
+    return result;
   }
 
   private async loadRulePack(ver: string): Promise<typeof DEFAULT_RULE_PACK> {

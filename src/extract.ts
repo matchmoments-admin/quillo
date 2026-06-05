@@ -924,3 +924,44 @@ export async function extractSituationDraft(llm: LLM, message: string): Promise<
   if (!toolUse) throw new Error("model did not return a record_situation tool call");
   return SituationDraft.parse(toolUse.input);
 }
+
+// ── "Guide me" — personalised in-app walkthrough (forced tool-use → a clean steps array) ─────────
+const GUIDE_TOOL: Anthropic.Tool = {
+  name: "give_guide",
+  description: "Return a short personalised walkthrough for the user's current screen: a one-line headline + 3–6 concrete steps grounded in their data. Call exactly once.",
+  input_schema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["headline", "steps"],
+    properties: {
+      headline: { type: "string", description: "One short, encouraging line." },
+      steps: { type: "array", items: { type: "string" }, description: "3–6 short, concrete next steps tailored to THIS user's numbers." },
+    },
+  },
+};
+
+export interface GuideResult {
+  headline: string;
+  steps: string[];
+}
+
+/** One metered Haiku call → a short personalised walkthrough. Plain structured output, no prose parsing. */
+export async function extractGuide(llm: LLM, system: string, user: string): Promise<GuideResult> {
+  const msg = await llm.create(
+    {
+      model: llm.modelId,
+      max_tokens: 700,
+      system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
+      tools: [GUIDE_TOOL],
+      tool_choice: { type: "tool", name: GUIDE_TOOL.name },
+      messages: [{ role: "user", content: [{ type: "text", text: user }] }],
+    },
+    "guide_me",
+  );
+  const toolUse = msg.content.find((c): c is Anthropic.ToolUseBlock => c.type === "tool_use" && c.name === GUIDE_TOOL.name);
+  if (!toolUse) throw new Error("model did not return a give_guide tool call");
+  const input = toolUse.input as { headline?: unknown; steps?: unknown };
+  const headline = typeof input.headline === "string" && input.headline.trim() ? input.headline.trim() : "Here's what to do next";
+  const steps = Array.isArray(input.steps) ? input.steps.filter((s): s is string => typeof s === "string" && s.trim().length > 0).slice(0, 6) : [];
+  return { headline, steps };
+}

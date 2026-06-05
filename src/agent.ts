@@ -2202,9 +2202,11 @@ export class TaxAgent extends Agent<Env> {
   private async loadClaimRules(userId: string, rulePackVer: string): Promise<ClaimRule[]> {
     const pack = await this.loadRulePack(rulePackVer);
     const packRules = ((pack as { claimability?: ClaimRule[] }).claimability ?? []) as ClaimRule[];
+    // NB: requires_entity_kind is a pack-only field (JSON rules); the claimability_rules table has no
+    // such column — selecting it would throw "no such column". D1 rows carry no entity AND-gate.
     const d1 = (
       await this.env.DB.prepare(
-        `SELECT id, scope_type, scope_value, merchant_hint, requires_entity_kind, ato_label, claim_type, default_method, general_info_note, defer_to_agent
+        `SELECT id, scope_type, scope_value, merchant_hint, ato_label, claim_type, default_method, general_info_note, defer_to_agent
            FROM claimability_rules WHERE rule_pack_ver = ? AND (user_id IS NULL OR user_id = ?)`,
       ).bind(rulePackVer, userId).all<ClaimRule>()
     ).results ?? [];

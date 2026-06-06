@@ -255,6 +255,8 @@ export const api = {
   // Stage A — deterministic non-spend movement clean-up (no LLM, no consent)
   sweepMovements: () => get<MovementSweep>("/api/movements/sweep"),
   applyMovementSweep: (ids: string[]) => post<{ ignored: number; skipped: number }>("/api/movements/apply", { ids }),
+  applyLoanSplit: (b: { txn_id: string; property_id: string; interest_cents?: number; interest_pct?: number }) =>
+    post<{ ok: true; interest_cents: number }>("/api/movements/loan-split", b),
 
   // Phase 2 — batch correction + undo + bulk delete
   correctBatch: (txnIds: string[], edits: { field: string; value: string }[]) => post<BatchResult>("/api/correct/batch", { txnIds, edits }),

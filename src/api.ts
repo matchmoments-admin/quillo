@@ -750,6 +750,27 @@ export async function handleApi(
       if (!Array.isArray(ids) || ids.some((x) => typeof x !== "string")) return json({ error: "ids must be an array of strings" }, 400);
       return json(await stub.applyMovementSweep(uid, ids as string[]));
     }
+    // POST /api/movements/loan-split { txn_id, property_id, interest_cents | interest_pct }
+    //   → record the deductible interest portion of one loan line (Phase 5, guided split).
+    if (m === "POST" && id === "loan-split") {
+      // Gate on the flag: with it OFF the position counts GROSS (amtExpr falls back), so a split row
+      // (property_rented + confirmed_deductible) would over-claim the principal. Only allow creating
+      // splits when the position is set up to honour the apportioned interest.
+      if (!featureOn(env, "loan_split")) return json({ error: "loan split is not enabled" }, 404);
+      const b = (await req.json().catch(() => ({}))) as { txn_id?: unknown; property_id?: unknown; interest_cents?: unknown; interest_pct?: unknown };
+      if (typeof b.txn_id !== "string" || typeof b.property_id !== "string") return json({ error: "txn_id and property_id are required" }, 400);
+      try {
+        return json(
+          await stub.applyLoanSplit(uid, b.txn_id, {
+            property_id: b.property_id,
+            interest_cents: typeof b.interest_cents === "number" ? b.interest_cents : undefined,
+            interest_pct: typeof b.interest_pct === "number" ? b.interest_pct : undefined,
+          }),
+        );
+      } catch (e) {
+        return json({ error: (e as Error).message }, 400);
+      }
+    }
   }
 
   // ── Stage B: clarify-by-pattern (flag accountant_pass) — 404 when off ──────

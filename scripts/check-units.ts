@@ -725,7 +725,7 @@ console.log("readiness");
 
 // ── DEDUCTIBILITY: deny-by-default matcher + the headline/display reconciliation ──
 import { verdictForTxn } from "../src/lib/deductibility";
-import { deductionGroupForRow } from "../src/lib/report";
+import { deductionGroupForRow, positionAmountCents } from "../src/lib/report";
 
 console.log("deductibility (deny-by-default)");
 {
@@ -763,6 +763,17 @@ console.log("deductibility (deny-by-default)");
   check("ON: needs_apportionment excluded", deductionGroupForRow("payg", "needs_apportionment", true) === "excluded");
   check("ON: property_rented undetermined still counts (capture-now preserved)", deductionGroupForRow("property_rented", "undetermined", true) === "deduction");
   check("ON: property_rented confirmed_not excluded", deductionGroupForRow("property_rented", "confirmed_not", true) === "excluded");
+
+  // ── PHASE 5: loan interest/principal split — positionAmountCents (mirrors the buildReport SUM) ──
+  // A split mortgage line keeps amount_cents = gross (so statement reconciliation is untouched) and
+  // carries deductible_amount_cents = the interest. When the loan_split flag honours apportionment,
+  // the position counts the INTEREST only — the principal can never leak into the rental net.
+  const mortgage = { amount_cents: 240_000, amount_aud_cents: 240_000, deductible_amount_cents: 175_000 };
+  check("loan_split ON: position counts interest only (not gross)", positionAmountCents(mortgage, true) === 175_000);
+  check("loan_split OFF: position counts gross (legacy, byte-identical)", positionAmountCents(mortgage, false) === 240_000);
+  check("no apportioned amount → gross either way (un-split rows unchanged)", positionAmountCents({ amount_cents: 5_000, amount_aud_cents: 5_000 }, true) === 5_000);
+  check("deductible_amount_cents = 0 is honoured (fully non-deductible, not treated as null)", positionAmountCents({ amount_cents: 5_000, amount_aud_cents: 5_000, deductible_amount_cents: 0 }, true) === 0);
+  check("AUD fallback when no apportioned amount", positionAmountCents({ amount_cents: 9_000, amount_aud_cents: 8_000 }, true) === 8_000);
 
   // RECONCILIATION: the readiness "Deductions" lines sum to the same gross the headline math uses,
   // and private/capital/company spend lands in the excluded/company sections — not under Deductions.

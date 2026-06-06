@@ -56,6 +56,7 @@ export interface MovementCandidate {
   amount_aud_cents: number | null;
   direction: string | null;
   txn_date: string | null;
+  account_id: string | null; // the source account — lets the loan-split UI pre-fill from loans_properties
   klass: MovementClass;
   reason: string;
 }
@@ -3044,14 +3045,14 @@ export class TaxAgent extends Agent<Env> {
     // Candidates: captured bank lines not already excluded/confirmed, still uncategorised or
     // low-confidence — so a row the user has confirmed (corrected / high-confidence) is never reclassified.
     const rows = await this.env.DB.prepare(
-      `SELECT id, merchant, raw_description, amount_cents, amount_aud_cents, direction, txn_date
+      `SELECT id, merchant, raw_description, amount_cents, amount_aud_cents, direction, txn_date, account_id
          FROM transactions
         WHERE user_id = ? AND kind = 'bank_line'
           AND status NOT IN ('ignored','duplicate','matched_receipt','corrected')
           AND (bucket IS NULL OR bucket = 'unknown' OR confidence IS NULL OR confidence < 0.85)`,
     )
       .bind(userId)
-      .all<{ id: string; merchant: string | null; raw_description: string | null; amount_cents: number | null; amount_aud_cents: number | null; direction: string | null; txn_date: string | null }>();
+      .all<{ id: string; merchant: string | null; raw_description: string | null; amount_cents: number | null; amount_aud_cents: number | null; direction: string | null; txn_date: string | null; account_id: string | null }>();
     const ignorable: MovementCandidate[] = [];
     const property_loan_review: MovementCandidate[] = [];
     for (const r of rows.results ?? []) {
@@ -3066,6 +3067,7 @@ export class TaxAgent extends Agent<Env> {
         amount_aud_cents: r.amount_aud_cents,
         direction: r.direction,
         txn_date: r.txn_date,
+        account_id: r.account_id,
         klass: v.klass,
         reason: v.reason,
       };
@@ -3124,6 +3126,70 @@ export class TaxAgent extends Agent<Env> {
     for (let i = 0; i < stmts.length; i += 50) await this.env.DB.batch(stmts.slice(i, i + 50));
     await this.audit(userId, "movement_sweep", JSON.stringify({ ignored, skipped }));
     return { ignored, skipped };
+  }
+
+  /**
+   * Guided mortgage interest/principal split (Phase 5). For ONE loan/mortgage line tied to an
+   * investment property, record the deductible INTEREST portion: the row keeps its gross amount_cents
+   * (so statement reconciliation is untouched — one canonical money source), and deductible_amount_cents
+   * is set to the interest, which the position counts ONLY when the `loan_split` flag is on (see
+   * report.ts positionAmountCents). The principal is implicitly excluded. Confirm-each-pattern: the UI
+   * pre-fills the % from the loan→property link but the user confirms each line. Own-home rent is
+   * refused — only an income-producing property's loan interest is deductible (s8-1). General info only.
+   */
+  async applyLoanSplit(
+    userId: string,
+    txnId: string,
+    opts: { property_id: string; interest_cents?: number; interest_pct?: number },
+  ): Promise<{ ok: true; interest_cents: number }> {
+    const row = await this.env.DB.prepare(
+      `SELECT raw_description, merchant, direction, amount_cents, amount_aud_cents, account_id, status
+         FROM transactions WHERE id = ? AND user_id = ? AND kind = 'bank_line'`,
+    )
+      .bind(txnId, userId)
+      .first<{ raw_description: string | null; merchant: string | null; direction: string | null; amount_cents: number | null; amount_aud_cents: number | null; account_id: string | null; status: string }>();
+    if (!row) throw new Error("transaction not found");
+    // Defence in depth: re-verify server-side that this really is a loan-review line (a client can't
+    // split arbitrary spend), mirroring the applyMovementSweep guard.
+    const v = classifyMovement(row.raw_description ?? row.merchant ?? "");
+    if (movementTreatment(v.klass, row.direction) !== "review") throw new Error("not a loan line to split");
+    // The property must belong to this tenant AND be income-producing. Loan interest is only
+    // deductible on a property held to earn assessable income — a rented one, or one genuinely
+    // available for rent (vacant). An owner-occupied home, a property you rent as a tenant
+    // (renting_*), or a sold one are all refused (their loan interest is private/capital).
+    const prop = await this.env.DB.prepare(`SELECT status FROM properties WHERE id = ? AND user_id = ?`)
+      .bind(opts.property_id, userId)
+      .first<{ status: string | null }>();
+    if (!prop) throw new Error("property not found");
+    if (!["rented", "vacant"].includes(prop.status ?? ""))
+      throw new Error("loan interest is only deductible on an income-producing property (rented, or genuinely available for rent) — not your own home, a property you rent, or a sold one");
+    const gross = row.amount_aud_cents ?? row.amount_cents ?? 0;
+    const raw = opts.interest_cents ?? Math.round((gross * (opts.interest_pct ?? 0)) / 100);
+    const interest = Math.max(0, Math.min(gross, Math.round(raw))); // interest can't exceed the payment
+    await this.env.DB.prepare(
+      `UPDATE transactions
+          SET bucket = 'property_rented', property_id = ?, deductible_amount_cents = ?,
+              deductibility = 'confirmed_deductible', ato_label = 'rental:interest', status = 'corrected'
+        WHERE id = ? AND user_id = ?`,
+    )
+      .bind(opts.property_id, interest, txnId, userId)
+      .run();
+    await this.env.DB.prepare(
+      `INSERT INTO corrections (id, user_id, txn_id, field, old_value, new_value) VALUES (?, ?, ?, 'loan_split', ?, ?)`,
+    )
+      .bind(crypto.randomUUID(), userId, txnId, String(gross), String(interest))
+      .run();
+    // Persist the implied % back onto the loan→property link (if one exists) so the next statement's
+    // matching line pre-fills with this %. This does NOT auto-apply — each line is still confirmed.
+    if (row.account_id && gross > 0) {
+      await this.env.DB.prepare(
+        `UPDATE loans_properties SET deductible_interest_pct = ? WHERE user_id = ? AND loan_account_id = ? AND property_id = ?`,
+      )
+        .bind((interest / gross) * 100, userId, row.account_id, opts.property_id)
+        .run();
+    }
+    await this.audit(userId, "loan_split", JSON.stringify({ txnId, property_id: opts.property_id, gross, interest }));
+    return { ok: true, interest_cents: interest };
   }
 
   // ── STAGE B: clarify-by-pattern (group leftovers → one question per pattern) ──

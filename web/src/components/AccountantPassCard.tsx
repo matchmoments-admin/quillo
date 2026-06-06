@@ -61,10 +61,12 @@ export function SuggestedDeductions({ fy }: { fy: number }) {
   if (rows.length === 0) return null;
   return (
     <div className="rounded-lg border border-line p-3">
-      <p className="mb-1 text-sm font-medium">Suggested deductions — confirm to include in your position</p>
+      <p className="mb-1 text-sm font-medium">Possible deductions — confirm each to include it</p>
       <p className="mb-2 text-xs text-muted">
-        These look claimable (union/professional fees, tax-agent fees, DGR donations, income protection).
-        They're excluded until you confirm. Confirming doesn't predict a refund.
+        These categories (union/professional fees, tax-agent fees, DGR donations, income protection)
+        <em>might</em> apply to you — nothing is claimed yet, and each stays out of your position until you
+        confirm it relates to earning your income. For donations, check the organisation is a DGR and you
+        received nothing in return. General information only — confirming doesn't predict a refund.
       </p>
       <ul className="space-y-1">
         {rows.map((r) => (

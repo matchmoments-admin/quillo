@@ -494,6 +494,7 @@ export interface MovementCandidate {
   amount_aud_cents: number | null;
   direction: string | null;
   txn_date: string | null;
+  account_id: string | null;
   klass: MovementClass;
   reason: string;
 }

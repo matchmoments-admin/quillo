@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api } from "../api";
 import { Button, Card, money } from "./ui";
+import { useFeatures } from "../lib/features";
 import type { MovementCandidate } from "../types";
 
 const KLASS_LABEL: Record<string, string> = {
@@ -23,6 +24,10 @@ const KLASS_LABEL: Record<string, string> = {
 export function MovementSweepCard() {
   const qc = useQueryClient();
   const { data, isLoading } = useQuery({ queryKey: ["movements-sweep"], queryFn: api.sweepMovements });
+  // When loan_split is on, the loan-review lines are handled by their own LoanSplitCard step, so this
+  // card drops its read-only review box (no duplication).
+  const { has } = useFeatures();
+  const hasLoanSplit = has("loan_split");
   const ignorable = data?.ignorable ?? [];
   // Selection defaults to ALL candidates (pre-checked); recomputed when the candidate id set changes.
   const allIds = useMemo(() => ignorable.map((c) => c.id), [ignorable]);
@@ -45,7 +50,7 @@ export function MovementSweepCard() {
   });
 
   if (isLoading || !data) return null;
-  const review = data.property_loan_review ?? [];
+  const review = hasLoanSplit ? [] : data.property_loan_review ?? [];
   if (ignorable.length === 0 && review.length === 0) return null;
 
   const selected = allIds.filter((id) => !excluded.has(id));

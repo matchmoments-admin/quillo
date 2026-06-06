@@ -2,7 +2,9 @@ import { useEffect, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../api";
 import { Card } from "./ui";
+import { useFeatures } from "../lib/features";
 import { MovementSweepCard } from "./MovementSweepCard";
+import { LoanSplitCard } from "./LoanSplitCard";
 import { ClarifyCard } from "./ClarifyCard";
 import { SuggestedDeductions } from "./AccountantPassCard";
 
@@ -18,9 +20,11 @@ import { SuggestedDeductions } from "./AccountantPassCard";
  * cache the cards already populate. General information only.
  */
 
-type StepKey = "movements" | "clarify" | "suggestions";
+type StepKey = "movements" | "loanSplit" | "clarify" | "suggestions";
 
 export function SortFlow({ fy, hasAccountantPass }: { fy: number; hasAccountantPass: boolean }) {
+  const { has } = useFeatures();
+  const hasLoanSplit = has("loan_split");
   // Which step the user manually expanded. Null = follow the derived priority order.
   const [override, setOverride] = useState<StepKey | null>(null);
   // Drop a manual expansion when the active FY changes — a step the user opened for one year's data
@@ -39,15 +43,22 @@ export function SortFlow({ fy, hasAccountantPass }: { fy: number; hasAccountantP
     enabled: hasAccountantPass,
   });
 
-  const moveCount = (sweep.data?.ignorable.length ?? 0) + (sweep.data?.property_loan_review.length ?? 0);
+  const ignorableCount = sweep.data?.ignorable.length ?? 0;
+  const reviewCount = sweep.data?.property_loan_review.length ?? 0;
+  // When loan_split is on, the loan-review lines get their own actionable step; otherwise they stay
+  // in the movement sweep card's read-only review box, so they count toward the movements step.
+  const moveCount = ignorableCount + (hasLoanSplit ? 0 : reviewCount);
   const clarifyCount = clarify.data?.length ?? 0;
   const suggCount = suggestions.data?.length ?? 0;
 
-  // Step order = the order you work them. Movement sweep is always available; clarify + suggested
-  // deductions are gated behind the accountant_pass flag (same as before this refactor).
+  // Step order = the order you work them. Movement sweep is always available; the loan split (flag
+  // loan_split) and clarify + suggested deductions (flag accountant_pass) are gated.
   const steps: { key: StepKey; title: string; count: number; body: ReactNode }[] = [
     { key: "movements", title: "Clean up transfers & repayments", count: moveCount, body: <MovementSweepCard /> },
   ];
+  if (hasLoanSplit) {
+    steps.push({ key: "loanSplit", title: "Split loan interest", count: reviewCount, body: <LoanSplitCard /> });
+  }
   if (hasAccountantPass) {
     steps.push({ key: "clarify", title: "Clarify recurring patterns", count: clarifyCount, body: <ClarifyCard fy={fy} /> });
     steps.push({

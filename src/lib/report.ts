@@ -99,15 +99,37 @@ export interface Report {
   taxable_position_cents: number;      // total_income − total_deductions − depreciation (indicative)
 }
 
+/**
+ * The amount a captured expense row contributes to the indicative position. When `honorApportion`
+ * is on (flag `loan_split`), the CLAIMABLE (apportioned) portion wins — `deductible_amount_cents`,
+ * set e.g. by the guided loan interest/principal split — so only the deductible interest of a
+ * mortgage line counts, never the principal. This MUST stay in lockstep with the SUM(COALESCE(...))
+ * expressions in buildReport's byBucket + byPropertyRaw queries (golden: check-units.ts). A row with
+ * no apportioned amount falls back to gross, so flag-off (and every un-split row) is byte-identical.
+ */
+export function positionAmountCents(
+  row: { deductible_amount_cents?: number | null; amount_aud_cents?: number | null; amount_cents?: number | null },
+  honorApportion: boolean,
+): number {
+  if (honorApportion && row.deductible_amount_cents != null) return row.deductible_amount_cents;
+  return row.amount_aud_cents ?? row.amount_cents ?? 0;
+}
+
 export async function buildReport(env: Env, userId: string, startYear: number): Promise<Report> {
   const { start, end } = fyBounds(startYear);
+  // Flag `loan_split`: when on, the position counts the claimable (apportioned) portion
+  // (deductible_amount_cents) of a row instead of the gross — see positionAmountCents. The SUM
+  // expressions below MUST mirror that helper exactly. Off ⇒ byte-identical legacy totals.
+  const honorApportion = featureOn(env, "loan_split");
+  const amtExpr = honorApportion ? "COALESCE(deductible_amount_cents, amount_aud_cents, amount_cents)" : "COALESCE(amount_aud_cents, amount_cents)";
+  const amtExprT = honorApportion ? "COALESCE(t.deductible_amount_cents, t.amount_aud_cents, t.amount_cents)" : "COALESCE(t.amount_aud_cents, t.amount_cents)";
 
   // AUD totals (fall back to original when already AUD / pre-migration). Exclude duplicates.
   // Grouped by (bucket, ato_label, deductibility) so the deductibility-aware position can filter per
   // row; the legacy `by_bucket` shape is rebuilt by collapsing the deductibility dimension below.
   const byBucket = await env.DB.prepare(
     `SELECT bucket, ato_label, COALESCE(deductibility,'undetermined') AS deductibility, COUNT(*) AS n,
-            COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS total_cents,
+            COALESCE(SUM(${amtExpr}),0) AS total_cents,
             COALESCE(SUM(gst_cents),0) AS gst_cents
        FROM transactions
       WHERE user_id = ? AND txn_date >= ? AND txn_date <= ? AND bucket IS NOT NULL AND ${COUNTABLE}
@@ -136,7 +158,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
 
   const byPropertyRaw = await env.DB.prepare(
     `SELECT t.property_id, p.label, COALESCE(t.deductibility,'undetermined') AS deductibility, COUNT(*) AS n,
-            COALESCE(SUM(COALESCE(t.amount_aud_cents, t.amount_cents)),0) AS total_cents
+            COALESCE(SUM(${amtExprT}),0) AS total_cents
        FROM transactions t LEFT JOIN properties p ON p.id = t.property_id
       WHERE t.user_id = ? AND t.txn_date >= ? AND t.txn_date <= ? AND t.property_id IS NOT NULL AND ${COUNTABLE.replace(/\b(status|kind|matched_txn_id|direction)\b/g, "t.$1")}
       GROUP BY t.property_id, deductibility`,

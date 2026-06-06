@@ -129,6 +129,20 @@ CREATE TABLE IF NOT EXISTS accounts (
 );
 CREATE INDEX IF NOT EXISTS idx_acct_user ON accounts(user_id, active);
 
+-- 0027: links a loan account to the property it funds, with the deductible-interest %. Set-up data
+-- only — pre-fills the Phase 5 interest/principal split; inert until that step reads it.
+CREATE TABLE IF NOT EXISTS loans_properties (
+  id                      TEXT PRIMARY KEY,
+  user_id                 TEXT NOT NULL,
+  loan_account_id         TEXT NOT NULL,            -- accounts.id (type='loan')
+  property_id             TEXT NOT NULL,            -- properties.id
+  deductible_interest_pct REAL NOT NULL DEFAULT 0,  -- 0-100; pre-fill default for the Phase 5 split
+  created_at              TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (user_id, loan_account_id, property_id)
+);
+CREATE INDEX IF NOT EXISTS idx_loanprop_account ON loans_properties(user_id, loan_account_id);
+CREATE INDEX IF NOT EXISTS idx_loanprop_property ON loans_properties(user_id, property_id);
+
 -- ── Statement import batches (CSV/PDF) ────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS statements (
   id             TEXT PRIMARY KEY,

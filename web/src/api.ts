@@ -128,6 +128,13 @@ export const api = {
   updateAccount: (id: string, b: Partial<Account>) => send<{ ok: boolean }>("PUT", `/api/accounts/${id}`, b),
   deleteAccount: (id: string) => send<{ ok: boolean }>("DELETE", `/api/accounts/${id}`),
   setAccountSource: (id: string, source: string) => post<{ ok: boolean }>(`/api/accounts/${id}/source`, { source }),
+
+  // Loan → property links (Set-up; pre-fills the Phase 5 interest split)
+  addLoanProperty: (b: { loan_account_id: string; property_id: string; deductible_interest_pct?: number }) =>
+    post<{ id: string }>("/api/loans-properties", b),
+  updateLoanProperty: (id: string, b: { deductible_interest_pct?: number }) =>
+    send<{ ok: boolean }>("PUT", `/api/loans-properties/${id}`, b),
+  deleteLoanProperty: (id: string) => send<{ ok: boolean }>("DELETE", `/api/loans-properties/${id}`),
   syncQboAccounts: () => post<{ synced: number }>("/api/qbo/sync-accounts"),
   parseStatement: async (file: File, accountId: string): Promise<StatementParse> => {
     const fd = new FormData();

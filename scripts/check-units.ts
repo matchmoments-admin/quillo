@@ -658,7 +658,7 @@ console.log("readiness");
     ...p,
   });
   const mkSituation = (p: Partial<Situation> = {}): Situation => ({
-    profile: {} as Situation["profile"], persons: [], properties: [], entities: [], rules: [], ...p,
+    profile: {} as Situation["profile"], persons: [], properties: [], entities: [], rules: [], loans_properties: [], ...p,
   });
   const noSignals = (p: Partial<FilingReadinessSignals> = {}): FilingReadinessSignals => ({
     unknownBucketCents: 0, unknownBucketN: 0, lowConfidenceN: 0, needsReviewIncomeN: 0, needsReviewAssetsN: 0,
@@ -781,7 +781,7 @@ console.log("deductibility (deny-by-default)");
     fy: "2025-26", income: { by_type: [], gross_cents: 0, withholding_cents: 0, franking_credit_cents: 0, foreign_tax_paid_cents: 0 },
     deduction_breakdown: bd, per_property: [], depreciation_cents: 0, undated: { n: 0, total_cents: 0 }, gst_credits_cents: 0, abn: null, taxable_position_cents: 0,
   } as unknown as Report);
-  const mkS = (): Situation => ({ profile: {}, persons: [], properties: [], entities: [], rules: [] } as unknown as Situation);
+  const mkS = (): Situation => ({ profile: {}, persons: [], properties: [], entities: [], rules: [], loans_properties: [] } as unknown as Situation);
   const mkSig = (): FilingReadinessSignals => ({
     unknownBucketCents: 0, unknownBucketN: 0, lowConfidenceN: 0, needsReviewIncomeN: 0, needsReviewAssetsN: 0,
     hasDividendStatementDoc: true, rentalPropsMissingSummary: [], disposedAssetsN: 0, instantAssetWriteOffCentsThisFy: null, instantAssetWriteOffCentsPrevFy: null,

@@ -1,8 +1,10 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api";
 import { useActiveFy } from "../lib/activeFy";
 import { Panel, PanelHead, KpiCard, Meter, Pill, Spinner, Button, money, BUCKET_LABEL, InfoTip } from "../components/ui";
+import { FindAndAttachSheet } from "../components/FindAndAttachSheet";
 import type { ChecklistItem } from "../types";
 
 const FEATURE_LABEL: Record<string, string> = {
@@ -263,26 +265,35 @@ function ChecklistCard() {
 function ClaimsCard() {
   const qc = useQueryClient();
   const { data } = useQuery({ queryKey: ["claims"], queryFn: () => api.claims() });
+  const [evidenceFor, setEvidenceFor] = useState<string | null>(null);
   const setStatus = useMutation({
     mutationFn: ({ id, status }: { id: string; status: string }) => api.setClaimStatus(id, status),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["claims"] }),
   });
-  const open = (data ?? []).filter((c) => c.status === "suggested");
+  // Include 'capturing' (evidence being attached) so a claim doesn't vanish the moment you attach.
+  const open = (data ?? []).filter((c) => c.status === "suggested" || c.status === "capturing");
   if (!open.length) return null;
   return (
     <Panel>
       <PanelHead title="Claim guidance" sub={`${open.length}`} />
       <div className="divide-y divide-line">
         {open.slice(0, 6).map((c) => (
-          <div key={c.id} className="flex items-start justify-between gap-3 py-3 text-sm">
-            <span>
-              {c.suggestion}
-              {c.claim_type ? <span className="ml-2"><Pill tone="info">{c.claim_type}</Pill></span> : null}
-            </span>
-            <div className="flex flex-none gap-2 text-xs">
-              <button className="text-safe hover:underline" onClick={() => setStatus.mutate({ id: c.id, status: "accepted" })}>keep</button>
-              <button className="text-muted hover:underline" onClick={() => setStatus.mutate({ id: c.id, status: "dismissed" })}>dismiss</button>
+          <div key={c.id} className="py-3 text-sm">
+            <div className="flex items-start justify-between gap-3">
+              <span>
+                {c.suggestion}
+                {c.claim_type ? <span className="ml-2"><Pill tone="info">{c.claim_type}</Pill></span> : null}
+                {c.status === "capturing" ? <span className="ml-2"><Pill tone="info">capturing</Pill></span> : null}
+              </span>
+              <div className="flex flex-none gap-2 text-xs">
+                <button className="text-ink hover:underline" onClick={() => setEvidenceFor(evidenceFor === c.id ? null : c.id)}>
+                  {evidenceFor === c.id ? "hide" : "find evidence"}
+                </button>
+                <button className="text-safe hover:underline" onClick={() => setStatus.mutate({ id: c.id, status: "accepted" })}>keep</button>
+                <button className="text-muted hover:underline" onClick={() => setStatus.mutate({ id: c.id, status: "dismissed" })}>dismiss</button>
+              </div>
             </div>
+            {evidenceFor === c.id && <FindAndAttachSheet claimId={c.id} />}
           </div>
         ))}
       </div>

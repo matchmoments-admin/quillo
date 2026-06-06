@@ -679,6 +679,27 @@ export async function handleApi(
       if (!Array.isArray(rules)) return json({ error: "rules must be an array" }, 400);
       return json(await stub.addClaimabilityRules(uid, rules));
     }
+    // Phase 3 — auto-match evidence to a claim, then attach/detach.
+    // GET  /api/claim-review/match?claimId=  → scored candidate transactions + already-linked ids
+    // POST /api/claim-review/attach { claimId, txnId } · POST /api/claim-review/detach { claimId, txnId }
+    if (m === "GET" && id === "match") {
+      const claimId = url.searchParams.get("claimId");
+      if (!claimId) return json({ error: "claimId required" }, 400);
+      try {
+        return json(await stub.matchClaim(uid, claimId));
+      } catch (e) {
+        return json({ error: (e as Error).message }, 400);
+      }
+    }
+    if (m === "POST" && (id === "attach" || id === "detach")) {
+      const { claimId, txnId } = (await req.json().catch(() => ({}))) as { claimId?: unknown; txnId?: unknown };
+      if (typeof claimId !== "string" || typeof txnId !== "string") return json({ error: "claimId and txnId required" }, 400);
+      try {
+        return json(id === "attach" ? await stub.attachClaim(uid, claimId, txnId) : await stub.detachClaim(uid, claimId, txnId));
+      } catch (e) {
+        return json({ error: (e as Error).message }, 400);
+      }
+    }
   }
 
   // ── Stage A: deterministic non-spend movement clean-up (no LLM, no consent) ─

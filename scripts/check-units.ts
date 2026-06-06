@@ -4,6 +4,7 @@
 // regression guards for the rules we keep re-learning. Run: npm run test:units
 import { reconcileStatement, deriveBalances, isTransferLike, classifyMovement, movementTreatment, signedCents, lineFingerprint, type StatementLine } from "../src/lib/statements";
 import { groupKey, groupForClarify, rulePatternForStem } from "../src/lib/clarify";
+import { scoreClaimMatches } from "../src/lib/claim-match";
 import { batchStatementStatus, isStaleBatch, BATCH_MAX_AGE_MS } from "../src/lib/batch";
 import { extractSituationDraft, parseBatchMessage, mapBatchItems, type BatchItem } from "../src/extract";
 import type { LLM } from "../src/llm";
@@ -187,6 +188,30 @@ console.log("clarify.groupForClarify");
   // Direction-aware suggestions.
   check("credit group suggests rental income with property pick", groups[0]!.suggestions.some((s) => s.kind === "income_property" && s.needs_property));
   check("debit group suggests private (payg) + ignore", big[0]!.suggestions.some((s) => s.kind === "bucket" && s.bucket === "payg") && big[0]!.suggestions.some((s) => s.kind === "ignore"));
+}
+
+// ── Phase 3 claim auto-matcher: scoreClaimMatches ─────────────────────────────
+console.log("scoreClaimMatches");
+{
+  const rule = { scope_type: "bucket", scope_value: "payg", merchant_hint: "asic,union", ato_label: "union-fees", claim_type: "immediate", general_info_note: "" };
+  const txn = (over: Partial<{ id: string; merchant: string | null; bucket: string | null; ato_label: string | null; direction: string | null; amount_cents: number | null; amount_aud_cents: number | null; txn_date: string | null }>) =>
+    ({ id: "t", merchant: null, bucket: null, ato_label: null, direction: "debit", amount_cents: 1000, amount_aud_cents: 1000, txn_date: null, ...over });
+  // Full match (merchant + bucket + label) → all three reasons; debit only.
+  const full = scoreClaimMatches(rule, [txn({ id: "a", merchant: "ASIC Annual Fee", bucket: "payg", ato_label: "union-fees" })]);
+  check("full match surfaces with all three reasons", full.length === 1 && full[0]!.reasons.length === 3);
+  // Bucket-only (0.35) clears the 0.30 floor; merchant-only (0.45) too.
+  check("bucket-only match (0.35) clears the floor", scoreClaimMatches(rule, [txn({ bucket: "payg" })]).length === 1);
+  check("merchant-only match (0.45) clears the floor", scoreClaimMatches(rule, [txn({ merchant: "Union Dues NSW" })]).length === 1);
+  // Label-only (0.25) is below the 0.30 floor → dropped.
+  check("label-only (0.25) is below the floor → dropped", scoreClaimMatches(rule, [txn({ ato_label: "union-fees" })]).length === 0);
+  // Credits are never claim evidence.
+  check("a credit is never a claim candidate", scoreClaimMatches(rule, [txn({ merchant: "ASIC", bucket: "payg", direction: "credit" })]).length === 0);
+  // An un-hinted rule earns no merchant points.
+  const noHint = { ...rule, merchant_hint: null };
+  check("un-hinted rule: a non-bucket txn scores 0 → dropped", scoreClaimMatches(noHint, [txn({ merchant: "ASIC" })]).length === 0);
+  // Ordering: higher score first.
+  const ranked = scoreClaimMatches(rule, [txn({ id: "weak", bucket: "payg" }), txn({ id: "strong", merchant: "ASIC", bucket: "payg", ato_label: "union-fees" })]);
+  check("candidates ranked by score desc", ranked[0]!.id === "strong");
 }
 
 // ── signedCents ──────────────────────────────────────────────────────────────

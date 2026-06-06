@@ -744,6 +744,10 @@ console.log("deductibility (deny-by-default)");
   check("DGR donation → suggested_deductible", verdictForTxn("payg", "payg:donation", "RSPCA donation", section).deductibility === "suggested_deductible");
   check("a SUGGESTION is excluded from the position until confirmed (B1)", deductionGroupForRow("payg", "suggested_deductible", true) === "excluded" && deductionGroupForRow("payg", "suggested_deductible", false) === "excluded");
   check("deny still wins over suggest (groceries stay denied)", verdictForTxn("payg", "payg:groceries", "Coles", section).deductibility === "likely_not");
+  // Phase 3 deny-list precision: flowers + swimwear are private spend → likely_not (belt-and-suspenders;
+  // they were already excluded as 'undetermined', this just stamps them clearly and keeps them out of suggestions).
+  check("florist → likely_not", verdictForTxn("payg", "payg:other", "Flawless Flowers florist", section).deductibility === "likely_not");
+  check("swimwear → likely_not", verdictForTxn("payg", "payg:other", "Cupshe swimwear", section).deductibility === "likely_not");
   check("unclassified payg → undetermined (deny-by-default excludes it)", verdictForTxn("payg", "payg:other", "Mystery Shop", section).deductibility === "undetermined");
   check("non-payg bucket → undetermined (handled by bucket)", verdictForTxn("company", "company:software", "Anthropic", section).deductibility === "undetermined");
   check("asset → undetermined (handled by bucket)", verdictForTxn("asset", "asset:furniture", "Officeworks", section).deductibility === "undetermined");

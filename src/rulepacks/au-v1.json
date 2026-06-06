@@ -100,7 +100,8 @@
       { "match": "meals-entertainment,meals and entertainment,entertainment,dining,restaurant,cafe,coffee,takeaway,uber eats,deliveroo,doordash,menulog,bar,pub,alcohol,liquor", "note": "Meals and entertainment are generally not deductible (Division 32 / s8-1(2)(b)), even with a work connection, unless a specific exception applies." },
       { "match": "groceries-meals,meals-groceries,meals-personal,meals,lunch,breakfast,dinner", "note": "The cost of your ordinary daily meals is a private expense and generally not deductible." },
       { "match": "health-fitness,fitness,gym,health,wellbeing,wellness,supplements", "note": "Gym, fitness and general health costs are private and generally not deductible (narrow occupation exceptions exist — confirm with a registered tax agent)." },
-      { "match": "clothing,clothes,fashion,apparel,shoes,footwear", "note": "Conventional everyday clothing is private and not deductible (TR 97/12). Only compulsory/occupation-specific or protective clothing is claimable." }
+      { "match": "clothing,clothes,fashion,apparel,shoes,footwear,swimwear,swimsuit,beachwear", "note": "Conventional everyday clothing (including swimwear) is private and not deductible (TR 97/12). Only compulsory/occupation-specific or protective clothing is claimable." },
+      { "match": "florist,floral,bouquet,flowers", "note": "Flowers are a private/personal expense and generally not deductible (s8-1(2)(b))." }
     ],
     "apportion": [
       { "match": "home office,home-office,wfh,electricity,power,energy,gas,internet,broadband,nbn,phone,mobile,stationery,printer ink,consumables,utilities", "note": "Additional running costs of working from home can be claimed at the 70c/hr fixed rate (PCG 2023/1) or the actual-cost method for the hours you genuinely work from home — the fixed rate already bundles energy, internet, phone and stationery, so don't also claim those items separately. Needs your hours before it can be claimed." },

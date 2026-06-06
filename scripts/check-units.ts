@@ -190,6 +190,13 @@ console.log("clarify.groupForClarify");
   // Direction-aware suggestions.
   check("credit group suggests rental income with property pick", groups[0]!.suggestions.some((s) => s.kind === "income_property" && s.needs_property));
   check("debit group suggests private (payg) + ignore", big[0]!.suggestions.some((s) => s.kind === "bucket" && s.bucket === "payg") && big[0]!.suggestions.some((s) => s.kind === "ignore"));
+  // Phase 6d — own-home rent routing: a tenant (renting_residence) sees a "rent I pay (private)" answer
+  // on a rent-like debit group; without a tenant home, or on a non-rent group, it isn't offered.
+  const rentRows = [mk("ANZ CARDS rent payment", "debit", 250000), mk("ANZ CARDS rent payment", "debit", 250000), mk("ANZ CARDS rent payment", "debit", 250000)];
+  const rentTenant = groupForClarify(rentRows, undefined, { hasTenantHome: true });
+  check("tenant + rent group → 'rent I pay (private)' offered", rentTenant[0]!.suggestions.some((s) => /rent I pay/i.test(s.label) && s.bucket === "payg" && s.ato_label === "personal-spend"));
+  check("non-tenant + rent group → no rent-private suggestion", !groupForClarify(rentRows, undefined, { hasTenantHome: false })[0]!.suggestions.some((s) => /rent I pay/i.test(s.label)));
+  check("tenant + non-rent group → no rent-private suggestion", !groupForClarify([mk("Coles 1234", "debit", 30000)], undefined, { hasTenantHome: true })[0]!.suggestions.some((s) => /rent I pay/i.test(s.label)));
 }
 
 // ── Phase 3 claim auto-matcher: scoreClaimMatches ─────────────────────────────

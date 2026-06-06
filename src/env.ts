@@ -102,6 +102,9 @@ export interface TaxAgentRpc {
   reviewClaims(userId: string, startYear: number): Promise<import("./agent").ClaimReview>;
   sweepMovements(userId: string): Promise<import("./agent").MovementSweep>;
   applyMovementSweep(userId: string, txnIds: string[]): Promise<{ ignored: number; skipped: number }>;
+  applyCorrectionBatch(userId: string, txnIds: string[], edits: { field: string; value: string }[]): Promise<{ batch_id: string; updated: number; failures: { txnId: string; error: string }[] }>;
+  undoCorrectionBatch(userId: string, batchId: string): Promise<{ reverted: number }>;
+  deleteTransactionBatch(userId: string, txnIds: string[]): Promise<{ deleted: number }>;
   draftOccupationRules(userId: string, occupation: string): Promise<import("./extract").OccupationRulesDraft>;
   addClaimabilityRules(userId: string, rules: { scope_type: string; scope_value: string; merchant_hint?: string | null; ato_label?: string | null; claim_type: string; default_method?: string | null; general_info_note: string }[]): Promise<{ inserted: number; ids: string[] }>;
 }

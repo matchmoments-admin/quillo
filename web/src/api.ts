@@ -1,4 +1,4 @@
-import type { Txn, TxnDetail, Situation, SituationDraft, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse, UsageData, StatementInfo, IncomeRow, DocRow, AssetRow, ScheduleRow, ChecklistItem, ClaimSuggestion, FilingReadiness, ReviewSummary, Progress, AdminTenant, AdminOverview, ClaimReview, OccupationRulesDraft, OccupationRuleCandidate, MovementSweep } from "./types";
+import type { Txn, TxnDetail, Situation, SituationDraft, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse, UsageData, StatementInfo, IncomeRow, DocRow, AssetRow, ScheduleRow, ChecklistItem, ClaimSuggestion, FilingReadiness, ReviewSummary, Progress, AdminTenant, AdminOverview, ClaimReview, OccupationRulesDraft, OccupationRuleCandidate, MovementSweep, BatchResult } from "./types";
 
 // Clerk session token getter, wired from <TokenBridge> inside ClerkProvider (main.tsx).
 // Clerk tokens are short-lived, so we fetch a fresh one per request (getToken caches/refreshes).
@@ -239,6 +239,11 @@ export const api = {
   // Stage A — deterministic non-spend movement clean-up (no LLM, no consent)
   sweepMovements: () => get<MovementSweep>("/api/movements/sweep"),
   applyMovementSweep: (ids: string[]) => post<{ ignored: number; skipped: number }>("/api/movements/apply", { ids }),
+
+  // Phase 2 — batch correction + undo + bulk delete
+  correctBatch: (txnIds: string[], edits: { field: string; value: string }[]) => post<BatchResult>("/api/correct/batch", { txnIds, edits }),
+  undoBatch: (batchId: string) => post<{ reverted: number }>("/api/correct/undo", { batchId }),
+  deleteTxnBatch: (ids: string[]) => post<{ deleted: number }>("/api/transactions/batch-delete", { ids }),
 
   // Admin (founder only — server enforces the 'admin' role)
   adminOverview: () => get<AdminOverview>("/api/admin/overview"),

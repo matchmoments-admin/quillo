@@ -494,3 +494,10 @@ export interface MovementSweep {
   property_loan_review: MovementCandidate[];
   summary: { ignorable_n: number; ignorable_total_cents: number; review_n: number };
 }
+
+// Phase 2 — batch correction result
+export interface BatchResult {
+  batch_id: string;
+  updated: number;
+  failures: { txnId: string; error: string }[];
+}

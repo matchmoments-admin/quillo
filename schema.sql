@@ -153,13 +153,15 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_stmt_filehash ON statements(user_id, file_
 
 -- ── User overrides => training signal for self-improvement ────────────────────
 CREATE TABLE IF NOT EXISTS corrections (
-  id         TEXT PRIMARY KEY,
-  user_id    TEXT NOT NULL,
-  txn_id     TEXT NOT NULL,
-  field      TEXT NOT NULL,              -- bucket|ato_label|amount_cents|merchant (allowlisted in code)
-  old_value  TEXT,
-  new_value  TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  id          TEXT PRIMARY KEY,
+  user_id     TEXT NOT NULL,
+  txn_id      TEXT NOT NULL,
+  field       TEXT NOT NULL,              -- bucket|ato_label|amount_cents|merchant (allowlisted in code)
+  old_value   TEXT,
+  new_value   TEXT,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  batch_id    TEXT,                       -- 0022: groups the per-txn corrections of one bulk action; NULL = standalone
+  reverted_at TEXT                        -- 0022: set when an undo writes old_value back; NULL = still applied
 );
 
 -- ── Full decision trace (inputs -> model output) for auditability + evals ─────
@@ -307,6 +309,7 @@ CREATE TABLE IF NOT EXISTS user_rules (
 
 CREATE INDEX IF NOT EXISTS idx_txn_user   ON transactions(user_id, status);
 CREATE INDEX IF NOT EXISTS idx_corr_user  ON corrections(user_id);
+CREATE INDEX IF NOT EXISTS idx_corr_batch ON corrections(user_id, batch_id);
 CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_log(user_id, seq);
 CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_prop_user  ON properties(user_id);

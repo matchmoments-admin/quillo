@@ -84,8 +84,15 @@ export async function handleApi(
     return json({ transactions: rows });
   }
 
+  // POST /api/transactions/batch-delete  { ids } — bulk hard-delete (audited per row via the DO).
+  if (resource === "transactions" && id === "batch-delete" && m === "POST") {
+    const { ids } = (await req.json().catch(() => ({}))) as { ids?: unknown };
+    if (!Array.isArray(ids) || ids.some((x) => typeof x !== "string")) return json({ error: "ids must be an array of strings" }, 400);
+    return json(await stub.deleteTransactionBatch(uid, ids as string[]));
+  }
+
   // DELETE /api/transactions/:id — hard-delete (e.g. a duplicate), audited via the DO.
-  if (resource === "transactions" && id && m === "DELETE") {
+  if (resource === "transactions" && id && id !== "batch-delete" && m === "DELETE") {
     await stub.deleteTransaction(uid, id);
     return json({ ok: true });
   }
@@ -224,8 +231,27 @@ export async function handleApi(
     return json(await stub.setUiState(uid, patch ?? {}));
   }
 
+  // POST /api/correct/batch { txnIds, edits } — apply one set of edits to many txns (undoable).
+  // POST /api/correct/undo  { batchId }        — revert a batch correction as a unit.
+  if (resource === "correct" && id === "batch" && m === "POST") {
+    const { txnIds, edits } = (await req.json().catch(() => ({}))) as { txnIds?: unknown; edits?: unknown };
+    if (!Array.isArray(txnIds) || txnIds.some((x) => typeof x !== "string")) return json({ error: "txnIds must be an array of strings" }, 400);
+    if (!Array.isArray(edits) || edits.some((e) => typeof (e as { field?: unknown })?.field !== "string" || typeof (e as { value?: unknown })?.value !== "string"))
+      return json({ error: "edits must be an array of {field, value}" }, 400);
+    try {
+      return json(await stub.applyCorrectionBatch(uid, txnIds as string[], edits as { field: string; value: string }[]));
+    } catch (e) {
+      return json({ error: (e as Error).message }, 400);
+    }
+  }
+  if (resource === "correct" && id === "undo" && m === "POST") {
+    const { batchId } = (await req.json().catch(() => ({}))) as { batchId?: unknown };
+    if (typeof batchId !== "string" || !batchId) return json({ error: "batchId required" }, 400);
+    return json(await stub.undoCorrectionBatch(uid, batchId));
+  }
+
   // POST /api/correct  { txnId, field, value } — audited write via the DO.
-  if (resource === "correct" && m === "POST") {
+  if (resource === "correct" && !id && m === "POST") {
     const { txnId, field, value } = (await req.json()) as { txnId: string; field: string; value: string };
     await stub.applyCorrection(uid, txnId, field, value);
     return json({ ok: true });

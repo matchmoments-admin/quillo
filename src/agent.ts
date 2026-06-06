@@ -1636,15 +1636,31 @@ export class TaxAgent extends Agent<Env> {
       const guard = opts?.reResolve
         ? "deductibility NOT IN ('confirmed_deductible','confirmed_not')"
         : "(deductibility IS NULL OR deductibility = 'undetermined')";
-      const idFilter = opts?.txnIds?.length ? ` AND id IN (${opts.txnIds.map(() => "?").join(",")})` : "";
-      const rows = await this.env.DB.prepare(
-        `SELECT id, bucket, ato_label, merchant FROM transactions
-          WHERE user_id = ? AND bucket = 'payg' AND ${guard}${idFilter}`,
-      )
-        .bind(userId, ...(opts?.txnIds ?? []))
-        .all<{ id: string; bucket: string; ato_label: string | null; merchant: string | null }>();
+      // Read candidate rows. When scoped to specific ids, CHUNK the IN-list: D1 caps bound params at
+      // ~100/query, so a bulk re-bucket of hundreds of ids (batch correction) would otherwise throw
+      // here and silently skip the re-stamp — leaving the position computed off stale deductibility.
+      const rows: { id: string; bucket: string; ato_label: string | null; merchant: string | null }[] = [];
+      if (opts?.txnIds?.length) {
+        for (let i = 0; i < opts.txnIds.length; i += 90) {
+          const chunk = opts.txnIds.slice(i, i + 90);
+          const r = await this.env.DB.prepare(
+            `SELECT id, bucket, ato_label, merchant FROM transactions
+              WHERE user_id = ? AND bucket = 'payg' AND ${guard} AND id IN (${chunk.map(() => "?").join(",")})`,
+          )
+            .bind(userId, ...chunk)
+            .all<{ id: string; bucket: string; ato_label: string | null; merchant: string | null }>();
+          rows.push(...(r.results ?? []));
+        }
+      } else {
+        const r = await this.env.DB.prepare(
+          `SELECT id, bucket, ato_label, merchant FROM transactions WHERE user_id = ? AND bucket = 'payg' AND ${guard}`,
+        )
+          .bind(userId)
+          .all<{ id: string; bucket: string; ato_label: string | null; merchant: string | null }>();
+        rows.push(...(r.results ?? []));
+      }
       const updates: D1PreparedStatement[] = [];
-      for (const r of rows.results ?? []) {
+      for (const r of rows) {
         const v = verdictForTxn(r.bucket, r.ato_label, r.merchant, section);
         if (v.deductibility === "undetermined") continue; // nothing positively classified → leave as-is
         // deductible_amount_cents: 0 for a denied row (explicitly $0 claimable); NULL otherwise so the
@@ -2739,6 +2755,145 @@ export class TaxAgent extends Agent<Env> {
     await this.audit(userId, "correction", JSON.stringify({ txnId, field, newValue }));
   }
 
+  // ── 3b. BATCH CORRECTION: one set of edits applied to many txns (bulk bar / clarify group) ──
+  /**
+   * Apply the SAME edit(s) to many transactions in one audited, undoable action. Replicates every
+   * side effect of applyCorrection (status='corrected', re-stamp deductibility on bucket/ato_label/
+   * merchant change, link assets, promote repeated corrections into eval cases / auto-rules) but
+   * batched: the deductibility re-stamp and asset-link run ONCE over all changed ids. Each per-txn
+   * correction row shares a `batch_id` so undoCorrectionBatch can revert the action as a unit.
+   * Validates every edit up front — a bad field/value rejects the whole batch. Clamps to 500.
+   */
+  async applyCorrectionBatch(
+    userId: string,
+    txnIds: string[],
+    edits: { field: string; value: string }[],
+  ): Promise<{ batch_id: string; updated: number; failures: { txnId: string; error: string }[] }> {
+    if (!Array.isArray(txnIds) || txnIds.length === 0 || !Array.isArray(edits) || edits.length === 0)
+      return { batch_id: "", updated: 0, failures: [] };
+    // Validate + normalise all edits up front (mirrors applyCorrection's per-field hygiene).
+    const norm: { field: string; column: string; value: string }[] = [];
+    for (const e of edits) {
+      const column = CORRECTABLE[e.field];
+      if (!column) throw new Error(`field not correctable: ${e.field}`);
+      let value = e.value;
+      if (e.field === "bucket" && !isBucket(value)) throw new Error(`invalid bucket: ${value}`);
+      if (e.field === "ato_label") {
+        const clean = normalizeAtoLabel(value);
+        if (!clean) throw new Error(`invalid ato_label: ${value}`);
+        value = clean;
+      }
+      norm.push({ field: e.field, column, value });
+    }
+    const ids = txnIds.slice(0, 500);
+    const batchId = crypto.randomUUID();
+    const selectCols = [...new Set(norm.map((n) => n.column))];
+    const setClause = norm.map((n) => `${n.column} = ?`).join(", ");
+    const changedIds: string[] = [];
+    const failures: { txnId: string; error: string }[] = [];
+    let anyAsset = false;
+    let reStampNeeded = false;
+    // Build per-txn statement groups; flush in chunks WITHOUT splitting a txn's group across batches.
+    let pending: D1PreparedStatement[] = [];
+    const flush = async () => {
+      if (pending.length) {
+        await this.env.DB.batch(pending);
+        pending = [];
+      }
+    };
+    for (const txnId of ids) {
+      const row = await this.env.DB.prepare(
+        `SELECT ${selectCols.join(", ")} FROM transactions WHERE id = ? AND user_id = ?`,
+      )
+        .bind(txnId, userId)
+        .first<Record<string, string | null>>();
+      if (!row) {
+        failures.push({ txnId, error: "not found" });
+        continue;
+      }
+      const group: D1PreparedStatement[] = [
+        this.env.DB.prepare(`UPDATE transactions SET ${setClause}, status='corrected' WHERE id = ? AND user_id = ?`).bind(...norm.map((n) => n.value), txnId, userId),
+      ];
+      for (const n of norm) {
+        group.push(
+          this.env.DB.prepare(
+            `INSERT INTO corrections (id, user_id, txn_id, field, old_value, new_value, batch_id) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          ).bind(crypto.randomUUID(), userId, txnId, n.field, row[n.column] ?? null, n.value, batchId),
+        );
+        if (n.field === "bucket" && n.value === "asset") anyAsset = true;
+        if (n.field === "bucket" || n.field === "ato_label" || n.field === "merchant") reStampNeeded = true;
+      }
+      pending.push(...group);
+      changedIds.push(txnId);
+      if (pending.length >= 80) await flush();
+    }
+    await flush();
+
+    // Side effects ONCE over all changed ids (mirrors applyCorrection, batched).
+    if (anyAsset) await this.linkAssetsForUser(userId);
+    if (reStampNeeded && changedIds.length) await this.stampDeductibility(userId, { txnIds: changedIds, reResolve: true });
+    // Best-effort: eval-case promotion is a training side effect — a failure here must never reject
+    // an already-committed correction batch (which the API would surface as a misleading error).
+    for (const txnId of changedIds) {
+      try {
+        await this.promoteToEvalCase(userId, txnId);
+      } catch (e) {
+        await this.audit(userId, "promote_eval_error", JSON.stringify({ txnId, error: (e as Error).message }));
+      }
+    }
+    await this.audit(userId, "correction_batch", JSON.stringify({ batch_id: batchId, updated: changedIds.length, edits: norm.map((n) => n.field), failures: failures.length }));
+    return { batch_id: batchId, updated: changedIds.length, failures };
+  }
+
+  /**
+   * Undo a batch correction as a unit: write each per-txn old_value back to its column and stamp
+   * reverted_at, for the corrections of `batchId` that are still applied (reverted_at IS NULL).
+   * Re-stamps deductibility on the restored rows. Idempotent (already-reverted rows are skipped).
+   */
+  async undoCorrectionBatch(userId: string, batchId: string): Promise<{ reverted: number }> {
+    if (!batchId) return { reverted: 0 };
+    const corr = await this.env.DB.prepare(
+      `SELECT id, txn_id, field, old_value, new_value FROM corrections
+        WHERE user_id = ? AND batch_id = ? AND reverted_at IS NULL ORDER BY created_at DESC`,
+    )
+      .bind(userId, batchId)
+      .all<{ id: string; txn_id: string; field: string; old_value: string | null; new_value: string | null }>();
+    const rows = corr.results ?? [];
+    if (!rows.length) return { reverted: 0 };
+    const changed = new Set<string>();
+    const stmts: D1PreparedStatement[] = [];
+    for (const c of rows) {
+      const column = CORRECTABLE[c.field];
+      if (!column) continue; // a non-correctable field never enters a batch, but guard anyway
+      // Last-writer guard: only restore old_value if the column STILL holds this batch's new_value.
+      // If a later correction overwrote it, undoing this batch must not clobber that newer value.
+      stmts.push(
+        this.env.DB.prepare(`UPDATE transactions SET ${column} = ? WHERE id = ? AND user_id = ? AND COALESCE(${column},'') = COALESCE(?,'')`).bind(c.old_value, c.txn_id, userId, c.new_value),
+        this.env.DB.prepare(`UPDATE corrections SET reverted_at = datetime('now') WHERE id = ? AND user_id = ?`).bind(c.id, userId),
+      );
+      changed.add(c.txn_id);
+    }
+    for (let i = 0; i < stmts.length; i += 50) await this.env.DB.batch(stmts.slice(i, i + 50));
+    if (changed.size) await this.stampDeductibility(userId, { txnIds: [...changed], reResolve: true });
+    await this.audit(userId, "correction_batch_undo", JSON.stringify({ batch_id: batchId, reverted: changed.size }));
+    return { reverted: changed.size };
+  }
+
+  /** Hard-delete many transactions (bulk bar). Tolerant of missing ids; reuses deleteTransaction's R2 + audit path per row. */
+  async deleteTransactionBatch(userId: string, txnIds: string[]): Promise<{ deleted: number }> {
+    if (!Array.isArray(txnIds) || txnIds.length === 0) return { deleted: 0 };
+    let deleted = 0;
+    for (const txnId of txnIds.slice(0, 500)) {
+      try {
+        await this.deleteTransaction(userId, txnId);
+        deleted++;
+      } catch {
+        /* missing / already gone — skip */
+      }
+    }
+    return { deleted };
+  }
+
   // ── STAGE A: deterministic non-spend MOVEMENT clean-up (no LLM, no consent) ──
   /**
    * Scan the tenant's captured bank lines for non-spend movements (internal transfers, card
@@ -3298,9 +3453,13 @@ export class TaxAgent extends Agent<Env> {
   }
 
   private async promoteToEvalCase(userId: string, txnId: string): Promise<void> {
-    // Promote to an eval case once a txn has accumulated repeated corrections.
+    // Promote to an eval case once a txn has accumulated repeated corrections from SEPARATE ACTIONS.
+    // Count DISTINCT actions, not rows: a single batch correction shares one batch_id and a single
+    // multi-field batch must NOT trip the "corrected twice → learn" moat from one click. Standalone
+    // corrections (NULL batch_id) each count via their own id. Reverted corrections don't count.
     const count = await this.env.DB.prepare(
-      `SELECT COUNT(*) AS n FROM corrections WHERE user_id = ? AND txn_id = ?`,
+      `SELECT COUNT(DISTINCT COALESCE(batch_id, id)) AS n FROM corrections
+        WHERE user_id = ? AND txn_id = ? AND reverted_at IS NULL`,
     )
       .bind(userId, txnId)
       .first<{ n: number }>();
@@ -3323,7 +3482,7 @@ export class TaxAgent extends Agent<Env> {
         userId,
         JSON.stringify({ merchant: txn.merchant, amount_cents: txn.amount_cents, gst_cents: txn.gst_cents }),
         txn.bucket,
-        txn.ato_label,
+        txn.ato_label ?? "", // expected_label is NOT NULL — an uncategorised line re-bucketed without a label has none
         txn.rule_pack_ver,
       )
       .run();

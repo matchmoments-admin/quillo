@@ -1,9 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api";
 import { BucketPill, Button, ConfidencePill, Card, Spinner, money } from "../components/ui";
 import { MovementSweepCard } from "../components/MovementSweepCard";
+import { BulkBar, type BulkDone } from "../components/BulkBar";
 import type { Txn } from "../types";
 
 const TABS = [
@@ -18,6 +19,17 @@ export function Inbox() {
   const [note, setNote] = useState<string | null>(null);
   const [tab, setTab] = useState<(typeof TABS)[number]["key"]>("receipts");
   const [limit, setLimit] = useState(50);
+  // Multi-select for the bulk bar. Reset whenever the tab or page-size changes so a stale id from a
+  // no-longer-visible row can't be acted on.
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [flash, setFlash] = useState<BulkDone | null>(null);
+  const toggleSel = (id: string) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   const tabOpts = TABS.find((t) => t.key === tab)!.opts;
   const { data, isLoading, error } = useQuery({
     queryKey: ["transactions", tab, limit],
@@ -76,6 +88,7 @@ export function Inbox() {
             onClick={() => {
               setTab(t.key);
               setLimit(50);
+              setSelected(new Set());
             }}
             className={`rounded-lg px-3 py-1.5 ${tab === t.key ? "bg-ink text-white" : "text-muted hover:text-ink"}`}
           >
@@ -109,10 +122,19 @@ export function Inbox() {
         </Card>
       ) : (
         <>
+          <label className="flex items-center gap-2 px-1 text-xs text-muted">
+            <input
+              type="checkbox"
+              className="h-4 w-4"
+              checked={txns.length > 0 && txns.every((t) => selected.has(t.id))}
+              onChange={(e) => setSelected(e.target.checked ? new Set(txns.map((t) => t.id)) : new Set())}
+            />
+            Select all on this page
+          </label>
           <ul className="space-y-3">
             {txns.map((t) => (
               <li key={t.id}>
-                <Row txn={t} />
+                <Row txn={t} selected={selected.has(t.id)} onToggle={() => toggleSel(t.id)} />
               </li>
             ))}
           </ul>
@@ -123,15 +145,58 @@ export function Inbox() {
           )}
         </>
       )}
+
+      {selected.size > 0 && (
+        <BulkBar ids={[...selected]} onClear={() => setSelected(new Set())} onDone={setFlash} />
+      )}
+      {/* Outcome note + ~10s Undo — lives at page level so it survives the BulkBar unmounting when
+          the selection clears on a successful action. */}
+      {flash && <UndoToast flash={flash} onClose={() => setFlash(null)} />}
     </div>
   );
 }
 
-function Row({ txn }: { txn: Txn }) {
+function UndoToast({ flash, onClose }: { flash: BulkDone; onClose: () => void }) {
+  const qc = useQueryClient();
+  const undo = useMutation({
+    mutationFn: (batchId: string) => api.undoBatch(batchId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["transactions"] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+      onClose();
+    },
+  });
+  // Auto-dismiss after 10s (re-armed whenever a new outcome arrives).
+  useEffect(() => {
+    const t = setTimeout(onClose, 10_000);
+    return () => clearTimeout(t);
+  }, [flash, onClose]);
+  return (
+    <div className="sticky bottom-3 z-10 mx-auto flex w-full max-w-2xl items-center justify-between gap-3 rounded-xl border border-line bg-ink px-3 py-2 text-sm text-white shadow-lg">
+      <span>{undo.isPending ? "Undoing…" : flash.message}</span>
+      <div className="flex items-center gap-2">
+        {flash.batchId && !undo.isPending && (
+          <button onClick={() => undo.mutate(flash.batchId!)} className="font-medium underline">
+            Undo
+          </button>
+        )}
+        <button onClick={onClose} className="text-white/60 hover:text-white" aria-label="Dismiss">
+          ✕
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function Row({ txn, selected, onToggle }: { txn: Txn; selected: boolean; onToggle: () => void }) {
   const isLine = txn.kind === "bank_line";
   return (
-    <Link to={`/txn/${txn.id}`}>
-      <Card className="flex items-center gap-4 p-3 transition hover:shadow-md">
+    // The checkbox sits OUTSIDE the <Link> — interactive controls nested inside an <a> are invalid
+    // HTML and swallow the navigation click.
+    <div className="flex items-center gap-2">
+      <input type="checkbox" checked={selected} onChange={onToggle} className="h-4 w-4 flex-none" aria-label="Select transaction" />
+      <Link to={`/txn/${txn.id}`} className="min-w-0 flex-1">
+        <Card className="flex items-center gap-4 p-3 transition hover:shadow-md">
         {isLine ? (
           <div className="grid h-14 w-14 flex-none place-items-center rounded-lg border border-line bg-surface text-[10px] font-medium uppercase text-muted">
             line
@@ -170,8 +235,9 @@ function Row({ txn }: { txn: Txn }) {
           ) : (
             txn.gst_cents != null && <div className="text-xs text-muted">GST {money(txn.gst_cents)}</div>
           )}
-        </div>
-      </Card>
-    </Link>
+          </div>
+        </Card>
+      </Link>
+    </div>
   );
 }

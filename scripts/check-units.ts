@@ -712,10 +712,19 @@ console.log("readiness");
   // Non-defer rule → NOT surfaced as a judgement finding (avoid noise).
   check("non-defer rule → no judgement finding", run(mkReport(), noSignals(), [{ ...deferRule, defer_to_agent: 0 }]).findings.length === 0);
 
+  // Trust entity → a defer-to-agent "resolve distributions before 30 June" finding (the one place a
+  // trust is flagged at hand-off; no trust position is in the personal headline).
+  const trustReport = mkReport({ income: { by_type: [{ income_type: "salary_payg", n: 1, gross_cents: 5_000_000, net_cents: 4_000_000, withholding_cents: 1_000_000, franking_credit_cents: 0, foreign_tax_paid_cents: 0 }], gross_cents: 5_000_000, withholding_cents: 1_000_000, franking_credit_cents: 0, foreign_tax_paid_cents: 0 }, total_income_cents: 5_000_000, taxable_position_cents: 5_000_000 });
+  const trust = run(trustReport, noSignals(), [], mkSituation({ entities: [{ id: "e1", kind: "trust", name: "Smith Family Trust", detail_json: null }] }));
+  check("trust entity → distribution-resolution defer finding", trust.findings.some((f) => f.id === "trust_resolution:e1" && f.defer_to_agent && f.severity === "review"));
+  check("trust finding doesn't block readiness (review, not blocker)", trust.readiness_score.ready);
+  // No trust → no trust finding.
+  check("no trust entity → no trust finding", !run(mkReport(), noSignals()).findings.some((f) => f.id.startsWith("trust_resolution:")));
+
   // THE INVARIANT: no generated finding/position text asserts tax payable, a refund, or a rate.
   // (The fixed position caption intentionally NEGATES those words and is excluded — it's a vetted constant.)
   const denylist = /refund|tax payable|marginal rate|\b\d{1,2}%\s*(tax|bracket)/i;
-  const everything = [unknown, franking, rental, iawo, disposed, judged, clean];
+  const everything = [unknown, franking, rental, iawo, disposed, judged, clean, trust];
   const generatedText = everything.flatMap((r) => [
     ...r.findings.flatMap((f) => [f.title, f.general_info_note]),
     ...r.position.lines.flatMap((l) => [l.basis, l.why]),

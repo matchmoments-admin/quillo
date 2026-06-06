@@ -288,6 +288,19 @@ export function assessReadiness(input: {
       []));
   }
 
+  // Trust entities lodge their own return and must resolve distributions before 30 June — surfaced
+  // for the agent (no trust position is modelled in the personal headline, so this is the one place
+  // a trust is flagged at hand-off).
+  for (const e of situation.entities) {
+    if (e.kind === "trust") {
+      findings.push(f(`trust_resolution:${e.id}`, "judgement", "review", `Trust "${e.name ?? "trust"}" — resolve distributions before 30 June`,
+        `A trust generally must resolve how its income is distributed to beneficiaries before 30 June; an unresolved distribution can leave the trustee assessed at the highest rate of tax. This isn't reflected in your personal position — confirm the trust's distribution resolution and its own lodgment with a registered tax agent.${DEFER}`, true, []));
+    }
+  }
+  // (Super Notice-of-intent is surfaced via the year-end checklist (generateChecklist), not here, to
+  // keep a clean PAYG-only return finding-free. PAYG-balance / Div 35 non-commercial-loss prompts are
+  // deferred until sole-trader P&L is modelled — flagging them now would be noise or guesswork.)
+
   // ── (3) judgement passthrough — matched defer-to-agent rules for this situation ──
   for (const r of claimMatches) {
     if (!r.defer_to_agent) continue;

@@ -71,17 +71,26 @@ export interface UserRule {
   priority: number;
 }
 
+export interface LoanProperty {
+  id: string;
+  user_id: string;
+  loan_account_id: string;
+  property_id: string;
+  deductible_interest_pct: number;
+}
+
 export interface Situation {
   profile: Profile;
   persons: Person[];
   properties: Property[];
   entities: Entity[];
   rules: UserRule[];
+  loans_properties: LoanProperty[];
 }
 
 /** Load everything the categoriser needs to know about who this tenant is. */
 export async function getSituation(env: Env, userId: string, profile: Profile): Promise<Situation> {
-  const [persons, props, ents, rules] = await Promise.all([
+  const [persons, props, ents, rules, loansProps] = await Promise.all([
     env.DB.prepare(
       `SELECT id, user_id, display_name, role, occupation, tax_residency FROM persons WHERE user_id = ? ORDER BY role = 'self' DESC, created_at`,
     ).bind(userId).all<Person>(),
@@ -95,6 +104,10 @@ export async function getSituation(env: Env, userId: string, profile: Profile): 
       `SELECT id, user_id, match_type, pattern, bucket, ato_label, property_id, priority
          FROM user_rules WHERE user_id = ? AND active = 1 ORDER BY priority DESC`,
     ).bind(userId).all<UserRule>(),
+    env.DB.prepare(
+      `SELECT id, user_id, loan_account_id, property_id, deductible_interest_pct
+         FROM loans_properties WHERE user_id = ? ORDER BY created_at`,
+    ).bind(userId).all<LoanProperty>(),
   ]);
   return {
     profile,
@@ -102,6 +115,7 @@ export async function getSituation(env: Env, userId: string, profile: Profile): 
     properties: props.results ?? [],
     entities: ents.results ?? [],
     rules: rules.results ?? [],
+    loans_properties: loansProps.results ?? [],
   };
 }
 

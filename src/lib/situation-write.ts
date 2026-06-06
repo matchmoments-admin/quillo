@@ -202,7 +202,51 @@ export async function updateAccount(
     .run();
 }
 
-export async function deleteRow(env: Env, userId: string, table: "properties" | "entities" | "user_rules" | "accounts" | "persons" | "income" | "assets", id: string): Promise<void> {
+// ── Loan → property links (Set-up data; pre-fills the Phase 5 interest split) ──
+// Capture-only: recording a link does NOT change the position or claim anything.
+const clampPct = (n: number | undefined): number => Math.max(0, Math.min(100, Number.isFinite(n as number) ? (n as number) : 0));
+
+export async function addLoanProperty(
+  env: Env,
+  userId: string,
+  lp: { loan_account_id: string; property_id: string; deductible_interest_pct?: number },
+): Promise<string> {
+  if (!lp.loan_account_id || !lp.property_id) throw new Error("loan_account_id and property_id are required");
+  // Ownership check: both ids must belong to THIS tenant. Stops a dangling/cross-tenant reference
+  // (which Phase 5 would later try to pre-fill a split from) — every join must be user_id-scoped.
+  const owns = await env.DB.prepare(
+    `SELECT (SELECT COUNT(*) FROM accounts   WHERE id = ? AND user_id = ?) AS acct,
+            (SELECT COUNT(*) FROM properties WHERE id = ? AND user_id = ?) AS prop`,
+  )
+    .bind(lp.loan_account_id, userId, lp.property_id, userId)
+    .first<{ acct: number; prop: number }>();
+  if (!owns || owns.acct === 0) throw new Error("loan account not found");
+  if (owns.prop === 0) throw new Error("property not found");
+  const id = uid();
+  // INSERT OR IGNORE on the UNIQUE(user_id, loan_account_id, property_id) so re-linking is idempotent.
+  await env.DB.prepare(
+    `INSERT OR IGNORE INTO loans_properties (id, user_id, loan_account_id, property_id, deductible_interest_pct)
+     VALUES (?, ?, ?, ?, ?)`,
+  )
+    .bind(id, userId, lp.loan_account_id, lp.property_id, clampPct(lp.deductible_interest_pct))
+    .run();
+  return id;
+}
+
+export async function updateLoanProperty(
+  env: Env,
+  userId: string,
+  id: string,
+  lp: { deductible_interest_pct?: number },
+): Promise<void> {
+  await env.DB.prepare(
+    `UPDATE loans_properties SET deductible_interest_pct = COALESCE(?, deductible_interest_pct) WHERE id = ? AND user_id = ?`,
+  )
+    .bind(lp.deductible_interest_pct === undefined ? null : clampPct(lp.deductible_interest_pct), id, userId)
+    .run();
+}
+
+export async function deleteRow(env: Env, userId: string, table: "properties" | "entities" | "user_rules" | "accounts" | "persons" | "income" | "assets" | "loans_properties", id: string): Promise<void> {
   // table is from a fixed allowlist (never user input) — safe to interpolate.
   await env.DB.prepare(`DELETE FROM ${table} WHERE id = ? AND user_id = ?`).bind(id, userId).run();
 }

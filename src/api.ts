@@ -33,6 +33,8 @@ import {
   updateRule,
   addAccount,
   updateAccount,
+  addLoanProperty,
+  updateLoanProperty,
   ensureTenant,
   deleteRow,
   listKeys,
@@ -350,6 +352,24 @@ export async function handleApi(
     }
     if (m === "DELETE" && id) {
       await deleteRow(env, uid, "accounts", id);
+      return json({ ok: true });
+    }
+  }
+  // ── Loan → property links (Set-up; pre-fills the Phase 5 interest split) ──────
+  if (resource === "loans-properties") {
+    if (m === "POST" && !id) {
+      try {
+        return json({ id: await addLoanProperty(env, uid, await req.json()) });
+      } catch (e) {
+        return json({ error: (e as Error).message }, 400);
+      }
+    }
+    if (m === "PUT" && id) {
+      await updateLoanProperty(env, uid, id, await req.json());
+      return json({ ok: true });
+    }
+    if (m === "DELETE" && id) {
+      await deleteRow(env, uid, "loans_properties", id);
       return json({ ok: true });
     }
   }

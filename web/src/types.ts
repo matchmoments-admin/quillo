@@ -137,6 +137,14 @@ export interface Situation {
   properties: Property[];
   entities: { id: string; kind: string; name: string | null; detail_json?: string | null }[];
   rules: { id: string; pattern: string; bucket: string; ato_label: string }[];
+  loans_properties?: LoanProperty[];
+}
+
+export interface LoanProperty {
+  id: string;
+  loan_account_id: string;
+  property_id: string;
+  deductible_interest_pct: number;
 }
 
 // Mirror of the server taxonomy (src/lib/taxonomy.ts BUCKETS) — keep in sync. Drives the rule

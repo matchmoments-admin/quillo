@@ -4,7 +4,7 @@ import { api } from "../api";
 import { BUCKETS } from "../types";
 import { Card, Spinner, BUCKET_LABEL, InfoTip } from "../components/ui";
 import { EntityFields, PropertyFields, PersonFields, entityToBody, entityToValue, propertyToBody, personToBody, personToValue, emptyEntity, emptyProperty, emptyPerson, OWNED_STATUSES, TENANT_STATUSES, propertyStatusLabel, type EntityValue, type PersonValue, type PropertyValue } from "../components/SituationFields";
-import type { Person } from "../types";
+import type { Person, Account, Property, LoanProperty } from "../types";
 
 const input = "rounded-lg border border-line bg-card px-3 py-2 text-sm";
 const btn = "rounded-lg bg-ink px-3 py-2 text-sm font-medium text-white hover:bg-ink/90 disabled:opacity-50";
@@ -13,6 +13,7 @@ const del = "text-xs text-muted hover:text-danger";
 export function Settings() {
   const qc = useQueryClient();
   const sit = useQuery({ queryKey: ["situation"], queryFn: () => api.situation() });
+  const accts = useQuery({ queryKey: ["accounts"], queryFn: () => api.accounts() });
   const keys = useQuery({ queryKey: ["keys"], queryFn: () => api.keys() });
   const invalidate = () => qc.invalidateQueries({ queryKey: ["situation"] });
 
@@ -49,6 +50,25 @@ export function Settings() {
         ))}
         {!s.properties.length && <Empty>No properties yet. Add an investment or rented property so its expenses attribute correctly.</Empty>}
         <AddProperty onDone={invalidate} />
+      </Section>
+
+      {/* Loan → property links — set the deductible-interest % each loan funds. Set-up data only:
+          it pre-fills the guided interest/principal split later; nothing is claimed here. */}
+      <Section
+        title={
+          <>
+            Loan interest attribution{" "}
+            <InfoTip tip="Link a loan/mortgage account to the property it funds and set the share of interest that's deductible. It pre-fills the guided interest-vs-principal split later — nothing is claimed automatically." />
+          </>
+        }
+      >
+        {(s.loans_properties ?? []).map((lp) => (
+          <EditableLoanProperty key={lp.id} link={lp} accounts={accts.data ?? []} properties={s.properties} onDone={invalidate} />
+        ))}
+        {!(s.loans_properties ?? []).length && (
+          <Empty>No loan links yet. Link a loan to the property it funds so its interest can be split out at tax time.</Empty>
+        )}
+        <AddLoanProperty accounts={accts.data ?? []} properties={s.properties} onDone={invalidate} />
       </Section>
 
       {/* Entities */}
@@ -302,6 +322,106 @@ function AddProperty({ onDone }: { onDone: () => void }) {
 
 function Empty({ children }: { children: React.ReactNode }) {
   return <p className="px-1 text-xs text-muted">{children}</p>;
+}
+
+function EditableLoanProperty({
+  link,
+  accounts,
+  properties,
+  onDone,
+}: {
+  link: LoanProperty;
+  accounts: Account[];
+  properties: Property[];
+  onDone: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [pct, setPct] = useState(String(link.deductible_interest_pct));
+  const save = useMutation({
+    mutationFn: () => api.updateLoanProperty(link.id, { deductible_interest_pct: Number(pct) }),
+    onSuccess: () => {
+      setEditing(false);
+      onDone();
+    },
+  });
+  const remove = useMutation({ mutationFn: () => api.deleteLoanProperty(link.id), onSuccess: onDone });
+  const acc = accounts.find((a) => a.id === link.loan_account_id);
+  const prop = properties.find((p) => p.id === link.property_id);
+  const label = `${acc?.name ?? "loan"} → ${prop?.label ?? "property"}`;
+
+  if (!editing) {
+    return (
+      <div className="flex items-center justify-between rounded-lg bg-surface px-3 py-2 text-sm">
+        <span className="truncate">
+          {label} · <span className="tabular-nums">{link.deductible_interest_pct}%</span> interest deductible
+        </span>
+        <div className="flex flex-none gap-3">
+          <button onClick={() => { setPct(String(link.deductible_interest_pct)); setEditing(true); }} className={del}>
+            edit
+          </button>
+          <button onClick={() => remove.mutate()} disabled={remove.isPending} className={del}>
+            delete
+          </button>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="flex flex-wrap items-center gap-2 rounded-lg bg-surface px-3 py-2 text-sm">
+      <span className="truncate">{label}</span>
+      <input className={`${input} w-20`} type="number" min={0} max={100} value={pct} onChange={(e) => setPct(e.target.value)} aria-label="Deductible interest %" />
+      <span>% deductible</span>
+      <button className={btn} disabled={save.isPending || pct === ""} onClick={() => save.mutate()}>
+        Save
+      </button>
+      <button className={del} onClick={() => setEditing(false)}>
+        cancel
+      </button>
+    </div>
+  );
+}
+
+function AddLoanProperty({ accounts, properties, onDone }: { accounts: Account[]; properties: Property[]; onDone: () => void }) {
+  const loans = accounts.filter((a) => a.type === "loan");
+  const [loanId, setLoanId] = useState("");
+  const [propId, setPropId] = useState("");
+  const [pct, setPct] = useState("");
+  const add = useMutation({
+    mutationFn: () => api.addLoanProperty({ loan_account_id: loanId, property_id: propId, deductible_interest_pct: pct === "" ? 0 : Number(pct) }),
+    onSuccess: () => {
+      setLoanId("");
+      setPropId("");
+      setPct("");
+      onDone();
+    },
+  });
+  if (loans.length === 0) return <Empty>No loan accounts yet. Add one on the Accounts page (type “loan”) to link it to a property.</Empty>;
+  if (properties.length === 0) return <Empty>Add a property above first, then link your loan to it.</Empty>;
+  return (
+    <div className="flex flex-wrap items-center gap-2 pt-1">
+      <select className={input} value={loanId} onChange={(e) => setLoanId(e.target.value)} aria-label="Loan account">
+        <option value="">Loan account…</option>
+        {loans.map((a) => (
+          <option key={a.id} value={a.id}>
+            {a.name}
+          </option>
+        ))}
+      </select>
+      <select className={input} value={propId} onChange={(e) => setPropId(e.target.value)} aria-label="Property">
+        <option value="">Property…</option>
+        {properties.map((p) => (
+          <option key={p.id} value={p.id}>
+            {p.label}
+          </option>
+        ))}
+      </select>
+      <input className={`${input} w-20`} type="number" min={0} max={100} placeholder="%" value={pct} onChange={(e) => setPct(e.target.value)} aria-label="Deductible interest %" />
+      <button className={btn} disabled={!loanId || !propId || add.isPending} onClick={() => add.mutate()}>
+        Add link
+      </button>
+      {add.isError && <span className="text-xs text-danger">{(add.error as Error).message}</span>}
+    </div>
+  );
 }
 
 function EditablePerson({ person, onDone }: { person: Person; onDone: () => void }) {

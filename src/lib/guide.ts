@@ -12,7 +12,7 @@ export const TAB_PURPOSE: Record<string, string> = {
   reconcile: "optionally matching receipts to bank lines as proof for deductions",
   reports: "the year-end report to hand to a registered tax agent",
   review: "year-end review — confirming what's actually deductible, with apportionment",
-  filing: "the year-end position and lodge-readiness checklist",
+  filing: "the year-end position and hand-off readiness checklist",
   quickbooks: "connecting QuickBooks (read-only reconcile)",
   alerts: "alerts/notifications that need attention",
   settings: "your situation, entities, rules, people, privacy & AI consent",

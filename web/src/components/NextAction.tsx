@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "../api";
 
 // The cross-tab "where am I / what's next" spine. Ambient (always visible, never modal), oriented
-// to one goal: getting the year lodge-ready. Reads the shared ["progress"] query so it can't drift
+// to one goal: getting the year ready to hand off to your agent. Reads the shared ["progress"] query so it can't drift
 // from the per-tab guides (and TabGuide reads the same key). It's an ALL-TIME cross-year backlog —
 // deliberately not FY-scoped — so it matches the Inbox/Reconcile queues it routes to (those aren't
 // FY-scoped either). Clicking the next action routes to it. Freshness after a write is handled
@@ -36,7 +36,7 @@ export function NextActionBar() {
         onClick={() => navigate(next_action.href)}
         className="inline-flex items-center gap-1.5 rounded-full bg-ink px-3 py-1 text-xs font-semibold text-cream transition hover:bg-green"
       >
-        {done ? "You're ready — open File to export" : next_action.label}
+        {done ? "You're ready — open File to hand off" : next_action.label}
         <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
           <path d="M6 3l5 5-5 5" />
         </svg>

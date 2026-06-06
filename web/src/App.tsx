@@ -15,32 +15,45 @@ import { Coachmarks } from "./components/Coachmarks";
 type NavItem = { to: string; label: string; icon: IconName; end?: boolean; badge?: boolean; flag?: string; admin?: boolean };
 type NavGroup = { label: string; items: NavItem[] };
 
-// Grouped destinations — the forest sidebar that replaced the old cramped 12-tab top nav.
+// Grouped destinations — the forest sidebar, ordered as the six-stop work spine
+// (Set up → Bring in → Sort → Check → Position → File) so the nav reads top-to-bottom
+// in the order you actually do the job. The numbered labels are ORIENTATION, not locks:
+// every route stays freely clickable and tax work is iterative (import more, re-run books,
+// re-reconcile). "Bring in" lives on the Accounts page (add an account + upload its
+// statement together), surfaced as the active CTA by NextActionBar rather than a duplicate
+// route. See memory: simplification-plan (six-stop happy path, 2026-06-07).
 const GROUPS: NavGroup[] = [
   {
-    label: "Overview",
+    label: "1 · Set up",
     items: [
-      { to: "/", label: "Inbox", icon: "inbox", end: true, badge: true },
-      { to: "/dashboard", label: "Dashboard", icon: "grid" },
-    ],
-  },
-  {
-    label: "Records",
-    items: [
+      // Accounts is where you add accounts AND bring in statements/CSVs (the "Bring in" stop).
+      { to: "/accounts", label: "Accounts & import", icon: "card" },
       { to: "/income", label: "Income", icon: "income" },
       { to: "/assets", label: "Assets", icon: "shield" },
       { to: "/documents", label: "Documents", icon: "doc" },
-      { to: "/accounts", label: "Accounts", icon: "card" },
     ],
   },
   {
-    label: "Work",
+    label: "2 · Sort",
+    items: [{ to: "/", label: "Inbox", icon: "inbox", end: true, badge: true }],
+  },
+  {
+    label: "3 · Check",
     items: [
       { to: "/reconcile", label: "Reconcile", icon: "swap" },
-      { to: "/reports", label: "Reports", icon: "bars" },
       { to: "/review", label: "Review", icon: "check", flag: "deductibility_review" },
-      { to: "/filing", label: "File", icon: "file" },
     ],
+  },
+  {
+    label: "4 · Position",
+    items: [
+      { to: "/dashboard", label: "Dashboard", icon: "grid" },
+      { to: "/reports", label: "Reports", icon: "bars" },
+    ],
+  },
+  {
+    label: "5 · File",
+    items: [{ to: "/filing", label: "File", icon: "file" }],
   },
   {
     label: "Connections",

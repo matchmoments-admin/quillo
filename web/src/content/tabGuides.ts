@@ -3,7 +3,7 @@ import type { Progress } from "../types";
 // Per-tab "what do I do here?" copy, branched on the live progress snapshot. Kept as a single
 // content map (separate from the term-level GLOSSARY) so the page guidance reads as one voice and
 // stays easy to edit. The whole spine is oriented around one goal: getting a financial year
-// lodge-ready. If a tab can't produce a sensible line for a state, that's a build bug, not copy.
+// ready to hand off. If a tab can't produce a sensible line for a state, that's a build bug, not copy.
 
 export type TabKey =
   | "inbox"
@@ -79,7 +79,7 @@ export function tabGuide(tab: TabKey, p?: Progress): GuideCopy {
       if (needs > 0)
         return {
           title: `${items(needs)} to review`,
-          body: "Quillo wasn't sure on these. Tap one, confirm or change the category, and it's done. This is the main thing left before you can lodge.",
+          body: "Quillo wasn't sure on these. Tap one, confirm or change the category, and it's done. This is the main thing left before you hand off to your accountant.",
         };
       return {
         title: "All caught up",
@@ -164,7 +164,7 @@ export function tabGuide(tab: TabKey, p?: Progress): GuideCopy {
     case "filing":
       if (needs > 0 || undated > 0)
         return {
-          title: "Nearly lodge-ready",
+          title: "Nearly ready to hand off",
           body: `A few items to clear first${
             needs > 0 ? ` — ${items(needs)} to review` : ""
           }${undated > 0 ? `${needs > 0 ? "," : " —"} ${items(undated)} to date` : ""}. Sort those, then this page is your year-end position to print or export. Always confirm with a registered tax agent before lodging.`,
@@ -189,7 +189,7 @@ export function tabGuide(tab: TabKey, p?: Progress): GuideCopy {
     case "alerts":
       return {
         title: "Things needing attention",
-        body: "Quillo flags items here — usually a few to review or date. Clearing these is how you get to 'ready to lodge.'",
+        body: "Quillo flags items here — usually a few to review or date. Clearing these is how you get ready to hand off to your accountant.",
       };
 
     case "settings":

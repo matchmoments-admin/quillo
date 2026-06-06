@@ -38,7 +38,7 @@ const plural = (n: number, one: string): string => (n === 1 ? one : `${one}s`);
 /**
  * The single source of truth for "what's the ONE next thing to do?". Precedence:
  *   nothing imported → import; needs_review>0 → review; undated>0 → date; else → export.
- * File (/filing) is the lodge-ready finish line (its readiness view links the CSV export), so the
+ * File (/filing) is the hand-off finish line (its readiness view links the CSV export), so the
  * cleared state points there rather than at /reports. Pure + read-only (no D1, no mutation) so
  * every branch is covered by an offline unit test.
  */
@@ -49,7 +49,7 @@ export function nextAction(c: ProgressCounts): NextAction {
     return { kind: "review", count: c.needs_review, label: `${c.needs_review} ${plural(c.needs_review, "item")} to review`, href: "/" };
   if (c.undated > 0)
     return { kind: "date", count: c.undated, label: `${c.undated} ${plural(c.undated, "item")} to date`, href: "/reports" };
-  return { kind: "export", count: 0, label: "Ready to lodge — review the position and export", href: "/filing" };
+  return { kind: "export", count: 0, label: "Ready — review your position and hand off", href: "/filing" };
 }
 
 // "Done" = there's data AND no outstanding exceptions. The imported>0 guard stops a brand-new

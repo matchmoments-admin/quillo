@@ -3218,7 +3218,9 @@ export class TaxAgent extends Agent<Env> {
     )
       .bind(userId, start, end)
       .all<ClarifyRow>();
-    const groups = groupForClarify(rows.results ?? []);
+    // Tenant paying rent on their own home → clarify offers a "rent I pay (private)" answer.
+    const hasTenantHome = situation.properties.some((p) => p.status === "renting_residence");
+    const groups = groupForClarify(rows.results ?? [], undefined, { hasTenantHome });
     let questions = 0;
     for (const g of groups) {
       // Skip a stem a DIRECTION-PURE group's user_rule already covers — those lines auto-apply on

@@ -85,8 +85,19 @@ export interface ClarifyThresholds {
 
 export const DEFAULT_CLARIFY_THRESHOLDS: ClarifyThresholds = { minCount: 3, minTotalCents: 25_000 };
 
+/** Optional context that tailors the suggestions to the tenant's situation. */
+export interface SuggestionContext {
+  isRentLike?: boolean;     // the group's stem looks like rent/lease
+  hasTenantHome?: boolean;  // the tenant has a renting_residence (own-home rental) property
+}
+
+/** True when a group's stem/description reads like rent or a lease payment. */
+export function isRentLikeStem(s: string | null | undefined): boolean {
+  return /\b(rent|lease|tenancy|landlord)\b/i.test(s ?? "");
+}
+
 /** Direction-aware suggested answers — one tap each. Concrete fields are filled in by the UI/server. */
-export function suggestionsFor(direction: "debit" | "credit" | "mixed"): ClarifySuggestion[] {
+export function suggestionsFor(direction: "debit" | "credit" | "mixed", ctx: SuggestionContext = {}): ClarifySuggestion[] {
   if (direction === "credit") {
     return [
       { label: "Rental income (choose property)", kind: "income_property", needs_property: true },
@@ -96,12 +107,21 @@ export function suggestionsFor(direction: "debit" | "credit" | "mixed"): Clarify
     ];
   }
   // debit (or mixed — treat as spend by default; the user can still pick ignore)
-  return [
+  const out: ClarifySuggestion[] = [];
+  // Tenant paying rent on their OWN home: lead with the correct answer — it's private, not deductible.
+  // (Only WFH running costs are claimable, separately — never the rent itself.) Reuses the existing
+  // payg/personal-spend bucket; no new answer kind. Business-premises rent is deliberately NOT offered
+  // here (it turns on entity structure + apportionment — deferred).
+  if (ctx.isRentLike && ctx.hasTenantHome) {
+    out.push({ label: "Rent I pay on my home (private — not deductible)", kind: "bucket", bucket: "payg", ato_label: "personal-spend" });
+  }
+  out.push(
     { label: "Private / personal (not deductible)", kind: "bucket", bucket: "payg", ato_label: "personal-spend" },
     { label: "Loan repayment / transfer (ignore)", kind: "ignore" },
     { label: "Work-related deduction (choose category)", kind: "bucket", bucket: "payg" },
     { label: "Rental-property expense", kind: "bucket", bucket: "property_rented" },
-  ];
+  );
+  return out;
 }
 
 /**
@@ -110,7 +130,7 @@ export function suggestionsFor(direction: "debit" | "credit" | "mixed"): Clarify
  * they stay in the normal review queue (the caller must not drop them). Rows with no usable stem
  * (groupKey === null) are skipped here for the same reason.
  */
-export function groupForClarify(rows: ClarifyRow[], thresholds: ClarifyThresholds = DEFAULT_CLARIFY_THRESHOLDS): ClarifyGroup[] {
+export function groupForClarify(rows: ClarifyRow[], thresholds: ClarifyThresholds = DEFAULT_CLARIFY_THRESHOLDS, ctx: SuggestionContext = {}): ClarifyGroup[] {
   const groups = new Map<string, { rows: ClarifyRow[]; sample: string; total: number; debits: number; credits: number }>();
   for (const r of rows) {
     const key = groupKey(r.raw_description ?? r.merchant ?? "");
@@ -132,7 +152,7 @@ export function groupForClarify(rows: ClarifyRow[], thresholds: ClarifyThreshold
       n: g.rows.length,
       total_cents: g.total,
       direction,
-      suggestions: suggestionsFor(direction),
+      suggestions: suggestionsFor(direction, { ...ctx, isRentLike: isRentLikeStem(g.sample) || isRentLikeStem(key) }),
     });
   }
   // Biggest-dollar patterns first — that's where the position correction matters most.

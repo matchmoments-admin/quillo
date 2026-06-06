@@ -25,7 +25,7 @@ export interface ClaimContext {
   entity_kinds?: string[];
 }
 
-function merchantMatches(hint: string | null | undefined, merchant: string): boolean {
+export function merchantMatches(hint: string | null | undefined, merchant: string): boolean {
   if (!hint) return true; // no merchant constraint on this rule
   const m = merchant.toLowerCase();
   return hint

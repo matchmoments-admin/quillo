@@ -528,3 +528,23 @@ export interface ClarifyAnswer {
   ato_label?: string;
   property_id?: string;
 }
+
+// Phase 3 — claim auto-matcher
+export interface ScoredTxn {
+  id: string;
+  merchant: string | null;
+  bucket: string | null;
+  ato_label: string | null;
+  direction: string | null;
+  amount_cents: number | null;
+  amount_aud_cents: number | null;
+  txn_date: string | null;
+  score: number;
+  reasons: string[];
+}
+export interface ClaimMatch {
+  claim_id: string;
+  rule_id: string | null;
+  candidates: ScoredTxn[];
+  linked: string[];
+}

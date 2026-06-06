@@ -1,4 +1,4 @@
-import type { Txn, TxnDetail, Situation, SituationDraft, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse, UsageData, StatementInfo, IncomeRow, DocRow, AssetRow, ScheduleRow, ChecklistItem, ClaimSuggestion, FilingReadiness, ReviewSummary, Progress, AdminTenant, AdminOverview, ClaimReview, OccupationRulesDraft, OccupationRuleCandidate, MovementSweep, BatchResult, ClarifyQuestion, ClarifyAnswer } from "./types";
+import type { Txn, TxnDetail, Situation, SituationDraft, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse, UsageData, StatementInfo, IncomeRow, DocRow, AssetRow, ScheduleRow, ChecklistItem, ClaimSuggestion, FilingReadiness, ReviewSummary, Progress, AdminTenant, AdminOverview, ClaimReview, OccupationRulesDraft, OccupationRuleCandidate, MovementSweep, BatchResult, ClarifyQuestion, ClarifyAnswer, ClaimMatch } from "./types";
 
 // Clerk session token getter, wired from <TokenBridge> inside ClerkProvider (main.tsx).
 // Clerk tokens are short-lived, so we fetch a fresh one per request (getToken caches/refreshes).
@@ -231,6 +231,11 @@ export const api = {
   // v2 — Claimability suggestions
   claims: () => get<{ claims: ClaimSuggestion[] }>("/api/claims").then((r) => r.claims),
   setClaimStatus: (id: string, status: string) => send<{ ok: boolean }>("PATCH", `/api/claims/${id}`, { status }),
+
+  // Phase 3 — Find & attach claim evidence
+  matchClaim: (claimId: string) => get<ClaimMatch>(`/api/claim-review/match?claimId=${encodeURIComponent(claimId)}`),
+  attachClaim: (claimId: string, txnId: string) => post<{ ok: boolean; status: string }>("/api/claim-review/attach", { claimId, txnId }),
+  detachClaim: (claimId: string, txnId: string) => post<{ ok: boolean; status: string }>("/api/claim-review/detach", { claimId, txnId }),
 
   // v2 — CGT on a disposed property (Phase 5)
   cgt: (propertyId: string) =>

@@ -105,6 +105,10 @@ export interface TaxAgentRpc {
   applyCorrectionBatch(userId: string, txnIds: string[], edits: { field: string; value: string }[]): Promise<{ batch_id: string; updated: number; failures: { txnId: string; error: string }[] }>;
   undoCorrectionBatch(userId: string, batchId: string): Promise<{ reverted: number }>;
   deleteTransactionBatch(userId: string, txnIds: string[]): Promise<{ deleted: number }>;
+  matchClaim(userId: string, claimId: string): Promise<{ claim_id: string; rule_id: string | null; candidates: import("./lib/claim-match").ScoredTxn[]; linked: string[] }>;
+  attachClaim(userId: string, claimId: string, txnId: string): Promise<{ ok: boolean; status: string }>;
+  detachClaim(userId: string, claimId: string, txnId: string): Promise<{ ok: boolean; status: string }>;
+  listClaimLinks(userId: string, claimId: string): Promise<{ txn_id: string; merchant: string | null; amount_cents: number | null; txn_date: string | null }[]>;
   runClarifyScan(userId: string, startYear: number): Promise<{ questions: number; groups: number }>;
   listClarifyQuestions(userId: string, startYear?: number): Promise<import("./agent").ClarifyQuestion[]>;
   answerClarify(userId: string, questionId: string, answer: import("./agent").ClarifyAnswer): Promise<{ applied: number; income_recorded: number }>;

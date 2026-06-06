@@ -19,6 +19,7 @@ import { rollSchedule, balancingAdjustment, fyStartYearOf, isLowCostAsset, looks
 import { matchClaimRules, suggestionText, enumerateSituationClaims, classifyClaim, uncoveredOccupations, ruleKey, type ClaimRule, type ClaimContext, type ClaimSituation } from "./lib/claimability";
 import { parseCsv, applyColumnMap, lineFingerprint, deriveBalances, reconcileStatement, isLiabilityAccount, fuzzyMerchant, isTransferLike, classifyMovement, movementTreatment, type ColumnMap, type Reconciliation, type StatementLine, type MovementClass } from "./lib/statements";
 import { groupKey, groupForClarify, rulePatternForStem, type ClarifyRow } from "./lib/clarify";
+import { scoreClaimMatches, type ScoredTxn } from "./lib/claim-match";
 import { batchStatementStatus, isStaleBatch } from "./lib/batch";
 import { cleanMerchant } from "./lib/bank-parsers";
 import { pdfPageCount, splitPdf, normalizePdf } from "./lib/pdf";
@@ -2399,6 +2400,84 @@ export class TaxAgent extends Agent<Env> {
     return [...packRules, ...d1];
   }
 
+  // ── PHASE 3: Find & attach claim evidence (claim_links) ────────────────────
+  /**
+   * Score the tenant's transactions as candidate EVIDENCE for one claim_suggestion (read-only).
+   * Resolves the suggestion's rule (by ruleKey across pack ∪ D1 rules) and ranks debit txns via the
+   * pure scoreClaimMatches. Already-attached txns are returned separately so the UI can show them as
+   * confirmed. Never writes deductibility or a dollar figure.
+   */
+  async matchClaim(userId: string, claimId: string): Promise<{ claim_id: string; rule_id: string | null; candidates: ScoredTxn[]; linked: string[] }> {
+    const claim = await this.env.DB.prepare(
+      `SELECT id, rule_id FROM claim_suggestions WHERE id = ? AND user_id = ?`,
+    )
+      .bind(claimId, userId)
+      .first<{ id: string; rule_id: string | null }>();
+    if (!claim) throw new Error("claim not found");
+    const profile = await this.requireProfile(userId);
+    const rules = await this.loadClaimRules(userId, profile.rule_pack_ver);
+    const rule = rules.find((r) => ruleKey(r) === claim.rule_id) ?? null;
+    const linkedRows = await this.env.DB.prepare(`SELECT txn_id FROM claim_links WHERE user_id = ? AND claim_id = ?`).bind(userId, claimId).all<{ txn_id: string }>();
+    const linked = (linkedRows.results ?? []).map((r) => r.txn_id);
+    if (!rule) return { claim_id: claimId, rule_id: claim.rule_id, candidates: [], linked };
+    // Candidate pool: the tenant's debit transactions (spend) not already excluded; cap for safety.
+    const txnsRes = await this.env.DB.prepare(
+      `SELECT id, merchant, bucket, ato_label, direction, amount_cents, amount_aud_cents, txn_date
+         FROM transactions
+        WHERE user_id = ? AND COALESCE(direction,'debit') = 'debit'
+          AND status NOT IN ('duplicate','ignored','matched_receipt')
+        ORDER BY txn_date DESC LIMIT 1000`,
+    )
+      .bind(userId)
+      .all<{ id: string; merchant: string | null; bucket: string | null; ato_label: string | null; direction: string | null; amount_cents: number | null; amount_aud_cents: number | null; txn_date: string | null }>();
+    const linkedSet = new Set(linked);
+    const candidates = scoreClaimMatches(rule, txnsRes.results ?? []).filter((c) => !linkedSet.has(c.id)).slice(0, 50);
+    return { claim_id: claimId, rule_id: claim.rule_id, candidates, linked };
+  }
+
+  /** Attach a transaction as evidence for a claim → claim_links (idempotent) + claim moves to 'capturing'. */
+  async attachClaim(userId: string, claimId: string, txnId: string): Promise<{ ok: boolean; status: string }> {
+    const claim = await this.env.DB.prepare(`SELECT status FROM claim_suggestions WHERE id = ? AND user_id = ?`).bind(claimId, userId).first<{ status: string }>();
+    if (!claim) throw new Error("claim not found");
+    const txn = await this.env.DB.prepare(`SELECT id FROM transactions WHERE id = ? AND user_id = ?`).bind(txnId, userId).first<{ id: string }>();
+    if (!txn) throw new Error("transaction not found");
+    await this.env.DB.prepare(
+      `INSERT OR IGNORE INTO claim_links (id, user_id, claim_id, txn_id) VALUES (?, ?, ?, ?)`,
+    )
+      .bind(crypto.randomUUID(), userId, claimId, txnId)
+      .run();
+    // Move to 'capturing' unless the user dismissed it (don't resurrect a dismissed claim).
+    const nextStatus = claim.status === "dismissed" ? claim.status : "capturing";
+    if (nextStatus !== claim.status) await this.env.DB.prepare(`UPDATE claim_suggestions SET status = 'capturing' WHERE id = ? AND user_id = ?`).bind(claimId, userId).run();
+    await this.audit(userId, "claim_attach", JSON.stringify({ claimId, txnId }));
+    return { ok: true, status: nextStatus };
+  }
+
+  /** Detach evidence; if a claim has no links left, revert 'capturing' → 'suggested'. */
+  async detachClaim(userId: string, claimId: string, txnId: string): Promise<{ ok: boolean; status: string }> {
+    await this.env.DB.prepare(`DELETE FROM claim_links WHERE user_id = ? AND claim_id = ? AND txn_id = ?`).bind(userId, claimId, txnId).run();
+    const remaining = await this.env.DB.prepare(`SELECT COUNT(*) AS n FROM claim_links WHERE user_id = ? AND claim_id = ?`).bind(userId, claimId).first<{ n: number }>();
+    let status = "capturing";
+    if ((remaining?.n ?? 0) === 0) {
+      await this.env.DB.prepare(`UPDATE claim_suggestions SET status = 'suggested' WHERE id = ? AND user_id = ? AND status = 'capturing'`).bind(claimId, userId).run();
+      status = "suggested";
+    }
+    await this.audit(userId, "claim_detach", JSON.stringify({ claimId, txnId }));
+    return { ok: true, status };
+  }
+
+  /** The transactions attached to a claim (for the evidence panel). */
+  async listClaimLinks(userId: string, claimId: string): Promise<{ txn_id: string; merchant: string | null; amount_cents: number | null; txn_date: string | null }[]> {
+    const res = await this.env.DB.prepare(
+      `SELECT cl.txn_id, t.merchant, t.amount_cents, t.txn_date
+         FROM claim_links cl JOIN transactions t ON t.id = cl.txn_id AND t.user_id = cl.user_id
+        WHERE cl.user_id = ? AND cl.claim_id = ? ORDER BY t.txn_date DESC`,
+    )
+      .bind(userId, claimId)
+      .all<{ txn_id: string; merchant: string | null; amount_cents: number | null; txn_date: string | null }>();
+    return res.results ?? [];
+  }
+
   async suggestClaims(
     userId: string,
     ctx: ClaimContext,
@@ -3232,6 +3311,8 @@ export class TaxAgent extends Agent<Env> {
     for (const k of keys) await this.env.RECEIPTS.delete(k);
 
     await this.env.DB.prepare(`DELETE FROM corrections WHERE txn_id = ? AND user_id = ?`).bind(txnId, userId).run();
+    // Remove any claim evidence pointing at this txn (else reviewClaims folds stale links into 'capturing').
+    await this.env.DB.prepare(`DELETE FROM claim_links WHERE txn_id = ? AND user_id = ?`).bind(txnId, userId).run();
     await this.env.DB.prepare(`DELETE FROM transactions WHERE id = ? AND user_id = ?`).bind(txnId, userId).run();
     await this.audit(
       userId,

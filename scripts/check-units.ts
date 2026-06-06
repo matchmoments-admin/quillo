@@ -10,7 +10,8 @@ import { extractSituationDraft, parseBatchMessage, mapBatchItems, type BatchItem
 import type { LLM } from "../src/llm";
 import { isValidAbn, normaliseAbn } from "../web/src/lib/abn";
 import { billableCents } from "../src/lib/billing";
-import { costCents } from "../src/lib/usage";
+import { costCents, isPricedModel } from "../src/lib/usage";
+import { LLM_MODEL_IDS } from "../src/llm";
 import { BUCKETS } from "../src/lib/taxonomy";
 import { applyUserRules } from "../src/lib/rules";
 import type { UserRule } from "../src/lib/db";
@@ -875,7 +876,14 @@ console.log("costCents (AI spend pricing)");
   check("input priced at $1/M (1M → 100c)", Math.round(costCents(H, { input_tokens: 1_000_000 })) === 100);
   check("output priced at $5/M (1M → 500c)", Math.round(costCents(H, { output_tokens: 1_000_000 })) === 500);
   check("cache-read 10× cheaper than input", costCents(H, { cache_read_input_tokens: 1_000_000 }) === 10);
-  check("unknown model falls back to Haiku rate", costCents("unknown-model", { input_tokens: 1_000_000 }) === 100);
+  // #80: PRICING must cover every model getLLM can emit, or spend is silently mis-costed and the
+  // budget gate under-reads. This golden fails CI if a model is swapped in llm.ts without pricing it.
+  check("every getLLM model id has a PRICING entry", LLM_MODEL_IDS.every((m) => isPricedModel(m)));
+  check("a real (priced) model is recognised", isPricedModel(H));
+  check("an unpriced model id is flagged, not silently accepted", isPricedModel("claude-opus-not-priced") === false);
+  // costCents still returns the Haiku floor for an unknown id so spend is never LOST (the recording
+  // path logs loudly) — but isPricedModel above is the guard that keeps that path from ever shipping.
+  check("unknown model is cost-estimated at the Haiku floor (spend never lost)", costCents("unknown-model", { input_tokens: 1_000_000 }) === 100);
   check("empty usage → 0c", costCents(H, {}) === 0);
 
   // C5: a real ~40-line chunk is sub-cent. Quantising to 4dp must PRESERVE the fraction — rounding

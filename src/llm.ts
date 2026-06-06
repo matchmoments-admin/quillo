@@ -37,6 +37,11 @@ const ANTHROPIC_HAIKU = "claude-haiku-4-5-20251001";
 // spans the wider Asia-Pacific geography). Kept here so it's a one-line change at switch time.
 const BEDROCK_HAIKU = "apac.anthropic.claude-haiku-4-5-20251001-v1:0";
 
+// Every model id getLLM can emit. The check-units golden asserts each has a PRICING entry in
+// usage.ts, so swapping the model here without updating pricing fails CI rather than silently
+// under-counting spend and defeating the budget gate (#80).
+export const LLM_MODEL_IDS = [ANTHROPIC_HAIKU, BEDROCK_HAIKU] as const;
+
 type ProviderProfile = Pick<Profile, "inference_provider" | "inference_region">;
 
 // Wraps a client + model into a metered LLM. `create` records usage after each call.

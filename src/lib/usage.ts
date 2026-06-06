@@ -26,6 +26,17 @@ const PRICING: Record<string, Rate> = {
   "apac.anthropic.claude-haiku-4-5-20251001-v1:0": HAIKU,
 };
 
+/**
+ * Does this model id have an explicit PRICING entry? If a future model swap in llm.ts isn't mirrored
+ * here, costCents would silently cost it at the Haiku rate (an Opus call would under-count ~5×),
+ * the daily_cost counter would under-read, and the budget gate would let far more real spend through
+ * than intended. The check-units golden asserts every id getLLM can emit is priced, so the dangerous
+ * swap-without-pricing fails CI rather than shipping silently (#80).
+ */
+export function isPricedModel(model: string): boolean {
+  return Object.prototype.hasOwnProperty.call(PRICING, model);
+}
+
 /** Cost in cents for one call. cents = Σ tokens × ($/1e6 tokens) × 100. */
 export function costCents(model: string, u: Usage): number {
   const r = PRICING[model] ?? HAIKU;
@@ -67,6 +78,12 @@ export function usageStatements(
   usage: Usage,
   discount = 1, // Message Batches bill at 50% → pass 0.5
 ): { cents: number; stmts: D1PreparedStatement[] } {
+  // No silent fallback: a model with no PRICING entry is still costed at the Haiku floor (so spend is
+  // never lost) but the mis-cost is made LOUD here — the budget gate would otherwise under-read it.
+  // The check-units golden keeps this from ever happening in practice; this is the runtime backstop.
+  if (!isPricedModel(model)) {
+    console.error(`usage: no PRICING entry for model "${model}" — costed at Haiku floor; add it to PRICING in src/lib/usage.ts`);
+  }
   const round4 = (n: number) => Math.round(n * 10_000) / 10_000; // bound float drift to 4dp
   const cents = round4(costCents(model, usage) * discount);
   const day = new Date().toISOString().slice(0, 10);

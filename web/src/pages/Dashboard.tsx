@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api";
 import { useActiveFy } from "../lib/activeFy";
@@ -45,7 +45,7 @@ export function Dashboard() {
           </Button>
         </Link>
         <Link to="/filing">
-          <Button className="h-9 px-4 text-xs uppercase tracking-wide">File</Button>
+          <Button className="h-9 px-4 text-xs uppercase tracking-wide">Handoff</Button>
         </Link>
       </div>
 
@@ -197,6 +197,18 @@ function ChecklistCard() {
   });
   const items = (data ?? []) as ChecklistItem[];
   const open = items.filter((i) => i.status === "open");
+
+  // Auto-generate the situation-driven checklist on first visit per FY, so "what's left to do" is the
+  // single source of truth on the handoff flow rather than a manual step a user can miss (#76). Safe to
+  // re-run — generateChecklist is idempotent (UNIQUE + ON CONFLICT DO NOTHING). The ref bounds it to one
+  // attempt per FY per mount so a genuinely empty result can't loop; the manual button stays as a fallback.
+  const autoGenFy = useRef<string | null>(null);
+  useEffect(() => {
+    if (isLoading || items.length || gen.isPending) return;
+    if (autoGenFy.current === label) return;
+    autoGenFy.current = label;
+    gen.mutate();
+  }, [isLoading, items.length, label, gen]);
 
   // Empty / not-yet-generated → the sage "checklist strip" CTA from the design.
   if (!isLoading && !items.length) {

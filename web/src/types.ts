@@ -147,6 +147,22 @@ export interface LoanProperty {
   deductible_interest_pct: number;
 }
 
+export interface CapitalLoss {
+  id: string;
+  prior_fy: number;
+  loss_cents: number;
+  asset_id: string | null;
+  notes: string | null;
+}
+
+export interface OpeningDepreciation {
+  id: string;
+  fy: number;
+  asset_id: string | null;
+  opening_adjustable_value_cents: number;
+  notes: string | null;
+}
+
 // Mirror of the server taxonomy (src/lib/taxonomy.ts BUCKETS) — keep in sync. Drives the rule
 // bucket <select> (Settings) and the per-transaction correction dropdown (TxnDetail). Previously
 // stale at 5, which silently hid income_*/refund/asset from both the rule editor and corrections

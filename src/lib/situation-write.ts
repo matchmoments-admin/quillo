@@ -246,6 +246,53 @@ export async function updateLoanProperty(
     .run();
 }
 
+// ── Prior-year carry-ins (capture-only; surfaced as defer findings, never auto-applied) ──
+export async function addCapitalLoss(
+  env: Env,
+  userId: string,
+  c: { prior_fy: number; loss_cents: number; asset_id?: string; notes?: string },
+): Promise<string> {
+  const id = uid();
+  await env.DB.prepare(
+    `INSERT INTO capital_loss_carryins (id, user_id, prior_fy, loss_cents, asset_id, notes) VALUES (?, ?, ?, ?, ?, ?)`,
+  )
+    .bind(id, userId, c.prior_fy, Math.max(0, Math.round(c.loss_cents)), c.asset_id ?? null, c.notes ?? null)
+    .run();
+  return id;
+}
+
+export async function listCapitalLosses(env: Env, userId: string) {
+  const res = await env.DB.prepare(
+    `SELECT id, prior_fy, loss_cents, asset_id, notes FROM capital_loss_carryins WHERE user_id = ? ORDER BY prior_fy DESC, created_at`,
+  )
+    .bind(userId)
+    .all();
+  return res.results ?? [];
+}
+
+export async function addDepreciationOpening(
+  env: Env,
+  userId: string,
+  d: { fy: number; opening_adjustable_value_cents: number; asset_id?: string; notes?: string },
+): Promise<string> {
+  const id = uid();
+  await env.DB.prepare(
+    `INSERT INTO depreciation_opening_balances (id, user_id, fy, asset_id, opening_adjustable_value_cents, notes) VALUES (?, ?, ?, ?, ?, ?)`,
+  )
+    .bind(id, userId, d.fy, d.asset_id ?? null, Math.max(0, Math.round(d.opening_adjustable_value_cents)), d.notes ?? null)
+    .run();
+  return id;
+}
+
+export async function listDepreciationOpenings(env: Env, userId: string) {
+  const res = await env.DB.prepare(
+    `SELECT id, fy, asset_id, opening_adjustable_value_cents, notes FROM depreciation_opening_balances WHERE user_id = ? ORDER BY fy DESC, created_at`,
+  )
+    .bind(userId)
+    .all();
+  return res.results ?? [];
+}
+
 // ── Soft per-FY sign-off (the user's own "ready to hand off" attestation; re-openable) ──
 export async function signOffFy(env: Env, userId: string, fy: number): Promise<void> {
   await env.DB.prepare(
@@ -266,7 +313,7 @@ export async function getFySignoff(env: Env, userId: string, fy: number): Promis
     .first<{ signed_off_at: string }>();
 }
 
-export async function deleteRow(env: Env, userId: string, table: "properties" | "entities" | "user_rules" | "accounts" | "persons" | "income" | "assets" | "loans_properties", id: string): Promise<void> {
+export async function deleteRow(env: Env, userId: string, table: "properties" | "entities" | "user_rules" | "accounts" | "persons" | "income" | "assets" | "loans_properties" | "capital_loss_carryins" | "depreciation_opening_balances", id: string): Promise<void> {
   // table is from a fixed allowlist (never user input) — safe to interpolate.
   await env.DB.prepare(`DELETE FROM ${table} WHERE id = ? AND user_id = ?`).bind(id, userId).run();
 }

@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import { BUCKETS } from "../types";
-import { Card, Spinner, BUCKET_LABEL, InfoTip } from "../components/ui";
+import { Card, Spinner, BUCKET_LABEL, InfoTip, money } from "../components/ui";
 import { EntityFields, PropertyFields, PersonFields, entityToBody, entityToValue, propertyToBody, personToBody, personToValue, emptyEntity, emptyProperty, emptyPerson, OWNED_STATUSES, TENANT_STATUSES, propertyStatusLabel, type EntityValue, type PersonValue, type PropertyValue } from "../components/SituationFields";
 import type { Person, Account, Property, LoanProperty } from "../types";
 
@@ -69,6 +69,19 @@ export function Settings() {
           <Empty>No loan links yet. Link a loan to the property it funds so its interest can be split out at tax time.</Empty>
         )}
         <AddLoanProperty accounts={accts.data ?? []} properties={s.properties} onDone={invalidate} />
+      </Section>
+
+      {/* Prior-year carry-ins — captured for your agent. CAPTURE-ONLY: never auto-applied to your
+          position (a capital loss offsets capital gains only; an opening value is the agent's to apply). */}
+      <Section
+        title={
+          <>
+            Prior-year carry-ins{" "}
+            <InfoTip tip="Carried-forward capital losses and opening depreciation values from last year. These are stored for your registered tax agent — Quillo never auto-applies them to your position (a capital loss offsets capital gains only, not income)." />
+          </>
+        }
+      >
+        <CarryIns />
       </Section>
 
       {/* Entities */}
@@ -420,6 +433,64 @@ function AddLoanProperty({ accounts, properties, onDone }: { accounts: Account[]
         Add link
       </button>
       {add.isError && <span className="text-xs text-danger">{(add.error as Error).message}</span>}
+    </div>
+  );
+}
+
+function CarryIns() {
+  const qc = useQueryClient();
+  const losses = useQuery({ queryKey: ["capital-losses"], queryFn: () => api.capitalLosses() });
+  const openings = useQuery({ queryKey: ["opening-depreciation"], queryFn: () => api.openingDepreciation() });
+  const toCents = (s: string) => Math.round((parseFloat(s) || 0) * 100);
+
+  const [lossFy, setLossFy] = useState("");
+  const [lossAmt, setLossAmt] = useState("");
+  const addLoss = useMutation({
+    mutationFn: () => api.addCapitalLoss({ prior_fy: Number(lossFy), loss_cents: toCents(lossAmt) }),
+    onSuccess: () => { setLossFy(""); setLossAmt(""); qc.invalidateQueries({ queryKey: ["capital-losses"] }); },
+  });
+  const delLoss = useMutation({ mutationFn: (id: string) => api.deleteCapitalLoss(id), onSuccess: () => qc.invalidateQueries({ queryKey: ["capital-losses"] }) });
+
+  const [depFy, setDepFy] = useState("");
+  const [depAmt, setDepAmt] = useState("");
+  const addDep = useMutation({
+    mutationFn: () => api.addOpeningDepreciation({ fy: Number(depFy), opening_adjustable_value_cents: toCents(depAmt) }),
+    onSuccess: () => { setDepFy(""); setDepAmt(""); qc.invalidateQueries({ queryKey: ["opening-depreciation"] }); },
+  });
+  const delDep = useMutation({ mutationFn: (id: string) => api.deleteOpeningDepreciation(id), onSuccess: () => qc.invalidateQueries({ queryKey: ["opening-depreciation"] }) });
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <div className="mb-1 text-xs font-medium">Carried-forward capital losses</div>
+        {(losses.data ?? []).map((l) => (
+          <div key={l.id} className="flex items-center justify-between rounded-lg bg-surface px-3 py-2 text-sm">
+            <span>FY {l.prior_fy} · {money(l.loss_cents)} <span className="text-muted">— offsets future capital gains only, not income</span></span>
+            <button onClick={() => delLoss.mutate(l.id)} disabled={delLoss.isPending} className={del}>delete</button>
+          </div>
+        ))}
+        {!(losses.data ?? []).length && <Empty>None recorded. Add a prior-year capital loss for your agent to carry forward.</Empty>}
+        <div className="flex flex-wrap items-center gap-2 pt-1">
+          <input className={`${input} w-36`} type="number" placeholder="Prior FY (e.g. 2023)" value={lossFy} onChange={(e) => setLossFy(e.target.value)} aria-label="Prior FY" />
+          <input className={`${input} w-28`} type="number" placeholder="$ loss" value={lossAmt} onChange={(e) => setLossAmt(e.target.value)} aria-label="Capital loss in dollars" />
+          <button className={btn} disabled={!lossFy || !lossAmt || addLoss.isPending} onClick={() => addLoss.mutate()}>Add</button>
+        </div>
+      </div>
+      <div>
+        <div className="mb-1 text-xs font-medium">Opening depreciation (adjustable values)</div>
+        {(openings.data ?? []).map((d) => (
+          <div key={d.id} className="flex items-center justify-between rounded-lg bg-surface px-3 py-2 text-sm">
+            <span>FY {d.fy} · {money(d.opening_adjustable_value_cents)} <span className="text-muted">— for your agent to apply</span></span>
+            <button onClick={() => delDep.mutate(d.id)} disabled={delDep.isPending} className={del}>delete</button>
+          </div>
+        ))}
+        {!(openings.data ?? []).length && <Empty>None recorded. Add an opening adjustable value from last year's depreciation schedule.</Empty>}
+        <div className="flex flex-wrap items-center gap-2 pt-1">
+          <input className={`${input} w-36`} type="number" placeholder="FY (e.g. 2024)" value={depFy} onChange={(e) => setDepFy(e.target.value)} aria-label="FY" />
+          <input className={`${input} w-32`} type="number" placeholder="$ opening value" value={depAmt} onChange={(e) => setDepAmt(e.target.value)} aria-label="Opening adjustable value in dollars" />
+          <button className={btn} disabled={!depFy || !depAmt || addDep.isPending} onClick={() => addDep.mutate()}>Add</button>
+        </div>
+      </div>
     </div>
   );
 }

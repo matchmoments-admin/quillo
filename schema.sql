@@ -151,6 +151,31 @@ CREATE TABLE IF NOT EXISTS fy_signoff (
   PRIMARY KEY (user_id, fy)
 );
 
+-- 0029: prior-year carry-ins captured at Set-up. CAPTURE-ONLY — surfaced as defer-to-agent findings,
+-- never auto-applied to the headline (capital losses offset capital gains only; opening adjustable
+-- values changing depreciation is a STOP-and-ask money-output call).
+CREATE TABLE IF NOT EXISTS capital_loss_carryins (
+  id          TEXT PRIMARY KEY,
+  user_id     TEXT NOT NULL,
+  prior_fy    INTEGER NOT NULL,
+  loss_cents  INTEGER NOT NULL,
+  asset_id    TEXT,
+  notes       TEXT,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_caploss_user ON capital_loss_carryins(user_id);
+
+CREATE TABLE IF NOT EXISTS depreciation_opening_balances (
+  id                            TEXT PRIMARY KEY,
+  user_id                       TEXT NOT NULL,
+  fy                            INTEGER NOT NULL,
+  asset_id                      TEXT,
+  opening_adjustable_value_cents INTEGER NOT NULL,
+  notes                         TEXT,
+  created_at                    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_depopen_user ON depreciation_opening_balances(user_id, fy);
+
 -- ── Statement import batches (CSV/PDF) ────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS statements (
   id             TEXT PRIMARY KEY,

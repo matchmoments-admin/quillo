@@ -663,7 +663,7 @@ console.log("readiness");
   const noSignals = (p: Partial<FilingReadinessSignals> = {}): FilingReadinessSignals => ({
     unknownBucketCents: 0, unknownBucketN: 0, lowConfidenceN: 0, needsReviewIncomeN: 0, needsReviewAssetsN: 0,
     hasDividendStatementDoc: true, rentalPropsMissingSummary: [], disposedAssetsN: 0,
-    instantAssetWriteOffCentsThisFy: null, instantAssetWriteOffCentsPrevFy: null, ...p,
+    instantAssetWriteOffCentsThisFy: null, instantAssetWriteOffCentsPrevFy: null, capitalLossCarryinCents: 0, ...p,
   });
   const run = (r: Report, sig: FilingReadinessSignals, claimMatches: ClaimRule[] = [], sit = mkSituation()) =>
     assessReadiness({ report: r, situation: sit, claimMatches, signals: sig, generatedAt: "2026-06-03T00:00:00Z" });
@@ -721,10 +721,17 @@ console.log("readiness");
   // No trust → no trust finding.
   check("no trust entity → no trust finding", !run(mkReport(), noSignals()).findings.some((f) => f.id.startsWith("trust_resolution:")));
 
+  // Capital-loss carry-in → a defer-to-agent info finding, and it is NEVER applied to the headline
+  // (capital losses offset capital gains only). taxable_position must equal the report's, unchanged.
+  const capLoss = run(trustReport, noSignals({ capitalLossCarryinCents: 800_000 }));
+  check("capital-loss carry-in → defer info finding", capLoss.findings.some((f) => f.id === "capital_loss_carryin" && f.defer_to_agent && f.severity === "info"));
+  check("capital-loss carry-in does NOT change the position", capLoss.position.indicative_taxable_position_cents === trustReport.taxable_position_cents);
+  check("no capital-loss → no capital-loss finding", !run(trustReport, noSignals()).findings.some((f) => f.id === "capital_loss_carryin"));
+
   // THE INVARIANT: no generated finding/position text asserts tax payable, a refund, or a rate.
   // (The fixed position caption intentionally NEGATES those words and is excluded — it's a vetted constant.)
   const denylist = /refund|tax payable|marginal rate|\b\d{1,2}%\s*(tax|bracket)/i;
-  const everything = [unknown, franking, rental, iawo, disposed, judged, clean, trust];
+  const everything = [unknown, franking, rental, iawo, disposed, judged, clean, trust, capLoss];
   const generatedText = everything.flatMap((r) => [
     ...r.findings.flatMap((f) => [f.title, f.general_info_note]),
     ...r.position.lines.flatMap((l) => [l.basis, l.why]),

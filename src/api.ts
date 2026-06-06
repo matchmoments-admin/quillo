@@ -35,6 +35,9 @@ import {
   updateAccount,
   addLoanProperty,
   updateLoanProperty,
+  signOffFy,
+  clearSignOffFy,
+  getFySignoff,
   ensureTenant,
   deleteRow,
   listKeys,
@@ -352,6 +355,19 @@ export async function handleApi(
     }
     if (m === "DELETE" && id) {
       await deleteRow(env, uid, "accounts", id);
+      return json({ ok: true });
+    }
+  }
+  // ── Soft per-FY sign-off (attestation only — Quillo never lodges) ─────────────
+  if (resource === "signoff") {
+    const fy = Number(url.searchParams.get("fy")) || currentFyStartYear();
+    if (m === "GET") return json({ signoff: await getFySignoff(env, uid, fy) });
+    if (m === "POST") {
+      await signOffFy(env, uid, fy);
+      return json({ signoff: await getFySignoff(env, uid, fy) });
+    }
+    if (m === "DELETE") {
+      await clearSignOffFy(env, uid, fy);
       return json({ ok: true });
     }
   }

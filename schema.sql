@@ -143,6 +143,14 @@ CREATE TABLE IF NOT EXISTS loans_properties (
 CREATE INDEX IF NOT EXISTS idx_loanprop_account ON loans_properties(user_id, loan_account_id);
 CREATE INDEX IF NOT EXISTS idx_loanprop_property ON loans_properties(user_id, property_id);
 
+-- 0028: soft, per-FY sign-off (user's own "ready to hand off" attestation; re-openable, never a lock).
+CREATE TABLE IF NOT EXISTS fy_signoff (
+  user_id       TEXT NOT NULL,
+  fy            INTEGER NOT NULL,
+  signed_off_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (user_id, fy)
+);
+
 -- ── Statement import batches (CSV/PDF) ────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS statements (
   id             TEXT PRIMARY KEY,

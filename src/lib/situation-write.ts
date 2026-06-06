@@ -246,6 +246,26 @@ export async function updateLoanProperty(
     .run();
 }
 
+// ── Soft per-FY sign-off (the user's own "ready to hand off" attestation; re-openable) ──
+export async function signOffFy(env: Env, userId: string, fy: number): Promise<void> {
+  await env.DB.prepare(
+    `INSERT INTO fy_signoff (user_id, fy, signed_off_at) VALUES (?, ?, datetime('now'))
+     ON CONFLICT(user_id, fy) DO UPDATE SET signed_off_at = datetime('now')`,
+  )
+    .bind(userId, fy)
+    .run();
+}
+
+export async function clearSignOffFy(env: Env, userId: string, fy: number): Promise<void> {
+  await env.DB.prepare(`DELETE FROM fy_signoff WHERE user_id = ? AND fy = ?`).bind(userId, fy).run();
+}
+
+export async function getFySignoff(env: Env, userId: string, fy: number): Promise<{ signed_off_at: string } | null> {
+  return await env.DB.prepare(`SELECT signed_off_at FROM fy_signoff WHERE user_id = ? AND fy = ?`)
+    .bind(userId, fy)
+    .first<{ signed_off_at: string }>();
+}
+
 export async function deleteRow(env: Env, userId: string, table: "properties" | "entities" | "user_rules" | "accounts" | "persons" | "income" | "assets" | "loans_properties", id: string): Promise<void> {
   // table is from a fixed allowlist (never user input) — safe to interpolate.
   await env.DB.prepare(`DELETE FROM ${table} WHERE id = ? AND user_id = ?`).bind(id, userId).run();

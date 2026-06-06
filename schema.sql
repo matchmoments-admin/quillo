@@ -307,9 +307,27 @@ CREATE TABLE IF NOT EXISTS user_rules (
   created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- 0023: Stage B clarify-by-pattern — one question per recurring merchant stem (per FY).
+CREATE TABLE IF NOT EXISTS clarify_questions (
+  id            TEXT PRIMARY KEY,
+  user_id       TEXT NOT NULL,
+  fy            TEXT NOT NULL,
+  group_key     TEXT NOT NULL,
+  sample_desc   TEXT,
+  direction     TEXT,
+  n             INTEGER NOT NULL DEFAULT 0,
+  total_cents   INTEGER NOT NULL DEFAULT 0,
+  suggested_json TEXT,
+  status        TEXT NOT NULL DEFAULT 'open',
+  answer_json   TEXT,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(user_id, fy, group_key)
+);
+
 CREATE INDEX IF NOT EXISTS idx_txn_user   ON transactions(user_id, status);
 CREATE INDEX IF NOT EXISTS idx_corr_user  ON corrections(user_id);
 CREATE INDEX IF NOT EXISTS idx_corr_batch ON corrections(user_id, batch_id);
+CREATE INDEX IF NOT EXISTS idx_clarify_user_status ON clarify_questions(user_id, status);
 CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_log(user_id, seq);
 CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_prop_user  ON properties(user_id);

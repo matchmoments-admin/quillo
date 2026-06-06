@@ -501,3 +501,30 @@ export interface BatchResult {
   updated: number;
   failures: { txnId: string; error: string }[];
 }
+
+// Stage B — clarify-by-pattern
+export type ClarifyAnswerKind = "income_property" | "income_business" | "income_personal" | "ignore" | "bucket";
+export interface ClarifySuggestion {
+  label: string;
+  kind: ClarifyAnswerKind;
+  bucket?: string;
+  ato_label?: string;
+  needs_property?: boolean;
+}
+export interface ClarifyQuestion {
+  id: string;
+  fy: string;
+  group_key: string;
+  sample_desc: string | null;
+  direction: string | null;
+  n: number;
+  total_cents: number;
+  suggestions: ClarifySuggestion[];
+  status: string;
+}
+export interface ClarifyAnswer {
+  kind: ClarifyAnswerKind;
+  bucket?: string;
+  ato_label?: string;
+  property_id?: string;
+}

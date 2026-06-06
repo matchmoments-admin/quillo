@@ -16,6 +16,7 @@ export const FEATURE_KEYS = [
   "guide_me",
   "claim_review",
   "position_excludes_nondeductible",
+  "accountant_pass",
 ] as const;
 
 export type FeatureKey = (typeof FEATURE_KEYS)[number];

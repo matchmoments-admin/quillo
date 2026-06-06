@@ -693,6 +693,33 @@ export async function handleApi(
     }
   }
 
+  // ── Stage B: clarify-by-pattern (flag accountant_pass) — 404 when off ──────
+  // GET  /api/clarify?fy=            → open questions (biggest-dollar first)
+  // POST /api/clarify/scan?fy=       → (re)scan leftovers into grouped questions
+  // POST /api/clarify/:id/answer     → { answer } apply to the group + learn a rule
+  // POST /api/clarify/:id/dismiss    → terminal dismiss
+  if (resource === "clarify") {
+    if (!featureOn(env, "accountant_pass")) return json({ error: "not available" }, 404);
+    if (m === "GET" && !id) {
+      const fyParam = url.searchParams.get("fy");
+      return json({ questions: await stub.listClarifyQuestions(uid, fyParam ? Number(fyParam) : undefined) });
+    }
+    if (m === "POST" && id === "scan") {
+      const fy = Number(url.searchParams.get("fy")) || currentFyStartYear();
+      return json(await stub.runClarifyScan(uid, fy));
+    }
+    if (m === "POST" && id && sub === "answer") {
+      const { answer } = (await req.json().catch(() => ({}))) as { answer?: { kind?: string; bucket?: string; ato_label?: string; property_id?: string } };
+      if (!answer || typeof answer.kind !== "string") return json({ error: "answer.kind required" }, 400);
+      try {
+        return json(await stub.answerClarify(uid, id, answer as import("./agent").ClarifyAnswer));
+      } catch (e) {
+        return json({ error: (e as Error).message }, 400);
+      }
+    }
+    if (m === "POST" && id && sub === "dismiss") return json(await stub.dismissClarify(uid, id));
+  }
+
   // ── Admin (founder only — cross-tenant) ───────────────────────────────────
   // Every admin route requires the caller's profile to hold the 'admin' role; the cross-tenant
   // reads hit D1 directly (the per-tenant DO is the wrong place for platform aggregates).

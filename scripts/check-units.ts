@@ -3,6 +3,7 @@
 // categorisation. No worker runtime / D1 / Claude — these are the fast, deterministic
 // regression guards for the rules we keep re-learning. Run: npm run test:units
 import { reconcileStatement, deriveBalances, isTransferLike, classifyMovement, movementTreatment, signedCents, lineFingerprint, type StatementLine } from "../src/lib/statements";
+import { groupKey, groupForClarify, rulePatternForStem } from "../src/lib/clarify";
 import { batchStatementStatus, isStaleBatch, BATCH_MAX_AGE_MS } from "../src/lib/batch";
 import { extractSituationDraft, parseBatchMessage, mapBatchItems, type BatchItem } from "../src/extract";
 import type { LLM } from "../src/llm";
@@ -133,6 +134,59 @@ console.log("movementTreatment");
   check("internal_transfer either direction → ignorable", movementTreatment("internal_transfer", "credit") === "ignorable" && movementTreatment("internal_transfer", "debit") === "ignorable");
   check("card_payment → ignorable", movementTreatment("card_payment", "debit") === "ignorable");
   check("none → skip", movementTreatment("none", "debit") === "skip");
+}
+
+// ── Stage B clarify engine: group_key normalization + grouping/thresholds ─────
+console.log("clarify.groupKey");
+{
+  // The flagship case: 9 phrasings of the same payee collapse to ONE key.
+  const phrasings = [
+    "Transfer From Catherine Soper",
+    "Direct Credit 123456 Catherine Soper",
+    "OSKO Deposit Catherine Soper Rent",
+    "Catherine Soper PayID 06/05",
+    "Transfer from CATHERINE SOPER 1234567",
+    "NetBank Transfer Catherine Soper",
+    "Catherine  Soper",
+    "PayTo Catherine Soper Value Date 05/06",
+    "Anytime Transfer Catherine Soper Rent Payment",
+  ];
+  const keys = new Set(phrasings.map((p) => groupKey(p)));
+  check("9 Catherine Soper phrasings collapse to ONE group_key", keys.size === 1 && [...keys][0] === "catherine soper");
+  // BPAY billers with distinct names stay SEPARATE.
+  check("BPAY Origin Energy → its own stem", groupKey("BPAY Origin Energy 12345") === "energy origin");
+  check("BPAY billers with different names don't merge", groupKey("BPAY Origin Energy 12345") !== groupKey("BPAY Telstra Corp 999"));
+  // No usable identity → null (never forms a junk group).
+  check("a bare numeric/noise description → null (ungroupable)", groupKey("OSKO Deposit 123456 06/05") === null);
+  check("empty → null", groupKey("") === null && groupKey(null) === null);
+  check("amazon variants merge (short suffix dropped)", groupKey("AMAZON AU") === groupKey("AMAZON US") && groupKey("AMAZON AU") === "amazon");
+  // The learned-rule pattern must be a REAL substring of the raw merchant (the sorted stem isn't).
+  const stem = groupKey("BPAY Origin Energy 12345")!; // "energy origin"
+  const pat = rulePatternForStem(stem);
+  check("rule pattern is a token of the stem", stem.split(" ").includes(pat));
+  check("rule pattern substring-matches the raw merchant (sorted stem would NOT)", "bpay origin energy 12345".includes(pat) && !"bpay origin energy 12345".includes(stem));
+}
+
+console.log("clarify.groupForClarify");
+{
+  const mk = (raw: string, dir: "debit" | "credit", cents: number) => ({ raw_description: raw, merchant: raw, amount_cents: cents, amount_aud_cents: cents, direction: dir });
+  // 3 same-payee credits → one group (K=3); a singleton is NOT grouped.
+  const rows = [
+    mk("Transfer From Catherine Soper", "credit", 50000),
+    mk("Transfer From Catherine Soper", "credit", 50000),
+    mk("Transfer From Catherine Soper", "credit", 50000),
+    mk("Coles 4567 Bondi", "debit", 8000), // singleton → not grouped
+  ];
+  const groups = groupForClarify(rows);
+  check("recurring credit (×3) forms a group", groups.length === 1 && groups[0]!.group_key === "catherine soper");
+  check("the group carries count + total + credit direction", groups[0]!.n === 3 && groups[0]!.total_cents === 150000 && groups[0]!.direction === "credit");
+  check("singleton (×1, sub-threshold) is NOT grouped (stays in review queue)", !groups.some((g) => g.group_key.includes("coles")));
+  // A single big-dollar debit clears the $ threshold even with count 1.
+  const big = groupForClarify([mk("ATO Tax Agent Fee", "debit", 30000)]);
+  check("a single >=$250 pattern clears the $ threshold", big.length === 1 && big[0]!.direction === "debit");
+  // Direction-aware suggestions.
+  check("credit group suggests rental income with property pick", groups[0]!.suggestions.some((s) => s.kind === "income_property" && s.needs_property));
+  check("debit group suggests private (payg) + ignore", big[0]!.suggestions.some((s) => s.kind === "bucket" && s.bucket === "payg") && big[0]!.suggestions.some((s) => s.kind === "ignore"));
 }
 
 // ── signedCents ──────────────────────────────────────────────────────────────

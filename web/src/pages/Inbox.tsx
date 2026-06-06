@@ -147,7 +147,7 @@ export function Inbox() {
           <ul className="space-y-3">
             {txns.map((t) => (
               <li key={t.id}>
-                <Row txn={t} selected={selected.has(t.id)} onToggle={() => toggleSel(t.id)} />
+                <Row txn={t} selected={selected.has(t.id)} onToggle={() => toggleSel(t.id)} showConfirm={tab === "needs_review"} />
               </li>
             ))}
           </ul>
@@ -201,11 +201,22 @@ function UndoToast({ flash, onClose }: { flash: BulkDone; onClose: () => void })
   );
 }
 
-function Row({ txn, selected, onToggle }: { txn: Txn; selected: boolean; onToggle: () => void }) {
+function Row({ txn, selected, onToggle, showConfirm = false }: { txn: Txn; selected: boolean; onToggle: () => void; showConfirm?: boolean }) {
+  const qc = useQueryClient();
   const isLine = txn.kind === "bank_line";
+  // Inline "Confirm as-is" for the Needs-review tab: accept the current bucket and drop the row from
+  // the queue WITHOUT opening the detail page and bouncing back to "/" each time (#73). Mirrors
+  // TxnDetail's confirm — re-applying the same bucket records acceptance and clears needs_review.
+  const confirm = useMutation({
+    mutationFn: () => api.correct(txn.id, "bucket", txn.bucket!),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["transactions"] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+  });
   return (
-    // The checkbox sits OUTSIDE the <Link> — interactive controls nested inside an <a> are invalid
-    // HTML and swallow the navigation click.
+    // The checkbox + confirm button sit OUTSIDE the <Link> — interactive controls nested inside an <a>
+    // are invalid HTML and swallow the navigation click.
     <div className="flex items-center gap-2">
       <input type="checkbox" checked={selected} onChange={onToggle} className="h-4 w-4 flex-none" aria-label="Select transaction" />
       <Link to={`/txn/${txn.id}`} className="min-w-0 flex-1">
@@ -251,6 +262,19 @@ function Row({ txn, selected, onToggle }: { txn: Txn; selected: boolean; onToggl
           </div>
         </Card>
       </Link>
+      {showConfirm && (
+        <div className="flex-none">
+          <button
+            onClick={() => confirm.mutate()}
+            disabled={confirm.isPending || !txn.bucket}
+            title={txn.bucket ? "Accept the current bucket and clear it from review" : "Open it to choose a bucket first"}
+            className="rounded-lg border border-line px-3 py-2 text-sm font-medium transition hover:bg-surface disabled:opacity-50"
+          >
+            {confirm.isPending ? "…" : "Confirm ✓"}
+          </button>
+          {confirm.isError && <p className="mt-1 max-w-[7rem] text-right text-xs text-danger">{(confirm.error as Error).message}</p>}
+        </div>
+      )}
     </div>
   );
 }

@@ -108,10 +108,18 @@ export interface Report {
  * no apportioned amount falls back to gross, so flag-off (and every un-split row) is byte-identical.
  */
 export function positionAmountCents(
-  row: { deductible_amount_cents?: number | null; amount_aud_cents?: number | null; amount_cents?: number | null },
+  row: { deductibility?: string | null; deductible_amount_cents?: number | null; amount_aud_cents?: number | null; amount_cents?: number | null },
   honorApportion: boolean,
 ): number {
-  if (honorApportion && row.deductible_amount_cents != null) return row.deductible_amount_cents;
+  // Honour the apportioned amount ONLY for rows the user has explicitly CONFIRMED deductible — the
+  // state the guided loan-split (and a year-end review) writes. Every other state keeps gross. This is
+  // critical: the 0021 backfill set deductible_amount_cents=0 on likely_not (private) rows, and those
+  // must still DISPLAY their gross in the excluded section (they're filtered out of the headline
+  // anyway by deductionGroupForRow). Scoping to confirmed_deductible also makes enabling the flag a
+  // no-op for all existing data — only freshly-split/confirmed rows ever diverge from gross.
+  if (honorApportion && row.deductibility === "confirmed_deductible" && row.deductible_amount_cents != null) {
+    return row.deductible_amount_cents;
+  }
   return row.amount_aud_cents ?? row.amount_cents ?? 0;
 }
 
@@ -121,8 +129,13 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   // (deductible_amount_cents) of a row instead of the gross — see positionAmountCents. The SUM
   // expressions below MUST mirror that helper exactly. Off ⇒ byte-identical legacy totals.
   const honorApportion = featureOn(env, "loan_split");
-  const amtExpr = honorApportion ? "COALESCE(deductible_amount_cents, amount_aud_cents, amount_cents)" : "COALESCE(amount_aud_cents, amount_cents)";
-  const amtExprT = honorApportion ? "COALESCE(t.deductible_amount_cents, t.amount_aud_cents, t.amount_cents)" : "COALESCE(t.amount_aud_cents, t.amount_cents)";
+  // Mirrors positionAmountCents EXACTLY: only confirmed_deductible rows count their apportioned amount;
+  // everything else (incl. likely_not rows the 0021 backfill stamped with deductible_amount_cents=0)
+  // keeps gross. `p` is the table-alias prefix ("" for byBucket, "t." for the property join).
+  const claim = (p: string) =>
+    `CASE WHEN ${p}deductibility = 'confirmed_deductible' AND ${p}deductible_amount_cents IS NOT NULL THEN ${p}deductible_amount_cents ELSE COALESCE(${p}amount_aud_cents, ${p}amount_cents) END`;
+  const amtExpr = honorApportion ? claim("") : "COALESCE(amount_aud_cents, amount_cents)";
+  const amtExprT = honorApportion ? claim("t.") : "COALESCE(t.amount_aud_cents, t.amount_cents)";
 
   // AUD totals (fall back to original when already AUD / pre-migration). Exclude duplicates.
   // Grouped by (bucket, ato_label, deductibility) so the deductibility-aware position can filter per

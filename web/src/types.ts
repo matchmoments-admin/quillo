@@ -568,3 +568,9 @@ export interface SuggestedDeduction {
   amount_aud_cents: number | null;
   txn_date: string | null;
 }
+
+// Per-FY work-use inputs for the computed WFH fixed-rate + car cents-per-km deductions (#67).
+export interface WorkUse {
+  wfh_hours: number | null;
+  car_work_km: number | null;
+}

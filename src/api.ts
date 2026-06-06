@@ -470,6 +470,23 @@ export async function handleApi(
     return json(await stub.rollForward(uid, fy));
   }
 
+  // ── Work-use inputs (computed WFH fixed-rate + car cents-per-km deductions) ──
+  // GET reads D1 directly; POST is an audited write through the DO. fy is the FY start year.
+  if (resource === "work-use") {
+    const fy = Number(url.searchParams.get("fy")) || currentFyStartYear();
+    if (m === "GET") {
+      const row = await env.DB.prepare(`SELECT wfh_hours, car_work_km FROM work_use_inputs WHERE user_id = ? AND fy = ?`)
+        .bind(uid, fy)
+        .first<{ wfh_hours: number | null; car_work_km: number | null }>();
+      return json({ work_use: row ?? { wfh_hours: null, car_work_km: null } });
+    }
+    if (m === "POST") {
+      const body = (await req.json().catch(() => ({}))) as { wfh_hours?: number | null; car_work_km?: number | null };
+      const num = (v: unknown): number | null => (v === null || v === undefined || v === "" || !Number.isFinite(Number(v)) ? null : Math.max(0, Number(v)));
+      return json(await stub.setWorkUseInputs(uid, { fy, wfh_hours: num(body.wfh_hours), car_work_km: num(body.car_work_km) }));
+    }
+  }
+
   // ── FY checklist ──────────────────────────────────────────────────────────
   if (resource === "checklist") {
     if (m === "GET" && !id) return json({ checklist: await listChecklist(env, uid, url.searchParams.get("fy") ?? undefined) });

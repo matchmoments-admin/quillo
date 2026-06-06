@@ -558,3 +558,15 @@ CREATE TABLE IF NOT EXISTS waitlist (
   created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_waitlist_created ON waitlist(created_at);
+
+-- ── Per-FY work-use inputs (computed WFH / car deductions) ────────────────────
+-- See migrations/0026_work_use_inputs.sql. wfh_hours → fixed-rate method; car_work_km → cents-per-km
+-- method. One row per user per FY. Flag-gated (wfh_car_methods) in report.ts.
+CREATE TABLE IF NOT EXISTS work_use_inputs (
+  user_id      TEXT NOT NULL,
+  fy           INTEGER NOT NULL,
+  wfh_hours    REAL,
+  car_work_km  REAL,
+  updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (user_id, fy)
+);

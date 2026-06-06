@@ -66,7 +66,9 @@
       "low_value_pool_threshold_cents": 100000,
       "immediate_non_business_cents": 30000,
       "super_concessional_cap_cents": 3000000,
-      "wfh_fixed_rate_cents_per_hour": 70
+      "wfh_fixed_rate_cents_per_hour": 70,
+      "car_cents_per_km": 88,
+      "car_km_cap": 5000
     },
     "2025-26": {
       "instant_asset_write_off_cents": 2000000,
@@ -74,7 +76,9 @@
       "low_value_pool_threshold_cents": 100000,
       "immediate_non_business_cents": 30000,
       "super_concessional_cap_cents": 3000000,
-      "wfh_fixed_rate_cents_per_hour": 70
+      "wfh_fixed_rate_cents_per_hour": 70,
+      "car_cents_per_km": 88,
+      "car_km_cap": 5000
     },
     "2026-27": {
       "instant_asset_write_off_cents": 100000,
@@ -82,7 +86,9 @@
       "low_value_pool_threshold_cents": 100000,
       "immediate_non_business_cents": 30000,
       "super_concessional_cap_cents": 3250000,
-      "wfh_fixed_rate_cents_per_hour": 70
+      "wfh_fixed_rate_cents_per_hour": 70,
+      "car_cents_per_km": 88,
+      "car_km_cap": 5000
     }
   },
   "payg_deductibility": {

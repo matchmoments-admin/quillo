@@ -12,6 +12,7 @@ import { isValidAbn, normaliseAbn } from "../web/src/lib/abn";
 import { billableCents } from "../src/lib/billing";
 import { costCents, isPricedModel } from "../src/lib/usage";
 import { LLM_MODEL_IDS } from "../src/llm";
+import { computeWorkMethodDeductions, workUseRatesForFy } from "../src/lib/work-use";
 import { BUCKETS } from "../src/lib/taxonomy";
 import { applyUserRules } from "../src/lib/rules";
 import type { UserRule } from "../src/lib/db";
@@ -796,6 +797,28 @@ console.log("deductibility (deny-by-default)");
   const legacyDeduction = legacy.position.lines.filter((l) => l.group === "deduction").reduce((s, l) => s + l.amount_cents, 0);
   check("OFF: payg + property all count (legacy basis)", legacyDeduction === 50_000 + 323_035 + 120_000 + 200_000);
   check("OFF: no payg_unresolved finding", !legacy.findings.some((fd) => fd.id === "payg_unresolved"));
+
+  // ── #67 work-use computed deductions: pure calc + readiness lines reconcile to the headline ──
+  const rates = { wfh_cents_per_hour: 70, car_cents_per_km: 88, car_km_cap: 5000 };
+  const wfhOnly = computeWorkMethodDeductions({ wfh_hours: 600, car_work_km: null }, rates);
+  check("WFH fixed rate: 600 hrs × 70c = $420", wfhOnly.wfh_cents === 42_000 && wfhOnly.car_cents === 0 && wfhOnly.total_cents === 42_000);
+  const carCapped = computeWorkMethodDeductions({ wfh_hours: null, car_work_km: 8000 }, rates);
+  check("car cents/km is capped at 5,000 km (5000 × 88c = $4,400, not 8000)", carCapped.car_cents === 440_000);
+  const both = computeWorkMethodDeductions({ wfh_hours: 100, car_work_km: 1000 }, rates);
+  check("both methods sum (100×70c + 1000×88c)", both.total_cents === 7_000 + 88_000);
+  check("negative/empty inputs floor to 0", computeWorkMethodDeductions({ wfh_hours: -5, car_work_km: null }, rates).total_cents === 0);
+  check("workUseRatesForFy falls back to defaults when a field is missing", workUseRatesForFy({}).car_cents_per_km === 88 && workUseRatesForFy(undefined).wfh_cents_per_hour === 70);
+
+  // Readiness renders the computed amounts as "deduction" lines (so lines-sum still == headline) and
+  // says they REPLACE the itemised costs (no double-claim). Mock a report carrying work_method.
+  const wmReport = { ...mkR([]), work_method: both } as unknown as Report;
+  const wmReady = assessReadiness({ report: wmReport, situation: mkS(), claimMatches: [], signals: mkSig(), generatedAt: "2026-06-03T00:00:00Z", excludeNonDeductible: true });
+  const wmLineSum = wmReady.position.lines.filter((l) => l.group === "deduction").reduce((s, l) => s + l.amount_cents, 0);
+  check("work-method amounts render as deduction lines (sum == computed total)", wmLineSum === both.total_cents);
+  check("work-method 'why' explains the no-double-claim exclusion", wmReady.position.lines.some((l) => /not also claimed|aren't claimed again|stay excluded|already covers/i.test(l.why)));
+  check("work-method lines never trip the tax-advice denylist", !wmReady.position.lines.flatMap((l) => [l.why, l.basis]).some((t) => /refund|tax payable|marginal rate|\b\d{1,2}%\s*(tax|bracket)/i.test(t)));
+  // Absent work_method (flag off / no inputs) → no work lines, legacy reconciliation intact.
+  check("no work_method ⇒ no work-use deduction lines (legacy intact)", !assessReadiness({ report: mkR([]), situation: mkS(), claimMatches: [], signals: mkSig(), generatedAt: "2026-06-03T00:00:00Z", excludeNonDeductible: true }).position.lines.some((l) => /Working from home|Car \(cents/.test(l.label)));
 }
 
 // ── Taxonomy ↔ rule pack ↔ UI agree (no silent bucket drift) ─────────────────

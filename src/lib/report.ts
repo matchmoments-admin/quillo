@@ -2,6 +2,8 @@ import type { Env } from "../env";
 import { COUNTABLE, COUNTABLE_INCOME } from "./queries";
 import { incomeTotals, depreciationTotals, type IncomeTotals } from "./ledger-totals";
 import { featureOn } from "./features";
+import auV1RulePack from "../rulepacks/au-v1.json";
+import { computeWorkMethodDeductions, workUseRatesForFy, type WorkMethodDeductions } from "./work-use";
 
 // Australian FY is Jul–Jun. Given a start year Y, the FY runs Y-07-01 .. (Y+1)-06-30.
 export function currentFyStartYear(now = new Date()): number {
@@ -89,6 +91,11 @@ export interface Report {
   company_tracked_cents: number;       // BUSINESS/'company'-bucket spend this FY — tracked, NOT in the individual position
   refunds_cents: number;               // refund/reimbursement credits this FY (0 unless refund_netting is on)
   resolved_deductible_cents: number;   // spend a year-end review has CONFIRMED deductible (~0 until review)
+  // Computed WFH (fixed-rate) + car (cents-per-km) deductions from the per-FY work_use_inputs. Present
+  // only when the `wfh_car_methods` flag is on AND the user supplied hours/km. Included in
+  // total_deductions_cents. The itemised running costs these methods cover stay excluded (deny-by-
+  // default needs_apportionment), so there's no double-claim. undefined ⇒ byte-identical legacy totals.
+  work_method?: WorkMethodDeductions;
   taxable_position_cents: number;      // total_income − total_deductions − depreciation (indicative)
 }
 
@@ -312,7 +319,24 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
       .first<{ total: number }>();
     refunds_cents = refundRow?.total ?? 0;
   }
-  const total_deductions_cents = Math.max(0, gross_deductions_cents - refunds_cents);
+  // Computed work-use deductions (WFH fixed-rate + car cents-per-km), flag-gated. These are NOT a %
+  // of tracked spend — they're calculated from the per-FY work_use_inputs and REPLACE the itemised
+  // running costs they cover (those stay excluded as needs_apportionment, so no double-claim). Off by
+  // default (flag) ⇒ work_method stays undefined and the totals below are byte-identical to before.
+  const fyLabel = `${startYear}-${String((startYear + 1) % 100).padStart(2, "0")}`;
+  let work_method: WorkMethodDeductions | undefined;
+  if (featureOn(env, "wfh_car_methods")) {
+    const wu = await env.DB.prepare(`SELECT wfh_hours, car_work_km FROM work_use_inputs WHERE user_id = ? AND fy = ?`)
+      .bind(userId, startYear)
+      .first<{ wfh_hours: number | null; car_work_km: number | null }>();
+    if (wu && ((wu.wfh_hours ?? 0) > 0 || (wu.car_work_km ?? 0) > 0)) {
+      const thresholds = (auV1RulePack as { thresholds_by_fy?: Record<string, { wfh_fixed_rate_cents_per_hour?: number; car_cents_per_km?: number; car_km_cap?: number }> }).thresholds_by_fy?.[fyLabel];
+      const computed = computeWorkMethodDeductions(wu, workUseRatesForFy(thresholds));
+      if (computed.total_cents > 0) work_method = computed;
+    }
+  }
+
+  const total_deductions_cents = Math.max(0, gross_deductions_cents - refunds_cents) + (work_method?.total_cents ?? 0);
   const taxable_position_cents = income.gross_cents - total_deductions_cents - dep.total_cents;
 
   // Resolved-deductible: only spend a year-end review has CONFIRMED deductible (deductibility set
@@ -329,7 +353,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   const resolved_deductible_cents = resolved?.total ?? 0;
 
   return {
-    fy: `${startYear}-${String((startYear + 1) % 100).padStart(2, "0")}`,
+    fy: fyLabel,
     start,
     end,
     by_bucket: rows,
@@ -349,6 +373,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
     company_tracked_cents,
     refunds_cents,
     resolved_deductible_cents,
+    work_method,
     taxable_position_cents,
   };
 }
@@ -373,6 +398,8 @@ export function reportToCsv(r: Report): string {
     "Tax position (indicative),Amount (AUD)",
     `Total income (gross),${d(r.total_income_cents)}`,
     ...(r.refunds_cents > 0 ? [`Refunds/reimbursements (netted against deductions),${d(r.refunds_cents)}`] : []),
+    ...(r.work_method && r.work_method.wfh_cents > 0 ? [`  • Working from home (fixed rate: ${r.work_method.wfh_hours} hrs × ${r.work_method.rates.wfh_cents_per_hour}c/hr),${d(r.work_method.wfh_cents)}`] : []),
+    ...(r.work_method && r.work_method.car_cents > 0 ? [`  • Car (cents per km: ${Math.min(r.work_method.car_work_km, r.work_method.rates.car_km_cap)} km × ${r.work_method.rates.car_cents_per_km}c/km),${d(r.work_method.car_cents)}`] : []),
     `Total deductions${r.refunds_cents > 0 ? " (net of refunds)" : ""},${d(r.total_deductions_cents)}`,
     `Decline in value (depreciation),${d(r.depreciation_cents)}`,
     `Indicative taxable position (individual),${d(r.taxable_position_cents)}`,

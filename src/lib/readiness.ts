@@ -166,6 +166,22 @@ export function assessReadiness(input: {
       paygUnresolvedN += b.n;
     }
   }
+  // Computed work-use deductions (WFH fixed-rate + car cents-per-km). These count toward the headline
+  // (buildReport added them to total_deductions), so they render as "deduction" lines and keep the
+  // lines-sum == headline invariant. The itemised running costs they cover stay in "excluded"
+  // (needs_apportionment) — the `why` says so — so nothing is double-claimed. Absent unless the
+  // wfh_car_methods flag is on and the user supplied hours/km, so the legacy reconciliation is intact.
+  const wm = report.work_method;
+  if (wm && wm.wfh_cents > 0) {
+    lines.push({ group: "deduction", label: "Working from home (fixed rate)", amount_cents: wm.wfh_cents,
+      basis: `${wm.wfh_hours} hrs × ${wm.rates.wfh_cents_per_hour}c/hr`,
+      why: "Home-office running costs claimed using the ATO fixed-rate method for the hours you worked from home. This method already covers electricity, internet, phone and stationery, so those individual receipts are not also claimed (they stay excluded below)." });
+  }
+  if (wm && wm.car_cents > 0) {
+    lines.push({ group: "deduction", label: "Car (cents per km)", amount_cents: wm.car_cents,
+      basis: `${Math.min(wm.car_work_km, wm.rates.car_km_cap)} km × ${wm.rates.car_cents_per_km}c/km (max ${wm.rates.car_km_cap} km)`,
+      why: "Work-related car expenses claimed using the cents-per-kilometre method, capped at the ATO kilometre limit. This method already covers running costs (fuel, servicing, rego, insurance), so actual car receipts are not also claimed." });
+  }
   if (report.depreciation_cents > 0) {
     lines.push({ group: "depreciation", label: "Decline in value", amount_cents: report.depreciation_cents, basis: "from your depreciation schedule (Div 40 / Div 43)", why: "Capital allowances carried forward from your asset schedule for this year." });
   }

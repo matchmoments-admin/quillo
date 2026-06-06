@@ -1958,7 +1958,16 @@ export class TaxAgent extends Agent<Env> {
         return { docId, doc_type: cls.doc_type, routed: true };
       }
       default: {
-        await this.notify(userId, `Filed a ${cls.doc_type} to your Documents shelf.`, null);
+        // We recognise these types (super_statement, managed_fund_amma, loan_statement, bank_statement)
+        // but have no extractor yet, so their figures do NOT enter the return. Be honest about that rather
+        // than implying capture — a reassuring "filed!" toast was making users believe income/interest was
+        // captured when it wasn't (#66). Extractors are tracked as the Phase-2 follow-up.
+        const friendly = cls.doc_type.replace(/_/g, " ");
+        await this.notify(
+          userId,
+          `Filed your ${friendly} to Documents for your records — I haven't read its figures into your return yet. Enter them manually if they belong in this year's return.`,
+          null,
+        );
         return { docId, doc_type: cls.doc_type, routed: true };
       }
     }

@@ -40,6 +40,8 @@ export const PURGE_TABLES = [
   "work_use_inputs",
   "loans_properties",
   "fy_signoff",
+  "capital_loss_carryins",
+  "depreciation_opening_balances",
 ] as const;
 
 // Columns that must NEVER leave the system in an APP-12 export, even though the row belongs to the

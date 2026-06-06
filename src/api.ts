@@ -35,6 +35,10 @@ import {
   updateAccount,
   addLoanProperty,
   updateLoanProperty,
+  addCapitalLoss,
+  listCapitalLosses,
+  addDepreciationOpening,
+  listDepreciationOpenings,
   signOffFy,
   clearSignOffFy,
   getFySignoff,
@@ -355,6 +359,31 @@ export async function handleApi(
     }
     if (m === "DELETE" && id) {
       await deleteRow(env, uid, "accounts", id);
+      return json({ ok: true });
+    }
+  }
+  // ── Prior-year carry-ins (capture-only; surfaced as defer findings, never auto-applied) ──
+  if (resource === "capital-losses") {
+    if (m === "GET" && !id) return json({ capital_losses: await listCapitalLosses(env, uid) });
+    if (m === "POST" && !id) {
+      const b = (await req.json().catch(() => ({}))) as { prior_fy?: unknown; loss_cents?: unknown; asset_id?: unknown; notes?: unknown };
+      if (typeof b.prior_fy !== "number" || typeof b.loss_cents !== "number") return json({ error: "prior_fy and loss_cents are required" }, 400);
+      return json({ id: await addCapitalLoss(env, uid, { prior_fy: b.prior_fy, loss_cents: b.loss_cents, asset_id: typeof b.asset_id === "string" ? b.asset_id : undefined, notes: typeof b.notes === "string" ? b.notes : undefined }) });
+    }
+    if (m === "DELETE" && id) {
+      await deleteRow(env, uid, "capital_loss_carryins", id);
+      return json({ ok: true });
+    }
+  }
+  if (resource === "opening-depreciation") {
+    if (m === "GET" && !id) return json({ opening_depreciation: await listDepreciationOpenings(env, uid) });
+    if (m === "POST" && !id) {
+      const b = (await req.json().catch(() => ({}))) as { fy?: unknown; opening_adjustable_value_cents?: unknown; asset_id?: unknown; notes?: unknown };
+      if (typeof b.fy !== "number" || typeof b.opening_adjustable_value_cents !== "number") return json({ error: "fy and opening_adjustable_value_cents are required" }, 400);
+      return json({ id: await addDepreciationOpening(env, uid, { fy: b.fy, opening_adjustable_value_cents: b.opening_adjustable_value_cents, asset_id: typeof b.asset_id === "string" ? b.asset_id : undefined, notes: typeof b.notes === "string" ? b.notes : undefined }) });
+    }
+    if (m === "DELETE" && id) {
+      await deleteRow(env, uid, "depreciation_opening_balances", id);
       return json({ ok: true });
     }
   }

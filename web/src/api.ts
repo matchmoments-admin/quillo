@@ -1,4 +1,4 @@
-import type { Txn, TxnDetail, Situation, SituationDraft, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse, UsageData, StatementInfo, IncomeRow, DocRow, AssetRow, ScheduleRow, ChecklistItem, ClaimSuggestion, FilingReadiness, ReviewSummary, Progress, AdminTenant, AdminOverview, ClaimReview, OccupationRulesDraft, OccupationRuleCandidate, MovementSweep, BatchResult, ClarifyQuestion, ClarifyAnswer, ClaimMatch, AccountantSummary, SuggestedDeduction, WorkUse } from "./types";
+import type { Txn, TxnDetail, Situation, SituationDraft, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse, UsageData, StatementInfo, IncomeRow, DocRow, AssetRow, ScheduleRow, ChecklistItem, ClaimSuggestion, FilingReadiness, ReviewSummary, Progress, AdminTenant, AdminOverview, ClaimReview, OccupationRulesDraft, OccupationRuleCandidate, MovementSweep, BatchResult, ClarifyQuestion, ClarifyAnswer, ClaimMatch, AccountantSummary, SuggestedDeduction, WorkUse, CapitalLoss, OpeningDepreciation } from "./types";
 
 // Clerk session token getter, wired from <TokenBridge> inside ClerkProvider (main.tsx).
 // Clerk tokens are short-lived, so we fetch a fresh one per request (getToken caches/refreshes).
@@ -172,6 +172,14 @@ export const api = {
   fySignoff: (fy?: number) => get<{ signoff: { signed_off_at: string } | null }>(`/api/signoff${fy ? `?fy=${fy}` : ""}`).then((r) => r.signoff),
   signOff: (fy?: number) => post<{ signoff: { signed_off_at: string } | null }>(`/api/signoff${fy ? `?fy=${fy}` : ""}`).then((r) => r.signoff),
   clearSignOff: (fy?: number) => send<{ ok: boolean }>("DELETE", `/api/signoff${fy ? `?fy=${fy}` : ""}`),
+
+  // Prior-year carry-ins (capture-only; surfaced as defer findings, never auto-applied)
+  capitalLosses: () => get<{ capital_losses: CapitalLoss[] }>("/api/capital-losses").then((r) => r.capital_losses),
+  addCapitalLoss: (b: { prior_fy: number; loss_cents: number; notes?: string }) => post<{ id: string }>("/api/capital-losses", b),
+  deleteCapitalLoss: (id: string) => send<{ ok: boolean }>("DELETE", `/api/capital-losses/${id}`),
+  openingDepreciation: () => get<{ opening_depreciation: OpeningDepreciation[] }>("/api/opening-depreciation").then((r) => r.opening_depreciation),
+  addOpeningDepreciation: (b: { fy: number; opening_adjustable_value_cents: number; notes?: string }) => post<{ id: string }>("/api/opening-depreciation", b),
+  deleteOpeningDepreciation: (id: string) => send<{ ok: boolean }>("DELETE", `/api/opening-depreciation/${id}`),
 
   // Find My Claims (flag claim_review) — read-only situational sweep, AI gap-fill draft, confirm write.
   claimReview: (fy?: number) => get<ClaimReview>(`/api/claim-review${fy ? `?fy=${fy}` : ""}`),

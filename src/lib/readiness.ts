@@ -63,6 +63,7 @@ export interface FilingReadinessSignals {
   disposedAssetsN: number;
   instantAssetWriteOffCentsThisFy: number | null;
   instantAssetWriteOffCentsPrevFy: number | null;
+  capitalLossCarryinCents: number; // prior-year capital losses captured at Set-up (0 if none)
 }
 
 export interface FilingReadiness {
@@ -297,6 +298,14 @@ export function assessReadiness(input: {
         `A trust generally must resolve how its income is distributed to beneficiaries before 30 June; an unresolved distribution can leave the trustee assessed at the highest rate of tax. This isn't reflected in your personal position — confirm the trust's distribution resolution and its own lodgment with a registered tax agent.${DEFER}`, true, []));
     }
   }
+  // Prior-year capital loss captured at Set-up → a defer finding. CAPTURE-ONLY: it is NOT applied to
+  // the indicative position (capital losses offset capital GAINS only — never ordinary income — and
+  // there is no CGT-gain line in this position to net against). The agent applies it on the CGT schedule.
+  if (signals.capitalLossCarryinCents > 0) {
+    findings.push(f("capital_loss_carryin", "judgement", "info", `Prior-year capital loss carried forward (${money(signals.capitalLossCarryinCents)})`,
+      `You've recorded a carried-forward capital loss. It is NOT applied to the position shown here — a capital loss can only offset a capital gain (never your salary, rental or other income), and is applied on the CGT schedule. Hand this figure to your registered tax agent to apply against any capital gains.${DEFER}`, true, []));
+  }
+
   // (Super Notice-of-intent is surfaced via the year-end checklist (generateChecklist), not here, to
   // keep a clean PAYG-only return finding-free. PAYG-balance / Div 35 non-commercial-loss prompts are
   // deferred until sole-trader P&L is modelled — flagging them now would be noise or guesswork.)

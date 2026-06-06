@@ -51,6 +51,16 @@ function stubFor(env: Env, userId: string): TaxAgentRpc {
   return stub as unknown as TaxAgentRpc;
 }
 
+/** Run `fn` over `items` with at most `concurrency` in flight. fn must not throw (callers catch
+ *  per-item) — a rejection would abort the worker and starve the rest of the slice. */
+async function runPooled<T>(items: T[], concurrency: number, fn: (item: T) => Promise<void>): Promise<void> {
+  let next = 0;
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (next < items.length) await fn(items[next++]!);
+  });
+  await Promise.all(workers);
+}
+
 export default {
   async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(req.url);
@@ -217,8 +227,21 @@ export default {
       // Current AU FY start year (Jul–Jun) for the depreciation roll-forward.
       const now = new Date();
       const fyStart = now.getUTCMonth() >= 6 ? now.getUTCFullYear() : now.getUTCFullYear() - 1;
-      const users = await env.DB.prepare(`SELECT user_id FROM profiles`).all<{ user_id: string }>();
-      for (const u of users.results) {
+      // Page the weekly sweep across ticks with a KV cursor so a large tenant set can't blow the 300s
+      // wall-clock and silently drop the tail (#79). Each tick processes a bounded, ordered slice
+      // (round-robin by user_id) and advances the cursor; bounded concurrency keeps the slice well
+      // within budget. NB: rollForward/flagOldData/proactiveScan are maintenance, not time-critical —
+      // weekly-paged delivery is fine. When tenant count outgrows one weekly slice, move this onto a
+      // Queue consumer (the per-tenant unit of work is already isolated for that).
+      const SLICE = 400;
+      const CONCURRENCY = 6;
+      const cursorKey = "cron:weekly:cursor";
+      const cursor = (await env.RULES.get(cursorKey)) ?? "";
+      const users = await env.DB.prepare(`SELECT user_id FROM profiles WHERE user_id > ? ORDER BY user_id LIMIT ?`)
+        .bind(cursor, SLICE)
+        .all<{ user_id: string }>();
+      const batch = users.results ?? [];
+      await runPooled(batch, CONCURRENCY, async (u) => {
         // Isolate per-tenant failures — one tenant's bad asset/data must not abort the sweep for all.
         try {
           const stub = stubFor(env, u.user_id);
@@ -230,6 +253,15 @@ export default {
         } catch (e) {
           console.error(`weekly cron failed for ${u.user_id}: ${(e as Error).message}`);
         }
+      });
+      // A full slice means more tenants remain → resume after the last id next tick. A short slice
+      // means we reached the end → clear the cursor so the next run round-robins from the start.
+      if (batch.length === SLICE) {
+        await env.RULES.put(cursorKey, batch[batch.length - 1]!.user_id);
+        console.warn(`weekly cron: swept ${batch.length} tenants from cursor "${cursor}"; more remain — resuming next tick`);
+      } else {
+        if (cursor !== "") await env.RULES.delete(cursorKey);
+        console.log(`weekly cron: swept ${batch.length} tenants (slice complete)`);
       }
       return;
     }

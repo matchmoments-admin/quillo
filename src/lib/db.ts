@@ -144,6 +144,11 @@ export function renderSituation(s: Situation): string {
       lines.push(`  - Employment (PAYG): ${e.name ?? d.employer ?? "?"}. Work-related deductions -> bucket "payg".`);
     } else if (e.kind === "novated_lease") {
       lines.push(`  - Novated lease: ${d.vehicle ?? e.name ?? "vehicle"} via ${d.provider ?? "?"} (salary-packaged). Lease/running costs are employment salary-packaging, not company.`);
+    } else if (e.kind === "trust") {
+      // A trust is a separate entity with its own TFN/return. Its distributions flow to beneficiaries
+      // and must be resolved before 30 June, or the trustee may be assessed at the top rate. We do NOT
+      // auto-route spend to a trust bucket (no trust position is modelled yet) — flag it for the agent.
+      lines.push(`  - Trust: ${e.name ?? "?"}${d.abn ? ` (ABN ${d.abn})` : ""}. A separate entity that lodges its own return; distributions to beneficiaries must be resolved before 30 June. Don't route personal spend here — confirm trust treatment with a registered tax agent.`);
     } else {
       lines.push(`  - ${e.kind}: ${e.name ?? ""}`);
     }

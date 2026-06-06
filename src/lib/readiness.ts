@@ -190,6 +190,29 @@ export function assessReadiness(input: {
   }
 
   // ── (2) deterministic "things to double-check" findings ──
+  // Nothing captured at all → the page must say "start here", NOT present an empty $0 return as
+  // "ready". A brand-new user (or an empty FY) otherwise saw a green "Nothing flagged" banner over a
+  // $0.00 position, reading as "your return is done" when they'd captured nothing (#74). A blocker so
+  // `ready` is false; Filing renders a dedicated start-capturing card for this finding.
+  const hasAnyData =
+    report.income.gross_cents > 0 ||
+    report.income.by_type.length > 0 ||
+    report.deduction_breakdown.length > 0 ||
+    report.depreciation_cents > 0 ||
+    report.per_property.length > 0 ||
+    report.undated.n > 0 ||
+    !!report.work_method ||
+    // any captured activity (even if it only surfaced as a signal/claim) means the FY isn't blank
+    signals.unknownBucketN > 0 ||
+    signals.lowConfidenceN > 0 ||
+    signals.needsReviewIncomeN > 0 ||
+    signals.needsReviewAssetsN > 0 ||
+    signals.disposedAssetsN > 0 ||
+    claimMatches.length > 0;
+  if (!hasAnyData) {
+    findings.push(f("nothing_captured", "completeness", "blocker", `Nothing captured for FY ${report.fy} yet`,
+      `Your return for this year is empty, so there's nothing to hand off. Import a bank statement or snap a receipt to get started, then come back here.`, false, []));
+  }
   // BLOCKERS: these materially distort the indicative position (money silently left out), so they
   // must drop `ready` to false — the old engine only ever emitted review/info, so a user with
   // uncategorised + undated spend was told they were ready (review Medium). Severity is now "blocker".

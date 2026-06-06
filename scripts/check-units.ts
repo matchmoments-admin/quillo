@@ -819,6 +819,12 @@ console.log("deductibility (deny-by-default)");
   check("work-method lines never trip the tax-advice denylist", !wmReady.position.lines.flatMap((l) => [l.why, l.basis]).some((t) => /refund|tax payable|marginal rate|\b\d{1,2}%\s*(tax|bracket)/i.test(t)));
   // Absent work_method (flag off / no inputs) → no work lines, legacy reconciliation intact.
   check("no work_method ⇒ no work-use deduction lines (legacy intact)", !assessReadiness({ report: mkR([]), situation: mkS(), claimMatches: [], signals: mkSig(), generatedAt: "2026-06-03T00:00:00Z", excludeNonDeductible: true }).position.lines.some((l) => /Working from home|Car \(cents/.test(l.label)));
+
+  // ── #74 empty FY must read "start here", not "ready" ──
+  const emptyReady = assessReadiness({ report: mkR([]), situation: mkS(), claimMatches: [], signals: mkSig(), generatedAt: "2026-06-03T00:00:00Z", excludeNonDeductible: true });
+  check("empty FY ⇒ nothing_captured blocker, ready=false", emptyReady.findings.some((fd) => fd.id === "nothing_captured" && fd.severity === "blocker") && emptyReady.readiness_score.ready === false);
+  check("nothing_captured copy is a start-here nudge, not tax advice", !/refund|tax payable|marginal rate/i.test(emptyReady.findings.find((fd) => fd.id === "nothing_captured")!.general_info_note));
+  check("FY with data ⇒ no nothing_captured finding", !assessReadiness({ report: mkR(breakdown), situation: mkS(), claimMatches: [], signals: mkSig(), generatedAt: "2026-06-03T00:00:00Z", excludeNonDeductible: true }).findings.some((fd) => fd.id === "nothing_captured"));
 }
 
 // ── Taxonomy ↔ rule pack ↔ UI agree (no silent bucket drift) ─────────────────

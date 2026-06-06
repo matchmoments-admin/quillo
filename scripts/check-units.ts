@@ -734,9 +734,14 @@ console.log("deductibility (deny-by-default)");
   check("loan repayment → likely_not", verdictForTxn("payg", "payg:loan-repayment", null, section).deductibility === "likely_not");
   check("meals-entertainment → likely_not", verdictForTxn("payg", "payg:meals-entertainment", null, section).deductibility === "likely_not");
   check("wfh electricity → needs_apportionment", verdictForTxn("payg", "payg:utilities", "Origin Energy electricity", section).deductibility === "needs_apportionment");
-  // Matcher NEVER auto-asserts a positive deduction: clearly-deductible payg (union/tax-affairs) stays
-  // undetermined → excluded by deny-by-default → surfaced for the user to confirm (resolved stays ~$0).
-  check("union fees → undetermined (not auto-claimed)", verdictForTxn("payg", "payg:union-fees", "ASU membership", section).deductibility === "undetermined");
+  // Stage D (B1): clearly-deductible payg (union/tax-affairs/donations/income-protection) is positively
+  // SUGGESTED — 'suggested_deductible' is still excluded from the position (never auto-claimed) and
+  // surfaced for the user to confirm, so resolved_deductible_cents stays ~$0 until they do.
+  check("union fees → suggested_deductible (confirm-required, not auto-claimed)", verdictForTxn("payg", "payg:union-fees", "ASU union membership", section).deductibility === "suggested_deductible");
+  check("tax-agent fees → suggested_deductible", verdictForTxn("payg", "payg:tax-affairs", "H&R Block tax agent", section).deductibility === "suggested_deductible");
+  check("DGR donation → suggested_deductible", verdictForTxn("payg", "payg:donation", "RSPCA donation", section).deductibility === "suggested_deductible");
+  check("a SUGGESTION is excluded from the position until confirmed (B1)", deductionGroupForRow("payg", "suggested_deductible", true) === "excluded" && deductionGroupForRow("payg", "suggested_deductible", false) === "excluded");
+  check("deny still wins over suggest (groceries stay denied)", verdictForTxn("payg", "payg:groceries", "Coles", section).deductibility === "likely_not");
   check("unclassified payg → undetermined (deny-by-default excludes it)", verdictForTxn("payg", "payg:other", "Mystery Shop", section).deductibility === "undetermined");
   check("non-payg bucket → undetermined (handled by bucket)", verdictForTxn("company", "company:software", "Anthropic", section).deductibility === "undetermined");
   check("asset → undetermined (handled by bucket)", verdictForTxn("asset", "asset:furniture", "Officeworks", section).deductibility === "undetermined");

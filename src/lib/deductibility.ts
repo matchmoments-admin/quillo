@@ -39,6 +39,9 @@ export interface DeductibilityList {
 export interface DeductibilitySection {
   deny?: DeductibilityList[];
   apportion?: DeductibilityList[];
+  /** Positive SUGGESTIONS (union/tax-affairs/donations/income-protection). Stamped 'suggested_deductible'
+   *  — excluded from the position (deny-by-default holds) and surfaced for the user to confirm. Never auto-claimed. */
+  allow_suggest?: DeductibilityList[];
 }
 
 export interface DeductibilityVerdict {
@@ -75,8 +78,12 @@ export function verdictForTxn(
   for (const l of section.deny ?? []) if (listHits(l, haystack)) return { deductibility: "likely_not", note: l.note };
   // Apportioned — work-related but needs a work-use % / WFH hours before any amount can be claimed.
   for (const l of section.apportion ?? []) if (listHits(l, haystack)) return { deductibility: "needs_apportionment", note: l.note };
+  // Positively suggest clearly-deductible categories (union/tax-affairs/donations/income-protection).
+  // 'suggested_deductible' is EXCLUDED from the position until the user confirms it → confirmed_deductible,
+  // so this never auto-asserts a deduction (deny-by-default + "never over-state" both hold).
+  for (const l of section.allow_suggest ?? []) if (listHits(l, haystack)) return { deductibility: "suggested_deductible", note: l.note };
 
-  // No deny/apportion match → stays undetermined. Deny-by-default excludes it from the headline until
-  // the user confirms it's work-related (we never auto-assert a deduction here).
+  // No match → stays undetermined. Deny-by-default excludes it from the headline until the user
+  // confirms it's work-related (we never auto-assert a deduction here).
   return { deductibility: "undetermined", note: null };
 }

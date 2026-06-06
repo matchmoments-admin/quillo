@@ -548,3 +548,23 @@ export interface ClaimMatch {
   candidates: ScoredTxn[];
   linked: string[];
 }
+
+// Phase 4 — accountant pass
+export interface AccountantSummary {
+  run_id: string;
+  fy: number;
+  movement_candidates: number;
+  property_loan_review: number;
+  deductibility_stamped: number;
+  suggestions: number;
+  clarify_questions: number;
+  claim_items: number;
+}
+export interface SuggestedDeduction {
+  id: string;
+  merchant: string | null;
+  ato_label: string | null;
+  amount_cents: number | null;
+  amount_aud_cents: number | null;
+  txn_date: string | null;
+}

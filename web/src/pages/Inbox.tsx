@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api";
 import { BucketPill, Button, ConfidencePill, Card, Spinner, money } from "../components/ui";
+import { AccountantPassCard } from "../components/AccountantPassCard";
 import { MovementSweepCard } from "../components/MovementSweepCard";
 import { ClarifyCard } from "../components/ClarifyCard";
 import { BulkBar, type BulkDone } from "../components/BulkBar";
@@ -80,6 +81,9 @@ export function Inbox() {
           </Button>
         </div>
       </div>
+
+      {/* Phase 4: "Do my books" — runs the accountant pass + the suggested-deductions sign-off. */}
+      {hasAccountantPass && <AccountantPassCard fy={activeFy} />}
 
       {/* Stage A: deterministic non-spend clean-up (transfers / repayments / deposits). Renders
           nothing when there's nothing to clean up. */}

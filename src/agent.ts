@@ -79,6 +79,18 @@ export interface ClarifyAnswer {
   property_id?: string;
 }
 
+/** The sign-off pack counts a "Do my books" run hands back. */
+export interface AccountantSummary {
+  run_id: string;
+  fy: number;
+  movement_candidates: number; // non-spend lines to confirm-and-exclude (Stage A)
+  property_loan_review: number; // loan lines to review (possible deductible interest)
+  deductibility_stamped: number; // payg rows (re-)classified deny/apportion/suggest
+  suggestions: number; // suggested_deductible rows to confirm (Stage D)
+  clarify_questions: number; // grouped questions to answer (Stage B)
+  claim_items: number; // open claim suggestions to attach evidence to (Stage E)
+}
+
 export interface MovementSweep {
   // Pre-checked confirm list: safe transfers/card payments, investment deposits, and non-property
   // loan repayments → excluding these as 'ignored' won't drop a deductible amount.
@@ -3276,6 +3288,79 @@ export class TaxAgent extends Agent<Env> {
     const dir = RULE_CREDIT_BUCKETS.has(bucket) ? "credit" : "debit";
     if (applyUserRules(pattern, situation.rules, dir)) return; // already covered
     await addRule(this.env, userId, { pattern, match_type: "merchant_contains", bucket, ato_label: atoLabel, property_id: propertyId });
+  }
+
+  // ── PHASE 4: "Do my books" accountant pass (deterministic orchestration) ────
+  /**
+   * Run the accountant pass for one FY end-to-end and return a sign-off pack of counts. Orchestrates
+   * the already-shipped, DETERMINISTIC stages — no LLM, no consent (Stage C's LLM remainder is gated
+   * + deferred): (A) detect non-spend movements to confirm-and-exclude; (D) re-stamp deny-by-default
+   * deductibility + positive SUGGESTIONS (suggested_deductible — excluded until confirmed, B1); (B)
+   * group leftovers into clarify questions; (E) sweep claim suggestions. Holds a per-(user,fy)
+   * in-flight lock in accountant_runs so a double-click can't start a second pass (B2). The
+   * interactive cards (movement sweep / clarify / claims) let the user act on the counts.
+   */
+  async runAccountantPass(userId: string, startYear: number): Promise<AccountantSummary> {
+    const fy = String(startYear);
+    // In-flight lock (B2): refuse to start a second pass for the same (user, fy). A 'running' row
+    // older than 15 min is treated as STALE (a crashed/evicted run) so the lock can't wedge forever.
+    const active = await this.env.DB.prepare(
+      `SELECT id FROM accountant_runs WHERE user_id = ? AND fy = ? AND status = 'running' AND started_at > datetime('now','-15 minutes')`,
+    ).bind(userId, fy).first<{ id: string }>();
+    if (active) throw new Error("a pass is already running for this year");
+    // Mark any stale running rows for this (user, fy) as errored so they don't accumulate.
+    await this.env.DB.prepare(`UPDATE accountant_runs SET status = 'error', finished_at = datetime('now') WHERE user_id = ? AND fy = ? AND status = 'running'`).bind(userId, fy).run();
+    const runId = crypto.randomUUID();
+    await this.env.DB.prepare(`INSERT INTO accountant_runs (id, user_id, fy, stage, status) VALUES (?, ?, ?, 'cleanup', 'running')`).bind(runId, userId, fy).run();
+    const setStage = (stage: string) => this.env.DB.prepare(`UPDATE accountant_runs SET stage = ? WHERE id = ? AND user_id = ?`).bind(stage, runId, userId).run();
+    try {
+      const { start, end } = fyBounds(startYear);
+      // Stage A — surface non-spend movements (NOT auto-applied; the user confirms, B3).
+      const sweep = await this.sweepMovements(userId);
+      // Stage D — re-stamp deny-by-default + positive suggestions over payg (reResolve refreshes the
+      // matcher's own prior auto-verdicts; user-confirmed states are preserved).
+      await setStage("deductibility");
+      const stamped = await this.stampDeductibility(userId, { reResolve: true });
+      const suggestions = (await this.env.DB.prepare(
+        `SELECT COUNT(*) AS n FROM transactions WHERE user_id = ? AND deductibility = 'suggested_deductible' AND txn_date >= ? AND txn_date <= ?`,
+      ).bind(userId, start, end).first<{ n: number }>())?.n ?? 0;
+      // Stage B — group leftovers into one-question-per-pattern.
+      await setStage("clarify");
+      const clarify = await this.runClarifyScan(userId, startYear);
+      // Stage E — claim discovery sweep (persists claim_suggestions; auto-match attaches evidence).
+      await setStage("claims");
+      await this.reviewClaims(userId, startYear);
+      const claimItems = (await this.env.DB.prepare(
+        `SELECT COUNT(*) AS n FROM claim_suggestions WHERE user_id = ? AND status IN ('suggested','capturing')`,
+      ).bind(userId).first<{ n: number }>())?.n ?? 0;
+
+      const summary: AccountantSummary = {
+        run_id: runId,
+        fy: startYear,
+        movement_candidates: sweep.summary.ignorable_n,
+        property_loan_review: sweep.summary.review_n,
+        deductibility_stamped: stamped.stamped,
+        suggestions,
+        clarify_questions: clarify.questions,
+        claim_items: claimItems,
+      };
+      await this.env.DB.prepare(`UPDATE accountant_runs SET status = 'done', stage = 'done', summary_json = ?, finished_at = datetime('now') WHERE id = ? AND user_id = ?`).bind(JSON.stringify(summary), runId, userId).run();
+      await this.audit(userId, "accountant_pass", JSON.stringify(summary));
+      return summary;
+    } catch (e) {
+      await this.env.DB.prepare(`UPDATE accountant_runs SET status = 'error', summary_json = ?, finished_at = datetime('now') WHERE id = ? AND user_id = ?`).bind(JSON.stringify({ error: (e as Error).message }), runId, userId).run();
+      throw e;
+    }
+  }
+
+  /** Confirm a SUGGESTED deduction (Stage D) → confirmed_deductible (it now counts). User-driven, audited. */
+  async confirmSuggestedDeduction(userId: string, txnId: string): Promise<{ ok: boolean }> {
+    const row = await this.env.DB.prepare(`SELECT deductibility FROM transactions WHERE id = ? AND user_id = ?`).bind(txnId, userId).first<{ deductibility: string | null }>();
+    if (!row) throw new Error("transaction not found");
+    if (row.deductibility !== "suggested_deductible") return { ok: false }; // only a live suggestion can be confirmed
+    await this.env.DB.prepare(`UPDATE transactions SET deductibility = 'confirmed_deductible' WHERE id = ? AND user_id = ?`).bind(txnId, userId).run();
+    await this.audit(userId, "confirm_deduction", JSON.stringify({ txnId }));
+    return { ok: true };
   }
 
   /**

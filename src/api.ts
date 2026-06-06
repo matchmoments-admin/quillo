@@ -19,6 +19,7 @@ import {
   listClaims,
   listTenantsAdmin,
   platformOverview,
+  listSuggestedDeductions,
 } from "./lib/queries";
 import { isAdmin, normaliseRoles } from "./lib/roles";
 import {
@@ -739,6 +740,35 @@ export async function handleApi(
       }
     }
     if (m === "POST" && id && sub === "dismiss") return json(await stub.dismissClarify(uid, id));
+  }
+
+  // ── Phase 4: "Do my books" accountant pass (flag accountant_pass) — 404 off ─
+  // POST /api/accountant/run?fy=            → run the deterministic pass, return the sign-off counts
+  // GET  /api/accountant/suggestions?fy=    → suggested_deductible rows to confirm (Stage D)
+  // POST /api/accountant/confirm { txnId }  → confirm one suggestion → confirmed_deductible (it counts)
+  if (resource === "accountant") {
+    if (!featureOn(env, "accountant_pass")) return json({ error: "not available" }, 404);
+    if (m === "POST" && id === "run") {
+      const fy = Number(url.searchParams.get("fy")) || currentFyStartYear();
+      try {
+        return json(await stub.runAccountantPass(uid, fy));
+      } catch (e) {
+        return json({ error: (e as Error).message }, 409);
+      }
+    }
+    if (m === "GET" && id === "suggestions") {
+      const fy = Number(url.searchParams.get("fy")) || currentFyStartYear();
+      return json({ suggestions: await listSuggestedDeductions(env, uid, fy) });
+    }
+    if (m === "POST" && id === "confirm") {
+      const { txnId } = (await req.json().catch(() => ({}))) as { txnId?: unknown };
+      if (typeof txnId !== "string") return json({ error: "txnId required" }, 400);
+      try {
+        return json(await stub.confirmSuggestedDeduction(uid, txnId));
+      } catch (e) {
+        return json({ error: (e as Error).message }, 400);
+      }
+    }
   }
 
   // ── Admin (founder only — cross-tenant) ───────────────────────────────────

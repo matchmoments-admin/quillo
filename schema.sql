@@ -307,6 +307,18 @@ CREATE TABLE IF NOT EXISTS user_rules (
   created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- 0025: Phase 4 accountant pass — one row per "Do my books" run (progress/audit + in-flight lock).
+CREATE TABLE IF NOT EXISTS accountant_runs (
+  id          TEXT PRIMARY KEY,
+  user_id     TEXT NOT NULL,
+  fy          TEXT NOT NULL,
+  stage       TEXT,
+  status      TEXT NOT NULL DEFAULT 'running',
+  summary_json TEXT,
+  started_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  finished_at TEXT
+);
+
 -- 0024: Phase 3 claim auto-matcher — attached transaction evidence per claim_suggestion.
 CREATE TABLE IF NOT EXISTS claim_links (
   id         TEXT PRIMARY KEY,
@@ -340,6 +352,7 @@ CREATE INDEX IF NOT EXISTS idx_corr_batch ON corrections(user_id, batch_id);
 CREATE INDEX IF NOT EXISTS idx_clarify_user_status ON clarify_questions(user_id, status);
 CREATE INDEX IF NOT EXISTS idx_claim_links_claim ON claim_links(user_id, claim_id);
 CREATE INDEX IF NOT EXISTS idx_claim_links_txn   ON claim_links(user_id, txn_id);
+CREATE INDEX IF NOT EXISTS idx_acctrun_user ON accountant_runs(user_id, status);
 CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_log(user_id, seq);
 CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_prop_user  ON properties(user_id);

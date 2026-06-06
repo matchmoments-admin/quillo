@@ -71,6 +71,7 @@ export const DEDUCTIBILITY_STATES = [
   "likely_deductible",
   "likely_not",
   "needs_apportionment",
+  "suggested_deductible", // a positive SUGGESTION (union/tax-affairs/donations/income-protection) — NEVER counted in the position until the user confirms it → confirmed_deductible (deny-by-default holds)
   "confirmed_deductible",
   "confirmed_not",
 ] as const;

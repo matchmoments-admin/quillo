@@ -168,6 +168,10 @@ export const api = {
   report: (fy?: number) => get<Report>(`/api/report${fy ? `?fy=${fy}` : ""}`),
   reportCsvUrl: (fy?: number) => `/api/report?format=csv${fy ? `&fy=${fy}` : ""}`,
   filingReadiness: (fy?: number) => get<FilingReadiness>(`/api/filing-readiness${fy ? `?fy=${fy}` : ""}`),
+  // Soft per-FY sign-off (attestation only — Quillo never lodges)
+  fySignoff: (fy?: number) => get<{ signoff: { signed_off_at: string } | null }>(`/api/signoff${fy ? `?fy=${fy}` : ""}`).then((r) => r.signoff),
+  signOff: (fy?: number) => post<{ signoff: { signed_off_at: string } | null }>(`/api/signoff${fy ? `?fy=${fy}` : ""}`).then((r) => r.signoff),
+  clearSignOff: (fy?: number) => send<{ ok: boolean }>("DELETE", `/api/signoff${fy ? `?fy=${fy}` : ""}`),
 
   // Find My Claims (flag claim_review) — read-only situational sweep, AI gap-fill draft, confirm write.
   claimReview: (fy?: number) => get<ClaimReview>(`/api/claim-review${fy ? `?fy=${fy}` : ""}`),

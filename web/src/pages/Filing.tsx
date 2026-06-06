@@ -16,6 +16,49 @@ const SEVERITY_CLASS: Record<ReadinessFinding["severity"], string> = {
 };
 const GROUP_LABEL: Record<PositionLine["group"], string> = { income: "Income", deduction: "Deductions", depreciation: "Depreciation", property: "Per-property position", company: "Company (separate return — not in your position)", excluded: "Excluded as private / non-deductible" };
 
+// Soft, per-FY sign-off: the user's own attestation that this position is ready to hand to their
+// agent. Re-openable (not a lock); a later import doesn't auto-clear it, so the timestamp stays
+// visible. Quillo never lodges — this is the user's record, for their accountant.
+function SignOff({ fy, ready }: { fy: number; ready: boolean }) {
+  const qc = useQueryClient();
+  const { data: signoff } = useQuery({ queryKey: ["fy-signoff", fy], queryFn: () => api.fySignoff(fy) });
+  const invalidate = () => qc.invalidateQueries({ queryKey: ["fy-signoff", fy] });
+  const sign = useMutation({ mutationFn: () => api.signOff(fy), onSuccess: invalidate });
+  const unsign = useMutation({ mutationFn: () => api.clearSignOff(fy), onSuccess: invalidate });
+
+  if (signoff) {
+    const when = new Date(signoff.signed_off_at.replace(" ", "T") + "Z");
+    return (
+      <Card className="flex flex-wrap items-center justify-between gap-2 border-safe/40 p-4 print:hidden">
+        <div className="text-sm">
+          <span className="font-semibold text-safe">Signed off</span> — you marked this position ready to hand off on{" "}
+          {isNaN(when.getTime()) ? signoff.signed_off_at : when.toLocaleDateString()}. Your own attestation; Quillo doesn't lodge.
+        </div>
+        <button onClick={() => unsign.mutate()} disabled={unsign.isPending} className="rounded-lg border border-line px-3 py-1.5 text-sm hover:bg-surface">
+          {unsign.isPending ? "…" : "Re-open"}
+        </button>
+      </Card>
+    );
+  }
+  return (
+    <Card className="flex flex-wrap items-center justify-between gap-2 p-4 print:hidden">
+      <div className="text-sm text-muted">
+        {ready
+          ? "Looks ready — sign off to mark this as your final position for your agent."
+          : "Clear the items flagged above first, then you can sign off."}
+      </div>
+      <button
+        onClick={() => sign.mutate()}
+        disabled={!ready || sign.isPending}
+        title={ready ? "" : "Fix the flagged items above first"}
+        className="rounded-lg bg-ink px-4 py-2 text-sm font-medium text-white hover:bg-ink/90 disabled:opacity-50"
+      >
+        {sign.isPending ? "…" : "Sign off this position"}
+      </button>
+    </Card>
+  );
+}
+
 export function Filing() {
   // Driven by the global active-FY switcher (in the app header).
   const { fy, label } = useActiveFy();
@@ -75,6 +118,9 @@ export function Filing() {
               </div>
             </div>
           </Card>
+
+          {/* Soft sign-off — the user's own "ready to hand off" attestation (re-openable, never a lock). */}
+          <SignOff fy={fy} ready={data.readiness_score.ready} />
 
           {/* Indicative position with reasoning */}
           <Card className="p-4">

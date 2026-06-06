@@ -122,6 +122,8 @@ function excludedWhy(bucket: string, deductibility: string | null | undefined): 
       return "Private or non-deductible spend (e.g. groceries, personal living costs, entertainment) — generally not deductible under s8-1(2)(b), so it's excluded from your position.";
     case "needs_apportionment":
       return "Work-related but needs an apportionment (e.g. work-use %, or your hours for working-from-home) before any amount can be claimed — excluded until you resolve it.";
+    case "suggested_deductible":
+      return "Looks like a deductible work/charity expense (e.g. union fees, tax-agent fees, a DGR donation) — suggested only, and excluded until you confirm it. General information, not tax advice.";
     default:
       return "Not yet confirmed as work-related — excluded by default until you confirm it relates to earning your income. Review it in the Inbox.";
   }

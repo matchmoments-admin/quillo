@@ -1,4 +1,4 @@
-import type { Txn, TxnDetail, Situation, SituationDraft, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse, UsageData, StatementInfo, IncomeRow, DocRow, AssetRow, ScheduleRow, ChecklistItem, ClaimSuggestion, FilingReadiness, ReviewSummary, Progress, AdminTenant, AdminOverview, ClaimReview, OccupationRulesDraft, OccupationRuleCandidate, MovementSweep, BatchResult, ClarifyQuestion, ClarifyAnswer, ClaimMatch } from "./types";
+import type { Txn, TxnDetail, Situation, SituationDraft, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse, UsageData, StatementInfo, IncomeRow, DocRow, AssetRow, ScheduleRow, ChecklistItem, ClaimSuggestion, FilingReadiness, ReviewSummary, Progress, AdminTenant, AdminOverview, ClaimReview, OccupationRulesDraft, OccupationRuleCandidate, MovementSweep, BatchResult, ClarifyQuestion, ClarifyAnswer, ClaimMatch, AccountantSummary, SuggestedDeduction } from "./types";
 
 // Clerk session token getter, wired from <TokenBridge> inside ClerkProvider (main.tsx).
 // Clerk tokens are short-lived, so we fetch a fresh one per request (getToken caches/refreshes).
@@ -249,6 +249,11 @@ export const api = {
   correctBatch: (txnIds: string[], edits: { field: string; value: string }[]) => post<BatchResult>("/api/correct/batch", { txnIds, edits }),
   undoBatch: (batchId: string) => post<{ reverted: number }>("/api/correct/undo", { batchId }),
   deleteTxnBatch: (ids: string[]) => post<{ deleted: number }>("/api/transactions/batch-delete", { ids }),
+
+  // Phase 4 — "Do my books" accountant pass
+  runAccountantPass: (fy?: number) => post<AccountantSummary>(`/api/accountant/run${fy != null ? `?fy=${fy}` : ""}`),
+  accountantSuggestions: (fy?: number) => get<{ suggestions: SuggestedDeduction[] }>(`/api/accountant/suggestions${fy != null ? `?fy=${fy}` : ""}`).then((r) => r.suggestions),
+  confirmDeduction: (txnId: string) => post<{ ok: boolean }>("/api/accountant/confirm", { txnId }),
 
   // Stage B — clarify-by-pattern
   clarifyQuestions: (fy?: number) => get<{ questions: ClarifyQuestion[] }>(`/api/clarify${fy != null ? `?fy=${fy}` : ""}`).then((r) => r.questions),

@@ -46,6 +46,9 @@ export function deductionGroupForRow(
 ): DeductionGroup {
   if (bucket === "company") return "company";
   if (bucket === "asset" || bucket === "unknown") return "excluded";
+  // A positive SUGGESTION is NEVER counted until the user confirms it → confirmed_deductible (B1).
+  // Excluded regardless of the flag — a suggestion must not move the headline.
+  if ((deductibility ?? "") === "suggested_deductible") return "excluded";
   if (!excludeNonDeductible) return "deduction"; // legacy: payg + property_* all counted
   const d = deductibility ?? "undetermined";
   if (d === "likely_not" || d === "confirmed_not" || d === "needs_apportionment") return "excluded";

@@ -363,6 +363,21 @@ export async function listChecklist(env: Env, userId: string, fy?: string) {
   return res.results ?? [];
 }
 
+/** Transactions positively SUGGESTED as deductible (Stage D) — confirm-required, FY-scoped. */
+export async function listSuggestedDeductions(env: Env, userId: string, startYear: number) {
+  const { start, end } = fyBounds(startYear);
+  const res = await env.DB.prepare(
+    `SELECT id, merchant, ato_label, amount_cents, amount_aud_cents, txn_date
+       FROM transactions
+      WHERE user_id = ? AND deductibility = 'suggested_deductible' AND ${COUNTABLE}
+        AND txn_date >= ? AND txn_date <= ?
+      ORDER BY COALESCE(amount_aud_cents, amount_cents) DESC LIMIT 200`,
+  )
+    .bind(userId, start, end)
+    .all<{ id: string; merchant: string | null; ato_label: string | null; amount_cents: number | null; amount_aud_cents: number | null; txn_date: string | null }>();
+  return res.results ?? [];
+}
+
 /** Claim suggestions (GENERAL-INFO), newest open first — for the Inbox/Dashboard nudge. */
 export async function listClaims(env: Env, userId: string) {
   const res = await env.DB.prepare(

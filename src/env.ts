@@ -113,6 +113,8 @@ export interface TaxAgentRpc {
   listClarifyQuestions(userId: string, startYear?: number): Promise<import("./agent").ClarifyQuestion[]>;
   answerClarify(userId: string, questionId: string, answer: import("./agent").ClarifyAnswer): Promise<{ applied: number; income_recorded: number }>;
   dismissClarify(userId: string, questionId: string): Promise<{ ok: boolean }>;
+  runAccountantPass(userId: string, startYear: number): Promise<import("./agent").AccountantSummary>;
+  confirmSuggestedDeduction(userId: string, txnId: string): Promise<{ ok: boolean }>;
   draftOccupationRules(userId: string, occupation: string): Promise<import("./extract").OccupationRulesDraft>;
   addClaimabilityRules(userId: string, rules: { scope_type: string; scope_value: string; merchant_hint?: string | null; ato_label?: string | null; claim_type: string; default_method?: string | null; general_info_note: string }[]): Promise<{ inserted: number; ids: string[] }>;
 }

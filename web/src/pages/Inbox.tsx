@@ -4,8 +4,7 @@ import { Link } from "react-router-dom";
 import { api } from "../api";
 import { BucketPill, Button, ConfidencePill, Card, Spinner, money } from "../components/ui";
 import { AccountantPassCard } from "../components/AccountantPassCard";
-import { MovementSweepCard } from "../components/MovementSweepCard";
-import { ClarifyCard } from "../components/ClarifyCard";
+import { SortFlow } from "../components/SortFlow";
 import { BulkBar, type BulkDone } from "../components/BulkBar";
 import { useFeatures } from "../lib/features";
 import { useActiveFy } from "../lib/activeFy";
@@ -74,7 +73,7 @@ export function Inbox() {
   return (
     <div className="space-y-6">
       <div className="flex items-baseline justify-between gap-3">
-        <h1 className="text-2xl font-semibold tracking-tight">Review</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">Sort</h1>
         <div className="flex items-center gap-3">
           <Button onClick={pickFile} disabled={upload.isPending}>
             {upload.isPending ? "Uploading…" : "+ Add receipt"}
@@ -82,15 +81,13 @@ export function Inbox() {
         </div>
       </div>
 
-      {/* Phase 4: "Do my books" — runs the accountant pass + the suggested-deductions sign-off. */}
+      {/* "Do my books" — the driver that populates the Sort flow below (accountant_pass-gated). */}
       {hasAccountantPass && <AccountantPassCard fy={activeFy} />}
 
-      {/* Stage A: deterministic non-spend clean-up (transfers / repayments / deposits). Renders
-          nothing when there's nothing to clean up. */}
-      <MovementSweepCard />
-
-      {/* Stage B: clarify recurring patterns (gated behind the accountant_pass flag). */}
-      {hasAccountantPass && <ClarifyCard fy={activeFy} />}
+      {/* Phase 2: the ordered "Sort" flow (priority, not gate) — expands the highest-priority queue
+          with work (clean transfers, clarify patterns, confirm suggestions), collapses the rest to
+          one-line rows, and falls away when clear. The transaction tabs/table below stay reachable. */}
+      <SortFlow fy={activeFy} hasAccountantPass={hasAccountantPass} />
 
       {/* Filter tabs — separates receipts from imported bank lines so a statement import
           doesn't flood the receipt review. */}

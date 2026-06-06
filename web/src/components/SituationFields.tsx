@@ -1,5 +1,6 @@
 import type { EntityDetail } from "../types";
 import { isValidAbn, normaliseAbn } from "../lib/abn";
+import { OCCUPATIONS, normaliseOccupation, occupationLabel } from "../content/occupations";
 import { InfoTip } from "./ui";
 
 // Shared input styling — kept here so the Settings forms and the onboarding wizard render
@@ -215,7 +216,9 @@ export interface PersonValue {
 export const emptyPerson = (): PersonValue => ({ display_name: "", role: "spouse", occupation: "", tax_residency: "AU" });
 
 export function personToValue(p: { display_name: string; role: string; occupation: string | null; tax_residency: string }): PersonValue {
-  return { display_name: p.display_name, role: p.role, occupation: p.occupation ?? "", tax_residency: p.tax_residency || "AU" };
+  // Show the human label for known occupation tokens (e.g. "it_professional" → "IT professional");
+  // unknown free-text values are shown exactly as stored.
+  return { display_name: p.display_name, role: p.role, occupation: occupationLabel(p.occupation ?? ""), tax_residency: p.tax_residency || "AU" };
 }
 
 /** Controlled editor for one taxpayer. Caller owns layout + submission. `lockRole` for the self person. */
@@ -237,10 +240,16 @@ export function PersonFields({ value, onChange, lockRole = false }: { value: Per
       </div>
       <input
         className={`${fieldInput} w-full`}
-        placeholder="Occupation e.g. nurse, it_professional, teacher — helps tailor deduction hints"
+        list="occupation-options"
+        placeholder="Occupation, e.g. Nurse, IT professional, Teacher — helps tailor deduction hints"
         value={value.occupation}
         onChange={(e) => set({ occupation: e.target.value })}
       />
+      <datalist id="occupation-options">
+        {OCCUPATIONS.map((o) => (
+          <option key={o.token} value={o.label} />
+        ))}
+      </datalist>
     </div>
   );
 }
@@ -249,7 +258,7 @@ export function personToBody(v: PersonValue): { display_name: string; role: stri
   return {
     display_name: v.display_name.trim() || "Taxpayer",
     role: v.role,
-    occupation: v.occupation.trim() || null,
+    occupation: normaliseOccupation(v.occupation) || null,
     tax_residency: v.tax_residency || "AU",
   };
 }

@@ -11,6 +11,9 @@ per-tenant `TaxAgent` Durable Object, D1 (`tax-agent-db`), R2 (`tax-agent-receip
 bank lines, income, assets/depreciation and documents; categorises with Claude; and produces
 a tax-position report. **General information only — never tax advice.**
 
+> Architecture note: the DO is a **write-coordinator**, D1 is the store **and the scale ceiling**
+> (the per-DO SQLite is declared but unused). See [`docs/adr-0001`](docs/adr-0001-do-write-coordinator-d1-ceiling.md).
+
 ## Commands
 - `npm run typecheck` — server (tsc). `npm --prefix web exec tsc -- --noEmit` — SPA.
 - `npm test` — unit goldens (`scripts/check-units.ts`) + statement reconciliation. `npm run test:units` for just units.

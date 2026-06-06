@@ -25,12 +25,13 @@ export function Filing() {
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between print:hidden">
-        <h1 className="text-2xl font-semibold tracking-tight">File your return</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">Year-end handoff</h1>
         <span className="text-sm tabular-nums text-muted">FY {label}</span>
       </div>
 
       <p className="text-sm text-muted print:hidden">
-        Everything you've captured, pulled together so you (and your accountant) can see the position and what's worth a second look before lodging.
+        Everything you've captured, pulled together so you and your registered tax agent can see the position and what's worth a second look.{" "}
+        <span className="text-ink">Quillo prepares your return for a registered tax agent — it doesn't lodge for you.</span>
       </p>
 
       {features.has("claim_review") && <FindMyClaims fy={fy} />}
@@ -48,7 +49,7 @@ export function Filing() {
                 <div className="text-lg font-semibold">
                   {data.readiness_score.ready
                     ? data.readiness_score.review > 0
-                      ? `${data.readiness_score.review} item(s) worth a look before lodging`
+                      ? `${data.readiness_score.review} item(s) worth a look before you hand off`
                       : "Nothing flagged — but always confirm with your agent"
                     : `${data.readiness_score.blockers} item(s) to fix first`}
                 </div>

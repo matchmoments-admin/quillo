@@ -2774,6 +2774,23 @@ export class TaxAgent extends Agent<Env> {
    * Idempotent — re-running only inserts items that aren't already present for the FY (the
    * UNIQUE(user_id, person_id, fy, item_key) key + ON CONFLICT DO NOTHING). GENERAL-INFO only.
    */
+  /**
+   * Upsert the per-FY work-use inputs (WFH hours + work-related km) that drive the computed fixed-rate /
+   * cents-per-km deductions (#67). One row per (user, fy). Inert until the wfh_car_methods flag is on
+   * (buildReport reads it then). Stores the raw inputs only — the $ figure is computed in report.ts.
+   */
+  async setWorkUseInputs(userId: string, input: { fy: number; wfh_hours: number | null; car_work_km: number | null }): Promise<{ ok: true }> {
+    await this.requireProfile(userId);
+    await this.env.DB.prepare(
+      `INSERT INTO work_use_inputs (user_id, fy, wfh_hours, car_work_km, updated_at) VALUES (?, ?, ?, ?, datetime('now'))
+       ON CONFLICT(user_id, fy) DO UPDATE SET wfh_hours = excluded.wfh_hours, car_work_km = excluded.car_work_km, updated_at = datetime('now')`,
+    )
+      .bind(userId, input.fy, input.wfh_hours, input.car_work_km)
+      .run();
+    await this.audit(userId, "work_use_set", JSON.stringify(input));
+    return { ok: true };
+  }
+
   async generateChecklist(userId: string, fy?: string): Promise<{ items: number }> {
     const profile = await this.requireProfile(userId);
     const situation = await getSituation(this.env, userId, profile);

@@ -37,6 +37,7 @@ export const PURGE_TABLES = [
   "clarify_questions",
   "claim_links",
   "accountant_runs",
+  "work_use_inputs",
 ] as const;
 
 // Columns that must NEVER leave the system in an APP-12 export, even though the row belongs to the

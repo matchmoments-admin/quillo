@@ -34,6 +34,7 @@ export const PURGE_TABLES = [
   "fy_checklist",
   "claim_suggestions",
   "claimability_rules", // only per-tenant rows: DELETE WHERE user_id=? leaves global (NULL) pack overrides intact
+  "clarify_questions",
 ] as const;
 
 // Columns that must NEVER leave the system in an APP-12 export, even though the row belongs to the

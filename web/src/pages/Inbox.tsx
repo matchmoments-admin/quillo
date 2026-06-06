@@ -4,7 +4,10 @@ import { Link } from "react-router-dom";
 import { api } from "../api";
 import { BucketPill, Button, ConfidencePill, Card, Spinner, money } from "../components/ui";
 import { MovementSweepCard } from "../components/MovementSweepCard";
+import { ClarifyCard } from "../components/ClarifyCard";
 import { BulkBar, type BulkDone } from "../components/BulkBar";
+import { useFeatures } from "../lib/features";
+import { useActiveFy } from "../lib/activeFy";
 import type { Txn } from "../types";
 
 const TABS = [
@@ -23,6 +26,9 @@ export function Inbox() {
   // no-longer-visible row can't be acted on.
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [flash, setFlash] = useState<BulkDone | null>(null);
+  const { has } = useFeatures();
+  const hasAccountantPass = has("accountant_pass");
+  const { fy: activeFy } = useActiveFy();
   const toggleSel = (id: string) =>
     setSelected((prev) => {
       const next = new Set(prev);
@@ -78,6 +84,9 @@ export function Inbox() {
       {/* Stage A: deterministic non-spend clean-up (transfers / repayments / deposits). Renders
           nothing when there's nothing to clean up. */}
       <MovementSweepCard />
+
+      {/* Stage B: clarify recurring patterns (gated behind the accountant_pass flag). */}
+      {hasAccountantPass && <ClarifyCard fy={activeFy} />}
 
       {/* Filter tabs — separates receipts from imported bank lines so a statement import
           doesn't flood the receipt review. */}

@@ -1,4 +1,4 @@
-import type { Txn, TxnDetail, Situation, SituationDraft, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse, UsageData, StatementInfo, IncomeRow, DocRow, AssetRow, ScheduleRow, ChecklistItem, ClaimSuggestion, FilingReadiness, ReviewSummary, Progress, AdminTenant, AdminOverview, ClaimReview, OccupationRulesDraft, OccupationRuleCandidate, MovementSweep, BatchResult } from "./types";
+import type { Txn, TxnDetail, Situation, SituationDraft, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse, UsageData, StatementInfo, IncomeRow, DocRow, AssetRow, ScheduleRow, ChecklistItem, ClaimSuggestion, FilingReadiness, ReviewSummary, Progress, AdminTenant, AdminOverview, ClaimReview, OccupationRulesDraft, OccupationRuleCandidate, MovementSweep, BatchResult, ClarifyQuestion, ClarifyAnswer } from "./types";
 
 // Clerk session token getter, wired from <TokenBridge> inside ClerkProvider (main.tsx).
 // Clerk tokens are short-lived, so we fetch a fresh one per request (getToken caches/refreshes).
@@ -244,6 +244,12 @@ export const api = {
   correctBatch: (txnIds: string[], edits: { field: string; value: string }[]) => post<BatchResult>("/api/correct/batch", { txnIds, edits }),
   undoBatch: (batchId: string) => post<{ reverted: number }>("/api/correct/undo", { batchId }),
   deleteTxnBatch: (ids: string[]) => post<{ deleted: number }>("/api/transactions/batch-delete", { ids }),
+
+  // Stage B — clarify-by-pattern
+  clarifyQuestions: (fy?: number) => get<{ questions: ClarifyQuestion[] }>(`/api/clarify${fy != null ? `?fy=${fy}` : ""}`).then((r) => r.questions),
+  clarifyScan: (fy?: number) => post<{ questions: number; groups: number }>(`/api/clarify/scan${fy != null ? `?fy=${fy}` : ""}`),
+  answerClarify: (id: string, answer: ClarifyAnswer) => post<{ applied: number; income_recorded: number }>(`/api/clarify/${id}/answer`, { answer }),
+  dismissClarify: (id: string) => post<{ ok: boolean }>(`/api/clarify/${id}/dismiss`),
 
   // Admin (founder only — server enforces the 'admin' role)
   adminOverview: () => get<AdminOverview>("/api/admin/overview"),

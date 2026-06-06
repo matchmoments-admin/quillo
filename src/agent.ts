@@ -18,6 +18,7 @@ import { assessReadiness, type FilingReadiness, type FilingReadinessSignals } fr
 import { rollSchedule, balancingAdjustment, fyStartYearOf, isLowCostAsset, looksLikePersonalTransfer, type DepAsset } from "./lib/depreciation";
 import { matchClaimRules, suggestionText, enumerateSituationClaims, classifyClaim, uncoveredOccupations, ruleKey, type ClaimRule, type ClaimContext, type ClaimSituation } from "./lib/claimability";
 import { parseCsv, applyColumnMap, lineFingerprint, deriveBalances, reconcileStatement, isLiabilityAccount, fuzzyMerchant, isTransferLike, classifyMovement, movementTreatment, type ColumnMap, type Reconciliation, type StatementLine, type MovementClass } from "./lib/statements";
+import { groupKey, groupForClarify, rulePatternForStem, type ClarifyRow } from "./lib/clarify";
 import { batchStatementStatus, isStaleBatch } from "./lib/batch";
 import { cleanMerchant } from "./lib/bank-parsers";
 import { pdfPageCount, splitPdf, normalizePdf } from "./lib/pdf";
@@ -57,6 +58,26 @@ export interface MovementCandidate {
   klass: MovementClass;
   reason: string;
 }
+// ── Stage B clarify-by-pattern return shapes ───────────────────────────────────
+export interface ClarifyQuestion {
+  id: string;
+  fy: string;
+  group_key: string;
+  sample_desc: string | null;
+  direction: string | null;
+  n: number;
+  total_cents: number;
+  suggestions: import("./lib/clarify").ClarifySuggestion[];
+  status: string;
+}
+/** A single clarify answer — one tap. The UI fills concrete fields from the chosen suggestion. */
+export interface ClarifyAnswer {
+  kind: import("./lib/clarify").ClarifyAnswerKind;
+  bucket?: string;
+  ato_label?: string;
+  property_id?: string;
+}
+
 export interface MovementSweep {
   // Pre-checked confirm list: safe transfers/card payments, investment deposits, and non-property
   // loan repayments → excluding these as 'ignored' won't drop a deductible amount.
@@ -2986,6 +3007,196 @@ export class TaxAgent extends Agent<Env> {
     for (let i = 0; i < stmts.length; i += 50) await this.env.DB.batch(stmts.slice(i, i + 50));
     await this.audit(userId, "movement_sweep", JSON.stringify({ ignored, skipped }));
     return { ignored, skipped };
+  }
+
+  // ── STAGE B: clarify-by-pattern (group leftovers → one question per pattern) ──
+  /**
+   * Scan the FY's leftover bank lines (uncategorised / unknown / low-confidence, not already
+   * excluded), group them by normalised merchant stem, and upsert ONE open clarify_question per
+   * recurring pattern (≥K lines OR ≥$threshold). Idempotent + state-preserving: the upsert only
+   * refreshes counts on rows still 'open', so an answered/dismissed question never resurrects. Stems
+   * already covered by a user_rule are skipped (they auto-apply on recategorise). No LLM, no consent.
+   */
+  async runClarifyScan(userId: string, startYear: number): Promise<{ questions: number; groups: number }> {
+    const profile = await this.requireProfile(userId);
+    const situation = await getSituation(this.env, userId, profile);
+    const { start, end } = fyBounds(startYear);
+    const rows = await this.env.DB.prepare(
+      `SELECT id, raw_description, merchant, amount_cents, amount_aud_cents, direction
+         FROM transactions
+        WHERE user_id = ? AND kind = 'bank_line'
+          AND status NOT IN ('ignored','duplicate','matched_receipt','corrected')
+          AND (bucket IS NULL OR bucket = 'unknown' OR confidence IS NULL OR confidence < 0.85)
+          AND txn_date >= ? AND txn_date <= ?`,
+    )
+      .bind(userId, start, end)
+      .all<ClarifyRow>();
+    const groups = groupForClarify(rows.results ?? []);
+    let questions = 0;
+    for (const g of groups) {
+      // Skip a stem a DIRECTION-PURE group's user_rule already covers — those lines auto-apply on
+      // recategorise, so re-asking would be noise. A MIXED group is NOT skipped: a debit expense
+      // rule must not suppress asking about the credit side (and vice-versa).
+      if (g.direction !== "mixed" && applyUserRules(g.group_key, situation.rules, g.direction)) continue;
+      const res = await this.env.DB.prepare(
+        `INSERT INTO clarify_questions (id, user_id, fy, group_key, sample_desc, direction, n, total_cents, suggested_json, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')
+         ON CONFLICT(user_id, fy, group_key) DO UPDATE SET
+           n = excluded.n, total_cents = excluded.total_cents, sample_desc = excluded.sample_desc,
+           direction = excluded.direction, suggested_json = excluded.suggested_json
+         WHERE clarify_questions.status = 'open'`,
+      )
+        .bind(crypto.randomUUID(), userId, String(startYear), g.group_key, g.sample_desc, g.direction, g.n, g.total_cents, JSON.stringify(g.suggestions))
+        .run();
+      questions += res.meta?.changes ?? 0;
+    }
+    await this.audit(userId, "clarify_scan", JSON.stringify({ fy: startYear, groups: groups.length, upserted: questions }));
+    return { questions, groups: groups.length };
+  }
+
+  /** Open clarify questions (optionally scoped to one FY start year), biggest-dollar first. */
+  async listClarifyQuestions(userId: string, startYear?: number): Promise<ClarifyQuestion[]> {
+    const where = startYear != null ? "user_id = ? AND status = 'open' AND fy = ?" : "user_id = ? AND status = 'open'";
+    const binds = startYear != null ? [userId, String(startYear)] : [userId];
+    const res = await this.env.DB.prepare(
+      `SELECT id, fy, group_key, sample_desc, direction, n, total_cents, suggested_json, status
+         FROM clarify_questions WHERE ${where} ORDER BY total_cents DESC LIMIT 200`,
+    )
+      .bind(...binds)
+      .all<{ id: string; fy: string; group_key: string; sample_desc: string | null; direction: string | null; n: number; total_cents: number; suggested_json: string | null; status: string }>();
+    return (res.results ?? []).map((r) => ({
+      id: r.id,
+      fy: r.fy,
+      group_key: r.group_key,
+      sample_desc: r.sample_desc,
+      direction: r.direction,
+      n: r.n,
+      total_cents: r.total_cents,
+      suggestions: r.suggested_json ? (JSON.parse(r.suggested_json) as ClarifyQuestion["suggestions"]) : [],
+      status: r.status,
+    }));
+  }
+
+  /** Dismiss a clarify question (the user judges the pattern not worth answering). Terminal. */
+  async dismissClarify(userId: string, questionId: string): Promise<{ ok: boolean }> {
+    await this.env.DB.prepare(`UPDATE clarify_questions SET status = 'dismissed' WHERE id = ? AND user_id = ? AND status = 'open'`).bind(questionId, userId).run();
+    return { ok: true };
+  }
+
+  /**
+   * Answer ONE clarify question → (a) recategorise the whole matching group NOW, and (b) create a
+   * user_rule so future matches auto-apply. Ordered + idempotent: claim the question (status='open'→
+   * 'answered') FIRST and treat a non-open question as a no-op, so a double-tap or re-run can't
+   * double-apply. Income answers route each credit to recordIncome (deduped via matched_income_id)
+   * and exclude the bank credit (status='ignored') so the rent counts exactly once (B4/B5). Re-bucket
+   * answers go through the Phase-2 applyCorrectionBatch seam (shared batch_id, deductibility re-stamp).
+   */
+  async answerClarify(userId: string, questionId: string, answer: ClarifyAnswer): Promise<{ applied: number; income_recorded: number }> {
+    const q = await this.env.DB.prepare(
+      `SELECT id, fy, group_key, status FROM clarify_questions WHERE id = ? AND user_id = ?`,
+    )
+      .bind(questionId, userId)
+      .first<{ id: string; fy: string; group_key: string; status: string }>();
+    if (!q) throw new Error("clarify question not found");
+    if (q.status !== "open") return { applied: 0, income_recorded: 0 }; // idempotent: already answered/dismissed
+    // VALIDATE BEFORE claiming the question, so a bad answer never consumes it (no dead-ended answer).
+    if (answer.kind === "income_property" && !answer.property_id) throw new Error("property_id required for rental income");
+    if (answer.kind === "bucket") {
+      if (!answer.bucket) throw new Error("bucket required");
+      // Income/refund are money-IN buckets — they MUST go through the income_* kinds (recordIncome +
+      // single-count dedupe), never the spend-oriented re-bucket seam, or the credit gets counted twice.
+      if (RULE_CREDIT_BUCKETS.has(answer.bucket)) throw new Error(`use an income answer kind, not bucket='${answer.bucket}'`);
+    }
+    // Claim it, guarded on status='open' so only one writer proceeds.
+    const claim = await this.env.DB.prepare(
+      `UPDATE clarify_questions SET status = 'answered', answer_json = ? WHERE id = ? AND user_id = ? AND status = 'open'`,
+    )
+      .bind(JSON.stringify(answer), questionId, userId)
+      .run();
+    if (!(claim.meta?.changes ?? 0)) return { applied: 0, income_recorded: 0 };
+
+    // Resolve the group's CURRENT rows using the SAME leftover filter the scan used (so the answer
+    // acts only on the uncategorised/low-confidence rows the user actually saw — never re-touching a
+    // row a prior correction already finalised, and never overshooting the count shown).
+    const { start, end } = fyBounds(Number(q.fy));
+    const rowsRes = await this.env.DB.prepare(
+      `SELECT id, raw_description, merchant, direction, amount_cents, amount_aud_cents, currency, matched_income_id, txn_date
+         FROM transactions
+        WHERE user_id = ? AND kind = 'bank_line'
+          AND status NOT IN ('ignored','duplicate','matched_receipt','corrected')
+          AND (bucket IS NULL OR bucket = 'unknown' OR confidence IS NULL OR confidence < 0.85)
+          AND txn_date >= ? AND txn_date <= ?`,
+    )
+      .bind(userId, start, end)
+      .all<{ id: string; raw_description: string | null; merchant: string | null; direction: string | null; amount_cents: number | null; amount_aud_cents: number | null; currency: string | null; matched_income_id: string | null; txn_date: string | null }>();
+    const group = (rowsRes.results ?? []).filter((r) => groupKey(r.raw_description ?? r.merchant ?? "") === q.group_key);
+
+    if (answer.kind === "income_property" || answer.kind === "income_business" || answer.kind === "income_personal") {
+      const incomeType = answer.kind === "income_property" ? "rent" : answer.kind === "income_business" ? "business" : "personal";
+      let income_recorded = 0;
+      for (const r of group) {
+        if (r.direction !== "credit") continue; // income answers act on credits only
+        if (r.matched_income_id) continue; // already linked → dedupe (B4)
+        // Pass the NATIVE amount + currency so recordIncome does the AUD conversion and preserves FX
+        // provenance (a foreign rent credit must not be relabelled native-AUD).
+        const incomeId = await this.recordIncome(userId, {
+          income_type: incomeType,
+          gross_cents: r.amount_cents ?? r.amount_aud_cents ?? 0,
+          currency: r.currency ?? "AUD",
+          property_id: answer.property_id ?? null,
+          txn_date: r.txn_date,
+          fy: fyLabel(Number(q.fy)),
+        });
+        await this.env.DB.prepare(`UPDATE transactions SET matched_income_id = ?, status = 'ignored' WHERE id = ? AND user_id = ?`).bind(incomeId, r.id, userId).run();
+        income_recorded++;
+      }
+      // NB: deliberately NO user_rule for income — a bucketing rule would tag future credits
+      // income_* WITHOUT recording them in the income table (the headline source), under-counting
+      // future rent. Leaving them uncategorised re-surfaces the pattern next scan → recorded correctly.
+      await this.audit(userId, "clarify_answer", JSON.stringify({ questionId, kind: answer.kind, income_recorded }));
+      return { applied: income_recorded, income_recorded };
+    }
+
+    if (answer.kind === "ignore") {
+      const ids = group.map((r) => r.id);
+      const stmts: D1PreparedStatement[] = [];
+      for (const r of group) {
+        stmts.push(
+          this.env.DB.prepare(`UPDATE transactions SET status = 'ignored' WHERE id = ? AND user_id = ?`).bind(r.id, userId),
+          this.env.DB.prepare(`INSERT INTO corrections (id, user_id, txn_id, field, old_value, new_value) VALUES (?, ?, ?, 'status', 'clarify', 'ignored')`).bind(crypto.randomUUID(), userId, r.id),
+        );
+      }
+      for (let i = 0; i < stmts.length; i += 80) await this.env.DB.batch(stmts.slice(i, i + 80));
+      await this.audit(userId, "clarify_answer", JSON.stringify({ questionId, kind: "ignore", applied: ids.length }));
+      return { applied: ids.length, income_recorded: 0 };
+    }
+
+    // kind === 'bucket' → re-bucket the group via the Phase-2 batch seam + learn a rule.
+    const edits: { field: string; value: string }[] = [{ field: "bucket", value: answer.bucket! }];
+    if (answer.ato_label) edits.push({ field: "ato_label", value: answer.ato_label });
+    if (answer.property_id) edits.push({ field: "property_id", value: answer.property_id });
+    const ids = group.map((r) => r.id);
+    const res = await this.applyCorrectionBatch(userId, ids, edits);
+    await this.ensureClarifyRule(userId, q.group_key, answer.bucket!, answer.ato_label ?? "", answer.property_id);
+    await this.audit(userId, "clarify_answer", JSON.stringify({ questionId, kind: "bucket", bucket: answer.bucket, applied: res.updated }));
+    return { applied: res.updated, income_recorded: 0 };
+  }
+
+  /**
+   * Create a per-user rule so future matches of an answered EXPENSE pattern auto-apply. The rule
+   * pattern is the LONGEST token of the group stem (a real substring of the raw merchant) — the
+   * stem itself is alphabetically sorted ("energy origin") and would never substring-match the raw
+   * "...origin energy..." line. Single-token stems are used as-is.
+   */
+  private async ensureClarifyRule(userId: string, groupKeyStem: string, bucket: string, atoLabel: string, propertyId?: string): Promise<void> {
+    if (!bucket || bucket === "unknown" || !groupKeyStem) return;
+    const pattern = rulePatternForStem(groupKeyStem);
+    if (!pattern) return;
+    const profile = await this.requireProfile(userId);
+    const situation = await getSituation(this.env, userId, profile);
+    const dir = RULE_CREDIT_BUCKETS.has(bucket) ? "credit" : "debit";
+    if (applyUserRules(pattern, situation.rules, dir)) return; // already covered
+    await addRule(this.env, userId, { pattern, match_type: "merchant_contains", bucket, ato_label: atoLabel, property_id: propertyId });
   }
 
   /**

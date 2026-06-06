@@ -40,6 +40,20 @@ export function Filing() {
         <Spinner />
       ) : error ? (
         <Card className="p-6 text-sm text-muted">Couldn't load: {(error as Error).message}</Card>
+      ) : data && data.findings.some((x) => x.id === "nothing_captured") ? (
+        /* Empty FY — don't present a $0 return as "ready". Point the user at the first action (#74). */
+        <Card className="space-y-3 border-warn/40 p-6">
+          <div className="text-lg font-semibold">Nothing captured for FY {label} yet</div>
+          <p className="text-sm text-muted">
+            Your return for this year is empty, so there's nothing to hand off to your agent. Start by importing a bank
+            statement or snapping a receipt — Quillo will categorise it and build your position from there.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <Link to="/accounts" className="rounded-lg bg-ink px-4 py-2 text-sm font-medium text-white hover:bg-ink/90">Import a statement</Link>
+            <Link to="/" className="rounded-lg border border-line px-4 py-2 text-sm font-medium hover:bg-surface">Add a receipt</Link>
+          </div>
+          <p className="text-xs text-muted">{data.disclaimer}</p>
+        </Card>
       ) : data ? (
         <>
           {/* Readiness banner */}

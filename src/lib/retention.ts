@@ -42,6 +42,9 @@ export const PURGE_TABLES = [
   "fy_signoff",
   "capital_loss_carryins",
   "depreciation_opening_balances",
+  "entity_roles",            // 0032
+  "income_activities",       // 0033
+  "transaction_attributions",// 0034
 ] as const;
 
 // Columns that must NEVER leave the system in an APP-12 export, even though the row belongs to the

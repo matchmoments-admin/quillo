@@ -26,7 +26,8 @@ a tax-position report. **General information only — never tax advice.**
 - **Multi-tenant**: every table has `user_id`; identity is derived server-side (verified HMAC key / Clerk / mailbox), **never** a client header.
 - **One canonical money source per account** (QBO feed XOR statement) — never double-count. QBO is reader/reconciler; never auto-post what a feed already provides.
 - **APP-8 consent gate**: any US/`anthropic` inference on personal data needs recorded consent; the gate runs **before** any model call. Bedrock/AU is the residency path.
-- **Migrations are additive + apply-once**: `CREATE TABLE/INDEX IF NOT EXISTS`, `ALTER TABLE ADD COLUMN`, idempotent backfills (`INSERT OR IGNORE`, guarded `UPDATE`). New migrations continue the `00NN_` sequence; keep `schema.sql` in lockstep.
+- **Migrations are additive + apply-once**: `CREATE TABLE/INDEX IF NOT EXISTS`, `ALTER TABLE ADD COLUMN`, idempotent backfills (`INSERT OR IGNORE`, guarded `UPDATE`). New migrations continue the `00NN_` sequence; keep `schema.sql` in lockstep. New tenant tables MUST be added to `PURGE_TABLES` (`src/lib/retention.ts`).
+- **Persona coverage is a contract**: the 10 taxpayer personas ([`docs/personas.md`](docs/personas.md)) are the coverage lens. **Any change to the data model, the money/tax-position pipeline (`report.ts`/`ledger-totals.ts`), or the user workflow MUST keep `npm run test:personas` green for all 10** and update `docs/personas.md` if coverage changes. A new tax feature lands **additive + feature-flag-gated** (flag OFF ⇒ byte-identical) and **adds or flips a persona golden in the same PR**. Shipping an engine is not "done" until the front end lets the relevant persona enter the data and see the result (engine ✓ + UI ✓ + display ✓) — track the UI/API gap if you defer it, don't silently call it complete.
 - **GENERAL-INFO framing** on every suggestion; `defer_to_agent` rules say "confirm with a registered tax agent"; never predict a refund amount.
 - **Local runtime is deploy-only** (macOS 12.6 can't run workerd) — verify via typecheck + `npm test`, then deploy to test live.
 
@@ -40,7 +41,7 @@ babysit branching. Do the due diligence below, then ship.
 
 ### The loop (run end-to-end, autonomously)
 1. **Branch** off `main` for anything non-trivial: `git checkout main && git pull --ff-only && git checkout -b <scope>/<short-name>`. (Trivial one-line fixes may go straight on a branch too — just never commit on `main`.)
-2. **Build green** — `npm run typecheck` + web tsc + `npm test`. All must pass before going further. If a change touches the rule pack, also reason about the eval gate.
+2. **Build green** — `npm run typecheck` + web tsc + `npm test` (which includes `test:personas` — all 10 personas). All must pass before going further. If you touched the data model, the position pipeline or the workflow, confirm the persona goldens still hold (and add/flip one for the change). If a change touches the rule pack, also reason about the eval gate.
 3. **Quick review, proportional to risk** — read your own diff; for anything touching **money/tax math, migrations, auth, or the ingest/report path**, run `/code-review` (high effort, like the v2 pass). For small UI/copy/config, a self-read is enough.
 4. **Fix confirmed findings** in the same branch; re-run the gates. Note genuinely low/edge deferrals in the PR body rather than fixing everything.
 5. **Commit** — explicit, descriptive message (WHY, not just what), end with the `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>` trailer. Prefer staging the specific files you changed.

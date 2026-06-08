@@ -409,6 +409,68 @@ CREATE INDEX IF NOT EXISTS idx_txn_attr_txn    ON transaction_attributions(user_
 CREATE INDEX IF NOT EXISTS idx_txn_attr_entity ON transaction_attributions(user_id, entity_id);
 CREATE INDEX IF NOT EXISTS idx_txn_attr_act    ON transaction_attributions(user_id, income_activity_id);
 
+-- 0035: company satellites (Phase C / G4). Facts a pre-revenue Pty Ltd needs; policy numbers live in
+-- the KV rule pack per FY. The engine computes the loss carry-forward; R&D + Div 7A are defer-to-agent.
+CREATE TABLE IF NOT EXISTS company_tax_positions (
+  id                          TEXT PRIMARY KEY,
+  user_id                     TEXT NOT NULL,
+  entity_id                   TEXT NOT NULL,
+  fy                          TEXT NOT NULL,
+  assessable_income_cents     INTEGER NOT NULL DEFAULT 0,
+  deductions_cents            INTEGER NOT NULL DEFAULT 0,
+  current_year_loss_cents     INTEGER NOT NULL DEFAULT 0,
+  carried_forward_losses_cents INTEGER NOT NULL DEFAULT 0,
+  cot_satisfied               INTEGER NOT NULL DEFAULT 1,
+  sbt_satisfied               INTEGER NOT NULL DEFAULT 0,
+  base_rate_entity            INTEGER NOT NULL DEFAULT 1,
+  computed_at                 TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (user_id, entity_id, fy)
+);
+CREATE INDEX IF NOT EXISTS idx_cotaxpos_user ON company_tax_positions(user_id, fy);
+
+CREATE TABLE IF NOT EXISTS blackhole_costs (
+  id                  TEXT PRIMARY KEY,
+  user_id             TEXT NOT NULL,
+  entity_id           TEXT NOT NULL,
+  incurred_date       TEXT NOT NULL,
+  amount_cents        INTEGER NOT NULL,
+  description         TEXT,
+  immediate_deduction INTEGER NOT NULL DEFAULT 0,
+  years_claimed       INTEGER NOT NULL DEFAULT 0,
+  created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_blackhole_user ON blackhole_costs(user_id, entity_id);
+
+CREATE TABLE IF NOT EXISTS shareholder_loans (
+  id                       TEXT PRIMARY KEY,
+  user_id                  TEXT NOT NULL,
+  company_entity_id        TEXT NOT NULL,
+  shareholder_person_id    TEXT NOT NULL,
+  direction                TEXT NOT NULL DEFAULT 'person_funds_company',
+  balance_cents            INTEGER NOT NULL DEFAULT 0,
+  loan_agreement_in_place  INTEGER NOT NULL DEFAULT 0,
+  benchmark_rate_pct       REAL,
+  min_yearly_repayment_cents INTEGER,
+  deemed_dividend_risk     INTEGER NOT NULL DEFAULT 0,
+  updated_at               TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (user_id, company_entity_id, shareholder_person_id, direction)
+);
+CREATE INDEX IF NOT EXISTS idx_shloan_user ON shareholder_loans(user_id, company_entity_id);
+
+CREATE TABLE IF NOT EXISTS rd_claims (
+  id                          TEXT PRIMARY KEY,
+  user_id                     TEXT NOT NULL,
+  entity_id                   TEXT NOT NULL,
+  fy                          TEXT NOT NULL,
+  eligible_expenditure_cents  INTEGER NOT NULL DEFAULT 0,
+  aggregated_turnover_cents   INTEGER NOT NULL DEFAULT 0,
+  offset_type                 TEXT,
+  registered_with_ausindustry INTEGER NOT NULL DEFAULT 0,
+  created_at                  TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (user_id, entity_id, fy)
+);
+CREATE INDEX IF NOT EXISTS idx_rdclaims_user ON rd_claims(user_id, entity_id);
+
 -- Deterministic per-user categorisation overrides (e.g. "Bunnings -> company tools").
 -- Applied AFTER extraction, BEFORE trusting the model's bucket (highest priority wins).
 CREATE TABLE IF NOT EXISTS user_rules (

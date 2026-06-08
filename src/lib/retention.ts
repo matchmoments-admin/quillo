@@ -45,6 +45,10 @@ export const PURGE_TABLES = [
   "entity_roles",            // 0032
   "income_activities",       // 0033
   "transaction_attributions",// 0034
+  "company_tax_positions",   // 0035
+  "blackhole_costs",         // 0035
+  "shareholder_loans",       // 0035
+  "rd_claims",               // 0035
 ] as const;
 
 // Columns that must NEVER leave the system in an APP-12 export, even though the row belongs to the

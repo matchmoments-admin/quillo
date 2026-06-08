@@ -1,6 +1,7 @@
 import type { Env } from "../env";
 import { COUNTABLE } from "./queries";
 import { classifyAttribution, splitAttribution } from "./attribution";
+import auV1RulePack from "../rulepacks/au-v1.json";
 
 // ── The single money-aggregation seam ─────────────────────────────────────────
 // Income lives in its own table; deductions live in `transactions`; depreciation in
@@ -191,4 +192,99 @@ export async function attributionTotals(
     if (/no such table/i.test((e as Error).message)) return empty;
     throw e;
   }
+}
+
+export interface CompanyPosition {
+  entity_id: string;
+  name: string | null;
+  base_rate_entity: number;
+  assessable_income_cents: number;
+  deductions_cents: number;
+  current_year_loss_cents: number;       // max(0, deductions − income) this FY
+  carried_forward_losses_cents: number;  // prior-year losses brought in (subject to COT)
+  total_carry_forward_cents: number;     // carried_forward + this year's loss
+  shareholder_loan_balance_cents: number;// person→company funding (NOT Div 7A)
+  rd_eligible: boolean;                  // turnover < cap AND registered (defer-to-agent)
+}
+
+/**
+ * Phase C / G4: the per-company position. A Pty Ltd is a SEPARATE taxpayer — its costs don't reduce
+ * the founder's salary; they net against company income and the excess becomes a carried-forward loss
+ * (the founder's personally-paid costs reach the company via an attribution + shareholder loan). This
+ * computes from source: company deductions = attributions routed to the company (+ raw company-bucket
+ * spend when there is exactly one company) ; income = the income table scoped to the company; the
+ * shareholder-loan balance = the person→company funding amount. R&D eligibility is a defer-to-agent
+ * flag (never an auto-claim). Empty (no company / pre-0035) → []. Flag-gated by the caller.
+ */
+export async function companyPositions(env: Env, userId: string, startYear: number): Promise<CompanyPosition[]> {
+  const fy = fyLabel(startYear);
+  const { start, end } = fyBounds(startYear);
+  try {
+    const companies = (await env.DB.prepare(`SELECT id, name, COALESCE(base_rate_entity,0) AS base_rate_entity FROM entities WHERE user_id = ? AND (kind = 'company' OR entity_type = 'company')`).bind(userId).all<{ id: string; name: string | null; base_rate_entity: number }>()).results ?? [];
+    if (!companies.length) return [];
+    const tFilter = COUNTABLE.replace(/\b(status|kind|matched_txn_id|direction)\b/g, "t.$1");
+    // Per-company attributed deductions THIS FY (the loss is a per-FY flow).
+    const attrRows = (await env.DB.prepare(
+      `SELECT ta.entity_id AS entity_id, COALESCE(SUM(ta.attributed_amount_cents),0) AS ded
+         FROM transaction_attributions ta
+         JOIN transactions t ON t.id = ta.transaction_id AND t.user_id = ta.user_id
+        WHERE ta.user_id = ? AND t.txn_date >= ? AND t.txn_date <= ? AND COALESCE(t.reimbursed,0) = 0 AND ${tFilter}
+        GROUP BY ta.entity_id`,
+    ).bind(userId, start, end).all<{ entity_id: string; ded: number }>()).results ?? [];
+    const attrBy = new Map(attrRows.map((r) => [r.entity_id, r]));
+    // Shareholder-loan balance is a CUMULATIVE stock (across all FYs), so it's computed all-time — the
+    // SAME filter syncShareholderLoans persists with (countable, reimbursed-excluded), so the on-screen
+    // figure and the persisted hand-off agree.
+    const loanRows = (await env.DB.prepare(
+      `SELECT ta.entity_id AS entity_id, COALESCE(SUM(ta.attributed_amount_cents),0) AS loan
+         FROM transaction_attributions ta
+         JOIN transactions t ON t.id = ta.transaction_id AND t.user_id = ta.user_id
+        WHERE ta.user_id = ? AND ta.creates_shareholder_loan = 1 AND COALESCE(t.reimbursed,0) = 0 AND ${tFilter}
+        GROUP BY ta.entity_id`,
+    ).bind(userId).all<{ entity_id: string; loan: number }>()).results ?? [];
+    const loanBy = new Map(loanRows.map((r) => [r.entity_id, r.loan]));
+    // Raw company-bucket spend (paid from the company's own account) — only unambiguous with one company.
+    // Excludes attributed txns (already in `ded`) AND reimbursed spend (the 0030 invariant) — no double
+    // count, no over-claim.
+    const rawCompany = companies.length === 1
+      ? (await env.DB.prepare(`SELECT COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS total FROM transactions WHERE user_id = ? AND bucket = 'company' AND txn_date >= ? AND txn_date <= ? AND COALESCE(reimbursed,0) = 0 AND ${COUNTABLE} AND NOT EXISTS (SELECT 1 FROM transaction_attributions ta WHERE ta.transaction_id = transactions.id)`).bind(userId, start, end).first<{ total: number }>())?.total ?? 0
+      : 0;
+    const incomeRows = (await env.DB.prepare(`SELECT entity_id, COALESCE(SUM(COALESCE(amount_aud_cents, gross_cents)),0) AS inc FROM income WHERE user_id = ? AND fy = ? AND entity_id IS NOT NULL GROUP BY entity_id`).bind(userId, fy).all<{ entity_id: string; inc: number }>()).results ?? [];
+    const incomeBy = new Map(incomeRows.map((r) => [r.entity_id, r.inc]));
+    const rdRows = (await env.DB.prepare(`SELECT entity_id, eligible_expenditure_cents, aggregated_turnover_cents, registered_with_ausindustry FROM rd_claims WHERE user_id = ? AND fy = ?`).bind(userId, fy).all<{ entity_id: string; eligible_expenditure_cents: number; aggregated_turnover_cents: number; registered_with_ausindustry: number }>()).results ?? [];
+    const rdBy = new Map(rdRows.map((r) => [r.entity_id, r]));
+    const rdCap = (auV1Thresholds(fy)?.rd_refundable_turnover_cap_cents) ?? Number.MAX_SAFE_INTEGER;
+    // Prior-year carried-forward losses already persisted (sum, gated by COT). 0 until a sign-off snapshots them.
+    const priorRows = (await env.DB.prepare(`SELECT entity_id, COALESCE(SUM(current_year_loss_cents),0) AS prior FROM company_tax_positions WHERE user_id = ? AND fy < ? AND cot_satisfied = 1 GROUP BY entity_id`).bind(userId, fy).all<{ entity_id: string; prior: number }>()).results ?? [];
+    const priorBy = new Map(priorRows.map((r) => [r.entity_id, r.prior]));
+
+    return companies.map((c, i) => {
+      const a = attrBy.get(c.id);
+      const deductions = (a?.ded ?? 0) + (i === 0 ? rawCompany : 0);
+      const income = incomeBy.get(c.id) ?? 0;
+      const loss = Math.max(0, deductions - income);
+      const carried = priorBy.get(c.id) ?? 0;
+      const rd = rdBy.get(c.id);
+      return {
+        entity_id: c.id,
+        name: c.name,
+        base_rate_entity: c.base_rate_entity,
+        assessable_income_cents: income,
+        deductions_cents: deductions,
+        current_year_loss_cents: loss,
+        carried_forward_losses_cents: carried,
+        total_carry_forward_cents: carried + loss,
+        shareholder_loan_balance_cents: loanBy.get(c.id) ?? 0,
+        rd_eligible: !!rd && rd.registered_with_ausindustry === 1 && rd.aggregated_turnover_cents < rdCap,
+      };
+    });
+  } catch (e) {
+    if (/no such table/i.test((e as Error).message)) return [];
+    throw e;
+  }
+}
+
+// Per-FY thresholds from the bundled rule pack (company/R&D params live here, never in SQL).
+function auV1Thresholds(fy: string): Record<string, number> | undefined {
+  return (auV1RulePack as unknown as { thresholds_by_fy?: Record<string, Record<string, number>> }).thresholds_by_fy?.[fy];
 }

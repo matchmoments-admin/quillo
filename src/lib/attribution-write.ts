@@ -126,6 +126,8 @@ export async function setAttributions(
     }
   }
   if (stmts.length) await env.DB.batch(stmts);
+  // Keep the persisted shareholder-loan balances in lockstep with the attributions just written.
+  if (body.attributions !== undefined) await syncShareholderLoans(env, userId);
   return { ok: true, rows: prepared.rows };
 }
 
@@ -135,4 +137,39 @@ export async function clearAttributions(env: Env, userId: string, txnId: string)
     env.DB.prepare(`DELETE FROM transaction_attributions WHERE user_id = ? AND transaction_id = ?`).bind(userId, txnId),
     env.DB.prepare(`UPDATE transactions SET payer_person_id = NULL, paid_via_account_id = NULL WHERE id = ? AND user_id = ?`).bind(txnId, userId),
   ]);
+  await syncShareholderLoans(env, userId);
+}
+
+/**
+ * Phase C / G4: recompute the person→company shareholder-loan balances from the attribution rows that
+ * flagged creates_shareholder_loan, and persist them (direction = person_funds_company — the benign,
+ * non-Div-7A direction). Recompute-from-source so it's idempotent. Leaves any company_loans_person rows
+ * (the Div 7A risk direction, entered separately) untouched. The report computes the balance from source
+ * too; this table is the persisted record for the hand-off + future Division 7A tracking.
+ */
+export async function syncShareholderLoans(env: Env, userId: string): Promise<void> {
+  const selfPerson = `person_self_${userId}`;
+  // SAME filter as companyPositions' loan query (countable, reimbursed-excluded) so the persisted
+  // balance and the on-screen report figure agree. Cumulative (all-time) — a loan is a running balance.
+  const rows = (await env.DB.prepare(
+    `SELECT ta.entity_id AS company, COALESCE(t.payer_person_id, ?) AS person, COALESCE(SUM(ta.attributed_amount_cents),0) AS bal
+       FROM transaction_attributions ta
+       JOIN transactions t ON t.id = ta.transaction_id AND t.user_id = ta.user_id
+      WHERE ta.user_id = ? AND ta.creates_shareholder_loan = 1 AND COALESCE(t.reimbursed,0) = 0
+        AND t.status NOT IN ('duplicate','ignored')
+        AND (t.kind = 'bank_line' OR (t.kind = 'receipt' AND t.matched_txn_id IS NULL))
+        AND COALESCE(t.direction,'debit') = 'debit'
+      GROUP BY ta.entity_id, person`,
+  ).bind(selfPerson, userId).all<{ company: string; person: string; bal: number }>()).results ?? [];
+  const stmts = [env.DB.prepare(`DELETE FROM shareholder_loans WHERE user_id = ? AND direction = 'person_funds_company'`).bind(userId)];
+  for (const r of rows) {
+    if (r.bal <= 0) continue;
+    stmts.push(
+      env.DB.prepare(
+        `INSERT INTO shareholder_loans (id, user_id, company_entity_id, shareholder_person_id, direction, balance_cents)
+         VALUES (?, ?, ?, ?, 'person_funds_company', ?)`,
+      ).bind(crypto.randomUUID(), userId, r.company, r.person, r.bal),
+    );
+  }
+  await env.DB.batch(stmts);
 }

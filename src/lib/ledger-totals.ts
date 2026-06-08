@@ -5,6 +5,7 @@ import { computeNetCapitalGain, cgtRulesForFy, type CgtPortfolioResult } from ".
 import { essAssessable, type EssAssessable } from "./ess";
 import { computeBasNet, type BasNet } from "./gst";
 import { businessUsePct, logbookDeductionCents, chooseCarMethod } from "./car-logbook";
+import { summariseTrustDistributions, type TrustTotals } from "./trust";
 import auV1RulePack from "../rulepacks/au-v1.json";
 
 // ── The single money-aggregation seam ─────────────────────────────────────────
@@ -295,6 +296,29 @@ function auV1Thresholds(fy: string): Record<string, number> | undefined {
 
 export interface GstPosition extends BasNet {
   registered: boolean;
+}
+
+/**
+ * Phase #139: an individual beneficiary's assessable trust distributions for an FY, character retained.
+ * Reads trust_distributions to a person in this tenant. Distributions to a corporate beneficiary feed
+ * the company position (a later step), so they're excluded here. Flag-gated by trust_distributions.
+ * Pre-0041 / no rows → all-zero (report byte-identical).
+ */
+export async function trustTotals(env: Env, userId: string, startYear: number): Promise<TrustTotals> {
+  const fy = fyLabel(startYear);
+  const zero: TrustTotals = { assessable_cents: 0, franking_credit_cents: 0, by_character: {} };
+  try {
+    const rows = (await env.DB.prepare(
+      `SELECT character, amount_cents, franking_credit_cents
+         FROM trust_distributions
+        WHERE user_id = ? AND fy = ? AND beneficiary_person_id IS NOT NULL`,
+    ).bind(userId, fy).all<{ character: string; amount_cents: number; franking_credit_cents: number }>()).results ?? [];
+    if (!rows.length) return zero;
+    return summariseTrustDistributions(rows);
+  } catch (e) {
+    if (/no such table/i.test((e as Error).message)) return zero;
+    throw e;
+  }
 }
 
 export interface CarLogbookPosition {

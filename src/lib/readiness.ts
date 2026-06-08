@@ -168,6 +168,13 @@ export function assessReadiness(input: {
       basis: "ESS discount assessable at its taxing point",
       why: "The discount on shares/options from your employee share scheme is assessable employment income (taxed-upfront or at a deferred taxing point). A startup-concession grant is NOT taxed here — it's taxed as a capital gain when you sell. ESS treatment is error-prone; confirm with a registered tax agent." });
   }
+  // Phase #139: assessable trust distributions to this person — buildReport added them to
+  // taxable_position, so they render as an "income" line to keep lines-sum == headline.
+  if (report.trust && report.trust.assessable_cents > 0) {
+    lines.push({ group: "income", label: "trust_distribution", amount_cents: report.trust.assessable_cents,
+      basis: report.trust.franking_credit_cents > 0 ? `incl. ${money(report.trust.franking_credit_cents)} franking credit` : "trust net income distributed to you",
+      why: "Your share of a trust's net income, distributed to you with its character retained (e.g. a franked dividend stays franked, a discounted capital gain stays discounted). It's assessable to you. Trust streaming, s100A and Division 7A are specialist — confirm with a registered tax agent." });
+  }
   // Deduction lines come from the deductibility-split breakdown so the SAME classifier that computed
   // the headline routes each row to its section ("deduction" sums to the headline; "excluded"/"company"
   // are shown apart). This both fixes the number AND explains what dropped out and why.

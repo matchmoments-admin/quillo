@@ -631,6 +631,7 @@ import { essAssessable } from "../src/lib/ess";
 import { gstFromInclusiveCents, computeBasNet } from "../src/lib/gst";
 import { businessUsePct, logbookDeductionCents, chooseCarMethod } from "../src/lib/car-logbook";
 import { occupationGuide, occupationScopes } from "../src/lib/occupations";
+import { summariseTrustDistributions } from "../src/lib/trust";
 
 console.log("cgt");
 {
@@ -736,6 +737,18 @@ console.log("occupations (#143)");
   check("tradie guide covers tools + PPE", (occupationGuide("tradie")?.suggest.join(" ") ?? "").match(/tool/i) != null);
   check("unknown scope → null", occupationGuide("astronaut") === null && occupationGuide(null) === null);
   check("scopes exclude the _note metadata key", occupationScopes().length >= 4 && !occupationScopes().includes("_note"));
+}
+
+console.log("trust distributions (#139)");
+{
+  const t = summariseTrustDistributions([
+    { character: "franked_dividend", amount_cents: 5_000_000, franking_credit_cents: 1_500_000 },
+    { character: "discount_capital_gain", amount_cents: 1_000_000 },
+    { character: "ordinary", amount_cents: 2_000_000 },
+  ]);
+  check("all distributed income is assessable to the beneficiary ($80k)", t.assessable_cents === 8_000_000);
+  check("franking credit carried (not grossed-up)", t.franking_credit_cents === 1_500_000);
+  check("character retained per type", t.by_character.franked_dividend === 5_000_000 && t.by_character.discount_capital_gain === 1_000_000);
 }
 
 // ── FILING READINESS: deterministic engine + the no-tax-advice invariant ──────

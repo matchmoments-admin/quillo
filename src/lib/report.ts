@@ -1,6 +1,7 @@
 import type { Env } from "../env";
 import { COUNTABLE, COUNTABLE_INCOME } from "./queries";
-import { incomeTotals, depreciationTotals, attributionTotals, companyPositions, cgtTotals, essTotals, gstTotals, carLogbookPosition, type IncomeTotals, type AttributionTotals, type CompanyPosition, type GstPosition, type CarLogbookPosition } from "./ledger-totals";
+import { incomeTotals, depreciationTotals, attributionTotals, companyPositions, cgtTotals, essTotals, gstTotals, carLogbookPosition, trustTotals, type IncomeTotals, type AttributionTotals, type CompanyPosition, type GstPosition, type CarLogbookPosition } from "./ledger-totals";
+import type { TrustTotals } from "./trust";
 import type { CgtPortfolioResult } from "./cgt";
 import type { EssAssessable } from "./ess";
 import { featureOn } from "./features";
@@ -134,7 +135,10 @@ export interface Report {
   // Phase #142: logbook-method car deduction vs cents-per-km (informational — not yet swapped into the
   // position). Present only when the car_logbook flag is on AND a vehicle_logbook exists for the FY.
   car_logbook?: CarLogbookPosition;
-  taxable_position_cents: number;      // total_income + net capital gain + ESS discount − deductions − depreciation (indicative)
+  // Phase #139: assessable trust distributions to this person (character retained). ADDED to
+  // taxable_position_cents. Present only when the trust_distributions flag is on AND there are rows.
+  trust?: TrustTotals;
+  taxable_position_cents: number;      // total_income + net capital gain + ESS discount + trust distributions − deductions − depreciation (indicative)
 }
 
 /**
@@ -483,8 +487,14 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
     const e = await essTotals(env, userId, startYear);
     if (e.assessable_discount_cents > 0 || e.startup_deferred_to_cgt_cents > 0) ess = e;
   }
+  // Phase #139: assessable trust distributions to this person — employment-independent income. Flag-gated.
+  let trust: TrustTotals | undefined;
+  if (featureOn(env, "trust_distributions")) {
+    const t = await trustTotals(env, userId, startYear);
+    if (t.assessable_cents > 0 || t.franking_credit_cents > 0) trust = t;
+  }
   const taxable_position_cents =
-    income.gross_cents + (capital_gains?.net_capital_gain_cents ?? 0) + (ess?.assessable_discount_cents ?? 0) - total_deductions_cents - dep.total_cents;
+    income.gross_cents + (capital_gains?.net_capital_gain_cents ?? 0) + (ess?.assessable_discount_cents ?? 0) + (trust?.assessable_cents ?? 0) - total_deductions_cents - dep.total_cents;
   // Phase #137: indicative BAS position — SEPARATE from income tax (never added to taxable_position).
   // Flag-gated; only surfaced when a business is GST-registered.
   let gst: GstPosition | undefined;
@@ -552,6 +562,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
     ess,
     gst,
     car_logbook,
+    trust,
     taxable_position_cents,
   };
 }

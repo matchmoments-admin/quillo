@@ -786,6 +786,25 @@ CREATE TABLE IF NOT EXISTS vehicle_logbooks (
 );
 CREATE INDEX IF NOT EXISTS idx_vehicle_logbooks_user ON vehicle_logbooks(user_id, fy);
 
+-- ── Trust distributions + streaming (0041, #139) ──────────────────────────────
+CREATE TABLE IF NOT EXISTS trust_distributions (
+  id                    TEXT PRIMARY KEY,
+  user_id               TEXT NOT NULL,
+  trust_entity_id       TEXT NOT NULL,
+  fy                    TEXT NOT NULL,
+  beneficiary_person_id TEXT,
+  beneficiary_entity_id TEXT,
+  share_pct             REAL,
+  amount_cents          INTEGER NOT NULL DEFAULT 0,
+  character             TEXT NOT NULL DEFAULT 'ordinary',
+  franking_credit_cents INTEGER NOT NULL DEFAULT 0,
+  resolution_dated_before_30jun INTEGER NOT NULL DEFAULT 0,
+  upe_present           INTEGER NOT NULL DEFAULT 0,
+  created_at            TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_trust_dist_user ON trust_distributions(user_id, fy);
+CREATE INDEX IF NOT EXISTS idx_trust_dist_trust ON trust_distributions(user_id, trust_entity_id);
+
 -- ── FY checklist (0009): bucket-driven kickoff/wrap-up items ───────────────────
 CREATE TABLE IF NOT EXISTS fy_checklist (
   id          TEXT PRIMARY KEY,

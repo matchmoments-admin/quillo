@@ -37,7 +37,7 @@ for (const f of fs.readdirSync(path.join(root, "migrations")).filter((f) => f.en
   db.exec(fs.readFileSync(path.join(root, "migrations", f), "utf8"));
 }
 
-const env = { DB: new D1(db), FEATURES: "attribution_engine,position_excludes_nondeductible,loan_split,wfh_car_methods,refund_netting,income_dedupe,cgt_engine,ess_engine,gst_bas,car_logbook" } as unknown as Env;
+const env = { DB: new D1(db), FEATURES: "attribution_engine,position_excludes_nondeductible,loan_split,wfh_car_methods,refund_netting,income_dedupe,cgt_engine,ess_engine,gst_bas,car_logbook,trust_distributions" } as unknown as Env;
 
 // tiny seed helper
 const run = (sql: string, ...p: unknown[]) => db.prepare(sql).run(...(p as never[]));
@@ -183,7 +183,8 @@ const asset = (id: string, u: string, costCents: number, depCents: number, prope
   run(`INSERT INTO entities (id, user_id, kind, name, person_id, entity_type, base_rate_entity) VALUES ('p8eCo', ?, 'company', 'Trading Pty Ltd', ?, 'company', 1)`, u, `person_self_${u}`);
   run(`INSERT INTO entities (id, user_id, kind, name, person_id, entity_type) VALUES ('p8eTrust', ?, 'trust', 'Family Trust', ?, 'trust')`, u, `person_self_${u}`);
   exp("p8tCoExp", u, 1000000, "company", "likely_deductible"); // company's own spend → company position loss
-  inc("p8iDist", u, "other", 5000000); // GAP #139: trust distribution modelled as plain 'other' — character (franked/CGT) NOT retained
+  // #139: the trust distributes $50k to him as a FRANKED dividend ($15k franking) — character retained.
+  run(`INSERT INTO trust_distributions (id, user_id, trust_entity_id, fy, beneficiary_person_id, amount_cents, character, franking_credit_cents) VALUES ('p8dist', ?, 'p8eTrust', '2025-26', ?, 5000000, 'franked_dividend', 1500000)`, u, `person_self_${u}`);
 }
 
 // ── Persona 9: Aisha, pre-revenue startup founder ──
@@ -285,7 +286,8 @@ async function main() {
   const r8 = await buildReport(env, "p8", 2025);
   const r8co = r8.company_positions?.find((c) => c.entity_id === "p8eCo");
   check("P8: the company is a separate taxpayer with a $10k current-year loss", r8co?.current_year_loss_cents === 1000000);
-  check("P8 GAP #139: trust distribution lands as plain 'other' — franking character NOT retained", r8.income.franking_credit_cents === 0 && !!r8.income.by_type.find((t) => t.income_type === "other"));
+  check("P8 #139: trust distribution retains FRANKED character — $50k assessable + $15k franking carried", r8.trust?.assessable_cents === 5000000 && r8.trust?.franking_credit_cents === 1500000 && r8.trust?.by_character.franked_dividend === 5000000);
+  check("P8 #139: the franked trust distribution feeds his position ($50k)", r8.taxable_position_cents === 5000000);
 
   // ── Persona 9: pre-revenue founder ──
   const r9 = await buildReport(env, "p9", 2025);

@@ -350,6 +350,11 @@ CREATE TABLE IF NOT EXISTS entities (
   --       single person_id when rows exist (mirrors property_owners).
   entity_type      TEXT,                 -- individual|payg_employment|company|property_partnership|trust|partnership|smsf
   base_rate_entity INTEGER NOT NULL DEFAULT 0, -- 1 => 25% company rate (else 30)
+  -- 0039 (#137): per-entity GST registration (profiles.gst_registered is the tenant default).
+  gst_registered        INTEGER NOT NULL DEFAULT 0,
+  gst_basis             TEXT,            -- cash|accrual
+  gst_period            TEXT,            -- quarterly|monthly
+  gst_registration_date TEXT,
   created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -649,6 +654,7 @@ CREATE TABLE IF NOT EXISTS assets (
   --       (Div 40 needs the taxpayer to own and bear the cost). Defaults => legacy behaviour.
   owned_by      TEXT NOT NULL DEFAULT 'self',   -- self|employer
   reimbursed    INTEGER NOT NULL DEFAULT 0,
+  is_car        INTEGER NOT NULL DEFAULT 0,     -- 0040 (#142): a motor vehicle (logbook method + Div 40 cost-limit cap)
   disposed_date TEXT,
   disposal_value_cents INTEGER,
   source_doc_id TEXT,
@@ -673,6 +679,156 @@ CREATE TABLE IF NOT EXISTS depreciation_schedule (
   UNIQUE(asset_id, fy)
 );
 CREATE INDEX IF NOT EXISTS idx_depsched_user_fy ON depreciation_schedule(user_id, fy);
+
+-- ── CGT holdings + disposal events (0037, #138) ───────────────────────────────
+-- A CGT asset is a parcel with a cost base; a CGT event is a disposal. Net capital gain (after losses
+-- + the 50% discount) is computed in src/lib/cgt.ts and feeds taxable income (never tax payable).
+-- Crypto is a cgt_asset with asset_kind='crypto'. Flag-gated by cgt_engine; zero rows ⇒ no change.
+CREATE TABLE IF NOT EXISTS cgt_assets (
+  id                     TEXT PRIMARY KEY,
+  user_id                TEXT NOT NULL,
+  person_id              TEXT,
+  asset_kind             TEXT NOT NULL,              -- shares|crypto|property|managed_fund|other
+  code                   TEXT,
+  label                  TEXT,
+  units                  REAL,
+  acquired_date          TEXT,
+  cost_base_cents        INTEGER NOT NULL DEFAULT 0,
+  reduced_cost_base_cents INTEGER,
+  main_residence_exempt  INTEGER NOT NULL DEFAULT 0,
+  status                 TEXT NOT NULL DEFAULT 'held',
+  created_at             TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_cgt_assets_user ON cgt_assets(user_id, asset_kind);
+CREATE INDEX IF NOT EXISTS idx_cgt_assets_person ON cgt_assets(user_id, person_id);
+
+CREATE TABLE IF NOT EXISTS cgt_events (
+  id                  TEXT PRIMARY KEY,
+  user_id             TEXT NOT NULL,
+  cgt_asset_id        TEXT NOT NULL,
+  fy                  TEXT NOT NULL,
+  event_type          TEXT NOT NULL DEFAULT 'disposal',
+  event_date          TEXT NOT NULL,
+  proceeds_cents      INTEGER NOT NULL DEFAULT 0,
+  cost_base_used_cents INTEGER NOT NULL DEFAULT 0,
+  units_disposed      REAL,
+  discount_eligible   INTEGER,
+  created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_cgt_events_user_fy ON cgt_events(user_id, fy);
+CREATE INDEX IF NOT EXISTS idx_cgt_events_asset ON cgt_events(user_id, cgt_asset_id);
+
+-- ── Employee Share Scheme grants (0038, #141) ─────────────────────────────────
+-- ESS discounts: taxed_upfront/deferral are assessable income at the taxing point; the startup
+-- concession defers to CGT (cost base = market value at acquisition). src/lib/ess.ts classifies.
+-- Flag-gated by ess_engine; zero rows ⇒ no change.
+CREATE TABLE IF NOT EXISTS ess_grants (
+  id                  TEXT PRIMARY KEY,
+  user_id             TEXT NOT NULL,
+  person_id           TEXT,
+  employer_entity_id  TEXT,
+  scheme_type         TEXT NOT NULL,                -- taxed_upfront|deferral|startup
+  grant_date          TEXT,
+  taxing_point_date   TEXT,
+  shares_or_options   TEXT,
+  units               REAL,
+  discount_cents      INTEGER NOT NULL DEFAULT 0,
+  market_value_cents  INTEGER,
+  ownership_gt_10pct  INTEGER NOT NULL DEFAULT 0,
+  created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_ess_grants_user ON ess_grants(user_id, scheme_type);
+CREATE INDEX IF NOT EXISTS idx_ess_grants_person ON ess_grants(user_id, person_id);
+
+-- ── GST / BAS + PAYG instalments (0039, #137) ─────────────────────────────────
+-- Indicative BAS workpaper (output GST − input credits). GST is NOT income tax. Quillo never lodges.
+CREATE TABLE IF NOT EXISTS bas_periods (
+  id                    TEXT PRIMARY KEY,
+  user_id               TEXT NOT NULL,
+  entity_id             TEXT,
+  period_start          TEXT NOT NULL,
+  period_end            TEXT NOT NULL,
+  output_gst_cents      INTEGER NOT NULL DEFAULT 0,
+  input_gst_cents       INTEGER NOT NULL DEFAULT 0,
+  payg_withholding_cents INTEGER NOT NULL DEFAULT 0,
+  payg_instalment_cents INTEGER NOT NULL DEFAULT 0,
+  status                TEXT NOT NULL DEFAULT 'draft',
+  created_at            TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_bas_user ON bas_periods(user_id, entity_id);
+
+CREATE TABLE IF NOT EXISTS payg_instalments (
+  id            TEXT PRIMARY KEY,
+  user_id       TEXT NOT NULL,
+  entity_id     TEXT,
+  fy            TEXT NOT NULL,
+  quarter       INTEGER,
+  instalment_cents INTEGER NOT NULL DEFAULT 0,
+  basis         TEXT,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_payg_inst_user ON payg_instalments(user_id, fy);
+
+-- ── Motor-vehicle logbook (0040, #142) ────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS vehicle_logbooks (
+  id                  TEXT PRIMARY KEY,
+  user_id             TEXT NOT NULL,
+  person_id           TEXT,
+  asset_id            TEXT,
+  fy                  TEXT NOT NULL,
+  start_date          TEXT,
+  end_date            TEXT,
+  business_km         REAL,
+  total_km            REAL,
+  running_costs_cents INTEGER NOT NULL DEFAULT 0,
+  business_use_pct    REAL,
+  created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_vehicle_logbooks_user ON vehicle_logbooks(user_id, fy);
+
+-- ── Trust distributions + streaming (0041, #139) ──────────────────────────────
+CREATE TABLE IF NOT EXISTS trust_distributions (
+  id                    TEXT PRIMARY KEY,
+  user_id               TEXT NOT NULL,
+  trust_entity_id       TEXT NOT NULL,
+  fy                    TEXT NOT NULL,
+  beneficiary_person_id TEXT,
+  beneficiary_entity_id TEXT,
+  share_pct             REAL,
+  amount_cents          INTEGER NOT NULL DEFAULT 0,
+  character             TEXT NOT NULL DEFAULT 'ordinary',
+  franking_credit_cents INTEGER NOT NULL DEFAULT 0,
+  resolution_dated_before_30jun INTEGER NOT NULL DEFAULT 0,
+  upe_present           INTEGER NOT NULL DEFAULT 0,
+  created_at            TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_trust_dist_user ON trust_distributions(user_id, fy);
+CREATE INDEX IF NOT EXISTS idx_trust_dist_trust ON trust_distributions(user_id, trust_entity_id);
+
+-- ── SMSF members + super contributions (0042, #140) ───────────────────────────
+CREATE TABLE IF NOT EXISTS smsf_members (
+  id                     TEXT PRIMARY KEY,
+  user_id                TEXT NOT NULL,
+  smsf_entity_id         TEXT NOT NULL,
+  person_id              TEXT,
+  phase                  TEXT NOT NULL DEFAULT 'accumulation',
+  pension_balance_cents  INTEGER NOT NULL DEFAULT 0,
+  accumulation_balance_cents INTEGER NOT NULL DEFAULT 0,
+  transfer_balance_cents INTEGER NOT NULL DEFAULT 0,
+  created_at             TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_smsf_members_user ON smsf_members(user_id, smsf_entity_id);
+
+CREATE TABLE IF NOT EXISTS super_contributions (
+  id            TEXT PRIMARY KEY,
+  user_id       TEXT NOT NULL,
+  person_id     TEXT,
+  fy            TEXT NOT NULL,
+  type          TEXT NOT NULL DEFAULT 'concessional',
+  amount_cents  INTEGER NOT NULL DEFAULT 0,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_super_contrib_user ON super_contributions(user_id, fy);
 
 -- ── FY checklist (0009): bucket-driven kickoff/wrap-up items ───────────────────
 CREATE TABLE IF NOT EXISTS fy_checklist (

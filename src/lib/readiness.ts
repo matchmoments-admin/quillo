@@ -94,6 +94,7 @@ export interface FilingReadiness {
 function incomeTypeWhy(incomeType: string): string {
   switch (incomeType) {
     case "salary_payg": return "Salary/wages you recorded (generally item 1). PAYG withheld is shown as a credit, not a deduction.";
+    case "business": return "Net income of your sole-trader / ABN business (generally item 15). Your business expenses are captured separately and reduce your individual position.";
     case "rent": return "Rent received on a let property (generally item 13). Agent-deducted expenses are captured separately as deductions.";
     case "foreign_rent": return "Rent received on a foreign property (generally item 20). Foreign tax paid is shown as a credit.";
     case "dividend": return "Dividends you recorded (generally item 11). Franking credits are shown as a credit.";
@@ -150,6 +151,29 @@ export function assessReadiness(input: {
   const lines: PositionLine[] = [];
   for (const it of report.income.by_type) {
     lines.push({ group: "income", label: it.income_type, amount_cents: it.gross_cents, basis: `${it.n} income record(s)`, why: incomeTypeWhy(it.income_type) });
+  }
+  // Phase #138: net capital gain is assessable income — buildReport added it to taxable_position, so it
+  // renders as an "income" line to keep the lines-sum == headline invariant. Present only when the
+  // cgt_engine flag is on with CGT events, so the legacy reconciliation is intact.
+  if (report.capital_gains && report.capital_gains.net_capital_gain_cents > 0) {
+    const cg = report.capital_gains;
+    lines.push({ group: "income", label: "net_capital_gain", amount_cents: cg.net_capital_gain_cents,
+      basis: `gains ${money(cg.gross_capital_gains_cents)} − losses ${money(cg.capital_losses_cents)} − 50% discount ${money(cg.discount_applied_cents)}`,
+      why: "Net capital gain on assets you disposed of this year (shares, crypto, property): total gains, less capital losses, less the 50% CGT discount on assets held 12+ months. This is assessable income — CGT is fact-specific, so confirm with a registered tax agent." });
+  }
+  // Phase #141: assessable ESS discount (taxed-upfront / deferral) is employment income — buildReport
+  // added it to taxable_position, so it renders as an "income" line to keep lines-sum == headline.
+  if (report.ess && report.ess.assessable_discount_cents > 0) {
+    lines.push({ group: "income", label: "ess_discount", amount_cents: report.ess.assessable_discount_cents,
+      basis: "ESS discount assessable at its taxing point",
+      why: "The discount on shares/options from your employee share scheme is assessable employment income (taxed-upfront or at a deferred taxing point). A startup-concession grant is NOT taxed here — it's taxed as a capital gain when you sell. ESS treatment is error-prone; confirm with a registered tax agent." });
+  }
+  // Phase #139: assessable trust distributions to this person — buildReport added them to
+  // taxable_position, so they render as an "income" line to keep lines-sum == headline.
+  if (report.trust && report.trust.assessable_cents > 0) {
+    lines.push({ group: "income", label: "trust_distribution", amount_cents: report.trust.assessable_cents,
+      basis: report.trust.franking_credit_cents > 0 ? `incl. ${money(report.trust.franking_credit_cents)} franking credit` : "trust net income distributed to you",
+      why: "Your share of a trust's net income, distributed to you with its character retained (e.g. a franked dividend stays franked, a discounted capital gain stays discounted). It's assessable to you. Trust streaming, s100A and Division 7A are specialist — confirm with a registered tax agent." });
   }
   // Deduction lines come from the deductibility-split breakdown so the SAME classifier that computed
   // the headline routes each row to its section ("deduction" sums to the headline; "excluded"/"company"

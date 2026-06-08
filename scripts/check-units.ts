@@ -626,7 +626,13 @@ console.log("claimability situational sweep (enumerateSituationClaims / classify
 }
 
 // ── CGT: cost-base, Div43 reduction, 50% discount, main-residence, losses ─────
-import { computeCapitalGain } from "../src/lib/cgt";
+import { computeCapitalGain, computeNetCapitalGain, DEFAULT_CGT_RULES } from "../src/lib/cgt";
+import { essAssessable } from "../src/lib/ess";
+import { gstFromInclusiveCents, computeBasNet } from "../src/lib/gst";
+import { businessUsePct, logbookDeductionCents, chooseCarMethod } from "../src/lib/car-logbook";
+import { occupationGuide, occupationScopes } from "../src/lib/occupations";
+import { summariseTrustDistributions } from "../src/lib/trust";
+import { ecpiExemptFraction, computeSmsfPosition } from "../src/lib/smsf";
 
 console.log("cgt");
 {
@@ -655,6 +661,106 @@ console.log("cgt");
   // Foreign resident → no 50% discount.
   const foreign = computeCapitalGain({ cost_base_cents: 50_000_000, proceeds_cents: 70_000_000, acquired_date: "2015-01-01", disposal_date: "2025-01-01", is_resident_individual: false });
   check("foreign resident → no discount", !foreign.discount_applied && foreign.net_gain_cents === 20_000_000);
+}
+
+console.log("cgt portfolio (#138)");
+{
+  const R = DEFAULT_CGT_RULES;
+  // One discountable $10k gain → 50% → $5k net.
+  const a = computeNetCapitalGain([{ proceeds_cents: 3_000_000, cost_base_used_cents: 2_000_000, discount_eligible: true }], R);
+  check("single discountable gain → 50% discount → $5k", a.net_capital_gain_cents === 500_000 && a.discount_applied_cents === 500_000);
+
+  // Losses offset NON-discountable gains first (optimal): $10k disc gain + $6k non-disc gain − $6k loss.
+  // Loss eats the non-disc gain entirely, disc gain halved → $5k.
+  const b = computeNetCapitalGain([
+    { proceeds_cents: 1_000_000, cost_base_used_cents: 0, discount_eligible: true },   // $10k disc
+    { proceeds_cents: 600_000, cost_base_used_cents: 0, discount_eligible: false },    // $6k non-disc
+    { proceeds_cents: 0, cost_base_used_cents: 600_000, discount_eligible: false },    // $6k loss
+  ], R);
+  check("loss applied to non-disc gain first → disc gain halved → $5k", b.net_capital_gain_cents === 500_000);
+
+  // Carried-forward loss exceeds gains → net 0, remainder carries forward.
+  const c = computeNetCapitalGain([{ proceeds_cents: 1_000_000, cost_base_used_cents: 0, discount_eligible: true }], R, 1_500_000);
+  check("prior loss > gains → net 0, $5k carries forward", c.net_capital_gain_cents === 0 && c.loss_carried_forward_cents === 500_000);
+
+  // discount_eligible derived from dates when not given (held >12mo).
+  const d = computeNetCapitalGain([{ proceeds_cents: 1_000_000, cost_base_used_cents: 0, acquired_date: "2023-01-01", event_date: "2025-09-01" }], R);
+  check("discount eligibility derived from dates (held >12mo) → $5k", d.net_capital_gain_cents === 500_000);
+
+  // Non-discountable (held <12mo via dates) → full gain assessable.
+  const e = computeNetCapitalGain([{ proceeds_cents: 1_000_000, cost_base_used_cents: 0, acquired_date: "2025-03-01", event_date: "2025-09-01" }], R);
+  check("held <12mo → no discount → full $10k", e.net_capital_gain_cents === 1_000_000);
+}
+
+console.log("ess (#141)");
+{
+  // taxed-upfront + deferral → assessable now; startup (≤10%) → deferred to CGT.
+  const a = essAssessable([
+    { scheme_type: "taxed_upfront", discount_cents: 500_000 },
+    { scheme_type: "deferral", discount_cents: 300_000 },
+    { scheme_type: "startup", discount_cents: 1_000_000, ownership_gt_10pct: false },
+  ]);
+  check("upfront+deferral assessable ($8k), startup deferred to CGT ($10k)", a.assessable_discount_cents === 800_000 && a.startup_deferred_to_cgt_cents === 1_000_000 && !a.ineligible_startup_flag);
+
+  // founder >10% on a 'startup' grant → concession unavailable → discount assessable + flagged.
+  const b = essAssessable([{ scheme_type: "startup", discount_cents: 1_000_000, ownership_gt_10pct: true }]);
+  check("startup grant with >10% ownership → assessable + ineligible flag", b.assessable_discount_cents === 1_000_000 && b.startup_deferred_to_cgt_cents === 0 && b.ineligible_startup_flag);
+}
+
+console.log("gst/bas (#137)");
+{
+  check("$1,100 inclusive → $100 GST", gstFromInclusiveCents(110_000) === 10_000);
+  check("$45,000 fares → $4,090.91 output GST (rounded)", gstFromInclusiveCents(4_500_000) === 409_091);
+  const net = computeBasNet(4_500_000, 45_454);
+  check("net BAS = output − input", net.output_gst_cents === 409_091 && net.input_gst_cents === 45_454 && net.net_gst_cents === 363_637);
+  const refund = computeBasNet(1_100_000, 200_000); // more credits than output → refund (negative net)
+  check("input > output → negative net (refund)", refund.net_gst_cents === 100_000 - 200_000);
+}
+
+console.log("car logbook (#142)");
+{
+  check("business-use % = business/total km", businessUsePct(27_000, 30_000) === 90);
+  check("zero total km → 0%", businessUsePct(100, 0) === 0);
+  // 90% × ($10k running + $2k car decline) = $10,800.
+  check("logbook = pct × (running + car dep)", logbookDeductionCents(1_000_000, 200_000, 90) === 1_080_000);
+  // logbook ($9k) beats capped cents-per-km ($4,400).
+  const win = chooseCarMethod(900_000, 440_000);
+  check("higher method wins (logbook)", win.method === "logbook" && win.deduction_cents === 900_000);
+  // a low-business-use car → cents-per-km wins; tie favours cents-per-km.
+  check("tie favours cents-per-km", chooseCarMethod(440_000, 440_000).method === "cents_per_km");
+}
+
+console.log("occupations (#143)");
+{
+  const nurse = occupationGuide("nurse");
+  check("nurse guide has suggestions + warnings", !!nurse && nurse.suggest.length > 0 && nurse.warn.length > 0);
+  check("nurse warning pre-empts the conventional-clothing error", !!nurse && nurse.warn.some((w) => /conventional clothing/i.test(w)));
+  check("tradie guide covers tools + PPE", (occupationGuide("tradie")?.suggest.join(" ") ?? "").match(/tool/i) != null);
+  check("unknown scope → null", occupationGuide("astronaut") === null && occupationGuide(null) === null);
+  check("scopes exclude the _note metadata key", occupationScopes().length >= 4 && !occupationScopes().includes("_note"));
+}
+
+console.log("trust distributions (#139)");
+{
+  const t = summariseTrustDistributions([
+    { character: "franked_dividend", amount_cents: 5_000_000, franking_credit_cents: 1_500_000 },
+    { character: "discount_capital_gain", amount_cents: 1_000_000 },
+    { character: "ordinary", amount_cents: 2_000_000 },
+  ]);
+  check("all distributed income is assessable to the beneficiary ($80k)", t.assessable_cents === 8_000_000);
+  check("franking credit carried (not grossed-up)", t.franking_credit_cents === 1_500_000);
+  check("character retained per type", t.by_character.franked_dividend === 5_000_000 && t.by_character.discount_capital_gain === 1_000_000);
+}
+
+console.log("smsf / ecpi (#140)");
+{
+  check("fully pension phase → ECPI 100%", ecpiExemptFraction([{ pension_balance_cents: 2_000_000_00, accumulation_balance_cents: 0 }]) === 1);
+  check("half pension / half accumulation → 50%", ecpiExemptFraction([{ pension_balance_cents: 1_000_000, accumulation_balance_cents: 1_000_000 }]) === 0.5);
+  check("no assets → 0", ecpiExemptFraction([]) === 0);
+  const full = computeSmsfPosition(4_000_000, 1);
+  check("100% ECPI → fund taxable income $0", full.fund_taxable_income_cents === 0 && full.ecpi_exempt_cents === 4_000_000);
+  const half = computeSmsfPosition(4_000_000, 0.5);
+  check("50% ECPI → half the earnings taxable", half.fund_taxable_income_cents === 2_000_000);
 }
 
 // ── FILING READINESS: deterministic engine + the no-tax-advice invariant ──────

@@ -1,6 +1,9 @@
 import type { Env } from "../env";
 import { COUNTABLE, COUNTABLE_INCOME } from "./queries";
-import { incomeTotals, depreciationTotals, attributionTotals, companyPositions, type IncomeTotals, type AttributionTotals, type CompanyPosition } from "./ledger-totals";
+import { incomeTotals, depreciationTotals, attributionTotals, companyPositions, cgtTotals, essTotals, gstTotals, carLogbookPosition, trustTotals, smsfFundPositions, smsfEntityIds, type IncomeTotals, type AttributionTotals, type CompanyPosition, type GstPosition, type CarLogbookPosition, type SmsfFundPosition } from "./ledger-totals";
+import type { TrustTotals } from "./trust";
+import type { CgtPortfolioResult } from "./cgt";
+import type { EssAssessable } from "./ess";
 import { featureOn } from "./features";
 import auV1RulePack from "../rulepacks/au-v1.json";
 import { computeWorkMethodDeductions, workUseRatesForFy, type WorkMethodDeductions } from "./work-use";
@@ -117,7 +120,30 @@ export interface Report {
   // flag is on and the tenant has a company entity. The company's costs don't reduce the personal
   // headline — they sit here, netting to a carried-forward loss when pre-revenue.
   company_positions?: CompanyPosition[];
-  taxable_position_cents: number;      // total_income − total_deductions − depreciation (indicative)
+  // Phase #138: net capital gain (shares/crypto/property disposals; 50% discount; loss offset/carry).
+  // Present only when the cgt_engine flag is on AND there are CGT events. net_capital_gain_cents is
+  // ADDED to taxable_position_cents (it's assessable income). undefined ⇒ byte-identical legacy totals.
+  capital_gains?: CgtPortfolioResult;
+  // Phase #141: assessable ESS discount (taxed-upfront / deferral). ADDED to taxable_position_cents
+  // (employment income). The startup-concession portion is deferred to CGT, not counted here. Present
+  // only when the ess_engine flag is on AND there are grants. undefined ⇒ byte-identical legacy totals.
+  ess?: EssAssessable;
+  // Phase #137: indicative BAS position (output GST − input credits). GST is NOT income tax — it is
+  // NEVER added to taxable_position_cents. Present only when the gst_bas flag is on AND a business is
+  // GST-registered. undefined ⇒ byte-identical legacy totals.
+  gst?: GstPosition;
+  // Phase #142: logbook-method car deduction vs cents-per-km (informational — not yet swapped into the
+  // position). Present only when the car_logbook flag is on AND a vehicle_logbook exists for the FY.
+  car_logbook?: CarLogbookPosition;
+  // Phase #139: assessable trust distributions to this person (character retained). ADDED to
+  // taxable_position_cents. Present only when the trust_distributions flag is on AND there are rows.
+  trust?: TrustTotals;
+  // Phase #140: per-SMSF fund position (a SEPARATE taxpayer, like a company). Fund taxable income after
+  // ECPI. NEVER added to the member's personal taxable_position (the member's pension is tax-free, and
+  // the fund's income is excluded from the personal headline). Present only when smsf_engine is on and
+  // the tenant has an SMSF.
+  smsf_funds?: SmsfFundPosition[];
+  taxable_position_cents: number;      // total_income + net capital gain + ESS discount + trust distributions − deductions − depreciation (indicative)
 }
 
 /**
@@ -302,7 +328,11 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   const excludeNonDeductible = featureOn(env, "position_excludes_nondeductible");
 
   // ── Tax position via the money seam: income − deductions − depreciation ──
-  const income = await incomeTotals(env, userId, { startYear });
+  // #140: when smsf_engine is on, an SMSF fund is a separate taxpayer — keep its income OUT of the
+  // member's personal headline (the fund position is reported separately; the member's pension is
+  // tax-free). Flag off ⇒ no exclusion ⇒ byte-identical.
+  const smsfIds = featureOn(env, "smsf_engine") ? await smsfEntityIds(env, userId) : [];
+  const income = await incomeTotals(env, userId, { startYear, excludeEntityIds: smsfIds });
   const dep = await depreciationTotals(env, userId, startYear);
   // Phase B / G2: deductions that come from explicit attributions (payer≠claimant) rather than the
   // raw transaction. The attributed transactions were excluded from the raw sums above (notAttributed),
@@ -452,7 +482,48 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   }
 
   const total_deductions_cents = Math.max(0, gross_deductions_cents - refunds_cents) + (work_method?.total_cents ?? 0);
-  const taxable_position_cents = income.gross_cents - total_deductions_cents - dep.total_cents;
+  // Phase #138: net capital gain is assessable income — add it to the position. Flag-gated; only set
+  // when there are CGT events (cgtTotals returns a zero result otherwise → no field, no change).
+  let capital_gains: CgtPortfolioResult | undefined;
+  if (featureOn(env, "cgt_engine")) {
+    const cgt = await cgtTotals(env, userId, startYear);
+    if (cgt.gross_capital_gains_cents > 0 || cgt.capital_losses_cents > 0) capital_gains = cgt;
+  }
+  // Phase #141: assessable ESS discount is employment income — add it to the position. Flag-gated; only
+  // set when there are grants with an assessable or startup-deferred amount.
+  let ess: EssAssessable | undefined;
+  if (featureOn(env, "ess_engine")) {
+    const e = await essTotals(env, userId, startYear);
+    if (e.assessable_discount_cents > 0 || e.startup_deferred_to_cgt_cents > 0) ess = e;
+  }
+  // Phase #139: assessable trust distributions to this person — employment-independent income. Flag-gated.
+  let trust: TrustTotals | undefined;
+  if (featureOn(env, "trust_distributions")) {
+    const t = await trustTotals(env, userId, startYear);
+    if (t.assessable_cents > 0 || t.franking_credit_cents > 0) trust = t;
+  }
+  const taxable_position_cents =
+    income.gross_cents + (capital_gains?.net_capital_gain_cents ?? 0) + (ess?.assessable_discount_cents ?? 0) + (trust?.assessable_cents ?? 0) - total_deductions_cents - dep.total_cents;
+  // Phase #137: indicative BAS position — SEPARATE from income tax (never added to taxable_position).
+  // Flag-gated; only surfaced when a business is GST-registered.
+  let gst: GstPosition | undefined;
+  if (featureOn(env, "gst_bas")) {
+    const g = await gstTotals(env, userId, startYear);
+    if (g.registered) gst = g;
+  }
+  // Phase #142: logbook vs cents-per-km comparison (informational). Uses the cents-per-km figure already
+  // computed in work_method. Flag-gated; null when there's no logbook for the FY.
+  let car_logbook: CarLogbookPosition | undefined;
+  if (featureOn(env, "car_logbook")) {
+    car_logbook = (await carLogbookPosition(env, userId, startYear, work_method?.car_cents ?? 0)) ?? undefined;
+  }
+  // Phase #140: per-SMSF fund position (separate taxpayer) — NOT added to the personal position. Its
+  // income was already excluded from the personal headline above (smsfIds). Flag-gated.
+  let smsf_funds: SmsfFundPosition[] | undefined;
+  if (smsfIds.length) {
+    const funds = await smsfFundPositions(env, userId, startYear);
+    if (funds.length) smsf_funds = funds;
+  }
 
   // Resolved-deductible: only spend a year-end review has CONFIRMED deductible (deductibility set
   // to a resolved state, with the apportioned amount when present). ~$0 until a review runs — by
@@ -503,6 +574,12 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
         ? { individual_cents: attr.individual_deduction_cents, company_cents: attr.company_deduction_cents, property_cents: attr_property_total_cents }
         : undefined,
     company_positions: company_positions.length ? company_positions : undefined,
+    capital_gains,
+    ess,
+    gst,
+    car_logbook,
+    trust,
+    smsf_funds,
     taxable_position_cents,
   };
 }

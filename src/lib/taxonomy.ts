@@ -36,6 +36,10 @@ export function isIncomeBucket(bucket: string | null | undefined): boolean {
 /** First-class income kinds (income is modelled, never inferred from bank credits). */
 export const INCOME_TYPES = [
   "salary_payg",
+  "business",            // #136: net income of an unincorporated sole trader / ABN individual (ATO item 15).
+                         // Assessable to the INDIVIDUAL — sums into income.gross like any other type; its
+                         // s8-1 expenses reach the personal headline via an individual-owned 'business'
+                         // income_activity (attribution engine), NOT the 'company' track (a separate taxpayer).
   "rent",
   "interest",
   "dividend",

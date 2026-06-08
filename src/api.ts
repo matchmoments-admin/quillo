@@ -122,8 +122,18 @@ export async function handleApi(
     }
   }
 
+  // PATCH /api/transactions/:id/flags { reimbursed } — set the per-txn reimbursed fact. Employer-
+  // reimbursed spend isn't the taxpayer's deductible cost, so the report excludes it (0030). Direct,
+  // user-scoped write (a fact flag, not a categorisation correction).
+  if (resource === "transactions" && id && sub === "flags" && m === "PATCH") {
+    const body = (await req.json().catch(() => ({}))) as { reimbursed?: unknown };
+    if (typeof body.reimbursed !== "boolean") return json({ error: "reimbursed must be a boolean" }, 400);
+    await env.DB.prepare(`UPDATE transactions SET reimbursed = ? WHERE id = ? AND user_id = ?`).bind(body.reimbursed ? 1 : 0, id, uid).run();
+    return json({ ok: true, reimbursed: body.reimbursed });
+  }
+
   // DELETE /api/transactions/:id — hard-delete (e.g. a duplicate), audited via the DO.
-  if (resource === "transactions" && id && id !== "batch-delete" && sub !== "attributions" && m === "DELETE") {
+  if (resource === "transactions" && id && id !== "batch-delete" && sub !== "attributions" && sub !== "flags" && m === "DELETE") {
     await stub.deleteTransaction(uid, id);
     return json({ ok: true });
   }

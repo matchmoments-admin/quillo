@@ -67,6 +67,7 @@ export interface TxnRow {
   direction: string | null;
   raw_description: string | null;
   ledger_ref: string | null;
+  reimbursed: number | null;
   created_at: string;
 }
 
@@ -75,7 +76,7 @@ const TXN_COLS =
   "id, source, status, merchant, amount_cents, currency, amount_aud_cents, fx_rate, fx_date, " +
   "gst_cents, txn_date, bucket, ato_label, property_id, paid_account, confidence, reasoning, " +
   "duplicate_of, kind, account_id, statement_id, matched_txn_id, direction, raw_description, " +
-  "ledger_ref, created_at";
+  "ledger_ref, COALESCE(reimbursed,0) AS reimbursed, created_at";
 
 export async function listTransactions(
   env: Env,

@@ -24,6 +24,7 @@ export interface Txn {
   direction?: string | null;
   raw_description?: string | null;
   ledger_ref: string | null;
+  reimbursed?: number | null;
   created_at: string;
 }
 

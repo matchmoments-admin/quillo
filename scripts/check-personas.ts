@@ -37,7 +37,7 @@ for (const f of fs.readdirSync(path.join(root, "migrations")).filter((f) => f.en
   db.exec(fs.readFileSync(path.join(root, "migrations", f), "utf8"));
 }
 
-const env = { DB: new D1(db), FEATURES: "attribution_engine,position_excludes_nondeductible,loan_split,wfh_car_methods,refund_netting,income_dedupe,cgt_engine" } as unknown as Env;
+const env = { DB: new D1(db), FEATURES: "attribution_engine,position_excludes_nondeductible,loan_split,wfh_car_methods,refund_netting,income_dedupe,cgt_engine,ess_engine" } as unknown as Env;
 
 // tiny seed helper
 const run = (sql: string, ...p: unknown[]) => db.prepare(sql).run(...(p as never[]));
@@ -189,7 +189,10 @@ const asset = (id: string, u: string, costCents: number, depCents: number, prope
   run(`INSERT INTO entities (id, user_id, kind, name, person_id, entity_type, base_rate_entity) VALUES ('p9eCo', ?, 'company', 'Startup Pty Ltd', ?, 'company', 1)`, u, `person_self_${u}`);
   run(`INSERT INTO blackhole_costs (id, user_id, entity_id, incurred_date, amount_cents, description, immediate_deduction) VALUES ('p9bh', ?, 'p9eCo', ?, 500000, 'ASIC + structure advice (s40-880)', 1)`, u, FY_DATE);
   run(`INSERT INTO rd_claims (id, user_id, entity_id, fy, eligible_expenditure_cents, aggregated_turnover_cents, offset_type, registered_with_ausindustry) VALUES ('p9rd', ?, 'p9eCo', '2025-26', 4000000, 0, 'refundable', 0)`, u); // NOT registered
-  // GAP #141: ESS options to staff not modelled
+  // #141: ESS — a staff startup-concession option (eligible, ≤10% → defers to CGT, $0 income now) and a
+  // taxed-upfront grant (discount assessable now).
+  run(`INSERT INTO ess_grants (id, user_id, person_id, employer_entity_id, scheme_type, grant_date, taxing_point_date, discount_cents, ownership_gt_10pct) VALUES ('p9essA', ?, ?, 'p9eCo', 'startup', '2025-09-01', '2025-09-01', 1000000, 0)`, u, `person_self_${u}`);
+  run(`INSERT INTO ess_grants (id, user_id, person_id, employer_entity_id, scheme_type, grant_date, taxing_point_date, discount_cents, ownership_gt_10pct) VALUES ('p9essB', ?, ?, 'p9eCo', 'taxed_upfront', '2025-09-01', '2025-09-01', 500000, 0)`, u, `person_self_${u}`);
 }
 
 // ── Persona 10: Margaret, SMSF retiree + crypto ──
@@ -282,6 +285,8 @@ async function main() {
   const r9co = r9.company_positions?.find((c) => c.entity_id === "p9eCo");
   check("P9 GAP #126: blackhole (s40-880) costs are capture-only — NOT auto-deducted into the company position", r9co?.deductions_cents === 0);
   check("P9: R&D not auto-claimed without AusIndustry registration", r9co?.rd_eligible === false);
+  check("P9 #141: startup-concession ESS option defers to CGT ($10k), taxed-upfront discount is assessable ($5k)", r9.ess?.startup_deferred_to_cgt_cents === 1000000 && r9.ess?.assessable_discount_cents === 500000);
+  check("P9 #141: only the taxed-upfront ESS discount feeds the position ($5k)", r9.taxable_position_cents === 500000);
 
   // ── Persona 10: SMSF retiree + crypto ──
   const r10 = await buildReport(env, "p10", 2025);

@@ -2,6 +2,7 @@ import type { Env } from "../env";
 import { COUNTABLE } from "./queries";
 import { classifyAttribution, splitAttribution } from "./attribution";
 import { computeNetCapitalGain, cgtRulesForFy, type CgtPortfolioResult } from "./cgt";
+import { essAssessable, type EssAssessable } from "./ess";
 import auV1RulePack from "../rulepacks/au-v1.json";
 
 // ── The single money-aggregation seam ─────────────────────────────────────────
@@ -288,6 +289,28 @@ export async function companyPositions(env: Env, userId: string, startYear: numb
 // Per-FY thresholds from the bundled rule pack (company/R&D params live here, never in SQL).
 function auV1Thresholds(fy: string): Record<string, number> | undefined {
   return (auV1RulePack as unknown as { thresholds_by_fy?: Record<string, Record<string, number>> }).thresholds_by_fy?.[fy];
+}
+
+/**
+ * Phase #141: assessable ESS discount for an FY. Sums ess_grants whose taxing point falls in the FY,
+ * classifying upfront/deferral as assessable income now and the startup concession as deferred-to-CGT.
+ * Flag-gated by the caller (ess_engine). Empty / pre-0038 → all-zero (report byte-identical).
+ */
+export async function essTotals(env: Env, userId: string, startYear: number): Promise<EssAssessable> {
+  const { start, end } = fyBounds(startYear);
+  const zero: EssAssessable = { assessable_discount_cents: 0, startup_deferred_to_cgt_cents: 0, ineligible_startup_flag: false };
+  try {
+    const grants = (await env.DB.prepare(
+      `SELECT scheme_type, discount_cents, ownership_gt_10pct
+         FROM ess_grants
+        WHERE user_id = ? AND COALESCE(taxing_point_date, grant_date) >= ? AND COALESCE(taxing_point_date, grant_date) <= ?`,
+    ).bind(userId, start, end).all<{ scheme_type: string; discount_cents: number; ownership_gt_10pct: number }>()).results ?? [];
+    if (!grants.length) return zero;
+    return essAssessable(grants.map((g) => ({ scheme_type: g.scheme_type, discount_cents: g.discount_cents, ownership_gt_10pct: g.ownership_gt_10pct === 1 })));
+  } catch (e) {
+    if (/no such table/i.test((e as Error).message)) return zero;
+    throw e;
+  }
 }
 
 /**

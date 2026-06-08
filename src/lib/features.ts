@@ -21,6 +21,7 @@ export const FEATURE_KEYS = [
   "loan_split",
   "attribution_engine", // 0032-0034: sum transaction_attributions for the position (payer≠claimant, ownership split). OFF in prod until validated.
   "cgt_engine",         // 0037 (#138): add net capital gain (shares/crypto/property disposals; 50% discount; loss offset) to the position. OFF in prod until validated.
+  "ess_engine",         // 0038 (#141): add assessable ESS discount (taxed-upfront / deferral) to the position; startup concession defers to CGT. OFF in prod until validated.
 ] as const;
 
 export type FeatureKey = (typeof FEATURE_KEYS)[number];

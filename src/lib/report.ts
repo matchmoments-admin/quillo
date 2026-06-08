@@ -1,7 +1,8 @@
 import type { Env } from "../env";
 import { COUNTABLE, COUNTABLE_INCOME } from "./queries";
-import { incomeTotals, depreciationTotals, attributionTotals, companyPositions, cgtTotals, type IncomeTotals, type AttributionTotals, type CompanyPosition } from "./ledger-totals";
+import { incomeTotals, depreciationTotals, attributionTotals, companyPositions, cgtTotals, essTotals, type IncomeTotals, type AttributionTotals, type CompanyPosition } from "./ledger-totals";
 import type { CgtPortfolioResult } from "./cgt";
+import type { EssAssessable } from "./ess";
 import { featureOn } from "./features";
 import auV1RulePack from "../rulepacks/au-v1.json";
 import { computeWorkMethodDeductions, workUseRatesForFy, type WorkMethodDeductions } from "./work-use";
@@ -122,7 +123,11 @@ export interface Report {
   // Present only when the cgt_engine flag is on AND there are CGT events. net_capital_gain_cents is
   // ADDED to taxable_position_cents (it's assessable income). undefined ⇒ byte-identical legacy totals.
   capital_gains?: CgtPortfolioResult;
-  taxable_position_cents: number;      // total_income + net capital gain − total_deductions − depreciation (indicative)
+  // Phase #141: assessable ESS discount (taxed-upfront / deferral). ADDED to taxable_position_cents
+  // (employment income). The startup-concession portion is deferred to CGT, not counted here. Present
+  // only when the ess_engine flag is on AND there are grants. undefined ⇒ byte-identical legacy totals.
+  ess?: EssAssessable;
+  taxable_position_cents: number;      // total_income + net capital gain + ESS discount − deductions − depreciation (indicative)
 }
 
 /**
@@ -464,7 +469,15 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
     const cgt = await cgtTotals(env, userId, startYear);
     if (cgt.gross_capital_gains_cents > 0 || cgt.capital_losses_cents > 0) capital_gains = cgt;
   }
-  const taxable_position_cents = income.gross_cents + (capital_gains?.net_capital_gain_cents ?? 0) - total_deductions_cents - dep.total_cents;
+  // Phase #141: assessable ESS discount is employment income — add it to the position. Flag-gated; only
+  // set when there are grants with an assessable or startup-deferred amount.
+  let ess: EssAssessable | undefined;
+  if (featureOn(env, "ess_engine")) {
+    const e = await essTotals(env, userId, startYear);
+    if (e.assessable_discount_cents > 0 || e.startup_deferred_to_cgt_cents > 0) ess = e;
+  }
+  const taxable_position_cents =
+    income.gross_cents + (capital_gains?.net_capital_gain_cents ?? 0) + (ess?.assessable_discount_cents ?? 0) - total_deductions_cents - dep.total_cents;
 
   // Resolved-deductible: only spend a year-end review has CONFIRMED deductible (deductibility set
   // to a resolved state, with the apportioned amount when present). ~$0 until a review runs — by
@@ -516,6 +529,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
         : undefined,
     company_positions: company_positions.length ? company_positions : undefined,
     capital_gains,
+    ess,
     taxable_position_cents,
   };
 }

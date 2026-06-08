@@ -627,6 +627,7 @@ console.log("claimability situational sweep (enumerateSituationClaims / classify
 
 // ── CGT: cost-base, Div43 reduction, 50% discount, main-residence, losses ─────
 import { computeCapitalGain, computeNetCapitalGain, DEFAULT_CGT_RULES } from "../src/lib/cgt";
+import { essAssessable } from "../src/lib/ess";
 
 console.log("cgt");
 {
@@ -684,6 +685,21 @@ console.log("cgt portfolio (#138)");
   // Non-discountable (held <12mo via dates) → full gain assessable.
   const e = computeNetCapitalGain([{ proceeds_cents: 1_000_000, cost_base_used_cents: 0, acquired_date: "2025-03-01", event_date: "2025-09-01" }], R);
   check("held <12mo → no discount → full $10k", e.net_capital_gain_cents === 1_000_000);
+}
+
+console.log("ess (#141)");
+{
+  // taxed-upfront + deferral → assessable now; startup (≤10%) → deferred to CGT.
+  const a = essAssessable([
+    { scheme_type: "taxed_upfront", discount_cents: 500_000 },
+    { scheme_type: "deferral", discount_cents: 300_000 },
+    { scheme_type: "startup", discount_cents: 1_000_000, ownership_gt_10pct: false },
+  ]);
+  check("upfront+deferral assessable ($8k), startup deferred to CGT ($10k)", a.assessable_discount_cents === 800_000 && a.startup_deferred_to_cgt_cents === 1_000_000 && !a.ineligible_startup_flag);
+
+  // founder >10% on a 'startup' grant → concession unavailable → discount assessable + flagged.
+  const b = essAssessable([{ scheme_type: "startup", discount_cents: 1_000_000, ownership_gt_10pct: true }]);
+  check("startup grant with >10% ownership → assessable + ineligible flag", b.assessable_discount_cents === 1_000_000 && b.startup_deferred_to_cgt_cents === 0 && b.ineligible_startup_flag);
 }
 
 // ── FILING READINESS: deterministic engine + the no-tax-advice invariant ──────

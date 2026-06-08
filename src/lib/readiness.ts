@@ -161,6 +161,13 @@ export function assessReadiness(input: {
       basis: `gains ${money(cg.gross_capital_gains_cents)} − losses ${money(cg.capital_losses_cents)} − 50% discount ${money(cg.discount_applied_cents)}`,
       why: "Net capital gain on assets you disposed of this year (shares, crypto, property): total gains, less capital losses, less the 50% CGT discount on assets held 12+ months. This is assessable income — CGT is fact-specific, so confirm with a registered tax agent." });
   }
+  // Phase #141: assessable ESS discount (taxed-upfront / deferral) is employment income — buildReport
+  // added it to taxable_position, so it renders as an "income" line to keep lines-sum == headline.
+  if (report.ess && report.ess.assessable_discount_cents > 0) {
+    lines.push({ group: "income", label: "ess_discount", amount_cents: report.ess.assessable_discount_cents,
+      basis: "ESS discount assessable at its taxing point",
+      why: "The discount on shares/options from your employee share scheme is assessable employment income (taxed-upfront or at a deferred taxing point). A startup-concession grant is NOT taxed here — it's taxed as a capital gain when you sell. ESS treatment is error-prone; confirm with a registered tax agent." });
+  }
   // Deduction lines come from the deductibility-split breakdown so the SAME classifier that computed
   // the headline routes each row to its section ("deduction" sums to the headline; "excluded"/"company"
   // are shown apart). This both fixes the number AND explains what dropped out and why.

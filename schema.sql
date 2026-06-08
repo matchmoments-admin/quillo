@@ -712,6 +712,28 @@ CREATE TABLE IF NOT EXISTS cgt_events (
 CREATE INDEX IF NOT EXISTS idx_cgt_events_user_fy ON cgt_events(user_id, fy);
 CREATE INDEX IF NOT EXISTS idx_cgt_events_asset ON cgt_events(user_id, cgt_asset_id);
 
+-- ── Employee Share Scheme grants (0038, #141) ─────────────────────────────────
+-- ESS discounts: taxed_upfront/deferral are assessable income at the taxing point; the startup
+-- concession defers to CGT (cost base = market value at acquisition). src/lib/ess.ts classifies.
+-- Flag-gated by ess_engine; zero rows ⇒ no change.
+CREATE TABLE IF NOT EXISTS ess_grants (
+  id                  TEXT PRIMARY KEY,
+  user_id             TEXT NOT NULL,
+  person_id           TEXT,
+  employer_entity_id  TEXT,
+  scheme_type         TEXT NOT NULL,                -- taxed_upfront|deferral|startup
+  grant_date          TEXT,
+  taxing_point_date   TEXT,
+  shares_or_options   TEXT,
+  units               REAL,
+  discount_cents      INTEGER NOT NULL DEFAULT 0,
+  market_value_cents  INTEGER,
+  ownership_gt_10pct  INTEGER NOT NULL DEFAULT 0,
+  created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_ess_grants_user ON ess_grants(user_id, scheme_type);
+CREATE INDEX IF NOT EXISTS idx_ess_grants_person ON ess_grants(user_id, person_id);
+
 -- ── FY checklist (0009): bucket-driven kickoff/wrap-up items ───────────────────
 CREATE TABLE IF NOT EXISTS fy_checklist (
   id          TEXT PRIMARY KEY,

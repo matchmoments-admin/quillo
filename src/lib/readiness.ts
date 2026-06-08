@@ -94,6 +94,7 @@ export interface FilingReadiness {
 function incomeTypeWhy(incomeType: string): string {
   switch (incomeType) {
     case "salary_payg": return "Salary/wages you recorded (generally item 1). PAYG withheld is shown as a credit, not a deduction.";
+    case "business": return "Net income of your sole-trader / ABN business (generally item 15). Your business expenses are captured separately and reduce your individual position.";
     case "rent": return "Rent received on a let property (generally item 13). Agent-deducted expenses are captured separately as deductions.";
     case "foreign_rent": return "Rent received on a foreign property (generally item 20). Foreign tax paid is shown as a credit.";
     case "dividend": return "Dividends you recorded (generally item 11). Franking credits are shown as a credit.";

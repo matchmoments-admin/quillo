@@ -16,6 +16,7 @@ function defaultFyStart(): number {
 
 const INCOME_TYPES = [
   "salary_payg",
+  "business",
   "rent",
   "interest",
   "dividend",
@@ -27,6 +28,7 @@ const INCOME_TYPES = [
 
 const TYPE_LABEL: Record<string, string> = {
   salary_payg: "Salary (PAYG)",
+  business: "Business (sole trader)",
   rent: "Rent",
   interest: "Interest",
   dividend: "Dividend",

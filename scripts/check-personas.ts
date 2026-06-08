@@ -120,12 +120,18 @@ const asset = (id: string, u: string, costCents: number, depCents: number, prope
   run(`INSERT INTO work_use_inputs (user_id, fy, car_work_km) VALUES (?, 2025, 5000)`, u); // GAP #142: cents-per-km only
 }
 
-// ── Persona 4: Priya, rideshare/ABN sole trader (THE gap) ──
+// ── Persona 4: Priya, rideshare/ABN sole trader (#136 closes the headline gap) ──
 {
   const u = "p4";
   seedTenant(u, "P4 Priya rideshare");
-  inc("p4iFares", u, "other", 4500000); // GAP #136: business income with no 'business' type → 'other'
-  exp("p4tFuel", u, 500000, "company"); // GAP #136: a sole trader's only "business" bucket is 'company' (a SEPARATE taxpayer) → excluded from HER position
+  // #136: a sole trader is an INDIVIDUAL entity with a 'business' income_activity. Her net business
+  // income is assessable to HER, and her s8-1 expenses reach her personal headline via the activity
+  // (the attribution engine routes an individual-owned business activity to 'individual', never 'company').
+  run(`INSERT INTO entities (id, user_id, kind, name, person_id, entity_type) VALUES ('p4eInd', ?, 'individual', 'Priya (sole trader)', ?, 'individual')`, u, `person_self_${u}`);
+  run(`INSERT INTO income_activities (id, user_id, entity_id, activity_type, label) VALUES ('p4iaBiz', ?, 'p4eInd', 'business', 'Rideshare')`, u);
+  inc("p4iFares", u, "business", 4500000);
+  exp("p4tFuel", u, 500000, "company"); // raw bucket is moot once attributed below
+  run(`INSERT INTO transaction_attributions (id, user_id, transaction_id, entity_id, income_activity_id, attributed_amount_cents, deduction_provision) VALUES ('p4aFuel', ?, 'p4tFuel', 'p4eInd', 'p4iaBiz', 500000, 's8-1_general')`, u);
   run(`INSERT INTO work_use_inputs (user_id, fy, car_work_km) VALUES (?, 2025, 30000)`, u); // GAP #142: 30k driven, capped at 5k → under-claims
 }
 
@@ -133,8 +139,11 @@ const asset = (id: string, u: string, costCents: number, depCents: number, prope
 {
   const u = "p5";
   seedTenant(u, "P5 Tom sole trader");
-  inc("p5iFees", u, "other", 11000000); // GAP #136: consulting fees → 'other'
-  exp("p5tSaaS", u, 300000, "company"); // GAP #136: business software has no individual home
+  run(`INSERT INTO entities (id, user_id, kind, name, person_id, entity_type) VALUES ('p5eInd', ?, 'individual', 'Tom (sole trader)', ?, 'individual')`, u, `person_self_${u}`);
+  run(`INSERT INTO income_activities (id, user_id, entity_id, activity_type, label) VALUES ('p5iaBiz', ?, 'p5eInd', 'business', 'Freelance design')`, u);
+  inc("p5iFees", u, "business", 11000000);
+  exp("p5tSaaS", u, 300000, "company");
+  run(`INSERT INTO transaction_attributions (id, user_id, transaction_id, entity_id, income_activity_id, attributed_amount_cents, deduction_provision) VALUES ('p5aSaaS', ?, 'p5tSaaS', 'p5eInd', 'p5iaBiz', 300000, 's8-1_general')`, u);
   run(`INSERT INTO work_use_inputs (user_id, fy, wfh_hours) VALUES (?, 2025, 600)`, u); // WFH fixed-rate DOES work
 }
 
@@ -236,15 +245,17 @@ async function main() {
   check("P3: ute via cents-per-km @ 88c × 5,000km cap = $4,400", r3.work_method?.car_cents === 440000);
   check("P3 GAP #136: the cash job has no 'business' activity — it sits in 'other'", !!r3.income.by_type.find((t) => t.income_type === "other"));
 
-  // ── Persona 4: rideshare/ABN sole trader (the headline gap) ──
+  // ── Persona 4: rideshare/ABN sole trader (#136 closes the headline gap) ──
   const r4 = await buildReport(env, "p4", 2025);
-  check("P4 GAP #136: business fuel has no individual home → excluded from her position (company-tracked)", r4.company_tracked_cents === 500000 && r4.taxable_position_cents === 4500000 - 440000);
+  const r4biz = r4.income.by_type.find((t) => t.income_type === "business");
+  check("P4 #136: business income is first-class ('business'), assessable to the individual ($45k)", r4biz?.gross_cents === 4500000);
+  check("P4 #136: business fuel NETS into her individual position via the sole-trader activity (not company-orphaned)", r4.attribution?.individual_cents === 500000 && r4.company_tracked_cents === 0 && r4.taxable_position_cents === 4500000 - 500000 - 440000);
   check("P4 GAP #142: 30,000km driven but cents-per-km caps at 5,000km ($4,400) — logbook would beat it", r4.work_method?.car_cents === 440000);
 
   // ── Persona 5: sole-trader freelancer ──
   const r5 = await buildReport(env, "p5", 2025);
   check("P5: WFH fixed-rate works (600h × 70c = $420)", r5.work_method?.wfh_cents === 42000);
-  check("P5 GAP #136: business software ($3k) excluded from the individual position (only 'company' bucket exists)", r5.company_tracked_cents === 300000);
+  check("P5 #136: sole-trader business software ($3k) now nets into the individual position", r5.attribution?.individual_cents === 300000 && r5.company_tracked_cents === 0 && r5.taxable_position_cents === 11000000 - 300000 - 42000);
 
   // ── Persona 6: co-owned negatively-geared landlords (verifies neg-gearing NETS) ──
   const r6 = await buildReport(env, "p6", 2025);

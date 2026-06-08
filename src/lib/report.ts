@@ -1,6 +1,6 @@
 import type { Env } from "../env";
 import { COUNTABLE, COUNTABLE_INCOME } from "./queries";
-import { incomeTotals, depreciationTotals, attributionTotals, companyPositions, cgtTotals, essTotals, gstTotals, type IncomeTotals, type AttributionTotals, type CompanyPosition, type GstPosition } from "./ledger-totals";
+import { incomeTotals, depreciationTotals, attributionTotals, companyPositions, cgtTotals, essTotals, gstTotals, carLogbookPosition, type IncomeTotals, type AttributionTotals, type CompanyPosition, type GstPosition, type CarLogbookPosition } from "./ledger-totals";
 import type { CgtPortfolioResult } from "./cgt";
 import type { EssAssessable } from "./ess";
 import { featureOn } from "./features";
@@ -131,6 +131,9 @@ export interface Report {
   // NEVER added to taxable_position_cents. Present only when the gst_bas flag is on AND a business is
   // GST-registered. undefined ⇒ byte-identical legacy totals.
   gst?: GstPosition;
+  // Phase #142: logbook-method car deduction vs cents-per-km (informational — not yet swapped into the
+  // position). Present only when the car_logbook flag is on AND a vehicle_logbook exists for the FY.
+  car_logbook?: CarLogbookPosition;
   taxable_position_cents: number;      // total_income + net capital gain + ESS discount − deductions − depreciation (indicative)
 }
 
@@ -489,6 +492,12 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
     const g = await gstTotals(env, userId, startYear);
     if (g.registered) gst = g;
   }
+  // Phase #142: logbook vs cents-per-km comparison (informational). Uses the cents-per-km figure already
+  // computed in work_method. Flag-gated; null when there's no logbook for the FY.
+  let car_logbook: CarLogbookPosition | undefined;
+  if (featureOn(env, "car_logbook")) {
+    car_logbook = (await carLogbookPosition(env, userId, startYear, work_method?.car_cents ?? 0)) ?? undefined;
+  }
 
   // Resolved-deductible: only spend a year-end review has CONFIRMED deductible (deductibility set
   // to a resolved state, with the apportioned amount when present). ~$0 until a review runs — by
@@ -542,6 +551,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
     capital_gains,
     ess,
     gst,
+    car_logbook,
     taxable_position_cents,
   };
 }

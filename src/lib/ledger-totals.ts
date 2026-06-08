@@ -4,6 +4,7 @@ import { classifyAttribution, splitAttribution } from "./attribution";
 import { computeNetCapitalGain, cgtRulesForFy, type CgtPortfolioResult } from "./cgt";
 import { essAssessable, type EssAssessable } from "./ess";
 import { computeBasNet, type BasNet } from "./gst";
+import { businessUsePct, logbookDeductionCents, chooseCarMethod } from "./car-logbook";
 import auV1RulePack from "../rulepacks/au-v1.json";
 
 // ── The single money-aggregation seam ─────────────────────────────────────────
@@ -294,6 +295,50 @@ function auV1Thresholds(fy: string): Record<string, number> | undefined {
 
 export interface GstPosition extends BasNet {
   registered: boolean;
+}
+
+export interface CarLogbookPosition {
+  business_use_pct: number;
+  running_costs_cents: number;
+  car_dep_cents: number;
+  logbook_deduction_cents: number;
+  cents_per_km_cents: number;          // the cents-per-km figure being compared against
+  recommended_method: "logbook" | "cents_per_km";
+  recommended_cents: number;
+}
+
+/**
+ * Phase #142: the logbook-method car deduction for an FY, compared to cents-per-km. business-use % ×
+ * (running costs + the car asset's decline-in-value). INFORMATIONAL — surfaced so a high-km driver sees
+ * that the logbook beats the capped cents-per-km; the position-swap (and excluding the overlapping car
+ * depreciation/running costs) is a careful follow-up. Flag-gated by car_logbook. No logbook row → null.
+ */
+export async function carLogbookPosition(env: Env, userId: string, startYear: number, centsPerKmCents: number): Promise<CarLogbookPosition | null> {
+  const fy = fyLabel(startYear);
+  try {
+    const lb = await env.DB.prepare(`SELECT asset_id, business_km, total_km, running_costs_cents, business_use_pct FROM vehicle_logbooks WHERE user_id = ? AND fy = ? LIMIT 1`)
+      .bind(userId, fy)
+      .first<{ asset_id: string | null; business_km: number | null; total_km: number | null; running_costs_cents: number; business_use_pct: number | null }>();
+    if (!lb) return null;
+    const pct = lb.business_use_pct != null ? lb.business_use_pct : businessUsePct(lb.business_km, lb.total_km);
+    const carDep = lb.asset_id
+      ? (await env.DB.prepare(`SELECT COALESCE(SUM(deduction_cents),0) AS d FROM depreciation_schedule WHERE user_id = ? AND fy = ? AND asset_id = ?`).bind(userId, fy, lb.asset_id).first<{ d: number }>())?.d ?? 0
+      : 0;
+    const logbookCents = logbookDeductionCents(lb.running_costs_cents, carDep, pct);
+    const choice = chooseCarMethod(logbookCents, centsPerKmCents);
+    return {
+      business_use_pct: pct,
+      running_costs_cents: lb.running_costs_cents,
+      car_dep_cents: carDep,
+      logbook_deduction_cents: logbookCents,
+      cents_per_km_cents: centsPerKmCents,
+      recommended_method: choice.method,
+      recommended_cents: choice.deduction_cents,
+    };
+  } catch (e) {
+    if (/no such table|no such column/i.test((e as Error).message)) return null;
+    throw e;
+  }
 }
 
 /**

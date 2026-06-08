@@ -654,6 +654,7 @@ CREATE TABLE IF NOT EXISTS assets (
   --       (Div 40 needs the taxpayer to own and bear the cost). Defaults => legacy behaviour.
   owned_by      TEXT NOT NULL DEFAULT 'self',   -- self|employer
   reimbursed    INTEGER NOT NULL DEFAULT 0,
+  is_car        INTEGER NOT NULL DEFAULT 0,     -- 0040 (#142): a motor vehicle (logbook method + Div 40 cost-limit cap)
   disposed_date TEXT,
   disposal_value_cents INTEGER,
   source_doc_id TEXT,
@@ -767,6 +768,23 @@ CREATE TABLE IF NOT EXISTS payg_instalments (
   created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_payg_inst_user ON payg_instalments(user_id, fy);
+
+-- ── Motor-vehicle logbook (0040, #142) ────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS vehicle_logbooks (
+  id                  TEXT PRIMARY KEY,
+  user_id             TEXT NOT NULL,
+  person_id           TEXT,
+  asset_id            TEXT,
+  fy                  TEXT NOT NULL,
+  start_date          TEXT,
+  end_date            TEXT,
+  business_km         REAL,
+  total_km            REAL,
+  running_costs_cents INTEGER NOT NULL DEFAULT 0,
+  business_use_pct    REAL,
+  created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_vehicle_logbooks_user ON vehicle_logbooks(user_id, fy);
 
 -- ── FY checklist (0009): bucket-driven kickoff/wrap-up items ───────────────────
 CREATE TABLE IF NOT EXISTS fy_checklist (

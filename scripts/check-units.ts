@@ -629,6 +629,7 @@ console.log("claimability situational sweep (enumerateSituationClaims / classify
 import { computeCapitalGain, computeNetCapitalGain, DEFAULT_CGT_RULES } from "../src/lib/cgt";
 import { essAssessable } from "../src/lib/ess";
 import { gstFromInclusiveCents, computeBasNet } from "../src/lib/gst";
+import { businessUsePct, logbookDeductionCents, chooseCarMethod } from "../src/lib/car-logbook";
 
 console.log("cgt");
 {
@@ -711,6 +712,19 @@ console.log("gst/bas (#137)");
   check("net BAS = output − input", net.output_gst_cents === 409_091 && net.input_gst_cents === 45_454 && net.net_gst_cents === 363_637);
   const refund = computeBasNet(1_100_000, 200_000); // more credits than output → refund (negative net)
   check("input > output → negative net (refund)", refund.net_gst_cents === 100_000 - 200_000);
+}
+
+console.log("car logbook (#142)");
+{
+  check("business-use % = business/total km", businessUsePct(27_000, 30_000) === 90);
+  check("zero total km → 0%", businessUsePct(100, 0) === 0);
+  // 90% × ($10k running + $2k car decline) = $10,800.
+  check("logbook = pct × (running + car dep)", logbookDeductionCents(1_000_000, 200_000, 90) === 1_080_000);
+  // logbook ($9k) beats capped cents-per-km ($4,400).
+  const win = chooseCarMethod(900_000, 440_000);
+  check("higher method wins (logbook)", win.method === "logbook" && win.deduction_cents === 900_000);
+  // a low-business-use car → cents-per-km wins; tie favours cents-per-km.
+  check("tie favours cents-per-km", chooseCarMethod(440_000, 440_000).method === "cents_per_km");
 }
 
 // ── FILING READINESS: deterministic engine + the no-tax-advice invariant ──────

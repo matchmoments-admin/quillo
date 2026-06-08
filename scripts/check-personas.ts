@@ -88,6 +88,110 @@ const check = (name: string, cond: boolean) => { if (cond) { pass++; console.log
   run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, direction, deductibility, reimbursed) VALUES ('p2crmb', ?, 'upload', 'categorised', 'bank_line', 5000, 5000, ?, 'company', 'debit', 'undetermined', 1)`, u, FY_DATE);
 }
 
+// Helpers for the report-persona fixtures (3–10). Income is first-class (income table); expenses are
+// transactions. `// GAP #NNN` marks behaviour an EPIC-#134 child issue will change — the assertion pins
+// TODAY's honest behaviour so we'd notice if a later feature silently moved it.
+const seedTenant = (u: string, name: string) => {
+  run(`INSERT INTO tenants (user_id, display_name) VALUES (?, ?)`, u, name);
+  run(`INSERT INTO persons (id, user_id, display_name, role) VALUES (?, ?, 'You', 'self')`, `person_self_${u}`, u);
+};
+const inc = (id: string, u: string, type: string, grossCents: number, extra: Record<string, number | string> = {}) => {
+  const cols = ["id", "user_id", "income_type", "fy", "gross_cents", "amount_aud_cents", ...Object.keys(extra)];
+  const vals = [id, u, type, "2025-26", grossCents, grossCents, ...Object.values(extra)];
+  run(`INSERT INTO income (${cols.join(",")}) VALUES (${cols.map(() => "?").join(",")})`, ...vals);
+};
+const exp = (id: string, u: string, cents: number, bucket: string, deductibility = "likely_deductible", propertyId: string | null = null) =>
+  run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, property_id, direction, deductibility) VALUES (?, ?, 'upload', 'categorised', 'bank_line', ?, ?, ?, ?, ?, 'debit', ?)`, id, u, cents, cents, FY_DATE, bucket, propertyId, deductibility);
+const asset = (id: string, u: string, costCents: number, depCents: number, propertyId: string | null = null) => {
+  run(`INSERT INTO assets (id, user_id, property_id, label, asset_class, cost_cents, acquired_date, owned_by) VALUES (?, ?, ?, 'Asset', 'div40_plant', ?, ?, 'self')`, id, u, propertyId, costCents, FY_DATE);
+  run(`INSERT INTO depreciation_schedule (id, user_id, asset_id, fy, opening_adjustable_value_cents, days_held, deduction_cents, closing_adjustable_value_cents, method_applied) VALUES (?, ?, ?, '2025-26', ?, 365, ?, ?, 'diminishing_value')`, `${id}_s`, u, id, costCents, depCents, costCents - depCents);
+};
+
+// ── Persona 3: Lukas, tradie (PAYG + tools/ute + a CASH side job) ──
+{
+  const u = "p3";
+  seedTenant(u, "P3 Lukas tradie");
+  inc("p3iSal", u, "salary_payg", 9500000);
+  inc("p3iCash", u, "other", 800000); // GAP #136: no 'business' income_type → cash job lands in 'other'
+  exp("p3t1", u, 30000, "payg"); // tools $300
+  exp("p3t2", u, 20000, "payg"); // PPE boots $200
+  exp("p3t3", u, 5000, "payg");  // union $50
+  asset("p3aDrill", u, 80000, 20000); // depreciating drill set >$300
+  run(`INSERT INTO work_use_inputs (user_id, fy, car_work_km) VALUES (?, 2025, 5000)`, u); // GAP #142: cents-per-km only
+}
+
+// ── Persona 4: Priya, rideshare/ABN sole trader (THE gap) ──
+{
+  const u = "p4";
+  seedTenant(u, "P4 Priya rideshare");
+  inc("p4iFares", u, "other", 4500000); // GAP #136: business income with no 'business' type → 'other'
+  exp("p4tFuel", u, 500000, "company"); // GAP #136: a sole trader's only "business" bucket is 'company' (a SEPARATE taxpayer) → excluded from HER position
+  run(`INSERT INTO work_use_inputs (user_id, fy, car_work_km) VALUES (?, 2025, 30000)`, u); // GAP #142: 30k driven, capped at 5k → under-claims
+}
+
+// ── Persona 5: Tom, sole-trader freelancer (home studio) ──
+{
+  const u = "p5";
+  seedTenant(u, "P5 Tom sole trader");
+  inc("p5iFees", u, "other", 11000000); // GAP #136: consulting fees → 'other'
+  exp("p5tSaaS", u, 300000, "company"); // GAP #136: business software has no individual home
+  run(`INSERT INTO work_use_inputs (user_id, fy, wfh_hours) VALUES (?, 2025, 600)`, u); // WFH fixed-rate DOES work
+}
+
+// ── Persona 6: Susan & Greg, co-owned negatively-geared landlords ──
+{
+  const u = "p6";
+  seedTenant(u, "P6 landlords");
+  run(`INSERT INTO persons (id, user_id, display_name, role) VALUES (?, ?, 'Spouse', 'spouse')`, `person_spouse_${u}`, u);
+  run(`INSERT INTO properties (id, user_id, label, status, use_status, ownership_pct) VALUES ('p6prop', ?, 'Rental', 'rented', 'rented', 50)`, u);
+  run(`INSERT INTO property_owners (id, user_id, property_id, person_id, ownership_pct) VALUES ('p6po1', ?, 'p6prop', ?, 50)`, u, `person_self_${u}`);
+  run(`INSERT INTO property_owners (id, user_id, property_id, person_id, ownership_pct) VALUES ('p6po2', ?, 'p6prop', ?, 50)`, u, `person_spouse_${u}`);
+  inc("p6iSal", u, "salary_payg", 13000000); // $130k salary
+  run(`INSERT INTO income (id, user_id, income_type, property_id, fy, gross_cents, amount_aud_cents) VALUES ('p6iRent', ?, 'rent', 'p6prop', '2025-26', 2000000, 2000000)`, u);
+  exp("p6tExp", u, 3000000, "property_rented", "likely_deductible", "p6prop"); // interest/rates/agent
+  asset("p6aPlant", u, 8000000, 2000000, "p6prop"); // Div 40 plant on the rental
+}
+
+// ── Persona 7: Nadia, nurse with TWO employers (multi-income aggregation) ──
+{
+  const u = "p7";
+  seedTenant(u, "P7 Nadia nurse");
+  inc("p7iSal1", u, "salary_payg", 5000000); // hospital
+  inc("p7iSal2", u, "salary_payg", 3800000); // agency shifts
+  exp("p7tEdu", u, 120000, "payg"); // wound-care course (current role)
+  exp("p7tUni", u, 20000, "payg");  // compulsory uniform
+  // GAP #143: no occupation content layer to pre-suggest AHPRA/union/PPE or warn on conventional clothing
+}
+
+// ── Persona 8: James, company + discretionary trust ──
+{
+  const u = "p8";
+  seedTenant(u, "P8 James co+trust");
+  run(`INSERT INTO entities (id, user_id, kind, name, person_id, entity_type, base_rate_entity) VALUES ('p8eCo', ?, 'company', 'Trading Pty Ltd', ?, 'company', 1)`, u, `person_self_${u}`);
+  run(`INSERT INTO entities (id, user_id, kind, name, person_id, entity_type) VALUES ('p8eTrust', ?, 'trust', 'Family Trust', ?, 'trust')`, u, `person_self_${u}`);
+  exp("p8tCoExp", u, 1000000, "company", "likely_deductible"); // company's own spend → company position loss
+  inc("p8iDist", u, "other", 5000000); // GAP #139: trust distribution modelled as plain 'other' — character (franked/CGT) NOT retained
+}
+
+// ── Persona 9: Aisha, pre-revenue startup founder ──
+{
+  const u = "p9";
+  seedTenant(u, "P9 Aisha founder");
+  run(`INSERT INTO entities (id, user_id, kind, name, person_id, entity_type, base_rate_entity) VALUES ('p9eCo', ?, 'company', 'Startup Pty Ltd', ?, 'company', 1)`, u, `person_self_${u}`);
+  run(`INSERT INTO blackhole_costs (id, user_id, entity_id, incurred_date, amount_cents, description, immediate_deduction) VALUES ('p9bh', ?, 'p9eCo', ?, 500000, 'ASIC + structure advice (s40-880)', 1)`, u, FY_DATE);
+  run(`INSERT INTO rd_claims (id, user_id, entity_id, fy, eligible_expenditure_cents, aggregated_turnover_cents, offset_type, registered_with_ausindustry) VALUES ('p9rd', ?, 'p9eCo', '2025-26', 4000000, 0, 'refundable', 0)`, u); // NOT registered
+  // GAP #141: ESS options to staff not modelled
+}
+
+// ── Persona 10: Margaret, SMSF retiree + crypto ──
+{
+  const u = "p10";
+  seedTenant(u, "P10 Margaret SMSF");
+  run(`INSERT INTO entities (id, user_id, kind, name, person_id, entity_type) VALUES ('p10eSmsf', ?, 'individual', 'Family SMSF', ?, 'smsf')`, u, `person_self_${u}`); // GAP #140: smsf entity declarable, no pension/ECPI model
+  inc("p10iDiv", u, "dividend", 700000, { franking_credit_cents: 300000 }); // franking captured
+  // GAP #138: crypto parcel disposals — no CGT engine, nothing computable yet
+}
+
 async function main() {
   console.log("persona verification (attribution_engine ON)");
 
@@ -124,6 +228,52 @@ async function main() {
   const rentOff = r2off.per_property.find((p) => p.property_id === "p2pRent");
   check("P2 (flag off): co-owned bill counts at its full raw $1000 (no 50% split)", rentOff?.deduction_cents === 100000);
   check("P2 (flag off): no attribution block on the report", r2off.attribution === undefined);
+
+  // ── Persona 3: tradie ──
+  const r3 = await buildReport(env, "p3", 2025);
+  check("P3: multi-income aggregates salary + a CASH side job ($95k + $8k 'other')", r3.income.gross_cents === 10300000);
+  check("P3: depreciating tools earn decline-in-value ($200)", r3.depreciation_cents === 20000);
+  check("P3: ute via cents-per-km @ 88c × 5,000km cap = $4,400", r3.work_method?.car_cents === 440000);
+  check("P3 GAP #136: the cash job has no 'business' activity — it sits in 'other'", !!r3.income.by_type.find((t) => t.income_type === "other"));
+
+  // ── Persona 4: rideshare/ABN sole trader (the headline gap) ──
+  const r4 = await buildReport(env, "p4", 2025);
+  check("P4 GAP #136: business fuel has no individual home → excluded from her position (company-tracked)", r4.company_tracked_cents === 500000 && r4.taxable_position_cents === 4500000 - 440000);
+  check("P4 GAP #142: 30,000km driven but cents-per-km caps at 5,000km ($4,400) — logbook would beat it", r4.work_method?.car_cents === 440000);
+
+  // ── Persona 5: sole-trader freelancer ──
+  const r5 = await buildReport(env, "p5", 2025);
+  check("P5: WFH fixed-rate works (600h × 70c = $420)", r5.work_method?.wfh_cents === 42000);
+  check("P5 GAP #136: business software ($3k) excluded from the individual position (only 'company' bucket exists)", r5.company_tracked_cents === 300000);
+
+  // ── Persona 6: co-owned negatively-geared landlords (verifies neg-gearing NETS) ──
+  const r6 = await buildReport(env, "p6", 2025);
+  const r6prop = r6.per_property.find((p) => p.property_id === "p6prop");
+  check("P6: negative gearing NETS — ($130k salary + $20k rent) − $30k expenses − $20k dep = $100k", r6.taxable_position_cents === 10000000);
+  check("P6: per-property shows the $30k rental loss", r6prop?.net_cents === -3000000);
+
+  // ── Persona 7: nurse, two employers ──
+  const r7 = await buildReport(env, "p7", 2025);
+  const r7sal = r7.income.by_type.find((t) => t.income_type === "salary_payg");
+  check("P7: two employers' salaries aggregate into one income figure ($88k)", r7.income.gross_cents === 8800000 && r7sal?.n === 2);
+  check("P7: self-education + uniform are deductible ($1,400)", r7.total_deductions_cents === 140000);
+
+  // ── Persona 8: company + trust ──
+  const r8 = await buildReport(env, "p8", 2025);
+  const r8co = r8.company_positions?.find((c) => c.entity_id === "p8eCo");
+  check("P8: the company is a separate taxpayer with a $10k current-year loss", r8co?.current_year_loss_cents === 1000000);
+  check("P8 GAP #139: trust distribution lands as plain 'other' — franking character NOT retained", r8.income.franking_credit_cents === 0 && !!r8.income.by_type.find((t) => t.income_type === "other"));
+
+  // ── Persona 9: pre-revenue founder ──
+  const r9 = await buildReport(env, "p9", 2025);
+  const r9co = r9.company_positions?.find((c) => c.entity_id === "p9eCo");
+  check("P9 GAP #126: blackhole (s40-880) costs are capture-only — NOT auto-deducted into the company position", r9co?.deductions_cents === 0);
+  check("P9: R&D not auto-claimed without AusIndustry registration", r9co?.rd_eligible === false);
+
+  // ── Persona 10: SMSF retiree + crypto ──
+  const r10 = await buildReport(env, "p10", 2025);
+  check("P10: franking credits on dividends are captured ($3k)", r10.income.franking_credit_cents === 300000);
+  check("P10: dividend gross feeds the indicative position, NOT grossed-up by franking (we never compute tax payable)", r10.taxable_position_cents === 700000);
 
   console.log(`\n=== personas: ${pass} passed, ${fail} failed ===`);
   if (fail > 0) process.exit(1);

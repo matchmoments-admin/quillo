@@ -83,7 +83,8 @@ export function Inbox() {
         </div>
       </div>
 
-      {/* "Do my books" — the driver that populates the Sort flow below (accountant_pass-gated). */}
+      {/* "Do my books" runs automatically on import now — this is just a quiet status strip with a
+          manual Re-scan (accountant_pass-gated). */}
       {hasAccountantPass && <AccountantPassCard fy={activeFy} />}
 
       {/* Phase 2: the ordered "Sort" flow (priority, not gate) — expands the highest-priority queue

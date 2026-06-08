@@ -1,13 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
-import { Button, Card, money } from "./ui";
+import { money } from "./ui";
 
 /**
- * Phase 4 — "Do my books". One button runs the deterministic accountant pass for the active FY
- * (clean up transfers, re-stamp deductibility + suggestions, group recurring patterns, sweep claims).
- * This card is just the DRIVER: it runs the pass and reports how much it surfaced. The actual work is
- * done in the ordered "Sort" flow below (movement sweep, clarify, suggested deductions), which this
- * pass populates. General information only.
+ * "Do my books" — now invisible plumbing. The deterministic accountant pass (clean up transfers,
+ * re-stamp deductibility + suggestions, group recurring patterns, sweep claims) runs AUTOMATICALLY
+ * after every import, so the ordered "Sort" flow below is already populated. This is just a quiet
+ * status strip with a manual "Re-scan" for when the user adds rules or wants to re-check a prior year.
+ * General information only.
  */
 export function AccountantPassCard({ fy }: { fy: number }) {
   const qc = useQueryClient();
@@ -18,33 +18,29 @@ export function AccountantPassCard({ fy }: { fy: number }) {
     },
   });
   const s = run.data;
-  // What the pass surfaced across every queue — drives the one-line result (the per-queue counts live
-  // in the Sort flow's stepper below, so we don't repeat the grid here).
+  // What a manual re-scan surfaced across every queue (per-queue counts live in the Sort stepper below).
   const found = s ? s.movement_candidates + s.property_loan_review + s.clarify_questions + s.suggestions + s.claim_items : 0;
 
   return (
-    <Card className="space-y-2 p-4">
-      <div className="flex items-baseline justify-between gap-3">
-        <div>
-          <h2 className="text-base font-semibold">Do my books</h2>
-          <p className="text-xs text-muted">
-            One pass: tidy transfers, work out what's claimable, and surface questions to sort below.{" "}
-            <span className="text-muted">General information only — not tax advice.</span>
-          </p>
-        </div>
-        <Button onClick={() => run.mutate()} disabled={run.isPending}>
-          {run.isPending ? "Working…" : "Do my books"}
-        </Button>
-      </div>
-      {run.isError && <p className="text-xs text-warn">{(run.error as Error).message}</p>}
-      {s && (
-        <p className="text-xs text-muted">
-          {found === 0
-            ? "All tidy — nothing to sort right now ✓"
-            : `Sorted what I could — ${found} ${found === 1 ? "item" : "items"} for you to check below.`}
-        </p>
-      )}
-    </Card>
+    <div className="flex flex-wrap items-center justify-between gap-2 px-1 text-xs text-muted">
+      <span>
+        Transfers, deductibility and recurring patterns are sorted automatically when you import.{" "}
+        {run.isError ? (
+          <span className="text-warn">{(run.error as Error).message}</span>
+        ) : s ? (
+          <span>{found === 0 ? "All tidy ✓" : `Re-scan found ${found} to check below.`}</span>
+        ) : (
+          <span>General information only — not tax advice.</span>
+        )}
+      </span>
+      <button
+        onClick={() => run.mutate()}
+        disabled={run.isPending}
+        className="flex-none rounded-lg border border-line px-2.5 py-1 font-medium text-ink transition hover:bg-surface disabled:opacity-50"
+      >
+        {run.isPending ? "Scanning…" : "↻ Re-scan"}
+      </button>
+    </div>
   );
 }
 

@@ -412,6 +412,43 @@ export class TaxAgent extends Agent<Env> {
   // column map, de-dup each line by fingerprint, batch-insert the new bank lines, and
   // categorise deterministically (user rules + merchant hints — FREE; LLM categorisation of
   // the remainder is a later phase). Returns counts.
+  /**
+   * Auto-run the deterministic "Do my books" pass after an import so the Sort queues (movement sweep,
+   * clarify, suggestions) are populated WITHOUT the user pressing a button. Deterministic + free
+   * (no LLM). Runs ONCE per distinct FY the imported lines touch (a statement can straddle 30 June),
+   * and is BEST-EFFORT: a concurrent manual pass holds the per-(user,fy) in-flight lock and throws —
+   * we swallow it so the import flow never errors on the auto-run (the user can always re-scan).
+   * Gated on the accountant_pass flag — with it off the Sort queues aren't shown, so there's nothing
+   * to populate.
+   */
+  private async autoAccountantPassAfterImport(userId: string, statementIds: string[]): Promise<void> {
+    if (!statementIds.length || !featureOn(this.env, "accountant_pass")) return;
+    const ph = statementIds.map(() => "?").join(",");
+    const range = await this.env.DB.prepare(
+      `SELECT MIN(txn_date) AS lo, MAX(txn_date) AS hi
+         FROM transactions WHERE user_id = ? AND statement_id IN (${ph}) AND kind = 'bank_line' AND txn_date IS NOT NULL`,
+    )
+      .bind(userId, ...statementIds)
+      .first<{ lo: string | null; hi: string | null }>();
+    if (!range?.lo || !range?.hi) return;
+    const fyStart = (d: string) => (Number(d.slice(5, 7)) >= 7 ? Number(d.slice(0, 4)) : Number(d.slice(0, 4)) - 1);
+    // Clamp the FY window so a single mis-parsed date (e.g. an OCR'd 01/01/9999) can't blow the loop into
+    // thousands of full-tenant passes and hang the DO: end no later than NEXT FY, span at most 8 FYs.
+    const now = new Date();
+    const curFy = now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear() - 1; // getMonth: Jul = 6 = FY start
+    const hiY = Math.min(fyStart(range.hi), curFy + 1);
+    const loY = Math.max(fyStart(range.lo), hiY - 7);
+    for (let y = loY; y <= hiY; y++) {
+      try {
+        await this.runAccountantPass(userId, y);
+      } catch (e) {
+        // Best-effort: an in-flight lock (a concurrent manual pass) is expected and fine; audit anything
+        // else so a silently-failed pass is observable (the Sort page's "Re-scan" can always re-run it).
+        await this.audit(userId, "accountant_pass_autorun_failed", JSON.stringify({ fy: y, error: (e as Error).message })).catch(() => {});
+      }
+    }
+  }
+
   async confirmImport(userId: string, statementId: string, _columnMapOverride?: ColumnMap, force?: boolean, quiet?: boolean): Promise<{ imported: number; skipped: number }> {
     // LEFT JOIN (not INNER) so a statement whose account was later deleted is still found — the
     // null account_type just falls through to the asset reconcile sign via isLiabilityAccount.
@@ -535,6 +572,10 @@ export class TaxAgent extends Agent<Env> {
     await this.matchReceiptsForUser(userId);
 
     if (!quiet) {
+      // Direct (single-statement) import: run the pass now so the Sort queues are ready. The bulk path
+      // passes quiet=true and runs the pass ONCE at its own tail, so a multi-statement import doesn't
+      // fire the pass per statement (which would trip the in-flight lock).
+      await this.autoAccountantPassAfterImport(userId, [statementId]);
       await this.notify(
         userId,
         `Imported ${imported} transaction(s)${skipped ? ` (${skipped} already on file)` : ""}${cat.categorised ? `, categorised ${cat.categorised} with Claude` : ""}.`,
@@ -578,6 +619,8 @@ export class TaxAgent extends Agent<Env> {
       }
     }
     await this.audit(userId, "statement_imported_bulk", JSON.stringify({ statements, imported, skipped, errors: errors.length }));
+    // One pass for the whole bulk import, across every FY the imported lines touched (best-effort).
+    await this.autoAccountantPassAfterImport(userId, ids);
     await this.notify(
       userId,
       `Imported ${statements} statement(s): ${imported} transaction(s)${skipped ? `, ${skipped} already on file` : ""}${errors.length ? `. ${errors.length} couldn't import (e.g. didn't reconcile) — review them.` : "."}`,
@@ -660,6 +703,7 @@ export class TaxAgent extends Agent<Env> {
     let statements = 0;
     let recovered = 0;
     let flagsFixed = 0;
+    const recoveredIds: string[] = [];
     for (const s of stmts.results ?? []) {
       const actual = (await this.env.DB.prepare(
         `SELECT COUNT(*) AS n FROM transactions WHERE user_id = ? AND statement_id = ? AND kind = 'bank_line'`,
@@ -698,6 +742,7 @@ export class TaxAgent extends Agent<Env> {
           .run();
         const r = await this.confirmImport(userId, s.id, undefined, true, true); // force past the gate, quiet
         recovered += Math.max(0, r.imported - actual);
+        recoveredIds.push(s.id);
         statements++;
       } else {
         // No missing lines (or no sidecar to recover from) — correct stale counters/flags in place.
@@ -716,6 +761,8 @@ export class TaxAgent extends Agent<Env> {
         if (fixed) flagsFixed++;
       }
     }
+    // Recovered lines re-materialised → repopulate the Sort queues for the FYs they touch (best-effort).
+    await this.autoAccountantPassAfterImport(userId, recoveredIds);
     await this.audit(userId, "statements_repaired", JSON.stringify({ statements, recovered, flagsFixed }));
     return { statements, recovered, flagsFixed };
   }

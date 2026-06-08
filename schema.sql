@@ -541,6 +541,7 @@ CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_log(user_id, seq);
 CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_prop_user  ON properties(user_id);
 CREATE INDEX IF NOT EXISTS idx_ent_user   ON entities(user_id, active);
+CREATE INDEX IF NOT EXISTS idx_ent_user_type ON entities(user_id, entity_type); -- 0043: entity_type lookups (separate-taxpayer income exclusion, company/SMSF positions)
 CREATE INDEX IF NOT EXISTS idx_rule_user  ON user_rules(user_id, active, priority);
 
 -- ── Inference cost accounting (every Claude call records real token usage + cost) ─────

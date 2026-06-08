@@ -370,6 +370,26 @@ export async function smsfEntityIds(env: Env, userId: string): Promise<string[]>
   }
 }
 
+/**
+ * Entity ids of every SEPARATE TAXPAYER a tenant holds — a company, trust, SMSF or partnership. Income
+ * scoped to one of these belongs to THAT taxpayer (it shows in the company/SMSF position), never in the
+ * individual's headline. The personal incomeTotals excludes these so a company/trust income row can't be
+ * double-counted into the founder's position (H1). Personal income (entity_id NULL, or an 'individual'
+ * entity) is never excluded. [] when none / pre-0032 — so the exclusion is a no-op for personal-only data.
+ */
+export async function separateTaxpayerEntityIds(env: Env, userId: string): Promise<string[]> {
+  try {
+    const rows = (await env.DB.prepare(
+      `SELECT id FROM entities WHERE user_id = ?
+         AND (entity_type IN ('company','trust','smsf','partnership','property_partnership') OR kind IN ('company','trust'))`,
+    ).bind(userId).all<{ id: string }>()).results ?? [];
+    return rows.map((r) => r.id);
+  } catch (e) {
+    if (/no such table|no such column/i.test((e as Error).message)) return [];
+    throw e;
+  }
+}
+
 export interface CarLogbookPosition {
   business_use_pct: number;
   running_costs_cents: number;

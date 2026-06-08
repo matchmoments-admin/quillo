@@ -1,6 +1,6 @@
 import type { Env } from "../env";
 import { COUNTABLE, COUNTABLE_INCOME } from "./queries";
-import { incomeTotals, depreciationTotals, attributionTotals, companyPositions, cgtTotals, essTotals, gstTotals, carLogbookPosition, trustTotals, smsfFundPositions, smsfEntityIds, type IncomeTotals, type AttributionTotals, type CompanyPosition, type GstPosition, type CarLogbookPosition, type SmsfFundPosition } from "./ledger-totals";
+import { incomeTotals, depreciationTotals, attributionTotals, companyPositions, cgtTotals, essTotals, gstTotals, carLogbookPosition, trustTotals, smsfFundPositions, separateTaxpayerEntityIds, type IncomeTotals, type AttributionTotals, type CompanyPosition, type GstPosition, type CarLogbookPosition, type SmsfFundPosition } from "./ledger-totals";
 import type { TrustTotals } from "./trust";
 import type { CgtPortfolioResult } from "./cgt";
 import type { EssAssessable } from "./ess";
@@ -328,11 +328,13 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   const excludeNonDeductible = featureOn(env, "position_excludes_nondeductible");
 
   // ── Tax position via the money seam: income − deductions − depreciation ──
-  // #140: when smsf_engine is on, an SMSF fund is a separate taxpayer — keep its income OUT of the
-  // member's personal headline (the fund position is reported separately; the member's pension is
-  // tax-free). Flag off ⇒ no exclusion ⇒ byte-identical.
-  const smsfIds = featureOn(env, "smsf_engine") ? await smsfEntityIds(env, userId) : [];
-  const income = await incomeTotals(env, userId, { startYear, excludeEntityIds: smsfIds });
+  // H1 (#134 follow-up): a company / trust / SMSF / partnership is a SEPARATE taxpayer — its income
+  // belongs to THAT taxpayer (shown in the company/SMSF position), never in the individual's headline.
+  // Exclude it unconditionally so an entity income row can't be double-counted into the personal
+  // position. Personal income (entity_id NULL / an 'individual' entity) always stays. [] for
+  // personal-only data ⇒ no-op (byte-identical). This subsumes the earlier SMSF-only carve-out.
+  const separateIds = await separateTaxpayerEntityIds(env, userId);
+  const income = await incomeTotals(env, userId, { startYear, excludeEntityIds: separateIds });
   const dep = await depreciationTotals(env, userId, startYear);
   // Phase B / G2: deductions that come from explicit attributions (payer≠claimant) rather than the
   // raw transaction. The attributed transactions were excluded from the raw sums above (notAttributed),
@@ -518,9 +520,9 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
     car_logbook = (await carLogbookPosition(env, userId, startYear, work_method?.car_cents ?? 0)) ?? undefined;
   }
   // Phase #140: per-SMSF fund position (separate taxpayer) — NOT added to the personal position. Its
-  // income was already excluded from the personal headline above (smsfIds). Flag-gated.
+  // income is already excluded from the personal headline above (separateIds). Flag-gated.
   let smsf_funds: SmsfFundPosition[] | undefined;
-  if (smsfIds.length) {
+  if (featureOn(env, "smsf_engine")) {
     const funds = await smsfFundPositions(env, userId, startYear);
     if (funds.length) smsf_funds = funds;
   }

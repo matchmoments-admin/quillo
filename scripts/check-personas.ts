@@ -182,7 +182,8 @@ const asset = (id: string, u: string, costCents: number, depCents: number, prope
   seedTenant(u, "P8 James co+trust");
   run(`INSERT INTO entities (id, user_id, kind, name, person_id, entity_type, base_rate_entity) VALUES ('p8eCo', ?, 'company', 'Trading Pty Ltd', ?, 'company', 1)`, u, `person_self_${u}`);
   run(`INSERT INTO entities (id, user_id, kind, name, person_id, entity_type) VALUES ('p8eTrust', ?, 'trust', 'Family Trust', ?, 'trust')`, u, `person_self_${u}`);
-  exp("p8tCoExp", u, 1000000, "company", "likely_deductible"); // company's own spend → company position loss
+  run(`INSERT INTO income (id, user_id, entity_id, income_type, fy, gross_cents, amount_aud_cents) VALUES ('p8iCoRev', ?, 'p8eCo', 'business', '2025-26', 3000000, 3000000)`, u); // H1: company revenue — a SEPARATE taxpayer's income, must NOT touch his personal headline
+  exp("p8tCoExp", u, 1000000, "company", "likely_deductible"); // company's own spend
   // #139: the trust distributes $50k to him as a FRANKED dividend ($15k franking) — character retained.
   run(`INSERT INTO trust_distributions (id, user_id, trust_entity_id, fy, beneficiary_person_id, amount_cents, character, franking_credit_cents) VALUES ('p8dist', ?, 'p8eTrust', '2025-26', ?, 5000000, 'franked_dividend', 1500000)`, u, `person_self_${u}`);
 }
@@ -288,7 +289,8 @@ async function main() {
   // ── Persona 8: company + trust ──
   const r8 = await buildReport(env, "p8", 2025);
   const r8co = r8.company_positions?.find((c) => c.entity_id === "p8eCo");
-  check("P8: the company is a separate taxpayer with a $10k current-year loss", r8co?.current_year_loss_cents === 1000000);
+  check("P8: the company is a separate taxpayer ($30k income − $10k deductions, no current-year loss)", r8co?.assessable_income_cents === 3000000 && r8co?.current_year_loss_cents === 0);
+  check("P8 H1: the company's $30k income is NOT in the member's personal headline (separate taxpayer)", r8.income.gross_cents === 0 && r8.taxable_position_cents === 5000000);
   check("P8 #139: trust distribution retains FRANKED character — $50k assessable + $15k franking carried", r8.trust?.assessable_cents === 5000000 && r8.trust?.franking_credit_cents === 1500000 && r8.trust?.by_character.franked_dividend === 5000000);
   check("P8 #139: the franked trust distribution feeds his position ($50k)", r8.taxable_position_cents === 5000000);
 

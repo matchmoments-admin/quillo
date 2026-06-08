@@ -2824,6 +2824,10 @@ export class TaxAgent extends Agent<Env> {
       /* ignore */
     }
     const hasInvestments = buckets.includes("investments") || buckets.includes("shares");
+    // A PAYG employee (an 'employment' entity, or just the payg bucket) — the common case whose biggest
+    // claims (WFH, equipment, the "things people forget") never originate as a statement line, so they
+    // were never surfaced. This branch pushes them as reminders to confirm. (D.2 / G6)
+    const hasEmployment = situation.entities.some((e) => e.kind === "employment") || buckets.includes("payg");
 
     const items: { item_key: string; title: string; rationale: string; trigger_bucket: string; due_hint: string }[] = [];
     if (hasRented)
@@ -2836,6 +2840,15 @@ export class TaxAgent extends Agent<Env> {
       items.push({ item_key: "company_equipment_review", title: "Review company equipment to depreciate (check this FY's instant asset write-off threshold)", rationale: "Eligible assets may be written off immediately or pooled. The threshold changes yearly — confirm the current-FY figure.", trigger_bucket: "company", due_hint: "Before 30 June" });
     if (hasInvestments || hasCompany)
       items.push({ item_key: "dividend_statements", title: "Upload dividend / managed-fund (AMMA) statements", rationale: "Franking credits and distribution components are captured from these — drop them in Documents.", trigger_bucket: "payg", due_hint: "After 30 June" });
+    if (hasEmployment) {
+      items.push({ item_key: "payg_wfh_hours", title: "Set your working-from-home days/week (the #1 work deduction)", rationale: "Home-office running costs are claimed at the ATO fixed rate for the hours you work from home. Enter your days/week on the Dashboard — keep a record of your actual hours.", trigger_bucket: "payg", due_hint: "Anytime" });
+      items.push({ item_key: "payg_equipment", title: "Bought any equipment for work? (laptop, monitor, desk, chair)", rationale: "Tools and equipment you bought for work are deductible — written off immediately if they're at or under the small-item threshold, otherwise depreciated over their effective life, apportioned for private use. Add them in Assets.", trigger_bucket: "payg", due_hint: "Before lodging" });
+      items.push({ item_key: "payg_income_protection", title: "Income protection insurance held outside super?", rationale: "Premiums for income-protection (salary-continuance) cover held outside super are generally deductible. Cover for life/TPD/trauma, or anything held inside super, is not.", trigger_bucket: "payg", due_hint: "Before lodging" });
+      items.push({ item_key: "payg_membership", title: "Union fees or a professional membership for your work?", rationale: "Annual union fees and subscriptions to professional associations connected to your work are generally deductible.", trigger_bucket: "payg", due_hint: "Before lodging" });
+      items.push({ item_key: "payg_self_education", title: "Work-related courses, subscriptions or self-education?", rationale: "Self-education and work subscriptions are deductible where they maintain or improve the skills of your CURRENT job (not to get a new one or for a separate venture). Apportion out any private use.", trigger_bucket: "payg", due_hint: "Before lodging" });
+      items.push({ item_key: "payg_donations", title: "Donations of $2+ to a registered charity (DGR)?", rationale: "Gifts of $2 or more to a deductible gift recipient are generally deductible — keep the receipts. Buying raffle tickets or event tickets is not a deductible gift.", trigger_bucket: "payg", due_hint: "Before lodging" });
+      items.push({ item_key: "payg_tax_agent_fee", title: "Add last year's tax-agent / accountant fee", rationale: "The cost of managing your tax affairs — registered tax agent and accountant fees — is generally deductible in the year you pay it.", trigger_bucket: "payg", due_hint: "Before lodging" });
+    }
     items.push({ item_key: "super_notice_of_intent", title: "Lodge your Notice of intent to claim a personal super deduction (and get the fund's acknowledgment)", rationale: "A personal super contribution is only deductible with a valid Notice of intent acknowledged by the fund — lodge before you lodge your return or by 30 June of the following year.", trigger_bucket: "payg", due_hint: "Before lodging" });
 
     let n = 0;

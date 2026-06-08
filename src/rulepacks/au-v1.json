@@ -138,5 +138,71 @@
       { "match": "donation,donations,charity,dgr,gift-deductible,red cross,rspca,unicef,salvation army,smith family", "note": "Gifts of $2 or more to a deductible gift recipient (DGR) are generally deductible (Div 30). Confirm the organisation is a DGR and you received no material benefit, then mark it as a deduction." },
       { "match": "income-protection,income protection,salary continuance,income-insurance", "note": "Income-protection insurance premiums (outside super) are generally deductible because the benefit would be assessable income (s8-1). Confirm it's not a life/TPD/trauma policy, then mark it as a deduction." }
     ]
+  },
+  "occupations": {
+    "_note": "#143: occupation deduction content keyed by income_activities.occupation_scope. 'suggest' items become claim_suggestions (suggested_deductible — never auto-counted; deny-by-default holds). 'warn' items pre-empt the ATO's top occupation errors. GENERAL INFO ONLY.",
+    "nurse": {
+      "label": "Nurse / midwife",
+      "suggest": [
+        "AHPRA registration renewal (required to practise) is generally deductible.",
+        "Nursing/professional association and union fees related to your work are generally deductible.",
+        "Compulsory or occupation-specific uniform and laundry (non-slip nursing shoes, logo'd scrubs).",
+        "Self-education directly connected to your CURRENT nursing role (e.g. a wound-care course).",
+        "Work-specific equipment: fob watch, stethoscope, safety glasses, gloves.",
+        "Income-protection insurance premiums (outside super)."
+      ],
+      "warn": [
+        "Plain black pants/shoes and ordinary clothing are conventional clothing — NOT deductible even if worn only at work.",
+        "The $150 laundry figure is a substantiation threshold, not an automatic entitlement.",
+        "Self-education to move into a NEW role (e.g. carer → RN) is not deductible.",
+        "You can't claim home-to-work travel, or anything your employer reimbursed."
+      ]
+    },
+    "tradie": {
+      "label": "Tradesperson",
+      "suggest": [
+        "Tools and equipment: immediate write-off ≤$300; depreciate >$300 (a tool SET >$300 is depreciated even if each piece is <$300).",
+        "Protective clothing/PPE: steel-cap boots, hi-vis, hard hats, safety glasses, sun protection for outdoor work.",
+        "Compulsory or logo'd uniforms and laundry.",
+        "Union fees and self-education for your current trade.",
+        "Car between sites via cents-per-km or logbook (not home-to-work)."
+      ],
+      "warn": [
+        "Conventional clothing (plain jeans, drill shirts) is NOT deductible even if only worn at work.",
+        "Home-to-work commuting is private and not deductible.",
+        "Declare cash-job income — it's assessable.",
+        "Don't claim a tool set's components individually to dodge the $300 threshold."
+      ]
+    },
+    "teacher": {
+      "label": "Teacher",
+      "suggest": [
+        "Teaching registration and professional association/union fees.",
+        "Self-education connected to your current teaching role.",
+        "Classroom supplies and resources you paid for yourself.",
+        "Excursion costs you incurred and weren't reimbursed for.",
+        "Work-related portion of phone/internet and home-office running costs."
+      ],
+      "warn": [
+        "Everyday clothing isn't deductible (only compulsory/logo'd or protective items).",
+        "Home-to-school travel is private.",
+        "Anything the school reimbursed can't be claimed."
+      ]
+    },
+    "it_professional": {
+      "label": "IT professional",
+      "suggest": [
+        "Work-related portion of home-office running costs (70c/hr fixed rate).",
+        "Self-education and certifications relevant to your current role.",
+        "Professional association/union fees.",
+        "Depreciation of self-bought work equipment (laptop, monitor) for the work-use portion.",
+        "Income-protection insurance premiums (outside super)."
+      ],
+      "warn": [
+        "Don't double-dip phone/internet on top of the 70c WFH fixed rate — it already bundles them.",
+        "An employer-supplied laptop isn't yours to depreciate.",
+        "Home-to-work travel is private."
+      ]
+    }
   }
 }

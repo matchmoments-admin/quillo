@@ -630,6 +630,7 @@ import { computeCapitalGain, computeNetCapitalGain, DEFAULT_CGT_RULES } from "..
 import { essAssessable } from "../src/lib/ess";
 import { gstFromInclusiveCents, computeBasNet } from "../src/lib/gst";
 import { businessUsePct, logbookDeductionCents, chooseCarMethod } from "../src/lib/car-logbook";
+import { occupationGuide, occupationScopes } from "../src/lib/occupations";
 
 console.log("cgt");
 {
@@ -725,6 +726,16 @@ console.log("car logbook (#142)");
   check("higher method wins (logbook)", win.method === "logbook" && win.deduction_cents === 900_000);
   // a low-business-use car → cents-per-km wins; tie favours cents-per-km.
   check("tie favours cents-per-km", chooseCarMethod(440_000, 440_000).method === "cents_per_km");
+}
+
+console.log("occupations (#143)");
+{
+  const nurse = occupationGuide("nurse");
+  check("nurse guide has suggestions + warnings", !!nurse && nurse.suggest.length > 0 && nurse.warn.length > 0);
+  check("nurse warning pre-empts the conventional-clothing error", !!nurse && nurse.warn.some((w) => /conventional clothing/i.test(w)));
+  check("tradie guide covers tools + PPE", (occupationGuide("tradie")?.suggest.join(" ") ?? "").match(/tool/i) != null);
+  check("unknown scope → null", occupationGuide("astronaut") === null && occupationGuide(null) === null);
+  check("scopes exclude the _note metadata key", occupationScopes().length >= 4 && !occupationScopes().includes("_note"));
 }
 
 // ── FILING READINESS: deterministic engine + the no-tax-advice invariant ──────

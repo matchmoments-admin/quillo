@@ -30,7 +30,7 @@ function draftEntityToValue(e: SituationDraft["entities"][number]): EntityValue 
   return { kind: e.kind, name: e.name ?? e.detail?.employer ?? "", detail: e.detail ?? {} };
 }
 function draftPropertyToValue(p: SituationDraft["properties"][number]): PropertyValue {
-  return { label: p.label, address: p.address ?? "", status: p.status, ownership_pct: String(p.ownership_pct ?? 100) };
+  return { label: p.label, address: p.address ?? "", status: p.status, use_status: "", ownership_pct: String(p.ownership_pct ?? 100) };
 }
 
 type StepKey = "welcome" | "consent" | "intake" | "people" | "entities" | "properties" | "rules" | "confirm";

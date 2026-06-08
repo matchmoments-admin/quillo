@@ -24,6 +24,23 @@ export function propertyStatusLabel(s: string): string {
   }
 }
 
+// 0031 use_status — how an OWNED property was used this year. This is what GATES deductibility:
+// private-use / renovating-not-available / vacant land earn no income, so their costs aren't
+// deductible (the CGT cost base still accrues). Distinct from `status` (the own-vs-rent relationship).
+export const USE_STATUSES = ["rented", "genuinely_available_for_rent", "private_use_rent_free", "under_renovation_not_available", "vacant_land", "owner_occupied"] as const;
+export const DENY_USE_STATUSES = new Set(["private_use_rent_free", "under_renovation_not_available", "vacant_land"]);
+export function useStatusLabel(s: string): string {
+  switch (s) {
+    case "rented": return "Rented out";
+    case "genuinely_available_for_rent": return "Genuinely available for rent";
+    case "private_use_rent_free": return "Private use — a relative lives there rent-free";
+    case "under_renovation_not_available": return "Renovating — not available to rent";
+    case "vacant_land": return "Vacant land (no dwelling)";
+    case "owner_occupied": return "I live there (owner-occupied)";
+    default: return s;
+  }
+}
+
 export interface EntityValue {
   kind: string;
   name: string;
@@ -34,11 +51,12 @@ export interface PropertyValue {
   label: string;
   address: string;
   status: string;
+  use_status: string; // "" = not set (defaults from status server-side); else a USE_STATUSES value
   ownership_pct: string; // kept as string for a controlled number input; coerced on submit
 }
 
 export const emptyEntity = (kind = "company"): EntityValue => ({ kind, name: "", detail: { gst_registered: true } });
-export const emptyProperty = (): PropertyValue => ({ label: "", address: "", status: "rented", ownership_pct: "100" });
+export const emptyProperty = (): PropertyValue => ({ label: "", address: "", status: "rented", use_status: "", ownership_pct: "100" });
 
 function namePlaceholder(kind: string): string {
   if (kind === "company") return "Company name e.g. Acme Pty Ltd";
@@ -190,6 +208,19 @@ export function PropertyFields({ value, onChange }: { value: PropertyValue; onCh
           />
         )}
       </div>
+      {/* How was it USED this year — gates deductibility. Only relevant for an owned, not-sold property. */}
+      {!tenant && value.status !== "sold" && (
+        <label className="block pt-1">
+          <span className="text-xs font-medium uppercase tracking-wide text-muted">How was it used this year? <InfoTip tip="This decides whether its costs are deductible. A property earning no income — a relative living there rent-free, or renovating and off the rental market — generally has no deductions, though its CGT cost base still accrues. General info only." /></span>
+          <select className={`${fieldInput} mt-1 w-full`} value={value.use_status} onChange={(e) => set({ use_status: e.target.value })}>
+            <option value="">— same as above —</option>
+            {USE_STATUSES.map((s) => <option key={s} value={s}>{useStatusLabel(s)}</option>)}
+          </select>
+        </label>
+      )}
+      {DENY_USE_STATUSES.has(value.use_status) && (
+        <span className="pl-1 text-xs text-warn">No deductions while it earns no income (rent-free / off-market / vacant) — but keep the costs: they add to its CGT cost base and reduce a future capital gain. "Slowly renovating" doesn't make holding costs deductible. General info only.</span>
+      )}
       {addressMissing && <span className="pl-1 text-xs text-warn">Add the address so rental expenses attribute to the right property.</span>}
       {value.status === "renting_residence" && (
         <span className="pl-1 text-xs text-muted">Rent on your home is generally not deductible — only a sole trader with a genuine place of business can claim a portion. General info only.</span>
@@ -264,11 +295,12 @@ export function personToBody(v: PersonValue): { display_name: string; role: stri
 }
 
 /** Build the addProperty request body from a PropertyValue. */
-export function propertyToBody(v: PropertyValue): { label: string; address?: string; status: string; ownership_pct: number } {
+export function propertyToBody(v: PropertyValue): { label: string; address?: string; status: string; use_status?: string; ownership_pct: number } {
   return {
     label: v.label,
     address: v.address.trim() || undefined,
     status: v.status,
+    use_status: v.use_status || undefined,
     ownership_pct: Number(v.ownership_pct) || 100,
   };
 }

@@ -48,6 +48,7 @@ export interface Property {
   label: string;
   address: string | null;
   status: string; // rented|vacant|owner_occupied|sold
+  use_status: string | null; // 0031: how it's used this year — gates deductibility
   ownership_pct: number;
   person_id: string | null; // primary owner (FK persons.id)
 }
@@ -95,7 +96,7 @@ export async function getSituation(env: Env, userId: string, profile: Profile): 
       `SELECT id, user_id, display_name, role, occupation, tax_residency FROM persons WHERE user_id = ? ORDER BY role = 'self' DESC, created_at`,
     ).bind(userId).all<Person>(),
     env.DB.prepare(
-      `SELECT id, user_id, label, address, status, ownership_pct, person_id FROM properties WHERE user_id = ?`,
+      `SELECT id, user_id, label, address, status, use_status, ownership_pct, person_id FROM properties WHERE user_id = ?`,
     ).bind(userId).all<Property>(),
     env.DB.prepare(
       `SELECT id, user_id, kind, name, detail_json FROM entities WHERE user_id = ? AND active = 1`,

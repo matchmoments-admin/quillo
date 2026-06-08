@@ -49,6 +49,8 @@ export const PURGE_TABLES = [
   "blackhole_costs",         // 0035
   "shareholder_loans",       // 0035
   "rd_claims",               // 0035
+  "cgt_assets",              // 0037 (#138)
+  "cgt_events",              // 0037 (#138)
 ] as const;
 
 // Columns that must NEVER leave the system in an APP-12 export, even though the row belongs to the

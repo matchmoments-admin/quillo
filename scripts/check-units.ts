@@ -626,7 +626,7 @@ console.log("claimability situational sweep (enumerateSituationClaims / classify
 }
 
 // ── CGT: cost-base, Div43 reduction, 50% discount, main-residence, losses ─────
-import { computeCapitalGain } from "../src/lib/cgt";
+import { computeCapitalGain, computeNetCapitalGain, DEFAULT_CGT_RULES } from "../src/lib/cgt";
 
 console.log("cgt");
 {
@@ -655,6 +655,35 @@ console.log("cgt");
   // Foreign resident → no 50% discount.
   const foreign = computeCapitalGain({ cost_base_cents: 50_000_000, proceeds_cents: 70_000_000, acquired_date: "2015-01-01", disposal_date: "2025-01-01", is_resident_individual: false });
   check("foreign resident → no discount", !foreign.discount_applied && foreign.net_gain_cents === 20_000_000);
+}
+
+console.log("cgt portfolio (#138)");
+{
+  const R = DEFAULT_CGT_RULES;
+  // One discountable $10k gain → 50% → $5k net.
+  const a = computeNetCapitalGain([{ proceeds_cents: 3_000_000, cost_base_used_cents: 2_000_000, discount_eligible: true }], R);
+  check("single discountable gain → 50% discount → $5k", a.net_capital_gain_cents === 500_000 && a.discount_applied_cents === 500_000);
+
+  // Losses offset NON-discountable gains first (optimal): $10k disc gain + $6k non-disc gain − $6k loss.
+  // Loss eats the non-disc gain entirely, disc gain halved → $5k.
+  const b = computeNetCapitalGain([
+    { proceeds_cents: 1_000_000, cost_base_used_cents: 0, discount_eligible: true },   // $10k disc
+    { proceeds_cents: 600_000, cost_base_used_cents: 0, discount_eligible: false },    // $6k non-disc
+    { proceeds_cents: 0, cost_base_used_cents: 600_000, discount_eligible: false },    // $6k loss
+  ], R);
+  check("loss applied to non-disc gain first → disc gain halved → $5k", b.net_capital_gain_cents === 500_000);
+
+  // Carried-forward loss exceeds gains → net 0, remainder carries forward.
+  const c = computeNetCapitalGain([{ proceeds_cents: 1_000_000, cost_base_used_cents: 0, discount_eligible: true }], R, 1_500_000);
+  check("prior loss > gains → net 0, $5k carries forward", c.net_capital_gain_cents === 0 && c.loss_carried_forward_cents === 500_000);
+
+  // discount_eligible derived from dates when not given (held >12mo).
+  const d = computeNetCapitalGain([{ proceeds_cents: 1_000_000, cost_base_used_cents: 0, acquired_date: "2023-01-01", event_date: "2025-09-01" }], R);
+  check("discount eligibility derived from dates (held >12mo) → $5k", d.net_capital_gain_cents === 500_000);
+
+  // Non-discountable (held <12mo via dates) → full gain assessable.
+  const e = computeNetCapitalGain([{ proceeds_cents: 1_000_000, cost_base_used_cents: 0, acquired_date: "2025-03-01", event_date: "2025-09-01" }], R);
+  check("held <12mo → no discount → full $10k", e.net_capital_gain_cents === 1_000_000);
 }
 
 // ── FILING READINESS: deterministic engine + the no-tax-advice invariant ──────

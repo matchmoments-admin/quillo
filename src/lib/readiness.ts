@@ -152,6 +152,15 @@ export function assessReadiness(input: {
   for (const it of report.income.by_type) {
     lines.push({ group: "income", label: it.income_type, amount_cents: it.gross_cents, basis: `${it.n} income record(s)`, why: incomeTypeWhy(it.income_type) });
   }
+  // Phase #138: net capital gain is assessable income — buildReport added it to taxable_position, so it
+  // renders as an "income" line to keep the lines-sum == headline invariant. Present only when the
+  // cgt_engine flag is on with CGT events, so the legacy reconciliation is intact.
+  if (report.capital_gains && report.capital_gains.net_capital_gain_cents > 0) {
+    const cg = report.capital_gains;
+    lines.push({ group: "income", label: "net_capital_gain", amount_cents: cg.net_capital_gain_cents,
+      basis: `gains ${money(cg.gross_capital_gains_cents)} − losses ${money(cg.capital_losses_cents)} − 50% discount ${money(cg.discount_applied_cents)}`,
+      why: "Net capital gain on assets you disposed of this year (shares, crypto, property): total gains, less capital losses, less the 50% CGT discount on assets held 12+ months. This is assessable income — CGT is fact-specific, so confirm with a registered tax agent." });
+  }
   // Deduction lines come from the deductibility-split breakdown so the SAME classifier that computed
   // the headline routes each row to its section ("deduction" sums to the headline; "excluded"/"company"
   // are shown apart). This both fixes the number AND explains what dropped out and why.

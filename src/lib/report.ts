@@ -1,6 +1,7 @@
 import type { Env } from "../env";
 import { COUNTABLE, COUNTABLE_INCOME } from "./queries";
-import { incomeTotals, depreciationTotals, attributionTotals, companyPositions, type IncomeTotals, type AttributionTotals, type CompanyPosition } from "./ledger-totals";
+import { incomeTotals, depreciationTotals, attributionTotals, companyPositions, cgtTotals, type IncomeTotals, type AttributionTotals, type CompanyPosition } from "./ledger-totals";
+import type { CgtPortfolioResult } from "./cgt";
 import { featureOn } from "./features";
 import auV1RulePack from "../rulepacks/au-v1.json";
 import { computeWorkMethodDeductions, workUseRatesForFy, type WorkMethodDeductions } from "./work-use";
@@ -117,7 +118,11 @@ export interface Report {
   // flag is on and the tenant has a company entity. The company's costs don't reduce the personal
   // headline — they sit here, netting to a carried-forward loss when pre-revenue.
   company_positions?: CompanyPosition[];
-  taxable_position_cents: number;      // total_income − total_deductions − depreciation (indicative)
+  // Phase #138: net capital gain (shares/crypto/property disposals; 50% discount; loss offset/carry).
+  // Present only when the cgt_engine flag is on AND there are CGT events. net_capital_gain_cents is
+  // ADDED to taxable_position_cents (it's assessable income). undefined ⇒ byte-identical legacy totals.
+  capital_gains?: CgtPortfolioResult;
+  taxable_position_cents: number;      // total_income + net capital gain − total_deductions − depreciation (indicative)
 }
 
 /**
@@ -452,7 +457,14 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   }
 
   const total_deductions_cents = Math.max(0, gross_deductions_cents - refunds_cents) + (work_method?.total_cents ?? 0);
-  const taxable_position_cents = income.gross_cents - total_deductions_cents - dep.total_cents;
+  // Phase #138: net capital gain is assessable income — add it to the position. Flag-gated; only set
+  // when there are CGT events (cgtTotals returns a zero result otherwise → no field, no change).
+  let capital_gains: CgtPortfolioResult | undefined;
+  if (featureOn(env, "cgt_engine")) {
+    const cgt = await cgtTotals(env, userId, startYear);
+    if (cgt.gross_capital_gains_cents > 0 || cgt.capital_losses_cents > 0) capital_gains = cgt;
+  }
+  const taxable_position_cents = income.gross_cents + (capital_gains?.net_capital_gain_cents ?? 0) - total_deductions_cents - dep.total_cents;
 
   // Resolved-deductible: only spend a year-end review has CONFIRMED deductible (deductibility set
   // to a resolved state, with the apportioned amount when present). ~$0 until a review runs — by
@@ -503,6 +515,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
         ? { individual_cents: attr.individual_deduction_cents, company_cents: attr.company_deduction_cents, property_cents: attr_property_total_cents }
         : undefined,
     company_positions: company_positions.length ? company_positions : undefined,
+    capital_gains,
     taxable_position_cents,
   };
 }

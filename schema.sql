@@ -674,6 +674,44 @@ CREATE TABLE IF NOT EXISTS depreciation_schedule (
 );
 CREATE INDEX IF NOT EXISTS idx_depsched_user_fy ON depreciation_schedule(user_id, fy);
 
+-- ── CGT holdings + disposal events (0037, #138) ───────────────────────────────
+-- A CGT asset is a parcel with a cost base; a CGT event is a disposal. Net capital gain (after losses
+-- + the 50% discount) is computed in src/lib/cgt.ts and feeds taxable income (never tax payable).
+-- Crypto is a cgt_asset with asset_kind='crypto'. Flag-gated by cgt_engine; zero rows ⇒ no change.
+CREATE TABLE IF NOT EXISTS cgt_assets (
+  id                     TEXT PRIMARY KEY,
+  user_id                TEXT NOT NULL,
+  person_id              TEXT,
+  asset_kind             TEXT NOT NULL,              -- shares|crypto|property|managed_fund|other
+  code                   TEXT,
+  label                  TEXT,
+  units                  REAL,
+  acquired_date          TEXT,
+  cost_base_cents        INTEGER NOT NULL DEFAULT 0,
+  reduced_cost_base_cents INTEGER,
+  main_residence_exempt  INTEGER NOT NULL DEFAULT 0,
+  status                 TEXT NOT NULL DEFAULT 'held',
+  created_at             TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_cgt_assets_user ON cgt_assets(user_id, asset_kind);
+CREATE INDEX IF NOT EXISTS idx_cgt_assets_person ON cgt_assets(user_id, person_id);
+
+CREATE TABLE IF NOT EXISTS cgt_events (
+  id                  TEXT PRIMARY KEY,
+  user_id             TEXT NOT NULL,
+  cgt_asset_id        TEXT NOT NULL,
+  fy                  TEXT NOT NULL,
+  event_type          TEXT NOT NULL DEFAULT 'disposal',
+  event_date          TEXT NOT NULL,
+  proceeds_cents      INTEGER NOT NULL DEFAULT 0,
+  cost_base_used_cents INTEGER NOT NULL DEFAULT 0,
+  units_disposed      REAL,
+  discount_eligible   INTEGER,
+  created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_cgt_events_user_fy ON cgt_events(user_id, fy);
+CREATE INDEX IF NOT EXISTS idx_cgt_events_asset ON cgt_events(user_id, cgt_asset_id);
+
 -- ── FY checklist (0009): bucket-driven kickoff/wrap-up items ───────────────────
 CREATE TABLE IF NOT EXISTS fy_checklist (
   id          TEXT PRIMARY KEY,

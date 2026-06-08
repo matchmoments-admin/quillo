@@ -1,6 +1,7 @@
 import type { Env } from "../env";
 import { COUNTABLE } from "./queries";
 import { classifyAttribution, splitAttribution } from "./attribution";
+import { computeNetCapitalGain, cgtRulesForFy, type CgtPortfolioResult } from "./cgt";
 import auV1RulePack from "../rulepacks/au-v1.json";
 
 // ── The single money-aggregation seam ─────────────────────────────────────────
@@ -287,4 +288,44 @@ export async function companyPositions(env: Env, userId: string, startYear: numb
 // Per-FY thresholds from the bundled rule pack (company/R&D params live here, never in SQL).
 function auV1Thresholds(fy: string): Record<string, number> | undefined {
   return (auV1RulePack as unknown as { thresholds_by_fy?: Record<string, Record<string, number>> }).thresholds_by_fy?.[fy];
+}
+
+/**
+ * Phase #138: the net capital gain for an FY — the single assessable CGT line that feeds taxable
+ * income. Sums cgt_events of the FY (joined to their asset for the acquisition date / discount clock),
+ * offsets carried-forward capital losses (capital_loss_carryins), and applies the 50% discount via the
+ * pure computeNetCapitalGain. Flag-gated by the caller (cgt_engine). Empty / pre-0037 → a zero result
+ * (report byte-identical to today). Net capital gain feeds TAXABLE INCOME — never tax payable.
+ */
+export async function cgtTotals(env: Env, userId: string, startYear: number): Promise<CgtPortfolioResult> {
+  const fy = fyLabel(startYear);
+  const zero: CgtPortfolioResult = { gross_capital_gains_cents: 0, capital_losses_cents: 0, discount_applied_cents: 0, net_capital_gain_cents: 0, loss_carried_forward_cents: 0 };
+  try {
+    const events = (await env.DB.prepare(
+      `SELECT ev.proceeds_cents AS proceeds_cents, ev.cost_base_used_cents AS cost_base_used_cents,
+              ev.discount_eligible AS discount_eligible, ev.event_date AS event_date,
+              a.acquired_date AS acquired_date
+         FROM cgt_events ev JOIN cgt_assets a ON a.id = ev.cgt_asset_id AND a.user_id = ev.user_id
+        WHERE ev.user_id = ? AND ev.fy = ?`,
+    ).bind(userId, fy).all<{ proceeds_cents: number; cost_base_used_cents: number; discount_eligible: number | null; event_date: string | null; acquired_date: string | null }>()).results ?? [];
+    if (!events.length) return zero;
+    // Carried-forward capital losses from prior FYs (capital_loss_carryins is capture-only set-up data).
+    const priorFy = startYear; // carry-ins use the prior FY *start year* (integer)
+    const prior = (await env.DB.prepare(`SELECT COALESCE(SUM(loss_cents),0) AS loss FROM capital_loss_carryins WHERE user_id = ? AND prior_fy < ?`).bind(userId, priorFy).first<{ loss: number }>())?.loss ?? 0;
+    const rules = cgtRulesForFy(auV1Thresholds(fy) as { cgt_discount_keep_fraction?: number } | undefined);
+    return computeNetCapitalGain(
+      events.map((e) => ({
+        proceeds_cents: e.proceeds_cents,
+        cost_base_used_cents: e.cost_base_used_cents,
+        discount_eligible: e.discount_eligible == null ? null : e.discount_eligible === 1,
+        acquired_date: e.acquired_date,
+        event_date: e.event_date,
+      })),
+      rules,
+      prior,
+    );
+  } catch (e) {
+    if (/no such table/i.test((e as Error).message)) return zero;
+    throw e;
+  }
 }

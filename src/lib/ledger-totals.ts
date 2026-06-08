@@ -104,6 +104,11 @@ export async function depreciationTotals(
       `SELECT a.property_id AS property_id, COALESCE(SUM(d.deduction_cents),0) AS deduction_cents
          FROM depreciation_schedule d JOIN assets a ON a.id = d.asset_id
         WHERE d.user_id = ? AND d.fy = ?
+          -- 0030: employer-owned / reimbursed assets earn the taxpayer no decline-in-value.
+          AND COALESCE(a.owned_by,'self') <> 'employer' AND COALESCE(a.reimbursed,0) = 0
+          -- 0031: plant in a rent-free / off-market-renovating property produces no deduction.
+          AND NOT EXISTS (SELECT 1 FROM properties pp WHERE pp.id = a.property_id
+                            AND pp.use_status IN ('private_use_rent_free','under_renovation_not_available'))
         GROUP BY a.property_id`,
     )
       .bind(userId, fy)

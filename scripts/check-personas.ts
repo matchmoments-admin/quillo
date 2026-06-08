@@ -112,6 +112,11 @@ async function main() {
   check("P2: R&D not auto-claimed without a registered AusIndustry rd_claims row", co?.rd_eligible === false);
   check("P2: company is a base-rate entity (25%)", co?.base_rate_entity === 1);
 
+  // ── D.0: attributed amounts feed the secondary display figures too (no under-count) ──
+  const rentDisplay = r2.by_property.find((p) => p.property_id === "p2pRent");
+  check("D.0: co-owned property tracked-spend display reflects the attributed $500", rentDisplay?.total_cents === 50000);
+  check("D.0: resolved-deductible includes the attributed personal deduction ($500)", r2.resolved_deductible_cents === 50000);
+
   // ── Flag OFF: the attribution split must NOT apply — attributed txns fall back to their raw amount
   // (the legacy path). Proves the engine is genuinely gated by attribution_engine. ──
   const envOff = { ...env, FEATURES: "position_excludes_nondeductible,loan_split,wfh_car_methods" } as unknown as Env;

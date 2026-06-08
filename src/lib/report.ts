@@ -306,10 +306,9 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   const dep = await depreciationTotals(env, userId, startYear);
   // Phase B / G2: deductions that come from explicit attributions (payer≠claimant) rather than the
   // raw transaction. The attributed transactions were excluded from the raw sums above (notAttributed),
-  // so these are added without double-counting. Flag off ⇒ all zeros ⇒ byte-identical.
-  // KNOWN B2.3 follow-ups (flag-dark, do not affect prod): an attributed property txn is dropped from
-  // the by_property tracked-spend DISPLAY (expenseByProp) and from resolved_deductible_cents, which
-  // have no attribution counterpart yet — secondary figures, corrected when the per-txn UI lands.
+  // so these are added without double-counting. Flag off ⇒ all zeros ⇒ byte-identical. The attributed
+  // amounts also feed the by_property DISPLAY (expenseByProp) and resolved_deductible_cents below, so
+  // those secondary figures stay consistent with the headline (D.0).
   const attr: AttributionTotals = useAttributions
     ? await attributionTotals(env, userId, startYear)
     : { individual_deduction_cents: 0, company_deduction_cents: 0, by_property: [] };
@@ -339,8 +338,20 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
     if (counts) expDeductMap.set(r.property_id, (expDeductMap.get(r.property_id) ?? 0) + r.total_cents);
   }
   // Attribution-derived per-property deductions (their txns were excluded from byPropertyRaw) add to
-  // the negative-gearing deduction for that property. Snapshotted, already owner-share-split.
-  for (const a of attr.by_property) expDeductMap.set(a.property_id, (expDeductMap.get(a.property_id) ?? 0) + a.deduction_cents);
+  // the negative-gearing deduction AND the tracked-spend display for that property — the attributed
+  // (owner-share) amount is what feeds this owner's position, so both stay consistent (D.0).
+  for (const a of attr.by_property) {
+    expDeductMap.set(a.property_id, (expDeductMap.get(a.property_id) ?? 0) + a.deduction_cents);
+    const prev = expSeen.get(a.property_id);
+    if (prev) {
+      prev.total_cents += a.deduction_cents;
+      prev.n += 1;
+    } else {
+      const row = { property_id: a.property_id, label: null, n: 1, total_cents: a.deduction_cents };
+      expSeen.set(a.property_id, row);
+      expenseByProp.push(row);
+    }
+  }
   const expMap = expSeen;
   const depByProp = new Map(dep.by_property.filter((d) => d.property_id).map((d) => [d.property_id as string, d.deduction_cents]));
   const rentByProp = new Map<string, number>();
@@ -458,7 +469,10 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   )
     .bind(userId, start, end)
     .first<{ total: number }>();
-  const resolved_deductible_cents = resolved?.total ?? 0;
+  // Attributions are an explicit user decision (who claims what), so the attributed personal deductions
+  // (individual + rental-property) count as resolved-deductible — keeping this figure in step with the
+  // headline now that attributed txns are excluded from the raw resolved sum above (D.0).
+  const resolved_deductible_cents = (resolved?.total ?? 0) + attr.individual_deduction_cents + attr_property_total_cents;
 
   return {
     fy: fyLabel,

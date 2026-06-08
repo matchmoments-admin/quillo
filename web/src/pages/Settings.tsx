@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import { BUCKETS } from "../types";
 import { Card, Spinner, BUCKET_LABEL, InfoTip, money } from "../components/ui";
-import { EntityFields, PropertyFields, PersonFields, entityToBody, entityToValue, propertyToBody, personToBody, personToValue, emptyEntity, emptyProperty, emptyPerson, OWNED_STATUSES, TENANT_STATUSES, propertyStatusLabel, type EntityValue, type PersonValue, type PropertyValue } from "../components/SituationFields";
+import { EntityFields, PropertyFields, PersonFields, entityToBody, entityToValue, propertyToBody, personToBody, personToValue, emptyEntity, emptyProperty, emptyPerson, OWNED_STATUSES, TENANT_STATUSES, USE_STATUSES, DENY_USE_STATUSES, isTenantStatus, useStatusLabel, propertyStatusLabel, type EntityValue, type PersonValue, type PropertyValue } from "../components/SituationFields";
 import type { Person, Account, Property, LoanProperty } from "../types";
 
 const input = "rounded-lg border border-line bg-card px-3 py-2 text-sm";
@@ -279,11 +279,12 @@ function Row({ label, onDelete, deleteLabel = "delete" }: { label: string; onDel
   );
 }
 
-function EditableProperty({ property, onDone }: { property: { id: string; label: string; status: string }; onDone: () => void }) {
+function EditableProperty({ property, onDone }: { property: { id: string; label: string; status: string; use_status?: string | null }; onDone: () => void }) {
   const [editing, setEditing] = useState(false);
   const [label, setLabel] = useState(property.label);
   const [status, setStatus] = useState(property.status);
-  const save = useMutation({ mutationFn: () => api.updateProperty(property.id, { label, status }), onSuccess: () => { setEditing(false); onDone(); } });
+  const [useStatus, setUseStatus] = useState(property.use_status ?? "");
+  const save = useMutation({ mutationFn: () => api.updateProperty(property.id, { label, status, use_status: useStatus || null }), onSuccess: () => { setEditing(false); onDone(); } });
   if (!editing) {
     return (
       <div className="flex items-center justify-between rounded-lg bg-surface px-3 py-2 text-sm">
@@ -306,8 +307,15 @@ function EditableProperty({ property, onDone }: { property: { id: string; label:
           {TENANT_STATUSES.map((s) => <option key={s} value={s}>{propertyStatusLabel(s)}</option>)}
         </optgroup>
       </select>
+      {!isTenantStatus(status) && status !== "sold" && (
+        <select className={input} value={useStatus} onChange={(e) => setUseStatus(e.target.value)} title="How it was used this year (gates deductibility)">
+          <option value="">used: — same —</option>
+          {USE_STATUSES.map((s) => <option key={s} value={s}>{useStatusLabel(s)}</option>)}
+        </select>
+      )}
       <button className={btn} disabled={!label || save.isPending} onClick={() => save.mutate()}>Save</button>
       <button className={del} onClick={() => setEditing(false)}>cancel</button>
+      {DENY_USE_STATUSES.has(useStatus) && <span className="w-full pl-1 text-xs text-warn">No deductions while it earns no income — costs still add to its CGT cost base. General info only.</span>}
     </div>
   );
 }

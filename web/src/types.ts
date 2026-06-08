@@ -58,6 +58,8 @@ export interface Property {
   id: string;
   label: string;
   status: string;
+  use_status?: string | null;
+  address?: string | null;
 }
 
 export interface Account {

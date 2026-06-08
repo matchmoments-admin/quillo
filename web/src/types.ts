@@ -147,6 +147,48 @@ export interface LoanProperty {
   deductible_interest_pct: number;
 }
 
+// Phase B / G2 — attributions (who paid vs who claims)
+export interface IncomeActivity {
+  id: string;
+  entity_id: string | null;
+  activity_type: string; // salary_wages|rental_property|business|investment|private
+  property_id: string | null;
+  label: string | null;
+  fy: string | null;
+}
+export interface AttributionInput {
+  entity_id: string;
+  income_activity_id?: string | null;
+  attributed_pct?: number | null;
+  attributed_amount_cents?: number | null;
+  work_use_pct?: number | null;
+  deduction_provision?: string | null;
+}
+export interface AttributionRow extends AttributionInput {
+  id?: string;
+  creates_shareholder_loan?: number;
+}
+export interface AttributionState {
+  payer_person_id: string | null;
+  paid_via_account_id: string | null;
+  attributions: AttributionRow[];
+}
+export interface PropertyOwner {
+  id: string;
+  property_id: string;
+  person_id: string;
+  ownership_pct: number;
+}
+export interface EntityRole {
+  id: string;
+  person_id: string;
+  entity_id: string;
+  role: string;
+  ownership_pct: number | null;
+  start_date: string | null;
+  end_date: string | null;
+}
+
 export interface CapitalLoss {
   id: string;
   prior_fy: number;

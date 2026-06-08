@@ -5,6 +5,8 @@ import { api } from "../api";
 import { BUCKETS } from "../types";
 import { BUCKET_LABEL, Card, Spinner, money, ConfidencePill, InfoTip } from "../components/ui";
 import { GLOSSARY, type GlossaryKey } from "../content/glossary";
+import { AttributionPanel } from "../components/AttributionPanel";
+import { useFeatures } from "../lib/features";
 
 export function TxnDetail() {
   const { id = "" } = useParams();
@@ -13,6 +15,7 @@ export function TxnDetail() {
 
   const txnQ = useQuery({ queryKey: ["txn", id], queryFn: () => api.transaction(id) });
   const sitQ = useQuery({ queryKey: ["situation"], queryFn: () => api.situation() });
+  const { has } = useFeatures();
 
   const [bucket, setBucket] = useState<string>("");
   const [label, setLabel] = useState<string>("");
@@ -221,6 +224,18 @@ export function TxnDetail() {
             </button>
             {save.isError && <p className="text-sm text-danger">Couldn't save: {(save.error as Error).message}</p>}
           </Card>
+
+          {/* Phase B / G2 — who paid vs who claims (payer≠claimant). Flag-gated: appears with the
+              attribution engine so the panel and the position activate together. */}
+          {has("attribution_engine") && (
+            <AttributionPanel
+              key={id}
+              txnId={id}
+              txnAmountCents={txn.amount_aud_cents ?? txn.amount_cents ?? 0}
+              entities={sitQ.data?.entities ?? []}
+              persons={sitQ.data?.persons ?? []}
+            />
+          )}
 
           {/* QuickBooks: reconcile-vs-push. Fed accounts reconcile (don't push); use this
               only for a NON-FEED company expense (cash / a card not connected to QBO). */}

@@ -3229,6 +3229,47 @@ export class TaxAgent extends Agent<Env> {
     return { ok: true, interest_cents: interest };
   }
 
+  /**
+   * Grouped loan-interest split — apply the SAME investment property + deductible-interest % to EVERY
+   * loan line in a group at once (e.g. all 12 monthly "LN REPAY" lines), instead of one row at a time.
+   * Loops the per-line applyLoanSplit, which re-verifies each line is a loan-review line on an
+   * income-producing property, keeps the gross amount unchanged (reconciliation untouched), records
+   * only the interest, and writes the % back to loans_properties. Passes the % (NOT a fixed cents
+   * figure) so each line computes its interest from its OWN gross — correct even when repayments vary.
+   * Already-split ('corrected') lines are skipped so a re-run is idempotent; a per-line failure (e.g. a
+   * line that isn't really a loan line) is counted and skipped, never fatal to the rest of the group.
+   */
+  async applyLoanSplitGroup(
+    userId: string,
+    txnIds: string[],
+    opts: { property_id: string; interest_pct: number },
+  ): Promise<{ applied: number; skipped: number; interest_cents: number }> {
+    if (!Array.isArray(txnIds) || txnIds.length === 0) return { applied: 0, skipped: 0, interest_cents: 0 };
+    const ids = txnIds.slice(0, 1000);
+    let applied = 0;
+    let skipped = 0;
+    let interest_cents = 0;
+    for (const id of ids) {
+      // Skip a line already split (status='corrected') so a double-tap / re-run can't re-split it.
+      const cur = await this.env.DB.prepare(`SELECT status FROM transactions WHERE id = ? AND user_id = ? AND kind = 'bank_line'`)
+        .bind(id, userId)
+        .first<{ status: string }>();
+      if (!cur || cur.status === "corrected") {
+        skipped++;
+        continue;
+      }
+      try {
+        const r = await this.applyLoanSplit(userId, id, { property_id: opts.property_id, interest_pct: opts.interest_pct });
+        applied++;
+        interest_cents += r.interest_cents;
+      } catch {
+        skipped++; // not a loan-review line / fails the income-producing-property check — skip, don't abort
+      }
+    }
+    await this.audit(userId, "loan_split_group", JSON.stringify({ n: ids.length, applied, skipped, property_id: opts.property_id, interest_pct: opts.interest_pct }));
+    return { applied, skipped, interest_cents };
+  }
+
   // ── STAGE B: clarify-by-pattern (group leftovers → one question per pattern) ──
   /**
    * Scan the FY's leftover bank lines (uncategorised / unknown / low-confidence, not already
@@ -3251,9 +3292,17 @@ export class TaxAgent extends Agent<Env> {
     )
       .bind(userId, start, end)
       .all<ClarifyRow>();
+    // Exclude non-spend MOVEMENTS that a dedicated step already owns — internal transfers, card
+    // payments and investment deposits (the movement-sweep "clean up" step) and loan repayments (the
+    // loan-split step) — so a line surfaces in exactly ONE place, never ALSO as a clarify group (the
+    // cause of the duplicate loan/transfer rows). Anything the sweep doesn't own classifies as "skip"
+    // and stays here. Reuses the shared matcher so the surfaces can't disagree.
+    const leftovers = (rows.results ?? []).filter(
+      (r) => movementTreatment(classifyMovement(r.raw_description ?? r.merchant ?? "").klass, r.direction) === "skip",
+    );
     // Tenant paying rent on their own home → clarify offers a "rent I pay (private)" answer.
     const hasTenantHome = situation.properties.some((p) => p.status === "renting_residence");
-    const groups = groupForClarify(rows.results ?? [], undefined, { hasTenantHome });
+    const groups = groupForClarify(leftovers, undefined, { hasTenantHome });
     let questions = 0;
     for (const g of groups) {
       // Skip a stem a DIRECTION-PURE group's user_rule already covers — those lines auto-apply on
@@ -3286,17 +3335,24 @@ export class TaxAgent extends Agent<Env> {
     )
       .bind(...binds)
       .all<{ id: string; fy: string; group_key: string; sample_desc: string | null; direction: string | null; n: number; total_cents: number; suggested_json: string | null; status: string }>();
-    return (res.results ?? []).map((r) => ({
-      id: r.id,
-      fy: r.fy,
-      group_key: r.group_key,
-      sample_desc: r.sample_desc,
-      direction: r.direction,
-      n: r.n,
-      total_cents: r.total_cents,
-      suggestions: r.suggested_json ? (JSON.parse(r.suggested_json) as ClarifyQuestion["suggestions"]) : [],
-      status: r.status,
-    }));
+    return (res.results ?? [])
+      // Hide questions whose group is actually a non-spend MOVEMENT — a dedicated step owns those now
+      // (the loan-split / movement-sweep steps). Keeps the LIST on the SAME predicate as the scan and
+      // the answer resolver, so OPEN questions created before this dedup landed (e.g. an old "Loan
+      // Repayment LN REPAY" group) don't linger as a duplicate of the loan/transfer rows — or answer to
+      // 0 rows. sample_desc is the raw line text, so it classifies the same way the scan rows do.
+      .filter((r) => movementTreatment(classifyMovement(r.sample_desc ?? r.group_key ?? "").klass, r.direction) === "skip")
+      .map((r) => ({
+        id: r.id,
+        fy: r.fy,
+        group_key: r.group_key,
+        sample_desc: r.sample_desc,
+        direction: r.direction,
+        n: r.n,
+        total_cents: r.total_cents,
+        suggestions: r.suggested_json ? (JSON.parse(r.suggested_json) as ClarifyQuestion["suggestions"]) : [],
+        status: r.status,
+      }));
   }
 
   /** Dismiss a clarify question (the user judges the pattern not worth answering). Terminal. */
@@ -3351,7 +3407,14 @@ export class TaxAgent extends Agent<Env> {
     )
       .bind(userId, start, end)
       .all<{ id: string; raw_description: string | null; merchant: string | null; direction: string | null; amount_cents: number | null; amount_aud_cents: number | null; currency: string | null; matched_income_id: string | null; txn_date: string | null }>();
-    const group = (rowsRes.results ?? []).filter((r) => groupKey(r.raw_description ?? r.merchant ?? "") === q.group_key);
+    // Same movement-exclusion predicate as runClarifyScan (the scan filter and this answer filter MUST
+    // move together) so the answer acts on exactly the rows the user saw — never a transfer/card/loan
+    // line that a dedicated step owns.
+    const group = (rowsRes.results ?? []).filter(
+      (r) =>
+        groupKey(r.raw_description ?? r.merchant ?? "") === q.group_key &&
+        movementTreatment(classifyMovement(r.raw_description ?? r.merchant ?? "").klass, r.direction) === "skip",
+    );
 
     if (answer.kind === "income_property" || answer.kind === "income_business" || answer.kind === "income_personal") {
       const incomeType = answer.kind === "income_property" ? "rent" : answer.kind === "income_business" ? "business" : "personal";

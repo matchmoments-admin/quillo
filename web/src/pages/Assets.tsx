@@ -114,6 +114,10 @@ function AddAssetForm({ onDone }: { onDone: () => void }) {
   const [acquired, setAcquired] = useState("");
   const [life, setLife] = useState("");
   const [method, setMethod] = useState("diminishing_value");
+  const [ownedBy, setOwnedBy] = useState("self");
+  const [reimbursed, setReimbursed] = useState(false);
+  const [workPct, setWorkPct] = useState("100");
+  const notMine = ownedBy === "employer" || reimbursed;
   const add = useMutation({
     mutationFn: () =>
       api.addAsset({
@@ -124,7 +128,10 @@ function AddAssetForm({ onDone }: { onDone: () => void }) {
         effective_life_years: life ? parseFloat(life) : null,
         method: assetClass === "div40_plant" ? method : null,
         div43_rate: assetClass === "div43_capital_works" ? 0.025 : null,
-      } as Partial<AssetRow> & { method: string | null; div43_rate: number | null }),
+        owned_by: ownedBy,
+        reimbursed: reimbursed ? 1 : 0,
+        business_use_pct: workPct.trim() === "" ? 100 : Math.max(0, Math.min(100, Number(workPct))),
+      } as Partial<AssetRow> & { method: string | null; div43_rate: number | null; owned_by: string; reimbursed: number; business_use_pct: number }),
     onSuccess: onDone,
   });
   return (
@@ -149,7 +156,24 @@ function AddAssetForm({ onDone }: { onDone: () => void }) {
             </label>
           </>
         )}
+        <label className="text-sm">Who owns it?
+          <select className="mt-1 w-full rounded-lg border border-line px-3 py-2 text-sm" value={ownedBy} onChange={(e) => setOwnedBy(e.target.value)}>
+            <option value="self">I bought it / it's mine</option>
+            <option value="employer">Employer-owned</option>
+          </select>
+        </label>
+        <label className="text-sm">% used for work<Input className="mt-1 w-full" inputMode="decimal" value={workPct} onChange={(e) => setWorkPct(e.target.value)} placeholder="100" /></label>
+        <label className="flex items-center gap-2 text-sm sm:col-span-3">
+          <input type="checkbox" checked={reimbursed} onChange={(e) => setReimbursed(e.target.checked)} />
+          My employer reimbursed me for this
+        </label>
       </div>
+      {notMine && (
+        <p className="rounded-lg bg-surface px-3 py-2 text-xs text-muted">
+          You can't claim decline-in-value on gear your employer owns or reimbursed — you didn't bear the cost. We'll
+          record it for your records but it won't appear as a deduction. General information only.
+        </p>
+      )}
       <Button onClick={() => add.mutate()} disabled={add.isPending || !label || !cost || !acquired}>{add.isPending ? "Saving…" : "Save asset"}</Button>
       {add.error && <p className="text-sm text-danger">{(add.error as Error).message}</p>}
     </Card>

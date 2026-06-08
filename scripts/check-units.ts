@@ -331,7 +331,7 @@ console.log("extractSituationDraft");
 }
 
 // ── Depreciation engine: exact-cents golden tests (the deterministic core) ────
-import { computeFyDeduction, rollSchedule, daysInFy, daysHeldInFy, balancingAdjustment, depreciableCostCents, isLowCostAsset, looksLikePersonalTransfer, type DepAsset } from "../src/lib/depreciation";
+import { computeFyDeduction, rollSchedule, daysInFy, daysHeldInFy, balancingAdjustment, depreciableCostCents, isLowCostAsset, looksLikePersonalTransfer, assetDepreciatesForTaxpayer, type DepAsset } from "../src/lib/depreciation";
 
 console.log("asset auto-classification heuristics (isLowCostAsset / looksLikePersonalTransfer)");
 {
@@ -349,6 +349,12 @@ console.log("asset auto-classification heuristics (isLowCostAsset / looksLikePer
   check("'IKEA Tempe NS AUS' is NOT a transfer (real shop)", looksLikePersonalTransfer("IKEA Tempe NS AUS") === false);
   check("a bare 'deposit' (e.g. rental bond) is NOT matched on its own", looksLikePersonalTransfer("Rental bond deposit") === false);
   check("empty/null merchant is not a transfer", looksLikePersonalTransfer(null) === false && looksLikePersonalTransfer("") === false);
+  // D.3: an employer-owned or reimbursed asset earns the taxpayer NO decline-in-value (computeDepreciation
+  // writes no schedule at source). Default self/0 keeps every normal asset depreciating.
+  check("self-owned, not reimbursed → depreciates", assetDepreciatesForTaxpayer({ owned_by: "self", reimbursed: 0 }) === true);
+  check("employer-owned → no decline-in-value", assetDepreciatesForTaxpayer({ owned_by: "employer", reimbursed: 0 }) === false);
+  check("reimbursed → no decline-in-value", assetDepreciatesForTaxpayer({ owned_by: "self", reimbursed: 1 }) === false);
+  check("missing fields default to depreciating (legacy assets unchanged)", assetDepreciatesForTaxpayer({}) === true);
 }
 
 console.log("depreciation: Div 40 diminishing value (ATO worked example $80k, 5yr life)");

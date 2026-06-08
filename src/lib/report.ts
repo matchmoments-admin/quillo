@@ -1,6 +1,6 @@
 import type { Env } from "../env";
 import { COUNTABLE, COUNTABLE_INCOME } from "./queries";
-import { incomeTotals, depreciationTotals, type IncomeTotals } from "./ledger-totals";
+import { incomeTotals, depreciationTotals, attributionTotals, type IncomeTotals, type AttributionTotals } from "./ledger-totals";
 import { featureOn } from "./features";
 import auV1RulePack from "../rulepacks/au-v1.json";
 import { computeWorkMethodDeductions, workUseRatesForFy, type WorkMethodDeductions } from "./work-use";
@@ -107,6 +107,12 @@ export interface Report {
   // total_deductions_cents. The itemised running costs these methods cover stay excluded (deny-by-
   // default needs_apportionment), so there's no double-claim. undefined ⇒ byte-identical legacy totals.
   work_method?: WorkMethodDeductions;
+  // Phase B / G2: deductions counted from explicit attributions (payer≠claimant) rather than the raw
+  // transaction. Present only when the attribution_engine flag is on AND there are attribution rows.
+  // individual_cents + property_cents are already inside gross_deductions/total_deductions (they reduce
+  // the personal headline); company_cents is inside company_tracked_cents (a separate taxpayer). The
+  // display layer renders matching lines so the position still equals the sum of its lines.
+  attribution?: { individual_cents: number; company_cents: number; property_cents: number };
   taxable_position_cents: number;      // total_income − total_deductions − depreciation (indicative)
 }
 
@@ -157,6 +163,15 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   const useStatusDenied = (col: string) =>
     `(CASE WHEN EXISTS (SELECT 1 FROM properties pp WHERE pp.id = ${col} AND pp.use_status IN ('private_use_rent_free','under_renovation_not_available')) THEN 1 ELSE 0 END)`;
 
+  // Phase B / G2: when the attribution_engine flag is on, a transaction that has explicit
+  // transaction_attributions is counted via those (attributionTotals) instead of its raw amount — so
+  // it must be EXCLUDED from the raw byBucket/byPropertyRaw/company/resolved sums to avoid double
+  // counting. Flag off (or no attribution rows) ⇒ this clause is empty ⇒ byte-identical legacy path.
+  // `col` is the transaction's id column for the surrounding query's alias; no extra bind.
+  const useAttributions = featureOn(env, "attribution_engine");
+  const notAttributed = (col: string) =>
+    useAttributions ? ` AND NOT EXISTS (SELECT 1 FROM transaction_attributions ta WHERE ta.transaction_id = ${col})` : "";
+
   // AUD totals (fall back to original when already AUD / pre-migration). Exclude duplicates.
   // Grouped by (bucket, ato_label, deductibility) so the deductibility-aware position can filter per
   // row; the legacy `by_bucket` shape is rebuilt by collapsing the deductibility dimension below.
@@ -167,7 +182,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
             COALESCE(SUM(${amtExpr}),0) AS total_cents,
             COALESCE(SUM(gst_cents),0) AS gst_cents
        FROM transactions
-      WHERE user_id = ? AND txn_date >= ? AND txn_date <= ? AND bucket IS NOT NULL AND ${COUNTABLE}
+      WHERE user_id = ? AND txn_date >= ? AND txn_date <= ? AND bucket IS NOT NULL AND ${COUNTABLE}${notAttributed("transactions.id")}
       GROUP BY bucket, ato_label, deductibility, reimbursed, use_status_denied ORDER BY bucket, total_cents DESC`,
   )
     .bind(userId, start, end)
@@ -197,7 +212,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
             COUNT(*) AS n,
             COALESCE(SUM(${amtExprT}),0) AS total_cents
        FROM transactions t LEFT JOIN properties p ON p.id = t.property_id
-      WHERE t.user_id = ? AND t.txn_date >= ? AND t.txn_date <= ? AND t.property_id IS NOT NULL AND ${COUNTABLE.replace(/\b(status|kind|matched_txn_id|direction)\b/g, "t.$1")}
+      WHERE t.user_id = ? AND t.txn_date >= ? AND t.txn_date <= ? AND t.property_id IS NOT NULL AND ${COUNTABLE.replace(/\b(status|kind|matched_txn_id|direction)\b/g, "t.$1")}${notAttributed("t.id")}
       GROUP BY t.property_id, deductibility, reimbursed, use_status_denied`,
   )
     .bind(userId, start, end)
@@ -285,6 +300,15 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   // ── Tax position via the money seam: income − deductions − depreciation ──
   const income = await incomeTotals(env, userId, { startYear });
   const dep = await depreciationTotals(env, userId, startYear);
+  // Phase B / G2: deductions that come from explicit attributions (payer≠claimant) rather than the
+  // raw transaction. The attributed transactions were excluded from the raw sums above (notAttributed),
+  // so these are added without double-counting. Flag off ⇒ all zeros ⇒ byte-identical.
+  // KNOWN B2.3 follow-ups (flag-dark, do not affect prod): an attributed property txn is dropped from
+  // the by_property tracked-spend DISPLAY (expenseByProp) and from resolved_deductible_cents, which
+  // have no attribution counterpart yet — secondary figures, corrected when the per-txn UI lands.
+  const attr: AttributionTotals = useAttributions
+    ? await attributionTotals(env, userId, startYear)
+    : { individual_deduction_cents: 0, company_deduction_cents: 0, by_property: [] };
   // Collapse the per-property deductibility split: `expenseByProp` keeps the legacy by_property shape
   // (all spend per property); `expMap` holds only the DEDUCTIBLE portion (used for the negative-
   // gearing net) — when excludeNonDeductible is on, likely_not/confirmed_not/needs_apportionment drop
@@ -307,6 +331,9 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
     const counts = !r.reimbursed && !r.use_status_denied && (!excludeNonDeductible || !(r.deductibility === "likely_not" || r.deductibility === "confirmed_not" || r.deductibility === "needs_apportionment"));
     if (counts) expDeductMap.set(r.property_id, (expDeductMap.get(r.property_id) ?? 0) + r.total_cents);
   }
+  // Attribution-derived per-property deductions (their txns were excluded from byPropertyRaw) add to
+  // the negative-gearing deduction for that property. Snapshotted, already owner-share-split.
+  for (const a of attr.by_property) expDeductMap.set(a.property_id, (expDeductMap.get(a.property_id) ?? 0) + a.deduction_cents);
   const expMap = expSeen;
   const depByProp = new Map(dep.by_property.filter((d) => d.property_id).map((d) => [d.property_id as string, d.deduction_cents]));
   const rentByProp = new Map<string, number>();
@@ -330,7 +357,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
 
   // Union of every property that has income, deductions OR depreciation — so an agent-managed
   // rental whose only deductions are depreciation still shows its negative-gearing position.
-  const propIds = new Set<string>([...expMap.keys(), ...rentByProp.keys(), ...depByProp.keys()].filter((id) => !tenantPropIds.has(id)));
+  const propIds = new Set<string>([...expMap.keys(), ...rentByProp.keys(), ...depByProp.keys(), ...attr.by_property.map((a) => a.property_id)].filter((id) => !tenantPropIds.has(id)));
   const per_property: PropertyPosition[] = [...propIds].map((pid) => {
     const incomeC = rentByProp.get(pid) ?? 0;
     const deductionC = expDeductMap.get(pid) ?? 0;
@@ -354,15 +381,24 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   // (business income isn't in the personal income total either, so subtracting business expenses
   // produced a wrong, misleadingly-low personal headline for business users — review High #3). Track
   // it separately so the figure is still visible; full per-entity position scoping is a roadmap item.
-  const company_tracked_cents = rows
-    .filter((b) => b.bucket === "company")
-    .reduce((s, b) => s + (b.total_cents ?? 0), 0);
+  const company_tracked_cents =
+    rows.filter((b) => b.bucket === "company").reduce((s, b) => s + (b.total_cents ?? 0), 0) +
+    attr.company_deduction_cents; // attributions routing to the company (e.g. personally-paid SaaS)
   // Deny-by-default deductions: only rows the shared classifier puts in the "deduction" group count.
   // The breakdown carries deductibility; the same classifier drives the readiness display lines so
   // the headline == the sum of the "Deductions" lines (asserted by the reconciliation golden).
-  const gross_deductions_cents = breakdown
-    .filter((b) => deductionGroupForRow(b.bucket, b.deductibility, excludeNonDeductible, b.reimbursed, b.use_status_denied) === "deduction")
-    .reduce((s, b) => s + (b.total_cents ?? 0), 0);
+  // Attribution deductions that reduce the personal headline: the individual track AND the
+  // rental-property track (negative gearing offsets salary, exactly as raw property expenses do via
+  // byBucket). The company track is NOT here — a company is a separate taxpayer (it sits in
+  // company_tracked_cents). Property attributions also feed per_property above; that mirrors how a raw
+  // property expense appears in BOTH byBucket (headline) and byPropertyRaw (per-property display).
+  const attr_property_total_cents = attr.by_property.reduce((s, a) => s + a.deduction_cents, 0);
+  const gross_deductions_cents =
+    breakdown
+      .filter((b) => deductionGroupForRow(b.bucket, b.deductibility, excludeNonDeductible, b.reimbursed, b.use_status_denied) === "deduction")
+      .reduce((s, b) => s + (b.total_cents ?? 0), 0) +
+    attr.individual_deduction_cents +
+    attr_property_total_cents;
 
   // Refund netting (flag `refund_netting`): a refund/reimbursement is a CREDIT, so it's already
   // excluded from the debit-only deduction sum above — but it reduces real spend (e.g. a $200
@@ -411,7 +447,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
         -- Stay in lockstep with the headline gates: reimbursed (0030) / rent-free property (0031) spend
         -- is never resolved-deductible, so this figure can't claim what the position excludes.
         AND COALESCE(reimbursed,0) = 0
-        AND ${useStatusDenied("transactions.property_id")} = 0`,
+        AND ${useStatusDenied("transactions.property_id")} = 0${notAttributed("transactions.id")}`,
   )
     .bind(userId, start, end)
     .first<{ total: number }>();
@@ -439,6 +475,12 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
     refunds_cents,
     resolved_deductible_cents,
     work_method,
+    // Surface the attribution split so the display layer can render matching lines (keeping the
+    // position == sum-of-lines invariant). Omitted entirely when there are no attributions.
+    attribution:
+      attr.individual_deduction_cents || attr.company_deduction_cents || attr_property_total_cents
+        ? { individual_cents: attr.individual_deduction_cents, company_cents: attr.company_deduction_cents, property_cents: attr_property_total_cents }
+        : undefined,
     taxable_position_cents,
   };
 }

@@ -183,6 +183,21 @@ export function assessReadiness(input: {
       basis: `${Math.min(wm.car_work_km, wm.rates.car_km_cap)} km × ${wm.rates.car_cents_per_km}c/km (max ${wm.rates.car_km_cap} km)`,
       why: "Work-related car expenses claimed using the cents-per-kilometre method, capped at the ATO kilometre limit. This method already covers running costs (fuel, servicing, rego, insurance), so actual car receipts are not also claimed." });
   }
+  // Phase B / G2: attribution deductions (payer≠claimant). buildReport added the individual + rental-
+  // property amounts to gross_deductions, so they render as "deduction" lines to keep lines-sum ==
+  // headline; the company amount sits in the company track (its own group). Present only when the
+  // attribution_engine flag is on with attribution rows, so the legacy reconciliation is intact.
+  const at = report.attribution;
+  if (at && at.individual_cents + at.property_cents > 0) {
+    lines.push({ group: "deduction", label: "Attributed deductions", amount_cents: at.individual_cents + at.property_cents,
+      basis: "your share of costs you paid but split by entitlement (e.g. a co-owned property)",
+      why: "Where you paid a cost but only part of it is yours to claim — for example a co-owned rental where the deduction follows legal ownership share, regardless of who paid the bill." });
+  }
+  if (at && at.company_cents > 0) {
+    lines.push({ group: "company", label: "Attributed (company)", amount_cents: at.company_cents,
+      basis: "costs you paid personally that belong to your company",
+      why: "Costs you paid personally that are the company's expense (e.g. its cloud subscriptions). These reduce the company's position, not your salary, and are typically recorded as a loan from you to the company." });
+  }
   if (report.depreciation_cents > 0) {
     lines.push({ group: "depreciation", label: "Decline in value", amount_cents: report.depreciation_cents, basis: "from your depreciation schedule (Div 40 / Div 43)", why: "Capital allowances carried forward from your asset schedule for this year." });
   }

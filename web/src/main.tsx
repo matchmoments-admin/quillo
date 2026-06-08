@@ -28,12 +28,20 @@ import { ActiveFyProvider } from "./lib/activeFy";
 const PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY as string | undefined;
 
 const queryClient: QueryClient = new QueryClient({
-  // The completion spine + per-tab guides read ["progress"]. Any successful mutation (confirming
-  // a category, dating an item, importing a statement, linking income…) can change that derived
-  // state, so refresh it once, centrally, after every write — rather than refetching on every
-  // navigation. onSuccess runs after queryClient is assigned, so the closure reference is safe.
+  // The completion spine + per-tab guides read ["progress"]; the Filing page's year-end position
+  // reads ["filing-readiness", fy]. Any successful mutation (confirming a category, dating an item,
+  // importing, linking income, splitting a loan…) can change that derived state, so refresh both
+  // once, centrally, after every write — rather than refetching on every navigation. Without the
+  // filing-readiness invalidation, the global 30s staleTime would let the Filing page show a stale
+  // position for up to 30s after an Inbox action (e.g. a loan split that moves the headline) — a real
+  // risk since that figure is handed to an accountant. invalidateQueries only refetches the query
+  // when it's mounted; otherwise it just marks it stale for the next visit. onSuccess runs after
+  // queryClient is assigned, so the closure reference is safe.
   mutationCache: new MutationCache({
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["progress"] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["progress"] });
+      queryClient.invalidateQueries({ queryKey: ["filing-readiness"] });
+    },
   }),
   // refetchOnWindowFocus was causing visible flashing: every time the tab regained focus
   // (e.g. switching back from the Intuit dashboard) ALL queries refetched at once. Off by

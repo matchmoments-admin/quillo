@@ -84,6 +84,7 @@ export const api = {
   receiptUrl: (id: string) => `/api/receipt/${id}`,
   correct: (txnId: string, field: string, value: string) => post<{ ok: boolean }>("/api/correct", { txnId, field, value }),
   deleteTxn: (id: string) => send<{ ok: boolean }>("DELETE", `/api/transactions/${id}`),
+  setTxnReimbursed: (id: string, reimbursed: boolean) => send<{ ok: boolean; reimbursed: boolean }>("PATCH", `/api/transactions/${id}/flags`, { reimbursed }),
 
   // Phase 2
   dashboard: (fy?: number) => get<DashboardData>(`/api/dashboard${fy ? `?fy=${fy}` : ""}`),

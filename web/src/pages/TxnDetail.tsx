@@ -67,6 +67,16 @@ export function TxnDetail() {
     },
   });
 
+  const reimb = useMutation({
+    mutationFn: (v: boolean) => api.setTxnReimbursed(id, v),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["txn", id] });
+      qc.invalidateQueries({ queryKey: ["report"] });
+      qc.invalidateQueries({ queryKey: ["filing-readiness"] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+  });
+
   const [pushMsg, setPushMsg] = useState<string | null>(null);
   const push = useMutation({
     mutationFn: () => api.qboPush(id),
@@ -224,6 +234,18 @@ export function TxnDetail() {
             </button>
             {save.isError && <p className="text-sm text-danger">Couldn't save: {(save.error as Error).message}</p>}
           </Card>
+
+          {/* Were you reimbursed? (G2) — employer-reimbursed spend isn't your deductible cost, so the
+              position excludes it. Shown for spend (debit), not income/refund credits. */}
+          {(txn.direction ?? "debit") === "debit" && txn.bucket !== "refund" && (
+            <Card className="space-y-1 p-4 text-sm">
+              <label className="flex items-center gap-2">
+                <input type="checkbox" checked={!!txn.reimbursed} disabled={reimb.isPending} onChange={(e) => reimb.mutate(e.target.checked)} />
+                <span className="font-medium">My employer reimbursed me for this</span>
+              </label>
+              <p className="text-xs text-muted">Reimbursed spend isn't deductible — you didn't bear the cost. Ticking this excludes it from your position. General information only.</p>
+            </Card>
+          )}
 
           {/* Phase B / G2 — who paid vs who claims (payer≠claimant). Flag-gated: appears with the
               attribution engine so the panel and the position activate together. */}

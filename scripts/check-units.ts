@@ -749,6 +749,7 @@ console.log("readiness");
 // ── DEDUCTIBILITY: deny-by-default matcher + the headline/display reconciliation ──
 import { verdictForTxn } from "../src/lib/deductibility";
 import { deductionGroupForRow, positionAmountCents } from "../src/lib/report";
+import { splitAttribution, classifyAttribution } from "../src/lib/attribution";
 
 console.log("deductibility (deny-by-default)");
 {
@@ -849,6 +850,33 @@ console.log("deductibility (deny-by-default)");
   const legacyDeduction = legacy.position.lines.filter((l) => l.group === "deduction").reduce((s, l) => s + l.amount_cents, 0);
   check("OFF: payg + property all count (legacy basis)", legacyDeduction === 50_000 + 323_035 + 120_000 + 200_000);
   check("OFF: no payg_unresolved finding", !legacy.findings.some((fd) => fd.id === "payg_unresolved"));
+
+  // ── PHASE B / G2: attribution snapshot math + track routing (payer ≠ claimant) ──
+  // splitAttribution: gross × owner-share% × work-use%, rounded to whole cents.
+  check("co-owner 50% of a $1,000 bill paid 100% by one owner → $500 (TR 93/32)", splitAttribution({ amount_cents: 100_000, owner_share_pct: 50 }) === 50_000);
+  check("company claims the whole $90 SaaS bill (no split) → $90", splitAttribution({ amount_cents: 9_000, owner_share_pct: 100 }) === 9_000);
+  check("mixed: 50% owner × 80% work-use of $1,000 → $400", splitAttribution({ amount_cents: 100_000, owner_share_pct: 50, work_use_pct: 80 }) === 40_000);
+  check("null shares default to 100% (whole amount)", splitAttribution({ amount_cents: 12_345 }) === 12_345);
+  check("shares clamp to [0,100] (120% → 100%, -5% → 0%)", splitAttribution({ amount_cents: 10_000, owner_share_pct: 120 }) === 10_000 && splitAttribution({ amount_cents: 10_000, owner_share_pct: -5 }) === 0);
+  check("rounds to whole cents (33.33% of $1.00 → 33c)", splitAttribution({ amount_cents: 100, owner_share_pct: 33.333 }) === 33);
+
+  // classifyAttribution: the routing track (the counterpart to deductionGroupForRow).
+  check("rental-property activity → property track (even for an individual)", classifyAttribution({ entity_type: "individual", activity_type: "rental_property" }) === "property");
+  check("company entity, business activity → company track", classifyAttribution({ entity_type: "company", activity_type: "business" }) === "company");
+  check("individual taxpayer, salary activity → individual headline", classifyAttribution({ entity_type: "individual", activity_type: "salary_wages" }) === "individual");
+  check("private_non_deductible provision → excluded, beats every track", classifyAttribution({ entity_type: "company", activity_type: "rental_property", deduction_provision: "private_non_deductible" }) === "excluded");
+  check("missing fields default to the individual headline", classifyAttribution({}) === "individual");
+
+  // Reconciliation WITH attribution present: the individual + property attribution amounts render as a
+  // "deduction" line (so lines-sum still == the headline gross), and the company amount lands in the
+  // company group — never the personal headline. Guards the invariant the reader's Report.attribution
+  // field exists to protect (review finding #1).
+  const attrReport = { ...mkR([]), attribution: { individual_cents: 30_000, company_cents: 50_000, property_cents: 20_000 } } as Report;
+  const attrReady = assessReadiness({ report: attrReport, situation: mkS(), claimMatches: [], signals: mkSig(), generatedAt: "2026-06-03T00:00:00Z", excludeNonDeductible: true });
+  const attrDeductionLines = attrReady.position.lines.filter((l) => l.group === "deduction").reduce((s, l) => s + l.amount_cents, 0);
+  check("attribution: individual+property (30k+20k) render as one deduction line", attrDeductionLines === 50_000);
+  check("attribution: company (50k) renders in the company group, not the headline", attrReady.position.lines.some((l) => l.group === "company" && l.amount_cents === 50_000));
+  check("attribution: no attribution field → no attributed lines (byte-identical)", !assessReadiness({ report: mkR([]), situation: mkS(), claimMatches: [], signals: mkSig(), generatedAt: "2026-06-03T00:00:00Z", excludeNonDeductible: true }).position.lines.some((l) => l.label.includes("Attributed")));
 
   // ── #67 work-use computed deductions: pure calc + readiness lines reconcile to the headline ──
   const rates = { wfh_cents_per_hour: 70, car_cents_per_km: 88, car_km_cap: 5000 };

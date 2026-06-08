@@ -1,4 +1,4 @@
-import type { Txn, TxnDetail, Situation, SituationDraft, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse, UsageData, StatementInfo, IncomeRow, DocRow, AssetRow, ScheduleRow, ChecklistItem, ClaimSuggestion, FilingReadiness, ReviewSummary, Progress, AdminTenant, AdminOverview, ClaimReview, OccupationRulesDraft, OccupationRuleCandidate, MovementSweep, BatchResult, ClarifyQuestion, ClarifyAnswer, ClaimMatch, AccountantSummary, SuggestedDeduction, WorkUse, CapitalLoss, OpeningDepreciation } from "./types";
+import type { Txn, TxnDetail, Situation, SituationDraft, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse, UsageData, StatementInfo, IncomeRow, DocRow, AssetRow, ScheduleRow, ChecklistItem, ClaimSuggestion, FilingReadiness, ReviewSummary, Progress, AdminTenant, AdminOverview, ClaimReview, OccupationRulesDraft, OccupationRuleCandidate, MovementSweep, BatchResult, ClarifyQuestion, ClarifyAnswer, ClaimMatch, AccountantSummary, SuggestedDeduction, WorkUse, CapitalLoss, OpeningDepreciation, AttributionState, AttributionInput, AttributionRow, IncomeActivity, PropertyOwner, EntityRole } from "./types";
 
 // Clerk session token getter, wired from <TokenBridge> inside ClerkProvider (main.tsx).
 // Clerk tokens are short-lived, so we fetch a fresh one per request (getToken caches/refreshes).
@@ -285,6 +285,19 @@ export const api = {
   clarifyScan: (fy?: number) => post<{ questions: number; groups: number }>(`/api/clarify/scan${fy != null ? `?fy=${fy}` : ""}`),
   answerClarify: (id: string, answer: ClarifyAnswer) => post<{ applied: number; income_recorded: number }>(`/api/clarify/${id}/answer`, { answer }),
   dismissClarify: (id: string) => post<{ ok: boolean }>(`/api/clarify/${id}/dismiss`),
+
+  // Phase B / G2 — attributions (who paid vs who claims) + the co-owner / activity spine
+  txnAttributions: (txnId: string) => get<AttributionState>(`/api/transactions/${txnId}/attributions`),
+  setTxnAttributions: (txnId: string, body: { payer_person_id?: string | null; paid_via_account_id?: string | null; attributions?: AttributionInput[] }) =>
+    send<{ ok: boolean; attributions: AttributionRow[] }>("PUT", `/api/transactions/${txnId}/attributions`, body),
+  clearTxnAttributions: (txnId: string) => send<{ ok: boolean }>("DELETE", `/api/transactions/${txnId}/attributions`),
+  incomeActivities: () => get<{ income_activities: IncomeActivity[] }>("/api/income-activities").then((r) => r.income_activities),
+  propertyOwners: () => get<{ property_owners: PropertyOwner[] }>("/api/property-owners").then((r) => r.property_owners),
+  addPropertyOwner: (b: { property_id: string; person_id: string; ownership_pct?: number }) => post<{ id: string }>("/api/property-owners", b),
+  deletePropertyOwner: (id: string) => send<{ ok: boolean }>("DELETE", `/api/property-owners/${id}`),
+  entityRoles: () => get<{ entity_roles: EntityRole[] }>("/api/entity-roles").then((r) => r.entity_roles),
+  addEntityRole: (b: { person_id: string; entity_id: string; role: string; ownership_pct?: number }) => post<{ id: string }>("/api/entity-roles", b),
+  deleteEntityRole: (id: string) => send<{ ok: boolean }>("DELETE", `/api/entity-roles/${id}`),
 
   // Admin (founder only — server enforces the 'admin' role)
   adminOverview: () => get<AdminOverview>("/api/admin/overview"),

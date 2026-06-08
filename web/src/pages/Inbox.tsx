@@ -10,17 +10,19 @@ import { useFeatures } from "../lib/features";
 import { useActiveFy } from "../lib/activeFy";
 import type { Txn } from "../types";
 
+// One exceptions list: the review backlog leads (the thing to actually clear), with Receipts / Bank
+// lines as filters of the same underlying queue rather than separate destinations.
 const TABS = [
+  { key: "needs_review", label: "Needs review", opts: { review: true } },
   { key: "receipts", label: "Receipts", opts: { kind: "receipt" } },
   { key: "bank_lines", label: "Bank lines", opts: { kind: "bank_line" } },
-  { key: "needs_review", label: "Needs review", opts: { review: true } },
 ] as const;
 
 export function Inbox() {
   const qc = useQueryClient();
   const fileRef = useRef<HTMLInputElement>(null);
   const [note, setNote] = useState<string | null>(null);
-  const [tab, setTab] = useState<(typeof TABS)[number]["key"]>("receipts");
+  const [tab, setTab] = useState<(typeof TABS)[number]["key"]>("needs_review");
   const [limit, setLimit] = useState(50);
   // Multi-select for the bulk bar. Reset whenever the tab or page-size changes so a stale id from a
   // no-longer-visible row can't be acted on.
@@ -89,8 +91,9 @@ export function Inbox() {
           one-line rows, and falls away when clear. The transaction tabs/table below stay reachable. */}
       <SortFlow fy={activeFy} hasAccountantPass={hasAccountantPass} />
 
-      {/* Filter tabs — separates receipts from imported bank lines so a statement import
-          doesn't flood the receipt review. */}
+      {/* One "still to review" list — the backlog leads; Receipts / Bank lines just filter the same
+          queue so a statement import doesn't flood the receipt review. */}
+      <h2 className="px-1 text-sm font-semibold text-muted">Still to review</h2>
       <div className="flex gap-1 text-sm">
         {TABS.map((t) => (
           <button

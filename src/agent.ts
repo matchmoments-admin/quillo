@@ -3456,6 +3456,30 @@ export class TaxAgent extends Agent<Env> {
       return { applied: ids.length, income_recorded: 0 };
     }
 
+    if (answer.kind === "capital") {
+      // Investment / capital (a Stake/CommSec/Pearler deposit, a share purchase): not a deduction and
+      // not income, but CGT-relevant. Park it EXCLUDED — status='ignored' (position-neutral: COUNTABLE
+      // excludes 'ignored') — and stamp ato_label='capital:investment' so a future CGT cost-base feature
+      // can find these lines. No user_rule in v1 (a re-scan re-surfaces the pattern); a real CGT ledger +
+      // auto-park rule is a deferred follow-up (needs a taxonomy decision).
+      //
+      // DIRECTION GUARD (mirrors the income branches): capital applies to the money-OUT side only — the
+      // deposit/purchase is the capital movement. Any CREDIT in the same merchant group is a dividend /
+      // capital return = assessable INCOME, so it MUST NOT be ignored here (that would silently drop it
+      // from income). Credits are left uncategorised for an income answer / the next scan.
+      const debits = group.filter((r) => r.direction !== "credit");
+      const stmts: D1PreparedStatement[] = [];
+      for (const r of debits) {
+        stmts.push(
+          this.env.DB.prepare(`UPDATE transactions SET status = 'ignored', ato_label = 'capital:investment' WHERE id = ? AND user_id = ?`).bind(r.id, userId),
+          this.env.DB.prepare(`INSERT INTO corrections (id, user_id, txn_id, field, old_value, new_value) VALUES (?, ?, ?, 'capital', 'clarify', 'capital:investment')`).bind(crypto.randomUUID(), userId, r.id),
+        );
+      }
+      for (let i = 0; i < stmts.length; i += 80) await this.env.DB.batch(stmts.slice(i, i + 80));
+      await this.audit(userId, "clarify_answer", JSON.stringify({ questionId, kind: "capital", applied: debits.length }));
+      return { applied: debits.length, income_recorded: 0 };
+    }
+
     // kind === 'bucket' → re-bucket the group via the Phase-2 batch seam + learn a rule.
     const edits: { field: string; value: string }[] = [{ field: "bucket", value: answer.bucket! }];
     if (answer.ato_label) edits.push({ field: "ato_label", value: answer.ato_label });

@@ -573,7 +573,7 @@ export interface BatchResult {
 }
 
 // Stage B — clarify-by-pattern
-export type ClarifyAnswerKind = "income_property" | "income_business" | "income_personal" | "ignore" | "bucket";
+export type ClarifyAnswerKind = "income_property" | "income_business" | "income_personal" | "ignore" | "capital" | "bucket";
 export interface ClarifySuggestion {
   label: string;
   kind: ClarifyAnswerKind;

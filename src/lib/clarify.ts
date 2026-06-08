@@ -51,6 +51,7 @@ export type ClarifyAnswerKind =
   | "income_business" // → recordIncome(income_business)
   | "income_personal" // → recordIncome(income_personal)
   | "ignore" // → status='ignored' (own-account transfer, loan repayment, personal/gift — not spend, not income)
+  | "capital" // → status='ignored' + ato_label='capital:investment' (a share/brokerage deposit — not deductible, not income, but CGT-relevant)
   | "bucket"; // → re-bucket the group (payg/property_*/asset…) with an optional ato_label
 
 export interface ClarifySuggestion {
@@ -120,6 +121,9 @@ export function suggestionsFor(direction: "debit" | "credit" | "mixed", ctx: Sug
     { label: "Loan repayment / transfer (ignore)", kind: "ignore" },
     { label: "Work-related deduction (choose category)", kind: "bucket", bucket: "payg" },
     { label: "Rental-property expense", kind: "bucket", bucket: "property_rented" },
+    // A deposit into a share/brokerage app (Stake, CommSec, Pearler…) is a CAPITAL movement — not a
+    // deduction and not income, but CGT-relevant. Parks it excluded + tagged for a future CGT feature.
+    { label: "Investment / shares (capital — not deductible)", kind: "capital" },
   );
   return out;
 }

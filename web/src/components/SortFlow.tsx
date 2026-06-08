@@ -51,16 +51,19 @@ export function SortFlow({ fy, hasAccountantPass }: { fy: number; hasAccountantP
   const clarifyCount = clarify.data?.length ?? 0;
   const suggCount = suggestions.data?.length ?? 0;
 
-  // Step order = the order you work them. Movement sweep is always available; the loan split (flag
-  // loan_split) and clarify + suggested deductions (flag accountant_pass) are gated.
-  const steps: { key: StepKey; title: string; count: number; body: ReactNode }[] = [
-    { key: "movements", title: "Clean up transfers & repayments", count: moveCount, body: <MovementSweepCard /> },
-  ];
+  // Step order = the order you work them. Clarify leads: the merchant-grouped, teach-once "bulk-clear"
+  // is where most lines get sorted in the fewest taps (the proven order across Xero/QBO/MYOB — clear
+  // the repeating merchants before working anything line-by-line). Then the loan split, then confirm
+  // suggestions, then the transfer clean-up. Clarify + suggestions are gated on accountant_pass and the
+  // loan split on loan_split; the movement sweep is always available.
+  const steps: { key: StepKey; title: string; count: number; body: ReactNode }[] = [];
+  if (hasAccountantPass) {
+    steps.push({ key: "clarify", title: "Clarify recurring patterns", count: clarifyCount, body: <ClarifyCard fy={fy} /> });
+  }
   if (hasLoanSplit) {
     steps.push({ key: "loanSplit", title: "Split loan interest", count: reviewCount, body: <LoanSplitCard /> });
   }
   if (hasAccountantPass) {
-    steps.push({ key: "clarify", title: "Clarify recurring patterns", count: clarifyCount, body: <ClarifyCard fy={fy} /> });
     steps.push({
       key: "suggestions",
       title: "Confirm suggested deductions",
@@ -72,6 +75,7 @@ export function SortFlow({ fy, hasAccountantPass }: { fy: number; hasAccountantP
       ),
     });
   }
+  steps.push({ key: "movements", title: "Clean up transfers & repayments", count: moveCount, body: <MovementSweepCard /> });
 
   const withWork = steps.filter((s) => s.count > 0);
   if (withWork.length === 0) return null; // nothing to sort — keep the page quiet (the table is below)

@@ -226,9 +226,12 @@ export function isTransferLike(description: string): boolean {
 export function movementTreatment(klass: MovementClass, direction: string | null | undefined): "ignorable" | "review" | "skip" {
   if (klass === "none") return "skip";
   if (klass === "loan_repayment") return "review"; // B3 — may carry deductible interest; never one-tap exclude
-  // A credit into an investment/brokerage app is likely a dividend / capital return = assessable
-  // income; only a DEBIT (money out to invest) is a sweepable capital movement.
-  if (klass === "investment_deposit") return direction === "debit" ? "ignorable" : "skip";
+  // An investment/brokerage deposit is a CAPITAL movement — not a deduction, not income, but
+  // CGT-relevant. Route BOTH directions to "skip" so it falls THROUGH the sweep into the clarify queue,
+  // where the user explicitly tags it via the "capital" answer (Investment / shares) rather than having
+  // it silently one-tap excluded. (A credit into a brokerage app is likely a dividend / capital return
+  // = assessable income — also a clarify decision, never a sweep exclude.)
+  if (klass === "investment_deposit") return "skip";
   return "ignorable"; // internal_transfer / card_payment — non-income movements either direction
 }
 

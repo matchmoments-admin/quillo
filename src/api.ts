@@ -35,6 +35,11 @@ import {
   updateAccount,
   addLoanProperty,
   updateLoanProperty,
+  addPropertyOwner,
+  listPropertyOwners,
+  addEntityRole,
+  listEntityRoles,
+  listIncomeActivities,
   addCapitalLoss,
   listCapitalLosses,
   addDepreciationOpening,
@@ -48,6 +53,7 @@ import {
   mintKey,
   revokeKey,
 } from "./lib/situation-write";
+import { setAttributions, getAttributions, clearAttributions } from "./lib/attribution-write";
 import { buildConnectUrl, qboStatus } from "./lib/qbo-oauth";
 import { QuickBooksAdapter } from "./ledger/qbo";
 import { LedgerReauthError } from "./ledger";
@@ -101,8 +107,23 @@ export async function handleApi(
     return json(await stub.deleteTransactionBatch(uid, ids as string[]));
   }
 
+  // ── Attributions (Phase B / G2): who-paid vs who-claims for one transaction ──
+  // GET/PUT/DELETE /api/transactions/:id/attributions
+  if (resource === "transactions" && id && sub === "attributions") {
+    if (m === "GET") return json(await getAttributions(env, uid, id));
+    if (m === "PUT") {
+      const body = (await req.json().catch(() => ({}))) as Parameters<typeof setAttributions>[3];
+      const res = await setAttributions(env, uid, id, body);
+      return res.ok ? json({ ok: true, attributions: res.rows }) : json({ error: res.error }, 400);
+    }
+    if (m === "DELETE") {
+      await clearAttributions(env, uid, id);
+      return json({ ok: true });
+    }
+  }
+
   // DELETE /api/transactions/:id — hard-delete (e.g. a duplicate), audited via the DO.
-  if (resource === "transactions" && id && id !== "batch-delete" && m === "DELETE") {
+  if (resource === "transactions" && id && id !== "batch-delete" && sub !== "attributions" && m === "DELETE") {
     await stub.deleteTransaction(uid, id);
     return json({ ok: true });
   }
@@ -328,6 +349,26 @@ export async function handleApi(
       await deleteRow(env, uid, "entities", id);
       return json({ ok: true });
     }
+  }
+  // ── Co-ownership + income-activity spine (Phase B / G2) ──────────────────────
+  if (resource === "property-owners") {
+    if (m === "GET" && !id) return json({ property_owners: await listPropertyOwners(env, uid) });
+    if (m === "POST" && !id) return json({ id: await addPropertyOwner(env, uid, await req.json()) });
+    if (m === "DELETE" && id) {
+      await deleteRow(env, uid, "property_owners", id);
+      return json({ ok: true });
+    }
+  }
+  if (resource === "entity-roles") {
+    if (m === "GET" && !id) return json({ entity_roles: await listEntityRoles(env, uid) });
+    if (m === "POST" && !id) return json({ id: await addEntityRole(env, uid, await req.json()) });
+    if (m === "DELETE" && id) {
+      await deleteRow(env, uid, "entity_roles", id);
+      return json({ ok: true });
+    }
+  }
+  if (resource === "income-activities" && m === "GET" && !id) {
+    return json({ income_activities: await listIncomeActivities(env, uid) });
   }
   if (resource === "rules") {
     if (m === "POST") return json({ id: await addRule(env, uid, await req.json()) });

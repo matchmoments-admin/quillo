@@ -750,6 +750,7 @@ console.log("readiness");
 import { verdictForTxn } from "../src/lib/deductibility";
 import { deductionGroupForRow, positionAmountCents } from "../src/lib/report";
 import { splitAttribution, classifyAttribution } from "../src/lib/attribution";
+import { prepareAttributions } from "../src/lib/attribution-write";
 
 console.log("deductibility (deny-by-default)");
 {
@@ -877,6 +878,27 @@ console.log("deductibility (deny-by-default)");
   check("attribution: individual+property (30k+20k) render as one deduction line", attrDeductionLines === 50_000);
   check("attribution: company (50k) renders in the company group, not the headline", attrReady.position.lines.some((l) => l.group === "company" && l.amount_cents === 50_000));
   check("attribution: no attribution field → no attributed lines (byte-identical)", !assessReadiness({ report: mkR([]), situation: mkS(), claimMatches: [], signals: mkSig(), generatedAt: "2026-06-03T00:00:00Z", excludeNonDeductible: true }).position.lines.some((l) => l.label.includes("Attributed")));
+
+  // prepareAttributions (the writer): snapshot + validation + shareholder-loan flag.
+  const isCo = (eid: string) => eid === "co_startup";
+  const r1 = prepareAttributions(100_000, [{ entity_id: "ind_self", attributed_pct: 50 }], { isCompany: isCo });
+  check("writer: co-owner 50% snapshots $500, no shareholder loan", !r1.error && r1.rows[0].attributed_amount_cents === 50_000 && r1.rows[0].creates_shareholder_loan === 0);
+  const r2 = prepareAttributions(9_000, [{ entity_id: "co_startup", attributed_pct: 100 }], { isCompany: isCo });
+  check("writer: a cost attributed to the company flags a shareholder loan (person_funds_company)", !r2.error && r2.rows[0].creates_shareholder_loan === 1 && r2.rows[0].attributed_amount_cents === 9_000);
+  const r3 = prepareAttributions(100_000, [{ entity_id: "a", attributed_pct: 60 }, { entity_id: "b", attributed_pct: 60 }], { isCompany: isCo });
+  check("writer: percentages over 100% are rejected", !!r3.error && r3.rows.length === 0);
+  const r4 = prepareAttributions(10_000, [{ entity_id: "a", attributed_amount_cents: 20_000 }], { isCompany: isCo });
+  check("writer: an explicit amount exceeding the transaction is rejected", !!r4.error);
+  const r5 = prepareAttributions(10_000, [{ entity_id: "" }], { isCompany: isCo });
+  check("writer: an attribution with no entity_id is rejected", !!r5.error);
+  check("writer: empty items → no rows, no error (clears attributions)", prepareAttributions(10_000, [], { isCompany: isCo }).rows.length === 0);
+  // review #1: a negative explicit amount is rejected (can't slip past a sign-naive sum guard).
+  check("writer: a negative attributed amount is rejected", !!prepareAttributions(10_000, [{ entity_id: "a", attributed_amount_cents: -50_000 }], { isCompany: isCo }).error);
+  check("writer: a negative-amount over-claim on a credit txn is rejected", !!prepareAttributions(-10_000, [{ entity_id: "a", attributed_amount_cents: -50_000 }], { isCompany: isCo }).error);
+  // review #4: when both pct and an explicit amount are given, the amount wins and pct is cleared
+  // (so a stray pct can't falsely trip the 100% guard).
+  const r6 = prepareAttributions(100_000, [{ entity_id: "a", attributed_pct: 60, attributed_amount_cents: 30_000 }, { entity_id: "b", attributed_pct: 60, attributed_amount_cents: 30_000 }], { isCompany: isCo });
+  check("writer: explicit amounts win over pct (no false >100% rejection)", !r6.error && r6.rows[0].attributed_amount_cents === 30_000 && r6.rows[0].attributed_pct === null);
 
   // ── #67 work-use computed deductions: pure calc + readiness lines reconcile to the headline ──
   const rates = { wfh_cents_per_hour: 70, car_cents_per_km: 88, car_km_cap: 5000 };

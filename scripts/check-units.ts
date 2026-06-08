@@ -130,8 +130,10 @@ console.log("movementTreatment");
   // Loan lines are ALWAYS review-only — never one-tap excluded, regardless of rental status (B3).
   check("loan_repayment (debit) → review, never ignorable", movementTreatment("loan_repayment", "debit") === "review");
   check("loan_repayment (credit) → review", movementTreatment("loan_repayment", "credit") === "review");
-  // An investment-app DEBIT is a capital movement (ignorable); a CREDIT is likely income → skip.
-  check("investment_deposit DEBIT → ignorable", movementTreatment("investment_deposit", "debit") === "ignorable");
+  // An investment-app deposit is a CAPITAL movement, routed BOTH directions to "skip" so it falls
+  // through the sweep into the clarify "capital" answer (a debit = money invested = CGT-relevant
+  // capital; a credit = likely dividend/return = income) — never silently one-tap excluded.
+  check("investment_deposit DEBIT → skip (capital decision routed to clarify, not a one-tap exclude)", movementTreatment("investment_deposit", "debit") === "skip");
   check("investment_deposit CREDIT → skip (likely dividend/return = income)", movementTreatment("investment_deposit", "credit") === "skip");
   // Transfers / card payments are non-income movements either direction.
   check("internal_transfer either direction → ignorable", movementTreatment("internal_transfer", "credit") === "ignorable" && movementTreatment("internal_transfer", "debit") === "ignorable");

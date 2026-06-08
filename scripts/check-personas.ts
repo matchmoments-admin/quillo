@@ -37,7 +37,7 @@ for (const f of fs.readdirSync(path.join(root, "migrations")).filter((f) => f.en
   db.exec(fs.readFileSync(path.join(root, "migrations", f), "utf8"));
 }
 
-const env = { DB: new D1(db), FEATURES: "attribution_engine,position_excludes_nondeductible,loan_split,wfh_car_methods,refund_netting,income_dedupe,cgt_engine,ess_engine,gst_bas,car_logbook,trust_distributions" } as unknown as Env;
+const env = { DB: new D1(db), FEATURES: "attribution_engine,position_excludes_nondeductible,loan_split,wfh_car_methods,refund_netting,income_dedupe,cgt_engine,ess_engine,gst_bas,car_logbook,trust_distributions,smsf_engine" } as unknown as Env;
 
 // tiny seed helper
 const run = (sql: string, ...p: unknown[]) => db.prepare(sql).run(...(p as never[]));
@@ -204,8 +204,11 @@ const asset = (id: string, u: string, costCents: number, depCents: number, prope
 {
   const u = "p10";
   seedTenant(u, "P10 Margaret SMSF");
-  run(`INSERT INTO entities (id, user_id, kind, name, person_id, entity_type) VALUES ('p10eSmsf', ?, 'individual', 'Family SMSF', ?, 'smsf')`, u, `person_self_${u}`); // GAP #140: smsf entity declarable, no pension/ECPI model
-  inc("p10iDiv", u, "dividend", 700000, { franking_credit_cents: 300000 }); // franking captured
+  run(`INSERT INTO entities (id, user_id, kind, name, person_id, entity_type) VALUES ('p10eSmsf', ?, 'individual', 'Family SMSF', ?, 'smsf')`, u, `person_self_${u}`);
+  // #140: she's 67, fully in retirement (pension) phase → ECPI 100% → fund earnings tax-exempt.
+  run(`INSERT INTO smsf_members (id, user_id, smsf_entity_id, person_id, phase, pension_balance_cents, accumulation_balance_cents) VALUES ('p10mem', ?, 'p10eSmsf', ?, 'pension', 200000000, 0)`, u, `person_self_${u}`);
+  run(`INSERT INTO income (id, user_id, entity_id, income_type, fy, gross_cents, amount_aud_cents) VALUES ('p10iFund', ?, 'p10eSmsf', 'dividend', '2025-26', 4000000, 4000000)`, u); // SMSF fund earnings $40k
+  inc("p10iDiv", u, "dividend", 700000, { franking_credit_cents: 300000 }); // PERSONAL dividend (outside super) — franking captured
   // #138: a crypto parcel held >12 months (BTC) disposed at a $10k gain → 50% discount applies.
   run(`INSERT INTO cgt_assets (id, user_id, person_id, asset_kind, code, units, acquired_date, cost_base_cents) VALUES ('p10cBtc', ?, ?, 'crypto', 'BTC', 0.5, '2023-01-01', 2000000)`, u, `person_self_${u}`);
   run(`INSERT INTO cgt_events (id, user_id, cgt_asset_id, fy, event_date, proceeds_cents, cost_base_used_cents) VALUES ('p10eBtc', ?, 'p10cBtc', '2025-26', '2025-09-01', 3000000, 2000000)`, u); // $30k − $20k = $10k gain, held >12mo
@@ -302,6 +305,8 @@ async function main() {
   check("P10: franking credits on dividends are captured ($3k)", r10.income.franking_credit_cents === 300000);
   check("P10 #138: crypto held >12mo, $10k gain → 50% discount → $5k net capital gain", r10.capital_gains?.net_capital_gain_cents === 500000);
   check("P10 #138: net capital gain feeds the position; dividend stays gross (no franking gross-up) → $7k + $5k = $12k", r10.taxable_position_cents === 1200000);
+  check("P10 #140: SMSF fully in pension phase → ECPI 100% → fund earnings tax-exempt ($0 fund taxable income)", r10.smsf_funds?.[0]?.assessable_income_cents === 4000000 && r10.smsf_funds?.[0]?.fund_taxable_income_cents === 0 && r10.smsf_funds?.[0]?.ecpi_exempt_fraction === 1);
+  check("P10 #140: the SMSF's $40k fund income does NOT pollute the member's personal position (still $12k)", r10.taxable_position_cents === 1200000);
 
   console.log(`\n=== personas: ${pass} passed, ${fail} failed ===`);
   if (fail > 0) process.exit(1);

@@ -6,6 +6,7 @@ import { essAssessable, type EssAssessable } from "./ess";
 import { computeBasNet, type BasNet } from "./gst";
 import { businessUsePct, logbookDeductionCents, chooseCarMethod } from "./car-logbook";
 import { summariseTrustDistributions, type TrustTotals } from "./trust";
+import { ecpiExemptFraction, computeSmsfPosition, type SmsfPosition } from "./smsf";
 import auV1RulePack from "../rulepacks/au-v1.json";
 
 // ── The single money-aggregation seam ─────────────────────────────────────────
@@ -46,7 +47,7 @@ export interface IncomeTotals {
 export async function incomeTotals(
   env: Env,
   userId: string,
-  opts: { startYear: number; personId?: string; propertyId?: string },
+  opts: { startYear: number; personId?: string; propertyId?: string; excludeEntityIds?: string[] },
 ): Promise<IncomeTotals> {
   const fy = fyLabel(opts.startYear);
   const where: string[] = ["user_id = ?", "fy = ?"];
@@ -58,6 +59,12 @@ export async function incomeTotals(
   if (opts.propertyId) {
     where.push("property_id = ?");
     binds.push(opts.propertyId);
+  }
+  // #140: keep a separate taxpayer's income (e.g. an SMSF fund) OUT of the individual's headline. Income
+  // with NULL entity_id (personal) always stays. Empty/omitted ⇒ byte-identical legacy behaviour.
+  if (opts.excludeEntityIds && opts.excludeEntityIds.length) {
+    where.push(`(entity_id IS NULL OR entity_id NOT IN (${opts.excludeEntityIds.map(() => "?").join(",")}))`);
+    binds.push(...opts.excludeEntityIds);
   }
   const res = await env.DB.prepare(
     `SELECT income_type, COUNT(*) AS n,
@@ -317,6 +324,48 @@ export async function trustTotals(env: Env, userId: string, startYear: number): 
     return summariseTrustDistributions(rows);
   } catch (e) {
     if (/no such table/i.test((e as Error).message)) return zero;
+    throw e;
+  }
+}
+
+export interface SmsfFundPosition extends SmsfPosition {
+  entity_id: string;
+  name: string | null;
+}
+
+/**
+ * Phase #140: per-SMSF fund position (a separate taxpayer) for an FY. Fund assessable income = the
+ * income table scoped to the SMSF entity; ECPI exempt fraction = pension balance / total balance across
+ * its members; fund taxable income = assessable × (1 − ECPI). The member's tax-free pension does NOT
+ * touch the personal position — the caller excludes the SMSF entity's income from the individual
+ * headline (incomeTotals excludeEntityIds). Flag-gated smsf_engine. No SMSF / pre-0042 → [].
+ */
+export async function smsfFundPositions(env: Env, userId: string, startYear: number): Promise<SmsfFundPosition[]> {
+  const fy = fyLabel(startYear);
+  try {
+    const funds = (await env.DB.prepare(`SELECT id, name FROM entities WHERE user_id = ? AND entity_type = 'smsf'`).bind(userId).all<{ id: string; name: string | null }>()).results ?? [];
+    if (!funds.length) return [];
+    const out: SmsfFundPosition[] = [];
+    for (const f of funds) {
+      const members = (await env.DB.prepare(`SELECT pension_balance_cents, accumulation_balance_cents FROM smsf_members WHERE user_id = ? AND smsf_entity_id = ?`).bind(userId, f.id).all<{ pension_balance_cents: number; accumulation_balance_cents: number }>()).results ?? [];
+      const assessable = (await env.DB.prepare(`SELECT COALESCE(SUM(COALESCE(amount_aud_cents, gross_cents)),0) AS inc FROM income WHERE user_id = ? AND fy = ? AND entity_id = ?`).bind(userId, fy, f.id).first<{ inc: number }>())?.inc ?? 0;
+      const pos = computeSmsfPosition(assessable, ecpiExemptFraction(members));
+      out.push({ entity_id: f.id, name: f.name, ...pos });
+    }
+    return out;
+  } catch (e) {
+    if (/no such table|no such column/i.test((e as Error).message)) return [];
+    throw e;
+  }
+}
+
+/** SMSF entity ids for a tenant (to exclude fund income from the personal headline). [] when none/pre-0032. */
+export async function smsfEntityIds(env: Env, userId: string): Promise<string[]> {
+  try {
+    const rows = (await env.DB.prepare(`SELECT id FROM entities WHERE user_id = ? AND entity_type = 'smsf'`).bind(userId).all<{ id: string }>()).results ?? [];
+    return rows.map((r) => r.id);
+  } catch (e) {
+    if (/no such table|no such column/i.test((e as Error).message)) return [];
     throw e;
   }
 }

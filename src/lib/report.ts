@@ -1,6 +1,6 @@
 import type { Env } from "../env";
 import { COUNTABLE, COUNTABLE_INCOME } from "./queries";
-import { incomeTotals, depreciationTotals, attributionTotals, companyPositions, cgtTotals, essTotals, gstTotals, carLogbookPosition, trustTotals, type IncomeTotals, type AttributionTotals, type CompanyPosition, type GstPosition, type CarLogbookPosition } from "./ledger-totals";
+import { incomeTotals, depreciationTotals, attributionTotals, companyPositions, cgtTotals, essTotals, gstTotals, carLogbookPosition, trustTotals, smsfFundPositions, smsfEntityIds, type IncomeTotals, type AttributionTotals, type CompanyPosition, type GstPosition, type CarLogbookPosition, type SmsfFundPosition } from "./ledger-totals";
 import type { TrustTotals } from "./trust";
 import type { CgtPortfolioResult } from "./cgt";
 import type { EssAssessable } from "./ess";
@@ -138,6 +138,11 @@ export interface Report {
   // Phase #139: assessable trust distributions to this person (character retained). ADDED to
   // taxable_position_cents. Present only when the trust_distributions flag is on AND there are rows.
   trust?: TrustTotals;
+  // Phase #140: per-SMSF fund position (a SEPARATE taxpayer, like a company). Fund taxable income after
+  // ECPI. NEVER added to the member's personal taxable_position (the member's pension is tax-free, and
+  // the fund's income is excluded from the personal headline). Present only when smsf_engine is on and
+  // the tenant has an SMSF.
+  smsf_funds?: SmsfFundPosition[];
   taxable_position_cents: number;      // total_income + net capital gain + ESS discount + trust distributions − deductions − depreciation (indicative)
 }
 
@@ -323,7 +328,11 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   const excludeNonDeductible = featureOn(env, "position_excludes_nondeductible");
 
   // ── Tax position via the money seam: income − deductions − depreciation ──
-  const income = await incomeTotals(env, userId, { startYear });
+  // #140: when smsf_engine is on, an SMSF fund is a separate taxpayer — keep its income OUT of the
+  // member's personal headline (the fund position is reported separately; the member's pension is
+  // tax-free). Flag off ⇒ no exclusion ⇒ byte-identical.
+  const smsfIds = featureOn(env, "smsf_engine") ? await smsfEntityIds(env, userId) : [];
+  const income = await incomeTotals(env, userId, { startYear, excludeEntityIds: smsfIds });
   const dep = await depreciationTotals(env, userId, startYear);
   // Phase B / G2: deductions that come from explicit attributions (payer≠claimant) rather than the
   // raw transaction. The attributed transactions were excluded from the raw sums above (notAttributed),
@@ -508,6 +517,13 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   if (featureOn(env, "car_logbook")) {
     car_logbook = (await carLogbookPosition(env, userId, startYear, work_method?.car_cents ?? 0)) ?? undefined;
   }
+  // Phase #140: per-SMSF fund position (separate taxpayer) — NOT added to the personal position. Its
+  // income was already excluded from the personal headline above (smsfIds). Flag-gated.
+  let smsf_funds: SmsfFundPosition[] | undefined;
+  if (smsfIds.length) {
+    const funds = await smsfFundPositions(env, userId, startYear);
+    if (funds.length) smsf_funds = funds;
+  }
 
   // Resolved-deductible: only spend a year-end review has CONFIRMED deductible (deductibility set
   // to a resolved state, with the apportioned amount when present). ~$0 until a review runs — by
@@ -563,6 +579,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
     gst,
     car_logbook,
     trust,
+    smsf_funds,
     taxable_position_cents,
   };
 }

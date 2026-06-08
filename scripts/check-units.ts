@@ -632,6 +632,7 @@ import { gstFromInclusiveCents, computeBasNet } from "../src/lib/gst";
 import { businessUsePct, logbookDeductionCents, chooseCarMethod } from "../src/lib/car-logbook";
 import { occupationGuide, occupationScopes } from "../src/lib/occupations";
 import { summariseTrustDistributions } from "../src/lib/trust";
+import { ecpiExemptFraction, computeSmsfPosition } from "../src/lib/smsf";
 
 console.log("cgt");
 {
@@ -749,6 +750,17 @@ console.log("trust distributions (#139)");
   check("all distributed income is assessable to the beneficiary ($80k)", t.assessable_cents === 8_000_000);
   check("franking credit carried (not grossed-up)", t.franking_credit_cents === 1_500_000);
   check("character retained per type", t.by_character.franked_dividend === 5_000_000 && t.by_character.discount_capital_gain === 1_000_000);
+}
+
+console.log("smsf / ecpi (#140)");
+{
+  check("fully pension phase → ECPI 100%", ecpiExemptFraction([{ pension_balance_cents: 2_000_000_00, accumulation_balance_cents: 0 }]) === 1);
+  check("half pension / half accumulation → 50%", ecpiExemptFraction([{ pension_balance_cents: 1_000_000, accumulation_balance_cents: 1_000_000 }]) === 0.5);
+  check("no assets → 0", ecpiExemptFraction([]) === 0);
+  const full = computeSmsfPosition(4_000_000, 1);
+  check("100% ECPI → fund taxable income $0", full.fund_taxable_income_cents === 0 && full.ecpi_exempt_cents === 4_000_000);
+  const half = computeSmsfPosition(4_000_000, 0.5);
+  check("50% ECPI → half the earnings taxable", half.fund_taxable_income_cents === 2_000_000);
 }
 
 // ── FILING READINESS: deterministic engine + the no-tax-advice invariant ──────

@@ -805,6 +805,31 @@ CREATE TABLE IF NOT EXISTS trust_distributions (
 CREATE INDEX IF NOT EXISTS idx_trust_dist_user ON trust_distributions(user_id, fy);
 CREATE INDEX IF NOT EXISTS idx_trust_dist_trust ON trust_distributions(user_id, trust_entity_id);
 
+-- ── SMSF members + super contributions (0042, #140) ───────────────────────────
+CREATE TABLE IF NOT EXISTS smsf_members (
+  id                     TEXT PRIMARY KEY,
+  user_id                TEXT NOT NULL,
+  smsf_entity_id         TEXT NOT NULL,
+  person_id              TEXT,
+  phase                  TEXT NOT NULL DEFAULT 'accumulation',
+  pension_balance_cents  INTEGER NOT NULL DEFAULT 0,
+  accumulation_balance_cents INTEGER NOT NULL DEFAULT 0,
+  transfer_balance_cents INTEGER NOT NULL DEFAULT 0,
+  created_at             TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_smsf_members_user ON smsf_members(user_id, smsf_entity_id);
+
+CREATE TABLE IF NOT EXISTS super_contributions (
+  id            TEXT PRIMARY KEY,
+  user_id       TEXT NOT NULL,
+  person_id     TEXT,
+  fy            TEXT NOT NULL,
+  type          TEXT NOT NULL DEFAULT 'concessional',
+  amount_cents  INTEGER NOT NULL DEFAULT 0,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_super_contrib_user ON super_contributions(user_id, fy);
+
 -- ── FY checklist (0009): bucket-driven kickoff/wrap-up items ───────────────────
 CREATE TABLE IF NOT EXISTS fy_checklist (
   id          TEXT PRIMARY KEY,

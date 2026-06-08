@@ -867,6 +867,19 @@ export async function handleApi(
         return json({ error: (e as Error).message }, 400);
       }
     }
+    // POST /api/movements/loan-split-group { txn_ids:[], property_id, interest_pct }
+    //   → apply the SAME property + interest % to every loan line in a group (one row per loan).
+    if (m === "POST" && id === "loan-split-group") {
+      if (!featureOn(env, "loan_split")) return json({ error: "loan split is not enabled" }, 404);
+      const b = (await req.json().catch(() => ({}))) as { txn_ids?: unknown; property_id?: unknown; interest_pct?: unknown };
+      if (!Array.isArray(b.txn_ids) || b.txn_ids.some((x) => typeof x !== "string")) return json({ error: "txn_ids must be an array of strings" }, 400);
+      if (typeof b.property_id !== "string" || typeof b.interest_pct !== "number") return json({ error: "property_id and interest_pct are required" }, 400);
+      try {
+        return json(await stub.applyLoanSplitGroup(uid, b.txn_ids as string[], { property_id: b.property_id, interest_pct: b.interest_pct }));
+      } catch (e) {
+        return json({ error: (e as Error).message }, 400);
+      }
+    }
   }
 
   // ── Stage B: clarify-by-pattern (flag accountant_pass) — 404 when off ──────

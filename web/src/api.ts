@@ -270,6 +270,8 @@ export const api = {
   applyMovementSweep: (ids: string[]) => post<{ ignored: number; skipped: number }>("/api/movements/apply", { ids }),
   applyLoanSplit: (b: { txn_id: string; property_id: string; interest_cents?: number; interest_pct?: number }) =>
     post<{ ok: true; interest_cents: number }>("/api/movements/loan-split", b),
+  applyLoanSplitGroup: (b: { txn_ids: string[]; property_id: string; interest_pct: number }) =>
+    post<{ applied: number; skipped: number; interest_cents: number }>("/api/movements/loan-split-group", b),
 
   // Phase 2 — batch correction + undo + bulk delete
   correctBatch: (txnIds: string[], edits: { field: string; value: string }[]) => post<BatchResult>("/api/correct/batch", { txnIds, edits }),

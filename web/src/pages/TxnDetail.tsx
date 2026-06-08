@@ -87,19 +87,22 @@ export function TxnDetail() {
     onError: (e) => setPushMsg((e as Error).message),
   });
 
+  // Journey explainers (R7 / G4): detect rent-like and phone/internet lines from the text. These —
+  // and the wfhQ hook they feed — are computed BEFORE the early returns below so every hook is called
+  // in the same order on every render. A hook placed after an early `return` changes the hook count
+  // between the loading and loaded renders, which crashes the page with React error #310. `txn` may be
+  // undefined while loading, so guard each field; the real values resolve once it's present.
+  const desc = `${txn?.merchant ?? ""} ${txn?.raw_description ?? ""}`.toLowerCase();
+  const looksPhoneInternet = /\b(telstra|optus|vodafone|tpg|iinet|aussie ?broadband|belong|superloop|internet|broadband|nbn|mobile|phone plan)\b/.test(desc);
+  const fyStart = txn?.txn_date && /^\d{4}-\d{2}-\d{2}$/.test(txn.txn_date) ? (Number(txn.txn_date.slice(5, 7)) >= 7 ? Number(txn.txn_date.slice(0, 4)) : Number(txn.txn_date.slice(0, 4)) - 1) : null;
+  const wfhQ = useQuery({ queryKey: ["work-use", fyStart], queryFn: () => api.workUse(fyStart as number), enabled: looksPhoneInternet && fyStart != null });
+
   if (txnQ.isLoading) return <Spinner />;
   if (!txn) return <Card className="p-6 text-sm text-muted">Transaction not found.</Card>;
 
   const isPdf = (txn.receipt_key ?? "").toLowerCase().endsWith(".pdf");
   const props = sitQ.data?.properties ?? [];
-
-  // Journey explainers (R7 / G4): detect rent-like and phone/internet lines from the text. The
-  // phone/internet "already covered by 70c" badge only shows when she's actually on the WFH fixed rate.
-  const desc = `${txn.merchant ?? ""} ${txn.raw_description ?? ""}`.toLowerCase();
   const looksRent = /\brent\b|rental payment|real estate|property manager|tenancy/.test(desc) && (txn.bucket === "payg" || txn.bucket === "unknown" || txn.bucket == null);
-  const looksPhoneInternet = /\b(telstra|optus|vodafone|tpg|iinet|aussie ?broadband|belong|superloop|internet|broadband|nbn|mobile|phone plan)\b/.test(desc);
-  const fyStart = txn.txn_date && /^\d{4}-\d{2}-\d{2}$/.test(txn.txn_date) ? (Number(txn.txn_date.slice(5, 7)) >= 7 ? Number(txn.txn_date.slice(0, 4)) : Number(txn.txn_date.slice(0, 4)) - 1) : null;
-  const wfhQ = useQuery({ queryKey: ["work-use", fyStart], queryFn: () => api.workUse(fyStart as number), enabled: looksPhoneInternet && fyStart != null });
   const wfhActive = (wfhQ.data?.wfh_hours ?? 0) > 0;
 
   return (

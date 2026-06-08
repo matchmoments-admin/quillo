@@ -16,7 +16,7 @@ import { getProgress } from "./lib/progress";
 import { buildGuidePrompt } from "./lib/guide";
 import { fyLabel, fyBounds } from "./lib/ledger-totals";
 import { assessReadiness, type FilingReadiness, type FilingReadinessSignals } from "./lib/readiness";
-import { rollSchedule, balancingAdjustment, fyStartYearOf, isLowCostAsset, looksLikePersonalTransfer, type DepAsset } from "./lib/depreciation";
+import { rollSchedule, balancingAdjustment, fyStartYearOf, isLowCostAsset, looksLikePersonalTransfer, assetDepreciatesForTaxpayer, type DepAsset } from "./lib/depreciation";
 import { matchClaimRules, suggestionText, enumerateSituationClaims, classifyClaim, uncoveredOccupations, ruleKey, type ClaimRule, type ClaimContext, type ClaimSituation } from "./lib/claimability";
 import { parseCsv, applyColumnMap, lineFingerprint, deriveBalances, reconcileStatement, isLiabilityAccount, fuzzyMerchant, isTransferLike, classifyMovement, movementTreatment, type ColumnMap, type Reconciliation, type StatementLine, type MovementClass } from "./lib/statements";
 import { groupKey, groupForClarify, rulePatternForStem, type ClarifyRow } from "./lib/clarify";
@@ -2257,11 +2257,21 @@ export class TaxAgent extends Agent<Env> {
   async computeDepreciation(userId: string, assetId: string, toStartYear?: number): Promise<{ rows: number }> {
     const row = await this.env.DB.prepare(
       `SELECT asset_class, cost_cents, acquired_date, effective_life_years, method, dv_rate_pct, div43_rate,
-              is_second_hand, business_use_pct, disposed_date FROM assets WHERE id = ? AND user_id = ?`,
+              is_second_hand, business_use_pct, disposed_date, owned_by, reimbursed FROM assets WHERE id = ? AND user_id = ?`,
     )
       .bind(assetId, userId)
-      .first<{ asset_class: string; cost_cents: number; acquired_date: string; effective_life_years: number | null; method: string | null; dv_rate_pct: number | null; div43_rate: number | null; is_second_hand: number; business_use_pct: number | null; disposed_date: string | null }>();
+      .first<{ asset_class: string; cost_cents: number; acquired_date: string; effective_life_years: number | null; method: string | null; dv_rate_pct: number | null; div43_rate: number | null; is_second_hand: number; business_use_pct: number | null; disposed_date: string | null; owned_by: string | null; reimbursed: number | null }>();
     if (!row) throw new Error("asset not found");
+
+    // 0030 / D.3 — fix at source: an employer-OWNED or REIMBURSED asset earns the taxpayer no
+    // decline-in-value (Div 40 needs the taxpayer to own and bear the cost). Write NO schedule rows and
+    // clear any stale ones, so EVERY reader (Assets page, CGT div43 cost-base, the position) is correct
+    // without its own guard.
+    if (!assetDepreciatesForTaxpayer(row)) {
+      await this.env.DB.prepare(`DELETE FROM depreciation_schedule WHERE asset_id = ? AND user_id = ?`).bind(assetId, userId).run();
+      await this.audit(userId, "depreciation_skipped_not_owned", JSON.stringify({ assetId, owned_by: row.owned_by, reimbursed: row.reimbursed }));
+      return { rows: 0 };
+    }
 
     const target = toStartYear ?? Number(this.currentFyLabel().slice(0, 4));
     const schedule = rollSchedule(this.toDepAsset(row), target);

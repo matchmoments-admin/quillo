@@ -76,6 +76,15 @@ export function looksLikePersonalTransfer(merchant: string | null | undefined): 
   return /\btransfer to\b|\bosko\b|\bpay\s?id\b|\bpay\s?anyone\b/.test(m);
 }
 
+/**
+ * Whether an asset earns the taxpayer decline-in-value: Div 40 needs the taxpayer to OWN it and BEAR
+ * the cost, so employer-owned or reimbursed gear depreciates to NOTHING. The single predicate
+ * computeDepreciation uses to decide whether to write a schedule at all (D.3 — fix at source).
+ */
+export function assetDepreciatesForTaxpayer(asset: { owned_by?: string | null; reimbursed?: number | null }): boolean {
+  return (asset.owned_by ?? "self") !== "employer" && !asset.reimbursed;
+}
+
 function utcDays(dateIso: string): number {
   const [y, m, d] = dateIso.split("-").map(Number);
   return Math.floor(Date.UTC(y ?? 1970, (m ?? 1) - 1, d ?? 1) / 86_400_000);

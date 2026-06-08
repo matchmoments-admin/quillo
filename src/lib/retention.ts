@@ -52,6 +52,8 @@ export const PURGE_TABLES = [
   "cgt_assets",              // 0037 (#138)
   "cgt_events",              // 0037 (#138)
   "ess_grants",              // 0038 (#141)
+  "bas_periods",             // 0039 (#137)
+  "payg_instalments",        // 0039 (#137)
 ] as const;
 
 // Columns that must NEVER leave the system in an APP-12 export, even though the row belongs to the

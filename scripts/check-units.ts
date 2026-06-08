@@ -628,6 +628,7 @@ console.log("claimability situational sweep (enumerateSituationClaims / classify
 // ── CGT: cost-base, Div43 reduction, 50% discount, main-residence, losses ─────
 import { computeCapitalGain, computeNetCapitalGain, DEFAULT_CGT_RULES } from "../src/lib/cgt";
 import { essAssessable } from "../src/lib/ess";
+import { gstFromInclusiveCents, computeBasNet } from "../src/lib/gst";
 
 console.log("cgt");
 {
@@ -700,6 +701,16 @@ console.log("ess (#141)");
   // founder >10% on a 'startup' grant → concession unavailable → discount assessable + flagged.
   const b = essAssessable([{ scheme_type: "startup", discount_cents: 1_000_000, ownership_gt_10pct: true }]);
   check("startup grant with >10% ownership → assessable + ineligible flag", b.assessable_discount_cents === 1_000_000 && b.startup_deferred_to_cgt_cents === 0 && b.ineligible_startup_flag);
+}
+
+console.log("gst/bas (#137)");
+{
+  check("$1,100 inclusive → $100 GST", gstFromInclusiveCents(110_000) === 10_000);
+  check("$45,000 fares → $4,090.91 output GST (rounded)", gstFromInclusiveCents(4_500_000) === 409_091);
+  const net = computeBasNet(4_500_000, 45_454);
+  check("net BAS = output − input", net.output_gst_cents === 409_091 && net.input_gst_cents === 45_454 && net.net_gst_cents === 363_637);
+  const refund = computeBasNet(1_100_000, 200_000); // more credits than output → refund (negative net)
+  check("input > output → negative net (refund)", refund.net_gst_cents === 100_000 - 200_000);
 }
 
 // ── FILING READINESS: deterministic engine + the no-tax-advice invariant ──────

@@ -350,6 +350,11 @@ CREATE TABLE IF NOT EXISTS entities (
   --       single person_id when rows exist (mirrors property_owners).
   entity_type      TEXT,                 -- individual|payg_employment|company|property_partnership|trust|partnership|smsf
   base_rate_entity INTEGER NOT NULL DEFAULT 0, -- 1 => 25% company rate (else 30)
+  -- 0039 (#137): per-entity GST registration (profiles.gst_registered is the tenant default).
+  gst_registered        INTEGER NOT NULL DEFAULT 0,
+  gst_basis             TEXT,            -- cash|accrual
+  gst_period            TEXT,            -- quarterly|monthly
+  gst_registration_date TEXT,
   created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -733,6 +738,35 @@ CREATE TABLE IF NOT EXISTS ess_grants (
 );
 CREATE INDEX IF NOT EXISTS idx_ess_grants_user ON ess_grants(user_id, scheme_type);
 CREATE INDEX IF NOT EXISTS idx_ess_grants_person ON ess_grants(user_id, person_id);
+
+-- ── GST / BAS + PAYG instalments (0039, #137) ─────────────────────────────────
+-- Indicative BAS workpaper (output GST − input credits). GST is NOT income tax. Quillo never lodges.
+CREATE TABLE IF NOT EXISTS bas_periods (
+  id                    TEXT PRIMARY KEY,
+  user_id               TEXT NOT NULL,
+  entity_id             TEXT,
+  period_start          TEXT NOT NULL,
+  period_end            TEXT NOT NULL,
+  output_gst_cents      INTEGER NOT NULL DEFAULT 0,
+  input_gst_cents       INTEGER NOT NULL DEFAULT 0,
+  payg_withholding_cents INTEGER NOT NULL DEFAULT 0,
+  payg_instalment_cents INTEGER NOT NULL DEFAULT 0,
+  status                TEXT NOT NULL DEFAULT 'draft',
+  created_at            TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_bas_user ON bas_periods(user_id, entity_id);
+
+CREATE TABLE IF NOT EXISTS payg_instalments (
+  id            TEXT PRIMARY KEY,
+  user_id       TEXT NOT NULL,
+  entity_id     TEXT,
+  fy            TEXT NOT NULL,
+  quarter       INTEGER,
+  instalment_cents INTEGER NOT NULL DEFAULT 0,
+  basis         TEXT,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_payg_inst_user ON payg_instalments(user_id, fy);
 
 -- ── FY checklist (0009): bucket-driven kickoff/wrap-up items ───────────────────
 CREATE TABLE IF NOT EXISTS fy_checklist (

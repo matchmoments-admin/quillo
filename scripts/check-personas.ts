@@ -37,7 +37,7 @@ for (const f of fs.readdirSync(path.join(root, "migrations")).filter((f) => f.en
   db.exec(fs.readFileSync(path.join(root, "migrations", f), "utf8"));
 }
 
-const env = { DB: new D1(db), FEATURES: "attribution_engine,position_excludes_nondeductible,loan_split,wfh_car_methods,refund_netting,income_dedupe,cgt_engine,ess_engine" } as unknown as Env;
+const env = { DB: new D1(db), FEATURES: "attribution_engine,position_excludes_nondeductible,loan_split,wfh_car_methods,refund_netting,income_dedupe,cgt_engine,ess_engine,gst_bas" } as unknown as Env;
 
 // tiny seed helper
 const run = (sql: string, ...p: unknown[]) => db.prepare(sql).run(...(p as never[]));
@@ -127,10 +127,12 @@ const asset = (id: string, u: string, costCents: number, depCents: number, prope
   // #136: a sole trader is an INDIVIDUAL entity with a 'business' income_activity. Her net business
   // income is assessable to HER, and her s8-1 expenses reach her personal headline via the activity
   // (the attribution engine routes an individual-owned business activity to 'individual', never 'company').
-  run(`INSERT INTO entities (id, user_id, kind, name, person_id, entity_type) VALUES ('p4eInd', ?, 'individual', 'Priya (sole trader)', ?, 'individual')`, u, `person_self_${u}`);
+  // #137: rideshare must register for GST from the first dollar — entity flagged registered.
+  run(`INSERT INTO entities (id, user_id, kind, name, person_id, entity_type, gst_registered) VALUES ('p4eInd', ?, 'individual', 'Priya (sole trader)', ?, 'individual', 1)`, u, `person_self_${u}`);
   run(`INSERT INTO income_activities (id, user_id, entity_id, activity_type, label) VALUES ('p4iaBiz', ?, 'p4eInd', 'business', 'Rideshare')`, u);
   inc("p4iFares", u, "business", 4500000);
   exp("p4tFuel", u, 500000, "company"); // raw bucket is moot once attributed below
+  run(`UPDATE transactions SET gst_cents = 45454 WHERE id = 'p4tFuel'`); // GST credit on the fuel input
   run(`INSERT INTO transaction_attributions (id, user_id, transaction_id, entity_id, income_activity_id, attributed_amount_cents, deduction_provision) VALUES ('p4aFuel', ?, 'p4tFuel', 'p4eInd', 'p4iaBiz', 500000, 's8-1_general')`, u);
   run(`INSERT INTO work_use_inputs (user_id, fy, car_work_km) VALUES (?, 2025, 30000)`, u); // GAP #142: 30k driven, capped at 5k → under-claims
 }
@@ -256,6 +258,8 @@ async function main() {
   check("P4 #136: business income is first-class ('business'), assessable to the individual ($45k)", r4biz?.gross_cents === 4500000);
   check("P4 #136: business fuel NETS into her individual position via the sole-trader activity (not company-orphaned)", r4.attribution?.individual_cents === 500000 && r4.company_tracked_cents === 0 && r4.taxable_position_cents === 4500000 - 500000 - 440000);
   check("P4 GAP #142: 30,000km driven but cents-per-km caps at 5,000km ($4,400) — logbook would beat it", r4.work_method?.car_cents === 440000);
+  check("P4 #137: GST-registered → output GST = 1/11 of $45k fares ($4,090.91)", r4.gst?.registered === true && r4.gst?.output_gst_cents === 409091);
+  check("P4 #137: input GST credit on fuel → net BAS = output − input (GST is NOT income tax, not in the position)", r4.gst?.input_gst_cents === 45454 && r4.gst?.net_gst_cents === 409091 - 45454);
 
   // ── Persona 5: sole-trader freelancer ──
   const r5 = await buildReport(env, "p5", 2025);

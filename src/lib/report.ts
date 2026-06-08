@@ -1,6 +1,6 @@
 import type { Env } from "../env";
 import { COUNTABLE, COUNTABLE_INCOME } from "./queries";
-import { incomeTotals, depreciationTotals, attributionTotals, companyPositions, cgtTotals, essTotals, type IncomeTotals, type AttributionTotals, type CompanyPosition } from "./ledger-totals";
+import { incomeTotals, depreciationTotals, attributionTotals, companyPositions, cgtTotals, essTotals, gstTotals, type IncomeTotals, type AttributionTotals, type CompanyPosition, type GstPosition } from "./ledger-totals";
 import type { CgtPortfolioResult } from "./cgt";
 import type { EssAssessable } from "./ess";
 import { featureOn } from "./features";
@@ -127,6 +127,10 @@ export interface Report {
   // (employment income). The startup-concession portion is deferred to CGT, not counted here. Present
   // only when the ess_engine flag is on AND there are grants. undefined ⇒ byte-identical legacy totals.
   ess?: EssAssessable;
+  // Phase #137: indicative BAS position (output GST − input credits). GST is NOT income tax — it is
+  // NEVER added to taxable_position_cents. Present only when the gst_bas flag is on AND a business is
+  // GST-registered. undefined ⇒ byte-identical legacy totals.
+  gst?: GstPosition;
   taxable_position_cents: number;      // total_income + net capital gain + ESS discount − deductions − depreciation (indicative)
 }
 
@@ -478,6 +482,13 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   }
   const taxable_position_cents =
     income.gross_cents + (capital_gains?.net_capital_gain_cents ?? 0) + (ess?.assessable_discount_cents ?? 0) - total_deductions_cents - dep.total_cents;
+  // Phase #137: indicative BAS position — SEPARATE from income tax (never added to taxable_position).
+  // Flag-gated; only surfaced when a business is GST-registered.
+  let gst: GstPosition | undefined;
+  if (featureOn(env, "gst_bas")) {
+    const g = await gstTotals(env, userId, startYear);
+    if (g.registered) gst = g;
+  }
 
   // Resolved-deductible: only spend a year-end review has CONFIRMED deductible (deductibility set
   // to a resolved state, with the apportioned amount when present). ~$0 until a review runs — by
@@ -530,6 +541,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
     company_positions: company_positions.length ? company_positions : undefined,
     capital_gains,
     ess,
+    gst,
     taxable_position_cents,
   };
 }

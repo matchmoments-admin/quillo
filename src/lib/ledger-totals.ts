@@ -3,6 +3,7 @@ import { COUNTABLE } from "./queries";
 import { classifyAttribution, splitAttribution } from "./attribution";
 import { computeNetCapitalGain, cgtRulesForFy, type CgtPortfolioResult } from "./cgt";
 import { essAssessable, type EssAssessable } from "./ess";
+import { computeBasNet, type BasNet } from "./gst";
 import auV1RulePack from "../rulepacks/au-v1.json";
 
 // ── The single money-aggregation seam ─────────────────────────────────────────
@@ -289,6 +290,37 @@ export async function companyPositions(env: Env, userId: string, startYear: numb
 // Per-FY thresholds from the bundled rule pack (company/R&D params live here, never in SQL).
 function auV1Thresholds(fy: string): Record<string, number> | undefined {
   return (auV1RulePack as unknown as { thresholds_by_fy?: Record<string, Record<string, number>> }).thresholds_by_fy?.[fy];
+}
+
+export interface GstPosition extends BasNet {
+  registered: boolean;
+}
+
+/**
+ * Phase #137: an INDICATIVE BAS position for an FY. Output GST = 1/11th of taxable-supply business
+ * income; input GST credits = gst_cents captured on countable business inputs. Only meaningful when a
+ * business is GST-registered (per-entity entities.gst_registered, or the tenant default
+ * profiles.gst_registered). GST is NOT income tax — the caller keeps this OUT of taxable_position.
+ * Flag-gated by gst_bas. Pre-0039 / not registered → registered:false with zeros. Quillo never lodges.
+ */
+export async function gstTotals(env: Env, userId: string, startYear: number): Promise<GstPosition> {
+  const fy = fyLabel(startYear);
+  const { start, end } = fyBounds(startYear);
+  const notRegistered: GstPosition = { registered: false, output_gst_cents: 0, input_gst_cents: 0, net_gst_cents: 0 };
+  try {
+    // Registered if any entity is flagged, or the tenant default profile flag is set.
+    const entReg = (await env.DB.prepare(`SELECT COUNT(*) AS n FROM entities WHERE user_id = ? AND COALESCE(gst_registered,0) = 1`).bind(userId).first<{ n: number }>())?.n ?? 0;
+    const profReg = (await env.DB.prepare(`SELECT COALESCE(gst_registered,0) AS g FROM profiles WHERE user_id = ?`).bind(userId).first<{ g: number }>())?.g ?? 0;
+    if (entReg === 0 && profReg === 0) return notRegistered;
+    // Taxable supplies: sole-trader / business income for the FY (GST-inclusive).
+    const sales = (await env.DB.prepare(`SELECT COALESCE(SUM(COALESCE(amount_aud_cents, gross_cents)),0) AS s FROM income WHERE user_id = ? AND fy = ? AND income_type = 'business'`).bind(userId, fy).first<{ s: number }>())?.s ?? 0;
+    // Input credits: GST captured on countable business inputs this FY.
+    const inputs = (await env.DB.prepare(`SELECT COALESCE(SUM(gst_cents),0) AS g FROM transactions WHERE user_id = ? AND txn_date >= ? AND txn_date <= ? AND bucket IN ('company','payg') AND ${COUNTABLE}`).bind(userId, start, end).first<{ g: number }>())?.g ?? 0;
+    return { registered: true, ...computeBasNet(sales, inputs) };
+  } catch (e) {
+    if (/no such table|no such column/i.test((e as Error).message)) return notRegistered;
+    throw e;
+  }
 }
 
 /**

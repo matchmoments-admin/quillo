@@ -198,9 +198,11 @@ export function TxnDetail() {
               />
             </label>
 
-            {(bucket === "property_rented" || bucket === "property_vacant") && (
+            {/* Property applies to rental EXPENSE buckets and to rent INCOME (income_property) — a rent
+                credit must be attributable to its property, or its rental income never ties in. */}
+            {(bucket === "property_rented" || bucket === "property_vacant" || bucket === "income_property") && (
               <label className="block">
-                <span className="text-xs font-medium uppercase tracking-wide text-muted">Property <InfoTip tip="Which of your investment properties this cost belongs to, so per-property totals stay accurate." /></span>
+                <span className="text-xs font-medium uppercase tracking-wide text-muted">Property <InfoTip tip={bucket === "income_property" ? "Which property this rent was received for, so it counts as that property's rental income." : "Which of your investment properties this cost belongs to, so per-property totals stay accurate."} /></span>
                 <select
                   value={propertyId}
                   onChange={(e) => {
@@ -216,6 +218,9 @@ export function TxnDetail() {
                     </option>
                   ))}
                 </select>
+                {bucket === "income_property" && (
+                  <span className="mt-1 block text-xs text-muted">Tagging the property attributes this credit. To make it count in the position, record it as rental income (or link it under "possible duplicate income"). General info only.</span>
+                )}
               </label>
             )}
 

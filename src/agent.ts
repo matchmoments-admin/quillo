@@ -2054,19 +2054,22 @@ export class TaxAgent extends Agent<Env> {
       business_use_pct?: number | null;
       source_doc_id?: string | null;
       needs_review?: number;
+      owned_by?: string | null;   // 0030: 'self' (default) | 'employer'
+      reimbursed?: number;        // 0030: 1 => reimbursed, not depreciable
     },
   ): Promise<string> {
     const id = crypto.randomUUID();
     await this.env.DB.prepare(
       `INSERT INTO assets (id, user_id, person_id, property_id, entity_id, label, asset_class, cost_cents,
          acquired_date, effective_life_years, method, dv_rate_pct, div43_rate, is_second_hand, business_use_pct,
-         source_doc_id, status, needs_review)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)`,
+         source_doc_id, status, needs_review, owned_by, reimbursed)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
     )
       .bind(
         id, userId, `person_self_${userId}`, a.property_id ?? null, a.entity_id ?? null, a.label, a.asset_class,
         a.cost_cents, a.acquired_date, a.effective_life_years ?? null, a.method ?? null, a.dv_rate_pct ?? 200, a.div43_rate ?? null,
         a.is_second_hand ? 1 : 0, a.business_use_pct ?? 100, a.source_doc_id ?? null, a.needs_review ?? 0,
+        a.owned_by ?? "self", a.reimbursed ?? 0,
       )
       .run();
     await this.audit(userId, "asset_created", JSON.stringify({ id, class: a.asset_class, cost: a.cost_cents }));
@@ -2088,6 +2091,7 @@ export class TaxAgent extends Agent<Env> {
          FROM transactions
         WHERE user_id = ? AND bucket = 'asset' AND asset_id IS NULL AND status NOT IN ('duplicate','ignored')
           AND COALESCE(direction,'debit') = 'debit'  -- a capital purchase is money OUT; never an asset from a credit
+          AND COALESCE(reimbursed,0) = 0             -- 0030: reimbursed spend isn't the taxpayer's cost — never a depreciating asset
           AND txn_date IS NOT NULL AND COALESCE(amount_aud_cents, amount_cents) > 0`,
     )
       .bind(userId)

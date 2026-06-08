@@ -22,6 +22,8 @@ export interface ReportRow {
   total_cents: number;
   gst_cents: number;
   deductibility?: string | null; // set on deduction_breakdown rows; absent on collapsed by_bucket/income rows
+  reimbursed?: number | null;    // 0030: set on deduction_breakdown rows; reimbursed spend is excluded from the headline
+  use_status_denied?: number | null; // 0031: 1 when the row's property is rent-free/renovating (excluded from the headline, kept visible)
 }
 
 /**
@@ -45,8 +47,17 @@ export function deductionGroupForRow(
   bucket: string,
   deductibility: string | null | undefined,
   excludeNonDeductible: boolean,
+  reimbursed: number | null | undefined = 0,
+  propertyDenied: number | null | undefined = 0,
 ): DeductionGroup {
   if (bucket === "company") return "company";
+  // 0030: employer-reimbursed spend is never a deductible loss/outgoing (the employer bore the cost).
+  // 0031: spend on a property held rent-free / off-market-renovating earns no income, so it's not a
+  // deduction either (s8-1) — though CGT cost base still accrues elsewhere. Both stay VISIBLE as
+  // excluded tracked-spend (not removed), so every surface that lists spend agrees; only the headline
+  // drops them. Default 0 keeps legacy callers byte-identical.
+  if (reimbursed) return "excluded";
+  if (propertyDenied) return "excluded";
   if (bucket === "asset" || bucket === "unknown") return "excluded";
   // A positive SUGGESTION is NEVER counted until the user confirms it → confirmed_deductible (B1).
   // Excluded regardless of the flag — a suggestion must not move the headline.
@@ -137,16 +148,27 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   const amtExpr = honorApportion ? claim("") : "COALESCE(amount_aud_cents, amount_cents)";
   const amtExprT = honorApportion ? claim("t.") : "COALESCE(t.amount_aud_cents, t.amount_cents)";
 
+  // 0031: a property held rent-free for a relative, or off-market while renovating, earns no income
+  // => its expenses are NOT deductions (s8-1), though CGT cost base still accrues. We MARK such rows
+  // (a 0/1 flag) rather than removing them, so they stay visible as excluded tracked-spend and every
+  // surface that lists spend agrees; only the headline classifier drops them. Static string, no extra
+  // binds; only the genuinely-new use_status values deny and no existing row carries them, so the
+  // position is byte-identical until a user marks a property. `col` is the txn's property_id column.
+  const useStatusDenied = (col: string) =>
+    `(CASE WHEN EXISTS (SELECT 1 FROM properties pp WHERE pp.id = ${col} AND pp.use_status IN ('private_use_rent_free','under_renovation_not_available')) THEN 1 ELSE 0 END)`;
+
   // AUD totals (fall back to original when already AUD / pre-migration). Exclude duplicates.
   // Grouped by (bucket, ato_label, deductibility) so the deductibility-aware position can filter per
   // row; the legacy `by_bucket` shape is rebuilt by collapsing the deductibility dimension below.
   const byBucket = await env.DB.prepare(
-    `SELECT bucket, ato_label, COALESCE(deductibility,'undetermined') AS deductibility, COUNT(*) AS n,
+    `SELECT bucket, ato_label, COALESCE(deductibility,'undetermined') AS deductibility,
+            COALESCE(reimbursed,0) AS reimbursed, ${useStatusDenied("transactions.property_id")} AS use_status_denied,
+            COUNT(*) AS n,
             COALESCE(SUM(${amtExpr}),0) AS total_cents,
             COALESCE(SUM(gst_cents),0) AS gst_cents
        FROM transactions
       WHERE user_id = ? AND txn_date >= ? AND txn_date <= ? AND bucket IS NOT NULL AND ${COUNTABLE}
-      GROUP BY bucket, ato_label, deductibility ORDER BY bucket, total_cents DESC`,
+      GROUP BY bucket, ato_label, deductibility, reimbursed, use_status_denied ORDER BY bucket, total_cents DESC`,
   )
     .bind(userId, start, end)
     .all<ReportRow>();
@@ -170,14 +192,16 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
     .all<ReportRow>();
 
   const byPropertyRaw = await env.DB.prepare(
-    `SELECT t.property_id, p.label, COALESCE(t.deductibility,'undetermined') AS deductibility, COUNT(*) AS n,
+    `SELECT t.property_id, p.label, COALESCE(t.deductibility,'undetermined') AS deductibility,
+            COALESCE(t.reimbursed,0) AS reimbursed, ${useStatusDenied("t.property_id")} AS use_status_denied,
+            COUNT(*) AS n,
             COALESCE(SUM(${amtExprT}),0) AS total_cents
        FROM transactions t LEFT JOIN properties p ON p.id = t.property_id
       WHERE t.user_id = ? AND t.txn_date >= ? AND t.txn_date <= ? AND t.property_id IS NOT NULL AND ${COUNTABLE.replace(/\b(status|kind|matched_txn_id|direction)\b/g, "t.$1")}
-      GROUP BY t.property_id, deductibility`,
+      GROUP BY t.property_id, deductibility, reimbursed, use_status_denied`,
   )
     .bind(userId, start, end)
-    .all<{ property_id: string; label: string | null; deductibility: string; n: number; total_cents: number }>();
+    .all<{ property_id: string; label: string | null; deductibility: string; reimbursed: number; use_status_denied: number; n: number; total_cents: number }>();
 
   // Receipts with no (or unparseable) date can't be assigned to any FY — surface them
   // explicitly instead of letting the date filter silently drop them from every report.
@@ -278,7 +302,9 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
       expSeen.set(r.property_id, row);
       expenseByProp.push(row);
     }
-    const counts = !excludeNonDeductible || !(r.deductibility === "likely_not" || r.deductibility === "confirmed_not" || r.deductibility === "needs_apportionment");
+    // Reimbursed (0030) and rent-free/renovating-property (0031) spend never counts toward the
+    // negative-gearing deduction, though it stays in expenseByProp as visible tracked-spend above.
+    const counts = !r.reimbursed && !r.use_status_denied && (!excludeNonDeductible || !(r.deductibility === "likely_not" || r.deductibility === "confirmed_not" || r.deductibility === "needs_apportionment"));
     if (counts) expDeductMap.set(r.property_id, (expDeductMap.get(r.property_id) ?? 0) + r.total_cents);
   }
   const expMap = expSeen;
@@ -335,7 +361,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   // The breakdown carries deductibility; the same classifier drives the readiness display lines so
   // the headline == the sum of the "Deductions" lines (asserted by the reconciliation golden).
   const gross_deductions_cents = breakdown
-    .filter((b) => deductionGroupForRow(b.bucket, b.deductibility, excludeNonDeductible) === "deduction")
+    .filter((b) => deductionGroupForRow(b.bucket, b.deductibility, excludeNonDeductible, b.reimbursed, b.use_status_denied) === "deduction")
     .reduce((s, b) => s + (b.total_cents ?? 0), 0);
 
   // Refund netting (flag `refund_netting`): a refund/reimbursement is a CREDIT, so it's already
@@ -381,7 +407,11 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
     `SELECT COALESCE(SUM(COALESCE(deductible_amount_cents, amount_aud_cents, amount_cents)),0) AS total
        FROM transactions
       WHERE user_id = ? AND txn_date >= ? AND txn_date <= ? AND ${COUNTABLE}
-        AND deductibility IN ('likely_deductible','confirmed_deductible')`,
+        AND deductibility IN ('likely_deductible','confirmed_deductible')
+        -- Stay in lockstep with the headline gates: reimbursed (0030) / rent-free property (0031) spend
+        -- is never resolved-deductible, so this figure can't claim what the position excludes.
+        AND COALESCE(reimbursed,0) = 0
+        AND ${useStatusDenied("transactions.property_id")} = 0`,
   )
     .bind(userId, start, end)
     .first<{ total: number }>();

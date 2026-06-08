@@ -158,7 +158,7 @@ export function assessReadiness(input: {
   let paygUnresolvedN = 0;
   for (const b of report.deduction_breakdown) {
     if (b.bucket === "unknown") continue; // surfaced via the unknown_bucket blocker, not as a line
-    const group = deductionGroupForRow(b.bucket, b.deductibility, excludeNonDeductible);
+    const group = deductionGroupForRow(b.bucket, b.deductibility, excludeNonDeductible, b.reimbursed, b.use_status_denied);
     const label = b.ato_label ? `${b.bucket} · ${b.ato_label}` : b.bucket;
     const why = group === "deduction" ? bucketWhy(b.bucket) : group === "company" ? bucketWhy("company") : excludedWhy(b.bucket, b.deductibility);
     lines.push({ group, label, amount_cents: b.total_cents, basis: `${b.n} countable transaction(s)`, why });

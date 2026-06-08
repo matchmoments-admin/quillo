@@ -98,6 +98,9 @@ CREATE TABLE IF NOT EXISTS transactions (
   deductible_amount_cents INTEGER,       -- apportioned claimable amount (cents), resolved at review; NULL until then
   -- 0012: a credit bank-line manually linked to the income row it duplicates (de-dup); NULL = unmatched.
   matched_income_id TEXT,
+  -- 0030: employer-reimbursed spend isn't a deductible loss/outgoing — excluded from the position
+  --       and never turned into a depreciating asset by the auto-linker. Defaults 0 => legacy.
+  reimbursed   INTEGER NOT NULL DEFAULT 0,
   created_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_txn_imghash ON transactions(user_id, image_hash);
@@ -308,6 +311,9 @@ CREATE TABLE IF NOT EXISTS properties (
   label         TEXT NOT NULL,           -- short name shown to the model, e.g. "14 Rental St"
   address       TEXT,
   status        TEXT NOT NULL DEFAULT 'rented',  -- rented|vacant|owner_occupied|sold
+  -- 0031: finer use-status that GATES deductibility (private_use_rent_free / vacant_land /
+  --       under_renovation_not_available deny deductions while CGT cost base still accrues).
+  use_status    TEXT,                    -- rented|genuinely_available_for_rent|private_use_rent_free|under_renovation_not_available|vacant_land|owner_occupied
   ownership_pct REAL NOT NULL DEFAULT 100, -- single-owner fast path; property_owners overrides when present
   acquired_date TEXT,
   notes         TEXT,
@@ -513,6 +519,10 @@ CREATE TABLE IF NOT EXISTS assets (
   is_second_hand INTEGER DEFAULT 0,
   ownership_pct REAL DEFAULT 100.0,
   business_use_pct REAL DEFAULT 100.0,
+  -- 0030: who owns / whether reimbursed. owned_by='employer' or reimbursed=1 => no decline-in-value
+  --       (Div 40 needs the taxpayer to own and bear the cost). Defaults => legacy behaviour.
+  owned_by      TEXT NOT NULL DEFAULT 'self',   -- self|employer
+  reimbursed    INTEGER NOT NULL DEFAULT 0,
   disposed_date TEXT,
   disposal_value_cents INTEGER,
   source_doc_id TEXT,

@@ -786,6 +786,15 @@ console.log("deductibility (deny-by-default)");
   check("ON: needs_apportionment excluded", deductionGroupForRow("payg", "needs_apportionment", true) === "excluded");
   check("ON: property_rented undetermined still counts (capture-now preserved)", deductionGroupForRow("property_rented", "undetermined", true) === "deduction");
   check("ON: property_rented confirmed_not excluded", deductionGroupForRow("property_rented", "confirmed_not", true) === "excluded");
+  // G7 (0030): employer-reimbursed spend is NEVER deductible, regardless of bucket/flag, and the
+  // default reimbursed=0 leaves every existing call byte-identical.
+  check("reimbursed payg excluded even when it would otherwise count", deductionGroupForRow("payg", "likely_deductible", true, 1) === "excluded");
+  check("reimbursed property excluded", deductionGroupForRow("property_rented", "undetermined", true, 1) === "excluded");
+  check("reimbursed=0 default keeps legacy result (byte-identical)", deductionGroupForRow("payg", "likely_deductible", true, 0) === "deduction" && deductionGroupForRow("payg", "likely_deductible", true) === "deduction");
+  // G3 (0031): a rent-free / off-market-renovating property's spend is excluded from the headline but
+  // still classified (visible), and propertyDenied=0 default leaves every existing call unchanged.
+  check("rent-free property spend excluded (propertyDenied=1)", deductionGroupForRow("property_rented", "undetermined", true, 0, 1) === "excluded");
+  check("propertyDenied=0 default keeps legacy result (byte-identical)", deductionGroupForRow("property_rented", "undetermined", true, 0, 0) === "deduction" && deductionGroupForRow("property_rented", "undetermined", true) === "deduction");
 
   // ── PHASE 5: loan interest/principal split — positionAmountCents (mirrors the buildReport SUM) ──
   // A split mortgage line keeps amount_cents = gross (so statement reconciliation is untouched) and

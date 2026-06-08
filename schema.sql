@@ -101,6 +101,10 @@ CREATE TABLE IF NOT EXISTS transactions (
   -- 0030: employer-reimbursed spend isn't a deductible loss/outgoing — excluded from the position
   --       and never turned into a depreciating asset by the auto-linker. Defaults 0 => legacy.
   reimbursed   INTEGER NOT NULL DEFAULT 0,
+  -- 0034: who actually paid + from which account, so the attribution layer can split payer from the
+  --       entity entitled to deduct (TR 93/32; personally-paid company costs). NULL => legacy.
+  payer_person_id     TEXT,
+  paid_via_account_id TEXT,
   created_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_txn_imghash ON transactions(user_id, image_hash);
@@ -342,8 +346,68 @@ CREATE TABLE IF NOT EXISTS entities (
   active      INTEGER NOT NULL DEFAULT 1,
   person_id   TEXT,                      -- 0006_persons.sql: owning taxpayer (FK persons.id)
   jurisdiction TEXT DEFAULT 'AU',        -- 0006_persons.sql
+  -- 0032: real columns for the company-position engine. entity_roles (many-to-many) overrides the
+  --       single person_id when rows exist (mirrors property_owners).
+  entity_type      TEXT,                 -- individual|payg_employment|company|property_partnership|trust|partnership|smsf
+  base_rate_entity INTEGER NOT NULL DEFAULT 0, -- 1 => 25% company rate (else 30)
   created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- 0032: person<->entity many-to-many with roles (a person is many things to many entities).
+-- Overrides entities.person_id when rows exist. Dark until the attribution engine reads it.
+CREATE TABLE IF NOT EXISTS entity_roles (
+  id            TEXT PRIMARY KEY,
+  user_id       TEXT NOT NULL,
+  person_id     TEXT NOT NULL,                  -- persons.id
+  entity_id     TEXT NOT NULL,                  -- entities.id
+  role          TEXT NOT NULL,                  -- individual_taxpayer|employee|director|shareholder|co_owner|partner
+  ownership_pct REAL,                           -- shareholder/co-owner/partner %; NULL for non-equity roles
+  start_date    TEXT,                           -- roles change over time (continuity-of-ownership tests)
+  end_date      TEXT,
+  detail_json   TEXT NOT NULL DEFAULT '{}',
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (user_id, person_id, entity_id, role)
+);
+CREATE INDEX IF NOT EXISTS idx_entity_roles_entity ON entity_roles(user_id, entity_id);
+CREATE INDEX IF NOT EXISTS idx_entity_roles_person ON entity_roles(user_id, person_id);
+
+-- 0033: income_activities — the explicit source-of-income spine. Every transaction/attribution hangs
+-- off an activity (or the 'private' sink). Seeded from entities/properties; transactions not backfilled.
+CREATE TABLE IF NOT EXISTS income_activities (
+  id               TEXT PRIMARY KEY,
+  user_id          TEXT NOT NULL,
+  entity_id        TEXT,                         -- entities.id (NULL for the 'private' sink)
+  activity_type    TEXT NOT NULL,                -- salary_wages|rental_property|business|investment|private
+  property_id      TEXT,                         -- properties.id for rental_property
+  occupation_scope TEXT,                         -- rule-pack scope key (e.g. it_professional)
+  fy               TEXT,                         -- nullable: cross-FY activities allowed
+  label            TEXT,
+  created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_income_act_user   ON income_activities(user_id, activity_type);
+CREATE INDEX IF NOT EXISTS idx_income_act_entity ON income_activities(user_id, entity_id);
+CREATE INDEX IF NOT EXISTS idx_income_act_prop   ON income_activities(user_id, property_id);
+
+-- 0034: transaction_attributions — split WHO PAID from WHO DEDUCTS (TR 93/32; shareholder-loan
+-- routing). One payment fans out to many entities/activities by ownership %. The report sums these
+-- when present, else falls back to the raw-transaction path. Gated behind attribution_engine (OFF).
+CREATE TABLE IF NOT EXISTS transaction_attributions (
+  id                       TEXT PRIMARY KEY,
+  user_id                  TEXT NOT NULL,
+  transaction_id           TEXT NOT NULL,           -- transactions.id
+  entity_id                TEXT NOT NULL,           -- the taxpayer claiming it
+  income_activity_id       TEXT,                    -- income_activities.id
+  attributed_pct           REAL,                    -- XOR with amount; the ownership/work split
+  attributed_amount_cents  INTEGER,
+  work_use_pct             REAL,                    -- mixed-use apportionment
+  deduction_provision      TEXT,                    -- s8-1_general|div40|div43|s40-880|wfh_fixed_rate|private_non_deductible
+  creates_shareholder_loan INTEGER NOT NULL DEFAULT 0,
+  shareholder_loan_id      TEXT,                    -- FK shareholder_loans.id (Phase C); NULL until then
+  created_at               TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_txn_attr_txn    ON transaction_attributions(user_id, transaction_id);
+CREATE INDEX IF NOT EXISTS idx_txn_attr_entity ON transaction_attributions(user_id, entity_id);
+CREATE INDEX IF NOT EXISTS idx_txn_attr_act    ON transaction_attributions(user_id, income_activity_id);
 
 -- Deterministic per-user categorisation overrides (e.g. "Bunnings -> company tools").
 -- Applied AFTER extraction, BEFORE trusting the model's bucket (highest priority wins).

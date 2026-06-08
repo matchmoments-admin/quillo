@@ -6,6 +6,7 @@ import { QuickBooksAdapter } from "./ledger/qbo";
 import { revokeAndDisconnect } from "./lib/qbo-oauth";
 import { purgeTenant as purgeTenantData, exportTenant as exportTenantData, flagOldData as flagOldDataSweep, type PurgeResult } from "./lib/retention";
 import { COUNTABLE } from "./lib/queries";
+import { deriveWfhHours } from "./lib/work-use";
 import { applyUserRules, RULE_CREDIT_BUCKETS } from "./lib/rules";
 import { sha256hex, sha256hexBytes } from "./lib/base64";
 import { getLLM, type LLM } from "./llm";
@@ -2788,15 +2789,20 @@ export class TaxAgent extends Agent<Env> {
    * cents-per-km deductions (#67). One row per (user, fy). Inert until the wfh_car_methods flag is on
    * (buildReport reads it then). Stores the raw inputs only — the $ figure is computed in report.ts.
    */
-  async setWorkUseInputs(userId: string, input: { fy: number; wfh_hours: number | null; car_work_km: number | null }): Promise<{ ok: true }> {
+  async setWorkUseInputs(userId: string, input: { fy: number; wfh_hours: number | null; car_work_km: number | null; wfh_days_per_week?: number | null; wfh_weeks?: number | null }): Promise<{ ok: true }> {
     await this.requireProfile(userId);
+    // 0036: hours stay authoritative. When the caller supplies days/week but no explicit hours (the
+    // wizard path), DERIVE hours so the figure is set transparently; an explicit hours edit always wins.
+    const days = input.wfh_days_per_week ?? null;
+    const weeks = input.wfh_weeks ?? null;
+    const hours = input.wfh_hours != null ? input.wfh_hours : deriveWfhHours(days, weeks);
     await this.env.DB.prepare(
-      `INSERT INTO work_use_inputs (user_id, fy, wfh_hours, car_work_km, updated_at) VALUES (?, ?, ?, ?, datetime('now'))
-       ON CONFLICT(user_id, fy) DO UPDATE SET wfh_hours = excluded.wfh_hours, car_work_km = excluded.car_work_km, updated_at = datetime('now')`,
+      `INSERT INTO work_use_inputs (user_id, fy, wfh_hours, car_work_km, wfh_days_per_week, wfh_weeks, updated_at) VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+       ON CONFLICT(user_id, fy) DO UPDATE SET wfh_hours = excluded.wfh_hours, car_work_km = excluded.car_work_km, wfh_days_per_week = excluded.wfh_days_per_week, wfh_weeks = excluded.wfh_weeks, updated_at = datetime('now')`,
     )
-      .bind(userId, input.fy, input.wfh_hours, input.car_work_km)
+      .bind(userId, input.fy, hours, input.car_work_km, days, weeks)
       .run();
-    await this.audit(userId, "work_use_set", JSON.stringify(input));
+    await this.audit(userId, "work_use_set", JSON.stringify({ ...input, wfh_hours: hours }));
     return { ok: true };
   }
 

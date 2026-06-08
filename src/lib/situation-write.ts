@@ -134,8 +134,11 @@ export async function addEntity(env: Env, userId: string, e: { kind: string; nam
   const id = uid();
   const personId = e.person_id ?? selfPersonId(userId);
   const entityType = entityTypeForKind(e.kind);
-  await env.DB.prepare(`INSERT INTO entities (id, user_id, kind, name, detail_json, person_id, entity_type) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-    .bind(id, userId, e.kind, e.name ?? null, JSON.stringify(e.detail ?? {}), personId, entityType)
+  // Most small trading companies are base-rate entities (25% — turnover < $50m, ≤80% passive income),
+  // so default a company to 1 (the user can change it). Non-companies: 0 (irrelevant).
+  const baseRate = e.kind === "company" ? 1 : 0;
+  await env.DB.prepare(`INSERT INTO entities (id, user_id, kind, name, detail_json, person_id, entity_type, base_rate_entity) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    .bind(id, userId, e.kind, e.name ?? null, JSON.stringify(e.detail ?? {}), personId, entityType, baseRate)
     .run();
   // 0032: seed a self->entity role so the join mirrors the scalar from the start (employment->employee,
   // company->director, else co_owner). 0033: seed the matching income_activity so attributions/UI have

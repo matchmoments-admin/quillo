@@ -83,6 +83,9 @@ const check = (name: string, cond: boolean) => { if (cond) { pass++; console.log
   run(`INSERT INTO transaction_attributions (id, user_id, transaction_id, entity_id, income_activity_id, attributed_pct, attributed_amount_cents, deduction_provision) VALUES ('p2aCo', ?, 'p2co', 'p2eInd', 'p2iaRent', 50, 50000, 's8-1_general')`, u);
   // (c) father-house expense $300 (raw, no attribution) → rent-free => NOT deductible, but kept visible
   run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, property_id, direction, deductibility) VALUES ('p2dad', ?, 'upload', 'categorised', 'bank_line', 30000, 30000, ?, 'property_rented', 'p2pDad', 'debit', 'undetermined')`, u, FY_DATE);
+  // (d) a REIMBURSED company-bucket cost $50 (raw, not attributed) → the company never bore it, so it
+  // must NOT inflate the company's loss (0030 invariant on the raw company-spend path).
+  run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, direction, deductibility, reimbursed) VALUES ('p2crmb', ?, 'upload', 'categorised', 'bank_line', 5000, 5000, ?, 'company', 'debit', 'undetermined', 1)`, u, FY_DATE);
 }
 
 async function main() {
@@ -97,10 +100,17 @@ async function main() {
   const r2 = await buildReport(env, "p2", 2025);
   const dad = r2.per_property.find((p) => p.property_id === "p2pDad");
   const rent = r2.per_property.find((p) => p.property_id === "p2pRent");
-  check("P2: Cloudflare bill routes to the COMPANY (shareholder loan), not salary", r2.attribution?.company_cents === 9000 && r2.company_tracked_cents === 9000);
+  check("P2: Cloudflare bill routes to the COMPANY track (not salary)", r2.attribution?.company_cents === 9000);
   check("P2: co-owned bill paid 100% is claimed at his 50% legal interest ($500)", r2.attribution?.property_cents === 50000 && rent?.deduction_cents === 50000);
   check("P2: personal deductions = co-owned $500 only (company + rent-free house excluded)", r2.total_deductions_cents === 50000);
   check("P2: father's rent-free house yields $0 deductions", !dad || dad.deduction_cents === 0);
+
+  // ── Phase C: the company position (separate taxpayer) ──
+  const co = r2.company_positions?.find((c) => c.entity_id === "p2eCo");
+  check("P2: pre-revenue company shows a carried-forward loss = its $90 deductions", !!co && co.current_year_loss_cents === 9000 && co.total_carry_forward_cents === 9000 && co.assessable_income_cents === 0);
+  check("P2: founder→company funding recorded as a shareholder loan ($90, not Div 7A)", co?.shareholder_loan_balance_cents === 9000);
+  check("P2: R&D not auto-claimed without a registered AusIndustry rd_claims row", co?.rd_eligible === false);
+  check("P2: company is a base-rate entity (25%)", co?.base_rate_entity === 1);
 
   // ── Flag OFF: the attribution split must NOT apply — attributed txns fall back to their raw amount
   // (the legacy path). Proves the engine is genuinely gated by attribution_engine. ──

@@ -204,6 +204,21 @@ export function assessReadiness(input: {
   for (const p of report.per_property) {
     lines.push({ group: "property", label: p.label ?? p.property_id, amount_cents: p.net_cents, basis: `rent ${money(p.income_cents)} − deductions ${money(p.deduction_cents)} − depreciation ${money(p.depreciation_cents)}`, why: "Per-property position. A net loss generally offsets your other income (negative gearing)." });
   }
+  // Phase C / G4: the company position is a SEPARATE taxpayer — render it in its own group so it never
+  // reads as reducing the individual's salary. A pre-revenue company nets to a carried-forward loss.
+  for (const cp of report.company_positions ?? []) {
+    lines.push({ group: "company", label: `${cp.name ?? "Company"} — position`, amount_cents: -cp.current_year_loss_cents,
+      basis: `income ${money(cp.assessable_income_cents)} − deductions ${money(cp.deductions_cents)} = ${cp.current_year_loss_cents > 0 ? "loss " + money(cp.current_year_loss_cents) : money(cp.assessable_income_cents - cp.deductions_cents)}`,
+      why: "Your company is a separate taxpayer — its costs don't reduce your salary. A pre-revenue company's costs carry forward as a tax loss it can use against future company income (subject to the continuity-of-ownership / same-business tests — confirm with a registered tax agent)." });
+    if (cp.shareholder_loan_balance_cents > 0) {
+      lines.push({ group: "company", label: `${cp.name ?? "Company"} — shareholder loan`, amount_cents: cp.shareholder_loan_balance_cents,
+        basis: "costs you paid personally on the company's behalf", why: "Money you put into the company (paying its costs personally) is a loan from you TO the company. This direction is not a Division 7A deemed dividend (that risk runs the other way — company lending to you). Keep a loan agreement and confirm with a registered tax agent." });
+    }
+    if (cp.rd_eligible) {
+      lines.push({ group: "company", label: `${cp.name ?? "Company"} — R&D offset (check eligibility)`, amount_cents: 0,
+        basis: "turnover under the R&D offset cap", why: "If the company conducts eligible, registered R&D activities it may access the R&D tax incentive offset. This is specialist territory — flagged for a registered tax agent, never auto-claimed." });
+    }
+  }
 
   // ── (2) deterministic "things to double-check" findings ──
   // Nothing captured at all → the page must say "start here", NOT present an empty $0 return as

@@ -68,7 +68,15 @@
       "super_concessional_cap_cents": 3000000,
       "wfh_fixed_rate_cents_per_hour": 70,
       "car_cents_per_km": 88,
-      "car_km_cap": 5000
+      "car_km_cap": 5000,
+      "base_rate_company_tax_pct": 25,
+      "full_company_tax_pct": 30,
+      "rd_refundable_turnover_cap_cents": 2000000000,
+      "rd_premium_pct": 18.5,
+      "div7a_benchmark_rate_pct": 8.77,
+      "div293_threshold_cents": 25000000,
+      "s40_880_years": 5,
+      "mls_single_threshold_cents": 9700000
     },
     "2025-26": {
       "instant_asset_write_off_cents": 2000000,
@@ -78,7 +86,15 @@
       "super_concessional_cap_cents": 3000000,
       "wfh_fixed_rate_cents_per_hour": 70,
       "car_cents_per_km": 88,
-      "car_km_cap": 5000
+      "car_km_cap": 5000,
+      "base_rate_company_tax_pct": 25,
+      "full_company_tax_pct": 30,
+      "rd_refundable_turnover_cap_cents": 2000000000,
+      "rd_premium_pct": 18.5,
+      "div7a_benchmark_rate_pct": 8.77,
+      "div293_threshold_cents": 25000000,
+      "s40_880_years": 5,
+      "mls_single_threshold_cents": 10100000
     },
     "2026-27": {
       "instant_asset_write_off_cents": 100000,
@@ -88,7 +104,15 @@
       "super_concessional_cap_cents": 3250000,
       "wfh_fixed_rate_cents_per_hour": 70,
       "car_cents_per_km": 88,
-      "car_km_cap": 5000
+      "car_km_cap": 5000,
+      "base_rate_company_tax_pct": 25,
+      "full_company_tax_pct": 30,
+      "rd_refundable_turnover_cap_cents": 2000000000,
+      "rd_premium_pct": 18.5,
+      "div7a_benchmark_rate_pct": 8.77,
+      "div293_threshold_cents": 25000000,
+      "s40_880_years": 5,
+      "mls_single_threshold_cents": 10100000
     }
   },
   "payg_deductibility": {

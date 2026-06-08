@@ -1,6 +1,6 @@
 import type { Env } from "../env";
 import { COUNTABLE, COUNTABLE_INCOME } from "./queries";
-import { incomeTotals, depreciationTotals, attributionTotals, type IncomeTotals, type AttributionTotals } from "./ledger-totals";
+import { incomeTotals, depreciationTotals, attributionTotals, companyPositions, type IncomeTotals, type AttributionTotals, type CompanyPosition } from "./ledger-totals";
 import { featureOn } from "./features";
 import auV1RulePack from "../rulepacks/au-v1.json";
 import { computeWorkMethodDeductions, workUseRatesForFy, type WorkMethodDeductions } from "./work-use";
@@ -113,6 +113,10 @@ export interface Report {
   // the personal headline); company_cents is inside company_tracked_cents (a separate taxpayer). The
   // display layer renders matching lines so the position still equals the sum of its lines.
   attribution?: { individual_cents: number; company_cents: number; property_cents: number };
+  // Phase C / G4: per-company position (a separate taxpayer). Present only when the attribution_engine
+  // flag is on and the tenant has a company entity. The company's costs don't reduce the personal
+  // headline — they sit here, netting to a carried-forward loss when pre-revenue.
+  company_positions?: CompanyPosition[];
   taxable_position_cents: number;      // total_income − total_deductions − depreciation (indicative)
 }
 
@@ -309,6 +313,9 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   const attr: AttributionTotals = useAttributions
     ? await attributionTotals(env, userId, startYear)
     : { individual_deduction_cents: 0, company_deduction_cents: 0, by_property: [] };
+  // Phase C / G4: per-company position (separate taxpayer). Same flag — it's the attribution-routed
+  // company deductions that make it meaningful. Empty when there's no company.
+  const company_positions: CompanyPosition[] = useAttributions ? await companyPositions(env, userId, startYear) : [];
   // Collapse the per-property deductibility split: `expenseByProp` keeps the legacy by_property shape
   // (all spend per property); `expMap` holds only the DEDUCTIBLE portion (used for the negative-
   // gearing net) — when excludeNonDeductible is on, likely_not/confirmed_not/needs_apportionment drop
@@ -481,6 +488,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
       attr.individual_deduction_cents || attr.company_deduction_cents || attr_property_total_cents
         ? { individual_cents: attr.individual_deduction_cents, company_cents: attr.company_deduction_cents, property_cents: attr_property_total_cents }
         : undefined,
+    company_positions: company_positions.length ? company_positions : undefined,
     taxable_position_cents,
   };
 }

@@ -93,6 +93,15 @@ export function TxnDetail() {
   const isPdf = (txn.receipt_key ?? "").toLowerCase().endsWith(".pdf");
   const props = sitQ.data?.properties ?? [];
 
+  // Journey explainers (R7 / G4): detect rent-like and phone/internet lines from the text. The
+  // phone/internet "already covered by 70c" badge only shows when she's actually on the WFH fixed rate.
+  const desc = `${txn.merchant ?? ""} ${txn.raw_description ?? ""}`.toLowerCase();
+  const looksRent = /\brent\b|rental payment|real estate|property manager|tenancy/.test(desc) && (txn.bucket === "payg" || txn.bucket === "unknown" || txn.bucket == null);
+  const looksPhoneInternet = /\b(telstra|optus|vodafone|tpg|iinet|aussie ?broadband|belong|superloop|internet|broadband|nbn|mobile|phone plan)\b/.test(desc);
+  const fyStart = txn.txn_date && /^\d{4}-\d{2}-\d{2}$/.test(txn.txn_date) ? (Number(txn.txn_date.slice(5, 7)) >= 7 ? Number(txn.txn_date.slice(0, 4)) : Number(txn.txn_date.slice(0, 4)) - 1) : null;
+  const wfhQ = useQuery({ queryKey: ["work-use", fyStart], queryFn: () => api.workUse(fyStart as number), enabled: looksPhoneInternet && fyStart != null });
+  const wfhActive = (wfhQ.data?.wfh_hours ?? 0) > 0;
+
   return (
     <div className="space-y-6">
       <div className="grid gap-6 sm:grid-cols-[1fr_1.2fr]">
@@ -234,6 +243,19 @@ export function TxnDetail() {
             </button>
             {save.isError && <p className="text-sm text-danger">Couldn't save: {(save.error as Error).message}</p>}
           </Card>
+
+          {/* R7 — reassure on rent: not deductible for an employee, but point to the claim she CAN make. */}
+          {looksRent && (
+            <Card className="border-line bg-surface p-3 text-xs text-muted">
+              Rent on your own home isn't deductible when you're an employee — but your home-office <span className="font-medium text-ink">running costs are</span>, via the working-from-home method on your Dashboard. General information only.
+            </Card>
+          )}
+          {/* G4 — phone/internet double-dip guard: the 70c fixed rate already bundles these. */}
+          {looksPhoneInternet && wfhActive && (
+            <Card className="border-warn/40 bg-warn/5 p-3 text-xs text-warn">
+              Already covered by the 70c working-from-home rate — phone &amp; internet are bundled into that method, so don't also claim this line separately. General information only.
+            </Card>
+          )}
 
           {/* Were you reimbursed? (G2) — employer-reimbursed spend isn't your deductible cost, so the
               position excludes it. Shown for spend (debit), not income/refund credits. */}

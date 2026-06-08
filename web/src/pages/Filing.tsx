@@ -410,6 +410,10 @@ function FindMyClaims({ fy }: { fy?: number }) {
             );
           })}
           <p className="text-xs text-muted">General information only — not tax advice. Confirm every claim with a registered tax agent.</p>
+          {/* G5 — evidence reminder: numbers aren't enough; the ATO needs the records behind them. */}
+          <div className="mt-2 rounded-lg bg-surface px-3 py-2 text-xs text-muted">
+            <span className="font-medium text-ink">Keep your evidence for 5 years.</span> The ATO needs written records once your claims pass $300 — keep receipts for anything you've claimed, and a <span className="font-medium text-ink">contemporaneous record of your work-from-home hours</span> (a diary, roster or timesheet — estimates aren't accepted). The ATO myDeductions tool is a simple way to log hours.
+          </div>
         </div>
       )}
     </Card>

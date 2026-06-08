@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api } from "../api";
@@ -54,6 +55,7 @@ export function Accounts() {
   });
   // Bulk-confirm every parsed-but-not-imported statement in one click (flag `bulk_import`).
   const { has } = useFeatures();
+  const navigate = useNavigate();
   const parsedCount = (statements ?? []).filter((s) => s.status === "parsed").length;
   const bulkImport = useMutation({
     mutationFn: () => api.confirmImportBulk(),
@@ -62,8 +64,11 @@ export function Accounts() {
       qc.invalidateQueries({ queryKey: ["accounts"] });
       qc.invalidateQueries({ queryKey: ["dashboard"] });
       const errs = r.errors.length ? ` ${r.errors.length} couldn't import (e.g. didn't reconcile).` : "";
+      // Steer to the Dashboard hub (WFH card + your likely-claims) rather than dead-ending here —
+      // a statements-only PAYG user's biggest claims aren't statement lines (G7).
       toast.success(`Imported ${r.statements} statement(s)`, {
         description: `${r.imported} transaction(s)${r.skipped ? `, ${r.skipped} already on file` : ""}.${errs}`,
+        action: { label: "See your claims", onClick: () => navigate("/dashboard") },
       });
     },
     onError: (e) => toast.error("Bulk import failed", { description: (e as Error).message }),

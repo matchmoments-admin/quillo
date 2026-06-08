@@ -5,6 +5,8 @@ import { api } from "../api";
 import { useActiveFy } from "../lib/activeFy";
 import { Panel, PanelHead, KpiCard, Meter, Pill, Spinner, Button, money, BUCKET_LABEL, InfoTip } from "../components/ui";
 import { FindAndAttachSheet } from "../components/FindAndAttachSheet";
+import { WorkMethodsCard } from "../components/WorkMethodsCard";
+import { useFeatures } from "../lib/features";
 import type { ChecklistItem } from "../types";
 
 const FEATURE_LABEL: Record<string, string> = {
@@ -21,6 +23,7 @@ const SWATCH = ["#0c3f26", "#15643a", "#1c7a48", "#97a86f", "#2f6bd6", "#9a6712"
 
 export function Dashboard() {
   const { fy, label } = useActiveFy();
+  const { has } = useFeatures();
   const { data, isLoading, error } = useQuery({ queryKey: ["dashboard", fy], queryFn: () => api.dashboard(fy) });
   const usage = useQuery({ queryKey: ["usage"], queryFn: () => api.usage() });
   if (isLoading) return <Spinner />;
@@ -76,6 +79,9 @@ export function Dashboard() {
           <span className="font-semibold text-forest">add dates to include them →</span>
         </Link>
       )}
+
+      {/* Working-from-home: the #1 PAYG claim, surfaced where it's seen (not buried under Review). */}
+      {has("wfh_car_methods") && <WorkMethodsCard fyNum={fy} compact />}
 
       <ChecklistCard />
       <ClaimsCard />

@@ -56,6 +56,20 @@ export function computeWorkMethodDeductions(inputs: WorkUseInputs, rates: WorkUs
   return { wfh_cents, car_cents, total_cents: wfh_cents + car_cents, wfh_hours: hours, car_work_km: km, rates };
 }
 
+// Deriving WFH hours from "days a week" (Phase D / G5). The ATO fixed-rate method counts actual hours
+// worked from home; a standard workday is ~7.6 hours, and there are ~48 working weeks once leave/public
+// holidays are removed. These are sensible DEFAULTS the user can override by editing the hours directly —
+// hours stay authoritative. GENERAL INFO ONLY; the ATO requires a contemporaneous record of actual hours.
+export const DEFAULT_WFH_HOURS_PER_DAY = 7.6;
+export const DEFAULT_WFH_WEEKS = 48;
+
+/** Estimate annual WFH hours from days/week × ~7.6h × working weeks. null when no days are given. */
+export function deriveWfhHours(daysPerWeek: number | null | undefined, weeks: number | null | undefined): number | null {
+  if (daysPerWeek == null || daysPerWeek <= 0) return null;
+  const w = weeks != null && weeks > 0 ? weeks : DEFAULT_WFH_WEEKS;
+  return Math.round(Math.max(0, daysPerWeek) * DEFAULT_WFH_HOURS_PER_DAY * w);
+}
+
 /** True when the inputs would produce a non-zero computed deduction. */
 export function hasWorkMethodInput(inputs: WorkUseInputs | null | undefined): boolean {
   if (!inputs) return false;

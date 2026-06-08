@@ -46,6 +46,7 @@ export function Onboarding() {
   const [properties, setProperties] = useState<PropertyValue[]>([]);
   const [rules, setRules] = useState<(DraftRule & { accept: boolean })[]>([]);
   const [intake, setIntake] = useState("");
+  const [wfhDays, setWfhDays] = useState(""); // WFH days/week — the #1 PAYG claim, captured at set-up (D.1)
 
   // The taxpayer (self) + any spouse/dependants. Occupation + residency are the single biggest
   // inputs to the claimability engine, yet onboarding never used to ask for them (review High #5) —
@@ -92,6 +93,12 @@ export function Onboarding() {
       for (const e of entities) if (e.name.trim()) await api.addEntity(entityToBody(e));
       for (const p of properties) if (p.label.trim()) await api.addProperty(propertyToBody(p));
       for (const r of rules) if (r.accept) await api.addRule({ pattern: r.pattern, bucket: r.bucket, ato_label: r.ato_label });
+      // WFH days/week → derive hours for the current FY (server derives; she refines on the Dashboard).
+      if (wfhDays.trim() !== "") {
+        const now = new Date();
+        const fyStart = now.getUTCMonth() >= 6 ? now.getUTCFullYear() : now.getUTCFullYear() - 1;
+        await api.setWorkUse(fyStart, { wfh_hours: null, car_work_km: null, wfh_days_per_week: Math.max(0, Number(wfhDays)), wfh_weeks: null });
+      }
     },
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: ["situation"] });
@@ -234,6 +241,18 @@ export function Onboarding() {
             <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted">You (the taxpayer)</div>
             <PersonFields value={self} onChange={setSelf} lockRole />
           </div>
+          {/* WFH days/week — the single most-valuable PAYG deduction, captured up front so it appears
+              automatically on the Dashboard. We derive the hours; she can refine them later. (D.1/R2) */}
+          <label className="mt-3 block rounded-lg bg-surface p-3">
+            <span className="text-xs font-medium uppercase tracking-wide text-muted">Do you work from home? Roughly how many days a week?</span>
+            <input
+              type="number" min="0" max="7" step="0.5" value={wfhDays}
+              onChange={(e) => setWfhDays(e.target.value)}
+              placeholder="e.g. 2 — leave blank if you don't"
+              className="mt-1 w-full rounded-lg border border-line bg-card px-3 py-2 text-sm"
+            />
+            <span className="mt-1 block text-xs text-muted">We'll estimate your home-office hours from this (you can refine them on the Dashboard). General info only.</span>
+          </label>
           {extraPersons.length > 0 && (
             <div className="mt-3 space-y-3">
               {extraPersons.map((p, i) => (

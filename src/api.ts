@@ -581,15 +581,15 @@ export async function handleApi(
   if (resource === "work-use") {
     const fy = Number(url.searchParams.get("fy")) || currentFyStartYear();
     if (m === "GET") {
-      const row = await env.DB.prepare(`SELECT wfh_hours, car_work_km FROM work_use_inputs WHERE user_id = ? AND fy = ?`)
+      const row = await env.DB.prepare(`SELECT wfh_hours, car_work_km, wfh_days_per_week, wfh_weeks FROM work_use_inputs WHERE user_id = ? AND fy = ?`)
         .bind(uid, fy)
-        .first<{ wfh_hours: number | null; car_work_km: number | null }>();
-      return json({ work_use: row ?? { wfh_hours: null, car_work_km: null } });
+        .first<{ wfh_hours: number | null; car_work_km: number | null; wfh_days_per_week: number | null; wfh_weeks: number | null }>();
+      return json({ work_use: row ?? { wfh_hours: null, car_work_km: null, wfh_days_per_week: null, wfh_weeks: null } });
     }
     if (m === "POST") {
-      const body = (await req.json().catch(() => ({}))) as { wfh_hours?: number | null; car_work_km?: number | null };
+      const body = (await req.json().catch(() => ({}))) as { wfh_hours?: number | null; car_work_km?: number | null; wfh_days_per_week?: number | null; wfh_weeks?: number | null };
       const num = (v: unknown): number | null => (v === null || v === undefined || v === "" || !Number.isFinite(Number(v)) ? null : Math.max(0, Number(v)));
-      return json(await stub.setWorkUseInputs(uid, { fy, wfh_hours: num(body.wfh_hours), car_work_km: num(body.car_work_km) }));
+      return json(await stub.setWorkUseInputs(uid, { fy, wfh_hours: num(body.wfh_hours), car_work_km: num(body.car_work_km), wfh_days_per_week: num(body.wfh_days_per_week), wfh_weeks: num(body.wfh_weeks) }));
     }
   }
 

@@ -640,4 +640,6 @@ export interface SuggestedDeduction {
 export interface WorkUse {
   wfh_hours: number | null;
   car_work_km: number | null;
+  wfh_days_per_week?: number | null;
+  wfh_weeks?: number | null;
 }

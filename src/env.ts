@@ -70,7 +70,7 @@ export interface TaxAgentRpc {
   disposeAsset(userId: string, assetId: string, disposedDate: string, disposalValueCents: number): Promise<{ balancing_adjustment_cents: number }>;
   importDepreciationSchedule(userId: string, docId: string, bytes: ArrayBuffer, mime: string): Promise<{ created: number }>;
   generateChecklist(userId: string, fy?: string): Promise<{ items: number }>;
-  setWorkUseInputs(userId: string, input: { fy: number; wfh_hours: number | null; car_work_km: number | null }): Promise<{ ok: true }>;
+  setWorkUseInputs(userId: string, input: { fy: number; wfh_hours: number | null; car_work_km: number | null; wfh_days_per_week?: number | null; wfh_weeks?: number | null }): Promise<{ ok: true }>;
   assessFilingReadiness(userId: string, startYear: number): Promise<import("./lib/readiness").FilingReadiness>;
   setChecklistStatus(userId: string, id: string, status: string): Promise<void>;
   setClaimStatus(userId: string, id: string, status: string): Promise<void>;

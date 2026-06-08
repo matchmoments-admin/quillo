@@ -750,6 +750,9 @@ CREATE TABLE IF NOT EXISTS work_use_inputs (
   fy           INTEGER NOT NULL,
   wfh_hours    REAL,
   car_work_km  REAL,
+  -- 0036: capture WFH as days/week so hours can be derived transparently (wfh_hours stays authoritative).
+  wfh_days_per_week REAL,
+  wfh_weeks         REAL,
   updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (user_id, fy)
 );

@@ -12,7 +12,7 @@ import { isValidAbn, normaliseAbn } from "../web/src/lib/abn";
 import { billableCents } from "../src/lib/billing";
 import { costCents, isPricedModel } from "../src/lib/usage";
 import { LLM_MODEL_IDS } from "../src/llm";
-import { computeWorkMethodDeductions, workUseRatesForFy } from "../src/lib/work-use";
+import { computeWorkMethodDeductions, workUseRatesForFy, deriveWfhHours } from "../src/lib/work-use";
 import { BUCKETS } from "../src/lib/taxonomy";
 import { applyUserRules } from "../src/lib/rules";
 import type { UserRule } from "../src/lib/db";
@@ -909,6 +909,10 @@ console.log("deductibility (deny-by-default)");
   const both = computeWorkMethodDeductions({ wfh_hours: 100, car_work_km: 1000 }, rates);
   check("both methods sum (100×70c + 1000×88c)", both.total_cents === 7_000 + 88_000);
   check("negative/empty inputs floor to 0", computeWorkMethodDeductions({ wfh_hours: -5, car_work_km: null }, rates).total_cents === 0);
+  // D.1: derive WFH hours from days/week (≈ days × 7.6h × 48 weeks). "2 days/week" → ~730 hrs.
+  check("WFH days/week: 2 days → ~730 hrs (2 × 7.6 × 48)", deriveWfhHours(2, null) === 730);
+  check("WFH days/week: explicit weeks override (3 days × 44 weeks)", deriveWfhHours(3, 44) === Math.round(3 * 7.6 * 44));
+  check("WFH days/week: no days → null (nothing to derive)", deriveWfhHours(null, 48) === null && deriveWfhHours(0, 48) === null);
   check("workUseRatesForFy falls back to defaults when a field is missing", workUseRatesForFy({}).car_cents_per_km === 88 && workUseRatesForFy(undefined).wfh_cents_per_hour === 70);
 
   // Readiness renders the computed amounts as "deduction" lines (so lines-sum still == headline) and

@@ -25,9 +25,11 @@ export function MovementSweepCard() {
   const qc = useQueryClient();
   const { data, isLoading } = useQuery({ queryKey: ["movements-sweep"], queryFn: api.sweepMovements });
   // When loan_split is on, the loan-review lines are handled by their own LoanSplitCard step, so this
-  // card drops its read-only review box (no duplication).
+  // card drops its read-only review box (no duplication). MUST mirror SortFlow's gating: when
+  // loan_interest_v2 retires the split step, those lines return to this card's read-only review box
+  // (and SortFlow folds them into the movements count), so the badge and the body stay consistent.
   const { has } = useFeatures();
-  const hasLoanSplit = has("loan_split");
+  const hasLoanSplit = has("loan_split") && !has("loan_interest_v2");
   const ignorable = data?.ignorable ?? [];
   // Selection defaults to ALL candidates (pre-checked); recomputed when the candidate id set changes.
   const allIds = useMemo(() => ignorable.map((c) => c.id), [ignorable]);

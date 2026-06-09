@@ -24,7 +24,11 @@ type StepKey = "movements" | "loanSplit" | "clarify" | "suggestions";
 
 export function SortFlow({ fy, hasAccountantPass }: { fy: number; hasAccountantPass: boolean }) {
   const { has } = useFeatures();
-  const hasLoanSplit = has("loan_split");
+  // Evidence-first loan interest (loan_interest_v2) RETIRES the manual per-line "Split loan interest"
+  // task: when it's on, the deductible interest comes from the lender's actual FY figure recorded
+  // against the loan account (Accounts → loan → "Interest charged this FY"), so the split step is no
+  // longer surfaced. The legacy loan_split engine stays intact as the fallback when v2 is off.
+  const hasLoanSplit = has("loan_split") && !has("loan_interest_v2");
   // Which step the user manually expanded. Null = follow the derived priority order.
   const [override, setOverride] = useState<StepKey | null>(null);
   // Drop a manual expansion when the active FY changes — a step the user opened for one year's data

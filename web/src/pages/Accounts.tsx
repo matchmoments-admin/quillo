@@ -4,6 +4,7 @@ import { useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/
 import { toast } from "sonner";
 import { api } from "../api";
 import { useFeatures } from "../lib/features";
+import { useActiveFy } from "../lib/activeFy";
 import { Button, Card, Spinner, money, InfoTip } from "../components/ui";
 import type { Account, StatementInfo, StatementParse } from "../types";
 
@@ -472,6 +473,29 @@ function EditAccount({
       }),
     onSuccess: onSaved,
   });
+
+  // Evidence-first loan interest (S5, flag loan_interest_v2): record the lender's ACTUAL interest for
+  // the active FY against this loan — the figure that flows to the property's deductible interest
+  // (retiring the per-line split). Scoped to the active FY; prefills from any recorded summary.
+  const { has } = useFeatures();
+  const { fy } = useActiveFy();
+  const v2 = type === "loan" && has("loan_interest_v2");
+  const qc = useQueryClient();
+  const liQ = useQuery({ queryKey: ["loan-interest", fy], queryFn: () => api.loanInterest(fy), enabled: v2 });
+  const existing = liQ.data?.find((s) => s.loan_account_id === account.id);
+  const [fyInterest, setFyInterest] = useState("");
+  useEffect(() => {
+    setFyInterest(existing ? String(existing.interest_cents / 100) : "");
+  }, [existing?.id, existing?.interest_cents]);
+  const setLi = useMutation({
+    mutationFn: () => api.setLoanInterest(account.id, { fy, interest_cents: Math.round(Number(fyInterest) * 100), source: "lender_summary" }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["loan-interest", fy] });
+      qc.invalidateQueries({ queryKey: ["report"] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+      toast.success("Loan interest saved");
+    },
+  });
   return (
     <div className="mt-3 space-y-3 rounded-lg border border-line bg-surface p-3">
       <div className="flex flex-wrap items-end gap-3">
@@ -516,6 +540,23 @@ function EditAccount({
         <p className="text-xs text-muted">
           Used only as an indicative estimate when no statement figure is available — your actual deductible interest comes from your loan statements. General information only — not tax advice.
         </p>
+      )}
+      {v2 && (
+        <div className="flex flex-wrap items-end gap-3 border-t border-line pt-3">
+          <label className="min-w-[12rem] flex-1">
+            <span className="text-xs font-medium uppercase tracking-wide text-muted">
+              Interest charged · FY {fy}–{String((fy + 1) % 100).padStart(2, "0")} $
+            </span>
+            <input value={fyInterest} onChange={(e) => setFyInterest(e.target.value)} inputMode="decimal" placeholder="12000" className="mt-1 w-full rounded-lg border border-line px-3 py-2" />
+          </label>
+          <Button onClick={() => setLi.mutate()} disabled={setLi.isPending || fyInterest.trim() === ""}>
+            {setLi.isPending ? "Saving…" : "Save interest"}
+          </Button>
+          <p className="w-full text-xs text-muted">
+            The actual interest from your lender's annual summary or statements — this is what flows to the property's deductible interest, replacing the per-line split
+            {existing ? ` (recorded: ${money(existing.interest_cents)}${existing.source === "estimate" ? " · estimate" : ""})` : ""}. General information only — not tax advice.
+          </p>
+        </div>
       )}
 
       <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line pt-3">

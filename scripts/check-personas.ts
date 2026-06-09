@@ -310,6 +310,52 @@ async function main() {
   check("P10 #140: SMSF fully in pension phase → ECPI 100% → fund earnings tax-exempt ($0 fund taxable income)", r10.smsf_funds?.[0]?.assessable_income_cents === 4000000 && r10.smsf_funds?.[0]?.fund_taxable_income_cents === 0 && r10.smsf_funds?.[0]?.ecpi_exempt_fraction === 1);
   check("P10 #140: the SMSF's $40k fund income does NOT pollute the member's personal position (still $12k)", r10.taxable_position_cents === 1200000);
 
+  // ── Persona 11 (#157 S5): negatively-geared investor — evidence-first loan interest ──
+  // A rented property funded by an investment loan. The lender's ACTUAL FY interest ($12k) is the
+  // source of truth; a stale legacy per-line split row for the SAME loan must NOT also count (one
+  // source per loan per FY); and the v2 figure must equal what the legacy split produced for the same $.
+  {
+    const u = "p11";
+    run(`INSERT INTO tenants (user_id, display_name) VALUES (?, 'P11')`, u);
+    run(`INSERT INTO persons (id, user_id, display_name, role) VALUES (?, ?, 'You', 'self')`, `person_self_${u}`, u);
+    run(`INSERT INTO properties (id, user_id, label, status, use_status) VALUES ('p11rent', ?, 'Investment unit', 'rented', 'rented')`, u);
+    run(`INSERT INTO accounts (id, user_id, name, type, source) VALUES ('p11loan', ?, 'Investment Loan', 'loan', 'statement')`, u);
+    run(`INSERT INTO loans_properties (id, user_id, loan_account_id, property_id, deductible_interest_pct) VALUES ('p11lp', ?, 'p11loan', 'p11rent', 100)`, u);
+    run(`INSERT INTO loan_interest_summaries (id, user_id, loan_account_id, fy, interest_cents, source) VALUES ('p11lis', ?, 'p11loan', '2025', 1200000, 'lender_summary')`, u);
+    // a STALE legacy per-line split row on the same loan ($12k interest of a $20k repayment) — must be
+    // superseded by the summary under v2, never double-counted.
+    run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, ato_label, property_id, account_id, direction, deductibility, deductible_amount_cents) VALUES ('p11int', ?, 'upload', 'categorised', 'bank_line', 2000000, 2000000, ?, 'property_rented', 'rental:interest', 'p11rent', 'p11loan', 'debit', 'confirmed_deductible', 1200000)`, u, FY_DATE);
+    run(`INSERT INTO income (id, user_id, income_type, fy, gross_cents, amount_aud_cents, property_id) VALUES ('p11rinc', ?, 'rent', '2025-26', 1000000, 1000000, 'p11rent')`, u);
+    // Regression guard A (NULL-safe exclusion): a NULL-ato_label rental expense on a DIFFERENT property
+    // must NOT be dropped under v2 — `NOT (NULL='rental:interest')` is NULL, so a naive clause would
+    // wrongly exclude every NULL-ato_label row. $500 deductible, must survive.
+    run(`INSERT INTO properties (id, user_id, label, status, use_status) VALUES ('p11rent2', ?, 'Unit 2', 'rented', 'rented')`, u);
+    run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, property_id, direction, deductibility) VALUES ('p11r2exp', ?, 'upload', 'categorised', 'bank_line', 50000, 50000, ?, 'property_rented', 'p11rent2', 'debit', 'likely_deductible')`, u, FY_DATE);
+    // Regression guard B (scoped exclusion): a loan with a legacy split but NO v2 figure (no summary,
+    // no rate/balance) is NOT superseded — its per-line split ($3k) must KEEP counting under v2.
+    run(`INSERT INTO properties (id, user_id, label, status, use_status) VALUES ('p11rent3', ?, 'Unit 3', 'rented', 'rented')`, u);
+    run(`INSERT INTO accounts (id, user_id, name, type, source) VALUES ('p11loan2', ?, 'Loan 2', 'loan', 'statement')`, u);
+    run(`INSERT INTO loans_properties (id, user_id, loan_account_id, property_id, deductible_interest_pct) VALUES ('p11lp2', ?, 'p11loan2', 'p11rent3', 100)`, u);
+    run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, ato_label, property_id, account_id, direction, deductibility, deductible_amount_cents) VALUES ('p11int2', ?, 'upload', 'categorised', 'bank_line', 500000, 500000, ?, 'property_rented', 'rental:interest', 'p11rent3', 'p11loan2', 'debit', 'confirmed_deductible', 300000)`, u, FY_DATE);
+
+    const envV2 = { ...env, FEATURES: `${(env as { FEATURES: string }).FEATURES},loan_interest_v2` } as unknown as Env;
+    const r11 = await buildReport(envV2, u, 2025);
+    const p11prop = r11.per_property?.find((p) => p.property_id === "p11rent");
+    check("P11 #157: evidence-first interest ($12k) is the property's deduction — NOT the legacy split row", p11prop?.deduction_cents === 1200000);
+    check("P11 #157: NO double count — summary supersedes the stale split (deduction is $12k, not $24k)", p11prop?.deduction_cents === 1200000);
+    check("P11 #157: per-property net = rent $10k − interest $12k = −$2k (negatively geared)", p11prop?.net_cents === -200000);
+    check("P11 #157 (NULL-safe): a NULL-ato_label rental expense is NOT dropped under v2 ($500 kept)", r11.per_property?.find((p) => p.property_id === "p11rent2")?.deduction_cents === 50000);
+    check("P11 #157 (scoped): a legacy split on a loan with NO v2 figure still counts ($3k kept)", r11.per_property?.find((p) => p.property_id === "p11rent3")?.deduction_cents === 300000);
+    check("P11 #157: headline deductions = v2 interest $12k + $500 expense + kept split $3k = $15.5k", r11.total_deductions_cents === 1550000);
+
+    // Cross-check: the legacy split (loan_split ON, loan_interest_v2 OFF) yields the SAME $ — proving the
+    // two engines agree, so flipping to v2 doesn't move the position for honest data.
+    const r11legacy = await buildReport(env, u, 2025);
+    const p11legacy = r11legacy.per_property?.find((p) => p.property_id === "p11rent");
+    check("P11 #157: legacy split and evidence-first agree on the deductible interest ($12k each)", p11legacy?.deduction_cents === 1200000 && p11legacy.deduction_cents === p11prop?.deduction_cents);
+    check("P11 #157: headline deductions match across both engines ($15.5k)", r11legacy.total_deductions_cents === r11.total_deductions_cents && r11.total_deductions_cents === 1550000);
+  }
+
   console.log(`\n=== personas: ${pass} passed, ${fail} failed ===`);
   if (fail > 0) process.exit(1);
 }

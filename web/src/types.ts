@@ -445,6 +445,17 @@ export interface VehicleLogbookRow {
   running_costs_cents: number;
   business_use_pct: number | null;
 }
+// Trust distribution (#139) entry row.
+export interface TrustDistributionRow {
+  id: string;
+  trust_entity_id: string;
+  fy: string;
+  beneficiary_person_id: string | null;
+  share_pct: number | null;
+  amount_cents: number;
+  character: string;
+  franking_credit_cents: number;
+}
 
 export interface Report {
   fy: string;

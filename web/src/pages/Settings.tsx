@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
+import { useFeatures } from "../lib/features";
 import { BUCKETS } from "../types";
 import { Card, Spinner, BUCKET_LABEL, InfoTip, money } from "../components/ui";
 import { EntityFields, PropertyFields, PersonFields, entityToBody, entityToValue, propertyToBody, personToBody, personToValue, emptyEntity, emptyProperty, emptyPerson, OWNED_STATUSES, TENANT_STATUSES, USE_STATUSES, DENY_USE_STATUSES, isTenantStatus, useStatusLabel, propertyStatusLabel, type EntityValue, type PersonValue, type PropertyValue } from "../components/SituationFields";
@@ -16,6 +17,7 @@ export function Settings() {
   const accts = useQuery({ queryKey: ["accounts"], queryFn: () => api.accounts() });
   const keys = useQuery({ queryKey: ["keys"], queryFn: () => api.keys() });
   const invalidate = () => qc.invalidateQueries({ queryKey: ["situation"] });
+  const { has } = useFeatures();
 
   if (sit.isLoading) return <Spinner />;
   if (sit.error) return <Card className="p-6 text-sm text-muted">Couldn't load: {(sit.error as Error).message}</Card>;
@@ -92,6 +94,13 @@ export function Settings() {
         {!s.entities.length && <Empty>No entities yet. Add your employer, company (with ABN), or a novated lease so spend routes to the right tax "hat".</Empty>}
         <AddEntity onDone={invalidate} />
       </Section>
+
+      {/* Trust distributions (#139) — what a trust distributed to you, character retained */}
+      {has("trust_distributions") && (
+        <Section title={<>Trust distributions <InfoTip tip="Your share of a trust's net income, with its character retained (a franked dividend stays franked). It's assessable to you. Add a trust entity above first. General information — confirm with a registered tax agent." /></>}>
+          <TrustDistributions trusts={s.entities.filter((e) => e.kind === "trust")} />
+        </Section>
+      )}
 
       {/* Rules */}
       <Section title={<>Per-user rules <InfoTip k="user_rules" /></>}>
@@ -685,6 +694,53 @@ function MintKey({ onDone }: { onDone: () => void }) {
           <code className="block break-all">SECRET={secret.secret}</code>
         </div>
       )}
+    </div>
+  );
+}
+
+// Trust distributions (#139): record what a trust distributed to a beneficiary, character retained.
+const TRUST_CHARACTERS = ["ordinary", "franked_dividend", "discount_capital_gain", "foreign_income"] as const;
+const CHAR_LABEL: Record<string, string> = { ordinary: "Ordinary income", franked_dividend: "Franked dividend", discount_capital_gain: "Discount capital gain", foreign_income: "Foreign income" };
+
+function TrustDistributions({ trusts }: { trusts: { id: string; name: string | null }[] }) {
+  const qc = useQueryClient();
+  const dists = useQuery({ queryKey: ["trust-distributions"], queryFn: () => api.trustDistributions() });
+  const [adding, setAdding] = useState(false);
+  const invalidate = () => { qc.invalidateQueries({ queryKey: ["trust-distributions"] }); qc.invalidateQueries({ queryKey: ["report"] }); };
+  if (!trusts.length) return <Empty>Add a trust entity above first, then record what it distributed to you.</Empty>;
+  return (
+    <div className="space-y-2">
+      {(dists.data ?? []).map((d) => (
+        <Row key={d.id} label={`${CHAR_LABEL[d.character] ?? d.character} · ${money(d.amount_cents)}${d.franking_credit_cents ? ` (franking ${money(d.franking_credit_cents)})` : ""} · ${d.fy}`} onDelete={() => api.deleteTrustDistribution(d.id).then(invalidate)} />
+      ))}
+      {adding ? (
+        <AddTrustDistribution trusts={trusts} onDone={() => { setAdding(false); invalidate(); }} />
+      ) : (
+        <button className={btn} onClick={() => setAdding(true)}>+ Add distribution</button>
+      )}
+    </div>
+  );
+}
+
+function AddTrustDistribution({ trusts, onDone }: { trusts: { id: string; name: string | null }[]; onDone: () => void }) {
+  const [trustId, setTrustId] = useState(trusts[0]?.id ?? "");
+  const [amount, setAmount] = useState("");
+  const [character, setCharacter] = useState("ordinary");
+  const [franking, setFranking] = useState("");
+  const add = useMutation({
+    mutationFn: () => api.addTrustDistribution({ trust_entity_id: trustId, amount_cents: Math.round(parseFloat(amount || "0") * 100), character, franking_credit_cents: Math.round(parseFloat(franking || "0") * 100) }),
+    onSuccess: onDone,
+  });
+  return (
+    <div className="space-y-2 rounded-lg border border-line p-3">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <select className={input} value={trustId} onChange={(e) => setTrustId(e.target.value)}>{trusts.map((t) => <option key={t.id} value={t.id}>{t.name ?? "Trust"}</option>)}</select>
+        <select className={input} value={character} onChange={(e) => setCharacter(e.target.value)}>{TRUST_CHARACTERS.map((c) => <option key={c} value={c}>{CHAR_LABEL[c]}</option>)}</select>
+        <input className={input} inputMode="decimal" placeholder="Amount $" value={amount} onChange={(e) => setAmount(e.target.value)} />
+        <input className={input} inputMode="decimal" placeholder="Franking $ (optional)" value={franking} onChange={(e) => setFranking(e.target.value)} />
+      </div>
+      <button className={btn} onClick={() => add.mutate()} disabled={add.isPending || !amount || !trustId}>{add.isPending ? "Saving…" : "Save distribution"}</button>
+      {add.error && <p className="text-sm text-danger">{(add.error as Error).message}</p>}
     </div>
   );
 }

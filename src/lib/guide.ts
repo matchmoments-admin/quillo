@@ -23,6 +23,30 @@ const GUARDRAILS =
   "suggest confirming with a registered tax agent where relevant. Be concrete and specific to THIS " +
   "user's data (cite their numbers), warm, plain and jargon-free.";
 
+// Stricter than the guide guardrails: this answers free-text questions, so it must refuse to invent
+// numbers or cross the advice line. Answer ONLY from the supplied data.
+const ASK_GUARDRAILS =
+  "GENERAL INFORMATION ONLY — you are NOT a tax agent. NEVER state tax payable, a refund amount, tax " +
+  "rates or bracket maths. NEVER assert that something IS deductible — describe what's generally " +
+  "deductible and say to confirm with a registered tax agent. Answer ONLY from the user's data below; " +
+  "if the answer isn't in the data, say what's missing and which screen to add it on. Be warm, plain, " +
+  "jargon-free, and cite the user's own numbers.";
+
+/** Build the system + user prompt for "Ask Quillo" — a grounded answer from the user's own ledger. Pure (unit-tested). */
+export function buildAskPrompt(question: string, situationText: string, positionText: string): { system: string; user: string } {
+  const system =
+    "You are Quillo, an Australian tax-evidence assistant answering a question about THIS user's own " +
+    "records. " +
+    ASK_GUARDRAILS +
+    " Call give_answer exactly once.";
+  const user =
+    `Their question:\n${question}\n\n` +
+    `What we know about them:\n${situationText || "(situation not set up yet)"}\n\n` +
+    `Their tracked tax position this year (their actual figures, JSON):\n${positionText}\n\n` +
+    `Answer using the data above. If it depends on something not captured, say so and name the screen to add it.`;
+  return { system, user };
+}
+
 /** Build the system + user prompt for the personalised "Guide me" walkthrough. Pure (unit-tested). */
 export function buildGuidePrompt(tab: string, progress: Progress, situationText: string): { system: string; user: string } {
   const purpose = TAB_PURPOSE[tab] ?? `the "${tab}" screen`;

@@ -1127,6 +1127,48 @@ export interface GuideResult {
   steps: string[];
 }
 
+const ANSWER_TOOL: Anthropic.Tool = {
+  name: "give_answer",
+  description: "Answer the user's question about their OWN tax records: a direct answer grounded only in their data, plus caveats and related screens. Call exactly once.",
+  input_schema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["answer"],
+    properties: {
+      answer: { type: "string", description: "A direct, plain-language answer grounded ONLY in the user's data. General information — never advice, a refund/tax-payable figure, or tax rates." },
+      caveats: { type: "array", items: { type: "string" }, description: "0–4 short caveats: what to confirm with a registered tax agent, or what's missing from their data." },
+      see_also: { type: "array", items: { type: "string" }, description: "0–4 app screens/actions that help (e.g. 'Assets — add the laptop to start depreciating it')." },
+    },
+  },
+};
+
+export interface AnswerResult {
+  answer: string;
+  caveats: string[];
+  see_also: string[];
+}
+
+/** One metered Haiku call → a grounded answer to a free-text question about the user's own ledger. */
+export async function extractAnswer(llm: LLM, system: string, user: string): Promise<AnswerResult> {
+  const msg = await llm.create(
+    {
+      model: llm.modelId,
+      max_tokens: 700,
+      system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
+      tools: [ANSWER_TOOL],
+      tool_choice: { type: "tool", name: ANSWER_TOOL.name },
+      messages: [{ role: "user", content: [{ type: "text", text: user }] }],
+    },
+    "ask",
+  );
+  const toolUse = msg.content.find((c): c is Anthropic.ToolUseBlock => c.type === "tool_use" && c.name === ANSWER_TOOL.name);
+  if (!toolUse) throw new Error("model did not return a give_answer tool call");
+  const input = toolUse.input as { answer?: unknown; caveats?: unknown; see_also?: unknown };
+  const answer = typeof input.answer === "string" && input.answer.trim() ? input.answer.trim() : "I couldn't answer that from your records.";
+  const strList = (v: unknown) => (Array.isArray(v) ? v.filter((s): s is string => typeof s === "string" && s.trim().length > 0).slice(0, 4) : []);
+  return { answer, caveats: strList(input.caveats), see_also: strList(input.see_also) };
+}
+
 /** One metered Haiku call → a short personalised walkthrough. Plain structured output, no prose parsing. */
 export async function extractGuide(llm: LLM, system: string, user: string): Promise<GuideResult> {
   const msg = await llm.create(

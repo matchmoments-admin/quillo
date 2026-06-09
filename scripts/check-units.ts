@@ -18,7 +18,7 @@ import { BUCKETS } from "../src/lib/taxonomy";
 import { applyUserRules } from "../src/lib/rules";
 import type { UserRule } from "../src/lib/db";
 import { parseRoles, hasRole, isAdmin, normaliseRoles, ROLES } from "../src/lib/roles";
-import { buildGuidePrompt } from "../src/lib/guide";
+import { buildGuidePrompt, buildAskPrompt } from "../src/lib/guide";
 import type { Progress } from "../src/lib/progress";
 import { fyBounds, fyLabel } from "../src/lib/ledger-totals";
 import { currentFyStartYear } from "../src/lib/report";
@@ -1125,6 +1125,18 @@ console.log("buildGuidePrompt (Guide me)");
   check("user embeds the live numbers", user.includes('"needs_review":12') && user.includes("338"));
   check("user embeds the situation summary", user.includes("Taxpayer: nurse"));
   check("unknown tab degrades gracefully", buildGuidePrompt("bogus", progress, "").system.includes('"bogus"'));
+}
+
+console.log("buildAskPrompt (Ask Quillo)");
+{
+  const { system, user } = buildAskPrompt("What's my work-from-home claim?", "Taxpayer: nurse", '{"work_method":{"wfh_deduction_cents":51100}}');
+  // Hard guardrails: no advice, no refund/payable, no rates — the safety contract for free-text Q&A.
+  check("ask system forbids advice", system.toLowerCase().includes("not a tax agent") || system.toLowerCase().includes("never tax advice") || system.toLowerCase().includes("general information only"));
+  check("ask system forbids a refund/payable figure", system.toLowerCase().includes("never state tax payable") && system.toLowerCase().includes("refund"));
+  check("ask system forbids tax rates", system.toLowerCase().includes("rates"));
+  check("ask embeds the question", user.includes("What's my work-from-home claim?"));
+  check("ask embeds the position JSON + situation", user.includes("wfh_deduction_cents") && user.includes("Taxpayer: nurse"));
+  check("ask forces a single give_answer call", system.includes("give_answer"));
 }
 
 console.log("roles");

@@ -6,6 +6,7 @@ import { useActiveFy } from "../lib/activeFy";
 import { Panel, PanelHead, KpiCard, Meter, Pill, Spinner, Button, money, BUCKET_LABEL, InfoTip } from "../components/ui";
 import { FindAndAttachSheet } from "../components/FindAndAttachSheet";
 import { WorkMethodsCard } from "../components/WorkMethodsCard";
+import { AskQuillo } from "../components/AskQuillo";
 import { useFeatures } from "../lib/features";
 import type { ChecklistItem } from "../types";
 
@@ -73,6 +74,9 @@ export function Dashboard() {
           <span className="font-semibold text-forest">add dates to include them →</span>
         </Link>
       )}
+
+      {/* Ask Quillo — grounded, single-turn tax Q&A from the user's own ledger (consent + budget gated). */}
+      {has("ask_quillo") && <AskQuillo />}
 
       {/* Working-from-home + car: the #1 PAYG claims, captured here on the Position surface (the one
           canonical place — Review no longer carries a second copy). */}

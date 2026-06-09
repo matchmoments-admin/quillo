@@ -94,6 +94,7 @@ export const api = {
   dashboard: (fy?: number) => get<DashboardData>(`/api/dashboard${fy ? `?fy=${fy}` : ""}`),
   progress: () => get<Progress>("/api/progress"),
   guideMe: (tab: string) => post<{ headline: string; steps: string[] }>("/api/guide", { tab }),
+  ask: (question: string, fy?: number) => post<{ answer: string; caveats: string[]; see_also: string[] }>("/api/ask", { question, fy }),
   usage: () => get<UsageData>("/api/usage"),
   notifications: () => get<{ notifications: Notification[] }>("/api/notifications").then((r) => r.notifications),
   markRead: (id: string) => post<{ ok: boolean }>(`/api/notifications/${id}/read`),

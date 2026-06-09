@@ -45,7 +45,7 @@ export function Dashboard() {
           badge, which isn't FY-scoped), so it can't sit in the per-FY KPI grid below without misleading. */}
       {d.needs_review > 0 && (
         <Link
-          to="/"
+          to="/inbox"
           className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-xl border border-line bg-card px-3 py-2 text-sm text-ink-2 shadow-card transition hover:border-ink/40"
         >
           <span className="font-semibold text-ink">{d.needs_review} still to sort</span>
@@ -95,7 +95,7 @@ export function Dashboard() {
                   n={b.n}
                   value={money(b.total_cents)}
                   frac={total ? b.total_cents / total : 0}
-                  to={`/?bucket=${encodeURIComponent(b.bucket)}`}
+                  to={`/transactions?bucket=${encodeURIComponent(b.bucket)}`}
                 />
               ))}
             </div>
@@ -115,7 +115,7 @@ export function Dashboard() {
                   name={p.label ?? p.property_id}
                   n={p.n}
                   value={money(p.total_cents)}
-                  to={`/?property=${encodeURIComponent(p.property_id)}`}
+                  to={`/transactions?property=${encodeURIComponent(p.property_id)}`}
                 />
               ))}
             </div>
@@ -137,7 +137,7 @@ export function Dashboard() {
                 n={b.n}
                 value={money(b.total_cents)}
                 frac={income ? b.total_cents / income : 0}
-                to={`/?bucket=${encodeURIComponent(b.bucket)}`}
+                to={`/transactions?bucket=${encodeURIComponent(b.bucket)}`}
               />
             ))}
           </div>

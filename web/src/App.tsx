@@ -23,6 +23,11 @@ type NavGroup = { label: string; items: NavItem[] };
 // statement together), surfaced as the active CTA by NextActionBar rather than a duplicate
 // route. See memory: simplification-plan (six-stop happy path, 2026-06-07).
 const GROUPS: NavGroup[] = [
+  // Dashboard is the home/landing tab (the default route "/"), sitting at the very top under the logo.
+  {
+    label: "",
+    items: [{ to: "/", label: "Dashboard", icon: "grid", end: true }],
+  },
   {
     label: "1 · Set up",
     items: [
@@ -35,7 +40,10 @@ const GROUPS: NavGroup[] = [
   },
   {
     label: "2 · Sort",
-    items: [{ to: "/", label: "Inbox", icon: "inbox", end: true, badge: true }],
+    items: [
+      { to: "/inbox", label: "Inbox", icon: "inbox", badge: true },
+      { to: "/transactions", label: "Transactions", icon: "list" },
+    ],
   },
   {
     label: "3 · Check",
@@ -47,7 +55,6 @@ const GROUPS: NavGroup[] = [
   {
     label: "4 · Position",
     items: [
-      { to: "/dashboard", label: "Dashboard", icon: "grid" },
       { to: "/reports", label: "Reports", icon: "bars" },
     ],
   },
@@ -211,8 +218,8 @@ function Sidebar({ needsReview, open }: { needsReview: number; open: boolean }) 
           const items = g.items.filter((it) => (!it.flag || has(it.flag)) && (!it.admin || isAdmin));
           if (!items.length) return null; // hide a group whose every item is gated off (e.g. Platform for non-admins)
           return (
-          <div key={g.label} className="mt-5 first:mt-1">
-            <div className="px-3 pb-2 text-[10px] font-bold uppercase tracking-[0.2em] text-cream/45">{g.label}</div>
+          <div key={g.label || "home"} className="mt-5 first:mt-1">
+            {g.label && <div className="px-3 pb-2 text-[10px] font-bold uppercase tracking-[0.2em] text-cream/45">{g.label}</div>}
             {items.map((it) => (
               <NavLink
                 key={it.to}
@@ -270,6 +277,7 @@ function Sidebar({ needsReview, open }: { needsReview: number; open: boolean }) 
 type IconName =
   | "grid"
   | "inbox"
+  | "list"
   | "income"
   | "shield"
   | "doc"
@@ -295,6 +303,12 @@ function Icon({ name }: { name: IconName }) {
       <>
         <path d="M2.5 5.5l6.5 4 6.5-4" />
         <rect x="2.5" y="3.5" width="13" height="11" rx="1.6" />
+      </>
+    ),
+    list: (
+      <>
+        <path d="M6 4.5h9M6 9h9M6 13.5h9" />
+        <path d="M3 4.5h.01M3 9h.01M3 13.5h.01" />
       </>
     ),
     income: <path d="M9 2.5v13M5.5 6h5a2 2 0 010 4h-3a2 2 0 000 4h5" />,

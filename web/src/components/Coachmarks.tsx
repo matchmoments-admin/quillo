@@ -32,7 +32,7 @@ const STEPS: Step[] = [
   {
     title: "2 · Sort what's flagged",
     body: "Anything Quillo wasn't confident about lands in your Inbox. Open an item to see the category and confidence, then confirm or change it — that teaches Quillo.",
-    href: "/",
+    href: "/inbox",
     cta: "Open Inbox",
   },
   {

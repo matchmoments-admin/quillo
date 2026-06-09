@@ -93,7 +93,7 @@ export function Filing() {
           </p>
           <div className="flex flex-wrap gap-2">
             <Link to="/accounts" className="rounded-lg bg-ink px-4 py-2 text-sm font-medium text-white hover:bg-ink/90">Import a statement</Link>
-            <Link to="/" className="rounded-lg border border-line px-4 py-2 text-sm font-medium hover:bg-surface">Add a receipt</Link>
+            <Link to="/inbox" className="rounded-lg border border-line px-4 py-2 text-sm font-medium hover:bg-surface">Add a receipt</Link>
           </div>
           <p className="text-xs text-muted">{data.disclaimer}</p>
         </Card>
@@ -213,7 +213,7 @@ const GROUP_META: { key: "capturing" | "check" | "defer"; title: string; sub: st
 function evidenceLink(item: ClaimReviewItem): { to: string; label: string } {
   if (item.claim_type === "div40") return { to: "/assets", label: "Add an asset" };
   if (item.claim_type === "div43" || item.scope_type === "property_status") return { to: "/income", label: "Add property records" };
-  return { to: "/", label: "Add a receipt" };
+  return { to: "/inbox", label: "Add a receipt" };
 }
 
 // Mirror TabGuide's friendly mapping for the AI gap-fill draft errors (consent 403 / budget 429).

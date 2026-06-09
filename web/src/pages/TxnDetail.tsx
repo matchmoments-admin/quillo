@@ -70,7 +70,7 @@ export function TxnDetail() {
           /* preview is best-effort — fall through to navigate */
         }
       }
-      navigate("/");
+      navigate("/inbox");
     },
   });
 
@@ -81,7 +81,7 @@ export function TxnDetail() {
       qc.invalidateQueries({ queryKey: ["transactions"] });
       qc.invalidateQueries({ queryKey: ["dashboard"] });
       qc.invalidateQueries({ queryKey: ["clarify"] });
-      navigate("/");
+      navigate("/inbox");
     },
   });
 
@@ -90,7 +90,7 @@ export function TxnDetail() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["transactions"] });
       qc.invalidateQueries({ queryKey: ["dashboard"] });
-      navigate("/");
+      navigate("/inbox");
     },
   });
 
@@ -298,7 +298,7 @@ export function TxnDetail() {
                   {fanout.isPending ? "Applying…" : `Apply to ${applyTo.n} & remember`}
                 </button>
                 <button
-                  onClick={() => navigate("/")}
+                  onClick={() => navigate("/inbox")}
                   disabled={fanout.isPending}
                   className="rounded-lg border border-line px-3 py-2 font-medium transition hover:bg-card disabled:opacity-50"
                 >

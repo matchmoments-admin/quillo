@@ -7,6 +7,7 @@ import type { Progress } from "../types";
 
 export type TabKey =
   | "inbox"
+  | "transactions"
   | "dashboard"
   | "income"
   | "assets"
@@ -28,10 +29,14 @@ export interface GuideCopy {
 
 /** Map a router pathname to a tab key. Returns null for surfaces with no guide (glossary, onboarding). */
 export function tabKeyForPath(pathname: string): TabKey | null {
-  if (pathname === "/") return "inbox";
+  if (pathname === "/") return "dashboard"; // "/" is now the Dashboard (home/landing tab)
   if (pathname.startsWith("/txn/")) return "txn";
   const seg = pathname.split("/").filter(Boolean)[0];
   switch (seg) {
+    case "inbox":
+      return "inbox";
+    case "transactions":
+      return "transactions";
     case "dashboard":
       return "dashboard";
     case "income":
@@ -84,6 +89,12 @@ export function tabGuide(tab: TabKey, p?: Progress): GuideCopy {
       return {
         title: "All caught up",
         body: "Nothing to review — your numbers are ready in Dashboard, Reports and File. There's no extra 'process' step; categorising happened on import.",
+      };
+
+    case "transactions":
+      return {
+        title: "Every transaction, searchable",
+        body: "The full record of everything in the system — search, filter by tax year or date range, and group by category, property, account or month. This is for browsing and finding; the Inbox is where you clear what's flagged.",
       };
 
     case "dashboard":

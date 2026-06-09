@@ -6,6 +6,7 @@ import { ClerkProvider, SignIn, SignUp, SignedIn, SignedOut, RedirectToSignIn, u
 import "./index.css";
 import { App } from "./App";
 import { Inbox } from "./pages/Inbox";
+import { Transactions } from "./pages/Transactions";
 import { TxnDetail } from "./pages/TxnDetail";
 import { Dashboard } from "./pages/Dashboard";
 import { Notifications } from "./pages/Notifications";
@@ -99,7 +100,9 @@ const router = createBrowserRouter([
     path: "/",
     element: <Protected />,
     children: [
-      { index: true, element: <Inbox /> },
+      { index: true, element: <Dashboard /> },
+      { path: "inbox", element: <Inbox /> },
+      { path: "transactions", element: <Transactions /> },
       { path: "txn/:id", element: <TxnDetail /> },
       { path: "dashboard", element: <Dashboard /> },
       { path: "income", element: <Income /> },

@@ -46,7 +46,7 @@ export function nextAction(c: ProgressCounts): NextAction {
   if (c.imported_transactions === 0)
     return { kind: "import", count: 0, label: "Import a statement to get started", href: "/accounts" };
   if (c.needs_review > 0)
-    return { kind: "review", count: c.needs_review, label: `${c.needs_review} ${plural(c.needs_review, "item")} to review`, href: "/" };
+    return { kind: "review", count: c.needs_review, label: `${c.needs_review} ${plural(c.needs_review, "item")} to review`, href: "/inbox" };
   if (c.undated > 0)
     return { kind: "date", count: c.undated, label: `${c.undated} ${plural(c.undated, "item")} to date`, href: "/reports" };
   return { kind: "export", count: 0, label: "Ready — review your position and hand off", href: "/filing" };

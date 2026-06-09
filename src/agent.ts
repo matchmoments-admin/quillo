@@ -3793,6 +3793,43 @@ export class TaxAgent extends Agent<Env> {
     return { ok: true, interest_cents: cents, source: src };
   }
 
+  /**
+   * The loan-interest "to confirm" list for the Sort flow: every loan account tied to an income-
+   * producing property (loans_properties → rented/vacant) and whether its FY interest has been
+   * recorded yet. Drives the "Confirm loan interest" step that replaces the retired manual split —
+   * so an investor is prompted to enter the lender's actual figure in the happy path. Surfaces a
+   * rate×balance ESTIMATE (when the account carries both) as a prefill suggestion, clearly labelled.
+   */
+  async listLoanInterestReview(
+    userId: string,
+    fy: number,
+  ): Promise<{ loan_account_id: string; loan_name: string; properties: { id: string; label: string | null }[]; recorded_cents: number | null; source: string | null; estimate_cents: number | null }[]> {
+    const res = await this.env.DB.prepare(
+      `SELECT a.id AS loan_account_id, a.name AS loan_name, a.interest_rate_pct, a.balance_cents,
+              p.id AS property_id, p.label AS property_label,
+              lis.interest_cents AS recorded_cents, lis.source AS source
+         FROM loans_properties lp
+         JOIN accounts a   ON a.id = lp.loan_account_id AND a.user_id = lp.user_id AND a.type = 'loan' AND a.active = 1
+         JOIN properties p ON p.id = lp.property_id     AND p.user_id = lp.user_id AND p.status IN ('rented','vacant')
+         LEFT JOIN loan_interest_summaries lis ON lis.loan_account_id = a.id AND lis.user_id = a.user_id AND lis.fy = ?
+        WHERE lp.user_id = ?
+        ORDER BY a.name`,
+    )
+      .bind(String(fy), userId)
+      .all<{ loan_account_id: string; loan_name: string; interest_rate_pct: number | null; balance_cents: number | null; property_id: string; property_label: string | null; recorded_cents: number | null; source: string | null }>();
+    const byLoan = new Map<string, { loan_account_id: string; loan_name: string; properties: { id: string; label: string | null }[]; recorded_cents: number | null; source: string | null; estimate_cents: number | null }>();
+    for (const r of res.results ?? []) {
+      let row = byLoan.get(r.loan_account_id);
+      if (!row) {
+        const estimate_cents = r.interest_rate_pct != null && r.balance_cents != null ? Math.round((r.balance_cents * r.interest_rate_pct) / 100) : null;
+        row = { loan_account_id: r.loan_account_id, loan_name: r.loan_name, properties: [], recorded_cents: r.recorded_cents, source: r.source, estimate_cents };
+        byLoan.set(r.loan_account_id, row);
+      }
+      if (!row.properties.some((p) => p.id === r.property_id)) row.properties.push({ id: r.property_id, label: r.property_label });
+    }
+    return [...byLoan.values()];
+  }
+
   /** List recorded loan-interest summaries (optionally for one FY start year). */
   async listLoanInterest(
     userId: string,

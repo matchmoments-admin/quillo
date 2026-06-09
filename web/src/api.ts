@@ -299,6 +299,11 @@ export const api = {
   undoBatch: (batchId: string) => post<{ reverted: number }>("/api/correct/undo", { batchId }),
   deleteTxnBatch: (ids: string[]) => post<{ deleted: number }>("/api/transactions/batch-delete", { ids }),
 
+  // Sort S1 — "edit one line → update its look-alikes" (flag apply_to_siblings; 404 when off)
+  siblingsPreview: (txnId: string) => get<{ n: number; total_cents: number; group_key: string | null }>(`/api/transactions/${txnId}/siblings`),
+  applyToSiblings: (txnId: string, edit: { bucket?: string; ato_label?: string; property_id?: string }, learn_rule = true) =>
+    post<{ applied: number; batch_id: string; rule_created: boolean; group_key: string | null }>(`/api/transactions/${txnId}/apply-to-siblings`, { edit, learn_rule }),
+
   // Phase 4 — "Do my books" accountant pass
   runAccountantPass: (fy?: number) => post<AccountantSummary>(`/api/accountant/run${fy != null ? `?fy=${fy}` : ""}`),
   accountantSuggestions: (fy?: number) => get<{ suggestions: SuggestedDeduction[] }>(`/api/accountant/suggestions${fy != null ? `?fy=${fy}` : ""}`).then((r) => r.suggestions),

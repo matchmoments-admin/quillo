@@ -3,6 +3,27 @@
 // normalise a noisy bank description into a stable group_key, group the leftovers, and propose
 // direction-aware suggested answers. No I/O — the DO does the D1 reads/writes around it.
 
+import { classifyMovement, movementTreatment } from "./statements";
+
+/**
+ * The SQL predicate that defines a clarify "leftover": a bank line still worth a question —
+ * uncategorised / unknown-bucket / low-confidence and not already finalised. Exported as ONE
+ * constant so the scan, the answer resolver and apply-to-siblings interpolate the identical WHERE
+ * (they MUST act on the same set of rows, or a pattern answer would touch rows the user never saw).
+ */
+export const CLARIFY_LEFTOVER_WHERE =
+  "status NOT IN ('ignored','duplicate','matched_receipt','corrected') AND (bucket IS NULL OR bucket = 'unknown' OR confidence IS NULL OR confidence < 0.85)";
+
+/**
+ * True when a row is a clarify leftover the dedicated movement steps DON'T own — i.e. its movement
+ * treatment is "skip" (not an internal transfer / card payment / loan repayment / investment
+ * deposit). Centralised so the scan, the answer resolver and apply-to-siblings can never disagree on
+ * which rows a pattern answer touches (the previous duplicate inline predicates risked drift).
+ */
+export function isClarifyLeftover(row: { raw_description?: string | null; merchant?: string | null; direction?: string | null }): boolean {
+  return movementTreatment(classifyMovement(row.raw_description ?? row.merchant ?? "").klass, row.direction ?? null) === "skip";
+}
+
 // Channel / noise tokens that carry no merchant identity — stripped before grouping so the SAME
 // payee phrased different ways ("Transfer From X", "Direct Credit X", "OSKO X") collapses to one key.
 const NOISE = new Set([

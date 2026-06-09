@@ -83,6 +83,29 @@ export async function handleApi(
   // Bootstrap a fresh tenant (profile + self person + signup email) on first authed touch.
   await ensureTenant(env, uid, user.email);
 
+  // ── Apply-to-siblings (flag apply_to_siblings) — "edit one line → update its look-alikes" ──
+  // GET  /api/transactions/:id/siblings          → { n, total_cents, group_key } preview
+  // POST /api/transactions/:id/apply-to-siblings  { edit, learn_rule } → fan the edit out + learn a rule
+  // Declared BEFORE the generic GET /transactions/:id handler so the :id detail route doesn't swallow it.
+  if (resource === "transactions" && id && sub === "siblings" && m === "GET") {
+    if (!featureOn(env, "apply_to_siblings")) return json({ error: "not available" }, 404);
+    try {
+      return json(await stub.previewSiblings(uid, id));
+    } catch (e) {
+      return json({ error: (e as Error).message }, 400);
+    }
+  }
+  if (resource === "transactions" && id && sub === "apply-to-siblings" && m === "POST") {
+    if (!featureOn(env, "apply_to_siblings")) return json({ error: "not available" }, 404);
+    const body = (await req.json().catch(() => ({}))) as { edit?: { bucket?: string; ato_label?: string; property_id?: string }; learn_rule?: boolean };
+    if (!body.edit || typeof body.edit !== "object") return json({ error: "edit required" }, 400);
+    try {
+      return json(await stub.applyToSiblings(uid, id, body.edit, { learnRule: !!body.learn_rule }));
+    } catch (e) {
+      return json({ error: (e as Error).message }, 400);
+    }
+  }
+
   // GET /api/transactions  ·  GET /api/transactions/:id
   if (resource === "transactions" && m === "GET") {
     if (id) {

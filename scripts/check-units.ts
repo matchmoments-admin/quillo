@@ -3,7 +3,7 @@
 // categorisation. No worker runtime / D1 / Claude — these are the fast, deterministic
 // regression guards for the rules we keep re-learning. Run: npm run test:units
 import { reconcileStatement, deriveBalances, isTransferLike, classifyMovement, movementTreatment, signedCents, lineFingerprint, type StatementLine } from "../src/lib/statements";
-import { groupKey, groupForClarify, rulePatternForStem } from "../src/lib/clarify";
+import { groupKey, groupForClarify, rulePatternForStem, isClarifyLeftover } from "../src/lib/clarify";
 import { scoreClaimMatches } from "../src/lib/claim-match";
 import { batchStatementStatus, isStaleBatch, BATCH_MAX_AGE_MS } from "../src/lib/batch";
 import { extractSituationDraft, parseBatchMessage, mapBatchItems, type BatchItem } from "../src/extract";
@@ -199,6 +199,19 @@ console.log("clarify.groupForClarify");
   check("tenant + rent group → 'rent I pay (private)' offered", rentTenant[0]!.suggestions.some((s) => /rent I pay/i.test(s.label) && s.bucket === "payg" && s.ato_label === "personal-spend"));
   check("non-tenant + rent group → no rent-private suggestion", !groupForClarify(rentRows, undefined, { hasTenantHome: false })[0]!.suggestions.some((s) => /rent I pay/i.test(s.label)));
   check("tenant + non-rent group → no rent-private suggestion", !groupForClarify([mk("Coles 1234", "debit", 30000)], undefined, { hasTenantHome: true })[0]!.suggestions.some((s) => /rent I pay/i.test(s.label)));
+}
+
+// ── Sort S1: isClarifyLeftover — the SINGLE predicate the scan, answer + apply-to-siblings share ──
+console.log("clarify.isClarifyLeftover");
+{
+  // A plain merchant line (movement 'skip') IS a clarify leftover — apply-to-siblings may touch it.
+  check("plain merchant debit → leftover (true)", isClarifyLeftover({ raw_description: "BPAY Origin Energy 12345", direction: "debit" }));
+  check("plain merchant credit → leftover (true)", isClarifyLeftover({ raw_description: "Transfer From Catherine Soper", direction: "credit" }));
+  // Movement-owned lines are NOT leftovers — a dedicated step owns them, so a pattern answer must skip.
+  check("loan repayment → NOT a leftover (loan-split step owns it)", !isClarifyLeftover({ raw_description: "Loan Repayment LN REPAY", direction: "debit" }));
+  check("internal transfer → NOT a leftover (movement sweep owns it)", !isClarifyLeftover({ raw_description: "Transfer to Savings", direction: "debit" }));
+  // Reads raw_description first, then merchant — mirrors the scan/answer fallback order.
+  check("falls back to merchant when raw_description is null", isClarifyLeftover({ raw_description: null, merchant: "Origin Energy", direction: "debit" }));
 }
 
 // ── Phase 3 claim auto-matcher: scoreClaimMatches ─────────────────────────────

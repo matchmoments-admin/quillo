@@ -3,7 +3,6 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api } from "../api";
 import { Button, Card, money } from "./ui";
-import { useFeatures } from "../lib/features";
 import type { MovementCandidate } from "../types";
 
 const KLASS_LABEL: Record<string, string> = {
@@ -24,12 +23,6 @@ const KLASS_LABEL: Record<string, string> = {
 export function MovementSweepCard() {
   const qc = useQueryClient();
   const { data, isLoading } = useQuery({ queryKey: ["movements-sweep"], queryFn: api.sweepMovements });
-  // When loan_split is on, the loan-review lines are handled by their own LoanSplitCard step, so this
-  // card drops its read-only review box (no duplication). MUST mirror SortFlow's gating: when
-  // loan_interest_v2 retires the split step, those lines return to this card's read-only review box
-  // (and SortFlow folds them into the movements count), so the badge and the body stay consistent.
-  const { has } = useFeatures();
-  const hasLoanSplit = has("loan_split") && !has("loan_interest_v2");
   const ignorable = data?.ignorable ?? [];
   // Selection defaults to ALL candidates (pre-checked); recomputed when the candidate id set changes.
   const allIds = useMemo(() => ignorable.map((c) => c.id), [ignorable]);
@@ -52,7 +45,10 @@ export function MovementSweepCard() {
   });
 
   if (isLoading || !data) return null;
-  const review = hasLoanSplit ? [] : data.property_loan_review ?? [];
+  // Loan-repayment lines that may carry deductible investment-loan interest — read-only review box.
+  // (The legacy per-line "Split loan interest" UI was retired; loan_interest_v2 captures the deductible
+  // figure against the loan account, so these just route the user to categorise each line.)
+  const review = data.property_loan_review ?? [];
   if (ignorable.length === 0 && review.length === 0) return null;
 
   const selected = allIds.filter((id) => !excluded.has(id));

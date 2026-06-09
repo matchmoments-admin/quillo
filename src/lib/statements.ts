@@ -217,6 +217,21 @@ export function isTransferLike(description: string): boolean {
 }
 
 /**
+ * Detect an itemised "interest charged" line on a LOAN statement (#165). Used only when aggregating a
+ * loan account's own lines, so any line that mentions interest is the lender's interest charge — EXCEPT
+ * non-charge mentions (a rate notice, an interest-saver/offset sweep, "interest free"). Summing these
+ * per FY pre-populates a statement_parsed loan-interest summary the user then confirms. Pure + unit-tested.
+ */
+export function isLoanInterestLine(description: string): boolean {
+  const d = (description ?? "").toLowerCase();
+  if (!/\binterest\b/.test(d)) return false;
+  // Non-charge mentions (either side of "interest"): rate notices, interest-saver / offset / free /
+  // bonus / redraw lines. A genuine charge reads "interest charged / debit interest / loan interest".
+  if (/\b(rate|saver|free|offset|bonus|redraw)\b/.test(d)) return false;
+  return true;
+}
+
+/**
  * How the Stage-A sweep should treat a classified line, given its direction. Shared by the read
  * (sweepMovements) and write (applyMovementSweep) paths so they can never disagree:
  *  - "ignorable" → safe to offer for one-tap exclusion (pre-checked confirm list);

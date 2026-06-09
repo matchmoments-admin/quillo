@@ -47,7 +47,10 @@ export function SortFlow({ fy, hasAccountantPass }: { fy: number; hasAccountantP
   const moveCount = (sweep.data?.ignorable.length ?? 0) + (sweep.data?.property_loan_review.length ?? 0);
   const clarifyCount = clarify.data?.length ?? 0;
   const suggCount = suggestions.data?.length ?? 0;
-  const loanInterestCount = (loanInterest.data ?? []).filter((l) => l.recorded_cents == null).length;
+  // "To confirm" = every loan whose FY interest isn't a user-confirmed lender_summary yet — including
+  // ones auto-prefilled from a parsed statement (source='statement_parsed', #165), which the user still
+  // confirms. A confirmed lender_summary drops out.
+  const loanInterestCount = (loanInterest.data ?? []).filter((l) => l.source !== "lender_summary").length;
 
   // Order = the order you work them: sort repeat merchants first (most lines cleared per tap), then
   // confirm loan interest, confirm suggested deductions, then the transfer clean-up.

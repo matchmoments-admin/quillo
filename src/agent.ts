@@ -18,7 +18,7 @@ import { fyLabel, fyBounds } from "./lib/ledger-totals";
 import { assessReadiness, type FilingReadiness, type FilingReadinessSignals } from "./lib/readiness";
 import { rollSchedule, balancingAdjustment, fyStartYearOf, isLowCostAsset, looksLikePersonalTransfer, assetDepreciatesForTaxpayer, type DepAsset } from "./lib/depreciation";
 import { matchClaimRules, suggestionText, enumerateSituationClaims, classifyClaim, uncoveredOccupations, ruleKey, type ClaimRule, type ClaimContext, type ClaimSituation } from "./lib/claimability";
-import { parseCsv, applyColumnMap, lineFingerprint, deriveBalances, reconcileStatement, isLiabilityAccount, fuzzyMerchant, isTransferLike, classifyMovement, movementTreatment, type ColumnMap, type Reconciliation, type StatementLine, type MovementClass } from "./lib/statements";
+import { parseCsv, applyColumnMap, lineFingerprint, deriveBalances, reconcileStatement, isLiabilityAccount, fuzzyMerchant, isTransferLike, isLoanInterestLine, classifyMovement, movementTreatment, type ColumnMap, type Reconciliation, type StatementLine, type MovementClass } from "./lib/statements";
 import { groupKey, groupForClarify, rulePatternForStem, isClarifyLeftover, CLARIFY_LEFTOVER_WHERE, type ClarifyRow } from "./lib/clarify";
 import { scoreClaimMatches, type ScoredTxn } from "./lib/claim-match";
 import { batchStatementStatus, isStaleBatch } from "./lib/batch";
@@ -570,6 +570,12 @@ export class TaxAgent extends Agent<Env> {
     await this.stampDeductibility(userId);
     // Attach any existing receipts to the new lines (stops double-counting + donates GST).
     await this.matchReceiptsForUser(userId);
+    // #165 — if this is a loan account whose statement itemises interest, sum those lines per FY and
+    // record a statement_parsed loan-interest summary so the "Confirm loan interest" card prefills from
+    // evidence (lender_summary still wins). Best-effort: never fail an import on this.
+    await this.recomputeStatementLoanInterest(userId, stmt.account_id, stmt.account_type).catch((e) =>
+      this.audit(userId, "loan_interest_autoparse_failed", JSON.stringify({ accountId: stmt.account_id, error: (e as Error).message })).catch(() => {}),
+    );
 
     if (!quiet) {
       // Direct (single-statement) import: run the pass now so the Sort queues are ready. The bulk path
@@ -583,6 +589,44 @@ export class TaxAgent extends Agent<Env> {
       );
     }
     return { imported, skipped };
+  }
+
+  /**
+   * #165 — evidence-first loan interest from parsed statements. For a LOAN account, sum its itemised
+   * "interest charged" lines per FY and upsert a `statement_parsed` loan-interest summary, so the
+   * "Confirm loan interest" card prefills the real figure for the user to confirm rather than type.
+   * Never overwrites a user-entered `lender_summary` (lender always wins); re-runs are idempotent
+   * (the upsert replaces an earlier statement_parsed/estimate with the latest sum). Gated on
+   * loan_interest_v2; a no-op for non-loan accounts.
+   */
+  private async recomputeStatementLoanInterest(userId: string, accountId: string, accountType: string | null): Promise<void> {
+    if (!featureOn(this.env, "loan_interest_v2") || accountType !== "loan") return;
+    const res = await this.env.DB.prepare(
+      `SELECT raw_description, merchant, txn_date, amount_cents, amount_aud_cents
+         FROM transactions
+        WHERE user_id = ? AND account_id = ? AND kind = 'bank_line' AND txn_date IS NOT NULL`,
+    )
+      .bind(userId, accountId)
+      .all<{ raw_description: string | null; merchant: string | null; txn_date: string; amount_cents: number | null; amount_aud_cents: number | null }>();
+    const fyStart = (d: string) => (Number(d.slice(5, 7)) >= 7 ? Number(d.slice(0, 4)) : Number(d.slice(0, 4)) - 1);
+    const byFy = new Map<number, number>();
+    for (const r of res.results ?? []) {
+      if (!isLoanInterestLine(r.raw_description ?? r.merchant ?? "")) continue;
+      const cents = Math.abs(r.amount_aud_cents ?? r.amount_cents ?? 0);
+      if (cents <= 0) continue;
+      const fy = fyStart(r.txn_date);
+      byFy.set(fy, (byFy.get(fy) ?? 0) + cents);
+    }
+    for (const [fy, cents] of byFy) {
+      // Lender summary is the user's confirmed figure — never overwrite it with a parsed estimate.
+      const existing = await this.env.DB.prepare(
+        `SELECT source FROM loan_interest_summaries WHERE user_id = ? AND loan_account_id = ? AND fy = ?`,
+      )
+        .bind(userId, accountId, String(fy))
+        .first<{ source: string }>();
+      if (existing?.source === "lender_summary") continue;
+      await this.setLoanInterest(userId, accountId, fy, cents, "statement_parsed");
+    }
   }
 
   /**

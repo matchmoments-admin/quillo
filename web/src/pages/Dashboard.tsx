@@ -9,15 +9,6 @@ import { WorkMethodsCard } from "../components/WorkMethodsCard";
 import { useFeatures } from "../lib/features";
 import type { ChecklistItem } from "../types";
 
-const FEATURE_LABEL: Record<string, string> = {
-  receipt: "Receipts",
-  text: "Typed expenses",
-  statement_columns: "Statement column-map",
-  statement_pdf: "PDF statements",
-  statement_batch: "Statement categorisation",
-};
-const cents = (c: number) => `$${(c / 100).toFixed(c < 100 ? 4 : 2)}`;
-
 // A green chart-segment palette cycled across breakdown rows (forest → moss → sage → info).
 const SWATCH = ["#0c3f26", "#15643a", "#1c7a48", "#97a86f", "#2f6bd6", "#9a6712"];
 
@@ -25,13 +16,11 @@ export function Dashboard() {
   const { fy, label } = useActiveFy();
   const { has } = useFeatures();
   const { data, isLoading, error } = useQuery({ queryKey: ["dashboard", fy], queryFn: () => api.dashboard(fy) });
-  const usage = useQuery({ queryKey: ["usage"], queryFn: () => api.usage() });
   if (isLoading) return <Spinner />;
   if (error) return <Panel className="text-sm text-muted">Couldn't load: {(error as Error).message}</Panel>;
   const d = data!;
   const total = d.by_bucket.reduce((s, b) => s + b.total_cents, 0);
   const income = d.income_by_bucket.reduce((s, b) => s + b.total_cents, 0);
-  const u = usage.data;
 
   return (
     <div className="space-y-6">
@@ -52,17 +41,22 @@ export function Dashboard() {
         </Link>
       </div>
 
-      {/* KPI row */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <KpiCard variant="feature" label="Tracked total" value={money(total)} foot={`${d.by_bucket.reduce((s, b) => s + b.n, 0)} categorised items`} />
-        <Link to="/">
-          <KpiCard
-            variant="accent"
-            label="Needs review"
-            value={String(d.needs_review)}
-            foot={d.needs_review ? "Open the inbox to clear them" : "All caught up"}
-          />
+      {/* "Still to sort" leads as its own banner — it's an ALL-TIME backlog (it must match the Inbox
+          badge, which isn't FY-scoped), so it can't sit in the per-FY KPI grid below without misleading. */}
+      {d.needs_review > 0 && (
+        <Link
+          to="/"
+          className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-xl border border-line bg-card px-3 py-2 text-sm text-ink-2 shadow-card transition hover:border-ink/40"
+        >
+          <span className="font-semibold text-ink">{d.needs_review} still to sort</span>
+          <span className="text-ink-3">across all years —</span>
+          <span className="font-semibold text-forest">open the inbox to categorise them →</span>
         </Link>
+      )}
+
+      {/* KPI row — every figure here is scoped to the active FY. */}
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <KpiCard variant="feature" label="Tracked total" value={money(total)} foot={`${d.by_bucket.reduce((s, b) => s + b.n, 0)} categorised items`} />
         <KpiCard label="Deduction categories" value={String(d.by_bucket.length)} foot="Categories in use" />
         <KpiCard label="Income tracked" value={money(income)} foot="From bank credits" />
       </div>
@@ -80,8 +74,9 @@ export function Dashboard() {
         </Link>
       )}
 
-      {/* Working-from-home: the #1 PAYG claim, surfaced where it's seen (not buried under Review). */}
-      {has("wfh_car_methods") && <WorkMethodsCard fyNum={fy} compact />}
+      {/* Working-from-home + car: the #1 PAYG claims, captured here on the Position surface (the one
+          canonical place — Review no longer carries a second copy). */}
+      {has("wfh_car_methods") && <WorkMethodsCard fyNum={fy} />}
 
       <ChecklistCard />
       <ClaimsCard />
@@ -100,6 +95,7 @@ export function Dashboard() {
                   n={b.n}
                   value={money(b.total_cents)}
                   frac={total ? b.total_cents / total : 0}
+                  to={`/?bucket=${encodeURIComponent(b.bucket)}`}
                 />
               ))}
             </div>
@@ -119,6 +115,7 @@ export function Dashboard() {
                   name={p.label ?? p.property_id}
                   n={p.n}
                   value={money(p.total_cents)}
+                  to={`/?property=${encodeURIComponent(p.property_id)}`}
                 />
               ))}
             </div>
@@ -140,52 +137,15 @@ export function Dashboard() {
                 n={b.n}
                 value={money(b.total_cents)}
                 frac={income ? b.total_cents / income : 0}
+                to={`/?bucket=${encodeURIComponent(b.bucket)}`}
               />
             ))}
           </div>
         </Panel>
       )}
 
-      {u && (
-        <Panel>
-          <PanelHead title={<>AI cost <InfoTip k="ai_cost" /></>} sub="measured" />
-          <div className="divide-y divide-line">
-            <SimpleRow k="Today" v={cents(u.today_cents)} />
-            <SimpleRow k={`This month · ${u.calls} calls`} v={cents(u.month_cents)} />
-            {u.by_feature.map((f) => (
-              <SimpleRow key={f.feature ?? "?"} k={FEATURE_LABEL[f.feature ?? ""] ?? f.feature ?? "—"} sub={`${f.calls}`} v={cents(f.cost_cents)} />
-            ))}
-          </div>
-          {u.by_fy.length > 0 && (
-            <div className="mt-4">
-              <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-ink-3">
-                By financial year{u.markup_pct > 0 ? ` · billable incl. ${u.markup_pct}% fee` : ""}
-              </div>
-              <div className="divide-y divide-line">
-                {u.by_fy.map((f) => (
-                  <SimpleRow
-                    key={f.fy}
-                    k={`FY ${f.fy}`}
-                    sub={`${f.calls} calls · ${cents(f.cost_cents)} cost`}
-                    v={cents(f.billable_cents)}
-                  />
-                ))}
-              </div>
-              <p className="mt-2 text-xs text-muted">
-                Billable = measured AI cost{u.markup_pct > 0 ? ` + ${u.markup_pct}%` : ""}
-                {u.app_fee_cents > 0 ? ` + ${cents(u.app_fee_cents)} fee` : ""}. Shown for transparency — not yet charged.
-              </p>
-            </div>
-          )}
-        </Panel>
-      )}
-
       <p className="text-sm text-muted">
-        Year-end totals, depreciation schedule + BAS quarters are on the{" "}
-        <Link to="/reports" className="text-ink underline underline-offset-2">
-          Reports
-        </Link>{" "}
-        page.
+        Year-end totals, depreciation schedule + BAS quarters are on the Reports page (top right).
       </p>
     </div>
   );
@@ -216,7 +176,8 @@ function ChecklistCard() {
     gen.mutate();
   }, [isLoading, items.length, label, gen]);
 
-  // Empty / not-yet-generated → the sage "checklist strip" CTA from the design.
+  // Empty → the situation-driven checklist auto-generates on first visit (the effect above), so this is
+  // just a quiet placeholder; no manual "Generate" button (the loaded-state "Refresh" covers re-runs).
   if (!isLoading && !items.length) {
     return (
       <div className="flex flex-wrap items-center gap-4 rounded-2xl border border-sage bg-sage px-6 py-5">
@@ -227,12 +188,10 @@ function ChecklistCard() {
         </span>
         <div className="min-w-0">
           <div className="font-display text-lg text-forest">FY {label} checklist</div>
-          <div className="text-[13px] text-forest/70">A to-do list tailored to your situation — rental, company, super &amp; investments.</div>
+          <div className="text-[13px] text-forest/70">
+            {gen.isPending ? "Building a to-do list tailored to your situation…" : "Nothing to do here yet — it'll fill in as you add your situation."}
+          </div>
         </div>
-        <span className="flex-1" />
-        <Button onClick={() => gen.mutate()} disabled={gen.isPending}>
-          {gen.isPending ? "Generating…" : "Generate"}
-        </Button>
       </div>
     );
   }
@@ -326,15 +285,17 @@ function BreakdownRow({
   n,
   value,
   frac,
+  to,
 }: {
   swatch: string;
   name: string;
   n: number;
   value: string;
   frac?: number;
+  to?: string; // when set, the row links into the Inbox filtered to this category/property
 }) {
-  return (
-    <div className="py-3">
+  const inner = (
+    <>
       <div className="flex items-center justify-between gap-4">
         <span className="flex min-w-0 items-center gap-2.5">
           <span className="h-2.5 w-2.5 flex-none rounded" style={{ background: swatch }} />
@@ -344,20 +305,16 @@ function BreakdownRow({
         <span className="font-semibold tnum">{value}</span>
       </div>
       {frac != null && <Meter frac={frac} />}
-    </div>
+    </>
   );
-}
-
-function SimpleRow({ k, sub, v }: { k: string; sub?: string; v: string }) {
-  return (
-    <div className="flex items-center justify-between py-2.5 text-sm">
-      <span className="text-muted">
-        {k}
-        {sub ? <span className="ml-1 text-ink-3">· {sub}</span> : null}
-      </span>
-      <span className="font-semibold tnum">{v}</span>
-    </div>
-  );
+  if (to) {
+    return (
+      <Link to={to} className="block py-3 transition hover:opacity-70">
+        {inner}
+      </Link>
+    );
+  }
+  return <div className="py-3">{inner}</div>;
 }
 
 function Empty() {

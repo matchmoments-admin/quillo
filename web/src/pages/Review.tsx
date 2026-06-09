@@ -4,8 +4,6 @@ import { toast } from "sonner";
 import { api } from "../api";
 import { Card, Spinner, Button, Input, money, BUCKET_LABEL } from "../components/ui";
 import { useActiveFy, FySwitcher } from "../lib/activeFy";
-import { useFeatures } from "../lib/features";
-import { WorkMethodsCard } from "../components/WorkMethodsCard";
 
 const DEDUCTIBLE_STATES = new Set(["likely_deductible", "confirmed_deductible"]);
 
@@ -15,8 +13,7 @@ type Label = { bucket: string; ato_label: string | null; n: number; total_cents:
 export function Review() {
   // Use the app-wide active FY (persisted per tenant) instead of a local stepper, so Review stays in
   // sync with Reports/Filing/Checklist — previously its own stepper silently desynced from the global one.
-  const { fy: fyNum, label: fy } = useActiveFy();
-  const { has } = useFeatures();
+  const { label: fy } = useActiveFy();
   const { data, isLoading, error } = useQuery({ queryKey: ["review", fy], queryFn: () => api.reviewSummary(fy) });
 
   const labels = useMemo<Label[]>(() => {
@@ -54,8 +51,6 @@ export function Review() {
         business-use %. General information only — not tax advice; confirm your claims with a registered tax agent before
         lodging. This never predicts a refund.
       </p>
-
-      {has("wfh_car_methods") && <WorkMethodsCard fyNum={fyNum} />}
 
       {isLoading ? (
         <Spinner />

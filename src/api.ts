@@ -115,6 +115,7 @@ export async function handleApi(
     const rows = await listTransactions(env, uid, {
       status: url.searchParams.get("status") ?? undefined,
       bucket: url.searchParams.get("bucket") ?? undefined,
+      property_id: url.searchParams.get("property_id") ?? undefined,
       kind: url.searchParams.get("kind") ?? undefined,
       review: url.searchParams.get("review") === "1" || undefined,
       limit: Number(url.searchParams.get("limit")) || undefined,

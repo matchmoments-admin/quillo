@@ -81,7 +81,7 @@ const TXN_COLS =
 export async function listTransactions(
   env: Env,
   userId: string,
-  opts: { status?: string; bucket?: string; kind?: string; review?: boolean; limit?: number; offset?: number } = {},
+  opts: { status?: string; bucket?: string; property_id?: string; kind?: string; review?: boolean; limit?: number; offset?: number } = {},
 ): Promise<TxnRow[]> {
   const where: string[] = ["user_id = ?"];
   const binds: unknown[] = [userId];
@@ -92,6 +92,10 @@ export async function listTransactions(
   if (opts.bucket) {
     where.push("bucket = ?");
     binds.push(opts.bucket);
+  }
+  if (opts.property_id) {
+    where.push("property_id = ?");
+    binds.push(opts.property_id);
   }
   if (opts.kind) {
     where.push("kind = ?");

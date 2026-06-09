@@ -259,6 +259,21 @@ export async function handleApi(
     }
   }
 
+  // POST /api/ask { question, fy? } — grounded single-turn tax-Q&A from the user's own ledger.
+  if (resource === "ask" && m === "POST") {
+    if (!featureOn(env, "ask_quillo")) return json({ error: "not available" }, 404);
+    const { question, fy } = (await req.json().catch(() => ({}))) as { question?: string; fy?: number };
+    if (!question || !question.trim()) return json({ error: "missing question" }, 400);
+    try {
+      return json(await stub.askQuestion(uid, question, Math.trunc(Number(fy)) || currentFyStartYear()));
+    } catch (e) {
+      const msg = (e as Error).message;
+      if (msg === "consent_required") return json({ error: "consent_required" }, 403);
+      if (msg === "ai_budget_reached") return json({ error: "AI is paused for today (daily limit reached) — try again after the reset." }, 429);
+      throw e;
+    }
+  }
+
   // GET /api/dashboard — aggregates. Opportunistically apply any finished async batch jobs
   // (cheap no-op when there are none) so results land without waiting for the cron.
   if (resource === "dashboard" && m === "GET") {

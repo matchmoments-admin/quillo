@@ -18,7 +18,7 @@ import { BUCKETS } from "../src/lib/taxonomy";
 import { applyUserRules } from "../src/lib/rules";
 import type { UserRule } from "../src/lib/db";
 import { parseRoles, hasRole, isAdmin, normaliseRoles, ROLES } from "../src/lib/roles";
-import { buildGuidePrompt } from "../src/lib/guide";
+import { buildGuidePrompt, buildAskPrompt, summariseReportForAsk } from "../src/lib/guide";
 import type { Progress } from "../src/lib/progress";
 import { fyBounds, fyLabel } from "../src/lib/ledger-totals";
 import { currentFyStartYear } from "../src/lib/report";
@@ -1125,6 +1125,30 @@ console.log("buildGuidePrompt (Guide me)");
   check("user embeds the live numbers", user.includes('"needs_review":12') && user.includes("338"));
   check("user embeds the situation summary", user.includes("Taxpayer: nurse"));
   check("unknown tab degrades gracefully", buildGuidePrompt("bogus", progress, "").system.includes('"bogus"'));
+}
+
+console.log("buildAskPrompt (Ask Quillo)");
+{
+  const { system, user } = buildAskPrompt("What's my work-from-home claim?", "Taxpayer: nurse", '{"work_method":{"wfh_deduction_cents":51100}}');
+  // Hard guardrails: no advice, no refund/payable, no rates — the safety contract for free-text Q&A.
+  check("ask system forbids advice", system.toLowerCase().includes("not a tax agent") || system.toLowerCase().includes("never tax advice") || system.toLowerCase().includes("general information only"));
+  check("ask system forbids a refund/payable figure", system.toLowerCase().includes("never state tax payable") && system.toLowerCase().includes("refund"));
+  check("ask system forbids tax rates", system.toLowerCase().includes("rates"));
+  check("ask embeds the question", user.includes("What's my work-from-home claim?"));
+  check("ask embeds the position JSON + situation", user.includes("wfh_deduction_cents") && user.includes("Taxpayer: nurse"));
+  check("ask forces a single give_answer call", system.includes("give_answer"));
+
+  // summariseReportForAsk: headline figures present + RAW (not redact-mangled) so the answer can cite them.
+  const fakeReport = {
+    fy: "2024-25", taxable_position_cents: 4_280_50, total_income_cents: 95_000_00, total_deductions_cents: 3_280_50,
+    resolved_deductible_cents: 0, depreciation_cents: 1_000_00, gst_credits_cents: 0, undated: { total_cents: 0 },
+    deduction_breakdown: [{ bucket: "payg", ato_label: "D5", n: 3, total_cents: 3_280_50 }],
+    income_by_bucket: [{ bucket: "income_personal", n: 12, total_cents: 95_000_00 }], per_property: [],
+  } as unknown as Parameters<typeof summariseReportForAsk>[0];
+  const summary = summariseReportForAsk(fakeReport);
+  check("ask summary keeps the headline taxable position verbatim", summary.includes("428050"));
+  check("ask summary keeps deduction figures verbatim (not redacted)", summary.includes("328050") && !summary.includes("REDACTED"));
+  check("ask summary leads with the position fields", summary.indexOf("indicative_taxable_position_cents") < summary.indexOf("deductions_by_category"));
 }
 
 console.log("roles");

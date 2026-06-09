@@ -1,4 +1,39 @@
 import type { Progress } from "./progress";
+import type { Report } from "./report";
+
+/**
+ * Compact, model-facing summary of the user's computed FY position for "Ask Quillo". Headline figures
+ * FIRST (so nothing important is ever truncated), then the breakdowns, then only the optional sections
+ * that are present. These are AGGREGATES (cents + bucket/label names) — no TFN/card/BSB digit strings —
+ * so it is NOT run through redact() (which would mangle the very *_cents numbers the answer must cite);
+ * the situation text, which can carry names, is redacted separately by the caller. Pure (unit-tested).
+ */
+export function summariseReportForAsk(r: Report): string {
+  const o: Record<string, unknown> = {
+    fy: r.fy,
+    indicative_taxable_position_cents: r.taxable_position_cents,
+    total_income_cents: r.total_income_cents,
+    tracked_deductions_cents: r.total_deductions_cents,
+    confirmed_deductible_cents: r.resolved_deductible_cents,
+    depreciation_cents: r.depreciation_cents,
+    gst_credits_cents: r.gst_credits_cents,
+    undated_cents: r.undated.total_cents,
+    deductions_by_category: r.deduction_breakdown.map((d) => ({ bucket: d.bucket, ato_label: d.ato_label, n: d.n, total_cents: d.total_cents, deductibility: (d as { deductibility?: string }).deductibility })),
+    income_by_type: r.income_by_bucket.map((i) => ({ bucket: i.bucket, n: i.n, total_cents: i.total_cents })),
+    per_property: r.per_property,
+  };
+  if (r.work_method) o.work_from_home_and_car = r.work_method;
+  if (r.capital_gains) o.capital_gains = r.capital_gains;
+  if (r.ess) o.employee_share_scheme = r.ess;
+  if (r.gst) o.gst_bas = r.gst;
+  if (r.trust) o.trust_distributions = r.trust;
+  if (r.car_logbook) o.car_logbook = r.car_logbook;
+  if (r.smsf_funds) o.smsf_funds = r.smsf_funds;
+  if (r.company_positions) o.company_positions = r.company_positions;
+  // Aggregated, so bounded by the count of distinct (bucket,ato_label) pairs + properties — but cap
+  // defensively so a pathological tenant can't blow the token budget.
+  return JSON.stringify(o).slice(0, 10000);
+}
 
 // One-line purpose per tab (mirrors the static web tabGuides meanings) — grounds the model so the
 // "Guide me" steps are on-topic for the screen the user is actually on.
@@ -22,6 +57,30 @@ const GUARDRAILS =
   "General information only — never tax advice, never predict a refund or assert deductibility; " +
   "suggest confirming with a registered tax agent where relevant. Be concrete and specific to THIS " +
   "user's data (cite their numbers), warm, plain and jargon-free.";
+
+// Stricter than the guide guardrails: this answers free-text questions, so it must refuse to invent
+// numbers or cross the advice line. Answer ONLY from the supplied data.
+const ASK_GUARDRAILS =
+  "GENERAL INFORMATION ONLY — you are NOT a tax agent. NEVER state tax payable, a refund amount, tax " +
+  "rates or bracket maths. NEVER assert that something IS deductible — describe what's generally " +
+  "deductible and say to confirm with a registered tax agent. Answer ONLY from the user's data below; " +
+  "if the answer isn't in the data, say what's missing and which screen to add it on. Be warm, plain, " +
+  "jargon-free, and cite the user's own numbers.";
+
+/** Build the system + user prompt for "Ask Quillo" — a grounded answer from the user's own ledger. Pure (unit-tested). */
+export function buildAskPrompt(question: string, situationText: string, positionText: string): { system: string; user: string } {
+  const system =
+    "You are Quillo, an Australian tax-evidence assistant answering a question about THIS user's own " +
+    "records. " +
+    ASK_GUARDRAILS +
+    " Call give_answer exactly once.";
+  const user =
+    `Their question:\n${question}\n\n` +
+    `What we know about them:\n${situationText || "(situation not set up yet)"}\n\n` +
+    `Their tracked tax position this year (their actual figures, JSON):\n${positionText}\n\n` +
+    `Answer using the data above. If it depends on something not captured, say so and name the screen to add it.`;
+  return { system, user };
+}
 
 /** Build the system + user prompt for the personalised "Guide me" walkthrough. Pure (unit-tested). */
 export function buildGuidePrompt(tab: string, progress: Progress, situationText: string): { system: string; user: string } {

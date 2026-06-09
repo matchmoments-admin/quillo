@@ -119,6 +119,8 @@ export async function handleApi(
       property_id: url.searchParams.get("property_id") ?? undefined,
       kind: url.searchParams.get("kind") ?? undefined,
       review: url.searchParams.get("review") === "1" || undefined,
+      fy: Number(url.searchParams.get("fy")) || undefined,
+      countable: url.searchParams.get("countable") === "1" || undefined,
       limit: Number(url.searchParams.get("limit")) || undefined,
       offset: Number(url.searchParams.get("offset")) || undefined,
     });

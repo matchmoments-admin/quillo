@@ -602,15 +602,18 @@ export class TaxAgent extends Agent<Env> {
   private async recomputeStatementLoanInterest(userId: string, accountId: string, accountType: string | null): Promise<void> {
     if (!featureOn(this.env, "loan_interest_v2") || accountType !== "loan") return;
     const res = await this.env.DB.prepare(
-      `SELECT raw_description, merchant, txn_date, amount_cents, amount_aud_cents
+      `SELECT raw_description, merchant, txn_date, direction, amount_cents, amount_aud_cents
          FROM transactions
         WHERE user_id = ? AND account_id = ? AND kind = 'bank_line' AND txn_date IS NOT NULL`,
     )
       .bind(userId, accountId)
-      .all<{ raw_description: string | null; merchant: string | null; txn_date: string; amount_cents: number | null; amount_aud_cents: number | null }>();
+      .all<{ raw_description: string | null; merchant: string | null; txn_date: string; direction: string | null; amount_cents: number | null; amount_aud_cents: number | null }>();
     const fyStart = (d: string) => (Number(d.slice(5, 7)) >= 7 ? Number(d.slice(0, 4)) : Number(d.slice(0, 4)) - 1);
     const byFy = new Map<number, number>();
     for (const r of res.results ?? []) {
+      // Only interest CHARGED (a debit on the loan) — never an interest credit/reversal/adjustment,
+      // which would otherwise inflate the sum via abs() and over-state deductible interest.
+      if ((r.direction ?? "debit") !== "debit") continue;
       if (!isLoanInterestLine(r.raw_description ?? r.merchant ?? "")) continue;
       const cents = Math.abs(r.amount_aud_cents ?? r.amount_cents ?? 0);
       if (cents <= 0) continue;

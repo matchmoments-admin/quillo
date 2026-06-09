@@ -30,7 +30,7 @@ export function Inbox() {
   const [flash, setFlash] = useState<BulkDone | null>(null);
   const { has } = useFeatures();
   const hasAccountantPass = has("accountant_pass");
-  const { fy: activeFy } = useActiveFy();
+  const { fy: activeFy, label: fyLabel } = useActiveFy();
   const toggleSel = (id: string) =>
     setSelected((prev) => {
       const next = new Set(prev);
@@ -39,22 +39,26 @@ export function Inbox() {
       return next;
     });
   // Drill-through from the Dashboard breakdowns: ?bucket= / ?property= shows ALL matching transactions
-  // (any status, the same figures the Dashboard totalled), not the needs-review queue — so a wrong total
-  // is one click from the lines behind it.
+  // (the lines behind a Dashboard figure — same FY scope + countable predicate the dashboard totalled),
+  // not the needs-review queue. A high limit (server caps at 500) so the count matches the figure.
   const [searchParams, setSearchParams] = useSearchParams();
   const filterBucket = searchParams.get("bucket") ?? undefined;
   const filterProperty = searchParams.get("property") ?? undefined;
   const filtering = Boolean(filterBucket || filterProperty);
+  const clearFilter = () => {
+    setSearchParams({});
+    setSelected(new Set()); // selection was over the filtered rows — don't leak it into the tab view
+  };
   const { data: situation } = useQuery({ queryKey: ["situation"], queryFn: api.situation });
   const propLabel = filterProperty ? situation?.properties.find((p) => p.id === filterProperty)?.label : undefined;
   const filterLabel = filterBucket ? BUCKET_LABEL[filterBucket] ?? filterBucket : (propLabel ?? "this property");
 
   const tabOpts = TABS.find((t) => t.key === tab)!.opts;
   const { data, isLoading, error } = useQuery({
-    queryKey: filtering ? ["transactions", "filter", filterBucket, filterProperty, limit] : ["transactions", tab, limit],
+    queryKey: filtering ? ["transactions", "filter", filterBucket, filterProperty, activeFy] : ["transactions", tab, limit],
     queryFn: () =>
       filtering
-        ? api.transactions({ bucket: filterBucket, property_id: filterProperty, limit })
+        ? api.transactions({ bucket: filterBucket, property_id: filterProperty, fy: activeFy, countable: true, limit: 500 })
         : api.transactions({ ...tabOpts, limit }),
   });
 
@@ -105,9 +109,9 @@ export function Inbox() {
         /* Drill-through view from a Dashboard breakdown — all matching lines, with a one-tap clear. */
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-line bg-card px-3 py-2 text-sm shadow-card">
           <span>
-            Showing <span className="font-semibold text-ink">{filterLabel}</span> · {txns.length} {txns.length === 1 ? "item" : "items"}
+            Showing <span className="font-semibold text-ink">{filterLabel}</span> · FY {fyLabel} · {txns.length} {txns.length === 1 ? "item" : "items"}
           </span>
-          <button onClick={() => setSearchParams({})} className="font-medium text-muted hover:text-ink">
+          <button onClick={clearFilter} className="font-medium text-muted hover:text-ink">
             Clear filter ✕
           </button>
         </div>
@@ -177,7 +181,7 @@ export function Inbox() {
               </li>
             ))}
           </ul>
-          {txns.length >= limit && (
+          {!filtering && txns.length >= limit && (
             <button onClick={() => setLimit((l) => l + 50)} className="w-full rounded-lg border border-line py-2 text-sm text-muted hover:text-ink">
               Load more
             </button>

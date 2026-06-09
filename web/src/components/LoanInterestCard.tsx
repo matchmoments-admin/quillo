@@ -13,7 +13,9 @@ import { Button, Card, Spinner, money } from "./ui";
 export function LoanInterestCard({ fy }: { fy: number }) {
   const q = useQuery({ queryKey: ["loan-interest-review", fy], queryFn: () => api.loanInterestReview(fy) });
   if (q.isLoading) return <Spinner />;
-  const loans = q.data ?? [];
+  // Only the loans still to confirm (no user-entered lender_summary yet) — matches SortFlow's count, so
+  // the card never re-prompts a figure the user already confirmed (which risked an accidental overwrite).
+  const loans = (q.data ?? []).filter((l) => l.source !== "lender_summary");
   if (loans.length === 0) return null;
   const fyLabel = `${fy}–${String((fy + 1) % 100).padStart(2, "0")}`;
 

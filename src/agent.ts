@@ -601,6 +601,17 @@ export class TaxAgent extends Agent<Env> {
    */
   private async recomputeStatementLoanInterest(userId: string, accountId: string, accountType: string | null): Promise<void> {
     if (!featureOn(this.env, "loan_interest_v2") || accountType !== "loan") return;
+    // Only record a parsed summary for a loan that's actually tied to an income-producing property —
+    // i.e. one that shows in the "Confirm loan interest" review (mirrors listLoanInterestReview's join).
+    // A non-rental loan's interest isn't deductible, so don't write a figure for it.
+    const linked = await this.env.DB.prepare(
+      `SELECT 1 FROM loans_properties lp
+         JOIN properties p ON p.id = lp.property_id AND p.user_id = lp.user_id
+        WHERE lp.user_id = ? AND lp.loan_account_id = ? AND p.status IN ('rented','vacant') LIMIT 1`,
+    )
+      .bind(userId, accountId)
+      .first();
+    if (!linked) return;
     const res = await this.env.DB.prepare(
       `SELECT raw_description, merchant, txn_date, direction, amount_cents, amount_aud_cents
          FROM transactions
@@ -629,6 +640,23 @@ export class TaxAgent extends Agent<Env> {
         .first<{ source: string }>();
       if (existing?.source === "lender_summary") continue;
       await this.setLoanInterest(userId, accountId, fy, cents, "statement_parsed");
+    }
+    // Clear STALE statement_parsed summaries: byFy is the complete set of FYs that currently have
+    // interest lines on this account, so any statement_parsed row for an FY no longer present (the user
+    // deleted/corrected the lines) is orphaned and must not keep feeding the position. Never touches a
+    // user lender_summary or a stored estimate.
+    const parsed = await this.env.DB.prepare(
+      `SELECT fy FROM loan_interest_summaries WHERE user_id = ? AND loan_account_id = ? AND source = 'statement_parsed'`,
+    )
+      .bind(userId, accountId)
+      .all<{ fy: string }>();
+    for (const row of parsed.results ?? []) {
+      if (byFy.has(Number(row.fy))) continue;
+      await this.env.DB.prepare(
+        `DELETE FROM loan_interest_summaries WHERE user_id = ? AND loan_account_id = ? AND fy = ? AND source = 'statement_parsed'`,
+      )
+        .bind(userId, accountId, row.fy)
+        .run();
     }
   }
 

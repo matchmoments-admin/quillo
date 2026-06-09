@@ -13,7 +13,7 @@ import { getLLM, type LLM } from "./llm";
 import { extractReceipt, extractReceipts, extractFromText, extractColumnMap, extractStatement, extractBatch, extractSituationDraft, extractOccupationRules, extractGuide, extractAnswer, classifyDocument, extractPayslip, extractAgentStatement, extractDepreciationSchedule, extractDividend, batchParams, parseBatchMessage, mapBatchItems, type Extracted, type ExtractedStatement, type SituationDraft, type OccupationRulesDraft, type AnswerResult } from "./extract";
 import { fyForDate, buildReport } from "./lib/report";
 import { getProgress } from "./lib/progress";
-import { buildGuidePrompt, buildAskPrompt, summariseReportForAsk } from "./lib/guide";
+import { buildGuidePrompt, buildAskSystem, summariseReportForAsk } from "./lib/guide";
 import { fyLabel, fyBounds } from "./lib/ledger-totals";
 import { assessReadiness, type FilingReadiness, type FilingReadinessSignals } from "./lib/readiness";
 import { rollSchedule, balancingAdjustment, fyStartYearOf, isLowCostAsset, looksLikePersonalTransfer, assetDepreciatesForTaxpayer, type DepAsset } from "./lib/depreciation";
@@ -4433,10 +4433,76 @@ export class TaxAgent extends Agent<Env> {
     // redact-then-slice so a truncated token can't defeat the regex. The position is a curated summary
     // of aggregates (no PII digit strings), so it is NOT redacted (redact would mangle the *_cents the
     // answer must cite). The situation text can carry names, so it stays redacted.
-    const { system, user } = buildAskPrompt(redact(q).slice(0, 600), redact(renderSituation(situation)), summariseReportForAsk(report));
-    const result = await extractAnswer(llm, system, user);
+    const system = buildAskSystem(redact(renderSituation(situation)), summariseReportForAsk(report));
+    const result = await extractAnswer(llm, system, [{ role: "user", content: redact(q).slice(0, 600) }]);
     await this.audit(userId, "ask", JSON.stringify({ q_len: q.length, fy }));
     return result;
+  }
+
+  /**
+   * Ask Quillo C2 (#173) — a multi-turn chat TURN. Same gates/grounding as askQuestion (consent +
+   * budget BEFORE the model call; question redacted; situation redacted; position summary raw), plus
+   * conversation history: loads the session's prior turns, sends them with the new question, and stores
+   * both the user message and the assistant answer. Creates a session if none is given. GENERAL-INFO
+   * only; any suggested_rule is surfaced for the UI to CONFIRM (never auto-written here).
+   */
+  async chatTurn(userId: string, sessionId: string | null, message: string, fy: number): Promise<{ session_id: string; answer: string; caveats: string[]; see_also: string[]; suggested_rule?: { pattern: string; bucket: string; ato_label?: string } }> {
+    const text = (message ?? "").trim();
+    if (!text) throw new Error("empty message");
+    const profile = await this.requireProfile(userId);
+    const provider = profile.inference_provider ?? this.env.DEFAULT_INFERENCE_PROVIDER;
+    if (provider === "anthropic" && profile.consent_xborder !== 1) throw new Error("consent_required");
+    if (!(await this.withinBudget(userId, null))) throw new Error("ai_budget_reached");
+
+    // Resolve / create the session (validate ownership). The session PINS its grounding FY for the whole
+    // conversation — so switching the global FY mid-chat can't silently mix two years' figures.
+    let sid = sessionId ?? "";
+    let sessionFy = fy;
+    if (sid) {
+      const own = await this.env.DB.prepare(`SELECT fy FROM chat_sessions WHERE id = ? AND user_id = ?`).bind(sid, userId).first<{ fy: number | null }>();
+      if (!own) sid = "";
+      else if (own.fy != null) sessionFy = own.fy;
+    }
+    if (!sid) {
+      sid = crypto.randomUUID();
+      await this.env.DB.prepare(`INSERT INTO chat_sessions (id, user_id, fy) VALUES (?, ?, ?)`).bind(sid, userId, sessionFy).run();
+    }
+
+    // Prior turns (cap to the last 20 to bound tokens), oldest first. Tiebreak role ASC within a second
+    // (assistant<user) so after reversing, the user turn precedes its assistant reply.
+    const prior = await this.env.DB.prepare(
+      `SELECT role, content FROM chat_messages WHERE user_id = ? AND session_id = ? ORDER BY created_at DESC, role ASC LIMIT 20`,
+    ).bind(userId, sid).all<{ role: string; content: string }>();
+    const history = (prior.results ?? []).reverse().map((m) => ({ role: m.role === "assistant" ? ("assistant" as const) : ("user" as const), content: m.content }));
+    // The Anthropic messages[] must start with a user turn — drop any leading assistant turns the
+    // 20-row window or an orphaned half-pair might begin with.
+    while (history[0]?.role === "assistant") history.shift();
+
+    const llm = await getLLM(this.env, profile, { userId });
+    await this.auditXborderInference(userId, provider, "ask", llm.modelId);
+    const [situation, report] = await Promise.all([
+      getSituation(this.env, userId, profile),
+      buildReport(this.env, userId, sessionFy),
+    ]);
+    const system = buildAskSystem(redact(renderSituation(situation)), summariseReportForAsk(report));
+    const userMsg = redact(text).slice(0, 600);
+    const result = await extractAnswer(llm, system, [...history, { role: "user", content: userMsg }]);
+
+    // Persist both turns (the redacted question + the answer — no PII in storage).
+    await this.env.DB.batch([
+      this.env.DB.prepare(`INSERT INTO chat_messages (id, user_id, session_id, role, content) VALUES (?, ?, ?, 'user', ?)`).bind(crypto.randomUUID(), userId, sid, userMsg),
+      this.env.DB.prepare(`INSERT INTO chat_messages (id, user_id, session_id, role, content) VALUES (?, ?, ?, 'assistant', ?)`).bind(crypto.randomUUID(), userId, sid, result.answer),
+    ]);
+    await this.audit(userId, "chat_turn", JSON.stringify({ session: sid, fy: sessionFy, turns: history.length / 2 + 1 }));
+    return { session_id: sid, ...result };
+  }
+
+  /** Load a chat session's messages (oldest first) to hydrate the UI. */
+  async chatHistory(userId: string, sessionId: string): Promise<{ messages: { role: string; content: string }[] }> {
+    const res = await this.env.DB.prepare(
+      `SELECT role, content FROM chat_messages WHERE user_id = ? AND session_id = ? ORDER BY created_at, role DESC`,
+    ).bind(userId, sessionId).all<{ role: string; content: string }>();
+    return { messages: res.results ?? [] };
   }
 
   async guideMe(userId: string, tab: string): Promise<{ headline: string; steps: string[] }> {

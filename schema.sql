@@ -931,3 +931,21 @@ CREATE TABLE IF NOT EXISTS work_use_inputs (
   updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (user_id, fy)
 );
+
+-- ── Ask Quillo C2 chat (0046, #173) ───────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS chat_sessions (
+  id         TEXT PRIMARY KEY,
+  user_id    TEXT NOT NULL,
+  fy         INTEGER,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_chat_sessions_user ON chat_sessions(user_id, created_at);
+CREATE TABLE IF NOT EXISTS chat_messages (
+  id         TEXT PRIMARY KEY,
+  user_id    TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  role       TEXT NOT NULL,
+  content    TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(user_id, session_id, created_at);

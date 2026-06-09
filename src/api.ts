@@ -275,6 +275,24 @@ export async function handleApi(
     }
   }
 
+  // Ask Quillo C2 (#173): multi-turn chat. GET /api/chat/:session → history; POST /api/chat → a turn.
+  if (resource === "chat") {
+    if (!featureOn(env, "ask_quillo")) return json({ error: "not available" }, 404);
+    if (m === "GET" && id) return json(await stub.chatHistory(uid, id));
+    if (m === "POST" && !id) {
+      const { session_id, message, fy } = (await req.json().catch(() => ({}))) as { session_id?: string; message?: string; fy?: number };
+      if (!message || !message.trim()) return json({ error: "missing message" }, 400);
+      try {
+        return json(await stub.chatTurn(uid, session_id ?? null, message, Math.trunc(Number(fy)) || currentFyStartYear()));
+      } catch (e) {
+        const msg = (e as Error).message;
+        if (msg === "consent_required") return json({ error: "consent_required" }, 403);
+        if (msg === "ai_budget_reached") return json({ error: "AI is paused for today (daily limit reached) — try again after the reset." }, 429);
+        throw e;
+      }
+    }
+  }
+
   // GET /api/dashboard — aggregates. Opportunistically apply any finished async batch jobs
   // (cheap no-op when there are none) so results land without waiting for the cron.
   if (resource === "dashboard" && m === "GET") {

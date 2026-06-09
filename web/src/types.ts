@@ -491,6 +491,13 @@ export interface SmsfMemberRow {
   transfer_balance_cents: number;
 }
 
+export interface AskAnswer {
+  answer: string;
+  caveats: string[];
+  see_also: string[];
+  suggested_rule?: { pattern: string; bucket: string; ato_label?: string };
+}
+
 export interface SuperContributionRow {
   id: string;
   person_id: string | null;

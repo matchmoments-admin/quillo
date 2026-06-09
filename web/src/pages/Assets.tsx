@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
+import { useFeatures } from "../lib/features";
 import { Card, Spinner, Button, Input, money } from "../components/ui";
-import type { AssetRow, ScheduleRow } from "../types";
+import type { AssetRow, ScheduleRow, VehicleLogbookRow } from "../types";
 
 const CLASS_LABEL: Record<string, string> = {
   div40_plant: "Plant & equipment (Div 40)",
@@ -14,6 +15,7 @@ const CLASS_LABEL: Record<string, string> = {
 
 export function Assets() {
   const qc = useQueryClient();
+  const { has } = useFeatures();
   const { data, isLoading, error } = useQuery({ queryKey: ["assets"], queryFn: () => api.assets() });
   const [adding, setAdding] = useState(false);
 
@@ -56,6 +58,8 @@ export function Assets() {
           </table>
         </Card>
       )}
+
+      {has("car_logbook") && <VehicleLogbooks assets={data ?? []} />}
     </div>
   );
 }
@@ -117,6 +121,7 @@ function AddAssetForm({ onDone }: { onDone: () => void }) {
   const [ownedBy, setOwnedBy] = useState("self");
   const [reimbursed, setReimbursed] = useState(false);
   const [workPct, setWorkPct] = useState("100");
+  const [isCar, setIsCar] = useState(false);
   const notMine = ownedBy === "employer" || reimbursed;
   const add = useMutation({
     mutationFn: () =>
@@ -130,8 +135,9 @@ function AddAssetForm({ onDone }: { onDone: () => void }) {
         div43_rate: assetClass === "div43_capital_works" ? 0.025 : null,
         owned_by: ownedBy,
         reimbursed: reimbursed ? 1 : 0,
+        is_car: isCar ? 1 : 0,
         business_use_pct: workPct.trim() === "" ? 100 : Math.max(0, Math.min(100, Number(workPct))),
-      } as Partial<AssetRow> & { method: string | null; div43_rate: number | null; owned_by: string; reimbursed: number; business_use_pct: number }),
+      } as Partial<AssetRow> & { method: string | null; div43_rate: number | null; owned_by: string; reimbursed: number; is_car: number; business_use_pct: number }),
     onSuccess: onDone,
   });
   return (
@@ -167,6 +173,10 @@ function AddAssetForm({ onDone }: { onDone: () => void }) {
           <input type="checkbox" checked={reimbursed} onChange={(e) => setReimbursed(e.target.checked)} />
           My employer reimbursed me for this
         </label>
+        <label className="flex items-center gap-2 text-sm sm:col-span-3">
+          <input type="checkbox" checked={isCar} onChange={(e) => setIsCar(e.target.checked)} />
+          This is a motor vehicle (enables the logbook method below)
+        </label>
       </div>
       {notMine && (
         <p className="rounded-lg bg-surface px-3 py-2 text-xs text-muted">
@@ -175,6 +185,72 @@ function AddAssetForm({ onDone }: { onDone: () => void }) {
         </p>
       )}
       <Button onClick={() => add.mutate()} disabled={add.isPending || !label || !cost || !acquired}>{add.isPending ? "Saving…" : "Save asset"}</Button>
+      {add.error && <p className="text-sm text-danger">{(add.error as Error).message}</p>}
+    </Card>
+  );
+}
+
+// Logbook (#142): a 12-week vehicle logbook. The report compares the logbook deduction (business-use % ×
+// (running costs + car decline-in-value)) against cents-per-km and recommends the higher.
+function VehicleLogbooks({ assets }: { assets: AssetRow[] }) {
+  const qc = useQueryClient();
+  const logs = useQuery({ queryKey: ["vehicle-logbooks"], queryFn: () => api.vehicleLogbooks() });
+  const [adding, setAdding] = useState(false);
+  const invalidate = () => { qc.invalidateQueries({ queryKey: ["vehicle-logbooks"] }); qc.invalidateQueries({ queryKey: ["report"] }); };
+  return (
+    <Card className="space-y-3 p-4">
+      <div className="flex items-center justify-between">
+        <div className="text-sm font-semibold">Vehicle logbook</div>
+        <Button variant="ghost" onClick={() => setAdding((v) => !v)}>{adding ? "Cancel" : "+ Add a logbook"}</Button>
+      </div>
+      <p className="text-xs text-muted">A 12-week logbook gives your business-use %. We compare the logbook method (your % × running costs + car decline-in-value) with cents-per-km and recommend the higher on your report. General information only.</p>
+      {adding && <AddLogbookForm assets={assets} onDone={() => { setAdding(false); invalidate(); }} />}
+      {(logs.data ?? []).length > 0 && (
+        <table className="w-full text-sm">
+          <tbody>
+            {(logs.data ?? []).map((l) => (
+              <tr key={l.id} className="border-t border-line">
+                <td className="px-2 py-1 tabular-nums">{l.fy}</td>
+                <td className="px-2 py-1 text-muted tabular-nums">{l.business_use_pct != null ? `${Math.round(l.business_use_pct)}%` : l.total_km ? `${Math.round(((l.business_km ?? 0) / l.total_km) * 100)}%` : "—"} business</td>
+                <td className="px-2 py-1 text-right tabular-nums text-muted">running {money(l.running_costs_cents)}</td>
+                <td className="px-2 py-1 text-right"><button className="text-xs text-danger hover:underline" onClick={() => api.deleteVehicleLogbook(l.id).then(invalidate)}>delete</button></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </Card>
+  );
+}
+
+function AddLogbookForm({ assets, onDone }: { assets: AssetRow[]; onDone: () => void }) {
+  const [assetId, setAssetId] = useState("");
+  const [businessKm, setBusinessKm] = useState("");
+  const [totalKm, setTotalKm] = useState("");
+  const [running, setRunning] = useState("");
+  const add = useMutation({
+    mutationFn: () => api.addVehicleLogbook({
+      asset_id: assetId || null,
+      business_km: businessKm ? Number(businessKm) : null,
+      total_km: totalKm ? Number(totalKm) : null,
+      running_costs_cents: Math.round(parseFloat(running || "0") * 100),
+    }),
+    onSuccess: onDone,
+  });
+  return (
+    <Card className="space-y-3 p-4">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <label className="text-sm">Car (optional)
+          <select className="mt-1 w-full rounded-lg border border-line px-3 py-2 text-sm" value={assetId} onChange={(e) => setAssetId(e.target.value)}>
+            <option value="">— none —</option>
+            {assets.map((a) => <option key={a.id} value={a.id}>{a.label}</option>)}
+          </select>
+        </label>
+        <label className="text-sm">Business km<Input className="mt-1 w-full" inputMode="numeric" value={businessKm} onChange={(e) => setBusinessKm(e.target.value)} /></label>
+        <label className="text-sm">Total km<Input className="mt-1 w-full" inputMode="numeric" value={totalKm} onChange={(e) => setTotalKm(e.target.value)} /></label>
+        <label className="text-sm">Running costs ($)<Input className="mt-1 w-full" inputMode="decimal" value={running} onChange={(e) => setRunning(e.target.value)} placeholder="fuel, rego, insurance…" /></label>
+      </div>
+      <Button onClick={() => add.mutate()} disabled={add.isPending || !running}>{add.isPending ? "Saving…" : "Save logbook"}</Button>
       {add.error && <p className="text-sm text-danger">{(add.error as Error).message}</p>}
     </Card>
   );

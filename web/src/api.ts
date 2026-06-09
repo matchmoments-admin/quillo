@@ -1,4 +1,4 @@
-import type { Txn, TxnDetail, Situation, SituationDraft, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse, UsageData, StatementInfo, IncomeRow, DocRow, AssetRow, ScheduleRow, ChecklistItem, ClaimSuggestion, FilingReadiness, ReviewSummary, Progress, AdminTenant, AdminOverview, ClaimReview, OccupationRulesDraft, OccupationRuleCandidate, MovementSweep, BatchResult, ClarifyQuestion, ClarifyAnswer, ClaimMatch, AccountantSummary, SuggestedDeduction, WorkUse, CapitalLoss, OpeningDepreciation, AttributionState, AttributionInput, AttributionRow, IncomeActivity, PropertyOwner, EntityRole, CgtAssetRow, CgtEventRow } from "./types";
+import type { Txn, TxnDetail, Situation, SituationDraft, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse, UsageData, StatementInfo, IncomeRow, DocRow, AssetRow, ScheduleRow, ChecklistItem, ClaimSuggestion, FilingReadiness, ReviewSummary, Progress, AdminTenant, AdminOverview, ClaimReview, OccupationRulesDraft, OccupationRuleCandidate, MovementSweep, BatchResult, ClarifyQuestion, ClarifyAnswer, ClaimMatch, AccountantSummary, SuggestedDeduction, WorkUse, CapitalLoss, OpeningDepreciation, AttributionState, AttributionInput, AttributionRow, IncomeActivity, PropertyOwner, EntityRole, CgtAssetRow, CgtEventRow, EssGrantRow, VehicleLogbookRow } from "./types";
 
 // Clerk session token getter, wired from <TokenBridge> inside ClerkProvider (main.tsx).
 // Clerk tokens are short-lived, so we fetch a fresh one per request (getToken caches/refreshes).
@@ -207,6 +207,15 @@ export const api = {
   cgtEvents: () => get<{ cgt_events: CgtEventRow[] }>("/api/cgt-events").then((r) => r.cgt_events),
   addCgtEvent: (b: Partial<CgtEventRow>) => post<{ id: string }>("/api/cgt-events", b),
   deleteCgtEvent: (id: string) => send<{ ok: boolean }>("DELETE", `/api/cgt-events/${id}`),
+
+  // ESS (#141)
+  essGrants: () => get<{ ess_grants: EssGrantRow[] }>("/api/ess-grants").then((r) => r.ess_grants),
+  addEssGrant: (b: Partial<EssGrantRow>) => post<{ id: string }>("/api/ess-grants", b),
+  deleteEssGrant: (id: string) => send<{ ok: boolean }>("DELETE", `/api/ess-grants/${id}`),
+  // Logbook (#142)
+  vehicleLogbooks: () => get<{ vehicle_logbooks: VehicleLogbookRow[] }>("/api/vehicle-logbooks").then((r) => r.vehicle_logbooks),
+  addVehicleLogbook: (b: Partial<VehicleLogbookRow>) => post<{ id: string }>("/api/vehicle-logbooks", b),
+  deleteVehicleLogbook: (id: string) => send<{ ok: boolean }>("DELETE", `/api/vehicle-logbooks/${id}`),
   incomeMatches: () =>
     get<{
       suggestions: { txn_id: string; merchant: string | null; txn_amount_cents: number; txn_date: string | null; bucket: string | null; income_id: string; income_type: string; income_gross_cents: number; income_net_cents: number | null; income_date: string | null }[];

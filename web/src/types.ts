@@ -359,6 +359,72 @@ export interface PropertyPosition {
   net_cents: number;
 }
 
+// EPIC #134 engine outputs (mirror the server shapes in src/lib/{cgt,ess,gst,car-logbook,trust}.ts +
+// ledger-totals.ts). Present on Report only when the matching feature flag is on AND there's data.
+export interface CgtPortfolioResult {
+  gross_capital_gains_cents: number;
+  capital_losses_cents: number;
+  discount_applied_cents: number;
+  net_capital_gain_cents: number;
+  loss_carried_forward_cents: number;
+}
+export interface EssAssessable {
+  assessable_discount_cents: number;
+  startup_deferred_to_cgt_cents: number;
+  ineligible_startup_flag: boolean;
+}
+export interface GstPosition {
+  registered: boolean;
+  output_gst_cents: number;
+  input_gst_cents: number;
+  net_gst_cents: number;
+}
+export interface CarLogbookPosition {
+  business_use_pct: number;
+  running_costs_cents: number;
+  car_dep_cents: number;
+  logbook_deduction_cents: number;
+  cents_per_km_cents: number;
+  recommended_method: "logbook" | "cents_per_km";
+  recommended_cents: number;
+}
+export interface TrustTotals {
+  assessable_cents: number;
+  franking_credit_cents: number;
+  by_character: Record<string, number>;
+}
+export interface SmsfFundPosition {
+  entity_id: string;
+  name: string | null;
+  assessable_income_cents: number;
+  ecpi_exempt_fraction: number;
+  ecpi_exempt_cents: number;
+  fund_taxable_income_cents: number;
+}
+
+// CGT entry rows (#138 UI). Mirror the cgt_assets / cgt_events tables.
+export interface CgtAssetRow {
+  id: string;
+  asset_kind: string;
+  code: string | null;
+  label: string | null;
+  units: number | null;
+  acquired_date: string | null;
+  cost_base_cents: number;
+  status: string;
+}
+export interface CgtEventRow {
+  id: string;
+  cgt_asset_id: string;
+  fy: string;
+  event_type: string;
+  event_date: string;
+  proceeds_cents: number;
+  cost_base_used_cents: number;
+  units_disposed: number | null;
+  discount_eligible: number | null;
+}
+
 export interface Report {
   fy: string;
   start: string;
@@ -379,6 +445,13 @@ export interface Report {
   company_tracked_cents: number;
   refunds_cents: number;
   resolved_deductible_cents: number;
+  // EPIC #134 engine outputs (flag-gated; undefined unless the flag is on and there's data).
+  capital_gains?: CgtPortfolioResult;   // #138 — added to taxable_position_cents
+  ess?: EssAssessable;                  // #141 — assessable discount added to taxable_position_cents
+  gst?: GstPosition;                    // #137 — indicative BAS (separate from income tax)
+  car_logbook?: CarLogbookPosition;     // #142 — logbook vs cents-per-km (informational)
+  trust?: TrustTotals;                  // #139 — assessable distributions added to taxable_position_cents
+  smsf_funds?: SmsfFundPosition[];      // #140 — per-fund position (separate taxpayer)
   taxable_position_cents: number;
 }
 

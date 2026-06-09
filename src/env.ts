@@ -123,6 +123,8 @@ export interface TaxAgentRpc {
   listClarifyQuestions(userId: string, startYear?: number): Promise<import("./agent").ClarifyQuestion[]>;
   answerClarify(userId: string, questionId: string, answer: import("./agent").ClarifyAnswer): Promise<{ applied: number; income_recorded: number }>;
   dismissClarify(userId: string, questionId: string): Promise<{ ok: boolean }>;
+  previewSiblings(userId: string, seedTxnId: string): Promise<{ n: number; total_cents: number; group_key: string | null }>;
+  applyToSiblings(userId: string, seedTxnId: string, edit: { bucket?: string; ato_label?: string; property_id?: string }, opts?: { learnRule?: boolean }): Promise<{ applied: number; batch_id: string; rule_created: boolean; group_key: string | null }>;
   runAccountantPass(userId: string, startYear: number): Promise<import("./agent").AccountantSummary>;
   confirmSuggestedDeduction(userId: string, txnId: string): Promise<{ ok: boolean }>;
   draftOccupationRules(userId: string, occupation: string): Promise<import("./extract").OccupationRulesDraft>;

@@ -19,7 +19,7 @@ import { assessReadiness, type FilingReadiness, type FilingReadinessSignals } fr
 import { rollSchedule, balancingAdjustment, fyStartYearOf, isLowCostAsset, looksLikePersonalTransfer, assetDepreciatesForTaxpayer, type DepAsset } from "./lib/depreciation";
 import { matchClaimRules, suggestionText, enumerateSituationClaims, classifyClaim, uncoveredOccupations, ruleKey, type ClaimRule, type ClaimContext, type ClaimSituation } from "./lib/claimability";
 import { parseCsv, applyColumnMap, lineFingerprint, deriveBalances, reconcileStatement, isLiabilityAccount, fuzzyMerchant, isTransferLike, classifyMovement, movementTreatment, type ColumnMap, type Reconciliation, type StatementLine, type MovementClass } from "./lib/statements";
-import { groupKey, groupForClarify, rulePatternForStem, type ClarifyRow } from "./lib/clarify";
+import { groupKey, groupForClarify, rulePatternForStem, isClarifyLeftover, CLARIFY_LEFTOVER_WHERE, type ClarifyRow } from "./lib/clarify";
 import { scoreClaimMatches, type ScoredTxn } from "./lib/claim-match";
 import { batchStatementStatus, isStaleBatch } from "./lib/batch";
 import { cleanMerchant } from "./lib/bank-parsers";
@@ -3448,8 +3448,7 @@ export class TaxAgent extends Agent<Env> {
       `SELECT id, raw_description, merchant, amount_cents, amount_aud_cents, direction
          FROM transactions
         WHERE user_id = ? AND kind = 'bank_line'
-          AND status NOT IN ('ignored','duplicate','matched_receipt','corrected')
-          AND (bucket IS NULL OR bucket = 'unknown' OR confidence IS NULL OR confidence < 0.85)
+          AND ${CLARIFY_LEFTOVER_WHERE}
           AND txn_date >= ? AND txn_date <= ?`,
     )
       .bind(userId, start, end)
@@ -3458,10 +3457,8 @@ export class TaxAgent extends Agent<Env> {
     // payments and investment deposits (the movement-sweep "clean up" step) and loan repayments (the
     // loan-split step) — so a line surfaces in exactly ONE place, never ALSO as a clarify group (the
     // cause of the duplicate loan/transfer rows). Anything the sweep doesn't own classifies as "skip"
-    // and stays here. Reuses the shared matcher so the surfaces can't disagree.
-    const leftovers = (rows.results ?? []).filter(
-      (r) => movementTreatment(classifyMovement(r.raw_description ?? r.merchant ?? "").klass, r.direction) === "skip",
-    );
+    // and stays here. Reuses the shared `isClarifyLeftover` matcher so the surfaces can't disagree.
+    const leftovers = (rows.results ?? []).filter(isClarifyLeftover);
     // Tenant paying rent on their own home → clarify offers a "rent I pay (private)" answer.
     const hasTenantHome = situation.properties.some((p) => p.status === "renting_residence");
     const groups = groupForClarify(leftovers, undefined, { hasTenantHome });
@@ -3503,7 +3500,7 @@ export class TaxAgent extends Agent<Env> {
       // the answer resolver, so OPEN questions created before this dedup landed (e.g. an old "Loan
       // Repayment LN REPAY" group) don't linger as a duplicate of the loan/transfer rows — or answer to
       // 0 rows. sample_desc is the raw line text, so it classifies the same way the scan rows do.
-      .filter((r) => movementTreatment(classifyMovement(r.sample_desc ?? r.group_key ?? "").klass, r.direction) === "skip")
+      .filter((r) => isClarifyLeftover({ raw_description: r.sample_desc, merchant: r.group_key, direction: r.direction }))
       .map((r) => ({
         id: r.id,
         fy: r.fy,
@@ -3563,19 +3560,16 @@ export class TaxAgent extends Agent<Env> {
       `SELECT id, raw_description, merchant, direction, amount_cents, amount_aud_cents, currency, matched_income_id, txn_date
          FROM transactions
         WHERE user_id = ? AND kind = 'bank_line'
-          AND status NOT IN ('ignored','duplicate','matched_receipt','corrected')
-          AND (bucket IS NULL OR bucket = 'unknown' OR confidence IS NULL OR confidence < 0.85)
+          AND ${CLARIFY_LEFTOVER_WHERE}
           AND txn_date >= ? AND txn_date <= ?`,
     )
       .bind(userId, start, end)
       .all<{ id: string; raw_description: string | null; merchant: string | null; direction: string | null; amount_cents: number | null; amount_aud_cents: number | null; currency: string | null; matched_income_id: string | null; txn_date: string | null }>();
-    // Same movement-exclusion predicate as runClarifyScan (the scan filter and this answer filter MUST
-    // move together) so the answer acts on exactly the rows the user saw — never a transfer/card/loan
-    // line that a dedicated step owns.
+    // Same movement-exclusion predicate as runClarifyScan (centralised in isClarifyLeftover so the scan
+    // filter and this answer filter can't drift) so the answer acts on exactly the rows the user saw —
+    // never a transfer/card/loan line that a dedicated step owns.
     const group = (rowsRes.results ?? []).filter(
-      (r) =>
-        groupKey(r.raw_description ?? r.merchant ?? "") === q.group_key &&
-        movementTreatment(classifyMovement(r.raw_description ?? r.merchant ?? "").klass, r.direction) === "skip",
+      (r) => groupKey(r.raw_description ?? r.merchant ?? "") === q.group_key && isClarifyLeftover(r),
     );
 
     if (answer.kind === "income_property" || answer.kind === "income_business" || answer.kind === "income_personal") {
@@ -3668,6 +3662,100 @@ export class TaxAgent extends Agent<Env> {
     const dir = RULE_CREDIT_BUCKETS.has(bucket) ? "credit" : "debit";
     if (applyUserRules(pattern, situation.rules, dir)) return; // already covered
     await addRule(this.env, userId, { pattern, match_type: "merchant_contains", bucket, ato_label: atoLabel, property_id: propertyId });
+  }
+
+  // ── Apply-to-siblings (flag apply_to_siblings) — "edit one line → update its look-alikes" ──
+  /**
+   * Resolve the still-to-review SIBLINGS of one seed transaction: other bank lines that normalise to
+   * the same merchant stem (groupKey), share the seed's direction, and are still clarify leftovers
+   * (uncategorised / low-confidence, not owned by a movement step). NOT FY-scoped — the same merchant
+   * is the same category in any year, so the answer fans out across the whole tenant. Reuses the
+   * shared CLARIFY_LEFTOVER_WHERE + isClarifyLeftover so it can never act on a row a dedicated step
+   * owns or a row the user already finalised. The seed itself is excluded (it's edited via the normal
+   * correct path).
+   */
+  private async resolveSiblingLeftovers(
+    userId: string,
+    seed: { id: string; raw_description: string | null; merchant: string | null; direction: string | null },
+  ): Promise<{ key: string | null; rows: { id: string; amount_cents: number | null; amount_aud_cents: number | null }[] }> {
+    const key = groupKey(seed.raw_description ?? seed.merchant ?? "");
+    if (!key) return { key: null, rows: [] };
+    const res = await this.env.DB.prepare(
+      `SELECT id, raw_description, merchant, direction, amount_cents, amount_aud_cents
+         FROM transactions
+        WHERE user_id = ? AND kind = 'bank_line' AND ${CLARIFY_LEFTOVER_WHERE}`,
+    )
+      .bind(userId)
+      .all<{ id: string; raw_description: string | null; merchant: string | null; direction: string | null; amount_cents: number | null; amount_aud_cents: number | null }>();
+    const rows = (res.results ?? []).filter(
+      (r) =>
+        r.id !== seed.id &&
+        groupKey(r.raw_description ?? r.merchant ?? "") === key &&
+        (r.direction ?? null) === (seed.direction ?? null) &&
+        isClarifyLeftover(r),
+    );
+    return { key, rows: rows.map((r) => ({ id: r.id, amount_cents: r.amount_cents, amount_aud_cents: r.amount_aud_cents })) };
+  }
+
+  /** Count + total of a seed's still-to-review look-alikes, for the "Apply to N look-alikes" prompt. */
+  async previewSiblings(userId: string, seedTxnId: string): Promise<{ n: number; total_cents: number; group_key: string | null }> {
+    const seed = await this.env.DB.prepare(
+      `SELECT id, raw_description, merchant, direction FROM transactions WHERE id = ? AND user_id = ?`,
+    )
+      .bind(seedTxnId, userId)
+      .first<{ id: string; raw_description: string | null; merchant: string | null; direction: string | null }>();
+    if (!seed) throw new Error("transaction not found");
+    const { key, rows } = await this.resolveSiblingLeftovers(userId, seed);
+    const total = rows.reduce((a, r) => a + Math.abs(r.amount_aud_cents ?? r.amount_cents ?? 0), 0);
+    return { n: rows.length, total_cents: total, group_key: key };
+  }
+
+  /**
+   * Apply one seed's categorisation (bucket / ato_label / property) to all its still-to-review
+   * look-alikes in ONE batch (shared batch_id → one-tap Undo), and optionally learn a user_rule so
+   * FUTURE imports of the same merchant auto-apply. This is the "edit one → update the other 35" path,
+   * built on the SAME applyCorrectionBatch + ensureClarifyRule seams the clarify answer uses, so the
+   * two paths are output-equivalent. Income/refund (money-IN) buckets are rejected — those must go
+   * through the income flow (single-count dedupe), never this spend-oriented seam.
+   */
+  async applyToSiblings(
+    userId: string,
+    seedTxnId: string,
+    edit: { bucket?: string; ato_label?: string; property_id?: string },
+    opts: { learnRule?: boolean } = {},
+  ): Promise<{ applied: number; batch_id: string; rule_created: boolean; group_key: string | null }> {
+    const seed = await this.env.DB.prepare(
+      `SELECT id, raw_description, merchant, direction FROM transactions WHERE id = ? AND user_id = ?`,
+    )
+      .bind(seedTxnId, userId)
+      .first<{ id: string; raw_description: string | null; merchant: string | null; direction: string | null }>();
+    if (!seed) throw new Error("transaction not found");
+    if (edit.bucket) {
+      if (!isBucket(edit.bucket)) throw new Error(`invalid bucket: ${edit.bucket}`);
+      if (RULE_CREDIT_BUCKETS.has(edit.bucket)) throw new Error(`use an income answer, not bucket='${edit.bucket}'`);
+    }
+    const edits: { field: string; value: string }[] = [];
+    if (edit.bucket) edits.push({ field: "bucket", value: edit.bucket });
+    if (edit.ato_label) edits.push({ field: "ato_label", value: edit.ato_label });
+    if (edit.property_id) edits.push({ field: "property_id", value: edit.property_id });
+    if (!edits.length) throw new Error("edit must set at least one of bucket / ato_label / property_id");
+
+    const { key, rows } = await this.resolveSiblingLeftovers(userId, seed);
+    const ids = rows.map((r) => r.id);
+    let applied = 0;
+    let batch_id = "";
+    if (ids.length) {
+      const res = await this.applyCorrectionBatch(userId, ids, edits);
+      applied = res.updated;
+      batch_id = res.batch_id;
+    }
+    let rule_created = false;
+    if (opts.learnRule && edit.bucket && key) {
+      await this.ensureClarifyRule(userId, key, edit.bucket, edit.ato_label ?? "", edit.property_id);
+      rule_created = true;
+    }
+    await this.audit(userId, "apply_to_siblings", JSON.stringify({ seedTxnId, group_key: key, applied, learnRule: !!opts.learnRule }));
+    return { applied, batch_id, rule_created, group_key: key };
   }
 
   // ── PHASE 4: "Do my books" accountant pass (deterministic orchestration) ────

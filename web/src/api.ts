@@ -133,6 +133,11 @@ export const api = {
   // Loan → property links (Set-up; pre-fills the Phase 5 interest split)
   addLoanProperty: (b: { loan_account_id: string; property_id: string; deductible_interest_pct?: number }) =>
     post<{ id: string }>("/api/loans-properties", b),
+  // Sort S4/S5 — evidence-first loan interest (flag loan_interest_v2; 404 when off)
+  loanInterest: (fy?: number) =>
+    get<{ summaries: { id: string; loan_account_id: string; fy: string; interest_cents: number; source: string; document_id: string | null }[] }>(`/api/loans/interest${fy != null ? `?fy=${fy}` : ""}`).then((r) => r.summaries),
+  setLoanInterest: (accountId: string, b: { fy: number; interest_cents: number; source?: string; document_id?: string }) =>
+    post<{ ok: boolean; interest_cents: number; source: string }>(`/api/loans/${accountId}/interest`, b),
   updateLoanProperty: (id: string, b: { deductible_interest_pct?: number }) =>
     send<{ ok: boolean }>("PUT", `/api/loans-properties/${id}`, b),
   deleteLoanProperty: (id: string) => send<{ ok: boolean }>("DELETE", `/api/loans-properties/${id}`),

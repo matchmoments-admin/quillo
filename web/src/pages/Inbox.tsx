@@ -87,13 +87,8 @@ export function Inbox() {
           manual Re-scan (accountant_pass-gated). */}
       {hasAccountantPass && <AccountantPassCard fy={activeFy} />}
 
-      {/* Phase 2: the ordered "Sort" flow (priority, not gate) — expands the highest-priority queue
-          with work (clean transfers, clarify patterns, confirm suggestions), collapses the rest to
-          one-line rows, and falls away when clear. The transaction tabs/table below stay reachable. */}
-      <SortFlow fy={activeFy} hasAccountantPass={hasAccountantPass} />
-
-      {/* One "still to review" list — the backlog leads; Receipts / Bank lines just filter the same
-          queue so a statement import doesn't flood the receipt review. */}
+      {/* One "still to review" list LEADS — single transactions are the primary unit of work. Receipts
+          / Bank lines just filter the same queue so a statement import doesn't flood the receipt review. */}
       <h2 className="px-1 text-sm font-semibold text-muted">Still to review</h2>
       <div className="flex gap-1 text-sm">
         {TABS.map((t) => (
@@ -159,6 +154,11 @@ export function Inbox() {
           )}
         </>
       )}
+
+      {/* "Finish these" — the small group-action wrap-up cluster (sort repeat merchants, confirm loan
+          interest / suggested deductions, exclude transfers). Sits BELOW the list and self-hides when
+          there's nothing left to finish. */}
+      <SortFlow fy={activeFy} hasAccountantPass={hasAccountantPass} />
 
       {selected.size > 0 && (
         <BulkBar ids={[...selected]} onClear={() => setSelected(new Set())} onDone={setFlash} />

@@ -4,6 +4,7 @@
 // regression guards for the rules we keep re-learning. Run: npm run test:units
 import { reconcileStatement, deriveBalances, isTransferLike, classifyMovement, movementTreatment, signedCents, lineFingerprint, type StatementLine } from "../src/lib/statements";
 import { groupKey, groupForClarify, rulePatternForStem, isClarifyLeftover } from "../src/lib/clarify";
+import { resolveLoanInterest, deductibleInterestCents } from "../src/lib/loan-interest";
 import { scoreClaimMatches } from "../src/lib/claim-match";
 import { batchStatementStatus, isStaleBatch, BATCH_MAX_AGE_MS } from "../src/lib/batch";
 import { extractSituationDraft, parseBatchMessage, mapBatchItems, type BatchItem } from "../src/extract";
@@ -212,6 +213,27 @@ console.log("clarify.isClarifyLeftover");
   check("internal transfer → NOT a leftover (movement sweep owns it)", !isClarifyLeftover({ raw_description: "Transfer to Savings", direction: "debit" }));
   // Reads raw_description first, then merchant — mirrors the scan/answer fallback order.
   check("falls back to merchant when raw_description is null", isClarifyLeftover({ raw_description: null, merchant: "Origin Energy", direction: "debit" }));
+}
+
+// ── Sort S4: evidence-first loan interest resolver (#157) ─────────────────────
+console.log("loan-interest.resolveLoanInterest");
+{
+  // 1. An evidenced summary wins and carries its source through.
+  const lender = resolveLoanInterest({ interest_cents: 1234500, source: "lender_summary" }, { interest_rate_pct: 6.25, balance_cents: 45000000 });
+  check("lender summary wins over the rate estimate", lender?.interest_cents === 1234500 && lender?.source === "lender_summary");
+  const parsed = resolveLoanInterest({ interest_cents: 999900, source: "statement_parsed" }, {});
+  check("parsed-statement figure used as-is", parsed?.interest_cents === 999900 && parsed?.source === "statement_parsed");
+  // 2. No summary → derive a LABELLED estimate from rate × balance only when both are known.
+  const est = resolveLoanInterest(null, { interest_rate_pct: 6, balance_cents: 50000000 });
+  check("no summary → rate×balance estimate, labelled 'estimate'", est?.interest_cents === 3000000 && est?.source === "estimate");
+  check("estimate needs BOTH rate and balance — rate only → null", resolveLoanInterest(null, { interest_rate_pct: 6 }) === null);
+  check("estimate needs BOTH rate and balance — balance only → null", resolveLoanInterest(null, { balance_cents: 50000000 }) === null);
+  check("no summary + no facts → null (nothing to attribute)", resolveLoanInterest(null, {}) === null);
+  check("a zero/garbage summary is ignored (not a real figure)", resolveLoanInterest({ interest_cents: 0, source: "lender_summary" }, {}) === null);
+  // 3. Deductible portion applies the loan→property share, clamped to 0–100.
+  check("deductible portion applies the share", deductibleInterestCents(1000000, 80) === 800000);
+  check("share clamps above 100", deductibleInterestCents(1000000, 150) === 1000000);
+  check("share clamps below 0", deductibleInterestCents(1000000, -5) === 0);
 }
 
 // ── Phase 3 claim auto-matcher: scoreClaimMatches ─────────────────────────────

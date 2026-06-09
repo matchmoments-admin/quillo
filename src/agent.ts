@@ -3758,6 +3758,57 @@ export class TaxAgent extends Agent<Env> {
     return { applied, batch_id, rule_created, group_key: key };
   }
 
+  // ── Evidence-first loan interest (flag loan_interest_v2) — record the ACTUAL FY interest ──
+  /**
+   * Record (upsert) the actual interest charged on a loan for a financial year — the evidenced
+   * figure (lender annual summary or parsed statement) that the evidence-first model prefers over a
+   * rate estimate. One row per (tenant, loan account, FY). Capture-only in this slice: report.ts does
+   * NOT read it yet (S5 wires the per-property contribution + the mutual-exclusion guard vs the legacy
+   * loan_split), so recording a figure does NOT change the indicative position.
+   */
+  async setLoanInterest(
+    userId: string,
+    loanAccountId: string,
+    fy: number,
+    interestCents: number,
+    source = "lender_summary",
+    documentId?: string,
+  ): Promise<{ ok: true; interest_cents: number; source: string }> {
+    const acct = await this.env.DB.prepare(`SELECT type FROM accounts WHERE id = ? AND user_id = ?`)
+      .bind(loanAccountId, userId)
+      .first<{ type: string }>();
+    if (!acct) throw new Error("loan account not found");
+    if (acct.type !== "loan") throw new Error("interest can only be recorded against a loan account");
+    const cents = Math.max(0, Math.round(Number.isFinite(interestCents) ? interestCents : 0));
+    const src = ["lender_summary", "statement_parsed", "estimate"].includes(source) ? source : "lender_summary";
+    await this.env.DB.prepare(
+      `INSERT INTO loan_interest_summaries (id, user_id, loan_account_id, fy, interest_cents, source, document_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(user_id, loan_account_id, fy) DO UPDATE SET
+         interest_cents = excluded.interest_cents, source = excluded.source, document_id = excluded.document_id`,
+    )
+      .bind(crypto.randomUUID(), userId, loanAccountId, String(fy), cents, src, documentId ?? null)
+      .run();
+    await this.audit(userId, "loan_interest_set", JSON.stringify({ loanAccountId, fy, cents, source: src }));
+    return { ok: true, interest_cents: cents, source: src };
+  }
+
+  /** List recorded loan-interest summaries (optionally for one FY start year). */
+  async listLoanInterest(
+    userId: string,
+    fy?: number,
+  ): Promise<{ id: string; loan_account_id: string; fy: string; interest_cents: number; source: string; document_id: string | null }[]> {
+    const where = fy != null ? "user_id = ? AND fy = ?" : "user_id = ?";
+    const binds = fy != null ? [userId, String(fy)] : [userId];
+    const res = await this.env.DB.prepare(
+      `SELECT id, loan_account_id, fy, interest_cents, source, document_id
+         FROM loan_interest_summaries WHERE ${where} ORDER BY created_at DESC`,
+    )
+      .bind(...binds)
+      .all<{ id: string; loan_account_id: string; fy: string; interest_cents: number; source: string; document_id: string | null }>();
+    return res.results ?? [];
+  }
+
   // ── PHASE 4: "Do my books" accountant pass (deterministic orchestration) ────
   /**
    * Run the accountant pass for one FY end-to-end and return a sign-off pack of counts. Orchestrates

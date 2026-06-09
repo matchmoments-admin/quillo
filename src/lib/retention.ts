@@ -58,6 +58,7 @@ export const PURGE_TABLES = [
   "trust_distributions",     // 0041 (#139)
   "smsf_members",            // 0042 (#140)
   "super_contributions",     // 0042 (#140)
+  "loan_interest_summaries", // 0045 (#157 S4)
 ] as const;
 
 // Columns that must NEVER leave the system in an APP-12 export, even though the row belongs to the

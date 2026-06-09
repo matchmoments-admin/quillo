@@ -69,6 +69,8 @@ export interface TaxAgentRpc {
   recordTrustDistribution(userId: string, d: { trust_entity_id: string; fy?: string | null; beneficiary_person_id?: string | null; beneficiary_entity_id?: string | null; share_pct?: number | null; amount_cents: number; character?: string | null; franking_credit_cents?: number }): Promise<string>;
   recordSmsfMember(userId: string, m: { smsf_entity_id: string; person_id?: string | null; phase?: string | null; pension_balance_cents?: number; accumulation_balance_cents?: number; transfer_balance_cents?: number }): Promise<string>;
   recordSuperContribution(userId: string, c: { person_id?: string | null; fy?: string | null; type?: string | null; amount_cents: number }): Promise<string>;
+  recordBasPeriod(userId: string, b: { entity_id?: string | null; period_start: string; period_end: string; output_gst_cents?: number; input_gst_cents?: number; payg_withholding_cents?: number; payg_instalment_cents?: number; status?: string }): Promise<string>;
+  recordPaygInstalment(userId: string, p: { entity_id?: string | null; fy?: string | null; quarter?: number | null; instalment_cents: number; basis?: string | null }): Promise<string>;
   computeDepreciation(userId: string, assetId: string, toStartYear?: number): Promise<{ rows: number }>;
   rollForward(userId: string, toStartYear: number): Promise<{ assets: number }>;
   reclassMisbucketedAssets(userId: string): Promise<{ removed: number; reclassed: number }>;

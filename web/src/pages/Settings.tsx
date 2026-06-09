@@ -95,11 +95,28 @@ export function Settings() {
         <AddEntity onDone={invalidate} />
       </Section>
 
+      {/* Business activities (#155) — a sole trader names their activity (e.g. "Rideshare", "Freelance
+          design") so spend can attribute to it. Auto-seeded for employers/companies; manual for ABN
+          sole traders. attribution_engine is what makes attribution useful, so gate the section on it. */}
+      {has("attribution_engine") && (
+        <Section title={<>Business activities <InfoTip tip="Name a business/sole-trader activity (e.g. 'Rideshare', 'Freelance design') so its income and expenses attribute to it. Salary and rental activities are created automatically. Optionally tag an occupation (e.g. it_professional) for future occupation-specific hints. General information." /></>}>
+          <BusinessActivities entities={s.entities} />
+        </Section>
+      )}
+
       {/* GST registration (the tenant default — the fallback for a sole trader with no company entity).
           Drives the indicative BAS on Reports. A company's own GST flag is set on its entity above. */}
       {has("gst_bas") && (
         <Section title={<>GST registration <InfoTip tip="Tick this if you're registered for GST (e.g. an ABN sole trader). Quillo then shows an indicative BAS position on Reports — GST collected on business income minus GST credits on business spend. A company's GST flag is set on its entity. General information — confirm with a registered tax/BAS agent." /></>}>
           <GstRegistration registered={(s.profile?.gst_registered ?? 0) === 1} onDone={invalidate} />
+        </Section>
+      )}
+
+      {/* BAS periods + PAYG instalments (#174) — actual lodged/draft figures. Recorded BAS periods
+          OVERRIDE the ledger-derived indicative BAS for the FY; PAYG instalments are informational. */}
+      {has("gst_bas") && (
+        <Section title={<>BAS periods &amp; PAYG instalments <InfoTip tip="Enter your actual quarterly BAS figures (GST collected / credits) — these override Quillo's ledger estimate for that year on Reports. PAYG instalments are pre-payments toward your income tax (informational, never in your position). Quillo never lodges. General information — confirm with a registered tax/BAS agent." /></>}>
+          <BasPeriods />
         </Section>
       )}
 
@@ -115,6 +132,13 @@ export function Settings() {
       {has("smsf_engine") && (
         <Section title={<>SMSF members &amp; balances <InfoTip tip="A self-managed super fund is a separate taxpayer. Add each member's pension- and accumulation-phase balances so Quillo can compute the ECPI exempt fraction (the share of fund income that's tax-exempt in pension phase). Record the fund's earnings as income against the SMSF entity. General information — confirm with a registered tax/SMSF agent." /></>}>
           <SmsfMembers funds={s.entities.filter((e) => e.kind === "smsf")} />
+        </Section>
+      )}
+
+      {/* Super contributions (#140) — concessional / non-concessional, for cap context. Capture-only. */}
+      {has("smsf_engine") && (
+        <Section title={<>Super contributions <InfoTip tip="Concessional (pre-tax, e.g. salary sacrifice + employer SG) and non-concessional (after-tax) contributions, recorded for the contributions-cap context your agent checks. Capture-only — Quillo doesn't apply the cap. General information." /></>}>
+          <SuperContributions persons={s.persons ?? []} />
         </Section>
       )}
 
@@ -829,6 +853,177 @@ function AddSmsfMember({ funds, onDone }: { funds: { id: string; name: string | 
         <input className={input} inputMode="decimal" placeholder="Accumulation balance $" value={accum} onChange={(e) => setAccum(e.target.value)} />
       </div>
       <button className={btn} onClick={() => add.mutate()} disabled={add.isPending || !fundId}>{add.isPending ? "Saving…" : "Save member"}</button>
+      {add.error && <p className="text-sm text-danger">{(add.error as Error).message}</p>}
+    </div>
+  );
+}
+
+function BasPeriods() {
+  const qc = useQueryClient();
+  const periods = useQuery({ queryKey: ["bas-periods"], queryFn: () => api.basPeriods() });
+  const instals = useQuery({ queryKey: ["payg-instalments"], queryFn: () => api.paygInstalments() });
+  const [addingBas, setAddingBas] = useState(false);
+  const [addingPayg, setAddingPayg] = useState(false);
+  const invalidate = () => { for (const k of ["bas-periods", "payg-instalments", "report", "dashboard"]) qc.invalidateQueries({ queryKey: [k] }); };
+  return (
+    <div className="space-y-3">
+      <div className="space-y-2">
+        <div className="text-xs font-medium uppercase tracking-wide text-muted">BAS periods</div>
+        {(periods.data ?? []).map((p) => (
+          <Row key={p.id} label={`${p.period_start} → ${p.period_end} · GST out ${money(p.output_gst_cents)} / in ${money(p.input_gst_cents)} · ${p.status}`} onDelete={() => api.deleteBasPeriod(p.id).then(invalidate)} />
+        ))}
+        {addingBas ? <AddBasPeriod onDone={() => { setAddingBas(false); invalidate(); }} /> : <button className={btn} onClick={() => setAddingBas(true)}>+ Add BAS period</button>}
+      </div>
+      <div className="space-y-2">
+        <div className="text-xs font-medium uppercase tracking-wide text-muted">PAYG instalments</div>
+        {(instals.data ?? []).map((p) => (
+          <Row key={p.id} label={`FY ${p.fy}${p.quarter ? ` · Q${p.quarter}` : ""} · ${money(p.instalment_cents)}`} onDelete={() => api.deletePaygInstalment(p.id).then(invalidate)} />
+        ))}
+        {addingPayg ? <AddPaygInstalment onDone={() => { setAddingPayg(false); invalidate(); }} /> : <button className={btn} onClick={() => setAddingPayg(true)}>+ Add PAYG instalment</button>}
+      </div>
+    </div>
+  );
+}
+
+function AddBasPeriod({ onDone }: { onDone: () => void }) {
+  const [start, setStart] = useState("");
+  const [end, setEnd] = useState("");
+  const [out, setOut] = useState("");
+  const [inp, setInp] = useState("");
+  const add = useMutation({
+    mutationFn: () => api.addBasPeriod({ period_start: start, period_end: end, output_gst_cents: Math.round(parseFloat(out || "0") * 100), input_gst_cents: Math.round(parseFloat(inp || "0") * 100), status: "finalised" }),
+    onSuccess: onDone,
+  });
+  return (
+    <div className="space-y-2 rounded-lg border border-line p-3">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <input className={input} type="date" aria-label="Period start" value={start} onChange={(e) => setStart(e.target.value)} />
+        <input className={input} type="date" aria-label="Period end" value={end} onChange={(e) => setEnd(e.target.value)} />
+        <input className={input} inputMode="decimal" placeholder="GST collected $" value={out} onChange={(e) => setOut(e.target.value)} />
+        <input className={input} inputMode="decimal" placeholder="GST credits $" value={inp} onChange={(e) => setInp(e.target.value)} />
+      </div>
+      <button className={btn} onClick={() => add.mutate()} disabled={add.isPending || !start || !end}>{add.isPending ? "Saving…" : "Save BAS period"}</button>
+      {add.error && <p className="text-sm text-danger">{(add.error as Error).message}</p>}
+    </div>
+  );
+}
+
+const PAYG_QUARTERS = [1, 2, 3, 4] as const;
+
+function AddPaygInstalment({ onDone }: { onDone: () => void }) {
+  const [fy, setFy] = useState("");
+  const [quarter, setQuarter] = useState("");
+  const [amount, setAmount] = useState("");
+  const add = useMutation({
+    mutationFn: () => api.addPaygInstalment({ fy: fy.trim() || undefined, quarter: quarter ? Number(quarter) : null, instalment_cents: Math.round(parseFloat(amount || "0") * 100) }),
+    onSuccess: onDone,
+  });
+  return (
+    <div className="space-y-2 rounded-lg border border-line p-3">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+        <input className={input} placeholder="FY e.g. 2024-25" value={fy} onChange={(e) => setFy(e.target.value)} />
+        <select className={input} value={quarter} onChange={(e) => setQuarter(e.target.value)}><option value="">Quarter…</option>{PAYG_QUARTERS.map((q) => <option key={q} value={q}>Q{q}</option>)}</select>
+        <input className={input} inputMode="decimal" placeholder="Amount $" value={amount} onChange={(e) => setAmount(e.target.value)} />
+      </div>
+      <button className={btn} onClick={() => add.mutate()} disabled={add.isPending || !amount}>{add.isPending ? "Saving…" : "Save instalment"}</button>
+      {add.error && <p className="text-sm text-danger">{(add.error as Error).message}</p>}
+    </div>
+  );
+}
+
+const ACTIVITY_TYPES = ["business", "investment", "private"] as const;
+const ACTIVITY_TYPE_LABEL: Record<string, string> = { business: "Business / sole trader", investment: "Investment", private: "Private", salary_wages: "Salary", rental_property: "Rental property" };
+
+function BusinessActivities({ entities }: { entities: { id: string; kind: string; name: string | null }[] }) {
+  const qc = useQueryClient();
+  const acts = useQuery({ queryKey: ["income-activities"], queryFn: () => api.incomeActivities() });
+  const [adding, setAdding] = useState(false);
+  const invalidate = () => qc.invalidateQueries({ queryKey: ["income-activities"] });
+  const entName = (id: string | null) => entities.find((e) => e.id === id)?.name ?? "—";
+  // Auto-seeded salary/rental activities are managed elsewhere; show the user-relevant ones.
+  const rows = (acts.data ?? []).filter((a) => a.activity_type === "business" || a.activity_type === "investment" || a.activity_type === "private");
+  return (
+    <div className="space-y-2">
+      {rows.map((a) => (
+        <Row key={a.id} label={`${a.label || ACTIVITY_TYPE_LABEL[a.activity_type] || a.activity_type}${a.entity_id ? ` · ${entName(a.entity_id)}` : ""}${a.occupation_scope ? ` · ${a.occupation_scope}` : ""}`} onDelete={() => api.deleteIncomeActivity(a.id).then(invalidate)} />
+      ))}
+      {!rows.length && <Empty>No business activities yet. Add one to name your sole-trader work (rideshare, freelance, consulting) so spend attributes to it.</Empty>}
+      {adding ? (
+        <AddIncomeActivity entities={entities} onDone={() => { setAdding(false); invalidate(); }} />
+      ) : (
+        <button className={btn} onClick={() => setAdding(true)}>+ Add activity</button>
+      )}
+    </div>
+  );
+}
+
+function AddIncomeActivity({ entities, onDone }: { entities: { id: string; kind: string; name: string | null }[]; onDone: () => void }) {
+  const [entityId, setEntityId] = useState("");
+  const [activityType, setActivityType] = useState<string>("business");
+  const [label, setLabel] = useState("");
+  const [scope, setScope] = useState("");
+  // Sole traders attribute to their individual entity; companies to the company. Offer both.
+  const pickable = entities.filter((e) => e.kind === "individual" || e.kind === "company");
+  const add = useMutation({
+    mutationFn: () => api.addIncomeActivity({ entity_id: entityId || null, activity_type: activityType, label: label.trim() || null, occupation_scope: scope.trim() || null }),
+    onSuccess: onDone,
+  });
+  return (
+    <div className="space-y-2 rounded-lg border border-line p-3">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <select className={input} value={activityType} onChange={(e) => setActivityType(e.target.value)}>{ACTIVITY_TYPES.map((t) => <option key={t} value={t}>{ACTIVITY_TYPE_LABEL[t]}</option>)}</select>
+        <input className={input} placeholder="Label e.g. Rideshare" value={label} onChange={(e) => setLabel(e.target.value)} />
+        <select className={input} value={entityId} onChange={(e) => setEntityId(e.target.value)}>
+          <option value="">Me (individual)</option>
+          {pickable.map((e) => <option key={e.id} value={e.id}>{e.name ?? e.kind}</option>)}
+        </select>
+        <input className={input} placeholder="Occupation e.g. it_professional" value={scope} onChange={(e) => setScope(e.target.value)} />
+      </div>
+      <button className={btn} onClick={() => add.mutate()} disabled={add.isPending}>{add.isPending ? "Saving…" : "Save activity"}</button>
+      {add.error && <p className="text-sm text-danger">{(add.error as Error).message}</p>}
+    </div>
+  );
+}
+
+const SUPER_TYPES = ["concessional", "non_concessional"] as const;
+const SUPER_TYPE_LABEL: Record<string, string> = { concessional: "Concessional (pre-tax)", non_concessional: "Non-concessional (after-tax)" };
+
+function SuperContributions({ persons }: { persons: { id: string; display_name: string }[] }) {
+  const qc = useQueryClient();
+  const rows = useQuery({ queryKey: ["super-contributions"], queryFn: () => api.superContributions() });
+  const [adding, setAdding] = useState(false);
+  const invalidate = () => qc.invalidateQueries({ queryKey: ["super-contributions"] });
+  const personName = (id: string | null) => persons.find((p) => p.id === id)?.display_name ?? "You";
+  return (
+    <div className="space-y-2">
+      {(rows.data ?? []).map((c) => (
+        <Row key={c.id} label={`${personName(c.person_id)} · ${SUPER_TYPE_LABEL[c.type] ?? c.type} · ${money(c.amount_cents)} · ${c.fy}`} onDelete={() => api.deleteSuperContribution(c.id).then(invalidate)} />
+      ))}
+      {adding ? (
+        <AddSuperContribution persons={persons} onDone={() => { setAdding(false); invalidate(); }} />
+      ) : (
+        <button className={btn} onClick={() => setAdding(true)}>+ Add contribution</button>
+      )}
+    </div>
+  );
+}
+
+function AddSuperContribution({ persons, onDone }: { persons: { id: string; display_name: string }[]; onDone: () => void }) {
+  const [personId, setPersonId] = useState(persons[0]?.id ?? "");
+  const [type, setType] = useState<string>("concessional");
+  const [amount, setAmount] = useState("");
+  const add = useMutation({
+    mutationFn: () => api.addSuperContribution({ person_id: personId || null, type, amount_cents: Math.round(parseFloat(amount || "0") * 100) }),
+    onSuccess: onDone,
+  });
+  return (
+    <div className="space-y-2 rounded-lg border border-line p-3">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+        <select className={input} value={personId} onChange={(e) => setPersonId(e.target.value)}>{persons.map((p) => <option key={p.id} value={p.id}>{p.display_name}</option>)}</select>
+        <select className={input} value={type} onChange={(e) => setType(e.target.value)}>{SUPER_TYPES.map((t) => <option key={t} value={t}>{SUPER_TYPE_LABEL[t]}</option>)}</select>
+        <input className={input} inputMode="decimal" placeholder="Amount $" value={amount} onChange={(e) => setAmount(e.target.value)} />
+      </div>
+      <button className={btn} onClick={() => add.mutate()} disabled={add.isPending || !amount}>{add.isPending ? "Saving…" : "Save contribution"}</button>
       {add.error && <p className="text-sm text-danger">{(add.error as Error).message}</p>}
     </div>
   );

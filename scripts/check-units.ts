@@ -20,7 +20,7 @@ import type { UserRule } from "../src/lib/db";
 import { parseRoles, hasRole, isAdmin, normaliseRoles, ROLES } from "../src/lib/roles";
 import { buildGuidePrompt, buildAskPrompt, summariseReportForAsk } from "../src/lib/guide";
 import type { Progress } from "../src/lib/progress";
-import { fyBounds, fyLabel } from "../src/lib/ledger-totals";
+import { fyBounds, fyLabel, basPositionFrom } from "../src/lib/ledger-totals";
 import { currentFyStartYear } from "../src/lib/report";
 import fs from "node:fs";
 import path from "node:path";
@@ -765,6 +765,15 @@ console.log("gst/bas (#137)");
   check("net BAS = output − input", net.output_gst_cents === 409_091 && net.input_gst_cents === 45_454 && net.net_gst_cents === 363_637);
   const refund = computeBasNet(1_100_000, 200_000); // more credits than output → refund (negative net)
   check("input > output → negative net (refund)", refund.net_gst_cents === 100_000 - 200_000);
+
+  // #174: recorded BAS periods OVERRIDE the ledger estimate; none → fall back to the estimate.
+  const ledger = computeBasNet(4_500_000, 45_454);
+  const overridden = basPositionFrom({ n: 2, output_gst_cents: 500_000, input_gst_cents: 80_000 }, ledger);
+  check("recorded BAS periods win (output)", overridden.output_gst_cents === 500_000 && overridden.source === "recorded");
+  check("recorded BAS net = recorded out − in", overridden.net_gst_cents === 420_000);
+  const fellBack = basPositionFrom({ n: 0, output_gst_cents: 0, input_gst_cents: 0 }, ledger);
+  check("no recorded periods → ledger estimate, source=ledger", fellBack.output_gst_cents === ledger.output_gst_cents && fellBack.source === "ledger");
+  check("null recorded → ledger estimate", basPositionFrom(null, ledger).source === "ledger");
 }
 
 console.log("car logbook (#142)");

@@ -41,6 +41,7 @@ import {
   addEntityRole,
   listEntityRoles,
   listIncomeActivities,
+  addIncomeActivity,
   addCapitalLoss,
   listCapitalLosses,
   addDepreciationOpening,
@@ -429,8 +430,10 @@ export async function handleApi(
       return json({ ok: true });
     }
   }
-  if (resource === "income-activities" && m === "GET" && !id) {
-    return json({ income_activities: await listIncomeActivities(env, uid) });
+  if (resource === "income-activities") {
+    if (m === "GET" && !id) return json({ income_activities: await listIncomeActivities(env, uid) });
+    if (m === "POST" && !id) return json({ id: await addIncomeActivity(env, uid, await req.json()) });
+    if (m === "DELETE" && id) { await deleteRow(env, uid, "income_activities", id); return json({ ok: true }); }
   }
   if (resource === "rules") {
     if (m === "POST") return json({ id: await addRule(env, uid, await req.json()) });
@@ -688,6 +691,19 @@ export async function handleApi(
     if (m === "GET" && !id) return json({ super_contributions: (await env.DB.prepare(`SELECT id, person_id, fy, type, amount_cents FROM super_contributions WHERE user_id = ? ORDER BY fy DESC`).bind(uid).all()).results ?? [] });
     if (m === "POST" && !id) return json({ id: await stub.recordSuperContribution(uid, await req.json()) });
     if (m === "DELETE" && id) { await deleteRow(env, uid, "super_contributions", id); return json({ ok: true }); }
+  }
+  // ── BAS periods + PAYG instalments (#174) — gst_bas gated ──────────────────
+  if (resource === "bas-periods") {
+    if (!featureOn(env, "gst_bas")) return json({ error: "not available" }, 404);
+    if (m === "GET" && !id) return json({ bas_periods: (await env.DB.prepare(`SELECT id, entity_id, period_start, period_end, output_gst_cents, input_gst_cents, payg_withholding_cents, payg_instalment_cents, status FROM bas_periods WHERE user_id = ? ORDER BY period_start DESC`).bind(uid).all()).results ?? [] });
+    if (m === "POST" && !id) { try { return json({ id: await stub.recordBasPeriod(uid, await req.json()) }); } catch (e) { return json({ error: (e as Error).message }, 400); } }
+    if (m === "DELETE" && id) { await deleteRow(env, uid, "bas_periods", id); return json({ ok: true }); }
+  }
+  if (resource === "payg-instalments") {
+    if (!featureOn(env, "gst_bas")) return json({ error: "not available" }, 404);
+    if (m === "GET" && !id) return json({ payg_instalments: (await env.DB.prepare(`SELECT id, entity_id, fy, quarter, instalment_cents, basis FROM payg_instalments WHERE user_id = ? ORDER BY fy DESC, quarter`).bind(uid).all()).results ?? [] });
+    if (m === "POST" && !id) return json({ id: await stub.recordPaygInstalment(uid, await req.json()) });
+    if (m === "DELETE" && id) { await deleteRow(env, uid, "payg_instalments", id); return json({ ok: true }); }
   }
 
   // ── Assets & depreciation ─────────────────────────────────────────────────

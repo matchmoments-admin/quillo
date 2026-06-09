@@ -1,6 +1,6 @@
 import type { Env } from "../env";
 import { COUNTABLE, COUNTABLE_INCOME } from "./queries";
-import { incomeTotals, depreciationTotals, attributionTotals, companyPositions, cgtTotals, essTotals, gstTotals, carLogbookPosition, trustTotals, smsfFundPositions, separateTaxpayerEntityIds, type IncomeTotals, type AttributionTotals, type CompanyPosition, type GstPosition, type CarLogbookPosition, type SmsfFundPosition } from "./ledger-totals";
+import { incomeTotals, depreciationTotals, attributionTotals, companyPositions, cgtTotals, essTotals, gstTotals, paygInstalmentsTotal, carLogbookPosition, trustTotals, smsfFundPositions, separateTaxpayerEntityIds, type IncomeTotals, type AttributionTotals, type CompanyPosition, type GstPosition, type CarLogbookPosition, type SmsfFundPosition } from "./ledger-totals";
 import type { TrustTotals } from "./trust";
 import type { CgtPortfolioResult } from "./cgt";
 import type { EssAssessable } from "./ess";
@@ -133,6 +133,9 @@ export interface Report {
   // NEVER added to taxable_position_cents. Present only when the gst_bas flag is on AND a business is
   // GST-registered. undefined ⇒ byte-identical legacy totals.
   gst?: GstPosition;
+  // #174: total PAYG instalments recorded for the FY (pre-payments toward income tax). Informational —
+  // NEVER in taxable_position. Present only when gst_bas is on AND a non-zero amount is recorded.
+  payg_instalments_cents?: number;
   // Phase #142: logbook-method car deduction vs cents-per-km (informational — not yet swapped into the
   // position). Present only when the car_logbook flag is on AND a vehicle_logbook exists for the FY.
   car_logbook?: CarLogbookPosition;
@@ -581,9 +584,12 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   // Phase #137: indicative BAS position — SEPARATE from income tax (never added to taxable_position).
   // Flag-gated; only surfaced when a business is GST-registered.
   let gst: GstPosition | undefined;
+  let payg_instalments_cents: number | undefined;
   if (featureOn(env, "gst_bas")) {
     const g = await gstTotals(env, userId, startYear);
     if (g.registered) gst = g;
+    const payg = await paygInstalmentsTotal(env, userId, startYear);
+    if (payg > 0) payg_instalments_cents = payg;
   }
   // Phase #142: logbook vs cents-per-km comparison (informational). Uses the cents-per-km figure already
   // computed in work_method. Flag-gated; null when there's no logbook for the FY.
@@ -651,6 +657,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
     capital_gains,
     ess,
     gst,
+    payg_instalments_cents,
     car_logbook,
     trust,
     smsf_funds,

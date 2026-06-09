@@ -23,6 +23,9 @@ export function TxnDetail() {
   const [date, setDate] = useState<string>("");
   const [seededId, setSeededId] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
+  // "Edit one → update its look-alikes": after a categorisation save, hold on the page to offer
+  // fanning the same edit out to the still-to-review siblings (+ learn a rule). Null = navigate away.
+  const [applyTo, setApplyTo] = useState<{ n: number; total_cents: number; edit: { bucket?: string; ato_label?: string; property_id?: string } } | null>(null);
 
   const txn = txnQ.data;
   // Re-seed the form whenever a DIFFERENT txn loads. This route reuses the same component instance
@@ -50,10 +53,34 @@ export function TxnDetail() {
       if (ops.length === 0 && txn.bucket) ops.push(api.correct(id, "bucket", txn.bucket));
       await Promise.all(ops);
     },
-    onSuccess: () => {
+    onSuccess: async () => {
       qc.invalidateQueries({ queryKey: ["transactions"] });
       qc.invalidateQueries({ queryKey: ["dashboard"] });
       qc.invalidateQueries({ queryKey: ["txn", id] });
+      // Flag-gated: after categorising one line to a spend/asset bucket, offer to apply it to the
+      // still-to-review look-alikes. Flag OFF (or no siblings) ⇒ navigate immediately, as before.
+      if (has("apply_to_siblings") && isSpendBucket(bucket)) {
+        try {
+          const preview = await api.siblingsPreview(id);
+          if (preview.n > 0) {
+            setApplyTo({ n: preview.n, total_cents: preview.total_cents, edit: { bucket, ato_label: label || undefined, property_id: propertyId || undefined } });
+            return; // hold on the page to show the prompt
+          }
+        } catch {
+          /* preview is best-effort — fall through to navigate */
+        }
+      }
+      navigate("/");
+    },
+  });
+
+  // Fan the just-saved edit out to the seed's look-alikes (+ learn a rule), then leave.
+  const fanout = useMutation({
+    mutationFn: () => api.applyToSiblings(id, applyTo!.edit, true),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["transactions"] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+      qc.invalidateQueries({ queryKey: ["clarify"] });
       navigate("/");
     },
   });
@@ -252,6 +279,36 @@ export function TxnDetail() {
             {save.isError && <p className="text-sm text-danger">Couldn't save: {(save.error as Error).message}</p>}
           </Card>
 
+          {/* "Edit one → update its look-alikes" — the apply-to-siblings prompt (flag apply_to_siblings). */}
+          {applyTo && (
+            <Card className="space-y-3 border-ink/20 bg-surface p-4">
+              <div className="text-sm">
+                <span className="font-medium">{applyTo.n} look-alike{applyTo.n === 1 ? "" : "s"}</span> still to review
+                {applyTo.total_cents ? <> · {money(applyTo.total_cents)}</> : null} match this merchant. Apply{" "}
+                <span className="font-medium">{BUCKET_LABEL[applyTo.edit.bucket as keyof typeof BUCKET_LABEL] ?? applyTo.edit.bucket}</span> to all of
+                them and remember it for future imports?
+              </div>
+              <p className="text-xs text-muted">Updates them in one step — you can Undo. General information only — not tax advice.</p>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => fanout.mutate()}
+                  disabled={fanout.isPending}
+                  className="flex-1 rounded-lg bg-ink py-2 font-medium text-white transition hover:bg-ink/90 disabled:opacity-50"
+                >
+                  {fanout.isPending ? "Applying…" : `Apply to ${applyTo.n} & remember`}
+                </button>
+                <button
+                  onClick={() => navigate("/")}
+                  disabled={fanout.isPending}
+                  className="rounded-lg border border-line px-3 py-2 font-medium transition hover:bg-card disabled:opacity-50"
+                >
+                  Just this one
+                </button>
+              </div>
+              {fanout.isError && <p className="text-sm text-danger">Couldn't apply: {(fanout.error as Error).message}</p>}
+            </Card>
+          )}
+
           {/* R7 — reassure on rent: not deductible for an employee, but point to the claim she CAN make. */}
           {looksRent && (
             <Card className="border-line bg-surface p-3 text-xs text-muted">
@@ -343,6 +400,14 @@ export function TxnDetail() {
       </div>
     </div>
   );
+}
+
+// Spend/asset buckets are the ones safe to fan out to siblings + learn a rule. Income/refund
+// (money-IN) buckets are excluded — those route through the income flow (single-count dedupe), and
+// the server rejects them on the apply-to-siblings seam — so we never offer the prompt for them.
+const MONEY_IN_BUCKETS = ["income_business", "income_property", "income_personal", "refund"];
+function isSpendBucket(b: string): boolean {
+  return !!b && !MONEY_IN_BUCKETS.includes(b);
 }
 
 // AU financial year (Jul–Jun) label for a YYYY-MM-DD date, or null if missing/unparseable.

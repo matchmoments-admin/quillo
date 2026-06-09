@@ -43,10 +43,10 @@ Legend — **engine**: backend computes it (✓ live behind flag); **UI**: a web
 | Sole-trader `business` income | ✓ | ◑ income only | ✓ | — (additive) | 4,5 |
 | Sole-trader activity + attribution | ✓ | ✗ no form | ◑ | `attribution_engine` | 4,5,8 |
 | CGT (shares/crypto/property) | ✓ | ✓ | ✓ | `cgt_engine` (ON) | 2,6,8,9,10 |
-| Employee Share Scheme | ✓ | ✗ | ✗ | `ess_engine` | 2,9 |
+| Employee Share Scheme | ✓ | ✓ | ✓ | `ess_engine` (ON) | 2,9 |
 | GST registration flag | ✓ | ✓ | ✓ | — | 4,5,8 |
 | Indicative BAS / PAYG instalments | ✓ | ✗ | ✗ | `gst_bas` | 4,5,8 |
-| Motor-vehicle logbook | ✓ | ✗ | ✗ | `car_logbook` | 3,4,5,7 |
+| Motor-vehicle logbook | ✓ | ✓ | ✓ | `car_logbook` (ON) | 3,4,5,7 |
 | Occupation content (person-level) | ✓ | ✓ | ✓ | — | 3,7 |
 | Occupation scope on an activity | ✓ | ✗ | ◑ | — | 3,7 |
 | Trust distributions / streaming | ✓ | ✗ | ✗ | `trust_distributions` | 8 |

@@ -338,6 +338,12 @@ export async function handleApi(
     return json({ ok: true });
   }
 
+  // POST /api/gst-registered { registered } — tenant-default GST registration (sole-trader fallback).
+  if (resource === "gst-registered" && m === "POST") {
+    const { registered } = (await req.json().catch(() => ({}))) as { registered?: boolean };
+    return json(await stub.setGstRegistered(uid, !!registered));
+  }
+
   // ── Situation writes (Settings + web onboarding) ──────────────────────────
   // Persons (taxpayers). The list is returned by GET /api/situation (getSituation).
   if (resource === "persons") {

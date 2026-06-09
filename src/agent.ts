@@ -4204,6 +4204,18 @@ export class TaxAgent extends Agent<Env> {
   }
 
   /**
+   * Set the tenant-default GST registration flag (the fallback the GST/BAS reader uses for sole
+   * traders with no company entity — gstTotals reads entities.gst_registered OR profiles.gst_registered).
+   * Indicative BAS only ever surfaces when this (or an entity flag) is on AND gst_bas is enabled.
+   */
+  async setGstRegistered(userId: string, registered: boolean): Promise<{ ok: true; gst_registered: number }> {
+    const v = registered ? 1 : 0;
+    await this.env.DB.prepare(`UPDATE profiles SET gst_registered = ? WHERE user_id = ?`).bind(v, userId).run();
+    await this.audit(userId, "gst_registered_set", JSON.stringify({ gst_registered: v }));
+    return { ok: true, gst_registered: v };
+  }
+
+  /**
    * Withdraw APP-8 cross-border consent. Clears the flag (the consent gate then blocks the
    * anthropic path again) but keeps the recorded text/timestamp as an audit trail of what was
    * previously agreed. Audited.

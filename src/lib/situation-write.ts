@@ -353,7 +353,7 @@ export async function getFySignoff(env: Env, userId: string, fy: number): Promis
     .first<{ signed_off_at: string }>();
 }
 
-export async function deleteRow(env: Env, userId: string, table: "properties" | "entities" | "user_rules" | "accounts" | "persons" | "income" | "assets" | "loans_properties" | "capital_loss_carryins" | "depreciation_opening_balances" | "property_owners" | "entity_roles", id: string): Promise<void> {
+export async function deleteRow(env: Env, userId: string, table: "properties" | "entities" | "user_rules" | "accounts" | "persons" | "income" | "assets" | "loans_properties" | "capital_loss_carryins" | "depreciation_opening_balances" | "property_owners" | "entity_roles" | "cgt_assets" | "cgt_events" | "ess_grants" | "vehicle_logbooks" | "trust_distributions" | "smsf_members" | "super_contributions", id: string): Promise<void> {
   // table is from a fixed allowlist (never user input) — safe to interpolate.
   await env.DB.prepare(`DELETE FROM ${table} WHERE id = ? AND user_id = ?`).bind(id, userId).run();
 }

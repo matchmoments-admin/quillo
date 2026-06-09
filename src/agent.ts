@@ -1509,6 +1509,39 @@ export class TaxAgent extends Agent<Env> {
     return id;
   }
 
+  // ── CGT (#138): holdings + disposal events. The net capital gain is computed in src/lib/cgt.ts and
+  // surfaced on the report behind the cgt_engine flag. These just persist the facts (user_id-scoped). ──
+  async recordCgtAsset(
+    userId: string,
+    a: { person_id?: string | null; asset_kind: string; code?: string | null; label?: string | null; units?: number | null; acquired_date?: string | null; cost_base_cents: number; reduced_cost_base_cents?: number | null; main_residence_exempt?: number },
+  ): Promise<string> {
+    const id = crypto.randomUUID();
+    await this.env.DB.prepare(
+      `INSERT INTO cgt_assets (id, user_id, person_id, asset_kind, code, label, units, acquired_date, cost_base_cents, reduced_cost_base_cents, main_residence_exempt, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'held')`,
+    )
+      .bind(id, userId, a.person_id ?? `person_self_${userId}`, a.asset_kind, a.code ?? null, a.label ?? null, a.units ?? null, a.acquired_date ?? null, a.cost_base_cents ?? 0, a.reduced_cost_base_cents ?? null, a.main_residence_exempt ?? 0)
+      .run();
+    await this.audit(userId, "cgt_asset_recorded", JSON.stringify({ id, kind: a.asset_kind, code: a.code }));
+    return id;
+  }
+
+  async recordCgtEvent(
+    userId: string,
+    e: { cgt_asset_id: string; fy?: string | null; event_type?: string | null; event_date: string; proceeds_cents: number; cost_base_used_cents: number; units_disposed?: number | null; discount_eligible?: boolean | null },
+  ): Promise<string> {
+    const id = crypto.randomUUID();
+    const fy = e.fy ?? fyForDate(e.event_date ?? null) ?? this.currentFyLabel();
+    await this.env.DB.prepare(
+      `INSERT INTO cgt_events (id, user_id, cgt_asset_id, fy, event_type, event_date, proceeds_cents, cost_base_used_cents, units_disposed, discount_eligible)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+      .bind(id, userId, e.cgt_asset_id, fy, e.event_type ?? "disposal", e.event_date, e.proceeds_cents ?? 0, e.cost_base_used_cents ?? 0, e.units_disposed ?? null, e.discount_eligible == null ? null : e.discount_eligible ? 1 : 0)
+      .run();
+    await this.audit(userId, "cgt_event_recorded", JSON.stringify({ id, asset: e.cgt_asset_id, fy }));
+    return id;
+  }
+
   /**
    * Income de-dup: surface likely duplicate pairs (a credit bank-line that looks like a documented
    * income row) and the already-confirmed links. SUGGEST ONLY — a credit is matched to an income

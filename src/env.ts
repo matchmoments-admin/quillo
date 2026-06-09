@@ -75,6 +75,8 @@ export interface TaxAgentRpc {
   setChecklistStatus(userId: string, id: string, status: string): Promise<void>;
   setClaimStatus(userId: string, id: string, status: string): Promise<void>;
   computeCgt(userId: string, propertyId: string): Promise<import("./lib/cgt").CgtResult & { property_id: string }>;
+  recordCgtAsset(userId: string, a: { person_id?: string | null; asset_kind: string; code?: string | null; label?: string | null; units?: number | null; acquired_date?: string | null; cost_base_cents: number; reduced_cost_base_cents?: number | null; main_residence_exempt?: number }): Promise<string>;
+  recordCgtEvent(userId: string, e: { cgt_asset_id: string; fy?: string | null; event_type?: string | null; event_date: string; proceeds_cents: number; cost_base_used_cents: number; units_disposed?: number | null; discount_eligible?: boolean | null }): Promise<string>;
   applyCorrection(userId: string, txnId: string, field: string, value: string): Promise<void>;
   deleteTransaction(userId: string, txnId: string): Promise<void>;
   pushToQuickBooks(userId: string, txnId: string): Promise<{ ok: boolean; ledgerRef?: string; error?: string }>;

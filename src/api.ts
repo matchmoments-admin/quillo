@@ -562,6 +562,25 @@ export async function handleApi(
     }
   }
 
+  // ── CGT (#138): holdings (cgt_assets) + disposal events (cgt_events) ───────
+  if (resource === "cgt-assets") {
+    if (m === "GET" && !id) {
+      const assets = (await env.DB.prepare(`SELECT id, asset_kind, code, label, units, acquired_date, cost_base_cents, status FROM cgt_assets WHERE user_id = ? ORDER BY acquired_date DESC, created_at DESC`).bind(uid).all()).results ?? [];
+      return json({ cgt_assets: assets });
+    }
+    if (m === "POST" && !id) return json({ id: await stub.recordCgtAsset(uid, await req.json()) });
+    if (m === "DELETE" && id) { await deleteRow(env, uid, "cgt_assets", id); return json({ ok: true }); }
+  }
+  if (resource === "cgt-events") {
+    if (m === "GET" && !id) {
+      const fy = url.searchParams.get("fy");
+      const events = (await env.DB.prepare(`SELECT id, cgt_asset_id, fy, event_type, event_date, proceeds_cents, cost_base_used_cents, units_disposed, discount_eligible FROM cgt_events WHERE user_id = ?${fy ? " AND fy = ?" : ""} ORDER BY event_date DESC`).bind(...(fy ? [uid, fy] : [uid])).all()).results ?? [];
+      return json({ cgt_events: events });
+    }
+    if (m === "POST" && !id) return json({ id: await stub.recordCgtEvent(uid, await req.json()) });
+    if (m === "DELETE" && id) { await deleteRow(env, uid, "cgt_events", id); return json({ ok: true }); }
+  }
+
   // ── Assets & depreciation ─────────────────────────────────────────────────
   if (resource === "assets") {
     if (m === "GET" && !id) return json({ assets: await listAssets(env, uid, url.searchParams.get("fy") ?? undefined) });

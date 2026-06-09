@@ -97,6 +97,82 @@ export function Reports() {
             </Card>
           )}
 
+          {/* EPIC #134 engine outputs — each renders only when its flag is on and there's data. */}
+          {data!.capital_gains && (
+            <Card className="overflow-hidden">
+              <Th>Capital gains (CGT) — net gain is assessable income</Th>
+              <div className="grid grid-cols-2 gap-4 p-4 sm:grid-cols-4">
+                <Stat label="Gains (gross)" value={money(data!.capital_gains.gross_capital_gains_cents)} />
+                <Stat label="Losses applied" value={money(data!.capital_gains.capital_losses_cents)} />
+                <Stat label="50% discount" value={money(data!.capital_gains.discount_applied_cents)} />
+                <Stat label="Net capital gain" value={money(data!.capital_gains.net_capital_gain_cents)} />
+              </div>
+            </Card>
+          )}
+
+          {data!.ess && (
+            <Card className="overflow-hidden">
+              <Th>Employee share scheme (ESS)</Th>
+              <div className="grid grid-cols-2 gap-4 p-4 sm:grid-cols-3">
+                <Stat label="Assessable discount" value={money(data!.ess.assessable_discount_cents)} />
+                <Stat label="Startup (deferred to CGT)" value={money(data!.ess.startup_deferred_to_cgt_cents)} />
+                <Stat label="Eligibility" value={data!.ess.ineligible_startup_flag ? "Check >10% rule" : "OK"} />
+              </div>
+            </Card>
+          )}
+
+          {data!.trust && (
+            <Card className="overflow-hidden">
+              <Th>Trust distributions to you (character retained)</Th>
+              <div className="grid grid-cols-2 gap-4 p-4 sm:grid-cols-3">
+                <Stat label="Assessable" value={money(data!.trust.assessable_cents)} />
+                <Stat label="Franking credits" value={money(data!.trust.franking_credit_cents)} />
+                <Stat label="Characters" value={Object.keys(data!.trust.by_character).join(", ") || "—"} />
+              </div>
+            </Card>
+          )}
+
+          {data!.car_logbook && (
+            <Card className="overflow-hidden">
+              <Th>Car — logbook vs cents-per-km (you can claim only one)</Th>
+              <div className="grid grid-cols-2 gap-4 p-4 sm:grid-cols-4">
+                <Stat label="Business use" value={`${Math.round(data!.car_logbook.business_use_pct)}%`} />
+                <Stat label="Logbook method" value={money(data!.car_logbook.logbook_deduction_cents)} />
+                <Stat label="Cents per km" value={money(data!.car_logbook.cents_per_km_cents)} />
+                <Stat label="Recommended" value={`${data!.car_logbook.recommended_method === "logbook" ? "Logbook" : "Cents/km"} · ${money(data!.car_logbook.recommended_cents)}`} />
+              </div>
+            </Card>
+          )}
+
+          {data!.gst && (
+            <Card className="overflow-hidden">
+              <Th>GST — indicative BAS position (separate from income tax) <InfoTip k="bas" /></Th>
+              <div className="grid grid-cols-2 gap-4 p-4 sm:grid-cols-3">
+                <Stat label="GST collected (output)" value={money(data!.gst.output_gst_cents)} />
+                <Stat label="GST credits (input)" value={money(data!.gst.input_gst_cents)} />
+                <Stat label={data!.gst.net_gst_cents >= 0 ? "Net GST payable" : "Net GST refund"} value={money(Math.abs(data!.gst.net_gst_cents))} />
+              </div>
+            </Card>
+          )}
+
+          {data!.smsf_funds && data!.smsf_funds.length > 0 && (
+            <Card className="overflow-hidden">
+              <Th>SMSF fund position (a separate taxpayer) — ECPI exempts pension-phase earnings</Th>
+              <table className="w-full text-sm">
+                <tbody>
+                  {data!.smsf_funds.map((f) => (
+                    <tr key={f.entity_id} className="border-t border-line">
+                      <td className="px-4 py-2">{f.name ?? "SMSF"}</td>
+                      <td className="px-4 py-2 text-right tabular-nums text-muted">income {money(f.assessable_income_cents)}</td>
+                      <td className="px-4 py-2 text-right tabular-nums text-muted">ECPI {Math.round(f.ecpi_exempt_fraction * 100)}%</td>
+                      <td className="px-4 py-2 text-right tabular-nums font-medium">taxable {money(f.fund_taxable_income_cents)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </Card>
+          )}
+
           {data!.per_property.length > 0 && (
             <Card className="overflow-hidden">
               <Th>Per-property position (rent − deductions − depreciation)</Th>

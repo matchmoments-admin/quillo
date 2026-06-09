@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
-import { Button } from "./ui";
+import { Button, BUCKET_LABEL } from "./ui";
 import { BUCKETS } from "../types";
 
 export interface BulkDone {
@@ -29,7 +29,7 @@ export function BulkBar({ ids, onClear, onDone }: { ids: string[]; onClear: () =
     onSuccess: (r) => {
       const failed = r.failures.length ? `, ${r.failures.length} skipped` : "";
       invalidate();
-      onDone({ message: `Re-bucketed ${r.updated} to ${bucket}${failed}.`, batchId: r.batch_id || null });
+      onDone({ message: `Re-categorised ${r.updated} to ${BUCKET_LABEL[bucket] ?? bucket}${failed}.`, batchId: r.batch_id || null });
       onClear();
     },
     onError: (e) => onDone({ message: `Couldn't apply: ${(e as Error).message}`, batchId: null }),
@@ -56,10 +56,10 @@ export function BulkBar({ ids, onClear, onDone }: { ids: string[]; onClear: () =
         disabled={busy}
         className="rounded-lg border border-white/20 bg-ink px-2 py-1 text-sm"
       >
-        <option value="">Re-bucket to…</option>
+        <option value="">Change category to…</option>
         {BUCKETS.map((b) => (
           <option key={b} value={b}>
-            {b}
+            {BUCKET_LABEL[b] ?? b}
           </option>
         ))}
       </select>

@@ -192,7 +192,7 @@ export function Reports() {
           )}
 
           <Card className="overflow-hidden">
-            <Th>By bucket + ATO label <InfoTip k="ato_label" /></Th>
+            <Th>By category + ATO label <InfoTip k="ato_label" /></Th>
             <table className="w-full text-sm">
               <tbody>
                 {data!.by_bucket.map((b, i) => (

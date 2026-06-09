@@ -63,7 +63,7 @@ export function Dashboard() {
             foot={d.needs_review ? "Open the inbox to clear them" : "All caught up"}
           />
         </Link>
-        <KpiCard label="Deduction buckets" value={String(d.by_bucket.length)} foot="Categories in use" />
+        <KpiCard label="Deduction categories" value={String(d.by_bucket.length)} foot="Categories in use" />
         <KpiCard label="Income tracked" value={money(income)} foot="From bank credits" />
       </div>
 
@@ -89,7 +89,7 @@ export function Dashboard() {
       {/* Breakdowns */}
       <div className="grid gap-5 lg:grid-cols-2">
         <Panel>
-          <PanelHead title={<>By bucket <InfoTip k="bucket" /></>} sub={d.by_bucket.length ? `${d.by_bucket.length} categories` : undefined} />
+          <PanelHead title={<>By category <InfoTip k="bucket" /></>} sub={d.by_bucket.length ? `${d.by_bucket.length} categories` : undefined} />
           {d.by_bucket.length ? (
             <div className="divide-y divide-line">
               {d.by_bucket.map((b, i) => (

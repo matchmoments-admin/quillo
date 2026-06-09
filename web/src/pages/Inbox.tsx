@@ -268,7 +268,7 @@ function Row({ txn, selected, onToggle, showConfirm = false }: { txn: Txn; selec
           <button
             onClick={() => confirm.mutate()}
             disabled={confirm.isPending || !txn.bucket}
-            title={txn.bucket ? "Accept the current bucket and clear it from review" : "Open it to choose a bucket first"}
+            title={txn.bucket ? "Accept the current category and clear it from review" : "Open it to choose a category first"}
             className="rounded-lg border border-line px-3 py-2 text-sm font-medium transition hover:bg-surface disabled:opacity-50"
           >
             {confirm.isPending ? "…" : "Confirm ✓"}

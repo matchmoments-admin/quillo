@@ -75,7 +75,7 @@ export function SuggestedDeductions({ fy }: { fy: number }) {
               disabled={confirm.isPending}
               className="flex-none rounded border border-line px-2 py-0.5 text-xs hover:opacity-80 disabled:opacity-50"
             >
-              confirm
+              Add to my deductions
             </button>
           </li>
         ))}

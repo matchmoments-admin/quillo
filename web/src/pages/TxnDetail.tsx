@@ -179,7 +179,7 @@ export function TxnDetail() {
 
           {txn.reasoning && (
             <Card className="space-y-1 bg-surface p-4">
-              <div className="text-xs font-medium uppercase tracking-wide text-ink-3">Why this bucket? <InfoTip k="reasoning" /></div>
+              <div className="text-xs font-medium uppercase tracking-wide text-ink-3">Why this category? <InfoTip k="reasoning" /></div>
               <p className="text-sm text-ink">{txn.reasoning}</p>
               <p className="text-xs text-muted">General information only — not tax advice. Confirm with a registered tax/BAS agent.</p>
             </Card>

@@ -581,6 +581,39 @@ export async function handleApi(
     if (m === "DELETE" && id) { await deleteRow(env, uid, "cgt_events", id); return json({ ok: true }); }
   }
 
+  // ── ESS grants (#141) ─────────────────────────────────────────────────────
+  if (resource === "ess-grants") {
+    if (m === "GET" && !id) return json({ ess_grants: (await env.DB.prepare(`SELECT id, employer_entity_id, scheme_type, grant_date, taxing_point_date, discount_cents, market_value_cents, ownership_gt_10pct FROM ess_grants WHERE user_id = ? ORDER BY COALESCE(taxing_point_date, grant_date) DESC`).bind(uid).all()).results ?? [] });
+    if (m === "POST" && !id) return json({ id: await stub.recordEssGrant(uid, await req.json()) });
+    if (m === "DELETE" && id) { await deleteRow(env, uid, "ess_grants", id); return json({ ok: true }); }
+  }
+
+  // ── Vehicle logbooks (#142) ───────────────────────────────────────────────
+  if (resource === "vehicle-logbooks") {
+    if (m === "GET" && !id) return json({ vehicle_logbooks: (await env.DB.prepare(`SELECT id, asset_id, fy, business_km, total_km, running_costs_cents, business_use_pct FROM vehicle_logbooks WHERE user_id = ? ORDER BY fy DESC`).bind(uid).all()).results ?? [] });
+    if (m === "POST" && !id) return json({ id: await stub.recordVehicleLogbook(uid, await req.json()) });
+    if (m === "DELETE" && id) { await deleteRow(env, uid, "vehicle_logbooks", id); return json({ ok: true }); }
+  }
+
+  // ── Trust distributions (#139) ────────────────────────────────────────────
+  if (resource === "trust-distributions") {
+    if (m === "GET" && !id) return json({ trust_distributions: (await env.DB.prepare(`SELECT id, trust_entity_id, fy, beneficiary_person_id, share_pct, amount_cents, character, franking_credit_cents FROM trust_distributions WHERE user_id = ? ORDER BY fy DESC`).bind(uid).all()).results ?? [] });
+    if (m === "POST" && !id) return json({ id: await stub.recordTrustDistribution(uid, await req.json()) });
+    if (m === "DELETE" && id) { await deleteRow(env, uid, "trust_distributions", id); return json({ ok: true }); }
+  }
+
+  // ── SMSF members + super contributions (#140) ─────────────────────────────
+  if (resource === "smsf-members") {
+    if (m === "GET" && !id) return json({ smsf_members: (await env.DB.prepare(`SELECT id, smsf_entity_id, person_id, phase, pension_balance_cents, accumulation_balance_cents, transfer_balance_cents FROM smsf_members WHERE user_id = ? ORDER BY created_at DESC`).bind(uid).all()).results ?? [] });
+    if (m === "POST" && !id) return json({ id: await stub.recordSmsfMember(uid, await req.json()) });
+    if (m === "DELETE" && id) { await deleteRow(env, uid, "smsf_members", id); return json({ ok: true }); }
+  }
+  if (resource === "super-contributions") {
+    if (m === "GET" && !id) return json({ super_contributions: (await env.DB.prepare(`SELECT id, person_id, fy, type, amount_cents FROM super_contributions WHERE user_id = ? ORDER BY fy DESC`).bind(uid).all()).results ?? [] });
+    if (m === "POST" && !id) return json({ id: await stub.recordSuperContribution(uid, await req.json()) });
+    if (m === "DELETE" && id) { await deleteRow(env, uid, "super_contributions", id); return json({ ok: true }); }
+  }
+
   // ── Assets & depreciation ─────────────────────────────────────────────────
   if (resource === "assets") {
     if (m === "GET" && !id) return json({ assets: await listAssets(env, uid, url.searchParams.get("fy") ?? undefined) });

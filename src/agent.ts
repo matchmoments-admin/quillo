@@ -1542,6 +1542,87 @@ export class TaxAgent extends Agent<Env> {
     return id;
   }
 
+  // ── ESS (#141): employee share scheme grants. assessable discount computed in src/lib/ess.ts. ──
+  async recordEssGrant(
+    userId: string,
+    g: { person_id?: string | null; employer_entity_id?: string | null; scheme_type: string; grant_date?: string | null; taxing_point_date?: string | null; shares_or_options?: string | null; units?: number | null; discount_cents: number; market_value_cents?: number | null; ownership_gt_10pct?: number },
+  ): Promise<string> {
+    const id = crypto.randomUUID();
+    await this.env.DB.prepare(
+      `INSERT INTO ess_grants (id, user_id, person_id, employer_entity_id, scheme_type, grant_date, taxing_point_date, shares_or_options, units, discount_cents, market_value_cents, ownership_gt_10pct)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+      .bind(id, userId, g.person_id ?? `person_self_${userId}`, g.employer_entity_id ?? null, g.scheme_type, g.grant_date ?? null, g.taxing_point_date ?? null, g.shares_or_options ?? null, g.units ?? null, g.discount_cents ?? 0, g.market_value_cents ?? null, g.ownership_gt_10pct ?? 0)
+      .run();
+    await this.audit(userId, "ess_grant_recorded", JSON.stringify({ id, scheme: g.scheme_type }));
+    return id;
+  }
+
+  // ── Logbook (#142): a 12-week vehicle logbook. Higher-of vs cents-per-km surfaced on the report. ──
+  async recordVehicleLogbook(
+    userId: string,
+    lb: { person_id?: string | null; asset_id?: string | null; fy?: string | null; start_date?: string | null; end_date?: string | null; business_km?: number | null; total_km?: number | null; running_costs_cents: number; business_use_pct?: number | null },
+  ): Promise<string> {
+    const id = crypto.randomUUID();
+    const fy = lb.fy ?? this.currentFyLabel();
+    await this.env.DB.prepare(
+      `INSERT INTO vehicle_logbooks (id, user_id, person_id, asset_id, fy, start_date, end_date, business_km, total_km, running_costs_cents, business_use_pct)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+      .bind(id, userId, lb.person_id ?? `person_self_${userId}`, lb.asset_id ?? null, fy, lb.start_date ?? null, lb.end_date ?? null, lb.business_km ?? null, lb.total_km ?? null, lb.running_costs_cents ?? 0, lb.business_use_pct ?? null)
+      .run();
+    await this.audit(userId, "vehicle_logbook_recorded", JSON.stringify({ id, fy }));
+    return id;
+  }
+
+  // ── Trust (#139): a distribution to a beneficiary, character retained (src/lib/trust.ts). ──
+  async recordTrustDistribution(
+    userId: string,
+    d: { trust_entity_id: string; fy?: string | null; beneficiary_person_id?: string | null; beneficiary_entity_id?: string | null; share_pct?: number | null; amount_cents: number; character?: string | null; franking_credit_cents?: number },
+  ): Promise<string> {
+    const id = crypto.randomUUID();
+    const fy = d.fy ?? this.currentFyLabel();
+    await this.env.DB.prepare(
+      `INSERT INTO trust_distributions (id, user_id, trust_entity_id, fy, beneficiary_person_id, beneficiary_entity_id, share_pct, amount_cents, character, franking_credit_cents)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+      .bind(id, userId, d.trust_entity_id, fy, d.beneficiary_person_id ?? `person_self_${userId}`, d.beneficiary_entity_id ?? null, d.share_pct ?? null, d.amount_cents ?? 0, d.character ?? "ordinary", d.franking_credit_cents ?? 0)
+      .run();
+    await this.audit(userId, "trust_distribution_recorded", JSON.stringify({ id, trust: d.trust_entity_id, fy }));
+    return id;
+  }
+
+  // ── SMSF (#140): fund members (phase + balances) + super contributions (src/lib/smsf.ts). ──
+  async recordSmsfMember(
+    userId: string,
+    m: { smsf_entity_id: string; person_id?: string | null; phase?: string | null; pension_balance_cents?: number; accumulation_balance_cents?: number; transfer_balance_cents?: number },
+  ): Promise<string> {
+    const id = crypto.randomUUID();
+    await this.env.DB.prepare(
+      `INSERT INTO smsf_members (id, user_id, smsf_entity_id, person_id, phase, pension_balance_cents, accumulation_balance_cents, transfer_balance_cents)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+      .bind(id, userId, m.smsf_entity_id, m.person_id ?? `person_self_${userId}`, m.phase ?? "accumulation", m.pension_balance_cents ?? 0, m.accumulation_balance_cents ?? 0, m.transfer_balance_cents ?? 0)
+      .run();
+    await this.audit(userId, "smsf_member_recorded", JSON.stringify({ id, smsf: m.smsf_entity_id, phase: m.phase }));
+    return id;
+  }
+
+  async recordSuperContribution(
+    userId: string,
+    c: { person_id?: string | null; fy?: string | null; type?: string | null; amount_cents: number },
+  ): Promise<string> {
+    const id = crypto.randomUUID();
+    const fy = c.fy ?? this.currentFyLabel();
+    await this.env.DB.prepare(
+      `INSERT INTO super_contributions (id, user_id, person_id, fy, type, amount_cents) VALUES (?, ?, ?, ?, ?, ?)`,
+    )
+      .bind(id, userId, c.person_id ?? `person_self_${userId}`, fy, c.type ?? "concessional", c.amount_cents ?? 0)
+      .run();
+    await this.audit(userId, "super_contribution_recorded", JSON.stringify({ id, type: c.type, fy }));
+    return id;
+  }
+
   /**
    * Income de-dup: surface likely duplicate pairs (a credit bank-line that looks like a documented
    * income row) and the already-confirmed links. SUGGEST ONLY — a credit is matched to an income
@@ -2137,20 +2218,21 @@ export class TaxAgent extends Agent<Env> {
       needs_review?: number;
       owned_by?: string | null;   // 0030: 'self' (default) | 'employer'
       reimbursed?: number;        // 0030: 1 => reimbursed, not depreciable
+      is_car?: number;            // 0040 (#142): a motor vehicle (logbook method + Div 40 cost-limit)
     },
   ): Promise<string> {
     const id = crypto.randomUUID();
     await this.env.DB.prepare(
       `INSERT INTO assets (id, user_id, person_id, property_id, entity_id, label, asset_class, cost_cents,
          acquired_date, effective_life_years, method, dv_rate_pct, div43_rate, is_second_hand, business_use_pct,
-         source_doc_id, status, needs_review, owned_by, reimbursed)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
+         source_doc_id, status, needs_review, owned_by, reimbursed, is_car)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`,
     )
       .bind(
         id, userId, `person_self_${userId}`, a.property_id ?? null, a.entity_id ?? null, a.label, a.asset_class,
         a.cost_cents, a.acquired_date, a.effective_life_years ?? null, a.method ?? null, a.dv_rate_pct ?? 200, a.div43_rate ?? null,
         a.is_second_hand ? 1 : 0, a.business_use_pct ?? 100, a.source_doc_id ?? null, a.needs_review ?? 0,
-        a.owned_by ?? "self", a.reimbursed ?? 0,
+        a.owned_by ?? "self", a.reimbursed ?? 0, a.is_car ?? 0,
       )
       .run();
     await this.audit(userId, "asset_created", JSON.stringify({ id, class: a.asset_class, cost: a.cost_cents }));

@@ -425,6 +425,27 @@ export interface CgtEventRow {
   discount_eligible: number | null;
 }
 
+// ESS (#141) + logbook (#142) entry rows.
+export interface EssGrantRow {
+  id: string;
+  employer_entity_id: string | null;
+  scheme_type: string;
+  grant_date: string | null;
+  taxing_point_date: string | null;
+  discount_cents: number;
+  market_value_cents: number | null;
+  ownership_gt_10pct: number;
+}
+export interface VehicleLogbookRow {
+  id: string;
+  asset_id: string | null;
+  fy: string;
+  business_km: number | null;
+  total_km: number | null;
+  running_costs_cents: number;
+  business_use_pct: number | null;
+}
+
 export interface Report {
   fy: string;
   start: string;

@@ -1698,6 +1698,40 @@ export class TaxAgent extends Agent<Env> {
     return id;
   }
 
+  /** #174: record a (draft/finalised) BAS period — the actual GST/PAYG figures that override the
+   * ledger-derived indicative BAS for that FY in gstTotals. Quillo never lodges; status is draft|finalised. */
+  async recordBasPeriod(
+    userId: string,
+    b: { entity_id?: string | null; period_start: string; period_end: string; output_gst_cents?: number; input_gst_cents?: number; payg_withholding_cents?: number; payg_instalment_cents?: number; status?: string },
+  ): Promise<string> {
+    if (!b.period_start || !b.period_end) throw new Error("period_start and period_end are required");
+    const id = crypto.randomUUID();
+    await this.env.DB.prepare(
+      `INSERT INTO bas_periods (id, user_id, entity_id, period_start, period_end, output_gst_cents, input_gst_cents, payg_withholding_cents, payg_instalment_cents, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+      .bind(id, userId, b.entity_id ?? null, b.period_start, b.period_end, b.output_gst_cents ?? 0, b.input_gst_cents ?? 0, b.payg_withholding_cents ?? 0, b.payg_instalment_cents ?? 0, b.status === "finalised" ? "finalised" : "draft")
+      .run();
+    await this.audit(userId, "bas_period_recorded", JSON.stringify({ id, period_start: b.period_start, period_end: b.period_end }));
+    return id;
+  }
+
+  /** #174: record a PAYG income-tax instalment for an FY quarter (informational; never in the position). */
+  async recordPaygInstalment(
+    userId: string,
+    p: { entity_id?: string | null; fy?: string | null; quarter?: number | null; instalment_cents: number; basis?: string | null },
+  ): Promise<string> {
+    const id = crypto.randomUUID();
+    const fy = p.fy ?? this.currentFyLabel();
+    await this.env.DB.prepare(
+      `INSERT INTO payg_instalments (id, user_id, entity_id, fy, quarter, instalment_cents, basis) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    )
+      .bind(id, userId, p.entity_id ?? null, fy, p.quarter ?? null, p.instalment_cents ?? 0, p.basis ?? "ato_amount")
+      .run();
+    await this.audit(userId, "payg_instalment_recorded", JSON.stringify({ id, fy, quarter: p.quarter }));
+    return id;
+  }
+
   /**
    * Income de-dup: surface likely duplicate pairs (a credit bank-line that looks like a documented
    * income row) and the already-confirmed links. SUGGEST ONLY — a credit is matched to an income

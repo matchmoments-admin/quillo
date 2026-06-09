@@ -159,6 +159,7 @@ export interface IncomeActivity {
   entity_id: string | null;
   activity_type: string; // salary_wages|rental_property|business|investment|private
   property_id: string | null;
+  occupation_scope?: string | null;
   label: string | null;
   fy: string | null;
 }
@@ -381,6 +382,26 @@ export interface GstPosition {
   output_gst_cents: number;
   input_gst_cents: number;
   net_gst_cents: number;
+  source?: "recorded" | "ledger";
+}
+export interface BasPeriodRow {
+  id: string;
+  entity_id: string | null;
+  period_start: string;
+  period_end: string;
+  output_gst_cents: number;
+  input_gst_cents: number;
+  payg_withholding_cents: number;
+  payg_instalment_cents: number;
+  status: string;
+}
+export interface PaygInstalmentRow {
+  id: string;
+  entity_id: string | null;
+  fy: string;
+  quarter: number | null;
+  instalment_cents: number;
+  basis: string | null;
 }
 export interface CarLogbookPosition {
   business_use_pct: number;
@@ -470,6 +491,14 @@ export interface SmsfMemberRow {
   transfer_balance_cents: number;
 }
 
+export interface SuperContributionRow {
+  id: string;
+  person_id: string | null;
+  fy: string;
+  type: string; // concessional | non_concessional
+  amount_cents: number;
+}
+
 export interface Report {
   fy: string;
   start: string;
@@ -494,6 +523,7 @@ export interface Report {
   capital_gains?: CgtPortfolioResult;   // #138 — added to taxable_position_cents
   ess?: EssAssessable;                  // #141 — assessable discount added to taxable_position_cents
   gst?: GstPosition;                    // #137 — indicative BAS (separate from income tax)
+  payg_instalments_cents?: number;      // #174 — total PAYG instalments recorded for the FY (informational)
   car_logbook?: CarLogbookPosition;     // #142 — logbook vs cents-per-km (informational)
   trust?: TrustTotals;                  // #139 — assessable distributions added to taxable_position_cents
   smsf_funds?: SmsfFundPosition[];      // #140 — per-fund position (separate taxpayer)

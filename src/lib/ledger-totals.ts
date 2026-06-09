@@ -303,6 +303,19 @@ function auV1Thresholds(fy: string): Record<string, number> | undefined {
 
 export interface GstPosition extends BasNet {
   registered: boolean;
+  source?: "recorded" | "ledger"; // "recorded" = summed from user-entered bas_periods; "ledger" = derived from income/gst_cents
+}
+
+/**
+ * Choose the indicative BAS figures: a user's recorded bas_periods for the FY WIN over the ledger-
+ * derived estimate (they're the actual lodged/draft numbers); fall back to the ledger when none. Pure
+ * + unit-tested so the override precedence can't silently regress.
+ */
+export function basPositionFrom(recorded: { n: number; output_gst_cents: number; input_gst_cents: number } | null, ledger: BasNet): BasNet & { source: "recorded" | "ledger" } {
+  if (recorded && recorded.n > 0) {
+    return { output_gst_cents: recorded.output_gst_cents, input_gst_cents: recorded.input_gst_cents, net_gst_cents: recorded.output_gst_cents - recorded.input_gst_cents, source: "recorded" };
+  }
+  return { ...ledger, source: "ledger" };
 }
 
 /**
@@ -454,9 +467,29 @@ export async function gstTotals(env: Env, userId: string, startYear: number): Pr
     const sales = (await env.DB.prepare(`SELECT COALESCE(SUM(COALESCE(amount_aud_cents, gross_cents)),0) AS s FROM income WHERE user_id = ? AND fy = ? AND income_type = 'business'`).bind(userId, fy).first<{ s: number }>())?.s ?? 0;
     // Input credits: GST captured on countable business inputs this FY.
     const inputs = (await env.DB.prepare(`SELECT COALESCE(SUM(gst_cents),0) AS g FROM transactions WHERE user_id = ? AND txn_date >= ? AND txn_date <= ? AND bucket IN ('company','payg') AND ${COUNTABLE}`).bind(userId, start, end).first<{ g: number }>())?.g ?? 0;
-    return { registered: true, ...computeBasNet(sales, inputs) };
+    // User-entered BAS periods for the FY WIN over the ledger estimate (the actual lodged/draft figures).
+    const recorded = await env.DB.prepare(
+      `SELECT COUNT(*) AS n, COALESCE(SUM(output_gst_cents),0) AS output_gst_cents, COALESCE(SUM(input_gst_cents),0) AS input_gst_cents
+         FROM bas_periods WHERE user_id = ? AND period_start >= ? AND period_end <= ?`,
+    ).bind(userId, start, end).first<{ n: number; output_gst_cents: number; input_gst_cents: number }>();
+    return { registered: true, ...basPositionFrom(recorded, computeBasNet(sales, inputs)) };
   } catch (e) {
     if (/no such table|no such column/i.test((e as Error).message)) return notRegistered;
+    throw e;
+  }
+}
+
+/**
+ * #174: total PAYG instalments the user recorded for the FY (pre-payments of income tax toward their
+ * own return). Informational only — NEVER added to taxable_position (it's a payment, not income/a
+ * deduction). Pre-table / none → 0 (report byte-identical). Flag-gated by the caller (gst_bas).
+ */
+export async function paygInstalmentsTotal(env: Env, userId: string, startYear: number): Promise<number> {
+  const fy = fyLabel(startYear);
+  try {
+    return (await env.DB.prepare(`SELECT COALESCE(SUM(instalment_cents),0) AS c FROM payg_instalments WHERE user_id = ? AND fy = ?`).bind(userId, fy).first<{ c: number }>())?.c ?? 0;
+  } catch (e) {
+    if (/no such table|no such column/i.test((e as Error).message)) return 0;
     throw e;
   }
 }

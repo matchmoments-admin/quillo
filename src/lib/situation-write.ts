@@ -367,7 +367,7 @@ export async function getFySignoff(env: Env, userId: string, fy: number): Promis
     .first<{ signed_off_at: string }>();
 }
 
-export async function deleteRow(env: Env, userId: string, table: "properties" | "entities" | "user_rules" | "accounts" | "persons" | "income" | "assets" | "loans_properties" | "capital_loss_carryins" | "depreciation_opening_balances" | "property_owners" | "entity_roles" | "cgt_assets" | "cgt_events" | "ess_grants" | "vehicle_logbooks" | "trust_distributions" | "smsf_members" | "super_contributions", id: string): Promise<void> {
+export async function deleteRow(env: Env, userId: string, table: "properties" | "entities" | "user_rules" | "accounts" | "persons" | "income" | "assets" | "loans_properties" | "capital_loss_carryins" | "depreciation_opening_balances" | "property_owners" | "entity_roles" | "cgt_assets" | "cgt_events" | "ess_grants" | "vehicle_logbooks" | "trust_distributions" | "smsf_members" | "super_contributions" | "income_activities" | "bas_periods" | "payg_instalments", id: string): Promise<void> {
   // table is from a fixed allowlist (never user input) — safe to interpolate.
   await env.DB.prepare(`DELETE FROM ${table} WHERE id = ? AND user_id = ?`).bind(id, userId).run();
 }
@@ -402,7 +402,30 @@ export async function listEntityRoles(env: Env, userId: string) {
 }
 
 export async function listIncomeActivities(env: Env, userId: string) {
-  return (await env.DB.prepare(`SELECT id, entity_id, activity_type, property_id, label, fy FROM income_activities WHERE user_id = ? ORDER BY activity_type, label`).bind(userId).all()).results ?? [];
+  return (await env.DB.prepare(`SELECT id, entity_id, activity_type, property_id, occupation_scope, label, fy FROM income_activities WHERE user_id = ? ORDER BY activity_type, label`).bind(userId).all()).results ?? [];
+}
+
+/**
+ * Manually create an income activity (the activity spine). Mirrors the auto-seed in addEntity/addProperty
+ * but lets a sole trader name a business activity (#155) — e.g. a rideshare/freelance activity on their
+ * individual entity — and tag an occupation_scope. Capture-only: no position math change (the activity
+ * just gives attributions a target and surfaces occupation context). occupation_scope is stored but not
+ * yet wired into claimability (persons.occupation still drives that — #156).
+ */
+export async function addIncomeActivity(
+  env: Env,
+  userId: string,
+  a: { entity_id?: string | null; activity_type?: string; property_id?: string | null; occupation_scope?: string | null; label?: string | null; fy?: string | null },
+): Promise<string> {
+  const id = uid();
+  const ACTIVITY_TYPES = ["salary_wages", "rental_property", "business", "investment", "private"];
+  const activityType = a.activity_type && ACTIVITY_TYPES.includes(a.activity_type) ? a.activity_type : "business";
+  await env.DB.prepare(
+    `INSERT INTO income_activities (id, user_id, entity_id, activity_type, property_id, occupation_scope, fy, label) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  )
+    .bind(id, userId, a.entity_id ?? null, activityType, a.property_id ?? null, a.occupation_scope ?? null, a.fy ?? null, a.label ?? null)
+    .run();
+  return id;
 }
 
 // ── Ingest keys (devices) ──────────────────────────────────────────────────

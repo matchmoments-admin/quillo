@@ -1,4 +1,4 @@
-import type { Txn, TxnDetail, Situation, SituationDraft, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse, UsageData, StatementInfo, IncomeRow, DocRow, AssetRow, ScheduleRow, ChecklistItem, ClaimSuggestion, FilingReadiness, ReviewSummary, Progress, AdminTenant, AdminOverview, ClaimReview, OccupationRulesDraft, OccupationRuleCandidate, MovementSweep, BatchResult, ClarifyQuestion, ClarifyAnswer, ClaimMatch, AccountantSummary, SuggestedDeduction, WorkUse, CapitalLoss, OpeningDepreciation, AttributionState, AttributionInput, AttributionRow, IncomeActivity, PropertyOwner, EntityRole, CgtAssetRow, CgtEventRow, EssGrantRow, VehicleLogbookRow, TrustDistributionRow, SmsfMemberRow } from "./types";
+import type { Txn, TxnDetail, Situation, SituationDraft, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse, UsageData, StatementInfo, IncomeRow, DocRow, AssetRow, ScheduleRow, ChecklistItem, ClaimSuggestion, FilingReadiness, ReviewSummary, Progress, AdminTenant, AdminOverview, ClaimReview, OccupationRulesDraft, OccupationRuleCandidate, MovementSweep, BatchResult, ClarifyQuestion, ClarifyAnswer, ClaimMatch, AccountantSummary, SuggestedDeduction, WorkUse, CapitalLoss, OpeningDepreciation, AttributionState, AttributionInput, AttributionRow, IncomeActivity, PropertyOwner, EntityRole, CgtAssetRow, CgtEventRow, EssGrantRow, VehicleLogbookRow, TrustDistributionRow, SmsfMemberRow, SuperContributionRow, BasPeriodRow, PaygInstalmentRow } from "./types";
 
 // Clerk session token getter, wired from <TokenBridge> inside ClerkProvider (main.tsx).
 // Clerk tokens are short-lived, so we fetch a fresh one per request (getToken caches/refreshes).
@@ -236,6 +236,15 @@ export const api = {
   smsfMembers: () => get<{ smsf_members: SmsfMemberRow[] }>("/api/smsf-members").then((r) => r.smsf_members),
   addSmsfMember: (b: Partial<SmsfMemberRow>) => post<{ id: string }>("/api/smsf-members", b),
   deleteSmsfMember: (id: string) => send<{ ok: boolean }>("DELETE", `/api/smsf-members/${id}`),
+  superContributions: () => get<{ super_contributions: SuperContributionRow[] }>("/api/super-contributions").then((r) => r.super_contributions),
+  addSuperContribution: (b: Partial<SuperContributionRow>) => post<{ id: string }>("/api/super-contributions", b),
+  deleteSuperContribution: (id: string) => send<{ ok: boolean }>("DELETE", `/api/super-contributions/${id}`),
+  basPeriods: () => get<{ bas_periods: BasPeriodRow[] }>("/api/bas-periods").then((r) => r.bas_periods),
+  addBasPeriod: (b: Partial<BasPeriodRow>) => post<{ id: string }>("/api/bas-periods", b),
+  deleteBasPeriod: (id: string) => send<{ ok: boolean }>("DELETE", `/api/bas-periods/${id}`),
+  paygInstalments: () => get<{ payg_instalments: PaygInstalmentRow[] }>("/api/payg-instalments").then((r) => r.payg_instalments),
+  addPaygInstalment: (b: Partial<PaygInstalmentRow>) => post<{ id: string }>("/api/payg-instalments", b),
+  deletePaygInstalment: (id: string) => send<{ ok: boolean }>("DELETE", `/api/payg-instalments/${id}`),
   incomeMatches: () =>
     get<{
       suggestions: { txn_id: string; merchant: string | null; txn_amount_cents: number; txn_date: string | null; bucket: string | null; income_id: string; income_type: string; income_gross_cents: number; income_net_cents: number | null; income_date: string | null }[];
@@ -334,6 +343,8 @@ export const api = {
     send<{ ok: boolean; attributions: AttributionRow[] }>("PUT", `/api/transactions/${txnId}/attributions`, body),
   clearTxnAttributions: (txnId: string) => send<{ ok: boolean }>("DELETE", `/api/transactions/${txnId}/attributions`),
   incomeActivities: () => get<{ income_activities: IncomeActivity[] }>("/api/income-activities").then((r) => r.income_activities),
+  addIncomeActivity: (b: Partial<IncomeActivity>) => post<{ id: string }>("/api/income-activities", b),
+  deleteIncomeActivity: (id: string) => send<{ ok: boolean }>("DELETE", `/api/income-activities/${id}`),
   propertyOwners: () => get<{ property_owners: PropertyOwner[] }>("/api/property-owners").then((r) => r.property_owners),
   addPropertyOwner: (b: { property_id: string; person_id: string; ownership_pct?: number }) => post<{ id: string }>("/api/property-owners", b),
   deletePropertyOwner: (id: string) => send<{ ok: boolean }>("DELETE", `/api/property-owners/${id}`),

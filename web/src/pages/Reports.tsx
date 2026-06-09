@@ -152,6 +152,12 @@ export function Reports() {
                 <Stat label="GST credits (input)" value={money(data!.gst.input_gst_cents)} />
                 <Stat label={data!.gst.net_gst_cents >= 0 ? "Net GST payable" : "Net GST refund"} value={money(Math.abs(data!.gst.net_gst_cents))} />
               </div>
+              <p className="px-4 pb-3 text-xs text-muted">
+                {data!.gst.source === "recorded"
+                  ? "From the BAS periods you recorded (Settings)."
+                  : "Estimated from your ledger — record your actual BAS periods in Settings to override this."}
+                {data!.payg_instalments_cents ? ` PAYG instalments recorded this year: ${money(data!.payg_instalments_cents)} (pre-payments toward income tax — not part of your position).` : ""}
+              </p>
             </Card>
           )}
 

@@ -138,6 +138,8 @@ export const api = {
     get<{ summaries: { id: string; loan_account_id: string; fy: string; interest_cents: number; source: string; document_id: string | null }[] }>(`/api/loans/interest${fy != null ? `?fy=${fy}` : ""}`).then((r) => r.summaries),
   setLoanInterest: (accountId: string, b: { fy: number; interest_cents: number; source?: string; document_id?: string }) =>
     post<{ ok: boolean; interest_cents: number; source: string }>(`/api/loans/${accountId}/interest`, b),
+  loanInterestReview: (fy?: number) =>
+    get<{ loans: { loan_account_id: string; loan_name: string; properties: { id: string; label: string | null }[]; recorded_cents: number | null; source: string | null; estimate_cents: number | null }[] }>(`/api/loans/review${fy != null ? `?fy=${fy}` : ""}`).then((r) => r.loans),
   updateLoanProperty: (id: string, b: { deductible_interest_pct?: number }) =>
     send<{ ok: boolean }>("PUT", `/api/loans-properties/${id}`, b),
   deleteLoanProperty: (id: string) => send<{ ok: boolean }>("DELETE", `/api/loans-properties/${id}`),

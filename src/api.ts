@@ -502,6 +502,10 @@ export async function handleApi(
       const fyParam = url.searchParams.get("fy");
       return json({ summaries: await stub.listLoanInterest(uid, fyParam ? Number(fyParam) : undefined) });
     }
+    if (m === "GET" && id === "review") {
+      const fy = Number(url.searchParams.get("fy")) || currentFyStartYear();
+      return json({ loans: await stub.listLoanInterestReview(uid, fy) });
+    }
     if (m === "POST" && id && id !== "interest" && sub === "interest") {
       const b = (await req.json().catch(() => ({}))) as { fy?: unknown; interest_cents?: unknown; source?: unknown; document_id?: unknown };
       if (typeof b.fy !== "number" || typeof b.interest_cents !== "number") return json({ error: "fy and interest_cents are required" }, 400);

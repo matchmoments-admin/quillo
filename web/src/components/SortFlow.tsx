@@ -5,6 +5,7 @@ import { Card } from "./ui";
 import { useFeatures } from "../lib/features";
 import { MovementSweepCard } from "./MovementSweepCard";
 import { LoanSplitCard } from "./LoanSplitCard";
+import { LoanInterestCard } from "./LoanInterestCard";
 import { ClarifyCard } from "./ClarifyCard";
 import { SuggestedDeductions } from "./AccountantPassCard";
 
@@ -20,7 +21,7 @@ import { SuggestedDeductions } from "./AccountantPassCard";
  * cache the cards already populate. General information only.
  */
 
-type StepKey = "movements" | "loanSplit" | "clarify" | "suggestions";
+type StepKey = "movements" | "loanSplit" | "loanInterest" | "clarify" | "suggestions";
 
 export function SortFlow({ fy, hasAccountantPass }: { fy: number; hasAccountantPass: boolean }) {
   const { has } = useFeatures();
@@ -29,6 +30,7 @@ export function SortFlow({ fy, hasAccountantPass }: { fy: number; hasAccountantP
   // against the loan account (Accounts → loan → "Interest charged this FY"), so the split step is no
   // longer surfaced. The legacy loan_split engine stays intact as the fallback when v2 is off.
   const hasLoanSplit = has("loan_split") && !has("loan_interest_v2");
+  const hasLoanInterest = has("loan_interest_v2");
   // Which step the user manually expanded. Null = follow the derived priority order.
   const [override, setOverride] = useState<StepKey | null>(null);
   // Drop a manual expansion when the active FY changes — a step the user opened for one year's data
@@ -46,6 +48,12 @@ export function SortFlow({ fy, hasAccountantPass }: { fy: number; hasAccountantP
     queryFn: () => api.accountantSuggestions(fy),
     enabled: hasAccountantPass,
   });
+  // Loans tied to a rental property whose FY interest hasn't been confirmed yet (evidence-first model).
+  const loanInterest = useQuery({
+    queryKey: ["loan-interest-review", fy],
+    queryFn: () => api.loanInterestReview(fy),
+    enabled: hasLoanInterest,
+  });
 
   const ignorableCount = sweep.data?.ignorable.length ?? 0;
   const reviewCount = sweep.data?.property_loan_review.length ?? 0;
@@ -54,6 +62,8 @@ export function SortFlow({ fy, hasAccountantPass }: { fy: number; hasAccountantP
   const moveCount = ignorableCount + (hasLoanSplit ? 0 : reviewCount);
   const clarifyCount = clarify.data?.length ?? 0;
   const suggCount = suggestions.data?.length ?? 0;
+  // Count = loans linked to a rental property with NO recorded FY interest yet (the ones to confirm).
+  const loanInterestCount = (loanInterest.data ?? []).filter((l) => l.recorded_cents == null).length;
 
   // Step order = the order you work them. Clarify leads: the merchant-grouped, teach-once "bulk-clear"
   // is where most lines get sorted in the fewest taps (the proven order across Xero/QBO/MYOB — clear
@@ -66,6 +76,9 @@ export function SortFlow({ fy, hasAccountantPass }: { fy: number; hasAccountantP
   }
   if (hasLoanSplit) {
     steps.push({ key: "loanSplit", title: "Split loan interest", count: reviewCount, body: <LoanSplitCard /> });
+  }
+  if (hasLoanInterest) {
+    steps.push({ key: "loanInterest", title: "Confirm loan interest", count: loanInterestCount, body: <LoanInterestCard fy={fy} /> });
   }
   if (hasAccountantPass) {
     steps.push({

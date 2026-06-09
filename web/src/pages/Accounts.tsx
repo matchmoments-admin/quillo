@@ -451,8 +451,25 @@ function EditAccount({
   const [institution, setInstitution] = useState(account.institution ?? "");
   const [last4, setLast4] = useState(account.last4 ?? "");
   const [type, setType] = useState(account.type);
+  // Loan facts (0044): the interest-rate section tied to the account. FALLBACK estimate inputs only —
+  // actual deductible interest is sourced from the statement/lender summary (S4). Stored in cents;
+  // shown in dollars. Empty string ⇒ clear (null); only sent for loan accounts.
+  const [rate, setRate] = useState(account.interest_rate_pct != null ? String(account.interest_rate_pct) : "");
+  const [balance, setBalance] = useState(account.balance_cents != null ? String(account.balance_cents / 100) : "");
   const save = useMutation({
-    mutationFn: () => api.updateAccount(account.id, { name, institution, last4, type }),
+    mutationFn: () =>
+      api.updateAccount(account.id, {
+        name,
+        institution,
+        last4,
+        type,
+        ...(type === "loan"
+          ? {
+              interest_rate_pct: rate.trim() === "" ? null : Number(rate),
+              balance_cents: balance.trim() === "" ? null : Math.round(Number(balance) * 100),
+            }
+          : {}),
+      }),
     onSuccess: onSaved,
   });
   return (
@@ -479,10 +496,27 @@ function EditAccount({
             <option value="investment">Investment</option>
           </select>
         </label>
+        {type === "loan" && (
+          <>
+            <label className="w-24">
+              <span className="text-xs font-medium uppercase tracking-wide text-muted">Rate %</span>
+              <input value={rate} onChange={(e) => setRate(e.target.value)} inputMode="decimal" placeholder="6.25" className="mt-1 w-full rounded-lg border border-line px-3 py-2" />
+            </label>
+            <label className="w-32">
+              <span className="text-xs font-medium uppercase tracking-wide text-muted">Balance $</span>
+              <input value={balance} onChange={(e) => setBalance(e.target.value)} inputMode="decimal" placeholder="450000" className="mt-1 w-full rounded-lg border border-line px-3 py-2" />
+            </label>
+          </>
+        )}
         <Button onClick={() => save.mutate()} disabled={save.isPending || !name}>
           {save.isPending ? "Saving…" : "Save"}
         </Button>
       </div>
+      {type === "loan" && (
+        <p className="text-xs text-muted">
+          Used only as an indicative estimate when no statement figure is available — your actual deductible interest comes from your loan statements. General information only — not tax advice.
+        </p>
+      )}
 
       <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line pt-3">
         <label className="flex items-center gap-2 text-sm">

@@ -132,7 +132,9 @@ CREATE TABLE IF NOT EXISTS accounts (
   source         TEXT NOT NULL DEFAULT 'statement',   -- qbo_feed|statement|manual
   qbo_account_id TEXT,                               -- QBO AccountRef when source='qbo_feed'
   active         INTEGER NOT NULL DEFAULT 1,
-  created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  interest_rate_pct REAL,                            -- 0044: annual rate % (loan accounts; FALLBACK estimate only — actual interest comes from statements/lender summary in S4)
+  balance_cents     INTEGER                          -- 0044: current/avg loan balance for the rate×balance estimate
 );
 CREATE INDEX IF NOT EXISTS idx_acct_user ON accounts(user_id, active);
 

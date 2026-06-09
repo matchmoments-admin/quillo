@@ -152,6 +152,22 @@ CREATE TABLE IF NOT EXISTS loans_properties (
 CREATE INDEX IF NOT EXISTS idx_loanprop_account ON loans_properties(user_id, loan_account_id);
 CREATE INDEX IF NOT EXISTS idx_loanprop_property ON loans_properties(user_id, property_id);
 
+-- 0045: per-FY loan-interest EVIDENCE — the actual interest charged on a loan for a financial year
+-- (lender annual summary or parsed statement). The canonical figure for the evidence-first loan
+-- model; the account rate (0044) is only the fallback estimate. One row per (tenant, loan, FY).
+CREATE TABLE IF NOT EXISTS loan_interest_summaries (
+  id              TEXT PRIMARY KEY,
+  user_id         TEXT NOT NULL,
+  loan_account_id TEXT NOT NULL,                     -- accounts.id (type='loan')
+  fy              TEXT NOT NULL,                      -- FY start year as a string ("2024")
+  interest_cents  INTEGER NOT NULL,                   -- actual interest charged for the FY (evidenced)
+  source          TEXT NOT NULL DEFAULT 'lender_summary', -- lender_summary | statement_parsed | estimate
+  document_id     TEXT,                               -- documents.id — the evidence in R2
+  created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (user_id, loan_account_id, fy)
+);
+CREATE INDEX IF NOT EXISTS idx_loanint_user_fy ON loan_interest_summaries(user_id, fy);
+
 -- 0028: soft, per-FY sign-off (user's own "ready to hand off" attestation; re-openable, never a lock).
 CREATE TABLE IF NOT EXISTS fy_signoff (
   user_id       TEXT NOT NULL,

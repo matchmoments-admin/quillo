@@ -493,6 +493,26 @@ export async function handleApi(
     }
   }
 
+  // ── Loan interest evidence (flag loan_interest_v2) — actual FY interest per loan ──────
+  // GET  /api/loans/interest?fy=               → recorded summaries (capture-only; not in the position yet)
+  // POST /api/loans/:accountId/interest        { fy, interest_cents, source?, document_id? } → upsert
+  if (resource === "loans") {
+    if (!featureOn(env, "loan_interest_v2")) return json({ error: "not available" }, 404);
+    if (m === "GET" && id === "interest") {
+      const fyParam = url.searchParams.get("fy");
+      return json({ summaries: await stub.listLoanInterest(uid, fyParam ? Number(fyParam) : undefined) });
+    }
+    if (m === "POST" && id && id !== "interest" && sub === "interest") {
+      const b = (await req.json().catch(() => ({}))) as { fy?: unknown; interest_cents?: unknown; source?: unknown; document_id?: unknown };
+      if (typeof b.fy !== "number" || typeof b.interest_cents !== "number") return json({ error: "fy and interest_cents are required" }, 400);
+      try {
+        return json(await stub.setLoanInterest(uid, id, b.fy, b.interest_cents, typeof b.source === "string" ? b.source : undefined, typeof b.document_id === "string" ? b.document_id : undefined));
+      } catch (e) {
+        return json({ error: (e as Error).message }, 400);
+      }
+    }
+  }
+
   // ── Statement import (CSV) ─────────────────────────────────────────────────
   if (resource === "statements") {
     // POST /api/statements (multipart: file + account_id) → parse + preview (no commit yet)

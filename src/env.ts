@@ -125,6 +125,8 @@ export interface TaxAgentRpc {
   dismissClarify(userId: string, questionId: string): Promise<{ ok: boolean }>;
   previewSiblings(userId: string, seedTxnId: string): Promise<{ n: number; total_cents: number; group_key: string | null }>;
   applyToSiblings(userId: string, seedTxnId: string, edit: { bucket?: string; ato_label?: string; property_id?: string }, opts?: { learnRule?: boolean }): Promise<{ applied: number; batch_id: string; rule_created: boolean; group_key: string | null }>;
+  setLoanInterest(userId: string, loanAccountId: string, fy: number, interestCents: number, source?: string, documentId?: string): Promise<{ ok: true; interest_cents: number; source: string }>;
+  listLoanInterest(userId: string, fy?: number): Promise<{ id: string; loan_account_id: string; fy: string; interest_cents: number; source: string; document_id: string | null }[]>;
   runAccountantPass(userId: string, startYear: number): Promise<import("./agent").AccountantSummary>;
   confirmSuggestedDeduction(userId: string, txnId: string): Promise<{ ok: boolean }>;
   draftOccupationRules(userId: string, occupation: string): Promise<import("./extract").OccupationRulesDraft>;

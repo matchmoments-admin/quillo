@@ -1,4 +1,39 @@
 import type { Progress } from "./progress";
+import type { Report } from "./report";
+
+/**
+ * Compact, model-facing summary of the user's computed FY position for "Ask Quillo". Headline figures
+ * FIRST (so nothing important is ever truncated), then the breakdowns, then only the optional sections
+ * that are present. These are AGGREGATES (cents + bucket/label names) — no TFN/card/BSB digit strings —
+ * so it is NOT run through redact() (which would mangle the very *_cents numbers the answer must cite);
+ * the situation text, which can carry names, is redacted separately by the caller. Pure (unit-tested).
+ */
+export function summariseReportForAsk(r: Report): string {
+  const o: Record<string, unknown> = {
+    fy: r.fy,
+    indicative_taxable_position_cents: r.taxable_position_cents,
+    total_income_cents: r.total_income_cents,
+    tracked_deductions_cents: r.total_deductions_cents,
+    confirmed_deductible_cents: r.resolved_deductible_cents,
+    depreciation_cents: r.depreciation_cents,
+    gst_credits_cents: r.gst_credits_cents,
+    undated_cents: r.undated.total_cents,
+    deductions_by_category: r.deduction_breakdown.map((d) => ({ bucket: d.bucket, ato_label: d.ato_label, n: d.n, total_cents: d.total_cents, deductibility: (d as { deductibility?: string }).deductibility })),
+    income_by_type: r.income_by_bucket.map((i) => ({ bucket: i.bucket, n: i.n, total_cents: i.total_cents })),
+    per_property: r.per_property,
+  };
+  if (r.work_method) o.work_from_home_and_car = r.work_method;
+  if (r.capital_gains) o.capital_gains = r.capital_gains;
+  if (r.ess) o.employee_share_scheme = r.ess;
+  if (r.gst) o.gst_bas = r.gst;
+  if (r.trust) o.trust_distributions = r.trust;
+  if (r.car_logbook) o.car_logbook = r.car_logbook;
+  if (r.smsf_funds) o.smsf_funds = r.smsf_funds;
+  if (r.company_positions) o.company_positions = r.company_positions;
+  // Aggregated, so bounded by the count of distinct (bucket,ato_label) pairs + properties — but cap
+  // defensively so a pathological tenant can't blow the token budget.
+  return JSON.stringify(o).slice(0, 10000);
+}
 
 // One-line purpose per tab (mirrors the static web tabGuides meanings) — grounds the model so the
 // "Guide me" steps are on-topic for the screen the user is actually on.

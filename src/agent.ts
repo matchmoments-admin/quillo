@@ -13,7 +13,7 @@ import { getLLM, type LLM } from "./llm";
 import { extractReceipt, extractReceipts, extractFromText, extractColumnMap, extractStatement, extractBatch, extractSituationDraft, extractOccupationRules, extractGuide, extractAnswer, classifyDocument, extractPayslip, extractAgentStatement, extractDepreciationSchedule, extractDividend, batchParams, parseBatchMessage, mapBatchItems, type Extracted, type ExtractedStatement, type SituationDraft, type OccupationRulesDraft, type AnswerResult } from "./extract";
 import { fyForDate, buildReport } from "./lib/report";
 import { getProgress } from "./lib/progress";
-import { buildGuidePrompt, buildAskPrompt } from "./lib/guide";
+import { buildGuidePrompt, buildAskPrompt, summariseReportForAsk } from "./lib/guide";
 import { fyLabel, fyBounds } from "./lib/ledger-totals";
 import { assessReadiness, type FilingReadiness, type FilingReadinessSignals } from "./lib/readiness";
 import { rollSchedule, balancingAdjustment, fyStartYearOf, isLowCostAsset, looksLikePersonalTransfer, assetDepreciatesForTaxpayer, type DepAsset } from "./lib/depreciation";
@@ -4395,10 +4395,11 @@ export class TaxAgent extends Agent<Env> {
       getSituation(this.env, userId, profile),
       buildReport(this.env, userId, fy),
     ]);
-    // Pass the whole computed position as JSON (aggregates, not raw lines) — redacted + capped so PII
-    // never leaves and token cost stays bounded.
-    const positionText = redact(JSON.stringify(report)).slice(0, 8000);
-    const { system, user } = buildAskPrompt(q.slice(0, 600), redact(renderSituation(situation)), positionText);
+    // The question is free text → redact (TFN/card/BSB) BEFORE it reaches the model (APP-8), THEN cap —
+    // redact-then-slice so a truncated token can't defeat the regex. The position is a curated summary
+    // of aggregates (no PII digit strings), so it is NOT redacted (redact would mangle the *_cents the
+    // answer must cite). The situation text can carry names, so it stays redacted.
+    const { system, user } = buildAskPrompt(redact(q).slice(0, 600), redact(renderSituation(situation)), summariseReportForAsk(report));
     const result = await extractAnswer(llm, system, user);
     await this.audit(userId, "ask", JSON.stringify({ q_len: q.length, fy }));
     return result;

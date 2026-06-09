@@ -265,7 +265,7 @@ export async function handleApi(
     const { question, fy } = (await req.json().catch(() => ({}))) as { question?: string; fy?: number };
     if (!question || !question.trim()) return json({ error: "missing question" }, 400);
     try {
-      return json(await stub.askQuestion(uid, question, Number(fy) || currentFyStartYear()));
+      return json(await stub.askQuestion(uid, question, Math.trunc(Number(fy)) || currentFyStartYear()));
     } catch (e) {
       const msg = (e as Error).message;
       if (msg === "consent_required") return json({ error: "consent_required" }, 403);

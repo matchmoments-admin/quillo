@@ -460,6 +460,16 @@ export interface TrustDistributionRow {
   franking_credit_cents: number;
 }
 
+export interface SmsfMemberRow {
+  id: string;
+  smsf_entity_id: string;
+  person_id: string | null;
+  phase: string; // accumulation | pension | transition
+  pension_balance_cents: number;
+  accumulation_balance_cents: number;
+  transfer_balance_cents: number;
+}
+
 export interface Report {
   fy: string;
   start: string;

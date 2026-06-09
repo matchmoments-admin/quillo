@@ -110,6 +110,14 @@ export function Settings() {
         </Section>
       )}
 
+      {/* SMSF members + balances (#140) — drives the ECPI exempt fraction. Fund earnings are recorded
+          as income against the SMSF entity (Income page). SMSF is a separate taxpayer. */}
+      {has("smsf_engine") && (
+        <Section title={<>SMSF members &amp; balances <InfoTip tip="A self-managed super fund is a separate taxpayer. Add each member's pension- and accumulation-phase balances so Quillo can compute the ECPI exempt fraction (the share of fund income that's tax-exempt in pension phase). Record the fund's earnings as income against the SMSF entity. General information — confirm with a registered tax/SMSF agent." /></>}>
+          <SmsfMembers funds={s.entities.filter((e) => e.kind === "smsf")} />
+        </Section>
+      )}
+
       {/* Rules */}
       <Section title={<>Per-user rules <InfoTip k="user_rules" /></>}>
         {s.rules.map((r) => (
@@ -766,6 +774,61 @@ function AddTrustDistribution({ trusts, onDone }: { trusts: { id: string; name: 
         <input className={input} inputMode="decimal" placeholder="Franking $ (optional)" value={franking} onChange={(e) => setFranking(e.target.value)} />
       </div>
       <button className={btn} onClick={() => add.mutate()} disabled={add.isPending || !amount || !trustId}>{add.isPending ? "Saving…" : "Save distribution"}</button>
+      {add.error && <p className="text-sm text-danger">{(add.error as Error).message}</p>}
+    </div>
+  );
+}
+
+const SMSF_PHASES = ["accumulation", "pension", "transition"] as const;
+
+function SmsfMembers({ funds }: { funds: { id: string; name: string | null }[] }) {
+  const qc = useQueryClient();
+  const members = useQuery({ queryKey: ["smsf-members"], queryFn: () => api.smsfMembers() });
+  const [adding, setAdding] = useState(false);
+  const invalidate = () => { qc.invalidateQueries({ queryKey: ["smsf-members"] }); qc.invalidateQueries({ queryKey: ["report"] }); };
+  if (!funds.length) return <Empty>Add an SMSF entity above first (Entities → kind "smsf"), then record each member's balances.</Empty>;
+  const fundName = (id: string) => funds.find((f) => f.id === id)?.name ?? "SMSF";
+  return (
+    <div className="space-y-2">
+      {(members.data ?? []).map((mb) => (
+        <Row
+          key={mb.id}
+          label={`${fundName(mb.smsf_entity_id)} · ${mb.phase} · pension ${money(mb.pension_balance_cents)} / accum ${money(mb.accumulation_balance_cents)}`}
+          onDelete={() => api.deleteSmsfMember(mb.id).then(invalidate)}
+        />
+      ))}
+      {adding ? (
+        <AddSmsfMember funds={funds} onDone={() => { setAdding(false); invalidate(); }} />
+      ) : (
+        <button className={btn} onClick={() => setAdding(true)}>+ Add member</button>
+      )}
+    </div>
+  );
+}
+
+function AddSmsfMember({ funds, onDone }: { funds: { id: string; name: string | null }[]; onDone: () => void }) {
+  const [fundId, setFundId] = useState(funds[0]?.id ?? "");
+  const [phase, setPhase] = useState<string>("accumulation");
+  const [pension, setPension] = useState("");
+  const [accum, setAccum] = useState("");
+  const add = useMutation({
+    mutationFn: () => api.addSmsfMember({
+      smsf_entity_id: fundId,
+      phase,
+      pension_balance_cents: Math.round(parseFloat(pension || "0") * 100),
+      accumulation_balance_cents: Math.round(parseFloat(accum || "0") * 100),
+    }),
+    onSuccess: onDone,
+  });
+  return (
+    <div className="space-y-2 rounded-lg border border-line p-3">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <select className={input} value={fundId} onChange={(e) => setFundId(e.target.value)}>{funds.map((f) => <option key={f.id} value={f.id}>{f.name ?? "SMSF"}</option>)}</select>
+        <select className={input} value={phase} onChange={(e) => setPhase(e.target.value)}>{SMSF_PHASES.map((p) => <option key={p} value={p}>{p}</option>)}</select>
+        <input className={input} inputMode="decimal" placeholder="Pension balance $" value={pension} onChange={(e) => setPension(e.target.value)} />
+        <input className={input} inputMode="decimal" placeholder="Accumulation balance $" value={accum} onChange={(e) => setAccum(e.target.value)} />
+      </div>
+      <button className={btn} onClick={() => add.mutate()} disabled={add.isPending || !fundId}>{add.isPending ? "Saving…" : "Save member"}</button>
       {add.error && <p className="text-sm text-danger">{(add.error as Error).message}</p>}
     </div>
   );

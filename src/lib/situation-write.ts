@@ -126,6 +126,7 @@ function entityTypeForKind(kind: string): string {
     case "employment": return "payg_employment";
     case "company": return "company";
     case "trust": return "trust";
+    case "smsf": return "smsf";
     default: return "individual";
   }
 }

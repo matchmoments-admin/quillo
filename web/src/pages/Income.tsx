@@ -373,6 +373,12 @@ function AddIncomeForm({ fy, onDone }: { fy: string; onDone: () => void }) {
   const [withheld, setWithheld] = useState("");
   const [franking, setFranking] = useState("");
   const [date, setDate] = useState("");
+  const [entityId, setEntityId] = useState("");
+  // Entities you can attribute income to (company / trust / SMSF). Default "" = you (the individual).
+  // SMSF/company/trust are separate taxpayers, so attributing fund earnings here keeps them off your
+  // personal position and feeds the per-entity reads (e.g. smsfFundPositions sums income by entity_id).
+  const { data: sit } = useQuery({ queryKey: ["situation"], queryFn: () => api.situation() });
+  const entities = (sit?.entities ?? []).filter((e) => e.kind === "company" || e.kind === "trust" || e.kind === "smsf");
   const add = useMutation({
     mutationFn: () =>
       api.addIncome({
@@ -382,6 +388,7 @@ function AddIncomeForm({ fy, onDone }: { fy: string; onDone: () => void }) {
         withholding_cents: Math.round(parseFloat(withheld || "0") * 100),
         franking_credit_cents: Math.round(parseFloat(franking || "0") * 100),
         txn_date: date || null,
+        entity_id: entityId || null,
       }),
     onSuccess: onDone,
   });
@@ -393,6 +400,14 @@ function AddIncomeForm({ fy, onDone }: { fy: string; onDone: () => void }) {
             {INCOME_TYPES.map((t) => <option key={t} value={t}>{TYPE_LABEL[t]}</option>)}
           </select>
         </label>
+        {entities.length > 0 && (
+          <label className="text-sm">Attribute to
+            <select className="mt-1 w-full rounded-lg border border-line px-3 py-2 text-sm" value={entityId} onChange={(e) => setEntityId(e.target.value)}>
+              <option value="">Me (individual)</option>
+              {entities.map((e) => <option key={e.id} value={e.id}>{e.name ?? e.kind}</option>)}
+            </select>
+          </label>
+        )}
         <label className="text-sm">Gross ($)<Input className="mt-1 w-full" inputMode="decimal" value={gross} onChange={(e) => setGross(e.target.value)} /></label>
         <label className="text-sm">Date<Input className="mt-1 w-full" type="date" value={date} onChange={(e) => setDate(e.target.value)} /></label>
         <label className="text-sm">PAYG withheld ($)<Input className="mt-1 w-full" inputMode="decimal" value={withheld} onChange={(e) => setWithheld(e.target.value)} /></label>

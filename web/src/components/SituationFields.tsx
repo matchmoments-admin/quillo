@@ -7,7 +7,7 @@ import { InfoTip } from "./ui";
 // identical controls (single source of truth for the situation fields the categoriser reads).
 export const fieldInput = "rounded-lg border border-line bg-card px-3 py-2 text-sm";
 
-export const ENTITY_KINDS = ["company", "employment", "novated_lease", "individual", "trust"] as const;
+export const ENTITY_KINDS = ["company", "employment", "novated_lease", "individual", "trust", "smsf"] as const;
 
 // Hand-mirror of PROPERTY_STATUSES in src/lib/taxonomy.ts — keep in sync. Two relationship groups:
 // "own" (landlord/occupier) vs "rent" (tenant). Tenant statuses have no cost base / CGT / ownership %.
@@ -63,6 +63,7 @@ function namePlaceholder(kind: string): string {
   if (kind === "employment") return "Employer name";
   if (kind === "novated_lease") return "Label e.g. Tesla lease";
   if (kind === "trust") return "Trust name";
+  if (kind === "smsf") return "SMSF fund name";
   return "Name";
 }
 
@@ -115,6 +116,19 @@ export function EntityFields({ value, onChange }: { value: EntityValue; onChange
             />
             GST registered (lets the agent claim GST credits) <InfoTip k="gst_registered" />
           </label>
+        </div>
+      )}
+
+      {value.kind === "smsf" && (
+        <div className="flex flex-col gap-1 pl-1 text-sm">
+          <input
+            className={`${fieldInput} w-56 ${abnBad ? "border-danger" : ""}`}
+            placeholder="Fund ABN (optional)"
+            value={abn}
+            onChange={(e) => setDetail({ abn: e.target.value })}
+          />
+          {abnBad && <span className="mt-0.5 text-xs text-danger">Doesn't look like a valid ABN — double-check.</span>}
+          <span className="text-xs text-muted">A self-managed super fund is a separate taxpayer — its income never touches your personal position. Add members &amp; balances below to compute the ECPI exempt fraction. General information — confirm with a registered tax agent.</span>
         </div>
       )}
 

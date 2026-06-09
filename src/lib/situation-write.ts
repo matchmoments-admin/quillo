@@ -231,14 +231,27 @@ export async function updateAccount(
   env: Env,
   userId: string,
   id: string,
-  a: { institution?: string; name?: string; last4?: string; type?: string; source?: string },
+  a: { institution?: string; name?: string; last4?: string; type?: string; source?: string; interest_rate_pct?: number | null; balance_cents?: number | null },
 ): Promise<void> {
+  // interest_rate_pct / balance_cents (0044): loan facts, FALLBACK estimate inputs only (S4 sources
+  // actual interest from the statement). Distinguish "not supplied" (undefined → COALESCE keeps the
+  // existing value) from an explicit clear (null → write NULL) so the user can blank the rate. Rate
+  // is clamped to a sane 0–100; a negative/garbage balance is dropped to NULL rather than stored.
+  const rate = a.interest_rate_pct === undefined ? undefined : a.interest_rate_pct === null || !Number.isFinite(a.interest_rate_pct) ? null : Math.max(0, Math.min(100, a.interest_rate_pct));
+  const bal = a.balance_cents === undefined ? undefined : a.balance_cents === null || !Number.isFinite(a.balance_cents) || a.balance_cents < 0 ? null : Math.round(a.balance_cents);
   await env.DB.prepare(
     `UPDATE accounts SET institution = COALESCE(?, institution), name = COALESCE(?, name),
-            last4 = COALESCE(?, last4), type = COALESCE(?, type), source = COALESCE(?, source)
+            last4 = COALESCE(?, last4), type = COALESCE(?, type), source = COALESCE(?, source),
+            interest_rate_pct = CASE WHEN ? = 1 THEN ? ELSE interest_rate_pct END,
+            balance_cents     = CASE WHEN ? = 1 THEN ? ELSE balance_cents END
       WHERE id = ? AND user_id = ?`,
   )
-    .bind(a.institution ?? null, a.name ?? null, a.last4 ?? null, a.type ?? null, a.source ?? null, id, userId)
+    .bind(
+      a.institution ?? null, a.name ?? null, a.last4 ?? null, a.type ?? null, a.source ?? null,
+      rate === undefined ? 0 : 1, rate ?? null,
+      bal === undefined ? 0 : 1, bal ?? null,
+      id, userId,
+    )
     .run();
 }
 

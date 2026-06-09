@@ -71,6 +71,8 @@ export interface Account {
   type: string; // transaction|credit_card|loan|investment
   source: string; // qbo_feed|statement|manual
   qbo_account_id: string | null;
+  interest_rate_pct?: number | null; // 0044: loan accounts — annual rate %, FALLBACK estimate only
+  balance_cents?: number | null; // 0044: current/avg loan balance for the rate×balance estimate
   line_count?: number;
   created_at?: string;
 }

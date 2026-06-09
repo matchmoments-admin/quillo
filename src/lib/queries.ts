@@ -190,6 +190,7 @@ export async function receiptKeyFor(env: Env, userId: string, txnId: string): Pr
 export async function listAccounts(env: Env, userId: string) {
   const res = await env.DB.prepare(
     `SELECT a.id, a.institution, a.name, a.last4, a.type, a.source, a.qbo_account_id, a.created_at,
+            a.interest_rate_pct, a.balance_cents,
             (SELECT COUNT(*) FROM transactions t WHERE t.account_id = a.id AND t.kind='bank_line') AS line_count
        FROM accounts a WHERE a.user_id = ? AND a.active = 1 ORDER BY a.created_at`,
   )

@@ -4454,15 +4454,18 @@ export class TaxAgent extends Agent<Env> {
     if (provider === "anthropic" && profile.consent_xborder !== 1) throw new Error("consent_required");
     if (!(await this.withinBudget(userId, null))) throw new Error("ai_budget_reached");
 
-    // Resolve / create the session (validate ownership).
+    // Resolve / create the session (validate ownership). The session PINS its grounding FY for the whole
+    // conversation — so switching the global FY mid-chat can't silently mix two years' figures.
     let sid = sessionId ?? "";
+    let sessionFy = fy;
     if (sid) {
-      const own = await this.env.DB.prepare(`SELECT 1 FROM chat_sessions WHERE id = ? AND user_id = ?`).bind(sid, userId).first();
+      const own = await this.env.DB.prepare(`SELECT fy FROM chat_sessions WHERE id = ? AND user_id = ?`).bind(sid, userId).first<{ fy: number | null }>();
       if (!own) sid = "";
+      else if (own.fy != null) sessionFy = own.fy;
     }
     if (!sid) {
       sid = crypto.randomUUID();
-      await this.env.DB.prepare(`INSERT INTO chat_sessions (id, user_id, fy) VALUES (?, ?, ?)`).bind(sid, userId, fy).run();
+      await this.env.DB.prepare(`INSERT INTO chat_sessions (id, user_id, fy) VALUES (?, ?, ?)`).bind(sid, userId, sessionFy).run();
     }
 
     // Prior turns (cap to the last 20 to bound tokens), oldest first. Tiebreak role ASC within a second
@@ -4471,12 +4474,15 @@ export class TaxAgent extends Agent<Env> {
       `SELECT role, content FROM chat_messages WHERE user_id = ? AND session_id = ? ORDER BY created_at DESC, role ASC LIMIT 20`,
     ).bind(userId, sid).all<{ role: string; content: string }>();
     const history = (prior.results ?? []).reverse().map((m) => ({ role: m.role === "assistant" ? ("assistant" as const) : ("user" as const), content: m.content }));
+    // The Anthropic messages[] must start with a user turn — drop any leading assistant turns the
+    // 20-row window or an orphaned half-pair might begin with.
+    while (history[0]?.role === "assistant") history.shift();
 
     const llm = await getLLM(this.env, profile, { userId });
     await this.auditXborderInference(userId, provider, "ask", llm.modelId);
     const [situation, report] = await Promise.all([
       getSituation(this.env, userId, profile),
-      buildReport(this.env, userId, fy),
+      buildReport(this.env, userId, sessionFy),
     ]);
     const system = buildAskSystem(redact(renderSituation(situation)), summariseReportForAsk(report));
     const userMsg = redact(text).slice(0, 600);
@@ -4487,7 +4493,7 @@ export class TaxAgent extends Agent<Env> {
       this.env.DB.prepare(`INSERT INTO chat_messages (id, user_id, session_id, role, content) VALUES (?, ?, ?, 'user', ?)`).bind(crypto.randomUUID(), userId, sid, userMsg),
       this.env.DB.prepare(`INSERT INTO chat_messages (id, user_id, session_id, role, content) VALUES (?, ?, ?, 'assistant', ?)`).bind(crypto.randomUUID(), userId, sid, result.answer),
     ]);
-    await this.audit(userId, "chat_turn", JSON.stringify({ session: sid, fy, turns: history.length / 2 + 1 }));
+    await this.audit(userId, "chat_turn", JSON.stringify({ session: sid, fy: sessionFy, turns: history.length / 2 + 1 }));
     return { session_id: sid, ...result };
   }
 

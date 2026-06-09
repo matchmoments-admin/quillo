@@ -67,19 +67,24 @@ const ASK_GUARDRAILS =
   "if the answer isn't in the data, say what's missing and which screen to add it on. Be warm, plain, " +
   "jargon-free, and cite the user's own numbers.";
 
-/** Build the system + user prompt for "Ask Quillo" — a grounded answer from the user's own ledger. Pure (unit-tested). */
-export function buildAskPrompt(question: string, situationText: string, positionText: string): { system: string; user: string } {
-  const system =
-    "You are Quillo, an Australian tax-evidence assistant answering a question about THIS user's own " +
-    "records. " +
+/**
+ * Build the SYSTEM prompt for "Ask Quillo" — the stable guardrails + persona + the user's own ledger
+ * context (situation + position). The conversation turns are passed separately as messages[], so this
+ * works for both single-turn (C1) and multi-turn chat (C2). Pure (unit-tested).
+ */
+export function buildAskSystem(situationText: string, positionText: string): string {
+  return (
+    "You are Quillo, an Australian tax-evidence assistant answering questions about THIS user's own " +
+    "records, in a short back-and-forth. " +
     ASK_GUARDRAILS +
-    " Call give_answer exactly once.";
-  const user =
-    `Their question:\n${question}\n\n` +
-    `What we know about them:\n${situationText || "(situation not set up yet)"}\n\n` +
-    `Their tracked tax position this year (their actual figures, JSON):\n${positionText}\n\n` +
-    `Answer using the data above. If it depends on something not captured, say so and name the screen to add it.`;
-  return { system, user };
+    "\n\nWhat we know about them:\n" +
+    (situationText || "(situation not set up yet)") +
+    "\n\nTheir tracked tax position this year (their actual figures, JSON):\n" +
+    positionText +
+    "\n\nAnswer each question using the data above. If it depends on something not captured, say so and " +
+    "name the screen to add it. When the user wants a repeating merchant categorised a certain way, you " +
+    "may propose a rule via suggested_rule (debit categories only). Call give_answer exactly once per reply."
+  );
 }
 
 /** Build the system + user prompt for the personalised "Guide me" walkthrough. Pure (unit-tested). */

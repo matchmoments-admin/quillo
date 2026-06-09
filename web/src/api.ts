@@ -1,4 +1,4 @@
-import type { Txn, TxnDetail, Situation, SituationDraft, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse, UsageData, StatementInfo, IncomeRow, DocRow, AssetRow, ScheduleRow, ChecklistItem, ClaimSuggestion, FilingReadiness, ReviewSummary, Progress, AdminTenant, AdminOverview, ClaimReview, OccupationRulesDraft, OccupationRuleCandidate, MovementSweep, BatchResult, ClarifyQuestion, ClarifyAnswer, ClaimMatch, AccountantSummary, SuggestedDeduction, WorkUse, CapitalLoss, OpeningDepreciation, AttributionState, AttributionInput, AttributionRow, IncomeActivity, PropertyOwner, EntityRole, CgtAssetRow, CgtEventRow, EssGrantRow, VehicleLogbookRow, TrustDistributionRow, SmsfMemberRow, SuperContributionRow, BasPeriodRow, PaygInstalmentRow } from "./types";
+import type { Txn, TxnDetail, Situation, SituationDraft, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse, UsageData, StatementInfo, IncomeRow, DocRow, AssetRow, ScheduleRow, ChecklistItem, ClaimSuggestion, FilingReadiness, ReviewSummary, Progress, AdminTenant, AdminOverview, ClaimReview, OccupationRulesDraft, OccupationRuleCandidate, MovementSweep, BatchResult, ClarifyQuestion, ClarifyAnswer, ClaimMatch, AccountantSummary, SuggestedDeduction, WorkUse, CapitalLoss, OpeningDepreciation, AttributionState, AttributionInput, AttributionRow, IncomeActivity, PropertyOwner, EntityRole, CgtAssetRow, CgtEventRow, EssGrantRow, VehicleLogbookRow, TrustDistributionRow, SmsfMemberRow, SuperContributionRow, BasPeriodRow, PaygInstalmentRow, AskAnswer } from "./types";
 
 // Clerk session token getter, wired from <TokenBridge> inside ClerkProvider (main.tsx).
 // Clerk tokens are short-lived, so we fetch a fresh one per request (getToken caches/refreshes).
@@ -94,7 +94,9 @@ export const api = {
   dashboard: (fy?: number) => get<DashboardData>(`/api/dashboard${fy ? `?fy=${fy}` : ""}`),
   progress: () => get<Progress>("/api/progress"),
   guideMe: (tab: string) => post<{ headline: string; steps: string[] }>("/api/guide", { tab }),
-  ask: (question: string, fy?: number) => post<{ answer: string; caveats: string[]; see_also: string[] }>("/api/ask", { question, fy }),
+  ask: (question: string, fy?: number) => post<AskAnswer>("/api/ask", { question, fy }),
+  chat: (message: string, session_id?: string, fy?: number) => post<AskAnswer & { session_id: string }>("/api/chat", { message, session_id, fy }),
+  chatHistory: (sessionId: string) => get<{ messages: { role: string; content: string }[] }>(`/api/chat/${sessionId}`).then((r) => r.messages),
   usage: () => get<UsageData>("/api/usage"),
   notifications: () => get<{ notifications: Notification[] }>("/api/notifications").then((r) => r.notifications),
   markRead: (id: string) => post<{ ok: boolean }>(`/api/notifications/${id}/read`),

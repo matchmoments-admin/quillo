@@ -1129,7 +1129,7 @@ export interface GuideResult {
 
 const ANSWER_TOOL: Anthropic.Tool = {
   name: "give_answer",
-  description: "Answer the user's question about their OWN tax records: a direct answer grounded only in their data, plus caveats and related screens. Call exactly once.",
+  description: "Answer the user's question about their OWN tax records: a direct answer grounded only in their data, plus caveats, related screens, and optionally a categorisation rule to remember. Call exactly once.",
   input_schema: {
     type: "object",
     additionalProperties: false,
@@ -1138,6 +1138,16 @@ const ANSWER_TOOL: Anthropic.Tool = {
       answer: { type: "string", description: "A direct, plain-language answer grounded ONLY in the user's data. General information — never advice, a refund/tax-payable figure, or tax rates." },
       caveats: { type: "array", items: { type: "string" }, description: "0–4 short caveats: what to confirm with a registered tax agent, or what's missing from their data." },
       see_also: { type: "array", items: { type: "string" }, description: "0–4 app screens/actions that help (e.g. 'Assets — add the laptop to start depreciating it')." },
+      suggested_rule: {
+        type: "object",
+        additionalProperties: false,
+        description: "ONLY when the user clearly wants a repeating merchant always categorised a certain way. A DEBIT spend category only (never income/refund).",
+        properties: {
+          pattern: { type: "string", description: "Merchant text to match (e.g. 'Adobe')." },
+          bucket: { type: "string", description: "A spend bucket: payg | company | property_rented | property_vacant | asset." },
+          ato_label: { type: "string", description: "Optional ATO label / deduction category." },
+        },
+      },
     },
   },
 };
@@ -1146,10 +1156,14 @@ export interface AnswerResult {
   answer: string;
   caveats: string[];
   see_also: string[];
+  suggested_rule?: { pattern: string; bucket: string; ato_label?: string };
 }
 
-/** One metered Haiku call → a grounded answer to a free-text question about the user's own ledger. */
-export async function extractAnswer(llm: LLM, system: string, user: string): Promise<AnswerResult> {
+const CREDIT_OR_UNKNOWN_BUCKETS = new Set(["income_business", "income_property", "income_personal", "refund", "unknown"]);
+
+/** One metered Haiku call → a grounded answer to a question about the user's own ledger, with prior
+ * turns as context (single-turn callers pass a one-element messages array). */
+export async function extractAnswer(llm: LLM, system: string, messages: { role: "user" | "assistant"; content: string }[]): Promise<AnswerResult> {
   const msg = await llm.create(
     {
       model: llm.modelId,
@@ -1157,16 +1171,22 @@ export async function extractAnswer(llm: LLM, system: string, user: string): Pro
       system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
       tools: [ANSWER_TOOL],
       tool_choice: { type: "tool", name: ANSWER_TOOL.name },
-      messages: [{ role: "user", content: [{ type: "text", text: user }] }],
+      messages: messages.map((m) => ({ role: m.role, content: [{ type: "text" as const, text: m.content }] })),
     },
     "ask",
   );
   const toolUse = msg.content.find((c): c is Anthropic.ToolUseBlock => c.type === "tool_use" && c.name === ANSWER_TOOL.name);
   if (!toolUse) throw new Error("model did not return a give_answer tool call");
-  const input = toolUse.input as { answer?: unknown; caveats?: unknown; see_also?: unknown };
+  const input = toolUse.input as { answer?: unknown; caveats?: unknown; see_also?: unknown; suggested_rule?: unknown };
   const answer = typeof input.answer === "string" && input.answer.trim() ? input.answer.trim() : "I couldn't answer that from your records.";
   const strList = (v: unknown) => (Array.isArray(v) ? v.filter((s): s is string => typeof s === "string" && s.trim().length > 0).slice(0, 4) : []);
-  return { answer, caveats: strList(input.caveats), see_also: strList(input.see_also) };
+  // Only surface a suggested rule for a valid DEBIT spend bucket — never an income/refund re-bucket.
+  let suggested_rule: AnswerResult["suggested_rule"];
+  const sr = input.suggested_rule as { pattern?: unknown; bucket?: unknown; ato_label?: unknown } | undefined;
+  if (sr && typeof sr.pattern === "string" && sr.pattern.trim() && typeof sr.bucket === "string" && isBucket(sr.bucket) && !CREDIT_OR_UNKNOWN_BUCKETS.has(sr.bucket)) {
+    suggested_rule = { pattern: sr.pattern.trim().slice(0, 60), bucket: sr.bucket, ato_label: typeof sr.ato_label === "string" ? sr.ato_label.trim().slice(0, 60) : undefined };
+  }
+  return { answer, caveats: strList(input.caveats), see_also: strList(input.see_also), suggested_rule };
 }
 
 /** One metered Haiku call → a short personalised walkthrough. Plain structured output, no prose parsing. */

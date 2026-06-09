@@ -49,7 +49,7 @@ Legend — **engine**: backend computes it (✓ live behind flag); **UI**: a web
 | Motor-vehicle logbook | ✓ | ✓ | ✓ | `car_logbook` (ON) | 3,4,5,7 |
 | Occupation content (person-level) | ✓ | ✓ | ✓ | — | 3,7 |
 | Occupation scope on an activity | ✓ | ✗ | ◑ | — | 3,7 |
-| Trust distributions / streaming | ✓ | ✗ | ✗ | `trust_distributions` | 8 |
+| Trust distributions / streaming | ✓ | ✓ | ✓ | `trust_distributions` (ON) | 8 |
 | SMSF / pension / ECPI | ✓ | ✗ | ✗ | `smsf_engine` | 10 |
 
 **Bottom line today:** the *engines* for all 10 personas are live (EPIC #134, migrations 0037–0042, all

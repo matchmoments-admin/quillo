@@ -95,6 +95,14 @@ export function Settings() {
         <AddEntity onDone={invalidate} />
       </Section>
 
+      {/* GST registration (the tenant default — the fallback for a sole trader with no company entity).
+          Drives the indicative BAS on Reports. A company's own GST flag is set on its entity above. */}
+      {has("gst_bas") && (
+        <Section title={<>GST registration <InfoTip tip="Tick this if you're registered for GST (e.g. an ABN sole trader). Quillo then shows an indicative BAS position on Reports — GST collected on business income minus GST credits on business spend. A company's GST flag is set on its entity. General information — confirm with a registered tax/BAS agent." /></>}>
+          <GstRegistration registered={(s.profile?.gst_registered ?? 0) === 1} onDone={invalidate} />
+        </Section>
+      )}
+
       {/* Trust distributions (#139) — what a trust distributed to you, character retained */}
       {has("trust_distributions") && (
         <Section title={<>Trust distributions <InfoTip tip="Your share of a trust's net income, with its character retained (a franked dividend stays franked). It's assessable to you. Add a trust entity above first. General information — confirm with a registered tax agent." /></>}>
@@ -263,6 +271,24 @@ function PrivacyPanel({
         .
       </p>
     </Card>
+  );
+}
+
+function GstRegistration({ registered, onDone }: { registered: boolean; onDone: () => void }) {
+  const qc = useQueryClient();
+  const set = useMutation({
+    mutationFn: (v: boolean) => api.setGstRegistered(v),
+    onSuccess: () => {
+      onDone();
+      for (const k of ["report", "dashboard", "filing-readiness"]) qc.invalidateQueries({ queryKey: [k] });
+    },
+  });
+  return (
+    <label className="flex items-center gap-2 text-sm">
+      <input type="checkbox" className="h-4 w-4" checked={registered} disabled={set.isPending} onChange={(e) => set.mutate(e.target.checked)} />
+      <span>I'm registered for GST</span>
+      {set.isPending && <span className="text-xs text-muted">saving…</span>}
+    </label>
   );
 }
 

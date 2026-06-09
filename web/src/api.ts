@@ -116,6 +116,7 @@ export const api = {
   revokeKey: (id: string) => post<{ ok: boolean }>(`/api/keys/${id}/revoke`),
   consent: (text: string) => post<{ ok: boolean }>("/api/consent", { text, method: "web" }),
   withdrawConsent: () => post<{ ok: boolean }>("/api/consent/withdraw"),
+  setGstRegistered: (registered: boolean) => post<{ ok: true; gst_registered: number }>("/api/gst-registered", { registered }),
   // APP 12 export: fetch the tenant's data (Bearer-authed) as a downloadable Blob.
   exportData: async (): Promise<Blob> => {
     const res = await fetch("/api/account/export", { credentials: "include", headers: await authHeaders() });

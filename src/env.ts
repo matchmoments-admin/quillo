@@ -94,6 +94,7 @@ export interface TaxAgentRpc {
   syncQboAccounts(userId: string): Promise<{ synced: number }>;
   disconnectQuickBooks(userId: string): Promise<{ ok: boolean; revoked: boolean }>;
   withdrawConsent(userId: string): Promise<{ ok: boolean }>;
+  setGstRegistered(userId: string, registered: boolean): Promise<{ ok: true; gst_registered: number }>;
   purgeTenant(userId: string): Promise<{ tables: number; rowsDeleted: number; r2Objects: number; kvKeys: number; qboRevoked: boolean }>;
   exportTenant(userId: string): Promise<Record<string, unknown>>;
   flagOldData(userId: string): Promise<{ flagged: boolean }>;

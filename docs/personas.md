@@ -41,22 +41,31 @@ Legend — **engine**: backend computes it (✓ live behind flag); **UI**: a web
 | Negative-gearing rentals + Div 40/43 | ✓ | ✓ | ✓ | (live) | 6 |
 | Multi-income aggregation | ✓ | ✓ | ✓ | (live) | all |
 | Sole-trader `business` income | ✓ | ◑ income only | ✓ | — (additive) | 4,5 |
-| Sole-trader activity + attribution | ✓ | ✗ no form | ◑ | `attribution_engine` | 4,5,8 |
+| Sole-trader activity + attribution | ✓ | ◑ txn attribution; no activity form | ◑ | `attribution_engine` (ON) | 4,5,8 |
 | CGT (shares/crypto/property) | ✓ | ✓ | ✓ | `cgt_engine` (ON) | 2,6,8,9,10 |
 | Employee Share Scheme | ✓ | ✓ | ✓ | `ess_engine` (ON) | 2,9 |
 | GST registration flag | ✓ | ✓ | ✓ | — | 4,5,8 |
-| Indicative BAS / PAYG instalments | ✓ | ✗ | ✗ | `gst_bas` | 4,5,8 |
+| Indicative BAS (from ledger) | ✓ | ✓ GST-registered toggle | ✓ | `gst_bas` (ON) | 4,5,8 |
+| Manual BAS periods / PAYG instalments | ✓ | ✗ (tables exist, deferred) | ✗ | `gst_bas` | 4,5,8 |
 | Motor-vehicle logbook | ✓ | ✓ | ✓ | `car_logbook` (ON) | 3,4,5,7 |
 | Occupation content (person-level) | ✓ | ✓ | ✓ | — | 3,7 |
 | Occupation scope on an activity | ✓ | ✗ | ◑ | — | 3,7 |
 | Trust distributions / streaming | ✓ | ✓ | ✓ | `trust_distributions` (ON) | 8 |
 | SMSF / pension / ECPI | ✓ | ✗ | ✗ | `smsf_engine` | 10 |
 
-**Bottom line today:** the *engines* for all 10 personas are live (EPIC #134, migrations 0037–0042, all
-flags OFF in prod). The *front end* lets a user complete only Personas 1, 3 (partly), 6 and 7 (partly)
-end-to-end. CGT / ESS / logbook / trust / SMSF need input UI + API write + display before Personas 2, 8,
-9, 10 (and the gig/sole-trader depth of 4, 5) are completable in the app. Tracked as the front-end
-completion epic.
+**Bottom line (2026-06-09).** The *engines* for all 10 personas are live, and the EPIC #134 flags are
+**ON in prod** — `cgt_engine, ess_engine, car_logbook, trust_distributions, attribution_engine` (and now
+`gst_bas`), with their input UIs shipped. So end-to-end in the app today:
+
+- **Complete:** P1 (PAYG renter), P2 (PAYG + shares/RSU/CGT/ESS), P3 (tradie — logbook + tools), P6
+  (co-owned rentals + Div 40/43 + CGT), P7 (nurse, multi-employer + occupation). P4/P5 GST is now
+  surfaced (indicative BAS from the ledger via the GST-registered toggle).
+- **Nearly:** P8 (company + trust ✓; Div 7A thin), P9 (ESS ✓; R&D / s40-880 blackhole costs have no form).
+- **Remaining hard gaps:** **SMSF / pension / ECPI (P10)** — engine + tables exist (0042) but no input
+  UI and `smsf_engine` OFF; sole-trader **activity setup** form (P3 cash job, P4/P5 ABN); **manual BAS
+  periods / PAYG instalments** entry (tables exist, indicative position covers the common case).
+
+Verify flag state against `wrangler.toml` FEATURES (the source of truth) rather than trusting this prose.
 
 ## How it's wired (for maintainers)
 

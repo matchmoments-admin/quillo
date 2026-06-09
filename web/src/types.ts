@@ -137,6 +137,7 @@ export interface Situation {
     inference_provider: string | null;
     inference_region?: string | null;
     ui_state?: string | null;
+    gst_registered?: number;
   };
   persons?: Person[];
   properties: Property[];

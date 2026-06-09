@@ -112,7 +112,7 @@ export interface TaxAgentRpc {
   applyMovementSweep(userId: string, txnIds: string[]): Promise<{ ignored: number; skipped: number }>;
   applyLoanSplit(userId: string, txnId: string, opts: { property_id: string; interest_cents?: number; interest_pct?: number }): Promise<{ ok: true; interest_cents: number }>;
   applyLoanSplitGroup(userId: string, txnIds: string[], opts: { property_id: string; interest_pct: number }): Promise<{ applied: number; skipped: number; interest_cents: number }>;
-  applyCorrectionBatch(userId: string, txnIds: string[], edits: { field: string; value: string }[]): Promise<{ batch_id: string; updated: number; failures: { txnId: string; error: string }[] }>;
+  applyCorrectionBatch(userId: string, txnIds: string[], edits: { field: string; value: string }[], opts?: { learnRule?: boolean }): Promise<{ batch_id: string; updated: number; failures: { txnId: string; error: string }[]; rules_created?: number }>;
   undoCorrectionBatch(userId: string, batchId: string): Promise<{ reverted: number }>;
   deleteTransactionBatch(userId: string, txnIds: string[]): Promise<{ deleted: number }>;
   matchClaim(userId: string, claimId: string): Promise<{ claim_id: string; rule_id: string | null; candidates: import("./lib/claim-match").ScoredTxn[]; linked: string[] }>;

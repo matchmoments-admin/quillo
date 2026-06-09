@@ -300,7 +300,8 @@ export const api = {
   applyMovementSweep: (ids: string[]) => post<{ ignored: number; skipped: number }>("/api/movements/apply", { ids }),
 
   // Phase 2 — batch correction + undo + bulk delete
-  correctBatch: (txnIds: string[], edits: { field: string; value: string }[]) => post<BatchResult>("/api/correct/batch", { txnIds, edits }),
+  correctBatch: (txnIds: string[], edits: { field: string; value: string }[], learn_rule = false) =>
+    post<BatchResult>("/api/correct/batch", { txnIds, edits, learn_rule }),
   undoBatch: (batchId: string) => post<{ reverted: number }>("/api/correct/undo", { batchId }),
   deleteTxnBatch: (ids: string[]) => post<{ deleted: number }>("/api/transactions/batch-delete", { ids }),
 

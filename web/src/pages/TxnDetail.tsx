@@ -322,29 +322,49 @@ export function TxnDetail() {
             </Card>
           )}
 
-          {/* Were you reimbursed? (G2) — employer-reimbursed spend isn't your deductible cost, so the
-              position excludes it. Shown for spend (debit), not income/refund credits. */}
-          {(txn.direction ?? "debit") === "debit" && txn.bucket !== "refund" && (
-            <Card className="space-y-1 p-4 text-sm">
-              <label className="flex items-center gap-2">
-                <input type="checkbox" checked={!!txn.reimbursed} disabled={reimb.isPending} onChange={(e) => reimb.mutate(e.target.checked)} />
-                <span className="font-medium">My employer reimbursed me for this</span>
-              </label>
-              <p className="text-xs text-muted">Reimbursed spend isn't deductible — you didn't bear the cost. Ticking this excludes it from your position. General information only.</p>
-            </Card>
-          )}
-
-          {/* Phase B / G2 — who paid vs who claims (payer≠claimant). Flag-gated: appears with the
-              attribution engine so the panel and the position activate together. */}
-          {has("attribution_engine") && (
-            <AttributionPanel
-              key={id}
-              txnId={id}
-              txnAmountCents={txn.amount_aud_cents ?? txn.amount_cents ?? 0}
-              entities={sitQ.data?.entities ?? []}
-              persons={sitQ.data?.persons ?? []}
-            />
-          )}
+          {/* Reimbursement (G2) + who-paid-vs-who-claims attribution (Phase B). With apply_to_siblings on,
+              the default detail view is category → property → apply-to-siblings, and these power-user
+              controls tuck into a collapsed "Advanced" section (#166). Flag-off ⇒ rendered inline, exactly
+              as before (byte-identical). */}
+          {(() => {
+            const reimbursedCard =
+              (txn.direction ?? "debit") === "debit" && txn.bucket !== "refund" ? (
+                <Card className="space-y-1 p-4 text-sm">
+                  <label className="flex items-center gap-2">
+                    <input type="checkbox" checked={!!txn.reimbursed} disabled={reimb.isPending} onChange={(e) => reimb.mutate(e.target.checked)} />
+                    <span className="font-medium">My employer reimbursed me for this</span>
+                  </label>
+                  <p className="text-xs text-muted">Reimbursed spend isn't deductible — you didn't bear the cost. Ticking this excludes it from your position. General information only.</p>
+                </Card>
+              ) : null;
+            const attributionCard = has("attribution_engine") ? (
+              <AttributionPanel
+                key={id}
+                txnId={id}
+                txnAmountCents={txn.amount_aud_cents ?? txn.amount_cents ?? 0}
+                entities={sitQ.data?.entities ?? []}
+                persons={sitQ.data?.persons ?? []}
+              />
+            ) : null;
+            if (!reimbursedCard && !attributionCard) return null;
+            if (has("apply_to_siblings")) {
+              return (
+                <details className="rounded-2xl border border-line bg-card">
+                  <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-ink-2">Advanced — reimbursement &amp; who claims</summary>
+                  <div className="space-y-3 px-4 pb-4">
+                    {reimbursedCard}
+                    {attributionCard}
+                  </div>
+                </details>
+              );
+            }
+            return (
+              <>
+                {reimbursedCard}
+                {attributionCard}
+              </>
+            );
+          })()}
 
           {/* QuickBooks: reconcile-vs-push. Fed accounts reconcile (don't push); use this
               only for a NON-FEED company expense (cash / a card not connected to QBO). */}

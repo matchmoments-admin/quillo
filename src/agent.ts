@@ -3106,7 +3106,8 @@ export class TaxAgent extends Agent<Env> {
     userId: string,
     txnIds: string[],
     edits: { field: string; value: string }[],
-  ): Promise<{ batch_id: string; updated: number; failures: { txnId: string; error: string }[] }> {
+    opts: { learnRule?: boolean } = {},
+  ): Promise<{ batch_id: string; updated: number; failures: { txnId: string; error: string }[]; rules_created?: number }> {
     if (!Array.isArray(txnIds) || txnIds.length === 0 || !Array.isArray(edits) || edits.length === 0)
       return { batch_id: "", updated: 0, failures: [] };
     // Validate + normalise all edits up front (mirrors applyCorrection's per-field hygiene).
@@ -3179,8 +3180,29 @@ export class TaxAgent extends Agent<Env> {
         await this.audit(userId, "promote_eval_error", JSON.stringify({ txnId, error: (e as Error).message }));
       }
     }
-    await this.audit(userId, "correction_batch", JSON.stringify({ batch_id: batchId, updated: changedIds.length, edits: norm.map((n) => n.field), failures: failures.length }));
-    return { batch_id: batchId, updated: changedIds.length, failures };
+    // Optional rule-learning (BulkBar "remember this as a rule") — parity with apply-to-siblings, but
+    // over a hand-picked multi-select: learn one rule per DISTINCT merchant stem among the changed rows,
+    // so future imports of those merchants auto-apply. Only meaningful when a bucket was set; credit
+    // buckets are rejected at the route (income must route through an income answer, not a re-bucket).
+    let rulesCreated = 0;
+    const bucketEdit = norm.find((n) => n.field === "bucket")?.value;
+    if (opts.learnRule && bucketEdit && bucketEdit !== "unknown" && changedIds.length) {
+      const atoLabel = norm.find((n) => n.field === "ato_label")?.value ?? "";
+      const propertyId = norm.find((n) => n.field === "property_id")?.value || undefined;
+      const stems = new Set<string>();
+      for (const txnId of changedIds) {
+        const r = await this.env.DB.prepare(`SELECT raw_description, merchant FROM transactions WHERE id = ? AND user_id = ?`)
+          .bind(txnId, userId)
+          .first<{ raw_description: string | null; merchant: string | null }>();
+        const stem = groupKey(r?.raw_description ?? r?.merchant ?? "");
+        if (stem) stems.add(stem);
+      }
+      for (const stem of stems) {
+        if (await this.ensureClarifyRule(userId, stem, bucketEdit, atoLabel, propertyId)) rulesCreated++;
+      }
+    }
+    await this.audit(userId, "correction_batch", JSON.stringify({ batch_id: batchId, updated: changedIds.length, edits: norm.map((n) => n.field), failures: failures.length, rules_created: rulesCreated }));
+    return { batch_id: batchId, updated: changedIds.length, failures, rules_created: rulesCreated };
   }
 
   /**
@@ -3653,15 +3675,16 @@ export class TaxAgent extends Agent<Env> {
    * stem itself is alphabetically sorted ("energy origin") and would never substring-match the raw
    * "...origin energy..." line. Single-token stems are used as-is.
    */
-  private async ensureClarifyRule(userId: string, groupKeyStem: string, bucket: string, atoLabel: string, propertyId?: string): Promise<void> {
-    if (!bucket || bucket === "unknown" || !groupKeyStem) return;
+  private async ensureClarifyRule(userId: string, groupKeyStem: string, bucket: string, atoLabel: string, propertyId?: string): Promise<boolean> {
+    if (!bucket || bucket === "unknown" || !groupKeyStem) return false;
     const pattern = rulePatternForStem(groupKeyStem);
-    if (!pattern) return;
+    if (!pattern) return false;
     const profile = await this.requireProfile(userId);
     const situation = await getSituation(this.env, userId, profile);
     const dir = RULE_CREDIT_BUCKETS.has(bucket) ? "credit" : "debit";
-    if (applyUserRules(pattern, situation.rules, dir)) return; // already covered
+    if (applyUserRules(pattern, situation.rules, dir)) return false; // already covered
     await addRule(this.env, userId, { pattern, match_type: "merchant_contains", bucket, ato_label: atoLabel, property_id: propertyId });
+    return true;
   }
 
   // ── Apply-to-siblings (flag apply_to_siblings) — "edit one line → update its look-alikes" ──

@@ -53,11 +53,15 @@ async function send<T>(method: string, path: string, body?: unknown): Promise<T>
 const post = <T>(path: string, body?: unknown) => send<T>("POST", path, body);
 
 export const api = {
-  transactions: (opts: { status?: string; kind?: string; review?: boolean; offset?: number; limit?: number } = {}) => {
+  transactions: (opts: { status?: string; bucket?: string; property_id?: string; kind?: string; review?: boolean; fy?: number; countable?: boolean; offset?: number; limit?: number } = {}) => {
     const q = new URLSearchParams();
     if (opts.status) q.set("status", opts.status);
+    if (opts.bucket) q.set("bucket", opts.bucket);
+    if (opts.property_id) q.set("property_id", opts.property_id);
     if (opts.kind) q.set("kind", opts.kind);
     if (opts.review) q.set("review", "1");
+    if (opts.fy != null) q.set("fy", String(opts.fy));
+    if (opts.countable) q.set("countable", "1");
     if (opts.offset) q.set("offset", String(opts.offset));
     if (opts.limit) q.set("limit", String(opts.limit));
     const qs = q.toString();
@@ -296,13 +300,10 @@ export const api = {
   // Stage A — deterministic non-spend movement clean-up (no LLM, no consent)
   sweepMovements: () => get<MovementSweep>("/api/movements/sweep"),
   applyMovementSweep: (ids: string[]) => post<{ ignored: number; skipped: number }>("/api/movements/apply", { ids }),
-  applyLoanSplit: (b: { txn_id: string; property_id: string; interest_cents?: number; interest_pct?: number }) =>
-    post<{ ok: true; interest_cents: number }>("/api/movements/loan-split", b),
-  applyLoanSplitGroup: (b: { txn_ids: string[]; property_id: string; interest_pct: number }) =>
-    post<{ applied: number; skipped: number; interest_cents: number }>("/api/movements/loan-split-group", b),
 
   // Phase 2 — batch correction + undo + bulk delete
-  correctBatch: (txnIds: string[], edits: { field: string; value: string }[]) => post<BatchResult>("/api/correct/batch", { txnIds, edits }),
+  correctBatch: (txnIds: string[], edits: { field: string; value: string }[], learn_rule = false) =>
+    post<BatchResult>("/api/correct/batch", { txnIds, edits, learn_rule }),
   undoBatch: (batchId: string) => post<{ reverted: number }>("/api/correct/undo", { batchId }),
   deleteTxnBatch: (ids: string[]) => post<{ deleted: number }>("/api/transactions/batch-delete", { ids }),
 

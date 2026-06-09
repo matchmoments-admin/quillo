@@ -81,7 +81,7 @@ const TXN_COLS =
 export async function listTransactions(
   env: Env,
   userId: string,
-  opts: { status?: string; bucket?: string; kind?: string; review?: boolean; limit?: number; offset?: number } = {},
+  opts: { status?: string; bucket?: string; property_id?: string; kind?: string; review?: boolean; fy?: number; countable?: boolean; limit?: number; offset?: number } = {},
 ): Promise<TxnRow[]> {
   const where: string[] = ["user_id = ?"];
   const binds: unknown[] = [userId];
@@ -93,10 +93,26 @@ export async function listTransactions(
     where.push("bucket = ?");
     binds.push(opts.bucket);
   }
+  if (opts.property_id) {
+    where.push("property_id = ?");
+    binds.push(opts.property_id);
+  }
   if (opts.kind) {
     where.push("kind = ?");
     binds.push(opts.kind);
   }
+  // FY scope — used by the Dashboard drill-through so the line list matches the FY-scoped figure the
+  // user clicked. Date-bound (NOT the COUNTABLE predicate) so undated rows fall out, exactly like the
+  // dashboard totals, which surface undated separately.
+  if (opts.fy != null) {
+    const { start, end } = fyBounds(opts.fy);
+    where.push("txn_date >= ? AND txn_date <= ?");
+    binds.push(start, end);
+  }
+  // Drop duplicates / excluded movements so a drill-through count reconciles with the dashboard total
+  // (which is COUNTABLE/COUNTABLE_INCOME). Direction isn't constrained here so it works for both spend
+  // (debit) and income (credit) buckets.
+  if (opts.countable) where.push("status NOT IN ('duplicate','ignored')");
   // "Needs review" queue: the SAME predicate the dashboard counts, so the badge and the list agree.
   if (opts.review) where.push(`(${NEEDS_REVIEW})`);
   // Matched receipts are evidence on a bank line — shown in Reconcile, not the review inbox.

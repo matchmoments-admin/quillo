@@ -13,7 +13,9 @@ import { Button, Card, Spinner, money } from "./ui";
 export function LoanInterestCard({ fy }: { fy: number }) {
   const q = useQuery({ queryKey: ["loan-interest-review", fy], queryFn: () => api.loanInterestReview(fy) });
   if (q.isLoading) return <Spinner />;
-  const loans = q.data ?? [];
+  // Only the loans still to confirm (no user-entered lender_summary yet) — matches SortFlow's count, so
+  // the card never re-prompts a figure the user already confirmed (which risked an accidental overwrite).
+  const loans = (q.data ?? []).filter((l) => l.source !== "lender_summary");
   if (loans.length === 0) return null;
   const fyLabel = `${fy}–${String((fy + 1) % 100).padStart(2, "0")}`;
 
@@ -67,16 +69,20 @@ function LoanInterestRow({
             <input value={value} onChange={(e) => setValue(e.target.value)} inputMode="decimal" placeholder="12000" className="mt-1 w-full rounded-lg border border-line bg-card px-3 py-2" />
           </label>
           <Button onClick={() => save.mutate()} disabled={save.isPending || value.trim() === ""}>
-            {save.isPending ? "Saving…" : loan.recorded_cents != null ? "Update" : "Confirm"}
+            {save.isPending ? "Saving…" : loan.source === "lender_summary" ? "Update" : "Confirm"}
           </Button>
         </div>
       </div>
       <p className="mt-1 text-xs text-muted">
-        {loan.recorded_cents != null
-          ? `Recorded: ${money(loan.recorded_cents)}${loan.source === "estimate" ? " · estimate" : ""}.`
-          : loan.estimate_cents != null
-            ? `≈ ${money(loan.estimate_cents)} estimate from the account rate × balance — replace with the actual figure from your lender.`
-            : "Enter the actual interest from your lender's annual summary or statements."}
+        {loan.source === "lender_summary"
+          ? `Confirmed: ${money(loan.recorded_cents ?? 0)}.`
+          : loan.source === "statement_parsed" && loan.recorded_cents != null
+            ? `≈ ${money(loan.recorded_cents)} summed from the interest lines on your statements — confirm it matches your lender's annual summary.`
+            : loan.source === "estimate" && loan.recorded_cents != null
+              ? `≈ ${money(loan.recorded_cents)} estimate — replace with the actual figure from your lender.`
+              : loan.estimate_cents != null
+                ? `≈ ${money(loan.estimate_cents)} estimate from the account rate × balance — replace with the actual figure from your lender.`
+                : "Enter the actual interest from your lender's annual summary or statements."}
       </p>
       {save.isError && <p className="mt-1 text-xs text-danger">Couldn't save: {(save.error as Error).message}</p>}
     </div>

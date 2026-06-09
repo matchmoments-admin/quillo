@@ -2,7 +2,7 @@
 // Offline unit tests for the pure invariants that underpin statement import + async
 // categorisation. No worker runtime / D1 / Claude — these are the fast, deterministic
 // regression guards for the rules we keep re-learning. Run: npm run test:units
-import { reconcileStatement, deriveBalances, isTransferLike, classifyMovement, movementTreatment, signedCents, lineFingerprint, type StatementLine } from "../src/lib/statements";
+import { reconcileStatement, deriveBalances, isTransferLike, isLoanInterestLine, classifyMovement, movementTreatment, signedCents, lineFingerprint, type StatementLine } from "../src/lib/statements";
 import { groupKey, groupForClarify, rulePatternForStem, isClarifyLeftover } from "../src/lib/clarify";
 import { resolveLoanInterest, deductibleInterestCents } from "../src/lib/loan-interest";
 import { scoreClaimMatches } from "../src/lib/claim-match";
@@ -123,6 +123,21 @@ console.log("classifyMovement");
   check("BPAY Origin Energy is none", classifyMovement("BPAY Origin Energy 12345").klass === "none");
   check("Woolworths is none", classifyMovement("WOOLWORTHS 1234 SYDNEY").klass === "none");
   check("Osko to a person is none", classifyMovement("Osko Payment John Smith").klass === "none");
+}
+
+// ── #165 loan-interest line detector (used only on a LOAN account's own lines) ─
+console.log("isLoanInterestLine");
+{
+  check("'Interest Charged' is an interest line", isLoanInterestLine("Interest Charged"));
+  check("'Loan Interest' is an interest line", isLoanInterestLine("Home Loan Interest 12345"));
+  check("'Debit Interest' is an interest line", isLoanInterestLine("Debit Interest"));
+  check("'Interest Charge' is an interest line", isLoanInterestLine("INTEREST CHARGE FOR THE PERIOD"));
+  check("'Interest Rate Change' is NOT a charge (rate notice)", !isLoanInterestLine("Interest Rate Change Notice"));
+  check("'Interest Saver Sweep' is NOT a charge", !isLoanInterestLine("Interest Saver Sweep"));
+  check("'Interest Free Period' is NOT a charge", !isLoanInterestLine("Interest Free Period Ends"));
+  check("'Offset Interest Benefit' is NOT a charge", !isLoanInterestLine("Offset Interest Benefit"));
+  check("a normal repayment line is NOT an interest line", !isLoanInterestLine("Loan Repayment LN REPAY 12345"));
+  check("Woolworths is NOT an interest line", !isLoanInterestLine("WOOLWORTHS 1234 SYDNEY"));
 }
 
 // ── Stage A movement treatment: ignorable vs review vs skip (B3 + income guard) ─

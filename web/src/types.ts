@@ -677,6 +677,7 @@ export interface BatchResult {
   batch_id: string;
   updated: number;
   failures: { txnId: string; error: string }[];
+  rules_created?: number;
 }
 
 // Stage B — clarify-by-pattern

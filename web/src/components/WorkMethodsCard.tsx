@@ -13,7 +13,7 @@ const HOURS_PER_DAY = 7.6;
 const DEFAULT_WEEKS = 48;
 const deriveHours = (daysPerWeek: number, weeks: number) => Math.round(Math.max(0, daysPerWeek) * HOURS_PER_DAY * (weeks > 0 ? weeks : DEFAULT_WEEKS));
 
-export function WorkMethodsCard({ fyNum, compact }: { fyNum: number; compact?: boolean }) {
+export function WorkMethodsCard({ fyNum }: { fyNum: number }) {
   const qc = useQueryClient();
   const { data } = useQuery({ queryKey: ["work-use", fyNum], queryFn: () => api.workUse(fyNum) });
   const [days, setDays] = useState<string>("");
@@ -63,7 +63,7 @@ export function WorkMethodsCard({ fyNum, compact }: { fyNum: number; compact?: b
   return (
     <Card className="space-y-3 p-4">
       <div>
-        <div className="text-sm font-semibold">Working from home{compact ? "" : " & car (fixed-rate methods)"}</div>
+        <div className="text-sm font-semibold">Working from home &amp; car (fixed-rate methods)</div>
         <div className="text-xs text-muted">
           Tell us how many days a week you work from home and we'll estimate your hours. The home-office fixed
           rate covers electricity, internet, phone &amp; stationery, so those receipts aren't claimed again. Keep a
@@ -85,13 +85,11 @@ export function WorkMethodsCard({ fyNum, compact }: { fyNum: number; compact?: b
         <Input type="number" min="0" value={hours} onChange={(e) => setHours(e.target.value)} placeholder="e.g. 730" />
         <span className="mt-0.5 block text-xs text-muted">≈ {money(estWfh)} at 70c/hr{days.trim() !== "" ? ` · derived from ${days} day(s)/week` : ""}</span>
       </label>
-      {!compact && (
-        <label className="block text-sm">
-          <span className="text-xs font-medium uppercase tracking-wide text-muted">Work-related car km this year</span>
-          <Input type="number" min="0" value={km} onChange={(e) => setKm(e.target.value)} placeholder="e.g. 1200" />
-          <span className="mt-0.5 block text-xs text-muted">≈ {money(estCar)} at 88c/km (max 5,000 km)</span>
-        </label>
-      )}
+      <label className="block text-sm">
+        <span className="text-xs font-medium uppercase tracking-wide text-muted">Work-related car km this year</span>
+        <Input type="number" min="0" value={km} onChange={(e) => setKm(e.target.value)} placeholder="e.g. 1200" />
+        <span className="mt-0.5 block text-xs text-muted">≈ {money(estCar)} at 88c/km (max 5,000 km)</span>
+      </label>
       <div className="flex flex-wrap items-center gap-3">
         <Button onClick={() => save.mutate()} disabled={save.isPending}>{save.isPending ? "Saving…" : "Save"}</Button>
         <span className="text-xs text-muted">Approximate — your hand-off shows the exact figure using this year's ATO rates.</span>

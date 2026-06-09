@@ -22,6 +22,7 @@ import {
   listSuggestedDeductions,
 } from "./lib/queries";
 import { isAdmin, normaliseRoles } from "./lib/roles";
+import { RULE_CREDIT_BUCKETS } from "./lib/rules";
 import {
   addPerson,
   updatePerson,
@@ -115,8 +116,11 @@ export async function handleApi(
     const rows = await listTransactions(env, uid, {
       status: url.searchParams.get("status") ?? undefined,
       bucket: url.searchParams.get("bucket") ?? undefined,
+      property_id: url.searchParams.get("property_id") ?? undefined,
       kind: url.searchParams.get("kind") ?? undefined,
       review: url.searchParams.get("review") === "1" || undefined,
+      fy: Number(url.searchParams.get("fy")) || undefined,
+      countable: url.searchParams.get("countable") === "1" || undefined,
       limit: Number(url.searchParams.get("limit")) || undefined,
       offset: Number(url.searchParams.get("offset")) || undefined,
     });
@@ -298,12 +302,16 @@ export async function handleApi(
   // POST /api/correct/batch { txnIds, edits } — apply one set of edits to many txns (undoable).
   // POST /api/correct/undo  { batchId }        — revert a batch correction as a unit.
   if (resource === "correct" && id === "batch" && m === "POST") {
-    const { txnIds, edits } = (await req.json().catch(() => ({}))) as { txnIds?: unknown; edits?: unknown };
+    const { txnIds, edits, learn_rule } = (await req.json().catch(() => ({}))) as { txnIds?: unknown; edits?: unknown; learn_rule?: boolean };
     if (!Array.isArray(txnIds) || txnIds.some((x) => typeof x !== "string")) return json({ error: "txnIds must be an array of strings" }, 400);
     if (!Array.isArray(edits) || edits.some((e) => typeof (e as { field?: unknown })?.field !== "string" || typeof (e as { value?: unknown })?.value !== "string"))
       return json({ error: "edits must be an array of {field, value}" }, 400);
+    // Income/refund are credits — re-bucketing them here would double-count income. They must route
+    // through an income answer (Clarify), which records once. Mirrors the apply-to-siblings guard.
+    const creditBucket = (edits as { field: string; value: string }[]).find((e) => e.field === "bucket" && RULE_CREDIT_BUCKETS.has(e.value));
+    if (creditBucket) return json({ error: `use an income answer for ${creditBucket.value}, not a re-categorise` }, 400);
     try {
-      return json(await stub.applyCorrectionBatch(uid, txnIds as string[], edits as { field: string; value: string }[]));
+      return json(await stub.applyCorrectionBatch(uid, txnIds as string[], edits as { field: string; value: string }[], { learnRule: !!learn_rule }));
     } catch (e) {
       return json({ error: (e as Error).message }, 400);
     }

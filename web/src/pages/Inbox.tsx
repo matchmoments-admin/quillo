@@ -1,8 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../api";
-import { BucketPill, Button, ConfidencePill, Card, Spinner, money } from "../components/ui";
+import { BucketPill, Button, ConfidencePill, Card, Spinner, money, BUCKET_LABEL } from "../components/ui";
 import { AccountantPassCard } from "../components/AccountantPassCard";
 import { SortFlow } from "../components/SortFlow";
 import { BulkBar, type BulkDone } from "../components/BulkBar";
@@ -30,7 +30,7 @@ export function Inbox() {
   const [flash, setFlash] = useState<BulkDone | null>(null);
   const { has } = useFeatures();
   const hasAccountantPass = has("accountant_pass");
-  const { fy: activeFy } = useActiveFy();
+  const { fy: activeFy, label: fyLabel } = useActiveFy();
   const toggleSel = (id: string) =>
     setSelected((prev) => {
       const next = new Set(prev);
@@ -38,10 +38,28 @@ export function Inbox() {
       else next.add(id);
       return next;
     });
+  // Drill-through from the Dashboard breakdowns: ?bucket= / ?property= shows ALL matching transactions
+  // (the lines behind a Dashboard figure — same FY scope + countable predicate the dashboard totalled),
+  // not the needs-review queue. A high limit (server caps at 500) so the count matches the figure.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const filterBucket = searchParams.get("bucket") ?? undefined;
+  const filterProperty = searchParams.get("property") ?? undefined;
+  const filtering = Boolean(filterBucket || filterProperty);
+  const clearFilter = () => {
+    setSearchParams({});
+    setSelected(new Set()); // selection was over the filtered rows — don't leak it into the tab view
+  };
+  const { data: situation } = useQuery({ queryKey: ["situation"], queryFn: api.situation });
+  const propLabel = filterProperty ? situation?.properties.find((p) => p.id === filterProperty)?.label : undefined;
+  const filterLabel = filterBucket ? BUCKET_LABEL[filterBucket] ?? filterBucket : (propLabel ?? "this property");
+
   const tabOpts = TABS.find((t) => t.key === tab)!.opts;
   const { data, isLoading, error } = useQuery({
-    queryKey: ["transactions", tab, limit],
-    queryFn: () => api.transactions({ ...tabOpts, limit }),
+    queryKey: filtering ? ["transactions", "filter", filterBucket, filterProperty, activeFy] : ["transactions", tab, limit],
+    queryFn: () =>
+      filtering
+        ? api.transactions({ bucket: filterBucket, property_id: filterProperty, fy: activeFy, countable: true, limit: 500 })
+        : api.transactions({ ...tabOpts, limit }),
   });
 
   const upload = useMutation({
@@ -87,29 +105,38 @@ export function Inbox() {
           manual Re-scan (accountant_pass-gated). */}
       {hasAccountantPass && <AccountantPassCard fy={activeFy} />}
 
-      {/* Phase 2: the ordered "Sort" flow (priority, not gate) — expands the highest-priority queue
-          with work (clean transfers, clarify patterns, confirm suggestions), collapses the rest to
-          one-line rows, and falls away when clear. The transaction tabs/table below stay reachable. */}
-      <SortFlow fy={activeFy} hasAccountantPass={hasAccountantPass} />
-
-      {/* One "still to review" list — the backlog leads; Receipts / Bank lines just filter the same
-          queue so a statement import doesn't flood the receipt review. */}
-      <h2 className="px-1 text-sm font-semibold text-muted">Still to review</h2>
-      <div className="flex gap-1 text-sm">
-        {TABS.map((t) => (
-          <button
-            key={t.key}
-            onClick={() => {
-              setTab(t.key);
-              setLimit(50);
-              setSelected(new Set());
-            }}
-            className={`rounded-lg px-3 py-1.5 ${tab === t.key ? "bg-ink text-white" : "text-muted hover:text-ink"}`}
-          >
-            {t.label}
+      {filtering ? (
+        /* Drill-through view from a Dashboard breakdown — all matching lines, with a one-tap clear. */
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-line bg-card px-3 py-2 text-sm shadow-card">
+          <span>
+            Showing <span className="font-semibold text-ink">{filterLabel}</span> · FY {fyLabel} · {txns.length} {txns.length === 1 ? "item" : "items"}
+          </span>
+          <button onClick={clearFilter} className="font-medium text-muted hover:text-ink">
+            Clear filter ✕
           </button>
-        ))}
-      </div>
+        </div>
+      ) : (
+        <>
+          {/* One "still to review" list LEADS — single transactions are the primary unit of work. Receipts
+              / Bank lines just filter the same queue so a statement import doesn't flood the receipt review. */}
+          <h2 className="px-1 text-sm font-semibold text-muted">Still to review</h2>
+          <div className="flex gap-1 text-sm">
+            {TABS.map((t) => (
+              <button
+                key={t.key}
+                onClick={() => {
+                  setTab(t.key);
+                  setLimit(50);
+                  setSelected(new Set());
+                }}
+                className={`rounded-lg px-3 py-1.5 ${tab === t.key ? "bg-ink text-white" : "text-muted hover:text-ink"}`}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
 
       {/* Mobile camera: `capture` opens the rear camera; accept images + PDFs. */}
       <input
@@ -128,11 +155,13 @@ export function Inbox() {
 
       {txns.length === 0 ? (
         <Card className="p-8 text-center text-sm text-muted">
-          {tab === "receipts"
-            ? "No receipts yet. Tap + Add receipt to snap one, or import a statement from Accounts."
-            : tab === "bank_lines"
-              ? "No bank lines. Import a statement from the Accounts page."
-              : "Nothing needs review — you're all caught up."}
+          {filtering
+            ? `No transactions in ${filterLabel}.`
+            : tab === "receipts"
+              ? "No receipts yet. Tap + Add receipt to snap one, or import a statement from Accounts."
+              : tab === "bank_lines"
+                ? "No bank lines. Import a statement from the Accounts page."
+                : "Nothing needs review — you're all caught up."}
         </Card>
       ) : (
         <>
@@ -148,17 +177,22 @@ export function Inbox() {
           <ul className="space-y-3">
             {txns.map((t) => (
               <li key={t.id}>
-                <Row txn={t} selected={selected.has(t.id)} onToggle={() => toggleSel(t.id)} showConfirm={tab === "needs_review"} />
+                <Row txn={t} selected={selected.has(t.id)} onToggle={() => toggleSel(t.id)} showConfirm={!filtering && tab === "needs_review"} />
               </li>
             ))}
           </ul>
-          {txns.length >= limit && (
+          {!filtering && txns.length >= limit && (
             <button onClick={() => setLimit((l) => l + 50)} className="w-full rounded-lg border border-line py-2 text-sm text-muted hover:text-ink">
               Load more
             </button>
           )}
         </>
       )}
+
+      {/* "Finish these" — the small group-action wrap-up cluster (sort repeat merchants, confirm loan
+          interest / suggested deductions, exclude transfers). Sits BELOW the list and self-hides when
+          there's nothing left to finish. */}
+      <SortFlow fy={activeFy} hasAccountantPass={hasAccountantPass} />
 
       {selected.size > 0 && (
         <BulkBar ids={[...selected]} onClear={() => setSelected(new Set())} onDone={setFlash} />
@@ -268,7 +302,7 @@ function Row({ txn, selected, onToggle, showConfirm = false }: { txn: Txn; selec
           <button
             onClick={() => confirm.mutate()}
             disabled={confirm.isPending || !txn.bucket}
-            title={txn.bucket ? "Accept the current bucket and clear it from review" : "Open it to choose a bucket first"}
+            title={txn.bucket ? "Accept the current category and clear it from review" : "Open it to choose a category first"}
             className="rounded-lg border border-line px-3 py-2 text-sm font-medium transition hover:bg-surface disabled:opacity-50"
           >
             {confirm.isPending ? "…" : "Confirm ✓"}

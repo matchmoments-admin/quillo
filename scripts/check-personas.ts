@@ -12,6 +12,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Env } from "../src/env";
 import { buildReport } from "../src/lib/report";
+import { buildAccountantSchedule, tieBackChecks } from "../src/lib/accountant-schedule";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
@@ -37,7 +38,7 @@ for (const f of fs.readdirSync(path.join(root, "migrations")).filter((f) => f.en
   db.exec(fs.readFileSync(path.join(root, "migrations", f), "utf8"));
 }
 
-const env = { DB: new D1(db), FEATURES: "attribution_engine,position_excludes_nondeductible,loan_split,wfh_car_methods,refund_netting,income_dedupe,cgt_engine,ess_engine,gst_bas,car_logbook,trust_distributions,smsf_engine" } as unknown as Env;
+const env = { DB: new D1(db), FEATURES: "attribution_engine,position_excludes_nondeductible,loan_split,wfh_car_methods,refund_netting,income_dedupe,cgt_engine,ess_engine,gst_bas,car_logbook,trust_distributions,smsf_engine,accountant_schedule" } as unknown as Env;
 
 // tiny seed helper
 const run = (sql: string, ...p: unknown[]) => db.prepare(sql).run(...(p as never[]));
@@ -163,6 +164,10 @@ const asset = (id: string, u: string, costCents: number, depCents: number, prope
   run(`INSERT INTO income (id, user_id, income_type, property_id, fy, gross_cents, amount_aud_cents) VALUES ('p6iRent', ?, 'rent', 'p6prop', '2025-26', 2000000, 2000000)`, u);
   exp("p6tExp", u, 3000000, "property_rented", "likely_deductible", "p6prop"); // interest/rates/agent
   asset("p6aPlant", u, 8000000, 2000000, "p6prop"); // Div 40 plant on the rental
+  // #181: a SECOND property held rent-free for family — its $1,500 holding cost must surface in the
+  // accountant schedule's NOT-CLAIMED section (with the rent-free reason), never in deductions.
+  run(`INSERT INTO properties (id, user_id, label, status, use_status) VALUES ('p6beach', ?, 'Beach house (family, rent-free)', 'owner_occupied', 'private_use_rent_free')`, u);
+  exp("p6tBeach", u, 150000, "property_rented", "undetermined", "p6beach");
 }
 
 // ── Persona 7: Nadia, nurse with TWO employers (multi-income aggregation) ──
@@ -199,6 +204,18 @@ const asset = (id: string, u: string, costCents: number, depCents: number, prope
   // taxed-upfront grant (discount assessable now).
   run(`INSERT INTO ess_grants (id, user_id, person_id, employer_entity_id, scheme_type, grant_date, taxing_point_date, discount_cents, ownership_gt_10pct) VALUES ('p9essA', ?, ?, 'p9eCo', 'startup', '2025-09-01', '2025-09-01', 1000000, 0)`, u, `person_self_${u}`);
   run(`INSERT INTO ess_grants (id, user_id, person_id, employer_entity_id, scheme_type, grant_date, taxing_point_date, discount_cents, ownership_gt_10pct) VALUES ('p9essB', ?, ?, 'p9eCo', 'taxed_upfront', '2025-09-01', '2025-09-01', 500000, 0)`, u, `person_self_${u}`);
+}
+
+// ── p1maya (#179): Maya, PAYG + WFH — the accountant-schedule Golden A tenant ──
+// Separate from p1 so p1's pinned totals stay byte-exact. One receipt-backed deduction, one
+// bank-line-only deduction (the substantiation gap), and WFH hours (the work-method section).
+{
+  const u = "p1maya";
+  seedTenant(u, "P1 Maya (schedule golden)");
+  inc("p1mSal", u, "salary_payg", 8000000); // $80k salary
+  exp("p1mt1", u, 15000, "payg"); // $150 keyboard — bank line ONLY (substantiation gap)
+  run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, direction, deductibility, receipt_key) VALUES ('p1mt2', ?, 'upload', 'categorised', 'receipt', 8000, 8000, ?, 'payg', 'debit', 'likely_deductible', 'receipts/p1maya/keyboard.jpg')`, u, FY_DATE); // $80 cable — receipt on file
+  run(`INSERT INTO work_use_inputs (user_id, fy, wfh_hours) VALUES (?, 2025, 400)`, u); // 400h × 70c = $280
 }
 
 // ── Persona 10: Margaret, SMSF retiree + crypto ──
@@ -354,6 +371,62 @@ async function main() {
     const p11legacy = r11legacy.per_property?.find((p) => p.property_id === "p11rent");
     check("P11 #157: legacy split and evidence-first agree on the deductible interest ($12k each)", p11legacy?.deduction_cents === 1200000 && p11legacy.deduction_cents === p11prop?.deduction_cents);
     check("P11 #157: headline deductions match across both engines ($15.5k)", r11legacy.total_deductions_cents === r11.total_deductions_cents && r11.total_deductions_cents === 1550000);
+  }
+
+  // ── Accountant schedule (#179/#181): goldens + the tie-back-by-construction loop ──
+
+  // Golden A (#179) — Maya: the schedule's claiming sections sum EXACTLY to her report deductions,
+  // and the bank-line-only claim surfaces as a substantiation gap.
+  {
+    const rM = await buildReport(env, "p1maya", 2025);
+    const sM = await buildAccountantSchedule(env, "p1maya", 2025, { report: rM });
+    const sec = (k: string) => sM.sections.find((s) => s.key === k);
+    const workRelated = sec("work_related");
+    const workMethods = sec("work_methods");
+    check("Schedule A (#179): work-related + work-method sections sum to Maya's report deductions",
+      (workRelated?.subtotal_cents ?? 0) + (workMethods?.subtotal_cents ?? 0) === rM.total_deductions_cents && rM.total_deductions_cents === 15000 + 8000 + 28000);
+    const gapRows = sec("substantiation_gaps")?.rows ?? [];
+    check("Schedule A (#181): the bank-line-only $150 claim is a substantiation gap; the receipt-backed one is not",
+      gapRows.some((r) => r[0] === "work_related" && r[1] === 1 && r[2] === "150.00"));
+    check("Schedule A: itemised rows label substantiation (receipt vs bank line)",
+      (workRelated?.rows ?? []).some((r) => r.includes("Receipt on file")) && (workRelated?.rows ?? []).some((r) => r.includes("Bank line only")));
+  }
+
+  // Golden B (#181) — Susan & Greg: the rent-free beach-house holding cost lands in NOT-CLAIMED with
+  // the rent-free reason, in no deduction/property subtotal, and P6's pinned position is unmoved.
+  {
+    const rB = await buildReport(env, "p6", 2025);
+    const sB = await buildAccountantSchedule(env, "p6", 2025, { report: rB });
+    const nc = sB.sections.find((s) => s.key === "not_claimed");
+    const beachRow = (nc?.rows ?? []).find((r) => r[3] === "1500.00");
+    check("Schedule B (#181): the rent-free property's $1,500 holding cost is EXPLICITLY NOT CLAIMED, with the rent-free reason",
+      !!beachRow && String(beachRow[4]).includes("rent-free"));
+    const beachSec = sB.sections.find((s) => s.key === "property:p6beach");
+    check("Schedule B (#181): the rent-free property claims $0 deductions (and ties back)",
+      (!beachSec || beachSec.subtotal_cents === 0) && rB.per_property.find((p) => p.property_id === "p6beach")?.deduction_cents === 0);
+    check("Schedule B: P6's pinned position is unmoved by the schedule tenant data ($100k)", rB.taxable_position_cents === 10000000);
+  }
+
+  // Tie-back loop — for EVERY tenant, every section that declares a tie-back must equal its
+  // buildReport figure exactly (engine totals stay the single source of truth).
+  for (const u of ["p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9", "p10", "p1maya"]) {
+    const r = await buildReport(env, u, 2025);
+    const s = await buildAccountantSchedule(env, u, 2025, { report: r });
+    const checks = tieBackChecks(s);
+    const bad = checks.filter((c) => !c.ok);
+    check(`Schedule tie-back ${u}: ${checks.length} section(s) tie to the report exactly`,
+      checks.length > 0 && bad.length === 0);
+    if (bad.length) for (const b of bad) console.log(`      ✗ ${u} ${b.label}: section ${b.actual_cents} vs report ${b.report_cents}`);
+  }
+  // p11 runs under the loan_interest_v2 flag set — its schedule must tie under that engine too.
+  {
+    const envV2 = { ...env, FEATURES: `${(env as { FEATURES: string }).FEATURES},loan_interest_v2` } as unknown as Env;
+    const r = await buildReport(envV2, "p11", 2025);
+    const s = await buildAccountantSchedule(envV2, "p11", 2025, { report: r });
+    const checks = tieBackChecks(s);
+    const bad = checks.filter((c) => !c.ok);
+    check("Schedule tie-back p11 (loan_interest_v2): evidence-first interest ties per property", checks.length > 0 && bad.length === 0);
+    if (bad.length) for (const b of bad) console.log(`      ✗ p11 ${b.label}: section ${b.actual_cents} vs report ${b.report_cents}`);
   }
 
   console.log(`\n=== personas: ${pass} passed, ${fail} failed ===`);

@@ -114,7 +114,7 @@ export function Filing() {
               </div>
               <div className="flex flex-none gap-2 print:hidden">
                 <button onClick={() => window.print()} className="rounded-lg bg-ink px-4 py-2 text-sm font-medium text-white hover:bg-ink/90">Print / Save as PDF</button>
-                <a href={api.reportCsvUrl(fy)} className="rounded-lg border border-line px-4 py-2 text-sm font-medium hover:bg-surface">CSV for your agent</a>
+                <a href={api.reportCsvUrl(fy)} className="rounded-lg border border-line px-4 py-2 text-sm font-medium hover:bg-surface">{features.has("accountant_schedule") ? "Accountant schedule (CSV)" : "CSV for your agent"}</a>
               </div>
             </div>
           </Card>

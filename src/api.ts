@@ -60,6 +60,7 @@ import { buildConnectUrl, qboStatus } from "./lib/qbo-oauth";
 import { QuickBooksAdapter } from "./ledger/qbo";
 import { LedgerReauthError } from "./ledger";
 import { buildReport, reportToCsv, currentFyStartYear } from "./lib/report";
+import { buildAccountantSchedule, scheduleToCsv } from "./lib/accountant-schedule";
 import { getProgress } from "./lib/progress";
 import { featureOn } from "./lib/features";
 
@@ -909,6 +910,17 @@ export async function handleApi(
     const fy = Number(url.searchParams.get("fy")) || currentFyStartYear();
     const rep = await buildReport(env, uid, fy);
     if (url.searchParams.get("format") === "csv") {
+      // #179/#181: the itemised accountant schedule replaces the thin summary CSV when the flag is
+      // on. Flag off ⇒ the identical legacy code path (byte-identical output by construction).
+      if (featureOn(env, "accountant_schedule")) {
+        const sched = await buildAccountantSchedule(env, uid, fy, { report: rep });
+        return new Response(scheduleToCsv(sched), {
+          headers: {
+            "content-type": "text/csv",
+            "content-disposition": `attachment; filename=quillo-accountant-schedule-${rep.fy}.csv`,
+          },
+        });
+      }
       return new Response(reportToCsv(rep), {
         headers: {
           "content-type": "text/csv",

@@ -5,7 +5,7 @@ import { addRule, addAccount } from "./lib/situation-write";
 import { QuickBooksAdapter } from "./ledger/qbo";
 import { revokeAndDisconnect } from "./lib/qbo-oauth";
 import { purgeTenant as purgeTenantData, exportTenant as exportTenantData, flagOldData as flagOldDataSweep, type PurgeResult } from "./lib/retention";
-import { COUNTABLE } from "./lib/queries";
+import { COUNTABLE, fetchAskDigestRows } from "./lib/queries";
 import { deriveWfhHours } from "./lib/work-use";
 import { applyUserRules, RULE_CREDIT_BUCKETS } from "./lib/rules";
 import { sha256hex, sha256hexBytes } from "./lib/base64";
@@ -13,7 +13,7 @@ import { getLLM, type LLM } from "./llm";
 import { extractReceipt, extractReceipts, extractFromText, extractColumnMap, extractStatement, extractBatch, extractSituationDraft, extractOccupationRules, extractGuide, extractAnswer, classifyDocument, extractPayslip, extractAgentStatement, extractDepreciationSchedule, extractDividend, batchParams, parseBatchMessage, mapBatchItems, type Extracted, type ExtractedStatement, type SituationDraft, type OccupationRulesDraft, type AnswerResult } from "./extract";
 import { fyForDate, buildReport } from "./lib/report";
 import { getProgress } from "./lib/progress";
-import { buildGuidePrompt, buildAskSystem, summariseReportForAsk } from "./lib/guide";
+import { buildGuidePrompt, buildAskSystem, summariseReportForAsk, renderTxnDigest } from "./lib/guide";
 import { fyLabel, fyBounds } from "./lib/ledger-totals";
 import { assessReadiness, type FilingReadiness, type FilingReadinessSignals } from "./lib/readiness";
 import { rollSchedule, balancingAdjustment, fyStartYearOf, isLowCostAsset, looksLikePersonalTransfer, assetDepreciatesForTaxpayer, type DepAsset } from "./lib/depreciation";
@@ -4425,17 +4425,24 @@ export class TaxAgent extends Agent<Env> {
     if (!(await this.withinBudget(userId, null))) throw new Error("ai_budget_reached");
     const llm = await getLLM(this.env, profile, { userId });
     await this.auditXborderInference(userId, provider, "ask", llm.modelId);
-    const [situation, report] = await Promise.all([
+    // C3 (flag ask_actions): also fetch the FY transaction digest so the model can PROPOSE one-click
+    // fixes by T-code alias. Merchants in the digest are the same data category statement categorisation
+    // already sends to the model, so the existing consent gate above covers it. Flag off ⇒ undefined ⇒
+    // buildAskSystem/extractAnswer take their pre-C3 paths byte-identically.
+    const wantActions = featureOn(this.env, "ask_actions");
+    const [situation, report, digestRows] = await Promise.all([
       getSituation(this.env, userId, profile),
       buildReport(this.env, userId, fy),
+      wantActions ? fetchAskDigestRows(this.env, userId, fy) : Promise.resolve(undefined),
     ]);
+    const digest = digestRows ? renderTxnDigest(digestRows.rows, digestRows.total) : undefined;
     // The question is free text → redact (TFN/card/BSB) BEFORE it reaches the model (APP-8), THEN cap —
     // redact-then-slice so a truncated token can't defeat the regex. The position is a curated summary
     // of aggregates (no PII digit strings), so it is NOT redacted (redact would mangle the *_cents the
     // answer must cite). The situation text can carry names, so it stays redacted.
-    const system = buildAskSystem(redact(renderSituation(situation)), summariseReportForAsk(report));
-    const result = await extractAnswer(llm, system, [{ role: "user", content: redact(q).slice(0, 600) }]);
-    await this.audit(userId, "ask", JSON.stringify({ q_len: q.length, fy }));
+    const system = buildAskSystem(redact(renderSituation(situation)), summariseReportForAsk(report), digest?.text);
+    const result = await extractAnswer(llm, system, [{ role: "user", content: redact(q).slice(0, 600) }], digest && { aliasToId: digest.aliasToId });
+    await this.audit(userId, "ask", JSON.stringify({ q_len: q.length, fy, proposals: result.proposed_actions?.length ?? 0 }));
     return result;
   }
 
@@ -4446,7 +4453,7 @@ export class TaxAgent extends Agent<Env> {
    * both the user message and the assistant answer. Creates a session if none is given. GENERAL-INFO
    * only; any suggested_rule is surfaced for the UI to CONFIRM (never auto-written here).
    */
-  async chatTurn(userId: string, sessionId: string | null, message: string, fy: number): Promise<{ session_id: string; answer: string; caveats: string[]; see_also: string[]; suggested_rule?: { pattern: string; bucket: string; ato_label?: string } }> {
+  async chatTurn(userId: string, sessionId: string | null, message: string, fy: number): Promise<{ session_id: string } & AnswerResult> {
     const text = (message ?? "").trim();
     if (!text) throw new Error("empty message");
     const profile = await this.requireProfile(userId);
@@ -4480,20 +4487,26 @@ export class TaxAgent extends Agent<Env> {
 
     const llm = await getLLM(this.env, profile, { userId });
     await this.auditXborderInference(userId, provider, "ask", llm.modelId);
-    const [situation, report] = await Promise.all([
+    // C3 (flag ask_actions): same digest as askQuestion, pinned to the session FY. Aliases are rebuilt
+    // per turn (deterministic ORDER BY keeps them stable unless data changes mid-chat); proposals are
+    // ephemeral per-turn — like suggested_rule, they are NOT persisted into chat_messages.
+    const wantActions = featureOn(this.env, "ask_actions");
+    const [situation, report, digestRows] = await Promise.all([
       getSituation(this.env, userId, profile),
       buildReport(this.env, userId, sessionFy),
+      wantActions ? fetchAskDigestRows(this.env, userId, sessionFy) : Promise.resolve(undefined),
     ]);
-    const system = buildAskSystem(redact(renderSituation(situation)), summariseReportForAsk(report));
+    const digest = digestRows ? renderTxnDigest(digestRows.rows, digestRows.total) : undefined;
+    const system = buildAskSystem(redact(renderSituation(situation)), summariseReportForAsk(report), digest?.text);
     const userMsg = redact(text).slice(0, 600);
-    const result = await extractAnswer(llm, system, [...history, { role: "user", content: userMsg }]);
+    const result = await extractAnswer(llm, system, [...history, { role: "user", content: userMsg }], digest && { aliasToId: digest.aliasToId });
 
     // Persist both turns (the redacted question + the answer — no PII in storage).
     await this.env.DB.batch([
       this.env.DB.prepare(`INSERT INTO chat_messages (id, user_id, session_id, role, content) VALUES (?, ?, ?, 'user', ?)`).bind(crypto.randomUUID(), userId, sid, userMsg),
       this.env.DB.prepare(`INSERT INTO chat_messages (id, user_id, session_id, role, content) VALUES (?, ?, ?, 'assistant', ?)`).bind(crypto.randomUUID(), userId, sid, result.answer),
     ]);
-    await this.audit(userId, "chat_turn", JSON.stringify({ session: sid, fy: sessionFy, turns: history.length / 2 + 1 }));
+    await this.audit(userId, "chat_turn", JSON.stringify({ session: sid, fy: sessionFy, turns: history.length / 2 + 1, proposals: result.proposed_actions?.length ?? 0 }));
     return { session_id: sid, ...result };
   }
 

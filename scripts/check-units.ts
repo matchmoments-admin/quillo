@@ -18,7 +18,8 @@ import { BUCKETS } from "../src/lib/taxonomy";
 import { applyUserRules } from "../src/lib/rules";
 import type { UserRule } from "../src/lib/db";
 import { parseRoles, hasRole, isAdmin, normaliseRoles, ROLES } from "../src/lib/roles";
-import { buildGuidePrompt, buildAskSystem, summariseReportForAsk } from "../src/lib/guide";
+import { buildGuidePrompt, buildAskSystem, summariseReportForAsk, renderTxnDigest } from "../src/lib/guide";
+import { validateProposedActions } from "../src/extract";
 import type { Progress } from "../src/lib/progress";
 import { fyBounds, fyLabel, basPositionFrom } from "../src/lib/ledger-totals";
 import { currentFyStartYear, reportToCsv, type Report } from "../src/lib/report";
@@ -1160,6 +1161,52 @@ console.log("buildAskSystem (Ask Quillo)");
   check("ask summary keeps the headline taxable position verbatim", summary.includes("428050"));
   check("ask summary keeps deduction figures verbatim (not redacted)", summary.includes("328050") && !summary.includes("REDACTED"));
   check("ask summary leads with the position fields", summary.indexOf("indicative_taxable_position_cents") < summary.indexOf("deductions_by_category"));
+}
+
+console.log("Ask Quillo C3 (ask_actions): digest + proposed-action validation");
+{
+  // Flag-off contract: the 2-arg prompt is BYTE-IDENTICAL to the pre-C3 prompt (no digest, no actions).
+  const s2 = buildAskSystem("Taxpayer: nurse", "{}");
+  check("no-digest call ≡ undefined-digest call (byte-identity)", s2 === buildAskSystem("Taxpayer: nurse", "{}", undefined));
+  check("no-digest prompt carries no actions text", !s2.includes("PROPOSED ACTIONS") && !s2.includes("T-code"));
+
+  const rows = [
+    { id: "real-1", txn_date: "2025-09-01", merchant: "OFFICEWORKS", amount_aud_cents: 4599, bucket: "payg", ato_label: "D5", deductibility: "undetermined", property_id: null },
+    { id: "real-2", txn_date: "2025-09-02", merchant: "card 4111111111111111 ref", amount_aud_cents: 31250, bucket: "property_rented", ato_label: null, deductibility: "needs_apportionment", property_id: "prop9" },
+  ];
+  const digest = renderTxnDigest(rows, 5);
+  check("digest aliases are sequential T-codes", digest.text.startsWith("T1|") && digest.text.includes("\nT2|"));
+  check("digest alias map round-trips to the real ids", digest.aliasToId.get("T1") === "real-1" && digest.aliasToId.get("T2") === "real-2");
+  check("digest notes the truncated remainder", digest.text.includes("3 more transactions not shown"));
+  check("digest redacts card-number digits in merchant strings", !digest.text.includes("4111111111111111"));
+  check("digest carries the property scope on the bucket", digest.text.includes("property_rented:prop9"));
+
+  const s3 = buildAskSystem("Taxpayer: nurse", "{}", digest.text);
+  check("digest prompt includes the rows + actions guardrail", s3.includes("T1|") && s3.includes("PROPOSED ACTIONS"));
+  check("digest prompt hard-gates confirmed_deductible", s3.includes("NEVER propose state confirmed_deductible"));
+  check("digest prompt frames proposals as confirm-first", s3.toLowerCase().includes("must confirm"));
+
+  // validateProposedActions: only executable-exactly-as-described proposals survive.
+  const aliases = digest.aliasToId;
+  const v = (raw: unknown) => validateProposedActions(raw, aliases);
+  const base = { title: "Fix things", rationale: "Because you asked" };
+  check("invalid kind dropped", v([{ ...base, kind: "delete_everything", txn_refs: ["T1"] }]).length === 0);
+  check("unknown T-code refs dropped; action with none left dropped", v([{ ...base, kind: "set_deductibility", state: "confirmed_not", txn_refs: ["T99"] }]).length === 0);
+  check("known refs resolve to REAL ids", (v([{ ...base, kind: "set_deductibility", state: "confirmed_not", txn_refs: ["T1", "T99", "T1"] }])[0] as { txn_ids: string[] }).txn_ids.join(",") === "real-1");
+  check("over-cap ref list drops the WHOLE action (not truncated)", v([{ ...base, kind: "set_deductibility", state: "confirmed_not", txn_refs: Array.from({ length: 51 }, () => "T1") }]).length === 0);
+  check("more than 3 proposals capped to 3", v(Array.from({ length: 4 }, () => ({ ...base, kind: "add_rule", pattern: "Adobe", bucket: "payg" }))).length === 3);
+  check("recategorise to a credit bucket dropped", v([{ ...base, kind: "recategorise", bucket: "income_personal", txn_refs: ["T1"] }]).length === 0);
+  check("recategorise to 'unknown' dropped", v([{ ...base, kind: "recategorise", bucket: "unknown", txn_refs: ["T1"] }]).length === 0);
+  check("non-proposable deductibility state dropped", v([{ ...base, kind: "set_deductibility", state: "suggested_deductible", txn_refs: ["T1"] }]).length === 0);
+  check("apportioned amount stripped unless confirmed_deductible", (v([{ ...base, kind: "set_deductibility", state: "likely_not", txn_refs: ["T1"], deductible_amount_cents: 5000 }])[0] as { deductible_amount_cents?: number }).deductible_amount_cents === undefined);
+  check("apportioned amount kept on confirmed_deductible", (v([{ ...base, kind: "set_deductibility", state: "confirmed_deductible", txn_refs: ["T1"], deductible_amount_cents: 5000 }])[0] as { deductible_amount_cents?: number }).deductible_amount_cents === 5000);
+  const trio = v([
+    { ...base, kind: "set_deductibility", state: "confirmed_not", txn_refs: ["T1"] },
+    { ...base, kind: "recategorise", bucket: "payg", ato_label: "D5", txn_refs: ["T2"] },
+    { ...base, kind: "add_rule", pattern: "Adobe", bucket: "payg" },
+  ]);
+  check("a valid set_deductibility + recategorise + add_rule trio passes through", trio.length === 3 && trio.map((t) => t.kind).join(",") === "set_deductibility,recategorise,add_rule");
+  check("missing title/rationale dropped", v([{ kind: "add_rule", pattern: "Adobe", bucket: "payg" }]).length === 0);
 }
 
 console.log("roles");

@@ -1,5 +1,7 @@
 import type { Progress } from "./progress";
 import type { Report } from "./report";
+import type { AskDigestRow } from "./queries";
+import { redact } from "./redact";
 
 /**
  * Compact, model-facing summary of the user's computed FY position for "Ask Quillo". Headline figures
@@ -69,12 +71,52 @@ const ASK_GUARDRAILS =
   "tax agent. Answer ONLY from the user's data below; if the answer isn't in the data, say what's " +
   "missing and which screen to add it on. Be warm, plain, jargon-free, and cite the user's own numbers.";
 
+// C3 (flag ask_actions): how the model may use proposed_actions. Proposals are SUGGESTIONS the user
+// must confirm in the UI — the model never writes. confirmed_deductible moves the tax position, so it
+// gets the strictest gate of all.
+const ASK_ACTIONS_GUARDRAILS =
+  "\n\nPROPOSED ACTIONS: when — and ONLY when — the user asks you to fix, confirm, correct, mark or " +
+  "re-categorise something, you may include up to 3 proposed_actions. Reference transactions ONLY by " +
+  "their T-codes from the digest below; NEVER invent a T-code. NEVER propose state confirmed_deductible " +
+  "unless the user has explicitly said the expense is work/income-related — when in doubt propose " +
+  "needs_apportionment, or ask. Every proposal is a suggestion the user must confirm — phrase your " +
+  "answer accordingly (\"I can mark these — confirm below\"), never as already done. To remember a " +
+  "repeating merchant, use an add_rule action (debit categories only).";
+
+/**
+ * Render the FY transaction digest for the Ask prompt (C3, flag ask_actions): one compact pipe-line per
+ * row, addressed by a short ALIAS (T1, T2 …) instead of the real id — the model proposes actions by
+ * T-code and the server resolves them via the returned map, so a hallucinated code resolves to nothing
+ * and real ids never reach the model. Merchants pass through redact() defensively (digit patterns only —
+ * statement categorisation already sends merchants to the model, so this adds no new data category).
+ * Pure (unit-tested). NOTE: aliases are rebuilt per turn — deterministic ORDER BY keeps them stable
+ * unless the data itself changes mid-conversation.
+ */
+export function renderTxnDigest(rows: AskDigestRow[], total: number): { text: string; aliasToId: Map<string, string> } {
+  const aliasToId = new Map<string, string>();
+  const lines: string[] = [];
+  rows.forEach((r, i) => {
+    const alias = `T${i + 1}`;
+    aliasToId.set(alias, r.id);
+    const bucket = r.property_id ? `${r.bucket ?? "?"}:${r.property_id}` : (r.bucket ?? "?");
+    lines.push(
+      `${alias}|${r.txn_date ?? "undated"}|${redact(r.merchant ?? "—")}|${(r.amount_aud_cents / 100).toFixed(2)}|${bucket}|${r.ato_label ?? ""}|${r.deductibility ?? "undetermined"}`,
+    );
+  });
+  if (total > rows.length) lines.push(`(${total - rows.length} more transactions not shown — totals are in the position JSON above)`);
+  // Defensive cap, mirroring the 10k-char position-summary cap: ~200 rows is ~6k chars in practice.
+  const text = lines.join("\n").slice(0, 12000);
+  return { text, aliasToId };
+}
+
 /**
  * Build the SYSTEM prompt for "Ask Quillo" — the stable guardrails + persona + the user's own ledger
  * context (situation + position). The conversation turns are passed separately as messages[], so this
  * works for both single-turn (C1) and multi-turn chat (C2). Pure (unit-tested).
+ * C3: `txnDigest` (flag ask_actions) appends the aliased FY transaction list + the actions guardrails;
+ * OMITTED ⇒ the output is byte-identical to the pre-C3 prompt (the flag-off contract, golden-pinned).
  */
-export function buildAskSystem(situationText: string, positionText: string): string {
+export function buildAskSystem(situationText: string, positionText: string, txnDigest?: string): string {
   return (
     "You are Quillo, an Australian tax-evidence assistant answering questions about THIS user's own " +
     "records, in a short back-and-forth. " +
@@ -83,9 +125,15 @@ export function buildAskSystem(situationText: string, positionText: string): str
     (situationText || "(situation not set up yet)") +
     "\n\nTheir tracked tax position this year (their actual figures, JSON):\n" +
     positionText +
-    "\n\nAnswer each question using the data above. If it depends on something not captured, say so and " +
-    "name the screen to add it. When the user wants a repeating merchant categorised a certain way, you " +
-    "may propose a rule via suggested_rule (debit categories only). Call give_answer exactly once per reply."
+    (txnDigest != null
+      ? ASK_ACTIONS_GUARDRAILS +
+        "\n\nTheir transactions this year (T-code|date|merchant|$AUD|bucket[:property]|ato_label|deductibility):\n" +
+        txnDigest +
+        "\n\nAnswer each question using the data above. If it depends on something not captured, say so and " +
+        "name the screen to add it. Call give_answer exactly once per reply."
+      : "\n\nAnswer each question using the data above. If it depends on something not captured, say so and " +
+        "name the screen to add it. When the user wants a repeating merchant categorised a certain way, you " +
+        "may propose a rule via suggested_rule (debit categories only). Call give_answer exactly once per reply.")
   );
 }
 

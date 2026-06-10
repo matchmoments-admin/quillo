@@ -1152,24 +1152,137 @@ const ANSWER_TOOL: Anthropic.Tool = {
   },
 };
 
+// ── Ask Quillo C3 (flag ask_actions): model-PROPOSED one-click fixes ──────────
+// The model references transactions by the short T-code aliases in the prompt digest; the server
+// resolves aliases → real ids via the per-turn map, so a hallucinated code resolves to nothing and the
+// model never sees (or can name) a real transaction id. Proposals are SUGGESTIONS — the UI renders a
+// confirm card and the user's click calls the EXISTING audited write endpoint. Never autonomous.
+
+// The deductibility states a proposal may carry — a SUBSET of taxonomy's DEDUCTIBILITY_STATES:
+// suggestion/undetermined states are pointless to propose, and likely_deductible would imply assurance
+// the model must not give. confirmed_deductible is allowed but the prompt gates it hard (user must have
+// explicitly said the expense is work-related) and the user still confirms in the UI.
+export const PROPOSABLE_DEDUCTIBILITY_STATES = ["confirmed_deductible", "confirmed_not", "likely_not", "needs_apportionment"] as const;
+export type ProposableDeductibility = (typeof PROPOSABLE_DEDUCTIBILITY_STATES)[number];
+
+export type ProposedAction =
+  | { kind: "set_deductibility"; title: string; rationale: string; txn_ids: string[]; state: ProposableDeductibility; deductible_amount_cents?: number }
+  | { kind: "recategorise"; title: string; rationale: string; txn_ids: string[]; bucket: string; ato_label?: string }
+  | { kind: "add_rule"; title: string; rationale: string; pattern: string; bucket: string; ato_label?: string };
+
 export interface AnswerResult {
   answer: string;
   caveats: string[];
   see_also: string[];
   suggested_rule?: { pattern: string; bucket: string; ato_label?: string };
+  proposed_actions?: ProposedAction[];
 }
 
 const CREDIT_OR_UNKNOWN_BUCKETS = new Set(["income_business", "income_property", "income_personal", "refund", "unknown"]);
 
+export const MAX_PROPOSALS_PER_TURN = 3;
+export const MAX_TXN_REFS_PER_PROPOSAL = 50;
+
+/**
+ * Validate + resolve the model's raw proposed_actions (pure — unit-tested in check-units). Drops
+ * anything that can't be executed exactly as described: unknown kinds, T-codes not in this turn's
+ * digest, credit/unknown buckets, non-proposable states. An action with MORE than the ref cap is
+ * dropped WHOLE (truncating it would silently apply a different change than the title describes).
+ */
+export function validateProposedActions(raw: unknown, aliasToId: Map<string, string>): ProposedAction[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ProposedAction[] = [];
+  for (const item of raw.slice(0, MAX_PROPOSALS_PER_TURN)) {
+    const a = item as { kind?: unknown; title?: unknown; rationale?: unknown; txn_refs?: unknown; state?: unknown; deductible_amount_cents?: unknown; bucket?: unknown; ato_label?: unknown; pattern?: unknown };
+    if (typeof a.title !== "string" || !a.title.trim() || typeof a.rationale !== "string" || !a.rationale.trim()) continue;
+    const title = a.title.trim().slice(0, 60);
+    const rationale = a.rationale.trim().slice(0, 200);
+    const atoLabel = typeof a.ato_label === "string" && a.ato_label.trim() ? a.ato_label.trim().slice(0, 60) : undefined;
+    const resolveRefs = (): string[] | null => {
+      if (!Array.isArray(a.txn_refs)) return null;
+      if (a.txn_refs.length > MAX_TXN_REFS_PER_PROPOSAL) return null; // over cap ⇒ drop whole action
+      const ids = [...new Set(a.txn_refs.filter((r): r is string => typeof r === "string").map((r) => aliasToId.get(r.trim())).filter((id): id is string => !!id))];
+      return ids.length ? ids : null;
+    };
+    const validBucket = typeof a.bucket === "string" && isBucket(a.bucket) && !CREDIT_OR_UNKNOWN_BUCKETS.has(a.bucket);
+    if (a.kind === "set_deductibility") {
+      const txn_ids = resolveRefs();
+      if (!txn_ids) continue;
+      if (typeof a.state !== "string" || !(PROPOSABLE_DEDUCTIBILITY_STATES as readonly string[]).includes(a.state)) continue;
+      const state = a.state as ProposableDeductibility;
+      // The apportioned amount only means something on a confirmed claim; strip it everywhere else.
+      const amt = state === "confirmed_deductible" && typeof a.deductible_amount_cents === "number" && Number.isInteger(a.deductible_amount_cents) && a.deductible_amount_cents > 0
+        ? a.deductible_amount_cents
+        : undefined;
+      out.push({ kind: "set_deductibility", title, rationale, txn_ids, state, ...(amt != null ? { deductible_amount_cents: amt } : {}) });
+    } else if (a.kind === "recategorise") {
+      const txn_ids = resolveRefs();
+      if (!txn_ids || !validBucket) continue;
+      out.push({ kind: "recategorise", title, rationale, txn_ids, bucket: a.bucket as string, ...(atoLabel ? { ato_label: atoLabel } : {}) });
+    } else if (a.kind === "add_rule") {
+      if (typeof a.pattern !== "string" || !a.pattern.trim() || !validBucket) continue;
+      out.push({ kind: "add_rule", title, rationale, pattern: a.pattern.trim().slice(0, 60), bucket: a.bucket as string, ...(atoLabel ? { ato_label: atoLabel } : {}) });
+    }
+  }
+  return out;
+}
+
+// The with-actions variant of ANSWER_TOOL (flag ask_actions). ANSWER_TOOL itself is untouched so the
+// flag-off request is byte-identical (prompt-cache keys included). suggested_rule is REMOVED here —
+// rules arrive as add_rule proposed actions, one consistent confirm-card channel for the UI.
+const ANSWER_TOOL_WITH_ACTIONS: Anthropic.Tool = {
+  name: "give_answer",
+  description: ANSWER_TOOL.description,
+  input_schema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["answer"],
+    properties: {
+      answer: (ANSWER_TOOL.input_schema as { properties: Record<string, unknown> }).properties.answer,
+      caveats: (ANSWER_TOOL.input_schema as { properties: Record<string, unknown> }).properties.caveats,
+      see_also: (ANSWER_TOOL.input_schema as { properties: Record<string, unknown> }).properties.see_also,
+      proposed_actions: {
+        type: "array",
+        maxItems: MAX_PROPOSALS_PER_TURN,
+        description: "ONLY when the user asks to fix/update their records: up to 3 one-click fixes the user will confirm. Reference transactions ONLY by the T-codes in the digest.",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["kind", "title", "rationale"],
+          properties: {
+            kind: { type: "string", enum: ["set_deductibility", "recategorise", "add_rule"] },
+            title: { type: "string", description: "Short human label, e.g. 'Mark 14 Uber rides not deductible'." },
+            rationale: { type: "string", description: "One line: why, grounded in the user's words and data." },
+            txn_refs: { type: "array", items: { type: "string" }, maxItems: MAX_TXN_REFS_PER_PROPOSAL, description: "T-codes from the digest (set_deductibility / recategorise only)." },
+            state: { type: "string", enum: [...PROPOSABLE_DEDUCTIBILITY_STATES], description: "set_deductibility only. confirmed_deductible ONLY when the user explicitly said it's work-related." },
+            deductible_amount_cents: { type: "integer", description: "Optional partial claim, only with confirmed_deductible." },
+            bucket: { type: "string", description: "Debit spend bucket (recategorise / add_rule): payg | company | property_rented | property_vacant | asset." },
+            ato_label: { type: "string", description: "Optional ATO label / deduction category." },
+            pattern: { type: "string", description: "add_rule only: merchant text to match (e.g. 'Adobe')." },
+          },
+        },
+      },
+    },
+  },
+};
+
 /** One metered Haiku call → a grounded answer to a question about the user's own ledger, with prior
- * turns as context (single-turn callers pass a one-element messages array). */
-export async function extractAnswer(llm: LLM, system: string, messages: { role: "user" | "assistant"; content: string }[]): Promise<AnswerResult> {
+ * turns as context (single-turn callers pass a one-element messages array).
+ * C3 (`actions` set, flag ask_actions): the with-actions tool variant + a higher output cap (three
+ * proposals × fifty T-codes plus prose doesn't fit in 700), proposals validated/resolved against this
+ * turn's alias map. `actions` ABSENT ⇒ the pre-C3 request byte-for-byte. */
+export async function extractAnswer(
+  llm: LLM,
+  system: string,
+  messages: { role: "user" | "assistant"; content: string }[],
+  actions?: { aliasToId: Map<string, string> },
+): Promise<AnswerResult> {
   const msg = await llm.create(
     {
       model: llm.modelId,
-      max_tokens: 700,
+      max_tokens: actions ? 1100 : 700,
       system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
-      tools: [ANSWER_TOOL],
+      tools: [actions ? ANSWER_TOOL_WITH_ACTIONS : ANSWER_TOOL],
       tool_choice: { type: "tool", name: ANSWER_TOOL.name },
       messages: messages.map((m) => ({ role: m.role, content: [{ type: "text" as const, text: m.content }] })),
     },
@@ -1177,7 +1290,7 @@ export async function extractAnswer(llm: LLM, system: string, messages: { role: 
   );
   const toolUse = msg.content.find((c): c is Anthropic.ToolUseBlock => c.type === "tool_use" && c.name === ANSWER_TOOL.name);
   if (!toolUse) throw new Error("model did not return a give_answer tool call");
-  const input = toolUse.input as { answer?: unknown; caveats?: unknown; see_also?: unknown; suggested_rule?: unknown };
+  const input = toolUse.input as { answer?: unknown; caveats?: unknown; see_also?: unknown; suggested_rule?: unknown; proposed_actions?: unknown };
   const answer = typeof input.answer === "string" && input.answer.trim() ? input.answer.trim() : "I couldn't answer that from your records.";
   const strList = (v: unknown) => (Array.isArray(v) ? v.filter((s): s is string => typeof s === "string" && s.trim().length > 0).slice(0, 4) : []);
   // Only surface a suggested rule for a valid DEBIT spend bucket — never an income/refund re-bucket.
@@ -1186,7 +1299,21 @@ export async function extractAnswer(llm: LLM, system: string, messages: { role: 
   if (sr && typeof sr.pattern === "string" && sr.pattern.trim() && typeof sr.bucket === "string" && isBucket(sr.bucket) && !CREDIT_OR_UNKNOWN_BUCKETS.has(sr.bucket)) {
     suggested_rule = { pattern: sr.pattern.trim().slice(0, 60), bucket: sr.bucket, ato_label: typeof sr.ato_label === "string" ? sr.ato_label.trim().slice(0, 60) : undefined };
   }
-  return { answer, caveats: strList(input.caveats), see_also: strList(input.see_also), suggested_rule };
+  if (!actions) return { answer, caveats: strList(input.caveats), see_also: strList(input.see_also), suggested_rule };
+  // Actions mode: one confirm-card channel. A stray suggested_rule (the schema dropped it, but a model
+  // can echo old-turn shapes) folds into an add_rule proposal rather than rendering a second UI path.
+  let proposed_actions = validateProposedActions(input.proposed_actions, actions.aliasToId);
+  if (suggested_rule && proposed_actions.length < MAX_PROPOSALS_PER_TURN && !proposed_actions.some((p) => p.kind === "add_rule")) {
+    proposed_actions = [...proposed_actions, {
+      kind: "add_rule",
+      title: `Always file “${suggested_rule.pattern}” the same way`,
+      rationale: "Remember this merchant's category for future imports.",
+      pattern: suggested_rule.pattern,
+      bucket: suggested_rule.bucket,
+      ...(suggested_rule.ato_label ? { ato_label: suggested_rule.ato_label } : {}),
+    }];
+  }
+  return { answer, caveats: strList(input.caveats), see_also: strList(input.see_also), proposed_actions: proposed_actions.length ? proposed_actions : undefined };
 }
 
 /** One metered Haiku call → a short personalised walkthrough. Plain structured output, no prose parsing. */

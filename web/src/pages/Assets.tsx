@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import { useFeatures } from "../lib/features";
 import { Card, Spinner, Button, Input, money } from "../components/ui";
-import type { AssetRow, ScheduleRow, VehicleLogbookRow } from "../types";
+import type { AssetRow, ScheduleRow } from "../types";
 
 const CLASS_LABEL: Record<string, string> = {
   div40_plant: "Plant & equipment (Div 40)",

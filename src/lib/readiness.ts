@@ -116,7 +116,8 @@ function bucketWhy(bucket: string): string {
 }
 
 // Why a captured row is EXCLUDED from the indicative position (or tracked as company). GENERAL-INFO.
-function excludedWhy(bucket: string, deductibility: string | null | undefined): string {
+// Exported for the accountant schedule's NOT-CLAIMED section (#181) — one source for the reason text.
+export function excludedWhy(bucket: string, deductibility: string | null | undefined): string {
   if (bucket === "asset") return "Capital purchase — claimed over time as decline in value (Div 40 / Div 43), not as an immediate deduction, so it isn't counted here.";
   switch (deductibility) {
     case "likely_not":
@@ -129,6 +130,24 @@ function excludedWhy(bucket: string, deductibility: string | null | undefined): 
     default:
       return "Not yet confirmed as work-related — excluded by default until you confirm it relates to earning your income. Review it in the Inbox.";
   }
+}
+
+/**
+ * The full exclusion reason for a row, covering the two gates that fire BEFORE deductibility
+ * (employer-reimbursed 0030, rent-free/renovating property 0031) and then the deductibility-state
+ * reasons. Used by the accountant schedule's NOT-CLAIMED section (#181) so every excluded item
+ * carries the same GENERAL-INFO explanation the readiness lines show. assessReadiness keeps calling
+ * excludedWhy directly (its breakdown rows render reimbursed/use-status lines separately).
+ */
+export function exclusionReason(
+  bucket: string,
+  deductibility: string | null | undefined,
+  reimbursed?: number | null,
+  useStatusDenied?: number | null,
+): string {
+  if (reimbursed) return "Employer-reimbursed — the employer bore the cost, so it isn't a deductible loss or outgoing (s8-1).";
+  if (useStatusDenied) return "Property held rent-free / off-market while renovating — it earns no assessable income, so holding costs aren't deductible (s8-1); CGT cost base may still accrue.";
+  return excludedWhy(bucket, deductibility);
 }
 
 /**

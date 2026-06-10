@@ -1,11 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../api";
 import { useActiveFy } from "../lib/activeFy";
+import { useFeatures } from "../lib/features";
 import { Card, Spinner, money, BUCKET_LABEL, InfoTip } from "../components/ui";
 
 export function Reports() {
   // Driven by the global active-FY switcher (in the app header); change the year there.
   const { fy, label } = useActiveFy();
+  const features = useFeatures();
   const { data, isLoading, error } = useQuery({ queryKey: ["report", fy], queryFn: () => api.report(fy) });
 
   return (
@@ -22,7 +24,7 @@ export function Reports() {
       </div>
 
       <a href={api.reportCsvUrl(fy)} className="inline-block rounded-lg bg-ink px-4 py-2 text-sm font-medium text-white hover:bg-ink/90">
-        Download CSV for your tax agent
+        {features.has("accountant_schedule") ? "Download accountant schedule (CSV)" : "Download CSV for your tax agent"}
       </a>
 
       {isLoading ? (

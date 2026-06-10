@@ -73,6 +73,20 @@ export function deductionGroupForRow(
   return "deduction";
 }
 
+/**
+ * Whether a property-scoped row counts toward that property's negative-gearing deduction. The
+ * per-property counterpart of deductionGroupForRow (NOTE the deliberate difference: a property
+ * row left 'undetermined' still counts — deny-by-default applies to payg, not to a let property).
+ * Shared with the accountant schedule so its per-property itemised rows tie back exactly.
+ */
+export function propertyRowCounts(
+  r: { deductibility?: string | null; reimbursed?: number | null; use_status_denied?: number | null },
+  excludeNonDeductible: boolean,
+): boolean {
+  const d = r.deductibility ?? "undetermined";
+  return !r.reimbursed && !r.use_status_denied && (!excludeNonDeductible || !(d === "likely_not" || d === "confirmed_not" || d === "needs_apportionment"));
+}
+
 // Per-property tax position (the negative-gearing figure): rent income − rental deductions −
 // decline in value. net_cents < 0 = a rental loss that offsets other income.
 export interface PropertyPosition {
@@ -174,85 +188,114 @@ export function positionAmountCents(
   return row.amount_aud_cents ?? row.amount_cents ?? 0;
 }
 
+// ── Shared per-row SQL context ────────────────────────────────────────────────
+// These clause builders are the SINGLE source of the WHERE/SUM fragments that decide which
+// transaction rows count and for how much. buildReport AND buildAccountantSchedule (the itemised
+// accountant export) both use them, so the itemised lines can never diverge from the engine totals
+// (tie-back by construction — asserted per persona in scripts/check-personas.ts).
+
+// Mirrors positionAmountCents EXACTLY: only confirmed_deductible rows count their apportioned amount;
+// everything else (incl. likely_not rows the 0021 backfill stamped with deductible_amount_cents=0)
+// keeps gross. `p` is the table-alias prefix ("" for byBucket, "t." for the property join).
+export const claimExpr = (p: string) =>
+  `CASE WHEN ${p}deductibility = 'confirmed_deductible' AND ${p}deductible_amount_cents IS NOT NULL THEN ${p}deductible_amount_cents ELSE COALESCE(${p}amount_aud_cents, ${p}amount_cents) END`;
+
+// 0031: a property held rent-free for a relative, or off-market while renovating, earns no income
+// => its expenses are NOT deductions (s8-1), though CGT cost base still accrues. We MARK such rows
+// (a 0/1 flag) rather than removing them, so they stay visible as excluded tracked-spend and every
+// surface that lists spend agrees; only the headline classifier drops them. Static string, no extra
+// binds; only the genuinely-new use_status values deny and no existing row carries them, so the
+// position is byte-identical until a user marks a property. `col` is the txn's property_id column.
+export const useStatusDeniedExpr = (col: string) =>
+  `(CASE WHEN EXISTS (SELECT 1 FROM properties pp WHERE pp.id = ${col} AND pp.use_status IN ('private_use_rent_free','under_renovation_not_available')) THEN 1 ELSE 0 END)`;
+
+// Phase B / G2: when the attribution_engine flag is on, a transaction that has explicit
+// transaction_attributions is counted via those (attributionTotals) instead of its raw amount — so
+// it must be EXCLUDED from the raw byBucket/byPropertyRaw/company/resolved sums to avoid double
+// counting. `on` false (or no attribution rows) ⇒ this clause is empty ⇒ byte-identical legacy path.
+// `col` is the transaction's id column for the surrounding query's alias; no extra bind.
+export const notAttributedExpr = (col: string, on: boolean) =>
+  on ? ` AND NOT EXISTS (SELECT 1 FROM transaction_attributions ta WHERE ta.transaction_id = ${col})` : "";
+
+// Exclude the legacy split rows ONLY for loans the v2 model supersedes (loanInterestV2Context).
+// NULL-safe via COALESCE — `NOT (NULL = 'x')` is NULL (falsy) and would wrongly DROP every
+// NULL-ato_label row. No superseded loans ⇒ empty clause ⇒ byte-identical legacy path. `p` is the
+// alias; the bound `?`s are the loan ids, appended LAST in each query's bind list.
+export const excludeSplitInterestExpr = (p: string, supersededLoanIds: string[]) =>
+  supersededLoanIds.length
+    ? ` AND NOT (COALESCE(${p}ato_label,'') = 'rental:interest' AND ${p}account_id IN (${supersededLoanIds.map(() => "?").join(",")}))`
+    : "";
+
+// Evidence-first loan interest (flag loan_interest_v2): the loan model is the source of a loan's
+// deductible interest — resolved per property from loan_interest_summaries (the lender/statement
+// actual) or a labelled rate×balance estimate, attributed by the loan→property deductible share.
+// Computed UP FRONT so the set of loans it SUPERSEDES is known before the raw sums run (only those
+// loans' legacy split rows get excluded — a loan with no v2 figure keeps its loan_split unchanged).
+export interface LoanInterestV2Context {
+  byProp: Map<string, number>;
+  total_cents: number;
+  // The loan ACCOUNT ids whose interest now comes from the v2 model — whose legacy per-line split rows
+  // (ato_label='rental:interest') must be EXCLUDED from the raw sums to avoid double-counting. Exactly
+  // one source per loan per FY; a loan with NO v2 figure (no summary, no rate+balance, no income-
+  // producing property link) is NOT here, so its legacy split is untouched — no silent under-count.
+  supersededLoanIds: string[];
+  // Per-loan resolution detail for the accountant schedule's evidence column. Presentation only.
+  loans: { loan_account_id: string; property_id: string; deductible_cents: number; source: LoanInterestSource }[];
+}
+
+export async function loanInterestV2Context(env: Env, userId: string, startYear: number): Promise<LoanInterestV2Context> {
+  const byProp = new Map<string, number>();
+  let total_cents = 0;
+  const supersededLoanIds: string[] = [];
+  const loans: LoanInterestV2Context["loans"] = [];
+  if (!featureOn(env, "loan_interest_v2")) return { byProp, total_cents, supersededLoanIds, loans };
+  const links = await env.DB.prepare(
+    `SELECT lp.loan_account_id, lp.property_id, lp.deductible_interest_pct, a.interest_rate_pct, a.balance_cents
+       FROM loans_properties lp
+       JOIN accounts a   ON a.id = lp.loan_account_id AND a.user_id = lp.user_id
+       JOIN properties p ON p.id = lp.property_id     AND p.user_id = lp.user_id
+      WHERE lp.user_id = ? AND p.status IN ('rented','vacant')`,
+  )
+    .bind(userId)
+    .all<{ loan_account_id: string; property_id: string; deductible_interest_pct: number; interest_rate_pct: number | null; balance_cents: number | null }>();
+  const sumsRes = await env.DB.prepare(
+    `SELECT loan_account_id, interest_cents, source FROM loan_interest_summaries WHERE user_id = ? AND fy = ?`,
+  )
+    .bind(userId, String(startYear))
+    .all<{ loan_account_id: string; interest_cents: number; source: string }>();
+  const sumByLoan = new Map((sumsRes.results ?? []).map((s) => [s.loan_account_id, { interest_cents: s.interest_cents, source: s.source as LoanInterestSource }]));
+  for (const link of links.results ?? []) {
+    const resolved = resolveLoanInterest(sumByLoan.get(link.loan_account_id) ?? null, { interest_rate_pct: link.interest_rate_pct, balance_cents: link.balance_cents });
+    if (!resolved) continue;
+    const ded = deductibleInterestCents(resolved.interest_cents, link.deductible_interest_pct);
+    if (ded <= 0) continue;
+    byProp.set(link.property_id, (byProp.get(link.property_id) ?? 0) + ded);
+    total_cents += ded;
+    if (!supersededLoanIds.includes(link.loan_account_id)) supersededLoanIds.push(link.loan_account_id);
+    loans.push({ loan_account_id: link.loan_account_id, property_id: link.property_id, deductible_cents: ded, source: resolved.source });
+  }
+  return { byProp, total_cents, supersededLoanIds, loans };
+}
+
 export async function buildReport(env: Env, userId: string, startYear: number): Promise<Report> {
   const { start, end } = fyBounds(startYear);
   // Flag `loan_split`: when on, the position counts the claimable (apportioned) portion
   // (deductible_amount_cents) of a row instead of the gross — see positionAmountCents. The SUM
   // expressions below MUST mirror that helper exactly. Off ⇒ byte-identical legacy totals.
   const honorApportion = featureOn(env, "loan_split");
-  // Mirrors positionAmountCents EXACTLY: only confirmed_deductible rows count their apportioned amount;
-  // everything else (incl. likely_not rows the 0021 backfill stamped with deductible_amount_cents=0)
-  // keeps gross. `p` is the table-alias prefix ("" for byBucket, "t." for the property join).
-  const claim = (p: string) =>
-    `CASE WHEN ${p}deductibility = 'confirmed_deductible' AND ${p}deductible_amount_cents IS NOT NULL THEN ${p}deductible_amount_cents ELSE COALESCE(${p}amount_aud_cents, ${p}amount_cents) END`;
-  const amtExpr = honorApportion ? claim("") : "COALESCE(amount_aud_cents, amount_cents)";
-  const amtExprT = honorApportion ? claim("t.") : "COALESCE(t.amount_aud_cents, t.amount_cents)";
+  const amtExpr = honorApportion ? claimExpr("") : "COALESCE(amount_aud_cents, amount_cents)";
+  const amtExprT = honorApportion ? claimExpr("t.") : "COALESCE(t.amount_aud_cents, t.amount_cents)";
 
-  // 0031: a property held rent-free for a relative, or off-market while renovating, earns no income
-  // => its expenses are NOT deductions (s8-1), though CGT cost base still accrues. We MARK such rows
-  // (a 0/1 flag) rather than removing them, so they stay visible as excluded tracked-spend and every
-  // surface that lists spend agrees; only the headline classifier drops them. Static string, no extra
-  // binds; only the genuinely-new use_status values deny and no existing row carries them, so the
-  // position is byte-identical until a user marks a property. `col` is the txn's property_id column.
-  const useStatusDenied = (col: string) =>
-    `(CASE WHEN EXISTS (SELECT 1 FROM properties pp WHERE pp.id = ${col} AND pp.use_status IN ('private_use_rent_free','under_renovation_not_available')) THEN 1 ELSE 0 END)`;
+  const useStatusDenied = (col: string) => useStatusDeniedExpr(col);
 
-  // Phase B / G2: when the attribution_engine flag is on, a transaction that has explicit
-  // transaction_attributions is counted via those (attributionTotals) instead of its raw amount — so
-  // it must be EXCLUDED from the raw byBucket/byPropertyRaw/company/resolved sums to avoid double
-  // counting. Flag off (or no attribution rows) ⇒ this clause is empty ⇒ byte-identical legacy path.
-  // `col` is the transaction's id column for the surrounding query's alias; no extra bind.
   const useAttributions = featureOn(env, "attribution_engine");
-  const notAttributed = (col: string) =>
-    useAttributions ? ` AND NOT EXISTS (SELECT 1 FROM transaction_attributions ta WHERE ta.transaction_id = ${col})` : "";
+  const notAttributed = (col: string) => notAttributedExpr(col, useAttributions);
 
-  // Evidence-first loan interest (flag loan_interest_v2): the loan model is the source of a loan's
-  // deductible interest — resolved per property from loan_interest_summaries (the lender/statement
-  // actual) or a labelled rate×balance estimate, attributed by the loan→property deductible share.
-  // Computed UP FRONT so the set of loans it SUPERSEDES is known before the raw sums run (only those
-  // loans' legacy split rows get excluded — a loan with no v2 figure keeps its loan_split unchanged).
-  const useLoanInterestV2 = featureOn(env, "loan_interest_v2");
-  const loanInterestByProp = new Map<string, number>();
-  let loan_interest_total_cents = 0;
-  // The loan ACCOUNT ids whose interest now comes from the v2 model — whose legacy per-line split rows
-  // (ato_label='rental:interest') must be EXCLUDED from the raw sums to avoid double-counting. Exactly
-  // one source per loan per FY; a loan with NO v2 figure (no summary, no rate+balance, no income-
-  // producing property link) is NOT here, so its legacy split is untouched — no silent under-count.
-  const supersededLoanIds: string[] = [];
-  if (useLoanInterestV2) {
-    const links = await env.DB.prepare(
-      `SELECT lp.loan_account_id, lp.property_id, lp.deductible_interest_pct, a.interest_rate_pct, a.balance_cents
-         FROM loans_properties lp
-         JOIN accounts a   ON a.id = lp.loan_account_id AND a.user_id = lp.user_id
-         JOIN properties p ON p.id = lp.property_id     AND p.user_id = lp.user_id
-        WHERE lp.user_id = ? AND p.status IN ('rented','vacant')`,
-    )
-      .bind(userId)
-      .all<{ loan_account_id: string; property_id: string; deductible_interest_pct: number; interest_rate_pct: number | null; balance_cents: number | null }>();
-    const sumsRes = await env.DB.prepare(
-      `SELECT loan_account_id, interest_cents, source FROM loan_interest_summaries WHERE user_id = ? AND fy = ?`,
-    )
-      .bind(userId, String(startYear))
-      .all<{ loan_account_id: string; interest_cents: number; source: string }>();
-    const sumByLoan = new Map((sumsRes.results ?? []).map((s) => [s.loan_account_id, { interest_cents: s.interest_cents, source: s.source as LoanInterestSource }]));
-    for (const link of links.results ?? []) {
-      const resolved = resolveLoanInterest(sumByLoan.get(link.loan_account_id) ?? null, { interest_rate_pct: link.interest_rate_pct, balance_cents: link.balance_cents });
-      if (!resolved) continue;
-      const ded = deductibleInterestCents(resolved.interest_cents, link.deductible_interest_pct);
-      if (ded <= 0) continue;
-      loanInterestByProp.set(link.property_id, (loanInterestByProp.get(link.property_id) ?? 0) + ded);
-      loan_interest_total_cents += ded;
-      if (!supersededLoanIds.includes(link.loan_account_id)) supersededLoanIds.push(link.loan_account_id);
-    }
-  }
-  // Exclude the legacy split rows ONLY for loans the v2 model supersedes (above). NULL-safe via
-  // COALESCE — `NOT (NULL = 'x')` is NULL (falsy) and would wrongly DROP every NULL-ato_label row.
-  // No superseded loans (or flag off) ⇒ empty clause ⇒ byte-identical legacy path. `p` is the alias;
-  // the bound `?`s are the loan ids, appended LAST in each query's bind list.
-  const excludeSplitInterest = (p: string) =>
-    supersededLoanIds.length
-      ? ` AND NOT (COALESCE(${p}ato_label,'') = 'rental:interest' AND ${p}account_id IN (${supersededLoanIds.map(() => "?").join(",")}))`
-      : "";
+  const loanCtx = await loanInterestV2Context(env, userId, startYear);
+  const loanInterestByProp = loanCtx.byProp;
+  const loan_interest_total_cents = loanCtx.total_cents;
+  const supersededLoanIds = loanCtx.supersededLoanIds;
+  const excludeSplitInterest = (p: string) => excludeSplitInterestExpr(p, supersededLoanIds);
 
   // AUD totals (fall back to original when already AUD / pre-migration). Exclude duplicates.
   // Grouped by (bucket, ato_label, deductibility) so the deductibility-aware position can filter per
@@ -418,8 +461,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
     }
     // Reimbursed (0030) and rent-free/renovating-property (0031) spend never counts toward the
     // negative-gearing deduction, though it stays in expenseByProp as visible tracked-spend above.
-    const counts = !r.reimbursed && !r.use_status_denied && (!excludeNonDeductible || !(r.deductibility === "likely_not" || r.deductibility === "confirmed_not" || r.deductibility === "needs_apportionment"));
-    if (counts) expDeductMap.set(r.property_id, (expDeductMap.get(r.property_id) ?? 0) + r.total_cents);
+    if (propertyRowCounts(r, excludeNonDeductible)) expDeductMap.set(r.property_id, (expDeductMap.get(r.property_id) ?? 0) + r.total_cents);
   }
   // Attribution-derived per-property deductions (their txns were excluded from byPropertyRaw) add to
   // the negative-gearing deduction AND the tracked-spend display for that property — the attributed

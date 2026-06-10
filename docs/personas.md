@@ -30,7 +30,7 @@ drives each persona through the real `buildReport` and asserts its position.
 Set up (Accounts, Income, Assets, Settings/entities), Bring in (Documents/import), Sort (Inbox),
 Check (Reconcile, Review), Position (Dashboard, Reports), File (Filing).
 
-## Coverage status (2026-06-09)
+## Coverage status (2026-06-10)
 
 Legend — **engine**: backend computes it (✓ live behind flag); **UI**: a web surface to enter the data;
 **display**: the result is rendered. A persona is "end-to-end" only when all three hold.
@@ -51,19 +51,23 @@ Legend — **engine**: backend computes it (✓ live behind flag); **UI**: a web
 | Occupation content (person-level) | ✓ | ✓ | ✓ | — | 3,7 |
 | Occupation scope on an activity | ✓ | ✗ | ◑ | — | 3,7 |
 | Trust distributions / streaming | ✓ | ✓ | ✓ | `trust_distributions` (ON) | 8 |
-| SMSF / pension / ECPI | ✓ | ✗ | ✗ | `smsf_engine` | 10 |
+| SMSF / pension / ECPI | ✓ | ✓ entity kind + member balances (#171) | ✓ | `smsf_engine` (ON) | 10 |
+| Accountant schedule export (itemised CSV: per-txn lines, engine schedules, NOT-CLAIMED, substantiation) | ✓ | ✓ Reports/Filing download | ✓ | `accountant_schedule` | all |
 
-**Bottom line (2026-06-09).** The *engines* for all 10 personas are live, and the EPIC #134 flags are
-**ON in prod** — `cgt_engine, ess_engine, car_logbook, trust_distributions, attribution_engine` (and now
-`gst_bas`), with their input UIs shipped. So end-to-end in the app today:
+**Bottom line (2026-06-10).** The *engines* for all 10 personas are live and **every persona flag is
+ON in prod** — `cgt_engine, ess_engine, car_logbook, trust_distributions, attribution_engine, gst_bas,
+smsf_engine` — with their input UIs shipped (#170–#177: GST/BAS forms, SMSF entity + member balances,
+super contributions, activity-create). So end-to-end in the app today:
 
-- **Complete:** P1 (PAYG renter), P2 (PAYG + shares/RSU/CGT/ESS), P3 (tradie — logbook + tools), P6
-  (co-owned rentals + Div 40/43 + CGT), P7 (nurse, multi-employer + occupation). P4/P5 GST is now
-  surfaced (indicative BAS from the ledger via the GST-registered toggle).
-- **Nearly:** P8 (company + trust ✓; Div 7A thin), P9 (ESS ✓; R&D / s40-880 blackhole costs have no form).
-- **Remaining hard gaps:** **SMSF / pension / ECPI (P10)** — engine + tables exist (0042) but no input
-  UI and `smsf_engine` OFF; sole-trader **activity setup** form (P3 cash job, P4/P5 ABN); **manual BAS
-  periods / PAYG instalments** entry (tables exist, indicative position covers the common case).
+- **Complete:** P1, P2, P3, P4, P5, P6, P7, P10 — enter the data, see the position, download the
+  deliverable. The accountant handoff is the **itemised accountant schedule CSV** (#179/#181, flag
+  `accountant_schedule`): per-transaction lines with substantiation, the engine schedules, and an
+  EXPLICITLY-NOT-CLAIMED section with reasons — every section tied back to `buildReport` exactly
+  (asserted per persona).
+- **Nearly:** P8 (company + trust ✓; Div 7A depth thin), P9 (ESS ✓; R&D / s40-880 blackhole costs are
+  capture-only — no auto-claim, form tracked in #126).
+- **Remaining (tracked):** xlsx skin (#180), occupation scope on activities (#156), advisory phases
+  (#182–#184).
 
 Verify flag state against `wrangler.toml` FEATURES (the source of truth) rather than trusting this prose.
 

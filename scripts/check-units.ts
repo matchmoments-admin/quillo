@@ -21,7 +21,9 @@ import { parseRoles, hasRole, isAdmin, normaliseRoles, ROLES } from "../src/lib/
 import { buildGuidePrompt, buildAskSystem, summariseReportForAsk } from "../src/lib/guide";
 import type { Progress } from "../src/lib/progress";
 import { fyBounds, fyLabel, basPositionFrom } from "../src/lib/ledger-totals";
-import { currentFyStartYear } from "../src/lib/report";
+import { currentFyStartYear, reportToCsv, type Report } from "../src/lib/report";
+import { csvCell, substantiationStatus, impliedWorkUsePct, scheduleToCsv, type AccountantSchedule } from "../src/lib/accountant-schedule";
+import { exclusionReason } from "../src/lib/readiness";
 import fs from "node:fs";
 import path from "node:path";
 import type Anthropic from "@anthropic-ai/sdk";
@@ -1466,6 +1468,101 @@ console.log("mapBatchItems (match results to line ids by echoed line, not array 
   // Duplicate line claim is ignored (first wins).
   const dup = mapBatchItems(ids, [it(1, "payg"), it(1, "company"), it(2, "asset")]);
   check("duplicate line claim ignored", dup.filter((r) => r.id === "a").length === 1);
+}
+
+// ── Accountant schedule (#179/#181): CSV escaping, substantiation, exclusion reasons ──
+console.log("csvCell (RFC-4180 + formula-injection guard)");
+{
+  check("plain string passes through", csvCell("rent") === "rent");
+  check("number passes through", csvCell(150) === "150");
+  check("null → empty", csvCell(null) === "");
+  check("comma is quoted", csvCell("Bunnings, Alexandria") === '"Bunnings, Alexandria"');
+  check("internal quotes doubled", csvCell('say "hi"') === '"say ""hi"""');
+  check("newline is quoted", csvCell("a\nb") === '"a\nb"');
+  check("leading = is neutralised (formula injection)", csvCell("=SUM(A1:A9)") === "'=SUM(A1:A9)");
+  check("leading + - @ neutralised too", csvCell("+1") === "'+1" && csvCell("-x") === "'-x" && csvCell("@cmd") === "'@cmd");
+  check("neutralised AND quoted when both apply", csvCell("=HYPERLINK(\"x\"),y") === "\"'=HYPERLINK(\"\"x\"\"),y\"");
+}
+
+console.log("substantiationStatus (what backs a claim)");
+{
+  check("receipt row with its key → receipt", substantiationStatus({ kind: "receipt", receipt_key: "r2/x.jpg" }) === "receipt");
+  check("document linked → document", substantiationStatus({ kind: "bank_line", document_id: "doc1" }) === "document");
+  check("bank line with a matched receipt → receipt_linked", substantiationStatus({ kind: "bank_line", linked_receipts: 1 }) === "receipt_linked");
+  check("bare bank line → bank_line_only", substantiationStatus({ kind: "bank_line" }) === "bank_line_only");
+}
+
+console.log("impliedWorkUsePct (apportioned confirmed rows only)");
+{
+  check("confirmed + apportioned → derived %", impliedWorkUsePct({ deductibility: "confirmed_deductible", deductible_amount_cents: 6000, gross_cents: 20000 }) === 30);
+  check("unconfirmed row → null (no implied %)", impliedWorkUsePct({ deductibility: "likely_deductible", deductible_amount_cents: 6000, gross_cents: 20000 }) === null);
+  check("confirmed without an apportioned amount → null", impliedWorkUsePct({ deductibility: "confirmed_deductible", deductible_amount_cents: null, gross_cents: 20000 }) === null);
+}
+
+console.log("exclusionReason (NOT-CLAIMED reason precedence)");
+{
+  check("reimbursed wins over everything", exclusionReason("payg", "likely_not", 1, 0).includes("Employer-reimbursed"));
+  check("rent-free property wins next", exclusionReason("property_rented", "undetermined", 0, 1).includes("rent-free"));
+  check("capital → decline-in-value reason", exclusionReason("asset", null, 0, 0).includes("decline in value"));
+  check("private → s8-1(2)(b) reason", exclusionReason("payg", "likely_not", 0, 0).includes("not deductible"));
+  check("unresolved payg → deny-by-default reason", exclusionReason("payg", "undetermined", 0, 0).includes("excluded by default"));
+}
+
+// ── Legacy reportToCsv byte-pin: the flag-OFF CSV can never drift (#179 byte-identity guard) ──
+console.log("reportToCsv (flag-off byte-identity pin)");
+{
+  const fixture: Report = {
+    fy: "2025-26", start: "2025-07-01", end: "2026-06-30",
+    by_bucket: [{ bucket: "payg", ato_label: "D5", n: 2, total_cents: 30000, gst_cents: 0 }],
+    deduction_breakdown: [{ bucket: "payg", ato_label: "D5", n: 2, total_cents: 30000, gst_cents: 0, deductibility: "likely_deductible" }],
+    income_by_bucket: [], by_property: [],
+    company_quarters: [{ quarter: "Q1 Jul–Sep", total_cents: 0, gst_cents: 0 }],
+    undated: { n: 0, total_cents: 0 }, undated_detail: [], abn: null, gst_credits_cents: 0,
+    income: { by_type: [{ income_type: "salary_payg", n: 1, gross_cents: 8000000, net_cents: 8000000, withholding_cents: 0, franking_credit_cents: 0, foreign_tax_paid_cents: 0 }], gross_cents: 8000000, withholding_cents: 0, franking_credit_cents: 0, foreign_tax_paid_cents: 0 },
+    depreciation_cents: 0, per_property: [], total_income_cents: 8000000, total_deductions_cents: 30000,
+    company_tracked_cents: 0, refunds_cents: 0, resolved_deductible_cents: 0, taxable_position_cents: 7970000,
+  };
+  const pinned =
+    "Quillo tax summary,FY 2025-26,2025-07-01 to 2026-06-30\n" +
+    "ABN,(not set)\n" +
+    "GST credits (ITC) on company expenses,0.00\n" +
+    "General information only — not tax advice. Confirm with a registered tax/BAS agent.\n" +
+    "\n" +
+    "Tax position (indicative),Amount (AUD)\n" +
+    "Total income (gross),80000.00\n" +
+    "Total deductions,300.00\n" +
+    "Decline in value (depreciation),0.00\n" +
+    "Indicative taxable position (individual),79700.00\n" +
+    "\n" +
+    "Income type,Count,Gross (AUD),Withholding,Franking credit,Foreign tax paid\n" +
+    "salary_payg,1,80000.00,0.00,0.00,0.00\n" +
+    "\n" +
+    "Bucket,ATO label,Count,Total (AUD),GST\n" +
+    "payg,D5,2,300.00,0.00\n" +
+    "\n" +
+    "Property,Rent income (AUD),Deductions,Depreciation,Net (negative gearing)\n" +
+    "\n" +
+    "Company BAS quarter,Total (AUD),GST\n" +
+    "Q1 Jul–Sep,0.00,0.00\n";
+  check("legacy CSV output is byte-identical to the pin", reportToCsv(fixture) === pinned);
+}
+
+console.log("scheduleToCsv (section layout + escaping + tie-back note)");
+{
+  const sched: AccountantSchedule = {
+    fy: "2025-26", start: "2025-07-01", end: "2026-06-30", abn: null,
+    disclaimer: "General information only.",
+    sections: [
+      { key: "work_related", title: "Work-related", columns: ["Date", "Merchant", "Amount"], rows: [["2025-09-01", "Bunnings, Alexandria", "150.00"], ["2025-09-02", "=SUM(A1)", "80.00"]], subtotal_cents: 23000 },
+      { key: "x", title: "Ties badly", columns: ["A"], rows: [["1"]], tie_back: { label: "demo", report_cents: 100, actual_cents: 90, ok: false }, notes: ["a note"] },
+    ],
+  };
+  const csv = scheduleToCsv(sched);
+  check("title + header + rows + subtotal render in order", csv.includes("WORK-RELATED\nDate,Merchant,Amount\n") && csv.includes("\nSubtotal,230.00\n"));
+  check("merchant with a comma is quoted", csv.includes('"Bunnings, Alexandria"'));
+  check("formula merchant is neutralised", csv.includes("'=SUM(A1)"));
+  check("a failed tie-back renders a visible NOTE", csv.includes("does not tie to the report demo"));
+  check("section notes render", csv.includes("Note: a note"));
 }
 
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);

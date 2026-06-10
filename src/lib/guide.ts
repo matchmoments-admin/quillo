@@ -83,30 +83,43 @@ const ASK_ACTIONS_GUARDRAILS =
   "answer accordingly (\"I can mark these — confirm below\"), never as already done. To remember a " +
   "repeating merchant, use an add_rule action (debit categories only).";
 
+/** What an alias resolves to: the real id + the row's gross, so the proposal validator can sanity-cap
+ * a model-supplied apportioned amount against what the transaction is actually worth. */
+export interface DigestRef {
+  id: string;
+  amount_cents: number;
+}
+
+// Defensive char cap on the digest, mirroring the 10k position-summary cap (~200 rows ≈ 6k chars).
+const DIGEST_CHAR_CAP = 12000;
+
 /**
  * Render the FY transaction digest for the Ask prompt (C3, flag ask_actions): one compact pipe-line per
  * row, addressed by a short ALIAS (T1, T2 …) instead of the real id — the model proposes actions by
  * T-code and the server resolves them via the returned map, so a hallucinated code resolves to nothing
- * and real ids never reach the model. Merchants pass through redact() defensively (digit patterns only —
- * statement categorisation already sends merchants to the model, so this adds no new data category).
+ * and real ids never reach the model. The map registers ONLY rows whose line fully fits the char cap —
+ * an alias the model never saw must not be resolvable. Merchants pass through redact() defensively
+ * (digit patterns only — statement categorisation already sends merchants, no new data category).
  * Pure (unit-tested). NOTE: aliases are rebuilt per turn — deterministic ORDER BY keeps them stable
  * unless the data itself changes mid-conversation.
  */
-export function renderTxnDigest(rows: AskDigestRow[], total: number): { text: string; aliasToId: Map<string, string> } {
-  const aliasToId = new Map<string, string>();
+export function renderTxnDigest(rows: AskDigestRow[], total: number): { text: string; aliasToId: Map<string, DigestRef> } {
+  const aliasToId = new Map<string, DigestRef>();
   const lines: string[] = [];
-  rows.forEach((r, i) => {
+  let len = 0;
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i]!;
     const alias = `T${i + 1}`;
-    aliasToId.set(alias, r.id);
     const bucket = r.property_id ? `${r.bucket ?? "?"}:${r.property_id}` : (r.bucket ?? "?");
-    lines.push(
-      `${alias}|${r.txn_date ?? "undated"}|${redact(r.merchant ?? "—")}|${(r.amount_aud_cents / 100).toFixed(2)}|${bucket}|${r.ato_label ?? ""}|${r.deductibility ?? "undetermined"}`,
-    );
-  });
-  if (total > rows.length) lines.push(`(${total - rows.length} more transactions not shown — totals are in the position JSON above)`);
-  // Defensive cap, mirroring the 10k-char position-summary cap: ~200 rows is ~6k chars in practice.
-  const text = lines.join("\n").slice(0, 12000);
-  return { text, aliasToId };
+    const line = `${alias}|${r.txn_date ?? "undated"}|${redact(r.merchant ?? "—")}|${(r.amount_aud_cents / 100).toFixed(2)}|${bucket}|${r.ato_label ?? ""}|${r.deductibility ?? "undetermined"}`;
+    if (len + line.length + 1 > DIGEST_CHAR_CAP) break; // whole-line cap: never show (or register) a half row
+    lines.push(line);
+    len += line.length + 1;
+    aliasToId.set(alias, { id: r.id, amount_cents: r.amount_aud_cents });
+  }
+  if (!lines.length) lines.push("(no transactions captured this year yet)");
+  if (total > aliasToId.size) lines.push(`(${total - aliasToId.size} more transactions not shown — totals are in the position JSON above)`);
+  return { text: lines.join("\n"), aliasToId };
 }
 
 /**
@@ -128,12 +141,15 @@ export function buildAskSystem(situationText: string, positionText: string, txnD
     (txnDigest != null
       ? ASK_ACTIONS_GUARDRAILS +
         "\n\nTheir transactions this year (T-code|date|merchant|$AUD|bucket[:property]|ato_label|deductibility):\n" +
-        txnDigest +
-        "\n\nAnswer each question using the data above. If it depends on something not captured, say so and " +
-        "name the screen to add it. Call give_answer exactly once per reply."
-      : "\n\nAnswer each question using the data above. If it depends on something not captured, say so and " +
-        "name the screen to add it. When the user wants a repeating merchant categorised a certain way, you " +
-        "may propose a rule via suggested_rule (debit categories only). Call give_answer exactly once per reply.")
+        txnDigest
+      : "") +
+    "\n\nAnswer each question using the data above. If it depends on something not captured, say so and " +
+    "name the screen to add it. " +
+    (txnDigest != null
+      ? ""
+      : "When the user wants a repeating merchant categorised a certain way, you " +
+        "may propose a rule via suggested_rule (debit categories only). ") +
+    "Call give_answer exactly once per reply."
   );
 }
 

@@ -4,6 +4,7 @@ import type { LLM } from "./llm";
 import { bytesToBase64 } from "./lib/base64";
 import type { ColumnMap } from "./lib/statements";
 import { BUCKETS, ENTITY_KINDS, PROPERTY_STATUSES, DOC_TYPES, ASSET_CLASSES, ATO_LABEL_MAX, CLAIM_TYPES, isBucket, normalizeAtoLabel } from "./lib/taxonomy";
+import type { DigestRef } from "./lib/guide";
 
 export const Extracted = z
   .object({
@@ -1186,10 +1187,11 @@ export const MAX_TXN_REFS_PER_PROPOSAL = 50;
 /**
  * Validate + resolve the model's raw proposed_actions (pure — unit-tested in check-units). Drops
  * anything that can't be executed exactly as described: unknown kinds, T-codes not in this turn's
- * digest, credit/unknown buckets, non-proposable states. An action with MORE than the ref cap is
- * dropped WHOLE (truncating it would silently apply a different change than the title describes).
+ * digest, credit/unknown buckets, non-proposable states. Refs are DEDUPED first, then an action with
+ * more than the ref cap of DISTINCT targets is dropped WHOLE (truncating it would silently apply a
+ * different change than the title describes).
  */
-export function validateProposedActions(raw: unknown, aliasToId: Map<string, string>): ProposedAction[] {
+export function validateProposedActions(raw: unknown, aliasToId: Map<string, DigestRef>): ProposedAction[] {
   if (!Array.isArray(raw)) return [];
   const out: ProposedAction[] = [];
   for (const item of raw.slice(0, MAX_PROPOSALS_PER_TURN)) {
@@ -1198,27 +1200,38 @@ export function validateProposedActions(raw: unknown, aliasToId: Map<string, str
     const title = a.title.trim().slice(0, 60);
     const rationale = a.rationale.trim().slice(0, 200);
     const atoLabel = typeof a.ato_label === "string" && a.ato_label.trim() ? a.ato_label.trim().slice(0, 60) : undefined;
-    const resolveRefs = (): string[] | null => {
+    const resolveRefs = (): DigestRef[] | null => {
       if (!Array.isArray(a.txn_refs)) return null;
-      if (a.txn_refs.length > MAX_TXN_REFS_PER_PROPOSAL) return null; // over cap ⇒ drop whole action
-      const ids = [...new Set(a.txn_refs.filter((r): r is string => typeof r === "string").map((r) => aliasToId.get(r.trim())).filter((id): id is string => !!id))];
-      return ids.length ? ids : null;
+      const seen = new Map<string, DigestRef>();
+      for (const r of a.txn_refs) {
+        if (typeof r !== "string") continue;
+        const ref = aliasToId.get(r.trim());
+        if (ref) seen.set(ref.id, ref); // unknown alias (incl. one sliced from the digest text) resolves to nothing
+      }
+      if (seen.size === 0 || seen.size > MAX_TXN_REFS_PER_PROPOSAL) return null; // over cap ⇒ drop whole action
+      return [...seen.values()];
     };
     const validBucket = typeof a.bucket === "string" && isBucket(a.bucket) && !CREDIT_OR_UNKNOWN_BUCKETS.has(a.bucket);
     if (a.kind === "set_deductibility") {
-      const txn_ids = resolveRefs();
-      if (!txn_ids) continue;
+      const refs = resolveRefs();
+      if (!refs) continue;
       if (typeof a.state !== "string" || !(PROPOSABLE_DEDUCTIBILITY_STATES as readonly string[]).includes(a.state)) continue;
       const state = a.state as ProposableDeductibility;
-      // The apportioned amount only means something on a confirmed claim; strip it everywhere else.
-      const amt = state === "confirmed_deductible" && typeof a.deductible_amount_cents === "number" && Number.isInteger(a.deductible_amount_cents) && a.deductible_amount_cents > 0
-        ? a.deductible_amount_cents
-        : undefined;
-      out.push({ kind: "set_deductibility", title, rationale, txn_ids, state, ...(amt != null ? { deductible_amount_cents: amt } : {}) });
+      // An apportioned amount is only meaningful on a SINGLE confirmed claim: setDeductibility stamps
+      // the SAME deductible_amount_cents on every txn in the list, so a multi-txn amount would
+      // multiply the claim. It must also not exceed that transaction's gross. Otherwise strip it —
+      // NULL falls back to the full amount, the standard behaviour.
+      const amt =
+        state === "confirmed_deductible" && refs.length === 1 &&
+        typeof a.deductible_amount_cents === "number" && Number.isInteger(a.deductible_amount_cents) &&
+        a.deductible_amount_cents > 0 && a.deductible_amount_cents <= refs[0]!.amount_cents
+          ? a.deductible_amount_cents
+          : undefined;
+      out.push({ kind: "set_deductibility", title, rationale, txn_ids: refs.map((r) => r.id), state, ...(amt != null ? { deductible_amount_cents: amt } : {}) });
     } else if (a.kind === "recategorise") {
-      const txn_ids = resolveRefs();
-      if (!txn_ids || !validBucket) continue;
-      out.push({ kind: "recategorise", title, rationale, txn_ids, bucket: a.bucket as string, ...(atoLabel ? { ato_label: atoLabel } : {}) });
+      const refs = resolveRefs();
+      if (!refs || !validBucket) continue;
+      out.push({ kind: "recategorise", title, rationale, txn_ids: refs.map((r) => r.id), bucket: a.bucket as string, ...(atoLabel ? { ato_label: atoLabel } : {}) });
     } else if (a.kind === "add_rule") {
       if (typeof a.pattern !== "string" || !a.pattern.trim() || !validBucket) continue;
       out.push({ kind: "add_rule", title, rationale, pattern: a.pattern.trim().slice(0, 60), bucket: a.bucket as string, ...(atoLabel ? { ato_label: atoLabel } : {}) });
@@ -1275,7 +1288,7 @@ export async function extractAnswer(
   llm: LLM,
   system: string,
   messages: { role: "user" | "assistant"; content: string }[],
-  actions?: { aliasToId: Map<string, string> },
+  actions?: { aliasToId: Map<string, DigestRef> },
 ): Promise<AnswerResult> {
   const msg = await llm.create(
     {

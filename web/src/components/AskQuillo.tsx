@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
-import { Card, Button, BUCKET_LABEL } from "./ui";
+import { Card, Button, BUCKET_LABEL, money } from "./ui";
 import { useActiveFy } from "../lib/activeFy";
 import type { AskAnswer, ProposedAction } from "../types";
 
@@ -128,7 +128,7 @@ function ProposedActionCard({ action }: { action: ProposedAction }) {
   });
   const summary =
     action.kind === "set_deductibility"
-      ? `${action.txn_ids.length} transaction(s) → ${STATE_LABEL[action.state] ?? action.state}${action.deductible_amount_cents != null ? ` ($${(action.deductible_amount_cents / 100).toFixed(2)} claimable)` : ""}`
+      ? `${action.txn_ids.length} transaction(s) → ${STATE_LABEL[action.state] ?? action.state}${action.deductible_amount_cents != null ? ` (${money(action.deductible_amount_cents)} claimable)` : ""}`
       : action.kind === "recategorise"
         ? `${action.txn_ids.length} transaction(s) → ${BUCKET_LABEL[action.bucket] ?? action.bucket}${action.ato_label ? ` (${action.ato_label})` : ""}`
         : `“${action.pattern}” → ${BUCKET_LABEL[action.bucket] ?? action.bucket}${action.ato_label ? ` (${action.ato_label})` : ""} on future imports`;

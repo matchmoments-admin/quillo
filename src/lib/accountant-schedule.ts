@@ -165,12 +165,17 @@ export async function buildAccountantSchedule(
   const honorApportion = featureOn(env, "loan_split");
   const excludeNonDeductible = featureOn(env, "position_excludes_nondeductible");
   const useAttributions = featureOn(env, "attribution_engine");
-  const loanCtx = await loanInterestV2Context(env, userId, startYear);
+  // These two gate the itemised queries' WHERE clauses, so they resolve first; everything after is
+  // independent and runs concurrently (D1 pipelines the reads — same pattern as queries.ts dashboard).
+  const [loanCtx, separateIds] = await Promise.all([
+    loanInterestV2Context(env, userId, startYear),
+    separateTaxpayerEntityIds(env, userId),
+  ]);
 
   const amtExpr = honorApportion ? claimExpr("") : "COALESCE(amount_aud_cents, amount_cents)";
 
   // (1) Itemised spend — byBucket (report.ts) ungrouped, identical WHERE + amount expression.
-  const items = await safeAll<ItemRow>(
+  const itemsP = safeAll<ItemRow>(
     env.DB.prepare(
       `SELECT id, txn_date, merchant, bucket, ato_label,
               COALESCE(deductibility,'undetermined') AS deductibility,
@@ -191,9 +196,8 @@ export async function buildAccountantSchedule(
 
   // (2) Itemised income — same separate-taxpayer exclusion as incomeTotals (entity income belongs to
   // the company/SMSF section, never the personal headline).
-  const separateIds = await separateTaxpayerEntityIds(env, userId);
   const entityClause = separateIds.length ? ` AND (entity_id IS NULL OR entity_id NOT IN (${separateIds.map(() => "?").join(",")}))` : "";
-  const incomeRows = await safeAll<{
+  const incomeRowsP = safeAll<{
     txn_date: string | null;
     income_type: string;
     ato_label: string | null;
@@ -240,7 +244,7 @@ export async function buildAccountantSchedule(
     owned_by: string;
     reimbursed: number;
   }
-  const depRows = await safeAll<DepRow>(
+  const depRowsP = safeAll<DepRow>(
     env.DB.prepare(
       `SELECT ${depCols}
          FROM depreciation_schedule d JOIN assets a ON a.id = d.asset_id LEFT JOIN properties p ON p.id = a.property_id
@@ -251,7 +255,7 @@ export async function buildAccountantSchedule(
       .bind(userId, fy)
       .all<DepRow>(),
   );
-  const depDenied = await safeAll<DepRow & { use_status_denied: number }>(
+  const depDeniedP = safeAll<DepRow & { use_status_denied: number }>(
     env.DB.prepare(
       `SELECT ${depCols}, (CASE WHEN ${rentFreeAsset} THEN 1 ELSE 0 END) AS use_status_denied
          FROM depreciation_schedule d JOIN assets a ON a.id = d.asset_id LEFT JOIN properties p ON p.id = a.property_id
@@ -279,8 +283,8 @@ export async function buildAccountantSchedule(
     deduction_provision: string | null;
   }
   const tFilter = COUNTABLE.replace(/\b(status|kind|matched_txn_id|direction)\b/g, "t.$1");
-  const attrRows = useAttributions
-    ? await safeAll<AttrRow>(
+  const attrRowsP = useAttributions
+    ? safeAll<AttrRow>(
         env.DB.prepare(
           `SELECT t.txn_date AS txn_date, t.merchant AS merchant,
                   ta.attributed_amount_cents AS attributed_amount_cents, ta.attributed_pct AS attributed_pct,
@@ -301,11 +305,11 @@ export async function buildAccountantSchedule(
           .bind(userId, start, end)
           .all<AttrRow>(),
       )
-    : [];
+    : Promise.resolve([] as AttrRow[]);
 
   // (5) Engine source rows — only fetched when the report carries that engine's output.
-  const cgtEvents = report.capital_gains
-    ? await safeAll<{
+  const cgtEventsP = report.capital_gains
+    ? safeAll<{
         event_date: string | null;
         code: string | null;
         label: string | null;
@@ -324,9 +328,9 @@ export async function buildAccountantSchedule(
           .bind(userId, fy)
           .all(),
       )
-    : [];
-  const essGrants = report.ess
-    ? await safeAll<{
+    : Promise.resolve([]);
+  const essGrantsP = report.ess
+    ? safeAll<{
         scheme_type: string;
         grant_date: string | null;
         taxing_point_date: string | null;
@@ -344,9 +348,9 @@ export async function buildAccountantSchedule(
           .bind(userId, start, end)
           .all(),
       )
-    : [];
-  const trustRows = report.trust
-    ? await safeAll<{ trust_name: string | null; character: string; share_pct: number | null; amount_cents: number; franking_credit_cents: number }>(
+    : Promise.resolve([]);
+  const trustRowsP = report.trust
+    ? safeAll<{ trust_name: string | null; character: string; share_pct: number | null; amount_cents: number; franking_credit_cents: number }>(
         env.DB.prepare(
           `SELECT e.name AS trust_name, td.character, td.share_pct, td.amount_cents, td.franking_credit_cents
              FROM trust_distributions td LEFT JOIN entities e ON e.id = td.trust_entity_id
@@ -355,9 +359,9 @@ export async function buildAccountantSchedule(
           .bind(userId, fy)
           .all(),
       )
-    : [];
-  const basRows = report.gst
-    ? await safeAll<{ period_start: string; period_end: string; output_gst_cents: number; input_gst_cents: number; payg_instalment_cents: number; status: string }>(
+    : Promise.resolve([]);
+  const basRowsP = report.gst
+    ? safeAll<{ period_start: string; period_end: string; output_gst_cents: number; input_gst_cents: number; payg_instalment_cents: number; status: string }>(
         env.DB.prepare(
           `SELECT period_start, period_end, output_gst_cents, input_gst_cents, payg_instalment_cents, status
              FROM bas_periods WHERE user_id = ? AND period_start >= ? AND period_end <= ? ORDER BY period_start`,
@@ -365,12 +369,16 @@ export async function buildAccountantSchedule(
           .bind(userId, start, end)
           .all(),
       )
-    : [];
-  const paygRows = report.payg_instalments_cents
-    ? await safeAll<{ quarter: number | null; instalment_cents: number; basis: string | null }>(
+    : Promise.resolve([]);
+  const paygRowsP = report.payg_instalments_cents
+    ? safeAll<{ quarter: number | null; instalment_cents: number; basis: string | null }>(
         env.DB.prepare(`SELECT quarter, instalment_cents, basis FROM payg_instalments WHERE user_id = ? AND fy = ? ORDER BY quarter`).bind(userId, fy).all(),
       )
-    : [];
+    : Promise.resolve([]);
+
+  // All ten reads are independent of one another — resolve them concurrently.
+  const [items, incomeRows, depRows, depDenied, attrRows, cgtEvents, essGrants, trustRows, basRows, paygRows] =
+    await Promise.all([itemsP, incomeRowsP, depRowsP, depDeniedP, attrRowsP, cgtEventsP, essGrantsP, trustRowsP, basRowsP, paygRowsP]);
 
   // Property labels for section titles / loan lines.
   const propLabels = new Map(report.per_property.map((p) => [p.property_id, p.label ?? p.property_id]));
@@ -536,13 +544,14 @@ export async function buildAccountantSchedule(
       rows.push(["Car — logbook method (comparison)", `${lb.business_use_pct}% business use × (running ${d(lb.running_costs_cents)} + decline ${d(lb.car_dep_cents)})`, d(lb.logbook_deduction_cents)]);
       rows.push([`Recommended method: ${lb.recommended_method === "logbook" ? "logbook" : "cents per km"}`, "informational — confirm with a registered tax agent", d(lb.recommended_cents)]);
     }
-    const total = wm?.total_cents ?? 0;
     sections.push({
       key: "work_methods",
       title: "Work-use method deductions",
       columns: ["Method", "Basis", "Amount (AUD)"],
       rows,
-      subtotal_cents: total,
+      // No subtotal when only the informational logbook comparison renders — a "Subtotal 0.00" under
+      // a logbook figure would read as a claimed-zero, which it isn't (nothing is claimed via methods).
+      subtotal_cents: wm ? wm.total_cents : undefined,
       tie_back: wm ? { label: "work-method deductions", report_cents: wm.total_cents, actual_cents: (wm.wfh_cents ?? 0) + (wm.car_cents ?? 0), ok: (wm.wfh_cents ?? 0) + (wm.car_cents ?? 0) === wm.total_cents } : undefined,
       notes: ["The fixed-rate / cents-per-km methods already cover the running costs they replace — those receipts stay in NOT CLAIMED, so nothing is claimed twice."],
     });

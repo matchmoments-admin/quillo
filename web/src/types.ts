@@ -491,11 +491,19 @@ export interface SmsfMemberRow {
   transfer_balance_cents: number;
 }
 
+// Ask Quillo C3 (flag ask_actions): a model-PROPOSED one-click fix — the user confirms via an Apply
+// card and the click calls the existing write endpoint (deductibility / correct-batch / rules).
+export type ProposedAction =
+  | { kind: "set_deductibility"; title: string; rationale: string; txn_ids: string[]; state: string; deductible_amount_cents?: number }
+  | { kind: "recategorise"; title: string; rationale: string; txn_ids: string[]; bucket: string; ato_label?: string }
+  | { kind: "add_rule"; title: string; rationale: string; pattern: string; bucket: string; ato_label?: string };
+
 export interface AskAnswer {
   answer: string;
   caveats: string[];
   see_also: string[];
   suggested_rule?: { pattern: string; bucket: string; ato_label?: string };
+  proposed_actions?: ProposedAction[];
 }
 
 export interface SuperContributionRow {

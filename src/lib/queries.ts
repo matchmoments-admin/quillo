@@ -131,6 +131,51 @@ export async function listTransactions(
   return res.results ?? [];
 }
 
+// ── Ask Quillo C3: the FY transaction digest (flag ask_actions) ───────────────
+// A bounded slice of the tenant's countable FY spend, ordered by FIXABILITY — the rows the model can
+// usefully propose actions on come first (undetermined → needs_apportionment → likely_not), with
+// needs_review and bigger amounts ahead within each band. The model only ever sees these rows via
+// short aliases (renderTxnDigest), so a proposal can only reference what was actually shown.
+export interface AskDigestRow {
+  id: string;
+  txn_date: string | null;
+  merchant: string | null;
+  amount_aud_cents: number;
+  bucket: string | null;
+  ato_label: string | null;
+  deductibility: string | null;
+  property_id: string | null;
+}
+
+export async function fetchAskDigestRows(
+  env: Env,
+  userId: string,
+  fyStartYear: number,
+  cap = 200,
+): Promise<{ rows: AskDigestRow[]; total: number }> {
+  const { start, end } = fyBounds(fyStartYear);
+  const where = `user_id = ? AND txn_date >= ? AND txn_date <= ? AND bucket IS NOT NULL AND ${COUNTABLE}`;
+  const res = await env.DB.prepare(
+    `SELECT id, txn_date, merchant, COALESCE(amount_aud_cents, amount_cents) AS amount_aud_cents,
+            bucket, ato_label, deductibility, property_id
+       FROM transactions WHERE ${where}
+      ORDER BY CASE COALESCE(deductibility,'undetermined')
+                 WHEN 'undetermined' THEN 0
+                 WHEN 'needs_apportionment' THEN 1
+                 WHEN 'likely_not' THEN 2
+                 ELSE 3 END,
+               CASE WHEN status = 'needs_review' THEN 0 ELSE 1 END,
+               ABS(COALESCE(amount_aud_cents, amount_cents)) DESC
+      LIMIT ?`,
+  )
+    .bind(userId, start, end, cap)
+    .all<AskDigestRow>();
+  const count = await env.DB.prepare(`SELECT COUNT(*) AS n FROM transactions WHERE ${where}`)
+    .bind(userId, start, end)
+    .first<{ n: number }>();
+  return { rows: res.results ?? [], total: count?.n ?? 0 };
+}
+
 /** Statements for an account (or all), with their reconcile/import status — for the Accounts page. */
 export async function listStatements(env: Env, userId: string, accountId?: string) {
   const where = accountId ? "s.user_id = ? AND s.account_id = ?" : "s.user_id = ?";

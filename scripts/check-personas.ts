@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import type { Env } from "../src/env";
 import { buildReport } from "../src/lib/report";
 import { buildAccountantSchedule, tieBackChecks } from "../src/lib/accountant-schedule";
+import { fetchAskDigestRows } from "../src/lib/queries";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
@@ -418,6 +419,19 @@ async function main() {
       checks.length > 0 && bad.length === 0);
     if (bad.length) for (const b of bad) console.log(`      ✗ ${u} ${b.label}: section ${b.actual_cents} vs report ${b.report_cents}`);
   }
+  // ── Ask Quillo C3 (ask_actions): the FY transaction digest against a REAL migrated DB ──
+  // P2 mixes deductibility states: p2dad/p2crmb are 'undetermined' (fixable — must sort FIRST),
+  // p2co/p2cf are attributed but still countable rows. Cap + total + COUNTABLE (no credits/dupes).
+  {
+    const all = await fetchAskDigestRows(env, "p2", 2025);
+    check("Digest (C3): every countable P2 row is present with a real id", all.total === all.rows.length && all.rows.every((r) => r.id && r.amount_aud_cents > 0));
+    const states = all.rows.map((r) => r.deductibility ?? "undetermined");
+    const firstNonUndetermined = states.findIndex((s) => s !== "undetermined");
+    check("Digest (C3): undetermined (fixable) rows sort before resolved ones", firstNonUndetermined === -1 || states.slice(firstNonUndetermined).every((s) => s !== "undetermined"));
+    const capped = await fetchAskDigestRows(env, "p2", 2025, 2);
+    check("Digest (C3): cap honoured while total still reports the full count", capped.rows.length === 2 && capped.total === all.total && all.total > 2);
+  }
+
   // p11 runs under the loan_interest_v2 flag set — its schedule must tie under that engine too.
   {
     const envV2 = { ...env, FEATURES: `${(env as { FEATURES: string }).FEATURES},loan_interest_v2` } as unknown as Env;

@@ -1,5 +1,7 @@
 import type { Progress } from "./progress";
 import type { Report } from "./report";
+import type { AskDigestRow } from "./queries";
+import { redact } from "./redact";
 
 /**
  * Compact, model-facing summary of the user's computed FY position for "Ask Quillo". Headline figures
@@ -69,12 +71,65 @@ const ASK_GUARDRAILS =
   "tax agent. Answer ONLY from the user's data below; if the answer isn't in the data, say what's " +
   "missing and which screen to add it on. Be warm, plain, jargon-free, and cite the user's own numbers.";
 
+// C3 (flag ask_actions): how the model may use proposed_actions. Proposals are SUGGESTIONS the user
+// must confirm in the UI — the model never writes. confirmed_deductible moves the tax position, so it
+// gets the strictest gate of all.
+const ASK_ACTIONS_GUARDRAILS =
+  "\n\nPROPOSED ACTIONS: when — and ONLY when — the user asks you to fix, confirm, correct, mark or " +
+  "re-categorise something, you may include up to 3 proposed_actions. Reference transactions ONLY by " +
+  "their T-codes from the digest below; NEVER invent a T-code. NEVER propose state confirmed_deductible " +
+  "unless the user has explicitly said the expense is work/income-related — when in doubt propose " +
+  "needs_apportionment, or ask. Every proposal is a suggestion the user must confirm — phrase your " +
+  "answer accordingly (\"I can mark these — confirm below\"), never as already done. To remember a " +
+  "repeating merchant, use an add_rule action (debit categories only).";
+
+/** What an alias resolves to: the real id + the row's gross, so the proposal validator can sanity-cap
+ * a model-supplied apportioned amount against what the transaction is actually worth. */
+export interface DigestRef {
+  id: string;
+  amount_cents: number;
+}
+
+// Defensive char cap on the digest, mirroring the 10k position-summary cap (~200 rows ≈ 6k chars).
+const DIGEST_CHAR_CAP = 12000;
+
+/**
+ * Render the FY transaction digest for the Ask prompt (C3, flag ask_actions): one compact pipe-line per
+ * row, addressed by a short ALIAS (T1, T2 …) instead of the real id — the model proposes actions by
+ * T-code and the server resolves them via the returned map, so a hallucinated code resolves to nothing
+ * and real ids never reach the model. The map registers ONLY rows whose line fully fits the char cap —
+ * an alias the model never saw must not be resolvable. Merchants pass through redact() defensively
+ * (digit patterns only — statement categorisation already sends merchants, no new data category).
+ * Pure (unit-tested). NOTE: aliases are rebuilt per turn — deterministic ORDER BY keeps them stable
+ * unless the data itself changes mid-conversation.
+ */
+export function renderTxnDigest(rows: AskDigestRow[], total: number): { text: string; aliasToId: Map<string, DigestRef> } {
+  const aliasToId = new Map<string, DigestRef>();
+  const lines: string[] = [];
+  let len = 0;
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i]!;
+    const alias = `T${i + 1}`;
+    const bucket = r.property_id ? `${r.bucket ?? "?"}:${r.property_id}` : (r.bucket ?? "?");
+    const line = `${alias}|${r.txn_date ?? "undated"}|${redact(r.merchant ?? "—")}|${(r.amount_aud_cents / 100).toFixed(2)}|${bucket}|${r.ato_label ?? ""}|${r.deductibility ?? "undetermined"}`;
+    if (len + line.length + 1 > DIGEST_CHAR_CAP) break; // whole-line cap: never show (or register) a half row
+    lines.push(line);
+    len += line.length + 1;
+    aliasToId.set(alias, { id: r.id, amount_cents: r.amount_aud_cents });
+  }
+  if (!lines.length) lines.push("(no transactions captured this year yet)");
+  if (total > aliasToId.size) lines.push(`(${total - aliasToId.size} more transactions not shown — totals are in the position JSON above)`);
+  return { text: lines.join("\n"), aliasToId };
+}
+
 /**
  * Build the SYSTEM prompt for "Ask Quillo" — the stable guardrails + persona + the user's own ledger
  * context (situation + position). The conversation turns are passed separately as messages[], so this
  * works for both single-turn (C1) and multi-turn chat (C2). Pure (unit-tested).
+ * C3: `txnDigest` (flag ask_actions) appends the aliased FY transaction list + the actions guardrails;
+ * OMITTED ⇒ the output is byte-identical to the pre-C3 prompt (the flag-off contract, golden-pinned).
  */
-export function buildAskSystem(situationText: string, positionText: string): string {
+export function buildAskSystem(situationText: string, positionText: string, txnDigest?: string): string {
   return (
     "You are Quillo, an Australian tax-evidence assistant answering questions about THIS user's own " +
     "records, in a short back-and-forth. " +
@@ -83,9 +138,18 @@ export function buildAskSystem(situationText: string, positionText: string): str
     (situationText || "(situation not set up yet)") +
     "\n\nTheir tracked tax position this year (their actual figures, JSON):\n" +
     positionText +
+    (txnDigest != null
+      ? ASK_ACTIONS_GUARDRAILS +
+        "\n\nTheir transactions this year (T-code|date|merchant|$AUD|bucket[:property]|ato_label|deductibility):\n" +
+        txnDigest
+      : "") +
     "\n\nAnswer each question using the data above. If it depends on something not captured, say so and " +
-    "name the screen to add it. When the user wants a repeating merchant categorised a certain way, you " +
-    "may propose a rule via suggested_rule (debit categories only). Call give_answer exactly once per reply."
+    "name the screen to add it. " +
+    (txnDigest != null
+      ? ""
+      : "When the user wants a repeating merchant categorised a certain way, you " +
+        "may propose a rule via suggested_rule (debit categories only). ") +
+    "Call give_answer exactly once per reply."
   );
 }
 

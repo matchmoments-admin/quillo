@@ -104,6 +104,48 @@ export async function matchEnergyOffer(db: PartnerDB): Promise<EnergyOfferMatch 
   };
 }
 
+/**
+ * A specific offer by id — used to PIN the referral to the exact offer the user saw on the CTA, so the
+ * lead can't be mis-attributed if the active offer changes between display and click. By default only
+ * returns a live offer (active + partner active); pass {anyStatus:true} to rebuild a prior referral's
+ * URL from its stored offer even after it's been deactivated (a re-click must stay stable).
+ */
+export async function getOfferById(db: PartnerDB, offerId: string, opts: { anyStatus?: boolean } = {}): Promise<EnergyOfferMatch | null> {
+  const live = opts.anyStatus ? "" : " AND o.active = 1 AND p.status = 'active'";
+  const row = await db
+    .prepare(
+      `SELECT o.id AS offer_id, o.target_url, o.title AS offer_title,
+              p.id AS partner_id, p.name AS partner_name, p.disclosure_text
+         FROM partner_offers o JOIN partners p ON p.id = o.partner_id
+        WHERE o.id = ?${live} LIMIT 1`,
+    )
+    .bind(offerId)
+    .first<{
+      offer_id: string;
+      target_url: string;
+      offer_title: string | null;
+      partner_id: string;
+      partner_name: string;
+      disclosure_text: string | null;
+    }>();
+  if (!row) return null;
+  return {
+    offer_id: row.offer_id,
+    partner_id: row.partner_id,
+    partner_name: row.partner_name,
+    target_url: row.target_url,
+    disclosure_text: row.disclosure_text,
+    cta_label: row.offer_title || `Get a quote from ${row.partner_name}`,
+  };
+}
+
+/** Clamp a postback revenue figure to a sane non-negative integer-cents value (rejects NaN/Infinity). */
+export function sanitizeRevenueCents(input: unknown): number {
+  const n = Number(input);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.min(Math.round(n), 100_000_000); // cap at $1,000,000 — far above any real energy CPA
+}
+
 // What the consumer Save surface renders beneath an energy opportunity (the government comparator is
 // already on the opportunity's signpost; this is the COMMERCIAL CTA shown AFTER it, with disclosure).
 export interface PartnerCta {

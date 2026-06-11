@@ -24,7 +24,7 @@ import {
   referralFunnelAdmin,
 } from "./lib/queries";
 import { isAdmin, normaliseRoles } from "./lib/roles";
-import { REFERRAL_STATUSES, canAdvanceReferral } from "./lib/partners";
+import { REFERRAL_STATUSES, canAdvanceReferral, sanitizeRevenueCents } from "./lib/partners";
 import { RULE_CREDIT_BUCKETS } from "./lib/rules";
 import {
   addPerson,
@@ -344,10 +344,10 @@ export async function handleApi(
   // the DO. NO PII leaves Quillo — the user completes everything on the partner's site.
   if (resource === "referrals" && !id && m === "POST") {
     if (!featureOn(env, "advisory_partners_energy")) return json({ error: "not available" }, 404);
-    const { opportunity_id } = (await req.json().catch(() => ({}))) as { opportunity_id?: unknown };
+    const { opportunity_id, offer_id } = (await req.json().catch(() => ({}))) as { opportunity_id?: unknown; offer_id?: unknown };
     if (typeof opportunity_id !== "string") return json({ error: "opportunity_id required" }, 400);
     try {
-      return json(await stub.createReferral(uid, opportunity_id));
+      return json(await stub.createReferral(uid, opportunity_id, typeof offer_id === "string" ? offer_id : undefined));
     } catch (e) {
       return json({ error: (e as Error).message }, 400);
     }
@@ -1185,10 +1185,18 @@ export async function handleApi(
       const cur = await env.DB.prepare(`SELECT status FROM referrals WHERE referral_token = ?`).bind(sub).first<{ status: string }>();
       if (!cur) return json({ error: "referral not found" }, 404);
       if (!canAdvanceReferral(cur.status, status)) return json({ error: `can't move ${cur.status} → ${status}` }, 409);
-      const rev = status === "converted" || status === "paid" ? Math.max(0, Math.round(Number(revenue_cents) || 0)) : 0;
+      // Revenue is only earned at convert/pay; a clawback REVERSES it (→0); other transitions leave it.
+      const nextRev =
+        status === "converted" || status === "paid" ? sanitizeRevenueCents(revenue_cents)
+        : status === "clawed_back" ? 0
+        : null; // null ⇒ keep the current value
       await env.DB.prepare(
-        `UPDATE referrals SET status = ?, revenue_cents = CASE WHEN ? > 0 THEN ? ELSE revenue_cents END, updated_at = datetime('now') WHERE referral_token = ?`,
-      ).bind(status, rev, rev, sub).run();
+        nextRev === null
+          ? `UPDATE referrals SET status = ?, updated_at = datetime('now') WHERE referral_token = ?`
+          : `UPDATE referrals SET status = ?, revenue_cents = ?, updated_at = datetime('now') WHERE referral_token = ?`,
+      )
+        .bind(...(nextRev === null ? [status, sub] : [status, nextRev, sub]))
+        .run();
       return json({ ok: true, status });
     }
   }

@@ -105,7 +105,7 @@ export const api = {
   dismissRecurringBill: (id: string) => post<{ ok: boolean }>(`/api/recurring-bills/${id}/dismiss`),
   confirmRecurringBill: (id: string) => post<{ ok: boolean }>(`/api/recurring-bills/${id}/confirm`),
   // Tier-1 energy referral (flag advisory_partners_energy) — returns the tokened outbound URL to open.
-  createReferral: (opportunityId: string) => post<{ token: string; url: string; partner_name: string }>("/api/referrals", { opportunity_id: opportunityId }),
+  createReferral: (opportunityId: string, offerId?: string) => post<{ token: string; url: string; partner_name: string }>("/api/referrals", { opportunity_id: opportunityId, offer_id: offerId }),
   notifications: () => get<{ notifications: Notification[] }>("/api/notifications").then((r) => r.notifications),
   markRead: (id: string) => post<{ ok: boolean }>(`/api/notifications/${id}/read`),
 

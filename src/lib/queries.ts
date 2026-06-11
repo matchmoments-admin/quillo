@@ -699,7 +699,9 @@ export async function referralFunnelAdmin(env: Env) {
   ]);
   const funnel = funnelRes.results ?? [];
   const total = funnel.reduce((n, r) => n + r.n, 0);
-  const revenue_cents = funnel.reduce((n, r) => n + r.revenue_cents, 0);
+  // Earned revenue = PAID only. Converted-but-unpaid is pipeline, not income; clawed_back is reversed —
+  // summing across all statuses would double-count both. Per-status revenue stays in `funnel` for detail.
+  const revenue_cents = funnel.filter((r) => r.status === "paid").reduce((n, r) => n + r.revenue_cents, 0);
   return { funnel, total, revenue_cents, recent: recentRes.results ?? [] };
 }
 

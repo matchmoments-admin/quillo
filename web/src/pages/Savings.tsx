@@ -34,7 +34,7 @@ export function Savings() {
   // Tier-1 energy referral: create the lead, then open the partner's site in a new tab. The user does
   // everything there (no PII leaves Quillo). Re-clicking is idempotent server-side (same token).
   const referral = useMutation({
-    mutationFn: (opportunityId: string) => api.createReferral(opportunityId),
+    mutationFn: (v: { opportunityId: string; offerId: string }) => api.createReferral(v.opportunityId, v.offerId),
     onSuccess: (r) => { window.open(r.url, "_blank", "noopener,noreferrer"); },
     onError: (e) => toast.error((e as Error).message),
   });
@@ -115,7 +115,7 @@ export function Savings() {
                         <Button
                           variant="ghost"
                           className="h-8 px-3 text-xs uppercase tracking-wide"
-                          onClick={() => referral.mutate(o.id)}
+                          onClick={() => referral.mutate({ opportunityId: o.id, offerId: o.partner_cta!.offer_id })}
                           disabled={referral.isPending}
                         >
                           {referral.isPending ? "Opening…" : o.partner_cta.cta_label} →

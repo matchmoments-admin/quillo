@@ -13,7 +13,8 @@ import { fileURLToPath } from "node:url";
 import type { Env } from "../src/env";
 import { buildReport } from "../src/lib/report";
 import { buildAccountantSchedule, tieBackChecks } from "../src/lib/accountant-schedule";
-import { fetchAskDigestRows } from "../src/lib/queries";
+import { fetchAskDigestRows, listAccounts } from "../src/lib/queries";
+import { deleteRow, archiveRow, DeleteBlockedError } from "../src/lib/situation-write";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
@@ -25,12 +26,15 @@ class D1Stmt {
   bind(...args: unknown[]) { this.params = args.map((a) => (a === undefined ? null : a)); return this; }
   async all<T = unknown>() { return { results: this.db.prepare(this.sql).all(...(this.params as never[])) as T[], success: true, meta: {} }; }
   async first<T = unknown>() { return (this.db.prepare(this.sql).get(...(this.params as never[])) as T) ?? null; }
-  async run() { this.db.prepare(this.sql).run(...(this.params as never[])); return { success: true, meta: {} }; }
+  async run() { const r = this.db.prepare(this.sql).run(...(this.params as never[])); return { success: true, meta: { changes: Number(r.changes ?? 0) } }; }
+  // Real D1 .batch() returns each statement's full result (SELECTs carry `.results`); mirror that so
+  // batched SELECTs (e.g. the delete-integrity guard) resolve correctly under the shim.
+  async settle() { return /^\s*(select|with)/i.test(this.sql) ? this.all() : this.run(); }
 }
 class D1 {
   constructor(private db: DatabaseSync) {}
   prepare(sql: string) { return new D1Stmt(this.db, sql); }
-  async batch(stmts: D1Stmt[]) { const out = []; for (const s of stmts) out.push(await s.run()); return out; }
+  async batch(stmts: D1Stmt[]) { const out = []; for (const s of stmts) out.push(await s.settle()); return out; }
 }
 
 const db = new DatabaseSync(":memory:");
@@ -441,6 +445,113 @@ async function main() {
     const bad = checks.filter((c) => !c.ok);
     check("Schedule tie-back p11 (loan_interest_v2): evidence-first interest ties per property", checks.length > 0 && bad.length === 0);
     if (bad.length) for (const b of bad) console.log(`      ✗ p11 ${b.label}: section ${b.actual_cents} vs report ${b.report_cents}`);
+  }
+
+  // ── Delete integrity (H1): RESTRICT + archive — no FK cascade, so a parent delete must not
+  //    silently orphan rows that the tax position still sums. ──
+  {
+    const u = "pdel";
+    run(`INSERT INTO tenants (user_id, display_name) VALUES (?, 'PDEL')`, u);
+    run(`INSERT INTO persons (id, user_id, display_name, role) VALUES (?, ?, 'You', 'self')`, `person_self_${u}`, u);
+    run(`INSERT INTO accounts (id, user_id, name, type, source, active) VALUES ('pdAcc', ?, 'Everyday', 'transaction', 'statement', 1)`, u);
+    run(`INSERT INTO properties (id, user_id, label, status, use_status) VALUES ('pdProp', ?, 'Rental', 'rented', 'rented')`, u);
+    run(`INSERT INTO entities (id, user_id, kind, name, entity_type, active) VALUES ('pdEnt', ?, 'company', 'Co', 'company', 1)`, u);
+    // A countable bank-line tied to BOTH the account and the property (negative-gearing deduction).
+    run(`INSERT INTO transactions (id, user_id, source, status, kind, account_id, property_id, amount_cents, amount_aud_cents, txn_date, bucket, ato_label, direction, deductibility) VALUES ('pdTxn', ?, 'statement', 'categorised', 'bank_line', 'pdAcc', 'pdProp', 50000, 50000, ?, 'property_rented', 'rental:interest', 'debit', 'likely_deductible')`, u, FY_DATE);
+    // Income on the entity so deleting it would orphan a money row too.
+    run(`INSERT INTO income (id, user_id, entity_id, income_type, fy, gross_cents, amount_aud_cents) VALUES ('pdInc', ?, 'pdEnt', 'rent', '2025-26', 120000, 120000)`, u);
+
+    const before = await buildReport(env, u, 2025);
+
+    const blocks = async (table: "accounts" | "properties" | "entities", id: string) => {
+      try { await deleteRow(env, u, table, id); return false; } catch (e) { return e instanceof DeleteBlockedError; }
+    };
+    check("H1: deleting an account with transactions is blocked (409)", await blocks("accounts", "pdAcc"));
+    check("H1: deleting a property with transactions is blocked (409)", await blocks("properties", "pdProp"));
+    check("H1: deleting an entity with income is blocked (409)", await blocks("entities", "pdEnt"));
+
+    const after = await buildReport(env, u, 2025);
+    check("H1: blocked deletes leave the tax position byte-identical",
+      JSON.stringify(after.by_bucket) === JSON.stringify(before.by_bucket) &&
+      after.taxable_position_cents === before.taxable_position_cents);
+
+    // Archive is the non-destructive path: the account leaves the picker but its line stays counted.
+    const archived = await archiveRow(env, u, "accounts", "pdAcc");
+    const accts = await listAccounts(env, u);
+    const afterArchive = await buildReport(env, u, 2025);
+    check("H1: archiveRow(account) succeeds and drops it from listAccounts", archived === true && !accts.some((a) => a.id === "pdAcc"));
+    check("H1: archiving keeps the account's transactions in the position",
+      afterArchive.taxable_position_cents === before.taxable_position_cents);
+
+    // A leaf parent with no children deletes cleanly (guard is a no-op).
+    run(`INSERT INTO accounts (id, user_id, name, type, source, active) VALUES ('pdAcc2', ?, 'Spare', 'transaction', 'statement', 1)`, u);
+    let leafDeleted = false;
+    try { await deleteRow(env, u, "accounts", "pdAcc2"); leafDeleted = true; } catch { leafDeleted = false; }
+    check("H1: deleting a parent with no children still works", leafDeleted);
+  }
+
+  // ── FX un-conversion (H2): a foreign row we couldn't convert (amount_aud_cents NULL) must be
+  //    EXCLUDED from the position, never summed 1:1 as AUD. A converted foreign row still counts. ──
+  {
+    const u = "pfx";
+    run(`INSERT INTO tenants (user_id, display_name) VALUES (?, 'PFX')`, u);
+    run(`INSERT INTO persons (id, user_id, display_name, role) VALUES (?, ?, 'You', 'self')`, `person_self_${u}`, u);
+    // Converted GBP income: £1,000 @ 1.9 = $1,900 (counts). Unconverted USD income: amount_aud_cents NULL (excluded).
+    run(`INSERT INTO income (id, user_id, income_type, fy, gross_cents, currency, amount_aud_cents, fx_rate) VALUES ('pfxIncOk', ?, 'foreign_pension', '2025-26', 100000, 'GBP', 190000, 1.9)`, u);
+    run(`INSERT INTO income (id, user_id, income_type, fy, gross_cents, currency, amount_aud_cents, fx_rate, needs_review) VALUES ('pfxIncBad', ?, 'foreign_pension', '2025-26', 500000, 'USD', NULL, NULL, 1)`, u);
+    // Converted USD deduction $300 (counts) + an unconverted EUR deduction (excluded).
+    run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, currency, amount_aud_cents, fx_rate, txn_date, bucket, direction, deductibility) VALUES ('pfxTxnOk', ?, 'upload', 'categorised', 'bank_line', 20000, 'USD', 30000, 1.5, ?, 'payg', 'debit', 'likely_deductible')`, u, FY_DATE);
+    run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, currency, amount_aud_cents, fx_rate, txn_date, bucket, direction, deductibility) VALUES ('pfxTxnBad', ?, 'upload', 'needs_review', 'bank_line', 90000, 'EUR', NULL, NULL, ?, 'payg', 'debit', 'likely_deductible')`, u, FY_DATE);
+
+    const r = await buildReport(env, u, 2025);
+    check("H2: income excludes the un-converted foreign row (only the $1,900 converted one counts)", r.income.gross_cents === 190000);
+    const payg = r.by_bucket.find((b) => b.bucket === "payg");
+    check("H2: deductions exclude the un-converted foreign txn (only the $300 converted one counts)", (payg?.total_cents ?? 0) === 30000);
+    check("H2: the un-converted rows are NOT silently counted at their raw foreign value",
+      r.income.gross_cents !== 690000 && (payg?.total_cents ?? 0) !== 120000);
+  }
+
+  // ── Multi-company spend (H3): raw bucket='company' spend with 2+ companies can't be auto-assigned —
+  //    it must be SURFACED (unattributed), never silently dropped or pinned to companies[0]. ──
+  {
+    // Two-company tenant: an unattributed company expense must surface, not vanish.
+    const u = "pco2";
+    run(`INSERT INTO tenants (user_id, display_name) VALUES (?, 'PCO2')`, u);
+    run(`INSERT INTO persons (id, user_id, display_name, role) VALUES (?, ?, 'You', 'self')`, `person_self_${u}`, u);
+    run(`INSERT INTO entities (id, user_id, kind, name, entity_type, active) VALUES ('pco2a', ?, 'company', 'Co A', 'company', 1)`, u);
+    run(`INSERT INTO entities (id, user_id, kind, name, entity_type, active) VALUES ('pco2b', ?, 'company', 'Co B', 'company', 1)`, u);
+    run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, direction, deductibility) VALUES ('pco2t', ?, 'upload', 'categorised', 'bank_line', 80000, 80000, ?, 'company', 'debit', 'likely_deductible')`, u, FY_DATE);
+    const r2 = await buildReport(env, u, 2025);
+    check("H3: 2-company unattributed company spend is surfaced ($800, 1 txn)", r2.company_unattributed_cents === 80000 && r2.company_unattributed_n === 1);
+    check("H3: 2-company unattributed spend is NOT pinned to companies[0]", (r2.company_positions ?? []).every((p) => p.deductions_cents === 0));
+
+    // One-company tenant: the SAME raw spend is consumed into that company's deductions (byte-identical legacy).
+    const u1 = "pco1";
+    run(`INSERT INTO tenants (user_id, display_name) VALUES (?, 'PCO1')`, u1);
+    run(`INSERT INTO persons (id, user_id, display_name, role) VALUES (?, ?, 'You', 'self')`, `person_self_${u1}`, u1);
+    run(`INSERT INTO entities (id, user_id, kind, name, entity_type, active) VALUES ('pco1a', ?, 'company', 'Solo Co', 'company', 1)`, u1);
+    run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, direction, deductibility) VALUES ('pco1t', ?, 'upload', 'categorised', 'bank_line', 50000, 50000, ?, 'company', 'debit', 'likely_deductible')`, u1, FY_DATE);
+    const r1 = await buildReport(env, u1, 2025);
+    check("H3: 1-company raw spend still counts in that company's deductions ($500), nothing unattributed",
+      (r1.company_positions ?? [])[0]?.deductions_cents === 50000 && !r1.company_unattributed_cents);
+  }
+
+  // ── Canonical source: INCOME (income table wins; a matched credit folds in once) ──
+  // The `income` table is the single source of truth for income. A bank credit the user confirmed
+  // duplicates a documented income row (matched_income_id set) must NOT be counted a second time.
+  {
+    const u = "pdup";
+    run(`INSERT INTO tenants (user_id, display_name) VALUES (?, 'PDUP')`, u);
+    run(`INSERT INTO persons (id, user_id, display_name, role) VALUES (?, ?, 'You', 'self')`, `person_self_${u}`, u);
+    run(`INSERT INTO income (id, user_id, income_type, fy, gross_cents, currency, amount_aud_cents) VALUES ('pdupInc', ?, 'salary_payg', '2025-26', 100000, 'AUD', 100000)`, u);
+    // The same salary as a bank credit, CONFIRMED to match the income row → excluded from income-by-bucket.
+    run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, ato_label, direction, matched_income_id) VALUES ('pdupCr', ?, 'statement', 'categorised', 'bank_line', 100000, 100000, ?, 'income_personal', 'income:salary', 'credit', 'pdupInc')`, u, FY_DATE);
+    // An UNMATCHED credit still shows as income-by-bucket (proves the dedupe is targeted, not blanket).
+    run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, ato_label, direction) VALUES ('pdupCr2', ?, 'statement', 'categorised', 'bank_line', 20000, 20000, ?, 'income_personal', 'income:other', 'credit')`, u, FY_DATE);
+    const r = await buildReport(env, u, 2025);
+    const ibb = (r.income_by_bucket ?? []).reduce((s, b) => s + b.total_cents, 0);
+    check("Canonical income: the documented row counts once ($1,000 headline)", r.income.gross_cents === 100000);
+    check("Canonical income: a matched credit is NOT double-counted (only the $200 unmatched credit shows)", ibb === 20000);
   }
 
   console.log(`\n=== personas: ${pass} passed, ${fail} failed ===`);

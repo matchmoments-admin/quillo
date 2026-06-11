@@ -48,6 +48,9 @@ export async function toAud(
   } catch {
     // network/parse failure — fall through to best-effort
   }
-  // Couldn't convert — surface the original number as a placeholder, flagged by fx_rate=null.
-  return { amount_aud_cents: amountCents, fx_rate: null, fx_date: null };
+  // Couldn't convert a FOREIGN amount. Never fabricate an AUD value: returning the raw foreign cents
+  // here was summed 1:1 into the tax position (a USD/GBP receipt counted as if it were AUD). Leave
+  // amount_aud_cents NULL + fx_rate NULL so the caller flags the row for review and the sum paths
+  // exclude-and-surface it rather than silently over/under-stating the position.
+  return { amount_aud_cents: null, fx_rate: null, fx_date: null };
 }

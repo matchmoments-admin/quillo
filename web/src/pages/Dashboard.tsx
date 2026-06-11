@@ -29,7 +29,7 @@ export function Dashboard() {
       <div className="flex flex-wrap items-end gap-4">
         <div>
           <h1 className="font-display text-4xl text-forest">Dashboard</h1>
-          <div className="mt-1.5 text-xs font-medium text-ink-3">Your tracked tax position · FY {label}</div>
+          <div className="mt-1.5 text-xs font-medium text-ink-3">What you've tracked · FY {label}</div>
         </div>
         <span className="flex-1" />
         <Link to="/reports">
@@ -57,7 +57,7 @@ export function Dashboard() {
 
       {/* KPI row — every figure here is scoped to the active FY. */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        <KpiCard variant="feature" label="Tracked total" value={money(total)} foot={`${d.by_bucket.reduce((s, b) => s + b.n, 0)} categorised items`} />
+        <KpiCard variant="feature" label="Tracked spend" value={money(total)} foot={`${d.by_bucket.reduce((s, b) => s + b.n, 0)} categorised items · not your tax position`} />
         <KpiCard label="Deduction categories" value={String(d.by_bucket.length)} foot="Categories in use" />
         <KpiCard label="Income tracked" value={money(income)} foot="From bank credits" />
       </div>

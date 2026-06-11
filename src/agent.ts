@@ -1456,13 +1456,18 @@ export class TaxAgent extends Agent<Env> {
     const currency = (final.currency ?? "AUD").trim().toUpperCase();
     const gstCents = currency === "AUD" ? final.gst_cents : null;
     const fx = await toAud(this.env, final.amount_cents, currency, final.txn_date);
+    // A foreign amount we couldn't convert (fx_rate null) has NO AUD value — flag it for review so
+    // it's excluded-and-surfaced rather than summed un-converted into the position.
+    const fxUnconverted = currency !== "AUD" && fx.fx_rate == null;
+    const status = fxUnconverted ? "needs_review" : "extracted";
 
     await this.env.DB.prepare(
-      `UPDATE transactions SET status='extracted', merchant=?, amount_cents=?, currency=?,
+      `UPDATE transactions SET status=?, merchant=?, amount_cents=?, currency=?,
               amount_aud_cents=?, fx_rate=?, fx_date=?, gst_cents=?, txn_date=?, bucket=?,
               ato_label=?, property_id=?, paid_account=?, confidence=?, reasoning=? WHERE id=? AND user_id=?`,
     )
       .bind(
+        status,
         final.merchant,
         final.amount_cents,
         currency,
@@ -1566,8 +1571,13 @@ export class TaxAgent extends Agent<Env> {
     // Convert the non-gross money columns to AUD with the SAME rate as gross, so the reporting
     // seam (which sums these columns directly) never mixes currencies. AUD income → rate 1 (no-op).
     // Franking credits are an AU imputation amount, always AUD, so they're never converted.
-    const rate = currency === "AUD" ? 1 : fx.fx_rate ?? 1;
-    const toAudCents = (c: number | null | undefined): number | null => (c == null ? null : Math.round(c * rate));
+    // A foreign amount we couldn't convert (fx_rate null) gets NO fabricated rate: leave every AUD
+    // column NULL and flag the row for review so the position excludes-and-surfaces it (instead of
+    // counting un-converted foreign cents, or rate-1 placeholders, as AUD).
+    const fxUnconverted = currency !== "AUD" && fx.fx_rate == null;
+    const rate = currency === "AUD" ? 1 : fx.fx_rate ?? null;
+    const toAudCents = (c: number | null | undefined): number | null => (c == null || rate == null ? null : Math.round(c * rate));
+    const needsReview = (inc.needs_review ?? 0) || (fxUnconverted ? 1 : 0);
     await this.env.DB.prepare(
       `INSERT INTO income (id, user_id, person_id, entity_id, property_id, income_type, ato_label, fy,
          gross_cents, net_cents, withholding_cents, franking_credit_cents, foreign_tax_paid_cents,
@@ -1579,7 +1589,7 @@ export class TaxAgent extends Agent<Env> {
         inc.income_type, inc.ato_label ?? null, fy, inc.gross_cents, toAudCents(inc.net_cents),
         toAudCents(inc.withholding_cents) ?? 0, inc.franking_credit_cents ?? 0, toAudCents(inc.foreign_tax_paid_cents) ?? 0,
         currency, fx.amount_aud_cents, fx.fx_rate, inc.source_doc_id ?? null, inc.txn_date ?? null,
-        inc.detail_json ?? null, inc.needs_review ?? 0,
+        inc.detail_json ?? null, needsReview,
       )
       .run();
     await this.audit(userId, "income_recorded", JSON.stringify({ id, type: inc.income_type, gross: inc.gross_cents, fy }));
@@ -3019,13 +3029,19 @@ export class TaxAgent extends Agent<Env> {
     // Pre-counted impure signals handed to the pure engine.
     const unknownRow = report.by_bucket.find((b) => b.bucket === "unknown");
     const confidenceFloor = 0.6;
-    const [needsIncome, needsAssets, lowConf, divDoc, agentSummaryProps, disposed] = await Promise.all([
+    // Foreign-currency rows we couldn't convert (currency != AUD AND amount_aud_cents IS NULL): excluded
+    // from the position by FX_CONVERTED, surfaced here so the excluded money stays visible. Counts the
+    // income rows + the dated transactions in this FY window.
+    const fxUnconvertedPredicate = "COALESCE(currency,'AUD') <> 'AUD' AND amount_aud_cents IS NULL";
+    const [needsIncome, needsAssets, lowConf, divDoc, agentSummaryProps, disposed, fxIncome, fxTxns] = await Promise.all([
       this.env.DB.prepare(`SELECT COUNT(*) AS n FROM income WHERE user_id = ? AND fy = ? AND needs_review = 1`).bind(userId, fy).first<{ n: number }>(),
       this.env.DB.prepare(`SELECT COUNT(*) AS n FROM assets WHERE user_id = ? AND needs_review = 1 AND status = 'active'`).bind(userId).first<{ n: number }>(),
       this.env.DB.prepare(`SELECT COUNT(*) AS n FROM transactions WHERE user_id = ? AND confidence IS NOT NULL AND confidence < ? AND txn_date >= ? AND txn_date <= ? AND ${COUNTABLE}`).bind(userId, confidenceFloor, start, end).first<{ n: number }>(),
       this.env.DB.prepare(`SELECT COUNT(*) AS n FROM documents WHERE user_id = ? AND doc_type IN ('dividend_statement','managed_fund_amma') AND (fy = ? OR fy IS NULL)`).bind(userId, fy).first<{ n: number }>(),
       this.env.DB.prepare(`SELECT DISTINCT property_id FROM documents WHERE user_id = ? AND doc_type = 'agent_rental_summary' AND property_id IS NOT NULL`).bind(userId).all<{ property_id: string }>(),
       this.env.DB.prepare(`SELECT COUNT(*) AS n FROM assets WHERE user_id = ? AND disposed_date IS NOT NULL AND disposed_date >= ? AND disposed_date <= ?`).bind(userId, start, end).first<{ n: number }>(),
+      this.env.DB.prepare(`SELECT COUNT(*) AS n FROM income WHERE user_id = ? AND fy = ? AND ${fxUnconvertedPredicate}`).bind(userId, fy).first<{ n: number }>(),
+      this.env.DB.prepare(`SELECT COUNT(*) AS n FROM transactions WHERE user_id = ? AND txn_date >= ? AND txn_date <= ? AND status NOT IN ('duplicate','ignored') AND ${fxUnconvertedPredicate}`).bind(userId, start, end).first<{ n: number }>(),
     ]);
     const haveSummaryFor = new Set((agentSummaryProps.results ?? []).map((r) => r.property_id));
     const rentalPropsMissingSummary = report.per_property
@@ -3048,6 +3064,7 @@ export class TaxAgent extends Agent<Env> {
       instantAssetWriteOffCentsThisFy: thresholds[fy]?.instant_asset_write_off_cents ?? null,
       instantAssetWriteOffCentsPrevFy: thresholds[fyLabel(startYear - 1)]?.instant_asset_write_off_cents ?? null,
       capitalLossCarryinCents: capLoss?.total ?? 0,
+      fxUnconvertedN: (fxIncome?.n ?? 0) + (fxTxns?.n ?? 0),
     };
 
     const readiness = assessReadiness({ report, situation, claimMatches: [...matchedById.values()], signals, generatedAt: new Date().toISOString(), excludeNonDeductible: featureOn(this.env, "position_excludes_nondeductible") });
@@ -4088,6 +4105,16 @@ export class TaxAgent extends Agent<Env> {
     await this.env.DB.prepare(`DELETE FROM corrections WHERE txn_id = ? AND user_id = ?`).bind(txnId, userId).run();
     // Remove any claim evidence pointing at this txn (else reviewClaims folds stale links into 'capturing').
     await this.env.DB.prepare(`DELETE FROM claim_links WHERE txn_id = ? AND user_id = ?`).bind(txnId, userId).run();
+    // Reverse-orphan cleanup (no FK cascade): if this row was a bank_line, any receipt matched to it
+    // would dangle AND stay excluded from the position forever (COUNTABLE counts a receipt only when
+    // matched_txn_id IS NULL) — un-match them back to countable, mirroring deleteStatement's purge.
+    // Also drop attribution rows keyed to this txn so they don't sum against a deleted transaction.
+    await this.env.DB.prepare(
+      `UPDATE transactions SET matched_txn_id = NULL, status = 'extracted' WHERE user_id = ? AND matched_txn_id = ?`,
+    )
+      .bind(userId, txnId)
+      .run();
+    await this.env.DB.prepare(`DELETE FROM transaction_attributions WHERE transaction_id = ? AND user_id = ?`).bind(txnId, userId).run();
     await this.env.DB.prepare(`DELETE FROM transactions WHERE id = ? AND user_id = ?`).bind(txnId, userId).run();
     await this.audit(
       userId,

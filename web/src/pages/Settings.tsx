@@ -1,9 +1,42 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api } from "../api";
+import { toast } from "sonner";
+import { api, isDeleteBlocked } from "../api";
 import { useFeatures } from "../lib/features";
 import { BUCKETS } from "../types";
 import { Card, Spinner, BUCKET_LABEL, InfoTip, money } from "../components/ui";
+
+// Run a delete; on a blocked-delete (409, dependent records still reference the row) surface the
+// reason and offer Archive when the parent supports it — instead of silently swallowing the error.
+async function runDelete(
+  del: () => Promise<unknown>,
+  opts: { onDone: () => void; label: string; archive?: () => Promise<unknown> },
+): Promise<void> {
+  try {
+    await del();
+    opts.onDone();
+  } catch (e) {
+    if (isDeleteBlocked(e)) {
+      if (opts.archive && e.archivable) {
+        toast.error(e.message, {
+          description: "Archive it instead to hide it without losing the data.",
+          action: {
+            label: "Archive",
+            onClick: () =>
+              opts
+                .archive!()
+                .then(() => opts.onDone())
+                .catch((er) => toast.error("Couldn't archive", { description: (er as Error).message })),
+          },
+        });
+      } else {
+        toast.error(e.message, { description: "Remove or reassign those records first, then delete." });
+      }
+    } else {
+      toast.error(`Couldn't delete ${opts.label}`, { description: (e as Error).message });
+    }
+  }
+}
 import { EntityFields, PropertyFields, PersonFields, entityToBody, entityToValue, propertyToBody, personToBody, personToValue, emptyEntity, emptyProperty, emptyPerson, OWNED_STATUSES, TENANT_STATUSES, USE_STATUSES, DENY_USE_STATUSES, isTenantStatus, useStatusLabel, propertyStatusLabel, type EntityValue, type PersonValue, type PropertyValue } from "../components/SituationFields";
 import type { Person, Account, Property, LoanProperty } from "../types";
 
@@ -358,7 +391,7 @@ function EditableProperty({ property, onDone }: { property: { id: string; label:
         <span className="truncate">{property.label} — {propertyStatusLabel(property.status)}</span>
         <div className="flex flex-none gap-3">
           <button onClick={() => setEditing(true)} className={del}>edit</button>
-          <button onClick={() => api.deleteProperty(property.id).then(onDone)} className={del}>delete</button>
+          <button onClick={() => runDelete(() => api.deleteProperty(property.id), { onDone, label: "property" })} className={del}>delete</button>
         </div>
       </div>
     );
@@ -583,7 +616,7 @@ function EditablePerson({ person, onDone }: { person: Person; onDone: () => void
         <div className="flex flex-none gap-3">
           <button onClick={() => { setValue(personToValue(person)); setEditing(true); }} className={del}>edit</button>
           {/* The 'self' person anchors entities/properties/income — never deletable here. */}
-          {!isSelf && <button onClick={() => api.deletePerson(person.id).then(onDone)} className={del}>delete</button>}
+          {!isSelf && <button onClick={() => runDelete(() => api.deletePerson(person.id), { onDone, label: "person" })} className={del}>delete</button>}
         </div>
       </div>
     );
@@ -618,7 +651,7 @@ function EditableEntity({ entity, onDone }: { entity: { id: string; kind: string
         <span className="truncate">{entityLabel(entity)}</span>
         <div className="flex flex-none gap-3">
           <button onClick={() => { setValue(entityToValue(entity)); setEditing(true); }} className={del}>edit</button>
-          <button onClick={() => api.deleteEntity(entity.id).then(onDone)} className={del}>delete</button>
+          <button onClick={() => runDelete(() => api.deleteEntity(entity.id), { onDone, label: "entity", archive: () => api.archiveEntity(entity.id) })} className={del}>delete</button>
         </div>
       </div>
     );

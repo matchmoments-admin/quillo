@@ -14,6 +14,25 @@ async function authHeaders(extra?: Record<string, string>): Promise<Record<strin
   return headers;
 }
 
+// A delete blocked because dependent records still reference the row (HTTP 409). Carries the
+// blockers + whether the parent can be archived instead, so the UI can offer "Archive".
+export type DeleteBlocker = { table: string; label: string; count: number };
+export class ApiError extends Error {
+  status: number;
+  blockers?: DeleteBlocker[];
+  archivable?: boolean;
+  parentTable?: string;
+  constructor(message: string, status: number, extra?: { blockers?: DeleteBlocker[]; archivable?: boolean; parentTable?: string }) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.blockers = extra?.blockers;
+    this.archivable = extra?.archivable;
+    this.parentTable = extra?.parentTable;
+  }
+}
+export const isDeleteBlocked = (e: unknown): e is ApiError => e instanceof ApiError && e.status === 409 && Array.isArray(e.blockers);
+
 // Turn a non-2xx response into a clean Error. The Worker returns `{ error: "<message>" }` JSON, so
 // surface just that message (shown verbatim in toasts) instead of a raw `429 {"error":"…"}` blob.
 // Falls back to the raw body / status text when the response isn't the expected shape. NOTE: callers
@@ -22,12 +41,17 @@ async function authHeaders(extra?: Record<string, string>): Promise<Record<strin
 async function errFrom(res: Response): Promise<Error> {
   const text = await res.text();
   try {
-    const body = JSON.parse(text) as { error?: unknown };
-    if (typeof body?.error === "string" && body.error) return new Error(body.error);
+    const body = JSON.parse(text) as { error?: unknown; blockers?: DeleteBlocker[]; archivable?: boolean; parentTable?: string };
+    // Blocked delete (409): build a human summary of what still references the row.
+    if (res.status === 409 && Array.isArray(body?.blockers)) {
+      const summary = body.blockers.map((b) => `${b.count} ${b.label}`).join(", ");
+      return new ApiError(`Can't delete — still used by ${summary}.`, 409, { blockers: body.blockers, archivable: body.archivable, parentTable: body.parentTable });
+    }
+    if (typeof body?.error === "string" && body.error) return new ApiError(body.error, res.status);
   } catch {
     /* not JSON — fall through to the raw text */
   }
-  return new Error(text || `${res.status} ${res.statusText}`);
+  return new ApiError(text || `${res.status} ${res.statusText}`, res.status);
 }
 
 // Same-origin: the SPA is served by the Worker, so /api/* needs no base URL.
@@ -116,6 +140,7 @@ export const api = {
   addEntity: (b: unknown) => post<{ id: string }>("/api/entities", b),
   updateEntity: (id: string, b: unknown) => send<{ ok: boolean }>("PUT", `/api/entities/${id}`, b),
   deleteEntity: (id: string) => send<{ ok: boolean }>("DELETE", `/api/entities/${id}`),
+  archiveEntity: (id: string) => send<{ ok: boolean; archived: boolean }>("POST", `/api/entities/${id}/archive`),
   addRule: (b: unknown) => post<{ id: string }>("/api/rules", b),
   updateRule: (id: string, b: unknown) => send<{ ok: boolean }>("PUT", `/api/rules/${id}`, b),
   deleteRule: (id: string) => send<{ ok: boolean }>("DELETE", `/api/rules/${id}`),
@@ -144,6 +169,7 @@ export const api = {
   addAccount: (b: Partial<Account>) => post<{ id: string }>("/api/accounts", b),
   updateAccount: (id: string, b: Partial<Account>) => send<{ ok: boolean }>("PUT", `/api/accounts/${id}`, b),
   deleteAccount: (id: string) => send<{ ok: boolean }>("DELETE", `/api/accounts/${id}`),
+  archiveAccount: (id: string) => send<{ ok: boolean; archived: boolean }>("POST", `/api/accounts/${id}/archive`),
   setAccountSource: (id: string, source: string) => post<{ ok: boolean }>(`/api/accounts/${id}/source`, { source }),
 
   // Loan → property links (Set-up; pre-fills the Phase 5 interest split)

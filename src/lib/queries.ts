@@ -15,10 +15,16 @@ import { matchEnergyOffer, ctaFromOffer, opportunityTakesEnergyCta, type Partner
 //  - drop duplicates and transfers/cc-payments (status 'ignored')
 //  - count bank lines + ONLY receipts that aren't matched to a line (cash / no statement)
 //  - count debits (spend); credits/refunds are stored but excluded.
+// A foreign-currency row we couldn't convert to AUD (currency != AUD AND amount_aud_cents IS NULL)
+// has no trustworthy AUD value — it's flagged needs_review and must be EXCLUDED from every money sum
+// (never summed 1:1 as if it were AUD). Surfaced separately so the excluded money stays visible.
+export const FX_CONVERTED = "NOT (COALESCE(currency,'AUD') <> 'AUD' AND amount_aud_cents IS NULL)";
+
 export const COUNTABLE =
   "status NOT IN ('duplicate','ignored') " +
   "AND (kind = 'bank_line' OR (kind = 'receipt' AND matched_txn_id IS NULL)) " +
-  "AND COALESCE(direction,'debit') = 'debit'";
+  "AND COALESCE(direction,'debit') = 'debit' " +
+  `AND ${FX_CONVERTED}`;
 
 // The income counterpart of COUNTABLE: same dedup/transfer exclusions, but the CREDIT side
 // (money in). Reported separately from the `income` table (document-sourced income); the two
@@ -27,7 +33,8 @@ export const COUNTABLE =
 export const COUNTABLE_INCOME =
   "status NOT IN ('duplicate','ignored') " +
   "AND (kind = 'bank_line' OR (kind = 'receipt' AND matched_txn_id IS NULL)) " +
-  "AND direction = 'credit'";
+  "AND direction = 'credit' " +
+  `AND ${FX_CONVERTED}`;
 
 // Rows that warrant the user's attention — defined ONCE so the Dashboard "needs review" counter
 // and the Inbox "Needs review" tab can't drift (previously the dashboard counted unknown/low-conf
@@ -492,7 +499,7 @@ export async function dashboard(env: Env, userId: string, startYear: number) {
       `SELECT t.property_id, p.label, COUNT(*) AS n,
               COALESCE(SUM(COALESCE(t.amount_aud_cents, t.amount_cents)),0) AS total_cents
          FROM transactions t LEFT JOIN properties p ON p.id = t.property_id
-        WHERE t.user_id = ? AND t.property_id IS NOT NULL AND ${COUNTABLE.replace(/\b(status|kind|matched_txn_id|direction)\b/g, "t.$1")}
+        WHERE t.user_id = ? AND t.property_id IS NOT NULL AND ${COUNTABLE.replace(/\b(status|kind|matched_txn_id|direction|currency|amount_aud_cents)\b/g, "t.$1")}
           AND t.txn_date >= ? AND t.txn_date <= ?
         GROUP BY t.property_id`,
     )

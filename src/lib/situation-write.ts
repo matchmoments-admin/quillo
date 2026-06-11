@@ -367,9 +367,129 @@ export async function getFySignoff(env: Env, userId: string, fy: number): Promis
     .first<{ signed_off_at: string }>();
 }
 
+// ── Delete integrity (RESTRICT) ────────────────────────────────────────────────
+// The schema has no foreign keys, so a hard DELETE of a parent (account / property /
+// entity / person / asset …) would leave orphaned child rows that the tax report still
+// sums — silently changing the position. Production financial apps (Xero, QuickBooks)
+// block deleting anything that still has linked records and offer "archive" instead.
+// We mirror that: deleteRow refuses when blocking children exist (DeleteBlockedError →
+// 409 at the API boundary), and accounts/entities get a non-destructive archiveRow.
+export type DeleteBlocker = { table: string; label: string; count: number };
+
+export class DeleteBlockedError extends Error {
+  blockers: DeleteBlocker[];
+  parentTable: string;
+  archivable: boolean;
+  constructor(parentTable: string, blockers: DeleteBlocker[]) {
+    super(`cannot delete ${parentTable}: ${blockers.length} dependent record set(s) still reference it`);
+    this.name = "DeleteBlockedError";
+    this.parentTable = parentTable;
+    this.blockers = blockers;
+    this.archivable = parentTable === "accounts" || parentTable === "entities";
+  }
+}
+
+// parent table → child references (childTable, fk column, human label). A parent only
+// blocks if at least one referencing row exists. Leaf tables are absent ⇒ guard is a no-op.
+const CHILD_REFS: Record<string, ReadonlyArray<{ table: string; column: string; label: string }>> = {
+  accounts: [
+    { table: "transactions", column: "account_id", label: "transactions" },
+    { table: "transactions", column: "paid_via_account_id", label: "transactions paid from this account" },
+    { table: "statements", column: "account_id", label: "imported statements" },
+    { table: "loans_properties", column: "loan_account_id", label: "loan-to-property links" },
+    { table: "loan_interest_summaries", column: "loan_account_id", label: "loan-interest records" },
+  ],
+  properties: [
+    { table: "transactions", column: "property_id", label: "transactions" },
+    { table: "income", column: "property_id", label: "income records" },
+    { table: "assets", column: "property_id", label: "assets" },
+    { table: "property_owners", column: "property_id", label: "co-owners" },
+    { table: "loans_properties", column: "property_id", label: "loan links" },
+    { table: "income_activities", column: "property_id", label: "income activities" },
+    { table: "documents", column: "property_id", label: "documents" },
+  ],
+  entities: [
+    { table: "income", column: "entity_id", label: "income records" },
+    { table: "assets", column: "entity_id", label: "assets" },
+    { table: "entity_roles", column: "entity_id", label: "person roles" },
+    { table: "income_activities", column: "entity_id", label: "income activities" },
+    { table: "transaction_attributions", column: "entity_id", label: "transaction attributions" },
+    { table: "company_tax_positions", column: "entity_id", label: "company tax positions" },
+    { table: "bas_periods", column: "entity_id", label: "BAS periods" },
+    { table: "payg_instalments", column: "entity_id", label: "PAYG instalments" },
+    { table: "blackhole_costs", column: "entity_id", label: "blackhole costs" },
+    { table: "shareholder_loans", column: "company_entity_id", label: "shareholder loans" },
+    { table: "rd_claims", column: "entity_id", label: "R&D claims" },
+    { table: "trust_distributions", column: "trust_entity_id", label: "trust distributions" },
+    { table: "smsf_members", column: "smsf_entity_id", label: "SMSF members" },
+    { table: "ess_grants", column: "employer_entity_id", label: "ESS grants" },
+    { table: "documents", column: "entity_id", label: "documents" },
+  ],
+  persons: [
+    { table: "properties", column: "person_id", label: "properties" },
+    { table: "entities", column: "person_id", label: "entities" },
+    { table: "entity_roles", column: "person_id", label: "entity roles" },
+    { table: "property_owners", column: "person_id", label: "property co-ownerships" },
+    { table: "income", column: "person_id", label: "income records" },
+    { table: "assets", column: "person_id", label: "assets" },
+    { table: "transactions", column: "payer_person_id", label: "transactions paid by this person" },
+    { table: "vehicle_logbooks", column: "person_id", label: "vehicle logbooks" },
+    { table: "trust_distributions", column: "beneficiary_person_id", label: "trust distributions" },
+    { table: "smsf_members", column: "person_id", label: "SMSF memberships" },
+    { table: "super_contributions", column: "person_id", label: "super contributions" },
+    { table: "cgt_assets", column: "person_id", label: "CGT assets" },
+    { table: "ess_grants", column: "person_id", label: "ESS grants" },
+    { table: "shareholder_loans", column: "shareholder_person_id", label: "shareholder loans" },
+  ],
+  assets: [
+    { table: "depreciation_schedule", column: "asset_id", label: "depreciation schedules" },
+    { table: "vehicle_logbooks", column: "asset_id", label: "vehicle logbooks" },
+    { table: "capital_loss_carryins", column: "asset_id", label: "capital-loss carry-ins" },
+    { table: "transactions", column: "asset_id", label: "transactions" },
+  ],
+  income_activities: [
+    { table: "transaction_attributions", column: "income_activity_id", label: "transaction attributions" },
+  ],
+  cgt_assets: [
+    { table: "cgt_events", column: "cgt_asset_id", label: "CGT events" },
+  ],
+};
+
+// Throws DeleteBlockedError if any child row still references this parent. One batched
+// round-trip; tables/columns come from the static allowlist above (never user input).
+export async function assertNoBlockingChildren(env: Env, userId: string, parentTable: string, parentId: string): Promise<void> {
+  const refs = CHILD_REFS[parentTable];
+  if (!refs || refs.length === 0) return;
+  const rows = await env.DB.batch(
+    refs.map((r) => env.DB.prepare(`SELECT COUNT(*) AS n FROM ${r.table} WHERE ${r.column} = ? AND user_id = ?`).bind(parentId, userId)),
+  );
+  // Aggregate by label (transactions appear twice for accounts/persons via two columns).
+  const byLabel = new Map<string, DeleteBlocker>();
+  refs.forEach((r, i) => {
+    const n = (rows[i]?.results?.[0] as { n?: number } | undefined)?.n ?? 0;
+    if (n <= 0) return;
+    const existing = byLabel.get(r.label);
+    if (existing) existing.count += n;
+    else byLabel.set(r.label, { table: r.table, label: r.label, count: n });
+  });
+  if (byLabel.size > 0) throw new DeleteBlockedError(parentTable, [...byLabel.values()]);
+}
+
 export async function deleteRow(env: Env, userId: string, table: "properties" | "entities" | "user_rules" | "accounts" | "persons" | "income" | "assets" | "loans_properties" | "capital_loss_carryins" | "depreciation_opening_balances" | "property_owners" | "entity_roles" | "cgt_assets" | "cgt_events" | "ess_grants" | "vehicle_logbooks" | "trust_distributions" | "smsf_members" | "super_contributions" | "income_activities" | "bas_periods" | "payg_instalments", id: string): Promise<void> {
+  // RESTRICT: refuse if dependent financial records still reference this row (no FK = no
+  // engine-level cascade, so orphans would silently stay in the tax position). Callers that
+  // legitimately remove children first (e.g. income clears matched_income_id) are unaffected.
+  await assertNoBlockingChildren(env, userId, table, id);
   // table is from a fixed allowlist (never user input) — safe to interpolate.
   await env.DB.prepare(`DELETE FROM ${table} WHERE id = ? AND user_id = ?`).bind(id, userId).run();
+}
+
+// Non-destructive alternative to deleting an account/entity that still has history: hide it
+// from pickers/source-of-truth (read paths already filter active = 1) while keeping its rows —
+// the money they carry is real evidence and must stay correctly counted.
+export async function archiveRow(env: Env, userId: string, table: "accounts" | "entities", id: string): Promise<boolean> {
+  const res = await env.DB.prepare(`UPDATE ${table} SET active = 0 WHERE id = ? AND user_id = ?`).bind(id, userId).run();
+  return (res.meta?.changes ?? 0) > 0;
 }
 
 // ── Co-ownership capture (Phase B / G2) ────────────────────────────────────────

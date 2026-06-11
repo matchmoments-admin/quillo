@@ -64,6 +64,7 @@ export interface FilingReadinessSignals {
   instantAssetWriteOffCentsThisFy: number | null;
   instantAssetWriteOffCentsPrevFy: number | null;
   capitalLossCarryinCents: number; // prior-year capital losses captured at Set-up (0 if none)
+  fxUnconvertedN?: number; // foreign-currency rows we couldn't convert to AUD (excluded from the position)
 }
 
 export interface FilingReadiness {
@@ -312,6 +313,16 @@ export function assessReadiness(input: {
     findings.push(f("income_needs_review", "income", "review", `${signals.needsReviewIncomeN} income record(s) flagged for review`,
       `Some income was captured with low confidence or didn't reconcile. Check the amounts before relying on the position.`, false,
       [{ kind: "income", count: signals.needsReviewIncomeN }]));
+  }
+  if ((signals.fxUnconvertedN ?? 0) > 0) {
+    findings.push(f("fx_unconverted", "income", "review", `${signals.fxUnconvertedN} foreign-currency item(s) couldn't be converted to AUD`,
+      `We couldn't fetch an exchange rate for these (unsupported currency, or a date with no published rate), so they're EXCLUDED from the indicative position rather than counted at the wrong value. Check the date/currency, or enter the AUD amount manually.`, false,
+      [{ kind: "transaction", count: signals.fxUnconvertedN }]));
+  }
+  if ((report.company_unattributed_n ?? 0) > 0) {
+    findings.push(f("company_unattributed", "classification", "review", `${report.company_unattributed_n} company transaction(s) aren't assigned to a specific company`,
+      `These total ${money(report.company_unattributed_cents ?? 0)}. With more than one company, a plain "company" expense can't be auto-assigned, so it's EXCLUDED from every company's position. Assign each to the company that incurred it (set its attribution) so it's counted.`, false,
+      [{ kind: "transaction", count: report.company_unattributed_n }]));
   }
   if (signals.needsReviewAssetsN > 0) {
     findings.push(f("assets_needs_review", "depreciation", "review", `${signals.needsReviewAssetsN} asset(s) flagged for review`,

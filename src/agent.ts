@@ -4295,7 +4295,7 @@ export class TaxAgent extends Agent<Env> {
              is_essential=excluded.is_essential, occurrences=excluded.occurrences,
              first_seen_date=excluded.first_seen_date, last_seen_date=excluded.last_seen_date,
              next_expected_date=excluded.next_expected_date,
-             status=CASE WHEN recurring_bills.status IN ('dismissed','ended') THEN recurring_bills.status ELSE excluded.status END,
+             status=CASE WHEN recurring_bills.status IN ('dismissed','ended') OR recurring_bills.pinned = 1 THEN recurring_bills.status ELSE excluded.status END,
              updated_at=datetime('now')`,
         ).bind(
           crypto.randomUUID(), userId, biller_key, g.label.slice(0, 64), category, det.cadence,
@@ -4395,6 +4395,16 @@ export class TaxAgent extends Agent<Env> {
   async dismissRecurringBill(userId: string, id: string): Promise<{ ok: boolean }> {
     await this.env.DB.prepare(
       `UPDATE recurring_bills SET status='dismissed', updated_at=datetime('now') WHERE user_id = ? AND id = ?`,
+    )
+      .bind(userId, id)
+      .run();
+    return { ok: true };
+  }
+
+  /** Confirm a detected recurring bill (user feedback): pin it sticky so re-detection won't downgrade it. */
+  async confirmRecurringBill(userId: string, id: string): Promise<{ ok: boolean }> {
+    await this.env.DB.prepare(
+      `UPDATE recurring_bills SET pinned=1, status='confirmed', updated_at=datetime('now') WHERE user_id = ? AND id = ?`,
     )
       .bind(userId, id)
       .run();

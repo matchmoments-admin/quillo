@@ -2,7 +2,7 @@ import type { Env } from "../env";
 import { enabledFeatures, featureOn } from "./features";
 import { billingPolicy, billableCents } from "./billing";
 import { getProfile } from "./db";
-import { isAdmin } from "./roles";
+import { isAdmin, isPartner } from "./roles";
 import { fyBounds } from "./ledger-totals";
 import { annualiseSpendCents, runRateCopy, ADVISORY_DISCLAIMER } from "./advisory";
 import { matchEnergyOffer, ctaFromOffer, opportunityTakesEnergyCta, type PartnerDB } from "./partners";
@@ -533,6 +533,7 @@ export async function dashboard(env: Env, userId: string, startYear: number) {
     undated: { n: undated?.n ?? 0, total_cents: undated?.total_cents ?? 0 },
     features: enabledFeatures(env), // SPA gates nav/UI on the enabled flags (loaded once on mount)
     is_admin: isAdmin(profile), // gates the Admin page/nav (founder only)
+    is_partner: isPartner(profile), // gates the Partner portal page/nav (partner staff only)
   };
 }
 

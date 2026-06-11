@@ -135,6 +135,10 @@ export interface Report {
   // flag is on and the tenant has a company entity. The company's costs don't reduce the personal
   // headline — they sit here, netting to a carried-forward loss when pre-revenue.
   company_positions?: CompanyPosition[];
+  // Raw company-bucket spend that couldn't be assigned to a specific company (2+ companies only).
+  // Excluded from every company position and surfaced as a review item — never silently dropped.
+  company_unattributed_cents?: number;
+  company_unattributed_n?: number;
   // Phase #138: net capital gain (shares/crypto/property disposals; 50% discount; loss offset/carry).
   // Present only when the cgt_engine flag is on AND there are CGT events. net_capital_gain_cents is
   // ADDED to taxable_position_cents (it's assessable income). undefined ⇒ byte-identical legacy totals.
@@ -337,7 +341,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
             COUNT(*) AS n,
             COALESCE(SUM(${amtExprT}),0) AS total_cents
        FROM transactions t LEFT JOIN properties p ON p.id = t.property_id
-      WHERE t.user_id = ? AND t.txn_date >= ? AND t.txn_date <= ? AND t.property_id IS NOT NULL AND ${COUNTABLE.replace(/\b(status|kind|matched_txn_id|direction)\b/g, "t.$1")}${notAttributed("t.id")}${excludeSplitInterest("t.")}
+      WHERE t.user_id = ? AND t.txn_date >= ? AND t.txn_date <= ? AND t.property_id IS NOT NULL AND ${COUNTABLE.replace(/\b(status|kind|matched_txn_id|direction|currency|amount_aud_cents)\b/g, "t.$1")}${notAttributed("t.id")}${excludeSplitInterest("t.")}
       GROUP BY t.property_id, deductibility, reimbursed, use_status_denied`,
   )
     .bind(userId, start, end, ...supersededLoanIds)
@@ -441,7 +445,8 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
     : { individual_deduction_cents: 0, company_deduction_cents: 0, by_property: [] };
   // Phase C / G4: per-company position (separate taxpayer). Same flag — it's the attribution-routed
   // company deductions that make it meaningful. Empty when there's no company.
-  const company_positions: CompanyPosition[] = useAttributions ? await companyPositions(env, userId, startYear) : [];
+  const companyResult = useAttributions ? await companyPositions(env, userId, startYear) : { positions: [], unattributed_cents: 0, unattributed_n: 0 };
+  const company_positions: CompanyPosition[] = companyResult.positions;
   // Collapse the per-property deductibility split: `expenseByProp` keeps the legacy by_property shape
   // (all spend per property); `expMap` holds only the DEDUCTIBLE portion (used for the negative-
   // gearing net) — when excludeNonDeductible is on, likely_not/confirmed_not/needs_apportionment drop
@@ -696,6 +701,8 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
         ? { individual_cents: attr.individual_deduction_cents, company_cents: attr.company_deduction_cents, property_cents: attr_property_total_cents }
         : undefined,
     company_positions: company_positions.length ? company_positions : undefined,
+    company_unattributed_cents: companyResult.unattributed_cents || undefined,
+    company_unattributed_n: companyResult.unattributed_n || undefined,
     capital_gains,
     ess,
     gst,

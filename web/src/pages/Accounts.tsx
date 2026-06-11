@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { api } from "../api";
+import { api, isDeleteBlocked } from "../api";
 import { useFeatures } from "../lib/features";
 import { useActiveFy } from "../lib/activeFy";
 import { Button, Card, Spinner, money, InfoTip } from "../components/ui";
@@ -217,9 +217,28 @@ function AccountRow({ account, statements }: { account: Account; statements: Sta
     mutationFn: (source: string) => api.setAccountSource(account.id, source),
     onSuccess: invalidate,
   });
+  const archive = useMutation({
+    mutationFn: () => api.archiveAccount(account.id),
+    onSuccess: () => {
+      toast.success(`Archived "${account.name}"`, { description: "Hidden from lists; its transactions stay counted." });
+      invalidate();
+    },
+    onError: (e) => toast.error("Couldn't archive", { description: (e as Error).message }),
+  });
   const del = useMutation({
     mutationFn: () => api.deleteAccount(account.id),
     onSuccess: invalidate,
+    onError: (e) => {
+      // Blocked because transactions/statements still reference it — offer the non-destructive archive.
+      if (isDeleteBlocked(e) && e.archivable) {
+        toast.error(e.message, {
+          description: "Archive it instead to hide it without losing the data.",
+          action: { label: "Archive", onClick: () => archive.mutate() },
+        });
+      } else {
+        toast.error("Couldn't delete account", { description: (e as Error).message });
+      }
+    },
   });
 
   const isFeed = account.source === "qbo_feed";
@@ -289,9 +308,9 @@ function AccountRow({ account, statements }: { account: Account; statements: Sta
               invalidate();
             }}
             onDelete={() => {
-              if (confirm(`Delete "${account.name}"? Its imported transactions stay, but the account record is removed.`)) del.mutate();
+              if (confirm(`Delete "${account.name}"? If it still has transactions or statements, the delete is blocked — you'll be offered Archive instead (keeps the data, hides the account).`)) del.mutate();
             }}
-            deletePending={del.isPending}
+            deletePending={del.isPending || archive.isPending}
           />
         )}
 

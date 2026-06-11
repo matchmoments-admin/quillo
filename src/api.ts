@@ -54,6 +54,7 @@ import {
   getFySignoff,
   ensureTenant,
   deleteRow,
+  archiveRow,
   listKeys,
   mintKey,
   revokeKey,
@@ -480,6 +481,12 @@ export async function handleApi(
       await updateEntity(env, uid, id, await req.json());
       return json({ ok: true });
     }
+    // Non-destructive archive (hide from pickers, keep history) — the safe alternative
+    // surfaced when a delete is blocked because records still reference this entity.
+    if (m === "POST" && id && sub === "archive") {
+      const ok = await archiveRow(env, uid, "entities", id);
+      return ok ? json({ ok: true, archived: true }) : json({ error: "not found" }, 404);
+    }
     if (m === "DELETE" && id) {
       await deleteRow(env, uid, "entities", id);
       return json({ ok: true });
@@ -534,6 +541,11 @@ export async function handleApi(
       const { source } = (await req.json()) as { source: string };
       await stub.setAccountSource(uid, id, source);
       return json({ ok: true });
+    }
+    // Non-destructive archive (hide from pickers, keep imported lines counted).
+    if (m === "POST" && id && sub === "archive") {
+      const ok = await archiveRow(env, uid, "accounts", id);
+      return ok ? json({ ok: true, archived: true }) : json({ error: "not found" }, 404);
     }
     if (m === "DELETE" && id) {
       await deleteRow(env, uid, "accounts", id);

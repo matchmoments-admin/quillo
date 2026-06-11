@@ -4,6 +4,7 @@ import { parseEmail } from "./lib/email";
 import { userIdFromLocalpart } from "./lib/db";
 import { requireClerk } from "./auth/clerk";
 import { handleApi } from "./api";
+import { DeleteBlockedError } from "./lib/situation-write";
 import { handleCallback } from "./lib/qbo-oauth";
 import { marketingResponse } from "./marketing/landing";
 import { legalResponse } from "./marketing/legal";
@@ -177,6 +178,11 @@ export default {
       try {
         return await handleApi(req, env, auth.user, stubFor(env, auth.user.userId));
       } catch (e) {
+        // A blocked delete (dependent financial records still reference the row) is a
+        // 409, not a 500 — return the blockers so the UI can offer "archive instead".
+        if (e instanceof DeleteBlockedError) {
+          return Response.json({ error: e.message, blockers: e.blockers, parentTable: e.parentTable, archivable: e.archivable }, { status: 409 });
+        }
         const err = e as Error;
         console.error(`api error: ${req.method} ${url.pathname}: ${err?.stack ?? err?.message ?? err}`);
         return Response.json({ error: err?.message ?? "internal error" }, { status: 500 });

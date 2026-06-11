@@ -282,7 +282,7 @@ export async function buildAccountantSchedule(
     property_id: string | null;
     deduction_provision: string | null;
   }
-  const tFilter = COUNTABLE.replace(/\b(status|kind|matched_txn_id|direction)\b/g, "t.$1");
+  const tFilter = COUNTABLE.replace(/\b(status|kind|matched_txn_id|direction|currency|amount_aud_cents)\b/g, "t.$1");
   const attrRowsP = useAttributions
     ? safeAll<AttrRow>(
         env.DB.prepare(

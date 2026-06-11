@@ -4338,8 +4338,10 @@ export class TaxAgent extends Agent<Env> {
     }
     await this.batchChunked(oppUpserts);
 
-    // (4) ONE deduped notification (mirror flagOldData's unread-nudge dedup; stable marker for the LIKE).
-    if (oppUpserts.length > 0 && !(await hasPendingNudge(this.env, userId, "%Savings & Opportunities%"))) {
+    // (4) ONE quiet notification — suppress if a Savings nudge was sent in the last 25 days (read or
+    // not), so the standing opportunity set isn't re-announced every weekly cron once the user has seen
+    // it ("accrue quietly", non-nagging — the brief's UX rule), rather than re-firing after each read.
+    if (oppUpserts.length > 0 && !(await hasPendingNudge(this.env, userId, "%Savings & Opportunities%", { withinDays: 25 }))) {
       await this.notify(
         userId,
         `Savings & Opportunities: we spotted ${detected.length} recurring payment${detected.length === 1 ? "" : "s"} and your annualised spending in the new Save tab. General information only — not financial product advice.`,

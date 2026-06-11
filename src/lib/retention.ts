@@ -201,16 +201,25 @@ export async function exportTenant(env: Env, userId: string): Promise<Record<str
 }
 
 /**
- * Shared unread-nudge dedup: true when an UNREAD notification whose body matches `bodyPattern`
- * (a SQL LIKE pattern) already exists — so a caller can skip re-notifying and avoid nudge fatigue.
- * Centralised so the advisory layer reuses the exact pattern flagOldData established.
+ * Shared nudge dedup: true when a notification whose body matches `bodyPattern` (a SQL LIKE pattern)
+ * already exists — so a caller can skip re-notifying and avoid nudge fatigue. Default mode matches an
+ * UNREAD nudge (the flagOldData pattern: re-notify once the user has actioned the last one). Pass
+ * `withinDays` to instead suppress while ANY such nudge was created in that window REGARDLESS of read
+ * state — used by the advisory layer so a standing set of opportunities isn't re-announced every weekly
+ * cron after the user reads it ("accrue quietly", not nagging).
  */
-export async function hasPendingNudge(env: Env, userId: string, bodyPattern: string): Promise<boolean> {
-  const existing = await env.DB.prepare(
-    `SELECT 1 FROM notifications WHERE user_id = ? AND read_at IS NULL AND body LIKE ? LIMIT 1`,
-  )
-    .bind(userId, bodyPattern)
-    .first();
+export async function hasPendingNudge(env: Env, userId: string, bodyPattern: string, opts: { withinDays?: number } = {}): Promise<boolean> {
+  const existing = opts.withinDays != null
+    ? await env.DB.prepare(
+        `SELECT 1 FROM notifications WHERE user_id = ? AND body LIKE ? AND created_at > datetime('now', ?) LIMIT 1`,
+      )
+        .bind(userId, bodyPattern, `-${opts.withinDays} days`)
+        .first()
+    : await env.DB.prepare(
+        `SELECT 1 FROM notifications WHERE user_id = ? AND read_at IS NULL AND body LIKE ? LIMIT 1`,
+      )
+        .bind(userId, bodyPattern)
+        .first();
   return existing != null;
 }
 

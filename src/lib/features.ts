@@ -32,6 +32,7 @@ export const FEATURE_KEYS = [
   "accountant_schedule",// #179/#181: itemised accountant schedule CSV (per-txn lines, engine schedules, NOT-CLAIMED, substantiation) replaces the thin summary CSV at format=csv. OFF in prod until validated.
   "ask_actions",        // Ask Quillo C3: FY txn digest in the Ask prompt + model-PROPOSED one-click fixes (set_deductibility / recategorise / add_rule). Propose→confirm→execute via the EXISTING write endpoints — never autonomous. Applying a deductibility card needs deductibility_review ON. OFF ⇒ Ask byte-identical.
   "advisory_layer",     // Savings & Opportunities (#182–184): annualised spend run-rate + deterministic recurring-bill/subscription detection + FACTUAL opportunity nudges + the "Save" surface. No LLM, no partners, no PII egress, no projections/benchmarks (src/lib/advisory.ts). OFF ⇒ no read/write path, byte-identical.
+  "advisory_partners_energy", // Advisory Phase 2 (docs/advisory-phase2-partners.md): the Tier-1 energy partner CTA on advisory opportunities + the create-referral path. Identity/data-model scaffold ships flag-OFF (Slice 1); no consumer CTA, no live partner, no PII egress until this is ON *and* legal sign-off (§5) lands. OFF ⇒ byte-identical.
 ] as const;
 
 export type FeatureKey = (typeof FEATURE_KEYS)[number];

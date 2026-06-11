@@ -339,7 +339,7 @@ export interface SavingsData {
 }
 
 // Platform roles (mirror of src/lib/roles.ts ROLES). 'individual' is the default.
-export const ROLES = ["individual", "admin", "accountant", "bookkeeper", "support"] as const;
+export const ROLES = ["individual", "admin", "accountant", "bookkeeper", "support", "partner"] as const;
 export type Role = (typeof ROLES)[number];
 export const ROLE_LABEL: Record<Role, string> = {
   individual: "Individual",
@@ -347,6 +347,7 @@ export const ROLE_LABEL: Record<Role, string> = {
   accountant: "Accountant / tax agent",
   bookkeeper: "Bookkeeper",
   support: "Support",
+  partner: "Partner",
 };
 export interface AdminTenant {
   user_id: string;

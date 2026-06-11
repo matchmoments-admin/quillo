@@ -18,6 +18,7 @@ import { Savings } from "./pages/Savings";
 import { Review } from "./pages/Review";
 import { Filing } from "./pages/Filing";
 import { Admin } from "./pages/Admin";
+import { Partner } from "./pages/Partner";
 import { Accounts } from "./pages/Accounts";
 import { Reconcile } from "./pages/Reconcile";
 import { Income } from "./pages/Income";
@@ -120,6 +121,7 @@ const router = createBrowserRouter([
       { path: "review", element: <Review /> },
       { path: "filing", element: <Filing /> },
       { path: "admin", element: <Admin /> },
+      { path: "partner", element: <Partner /> },
       { path: "glossary", element: <Glossary /> },
     ],
   },

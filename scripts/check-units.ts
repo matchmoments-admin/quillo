@@ -1314,6 +1314,14 @@ console.log("partner isolation (advisory phase 2 scaffold)");
   // — never a value off the request. (Mirrors the regex-on-source guards used elsewhere in this file.)
   const partnersSrc = fs.readFileSync(path.join(process.cwd(), "src", "lib", "partners.ts"), "utf8");
   check("referrals read is scoped by partner_id", /FROM referrals WHERE partner_id = \?/.test(partnersSrc));
+
+  // Partner portal: leads must be scoped by partner_id AND must NOT expose the consumer's user_id /
+  // opportunity_id (Tier-1 keeps PII in Quillo — the partner never learns who the lead is).
+  const leadsSelect = partnersSrc.match(/SELECT referral_token, status, revenue_cents, created_at, updated_at FROM referrals WHERE partner_id = \?/);
+  check("portal leads query is scoped by partner_id", leadsSelect != null);
+  check("portal leads query omits user_id", leadsSelect != null && !/user_id/.test(leadsSelect![0]));
+  check("portal leads query omits opportunity_id", leadsSelect != null && !/opportunity_id/.test(leadsSelect![0]));
+  check("portal resolves partner_id from the caller's own tenant", /resolvePartnerId\(db, staffUserId\)/.test(partnersSrc));
 }
 
 console.log("referral lifecycle (advisory phase 2 slice 2)");

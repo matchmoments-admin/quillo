@@ -23,8 +23,8 @@ import {
   savingsOverview,
   referralFunnelAdmin,
 } from "./lib/queries";
-import { isAdmin, normaliseRoles } from "./lib/roles";
-import { REFERRAL_STATUSES, canAdvanceReferral, sanitizeRevenueCents } from "./lib/partners";
+import { isAdmin, isPartner, normaliseRoles } from "./lib/roles";
+import { REFERRAL_STATUSES, canAdvanceReferral, sanitizeRevenueCents, partnerPortalData } from "./lib/partners";
 import { RULE_CREDIT_BUCKETS } from "./lib/rules";
 import {
   addPerson,
@@ -351,6 +351,15 @@ export async function handleApi(
     } catch (e) {
       return json({ error: (e as Error).message }, 400);
     }
+  }
+
+  // ── Partner portal (role 'partner') — a partner staff member's OWN org only ───────────────────────
+  // GET /api/partner/overview → org + funnel + anonymised leads + offers, scoped to the caller's
+  // partner_id (resolved server-side from partner_members; never a request value). The consumer's
+  // identity/ledger never crosses into this surface. Role-gated, exactly like /admin is founder-gated.
+  if (resource === "partner") {
+    if (!isPartner(await getProfile(env, uid))) return json({ error: "forbidden" }, 403);
+    if (m === "GET" && id === "overview") return json(await partnerPortalData(env, uid));
   }
 
   // GET /api/progress — derived completion state + the single next action that drives the

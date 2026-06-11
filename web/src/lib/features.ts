@@ -22,3 +22,10 @@ export function useAdminAccess(): { isAdmin: boolean; loaded: boolean } {
   const q = useQuery({ queryKey: ["dashboard", fy], queryFn: () => api.dashboard(fy), staleTime: 60_000 });
   return { isAdmin: q.data?.is_admin ?? false, loaded: !q.isLoading && !!q.data };
 }
+
+/** Whether the signed-in tenant holds the 'partner' role — gates the Partner portal page/nav. */
+export function usePartnerAccess(): { isPartner: boolean; loaded: boolean } {
+  const { fy } = useActiveFy();
+  const q = useQuery({ queryKey: ["dashboard", fy], queryFn: () => api.dashboard(fy), staleTime: 60_000 });
+  return { isPartner: q.data?.is_partner ?? false, loaded: !q.isLoading && !!q.data };
+}

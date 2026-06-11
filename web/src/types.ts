@@ -279,6 +279,32 @@ export interface DashboardData {
   undated: { n: number; total_cents: number }; // countable spend with no date → in no FY's totals
   features: string[]; // enabled feature flags — gate nav/UI on these
   is_admin?: boolean; // founder/admin — gates the Admin page
+  is_partner?: boolean; // partner staff — gates the Partner portal page
+}
+
+// ── Partner portal (role 'partner') — a partner staff member's view of THEIR org only ──
+export interface PartnerLead {
+  referral_token: string;
+  status: string;
+  revenue_cents: number;
+  created_at: string;
+  updated_at: string;
+}
+export interface PartnerPortalOffer {
+  id: string;
+  vertical: string;
+  title: string | null;
+  target_url: string;
+  active: number;
+  created_at: string;
+}
+export interface PartnerPortal {
+  partner: { id: string; name: string; vertical: string; status: string } | null;
+  funnel: { status: string; n: number; revenue_cents: number }[];
+  total: number;
+  revenue_cents: number;
+  leads: PartnerLead[];
+  offers: PartnerPortalOffer[];
 }
 
 // ── Savings & Opportunities (flag advisory_layer) — FACTUAL-info advisory surface ──

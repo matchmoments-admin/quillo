@@ -6,13 +6,13 @@ import { useQuery } from "@tanstack/react-query";
 import { Toaster } from "sonner";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import { api } from "./api";
-import { useFeatures, useAdminAccess } from "./lib/features";
+import { useFeatures, useAdminAccess, usePartnerAccess } from "./lib/features";
 import { FySwitcher, useActiveFy } from "./lib/activeFy";
 import { NextActionBar } from "./components/NextAction";
 import { TabGuide } from "./components/TabGuide";
 import { Coachmarks } from "./components/Coachmarks";
 
-type NavItem = { to: string; label: string; icon: IconName; end?: boolean; badge?: boolean; flag?: string; admin?: boolean };
+type NavItem = { to: string; label: string; icon: IconName; end?: boolean; badge?: boolean; flag?: string; admin?: boolean; partner?: boolean };
 type NavGroup = { label: string; items: NavItem[] };
 
 // Grouped destinations — the forest sidebar, ordered as the six-stop work spine
@@ -72,6 +72,10 @@ const GROUPS: NavGroup[] = [
       { to: "/quickbooks", label: "QuickBooks", icon: "check" },
       { to: "/notifications", label: "Alerts", icon: "bell" },
     ],
+  },
+  {
+    label: "Partner",
+    items: [{ to: "/partner", label: "Partner portal", icon: "income", partner: true }],
   },
   {
     label: "Platform",
@@ -204,6 +208,7 @@ function Brand() {
 function Sidebar({ needsReview, open }: { needsReview: number; open: boolean }) {
   const { has } = useFeatures();
   const { isAdmin } = useAdminAccess();
+  const { isPartner } = usePartnerAccess();
   return (
     <aside
       className={`fixed inset-y-0 left-0 z-50 flex w-[252px] flex-col bg-forest px-4 py-5 text-cream transition-transform lg:sticky lg:top-0 lg:z-auto lg:h-screen lg:translate-x-0 ${
@@ -219,7 +224,7 @@ function Sidebar({ needsReview, open }: { needsReview: number; open: boolean }) 
 
       <nav className="-mx-1 flex-1 overflow-y-auto px-1">
         {GROUPS.map((g) => {
-          const items = g.items.filter((it) => (!it.flag || has(it.flag)) && (!it.admin || isAdmin));
+          const items = g.items.filter((it) => (!it.flag || has(it.flag)) && (!it.admin || isAdmin) && (!it.partner || isPartner));
           if (!items.length) return null; // hide a group whose every item is gated off (e.g. Platform for non-admins)
           return (
           <div key={g.label || "home"} className="mt-5 first:mt-1">

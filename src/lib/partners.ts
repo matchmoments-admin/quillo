@@ -214,3 +214,63 @@ export async function partnerScopedReferrals(env: Env, staffUserId: string): Pro
   if (!partnerId) return null;
   return listPartnerReferrals(env.DB as unknown as PartnerDB, partnerId);
 }
+
+// ── Partner portal payload (the /partner page) ───────────────────────────────────────────────────
+// A LEAD is the partner's view of a referral. CRITICAL: it deliberately omits user_id and
+// opportunity_id — the consumer's identity and ledger NEVER reach the partner (Tier-1 keeps PII in
+// Quillo). The referral_token IS the partner's own attribution key, so showing it is correct.
+export interface PartnerLead {
+  referral_token: string;
+  status: string;
+  revenue_cents: number;
+  created_at: string;
+  updated_at: string;
+}
+export interface PartnerPortalOffer {
+  id: string;
+  vertical: string;
+  title: string | null;
+  target_url: string;
+  active: number;
+  created_at: string;
+}
+export interface PartnerPortal {
+  partner: { id: string; name: string; vertical: string; status: string } | null; // null ⇒ caller isn't partner staff
+  funnel: { status: string; n: number; revenue_cents: number }[];
+  total: number;
+  revenue_cents: number; // PAID only (earned), same truthful basis as the admin funnel
+  leads: PartnerLead[];
+  offers: PartnerPortalOffer[];
+}
+
+const EMPTY_PORTAL: PartnerPortal = { partner: null, funnel: [], total: 0, revenue_cents: 0, leads: [], offers: [] };
+
+/**
+ * The whole /partner portal payload for the signed-in partner staff member — org, funnel, anonymised
+ * leads, and their offers. EVERY query is scoped by the partner_id resolved from the CALLER'S OWN
+ * tenant (resolvePartnerId), never a request value, so one org can never read another's. A caller who
+ * isn't partner staff resolves to null → an empty portal (the route also 403s on the isPartner role).
+ */
+export async function partnerPortalData(env: Env, staffUserId: string): Promise<PartnerPortal> {
+  const db = env.DB as unknown as PartnerDB;
+  const partnerId = await resolvePartnerId(db, staffUserId);
+  if (!partnerId) return EMPTY_PORTAL;
+
+  const [orgRes, funnelRes, leadsRes, offersRes] = await Promise.all([
+    env.DB.prepare(`SELECT id, name, vertical, status FROM partners WHERE id = ?`).bind(partnerId).first<{ id: string; name: string; vertical: string; status: string }>(),
+    env.DB.prepare(`SELECT status, COUNT(*) AS n, COALESCE(SUM(revenue_cents),0) AS revenue_cents FROM referrals WHERE partner_id = ? GROUP BY status`).bind(partnerId).all<{ status: string; n: number; revenue_cents: number }>(),
+    // Leads: NO user_id / opportunity_id — the consumer's identity never reaches the partner.
+    env.DB.prepare(`SELECT referral_token, status, revenue_cents, created_at, updated_at FROM referrals WHERE partner_id = ? ORDER BY created_at DESC LIMIT 200`).bind(partnerId).all<PartnerLead>(),
+    env.DB.prepare(`SELECT id, vertical, title, target_url, active, created_at FROM partner_offers WHERE partner_id = ? ORDER BY created_at DESC`).bind(partnerId).all<PartnerPortalOffer>(),
+  ]);
+
+  const funnel = funnelRes.results ?? [];
+  return {
+    partner: orgRes ?? null,
+    funnel,
+    total: funnel.reduce((n, r) => n + r.n, 0),
+    revenue_cents: funnel.filter((r) => r.status === "paid").reduce((n, r) => n + r.revenue_cents, 0),
+    leads: leadsRes.results ?? [],
+    offers: offersRes.results ?? [],
+  };
+}

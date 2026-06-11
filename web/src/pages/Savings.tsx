@@ -31,6 +31,13 @@ export function Savings() {
     onError: (e) => toast.error((e as Error).message),
   });
   const dismissOpp = useMutation({ mutationFn: (id: string) => api.dismissOpportunity(id), onSuccess: () => qc.invalidateQueries({ queryKey: ["savings"] }) });
+  // Tier-1 energy referral: create the lead, then open the partner's site in a new tab. The user does
+  // everything there (no PII leaves Quillo). Re-clicking is idempotent server-side (same token).
+  const referral = useMutation({
+    mutationFn: (v: { opportunityId: string; offerId: string }) => api.createReferral(v.opportunityId, v.offerId),
+    onSuccess: (r) => { window.open(r.url, "_blank", "noopener,noreferrer"); },
+    onError: (e) => toast.error((e as Error).message),
+  });
   const dismissBill = useMutation({ mutationFn: (id: string) => api.dismissRecurringBill(id), onSuccess: () => qc.invalidateQueries({ queryKey: ["savings"] }) });
   const confirmBill = useMutation({ mutationFn: (id: string) => api.confirmRecurringBill(id), onSuccess: () => qc.invalidateQueries({ queryKey: ["savings"] }) });
 
@@ -99,6 +106,22 @@ export function Savings() {
                       <a href={o.signpost_url} target="_blank" rel="noopener noreferrer" className="mt-1.5 inline-block text-sm font-semibold text-forest underline">
                         {o.signpost_label} →
                       </a>
+                    ) : null}
+                    {/* Tier-1 partner CTA — shown AFTER the government comparator above, with a factual
+                        disclosure naming the commercial relationship. Clicking creates a tracked referral
+                        (no PII leaves Quillo) and opens the partner's site. */}
+                    {o.partner_cta ? (
+                      <div className="mt-2.5 rounded-lg border border-sage/40 bg-sage/10 px-3 py-2">
+                        <Button
+                          variant="ghost"
+                          className="h-8 px-3 text-xs uppercase tracking-wide"
+                          onClick={() => referral.mutate({ opportunityId: o.id, offerId: o.partner_cta!.offer_id })}
+                          disabled={referral.isPending}
+                        >
+                          {referral.isPending ? "Opening…" : o.partner_cta.cta_label} →
+                        </Button>
+                        <p className="mt-1.5 text-xs text-ink-3">{o.partner_cta.disclosure}</p>
+                      </div>
                     ) : null}
                   </div>
                   <button className="shrink-0 text-xs text-ink-3 underline hover:text-ink" onClick={() => dismissOpp.mutate(o.id)}>Dismiss</button>

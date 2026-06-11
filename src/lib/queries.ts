@@ -1,10 +1,11 @@
 import type { Env } from "../env";
-import { enabledFeatures } from "./features";
+import { enabledFeatures, featureOn } from "./features";
 import { billingPolicy, billableCents } from "./billing";
 import { getProfile } from "./db";
 import { isAdmin } from "./roles";
 import { fyBounds } from "./ledger-totals";
 import { annualiseSpendCents, runRateCopy, ADVISORY_DISCLAIMER } from "./advisory";
+import { matchEnergyOffer, ctaFromOffer, opportunityTakesEnergyCta, type PartnerDB } from "./partners";
 
 // Read-side queries for the web API. Reads hit D1 directly from the Worker; audited
 // writes (corrections, consent) go through the Durable Object RPC instead.
@@ -641,7 +642,31 @@ export async function savingsOverview(env: Env, userId: string, startYear: numbe
     listOpportunities(env, userId),
     spendYoy(env, userId, startYear),
   ]);
-  return { run_rate, recurring_bills, opportunities, yoy, disclaimer: ADVISORY_DISCLAIMER };
+  return {
+    run_rate,
+    recurring_bills,
+    opportunities: await withEnergyCtas(env, opportunities),
+    yoy,
+    disclaimer: ADVISORY_DISCLAIMER,
+  };
+}
+
+/**
+ * Attach the Tier-1 energy partner CTA to qualifying opportunities — ONLY when advisory_partners_energy
+ * is ON and a live partner offer exists. Flag OFF (prod default) ⇒ returns the rows untouched, so the
+ * Save surface stays signpost-only and byte-identical. The CTA is purely additive display data; it
+ * spawns nothing until the consumer clicks (POST /api/referrals).
+ */
+async function withEnergyCtas(env: Env, opportunities: Record<string, unknown>[]): Promise<Record<string, unknown>[]> {
+  if (!featureOn(env, "advisory_partners_energy")) return opportunities;
+  const eligible = opportunities.some((o) => opportunityTakesEnergyCta(o as { opportunity_type?: string; category?: string }));
+  if (!eligible) return opportunities;
+  const offer = await matchEnergyOffer(env.DB as unknown as PartnerDB);
+  if (!offer) return opportunities;
+  const cta = ctaFromOffer(offer);
+  return opportunities.map((o) =>
+    opportunityTakesEnergyCta(o as { opportunity_type?: string; category?: string }) ? { ...o, partner_cta: cta } : o,
+  );
 }
 
 /** Cross-tenant admin: every tenant with signup + activity + AI-spend summary (newest first). */
@@ -654,6 +679,30 @@ export async function listTenantsAdmin(env: Env) {
        FROM profiles p ORDER BY p.created_at DESC LIMIT 500`,
   ).all();
   return res.results ?? [];
+}
+
+/**
+ * Cross-tenant admin: the referral funnel (counts per status + total revenue) and the most recent leads.
+ * God-mode read (founder-only, like platformOverview) — the SCOPED partner view is the deferred portal.
+ */
+export async function referralFunnelAdmin(env: Env) {
+  const [funnelRes, recentRes] = await Promise.all([
+    env.DB.prepare(
+      `SELECT r.status, COUNT(*) AS n, COALESCE(SUM(r.revenue_cents),0) AS revenue_cents
+         FROM referrals r GROUP BY r.status`,
+    ).all<{ status: string; n: number; revenue_cents: number }>(),
+    env.DB.prepare(
+      `SELECT r.referral_token, r.status, r.revenue_cents, r.created_at, r.updated_at, p.name AS partner_name
+         FROM referrals r LEFT JOIN partners p ON p.id = r.partner_id
+        ORDER BY r.created_at DESC LIMIT 100`,
+    ).all(),
+  ]);
+  const funnel = funnelRes.results ?? [];
+  const total = funnel.reduce((n, r) => n + r.n, 0);
+  // Earned revenue = PAID only. Converted-but-unpaid is pipeline, not income; clawed_back is reversed —
+  // summing across all statuses would double-count both. Per-status revenue stays in `funnel` for detail.
+  const revenue_cents = funnel.filter((r) => r.status === "paid").reduce((n, r) => n + r.revenue_cents, 0);
+  return { funnel, total, revenue_cents, recent: recentRes.results ?? [] };
 }
 
 /** Cross-tenant admin: platform headline metrics. */

@@ -111,6 +111,7 @@ export interface TaxAgentRpc {
   dismissOpportunity(userId: string, id: string): Promise<{ ok: boolean }>;
   dismissRecurringBill(userId: string, id: string): Promise<{ ok: boolean }>;
   confirmRecurringBill(userId: string, id: string): Promise<{ ok: boolean }>;
+  createReferral(userId: string, opportunityId: string, offerId?: string): Promise<{ token: string; url: string; partner_name: string }>;
   recordConsent(userId: string, text: string, method: string): Promise<void>;
   draftSituation(userId: string, message: string): Promise<import("./extract").SituationDraft>;
   guideMe(userId: string, tab: string): Promise<{ headline: string; steps: string[] }>;

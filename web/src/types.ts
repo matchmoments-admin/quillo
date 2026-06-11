@@ -329,6 +329,16 @@ export interface Opportunity {
   signpost_url: string | null;
   status: string;
   created_at: string;
+  partner_cta?: PartnerCta | null;
+}
+// Tier-1 energy partner CTA (flag advisory_partners_energy). Shown AFTER the government comparator,
+// with a factual disclosure naming the commercial relationship. Clicking it POSTs /api/referrals.
+export interface PartnerCta {
+  offer_id: string;
+  partner_id: string;
+  partner_name: string;
+  cta_label: string;
+  disclosure: string;
 }
 export interface SavingsData {
   run_rate: RunRate;

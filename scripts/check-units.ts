@@ -23,7 +23,18 @@ import {
 import { applyUserRules } from "../src/lib/rules";
 import type { UserRule } from "../src/lib/db";
 import { parseRoles, hasRole, isAdmin, isPartner, normaliseRoles, ROLES } from "../src/lib/roles";
-import { resolvePartnerId, listPartnerReferrals, type PartnerDB } from "../src/lib/partners";
+import {
+  resolvePartnerId,
+  listPartnerReferrals,
+  canAdvanceReferral,
+  buildReferralUrl,
+  matchEnergyOffer,
+  getOfferById,
+  sanitizeRevenueCents,
+  ctaFromOffer,
+  opportunityTakesEnergyCta,
+  type PartnerDB,
+} from "../src/lib/partners";
 import { buildGuidePrompt, buildAskSystem, summariseReportForAsk, renderTxnDigest } from "../src/lib/guide";
 import { validateProposedActions } from "../src/extract";
 import type { Progress } from "../src/lib/progress";
@@ -1303,6 +1314,78 @@ console.log("partner isolation (advisory phase 2 scaffold)");
   // — never a value off the request. (Mirrors the regex-on-source guards used elsewhere in this file.)
   const partnersSrc = fs.readFileSync(path.join(process.cwd(), "src", "lib", "partners.ts"), "utf8");
   check("referrals read is scoped by partner_id", /FROM referrals WHERE partner_id = \?/.test(partnersSrc));
+}
+
+console.log("referral lifecycle (advisory phase 2 slice 2)");
+{
+  // Forward-only transitions; terminals are sinks; no backwards moves.
+  check("clicked → converted allowed", canAdvanceReferral("clicked", "converted"));
+  check("converted → paid allowed", canAdvanceReferral("converted", "paid"));
+  check("paid → converted rejected (no rewind)", !canAdvanceReferral("paid", "converted"));
+  check("clicked → paid rejected (must pass converted)", !canAdvanceReferral("clicked", "paid"));
+  check("dismissed → anything rejected (terminal)", !canAdvanceReferral("dismissed", "clicked"));
+
+  // Token is appended as a query param, surviving an existing query string.
+  check("buildReferralUrl appends ?ref on a bare url", buildReferralUrl("https://x.test/go", "tok1") === "https://x.test/go?ref=tok1");
+  check("buildReferralUrl appends &ref when a query exists", buildReferralUrl("https://x.test/go?a=1", "tok2") === "https://x.test/go?a=1&ref=tok2");
+
+  // Only energy/gas/essential-switch opportunities take the CTA.
+  check("energy opportunity takes CTA", opportunityTakesEnergyCta({ category: "energy" }));
+  check("essential_switch takes CTA", opportunityTakesEnergyCta({ opportunity_type: "essential_switch" }));
+  check("run_rate/insurance does NOT take CTA", !opportunityTakesEnergyCta({ opportunity_type: "run_rate", category: "insurance" }));
+
+  // matchEnergyOffer picks an active energy offer + builds a factual disclosure naming the relationship.
+  const offerDb: PartnerDB = {
+    prepare(_sql: string) {
+      return {
+        bind(..._v: unknown[]) {
+          return {
+            async first<T>() {
+              return {
+                offer_id: "of1", target_url: "https://econnex.test/compare", offer_title: null,
+                partner_id: "pa1", partner_name: "Econnex", disclosure_text: null,
+              } as unknown as T;
+            },
+            async all<T>() { return { results: [] as T[] }; },
+          };
+        },
+      };
+    },
+  };
+  const m = await matchEnergyOffer(offerDb);
+  check("matchEnergyOffer returns the active offer", m?.partner_name === "Econnex" && m?.target_url === "https://econnex.test/compare");
+  const cta = ctaFromOffer(m!);
+  check("CTA label defaults to 'Get a quote from <partner>'", cta.cta_label === "Get a quote from Econnex");
+  check("CTA disclosure names the fee + 'not advice'", /Econnex/.test(cta.disclosure) && /fee/.test(cta.disclosure) && /not advice/.test(cta.disclosure));
+
+  // getOfferById pins to a specific offer (active by default; anyStatus for a stable re-click rebuild).
+  const byIdDb = (active: number, status: string): PartnerDB => ({
+    prepare(sql: string) {
+      return {
+        bind(...v: unknown[]) {
+          return {
+            async first<T>() {
+              const wantsLive = /o\.active = 1/.test(sql);
+              if (wantsLive && (active !== 1 || status !== "active")) return null as T | null;
+              return { offer_id: v[0], target_url: "https://econnex.test/c", offer_title: "Quote", partner_id: "pa1", partner_name: "Econnex", disclosure_text: null } as unknown as T;
+            },
+            async all<T>() { return { results: [] as T[] }; },
+          };
+        },
+      };
+    },
+  });
+  check("getOfferById returns a live offer", (await getOfferById(byIdDb(1, "active"), "of1"))?.offer_id === "of1");
+  check("getOfferById (default) skips a deactivated offer", (await getOfferById(byIdDb(0, "active"), "of1")) === null);
+  check("getOfferById anyStatus rebuilds a deactivated offer", (await getOfferById(byIdDb(0, "active"), "of1", { anyStatus: true }))?.offer_id === "of1");
+
+  // Revenue sanitiser: rejects NaN/Infinity/negative, rounds, caps at $1M.
+  check("sanitizeRevenueCents passes a normal figure", sanitizeRevenueCents(5000) === 5000);
+  check("sanitizeRevenueCents rounds", sanitizeRevenueCents(49.6) === 50);
+  check("sanitizeRevenueCents → 0 for negative", sanitizeRevenueCents(-100) === 0);
+  check("sanitizeRevenueCents → 0 for Infinity", sanitizeRevenueCents(Infinity) === 0);
+  check("sanitizeRevenueCents → 0 for NaN/garbage", sanitizeRevenueCents("abc") === 0);
+  check("sanitizeRevenueCents caps at $1,000,000", sanitizeRevenueCents(99999999999) === 100_000_000);
 }
 
 console.log("bucket taxonomy");

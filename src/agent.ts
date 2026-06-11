@@ -7,6 +7,7 @@ import { revokeAndDisconnect } from "./lib/qbo-oauth";
 import { purgeTenant as purgeTenantData, exportTenant as exportTenantData, flagOldData as flagOldDataSweep, hasPendingNudge, type PurgeResult } from "./lib/retention";
 import { COUNTABLE, fetchAskDigestRows, spendRunRate } from "./lib/queries";
 import { billerNormalize, detectRecurrence, classifyBiller, paymentsPerYear, recurringCopy, signpostFor, type RecurringOccurrence } from "./lib/advisory";
+import { matchEnergyOffer, buildReferralUrl, opportunityTakesEnergyCta, type PartnerDB } from "./lib/partners";
 import { deriveWfhHours } from "./lib/work-use";
 import { applyUserRules, RULE_CREDIT_BUCKETS } from "./lib/rules";
 import { sha256hex, sha256hexBytes } from "./lib/base64";
@@ -4409,6 +4410,48 @@ export class TaxAgent extends Agent<Env> {
       .bind(userId, id)
       .run();
     return { ok: true };
+  }
+
+  /**
+   * Create a Tier-1 energy referral from an opportunity the user clicked (advisory_partners_energy).
+   * USER-INITIATED only (the "no cold calls" rule — this is reached solely from the consumer pressing
+   * the CTA), IDEMPOTENT (UNIQUE(user_id, opportunity_id) → a re-click returns the SAME token, never a
+   * second lead), AUDITED, and Tier-1 (consent_id stays NULL — no PII leaves; the user finishes on the
+   * partner's site). Returns the tokened outbound URL the SPA opens. Throws if the opportunity isn't a
+   * live energy one or no partner offer is live — the CTA simply isn't shown in those cases.
+   */
+  async createReferral(userId: string, opportunityId: string): Promise<{ token: string; url: string; partner_name: string }> {
+    const opp = await this.env.DB.prepare(
+      `SELECT id, opportunity_type, category, status FROM opportunities WHERE user_id = ? AND id = ?`,
+    )
+      .bind(userId, opportunityId)
+      .first<{ id: string; opportunity_type: string; category: string | null; status: string }>();
+    if (!opp || opp.status !== "open") throw new Error("opportunity not found");
+    if (!opportunityTakesEnergyCta(opp)) throw new Error("not an energy opportunity");
+
+    const offer = await matchEnergyOffer(this.env.DB as unknown as PartnerDB);
+    if (!offer) throw new Error("no partner offer available");
+
+    // Idempotent: a prior referral for this opportunity → re-return its token (re-click is a no-op).
+    const existing = await this.env.DB.prepare(
+      `SELECT referral_token FROM referrals WHERE user_id = ? AND opportunity_id = ?`,
+    )
+      .bind(userId, opportunityId)
+      .first<{ referral_token: string }>();
+    if (existing) {
+      return { token: existing.referral_token, url: buildReferralUrl(offer.target_url, existing.referral_token), partner_name: offer.partner_name };
+    }
+
+    const id = crypto.randomUUID();
+    const token = crypto.randomUUID();
+    await this.env.DB.prepare(
+      `INSERT INTO referrals (id, user_id, opportunity_id, partner_id, partner_offer_id, referral_token, status, consent_id, revenue_cents)
+       VALUES (?, ?, ?, ?, ?, ?, 'clicked', NULL, 0)`,
+    )
+      .bind(id, userId, opportunityId, offer.partner_id, offer.offer_id, token)
+      .run();
+    await this.audit(userId, "referral_created", JSON.stringify({ id, opportunityId, partner_id: offer.partner_id, offer_id: offer.offer_id }));
+    return { token, url: buildReferralUrl(offer.target_url, token), partner_name: offer.partner_name };
   }
 
   /** Record explicit, dated APP-8 cross-border consent (fix H7). */

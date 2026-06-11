@@ -21,8 +21,10 @@ import {
   platformOverview,
   listSuggestedDeductions,
   savingsOverview,
+  referralFunnelAdmin,
 } from "./lib/queries";
 import { isAdmin, normaliseRoles } from "./lib/roles";
+import { REFERRAL_STATUSES, canAdvanceReferral } from "./lib/partners";
 import { RULE_CREDIT_BUCKETS } from "./lib/rules";
 import {
   addPerson,
@@ -335,6 +337,20 @@ export async function handleApi(
   if (resource === "recurring-bills" && id && sub === "confirm" && m === "POST") {
     if (!featureOn(env, "advisory_layer")) return json({ error: "not available" }, 404);
     return json(await stub.confirmRecurringBill(uid, id));
+  }
+
+  // POST /api/referrals { opportunity_id } — user-initiated Tier-1 energy referral (flag
+  // advisory_partners_energy). Returns the tokened outbound URL the SPA opens. Idempotent + audited in
+  // the DO. NO PII leaves Quillo — the user completes everything on the partner's site.
+  if (resource === "referrals" && !id && m === "POST") {
+    if (!featureOn(env, "advisory_partners_energy")) return json({ error: "not available" }, 404);
+    const { opportunity_id } = (await req.json().catch(() => ({}))) as { opportunity_id?: unknown };
+    if (typeof opportunity_id !== "string") return json({ error: "opportunity_id required" }, 400);
+    try {
+      return json(await stub.createReferral(uid, opportunity_id));
+    } catch (e) {
+      return json({ error: (e as Error).message }, 400);
+    }
   }
 
   // GET /api/progress — derived completion state + the single next action that drives the
@@ -1157,6 +1173,23 @@ export async function handleApi(
       const res = await env.DB.prepare(`UPDATE profiles SET roles = ? WHERE user_id = ?`).bind(JSON.stringify(next), target).run();
       if (!res.meta?.changes) return json({ error: "tenant not found" }, 404);
       return json({ ok: true, roles: next });
+    }
+    // GET /api/admin/referrals — cross-tenant referral funnel + recent leads (god-mode read, like the
+    // other admin aggregates). The partner PORTAL (deferred) is the scoped view; this is the founder's.
+    if (m === "GET" && id === "referrals") return json(await referralFunnelAdmin(env));
+    // POST /api/admin/referrals/:token/advance { status, revenue_cents } — SIMULATE the partner postback
+    // for testing (the real HMAC webhook is the outward integration step, deferred). Forward-only.
+    if (m === "POST" && id === "referrals" && sub && parts[3] === "advance") {
+      const { status, revenue_cents } = (await req.json().catch(() => ({}))) as { status?: unknown; revenue_cents?: unknown };
+      if (typeof status !== "string" || !(REFERRAL_STATUSES as readonly string[]).includes(status)) return json({ error: "valid status required" }, 400);
+      const cur = await env.DB.prepare(`SELECT status FROM referrals WHERE referral_token = ?`).bind(sub).first<{ status: string }>();
+      if (!cur) return json({ error: "referral not found" }, 404);
+      if (!canAdvanceReferral(cur.status, status)) return json({ error: `can't move ${cur.status} → ${status}` }, 409);
+      const rev = status === "converted" || status === "paid" ? Math.max(0, Math.round(Number(revenue_cents) || 0)) : 0;
+      await env.DB.prepare(
+        `UPDATE referrals SET status = ?, revenue_cents = CASE WHEN ? > 0 THEN ? ELSE revenue_cents END, updated_at = datetime('now') WHERE referral_token = ?`,
+      ).bind(status, rev, rev, sub).run();
+      return json({ ok: true, status });
     }
   }
 

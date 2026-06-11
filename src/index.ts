@@ -9,6 +9,7 @@ import { marketingResponse } from "./marketing/landing";
 import { legalResponse } from "./marketing/legal";
 import { handleWaitlist } from "./marketing/waitlist";
 import { spentTodayGlobalCents } from "./lib/usage";
+import { featureOn } from "./lib/features";
 
 // The DO class must be exported from the Worker's main module for the binding.
 export { TaxAgent } from "./agent";
@@ -250,6 +251,9 @@ export default {
           await stub.rollForward(u.user_id, fyStart);
           // Retention: flag (never delete) records past the tenant's window.
           await stub.flagOldData(u.user_id);
+          // Savings & Opportunities: deterministic recurring-bill detection + factual opportunities
+          // (no LLM → no AI-spend interaction). Flag-gated so OFF ⇒ no read/write path, byte-identical.
+          if (featureOn(env, "advisory_layer")) await stub.detectAdvisory(u.user_id);
         } catch (e) {
           console.error(`weekly cron failed for ${u.user_id}: ${(e as Error).message}`);
         }

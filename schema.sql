@@ -105,9 +105,11 @@ CREATE TABLE IF NOT EXISTS transactions (
   --       entity entitled to deduct (TR 93/32; personally-paid company costs). NULL => legacy.
   payer_person_id     TEXT,
   paid_via_account_id TEXT,
+  biller_key   TEXT,  -- 0047: normalised biller identity (channel-stripped) for recurring-bill grouping
   created_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_txn_imghash ON transactions(user_id, image_hash);
+CREATE INDEX IF NOT EXISTS idx_transactions_biller ON transactions(user_id, biller_key); -- 0047
 -- Statement re-upload de-dup: a bank line is unique per (account, fingerprint). NOT partial
 -- so it's a valid ON CONFLICT target; receipts have NULL fingerprint and NULLs are distinct
 -- in SQLite UNIQUE indexes, so they never collide.
@@ -949,3 +951,48 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(user_id, session_id, created_at);
+
+-- ── Savings & Opportunities advisory layer (0047) ─────────────────────────────
+-- Deterministic detection (src/lib/advisory.ts) writes these; FACTUAL-info only, gated by advisory_layer.
+CREATE TABLE IF NOT EXISTS recurring_bills (
+  id                   TEXT PRIMARY KEY,
+  user_id              TEXT NOT NULL,
+  biller_key           TEXT NOT NULL,
+  label                TEXT,
+  category             TEXT,
+  cadence              TEXT,
+  typical_amount_cents INTEGER,
+  amount_variance_cents INTEGER DEFAULT 0,
+  annual_amount_cents  INTEGER,
+  is_subscription      INTEGER DEFAULT 0,
+  is_essential         INTEGER DEFAULT 0,
+  occurrences          INTEGER DEFAULT 0,
+  first_seen_date      TEXT,
+  last_seen_date       TEXT,
+  next_expected_date   TEXT,
+  status               TEXT DEFAULT 'detected',
+  created_at           TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at           TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (user_id, biller_key)
+);
+CREATE INDEX IF NOT EXISTS idx_recurring_bills_user ON recurring_bills(user_id);
+CREATE TABLE IF NOT EXISTS opportunities (
+  id                   TEXT PRIMARY KEY,
+  user_id              TEXT NOT NULL,
+  opportunity_type     TEXT NOT NULL,
+  subject_key          TEXT NOT NULL DEFAULT '',
+  fy                   TEXT,
+  recurring_bill_id    TEXT,
+  category             TEXT,
+  title                TEXT,
+  body                 TEXT,
+  amount_cents         INTEGER,
+  signpost_label       TEXT,
+  signpost_url         TEXT,
+  status               TEXT DEFAULT 'open',
+  notified             INTEGER DEFAULT 0,
+  created_at           TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at           TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (user_id, opportunity_type, subject_key)
+);
+CREATE INDEX IF NOT EXISTS idx_opportunities_user ON opportunities(user_id);

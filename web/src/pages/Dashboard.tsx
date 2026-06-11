@@ -75,6 +75,9 @@ export function Dashboard() {
         </Link>
       )}
 
+      {/* Savings run-rate — the "yearly wake-up figure" (factual annualisation), links into the Save tab. */}
+      {has("advisory_layer") && <RunRateStrip fy={fy} />}
+
       {/* Ask Quillo — grounded, single-turn tax Q&A from the user's own ledger (consent + budget gated). */}
       {has("ask_quillo") && <AskQuillo />}
 
@@ -323,4 +326,22 @@ function BreakdownRow({
 
 function Empty() {
   return <div className="py-4 text-sm text-muted">No data yet.</div>;
+}
+
+// Compact run-rate strip (flag advisory_layer): the factual "at this rate, ~$X/year" wake-up figure,
+// reusing the shared ["savings", fy] query (the Save page uses the same cache entry). Links into /savings.
+function RunRateStrip({ fy }: { fy: number }) {
+  const { data } = useQuery({ queryKey: ["savings", fy], queryFn: () => api.savings(fy) });
+  const rr = data?.run_rate;
+  if (!rr || rr.spent_cents <= 0) return null;
+  return (
+    <Link
+      to="/savings"
+      className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-xl border border-line bg-card px-3 py-2 text-sm text-ink-2 shadow-card transition hover:border-ink/40"
+    >
+      <span className="font-semibold text-ink">{money(rr.spent_cents)} spent so far this year</span>
+      <span className="text-ink-3">— at this rate that's about {money(rr.annualised_cents)} across a full year.</span>
+      <span className="font-semibold text-forest">See your savings →</span>
+    </Link>
+  );
 }

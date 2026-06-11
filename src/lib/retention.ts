@@ -61,6 +61,8 @@ export const PURGE_TABLES = [
   "loan_interest_summaries", // 0045 (#157 S4)
   "chat_sessions",           // 0046 (#173 C2)
   "chat_messages",           // 0046 (#173 C2)
+  "recurring_bills",         // 0047 (advisory)
+  "opportunities",           // 0047 (advisory)
 ] as const;
 
 // Columns that must NEVER leave the system in an APP-12 export, even though the row belongs to the
@@ -196,6 +198,20 @@ export async function exportTenant(env: Env, userId: string): Promise<Record<str
     situation, // friendly structured view (persons/properties/entities/rules); raw rows are in `tables`
     tables,
   };
+}
+
+/**
+ * Shared unread-nudge dedup: true when an UNREAD notification whose body matches `bodyPattern`
+ * (a SQL LIKE pattern) already exists — so a caller can skip re-notifying and avoid nudge fatigue.
+ * Centralised so the advisory layer reuses the exact pattern flagOldData established.
+ */
+export async function hasPendingNudge(env: Env, userId: string, bodyPattern: string): Promise<boolean> {
+  const existing = await env.DB.prepare(
+    `SELECT 1 FROM notifications WHERE user_id = ? AND read_at IS NULL AND body LIKE ? LIMIT 1`,
+  )
+    .bind(userId, bodyPattern)
+    .first();
+  return existing != null;
 }
 
 /**

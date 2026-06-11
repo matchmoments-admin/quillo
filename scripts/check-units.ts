@@ -15,6 +15,11 @@ import { costCents, isPricedModel } from "../src/lib/usage";
 import { LLM_MODEL_IDS } from "../src/llm";
 import { computeWorkMethodDeductions, workUseRatesForFy, deriveWfhHours } from "../src/lib/work-use";
 import { BUCKETS } from "../src/lib/taxonomy";
+import {
+  billerNormalize, classifyBiller, annualiseSpendCents, daysBetween, detectRecurrence,
+  classifyCadence, paymentsPerYear, runRateCopy, recurringCopy, assertFactual, signpostFor,
+  ADVISORY_DISCLAIMER,
+} from "../src/lib/advisory";
 import { applyUserRules } from "../src/lib/rules";
 import type { UserRule } from "../src/lib/db";
 import { parseRoles, hasRole, isAdmin, normaliseRoles, ROLES } from "../src/lib/roles";
@@ -1622,6 +1627,76 @@ console.log("scheduleToCsv (section layout + escaping + tie-back note)");
   check("formula merchant is neutralised", csv.includes("'=SUM(A1)"));
   check("a failed tie-back renders a visible NOTE", csv.includes("does not tie to the report demo"));
   check("section notes render", csv.includes("Note: a note"));
+}
+
+// ── Advisory engine: biller normalisation (channel-strip, no entity merge) ────
+console.log("advisory.billerNormalize");
+{
+  // Same biller phrased via different channels collapses to ONE key (order preserved, not sorted).
+  check("BPAY + OSKO Origin Energy → same key", billerNormalize("BPAY Origin Energy 12345") === "origin energy" && billerNormalize("OSKO ORIGIN ENERGY") === "origin energy");
+  check("key preserves word ORDER (not clarify's sorted stem)", billerNormalize("Origin Energy") === "origin energy");
+  // Distinct legal entities are NEVER merged (merging would corrupt per-biller apportionment).
+  check("Ergon stays separate from Origin", billerNormalize("BPAY Ergon Energy") !== billerNormalize("BPAY Origin Energy"));
+  check("single-word subscriptions survive", billerNormalize("NETFLIX.COM") === "netflix" && billerNormalize("SPOTIFY P0A1B2") === "spotify");
+  check("pure channel/number noise → null", billerNormalize("OSKO Deposit 123456") === null && billerNormalize("") === null && billerNormalize(null) === null);
+}
+
+console.log("advisory.classifyBiller");
+{
+  check("origin energy → energy + essential", classifyBiller("origin energy").category === "energy" && classifyBiller("origin energy").essential);
+  check("netflix → streaming + NOT essential", classifyBiller("netflix").category === "streaming" && !classifyBiller("netflix").essential);
+  check("bupa → health + essential", classifyBiller("bupa").category === "health" && classifyBiller("bupa").essential);
+  check("unknown merchant → other + not essential", classifyBiller("bob's bait shop").category === "other" && !classifyBiller("bob's bait shop").essential);
+}
+
+console.log("advisory.annualiseSpendCents");
+{
+  // Exactly half the FY elapsed → spend doubles. (2025-07-01 .. 2025-12-31 ≈ 184/365 days.)
+  const half = annualiseSpendCents(100000, "2025-07-01", "2026-06-30", "2025-12-31");
+  check("~half-year $1,000 annualises to ~$1,980–$2,000", half >= 198000 && half <= 200000);
+  check("never extrapolates BELOW actual spent", annualiseSpendCents(50000, "2025-07-01", "2026-06-30", "2025-07-02") >= 50000);
+  check("full FY elapsed → returns the actual figure (no inflation)", annualiseSpendCents(73000, "2025-07-01", "2026-06-30", "2026-06-30") === 73000);
+  check("daysBetween counts whole days", daysBetween("2025-07-01", "2025-07-31") === 30 && daysBetween("2025-07-01", "2025-07-01") === 0);
+  check("malformed date → 0 (no NaN leak)", daysBetween("nope", "2025-07-01") === 0);
+}
+
+console.log("advisory.detectRecurrence");
+{
+  const mk = (date: string, c: number) => ({ date, amount_cents: c });
+  // Fixed monthly streaming sub → confirmed subscription, ~12/yr.
+  const netflix = detectRecurrence([mk("2025-07-03", 1899), mk("2025-08-03", 1899), mk("2025-09-03", 1899), mk("2025-10-03", 1899)])!;
+  check("monthly fixed → confirmed monthly subscription", netflix.cadence === "monthly" && netflix.status === "confirmed" && netflix.is_subscription);
+  check("subscription typical amount + zero-ish variance", netflix.typical_amount_cents === 1899 && netflix.amount_variance_cents === 0);
+  check("next_expected rolls forward one cadence", netflix.next_expected === "2025-11-02");
+  // Variable quarterly energy bill → confirmed bill (NOT a subscription — usage varies).
+  const energy = detectRecurrence([mk("2025-07-15", 42000), mk("2025-10-14", 51000), mk("2026-01-13", 38000), mk("2026-04-14", 47000)])!;
+  check("quarterly variable → confirmed quarterly BILL (not subscription)", energy.cadence === "quarterly" && energy.status === "confirmed" && !energy.is_subscription);
+  // Two occurrences only → early detection (Plaid pattern).
+  const early = detectRecurrence([mk("2025-07-01", 1500), mk("2025-08-01", 1500)])!;
+  check("2 occurrences → early (not confirmed)", early.occurrences === 2 && early.status === "early");
+  // A single occurrence / same-day dupes → not a recurrence.
+  check("1 occurrence → null", detectRecurrence([mk("2025-07-01", 1500)]) === null);
+  check("same-day duplicates → null (gap 0)", detectRecurrence([mk("2025-07-01", 100), mk("2025-07-01", 100)]) === null);
+  // Cadence classifier bands.
+  check("7d→weekly, 14d→fortnightly, 30d→monthly, 91d→quarterly, 365d→annual",
+    classifyCadence(7) === "weekly" && classifyCadence(14) === "fortnightly" && classifyCadence(30) === "monthly" && classifyCadence(91) === "quarterly" && classifyCadence(365) === "annual");
+  check("an off-band gap → irregular", classifyCadence(50) === "irregular");
+  check("paymentsPerYear maps cadence", paymentsPerYear("monthly") === 12 && paymentsPerYear("weekly") === 52 && paymentsPerYear("irregular") === 0);
+}
+
+console.log("advisory.copy is FACTUAL (no advice/projection/comparison tokens)");
+{
+  // The compliance contract: every user-facing advisory string must pass assertFactual.
+  check("the disclaimer is factual", assertFactual(ADVISORY_DISCLAIMER));
+  const rr = runRateCopy(92000, 184000, 41);
+  check("run-rate copy renders the figures and is factual", rr.includes("$920") && rr.includes("$1,840") && assertFactual(rr));
+  const sub = recurringCopy("Netflix", detectRecurrence([{ date: "2025-07-03", amount_cents: 1899 }, { date: "2025-08-03", amount_cents: 1899 }, { date: "2025-09-03", amount_cents: 1899 }])!);
+  check("recurring copy renders cadence + annual + is factual", /per month/.test(sub) && /a year/.test(sub) && assertFactual(sub));
+  // The guardrail itself must REJECT advice-shaped copy (so the test has teeth).
+  check("guardrail catches a recommendation", !assertFactual("You should switch to the cheapest plan and save up to $200"));
+  check("guardrail catches an investment steer", !assertFactual("Invest your surplus for a projected return"));
+  // Energy is signposted to the government comparator (whole-of-market, no commission); streaming isn't.
+  check("energy → Energy Made Easy signpost; streaming → none", signpostFor("energy")!.url.includes("energymadeeasy") && signpostFor("streaming") === null);
 }
 
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);

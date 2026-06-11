@@ -18,7 +18,7 @@ import { BUCKETS } from "../src/lib/taxonomy";
 import {
   billerNormalize, classifyBiller, annualiseSpendCents, daysBetween, detectRecurrence,
   classifyCadence, paymentsPerYear, runRateCopy, recurringCopy, assertFactual, signpostFor,
-  ADVISORY_DISCLAIMER,
+  ADVISORY_DISCLAIMER, savingsProjection, savingsProjectionCopy,
 } from "../src/lib/advisory";
 import { applyUserRules } from "../src/lib/rules";
 import type { UserRule } from "../src/lib/db";
@@ -1697,6 +1697,21 @@ console.log("advisory.copy is FACTUAL (no advice/projection/comparison tokens)")
   check("guardrail catches an investment steer", !assertFactual("Invest your surplus for a projected return"));
   // Energy is signposted to the government comparator (whole-of-market, no commission); streaming isn't.
   check("energy → Energy Made Easy signpost; streaming → none", signpostFor("energy")!.url.includes("energymadeeasy") && signpostFor("streaming") === null);
+}
+
+console.log("advisory.savingsProjection (factual SAVING calculator — no product, no projection token)");
+{
+  // r=0 → just the contributions, no interest.
+  const flat = savingsProjection(92000, 5, 0);
+  check("0% → contributed only, zero interest", flat.contributed_cents === 460000 && flat.total_cents === 460000 && flat.interest_cents === 0);
+  // $920/yr for 5 years at 5% end-of-year annuity = 920 * ((1.05^5 - 1)/0.05) = $5,083.58.
+  const grow = savingsProjection(92000, 5, 5);
+  check("$920/yr × 5y @5% ≈ $5,083.58", grow.total_cents === 508358 && grow.contributed_cents === 460000 && grow.interest_cents === 48358);
+  check("0 years → all zero (no divide/NaN)", savingsProjection(92000, 0, 5).total_cents === 0);
+  check("interest never negative", savingsProjection(50000, 3, 0).interest_cents === 0);
+  // The copy is factual + carries the figures, and the guardrail would catch advice-shaped variants.
+  const copy = savingsProjectionCopy(92000, 5, 5, grow);
+  check("calculator copy renders figures and is factual", copy.includes("$920") && copy.includes("$5,084") && copy.includes("$4,600") && assertFactual(copy));
 }
 
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);

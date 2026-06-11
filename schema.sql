@@ -971,6 +971,7 @@ CREATE TABLE IF NOT EXISTS recurring_bills (
   last_seen_date       TEXT,
   next_expected_date   TEXT,
   status               TEXT DEFAULT 'detected',
+  pinned               INTEGER DEFAULT 0,  -- 0048: user pressed "Confirm" — sticky, detector won't downgrade
   created_at           TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at           TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE (user_id, biller_key)

@@ -307,6 +307,14 @@ export interface RecurringBill {
   last_seen_date: string | null;
   next_expected_date: string | null;
   status: string;
+  pinned: number;
+}
+export interface Yoy {
+  fy: number;
+  this_cents: number;
+  prior_cents: number;
+  delta_cents: number;
+  delta_pct: number | null;
 }
 export interface Opportunity {
   id: string;
@@ -326,6 +334,7 @@ export interface SavingsData {
   run_rate: RunRate;
   recurring_bills: RecurringBill[];
   opportunities: Opportunity[];
+  yoy: Yoy;
   disclaimer: string;
 }
 

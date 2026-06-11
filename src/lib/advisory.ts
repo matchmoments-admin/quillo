@@ -257,6 +257,30 @@ export function runRateCopy(spentCents: number, annualisedCents: number, items: 
   return `You've spent ${money(spentCents)} across ${items} item${items === 1 ? "" : "s"} so far this financial year. At this rate that's about ${money(annualisedCents)} across a full year.`;
 }
 
+// ── Savings calculator (factual arithmetic, SAVING-framed — H.2 safe pattern) ──
+// "If you set aside $X/year, after N years that's about $Y" — plain compound-of-an-annuity maths the
+// USER drives (their amount, their years, an assumed rate they pick). NOT investing, NO product named,
+// NOT a return promise — explicitly an illustration. Mirrors ASIC MoneySmart's own savings calculator.
+export interface SavingsProjection {
+  contributed_cents: number; // amount set aside (annual × years)
+  total_cents: number;       // contributions + assumed interest
+  interest_cents: number;    // total − contributed
+}
+
+/** Future value of an end-of-year annuity. r=0 → just the contributions. Pure integer-cents maths. */
+export function savingsProjection(annualCents: number, years: number, ratePct: number): SavingsProjection {
+  const n = Math.max(0, Math.floor(years));
+  const r = Math.max(0, ratePct) / 100;
+  const contributed = Math.max(0, Math.round(annualCents)) * n;
+  const total = r === 0 ? contributed : Math.round(annualCents * ((Math.pow(1 + r, n) - 1) / r));
+  return { contributed_cents: contributed, total_cents: total, interest_cents: Math.max(0, total - contributed) };
+}
+
+/** Factual, non-advice sentence for the savings calculator (must pass assertFactual). */
+export function savingsProjectionCopy(annualCents: number, years: number, ratePct: number, p: SavingsProjection): string {
+  return `Setting aside ${money(annualCents)} a year for ${years} year${years === 1 ? "" : "s"} is about ${money(p.total_cents)} (${money(p.contributed_cents)} set aside plus ${money(p.interest_cents)} interest at an assumed ${ratePct}%). General arithmetic — not advice.`;
+}
+
 /** Factual recurring-stream sentence: how much, how often, annual commitment. */
 export function recurringCopy(billerLabel: string, d: RecurringDetection): string {
   const per = CADENCE_WORD[d.cadence];

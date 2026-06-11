@@ -103,6 +103,7 @@ export const api = {
   savingsScan: () => post<{ recurring: number; opportunities: number }>("/api/savings/scan"),
   dismissOpportunity: (id: string) => post<{ ok: boolean }>(`/api/opportunities/${id}/dismiss`),
   dismissRecurringBill: (id: string) => post<{ ok: boolean }>(`/api/recurring-bills/${id}/dismiss`),
+  confirmRecurringBill: (id: string) => post<{ ok: boolean }>(`/api/recurring-bills/${id}/confirm`),
   notifications: () => get<{ notifications: Notification[] }>("/api/notifications").then((r) => r.notifications),
   markRead: (id: string) => post<{ ok: boolean }>(`/api/notifications/${id}/read`),
 

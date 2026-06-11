@@ -590,14 +590,33 @@ export async function listRecurringBills(env: Env, userId: string) {
   const res = await env.DB.prepare(
     `SELECT id, biller_key, label, category, cadence, typical_amount_cents, amount_variance_cents,
             annual_amount_cents, is_subscription, is_essential, occurrences, first_seen_date,
-            last_seen_date, next_expected_date, status
+            last_seen_date, next_expected_date, status, COALESCE(pinned,0) AS pinned
        FROM recurring_bills
       WHERE user_id = ? AND status NOT IN ('dismissed','ended')
-      ORDER BY annual_amount_cents DESC, typical_amount_cents DESC LIMIT 100`,
+      ORDER BY pinned DESC, annual_amount_cents DESC, typical_amount_cents DESC LIMIT 100`,
   )
     .bind(userId)
     .all();
   return res.results ?? [];
+}
+
+/** Year-over-year total countable spend (this FY vs prior FY) — factual delta, no commentary. */
+export async function spendYoy(env: Env, userId: string, startYear: number) {
+  const cur = fyBounds(startYear);
+  const prev = fyBounds(startYear - 1);
+  const sumFy = (b: { start: string; end: string }) =>
+    env.DB.prepare(
+      `SELECT COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS total_cents
+         FROM transactions WHERE user_id = ? AND ${COUNTABLE} AND txn_date >= ? AND txn_date <= ?`,
+    )
+      .bind(userId, b.start, b.end)
+      .first<{ total_cents: number }>();
+  const [thisFy, priorFy] = await Promise.all([sumFy(cur), sumFy(prev)]);
+  const this_cents = thisFy?.total_cents ?? 0;
+  const prior_cents = priorFy?.total_cents ?? 0;
+  const delta_cents = this_cents - prior_cents;
+  const delta_pct = prior_cents > 0 ? Math.round((delta_cents / prior_cents) * 1000) / 10 : null;
+  return { fy: startYear, this_cents, prior_cents, delta_cents, delta_pct };
 }
 
 /** Open opportunities (factual nudges), biggest figure first. */
@@ -616,12 +635,13 @@ export async function listOpportunities(env: Env, userId: string) {
 
 /** The combined "Save" surface payload: run-rate + recurring + opportunities + the standing disclaimer. */
 export async function savingsOverview(env: Env, userId: string, startYear: number) {
-  const [run_rate, recurring_bills, opportunities] = await Promise.all([
+  const [run_rate, recurring_bills, opportunities, yoy] = await Promise.all([
     spendRunRate(env, userId, startYear),
     listRecurringBills(env, userId),
     listOpportunities(env, userId),
+    spendYoy(env, userId, startYear),
   ]);
-  return { run_rate, recurring_bills, opportunities, disclaimer: ADVISORY_DISCLAIMER };
+  return { run_rate, recurring_bills, opportunities, yoy, disclaimer: ADVISORY_DISCLAIMER };
 }
 
 /** Cross-tenant admin: every tenant with signup + activity + AI-spend summary (newest first). */

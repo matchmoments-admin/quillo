@@ -332,6 +332,10 @@ export async function handleApi(
     if (!featureOn(env, "advisory_layer")) return json({ error: "not available" }, 404);
     return json(await stub.dismissRecurringBill(uid, id));
   }
+  if (resource === "recurring-bills" && id && sub === "confirm" && m === "POST") {
+    if (!featureOn(env, "advisory_layer")) return json({ error: "not available" }, 404);
+    return json(await stub.confirmRecurringBill(uid, id));
+  }
 
   // GET /api/progress — derived completion state + the single next action that drives the
   // cross-tab spine and per-tab guides. Read-only (counts only); reuses COUNTABLE / NEEDS_REVIEW.

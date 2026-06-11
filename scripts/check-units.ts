@@ -22,7 +22,8 @@ import {
 } from "../src/lib/advisory";
 import { applyUserRules } from "../src/lib/rules";
 import type { UserRule } from "../src/lib/db";
-import { parseRoles, hasRole, isAdmin, normaliseRoles, ROLES } from "../src/lib/roles";
+import { parseRoles, hasRole, isAdmin, isPartner, normaliseRoles, ROLES } from "../src/lib/roles";
+import { resolvePartnerId, listPartnerReferrals, type PartnerDB } from "../src/lib/partners";
 import { buildGuidePrompt, buildAskSystem, summariseReportForAsk, renderTxnDigest } from "../src/lib/guide";
 import { validateProposedActions } from "../src/extract";
 import type { Progress } from "../src/lib/progress";
@@ -1233,6 +1234,8 @@ console.log("roles");
   check("hasRole reads the array", hasRole(p('["admin","individual"]'), "admin"));
   check("isAdmin true for admin", isAdmin(p('["admin"]')));
   check("isAdmin false for individual-only", !isAdmin(p('["individual"]')));
+  check("isPartner true for partner", isPartner(p('["partner"]')));
+  check("isPartner false for admin (admin ≠ partner)", !isPartner(p('["admin"]')));
   check("malformed JSON → individual", JSON.stringify(parseRoles(p("not json"))) === '["individual"]');
   check("normaliseRoles drops unknowns", JSON.stringify(normaliseRoles(["admin", "bogus", "accountant"])) === '["admin","accountant"]');
   check("normaliseRoles empty → individual", JSON.stringify(normaliseRoles([])) === '["individual"]');
@@ -1242,6 +1245,64 @@ console.log("roles");
   const rBlock = webRolesSrc.slice(rStart, webRolesSrc.indexOf("]", rStart));
   const webRoles = [...rBlock.matchAll(/"([a-z_]+)"/g)].map((m) => m[1]!);
   check("web ROLES match the server taxonomy", JSON.stringify(webRoles) === JSON.stringify([...ROLES]));
+}
+
+console.log("partner isolation (advisory phase 2 scaffold)");
+{
+  // The whole point of Slice 1: prove the SECOND isolation axis (partner_id) holds. A fake D1 that
+  // honours the WHERE-binding lets us assert, deterministically and without real D1, that a partner
+  // only ever reads its OWN rows — the leak this scaffold exists to prevent.
+  const members = [
+    { user_id: "staff-A", partner_id: "org-A" },
+    { user_id: "staff-B", partner_id: "org-B" },
+  ];
+  const referrals = [
+    { id: "r1", user_id: "consumer-1", partner_id: "org-A", status: "created", revenue_cents: 0, created_at: "2026-01-01" },
+    { id: "r2", user_id: "consumer-2", partner_id: "org-A", status: "clicked", revenue_cents: 0, created_at: "2026-01-02" },
+    { id: "r3", user_id: "consumer-3", partner_id: "org-B", status: "paid", revenue_cents: 5000, created_at: "2026-01-03" },
+  ];
+  const fakeDb: PartnerDB = {
+    prepare(sql: string) {
+      return {
+        bind(...vals: unknown[]) {
+          const arg = vals[0];
+          return {
+            async first<T>() {
+              if (/FROM partner_members/.test(sql)) {
+                const m = members.find((x) => x.user_id === arg);
+                return (m ? { partner_id: m.partner_id } : null) as T | null;
+              }
+              return null as T | null;
+            },
+            async all<T>() {
+              if (/FROM referrals/.test(sql)) {
+                return { results: referrals.filter((x) => x.partner_id === arg) as unknown as T[] };
+              }
+              return { results: [] as T[] };
+            },
+          };
+        },
+      };
+    },
+  };
+
+  // resolvePartnerId maps a staff tenant → its one org; a non-staff tenant → null (no access).
+  const pidA = await resolvePartnerId(fakeDb, "staff-A");
+  const pidNone = await resolvePartnerId(fakeDb, "stranger");
+  check("resolvePartnerId maps staff → their org", pidA === "org-A");
+  check("resolvePartnerId → null for a non-partner tenant", pidNone === null);
+
+  // The isolation invariant: org A sees ONLY org A's referrals, never org B's.
+  const aRows = await listPartnerReferrals(fakeDb, "org-A");
+  const bRows = await listPartnerReferrals(fakeDb, "org-B");
+  check("partner A reads exactly its own referrals", JSON.stringify(aRows.map((r) => r.id)) === '["r1","r2"]');
+  check("partner A cannot see partner B's referral", !aRows.some((r) => r.id === "r3"));
+  check("partner B reads exactly its own referral", JSON.stringify(bRows.map((r) => r.id)) === '["r3"]');
+
+  // Source guard: the only partner_id bound into a referrals read is one resolved from partner_members
+  // — never a value off the request. (Mirrors the regex-on-source guards used elsewhere in this file.)
+  const partnersSrc = fs.readFileSync(path.join(process.cwd(), "src", "lib", "partners.ts"), "utf8");
+  check("referrals read is scoped by partner_id", /FROM referrals WHERE partner_id = \?/.test(partnersSrc));
 }
 
 console.log("bucket taxonomy");

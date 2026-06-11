@@ -997,3 +997,69 @@ CREATE TABLE IF NOT EXISTS opportunities (
   UNIQUE (user_id, opportunity_type, subject_key)
 );
 CREATE INDEX IF NOT EXISTS idx_opportunities_user ON opportunities(user_id);
+-- 0049: Partner platform scaffold (Advisory Phase 2, Slice 1). Global reference tables (no user_id)
+-- + per-tenant tables (user_id → PURGE_TABLES). All commercial surfaces gated by advisory_partners_energy.
+CREATE TABLE IF NOT EXISTS partners (
+  id                        TEXT PRIMARY KEY,
+  name                      TEXT NOT NULL,
+  vertical                  TEXT NOT NULL,
+  afsl_or_acl               TEXT,
+  is_authorised_representative INTEGER DEFAULT 0,
+  commission_model          TEXT,
+  disclosure_text           TEXT,
+  status                    TEXT DEFAULT 'draft',
+  created_at                TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at                TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS partner_offers (
+  id                        TEXT PRIMARY KEY,
+  partner_id                TEXT NOT NULL,
+  vertical                  TEXT NOT NULL,
+  title                     TEXT,
+  description               TEXT,
+  target_url                TEXT NOT NULL,
+  postcode_scope            TEXT,
+  cpl_cents                 INTEGER,
+  cpa_cents                 INTEGER,
+  active                    INTEGER DEFAULT 0,
+  created_at                TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at                TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_partner_offers_partner ON partner_offers(partner_id);
+CREATE INDEX IF NOT EXISTS idx_partner_offers_vertical ON partner_offers(vertical, active);
+CREATE TABLE IF NOT EXISTS partner_members (
+  id                        TEXT PRIMARY KEY,
+  partner_id                TEXT NOT NULL,
+  user_id                   TEXT NOT NULL,
+  role                      TEXT NOT NULL DEFAULT 'partner_agent',
+  created_at                TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_partner_members_partner ON partner_members(partner_id);
+CREATE TABLE IF NOT EXISTS referrals (
+  id                        TEXT PRIMARY KEY,
+  user_id                   TEXT NOT NULL,
+  opportunity_id            TEXT,
+  partner_id                TEXT NOT NULL,
+  partner_offer_id          TEXT,
+  referral_token            TEXT NOT NULL,
+  status                    TEXT NOT NULL DEFAULT 'created',
+  consent_id                TEXT,
+  revenue_cents             INTEGER DEFAULT 0,
+  created_at                TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at                TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (user_id, opportunity_id),
+  UNIQUE (referral_token)
+);
+CREATE INDEX IF NOT EXISTS idx_referrals_user ON referrals(user_id);
+CREATE INDEX IF NOT EXISTS idx_referrals_partner ON referrals(partner_id, status);
+CREATE TABLE IF NOT EXISTS referral_consents (
+  id                        TEXT PRIMARY KEY,
+  user_id                   TEXT NOT NULL,
+  partner_id                TEXT NOT NULL,
+  scope                     TEXT,
+  disclosure_shown          TEXT,
+  consented_at              TEXT NOT NULL DEFAULT (datetime('now')),
+  revoked_at                TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_referral_consents_user ON referral_consents(user_id);

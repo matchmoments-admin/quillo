@@ -63,6 +63,9 @@ export const PURGE_TABLES = [
   "chat_messages",           // 0046 (#173 C2)
   "recurring_bills",         // 0047 (advisory)
   "opportunities",           // 0047 (advisory)
+  "partner_members",         // 0049 (advisory phase 2 scaffold) — staff↔org link
+  "referrals",               // 0049 — consumer referrals (user_id = the consumer)
+  "referral_consents",       // 0049 — Tier-2 consent (created now, used in Phase 3)
 ] as const;
 
 // Columns that must NEVER leave the system in an APP-12 export, even though the row belongs to the

@@ -59,7 +59,11 @@ const GROUPS: NavGroup[] = [
     ],
   },
   {
-    label: "5 · File",
+    label: "5 · Save",
+    items: [{ to: "/savings", label: "Savings", icon: "income", flag: "advisory_layer" }],
+  },
+  {
+    label: "6 · File",
     items: [{ to: "/filing", label: "File", icon: "file" }],
   },
   {

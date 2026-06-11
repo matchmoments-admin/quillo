@@ -281,6 +281,54 @@ export interface DashboardData {
   is_admin?: boolean; // founder/admin — gates the Admin page
 }
 
+// ── Savings & Opportunities (flag advisory_layer) — FACTUAL-info advisory surface ──
+export interface RunRate {
+  fy: number;
+  spent_cents: number;
+  items: number;
+  annualised_cents: number;
+  as_of: string;
+  body: string;
+  top_spenders: { label: string; n: number; spent_cents: number; annualised_cents: number }[];
+}
+export interface RecurringBill {
+  id: string;
+  biller_key: string;
+  label: string | null;
+  category: string | null;
+  cadence: string | null;
+  typical_amount_cents: number | null;
+  amount_variance_cents: number | null;
+  annual_amount_cents: number | null;
+  is_subscription: number;
+  is_essential: number;
+  occurrences: number;
+  first_seen_date: string | null;
+  last_seen_date: string | null;
+  next_expected_date: string | null;
+  status: string;
+}
+export interface Opportunity {
+  id: string;
+  opportunity_type: string;
+  subject_key: string;
+  fy: string | null;
+  category: string | null;
+  title: string | null;
+  body: string | null;
+  amount_cents: number | null;
+  signpost_label: string | null;
+  signpost_url: string | null;
+  status: string;
+  created_at: string;
+}
+export interface SavingsData {
+  run_rate: RunRate;
+  recurring_bills: RecurringBill[];
+  opportunities: Opportunity[];
+  disclaimer: string;
+}
+
 // Platform roles (mirror of src/lib/roles.ts ROLES). 'individual' is the default.
 export const ROLES = ["individual", "admin", "accountant", "bookkeeper", "support"] as const;
 export type Role = (typeof ROLES)[number];

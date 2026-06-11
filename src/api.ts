@@ -20,6 +20,7 @@ import {
   listTenantsAdmin,
   platformOverview,
   listSuggestedDeductions,
+  savingsOverview,
 } from "./lib/queries";
 import { isAdmin, normaliseRoles } from "./lib/roles";
 import { RULE_CREDIT_BUCKETS } from "./lib/rules";
@@ -307,6 +308,29 @@ export async function handleApi(
   // GET /api/usage — measured inference cost (today / month / by feature).
   if (resource === "usage" && m === "GET") {
     return json(await usageSummary(env, uid));
+  }
+
+  // ── Savings & Opportunities (flag advisory_layer) — FACTUAL-info advisory surface ──
+  // GET  /api/savings              → run-rate + recurring bills + opportunities (FY-scoped run-rate)
+  // POST /api/savings/scan         → run the deterministic detector on demand (no LLM)
+  // POST /api/opportunities/:id/dismiss   → terminal-dismiss an opportunity (user action)
+  // POST /api/recurring-bills/:id/dismiss → terminal-dismiss a detected recurring bill
+  if (resource === "savings" && !id && m === "GET") {
+    if (!featureOn(env, "advisory_layer")) return json({ error: "not available" }, 404);
+    const fy = Number(url.searchParams.get("fy")) || currentFyStartYear();
+    return json(await savingsOverview(env, uid, fy));
+  }
+  if (resource === "savings" && id === "scan" && m === "POST") {
+    if (!featureOn(env, "advisory_layer")) return json({ error: "not available" }, 404);
+    return json(await stub.detectAdvisory(uid));
+  }
+  if (resource === "opportunities" && id && sub === "dismiss" && m === "POST") {
+    if (!featureOn(env, "advisory_layer")) return json({ error: "not available" }, 404);
+    return json(await stub.dismissOpportunity(uid, id));
+  }
+  if (resource === "recurring-bills" && id && sub === "dismiss" && m === "POST") {
+    if (!featureOn(env, "advisory_layer")) return json({ error: "not available" }, 404);
+    return json(await stub.dismissRecurringBill(uid, id));
   }
 
   // GET /api/progress — derived completion state + the single next action that drives the

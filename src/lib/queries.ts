@@ -4,6 +4,7 @@ import { billingPolicy, billableCents } from "./billing";
 import { getProfile } from "./db";
 import { isAdmin } from "./roles";
 import { fyBounds } from "./ledger-totals";
+import { annualiseSpendCents, runRateCopy, ADVISORY_DISCLAIMER } from "./advisory";
 
 // Read-side queries for the web API. Reads hit D1 directly from the Worker; audited
 // writes (corrections, consent) go through the Durable Object RPC instead.
@@ -532,6 +533,95 @@ export async function dashboard(env: Env, userId: string, startYear: number) {
     features: enabledFeatures(env), // SPA gates nav/UI on the enabled flags (loaded once on mount)
     is_admin: isAdmin(profile), // gates the Admin page/nav (founder only)
   };
+}
+
+// ── Savings & Opportunities advisory reads (flag: advisory_layer) ──────────────
+// All FACTUAL: annualised run-rate is plain arithmetic on spend the user already gave us; recurring
+// bills + opportunities are written by the deterministic detector. No projections/benchmarks/partners.
+
+/** FY-scoped annualised spend run-rate + top spenders (factual "at this rate, ~$X/year"). */
+export async function spendRunRate(env: Env, userId: string, startYear: number) {
+  const { start, end } = fyBounds(startYear);
+  // asOf = today clamped into the FY window (a past FY annualises to its actual total; the current FY
+  // extrapolates by elapsed days). String compare is safe for ISO dates.
+  const today = new Date().toISOString().slice(0, 10);
+  const asOf = today < start ? start : today > end ? end : today;
+  const [head, top] = await Promise.all([
+    env.DB.prepare(
+      `SELECT COUNT(*) AS n, COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS total_cents
+         FROM transactions WHERE user_id = ? AND ${COUNTABLE} AND txn_date >= ? AND txn_date <= ?`,
+    )
+      .bind(userId, start, end)
+      .first<{ n: number; total_cents: number }>(),
+    // Top spenders grouped by stable biller_key when present, else the cleaned merchant/description.
+    env.DB.prepare(
+      `SELECT COALESCE(NULLIF(biller_key,''), lower(COALESCE(merchant, raw_description, ''))) AS k,
+              COALESCE(MAX(merchant), MAX(raw_description)) AS label,
+              COUNT(*) AS n,
+              COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS total_cents
+         FROM transactions
+        WHERE user_id = ? AND ${COUNTABLE} AND txn_date >= ? AND txn_date <= ?
+          AND COALESCE(NULLIF(biller_key,''), merchant, raw_description) IS NOT NULL
+        GROUP BY k HAVING k <> '' ORDER BY total_cents DESC LIMIT 8`,
+    )
+      .bind(userId, start, end)
+      .all<{ k: string; label: string | null; n: number; total_cents: number }>(),
+  ]);
+  const spent = head?.total_cents ?? 0;
+  const annualised = annualiseSpendCents(spent, start, end, asOf);
+  return {
+    fy: startYear,
+    spent_cents: spent,
+    items: head?.n ?? 0,
+    annualised_cents: annualised,
+    as_of: asOf,
+    body: runRateCopy(spent, annualised, head?.n ?? 0),
+    top_spenders: (top.results ?? []).map((r) => ({
+      label: r.label ?? r.k,
+      n: r.n,
+      spent_cents: r.total_cents,
+      annualised_cents: annualiseSpendCents(r.total_cents, start, end, asOf),
+    })),
+  };
+}
+
+/** Detected recurring bills + subscriptions (newest activity first), confirmed/early only. */
+export async function listRecurringBills(env: Env, userId: string) {
+  const res = await env.DB.prepare(
+    `SELECT id, biller_key, label, category, cadence, typical_amount_cents, amount_variance_cents,
+            annual_amount_cents, is_subscription, is_essential, occurrences, first_seen_date,
+            last_seen_date, next_expected_date, status
+       FROM recurring_bills
+      WHERE user_id = ? AND status NOT IN ('dismissed','ended')
+      ORDER BY annual_amount_cents DESC, typical_amount_cents DESC LIMIT 100`,
+  )
+    .bind(userId)
+    .all();
+  return res.results ?? [];
+}
+
+/** Open opportunities (factual nudges), biggest figure first. */
+export async function listOpportunities(env: Env, userId: string) {
+  const res = await env.DB.prepare(
+    `SELECT id, opportunity_type, subject_key, fy, recurring_bill_id, category, title, body,
+            amount_cents, signpost_label, signpost_url, status, created_at
+       FROM opportunities
+      WHERE user_id = ? AND status = 'open'
+      ORDER BY amount_cents DESC, created_at DESC LIMIT 50`,
+  )
+    .bind(userId)
+    .all();
+  return res.results ?? [];
+}
+
+/** The combined "Save" surface payload: run-rate + recurring + opportunities + the standing disclaimer. */
+export async function savingsOverview(env: Env, userId: string, startYear: number) {
+  const [run_rate, recurring_bills, opportunities] = await Promise.all([
+    spendRunRate(env, userId, startYear),
+    listRecurringBills(env, userId),
+    listOpportunities(env, userId),
+  ]);
+  return { run_rate, recurring_bills, opportunities, disclaimer: ADVISORY_DISCLAIMER };
 }
 
 /** Cross-tenant admin: every tenant with signup + activity + AI-spend summary (newest first). */

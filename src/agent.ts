@@ -4,8 +4,9 @@ import { getProfile, getSituation, renderSituation, type Profile, type Situation
 import { addRule, addAccount } from "./lib/situation-write";
 import { QuickBooksAdapter } from "./ledger/qbo";
 import { revokeAndDisconnect } from "./lib/qbo-oauth";
-import { purgeTenant as purgeTenantData, exportTenant as exportTenantData, flagOldData as flagOldDataSweep, type PurgeResult } from "./lib/retention";
-import { COUNTABLE, fetchAskDigestRows } from "./lib/queries";
+import { purgeTenant as purgeTenantData, exportTenant as exportTenantData, flagOldData as flagOldDataSweep, hasPendingNudge, type PurgeResult } from "./lib/retention";
+import { COUNTABLE, fetchAskDigestRows, spendRunRate } from "./lib/queries";
+import { billerNormalize, detectRecurrence, classifyBiller, paymentsPerYear, recurringCopy, signpostFor, type RecurringOccurrence } from "./lib/advisory";
 import { deriveWfhHours } from "./lib/work-use";
 import { applyUserRules, RULE_CREDIT_BUCKETS } from "./lib/rules";
 import { sha256hex, sha256hexBytes } from "./lib/base64";
@@ -4224,6 +4225,178 @@ export class TaxAgent extends Agent<Env> {
       await this.notify(userId, suggestions.join("\n"), null);
     }
     await this.audit(userId, "proactive_scan", JSON.stringify({ count: suggestions.length }));
+  }
+
+  /**
+   * Savings & Opportunities detector (flag advisory_layer) — DETERMINISTIC, NO LLM (so no AI-spend
+   * gate interaction). Runs per-tenant in the weekly sweep, bounded + idempotent: (1) backfill the
+   * normalised biller_key on a bounded slice of un-keyed rows; (2) detect recurring streams (bills +
+   * subscriptions) and upsert recurring_bills; (3) write FACTUAL opportunities (annualised run-rate +
+   * essential-switch signposts); (4) surface ONE deduped notification. Pure detection lives in
+   * src/lib/advisory.ts; this method is just the D1 plumbing around it.
+   */
+  async detectAdvisory(userId: string): Promise<{ recurring: number; opportunities: number }> {
+    // (1) Backfill biller_key on a bounded slice (idempotent: WHERE biller_key IS NULL → naturally
+    // re-runnable; subsequent ticks pick up the rest). No model call.
+    const unkeyed = await this.env.DB.prepare(
+      `SELECT id, merchant, raw_description FROM transactions
+        WHERE user_id = ? AND biller_key IS NULL AND kind IN ('bank_line','receipt') LIMIT 2000`,
+    )
+      .bind(userId)
+      .all<{ id: string; merchant: string | null; raw_description: string | null }>();
+    const updates = (unkeyed.results ?? [])
+      .map((r) => ({ id: r.id, key: billerNormalize(r.merchant, r.raw_description) ?? "" }))
+      .map((u) =>
+        this.env.DB.prepare(`UPDATE transactions SET biller_key = ? WHERE user_id = ? AND id = ?`).bind(u.key, userId, u.id),
+      );
+    await this.batchChunked(updates);
+
+    // (2) Detect recurring streams over the last ~18 months of countable debits with a biller_key.
+    const since = new Date(Date.now() - 540 * 86_400_000).toISOString().slice(0, 10);
+    const rows = await this.env.DB.prepare(
+      `SELECT biller_key, txn_date, COALESCE(amount_aud_cents, amount_cents) AS amt,
+              COALESCE(merchant, raw_description) AS label
+         FROM transactions
+        WHERE user_id = ? AND ${COUNTABLE} AND biller_key IS NOT NULL AND biller_key <> ''
+          AND txn_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' AND txn_date >= ?
+        ORDER BY biller_key, txn_date LIMIT 6000`,
+    )
+      .bind(userId, since)
+      .all<{ biller_key: string; txn_date: string; amt: number | null; label: string | null }>();
+
+    const byBiller = new Map<string, { occ: RecurringOccurrence[]; label: string }>();
+    for (const r of rows.results ?? []) {
+      if (!r.amt || r.amt <= 0) continue;
+      const g = byBiller.get(r.biller_key) ?? { occ: [], label: r.label ?? r.biller_key };
+      g.occ.push({ date: r.txn_date, amount_cents: r.amt });
+      byBiller.set(r.biller_key, g);
+    }
+
+    const billUpserts = [];
+    type Detected = { biller_key: string; label: string; category: ReturnType<typeof classifyBiller>["category"]; det: NonNullable<ReturnType<typeof detectRecurrence>>; essential: boolean };
+    const detected: Detected[] = [];
+    for (const [biller_key, g] of byBiller) {
+      const det = detectRecurrence(g.occ);
+      if (!det) continue;
+      const { category, essential } = classifyBiller(biller_key);
+      const annual = paymentsPerYear(det.cadence) * det.typical_amount_cents;
+      detected.push({ biller_key, label: g.label, category, det, essential });
+      billUpserts.push(
+        this.env.DB.prepare(
+          `INSERT INTO recurring_bills
+             (id,user_id,biller_key,label,category,cadence,typical_amount_cents,amount_variance_cents,
+              annual_amount_cents,is_subscription,is_essential,occurrences,first_seen_date,last_seen_date,
+              next_expected_date,status,updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
+           ON CONFLICT(user_id,biller_key) DO UPDATE SET
+             label=excluded.label, category=excluded.category, cadence=excluded.cadence,
+             typical_amount_cents=excluded.typical_amount_cents, amount_variance_cents=excluded.amount_variance_cents,
+             annual_amount_cents=excluded.annual_amount_cents, is_subscription=excluded.is_subscription,
+             is_essential=excluded.is_essential, occurrences=excluded.occurrences,
+             first_seen_date=excluded.first_seen_date, last_seen_date=excluded.last_seen_date,
+             next_expected_date=excluded.next_expected_date,
+             status=CASE WHEN recurring_bills.status IN ('dismissed','ended') THEN recurring_bills.status ELSE excluded.status END,
+             updated_at=datetime('now')`,
+        ).bind(
+          crypto.randomUUID(), userId, biller_key, g.label.slice(0, 64), category, det.cadence,
+          det.typical_amount_cents, det.amount_variance_cents, annual, det.is_subscription ? 1 : 0,
+          essential ? 1 : 0, det.occurrences, det.first_seen, det.last_seen, det.next_expected, det.status,
+        ),
+      );
+    }
+    await this.batchChunked(billUpserts);
+
+    // (3) Opportunities — FACTUAL only. Current AU FY (Jul–Jun).
+    const now = new Date();
+    const fyStart = now.getUTCMonth() >= 6 ? now.getUTCFullYear() : now.getUTCFullYear() - 1;
+    const fyLbl = String(fyStart);
+    const runRate = await spendRunRate(this.env, userId, fyStart);
+    const oppUpserts = [];
+    if (runRate.spent_cents > 0) {
+      oppUpserts.push(
+        this.upsertOpportunity(userId, "run_rate", "", {
+          fy: fyLbl, category: null, title: "Your spending, annualised",
+          body: runRate.body, amount_cents: runRate.annualised_cents, signpost: null, recurringBillId: null,
+        }),
+      );
+    }
+    // Essential switchable bills WITH a government comparator → a factual switch signpost (no savings claim).
+    for (const d of detected) {
+      if (!d.essential || d.det.status !== "confirmed") continue;
+      const sp = signpostFor(d.category);
+      if (!sp) continue; // only signpost where a whole-of-market government comparator exists (energy/health)
+      const annual = paymentsPerYear(d.det.cadence) * d.det.typical_amount_cents;
+      const label = d.label.slice(0, 40);
+      oppUpserts.push(
+        this.upsertOpportunity(userId, "essential_switch", d.biller_key, {
+          fy: null, category: d.category,
+          title: `${label} — about $${Math.round(annual / 100).toLocaleString("en-AU")} a year`,
+          body: `${recurringCopy(label, d.det)} You can compare options yourself — ${sp.label}.`,
+          amount_cents: annual, signpost: sp, recurringBillId: null,
+        }),
+      );
+    }
+    await this.batchChunked(oppUpserts);
+
+    // (4) ONE deduped notification (mirror flagOldData's unread-nudge dedup; stable marker for the LIKE).
+    if (oppUpserts.length > 0 && !(await hasPendingNudge(this.env, userId, "%Savings & Opportunities%"))) {
+      await this.notify(
+        userId,
+        `Savings & Opportunities: we spotted ${detected.length} recurring payment${detected.length === 1 ? "" : "s"} and your annualised spending in the new Save tab. General information only — not financial product advice.`,
+        null,
+      );
+    }
+    await this.audit(userId, "detect_advisory", JSON.stringify({ recurring: detected.length, opportunities: oppUpserts.length }));
+    return { recurring: detected.length, opportunities: oppUpserts.length };
+  }
+
+  /** Run prepared statements in chunks of 50 (D1 bounds params per batch — same pattern as elsewhere). */
+  private async batchChunked(stmts: D1PreparedStatement[]): Promise<void> {
+    for (let i = 0; i < stmts.length; i += 50) await this.env.DB.batch(stmts.slice(i, i + 50));
+  }
+
+  /** Idempotent opportunity upsert (natural key user_id+type+subject_key; preserves user dismiss/action). */
+  private upsertOpportunity(
+    userId: string,
+    type: string,
+    subjectKey: string,
+    o: { fy: string | null; category: string | null; title: string; body: string; amount_cents: number; signpost: { label: string; url: string } | null; recurringBillId: string | null },
+  ) {
+    return this.env.DB.prepare(
+      `INSERT INTO opportunities
+         (id,user_id,opportunity_type,subject_key,fy,recurring_bill_id,category,title,body,amount_cents,
+          signpost_label,signpost_url,status,updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'open',datetime('now'))
+       ON CONFLICT(user_id,opportunity_type,subject_key) DO UPDATE SET
+         fy=excluded.fy, category=excluded.category, title=excluded.title, body=excluded.body,
+         amount_cents=excluded.amount_cents, signpost_label=excluded.signpost_label, signpost_url=excluded.signpost_url,
+         recurring_bill_id=excluded.recurring_bill_id,
+         status=CASE WHEN opportunities.status IN ('dismissed','actioned') THEN opportunities.status ELSE 'open' END,
+         updated_at=datetime('now')`,
+    ).bind(
+      crypto.randomUUID(), userId, type, subjectKey, o.fy, o.recurringBillId, o.category,
+      o.title, o.body, o.amount_cents, o.signpost?.label ?? null, o.signpost?.url ?? null,
+    );
+  }
+
+  /** Dismiss an opportunity (user action — sets terminal status so the detector won't reopen it). */
+  async dismissOpportunity(userId: string, id: string): Promise<{ ok: boolean }> {
+    await this.env.DB.prepare(
+      `UPDATE opportunities SET status='dismissed', updated_at=datetime('now') WHERE user_id = ? AND id = ?`,
+    )
+      .bind(userId, id)
+      .run();
+    return { ok: true };
+  }
+
+  /** Dismiss a detected recurring bill (won't be resurrected by re-detection). */
+  async dismissRecurringBill(userId: string, id: string): Promise<{ ok: boolean }> {
+    await this.env.DB.prepare(
+      `UPDATE recurring_bills SET status='dismissed', updated_at=datetime('now') WHERE user_id = ? AND id = ?`,
+    )
+      .bind(userId, id)
+      .run();
+    return { ok: true };
   }
 
   /** Record explicit, dated APP-8 cross-border consent (fix H7). */

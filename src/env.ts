@@ -107,6 +107,9 @@ export interface TaxAgentRpc {
   linkReceipt(userId: string, receiptId: string, lineId: string): Promise<void>;
   unlinkReceipt(userId: string, receiptId: string): Promise<void>;
   runProactiveScan(userId: string): Promise<void>;
+  detectAdvisory(userId: string): Promise<{ recurring: number; opportunities: number }>;
+  dismissOpportunity(userId: string, id: string): Promise<{ ok: boolean }>;
+  dismissRecurringBill(userId: string, id: string): Promise<{ ok: boolean }>;
   recordConsent(userId: string, text: string, method: string): Promise<void>;
   draftSituation(userId: string, message: string): Promise<import("./extract").SituationDraft>;
   guideMe(userId: string, tab: string): Promise<{ headline: string; steps: string[] }>;

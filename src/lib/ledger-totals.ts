@@ -549,6 +549,32 @@ export async function paygInstalmentsTotal(env: Env, userId: string, startYear: 
   }
 }
 
+export interface SuperDeduction {
+  claimed_cents: number;      // the deductible amount (min of contributed, cap)
+  contributed_cents: number;  // total personal-deductible contributions for the FY
+  cap_cents: number;          // concessional cap (from the rule pack)
+  over_cap: boolean;          // contributed beyond the cap (excess isn't deductible + may be taxed)
+}
+
+/**
+ * Phase 3a (s290-150): PERSONAL-DEDUCTIBLE concessional super contributions reduce assessable income, up
+ * to the concessional cap. ONLY type='personal_deductible' counts — employer SG / salary-sacrifice are
+ * pre-tax (already out of salary) and must NEVER be deducted again. Flag-gated by the caller
+ * (super_deduction). No personal-deductible rows → claimed 0 (report byte-identical).
+ */
+export async function superConcessionalDeduction(env: Env, userId: string, startYear: number, capCents: number): Promise<SuperDeduction> {
+  const fy = fyLabel(startYear);
+  let contributed = 0;
+  try {
+    contributed = (await env.DB.prepare(
+      `SELECT COALESCE(SUM(amount_cents),0) AS c FROM super_contributions WHERE user_id = ? AND fy = ? AND type = 'personal_deductible'`,
+    ).bind(userId, fy).first<{ c: number }>())?.c ?? 0;
+  } catch (e) {
+    if (!/no such table|no such column/i.test((e as Error).message)) throw e;
+  }
+  return { claimed_cents: Math.min(contributed, capCents), contributed_cents: contributed, cap_cents: capCents, over_cap: contributed > capCents };
+}
+
 /**
  * Phase #141: assessable ESS discount for an FY. Sums ess_grants whose taxing point falls in the FY,
  * classifying upfront/deferral as assessable income now and the startup concession as deferred-to-CGT.

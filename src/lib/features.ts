@@ -33,6 +33,8 @@ export const FEATURE_KEYS = [
   "ask_actions",        // Ask Quillo C3: FY txn digest in the Ask prompt + model-PROPOSED one-click fixes (set_deductibility / recategorise / add_rule). Propose→confirm→execute via the EXISTING write endpoints — never autonomous. Applying a deductibility card needs deductibility_review ON. OFF ⇒ Ask byte-identical.
   "advisory_layer",     // Savings & Opportunities (#182–184): annualised spend run-rate + deterministic recurring-bill/subscription detection + FACTUAL opportunity nudges + the "Save" surface. No LLM, no partners, no PII egress, no projections/benchmarks (src/lib/advisory.ts). OFF ⇒ no read/write path, byte-identical.
   "advisory_partners_energy", // Advisory Phase 2 (docs/advisory-phase2-partners.md): the Tier-1 energy partner CTA on advisory opportunities + the create-referral path. Identity/data-model scaffold ships flag-OFF (Slice 1); no consumer CTA, no live partner, no PII egress until this is ON *and* legal sign-off (§5) lands. OFF ⇒ byte-identical.
+  "franking_gross_up",  // Phase 3a (s207-20): gross franked dividend/distribution franking credits INTO assessable income (the credit is also a refundable offset, out of scope). ADDS to taxable_position. OFF ⇒ byte-identical.
+  "super_deduction",    // Phase 3a (s290-150): personal-deductible super contributions (type='personal_deductible' only — never employer SG) reduce assessable income up to the concessional cap. SUBTRACTS from taxable_position. OFF ⇒ byte-identical.
 ] as const;
 
 export type FeatureKey = (typeof FEATURE_KEYS)[number];

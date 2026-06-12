@@ -238,6 +238,28 @@ CREATE TABLE IF NOT EXISTS corrections (
   reverted_at TEXT                        -- 0022: set when an undo writes old_value back; NULL = still applied
 );
 
+-- 0057: ai_edits — audited, reversible log of AI-driven (and optionally manual) whole-entity writes
+-- (persons|properties|entities|rules). Full old/new row snapshots → reliable single-action undo
+-- (create→delete, update→restore). Written ONLY via the DO + mirrored to audit_log.
+CREATE TABLE IF NOT EXISTS ai_edits (
+  id          TEXT PRIMARY KEY,
+  user_id     TEXT NOT NULL,
+  batch_id    TEXT,
+  action_id   TEXT,
+  entity_type TEXT NOT NULL,
+  entity_id   TEXT NOT NULL,
+  op          TEXT NOT NULL,
+  old_json    TEXT,
+  new_json    TEXT,
+  source      TEXT NOT NULL DEFAULT 'ai_confirmed',
+  session_id  TEXT,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  reverted_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_ai_edits_user ON ai_edits(user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_ai_edits_action ON ai_edits(user_id, action_id);
+CREATE INDEX IF NOT EXISTS idx_ai_edits_batch ON ai_edits(user_id, batch_id);
+
 -- ── Full decision trace (inputs -> model output) for auditability + evals ─────
 CREATE TABLE IF NOT EXISTS traces (
   id          TEXT PRIMARY KEY,

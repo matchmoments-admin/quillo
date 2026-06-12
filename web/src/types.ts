@@ -425,6 +425,17 @@ export interface AdminSpend {
   tenants: AdminSpendTenant[];
 }
 
+export interface AiEdit {
+  action_id: string;
+  entity_type: string;
+  entity_id: string;
+  op: string;
+  source: string;
+  created_at: string;
+  reverted_at: string | null;
+  summary: string;
+}
+
 export interface UsageData {
   today_cents: number;
   month_cents: number;

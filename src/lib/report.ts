@@ -371,6 +371,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
       `SELECT COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS total_cents,
               COALESCE(SUM(gst_cents),0) AS gst_cents
          FROM transactions WHERE user_id = ? AND bucket = 'company' AND ${COUNTABLE}
+           AND COALESCE(reimbursed,0) = 0
            AND txn_date >= ? AND txn_date <= ?`,
     )
       .bind(userId, q.s, q.e)
@@ -663,9 +664,11 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
         -- Stay in lockstep with the headline gates: reimbursed (0030) / rent-free property (0031) spend
         -- is never resolved-deductible, so this figure can't claim what the position excludes.
         AND COALESCE(reimbursed,0) = 0
-        AND ${useStatusDenied("transactions.property_id")} = 0${notAttributed("transactions.id")}`,
+        -- Same loan_interest_v2 supersession as byBucket/byPropertyRaw: a legacy rental:interest split
+        -- row replaced by an evidenced v2 figure must NOT be summed here too, or resolved double-counts it.
+        AND ${useStatusDenied("transactions.property_id")} = 0${notAttributed("transactions.id")}${excludeSplitInterest("")}`,
   )
-    .bind(userId, start, end)
+    .bind(userId, start, end, ...supersededLoanIds)
     .first<{ total: number }>();
   // Attributions are an explicit user decision (who claims what), so the attributed personal deductions
   // (individual + rental-property) count as resolved-deductible — keeping this figure in step with the

@@ -107,6 +107,23 @@ console.log("reconcileStatement");
   check("credit-card statement reconciles when liability-aware", ccOk.ok && ccOk.available && ccOk.diff_cents === 0);
   const ccAsset = reconcileStatement(cc, 186614, 159513, false);
   check("same credit-card statement does NOT balance under asset sign", !ccAsset.ok && ccAsset.diff_cents === 54202);
+
+  // BUG FIX: a credit-card CSV with per-line balances must DERIVE the opening with the liability
+  // sign too — deriveBalances used to ignore isLiability, so the opening was off by 2×signedCents
+  // and EVERY such import failed reconcile (forcing force=true). Owed: 1866.14 → +8528.99 purchase
+  // (=10395.13) → −8800.00 payment (=1595.13 closing).
+  const ccBal: StatementLine[] = [
+    line({ amount_cents: 852899, direction: "debit", balance_cents: 1039513, description: "purchases" }),
+    line({ amount_cents: 880000, direction: "credit", balance_cents: 159513, description: "payments" }),
+  ];
+  const dLia = deriveBalances(ccBal, true)!;
+  check("deriveBalances(liability) recovers the true opening (1866.14)", dLia.opening_cents === 186614 && dLia.closing_cents === 159513);
+  const rLia = reconcileStatement(ccBal, dLia.opening_cents, dLia.closing_cents, true);
+  check("liability CSV now reconciles end-to-end (derive + reconcile)", rLia.ok && rLia.diff_cents === 0);
+  // The old asset-math derive produced a wrong opening → reconcile failed (the bug we fixed).
+  const dAsset = deriveBalances(ccBal, false)!;
+  check("asset-math derive on a liability CSV gives the WRONG opening", dAsset.opening_cents === 1892412);
+  check("...and that wrong opening fails reconcile (proves the flag is load-bearing)", !reconcileStatement(ccBal, dAsset.opening_cents, dAsset.closing_cents, true).ok);
 }
 
 // ── Transfer detection: conservative (never drop a real expense) ─────────────

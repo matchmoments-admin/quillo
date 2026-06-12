@@ -374,7 +374,7 @@ export class TaxAgent extends Agent<Env> {
       const rows = parseCsv(new TextDecoder().decode(bytes));
       columnMap = await extractColumnMap(llm, rows);
       lines = applyColumnMap(rows, columnMap);
-      const bal = deriveBalances(lines);
+      const bal = deriveBalances(lines, isLiability);
       recon = reconcileStatement(lines, bal?.opening_cents ?? null, bal?.closing_cents ?? null, isLiability);
     }
 

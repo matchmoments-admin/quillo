@@ -368,6 +368,10 @@ async function main() {
     check("P11 #157 (NULL-safe): a NULL-ato_label rental expense is NOT dropped under v2 ($500 kept)", r11.per_property?.find((p) => p.property_id === "p11rent2")?.deduction_cents === 50000);
     check("P11 #157 (scoped): a legacy split on a loan with NO v2 figure still counts ($3k kept)", r11.per_property?.find((p) => p.property_id === "p11rent3")?.deduction_cents === 300000);
     check("P11 #157: headline deductions = v2 interest $12k + $500 expense + kept split $3k = $15.5k", r11.total_deductions_cents === 1550000);
+    // BUG FIX: resolved_deductible_cents must apply the SAME loan_interest_v2 supersession as the headline.
+    // The superseded $12k legacy split (p11int, on a loan with a v2 summary) must NOT be summed here, or
+    // resolved over-states. Expect $3k confirmed (p11int2) + $0.5k likely (p11r2exp) = $3.5k; never $15.5k.
+    check("P11 #157: resolved-deductible excludes the superseded split (no double-count) — $3.5k", r11.resolved_deductible_cents === 350000);
 
     // Cross-check: the legacy split (loan_split ON, loan_interest_v2 OFF) yields the SAME $ — proving the
     // two engines agree, so flipping to v2 doesn't move the position for honest data.

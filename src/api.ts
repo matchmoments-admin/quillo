@@ -896,15 +896,15 @@ export async function handleApi(
   if (resource === "work-use") {
     const fy = Number(url.searchParams.get("fy")) || defaultFy();
     if (m === "GET") {
-      const row = await env.DB.prepare(`SELECT wfh_hours, car_work_km, wfh_days_per_week, wfh_weeks FROM work_use_inputs WHERE user_id = ? AND fy = ?`)
+      const row = await env.DB.prepare(`SELECT wfh_hours, car_work_km, wfh_days_per_week, wfh_weeks, has_dedicated_home_office, wfh_has_record FROM work_use_inputs WHERE user_id = ? AND fy = ?`)
         .bind(uid, fy)
-        .first<{ wfh_hours: number | null; car_work_km: number | null; wfh_days_per_week: number | null; wfh_weeks: number | null }>();
-      return json({ work_use: row ?? { wfh_hours: null, car_work_km: null, wfh_days_per_week: null, wfh_weeks: null } });
+        .first<{ wfh_hours: number | null; car_work_km: number | null; wfh_days_per_week: number | null; wfh_weeks: number | null; has_dedicated_home_office: number | null; wfh_has_record: number | null }>();
+      return json({ work_use: row ?? { wfh_hours: null, car_work_km: null, wfh_days_per_week: null, wfh_weeks: null, has_dedicated_home_office: 0, wfh_has_record: 0 } });
     }
     if (m === "POST") {
-      const body = (await req.json().catch(() => ({}))) as { wfh_hours?: number | null; car_work_km?: number | null; wfh_days_per_week?: number | null; wfh_weeks?: number | null };
+      const body = (await req.json().catch(() => ({}))) as { wfh_hours?: number | null; car_work_km?: number | null; wfh_days_per_week?: number | null; wfh_weeks?: number | null; has_dedicated_home_office?: boolean; wfh_has_record?: boolean };
       const num = (v: unknown): number | null => (v === null || v === undefined || v === "" || !Number.isFinite(Number(v)) ? null : Math.max(0, Number(v)));
-      return json(await stub.setWorkUseInputs(uid, { fy, wfh_hours: num(body.wfh_hours), car_work_km: num(body.car_work_km), wfh_days_per_week: num(body.wfh_days_per_week), wfh_weeks: num(body.wfh_weeks) }));
+      return json(await stub.setWorkUseInputs(uid, { fy, wfh_hours: num(body.wfh_hours), car_work_km: num(body.car_work_km), wfh_days_per_week: num(body.wfh_days_per_week), wfh_weeks: num(body.wfh_weeks), has_dedicated_home_office: !!body.has_dedicated_home_office, wfh_has_record: !!body.wfh_has_record }));
     }
   }
 

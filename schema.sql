@@ -934,6 +934,9 @@ CREATE TABLE IF NOT EXISTS work_use_inputs (
   -- 0036: capture WFH as days/week so hours can be derived transparently (wfh_hours stays authoritative).
   wfh_days_per_week REAL,
   wfh_weeks         REAL,
+  -- 0058: capture-only context that drives GUIDANCE, not the fixed-rate $ figure (no position impact).
+  has_dedicated_home_office INTEGER DEFAULT 0,   -- dedicated room (actual-cost method / cleaning eligibility)
+  wfh_has_record            INTEGER DEFAULT 0,   -- user keeps a contemporaneous record of actual hours (ATO requirement from 1 Mar 2023)
   updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (user_id, fy)
 );

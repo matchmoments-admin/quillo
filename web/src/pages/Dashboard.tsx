@@ -78,8 +78,10 @@ export function Dashboard() {
       {/* Savings run-rate — the "yearly wake-up figure" (factual annualisation), links into the Save tab. */}
       {has("advisory_layer") && <RunRateStrip fy={fy} />}
 
-      {/* Ask Quillo — grounded, single-turn tax Q&A from the user's own ledger (consent + budget gated). */}
-      {has("ask_quillo") && <AskQuillo />}
+      {/* Ask Quillo — grounded tax Q&A from the user's own ledger. Superseded by the floating bubble:
+          show the embedded card ONLY when the bubble is off (a fallback so chat survives if floating_chat
+          is ever disabled), so there's never two chats at once. */}
+      {has("ask_quillo") && !has("floating_chat") && <AskQuillo />}
 
       {/* Working-from-home + car: the #1 PAYG claims, captured here on the Position surface (the one
           canonical place — Review no longer carries a second copy). */}

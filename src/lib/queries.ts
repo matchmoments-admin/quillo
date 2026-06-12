@@ -273,16 +273,17 @@ export async function usageSummary(env: Env, userId: string) {
   const today = new Date().toISOString().slice(0, 10);
   const month = today.slice(0, 7);
   const totals = await env.DB.prepare(
+    // cost_e4 is the exact integer cost (1e-4 cent units); SUM integers, divide to cents once.
     `SELECT
-       COALESCE(SUM(CASE WHEN substr(created_at,1,10) = ? THEN cost_cents END),0) AS today_cents,
-       COALESCE(SUM(CASE WHEN substr(created_at,1,7)  = ? THEN cost_cents END),0) AS month_cents,
+       COALESCE(SUM(CASE WHEN substr(created_at,1,10) = ? THEN cost_e4 END),0)/10000.0 AS today_cents,
+       COALESCE(SUM(CASE WHEN substr(created_at,1,7)  = ? THEN cost_e4 END),0)/10000.0 AS month_cents,
        COUNT(*) AS calls
      FROM llm_usage WHERE user_id = ?`,
   )
     .bind(today, month, userId)
     .first<{ today_cents: number; month_cents: number; calls: number }>();
   const byFeature = await env.DB.prepare(
-    `SELECT feature, COUNT(*) AS calls, COALESCE(SUM(cost_cents),0) AS cost_cents
+    `SELECT feature, COUNT(*) AS calls, COALESCE(SUM(cost_e4),0)/10000.0 AS cost_cents
        FROM llm_usage WHERE user_id = ? AND substr(created_at,1,7) = ?
       GROUP BY feature ORDER BY cost_cents DESC`,
   )
@@ -298,7 +299,7 @@ export async function usageSummary(env: Env, userId: string) {
   const byFyRows = await env.DB.prepare(
     `SELECT CAST(substr(created_at,1,4) AS INTEGER)
               - (CASE WHEN CAST(substr(created_at,6,2) AS INTEGER) >= 7 THEN 0 ELSE 1 END) AS fy_start,
-            COUNT(*) AS calls, COALESCE(SUM(cost_cents),0) AS cost_cents
+            COUNT(*) AS calls, COALESCE(SUM(cost_e4),0)/10000.0 AS cost_cents
        FROM llm_usage WHERE user_id = ?
       GROUP BY fy_start ORDER BY fy_start DESC`,
   )
@@ -682,7 +683,7 @@ export async function listTenantsAdmin(env: Env) {
   const res = await env.DB.prepare(
     `SELECT p.user_id, p.email, p.roles, p.created_at,
             (SELECT COUNT(*) FROM transactions t WHERE t.user_id = p.user_id) AS txn_count,
-            (SELECT COALESCE(SUM(cost_cents),0) FROM llm_usage u WHERE u.user_id = p.user_id) AS cost_cents,
+            (SELECT COALESCE(SUM(cost_e4),0)/10000.0 FROM llm_usage u WHERE u.user_id = p.user_id) AS cost_cents,
             (SELECT MAX(created_at) FROM audit_log a WHERE a.user_id = p.user_id) AS last_activity
        FROM profiles p ORDER BY p.created_at DESC LIMIT 500`,
   ).all();
@@ -722,9 +723,9 @@ export async function platformOverview(env: Env) {
        (SELECT COUNT(*) FROM profiles) AS tenants,
        (SELECT COUNT(*) FROM profiles WHERE created_at >= datetime('now','-7 days')) AS signups_7d,
        (SELECT COUNT(*) FROM profiles WHERE created_at >= datetime('now','-30 days')) AS signups_30d,
-       (SELECT COALESCE(SUM(cost_cents),0) FROM llm_usage WHERE substr(created_at,1,10) = ?) AS spend_today_cents,
-       (SELECT COALESCE(SUM(cost_cents),0) FROM llm_usage WHERE substr(created_at,1,7) = ?) AS spend_month_cents,
-       (SELECT COALESCE(SUM(cost_cents),0) FROM llm_usage) AS spend_all_cents`,
+       (SELECT COALESCE(SUM(cost_e4),0)/10000.0 FROM llm_usage WHERE substr(created_at,1,10) = ?) AS spend_today_cents,
+       (SELECT COALESCE(SUM(cost_e4),0)/10000.0 FROM llm_usage WHERE substr(created_at,1,7) = ?) AS spend_month_cents,
+       (SELECT COALESCE(SUM(cost_e4),0)/10000.0 FROM llm_usage) AS spend_all_cents`,
   )
     .bind(day, month)
     .first<{ tenants: number; signups_7d: number; signups_30d: number; spend_today_cents: number; spend_month_cents: number; spend_all_cents: number }>();

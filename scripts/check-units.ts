@@ -11,7 +11,7 @@ import { extractSituationDraft, parseBatchMessage, mapBatchItems, type BatchItem
 import type { LLM } from "../src/llm";
 import { isValidAbn, normaliseAbn } from "../web/src/lib/abn";
 import { billableCents } from "../src/lib/billing";
-import { costCents, isPricedModel } from "../src/lib/usage";
+import { costCents, isPricedModel, toE4, centsFromE4 } from "../src/lib/usage";
 import { LLM_MODEL_IDS } from "../src/llm";
 import { computeWorkMethodDeductions, workUseRatesForFy, deriveWfhHours } from "../src/lib/work-use";
 import { BUCKETS } from "../src/lib/taxonomy";
@@ -1449,6 +1449,28 @@ console.log("costCents (AI spend pricing)");
   check("1000 × 0.25c sums to exactly 250c (no drift)", total === 250);
   // Quantisation is bounded to 4 decimal places (1e-4 cents) — never a long float tail.
   check("cost is quantised to ≤4 decimal places", Number.isInteger(costCents(H, { input_tokens: 333, output_tokens: 77 }) * 10_000));
+}
+
+console.log("money integer scale (0051: cost_e4 / cents_e4)");
+{
+  const H = "claude-haiku-4-5-20251001";
+  // The spend columns are stored as integer 1e-4-cent units so SUM() is exact. The ×10000 scale is
+  // lossless vs costCents' 4-dp quantisation, and every read divides back to cents ONCE.
+  check("toE4 round-trips a sub-cent value (0.25c → 2500 → 0.25c)", toE4(0.25) === 2500 && centsFromE4(2500) === 0.25);
+  check("toE4 keeps a tiny call (0.03c → 300)", toE4(0.03) === 300);
+  check("toE4 is always an exact integer (no float tail)", Number.isInteger(toE4(costCents(H, { input_tokens: 333, output_tokens: 77 }))));
+  // Integer accumulation is EXACT — 1000 × 0.25c summed as units then divided once = 250c, no drift.
+  const unit = toE4(costCents(H, { input_tokens: 1500, output_tokens: 200 }));
+  let units = 0;
+  for (let i = 0; i < 1000; i++) units += unit; // integer addition, never floats
+  check("1000 × 0.25c accumulates to exactly 250c via integer units", Number.isInteger(units) && centsFromE4(units) === 250);
+  // Guard against a regression to the legacy REAL columns: the budget gate must read cents_e4 and the
+  // billing/admin rollups must SUM cost_e4 (not the float cost_cents).
+  const usageSrc = fs.readFileSync(new URL("../src/lib/usage.ts", import.meta.url), "utf8");
+  const queriesSrc = fs.readFileSync(new URL("../src/lib/queries.ts", import.meta.url), "utf8");
+  check("budget gate reads the integer tally (cents_e4)", /SELECT cents_e4 FROM daily_cost/.test(usageSrc));
+  check("daily_cost upsert increments cents_e4", /cents_e4 = cents_e4 \+ excluded\.cents_e4/.test(usageSrc));
+  check("spend rollups SUM the integer column (cost_e4), not the float", /SUM\(cost_e4\)/.test(queriesSrc) && !/SUM\(cost_cents\)/.test(queriesSrc));
 }
 
 console.log("billableCents");

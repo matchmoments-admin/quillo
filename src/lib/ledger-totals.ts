@@ -7,7 +7,12 @@ import { computeBasNet, type BasNet } from "./gst";
 import { businessUsePct, logbookDeductionCents, chooseCarMethod } from "./car-logbook";
 import { summariseTrustDistributions, type TrustTotals } from "./trust";
 import { ecpiExemptFraction, computeSmsfPosition, type SmsfPosition } from "./smsf";
-import auV1RulePack from "../rulepacks/au-v1.json";
+// Rule-pack thresholds are RESOLVED by the caller (buildReport → resolveRulePack, keyed by
+// profiles.rule_pack_ver with a KV override) and threaded in — never statically imported here, so a
+// per-tenant / per-jurisdiction pack is actually honoured by the report engines.
+export interface RulePackThresholds {
+  thresholds_by_fy?: Record<string, Record<string, number>>;
+}
 
 // ── The single money-aggregation seam ─────────────────────────────────────────
 // Income lives in its own table; deductions live in `transactions`; depreciation in
@@ -270,7 +275,7 @@ export interface CompanyPositionsResult {
  * shareholder-loan balance = the person→company funding amount. R&D eligibility is a defer-to-agent
  * flag (never an auto-claim). Empty (no company / pre-0035) → []. Flag-gated by the caller.
  */
-export async function companyPositions(env: Env, userId: string, startYear: number): Promise<CompanyPositionsResult> {
+export async function companyPositions(env: Env, userId: string, startYear: number, rulePack: RulePackThresholds): Promise<CompanyPositionsResult> {
   const fy = fyLabel(startYear);
   const { start, end } = fyBounds(startYear);
   const empty: CompanyPositionsResult = { positions: [], unattributed_cents: 0, unattributed_n: 0 };
@@ -312,7 +317,7 @@ export async function companyPositions(env: Env, userId: string, startYear: numb
     const incomeBy = new Map(incomeRows.map((r) => [r.entity_id, r.inc]));
     const rdRows = (await env.DB.prepare(`SELECT entity_id, eligible_expenditure_cents, aggregated_turnover_cents, registered_with_ausindustry FROM rd_claims WHERE user_id = ? AND fy = ?`).bind(userId, fy).all<{ entity_id: string; eligible_expenditure_cents: number; aggregated_turnover_cents: number; registered_with_ausindustry: number }>()).results ?? [];
     const rdBy = new Map(rdRows.map((r) => [r.entity_id, r]));
-    const rdCap = (auV1Thresholds(fy)?.rd_refundable_turnover_cap_cents) ?? Number.MAX_SAFE_INTEGER;
+    const rdCap = (thresholdsForFy(rulePack, fy)?.rd_refundable_turnover_cap_cents) ?? Number.MAX_SAFE_INTEGER;
     // Prior-year carried-forward losses already persisted (sum, gated by COT). 0 until a sign-off snapshots them.
     const priorRows = (await env.DB.prepare(`SELECT entity_id, COALESCE(SUM(current_year_loss_cents),0) AS prior FROM company_tax_positions WHERE user_id = ? AND fy < ? AND cot_satisfied = 1 GROUP BY entity_id`).bind(userId, fy).all<{ entity_id: string; prior: number }>()).results ?? [];
     const priorBy = new Map(priorRows.map((r) => [r.entity_id, r.prior]));
@@ -346,8 +351,8 @@ export async function companyPositions(env: Env, userId: string, startYear: numb
 }
 
 // Per-FY thresholds from the bundled rule pack (company/R&D params live here, never in SQL).
-function auV1Thresholds(fy: string): Record<string, number> | undefined {
-  return (auV1RulePack as unknown as { thresholds_by_fy?: Record<string, Record<string, number>> }).thresholds_by_fy?.[fy];
+function thresholdsForFy(pack: RulePackThresholds, fy: string): Record<string, number> | undefined {
+  return pack.thresholds_by_fy?.[fy];
 }
 
 export interface GstPosition extends BasNet {
@@ -573,7 +578,7 @@ export async function essTotals(env: Env, userId: string, startYear: number): Pr
  * pure computeNetCapitalGain. Flag-gated by the caller (cgt_engine). Empty / pre-0037 → a zero result
  * (report byte-identical to today). Net capital gain feeds TAXABLE INCOME — never tax payable.
  */
-export async function cgtTotals(env: Env, userId: string, startYear: number): Promise<CgtPortfolioResult> {
+export async function cgtTotals(env: Env, userId: string, startYear: number, rulePack: RulePackThresholds): Promise<CgtPortfolioResult> {
   const fy = fyLabel(startYear);
   const zero: CgtPortfolioResult = { gross_capital_gains_cents: 0, capital_losses_cents: 0, discount_applied_cents: 0, net_capital_gain_cents: 0, loss_carried_forward_cents: 0 };
   try {
@@ -588,7 +593,7 @@ export async function cgtTotals(env: Env, userId: string, startYear: number): Pr
     // Carried-forward capital losses from prior FYs (capital_loss_carryins is capture-only set-up data).
     const priorFy = startYear; // carry-ins use the prior FY *start year* (integer)
     const prior = (await env.DB.prepare(`SELECT COALESCE(SUM(loss_cents),0) AS loss FROM capital_loss_carryins WHERE user_id = ? AND prior_fy < ?`).bind(userId, priorFy).first<{ loss: number }>())?.loss ?? 0;
-    const rules = cgtRulesForFy(auV1Thresholds(fy) as { cgt_discount_keep_fraction?: number } | undefined);
+    const rules = cgtRulesForFy(thresholdsForFy(rulePack, fy) as { cgt_discount_keep_fraction?: number } | undefined);
     return computeNetCapitalGain(
       events.map((e) => ({
         proceeds_cents: e.proceeds_cents,

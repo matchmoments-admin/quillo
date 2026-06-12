@@ -1,6 +1,6 @@
 import type { Env } from "../env";
 import { COUNTABLE, COUNTABLE_INCOME } from "./queries";
-import { incomeTotals, depreciationTotals, attributionTotals, companyPositions, cgtTotals, essTotals, gstTotals, paygInstalmentsTotal, carLogbookPosition, trustTotals, smsfFundPositions, separateTaxpayerEntityIds, fyStartYearStr, type IncomeTotals, type AttributionTotals, type CompanyPosition, type GstPosition, type CarLogbookPosition, type SmsfFundPosition } from "./ledger-totals";
+import { incomeTotals, depreciationTotals, attributionTotals, companyPositions, cgtTotals, essTotals, gstTotals, paygInstalmentsTotal, carLogbookPosition, trustTotals, smsfFundPositions, separateTaxpayerEntityIds, fyStartYearStr, type IncomeTotals, type AttributionTotals, type CompanyPosition, type GstPosition, type CarLogbookPosition, type SmsfFundPosition, type RulePackThresholds } from "./ledger-totals";
 import type { TrustTotals } from "./trust";
 import type { CgtPortfolioResult } from "./cgt";
 import type { EssAssessable } from "./ess";
@@ -281,8 +281,26 @@ export async function loanInterestV2Context(env: Env, userId: string, startYear:
   return { byProp, total_cents, supersededLoanIds, loans };
 }
 
+// Resolve the tenant's rule pack for the REPORT engines: the KV override `rulepack:<rule_pack_ver>`
+// (mirrors the DO's loadRulePack), falling back to the bundled au-v1. Previously the engines statically
+// imported au-v1 and ignored rule_pack_ver entirely — so a KV/jurisdiction pack was silently dropped.
+// Guarded for the test harness (no env.RULES binding / no profile row) → bundled au-v1 ⇒ AU byte-identical.
+async function resolveRulePack(env: Env, userId: string): Promise<RulePackThresholds> {
+  let ver = "au-v1";
+  try {
+    const p = await env.DB.prepare(`SELECT rule_pack_ver FROM profiles WHERE user_id = ?`).bind(userId).first<{ rule_pack_ver: string | null }>();
+    if (p?.rule_pack_ver) ver = p.rule_pack_ver;
+  } catch { /* no profile (test env) → default */ }
+  try {
+    const override = env.RULES ? await env.RULES.get(`rulepack:${ver}`, "json") : null;
+    if (override) return override as RulePackThresholds;
+  } catch { /* KV unavailable (test env) → bundled default */ }
+  return auV1RulePack as unknown as RulePackThresholds;
+}
+
 export async function buildReport(env: Env, userId: string, startYear: number): Promise<Report> {
   const { start, end } = fyBounds(startYear);
+  const rulePack = await resolveRulePack(env, userId);
   // Flag `loan_split`: when on, the position counts the claimable (apportioned) portion
   // (deductible_amount_cents) of a row instead of the gross — see positionAmountCents. The SUM
   // expressions below MUST mirror that helper exactly. Off ⇒ byte-identical legacy totals.
@@ -446,7 +464,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
     : { individual_deduction_cents: 0, company_deduction_cents: 0, by_property: [] };
   // Phase C / G4: per-company position (separate taxpayer). Same flag — it's the attribution-routed
   // company deductions that make it meaningful. Empty when there's no company.
-  const companyResult = useAttributions ? await companyPositions(env, userId, startYear) : { positions: [], unattributed_cents: 0, unattributed_n: 0 };
+  const companyResult = useAttributions ? await companyPositions(env, userId, startYear, rulePack) : { positions: [], unattributed_cents: 0, unattributed_n: 0 };
   const company_positions: CompanyPosition[] = companyResult.positions;
   // Collapse the per-property deductibility split: `expenseByProp` keeps the legacy by_property shape
   // (all spend per property); `expMap` holds only the DEDUCTIBLE portion (used for the negative-
@@ -600,7 +618,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
       .bind(userId, startYear)
       .first<{ wfh_hours: number | null; car_work_km: number | null }>();
     if (wu && ((wu.wfh_hours ?? 0) > 0 || (wu.car_work_km ?? 0) > 0)) {
-      const thresholds = (auV1RulePack as { thresholds_by_fy?: Record<string, { wfh_fixed_rate_cents_per_hour?: number; car_cents_per_km?: number; car_km_cap?: number }> }).thresholds_by_fy?.[fyLabel];
+      const thresholds = (rulePack as { thresholds_by_fy?: Record<string, { wfh_fixed_rate_cents_per_hour?: number; car_cents_per_km?: number; car_km_cap?: number }> }).thresholds_by_fy?.[fyLabel];
       const computed = computeWorkMethodDeductions(wu, workUseRatesForFy(thresholds));
       if (computed.total_cents > 0) work_method = computed;
     }
@@ -611,7 +629,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   // when there are CGT events (cgtTotals returns a zero result otherwise → no field, no change).
   let capital_gains: CgtPortfolioResult | undefined;
   if (featureOn(env, "cgt_engine")) {
-    const cgt = await cgtTotals(env, userId, startYear);
+    const cgt = await cgtTotals(env, userId, startYear, rulePack);
     if (cgt.gross_capital_gains_cents > 0 || cgt.capital_losses_cents > 0) capital_gains = cgt;
   }
   // Phase #141: assessable ESS discount is employment income — add it to the position. Flag-gated; only

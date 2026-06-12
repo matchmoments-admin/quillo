@@ -101,6 +101,7 @@ function incomeTypeWhy(incomeType: string): string {
   switch (incomeType) {
     case "salary_payg": return "Salary/wages you recorded (generally item 1). PAYG withheld is shown as a credit, not a deduction.";
     case "business": return "Net income of your sole-trader / ABN business (generally item 15). Your business expenses are captured separately and reduce your individual position.";
+    case "foreign_business": return "Business income from foreign sources (e.g. overseas platform/ad revenue or overseas clients). Assessable like your other business income; any foreign tax paid is shown as a credit and may support a foreign income tax offset.";
     case "rent": return "Rent received on a let property (generally item 13). Agent-deducted expenses are captured separately as deductions.";
     case "foreign_rent": return "Rent received on a foreign property (generally item 20). Foreign tax paid is shown as a credit.";
     case "dividend": return "Dividends you recorded (generally item 11). Franking credits are shown as a credit.";
@@ -176,6 +177,14 @@ export function assessReadiness(input: {
   const lines: PositionLine[] = [];
   for (const it of report.income.by_type) {
     lines.push({ group: "income", label: it.income_type, amount_cents: it.gross_cents, basis: `${it.n} income record(s)`, why: incomeTypeWhy(it.income_type) });
+  }
+  // S4: non-cash benefits (gifted products / barter) are captured at market value but EXCLUDED from the
+  // assessable headline (incomeTotals kept them out of gross/by_type). Render as an "excluded" line so the
+  // money stays visible without counting — preserves the lines-sum == taxable_position invariant.
+  if ((report.income.non_cash_cents ?? 0) > 0) {
+    lines.push({ group: "excluded", label: "non_cash_benefit", amount_cents: report.income.non_cash_cents ?? 0,
+      basis: "gifted products / non-cash benefits at market value",
+      why: "Captured as evidence but NOT counted in your position. Non-cash benefits a business receives for promotion (gifted products, barter) can be assessable at their market value — but the value is self-estimated and whether it's assessable depends on whether you're genuinely carrying on a business, so it's left out until a registered tax agent confirms it." });
   }
   // Phase #138: net capital gain is assessable income — buildReport added it to taxable_position, so it
   // renders as an "income" line to keep the lines-sum == headline invariant. Present only when the
@@ -277,6 +286,7 @@ export function assessReadiness(input: {
   const hasAnyData =
     report.income.gross_cents > 0 ||
     report.income.by_type.length > 0 ||
+    (report.income.non_cash_cents ?? 0) > 0 || // S4: a captured-but-excluded gift still means the FY isn't blank
     report.deduction_breakdown.length > 0 ||
     report.depreciation_cents > 0 ||
     report.per_property.length > 0 ||
@@ -354,6 +364,13 @@ export function assessReadiness(input: {
       `You've recorded ${money(report.income.foreign_tax_paid_cents)} of foreign tax paid, which may give rise to a Foreign Income Tax Offset. The offset limit is worked out by your registered tax agent.${DEFER}`, true,
       [{ kind: "income", label: "foreign tax paid" }]));
   }
+  // S4: non-cash benefits captured but excluded — surface a defer nudge so the user knows they may be
+  // assessable at market value (we never assert it; assessability depends on carrying on a business).
+  if ((report.income.non_cash_cents ?? 0) > 0) {
+    findings.push(f("non_cash_benefit", "income", "review", "Non-cash benefits recorded (gifted products / barter)",
+      `You've recorded ${money(report.income.non_cash_cents ?? 0)} of non-cash benefits (e.g. gifted products received for promotion). These are EXCLUDED from your indicative position. If you're carrying on a business, benefits like these can be assessable at their market value — keep evidence of how you valued them and confirm the treatment with a registered tax agent.${DEFER}`, true,
+      [{ kind: "income", label: "non-cash benefits" }]));
+  }
   if (signals.disposedAssetsN > 0) {
     findings.push(f("disposed_assets", "depreciation", "review", `${signals.disposedAssetsN} asset(s) were disposed this year`,
       `A disposal can trigger a balancing adjustment and/or a capital gain. Your registered tax agent will confirm the treatment.${DEFER}`, true,
@@ -386,7 +403,7 @@ export function assessReadiness(input: {
   // deductible. No engine branch yet (capture flag + Div 86 split is a later persona slice).
   // S2: three variants keyed off the self-declared psi_status on the business activity. We never remove
   // deductions (deny-by-default already excludes unconfirmed payg spend) — the value is sharper guidance.
-  const hasBusinessIncome = report.income.by_type.some((it) => it.income_type === "business");
+  const hasBusinessIncome = report.income.by_type.some((it) => it.income_type === "business" || it.income_type === "foreign_business");
   if (hasBusinessIncome && signals.psiAppliesDeclared) {
     // Declared "PSI applies" → name the specific Div 86 restrictions so the user/agent can act on them.
     findings.push(f("psi_check", "judgement", "review", "PSI applies — some business deductions are restricted under Div 86",

@@ -11,7 +11,7 @@ import {
   propertyRowCounts,
   type Report,
 } from "./report";
-import { fyLabel, fyBounds, separateTaxpayerEntityIds } from "./ledger-totals";
+import { fyLabel, fyBounds, separateTaxpayerEntityIds, NON_ASSESSABLE_INCOME_TYPES } from "./ledger-totals";
 import { classifyAttribution, splitAttribution } from "./attribution";
 import { exclusionReason } from "./readiness";
 import { featureOn } from "./features";
@@ -478,17 +478,23 @@ export async function buildAccountantSchedule(
     });
   }
 
-  // 2. Income (documented) — itemised; ties to total_income_cents.
-  if (incomeRows.length) {
+  // 2. Income (documented) — itemised; ties to total_income_cents. S4: capture-only non-cash benefits are
+  // EXCLUDED from the assessable income that the report headline (total_income_cents) counts — so exclude
+  // them here too or the tie-back breaks. They're surfaced as a note (and stay visible via the report's
+  // excluded line), never silently dropped.
+  const assessableIncomeRows = incomeRows.filter((r) => !NON_ASSESSABLE_INCOME_TYPES.has(r.income_type));
+  const nonCashRows = incomeRows.filter((r) => NON_ASSESSABLE_INCOME_TYPES.has(r.income_type));
+  if (assessableIncomeRows.length) {
     const notes: string[] = [];
-    const total = incomeRows.reduce((s, r) => s + r.gross_cents, 0);
-    const noDoc = incomeRows.filter((r) => !r.source_doc_id);
+    const total = assessableIncomeRows.reduce((s, r) => s + r.gross_cents, 0);
+    if (nonCashRows.length) notes.push(`${nonCashRows.length} non-cash benefit(s) totalling ${d(nonCashRows.reduce((s, r) => s + r.gross_cents, 0))} are captured but EXCLUDED from assessable income (may be assessable at market value — confirm with a registered tax agent).`);
+    const noDoc = assessableIncomeRows.filter((r) => !r.source_doc_id);
     if (noDoc.length) gaps.push({ section: "income", n: noDoc.length, total_cents: noDoc.reduce((s, r) => s + r.gross_cents, 0) });
     sections.push({
       key: "income",
       title: "Income (documented)",
       columns: ["Date", "Type", "ATO label", "Property", "Gross (AUD)", "Withholding", "Franking credit", "Foreign tax paid", "Substantiation"],
-      rows: capped(incomeRows, notes).map((r) => [
+      rows: capped(assessableIncomeRows, notes).map((r) => [
         r.txn_date,
         r.income_type,
         r.ato_label,

@@ -46,6 +46,12 @@ export const INCOME_TYPES = [
   "managed_fund_distribution",
   "foreign_pension",
   "foreign_rent",
+  "foreign_business",    // S3: foreign-sourced business income (e.g. platform/AdSense revenue, overseas
+                         // clients). Assessable like 'business'; foreign_tax_paid_cents links to FITO.
+                         // Jurisdiction-neutral: "foreign" is relative to profiles.jurisdiction.
+  "non_cash_benefit",    // S4: gifted products / barter received for promotion, captured at market value.
+                         // CAPTURE-ONLY — EXCLUDED from the assessable position (see NON_ASSESSABLE_INCOME_TYPES
+                         // in ledger-totals.ts); surfaced as an excluded line + a defer nudge.
   "other",
 ] as const;
 export type IncomeType = (typeof INCOME_TYPES)[number];

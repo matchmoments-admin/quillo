@@ -52,14 +52,24 @@ export function costCents(model: string, u: Usage): number {
   return Math.round((c / 1_000_000) * 100 * 10_000) / 10_000;
 }
 
+// Integer money scale: 1 unit = 1e-4 cent, so cents = units / 10000. costCents quantises to 4 dp,
+// so this is lossless. Storing INTEGER means SUM() is exact (REAL accumulation could drift); we divide
+// back to cents ONCE at read. `cost_e4`/`cents_e4` are the source of truth; the old REAL columns are
+// dual-written as a live audit mirror until a future cleanup drops them.
+export const MONEY_E4 = 10_000;
+/** cents → exact integer 1e-4-cent units (lossless vs costCents' 4-dp quantisation). */
+export const toE4 = (cents: number): number => Math.round(cents * MONEY_E4);
+/** integer 1e-4-cent units → cents (single division; callers SUM the integers first). */
+export const centsFromE4 = (units: number): number => units / MONEY_E4;
+
 /** Atomic UPSERT that increments a daily_cost tally without a read-modify-write race. */
 function bumpDailyCost(env: Env, scope: string, day: string, cents: number) {
-  // SQLite (D1) serialises writes, so `cents = cents + excluded.cents` can't lose a concurrent
-  // increment — this is what makes the GLOBAL tally (written by every tenant's DO) safe.
+  // SQLite (D1) serialises writes, so `x = x + excluded.x` can't lose a concurrent increment — this is
+  // what makes the GLOBAL tally (written by every tenant's DO) safe. cents_e4 is the exact integer tally.
   return env.DB.prepare(
-    `INSERT INTO daily_cost (scope, day, cents) VALUES (?, ?, ?)
-     ON CONFLICT(scope, day) DO UPDATE SET cents = cents + excluded.cents, updated_at = datetime('now')`,
-  ).bind(scope, day, cents);
+    `INSERT INTO daily_cost (scope, day, cents, cents_e4) VALUES (?, ?, ?, ?)
+     ON CONFLICT(scope, day) DO UPDATE SET cents = cents + excluded.cents, cents_e4 = cents_e4 + excluded.cents_e4, updated_at = datetime('now')`,
+  ).bind(scope, day, cents, toE4(cents));
 }
 
 /**
@@ -93,8 +103,8 @@ export function usageStatements(
       bumpDailyCost(env, userId, day, cents),
       bumpDailyCost(env, "global", day, cents),
       env.DB.prepare(
-        `INSERT INTO llm_usage (id, user_id, feature, model, input_tokens, output_tokens, cache_read_tokens, cost_cents)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO llm_usage (id, user_id, feature, model, input_tokens, output_tokens, cache_read_tokens, cost_cents, cost_e4)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).bind(
         crypto.randomUUID(),
         userId,
@@ -104,6 +114,7 @@ export function usageStatements(
         usage.output_tokens ?? 0,
         usage.cache_read_input_tokens ?? 0,
         cents,
+        toE4(cents),
       ),
     ],
   };
@@ -137,10 +148,11 @@ export async function spentTodayGlobalCents(env: Env): Promise<number> {
 
 async function spentToday(env: Env, scope: string): Promise<number> {
   const day = new Date().toISOString().slice(0, 10);
-  const row = await env.DB.prepare(`SELECT cents FROM daily_cost WHERE scope = ? AND day = ?`)
+  // Read the exact integer tally and divide to cents ONCE (no float accumulation drift).
+  const row = await env.DB.prepare(`SELECT cents_e4 FROM daily_cost WHERE scope = ? AND day = ?`)
     .bind(scope, day)
-    .first<{ cents: number }>();
-  return Number(row?.cents ?? 0);
+    .first<{ cents_e4: number }>();
+  return Number(row?.cents_e4 ?? 0) / MONEY_E4;
 }
 
 /**

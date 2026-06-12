@@ -573,7 +573,8 @@ CREATE TABLE IF NOT EXISTS llm_usage (
   input_tokens      INTEGER,
   output_tokens     INTEGER,
   cache_read_tokens INTEGER,
-  cost_cents        REAL,
+  cost_cents        REAL,                  -- legacy float (dual-written audit mirror); cost_e4 is canonical
+  cost_e4           INTEGER,               -- 0051: exact cost in 1e-4-cent units (cents = cost_e4/10000) — SUMs without float drift
   created_at        TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_usage_user ON llm_usage(user_id, created_at);
@@ -586,7 +587,8 @@ CREATE INDEX IF NOT EXISTS idx_usage_user ON llm_usage(user_id, created_at);
 CREATE TABLE IF NOT EXISTS daily_cost (
   scope      TEXT NOT NULL,   -- 'global' OR a tenant id
   day        TEXT NOT NULL,   -- YYYY-MM-DD (UTC)
-  cents      REAL NOT NULL DEFAULT 0,
+  cents      REAL NOT NULL DEFAULT 0,        -- legacy float (dual-written audit mirror); cents_e4 is canonical
+  cents_e4   INTEGER NOT NULL DEFAULT 0,     -- 0051: exact tally in 1e-4-cent units (cents = cents_e4/10000) — race-free integer SUM
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (scope, day)
 );

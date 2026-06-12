@@ -19,6 +19,7 @@ import {
   listClaims,
   listTenantsAdmin,
   platformOverview,
+  platformSpend,
   listSuggestedDeductions,
   savingsOverview,
   referralFunnelAdmin,
@@ -300,6 +301,8 @@ export async function handleApi(
         const msg = (e as Error).message;
         if (msg === "consent_required") return json({ error: "consent_required" }, 403);
         if (msg === "ai_budget_reached") return json({ error: "AI is paused for today (daily limit reached) — try again after the reset." }, 429);
+        if (msg === "chat_rate_limited") return json({ error: "You're sending messages too quickly — give it a moment and try again." }, 429);
+        if (msg === "chat_message_too_long") return json({ error: "That message is too long — please shorten it and try again." }, 400);
         throw e;
       }
     }
@@ -1204,6 +1207,9 @@ export async function handleApi(
     if (!isAdmin(await getProfile(env, uid))) return json({ error: "forbidden" }, 403);
     if (m === "GET" && id === "overview") return json(await platformOverview(env));
     if (m === "GET" && id === "tenants") return json({ tenants: await listTenantsAdmin(env) });
+    // GET /api/admin/spend — cross-tenant AI-spend + abuse view (per-tenant today/7d, who hit the daily
+    // cap, who's a large share of the global ceiling). Read-only; reads existing llm_usage/daily_cost.
+    if (m === "GET" && id === "spend") return json(await platformSpend(env));
     // PUT /api/admin/tenants/:tenantId/roles { roles: [...] } — assign platform roles.
     if (m === "PUT" && id === "tenants" && sub && parts[3] === "roles") {
       const target = sub;

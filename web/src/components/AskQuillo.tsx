@@ -108,7 +108,7 @@ const STATE_LABEL: Record<string, string> = {
  *  - recategorise      → POST /api/correct/batch (undoable as a unit)
  *  - add_rule          → POST /api/rules
  */
-function ProposedActionCard({ action }: { action: ProposedAction }) {
+export function ProposedActionCard({ action }: { action: ProposedAction }) {
   const qc = useQueryClient();
   const apply = useMutation({
     mutationFn: async () => {

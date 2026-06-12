@@ -2,7 +2,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import { useAdminAccess } from "../lib/features";
 import { Card, Spinner, money } from "../components/ui";
-import { ROLES, ROLE_LABEL, type Role, type AdminTenant } from "../types";
+import { ROLES, ROLE_LABEL, type Role, type AdminTenant, type AdminSpend } from "../types";
 
 // Founder-only platform view: who signed up, their activity + AI spend, and a per-tenant roles editor.
 // The server enforces the 'admin' role on every /api/admin/* call — this page is just the UI.
@@ -10,6 +10,7 @@ export function Admin() {
   const { isAdmin, loaded } = useAdminAccess();
   const overview = useQuery({ queryKey: ["admin", "overview"], queryFn: () => api.adminOverview(), enabled: isAdmin });
   const tenants = useQuery({ queryKey: ["admin", "tenants"], queryFn: () => api.adminTenants(), enabled: isAdmin });
+  const spend = useQuery({ queryKey: ["admin", "spend"], queryFn: () => api.adminSpend(), enabled: isAdmin });
 
   if (loaded && !isAdmin) return <Card className="p-6 text-sm text-muted">Not available.</Card>;
   if (!loaded || overview.isLoading) return <Spinner />;
@@ -27,6 +28,8 @@ export function Admin() {
         <Metric label="This month" value={money(o?.spend_month_cents ?? 0)} />
         <Metric label="All-time" value={money(o?.spend_all_cents ?? 0)} />
       </div>
+
+      {spend.data && <SpendPanel data={spend.data} />}
 
       <Card className="overflow-hidden">
         <div className="border-b border-line px-4 py-3 text-sm font-medium">Tenants ({tenants.data?.length ?? 0})</div>
@@ -51,6 +54,60 @@ export function Admin() {
       </Card>
       <p className="text-xs text-muted">Founder-only. Click a role to toggle it for that tenant. The server enforces the admin role on every call.</p>
     </div>
+  );
+}
+
+// Cross-tenant AI spend + abuse signal. Highlights any tenant who tripped the daily cap today or is a
+// large share of the global ceiling, plus the chat ("ask") slice of their spend. Read-only.
+function SpendPanel({ data }: { data: AdminSpend }) {
+  const cap = data.per_tenant_cap_cents;
+  const sorted = [...data.tenants].sort((a, b) => b.today_cents - a.today_cents);
+  return (
+    <Card className="overflow-hidden">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-line px-4 py-3 text-sm">
+        <span className="font-medium">Spend &amp; abuse</span>
+        <span className="text-muted">
+          Global today {money(data.spend_today_global_cents)}
+          {data.global_ceiling_cents > 0 ? ` of ${money(data.global_ceiling_cents)} ceiling` : " (no ceiling)"}
+        </span>
+        {data.flagged > 0 ? (
+          <span className="rounded-full bg-warn/10 px-2 py-0.5 text-xs font-bold text-warn">{data.flagged} hit the daily cap today</span>
+        ) : (
+          <span className="rounded-full bg-safe/10 px-2 py-0.5 text-xs font-medium text-safe">none over cap</span>
+        )}
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left text-xs uppercase tracking-wide text-muted">
+              <th className="px-4 py-2">Tenant</th>
+              <th className="px-4 py-2 text-right">Today</th>
+              <th className="px-4 py-2 text-right">Chat today</th>
+              <th className="px-4 py-2 text-right">7-day</th>
+              <th className="px-4 py-2 text-right">Calls today</th>
+              <th className="px-4 py-2 text-right">% of ceiling</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.map((t) => (
+              <tr key={t.user_id} className={`border-t border-line ${t.hit_cap_today ? "bg-warn/5" : ""}`}>
+                <td className="px-4 py-2">{t.user_id === "me" ? "you (founder)" : t.user_id}</td>
+                <td className="px-4 py-2 text-right tabular-nums">
+                  {money(t.today_cents)}
+                  {cap > 0 && t.hit_cap_today && <span className="ml-1 text-[10px] font-bold uppercase text-warn">cap</span>}
+                </td>
+                <td className="px-4 py-2 text-right tabular-nums text-muted">{money(t.ask_today_cents)}</td>
+                <td className="px-4 py-2 text-right tabular-nums">{money(t.week_cents)}</td>
+                <td className="px-4 py-2 text-right tabular-nums">{t.calls_today}</td>
+                <td className="px-4 py-2 text-right tabular-nums">{data.global_ceiling_cents > 0 ? `${t.pct_of_global}%` : "—"}</td>
+              </tr>
+            ))}
+            {!sorted.length && <tr><td colSpan={6} className="px-4 py-6 text-muted">No AI spend in the last 7 days.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+      <p className="px-4 py-2 text-xs text-muted">Top spenders (7-day), with the chat slice and daily-cap/ceiling signal. Complements the pre-call budget gate — it doesn't replace it.</p>
+    </Card>
   );
 }
 

@@ -4830,10 +4830,17 @@ export class TaxAgent extends Agent<Env> {
   async chatTurn(userId: string, sessionId: string | null, message: string, fy: number): Promise<{ session_id: string } & AnswerResult> {
     const text = (message ?? "").trim();
     if (!text) throw new Error("empty message");
+    // Token-bomb guard: reject an oversize prompt BEFORE any profile/grounding/model work (cheapest gate).
+    const maxChars = Number(this.env.CHAT_MAX_MESSAGE_CHARS ?? 0);
+    if (maxChars > 0 && text.length > maxChars) throw new Error("chat_message_too_long");
     const profile = await this.requireProfile(userId);
     const provider = profile.inference_provider ?? this.env.DEFAULT_INFERENCE_PROVIDER;
     if (provider === "anthropic" && profile.consent_xborder !== 1) throw new Error("consent_required");
     if (!(await this.withinBudget(userId, null))) throw new Error("ai_budget_reached");
+    // Per-tenant rate limit (burst + daily turn count) — a fast backstop so a bad actor can't hammer
+    // /api/chat and rack up spend before the daily $ budget trips. Counters live in KV; safe because the
+    // DO serialises a tenant's turns (this is the only writer), so the read-increment-write is race-free.
+    if (!(await this.chatRateOk(userId))) throw new Error("chat_rate_limited");
 
     // Resolve / create the session (validate ownership). The session PINS its grounding FY for the whole
     // conversation — so switching the global FY mid-chat can't silently mix two years' figures.
@@ -5010,6 +5017,46 @@ export class TaxAgent extends Agent<Env> {
       }
     }
     return true;
+  }
+
+  /**
+   * Per-tenant chat rate limit (anti-abuse), enforced AFTER consent + the daily $ budget but BEFORE the
+   * model call. Two windows: a per-minute burst cap and a per-day turn cap, both env-configured (0/unset
+   * ⇒ that window is off). Counters are KV (TTL'd), incremented BEFORE the check so a blocked attempt
+   * still counts. Race-free per tenant because the DO serialises a tenant's chatTurn calls — this DO is
+   * the only writer of these keys. Returns false when a window is exceeded (caller → 429). A repeated
+   * trip raises a once-per-day audit + console signal so a hammering tenant is visible to the admin view.
+   */
+  private async chatRateOk(userId: string): Promise<boolean> {
+    const now = new Date();
+    const perMin = Number(this.env.CHAT_MAX_TURNS_PER_MIN ?? 0);
+    const perDay = Number(this.env.CHAT_MAX_TURNS_PER_DAY ?? 0);
+    // Read-increment a KV counter; a missing/garbled value resets to 0 so the gate fails CLOSED
+    // (toward counting) rather than open (Number("x")+1 = NaN, and NaN > limit is always false).
+    const bump = async (k: string, ttl: number): Promise<number> => {
+      const prev = Number(await this.env.RULES.get(k));
+      const n = (Number.isFinite(prev) ? prev : 0) + 1;
+      await this.env.RULES.put(k, String(n), { expirationTtl: ttl });
+      return n;
+    };
+    let blocked: "minute" | "day" | null = null;
+    if (perMin > 0) {
+      // Fixed calendar-minute window (yyyy-mm-ddThh:mm) — a burst straddling a minute flip can briefly
+      // get ~1 extra turn; the per-day cap + the $ budget are the hard ceilings, so that's acceptable.
+      if ((await bump(`chatrate:min:${userId}:${now.toISOString().slice(0, 16)}`, 120)) > perMin) blocked = "minute";
+    }
+    if (!blocked && perDay > 0) {
+      if ((await bump(`chatrate:day:${userId}:${now.toISOString().slice(0, 10)}`, 60 * 60 * 26)) > perDay) blocked = "day";
+    }
+    if (!blocked) return true;
+    // Once-per-day signal so repeated hammering surfaces to the admin spend view + the tamper-evident log.
+    const alertKey = `chatrate:alert:${userId}:${now.toISOString().slice(0, 10)}`;
+    if (!(await this.env.RULES.get(alertKey))) {
+      await this.env.RULES.put(alertKey, "1", { expirationTtl: 60 * 60 * 26 });
+      console.warn(`chat rate limit hit (${blocked}) for tenant ${userId}`);
+      await this.audit(userId, "chat_rate_limited", JSON.stringify({ window: blocked }));
+    }
+    return false;
   }
 
   private async promoteToEvalCase(userId: string, txnId: string): Promise<void> {

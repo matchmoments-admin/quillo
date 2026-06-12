@@ -26,6 +26,9 @@ export interface Env {
   JURISDICTION: string;
   MAX_DAILY_COST_CENTS?: string;        // per-user daily AI spend budget in cents (0/unset = unlimited)
   MAX_DAILY_COST_CENTS_GLOBAL?: string; // platform-wide daily AI spend ceiling across ALL tenants (0/unset = unlimited)
+  CHAT_MAX_TURNS_PER_MIN?: string;      // Ask Quillo: per-tenant chat turns per rolling minute (0/unset = unlimited)
+  CHAT_MAX_TURNS_PER_DAY?: string;      // Ask Quillo: per-tenant chat turns per day (0/unset = unlimited)
+  CHAT_MAX_MESSAGE_CHARS?: string;      // Ask Quillo: max chars per chat message (0/unset = unlimited)
   DEFAULT_INFERENCE_PROVIDER: string;   // 'anthropic' | 'bedrock'
   DEFAULT_INFERENCE_REGION: string;     // e.g. 'ap-southeast-2'
   QBO_BASE_URL: string;                 // sandbox or production

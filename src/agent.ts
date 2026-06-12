@@ -3052,6 +3052,13 @@ export class TaxAgent extends Agent<Env> {
     // Prior-year capital losses are an all-time carry-forward (not FY-scoped) — sum them so readiness
     // can surface a defer finding (capture-only; never applied to the headline).
     const capLoss = await this.env.DB.prepare(`SELECT COALESCE(SUM(loss_cents),0) AS total FROM capital_loss_carryins WHERE user_id = ?`).bind(userId).first<{ total: number }>();
+    // F: properties flagged as a main residence and disposed in this FY — their gain is kept OUT of the
+    // computed position (no auto-exemption), so readiness surfaces a defer nudge.
+    const mainResDisposal = await this.env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM properties WHERE user_id = ? AND main_residence_flag = 1
+         AND disposal_date IS NOT NULL AND disposal_date >= ? AND disposal_date <= ?
+         AND cost_base_cents IS NOT NULL AND disposal_proceeds_cents IS NOT NULL`,
+    ).bind(userId, start, end).first<{ n: number }>();
     // GST registration status for the turnover nudge — registered if the tenant default is set OR any
     // entity is flagged (mirrors gstTotals' registration test in ledger-totals.ts).
     const entGstReg = (await this.env.DB.prepare(`SELECT COUNT(*) AS n FROM entities WHERE user_id = ? AND COALESCE(gst_registered,0) = 1`).bind(userId).first<{ n: number }>())?.n ?? 0;
@@ -3078,6 +3085,7 @@ export class TaxAgent extends Agent<Env> {
       isGstRegistered,
       psiAppliesDeclared,
       psiAllAssessed,
+      mainResidenceDisposalN: mainResDisposal?.n ?? 0,
     };
 
     const readiness = assessReadiness({ report, situation, claimMatches: [...matchedById.values()], signals, generatedAt: new Date().toISOString(), excludeNonDeductible: featureOn(this.env, "position_excludes_nondeductible") });

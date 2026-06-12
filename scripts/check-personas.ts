@@ -14,7 +14,7 @@ import type { Env } from "../src/env";
 import { buildReport } from "../src/lib/report";
 import { buildAccountantSchedule, tieBackChecks } from "../src/lib/accountant-schedule";
 import { fetchAskDigestRows, listAccounts } from "../src/lib/queries";
-import { deleteRow, archiveRow, DeleteBlockedError } from "../src/lib/situation-write";
+import { deleteRow, archiveRow, DeleteBlockedError, syncPropertyDisposalToCgt } from "../src/lib/situation-write";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
@@ -432,6 +432,36 @@ async function main() {
     const sched13 = await buildAccountantSchedule(env, u, 2025, { report: r13 });
     const inc13 = sched13.sections.find((s) => s.key === "income");
     check("P13 D: accountant schedule income section ties back (pension excluded, no double-count)", inc13?.tie_back?.ok === true && inc13?.subtotal_cents === 200000);
+  }
+
+  // ── Persona 14: property disposal → CGT engine (Slice F) ──
+  // A disposed investment property's orphaned cost_base/disposal fields now materialise into a cgt_event
+  // (via syncPropertyDisposalToCgt) and flow through the portfolio engine into the position. A second,
+  // main-residence-flagged disposal must NOT create an event (no auto-exemption / no auto-tax).
+  {
+    const u = "p14";
+    seedTenant(u, "P14 property disposer");
+    // Investment property: bought $500k (2020), sold $700k (in FY 2025-26), 100% owned, held > 12 months.
+    run(`INSERT INTO properties (id, user_id, label, status, ownership_pct, acquired_date, cost_base_cents, disposal_date, disposal_proceeds_cents, main_residence_flag) VALUES ('p14inv', ?, 'Investment unit', 'sold', 100, '2020-01-01', 50000000, '2025-09-01', 70000000, 0)`, u);
+    // Main residence sold the same FY — captured but EXCLUDED from the computed gain (defer to agent).
+    run(`INSERT INTO properties (id, user_id, label, status, ownership_pct, acquired_date, cost_base_cents, disposal_date, disposal_proceeds_cents, main_residence_flag) VALUES ('p14home', ?, 'Family home', 'sold', 100, '2015-01-01', 60000000, '2025-10-01', 90000000, 1)`, u);
+    await syncPropertyDisposalToCgt(env, u, "p14inv");
+    await syncPropertyDisposalToCgt(env, u, "p14home");
+
+    const r14 = await buildReport(env, u, 2025);
+    check("P14 F: investment-property gain reaches the position (gross $200k)", r14.capital_gains?.gross_capital_gains_cents === 20000000);
+    check("P14 F: 50% discount applied on a 12-month+ hold ($100k)", r14.capital_gains?.discount_applied_cents === 10000000);
+    check("P14 F: net capital gain ($100k) is in the taxable position", r14.capital_gains?.net_capital_gain_cents === 10000000 && r14.taxable_position_cents === 10000000);
+    // Main residence: NO event materialised → it never inflates the gain.
+    const homeEvents = db.prepare(`SELECT COUNT(*) AS n FROM cgt_assets WHERE user_id = ? AND property_id = 'p14home'`).get(u) as { n: number };
+    check("P14 F: main-residence disposal creates NO cgt_asset (no auto-exemption / no auto-tax)", homeEvents.n === 0);
+    // Idempotency: re-running the sync rebuilds exactly one asset + one event for the investment property.
+    await syncPropertyDisposalToCgt(env, u, "p14inv");
+    const invAssets = db.prepare(`SELECT COUNT(*) AS n FROM cgt_assets WHERE user_id = ? AND property_id = 'p14inv'`).get(u) as { n: number };
+    const invEvents = db.prepare(`SELECT COUNT(*) AS n FROM cgt_events WHERE user_id = ? AND cgt_asset_id IN (SELECT id FROM cgt_assets WHERE property_id = 'p14inv')`).get(u) as { n: number };
+    check("P14 F: sync is idempotent (exactly one asset + one event after re-run)", invAssets.n === 1 && invEvents.n === 1);
+    const r14b = await buildReport(env, u, 2025);
+    check("P14 F: position unchanged after a second sync (no double-count)", r14b.taxable_position_cents === 10000000);
   }
 
   // ── Accountant schedule (#179/#181): goldens + the tie-back-by-construction loop ──

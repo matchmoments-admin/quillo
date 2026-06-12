@@ -713,7 +713,7 @@ console.log("claimability situational sweep (enumerateSituationClaims / classify
 }
 
 // ── CGT: cost-base, Div43 reduction, 50% discount, main-residence, losses ─────
-import { computeCapitalGain, computeNetCapitalGain, DEFAULT_CGT_RULES } from "../src/lib/cgt";
+import { computeCapitalGain, computeNetCapitalGain, propertyToCgtInputs, DEFAULT_CGT_RULES } from "../src/lib/cgt";
 import { essAssessable } from "../src/lib/ess";
 import { gstFromInclusiveCents, computeBasNet } from "../src/lib/gst";
 import { businessUsePct, logbookDeductionCents, chooseCarMethod } from "../src/lib/car-logbook";
@@ -748,6 +748,29 @@ console.log("cgt");
   // Foreign resident → no 50% discount.
   const foreign = computeCapitalGain({ cost_base_cents: 50_000_000, proceeds_cents: 70_000_000, acquired_date: "2015-01-01", disposal_date: "2025-01-01", is_resident_individual: false });
   check("foreign resident → no discount", !foreign.discount_applied && foreign.net_gain_cents === 20_000_000);
+}
+
+console.log("cgt property synthesis (Slice F)");
+{
+  // A disposed investment property → a discountable cgt_event apportioned by ownership share.
+  const inv = propertyToCgtInputs({ cost_base_cents: 50_000_000, proceeds_cents: 70_000_000, acquired_date: "2020-01-01", disposal_date: "2025-09-01", ownership_pct: 100, is_resident_individual: true });
+  check("property → synth event (full share, discount eligible)", "event" in inv && inv.event.proceeds_cents === 70_000_000 && inv.event.cost_base_used_cents === 50_000_000 && inv.event.discount_eligible === true);
+
+  // 50% ownership halves BOTH proceeds and cost base used.
+  const half = propertyToCgtInputs({ cost_base_cents: 50_000_000, proceeds_cents: 70_000_000, acquired_date: "2020-01-01", disposal_date: "2025-09-01", ownership_pct: 50, is_resident_individual: true });
+  check("property → 50% ownership apportions proceeds + cost base", "event" in half && half.event.proceeds_cents === 35_000_000 && half.event.cost_base_used_cents === 25_000_000);
+
+  // Div 43 capital-works claimed reduces the cost base used (increasing the gain).
+  const div43 = propertyToCgtInputs({ cost_base_cents: 50_000_000, proceeds_cents: 70_000_000, div43_claimed_cents: 4_000_000, acquired_date: "2020-01-01", disposal_date: "2025-09-01", ownership_pct: 100, is_resident_individual: true });
+  check("property → Div 43 reduces cost base used", "event" in div43 && div43.event.cost_base_used_cents === 46_000_000);
+
+  // Non-resident → discount denied even on a 12-month+ hold.
+  const nonRes = propertyToCgtInputs({ cost_base_cents: 50_000_000, proceeds_cents: 70_000_000, acquired_date: "2020-01-01", disposal_date: "2025-09-01", ownership_pct: 100, is_resident_individual: false });
+  check("property → non-resident gets no discount", "event" in nonRes && nonRes.event.discount_eligible === false);
+
+  // A flagged main residence defers — no event is synthesised (never auto-exempt / auto-tax).
+  const home = propertyToCgtInputs({ cost_base_cents: 60_000_000, proceeds_cents: 90_000_000, acquired_date: "2015-01-01", disposal_date: "2025-10-01", ownership_pct: 100, is_resident_individual: true, main_residence_exempt: true });
+  check("property → main residence defers (no synthetic event)", "defer" in home && home.defer === "main_residence");
 }
 
 console.log("cgt portfolio (#138)");
@@ -993,10 +1016,16 @@ console.log("readiness");
   check("super pension → not mislabelled as a non-cash benefit", !pension.findings.some((f) => f.id === "non_cash_benefit"));
   check("super pension → an 'excluded' line, headline unchanged", pension.position.lines.some((l) => l.group === "excluded" && l.label === "super_pension" && l.amount_cents === 4_000_000) && pension.position.indicative_taxable_position_cents === 200_000);
 
+  // F: a disposed property flagged as a main residence → a defer review nudge (the gain is kept out of the
+  // position; we never auto-apply the exemption).
+  const mainRes = run(mkReport(), noSignals({ mainResidenceDisposalN: 1 }));
+  check("main-residence disposal → defer review nudge", mainRes.findings.some((f) => f.id === "main_residence_disposal" && f.defer_to_agent && f.severity === "review"));
+  check("no main-residence disposal → no such finding", !run(mkReport(), noSignals()).findings.some((f) => f.id === "main_residence_disposal"));
+
   // THE INVARIANT: no generated finding/position text asserts tax payable, a refund, or a rate.
   // (The fixed position caption intentionally NEGATES those words and is excluded — it's a vetted constant.)
   const denylist = /refund|tax payable|marginal rate|\b\d{1,2}%\s*(tax|bracket)/i;
-  const everything = [unknown, franking, rental, iawo, disposed, judged, clean, trust, capLoss, psi, psiApplies, div293Hit, gstOver, nonCash, pension];
+  const everything = [unknown, franking, rental, iawo, disposed, judged, clean, trust, capLoss, psi, psiApplies, div293Hit, gstOver, nonCash, pension, mainRes];
   const generatedText = everything.flatMap((r) => [
     ...r.findings.flatMap((f) => [f.title, f.general_info_note]),
     ...r.position.lines.flatMap((l) => [l.basis, l.why]),

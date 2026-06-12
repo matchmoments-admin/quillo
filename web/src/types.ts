@@ -631,6 +631,7 @@ export interface AskAnswer {
   see_also: string[];
   suggested_rule?: { pattern: string; bucket: string; ato_label?: string };
   proposed_actions?: ProposedAction[];
+  navigate?: { route: string; reason: string };
 }
 
 export interface SuperContributionRow {

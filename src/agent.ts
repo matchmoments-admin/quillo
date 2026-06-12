@@ -13,7 +13,7 @@ import { deriveWfhHours } from "./lib/work-use";
 import { applyUserRules, RULE_CREDIT_BUCKETS } from "./lib/rules";
 import { sha256hex, sha256hexBytes } from "./lib/base64";
 import { getLLM, type LLM } from "./llm";
-import { extractReceipt, extractReceipts, extractFromText, extractColumnMap, extractStatement, extractBatch, extractSituationDraft, extractOccupationRules, extractGuide, extractAnswer, classifyDocument, extractPayslip, extractAgentStatement, extractDepreciationSchedule, extractDividend, batchParams, parseBatchMessage, mapBatchItems, type Extracted, type ExtractedStatement, type SituationDraft, type OccupationRulesDraft, type AnswerResult } from "./extract";
+import { extractReceipt, extractReceipts, extractFromText, extractColumnMap, extractStatement, extractBatch, extractSituationDraft, extractOccupationRules, extractGuide, extractAnswer, classifyDocument, extractPayslip, extractAgentStatement, extractDepreciationSchedule, extractDividend, batchParams, parseBatchMessage, mapBatchItems, ALLOWED_NAV_ROUTES, type Extracted, type ExtractedStatement, type SituationDraft, type OccupationRulesDraft, type AnswerResult } from "./extract";
 import { fyForDate, buildReport } from "./lib/report";
 import { getProgress } from "./lib/progress";
 import { buildGuidePrompt, buildAskSystem, summariseReportForAsk, renderTxnDigest } from "./lib/guide";
@@ -4827,7 +4827,7 @@ export class TaxAgent extends Agent<Env> {
    * both the user message and the assistant answer. Creates a session if none is given. GENERAL-INFO
    * only; any suggested_rule is surfaced for the UI to CONFIRM (never auto-written here).
    */
-  async chatTurn(userId: string, sessionId: string | null, message: string, fy: number): Promise<{ session_id: string } & AnswerResult> {
+  async chatTurn(userId: string, sessionId: string | null, message: string, fy: number, pageRoute?: string): Promise<{ session_id: string } & AnswerResult> {
     const text = (message ?? "").trim();
     if (!text) throw new Error("empty message");
     // Token-bomb guard: reject an oversize prompt BEFORE any profile/grounding/model work (cheapest gate).
@@ -4872,15 +4872,19 @@ export class TaxAgent extends Agent<Env> {
     // per turn (deterministic ORDER BY keeps them stable unless data changes mid-chat); proposals are
     // ephemeral per-turn — like suggested_rule, they are NOT persisted into chat_messages.
     const wantActions = featureOn(this.env, "ask_actions");
+    // Phase 2 (chat_nav): only honour a client-supplied page route from the allowlist, so a crafted
+    // request can't smuggle arbitrary text into the system prompt. Off ⇒ no nav, no page line.
+    const wantNav = featureOn(this.env, "chat_nav");
+    const pageRouteOk = wantNav && pageRoute && (ALLOWED_NAV_ROUTES as readonly string[]).includes(pageRoute) ? pageRoute : undefined;
     const [situation, report, digestRows] = await Promise.all([
       getSituation(this.env, userId, profile),
       buildReport(this.env, userId, sessionFy),
       wantActions ? fetchAskDigestRows(this.env, userId, sessionFy) : Promise.resolve(undefined),
     ]);
     const digest = digestRows ? renderTxnDigest(digestRows.rows, digestRows.total) : undefined;
-    const system = buildAskSystem(redact(renderSituation(situation)), summariseReportForAsk(report), digest?.text);
+    const system = buildAskSystem(redact(renderSituation(situation)), summariseReportForAsk(report), digest?.text, { pageRoute: pageRouteOk, nav: wantNav });
     const userMsg = redact(text).slice(0, 600);
-    const result = await extractAnswer(llm, system, [...history, { role: "user", content: userMsg }], digest && { aliasToId: digest.aliasToId });
+    const result = await extractAnswer(llm, system, [...history, { role: "user", content: userMsg }], digest && { aliasToId: digest.aliasToId }, wantNav);
 
     // Persist both turns (the redacted question + the answer — no PII in storage).
     await this.env.DB.batch([

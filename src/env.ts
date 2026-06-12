@@ -120,7 +120,7 @@ export interface TaxAgentRpc {
   draftSituation(userId: string, message: string): Promise<import("./extract").SituationDraft>;
   guideMe(userId: string, tab: string): Promise<{ headline: string; steps: string[] }>;
   askQuestion(userId: string, question: string, fy: number): Promise<{ answer: string; caveats: string[]; see_also: string[]; suggested_rule?: { pattern: string; bucket: string; ato_label?: string } }>;
-  chatTurn(userId: string, sessionId: string | null, message: string, fy: number): Promise<{ session_id: string; answer: string; caveats: string[]; see_also: string[]; suggested_rule?: { pattern: string; bucket: string; ato_label?: string } }>;
+  chatTurn(userId: string, sessionId: string | null, message: string, fy: number, pageRoute?: string): Promise<{ session_id: string; answer: string; caveats: string[]; see_also: string[]; suggested_rule?: { pattern: string; bucket: string; ato_label?: string }; navigate?: { route: string; reason: string } }>;
   chatHistory(userId: string, sessionId: string): Promise<{ messages: { role: string; content: string }[] }>;
   reviewClaims(userId: string, startYear: number): Promise<import("./agent").ClaimReview>;
   sweepMovements(userId: string): Promise<import("./agent").MovementSweep>;

@@ -119,7 +119,7 @@ export const api = {
   progress: () => get<Progress>("/api/progress"),
   guideMe: (tab: string) => post<{ headline: string; steps: string[] }>("/api/guide", { tab }),
   ask: (question: string, fy?: number) => post<AskAnswer>("/api/ask", { question, fy }),
-  chat: (message: string, session_id?: string, fy?: number) => post<AskAnswer & { session_id: string }>("/api/chat", { message, session_id, fy }),
+  chat: (message: string, session_id?: string, fy?: number, page?: string) => post<AskAnswer & { session_id: string }>("/api/chat", { message, session_id, fy, page }),
   chatHistory: (sessionId: string) => get<{ messages: { role: string; content: string }[] }>(`/api/chat/${sessionId}`).then((r) => r.messages),
   usage: () => get<UsageData>("/api/usage"),
   // Savings & Opportunities (flag advisory_layer) — factual run-rate + recurring bills + opportunities.

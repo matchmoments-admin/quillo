@@ -636,6 +636,8 @@ export interface Report {
   car_logbook?: CarLogbookPosition;     // #142 — logbook vs cents-per-km (informational)
   trust?: TrustTotals;                  // #139 — assessable distributions added to taxable_position_cents
   smsf_funds?: SmsfFundPosition[];      // #140 — per-fund position (separate taxpayer)
+  franking_gross_up_cents?: number;     // 3a — franking credits grossed up INTO assessable income (s207-20)
+  super_deduction?: { claimed_cents: number; contributed_cents: number; cap_cents: number; over_cap: boolean }; // 3a — personal-deductible super (s290-150)
   taxable_position_cents: number;
 }
 

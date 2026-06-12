@@ -134,6 +134,27 @@ export function Reports() {
             </Card>
           )}
 
+          {data!.franking_gross_up_cents != null && (
+            <Card className="overflow-hidden">
+              <Th>Franking credits (grossed up into income)</Th>
+              <div className="grid grid-cols-2 gap-4 p-4 sm:grid-cols-3">
+                <Stat label="Added to assessable income" value={money(data!.franking_gross_up_cents)} />
+                <Stat label="Also a tax offset" value="Reduces tax payable (not shown here)" />
+              </div>
+            </Card>
+          )}
+
+          {data!.super_deduction && (
+            <Card className="overflow-hidden">
+              <Th>Personal super contributions (deduction)</Th>
+              <div className="grid grid-cols-2 gap-4 p-4 sm:grid-cols-3">
+                <Stat label="Deduction claimed" value={money(data!.super_deduction.claimed_cents)} />
+                <Stat label="Contributed" value={money(data!.super_deduction.contributed_cents)} />
+                <Stat label="Concessional cap" value={data!.super_deduction.over_cap ? `${money(data!.super_deduction.cap_cents)} — over cap` : money(data!.super_deduction.cap_cents)} />
+              </div>
+            </Card>
+          )}
+
           {data!.car_logbook && (
             <Card className="overflow-hidden">
               <Th>Car — logbook vs cents-per-km (you can claim only one)</Th>

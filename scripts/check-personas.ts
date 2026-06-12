@@ -576,6 +576,30 @@ async function main() {
     check("Phase 2: a KV rule-pack override flows into the report (no discount → $10k net)", rOverride.capital_gains?.net_capital_gain_cents === 1000000);
   }
 
+  // ── Phase 3a: franking gross-up (s207-20) + personal-deductible super (s290-150). Flag-gated:
+  //    OFF ⇒ byte-identical; ON ⇒ franking ADDS to assessable income, personal-deductible super SUBTRACTS
+  //    (capped), and employer SG is NEVER deducted. ──
+  {
+    const u = "p3a";
+    run(`INSERT INTO tenants (user_id, display_name) VALUES (?, 'P3A')`, u);
+    run(`INSERT INTO persons (id, user_id, display_name, role) VALUES (?, ?, 'You', 'self')`, `person_self_${u}`, u);
+    run(`INSERT INTO income (id, user_id, person_id, income_type, fy, gross_cents, amount_aud_cents) VALUES ('p3aSal', ?, 'person_self_p3a', 'salary_payg', '2025-26', 10000000, 10000000)`, u); // $100k salary
+    run(`INSERT INTO income (id, user_id, person_id, income_type, fy, gross_cents, amount_aud_cents, franking_credit_cents) VALUES ('p3aDiv', ?, 'person_self_p3a', 'dividend', '2025-26', 70000, 70000, 30000)`, u); // $700 fully-franked, $300 credit
+    run(`INSERT INTO super_contributions (id, user_id, person_id, fy, type, amount_cents) VALUES ('p3aSP', ?, 'person_self_p3a', '2025-26', 'personal_deductible', 3500000)`, u); // $35k personal deductible (OVER the $30k cap)
+    run(`INSERT INTO super_contributions (id, user_id, person_id, fy, type, amount_cents) VALUES ('p3aSE', ?, 'person_self_p3a', '2025-26', 'concessional', 1150000)`, u); // $11.5k employer SG — must NOT be deducted
+
+    const incomeGross = 10000000 + 70000; // salary + dividend cash (franking is separate)
+    const rOff = await buildReport(env, u, 2025);
+    check("3a OFF: byte-identical — franking not in position, super not deducted", rOff.franking_gross_up_cents === undefined && rOff.super_deduction === undefined && rOff.taxable_position_cents === incomeGross);
+
+    const env3a = { ...env, FEATURES: `${(env as { FEATURES: string }).FEATURES},franking_gross_up,super_deduction` } as unknown as Env;
+    const rOn = await buildReport(env3a, u, 2025);
+    check("3a ON: $300 franking credit grossed up into assessable income", rOn.franking_gross_up_cents === 30000);
+    check("3a ON: only personal-deductible super counts (employer SG $11.5k excluded)", rOn.super_deduction?.contributed_cents === 3500000);
+    check("3a ON: super deduction capped at the $30k concessional cap (over_cap flagged)", rOn.super_deduction?.claimed_cents === 3000000 && rOn.super_deduction?.over_cap === true);
+    check("3a ON: position = income + franking − capped super", rOn.taxable_position_cents === incomeGross + 30000 - 3000000);
+  }
+
   console.log(`\n=== personas: ${pass} passed, ${fail} failed ===`);
   if (fail > 0) process.exit(1);
 }

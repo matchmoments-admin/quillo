@@ -1,6 +1,6 @@
 import type { Env } from "../env";
 import { COUNTABLE, COUNTABLE_INCOME } from "./queries";
-import { incomeTotals, depreciationTotals, attributionTotals, companyPositions, cgtTotals, essTotals, gstTotals, paygInstalmentsTotal, carLogbookPosition, trustTotals, smsfFundPositions, separateTaxpayerEntityIds, fyStartYearStr, type IncomeTotals, type AttributionTotals, type CompanyPosition, type GstPosition, type CarLogbookPosition, type SmsfFundPosition, type RulePackThresholds } from "./ledger-totals";
+import { incomeTotals, depreciationTotals, attributionTotals, companyPositions, cgtTotals, essTotals, gstTotals, paygInstalmentsTotal, carLogbookPosition, trustTotals, smsfFundPositions, separateTaxpayerEntityIds, superConcessionalDeduction, fyStartYearStr, type IncomeTotals, type AttributionTotals, type CompanyPosition, type GstPosition, type CarLogbookPosition, type SmsfFundPosition, type RulePackThresholds, type SuperDeduction } from "./ledger-totals";
 import type { TrustTotals } from "./trust";
 import type { CgtPortfolioResult } from "./cgt";
 import type { EssAssessable } from "./ess";
@@ -165,7 +165,15 @@ export interface Report {
   // the fund's income is excluded from the personal headline). Present only when smsf_engine is on and
   // the tenant has an SMSF.
   smsf_funds?: SmsfFundPosition[];
-  taxable_position_cents: number;      // total_income + net capital gain + ESS discount + trust distributions − deductions − depreciation (indicative)
+  // Phase 3a: franking credits grossed up into assessable income (ITAA97 s207-20) — ADDED to the position.
+  // The credit is also a refundable tax offset (out of scope: Quillo computes a position, not tax payable).
+  // Present only when franking_gross_up is on AND there are franking credits. undefined ⇒ legacy totals.
+  franking_gross_up_cents?: number;
+  // Phase 3a: personal-deductible super contributions reduce assessable income (s290-150), capped at the
+  // concessional cap. SUBTRACTED from the position. Employer SG / salary-sacrifice are pre-tax → never here.
+  // Present only when super_deduction is on AND there are personal_deductible contributions.
+  super_deduction?: { claimed_cents: number; contributed_cents: number; cap_cents: number; over_cap: boolean };
+  taxable_position_cents: number;      // total_income + net capital gain + ESS discount + trust distributions + franking gross-up − deductions − depreciation − super (indicative)
 }
 
 /**
@@ -645,8 +653,24 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
     const t = await trustTotals(env, userId, startYear);
     if (t.assessable_cents > 0 || t.franking_credit_cents > 0) trust = t;
   }
+  // Phase 3a: franking credits are assessable income (gross-up, s207-20). The credit (income.franking +
+  // any trust franking) is ADDED to the position when the flag is on. Off ⇒ byte-identical.
+  let franking_gross_up_cents: number | undefined;
+  if (featureOn(env, "franking_gross_up")) {
+    const fc = income.franking_credit_cents + (trust?.franking_credit_cents ?? 0);
+    if (fc > 0) franking_gross_up_cents = fc;
+  }
+  // Phase 3a: personal-deductible super contributions reduce assessable income (s290-150), capped. Only
+  // type='personal_deductible' counts (employer SG is pre-tax). SUBTRACTED. Off ⇒ byte-identical.
+  let super_deduction: SuperDeduction | undefined;
+  if (featureOn(env, "super_deduction")) {
+    const cap = (rulePack as { thresholds_by_fy?: Record<string, { super_concessional_cap_cents?: number }> }).thresholds_by_fy?.[fyLabel]?.super_concessional_cap_cents ?? Number.MAX_SAFE_INTEGER;
+    const sd = await superConcessionalDeduction(env, userId, startYear, cap);
+    if (sd.contributed_cents > 0) super_deduction = sd;
+  }
   const taxable_position_cents =
-    income.gross_cents + (capital_gains?.net_capital_gain_cents ?? 0) + (ess?.assessable_discount_cents ?? 0) + (trust?.assessable_cents ?? 0) - total_deductions_cents - dep.total_cents;
+    income.gross_cents + (capital_gains?.net_capital_gain_cents ?? 0) + (ess?.assessable_discount_cents ?? 0) + (trust?.assessable_cents ?? 0)
+    + (franking_gross_up_cents ?? 0) - total_deductions_cents - dep.total_cents - (super_deduction?.claimed_cents ?? 0);
   // Phase #137: indicative BAS position — SEPARATE from income tax (never added to taxable_position).
   // Flag-gated; only surfaced when a business is GST-registered.
   let gst: GstPosition | undefined;
@@ -731,6 +755,8 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
     car_logbook,
     trust,
     smsf_funds,
+    franking_gross_up_cents,
+    super_deduction,
     taxable_position_cents,
   };
 }

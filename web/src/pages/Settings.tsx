@@ -1018,8 +1018,14 @@ function AddIncomeActivity({ entities, onDone }: { entities: { id: string; kind:
   );
 }
 
-const SUPER_TYPES = ["concessional", "non_concessional"] as const;
-const SUPER_TYPE_LABEL: Record<string, string> = { concessional: "Concessional (pre-tax)", non_concessional: "Non-concessional (after-tax)" };
+const SUPER_TYPES = ["concessional", "personal_deductible", "non_concessional"] as const;
+const SUPER_TYPE_LABEL: Record<string, string> = {
+  concessional: "Concessional — employer/salary-sacrifice (pre-tax)",
+  // Only PERSONAL deductible contributions reduce assessable income (s290-150) — you lodge a notice of
+  // intent and claim them. Employer SG / salary-sacrifice are already pre-tax and are NOT deductible again.
+  personal_deductible: "Personal deductible (you'll claim a deduction)",
+  non_concessional: "Non-concessional (after-tax)",
+};
 
 function SuperContributions({ persons }: { persons: { id: string; display_name: string }[] }) {
   const qc = useQueryClient();

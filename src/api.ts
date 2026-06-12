@@ -66,6 +66,7 @@ import { buildConnectUrl, qboStatus } from "./lib/qbo-oauth";
 import { QuickBooksAdapter } from "./ledger/qbo";
 import { LedgerReauthError } from "./ledger";
 import { buildReport, reportToCsv, currentFyStartYear } from "./lib/report";
+import { resolveJurisdictionForUser } from "./lib/jurisdiction";
 import { buildAccountantSchedule, scheduleToCsv } from "./lib/accountant-schedule";
 import { getProgress } from "./lib/progress";
 import { featureOn } from "./lib/features";
@@ -91,6 +92,10 @@ export async function handleApi(
   const uid = user.userId;
   // Bootstrap a fresh tenant (profile + self person + signup email) on first authed touch.
   await ensureTenant(env, uid, user.email);
+  // Resolve the tenant's jurisdiction once so the default-FY (when the SPA omits ?fy) is computed under
+  // the tenant's tax period. Flag OFF / AU ⇒ Jul–Jun ⇒ byte-identical. The SPA normally sends ?fy.
+  const jur = await resolveJurisdictionForUser(env, uid);
+  const defaultFy = () => currentFyStartYear(new Date(), jur);
 
   // ── Apply-to-siblings (flag apply_to_siblings) — "edit one line → update its look-alikes" ──
   // GET  /api/transactions/:id/siblings          → { n, total_cents, group_key } preview
@@ -273,7 +278,7 @@ export async function handleApi(
     const { question, fy } = (await req.json().catch(() => ({}))) as { question?: string; fy?: number };
     if (!question || !question.trim()) return json({ error: "missing question" }, 400);
     try {
-      return json(await stub.askQuestion(uid, question, Math.trunc(Number(fy)) || currentFyStartYear()));
+      return json(await stub.askQuestion(uid, question, Math.trunc(Number(fy)) || defaultFy()));
     } catch (e) {
       const msg = (e as Error).message;
       if (msg === "consent_required") return json({ error: "consent_required" }, 403);
@@ -290,7 +295,7 @@ export async function handleApi(
       const { session_id, message, fy } = (await req.json().catch(() => ({}))) as { session_id?: string; message?: string; fy?: number };
       if (!message || !message.trim()) return json({ error: "missing message" }, 400);
       try {
-        return json(await stub.chatTurn(uid, session_id ?? null, message, Math.trunc(Number(fy)) || currentFyStartYear()));
+        return json(await stub.chatTurn(uid, session_id ?? null, message, Math.trunc(Number(fy)) || defaultFy()));
       } catch (e) {
         const msg = (e as Error).message;
         if (msg === "consent_required") return json({ error: "consent_required" }, 403);
@@ -306,7 +311,7 @@ export async function handleApi(
     await stub.pollBatchJobs(uid);
     // FY-scoped (Jul–Jun); the SPA always sends ?fy=<start year> from the active-FY switcher.
     // Absent/garbage → default to the current FY so a bare /api/dashboard still works.
-    const fy = Number(url.searchParams.get("fy")) || currentFyStartYear();
+    const fy = Number(url.searchParams.get("fy")) || defaultFy();
     return json(await dashboard(env, uid, fy));
   }
 
@@ -322,7 +327,7 @@ export async function handleApi(
   // POST /api/recurring-bills/:id/dismiss → terminal-dismiss a detected recurring bill
   if (resource === "savings" && !id && m === "GET") {
     if (!featureOn(env, "advisory_layer")) return json({ error: "not available" }, 404);
-    const fy = Number(url.searchParams.get("fy")) || currentFyStartYear();
+    const fy = Number(url.searchParams.get("fy")) || defaultFy();
     return json(await savingsOverview(env, uid, fy));
   }
   if (resource === "savings" && id === "scan" && m === "POST") {
@@ -582,7 +587,7 @@ export async function handleApi(
   }
   // ── Soft per-FY sign-off (attestation only — Quillo never lodges) ─────────────
   if (resource === "signoff") {
-    const fy = Number(url.searchParams.get("fy")) || currentFyStartYear();
+    const fy = Number(url.searchParams.get("fy")) || defaultFy();
     if (m === "GET") return json({ signoff: await getFySignoff(env, uid, fy) });
     if (m === "POST") {
       await signOffFy(env, uid, fy);
@@ -622,7 +627,7 @@ export async function handleApi(
       return json({ summaries: await stub.listLoanInterest(uid, fyParam ? Number(fyParam) : undefined) });
     }
     if (m === "GET" && id === "review") {
-      const fy = Number(url.searchParams.get("fy")) || currentFyStartYear();
+      const fy = Number(url.searchParams.get("fy")) || defaultFy();
       return json({ loans: await stub.listLoanInterestReview(uid, fy) });
     }
     if (m === "POST" && id && id !== "interest" && sub === "interest") {
@@ -832,7 +837,7 @@ export async function handleApi(
   // ── Work-use inputs (computed WFH fixed-rate + car cents-per-km deductions) ──
   // GET reads D1 directly; POST is an audited write through the DO. fy is the FY start year.
   if (resource === "work-use") {
-    const fy = Number(url.searchParams.get("fy")) || currentFyStartYear();
+    const fy = Number(url.searchParams.get("fy")) || defaultFy();
     if (m === "GET") {
       const row = await env.DB.prepare(`SELECT wfh_hours, car_work_km, wfh_days_per_week, wfh_weeks FROM work_use_inputs WHERE user_id = ? AND fy = ?`)
         .bind(uid, fy)
@@ -987,7 +992,7 @@ export async function handleApi(
 
   // ── Year-end report (Phase 5) ─────────────────────────────────────────────
   if (resource === "report" && m === "GET") {
-    const fy = Number(url.searchParams.get("fy")) || currentFyStartYear();
+    const fy = Number(url.searchParams.get("fy")) || defaultFy();
     const rep = await buildReport(env, uid, fy);
     if (url.searchParams.get("format") === "csv") {
       // #179/#181: the itemised accountant schedule replaces the thin summary CSV when the flag is
@@ -1034,7 +1039,7 @@ export async function handleApi(
 
   // ── Filing readiness (capstone) ───────────────────────────────────────────
   if (resource === "filing-readiness" && m === "GET") {
-    const fy = Number(url.searchParams.get("fy")) || currentFyStartYear();
+    const fy = Number(url.searchParams.get("fy")) || defaultFy();
     return json(await stub.assessFilingReadiness(uid, fy));
   }
 
@@ -1045,7 +1050,7 @@ export async function handleApi(
   if (resource === "claim-review") {
     if (!featureOn(env, "claim_review")) return json({ error: "not available" }, 404);
     if (m === "GET" && !id) {
-      const fy = Number(url.searchParams.get("fy")) || currentFyStartYear();
+      const fy = Number(url.searchParams.get("fy")) || defaultFy();
       return json(await stub.reviewClaims(uid, fy));
     }
     if (m === "POST" && id === "draft") {
@@ -1148,7 +1153,7 @@ export async function handleApi(
       return json({ questions: await stub.listClarifyQuestions(uid, fyParam ? Number(fyParam) : undefined) });
     }
     if (m === "POST" && id === "scan") {
-      const fy = Number(url.searchParams.get("fy")) || currentFyStartYear();
+      const fy = Number(url.searchParams.get("fy")) || defaultFy();
       return json(await stub.runClarifyScan(uid, fy));
     }
     if (m === "POST" && id && sub === "answer") {
@@ -1170,7 +1175,7 @@ export async function handleApi(
   if (resource === "accountant") {
     if (!featureOn(env, "accountant_pass")) return json({ error: "not available" }, 404);
     if (m === "POST" && id === "run") {
-      const fy = Number(url.searchParams.get("fy")) || currentFyStartYear();
+      const fy = Number(url.searchParams.get("fy")) || defaultFy();
       try {
         return json(await stub.runAccountantPass(uid, fy));
       } catch (e) {
@@ -1178,7 +1183,7 @@ export async function handleApi(
       }
     }
     if (m === "GET" && id === "suggestions") {
-      const fy = Number(url.searchParams.get("fy")) || currentFyStartYear();
+      const fy = Number(url.searchParams.get("fy")) || defaultFy();
       return json({ suggestions: await listSuggestedDeductions(env, uid, fy) });
     }
     if (m === "POST" && id === "confirm") {

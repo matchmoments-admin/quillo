@@ -12,6 +12,7 @@ import {
   type Report,
 } from "./report";
 import { fyLabel, fyBounds, separateTaxpayerEntityIds, NON_ASSESSABLE_INCOME_TYPES } from "./ledger-totals";
+import { resolveJurisdictionForUser } from "./jurisdiction";
 import { classifyAttribution, splitAttribution } from "./attribution";
 import { exclusionReason } from "./readiness";
 import { featureOn } from "./features";
@@ -157,7 +158,7 @@ export async function buildAccountantSchedule(
   opts?: { report?: Report },
 ): Promise<AccountantSchedule> {
   const report = opts?.report ?? (await buildReport(env, userId, startYear));
-  const { start, end } = fyBounds(startYear);
+  const { start, end } = fyBounds(startYear, await resolveJurisdictionForUser(env, userId));
   const fy = fyLabel(startYear);
 
   // The SAME flag context buildReport ran under — the shared clause builders guarantee the itemised

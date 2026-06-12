@@ -2,6 +2,7 @@ import type { Env } from "../env";
 import { BUCKETS } from "./taxonomy";
 import { propertyToCgtInputs } from "./cgt";
 import { fyForDate } from "./report";
+import { resolveJurisdictionForUser } from "./jurisdiction";
 import { ammaToCgtEvents, type AmmaComponents } from "./managed-fund";
 
 // Situation mutations for the Settings + onboarding-web flows. These rows are not
@@ -183,7 +184,7 @@ export async function syncPropertyDisposalToCgt(env: Env, userId: string, proper
     }
 
     const assetId = uid();
-    const fy = fyForDate(prop.disposal_date);
+    const fy = fyForDate(prop.disposal_date, await resolveJurisdictionForUser(env, userId));
     const insAsset = env.DB.prepare(
       `INSERT INTO cgt_assets (id, user_id, person_id, asset_kind, label, acquired_date, cost_base_cents, main_residence_exempt, status, property_id)
        VALUES (?, ?, ?, 'property', ?, ?, ?, 0, 'disposed', ?)`,

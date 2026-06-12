@@ -7,6 +7,7 @@ import { computeBasNet, type BasNet } from "./gst";
 import { businessUsePct, logbookDeductionCents, chooseCarMethod } from "./car-logbook";
 import { summariseTrustDistributions, type TrustTotals } from "./trust";
 import { ecpiExemptFraction, computeSmsfPosition, type SmsfPosition } from "./smsf";
+import { fyBoundsFor, AU_DESCRIPTOR, type JurisdictionDescriptor } from "./jurisdiction";
 // Rule-pack thresholds are RESOLVED by the caller (buildReport → resolveRulePack, keyed by
 // profiles.rule_pack_ver with a KV override) and threaded in — never statically imported here, so a
 // per-tenant / per-jurisdiction pack is actually honoured by the report engines.
@@ -56,9 +57,13 @@ export function normaliseFyLabel(fy: string | number | null | undefined): string
   return Number.isNaN(y) ? null : fyLabel(y);
 }
 
-/** Calendar bounds of an AU FY start year. */
-export function fyBounds(startYear: number): { start: string; end: string } {
-  return { start: `${startYear}-07-01`, end: `${startYear + 1}-06-30` };
+/**
+ * Calendar bounds of an FY start year. Period maths live in jurisdiction.ts; the optional descriptor
+ * defaults to AU so every existing caller is byte-identical (AU = Jul 1 .. Jun 30). Pass a resolved
+ * descriptor (buildReport / request edge) to honour a non-AU period (UK = Apr 6 .. Apr 5).
+ */
+export function fyBounds(startYear: number, descriptor: JurisdictionDescriptor = AU_DESCRIPTOR): { start: string; end: string } {
+  return fyBoundsFor(descriptor, startYear);
 }
 
 export interface IncomeTypeRow {
@@ -159,8 +164,9 @@ export async function deductionTotalForProperty(
   userId: string,
   startYear: number,
   propertyId: string,
+  descriptor: JurisdictionDescriptor = AU_DESCRIPTOR,
 ): Promise<number> {
-  const { start, end } = fyBounds(startYear);
+  const { start, end } = fyBounds(startYear, descriptor);
   const row = await env.DB.prepare(
     `SELECT COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS total_cents
        FROM transactions
@@ -221,8 +227,9 @@ export async function attributionTotals(
   env: Env,
   userId: string,
   startYear: number,
+  descriptor: JurisdictionDescriptor = AU_DESCRIPTOR,
 ): Promise<AttributionTotals> {
-  const { start, end } = fyBounds(startYear);
+  const { start, end } = fyBounds(startYear, descriptor);
   const empty: AttributionTotals = { individual_deduction_cents: 0, company_deduction_cents: 0, by_property: [] };
   try {
     const res = await env.DB.prepare(
@@ -302,9 +309,9 @@ export interface CompanyPositionsResult {
  * shareholder-loan balance = the person→company funding amount. R&D eligibility is a defer-to-agent
  * flag (never an auto-claim). Empty (no company / pre-0035) → []. Flag-gated by the caller.
  */
-export async function companyPositions(env: Env, userId: string, startYear: number, rulePack: RulePackThresholds): Promise<CompanyPositionsResult> {
+export async function companyPositions(env: Env, userId: string, startYear: number, rulePack: RulePackThresholds, descriptor: JurisdictionDescriptor = AU_DESCRIPTOR): Promise<CompanyPositionsResult> {
   const fy = fyLabel(startYear);
-  const { start, end } = fyBounds(startYear);
+  const { start, end } = fyBounds(startYear, descriptor);
   const empty: CompanyPositionsResult = { positions: [], unattributed_cents: 0, unattributed_n: 0 };
   try {
     const companies = (await env.DB.prepare(`SELECT id, name, COALESCE(base_rate_entity,0) AS base_rate_entity FROM entities WHERE user_id = ? AND (kind = 'company' OR entity_type = 'company')`).bind(userId).all<{ id: string; name: string | null; base_rate_entity: number }>()).results ?? [];
@@ -551,9 +558,9 @@ export async function carLogbookPosition(env: Env, userId: string, startYear: nu
  * profiles.gst_registered). GST is NOT income tax — the caller keeps this OUT of taxable_position.
  * Flag-gated by gst_bas. Pre-0039 / not registered → registered:false with zeros. Quillo never lodges.
  */
-export async function gstTotals(env: Env, userId: string, startYear: number): Promise<GstPosition> {
+export async function gstTotals(env: Env, userId: string, startYear: number, descriptor: JurisdictionDescriptor = AU_DESCRIPTOR): Promise<GstPosition> {
   const fy = fyLabel(startYear);
-  const { start, end } = fyBounds(startYear);
+  const { start, end } = fyBounds(startYear, descriptor);
   const notRegistered: GstPosition = { registered: false, output_gst_cents: 0, input_gst_cents: 0, net_gst_cents: 0 };
   try {
     // Registered if any entity is flagged, or the tenant default profile flag is set.
@@ -623,8 +630,8 @@ export async function superConcessionalDeduction(env: Env, userId: string, start
  * classifying upfront/deferral as assessable income now and the startup concession as deferred-to-CGT.
  * Flag-gated by the caller (ess_engine). Empty / pre-0038 → all-zero (report byte-identical).
  */
-export async function essTotals(env: Env, userId: string, startYear: number): Promise<EssAssessable> {
-  const { start, end } = fyBounds(startYear);
+export async function essTotals(env: Env, userId: string, startYear: number, descriptor: JurisdictionDescriptor = AU_DESCRIPTOR): Promise<EssAssessable> {
+  const { start, end } = fyBounds(startYear, descriptor);
   const zero: EssAssessable = { assessable_discount_cents: 0, startup_deferred_to_cgt_cents: 0, ineligible_startup_flag: false };
   try {
     const grants = (await env.DB.prepare(

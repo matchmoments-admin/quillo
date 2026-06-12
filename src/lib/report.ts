@@ -8,15 +8,13 @@ import { featureOn } from "./features";
 import { resolveLoanInterest, deductibleInterestCents, type LoanInterestSource } from "./loan-interest";
 import auV1RulePack from "../rulepacks/au-v1.json";
 import { computeWorkMethodDeductions, workUseRatesForFy, type WorkMethodDeductions } from "./work-use";
+import { fyBounds, fyLabel as fyLabelOf } from "./ledger-totals";
+import { resolveJurisdictionForUser, currentFyStartYearFor, fyStartYearForDate, AU_DESCRIPTOR, type JurisdictionDescriptor } from "./jurisdiction";
 
-// Australian FY is Jul–Jun. Given a start year Y, the FY runs Y-07-01 .. (Y+1)-06-30.
-export function currentFyStartYear(now = new Date()): number {
-  const y = now.getUTCFullYear();
-  return now.getUTCMonth() >= 6 ? y : y - 1; // month 6 = July (0-indexed)
-}
-
-function fyBounds(startYear: number): { start: string; end: string } {
-  return { start: `${startYear}-07-01`, end: `${startYear + 1}-06-30` };
+// Tax period is jurisdiction-driven (jurisdiction.ts). The optional descriptor defaults to AU so every
+// existing caller stays byte-identical (AU = Jul 1 .. Jun 30); pass a resolved descriptor for a UK tenant.
+export function currentFyStartYear(now = new Date(), descriptor: JurisdictionDescriptor = AU_DESCRIPTOR): number {
+  return currentFyStartYearFor(descriptor, now);
 }
 
 export interface ReportRow {
@@ -314,7 +312,12 @@ async function resolveRulePack(env: Env, userId: string): Promise<RulePackThresh
 }
 
 export async function buildReport(env: Env, userId: string, startYear: number): Promise<Report> {
-  const { start, end } = fyBounds(startYear);
+  // Resolve the tenant's jurisdiction once and thread it into every date-range (fyBounds) path, exactly
+  // like resolveRulePack below. AU (or flag OFF) ⇒ Jul–Jun ⇒ byte-identical. Label-keyed totals
+  // (incomeTotals/depreciationTotals/cgt/trust/super) need no descriptor — they match on the fy LABEL,
+  // which is jurisdiction-agnostic.
+  const jurisdiction = await resolveJurisdictionForUser(env, userId);
+  const { start, end } = fyBounds(startYear, jurisdiction);
   const rulePack = await resolveRulePack(env, userId);
   // Flag `loan_split`: when on, the position counts the claimable (apportioned) portion
   // (deductible_amount_cents) of a row instead of the gross — see positionAmountCents. The SUM
@@ -475,11 +478,11 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   // amounts also feed the by_property DISPLAY (expenseByProp) and resolved_deductible_cents below, so
   // those secondary figures stay consistent with the headline (D.0).
   const attr: AttributionTotals = useAttributions
-    ? await attributionTotals(env, userId, startYear)
+    ? await attributionTotals(env, userId, startYear, jurisdiction)
     : { individual_deduction_cents: 0, company_deduction_cents: 0, by_property: [] };
   // Phase C / G4: per-company position (separate taxpayer). Same flag — it's the attribution-routed
   // company deductions that make it meaningful. Empty when there's no company.
-  const companyResult = useAttributions ? await companyPositions(env, userId, startYear, rulePack) : { positions: [], unattributed_cents: 0, unattributed_n: 0 };
+  const companyResult = useAttributions ? await companyPositions(env, userId, startYear, rulePack, jurisdiction) : { positions: [], unattributed_cents: 0, unattributed_n: 0 };
   const company_positions: CompanyPosition[] = companyResult.positions;
   // Collapse the per-property deductibility split: `expenseByProp` keeps the legacy by_property shape
   // (all spend per property); `expMap` holds only the DEDUCTIBLE portion (used for the negative-
@@ -660,7 +663,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   // set when there are grants with an assessable or startup-deferred amount.
   let ess: EssAssessable | undefined;
   if (featureOn(env, "ess_engine")) {
-    const e = await essTotals(env, userId, startYear);
+    const e = await essTotals(env, userId, startYear, jurisdiction);
     if (e.assessable_discount_cents > 0 || e.startup_deferred_to_cgt_cents > 0) ess = e;
   }
   // Phase #139: assessable trust distributions to this person — employment-independent income. Flag-gated.
@@ -698,7 +701,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   let gst: GstPosition | undefined;
   let payg_instalments_cents: number | undefined;
   if (featureOn(env, "gst_bas")) {
-    const g = await gstTotals(env, userId, startYear);
+    const g = await gstTotals(env, userId, startYear, jurisdiction);
     if (g.registered) gst = g;
     const payg = await paygInstalmentsTotal(env, userId, startYear);
     if (payg > 0) payg_instalments_cents = payg;
@@ -785,13 +788,15 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   };
 }
 
-/** AU financial-year label for a date, e.g. "2025-26". null when the date is missing/unparseable. */
-export function fyForDate(txnDate: string | null): string | null {
+/**
+ * Financial-year LABEL for a date, e.g. "2025-26". null when the date is missing/unparseable. The
+ * optional descriptor defaults to AU (Jul–Jun) so existing callers are byte-identical; pass a resolved
+ * descriptor at write-time so a UK tenant's row buckets into the UK FY (Apr 6 boundary).
+ */
+export function fyForDate(txnDate: string | null, descriptor: JurisdictionDescriptor = AU_DESCRIPTOR): string | null {
   if (!txnDate || !/^\d{4}-\d{2}-\d{2}$/.test(txnDate)) return null;
-  const y = Number(txnDate.slice(0, 4));
-  const mo = Number(txnDate.slice(5, 7));
-  const startYear = mo >= 7 ? y : y - 1;
-  return `${startYear}-${String((startYear + 1) % 100).padStart(2, "0")}`;
+  const startYear = fyStartYearForDate(descriptor, txnDate);
+  return Number.isNaN(startYear) ? null : fyLabelOf(startYear);
 }
 
 export function reportToCsv(r: Report): string {

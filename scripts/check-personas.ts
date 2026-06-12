@@ -44,7 +44,7 @@ for (const f of fs.readdirSync(path.join(root, "migrations")).filter((f) => f.en
   db.exec(fs.readFileSync(path.join(root, "migrations", f), "utf8"));
 }
 
-const env = { DB: new D1(db), FEATURES: "attribution_engine,position_excludes_nondeductible,loan_split,wfh_car_methods,refund_netting,income_dedupe,cgt_engine,ess_engine,gst_bas,car_logbook,trust_distributions,partnership_distributions,smsf_engine,accountant_schedule" } as unknown as Env;
+const env = { DB: new D1(db), FEATURES: "attribution_engine,position_excludes_nondeductible,loan_split,wfh_car_methods,refund_netting,income_dedupe,cgt_engine,ess_engine,gst_bas,car_logbook,trust_distributions,partnership_distributions,smsf_engine,accountant_schedule,jurisdiction_period" } as unknown as Env;
 
 // tiny seed helper
 const run = (sql: string, ...p: unknown[]) => db.prepare(sql).run(...(p as never[]));
@@ -750,6 +750,34 @@ async function main() {
     const rCurrent = await buildReport(env, u, 2025);
     check("3b: prior FY with no configured rate → NO work-method deduction (avoids over-claim) + flagged", rPrior.work_method === undefined && rPrior.work_method_rates_unavailable === true);
     check("3b: current FY with configured rates → work-method still computed (byte-identical)", rCurrent.work_method !== undefined && !rCurrent.work_method_rates_unavailable);
+  }
+
+  // ── UK epic stop 1: the tax-period seam. A tenant with profiles.jurisdiction='UK' buckets by the UK
+  //    tax year (6 Apr – 5 Apr), not AU's Jul–Jun. Three deductible payg expenses straddle the Apr-6
+  //    boundary; the report's date-range deduction total must follow the UK period — and revert to AU
+  //    (byte-identical) when the jurisdiction_period flag is OFF. Proves the seam + the gate end-to-end. ──
+  {
+    const u = "puk";
+    run(`INSERT INTO tenants (user_id, display_name) VALUES (?, 'PUK')`, u);
+    run(`INSERT INTO persons (id, user_id, display_name, role) VALUES (?, ?, 'You', 'self')`, `person_self_${u}`, u);
+    run(`INSERT INTO profiles (user_id, jurisdiction) VALUES (?, 'UK')`, u);
+    const ukExp = (id: string, cents: number, date: string) =>
+      run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, direction, deductibility) VALUES (?, ?, 'upload', 'categorised', 'bank_line', ?, ?, ?, 'payg', 'debit', 'likely_deductible')`, id, u, cents, cents, date);
+    ukExp("pukApr5", 10000, "2025-04-05"); // UK FY2024 (prior; 5 Apr is the LAST day) — NOT in FY2025
+    ukExp("pukApr6", 20000, "2025-04-06"); // UK FY2025 (boundary day; 6 Apr is the FIRST day)
+    ukExp("pukMay", 30000, "2025-05-01");  // UK FY2025 — and AU FY2024 (the AU/UK discriminator)
+
+    const rUk25 = await buildReport(env, u, 2025);
+    check("UK seam: FY2025 buckets by Apr 6 — only the 6 Apr + 1 May expenses count ($500), 5 Apr excluded", rUk25.total_deductions_cents === 50000);
+    const rUk24 = await buildReport(env, u, 2024);
+    check("UK seam: the 5 Apr 2025 expense lands in UK FY2024 (Apr 6 2024 – Apr 5 2025) = $100", rUk24.total_deductions_cents === 10000);
+
+    // Flag OFF ⇒ AU descriptor regardless of the stored 'UK' code ⇒ byte-identical AU bucketing.
+    const envOff = { ...env, FEATURES: "attribution_engine,position_excludes_nondeductible" } as unknown as Env;
+    const rAu25 = await buildReport(envOff, u, 2025);
+    const rAu24 = await buildReport(envOff, u, 2024);
+    check("UK seam GATE: flag OFF ⇒ AU Jul–Jun — none of the Apr/May 2025 rows fall in AU FY2025 ($0)", rAu25.total_deductions_cents === 0);
+    check("UK seam GATE: flag OFF ⇒ all three rows lump into AU FY2024 (Jul 2024 – Jun 2025) = $600", rAu24.total_deductions_cents === 60000);
   }
 
   console.log(`\n=== personas: ${pass} passed, ${fail} failed ===`);

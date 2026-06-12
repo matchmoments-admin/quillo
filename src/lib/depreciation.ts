@@ -5,6 +5,7 @@
 // AU FY is Jul–Jun; a "start year" Y denotes the FY Y-07-01 .. (Y+1)-06-30.
 
 import type { AssetClass } from "./taxonomy";
+import { fyStartYearForDate, AU_DESCRIPTOR, type JurisdictionDescriptor } from "./jurisdiction";
 
 export interface DepAsset {
   asset_class: AssetClass;
@@ -34,7 +35,11 @@ export interface ScheduleRow {
   method_applied: string;
 }
 
-/** AU FY label for a start year, e.g. 2025 -> '2025-26'. */
+/**
+ * FY label for a start year, e.g. 2025 -> '2025-26'. The straddle-label form is jurisdiction-INVARIANT
+ * (UK Apr 6 2025–Apr 5 2026 is also '2025-26'), so this stays local to keep the engine I/O-free; it
+ * mirrors ledger-totals.fyLabel by construction (golden-locked in check-units.ts).
+ */
 export function fyLabel(startYear: number): string {
   return `${startYear}-${String((startYear + 1) % 100).padStart(2, "0")}`;
 }
@@ -48,10 +53,15 @@ export function daysInFy(startYear: number): number {
   return isLeapYear(startYear + 1) ? 366 : 365;
 }
 
-/** The AU FY start year that a date falls in. */
-export function fyStartYearOf(dateIso: string): number {
-  const [y, m] = dateIso.split("-").map(Number);
-  return (m ?? 1) >= 7 ? (y ?? 0) : (y ?? 0) - 1;
+/**
+ * The FY start year that a date falls in. Delegates to the pure jurisdiction period maths; the optional
+ * descriptor defaults to AU so the AU-golden'd engine is byte-identical. NOTE (UK epic): the multi-year
+ * depreciation SCHEDULE math (computeFyDeduction/rollSchedule/daysHeldInFy) is AU-shaped and golden-locked;
+ * full UK period-correctness for depreciation rides with the UK capital-allowance RULES (Phase 6), not
+ * this period seam — internal callers intentionally keep the AU default for now.
+ */
+export function fyStartYearOf(dateIso: string, descriptor: JurisdictionDescriptor = AU_DESCRIPTOR): number {
+  return fyStartYearForDate(descriptor, dateIso);
 }
 
 /**

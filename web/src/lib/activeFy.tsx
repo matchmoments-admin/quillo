@@ -2,11 +2,19 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from "
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../api";
 
-/** AU FY start year for "today" (Jul–Jun). e.g. Mar 2026 → 2025 (FY 2025-26). */
-export function currentFyStart(): number {
+/**
+ * FY start year for "today". The period defaults to AU (Jul 1) so existing call sites are byte-identical;
+ * the ActiveFyProvider passes the tenant's server-resolved period so a UK tenant (Apr 6) defaults to the
+ * right FY. e.g. AU Mar 2026 → 2025; UK Mar 2026 → 2025; UK May 2026 → 2026.
+ */
+export function currentFyStart(period: { start_month: number; start_day: number } = { start_month: 7, start_day: 1 }): number {
   const now = new Date();
-  return now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear() - 1;
+  const mo = now.getMonth() + 1;
+  const day = now.getDate();
+  const onOrAfter = mo > period.start_month || (mo === period.start_month && day >= period.start_day);
+  return onOrAfter ? now.getFullYear() : now.getFullYear() - 1;
 }
+// The straddle FY label is jurisdiction-invariant (UK Apr 2025–Apr 2026 is also '2025-26').
 export const fyLabel = (start: number): string => `${start}-${String((start + 1) % 100).padStart(2, "0")}`;
 
 function parseStored(uiState?: string | null): number | null {
@@ -32,10 +40,11 @@ export function ActiveFyProvider({ children }: { children: ReactNode }) {
   const sit = useQuery({ queryKey: ["situation"], queryFn: () => api.situation() });
   const [fy, setFyState] = useState<number | null>(null);
   // Seed from the persisted value once the profile loads (only if the user hasn't already changed it).
+  // The default FY follows the tenant's tax period (server-resolved), so a UK tenant defaults to Apr 6–5.
   useEffect(() => {
-    if (fy === null && sit.data) setFyState(parseStored(sit.data.profile?.ui_state) ?? currentFyStart());
+    if (fy === null && sit.data) setFyState(parseStored(sit.data.profile?.ui_state) ?? currentFyStart(sit.data.tax_period));
   }, [sit.data, fy]);
-  const effFy = fy ?? currentFyStart();
+  const effFy = fy ?? currentFyStart(sit.data?.tax_period);
   const setFy: ActiveFy["setFy"] = (next) => {
     const y = typeof next === "function" ? next(effFy) : next;
     setFyState(y);

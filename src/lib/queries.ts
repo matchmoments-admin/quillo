@@ -4,6 +4,7 @@ import { billingPolicy, billableCents } from "./billing";
 import { getProfile } from "./db";
 import { isAdmin, isPartner } from "./roles";
 import { fyBounds, normaliseFyLabel } from "./ledger-totals";
+import { resolveJurisdictionForUser, fyStartYearSqlExpr } from "./jurisdiction";
 import { annualiseSpendCents, runRateCopy, ADVISORY_DISCLAIMER } from "./advisory";
 import { matchEnergyOffer, ctaFromOffer, opportunityTakesEnergyCta, type PartnerDB } from "./partners";
 
@@ -114,7 +115,7 @@ export async function listTransactions(
   // user clicked. Date-bound (NOT the COUNTABLE predicate) so undated rows fall out, exactly like the
   // dashboard totals, which surface undated separately.
   if (opts.fy != null) {
-    const { start, end } = fyBounds(opts.fy);
+    const { start, end } = fyBounds(opts.fy, await resolveJurisdictionForUser(env, userId));
     where.push("txn_date >= ? AND txn_date <= ?");
     binds.push(start, end);
   }
@@ -162,7 +163,7 @@ export async function fetchAskDigestRows(
   fyStartYear: number,
   cap = 200,
 ): Promise<{ rows: AskDigestRow[]; total: number }> {
-  const { start, end } = fyBounds(fyStartYear);
+  const { start, end } = fyBounds(fyStartYear, await resolveJurisdictionForUser(env, userId));
   const where = `user_id = ? AND txn_date >= ? AND txn_date <= ? AND bucket IS NOT NULL AND ${COUNTABLE}`;
   const res = await env.DB.prepare(
     `SELECT id, txn_date, merchant, COALESCE(amount_aud_cents, amount_cents) AS amount_aud_cents,
@@ -296,9 +297,9 @@ export async function usageSummary(env: Env, userId: string) {
   // usage in the ~10h window after AEST midnight on 1 Jul lands in the prior FY; acceptable for a
   // display rollup, but apply a proper AU-local offset before this drives a real charge.
   const policy = billingPolicy(env);
+  const fyStartExpr = fyStartYearSqlExpr(await resolveJurisdictionForUser(env, userId), "created_at");
   const byFyRows = await env.DB.prepare(
-    `SELECT CAST(substr(created_at,1,4) AS INTEGER)
-              - (CASE WHEN CAST(substr(created_at,6,2) AS INTEGER) >= 7 THEN 0 ELSE 1 END) AS fy_start,
+    `SELECT ${fyStartExpr} AS fy_start,
             COUNT(*) AS calls, COALESCE(SUM(cost_e4),0)/10000.0 AS cost_cents
        FROM llm_usage WHERE user_id = ?
       GROUP BY fy_start ORDER BY fy_start DESC`,
@@ -441,7 +442,7 @@ export async function listChecklist(env: Env, userId: string, fy?: string) {
 
 /** Transactions positively SUGGESTED as deductible (Stage D) — confirm-required, FY-scoped. */
 export async function listSuggestedDeductions(env: Env, userId: string, startYear: number) {
-  const { start, end } = fyBounds(startYear);
+  const { start, end } = fyBounds(startYear, await resolveJurisdictionForUser(env, userId));
   const res = await env.DB.prepare(
     `SELECT id, merchant, ato_label, amount_cents, amount_aud_cents, txn_date
        FROM transactions
@@ -481,7 +482,7 @@ export async function dashboard(env: Env, userId: string, startYear: number) {
   // bounds are appended to each query (NOT baked into the COUNTABLE predicate) so the by_property
   // column-aliasing replace below stays isolated. Undated rows (no FY) are reported separately so
   // FY-scoping never silently hides them.
-  const { start, end } = fyBounds(startYear);
+  const { start, end } = fyBounds(startYear, await resolveJurisdictionForUser(env, userId));
   // The MONEY figures (tracked total, by-property, income) are scoped to the active FY — bounds are
   // appended per-query (NOT into the COUNTABLE predicate) so the by_property column-aliasing replace
   // below stays isolated. `needs_review` is deliberately ALL-TIME: it's the review-queue backlog and
@@ -554,7 +555,7 @@ export async function dashboard(env: Env, userId: string, startYear: number) {
 
 /** FY-scoped annualised spend run-rate + top spenders (factual "at this rate, ~$X/year"). */
 export async function spendRunRate(env: Env, userId: string, startYear: number) {
-  const { start, end } = fyBounds(startYear);
+  const { start, end } = fyBounds(startYear, await resolveJurisdictionForUser(env, userId));
   // asOf = today clamped into the FY window (a past FY annualises to its actual total; the current FY
   // extrapolates by elapsed days). String compare is safe for ISO dates.
   const today = new Date().toISOString().slice(0, 10);
@@ -615,8 +616,9 @@ export async function listRecurringBills(env: Env, userId: string) {
 
 /** Year-over-year total countable spend (this FY vs prior FY) — factual delta, no commentary. */
 export async function spendYoy(env: Env, userId: string, startYear: number) {
-  const cur = fyBounds(startYear);
-  const prev = fyBounds(startYear - 1);
+  const jur = await resolveJurisdictionForUser(env, userId);
+  const cur = fyBounds(startYear, jur);
+  const prev = fyBounds(startYear - 1, jur);
   const sumFy = (b: { start: string; end: string }) =>
     env.DB.prepare(
       `SELECT COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS total_cents

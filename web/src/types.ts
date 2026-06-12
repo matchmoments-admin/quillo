@@ -144,6 +144,9 @@ export interface Situation {
   entities: { id: string; kind: string; name: string | null; detail_json?: string | null }[];
   rules: { id: string; pattern: string; bucket: string; ato_label: string }[];
   loans_properties?: LoanProperty[];
+  // UK epic stop 1: the tenant's tax-period start (month/day), from the server descriptor (AU 7/1 by
+  // default). Drives the active-FY default so a UK tenant follows Apr 6 – Apr 5, not a hardcoded Jul–Jun.
+  tax_period?: { start_month: number; start_day: number };
 }
 
 export interface LoanProperty {

@@ -18,6 +18,7 @@ import { fyForDate, buildReport } from "./lib/report";
 import { getProgress } from "./lib/progress";
 import { buildGuidePrompt, buildAskSystem, summariseReportForAsk, renderTxnDigest } from "./lib/guide";
 import { fyLabel, fyBounds, fyStartYearStr, parseFyStartYear, normaliseFyLabel } from "./lib/ledger-totals";
+import { resolveJurisdictionForUser, currentFyStartYearFor, AU_DESCRIPTOR, type JurisdictionDescriptor } from "./lib/jurisdiction";
 import { assessReadiness, type FilingReadiness, type FilingReadinessSignals } from "./lib/readiness";
 import { rollSchedule, balancingAdjustment, fyStartYearOf, isLowCostAsset, looksLikePersonalTransfer, assetDepreciatesForTaxpayer, type DepAsset } from "./lib/depreciation";
 import { matchClaimRules, suggestionText, enumerateSituationClaims, classifyClaim, uncoveredOccupations, ruleKey, type ClaimRule, type ClaimContext, type ClaimSituation } from "./lib/claimability";
@@ -1568,7 +1569,8 @@ export class TaxAgent extends Agent<Env> {
   ): Promise<string> {
     const id = crypto.randomUUID();
     const currency = (inc.currency ?? "AUD").trim().toUpperCase();
-    const fy = inc.fy ?? fyForDate(inc.txn_date ?? null) ?? this.currentFyLabel();
+    const jur = await this.jurisdictionFor(userId);
+    const fy = inc.fy ?? fyForDate(inc.txn_date ?? null, jur) ?? this.currentFyLabel(jur);
     // ── Slice B: managed-fund (AMMA) component split (flag-gated AND presence-gated). When a
     // managed_fund_distribution carries components, the row's assessable gross is the ORDINARY portion only;
     // the capital-gain buckets are materialised into the CGT engine (below) so they aren't taxed as ordinary
@@ -1651,7 +1653,8 @@ export class TaxAgent extends Agent<Env> {
     e: { cgt_asset_id: string; fy?: string | null; event_type?: string | null; event_date: string; proceeds_cents: number; cost_base_used_cents: number; units_disposed?: number | null; discount_eligible?: boolean | null },
   ): Promise<string> {
     const id = crypto.randomUUID();
-    const fy = e.fy ?? fyForDate(e.event_date ?? null) ?? this.currentFyLabel();
+    const jur = await this.jurisdictionFor(userId);
+    const fy = e.fy ?? fyForDate(e.event_date ?? null, jur) ?? this.currentFyLabel(jur);
     await this.env.DB.prepare(
       `INSERT INTO cgt_events (id, user_id, cgt_asset_id, fy, event_type, event_date, proceeds_cents, cost_base_used_cents, units_disposed, discount_eligible)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -1684,7 +1687,7 @@ export class TaxAgent extends Agent<Env> {
     lb: { person_id?: string | null; asset_id?: string | null; fy?: string | null; start_date?: string | null; end_date?: string | null; business_km?: number | null; total_km?: number | null; running_costs_cents: number; business_use_pct?: number | null },
   ): Promise<string> {
     const id = crypto.randomUUID();
-    const fy = lb.fy ?? this.currentFyLabel();
+    const fy = lb.fy ?? this.currentFyLabel(await this.jurisdictionFor(userId));
     await this.env.DB.prepare(
       `INSERT INTO vehicle_logbooks (id, user_id, person_id, asset_id, fy, start_date, end_date, business_km, total_km, running_costs_cents, business_use_pct)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -1701,7 +1704,7 @@ export class TaxAgent extends Agent<Env> {
     d: { trust_entity_id: string; fy?: string | null; beneficiary_person_id?: string | null; beneficiary_entity_id?: string | null; share_pct?: number | null; amount_cents: number; character?: string | null; franking_credit_cents?: number },
   ): Promise<string> {
     const id = crypto.randomUUID();
-    const fy = d.fy ?? this.currentFyLabel();
+    const fy = d.fy ?? this.currentFyLabel(await this.jurisdictionFor(userId));
     await this.env.DB.prepare(
       `INSERT INTO trust_distributions (id, user_id, trust_entity_id, fy, beneficiary_person_id, beneficiary_entity_id, share_pct, amount_cents, character, franking_credit_cents)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -1719,7 +1722,7 @@ export class TaxAgent extends Agent<Env> {
     d: { partnership_entity_id: string; fy?: string | null; beneficiary_person_id?: string | null; share_pct?: number | null; amount_cents: number; character?: string | null; franking_credit_cents?: number },
   ): Promise<string> {
     const id = crypto.randomUUID();
-    const fy = d.fy ?? this.currentFyLabel();
+    const fy = d.fy ?? this.currentFyLabel(await this.jurisdictionFor(userId));
     await this.env.DB.prepare(
       `INSERT INTO trust_distributions (id, user_id, trust_entity_id, fy, beneficiary_person_id, share_pct, amount_cents, character, franking_credit_cents, source_kind)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'partnership')`,
@@ -1751,7 +1754,7 @@ export class TaxAgent extends Agent<Env> {
     c: { person_id?: string | null; fy?: string | null; type?: string | null; amount_cents: number },
   ): Promise<string> {
     const id = crypto.randomUUID();
-    const fy = c.fy ?? this.currentFyLabel();
+    const fy = c.fy ?? this.currentFyLabel(await this.jurisdictionFor(userId));
     await this.env.DB.prepare(
       `INSERT INTO super_contributions (id, user_id, person_id, fy, type, amount_cents) VALUES (?, ?, ?, ?, ?, ?)`,
     )
@@ -1785,7 +1788,7 @@ export class TaxAgent extends Agent<Env> {
     p: { entity_id?: string | null; fy?: string | null; quarter?: number | null; instalment_cents: number; basis?: string | null },
   ): Promise<string> {
     const id = crypto.randomUUID();
-    const fy = p.fy ?? this.currentFyLabel();
+    const fy = p.fy ?? this.currentFyLabel(await this.jurisdictionFor(userId));
     await this.env.DB.prepare(
       `INSERT INTO payg_instalments (id, user_id, entity_id, fy, quarter, instalment_cents, basis) VALUES (?, ?, ?, ?, ?, ?, ?)`,
     )
@@ -1835,6 +1838,7 @@ export class TaxAgent extends Agent<Env> {
 
     const suggestions: Awaited<ReturnType<TaxAgent["incomeMatches"]>>["suggestions"] = [];
     const matched: Awaited<ReturnType<TaxAgent["incomeMatches"]>>["matched"] = [];
+    const jur = await this.jurisdictionFor(userId); // bucket the credit by the SAME period as income.fy
     for (const c of credits.results ?? []) {
       const amt = c.amt ?? 0;
       if (c.matched_income_id) {
@@ -1845,7 +1849,7 @@ export class TaxAgent extends Agent<Env> {
       // Best candidate: same FY, amount matches net or gross, closest date wins. The FY gate keeps
       // a pair from spanning two financial years (the income row counts in its FY; excluding the
       // credit by its own FY near 30 Jun would otherwise drop it from one year entirely).
-      const creditFy = fyForDate(c.txn_date);
+      const creditFy = fyForDate(c.txn_date, jur);
       let best: { inc: (typeof incomeRows)[number]; days: number } | null = null;
       for (const inc of incomeRows) {
         if (claimed.has(inc.id)) continue; // already linked to another credit
@@ -1883,7 +1887,7 @@ export class TaxAgent extends Agent<Env> {
       .bind(txnId, userId)
       .first<{ txn_date: string | null }>();
     if (!txn) throw new Error("income credit not found");
-    if (fyForDate(txn.txn_date) !== inc.fy) throw new Error("the credit and the income row are in different financial years");
+    if (fyForDate(txn.txn_date, await this.jurisdictionFor(userId)) !== inc.fy) throw new Error("the credit and the income row are in different financial years");
     await this.env.DB.prepare(`UPDATE transactions SET matched_income_id = ? WHERE id = ? AND user_id = ?`)
       .bind(incomeId, txnId, userId)
       .run();
@@ -1906,10 +1910,10 @@ export class TaxAgent extends Agent<Env> {
   /** Resolved deductibility states (0011). 'undetermined' is the captured default; the rest are written by the matcher / review. */
   private static readonly DEDUCTIBILITY_STATES = new Set<string>(DEDUCTIBILITY_STATES);
 
-  private fyBoundsFor(fy?: string): { fy: string; start: string; end: string } {
-    const label = fy ?? this.currentFyLabel();
+  private fyBoundsFor(fy: string | undefined, descriptor: JurisdictionDescriptor = AU_DESCRIPTOR): { fy: string; start: string; end: string } {
+    const label = fy ?? this.currentFyLabel(descriptor);
     const sy = Number(label.slice(0, 4));
-    return { fy: label, start: `${sy}-07-01`, end: `${sy + 1}-06-30` };
+    return { fy: label, ...fyBounds(sy, descriptor) };
   }
 
   /**
@@ -1921,7 +1925,7 @@ export class TaxAgent extends Agent<Env> {
     userId: string,
     fy?: string,
   ): Promise<{ fy: string; rows: { bucket: string; ato_label: string | null; deductibility: string; n: number; total_cents: number; resolved_cents: number }[] }> {
-    const { fy: label, start, end } = this.fyBoundsFor(fy);
+    const { fy: label, start, end } = this.fyBoundsFor(fy, await this.jurisdictionFor(userId));
     const rows = await this.env.DB.prepare(
       `SELECT bucket, ato_label, COALESCE(deductibility,'undetermined') AS deductibility,
               COUNT(*) AS n,
@@ -1966,7 +1970,7 @@ export class TaxAgent extends Agent<Env> {
     opts: { fy?: string; bucket: string; atoLabel?: string | null; state: string; businessUsePct?: number | null },
   ): Promise<{ updated: number }> {
     if (!TaxAgent.DEDUCTIBILITY_STATES.has(opts.state)) throw new Error(`invalid deductibility state: ${opts.state}`);
-    const { start, end } = this.fyBoundsFor(opts.fy);
+    const { start, end } = this.fyBoundsFor(opts.fy, await this.jurisdictionFor(userId));
     const pct = opts.businessUsePct == null ? null : Math.max(0, Math.min(100, opts.businessUsePct));
     const res = await this.env.DB.prepare(
       `UPDATE transactions
@@ -2048,11 +2052,18 @@ export class TaxAgent extends Agent<Env> {
     }
   }
 
-  /** Current AU FY label, e.g. '2025-26' (Jul–Jun). */
-  private currentFyLabel(): string {
-    const now = new Date();
-    const sy = now.getUTCMonth() >= 6 ? now.getUTCFullYear() : now.getUTCFullYear() - 1;
-    return fyLabel(sy);
+  /**
+   * Resolve a tenant's jurisdiction descriptor (gated by jurisdiction_period; OFF ⇒ AU). Threaded into
+   * write-time FY bucketing so a UK tenant's captured income/CGT/etc. get the UK FY label (Apr 6 boundary)
+   * — label-keyed report reads match on that label, so mis-bucketing here would hide a UK row from its FY.
+   */
+  private async jurisdictionFor(userId: string): Promise<JurisdictionDescriptor> {
+    return resolveJurisdictionForUser(this.env, userId);
+  }
+
+  /** Current FY label, e.g. '2025-26'. Period from the descriptor (AU Jul–Jun by default; UK Apr 6). */
+  private currentFyLabel(descriptor: JurisdictionDescriptor = AU_DESCRIPTOR): string {
+    return fyLabel(currentFyStartYearFor(descriptor));
   }
 
   /** Write a row into the canonical documents registry. */
@@ -2214,7 +2225,7 @@ export class TaxAgent extends Agent<Env> {
       r2_key: r2key,
       image_hash: imageHash,
       property_id: propertyId,
-      fy: fyForDate(cls.doc_date ?? null),
+      fy: fyForDate(cls.doc_date ?? null, await this.jurisdictionFor(userId)),
       issuer: cls.issuer,
       doc_date: cls.doc_date,
       extracted_json: JSON.stringify(cls),
@@ -2329,7 +2340,8 @@ export class TaxAgent extends Agent<Env> {
       ext.net_disbursed_cents == null
         ? true
         : Math.abs(sumIncome - sumExpense - ext.net_disbursed_cents) <= Math.max(100, Math.round(sumIncome * 0.01));
-    const fy = fyForDate(ext.period_end ?? ext.period_start ?? null) ?? this.currentFyLabel();
+    const jur = await this.jurisdictionFor(userId);
+    const fy = fyForDate(ext.period_end ?? ext.period_start ?? null, jur) ?? this.currentFyLabel(jur);
     const needsReview = !reconOk || ext.confidence < CONFIDENCE_THRESHOLD ? 1 : 0;
 
     await this.recordIncome(userId, {
@@ -2607,6 +2619,8 @@ export class TaxAgent extends Agent<Env> {
       return { rows: 0 };
     }
 
+    // Depreciation period stays AU-shaped this stop (UK capital-allowance period rides with the UK rule
+    // pack, Phase 6) — the default target FY intentionally uses the AU descriptor. See depreciation.ts.
     const target = toStartYear ?? Number(this.currentFyLabel().slice(0, 4));
     const schedule = rollSchedule(this.toDepAsset(row), target);
     const stmts = schedule.map((s) =>
@@ -3059,7 +3073,7 @@ export class TaxAgent extends Agent<Env> {
   async assessFilingReadiness(userId: string, startYear: number): Promise<FilingReadiness> {
     const profile = await this.requireProfile(userId);
     const fy = fyLabel(startYear);
-    const { start, end } = fyBounds(startYear);
+    const { start, end } = fyBounds(startYear, await this.jurisdictionFor(userId));
     const [report, situation] = await Promise.all([buildReport(this.env, userId, startYear), getSituation(this.env, userId, profile)]);
 
     // Matched situation-level claim rules (defer-to-agent ones become "judgement" findings). Iterate
@@ -3193,7 +3207,7 @@ export class TaxAgent extends Agent<Env> {
   async generateChecklist(userId: string, fy?: string): Promise<{ items: number }> {
     const profile = await this.requireProfile(userId);
     const situation = await getSituation(this.env, userId, profile);
-    const targetFy = normaliseFyLabel(fy) ?? this.currentFyLabel();
+    const targetFy = normaliseFyLabel(fy) ?? this.currentFyLabel(await this.jurisdictionFor(userId));
     const personId = `person_self_${userId}`;
     const hasRented = situation.properties.some((p) => p.status === "rented");
     const hasVacant = situation.properties.some((p) => p.status === "vacant");
@@ -3677,7 +3691,7 @@ export class TaxAgent extends Agent<Env> {
   async runClarifyScan(userId: string, startYear: number): Promise<{ questions: number; groups: number }> {
     const profile = await this.requireProfile(userId);
     const situation = await getSituation(this.env, userId, profile);
-    const { start, end } = fyBounds(startYear);
+    const { start, end } = fyBounds(startYear, await this.jurisdictionFor(userId));
     const rows = await this.env.DB.prepare(
       `SELECT id, raw_description, merchant, amount_cents, amount_aud_cents, direction
          FROM transactions
@@ -3789,7 +3803,7 @@ export class TaxAgent extends Agent<Env> {
     // Resolve the group's CURRENT rows using the SAME leftover filter the scan used (so the answer
     // acts only on the uncategorised/low-confidence rows the user actually saw — never re-touching a
     // row a prior correction already finalised, and never overshooting the count shown).
-    const { start, end } = fyBounds(parseFyStartYear(q.fy));
+    const { start, end } = fyBounds(parseFyStartYear(q.fy), await this.jurisdictionFor(userId));
     const rowsRes = await this.env.DB.prepare(
       `SELECT id, raw_description, merchant, direction, amount_cents, amount_aud_cents, currency, matched_income_id, txn_date
          FROM transactions
@@ -4105,7 +4119,7 @@ export class TaxAgent extends Agent<Env> {
     await this.env.DB.prepare(`INSERT INTO accountant_runs (id, user_id, fy, stage, status) VALUES (?, ?, ?, 'cleanup', 'running')`).bind(runId, userId, fy).run();
     const setStage = (stage: string) => this.env.DB.prepare(`UPDATE accountant_runs SET stage = ? WHERE id = ? AND user_id = ?`).bind(stage, runId, userId).run();
     try {
-      const { start, end } = fyBounds(startYear);
+      const { start, end } = fyBounds(startYear, await this.jurisdictionFor(userId));
       // Stage A — surface non-spend movements (NOT auto-applied; the user confirms, B3).
       const sweep = await this.sweepMovements(userId);
       // Stage D — re-stamp deny-by-default + positive suggestions over payg (reResolve refreshes the

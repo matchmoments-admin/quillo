@@ -1,4 +1,6 @@
 import type { Env } from "../env";
+import { featureOn } from "./features";
+import { resolveJurisdiction, AU_DESCRIPTOR } from "./jurisdiction";
 
 export interface Profile {
   user_id: string;
@@ -87,6 +89,10 @@ export interface Situation {
   entities: Entity[];
   rules: UserRule[];
   loans_properties: LoanProperty[];
+  // UK epic stop 1: the tenant's tax-period start (month/day), resolved from the jurisdiction descriptor
+  // (flag-gated; AU 7/1 by default). The SPA reads this so the active-FY default follows the tenant's
+  // period instead of a client-side Jul–Jun hardcode — the server stays the single source of period truth.
+  tax_period: { start_month: number; start_day: number };
 }
 
 /** Load everything the categoriser needs to know about who this tenant is. */
@@ -110,6 +116,11 @@ export async function getSituation(env: Env, userId: string, profile: Profile): 
          FROM loans_properties WHERE user_id = ? ORDER BY created_at`,
     ).bind(userId).all<LoanProperty>(),
   ]);
+  // Resolve from the already-loaded profile (no re-read); flag OFF ⇒ AU. Calendar periods (reserved) map
+  // to Jan 1 — not used this stop, the SPA treats it as a straddle start anchor.
+  const jur = featureOn(env, "jurisdiction_period") ? resolveJurisdiction(profile.jurisdiction) : AU_DESCRIPTOR;
+  const tp = jur.taxPeriod;
+  const tax_period = tp.kind === "straddle" ? { start_month: tp.startMonth, start_day: tp.startDay } : { start_month: 1, start_day: 1 };
   return {
     profile,
     persons: persons.results ?? [],
@@ -117,6 +128,7 @@ export async function getSituation(env: Env, userId: string, profile: Profile): 
     entities: ents.results ?? [],
     rules: rules.results ?? [],
     loans_properties: loansProps.results ?? [],
+    tax_period,
   };
 }
 

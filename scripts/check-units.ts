@@ -40,6 +40,7 @@ import { validateProposedActions } from "../src/extract";
 import type { Progress } from "../src/lib/progress";
 import { fyBounds, fyLabel, basPositionFrom, fyStartYearStr, parseFyStartYear, normaliseFyLabel } from "../src/lib/ledger-totals";
 import { currentFyStartYear, reportToCsv, type Report } from "../src/lib/report";
+import { resolveJurisdiction, fyBoundsFor, fyStartYearForDate, fyStartYearSqlExpr, AU_DESCRIPTOR, UK_DESCRIPTOR } from "../src/lib/jurisdiction";
 import { csvCell, substantiationStatus, impliedWorkUsePct, scheduleToCsv, type AccountantSchedule } from "../src/lib/accountant-schedule";
 import { exclusionReason } from "../src/lib/readiness";
 import fs from "node:fs";
@@ -2044,6 +2045,41 @@ console.log("advisory.savingsProjection (factual SAVING calculator — no produc
   // The copy is factual + carries the figures, and the guardrail would catch advice-shaped variants.
   const copy = savingsProjectionCopy(92000, 5, 5, grow);
   check("calculator copy renders figures and is factual", copy.includes("$920") && copy.includes("$5,084") && copy.includes("$4,600") && assertFactual(copy));
+}
+
+console.log("jurisdiction — the tax-period seam (AU byte-identical; UK = 6 Apr – 5 Apr)");
+{
+  // resolveJurisdiction: case-insensitive, unknown/blank ⇒ AU.
+  check("resolveJurisdiction('AU')→AU, ('uk')→UK, (undefined)→AU, ('ZZ')→AU",
+    resolveJurisdiction("AU").code === "AU" && resolveJurisdiction("uk").code === "UK" &&
+    resolveJurisdiction(undefined).code === "AU" && resolveJurisdiction("ZZ").code === "AU");
+
+  // fyBoundsFor AU must reproduce the legacy hardcoded bounds EXACTLY (byte-identical guarantee).
+  const au = fyBoundsFor(AU_DESCRIPTOR, 2025);
+  check("AU bounds(2025) = 2025-07-01 .. 2026-06-30 (byte-identical to legacy)", au.start === "2025-07-01" && au.end === "2026-06-30");
+  check("ledger-totals.fyBounds default == AU descriptor (no caller change drifts AU)",
+    JSON.stringify(fyBounds(2025)) === JSON.stringify(au));
+
+  // UK = 6 Apr → 5 Apr next year (the day-before-next-start), incl. across a leap year.
+  const uk = fyBoundsFor(UK_DESCRIPTOR, 2025);
+  check("UK bounds(2025) = 2025-04-06 .. 2026-04-05", uk.start === "2025-04-06" && uk.end === "2026-04-05");
+  check("UK bounds(2023) end = 2024-04-05 (leap-year Feb 29 inside the FY, no off-by-one)", fyBoundsFor(UK_DESCRIPTOR, 2023).end === "2024-04-05");
+
+  // fyStartYearForDate — the boundary-day test a naive month-only gate gets wrong.
+  check("AU date gate: 30 Jun → prior FY (2024), 1 Jul → new FY (2025)",
+    fyStartYearForDate(AU_DESCRIPTOR, "2025-06-30") === 2024 && fyStartYearForDate(AU_DESCRIPTOR, "2025-07-01") === 2025);
+  check("UK date gate: 5 Apr → prior FY (2024), 6 Apr → new FY (2025) [boundary day]",
+    fyStartYearForDate(UK_DESCRIPTOR, "2025-04-05") === 2024 && fyStartYearForDate(UK_DESCRIPTOR, "2025-04-06") === 2025);
+  check("UK date gate: 1 May 2025 → UK FY2025, but the SAME date is AU FY2024 (the discriminator)",
+    fyStartYearForDate(UK_DESCRIPTOR, "2025-05-01") === 2025 && fyStartYearForDate(AU_DESCRIPTOR, "2025-05-01") === 2024);
+  check("date gate: missing/garbage ⇒ NaN", Number.isNaN(fyStartYearForDate(AU_DESCRIPTOR, null)) && Number.isNaN(fyStartYearForDate(UK_DESCRIPTOR, "nope")));
+
+  // The SQL FY-start expression: AU reproduces the legacy month-only gate byte-for-byte; UK is day-aware.
+  const auSql = fyStartYearSqlExpr(AU_DESCRIPTOR, "created_at");
+  check("AU SQL gate reproduces the legacy month-only expression",
+    auSql === "CAST(substr(created_at,1,4) AS INTEGER) - (CASE WHEN CAST(substr(created_at,6,2) AS INTEGER) >= 7 THEN 0 ELSE 1 END)");
+  check("UK SQL gate is day-aware on the boundary month (incl. day >= 6)",
+    fyStartYearSqlExpr(UK_DESCRIPTOR, "created_at").includes("CAST(substr(created_at,9,2) AS INTEGER) >= 6"));
 }
 
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);

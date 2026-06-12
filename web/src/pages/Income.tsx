@@ -373,29 +373,61 @@ function IncomeLine({ row, fy }: { row: IncomeRow; fy: string }) {
   );
 }
 
+// Slice B: AMMA managed-fund distribution components — these dollar fields map to AmmaComponents (cents).
+const MF_FIELDS = [
+  { key: "franked", label: "Franked dividends ($)", group: "income" },
+  { key: "unfranked", label: "Unfranked dividends ($)", group: "income" },
+  { key: "interest", label: "Interest ($)", group: "income" },
+  { key: "other", label: "Other Australian income ($)", group: "income" },
+  { key: "foreign", label: "Foreign income ($)", group: "income" },
+  { key: "frankingCredit", label: "Franking credit ($)", group: "credit" },
+  { key: "foreignTax", label: "Foreign tax paid ($)", group: "credit" },
+  { key: "cgDiscounted", label: "Capital gain — discounted method, GROSS ($)", group: "cgt" },
+  { key: "cgOther", label: "Capital gain — other method ($)", group: "cgt" },
+  { key: "costBase", label: "AMIT cost-base net amount ($, +/−)", group: "costbase" },
+] as const;
+type MfKey = (typeof MF_FIELDS)[number]["key"];
+
 function AddIncomeForm({ fy, onDone }: { fy: string; onDone: () => void }) {
+  const { has } = useFeatures();
   const [type, setType] = useState<string>("salary_payg");
   const [gross, setGross] = useState("");
   const [withheld, setWithheld] = useState("");
   const [franking, setFranking] = useState("");
   const [date, setDate] = useState("");
   const [entityId, setEntityId] = useState("");
+  const [mf, setMf] = useState<Record<MfKey, string>>(() => Object.fromEntries(MF_FIELDS.map((f) => [f.key, ""])) as Record<MfKey, string>);
   // Entities you can attribute income to (company / trust / SMSF). Default "" = you (the individual).
   // SMSF/company/trust are separate taxpayers, so attributing fund earnings here keeps them off your
   // personal position and feeds the per-entity reads (e.g. smsfFundPositions sums income by entity_id).
   const { data: sit } = useQuery({ queryKey: ["situation"], queryFn: () => api.situation() });
   const entities = (sit?.entities ?? []).filter((e) => e.kind === "company" || e.kind === "trust" || e.kind === "smsf");
+
+  // The component form shows ONLY for a personal managed-fund distribution (cgtTotals isn't entity-scoped,
+  // so an entity's capital gain would leak into the personal headline → component capture is personal-only).
+  const isMf = type === "managed_fund_distribution" && has("mf_components") && !entityId;
+  const c = (s: string) => Math.round(parseFloat(s || "0") * 100);
+  const components = {
+    franked_cents: c(mf.franked), unfranked_cents: c(mf.unfranked), interest_cents: c(mf.interest),
+    other_income_cents: c(mf.other), foreign_income_cents: c(mf.foreign),
+    franking_credit_cents: c(mf.frankingCredit), foreign_tax_paid_cents: c(mf.foreignTax),
+    capital_gain_discounted_cents: c(mf.cgDiscounted), capital_gain_other_cents: c(mf.cgOther),
+    amit_cost_base_net_amount_cents: c(mf.costBase),
+  };
+  const mfOrdinary = components.franked_cents + components.unfranked_cents + components.interest_cents + components.other_income_cents + components.foreign_income_cents;
+  const mfCg = components.capital_gain_discounted_cents + components.capital_gain_other_cents;
+  const mfTotal = mfOrdinary + mfCg + components.amit_cost_base_net_amount_cents;
+  const mfHasAny = mfOrdinary > 0 || mfCg > 0 || components.amit_cost_base_net_amount_cents !== 0;
+
   const add = useMutation({
     mutationFn: () =>
-      api.addIncome({
-        income_type: type,
-        fy,
-        gross_cents: Math.round(parseFloat(gross || "0") * 100),
-        withholding_cents: Math.round(parseFloat(withheld || "0") * 100),
-        franking_credit_cents: Math.round(parseFloat(franking || "0") * 100),
-        txn_date: date || null,
-        entity_id: entityId || null,
-      }),
+      isMf
+        ? api.addIncome({ income_type: type, fy, txn_date: date || null, components })
+        : api.addIncome({
+            income_type: type, fy,
+            gross_cents: c(gross), withholding_cents: c(withheld), franking_credit_cents: c(franking),
+            txn_date: date || null, entity_id: entityId || null,
+          }),
     onSuccess: onDone,
   });
   return (
@@ -414,12 +446,38 @@ function AddIncomeForm({ fy, onDone }: { fy: string; onDone: () => void }) {
             </select>
           </label>
         )}
-        <label className="text-sm">Gross ($)<Input className="mt-1 w-full" inputMode="decimal" value={gross} onChange={(e) => setGross(e.target.value)} /></label>
         <label className="text-sm">Date<Input className="mt-1 w-full" type="date" value={date} onChange={(e) => setDate(e.target.value)} /></label>
-        <label className="text-sm">PAYG withheld ($)<Input className="mt-1 w-full" inputMode="decimal" value={withheld} onChange={(e) => setWithheld(e.target.value)} /></label>
-        <label className="text-sm">Franking credit ($)<Input className="mt-1 w-full" inputMode="decimal" value={franking} onChange={(e) => setFranking(e.target.value)} /></label>
+        {!isMf && <>
+          <label className="text-sm">Gross ($)<Input className="mt-1 w-full" inputMode="decimal" value={gross} onChange={(e) => setGross(e.target.value)} /></label>
+          <label className="text-sm">PAYG withheld ($)<Input className="mt-1 w-full" inputMode="decimal" value={withheld} onChange={(e) => setWithheld(e.target.value)} /></label>
+          <label className="text-sm">Franking credit ($)<Input className="mt-1 w-full" inputMode="decimal" value={franking} onChange={(e) => setFranking(e.target.value)} /></label>
+        </>}
       </div>
-      <Button onClick={() => add.mutate()} disabled={add.isPending || !gross}>{add.isPending ? "Saving…" : "Save income"}</Button>
+
+      {isMf && (
+        <div className="space-y-2 rounded-lg border border-line bg-paper/40 p-3">
+          <div className="text-xs font-semibold uppercase tracking-wide text-muted">AMMA distribution components</div>
+          <p className="text-xs text-muted">Enter your managed-fund / ETF distribution from its AMMA (tax) statement. The capital-gain amounts feed the CGT engine (the discounted-method amount is the GROSS gain — we apply the 50% discount). The AMIT cost-base net amount isn't assessable; it adjusts your units' cost base for a future sale.</p>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+            {MF_FIELDS.map((field) => (
+              <label key={field.key} className="text-sm">{field.label}
+                <Input className="mt-1 w-full" inputMode="decimal" value={mf[field.key]} onChange={(e) => setMf((m) => ({ ...m, [field.key]: e.target.value }))} />
+              </label>
+            ))}
+          </div>
+          <div className="flex flex-wrap gap-x-4 gap-y-1 border-t border-line pt-2 text-xs tabular-nums text-muted">
+            <span>Assessable ordinary <span className="text-ink">{money(mfOrdinary)}</span></span>
+            <span>Capital gain → CGT <span className="text-ink">{money(mfCg)}</span></span>
+            <span>Cost-base adjustment (not assessable) <span className="text-ink">{money(components.amit_cost_base_net_amount_cents)}</span></span>
+            <span>Total distribution <span className="text-ink">{money(mfTotal)}</span></span>
+          </div>
+        </div>
+      )}
+      {type === "managed_fund_distribution" && has("mf_components") && entityId && (
+        <p className="text-xs text-muted">Component capture is for personal distributions only right now — attributing to an entity records a single gross amount.</p>
+      )}
+
+      <Button onClick={() => add.mutate()} disabled={add.isPending || (isMf ? !mfHasAny : !gross)}>{add.isPending ? "Saving…" : "Save income"}</Button>
       {add.error && <p className="text-sm text-danger">{(add.error as Error).message}</p>}
     </Card>
   );

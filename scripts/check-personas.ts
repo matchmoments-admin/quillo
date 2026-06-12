@@ -14,7 +14,8 @@ import type { Env } from "../src/env";
 import { buildReport } from "../src/lib/report";
 import { buildAccountantSchedule, tieBackChecks } from "../src/lib/accountant-schedule";
 import { fetchAskDigestRows, listAccounts } from "../src/lib/queries";
-import { deleteRow, archiveRow, DeleteBlockedError, syncPropertyDisposalToCgt } from "../src/lib/situation-write";
+import { deleteRow, archiveRow, DeleteBlockedError, syncPropertyDisposalToCgt, syncIncomeCgtFromComponents } from "../src/lib/situation-write";
+import { ordinaryAssessableCents, type AmmaComponents } from "../src/lib/managed-fund";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
@@ -462,6 +463,41 @@ async function main() {
     check("P14 F: sync is idempotent (exactly one asset + one event after re-run)", invAssets.n === 1 && invEvents.n === 1);
     const r14b = await buildReport(env, u, 2025);
     check("P14 F: position unchanged after a second sync (no double-count)", r14b.taxable_position_cents === 10000000);
+  }
+
+  // ── Persona 15: ETF / managed-fund investor — AMMA component split (Slice B) ──
+  // A managed-fund distribution's ordinary income lands in gross_cents; its discounted capital gain flows
+  // through the CGT engine (50% discount), NOT taxed as ordinary; the AMIT cost-base amount stays out.
+  {
+    const u = "p15";
+    seedTenant(u, "P15 ETF investor");
+    const comps: AmmaComponents = {
+      franked_cents: 0, unfranked_cents: 1000000, interest_cents: 200000, other_income_cents: 0, foreign_income_cents: 300000,
+      franking_credit_cents: 0, foreign_tax_paid_cents: 30000, capital_gain_discounted_cents: 2000000, capital_gain_other_cents: 0,
+      amit_cost_base_net_amount_cents: 400000,
+    };
+    const ordinary = ordinaryAssessableCents(comps); // $15k = unfranked $10k + interest $2k + foreign $3k
+    // Mirror recordIncome's write-time split: ordinary in gross, foreign tax in its column, components in detail_json.
+    inc("p15mf", u, "managed_fund_distribution", ordinary, { foreign_tax_paid_cents: 30000, detail_json: JSON.stringify({ components: comps }) });
+    await syncIncomeCgtFromComponents(env, u, "p15mf", comps, "2025-26", `person_self_${u}`, "Vanguard ETF", "2025-09-01");
+
+    const r15 = await buildReport(env, u, 2025);
+    const mfRow = r15.income.by_type.find((t) => t.income_type === "managed_fund_distribution");
+    check("P15 B: only ORDINARY income lands in gross ($15k — CG + cost-base excluded)", mfRow?.gross_cents === 1500000 && r15.income.gross_cents === 1500000);
+    check("P15 B: foreign tax paid is carried for FITO ($300)", r15.income.foreign_tax_paid_cents === 30000);
+    check("P15 B: discounted capital gain flows through the CGT engine, halved ($20k → $10k net)", r15.capital_gains?.net_capital_gain_cents === 1000000);
+    check("P15 B: taxable position = $15k ordinary + $10k net CG = $25k (CG NOT double-counted as income)", r15.taxable_position_cents === 2500000);
+    // Accountant schedule CGT section ties back to the engine's gross gains.
+    const sched15 = await buildAccountantSchedule(env, u, 2025, { report: r15 });
+    const cgtSec = sched15.sections.find((s) => s.key === "cgt");
+    check("P15 B: accountant schedule CGT section ties back", cgtSec?.tie_back?.ok === true);
+
+    // Byte-identical: a managed-fund row WITHOUT components records as a single gross, no CGT (legacy path).
+    const u2 = "p15b";
+    seedTenant(u2, "P15b legacy managed fund");
+    inc("p15bmf", u2, "managed_fund_distribution", 1800000); // single $18k gross, no components
+    const r15b = await buildReport(env, u2, 2025);
+    check("P15 B: a no-components managed-fund row is byte-identical (full gross, no CGT)", r15b.income.gross_cents === 1800000 && r15b.taxable_position_cents === 1800000 && r15b.capital_gains === undefined);
   }
 
   // ── Accountant schedule (#179/#181): goldens + the tie-back-by-construction loop ──

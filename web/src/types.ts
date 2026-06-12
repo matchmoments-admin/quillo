@@ -710,6 +710,20 @@ export interface IncomeRow {
   created_at: string;
 }
 
+// Slice B: managed-fund (AMMA) distribution components — mirrors src/lib/managed-fund.ts AmmaComponents.
+export interface AmmaComponents {
+  franked_cents: number;
+  unfranked_cents: number;
+  interest_cents: number;
+  other_income_cents: number;
+  foreign_income_cents: number;
+  franking_credit_cents: number;
+  foreign_tax_paid_cents: number;
+  capital_gain_discounted_cents: number;
+  capital_gain_other_cents: number;
+  amit_cost_base_net_amount_cents: number;
+}
+
 export interface ClaimSuggestion {
   id: string;
   txn_id: string | null;

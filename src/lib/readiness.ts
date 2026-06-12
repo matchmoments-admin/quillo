@@ -68,6 +68,8 @@ export interface FilingReadinessSignals {
   div293ThresholdCents?: number | null; // pack reference-only Div 293 income threshold (null if no rate block for the FY); drives a defer nudge only — NEVER a computed liability
   gstRegistrationThresholdCents?: number | null; // pack GST/consumption-tax registration threshold for the FY (jurisdiction-neutral; null if absent); drives the turnover nudge
   isGstRegistered?: boolean; // tenant default profiles.gst_registered OR any entity flag (mirrors gstTotals); suppresses the registration nudge
+  psiAppliesDeclared?: boolean; // S2: the user marked psi_status='psi_applies' on a business activity → sharpened PSI nudge
+  psiAllAssessed?: boolean; // S2: every business activity has a recorded psi_status → stop prompting them to assess
 }
 
 export interface FilingReadiness {
@@ -382,10 +384,19 @@ export function assessReadiness(input: {
   // PSI tests (results test / 80% / unrelated-clients) — that's a judgement call — so when business
   // income is present we surface a defer-to-agent nudge rather than silently treating every expense as
   // deductible. No engine branch yet (capture flag + Div 86 split is a later persona slice).
-  if (report.income.by_type.some((it) => it.income_type === "business")) {
+  // S2: three variants keyed off the self-declared psi_status on the business activity. We never remove
+  // deductions (deny-by-default already excludes unconfirmed payg spend) — the value is sharper guidance.
+  const hasBusinessIncome = report.income.by_type.some((it) => it.income_type === "business");
+  if (hasBusinessIncome && signals.psiAppliesDeclared) {
+    // Declared "PSI applies" → name the specific Div 86 restrictions so the user/agent can act on them.
+    findings.push(f("psi_check", "judgement", "review", "PSI applies — some business deductions are restricted under Div 86",
+      `You've indicated the Personal Services Income (PSI) rules apply to your business income. Where you're not running a personal services business, Division 86 generally denies deductions that would otherwise be allowable — rent, mortgage interest, rates and land tax on your home; payments to associates for non-principal work; and some superannuation for associates. Quillo does not remove these automatically; your registered tax agent will confirm exactly what stays deductible.${DEFER}`, true, []));
+  } else if (hasBusinessIncome && !signals.psiAllAssessed) {
+    // Not yet assessed → prompt them to assess and record it (the original general nudge + where to set it).
     findings.push(f("psi_check", "judgement", "review", "Sole-trader income — check whether the PSI rules apply",
-      `Some of your income is sole-trader/ABN business income. If it's mainly a reward for your personal skills or labour (typical for contractors and freelancers), the Personal Services Income (PSI) rules in Division 86 can limit which expenses you're able to claim. The PSI tests are fact-specific — your registered tax agent will confirm whether they apply and what stays deductible.${DEFER}`, true, []));
+      `Some of your income is sole-trader/ABN business income. If it's mainly a reward for your personal skills or labour (typical for contractors and freelancers), the Personal Services Income (PSI) rules in Division 86 can limit which expenses you're able to claim. The PSI tests are fact-specific — confirm with a registered tax agent, then record the outcome against the business activity in Settings.${DEFER}`, true, []));
   }
+  // hasBusinessIncome && psiAllAssessed && not "applies" (i.e. assessed as not_psi) → no nudge: they've decided.
   // GST/consumption-tax registration threshold — a self-employed taxpayer whose business turnover
   // reaches the registration threshold is generally required to register. We never assert they MUST
   // (the turnover test has projection/grouping nuances we don't model) — a defer nudge when turnover is

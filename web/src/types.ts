@@ -162,6 +162,7 @@ export interface IncomeActivity {
   occupation_scope?: string | null;
   label: string | null;
   fy: string | null;
+  psi_status?: string | null; // S2: self-declared PSI/Div 86 status (null=not assessed | not_psi | psi_applies)
 }
 export interface AttributionInput {
   entity_id: string;

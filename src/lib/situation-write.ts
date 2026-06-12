@@ -519,7 +519,24 @@ export async function listEntityRoles(env: Env, userId: string) {
 }
 
 export async function listIncomeActivities(env: Env, userId: string) {
-  return (await env.DB.prepare(`SELECT id, entity_id, activity_type, property_id, occupation_scope, label, fy FROM income_activities WHERE user_id = ? ORDER BY activity_type, label`).bind(userId).all()).results ?? [];
+  return (await env.DB.prepare(`SELECT id, entity_id, activity_type, property_id, occupation_scope, label, fy, psi_status FROM income_activities WHERE user_id = ? ORDER BY activity_type, label`).bind(userId).all()).results ?? [];
+}
+
+// S2: valid self-declared PSI/Div 86 statuses on a business activity. NULL (absent) = not assessed.
+const PSI_STATUSES = ["not_psi", "psi_applies"] as const;
+function normPsiStatus(v: unknown): string | null {
+  return typeof v === "string" && (PSI_STATUSES as readonly string[]).includes(v) ? v : null;
+}
+
+/**
+ * Update the self-declared PSI status on a business income activity (S2). Capture-only — it only sharpens
+ * the readiness defer nudge; it never changes the position. An invalid/absent value clears it (NULL = not
+ * assessed). Scoped to the tenant.
+ */
+export async function updateIncomeActivityPsiStatus(env: Env, userId: string, id: string, psi_status: unknown): Promise<void> {
+  await env.DB.prepare(`UPDATE income_activities SET psi_status = ? WHERE id = ? AND user_id = ?`)
+    .bind(normPsiStatus(psi_status), id, userId)
+    .run();
 }
 
 /**
@@ -532,15 +549,15 @@ export async function listIncomeActivities(env: Env, userId: string) {
 export async function addIncomeActivity(
   env: Env,
   userId: string,
-  a: { entity_id?: string | null; activity_type?: string; property_id?: string | null; occupation_scope?: string | null; label?: string | null; fy?: string | null },
+  a: { entity_id?: string | null; activity_type?: string; property_id?: string | null; occupation_scope?: string | null; label?: string | null; fy?: string | null; psi_status?: string | null },
 ): Promise<string> {
   const id = uid();
   const ACTIVITY_TYPES = ["salary_wages", "rental_property", "business", "investment", "private"];
   const activityType = a.activity_type && ACTIVITY_TYPES.includes(a.activity_type) ? a.activity_type : "business";
   await env.DB.prepare(
-    `INSERT INTO income_activities (id, user_id, entity_id, activity_type, property_id, occupation_scope, fy, label) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO income_activities (id, user_id, entity_id, activity_type, property_id, occupation_scope, fy, label, psi_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
-    .bind(id, userId, a.entity_id ?? null, activityType, a.property_id ?? null, a.occupation_scope ?? null, a.fy ?? null, a.label ?? null)
+    .bind(id, userId, a.entity_id ?? null, activityType, a.property_id ?? null, a.occupation_scope ?? null, a.fy ?? null, a.label ?? null, normPsiStatus(a.psi_status))
     .run();
   return id;
 }

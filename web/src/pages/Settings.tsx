@@ -38,7 +38,7 @@ async function runDelete(
   }
 }
 import { EntityFields, PropertyFields, PersonFields, entityToBody, entityToValue, propertyToBody, personToBody, personToValue, emptyEntity, emptyProperty, emptyPerson, OWNED_STATUSES, TENANT_STATUSES, USE_STATUSES, DENY_USE_STATUSES, isTenantStatus, useStatusLabel, propertyStatusLabel, type EntityValue, type PersonValue, type PropertyValue } from "../components/SituationFields";
-import type { Person, Account, Property, LoanProperty } from "../types";
+import type { Person, Account, Property, LoanProperty, IncomeActivity } from "../types";
 
 const input = "rounded-lg border border-line bg-card px-3 py-2 text-sm";
 const btn = "rounded-lg bg-ink px-3 py-2 text-sm font-medium text-white hover:bg-ink/90 disabled:opacity-50";
@@ -978,7 +978,10 @@ function BusinessActivities({ entities }: { entities: { id: string; kind: string
   return (
     <div className="space-y-2">
       {rows.map((a) => (
-        <Row key={a.id} label={`${a.label || ACTIVITY_TYPE_LABEL[a.activity_type] || a.activity_type}${a.entity_id ? ` · ${entName(a.entity_id)}` : ""}${a.occupation_scope ? ` · ${a.occupation_scope}` : ""}`} onDelete={() => api.deleteIncomeActivity(a.id).then(invalidate)} />
+        <div key={a.id} className="space-y-1">
+          <Row label={`${a.label || ACTIVITY_TYPE_LABEL[a.activity_type] || a.activity_type}${a.entity_id ? ` · ${entName(a.entity_id)}` : ""}${a.occupation_scope ? ` · ${a.occupation_scope}` : ""}`} onDelete={() => api.deleteIncomeActivity(a.id).then(invalidate)} />
+          {a.activity_type === "business" && <PsiStatusSelect a={a} onSaved={invalidate} />}
+        </div>
       ))}
       {!rows.length && <Empty>No business activities yet. Add one to name your sole-trader work (rideshare, freelance, consulting) so spend attributes to it.</Empty>}
       {adding ? (
@@ -990,15 +993,38 @@ function BusinessActivities({ entities }: { entities: { id: string; kind: string
   );
 }
 
+// S2: self-declared PSI/Div 86 status on a business activity. Capture-only — it sharpens the PSI guidance
+// on the File page and never changes the position. Saves on change (null clears = not assessed).
+const PSI_OPTIONS = [["", "Not assessed"], ["not_psi", "PSI doesn't apply"], ["psi_applies", "PSI applies"]] as const;
+
+function PsiStatusSelect({ a, onSaved }: { a: IncomeActivity; onSaved: () => void }) {
+  const save = useMutation({
+    mutationFn: (v: string) => api.setIncomeActivityPsiStatus(a.id, v || null),
+    onSuccess: onSaved,
+  });
+  // The server is the source of truth (no stale local copy); show the in-flight value optimistically.
+  const value = save.isPending && typeof save.variables === "string" ? save.variables : (a.psi_status ?? "");
+  return (
+    <div className="flex items-center gap-2 pl-3 text-xs">
+      <span className="inline-flex items-center gap-1 text-muted">PSI status <InfoTip k="psi_status" /></span>
+      <select className={input} value={value} disabled={save.isPending} onChange={(e) => save.mutate(e.target.value)}>
+        {PSI_OPTIONS.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
+      </select>
+      {save.isError && <span className="text-danger">Couldn't save</span>}
+    </div>
+  );
+}
+
 function AddIncomeActivity({ entities, onDone }: { entities: { id: string; kind: string; name: string | null }[]; onDone: () => void }) {
   const [entityId, setEntityId] = useState("");
   const [activityType, setActivityType] = useState<string>("business");
   const [label, setLabel] = useState("");
   const [scope, setScope] = useState("");
+  const [psiStatus, setPsiStatus] = useState("");
   // Sole traders attribute to their individual entity; companies to the company. Offer both.
   const pickable = entities.filter((e) => e.kind === "individual" || e.kind === "company");
   const add = useMutation({
-    mutationFn: () => api.addIncomeActivity({ entity_id: entityId || null, activity_type: activityType, label: label.trim() || null, occupation_scope: scope.trim() || null }),
+    mutationFn: () => api.addIncomeActivity({ entity_id: entityId || null, activity_type: activityType, label: label.trim() || null, occupation_scope: scope.trim() || null, psi_status: activityType === "business" ? (psiStatus || null) : null }),
     onSuccess: onDone,
   });
   return (
@@ -1012,6 +1038,14 @@ function AddIncomeActivity({ entities, onDone }: { entities: { id: string; kind:
         </select>
         <input className={input} placeholder="Occupation e.g. it_professional" value={scope} onChange={(e) => setScope(e.target.value)} />
       </div>
+      {activityType === "business" && (
+        <label className="flex items-center gap-2 text-xs">
+          <span className="inline-flex items-center gap-1 text-muted">PSI status <InfoTip k="psi_status" /></span>
+          <select className={input} value={psiStatus} onChange={(e) => setPsiStatus(e.target.value)}>
+            {PSI_OPTIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
+        </label>
+      )}
       <button className={btn} onClick={() => add.mutate()} disabled={add.isPending}>{add.isPending ? "Saving…" : "Save activity"}</button>
       {add.error && <p className="text-sm text-danger">{(add.error as Error).message}</p>}
     </div>

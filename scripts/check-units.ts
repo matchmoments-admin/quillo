@@ -952,6 +952,11 @@ console.log("readiness");
   check("business income → PSI defer review finding", psi.findings.some((f) => f.id === "psi_check" && f.defer_to_agent && f.severity === "review"));
   check("PSI nudge doesn't change the position or block readiness", psi.readiness_score.ready && psi.position.indicative_taxable_position_cents === 11_000_000);
   check("no business income → no PSI finding", !run(trustReport, noSignals()).findings.some((f) => f.id === "psi_check"));
+  // S2: psi_status variants — declared "applies" sharpens the nudge; "all assessed as not_psi" suppresses it.
+  const psiApplies = run(psiReport, noSignals({ psiAppliesDeclared: true }));
+  check("PSI declared 'applies' → sharpened Div 86 defer finding", psiApplies.findings.some((f) => f.id === "psi_check" && f.defer_to_agent && f.title.includes("PSI applies")));
+  check("PSI sharpened nudge doesn't change the position", psiApplies.position.indicative_taxable_position_cents === 11_000_000);
+  check("PSI all assessed (not applies) → PSI nudge suppressed", !run(psiReport, noSignals({ psiAllAssessed: true })).findings.some((f) => f.id === "psi_check"));
 
   // Phase 3b: income at/above the Div 293 threshold → a defer-to-agent review nudge. Triggered only
   // when the pack supplies a reference-only threshold; never computes the surcharge.
@@ -977,7 +982,7 @@ console.log("readiness");
   // THE INVARIANT: no generated finding/position text asserts tax payable, a refund, or a rate.
   // (The fixed position caption intentionally NEGATES those words and is excluded — it's a vetted constant.)
   const denylist = /refund|tax payable|marginal rate|\b\d{1,2}%\s*(tax|bracket)/i;
-  const everything = [unknown, franking, rental, iawo, disposed, judged, clean, trust, capLoss, psi, div293Hit, gstOver];
+  const everything = [unknown, franking, rental, iawo, disposed, judged, clean, trust, capLoss, psi, psiApplies, div293Hit, gstOver];
   const generatedText = everything.flatMap((r) => [
     ...r.findings.flatMap((f) => [f.title, f.general_info_note]),
     ...r.position.lines.flatMap((l) => [l.basis, l.why]),

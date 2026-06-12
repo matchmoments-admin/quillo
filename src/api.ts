@@ -45,6 +45,7 @@ import {
   listEntityRoles,
   listIncomeActivities,
   addIncomeActivity,
+  updateIncomeActivityPsiStatus,
   addCapitalLoss,
   listCapitalLosses,
   addDepreciationOpening,
@@ -512,6 +513,7 @@ export async function handleApi(
   if (resource === "income-activities") {
     if (m === "GET" && !id) return json({ income_activities: await listIncomeActivities(env, uid) });
     if (m === "POST" && !id) return json({ id: await addIncomeActivity(env, uid, await req.json()) });
+    if (m === "PUT" && id) { await updateIncomeActivityPsiStatus(env, uid, id, (await req.json() as { psi_status?: unknown }).psi_status); return json({ ok: true }); }
     if (m === "DELETE" && id) { await deleteRow(env, uid, "income_activities", id); return json({ ok: true }); }
   }
   if (resource === "rules") {

@@ -973,4 +973,7 @@ export interface WorkUse {
   car_work_km: number | null;
   wfh_days_per_week?: number | null;
   wfh_weeks?: number | null;
+  // 0058: capture-only context (guidance, not the $ figure). GET returns 0/1; POST accepts boolean.
+  has_dedicated_home_office?: number | boolean | null;
+  wfh_has_record?: number | boolean | null;
 }

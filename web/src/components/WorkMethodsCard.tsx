@@ -20,12 +20,16 @@ export function WorkMethodsCard({ fyNum }: { fyNum: number }) {
   const [weeks, setWeeks] = useState<string>("");
   const [hours, setHours] = useState<string>("");
   const [km, setKm] = useState<string>("");
+  const [office, setOffice] = useState(false);
+  const [hasRecord, setHasRecord] = useState(false);
   const [seeded, setSeeded] = useState<number | null>(null);
   if (data && seeded !== fyNum) {
     setDays(data.wfh_days_per_week != null ? String(data.wfh_days_per_week) : "");
     setWeeks(data.wfh_weeks != null ? String(data.wfh_weeks) : "");
     setHours(data.wfh_hours != null ? String(data.wfh_hours) : "");
     setKm(data.car_work_km != null ? String(data.car_work_km) : "");
+    setOffice(!!data.has_dedicated_home_office);
+    setHasRecord(!!data.wfh_has_record);
     setSeeded(fyNum);
   }
 
@@ -46,6 +50,8 @@ export function WorkMethodsCard({ fyNum }: { fyNum: number }) {
         car_work_km: km.trim() === "" ? null : Math.max(0, Number(km)),
         wfh_days_per_week: days.trim() === "" ? null : Math.max(0, Number(days)),
         wfh_weeks: weeks.trim() === "" ? null : Math.max(0, Number(weeks)),
+        has_dedicated_home_office: office,
+        wfh_has_record: hasRecord,
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["work-use", fyNum] });
@@ -90,6 +96,28 @@ export function WorkMethodsCard({ fyNum }: { fyNum: number }) {
         <Input type="number" min="0" value={km} onChange={(e) => setKm(e.target.value)} placeholder="e.g. 1200" />
         <span className="mt-0.5 block text-xs text-muted">≈ {money(estCar)} at 88c/km (max 5,000 km)</span>
       </label>
+      <div className="space-y-2 border-t border-line pt-3">
+        <label className="flex items-start gap-2 text-sm">
+          <input type="checkbox" checked={office} onChange={(e) => setOffice(e.target.checked)} className="mt-0.5 h-4 w-4 flex-none accent-forest" />
+          <span>I have a <span className="font-medium">dedicated home office</span> (a room used mainly for work)</span>
+        </label>
+        <label className="flex items-start gap-2 text-sm">
+          <input type="checkbox" checked={hasRecord} onChange={(e) => setHasRecord(e.target.checked)} className="mt-0.5 h-4 w-4 flex-none accent-forest" />
+          <span>I keep a <span className="font-medium">record of my actual hours</span> worked from home</span>
+        </label>
+        {!hasRecord && (
+          <p className="text-xs text-warn">
+            Since 1 July 2024 the ATO needs a record of your <span className="font-medium">actual</span> hours for the whole year — a 4-week
+            estimate isn't accepted for the fixed-rate method. Start a simple log (a diary or timesheet) now.
+          </p>
+        )}
+        {office && (
+          <p className="text-xs text-muted">
+            A dedicated office doesn't change the 70c fixed rate, but it may open up the actual-cost method and cleaning claims —
+            worth a chat with a registered tax agent.
+          </p>
+        )}
+      </div>
       <div className="flex flex-wrap items-center gap-3">
         <Button onClick={() => save.mutate()} disabled={save.isPending}>{save.isPending ? "Saving…" : "Save"}</Button>
         <span className="text-xs text-muted">Approximate — your hand-off shows the exact figure using this year's ATO rates.</span>

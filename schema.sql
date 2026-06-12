@@ -427,7 +427,7 @@ CREATE TABLE IF NOT EXISTS transaction_attributions (
   work_use_pct             REAL,                    -- mixed-use apportionment
   deduction_provision      TEXT,                    -- s8-1_general|div40|div43|s40-880|wfh_fixed_rate|private_non_deductible
   creates_shareholder_loan INTEGER NOT NULL DEFAULT 0,
-  shareholder_loan_id      TEXT,                    -- FK shareholder_loans.id (Phase C); NULL until then
+  shareholder_loan_id      TEXT,                    -- reserved (always NULL); shareholder_loans table dropped in 0052 — kept to avoid a table rebuild
   created_at               TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_txn_attr_txn    ON transaction_attributions(user_id, transaction_id);
@@ -453,34 +453,8 @@ CREATE TABLE IF NOT EXISTS company_tax_positions (
 );
 CREATE INDEX IF NOT EXISTS idx_cotaxpos_user ON company_tax_positions(user_id, fy);
 
-CREATE TABLE IF NOT EXISTS blackhole_costs (
-  id                  TEXT PRIMARY KEY,
-  user_id             TEXT NOT NULL,
-  entity_id           TEXT NOT NULL,
-  incurred_date       TEXT NOT NULL,
-  amount_cents        INTEGER NOT NULL,
-  description         TEXT,
-  immediate_deduction INTEGER NOT NULL DEFAULT 0,
-  years_claimed       INTEGER NOT NULL DEFAULT 0,
-  created_at          TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE INDEX IF NOT EXISTS idx_blackhole_user ON blackhole_costs(user_id, entity_id);
-
-CREATE TABLE IF NOT EXISTS shareholder_loans (
-  id                       TEXT PRIMARY KEY,
-  user_id                  TEXT NOT NULL,
-  company_entity_id        TEXT NOT NULL,
-  shareholder_person_id    TEXT NOT NULL,
-  direction                TEXT NOT NULL DEFAULT 'person_funds_company',
-  balance_cents            INTEGER NOT NULL DEFAULT 0,
-  loan_agreement_in_place  INTEGER NOT NULL DEFAULT 0,
-  benchmark_rate_pct       REAL,
-  min_yearly_repayment_cents INTEGER,
-  deemed_dividend_risk     INTEGER NOT NULL DEFAULT 0,
-  updated_at               TEXT NOT NULL DEFAULT (datetime('now')),
-  UNIQUE (user_id, company_entity_id, shareholder_person_id, direction)
-);
-CREATE INDEX IF NOT EXISTS idx_shloan_user ON shareholder_loans(user_id, company_entity_id);
+-- blackhole_costs (s40-880) and shareholder_loans (Phase C) were dropped in migration 0052 — both were
+-- dark (no live read path; balance recomputed from transaction_attributions). See docs/adr-0002.
 
 CREATE TABLE IF NOT EXISTS rd_claims (
   id                          TEXT PRIMARY KEY,

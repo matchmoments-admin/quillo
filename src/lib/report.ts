@@ -125,6 +125,10 @@ export interface Report {
   // total_deductions_cents. The itemised running costs these methods cover stay excluded (deny-by-
   // default needs_apportionment), so there's no double-claim. undefined ⇒ byte-identical legacy totals.
   work_method?: WorkMethodDeductions;
+  // Phase 3b: true when the user supplied WFH/car inputs but THIS FY has no configured rate in the pack
+  // (a prior year the active-FY switcher allowed) — so the deduction is intentionally NOT computed (would
+  // over-claim at the current rate). The UI/readiness should prompt the user to enter it manually.
+  work_method_rates_unavailable?: boolean;
   // Phase B / G2: deductions counted from explicit attributions (payer≠claimant) rather than the raw
   // transaction. Present only when the attribution_engine flag is on AND there are attribution rows.
   // individual_cents + property_cents are already inside gross_deductions/total_deductions (they reduce
@@ -621,14 +625,23 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   // default (flag) ⇒ work_method stays undefined and the totals below are byte-identical to before.
   const fyLabel = `${startYear}-${String((startYear + 1) % 100).padStart(2, "0")}`;
   let work_method: WorkMethodDeductions | undefined;
+  let work_method_rates_unavailable = false; // WFH/car inputs exist but the FY has no configured rate (prior year)
   if (featureOn(env, "wfh_car_methods")) {
     const wu = await env.DB.prepare(`SELECT wfh_hours, car_work_km FROM work_use_inputs WHERE user_id = ? AND fy = ?`)
       .bind(userId, startYear)
       .first<{ wfh_hours: number | null; car_work_km: number | null }>();
     if (wu && ((wu.wfh_hours ?? 0) > 0 || (wu.car_work_km ?? 0) > 0)) {
       const thresholds = (rulePack as { thresholds_by_fy?: Record<string, { wfh_fixed_rate_cents_per_hour?: number; car_cents_per_km?: number; car_km_cap?: number }> }).thresholds_by_fy?.[fyLabel];
-      const computed = computeWorkMethodDeductions(wu, workUseRatesForFy(thresholds));
-      if (computed.total_cents > 0) work_method = computed;
+      // Only compute when THIS FY has configured rates. Otherwise the rate resolver would silently apply
+      // the CURRENT-FY default (70c WFH / 88c km) to a prior year — over-claiming, since the active-FY
+      // switcher lets users do prior-year work. No rates ⇒ skip + flag, never a wrong figure.
+      const hasRates = !!thresholds && (thresholds.wfh_fixed_rate_cents_per_hour != null || thresholds.car_cents_per_km != null);
+      if (hasRates) {
+        const computed = computeWorkMethodDeductions(wu, workUseRatesForFy(thresholds));
+        if (computed.total_cents > 0) work_method = computed;
+      } else {
+        work_method_rates_unavailable = true;
+      }
     }
   }
 
@@ -739,6 +752,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
     refunds_cents,
     resolved_deductible_cents,
     work_method,
+    work_method_rates_unavailable: work_method_rates_unavailable || undefined,
     // Surface the attribution split so the display layer can render matching lines (keeping the
     // position == sum-of-lines invariant). Omitted entirely when there are no attributions.
     attribution:

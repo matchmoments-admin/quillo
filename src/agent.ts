@@ -3048,10 +3048,14 @@ export class TaxAgent extends Agent<Env> {
       .filter((p) => p.income_cents > 0 && !haveSummaryFor.has(p.property_id))
       .map((p) => ({ property_id: p.property_id, label: p.label }));
 
-    const thresholds = (pack as { thresholds_by_fy?: Record<string, { instant_asset_write_off_cents?: number; div293_threshold_cents?: number }> }).thresholds_by_fy ?? {};
+    const thresholds = (pack as { thresholds_by_fy?: Record<string, { instant_asset_write_off_cents?: number; div293_threshold_cents?: number; gst_registration_threshold_cents?: number }> }).thresholds_by_fy ?? {};
     // Prior-year capital losses are an all-time carry-forward (not FY-scoped) — sum them so readiness
     // can surface a defer finding (capture-only; never applied to the headline).
     const capLoss = await this.env.DB.prepare(`SELECT COALESCE(SUM(loss_cents),0) AS total FROM capital_loss_carryins WHERE user_id = ?`).bind(userId).first<{ total: number }>();
+    // GST registration status for the turnover nudge — registered if the tenant default is set OR any
+    // entity is flagged (mirrors gstTotals' registration test in ledger-totals.ts).
+    const entGstReg = (await this.env.DB.prepare(`SELECT COUNT(*) AS n FROM entities WHERE user_id = ? AND COALESCE(gst_registered,0) = 1`).bind(userId).first<{ n: number }>())?.n ?? 0;
+    const isGstRegistered = (profile.gst_registered ?? 0) === 1 || entGstReg > 0;
     const signals: FilingReadinessSignals = {
       unknownBucketCents: unknownRow?.total_cents ?? 0,
       unknownBucketN: unknownRow?.n ?? 0,
@@ -3066,6 +3070,8 @@ export class TaxAgent extends Agent<Env> {
       capitalLossCarryinCents: capLoss?.total ?? 0,
       fxUnconvertedN: (fxIncome?.n ?? 0) + (fxTxns?.n ?? 0),
       div293ThresholdCents: thresholds[fy]?.div293_threshold_cents ?? null,
+      gstRegistrationThresholdCents: thresholds[fy]?.gst_registration_threshold_cents ?? null,
+      isGstRegistered,
     };
 
     const readiness = assessReadiness({ report, situation, claimMatches: [...matchedById.values()], signals, generatedAt: new Date().toISOString(), excludeNonDeductible: featureOn(this.env, "position_excludes_nondeductible") });

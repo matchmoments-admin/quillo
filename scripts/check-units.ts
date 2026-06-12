@@ -962,10 +962,22 @@ console.log("readiness");
   const div293NoThreshold = run(mkReport({ income: { by_type: [], gross_cents: 99_000_000, withholding_cents: 0, franking_credit_cents: 0, foreign_tax_paid_cents: 0 } }), noSignals());
   check("high income but no Div 293 threshold supplied → no finding", !div293NoThreshold.findings.some((f) => f.id === "div293_income"));
 
+  // S1 (Phase 4): business turnover at/above the GST registration threshold + not registered → defer nudge.
+  const gstBiz = (gross: number) => mkReport({ income: { by_type: [{ income_type: "business", n: 1, gross_cents: gross, net_cents: gross, withholding_cents: 0, franking_credit_cents: 0, foreign_tax_paid_cents: 0 }], gross_cents: gross, withholding_cents: 0, franking_credit_cents: 0, foreign_tax_paid_cents: 0 }, total_income_cents: gross, taxable_position_cents: gross });
+  const gstOver = run(gstBiz(8_000_000), noSignals({ gstRegistrationThresholdCents: 7_500_000, isGstRegistered: false }));
+  check("turnover ≥ GST threshold + not registered → defer review finding", gstOver.findings.some((f) => f.id === "gst_registration_threshold" && f.defer_to_agent && f.severity === "review"));
+  check("GST nudge doesn't change the position", gstOver.position.indicative_taxable_position_cents === 8_000_000);
+  const gstUnder = run(gstBiz(5_000_000), noSignals({ gstRegistrationThresholdCents: 7_500_000, isGstRegistered: false }));
+  check("turnover below GST threshold → no finding", !gstUnder.findings.some((f) => f.id === "gst_registration_threshold"));
+  const gstReg = run(gstBiz(8_000_000), noSignals({ gstRegistrationThresholdCents: 7_500_000, isGstRegistered: true }));
+  check("already GST-registered → no finding even above threshold", !gstReg.findings.some((f) => f.id === "gst_registration_threshold"));
+  const gstNoThreshold = run(gstBiz(8_000_000), noSignals({ isGstRegistered: false }));
+  check("no GST threshold supplied → no finding", !gstNoThreshold.findings.some((f) => f.id === "gst_registration_threshold"));
+
   // THE INVARIANT: no generated finding/position text asserts tax payable, a refund, or a rate.
   // (The fixed position caption intentionally NEGATES those words and is excluded — it's a vetted constant.)
   const denylist = /refund|tax payable|marginal rate|\b\d{1,2}%\s*(tax|bracket)/i;
-  const everything = [unknown, franking, rental, iawo, disposed, judged, clean, trust, capLoss, psi, div293Hit];
+  const everything = [unknown, franking, rental, iawo, disposed, judged, clean, trust, capLoss, psi, div293Hit, gstOver];
   const generatedText = everything.flatMap((r) => [
     ...r.findings.flatMap((f) => [f.title, f.general_info_note]),
     ...r.position.lines.flatMap((l) => [l.basis, l.why]),

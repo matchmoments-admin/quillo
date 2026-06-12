@@ -66,6 +66,8 @@ export interface FilingReadinessSignals {
   capitalLossCarryinCents: number; // prior-year capital losses captured at Set-up (0 if none)
   fxUnconvertedN?: number; // foreign-currency rows we couldn't convert to AUD (excluded from the position)
   div293ThresholdCents?: number | null; // pack reference-only Div 293 income threshold (null if no rate block for the FY); drives a defer nudge only — NEVER a computed liability
+  gstRegistrationThresholdCents?: number | null; // pack GST/consumption-tax registration threshold for the FY (jurisdiction-neutral; null if absent); drives the turnover nudge
+  isGstRegistered?: boolean; // tenant default profiles.gst_registered OR any entity flag (mirrors gstTotals); suppresses the registration nudge
 }
 
 export interface FilingReadiness {
@@ -383,6 +385,23 @@ export function assessReadiness(input: {
   if (report.income.by_type.some((it) => it.income_type === "business")) {
     findings.push(f("psi_check", "judgement", "review", "Sole-trader income — check whether the PSI rules apply",
       `Some of your income is sole-trader/ABN business income. If it's mainly a reward for your personal skills or labour (typical for contractors and freelancers), the Personal Services Income (PSI) rules in Division 86 can limit which expenses you're able to claim. The PSI tests are fact-specific — your registered tax agent will confirm whether they apply and what stays deductible.${DEFER}`, true, []));
+  }
+  // GST/consumption-tax registration threshold — a self-employed taxpayer whose business turnover
+  // reaches the registration threshold is generally required to register. We never assert they MUST
+  // (the turnover test has projection/grouping nuances we don't model) — a defer nudge when turnover is
+  // at/above the pack threshold AND no registration is on file. Jurisdiction-neutral: the threshold comes
+  // from the rule pack (AU GST $75k today; a UK VAT threshold swaps in via the pack), and "business"
+  // turnover is the assessable business income types (incl. foreign-sourced business income).
+  const businessTurnoverCents = report.income.by_type
+    .filter((it) => it.income_type === "business" || it.income_type === "foreign_business")
+    .reduce((s, it) => s + it.gross_cents, 0);
+  if (
+    signals.gstRegistrationThresholdCents != null &&
+    !signals.isGstRegistered &&
+    businessTurnoverCents >= signals.gstRegistrationThresholdCents
+  ) {
+    findings.push(f("gst_registration_threshold", "threshold", "review", "Business turnover near the GST registration threshold",
+      `Your recorded business turnover (${money(businessTurnoverCents)}) is at or above the GST registration threshold (${money(signals.gstRegistrationThresholdCents)}), and no GST registration is on file. A business that reaches the threshold is generally required to register for GST (and would then charge GST on its sales and claim credits on its purchases). Whether and from when you must register depends on the turnover test — confirm with a registered tax agent.${DEFER}`, true, []));
   }
   // Div 293 — an extra 15% tax on concessional super contributions for higher-income earners. It's a
   // separate assessment the ATO/agent computes (NOT part of the indicative position), so this is a

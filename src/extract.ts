@@ -1128,6 +1128,30 @@ export interface GuideResult {
   steps: string[];
 }
 
+// Phase 2 (flag chat_nav): the routes the chat agent may propose navigating to. An ENUM in the tool
+// schema is the first allowlist (the model literally cannot emit an off-list route); chatTurn also
+// re-checks server-side. Gated, specialised, or role-locked routes (/admin, /partner, /onboarding,
+// /quickbooks, /txn/:id) are deliberately excluded.
+export const ALLOWED_NAV_ROUTES = [
+  "/dashboard", "/inbox", "/transactions", "/income", "/assets", "/documents",
+  "/accounts", "/reconcile", "/reports", "/savings", "/review", "/filing", "/settings", "/glossary",
+] as const;
+export type NavRoute = (typeof ALLOWED_NAV_ROUTES)[number];
+
+// Shared `navigate` property — added to both answer tools so the schema is byte-stable; the model is
+// only INSTRUCTED to use it when chat_nav is on (buildAskSystem), and chatTurn drops it when off, so
+// flag OFF ⇒ no navigate in the output ⇒ byte-identical.
+const NAVIGATE_PROP = {
+  type: "object",
+  additionalProperties: false,
+  required: ["route", "reason"],
+  description: "ONLY when the user clearly wants to GO to a screen ('take me to my properties', 'show my transactions'). Renders as a 'Take me to …' button — never a silent jump. Omit for everything else.",
+  properties: {
+    route: { type: "string", enum: ALLOWED_NAV_ROUTES as unknown as string[], description: "The screen to open." },
+    reason: { type: "string", description: "Short human label for the button target, e.g. 'your transactions'." },
+  },
+} as const;
+
 const ANSWER_TOOL: Anthropic.Tool = {
   name: "give_answer",
   description: "Answer the user's question about their OWN tax records: a direct answer grounded only in their data, plus caveats, related screens, and optionally a categorisation rule to remember. Call exactly once.",
@@ -1149,6 +1173,7 @@ const ANSWER_TOOL: Anthropic.Tool = {
           ato_label: { type: "string", description: "Optional ATO label / deduction category." },
         },
       },
+      navigate: NAVIGATE_PROP,
     },
   },
 };
@@ -1177,6 +1202,7 @@ export interface AnswerResult {
   see_also: string[];
   suggested_rule?: { pattern: string; bucket: string; ato_label?: string };
   proposed_actions?: ProposedAction[];
+  navigate?: { route: NavRoute; reason: string };
 }
 
 const CREDIT_OR_UNKNOWN_BUCKETS = new Set(["income_business", "income_property", "income_personal", "refund", "unknown"]);
@@ -1275,6 +1301,7 @@ const ANSWER_TOOL_WITH_ACTIONS: Anthropic.Tool = {
           },
         },
       },
+      navigate: NAVIGATE_PROP,
     },
   },
 };
@@ -1289,6 +1316,7 @@ export async function extractAnswer(
   system: string,
   messages: { role: "user" | "assistant"; content: string }[],
   actions?: { aliasToId: Map<string, DigestRef> },
+  nav?: boolean,
 ): Promise<AnswerResult> {
   const msg = await llm.create(
     {
@@ -1303,16 +1331,25 @@ export async function extractAnswer(
   );
   const toolUse = msg.content.find((c): c is Anthropic.ToolUseBlock => c.type === "tool_use" && c.name === ANSWER_TOOL.name);
   if (!toolUse) throw new Error("model did not return a give_answer tool call");
-  const input = toolUse.input as { answer?: unknown; caveats?: unknown; see_also?: unknown; suggested_rule?: unknown; proposed_actions?: unknown };
+  const input = toolUse.input as { answer?: unknown; caveats?: unknown; see_also?: unknown; suggested_rule?: unknown; proposed_actions?: unknown; navigate?: unknown };
   const answer = typeof input.answer === "string" && input.answer.trim() ? input.answer.trim() : "I couldn't answer that from your records.";
   const strList = (v: unknown) => (Array.isArray(v) ? v.filter((s): s is string => typeof s === "string" && s.trim().length > 0).slice(0, 4) : []);
+  // Phase 2 (nav): only surface a navigation when chat_nav is on AND the route is on the allowlist —
+  // a second guard behind the schema enum. Off ⇒ navigate is never returned ⇒ byte-identical.
+  let navigate: AnswerResult["navigate"];
+  if (nav) {
+    const nv = input.navigate as { route?: unknown; reason?: unknown } | undefined;
+    if (nv && typeof nv.route === "string" && (ALLOWED_NAV_ROUTES as readonly string[]).includes(nv.route)) {
+      navigate = { route: nv.route as NavRoute, reason: typeof nv.reason === "string" ? nv.reason.trim().slice(0, 60) : "" };
+    }
+  }
   // Only surface a suggested rule for a valid DEBIT spend bucket — never an income/refund re-bucket.
   let suggested_rule: AnswerResult["suggested_rule"];
   const sr = input.suggested_rule as { pattern?: unknown; bucket?: unknown; ato_label?: unknown } | undefined;
   if (sr && typeof sr.pattern === "string" && sr.pattern.trim() && typeof sr.bucket === "string" && isBucket(sr.bucket) && !CREDIT_OR_UNKNOWN_BUCKETS.has(sr.bucket)) {
     suggested_rule = { pattern: sr.pattern.trim().slice(0, 60), bucket: sr.bucket, ato_label: typeof sr.ato_label === "string" ? sr.ato_label.trim().slice(0, 60) : undefined };
   }
-  if (!actions) return { answer, caveats: strList(input.caveats), see_also: strList(input.see_also), suggested_rule };
+  if (!actions) return { answer, caveats: strList(input.caveats), see_also: strList(input.see_also), suggested_rule, navigate };
   // Actions mode: one confirm-card channel. A stray suggested_rule (the schema dropped it, but a model
   // can echo old-turn shapes) folds into an add_rule proposal rather than rendering a second UI path.
   let proposed_actions = validateProposedActions(input.proposed_actions, actions.aliasToId);
@@ -1326,7 +1363,7 @@ export async function extractAnswer(
       ...(suggested_rule.ato_label ? { ato_label: suggested_rule.ato_label } : {}),
     }];
   }
-  return { answer, caveats: strList(input.caveats), see_also: strList(input.see_also), proposed_actions: proposed_actions.length ? proposed_actions : undefined };
+  return { answer, caveats: strList(input.caveats), see_also: strList(input.see_also), proposed_actions: proposed_actions.length ? proposed_actions : undefined, navigate };
 }
 
 /** One metered Haiku call → a short personalised walkthrough. Plain structured output, no prose parsing. */

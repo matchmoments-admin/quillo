@@ -129,11 +129,21 @@ export function renderTxnDigest(rows: AskDigestRow[], total: number): { text: st
  * C3: `txnDigest` (flag ask_actions) appends the aliased FY transaction list + the actions guardrails;
  * OMITTED ⇒ the output is byte-identical to the pre-C3 prompt (the flag-off contract, golden-pinned).
  */
-export function buildAskSystem(situationText: string, positionText: string, txnDigest?: string): string {
+export function buildAskSystem(
+  situationText: string,
+  positionText: string,
+  txnDigest?: string,
+  opts?: { pageRoute?: string; nav?: boolean },
+): string {
   return (
     "You are Quillo, an Australian tax-evidence assistant answering questions about THIS user's own " +
     "records, in a short back-and-forth. " +
     ASK_GUARDRAILS +
+    // Phase 2: page awareness — prefer help scoped to where the user already is, but still answer
+    // portfolio-wide questions. Only added when chat_nav is on (opts.nav) so OFF ⇒ byte-identical.
+    (opts?.nav && opts.pageRoute
+      ? `\n\nThe user is currently viewing the ${opts.pageRoute} screen — prefer answering in that context when relevant, but still help with whole-situation questions.`
+      : "") +
     "\n\nWhat we know about them:\n" +
     (situationText || "(situation not set up yet)") +
     "\n\nTheir tracked tax position this year (their actual figures, JSON):\n" +
@@ -149,6 +159,11 @@ export function buildAskSystem(situationText: string, positionText: string, txnD
       ? ""
       : "When the user wants a repeating merchant categorised a certain way, you " +
         "may propose a rule via suggested_rule (debit categories only). ") +
+    (opts?.nav
+      ? "When the user clearly wants to GO to one of their screens (e.g. 'take me to my transactions', " +
+        "'show me my assets'), set `navigate` with the allowed route + a short reason — it renders as a " +
+        "'Take me to …' button, never a silent jump. Don't navigate for ordinary questions. "
+      : "") +
     "Call give_answer exactly once per reply."
   );
 }

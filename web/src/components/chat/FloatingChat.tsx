@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   AssistantRuntimeProvider,
@@ -46,6 +47,11 @@ export function FloatingChat() {
 function FloatingChatInner() {
   const { fy } = useActiveFy();
   const { open, toggle, closeChat, unread, bumpUnread, clearUnread } = useChatUI();
+  const location = useLocation();
+  // Send the current route as page context (Phase 2) so the agent can scope its answer and propose
+  // navigation. Read from a ref so onNew's closure always sees the live route without re-binding.
+  const pageRef = useRef(location.pathname);
+  pageRef.current = location.pathname;
 
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [isRunning, setRunning] = useState(false);
@@ -70,7 +76,7 @@ function FloatingChatInner() {
     setMessages((prev) => [...prev, { id: uid(), role: "user", text }]);
     setRunning(true);
     try {
-      const r = await api.chat(text, sessionId, fy);
+      const r = await api.chat(text, sessionId, fy, pageRef.current);
       setSessionId(r.session_id);
       setMessages((prev) => [...prev, { id: uid(), role: "assistant", text: r.answer, extra: r }]);
       if (!openRef.current) bumpUnread();
@@ -133,7 +139,7 @@ function FloatingChatInner() {
                   message.role === "user" ? (
                     <UserBubble message={message as unknown as RenderMsg} />
                   ) : (
-                    <AssistantBubble message={message as unknown as RenderMsg} />
+                    <AssistantBubble message={message as unknown as RenderMsg} onNavigate={closeChat} />
                   )
                 }
               </ThreadPrimitive.Messages>
@@ -223,7 +229,7 @@ function UserBubble({ message }: { message: RenderMsg }) {
   return <p className="ml-auto max-w-[85%] whitespace-pre-wrap rounded-2xl bg-ink px-3 py-2 text-sm text-cream">{msgText(message)}</p>;
 }
 
-function AssistantBubble({ message }: { message: RenderMsg }) {
+function AssistantBubble({ message, onNavigate }: { message: RenderMsg; onNavigate: () => void }) {
   const extra = message.metadata?.custom?.extra as AskAnswer | undefined;
   return (
     <div className="max-w-[92%] space-y-2 rounded-2xl border border-line bg-surface p-3 text-sm">
@@ -238,7 +244,25 @@ function AssistantBubble({ message }: { message: RenderMsg }) {
       {!!extra?.see_also?.length && <p className="text-xs text-muted">See also: {extra.see_also.join(" · ")}</p>}
       {extra?.proposed_actions?.map((a, j) => <ProposedActionCard key={j} action={a} />)}
       {extra?.suggested_rule && <SaveRuleInline rule={extra.suggested_rule} />}
+      {extra?.navigate && <NavigateButton navigate={extra.navigate} onNavigate={onNavigate} />}
     </div>
+  );
+}
+
+// Phase 2 (chat_nav): the agent's "take me to a screen" affordance. A visible button — never a silent
+// jump — that uses React Router to swap the page and closes the panel (so the user lands on the page).
+function NavigateButton({ navigate, onNavigate }: { navigate: { route: string; reason: string }; onNavigate: () => void }) {
+  const go = useNavigate();
+  return (
+    <button
+      onClick={() => {
+        go(navigate.route);
+        onNavigate();
+      }}
+      className="flex w-full items-center justify-between gap-2 rounded-lg border border-line bg-card px-3 py-2 text-xs font-medium text-ink transition hover:bg-paper2"
+    >
+      <span>Take me to {navigate.reason || navigate.route} →</span>
+    </button>
   );
 }
 

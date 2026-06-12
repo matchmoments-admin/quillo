@@ -293,10 +293,10 @@ export async function handleApi(
     if (!featureOn(env, "ask_quillo")) return json({ error: "not available" }, 404);
     if (m === "GET" && id) return json(await stub.chatHistory(uid, id));
     if (m === "POST" && !id) {
-      const { session_id, message, fy } = (await req.json().catch(() => ({}))) as { session_id?: string; message?: string; fy?: number };
+      const { session_id, message, fy, page } = (await req.json().catch(() => ({}))) as { session_id?: string; message?: string; fy?: number; page?: string };
       if (!message || !message.trim()) return json({ error: "missing message" }, 400);
       try {
-        return json(await stub.chatTurn(uid, session_id ?? null, message, Math.trunc(Number(fy)) || defaultFy()));
+        return json(await stub.chatTurn(uid, session_id ?? null, message, Math.trunc(Number(fy)) || defaultFy(), typeof page === "string" ? page : undefined));
       } catch (e) {
         const msg = (e as Error).message;
         if (msg === "consent_required") return json({ error: "consent_required" }, 403);

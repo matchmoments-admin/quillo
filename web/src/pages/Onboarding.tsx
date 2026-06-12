@@ -218,11 +218,11 @@ export function Onboarding() {
               Couldn't read that ({(draft.error as Error).message}). You can fill it in manually instead.
             </p>
           )}
-          <div className="mt-3 flex items-center gap-2">
-            <Button onClick={() => draft.mutate(intake)} disabled={!intake.trim() || draft.isPending}>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <Button className="whitespace-nowrap" onClick={() => draft.mutate(intake)} disabled={!intake.trim() || draft.isPending}>
               {draft.isPending ? "Reading…" : "Extract & continue"}
             </Button>
-            <Button variant="ghost" onClick={goNext}>
+            <Button className="whitespace-nowrap" variant="ghost" onClick={goNext}>
               Skip — I'll fill it in
             </Button>
           </div>

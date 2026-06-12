@@ -59,6 +59,7 @@ import {
   listKeys,
   mintKey,
   revokeKey,
+  clearIncomeCgt,
 } from "./lib/situation-write";
 import { setAttributions, getAttributions, clearAttributions } from "./lib/attribution-write";
 import { buildConnectUrl, qboStatus } from "./lib/qbo-oauth";
@@ -722,6 +723,9 @@ export async function handleApi(
       await env.DB.prepare(`UPDATE transactions SET matched_income_id = NULL WHERE user_id = ? AND matched_income_id = ?`)
         .bind(uid, id)
         .run();
+      // Slice B: drop any AMMA capital-gain rows materialised from this distribution, or its gain would
+      // orphan into the position with no income row left to remove it (silent over-count).
+      await clearIncomeCgt(env, uid, id);
       await deleteRow(env, uid, "income", id);
       return json({ ok: true });
     }
@@ -730,7 +734,10 @@ export async function handleApi(
   // ── CGT (#138): holdings (cgt_assets) + disposal events (cgt_events) ───────
   if (resource === "cgt-assets") {
     if (m === "GET" && !id) {
-      const assets = (await env.DB.prepare(`SELECT id, asset_kind, code, label, units, acquired_date, cost_base_cents, status FROM cgt_assets WHERE user_id = ? ORDER BY acquired_date DESC, created_at DESC`).bind(uid).all()).results ?? [];
+      // Only user-entered holdings — auto-materialised assets (property disposal = Slice F, managed-fund AMMA
+      // capital gains = Slice B) are managed from their source row, not the capital register, so deleting one
+      // here can't desync it from its source.
+      const assets = (await env.DB.prepare(`SELECT id, asset_kind, code, label, units, acquired_date, cost_base_cents, status FROM cgt_assets WHERE user_id = ? AND property_id IS NULL AND income_id IS NULL ORDER BY acquired_date DESC, created_at DESC`).bind(uid).all()).results ?? [];
       return json({ cgt_assets: assets });
     }
     if (m === "POST" && !id) return json({ id: await stub.recordCgtAsset(uid, await req.json()) });

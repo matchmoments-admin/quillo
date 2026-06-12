@@ -1,7 +1,8 @@
 import { Agent } from "agents";
 import type { Env } from "./env";
 import { getProfile, getSituation, renderSituation, type Profile, type Situation, type UserRule } from "./lib/db";
-import { addRule, addAccount } from "./lib/situation-write";
+import { addRule, addAccount, syncIncomeCgtFromComponents, clearIncomeCgt } from "./lib/situation-write";
+import { ordinaryAssessableCents, validateComponents, parseAmmaComponents, type AmmaComponents } from "./lib/managed-fund";
 import { QuickBooksAdapter } from "./ledger/qbo";
 import { revokeAndDisconnect } from "./lib/qbo-oauth";
 import { purgeTenant as purgeTenantData, exportTenant as exportTenantData, flagOldData as flagOldDataSweep, hasPendingNudge, type PurgeResult } from "./lib/retention";
@@ -1562,12 +1563,39 @@ export class TaxAgent extends Agent<Env> {
       txn_date?: string | null;
       detail_json?: string | null;
       needs_review?: number;
+      components?: AmmaComponents | null; // Slice B: AMMA managed-fund component breakdown (managed_fund_distribution only)
     },
   ): Promise<string> {
     const id = crypto.randomUUID();
     const currency = (inc.currency ?? "AUD").trim().toUpperCase();
     const fy = inc.fy ?? fyForDate(inc.txn_date ?? null) ?? this.currentFyLabel();
-    const fx = await toAud(this.env, inc.gross_cents, currency, inc.txn_date ?? null);
+    // ── Slice B: managed-fund (AMMA) component split (flag-gated AND presence-gated). When a
+    // managed_fund_distribution carries components, the row's assessable gross is the ORDINARY portion only;
+    // the capital-gain buckets are materialised into the CGT engine (below) so they aren't taxed as ordinary
+    // income, and the AMIT cost-base amount stays out of the position. No components / flag off ⇒ unchanged.
+    let grossCents = inc.gross_cents;
+    let frankingCredit = inc.franking_credit_cents ?? 0;
+    let foreignTax = inc.foreign_tax_paid_cents ?? null;
+    let detailJson = inc.detail_json ?? null;
+    let componentNeedsReview = 0;
+    let materialiseCg = false;
+    const comps = inc.income_type === "managed_fund_distribution" && featureOn(this.env, "mf_components") ? inc.components ?? null : null;
+    if (comps) {
+      const valid = validateComponents(comps).ok;
+      grossCents = ordinaryAssessableCents(comps);
+      frankingCredit = comps.franking_credit_cents;
+      foreignTax = comps.foreign_tax_paid_cents;
+      let base: Record<string, unknown> = {};
+      try { base = inc.detail_json ? (JSON.parse(inc.detail_json) as Record<string, unknown>) : {}; } catch { base = {}; }
+      detailJson = JSON.stringify({ ...base, components: comps });
+      // v1 safety: only split into the CGT engine when AUD (components aren't FX-converted) and personal
+      // (cgtTotals isn't entity-scoped, so an entity's CG would leak into the personal headline). Otherwise
+      // record the ordinary income + components but flag for review and DON'T materialise the gain.
+      const safeToSplit = valid && currency === "AUD" && !inc.entity_id;
+      componentNeedsReview = safeToSplit ? 0 : 1;
+      materialiseCg = safeToSplit;
+    }
+    const fx = await toAud(this.env, grossCents, currency, inc.txn_date ?? null);
     // Convert the non-gross money columns to AUD with the SAME rate as gross, so the reporting
     // seam (which sums these columns directly) never mixes currencies. AUD income → rate 1 (no-op).
     // Franking credits are an AU imputation amount, always AUD, so they're never converted.
@@ -1577,7 +1605,7 @@ export class TaxAgent extends Agent<Env> {
     const fxUnconverted = currency !== "AUD" && fx.fx_rate == null;
     const rate = currency === "AUD" ? 1 : fx.fx_rate ?? null;
     const toAudCents = (c: number | null | undefined): number | null => (c == null || rate == null ? null : Math.round(c * rate));
-    const needsReview = (inc.needs_review ?? 0) || (fxUnconverted ? 1 : 0);
+    const needsReview = (inc.needs_review ?? 0) || (fxUnconverted ? 1 : 0) || componentNeedsReview;
     await this.env.DB.prepare(
       `INSERT INTO income (id, user_id, person_id, entity_id, property_id, income_type, ato_label, fy,
          gross_cents, net_cents, withholding_cents, franking_credit_cents, foreign_tax_paid_cents,
@@ -1586,13 +1614,18 @@ export class TaxAgent extends Agent<Env> {
     )
       .bind(
         id, userId, inc.person_id ?? `person_self_${userId}`, inc.entity_id ?? null, inc.property_id ?? null,
-        inc.income_type, inc.ato_label ?? null, fy, inc.gross_cents, toAudCents(inc.net_cents),
-        toAudCents(inc.withholding_cents) ?? 0, inc.franking_credit_cents ?? 0, toAudCents(inc.foreign_tax_paid_cents) ?? 0,
+        inc.income_type, inc.ato_label ?? null, fy, grossCents, toAudCents(inc.net_cents),
+        toAudCents(inc.withholding_cents) ?? 0, frankingCredit, toAudCents(foreignTax) ?? 0,
         currency, fx.amount_aud_cents, fx.fx_rate, inc.source_doc_id ?? null, inc.txn_date ?? null,
-        inc.detail_json ?? null, needsReview,
+        detailJson, needsReview,
       )
       .run();
-    await this.audit(userId, "income_recorded", JSON.stringify({ id, type: inc.income_type, gross: inc.gross_cents, fy }));
+    await this.audit(userId, "income_recorded", JSON.stringify({ id, type: inc.income_type, gross: grossCents, fy }));
+    // Slice B: materialise the AMMA capital-gain components into the CGT engine (after the row exists, so
+    // income_id provenance is set). Personal + AUD + valid only (guarded above).
+    if (comps && materialiseCg) {
+      await syncIncomeCgtFromComponents(this.env, userId, id, comps, fy, inc.person_id ?? `person_self_${userId}`, inc.ato_label ?? null, inc.txn_date ?? null);
+    }
     return id;
   }
 
@@ -3059,6 +3092,17 @@ export class TaxAgent extends Agent<Env> {
          AND disposal_date IS NOT NULL AND disposal_date >= ? AND disposal_date <= ?
          AND cost_base_cents IS NOT NULL AND disposal_proceeds_cents IS NOT NULL`,
     ).bind(userId, start, end).first<{ n: number }>();
+    // B: net AMIT cost-base amount across this FY's managed-fund distributions (capture-only; defer nudge).
+    let mfCostBaseAdjustmentCents = 0;
+    if (featureOn(this.env, "mf_components")) {
+      const mfRows = (await this.env.DB.prepare(
+        `SELECT detail_json FROM income WHERE user_id = ? AND fy = ? AND income_type = 'managed_fund_distribution' AND detail_json IS NOT NULL`,
+      ).bind(userId, fy).all<{ detail_json: string | null }>()).results ?? [];
+      for (const r of mfRows) {
+        const c = parseAmmaComponents(r.detail_json);
+        if (c) mfCostBaseAdjustmentCents += c.amit_cost_base_net_amount_cents;
+      }
+    }
     // GST registration status for the turnover nudge — registered if the tenant default is set OR any
     // entity is flagged (mirrors gstTotals' registration test in ledger-totals.ts).
     const entGstReg = (await this.env.DB.prepare(`SELECT COUNT(*) AS n FROM entities WHERE user_id = ? AND COALESCE(gst_registered,0) = 1`).bind(userId).first<{ n: number }>())?.n ?? 0;
@@ -3086,6 +3130,7 @@ export class TaxAgent extends Agent<Env> {
       psiAppliesDeclared,
       psiAllAssessed,
       mainResidenceDisposalN: mainResDisposal?.n ?? 0,
+      mfCostBaseAdjustmentCents,
     };
 
     const readiness = assessReadiness({ report, situation, claimMatches: [...matchedById.values()], signals, generatedAt: new Date().toISOString(), excludeNonDeductible: featureOn(this.env, "position_excludes_nondeductible") });

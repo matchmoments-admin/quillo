@@ -714,6 +714,7 @@ console.log("claimability situational sweep (enumerateSituationClaims / classify
 
 // ── CGT: cost-base, Div43 reduction, 50% discount, main-residence, losses ─────
 import { computeCapitalGain, computeNetCapitalGain, propertyToCgtInputs, DEFAULT_CGT_RULES } from "../src/lib/cgt";
+import { ordinaryAssessableCents, totalDistributionCents, validateComponents, ammaToCgtEvents, parseAmmaComponents, type AmmaComponents } from "../src/lib/managed-fund";
 import { essAssessable } from "../src/lib/ess";
 import { gstFromInclusiveCents, computeBasNet } from "../src/lib/gst";
 import { businessUsePct, logbookDeductionCents, chooseCarMethod } from "../src/lib/car-logbook";
@@ -771,6 +772,37 @@ console.log("cgt property synthesis (Slice F)");
   // A flagged main residence defers — no event is synthesised (never auto-exempt / auto-tax).
   const home = propertyToCgtInputs({ cost_base_cents: 60_000_000, proceeds_cents: 90_000_000, acquired_date: "2015-01-01", disposal_date: "2025-10-01", ownership_pct: 100, is_resident_individual: true, main_residence_exempt: true });
   check("property → main residence defers (no synthetic event)", "defer" in home && home.defer === "main_residence");
+}
+
+console.log("managed-fund AMMA components (Slice B)");
+{
+  const mk = (p: Partial<AmmaComponents> = {}): AmmaComponents => ({
+    franked_cents: 0, unfranked_cents: 0, interest_cents: 0, other_income_cents: 0, foreign_income_cents: 0,
+    franking_credit_cents: 0, foreign_tax_paid_cents: 0, capital_gain_discounted_cents: 0, capital_gain_other_cents: 0,
+    amit_cost_base_net_amount_cents: 0, ...p,
+  });
+  // Ordinary assessable = franked + unfranked + interest + other + foreign (NOT capital gains / cost base).
+  const c = mk({ franked_cents: 100_000, unfranked_cents: 50_000, interest_cents: 20_000, other_income_cents: 10_000, foreign_income_cents: 30_000, capital_gain_discounted_cents: 200_000, amit_cost_base_net_amount_cents: 40_000 });
+  check("AMMA ordinary assessable excludes CG + cost-base", ordinaryAssessableCents(c) === 210_000);
+  check("AMMA total distribution = ordinary + CG + cost-base", totalDistributionCents(c) === 210_000 + 200_000 + 40_000);
+
+  // CG events: one per non-zero bucket; discounted → discount_eligible true, other → false; cost_base_used 0.
+  const evs = ammaToCgtEvents(mk({ capital_gain_discounted_cents: 200_000, capital_gain_other_cents: 60_000 }));
+  check("AMMA → two CG events with correct discount flags", evs.length === 2 && evs[0].proceeds_cents === 200_000 && evs[0].discount_eligible === true && evs[0].cost_base_used_cents === 0 && evs[1].discount_eligible === false);
+  check("AMMA → zero CG buckets produce no events", ammaToCgtEvents(mk({ interest_cents: 5_000 })).length === 0);
+  // The discounted CG event feeds the engine as a GROSS gain → 50% discount → half net.
+  const net = computeNetCapitalGain(evs.map((e) => ({ ...e })), DEFAULT_CGT_RULES);
+  check("AMMA discounted CG halved by the engine; other-method full", net.net_capital_gain_cents === 100_000 + 60_000);
+
+  // Validation: rejects negatives (on income/CG), all-zero; allows a negative cost-base (an increase).
+  check("AMMA validate: rejects a negative income bucket", validateComponents(mk({ interest_cents: -1 })).ok === false);
+  check("AMMA validate: rejects all-zero", validateComponents(mk()).ok === false);
+  check("AMMA validate: allows a negative AMIT cost-base amount", validateComponents(mk({ amit_cost_base_net_amount_cents: -5_000 })).ok === true);
+
+  // parseAmmaComponents round-trips a {components} blob and ignores a legacy/plain detail_json.
+  const round = parseAmmaComponents(JSON.stringify({ components: c }));
+  check("AMMA parse: round-trips a components blob", round?.capital_gain_discounted_cents === 200_000 && round?.franked_cents === 100_000);
+  check("AMMA parse: a legacy detail_json (no components) → null", parseAmmaComponents(JSON.stringify({ payer: "x" })) === null && parseAmmaComponents(null) === null);
 }
 
 console.log("cgt portfolio (#138)");
@@ -1022,10 +1054,15 @@ console.log("readiness");
   check("main-residence disposal → defer review nudge", mainRes.findings.some((f) => f.id === "main_residence_disposal" && f.defer_to_agent && f.severity === "review"));
   check("no main-residence disposal → no such finding", !run(mkReport(), noSignals()).findings.some((f) => f.id === "main_residence_disposal"));
 
+  // B: a managed-fund AMIT cost-base adjustment → an info defer nudge (not assessable; future cost base).
+  const mfCb = run(mkReport(), noSignals({ mfCostBaseAdjustmentCents: 40_000 }));
+  check("AMIT cost-base amount → defer info nudge", mfCb.findings.some((f) => f.id === "mf_cost_base" && f.defer_to_agent && f.severity === "info"));
+  check("no AMIT cost-base amount → no such finding", !run(mkReport(), noSignals()).findings.some((f) => f.id === "mf_cost_base"));
+
   // THE INVARIANT: no generated finding/position text asserts tax payable, a refund, or a rate.
   // (The fixed position caption intentionally NEGATES those words and is excluded — it's a vetted constant.)
   const denylist = /refund|tax payable|marginal rate|\b\d{1,2}%\s*(tax|bracket)/i;
-  const everything = [unknown, franking, rental, iawo, disposed, judged, clean, trust, capLoss, psi, psiApplies, div293Hit, gstOver, nonCash, pension, mainRes];
+  const everything = [unknown, franking, rental, iawo, disposed, judged, clean, trust, capLoss, psi, psiApplies, div293Hit, gstOver, nonCash, pension, mainRes, mfCb];
   const generatedText = everything.flatMap((r) => [
     ...r.findings.flatMap((f) => [f.title, f.general_info_note]),
     ...r.position.lines.flatMap((l) => [l.basis, l.why]),

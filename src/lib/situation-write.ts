@@ -2,6 +2,7 @@ import type { Env } from "../env";
 import { BUCKETS } from "./taxonomy";
 import { propertyToCgtInputs } from "./cgt";
 import { fyForDate } from "./report";
+import { ammaToCgtEvents, type AmmaComponents } from "./managed-fund";
 
 // Situation mutations for the Settings + onboarding-web flows. These rows are not
 // hash-chained (unlike corrections/consent/audit), so they're written directly to D1.
@@ -196,6 +197,76 @@ export async function syncPropertyDisposalToCgt(env: Env, userId: string, proper
   } catch (e) {
     // If the CGT tables/column aren't present yet (pre-0054), skip silently — the disposal stays captured
     // on the property and is materialised once the migration lands.
+    if (/no such table|no such column/i.test((e as Error).message)) return;
+    throw e;
+  }
+}
+
+/**
+ * Slice B: materialise a managed-fund distribution's capital-gain components into the CGT engine, so they get
+ * the 50% discount + loss-offset instead of being taxed as ordinary income. Idempotent atomic REBUILD keyed on
+ * cgt_assets.income_id (mirrors syncPropertyDisposalToCgt): drop any prior income-sourced asset/events, then —
+ * when there's a non-zero CG bucket — insert one cgt_asset (asset_kind='managed_fund', income_id provenance)
+ * + one cgt_event per non-zero bucket with an EXPLICIT discount_eligible. No CG ⇒ just clears stale rows.
+ */
+export async function syncIncomeCgtFromComponents(
+  env: Env,
+  userId: string,
+  incomeId: string,
+  components: AmmaComponents,
+  fy: string,
+  personId: string | null,
+  label: string | null,
+  eventDate: string | null,
+): Promise<void> {
+  try {
+    // cgt_events.event_date is NOT NULL; use the distribution date, falling back to the FY end ("2025-26" →
+    // "2026-06-30"). The discount is set explicitly, so event_date is a record only, not used in the calc.
+    const evDate = eventDate ?? `${Number(fy.slice(0, 4)) + 1}-06-30`;
+    const delEvents = env.DB.prepare(
+      `DELETE FROM cgt_events WHERE user_id = ? AND cgt_asset_id IN (SELECT id FROM cgt_assets WHERE user_id = ? AND income_id = ?)`,
+    ).bind(userId, userId, incomeId);
+    const delAssets = env.DB.prepare(`DELETE FROM cgt_assets WHERE user_id = ? AND income_id = ?`).bind(userId, incomeId);
+
+    const cgEvents = ammaToCgtEvents(components);
+    if (!cgEvents.length) {
+      // No capital gain to materialise — just clear any stale income-sourced rows (e.g. an earlier version
+      // had a CG that's since been removed). Atomic.
+      await env.DB.batch([delEvents, delAssets]);
+      return;
+    }
+
+    const assetId = uid();
+    const insAsset = env.DB.prepare(
+      `INSERT INTO cgt_assets (id, user_id, person_id, asset_kind, label, cost_base_cents, main_residence_exempt, status, income_id)
+       VALUES (?, ?, ?, 'managed_fund', ?, 0, 0, 'disposed', ?)`,
+    ).bind(assetId, userId, personId ?? selfPersonId(userId), `${label ?? "Managed fund"} (AMMA distributed capital gain)`, incomeId);
+    const insEvents = cgEvents.map((ev) =>
+      env.DB.prepare(
+        `INSERT INTO cgt_events (id, user_id, cgt_asset_id, fy, event_type, event_date, proceeds_cents, cost_base_used_cents, discount_eligible)
+         VALUES (?, ?, ?, ?, 'distribution', ?, ?, ?, ?)`,
+      ).bind(uid(), userId, assetId, fy, evDate, ev.proceeds_cents, ev.cost_base_used_cents, ev.discount_eligible ? 1 : 0),
+    );
+    // Atomic rebuild: delete-then-insert in one batch.
+    await env.DB.batch([delEvents, delAssets, insAsset, ...insEvents]);
+  } catch (e) {
+    // Pre-0055 (no income_id column) → skip materialising; the ordinary income is still recorded, and the CG
+    // materialises once the migration lands. Degrade gracefully rather than 500-ing the income POST.
+    if (/no such table|no such column/i.test((e as Error).message)) return;
+    throw e;
+  }
+}
+
+/** Slice B: remove a managed-fund income row's materialised CGT rows (called when the income row is deleted,
+ *  so its capital gain doesn't orphan into the position). Atomic; safe pre-0055. */
+export async function clearIncomeCgt(env: Env, userId: string, incomeId: string): Promise<void> {
+  try {
+    const delEvents = env.DB.prepare(
+      `DELETE FROM cgt_events WHERE user_id = ? AND cgt_asset_id IN (SELECT id FROM cgt_assets WHERE user_id = ? AND income_id = ?)`,
+    ).bind(userId, userId, incomeId);
+    const delAssets = env.DB.prepare(`DELETE FROM cgt_assets WHERE user_id = ? AND income_id = ?`).bind(userId, incomeId);
+    await env.DB.batch([delEvents, delAssets]);
+  } catch (e) {
     if (/no such table|no such column/i.test((e as Error).message)) return;
     throw e;
   }

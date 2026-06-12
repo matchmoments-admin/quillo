@@ -71,6 +71,7 @@ export interface FilingReadinessSignals {
   psiAppliesDeclared?: boolean; // S2: the user marked psi_status='psi_applies' on a business activity → sharpened PSI nudge
   psiAllAssessed?: boolean; // S2: every business activity has a recorded psi_status → stop prompting them to assess
   mainResidenceDisposalN?: number; // F: disposed properties flagged as a main residence this FY → defer nudge (we never auto-apply the exemption)
+  mfCostBaseAdjustmentCents?: number; // B: net AMIT cost-base amount across managed-fund distributions → defer nudge (not assessable; adjusts the units' cost base for a future CGT calc)
 }
 
 export interface FilingReadiness {
@@ -400,6 +401,13 @@ export function assessReadiness(input: {
         `You've recorded ${money(ex.gross_cents)} of ${ex.income_type.replace(/_/g, " ")} income. It's EXCLUDED from your indicative position — confirm the treatment with a registered tax agent.${DEFER}`, true,
         [{ kind: "income", label: ex.income_type.replace(/_/g, " ") }]));
     }
+  }
+  // B: AMMA managed-fund distributions can include an AMIT cost-base net amount — not assessable now, but it
+  // adjusts the cost base of the units for the CGT calc on a future sale. Surface it as a defer nudge.
+  if ((signals.mfCostBaseAdjustmentCents ?? 0) !== 0) {
+    findings.push(f("mf_cost_base", "judgement", "info", "Managed-fund cost-base adjustment recorded",
+      `Your managed-fund distributions include ${money(Math.abs(signals.mfCostBaseAdjustmentCents ?? 0))} of AMIT cost-base adjustment. It isn't assessable this year, but it changes the cost base of your units for the CGT calculation when you eventually sell — keep a record and confirm the treatment with a registered tax agent.${DEFER}`, true,
+      [{ kind: "income", label: "managed-fund cost base" }]));
   }
   if (signals.disposedAssetsN > 0) {
     findings.push(f("disposed_assets", "depreciation", "review", `${signals.disposedAssetsN} asset(s) were disposed this year`,

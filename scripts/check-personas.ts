@@ -412,6 +412,28 @@ async function main() {
     check("P12 S4: accountant schedule income section ties back (non-cash excluded, no double-count)", inc12?.tie_back?.ok === true && inc12?.subtotal_cents === 11700000);
   }
 
+  // ── Persona 13: Margaret, retiree (account-based pension + bank interest) — Slice D ──
+  // Proves super_pension is captured but EXCLUDED from the assessable headline (an over-60 ABP from a taxed
+  // fund is tax-free; we never compute the SAPTO offset), surfaced per-type so it isn't mislabelled.
+  {
+    const u = "p13";
+    seedTenant(u, "P13 Margaret retiree");
+    inc("p13iPen", u, "super_pension", 4000000);  // account-based pension ($40k) — EXCLUDED
+    inc("p13iInt", u, "interest", 200000);         // bank interest ($2k) — assessable
+    const r13 = await buildReport(env, u, 2025);
+    check("P13 D: super pension is captured but EXCLUDED from assessable income ($40k → excluded_by_type)",
+      r13.income.excluded_by_type?.some((t) => t.income_type === "super_pension" && t.gross_cents === 4000000) === true
+      && !r13.income.by_type.some((t) => t.income_type === "super_pension"));
+    check("P13 D: only the $2k interest is assessable (pension never added to gross)", r13.income.gross_cents === 200000);
+    check("P13 D: taxable position = $2k interest only", r13.taxable_position_cents === 200000);
+    // The pension must NOT be lumped into the non-cash convenience field (it isn't a gift).
+    check("P13 D: super pension is not counted as a non-cash benefit", (r13.income.non_cash_cents ?? 0) === 0);
+    // Accountant schedule re-derives income from the DB — it must exclude the pension too or the tie-back breaks.
+    const sched13 = await buildAccountantSchedule(env, u, 2025, { report: r13 });
+    const inc13 = sched13.sections.find((s) => s.key === "income");
+    check("P13 D: accountant schedule income section ties back (pension excluded, no double-count)", inc13?.tie_back?.ok === true && inc13?.subtotal_cents === 200000);
+  }
+
   // ── Accountant schedule (#179/#181): goldens + the tie-back-by-construction loop ──
 
   // Golden A (#179) — Maya: the schedule's claiming sections sum EXACTLY to her report deductions,

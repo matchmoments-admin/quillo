@@ -71,19 +71,29 @@ export interface IncomeTypeRow {
   foreign_tax_paid_cents: number;
 }
 
+export interface ExcludedIncomeRow {
+  income_type: string;
+  gross_cents: number;
+  n: number;
+}
+
 export interface IncomeTotals {
   by_type: IncomeTypeRow[];
   gross_cents: number;
   withholding_cents: number;
   franking_credit_cents: number;
   foreign_tax_paid_cents: number;
-  non_cash_cents?: number; // S4: gifted/barter benefits captured at market value — EXCLUDED from gross_cents/the position (capture-only), surfaced separately for a defer nudge
+  // S4/D: income types captured as evidence but NOT assessable — kept out of by_type/gross_cents and
+  // surfaced per-type (each renders its own excluded line + defer nudge so a pension isn't mislabelled
+  // as a non-cash benefit). non_cash_cents is a derived back-compat convenience (the non_cash_benefit row).
+  excluded_by_type?: ExcludedIncomeRow[];
+  non_cash_cents?: number;
 }
 
-// S4: income types captured as evidence but NOT assessable in the indicative position (deny-by-default /
-// never-overstate). Kept out of by_type + gross_cents; surfaced via IncomeTotals.non_cash_cents. Exported
+// S4/D: income types captured as evidence but NOT assessable in the indicative position (deny-by-default /
+// never-overstate). Kept out of by_type + gross_cents; surfaced via IncomeTotals.excluded_by_type. Exported
 // so every consumer that re-derives an income total (e.g. the accountant schedule) excludes the SAME set.
-export const NON_ASSESSABLE_INCOME_TYPES = new Set(["non_cash_benefit"]);
+export const NON_ASSESSABLE_INCOME_TYPES = new Set(["non_cash_benefit", "super_pension"]);
 
 /** Income for an FY, optionally scoped to a person/property. Reads the AUD value for reporting. */
 export async function incomeTotals(
@@ -123,17 +133,23 @@ export async function incomeTotals(
     .bind(...binds)
     .all<IncomeTypeRow>();
   const rows = res.results ?? [];
-  // S4: split off capture-only (non-assessable) types so they never reach the assessable headline. Single
+  // S4/D: split off capture-only (non-assessable) types so they never reach the assessable headline. Single
   // GROUP-BY query, split in JS — no extra round-trip. assessable rows drive by_type/gross/credits; the
-  // rest surface only as non_cash_cents. Empty/absent ⇒ byte-identical to the legacy all-rows behaviour.
+  // rest surface per-type via excluded_by_type (+ a non_cash_cents back-compat field). Empty/absent ⇒
+  // byte-identical to the legacy all-rows behaviour.
   const assessable = rows.filter((r) => !NON_ASSESSABLE_INCOME_TYPES.has(r.income_type));
+  const excluded_by_type: ExcludedIncomeRow[] = rows
+    .filter((r) => NON_ASSESSABLE_INCOME_TYPES.has(r.income_type))
+    .map((r) => ({ income_type: r.income_type, gross_cents: r.gross_cents, n: r.n }));
   return {
     by_type: assessable,
     gross_cents: assessable.reduce((s, r) => s + r.gross_cents, 0),
     withholding_cents: assessable.reduce((s, r) => s + r.withholding_cents, 0),
     franking_credit_cents: assessable.reduce((s, r) => s + r.franking_credit_cents, 0),
     foreign_tax_paid_cents: assessable.reduce((s, r) => s + r.foreign_tax_paid_cents, 0),
-    non_cash_cents: rows.filter((r) => NON_ASSESSABLE_INCOME_TYPES.has(r.income_type)).reduce((s, r) => s + r.gross_cents, 0),
+    excluded_by_type,
+    // Back-compat convenience: the non-cash benefit total only (existing consumers/tests read this).
+    non_cash_cents: excluded_by_type.filter((r) => r.income_type === "non_cash_benefit").reduce((s, r) => s + r.gross_cents, 0),
   };
 }
 

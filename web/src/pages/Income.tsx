@@ -25,6 +25,7 @@ const INCOME_TYPES = [
   "foreign_rent",
   "foreign_business",
   "non_cash_benefit",
+  "super_pension",
   "other",
 ] as const;
 
@@ -39,6 +40,7 @@ const TYPE_LABEL: Record<string, string> = {
   foreign_rent: "Foreign rent",
   foreign_business: "Foreign business income",
   non_cash_benefit: "Non-cash benefit (captured, not in position)",
+  super_pension: "Super pension (captured, not in position)",
   other: "Other",
 };
 

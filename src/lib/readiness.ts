@@ -112,6 +112,23 @@ function incomeTypeWhy(incomeType: string): string {
   }
 }
 
+// S4/D: captured-but-excluded (non-assessable) income types — each gets its own label + explainer so a
+// pension is never rendered as a non-cash benefit. Keep in lockstep with NON_ASSESSABLE_INCOME_TYPES.
+function excludedIncomeLabel(incomeType: string): string {
+  switch (incomeType) {
+    case "non_cash_benefit": return "Non-cash benefits (captured, not in position)";
+    case "super_pension": return "Super pension (captured, not in position)";
+    default: return incomeType;
+  }
+}
+function excludedIncomeWhy(incomeType: string): string {
+  switch (incomeType) {
+    case "non_cash_benefit": return "Gifted products / barter you recorded at market value. Captured as evidence but NOT counted in your indicative position — assessability depends on whether you're carrying on a business.";
+    case "super_pension": return "Super pension income you recorded. Captured as evidence but NOT counted in your indicative position — an account-based pension from a taxed fund paid to someone aged 60 or over is generally tax-free.";
+    default: return "Income captured as evidence but not counted in your indicative position.";
+  }
+}
+
 function bucketWhy(bucket: string): string {
   switch (bucket) {
     case "payg": return "Work-related deductions you recorded (the D-labels). Each still needs to satisfy its own deductibility test.";
@@ -178,13 +195,14 @@ export function assessReadiness(input: {
   for (const it of report.income.by_type) {
     lines.push({ group: "income", label: it.income_type, amount_cents: it.gross_cents, basis: `${it.n} income record(s)`, why: incomeTypeWhy(it.income_type) });
   }
-  // S4: non-cash benefits (gifted products / barter) are captured at market value but EXCLUDED from the
-  // assessable headline (incomeTotals kept them out of gross/by_type). Render as an "excluded" line so the
-  // money stays visible without counting — preserves the lines-sum == taxable_position invariant.
-  if ((report.income.non_cash_cents ?? 0) > 0) {
-    lines.push({ group: "excluded", label: "non_cash_benefit", amount_cents: report.income.non_cash_cents ?? 0,
-      basis: "gifted products / non-cash benefits at market value",
-      why: "Captured as evidence but NOT counted in your position. Non-cash benefits a business receives for promotion (gifted products, barter) can be assessable at their market value — but the value is self-estimated and whether it's assessable depends on whether you're genuinely carrying on a business, so it's left out until a registered tax agent confirms it." });
+  // S4/D: captured-but-excluded income (non-cash benefits, super pension) is recorded at face value but kept
+  // OUT of the assessable headline (incomeTotals kept it out of gross/by_type). Render one "excluded" line
+  // per type so the money stays visible without counting — preserves the lines-sum == taxable_position
+  // invariant — and each type carries its own label/explainer (a pension is never shown as a gift).
+  for (const ex of report.income.excluded_by_type ?? []) {
+    if (ex.gross_cents <= 0) continue;
+    lines.push({ group: "excluded", label: ex.income_type, amount_cents: ex.gross_cents,
+      basis: `${ex.n} income record(s) — captured, not counted`, why: excludedIncomeWhy(ex.income_type) });
   }
   // Phase #138: net capital gain is assessable income — buildReport added it to taxable_position, so it
   // renders as an "income" line to keep the lines-sum == headline invariant. Present only when the
@@ -286,7 +304,7 @@ export function assessReadiness(input: {
   const hasAnyData =
     report.income.gross_cents > 0 ||
     report.income.by_type.length > 0 ||
-    (report.income.non_cash_cents ?? 0) > 0 || // S4: a captured-but-excluded gift still means the FY isn't blank
+    (report.income.excluded_by_type?.length ?? 0) > 0 || // S4/D: a captured-but-excluded type still means the FY isn't blank
     report.deduction_breakdown.length > 0 ||
     report.depreciation_cents > 0 ||
     report.per_property.length > 0 ||
@@ -364,12 +382,23 @@ export function assessReadiness(input: {
       `You've recorded ${money(report.income.foreign_tax_paid_cents)} of foreign tax paid, which may give rise to a Foreign Income Tax Offset. The offset limit is worked out by your registered tax agent.${DEFER}`, true,
       [{ kind: "income", label: "foreign tax paid" }]));
   }
-  // S4: non-cash benefits captured but excluded — surface a defer nudge so the user knows they may be
-  // assessable at market value (we never assert it; assessability depends on carrying on a business).
-  if ((report.income.non_cash_cents ?? 0) > 0) {
-    findings.push(f("non_cash_benefit", "income", "review", "Non-cash benefits recorded (gifted products / barter)",
-      `You've recorded ${money(report.income.non_cash_cents ?? 0)} of non-cash benefits (e.g. gifted products received for promotion). These are EXCLUDED from your indicative position. If you're carrying on a business, benefits like these can be assessable at their market value — keep evidence of how you valued them and confirm the treatment with a registered tax agent.${DEFER}`, true,
-      [{ kind: "income", label: "non-cash benefits" }]));
+  // S4/D: captured-but-excluded income types — surface one defer nudge per type so the user knows it may be
+  // assessable (we never assert it). Each type keeps its own wording; a pension is never called a gift.
+  for (const ex of report.income.excluded_by_type ?? []) {
+    if (ex.gross_cents <= 0) continue;
+    if (ex.income_type === "non_cash_benefit") {
+      findings.push(f("non_cash_benefit", "income", "review", "Non-cash benefits recorded (gifted products / barter)",
+        `You've recorded ${money(ex.gross_cents)} of non-cash benefits (e.g. gifted products received for promotion). These are EXCLUDED from your indicative position. If you're carrying on a business, benefits like these can be assessable at their market value — keep evidence of how you valued them and confirm the treatment with a registered tax agent.${DEFER}`, true,
+        [{ kind: "income", label: "non-cash benefits" }]));
+    } else if (ex.income_type === "super_pension") {
+      findings.push(f("super_pension", "income", "review", "Super pension income recorded (account-based / retirement pension)",
+        `You've recorded ${money(ex.gross_cents)} of super pension income. It's EXCLUDED from your indicative position. An account-based pension paid from a taxed fund to someone aged 60 or over is generally tax-free, so it isn't counted here. If you're under 60, or the pension includes an untaxed element (e.g. an untaxed government-fund component), part of it may be assessable and a tax offset may apply — confirm the treatment with a registered tax agent.${DEFER}`, true,
+        [{ kind: "income", label: "super pension" }]));
+    } else {
+      findings.push(f(`excluded_${ex.income_type}`, "income", "review", `${excludedIncomeLabel(ex.income_type)} recorded`,
+        `You've recorded ${money(ex.gross_cents)} of ${ex.income_type.replace(/_/g, " ")} income. It's EXCLUDED from your indicative position — confirm the treatment with a registered tax agent.${DEFER}`, true,
+        [{ kind: "income", label: ex.income_type.replace(/_/g, " ") }]));
+    }
   }
   if (signals.disposedAssetsN > 0) {
     findings.push(f("disposed_assets", "depreciation", "review", `${signals.disposedAssetsN} asset(s) were disposed this year`,

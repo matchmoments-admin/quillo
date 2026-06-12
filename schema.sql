@@ -588,7 +588,7 @@ CREATE TABLE IF NOT EXISTS income (
   person_id     TEXT,
   entity_id     TEXT,
   property_id   TEXT,
-  income_type   TEXT NOT NULL,                 -- salary_payg|rent|interest|dividend|managed_fund_distribution|foreign_pension|foreign_rent|other
+  income_type   TEXT NOT NULL,                 -- salary_payg|business|rent|interest|dividend|managed_fund_distribution|foreign_pension|foreign_rent|foreign_business|non_cash_benefit|super_pension|other (super_pension+non_cash_benefit = capture-only, EXCLUDED from the position; see NON_ASSESSABLE_INCOME_TYPES)
   ato_label     TEXT,
   fy            TEXT NOT NULL,                 -- '2025-26'
   gross_cents   INTEGER NOT NULL,

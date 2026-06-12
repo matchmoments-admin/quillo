@@ -478,16 +478,24 @@ export async function buildAccountantSchedule(
     });
   }
 
-  // 2. Income (documented) — itemised; ties to total_income_cents. S4: capture-only non-cash benefits are
-  // EXCLUDED from the assessable income that the report headline (total_income_cents) counts — so exclude
-  // them here too or the tie-back breaks. They're surfaced as a note (and stay visible via the report's
-  // excluded line), never silently dropped.
+  // 2. Income (documented) — itemised; ties to total_income_cents. S4/D: capture-only income (non-cash
+  // benefits, super pension) is EXCLUDED from the assessable income that the report headline
+  // (total_income_cents) counts — so exclude it here too or the tie-back breaks. It's surfaced as a per-type
+  // note (and stays visible via the report's excluded line), never silently dropped.
   const assessableIncomeRows = incomeRows.filter((r) => !NON_ASSESSABLE_INCOME_TYPES.has(r.income_type));
-  const nonCashRows = incomeRows.filter((r) => NON_ASSESSABLE_INCOME_TYPES.has(r.income_type));
+  const excludedRows = incomeRows.filter((r) => NON_ASSESSABLE_INCOME_TYPES.has(r.income_type));
+  const excludedNoteFor = (income_type: string, n: number, cents: number): string => {
+    if (income_type === "non_cash_benefit") return `${n} non-cash benefit(s) totalling ${d(cents)} are captured but EXCLUDED from assessable income (may be assessable at market value — confirm with a registered tax agent).`;
+    if (income_type === "super_pension") return `${n} super pension record(s) totalling ${d(cents)} are captured but EXCLUDED from assessable income (an over-60 account-based pension from a taxed fund is generally tax-free — confirm with a registered tax agent).`;
+    return `${n} ${income_type.replace(/_/g, " ")} record(s) totalling ${d(cents)} are captured but EXCLUDED from assessable income (confirm the treatment with a registered tax agent).`;
+  };
   if (assessableIncomeRows.length) {
     const notes: string[] = [];
     const total = assessableIncomeRows.reduce((s, r) => s + r.gross_cents, 0);
-    if (nonCashRows.length) notes.push(`${nonCashRows.length} non-cash benefit(s) totalling ${d(nonCashRows.reduce((s, r) => s + r.gross_cents, 0))} are captured but EXCLUDED from assessable income (may be assessable at market value — confirm with a registered tax agent).`);
+    for (const t of [...new Set(excludedRows.map((r) => r.income_type))]) {
+      const rs = excludedRows.filter((r) => r.income_type === t);
+      notes.push(excludedNoteFor(t, rs.length, rs.reduce((s, r) => s + r.gross_cents, 0)));
+    }
     const noDoc = assessableIncomeRows.filter((r) => !r.source_doc_id);
     if (noDoc.length) gaps.push({ section: "income", n: noDoc.length, total_cents: noDoc.reduce((s, r) => s + r.gross_cents, 0) });
     sections.push({

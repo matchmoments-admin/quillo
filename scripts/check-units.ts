@@ -945,10 +945,27 @@ console.log("readiness");
   check("capital-loss carry-in does NOT change the position", capLoss.position.indicative_taxable_position_cents === trustReport.taxable_position_cents);
   check("no capital-loss → no capital-loss finding", !run(trustReport, noSignals()).findings.some((f) => f.id === "capital_loss_carryin"));
 
+  // Phase 3b: sole-trader business income → a defer-to-agent PSI (Div 86) review nudge. Does NOT change
+  // the position; pure judgement passthrough.
+  const psiReport = mkReport({ income: { by_type: [{ income_type: "business", n: 1, gross_cents: 11_000_000, net_cents: 11_000_000, withholding_cents: 0, franking_credit_cents: 0, foreign_tax_paid_cents: 0 }], gross_cents: 11_000_000, withholding_cents: 0, franking_credit_cents: 0, foreign_tax_paid_cents: 0 }, total_income_cents: 11_000_000, taxable_position_cents: 11_000_000 });
+  const psi = run(psiReport, noSignals());
+  check("business income → PSI defer review finding", psi.findings.some((f) => f.id === "psi_check" && f.defer_to_agent && f.severity === "review"));
+  check("PSI nudge doesn't change the position or block readiness", psi.readiness_score.ready && psi.position.indicative_taxable_position_cents === 11_000_000);
+  check("no business income → no PSI finding", !run(trustReport, noSignals()).findings.some((f) => f.id === "psi_check"));
+
+  // Phase 3b: income at/above the Div 293 threshold → a defer-to-agent review nudge. Triggered only
+  // when the pack supplies a reference-only threshold; never computes the surcharge.
+  const div293 = run(psiReport, noSignals({ div293ThresholdCents: 25_000_000 }));
+  check("income below Div 293 threshold → no finding", !div293.findings.some((f) => f.id === "div293_income"));
+  const div293Hit = run(mkReport({ income: { by_type: [{ income_type: "salary_payg", n: 1, gross_cents: 26_000_000, net_cents: 18_000_000, withholding_cents: 8_000_000, franking_credit_cents: 0, foreign_tax_paid_cents: 0 }], gross_cents: 26_000_000, withholding_cents: 8_000_000, franking_credit_cents: 0, foreign_tax_paid_cents: 0 }, total_income_cents: 26_000_000, taxable_position_cents: 26_000_000 }), noSignals({ div293ThresholdCents: 25_000_000 }));
+  check("income above Div 293 threshold → defer review finding", div293Hit.findings.some((f) => f.id === "div293_income" && f.defer_to_agent && f.severity === "review"));
+  const div293NoThreshold = run(mkReport({ income: { by_type: [], gross_cents: 99_000_000, withholding_cents: 0, franking_credit_cents: 0, foreign_tax_paid_cents: 0 } }), noSignals());
+  check("high income but no Div 293 threshold supplied → no finding", !div293NoThreshold.findings.some((f) => f.id === "div293_income"));
+
   // THE INVARIANT: no generated finding/position text asserts tax payable, a refund, or a rate.
   // (The fixed position caption intentionally NEGATES those words and is excluded — it's a vetted constant.)
   const denylist = /refund|tax payable|marginal rate|\b\d{1,2}%\s*(tax|bracket)/i;
-  const everything = [unknown, franking, rental, iawo, disposed, judged, clean, trust, capLoss];
+  const everything = [unknown, franking, rental, iawo, disposed, judged, clean, trust, capLoss, psi, div293Hit];
   const generatedText = everything.flatMap((r) => [
     ...r.findings.flatMap((f) => [f.title, f.general_info_note]),
     ...r.position.lines.flatMap((l) => [l.basis, l.why]),

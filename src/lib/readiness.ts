@@ -65,6 +65,7 @@ export interface FilingReadinessSignals {
   instantAssetWriteOffCentsPrevFy: number | null;
   capitalLossCarryinCents: number; // prior-year capital losses captured at Set-up (0 if none)
   fxUnconvertedN?: number; // foreign-currency rows we couldn't convert to AUD (excluded from the position)
+  div293ThresholdCents?: number | null; // pack reference-only Div 293 income threshold (null if no rate block for the FY); drives a defer nudge only — NEVER a computed liability
 }
 
 export interface FilingReadiness {
@@ -371,6 +372,26 @@ export function assessReadiness(input: {
     findings.push(f("iawo_threshold_changed", "threshold", "info", "The instant asset write-off threshold changed this year",
       `This year's threshold (${money(signals.instantAssetWriteOffCentsThisFy)}) differs from last year (${money(signals.instantAssetWriteOffCentsPrevFy)}). Check which assets qualify before writing any off.${DEFER}`, true,
       []));
+  }
+
+  // PSI (Personal Services Income, Div 86) trap — a sole trader whose ABN income is really reward for
+  // their personal skill/labour (a contractor/freelancer) may be caught by the PSI rules, which can
+  // strip otherwise-ordinary business deductions (rent, super for associates, etc.). We do NOT run the
+  // PSI tests (results test / 80% / unrelated-clients) — that's a judgement call — so when business
+  // income is present we surface a defer-to-agent nudge rather than silently treating every expense as
+  // deductible. No engine branch yet (capture flag + Div 86 split is a later persona slice).
+  if (report.income.by_type.some((it) => it.income_type === "business")) {
+    findings.push(f("psi_check", "judgement", "review", "Sole-trader income — check whether the PSI rules apply",
+      `Some of your income is sole-trader/ABN business income. If it's mainly a reward for your personal skills or labour (typical for contractors and freelancers), the Personal Services Income (PSI) rules in Division 86 can limit which expenses you're able to claim. The PSI tests are fact-specific — your registered tax agent will confirm whether they apply and what stays deductible.${DEFER}`, true, []));
+  }
+  // Div 293 — an extra 15% tax on concessional super contributions for higher-income earners. It's a
+  // separate assessment the ATO/agent computes (NOT part of the indicative position), so this is a
+  // pure defer nudge triggered off recorded income vs the pack's reference-only threshold. We never
+  // compute the surcharge or assert it actually applies — "income for Div 293 purposes" includes items
+  // we don't model (e.g. the contributions themselves, certain add-backs), so the agent does the maths.
+  if (signals.div293ThresholdCents != null && report.income.gross_cents >= signals.div293ThresholdCents) {
+    findings.push(f("div293_income", "threshold", "review", "Income is around the Div 293 super threshold",
+      `Your recorded income (${money(report.income.gross_cents)}) is near or above the Division 293 threshold (${money(signals.div293ThresholdCents)}). Higher earners can pay an extra 15% on their concessional (before-tax) super contributions. This is a separate ATO assessment, not part of the position shown here — your registered tax agent will work out whether it applies.${DEFER}`, true, []));
   }
 
   // Trust entities lodge their own return and must resolve distributions before 30 June — surfaced

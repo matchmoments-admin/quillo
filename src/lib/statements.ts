@@ -280,15 +280,19 @@ export interface Reconciliation {
 }
 
 /**
- * Derive opening/closing from per-line balances (CSV). The balance shown is AFTER the line,
- * so opening = first line's balance − its signed amount; closing = last line's balance.
+ * Derive opening/closing from per-line balances (CSV). The balance shown is AFTER the line, so
+ * opening = first line's balance − the signed move that produced it; closing = last line's balance.
+ * MUST use the same liability sign-flip as reconcileStatement (a liability debit INCREASES the balance):
+ * without it, a credit-card/loan CSV's opening is off by 2×signedCents and reconcile fails at line 0,
+ * blocking every such import.
  */
-export function deriveBalances(lines: StatementLine[]): { opening_cents: number; closing_cents: number } | null {
+export function deriveBalances(lines: StatementLine[], isLiability = false): { opening_cents: number; closing_cents: number } | null {
   const withBal = lines.filter((l) => l.balance_cents != null);
   if (withBal.length < 1 || lines[0]?.balance_cents == null || lines[lines.length - 1]?.balance_cents == null) return null;
   const first = lines[0]!;
   const last = lines[lines.length - 1]!;
-  return { opening_cents: (first.balance_cents as number) - signedCents(first), closing_cents: last.balance_cents as number };
+  const dir = isLiability ? -1 : 1;
+  return { opening_cents: (first.balance_cents as number) - dir * signedCents(first), closing_cents: last.balance_cents as number };
 }
 
 /**

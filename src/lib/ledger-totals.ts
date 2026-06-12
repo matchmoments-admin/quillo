@@ -514,8 +514,9 @@ export async function gstTotals(env: Env, userId: string, startYear: number): Pr
     if (entReg === 0 && profReg === 0) return notRegistered;
     // Taxable supplies: sole-trader / business income for the FY (GST-inclusive).
     const sales = (await env.DB.prepare(`SELECT COALESCE(SUM(COALESCE(amount_aud_cents, gross_cents)),0) AS s FROM income WHERE user_id = ? AND fy = ? AND income_type = 'business' AND ${FX_CONVERTED}`).bind(userId, fy).first<{ s: number }>())?.s ?? 0;
-    // Input credits: GST captured on countable business inputs this FY.
-    const inputs = (await env.DB.prepare(`SELECT COALESCE(SUM(gst_cents),0) AS g FROM transactions WHERE user_id = ? AND txn_date >= ? AND txn_date <= ? AND bucket IN ('company','payg') AND ${COUNTABLE}`).bind(userId, start, end).first<{ g: number }>())?.g ?? 0;
+    // Input credits: GST captured on countable business inputs this FY. Reimbursed acquisitions carry no
+    // claimable ITC (you didn't bear the cost), so exclude them — mirrors the headline reimbursed gate (0030).
+    const inputs = (await env.DB.prepare(`SELECT COALESCE(SUM(gst_cents),0) AS g FROM transactions WHERE user_id = ? AND txn_date >= ? AND txn_date <= ? AND bucket IN ('company','payg') AND COALESCE(reimbursed,0) = 0 AND ${COUNTABLE}`).bind(userId, start, end).first<{ g: number }>())?.g ?? 0;
     // User-entered BAS periods for the FY WIN over the ledger estimate (the actual lodged/draft figures).
     const recorded = await env.DB.prepare(
       `SELECT COUNT(*) AS n, COALESCE(SUM(output_gst_cents),0) AS output_gst_cents, COALESCE(SUM(input_gst_cents),0) AS input_gst_cents

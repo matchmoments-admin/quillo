@@ -294,16 +294,25 @@ export async function loanInterestV2Context(env: Env, userId: string, startYear:
   return { byProp, total_cents, supersededLoanIds, loans };
 }
 
-// Resolve the tenant's rule pack for the REPORT engines: the KV override `rulepack:<rule_pack_ver>`
-// (mirrors the DO's loadRulePack), falling back to the bundled au-v1. Previously the engines statically
-// imported au-v1 and ignored rule_pack_ver entirely — so a KV/jurisdiction pack was silently dropped.
-// Guarded for the test harness (no env.RULES binding / no profile row) → bundled au-v1 ⇒ AU byte-identical.
-async function resolveRulePack(env: Env, userId: string): Promise<RulePackThresholds> {
-  let ver = "au-v1";
+// Resolve the tenant's rule pack for the REPORT engines from the JURISDICTION DESCRIPTOR — the single
+// source of truth for "which pack". The pack id is `descriptor.rulePackId` (AU ⇒ 'au-v1', UK ⇒ 'uk-2025'),
+// loaded from the KV override `rulepack:<id>` with the bundled au-v1 as the fallback.
+// Previously this re-read `profiles.rule_pack_ver` INDEPENDENTLY of the descriptor, so the tax-period math
+// (descriptor-driven) and the thresholds/claimability (column-driven) could silently disagree — e.g. a UK
+// tenant getting UK period under the AU pack. Now period and pack move together off the same descriptor.
+// AU is byte-identical: AU_DESCRIPTOR.rulePackId === 'au-v1' === the legacy `rule_pack_ver` default, so an
+// AU profile loads the same `rulepack:au-v1` (or the bundled fallback) as before. (A UK descriptor points at
+// `uk-2025`, which falls back to bundled au-v1 until that pack ships — the seam is wired, the content defers.)
+// Guarded for the test harness (no env.RULES binding) → bundled au-v1.
+async function resolveRulePack(env: Env, userId: string, descriptor: JurisdictionDescriptor): Promise<RulePackThresholds> {
+  // The JURISDICTION default is the base pack id; an explicit per-tenant `rule_pack_ver` pin overrides it.
+  // The generic 'au-v1' is the legacy NOT-NULL column default and is treated as "unset" (⇒ use the
+  // jurisdiction's pack), so a UK tenant whose column was never updated still gets uk-2025, not au-v1.
+  let ver = descriptor.rulePackId || "au-v1";
   try {
     const p = await env.DB.prepare(`SELECT rule_pack_ver FROM profiles WHERE user_id = ?`).bind(userId).first<{ rule_pack_ver: string | null }>();
-    if (p?.rule_pack_ver) ver = p.rule_pack_ver;
-  } catch { /* no profile (test env) → default */ }
+    if (p?.rule_pack_ver && p.rule_pack_ver !== "au-v1") ver = p.rule_pack_ver;
+  } catch { /* no profile (test env) → jurisdiction default */ }
   try {
     const override = env.RULES ? await env.RULES.get(`rulepack:${ver}`, "json") : null;
     if (override) return override as RulePackThresholds;
@@ -318,7 +327,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   // which is jurisdiction-agnostic.
   const jurisdiction = await resolveJurisdictionForUser(env, userId);
   const { start, end } = fyBounds(startYear, jurisdiction);
-  const rulePack = await resolveRulePack(env, userId);
+  const rulePack = await resolveRulePack(env, userId, jurisdiction);
   // Flag `loan_split`: when on, the position counts the claimable (apportioned) portion
   // (deductible_amount_cents) of a row instead of the gross — see positionAmountCents. The SUM
   // expressions below MUST mirror that helper exactly. Off ⇒ byte-identical legacy totals.

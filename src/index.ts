@@ -15,6 +15,42 @@ import { featureOn } from "./lib/features";
 // The DO class must be exported from the Worker's main module for the binding.
 export { TaxAgent } from "./agent";
 
+// Content-Security-Policy for the SPA shell. Shipped REPORT-ONLY first: an enforcing
+// `connect-src` mistake would lock every user out of Clerk auth, and the local runtime is
+// deploy-only (macOS 12.6 can't run workerd) so we can't validate the allowlist before prod.
+// Report-Only never blocks — it only POSTs violations to /csp-report — so it is safe to ship and
+// gives us server-side visibility of any unexpected outbound call (the supply-chain concern behind
+// adopting @assistant-ui/react). Flip to enforcing (`Content-Security-Policy`) in a fast-follow once
+// prod reports confirm zero false positives. Allowlist = self + Google Fonts + Clerk; assistant-ui
+// under useLocalRuntime needs nothing beyond 'self' (its optional cloud SDK is never constructed).
+const CSP_DIRECTIVES = [
+  "default-src 'self'",
+  "base-uri 'self'",
+  "object-src 'none'",
+  "frame-ancestors 'self'",
+  "script-src 'self' 'unsafe-inline' https://*.clerk.accounts.dev https://*.clerk.com https://challenges.cloudflare.com",
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+  "font-src 'self' https://fonts.gstatic.com",
+  "img-src 'self' data: blob: https://*.clerk.com https://img.clerk.com",
+  "connect-src 'self' https://*.clerk.accounts.dev https://*.clerk.com",
+  "worker-src 'self' blob:",
+  "frame-src 'self' https://*.clerk.com https://challenges.cloudflare.com",
+  "form-action 'self'",
+  "report-uri /csp-report",
+].join("; ");
+
+// Attach the Report-Only CSP (+ a couple of cheap always-safe headers) to the SPA's HTML shell only.
+// Hashed JS/CSS/font assets don't need it and we must not disturb their caching headers.
+function withSecurityHeaders(res: Response): Response {
+  const ct = res.headers.get("content-type") ?? "";
+  if (!ct.includes("text/html")) return res;
+  const h = new Headers(res.headers);
+  h.set("Content-Security-Policy-Report-Only", CSP_DIRECTIVES);
+  h.set("X-Content-Type-Options", "nosniff");
+  h.set("Referrer-Policy", "strict-origin-when-cross-origin");
+  return new Response(res.body, { status: res.status, statusText: res.statusText, headers: h });
+}
+
 /**
  * Run a one-time, KV-guarded backfill at most `maxAttempts` times, claiming the attempt BEFORE the
  * work. The old pattern set the "done" flag AFTER the AI work, so a mid-run failure (e.g. an
@@ -69,6 +105,20 @@ export default {
 
     if (url.pathname === "/healthz") {
       return Response.json({ ok: true });
+    }
+
+    // CSP violation sink (public — browsers POST reports with no auth header, so this must sit
+    // before the /api Clerk gate). We only log: a violation here means either a misconfigured
+    // allowlist (tighten the policy) or an unexpected outbound call from a bundled dep (investigate).
+    // Bounded body read so a spammed report can't be a memory amplifier.
+    if (url.pathname === "/csp-report" && req.method === "POST") {
+      try {
+        const raw = (await req.text()).slice(0, 4096);
+        console.warn(`csp-report: ${raw}`);
+      } catch {
+        /* ignore malformed reports */
+      }
+      return new Response(null, { status: 204 });
     }
 
     // ── Host branch: public marketing apex vs the gated app host ────────────────
@@ -200,7 +250,7 @@ export default {
     // Static assets / SPA. Now that "/" is in run_worker_first, the Worker runs for
     // the app host's "/" too, so it must hand back to the assets binding (which honours
     // the single-page-application fallback to index.html).
-    if (env.ASSETS) return env.ASSETS.fetch(req);
+    if (env.ASSETS) return withSecurityHeaders(await env.ASSETS.fetch(req));
     return new Response("not found", { status: 404 });
   },
 

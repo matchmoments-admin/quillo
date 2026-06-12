@@ -403,4 +403,6 @@ export const api = {
   // AI changes feed + undo (flag ai_edit_feed)
   aiEdits: () => get<{ edits: AiEdit[] }>("/api/ai-edits").then((r) => r.edits),
   undoAiEdit: (action_id: string) => post<{ reverted: number }>("/api/ai-edits/undo", { action_id }),
+  applyEntityAction: (a: { kind: string; entity_id?: string; fields: Record<string, unknown>; action_id: string; session_id?: string }) =>
+    post<{ ok: boolean; id: string; action_id: string }>("/api/ai-edits/apply", a),
 };

@@ -133,7 +133,7 @@ export function buildAskSystem(
   situationText: string,
   positionText: string,
   txnDigest?: string,
-  opts?: { pageRoute?: string; nav?: boolean },
+  opts?: { pageRoute?: string; nav?: boolean; entityWrites?: boolean },
 ): string {
   return (
     "You are Quillo, an Australian tax-evidence assistant answering questions about THIS user's own " +
@@ -163,6 +163,14 @@ export function buildAskSystem(
       ? "When the user clearly wants to GO to one of their screens (e.g. 'take me to my transactions', " +
         "'show me my assets'), set `navigate` with the allowed route + a short reason — it renders as a " +
         "'Take me to …' button, never a silent jump. Don't navigate for ordinary questions. "
+      : "") +
+    (opts?.entityWrites
+      ? "When the user states a CHANGE to their setup in their own words (e.g. 'I rented out 12 Smith St " +
+        "from August', 'add my company ACME Pty Ltd', 'my ownership is 50%'), propose it via " +
+        "`entity_actions` (max 3) — each becomes a confirmation card the user must approve before " +
+        "anything is written. Use edit_* with the record's entity_id for changes, create_* for new " +
+        "records. Only include fields the user actually gave you. Never invent values; don't propose " +
+        "writes for ordinary questions. "
       : "") +
     "Call give_answer exactly once per reply."
   );

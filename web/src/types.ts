@@ -636,6 +636,14 @@ export type ProposedAction =
   | { kind: "recategorise"; title: string; rationale: string; txn_ids: string[]; bucket: string; ato_label?: string }
   | { kind: "add_rule"; title: string; rationale: string; pattern: string; bucket: string; ato_label?: string };
 
+export interface EntityAction {
+  kind: string; // create_person | edit_person | create_property | edit_property | create_entity | edit_entity | create_rule
+  title: string;
+  rationale: string;
+  entity_id?: string;
+  fields: Record<string, unknown>;
+}
+
 export interface AskAnswer {
   answer: string;
   caveats: string[];
@@ -643,6 +651,7 @@ export interface AskAnswer {
   suggested_rule?: { pattern: string; bucket: string; ato_label?: string };
   proposed_actions?: ProposedAction[];
   navigate?: { route: string; reason: string };
+  entity_actions?: EntityAction[];
 }
 
 export interface SuperContributionRow {

@@ -1152,6 +1152,51 @@ const NAVIGATE_PROP = {
   },
 } as const;
 
+// Phase 3 (flag ask_actions_v2): the chat agent may PROPOSE creating/editing one of the four core
+// setup records. The user confirms a card; execution routes through the audited DO path
+// (aiWriteEntity → ai_edits + audit_log), never autonomously. `fields` is a flat allowlist (the union
+// of the four entities' editable fields) so the model can only set known columns; the server
+// re-allowlists per kind before applying. Edits carry entity_id.
+export const ENTITY_ACTION_KINDS = [
+  "create_person", "edit_person", "create_property", "edit_property",
+  "create_entity", "edit_entity", "create_rule",
+] as const;
+export type EntityActionKind = (typeof ENTITY_ACTION_KINDS)[number];
+export interface EntityAction {
+  kind: EntityActionKind;
+  title: string;
+  rationale: string;
+  entity_id?: string;
+  fields: Record<string, unknown>;
+}
+const ENTITY_ACTIONS_PROP = {
+  type: "array",
+  maxItems: 3,
+  description: "ONLY when the user clearly asks to ADD or CHANGE a setup record from their own words (e.g. 'I rented out 12 Smith St from August', 'add my company ACME Pty Ltd'). Up to 3 changes the user will CONFIRM before anything is written. Edits must include entity_id (an id from the situation above).",
+  items: {
+    type: "object",
+    additionalProperties: false,
+    required: ["kind", "title", "rationale", "fields"],
+    properties: {
+      kind: { type: "string", enum: [...ENTITY_ACTION_KINDS] },
+      title: { type: "string", description: "Short human label, e.g. 'Add rental: 12 Smith St'." },
+      rationale: { type: "string", description: "One line grounded in the user's words." },
+      entity_id: { type: "string", description: "Edits only: the id of the record to change (from the situation)." },
+      fields: {
+        type: "object",
+        additionalProperties: false,
+        description: "The values to set. Only include fields you have a value for.",
+        properties: {
+          display_name: { type: "string" }, role: { type: "string" }, occupation: { type: "string" }, tax_residency: { type: "string" }, tfn_last4: { type: "string" },
+          label: { type: "string" }, address: { type: "string" }, status: { type: "string", description: "rented | vacant | owner_occupied" }, use_status: { type: "string" }, ownership_pct: { type: "number" }, acquired_date: { type: "string" }, notes: { type: "string" },
+          kind: { type: "string", description: "entity kind: employment | company | novated_lease" }, name: { type: "string" }, detail: { type: "string" },
+          pattern: { type: "string" }, bucket: { type: "string" }, ato_label: { type: "string" }, property_id: { type: "string" },
+        },
+      },
+    },
+  },
+} as const;
+
 const ANSWER_TOOL: Anthropic.Tool = {
   name: "give_answer",
   description: "Answer the user's question about their OWN tax records: a direct answer grounded only in their data, plus caveats, related screens, and optionally a categorisation rule to remember. Call exactly once.",
@@ -1174,6 +1219,7 @@ const ANSWER_TOOL: Anthropic.Tool = {
         },
       },
       navigate: NAVIGATE_PROP,
+      entity_actions: ENTITY_ACTIONS_PROP,
     },
   },
 };
@@ -1203,6 +1249,59 @@ export interface AnswerResult {
   suggested_rule?: { pattern: string; bucket: string; ato_label?: string };
   proposed_actions?: ProposedAction[];
   navigate?: { route: NavRoute; reason: string };
+  entity_actions?: EntityAction[];
+}
+
+// Per-entity field allowlists — the server-side second guard (the tool schema is the first). A
+// proposal's `fields` are filtered to these before anything reaches the audited write path, so a
+// model (or a tampered client) can't set a column outside the editable set for that kind.
+const ENTITY_ACTION_SPECS: Record<EntityActionKind, { entity: "person" | "property" | "entity" | "rule"; op: "create" | "update"; fields: readonly string[] }> = {
+  create_person: { entity: "person", op: "create", fields: ["display_name", "role", "occupation", "tax_residency", "tfn_last4"] },
+  edit_person: { entity: "person", op: "update", fields: ["display_name", "role", "occupation", "tax_residency", "tfn_last4"] },
+  create_property: { entity: "property", op: "create", fields: ["label", "address", "status", "use_status", "ownership_pct", "acquired_date", "notes"] },
+  edit_property: { entity: "property", op: "update", fields: ["label", "address", "status", "use_status", "ownership_pct", "acquired_date", "notes"] },
+  create_entity: { entity: "entity", op: "create", fields: ["kind", "name", "detail"] },
+  edit_entity: { entity: "entity", op: "update", fields: ["kind", "name", "detail"] },
+  create_rule: { entity: "rule", op: "create", fields: ["pattern", "bucket", "ato_label", "property_id"] },
+};
+
+/** Validate a model `entity_actions` array: known kind, edits carry entity_id, fields allowlisted per
+ *  kind, required create field present. Returns only well-formed proposals (≤3) — never throws. */
+export function validateEntityActions(raw: unknown): EntityAction[] {
+  if (!Array.isArray(raw)) return [];
+  const out: EntityAction[] = [];
+  for (const a of raw.slice(0, 3)) {
+    if (!a || typeof a !== "object") continue;
+    const o = a as Record<string, unknown>;
+    const kind = o.kind as EntityActionKind;
+    const spec = ENTITY_ACTION_SPECS[kind];
+    if (!spec) continue;
+    if (spec.op === "update" && (typeof o.entity_id !== "string" || !o.entity_id)) continue;
+    const rawFields = (o.fields ?? {}) as Record<string, unknown>;
+    const fields: Record<string, unknown> = {};
+    for (const f of spec.fields) {
+      const v = rawFields[f];
+      if (v !== undefined && v !== null && v !== "") fields[f] = v;
+    }
+    // A create must carry its one required identifying field, else it's a NOT-NULL waiting to happen.
+    const requiredCreate: Record<string, string> = { person: "display_name", property: "label", entity: "kind", rule: "pattern" };
+    const reqField = requiredCreate[spec.entity];
+    if (spec.op === "create" && (!reqField || !fields[reqField])) continue;
+    if (!Object.keys(fields).length) continue;
+    out.push({
+      kind,
+      title: typeof o.title === "string" ? o.title.slice(0, 120) : kind,
+      rationale: typeof o.rationale === "string" ? o.rationale.slice(0, 200) : "",
+      ...(spec.op === "update" ? { entity_id: o.entity_id as string } : {}),
+      fields,
+    });
+  }
+  return out;
+}
+
+/** Resolve an EntityAction kind to the audited-write spec (entity kind + op). Used by the apply path. */
+export function entityActionSpec(kind: string): { entity: "person" | "property" | "entity" | "rule"; op: "create" | "update"; fields: readonly string[] } | undefined {
+  return ENTITY_ACTION_SPECS[kind as EntityActionKind];
 }
 
 const CREDIT_OR_UNKNOWN_BUCKETS = new Set(["income_business", "income_property", "income_personal", "refund", "unknown"]);
@@ -1302,6 +1401,7 @@ const ANSWER_TOOL_WITH_ACTIONS: Anthropic.Tool = {
         },
       },
       navigate: NAVIGATE_PROP,
+      entity_actions: ENTITY_ACTIONS_PROP,
     },
   },
 };
@@ -1317,6 +1417,7 @@ export async function extractAnswer(
   messages: { role: "user" | "assistant"; content: string }[],
   actions?: { aliasToId: Map<string, DigestRef> },
   nav?: boolean,
+  entityActions?: boolean,
 ): Promise<AnswerResult> {
   const msg = await llm.create(
     {
@@ -1331,7 +1432,10 @@ export async function extractAnswer(
   );
   const toolUse = msg.content.find((c): c is Anthropic.ToolUseBlock => c.type === "tool_use" && c.name === ANSWER_TOOL.name);
   if (!toolUse) throw new Error("model did not return a give_answer tool call");
-  const input = toolUse.input as { answer?: unknown; caveats?: unknown; see_also?: unknown; suggested_rule?: unknown; proposed_actions?: unknown; navigate?: unknown };
+  const input = toolUse.input as { answer?: unknown; caveats?: unknown; see_also?: unknown; suggested_rule?: unknown; proposed_actions?: unknown; navigate?: unknown; entity_actions?: unknown };
+  // Phase 3: validated entity-write proposals (only when ask_actions_v2 is on). Off ⇒ never returned.
+  const entity_actions = entityActions ? validateEntityActions(input.entity_actions) : [];
+  const withEntityActions = entity_actions.length ? { entity_actions } : {};
   const answer = typeof input.answer === "string" && input.answer.trim() ? input.answer.trim() : "I couldn't answer that from your records.";
   const strList = (v: unknown) => (Array.isArray(v) ? v.filter((s): s is string => typeof s === "string" && s.trim().length > 0).slice(0, 4) : []);
   // Phase 2 (nav): only surface a navigation when chat_nav is on AND the route is on the allowlist —
@@ -1349,7 +1453,7 @@ export async function extractAnswer(
   if (sr && typeof sr.pattern === "string" && sr.pattern.trim() && typeof sr.bucket === "string" && isBucket(sr.bucket) && !CREDIT_OR_UNKNOWN_BUCKETS.has(sr.bucket)) {
     suggested_rule = { pattern: sr.pattern.trim().slice(0, 60), bucket: sr.bucket, ato_label: typeof sr.ato_label === "string" ? sr.ato_label.trim().slice(0, 60) : undefined };
   }
-  if (!actions) return { answer, caveats: strList(input.caveats), see_also: strList(input.see_also), suggested_rule, navigate };
+  if (!actions) return { answer, caveats: strList(input.caveats), see_also: strList(input.see_also), suggested_rule, navigate, ...withEntityActions };
   // Actions mode: one confirm-card channel. A stray suggested_rule (the schema dropped it, but a model
   // can echo old-turn shapes) folds into an add_rule proposal rather than rendering a second UI path.
   let proposed_actions = validateProposedActions(input.proposed_actions, actions.aliasToId);
@@ -1363,7 +1467,7 @@ export async function extractAnswer(
       ...(suggested_rule.ato_label ? { ato_label: suggested_rule.ato_label } : {}),
     }];
   }
-  return { answer, caveats: strList(input.caveats), see_also: strList(input.see_also), proposed_actions: proposed_actions.length ? proposed_actions : undefined, navigate };
+  return { answer, caveats: strList(input.caveats), see_also: strList(input.see_also), proposed_actions: proposed_actions.length ? proposed_actions : undefined, navigate, ...withEntityActions };
 }
 
 /** One metered Haiku call → a short personalised walkthrough. Plain structured output, no prose parsing. */

@@ -38,7 +38,7 @@ import {
 import { buildGuidePrompt, buildAskSystem, summariseReportForAsk, renderTxnDigest } from "../src/lib/guide";
 import { validateProposedActions } from "../src/extract";
 import type { Progress } from "../src/lib/progress";
-import { fyBounds, fyLabel, basPositionFrom } from "../src/lib/ledger-totals";
+import { fyBounds, fyLabel, basPositionFrom, fyStartYearStr, parseFyStartYear, normaliseFyLabel } from "../src/lib/ledger-totals";
 import { currentFyStartYear, reportToCsv, type Report } from "../src/lib/report";
 import { csvCell, substantiationStatus, impliedWorkUsePct, scheduleToCsv, type AccountantSchedule } from "../src/lib/accountant-schedule";
 import { exclusionReason } from "../src/lib/readiness";
@@ -1471,6 +1471,27 @@ console.log("money integer scale (0051: cost_e4 / cents_e4)");
   check("budget gate reads the integer tally (cents_e4)", /SELECT cents_e4 FROM daily_cost/.test(usageSrc));
   check("daily_cost upsert increments cents_e4", /cents_e4 = cents_e4 \+ excluded\.cents_e4/.test(usageSrc));
   check("spend rollups SUM the integer column (cost_e4), not the float", /SUM\(cost_e4\)/.test(queriesSrc) && !/SUM\(cost_cents\)/.test(queriesSrc));
+}
+
+console.log("fy representation seam (canonical helpers + guardrail)");
+{
+  // `fy` is stored three internally-consistent ways; these helpers are the only sanctioned producers/
+  // parsers. Lock their behaviour + guard that the fragile open-coded casts don't creep back.
+  check("fyLabel(2025) → '2025-26'", fyLabel(2025) === "2025-26");
+  check("fyStartYearStr(2025) → '2025'", fyStartYearStr(2025) === "2025");
+  check("parseFyStartYear reads every stored form back to the start year",
+    parseFyStartYear("2025-26") === 2025 && parseFyStartYear("2025") === 2025 && parseFyStartYear(2025) === 2025);
+  check("parseFyStartYear(blank) → NaN", Number.isNaN(parseFyStartYear("")) && Number.isNaN(parseFyStartYear(null)));
+  check("normaliseFyLabel coerces any caller input to the label",
+    normaliseFyLabel("2025") === "2025-26" && normaliseFyLabel(2025) === "2025-26" && normaliseFyLabel("2025-26") === "2025-26");
+  check("normaliseFyLabel(blank) → null", normaliseFyLabel(null) === null && normaliseFyLabel("") === null);
+  check("label round-trips: label → start year → label", fyLabel(parseFyStartYear("2025-26")) === "2025-26");
+  // Guardrail: the fragile casts the seam replaced must not reappear.
+  const agentSrc = fs.readFileSync(new URL("../src/agent.ts", import.meta.url), "utf8");
+  const reportSrc = fs.readFileSync(new URL("../src/lib/report.ts", import.meta.url), "utf8");
+  check("clarify fy reads go through parseFyStartYear, not Number(q.fy)", !/Number\(q\.fy\)/.test(agentSrc));
+  check("checklist generate normalises its fy input", /normaliseFyLabel\(fy\)/.test(agentSrc));
+  check("loan-interest reads bind fyStartYearStr, not open-coded String(startYear)", !/String\(startYear\)/.test(reportSrc));
 }
 
 console.log("billableCents");

@@ -52,6 +52,10 @@ export const INCOME_TYPES = [
   "non_cash_benefit",    // S4: gifted products / barter received for promotion, captured at market value.
                          // CAPTURE-ONLY — EXCLUDED from the assessable position (see NON_ASSESSABLE_INCOME_TYPES
                          // in ledger-totals.ts); surfaced as an excluded line + a defer nudge.
+  "super_pension",       // D: account-based / retirement pension. CAPTURE-ONLY — EXCLUDED from the assessable
+                         // position (see NON_ASSESSABLE_INCOME_TYPES). An over-60 ABP from a taxed fund is
+                         // generally tax-free and we never compute the SAPTO offset; an under-60 / untaxed
+                         // element MAY be assessable → surfaced as an excluded line + a defer nudge.
   "other",
 ] as const;
 export type IncomeType = (typeof INCOME_TYPES)[number];

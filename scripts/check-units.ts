@@ -981,15 +981,22 @@ console.log("readiness");
 
   // S4: a non-cash benefit (captured but excluded) → a defer review nudge + an "excluded" position line,
   // and it is NEVER counted in the headline (incomeTotals already excluded it from gross_cents).
-  const nonCash = run(mkReport({ income: { by_type: [{ income_type: "salary_payg", n: 1, gross_cents: 8_000_000, net_cents: 6_000_000, withholding_cents: 2_000_000, franking_credit_cents: 0, foreign_tax_paid_cents: 0 }], gross_cents: 8_000_000, withholding_cents: 2_000_000, franking_credit_cents: 0, foreign_tax_paid_cents: 0, non_cash_cents: 500_000 }, total_income_cents: 8_000_000, taxable_position_cents: 8_000_000 }), noSignals());
+  const nonCash = run(mkReport({ income: { by_type: [{ income_type: "salary_payg", n: 1, gross_cents: 8_000_000, net_cents: 6_000_000, withholding_cents: 2_000_000, franking_credit_cents: 0, foreign_tax_paid_cents: 0 }], gross_cents: 8_000_000, withholding_cents: 2_000_000, franking_credit_cents: 0, foreign_tax_paid_cents: 0, excluded_by_type: [{ income_type: "non_cash_benefit", gross_cents: 500_000, n: 1 }], non_cash_cents: 500_000 }, total_income_cents: 8_000_000, taxable_position_cents: 8_000_000 }), noSignals());
   check("non-cash benefit → defer review nudge", nonCash.findings.some((f) => f.id === "non_cash_benefit" && f.defer_to_agent && f.severity === "review"));
   check("non-cash benefit → an 'excluded' line, headline unchanged", nonCash.position.lines.some((l) => l.group === "excluded" && l.label === "non_cash_benefit" && l.amount_cents === 500_000) && nonCash.position.indicative_taxable_position_cents === 8_000_000);
   check("no non-cash → no non-cash finding", !run(mkReport(), noSignals()).findings.some((f) => f.id === "non_cash_benefit"));
 
+  // D: a super pension (captured but excluded) → its OWN defer nudge + its OWN "excluded" line, never
+  // mislabelled as a non-cash benefit, never counted in the headline.
+  const pension = run(mkReport({ income: { by_type: [{ income_type: "interest", n: 1, gross_cents: 200_000, net_cents: 200_000, withholding_cents: 0, franking_credit_cents: 0, foreign_tax_paid_cents: 0 }], gross_cents: 200_000, withholding_cents: 0, franking_credit_cents: 0, foreign_tax_paid_cents: 0, excluded_by_type: [{ income_type: "super_pension", gross_cents: 4_000_000, n: 1 }] }, total_income_cents: 200_000, taxable_position_cents: 200_000 }), noSignals());
+  check("super pension → its own defer review nudge", pension.findings.some((f) => f.id === "super_pension" && f.defer_to_agent && f.severity === "review"));
+  check("super pension → not mislabelled as a non-cash benefit", !pension.findings.some((f) => f.id === "non_cash_benefit"));
+  check("super pension → an 'excluded' line, headline unchanged", pension.position.lines.some((l) => l.group === "excluded" && l.label === "super_pension" && l.amount_cents === 4_000_000) && pension.position.indicative_taxable_position_cents === 200_000);
+
   // THE INVARIANT: no generated finding/position text asserts tax payable, a refund, or a rate.
   // (The fixed position caption intentionally NEGATES those words and is excluded — it's a vetted constant.)
   const denylist = /refund|tax payable|marginal rate|\b\d{1,2}%\s*(tax|bracket)/i;
-  const everything = [unknown, franking, rental, iawo, disposed, judged, clean, trust, capLoss, psi, psiApplies, div293Hit, gstOver, nonCash];
+  const everything = [unknown, franking, rental, iawo, disposed, judged, clean, trust, capLoss, psi, psiApplies, div293Hit, gstOver, nonCash, pension];
   const generatedText = everything.flatMap((r) => [
     ...r.findings.flatMap((f) => [f.title, f.general_info_note]),
     ...r.position.lines.flatMap((l) => [l.basis, l.why]),

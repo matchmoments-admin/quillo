@@ -3048,7 +3048,7 @@ export class TaxAgent extends Agent<Env> {
       .filter((p) => p.income_cents > 0 && !haveSummaryFor.has(p.property_id))
       .map((p) => ({ property_id: p.property_id, label: p.label }));
 
-    const thresholds = (pack as { thresholds_by_fy?: Record<string, { instant_asset_write_off_cents?: number }> }).thresholds_by_fy ?? {};
+    const thresholds = (pack as { thresholds_by_fy?: Record<string, { instant_asset_write_off_cents?: number; div293_threshold_cents?: number }> }).thresholds_by_fy ?? {};
     // Prior-year capital losses are an all-time carry-forward (not FY-scoped) — sum them so readiness
     // can surface a defer finding (capture-only; never applied to the headline).
     const capLoss = await this.env.DB.prepare(`SELECT COALESCE(SUM(loss_cents),0) AS total FROM capital_loss_carryins WHERE user_id = ?`).bind(userId).first<{ total: number }>();
@@ -3065,6 +3065,7 @@ export class TaxAgent extends Agent<Env> {
       instantAssetWriteOffCentsPrevFy: thresholds[fyLabel(startYear - 1)]?.instant_asset_write_off_cents ?? null,
       capitalLossCarryinCents: capLoss?.total ?? 0,
       fxUnconvertedN: (fxIncome?.n ?? 0) + (fxTxns?.n ?? 0),
+      div293ThresholdCents: thresholds[fy]?.div293_threshold_cents ?? null,
     };
 
     const readiness = assessReadiness({ report, situation, claimMatches: [...matchedById.values()], signals, generatedAt: new Date().toISOString(), excludeNonDeductible: featureOn(this.env, "position_excludes_nondeductible") });

@@ -60,6 +60,10 @@
   ],
   "thresholds_by_fy": {
     "_note": "All dollar thresholds in CENTS. These change yearly and are policy-dependent — the depreciation engine + claimability brain read them per FY, never inline. Confirm against ATO before relying on them.",
+    "_reference_only_keys": {
+      "_note": "REFERENCE-ONLY: these per-FY keys are NOT used in any $ calculation in the engines. They are informational only — `div293_threshold_cents` informs a defer-to-agent readiness nudge (never a computed liability); `mls_single_threshold_cents` and the company-tax rates (`base_rate_company_tax_pct`/`full_company_tax_pct`) are unconsumed (the product never computes tax payable, by design — see CLAUDE.md). Do not wire these into any position maths without a registered-tax-agent review; surcharge/levy/company-tax computation is out of scope.",
+      "keys": ["div293_threshold_cents", "mls_single_threshold_cents", "base_rate_company_tax_pct", "full_company_tax_pct"]
+    },
     "2024-25": {
       "instant_asset_write_off_cents": 2000000,
       "car_limit_cents": 6920900,

@@ -16,6 +16,7 @@ export const PURGE_TABLES = [
   "accounts",
   "statements",
   "corrections",
+  "ai_edits",                // 0057: AI-driven/manual entity-write undo log
   "traces",
   "eval_cases",
   "notifications",

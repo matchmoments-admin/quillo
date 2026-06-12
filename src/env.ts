@@ -129,6 +129,10 @@ export interface TaxAgentRpc {
   applyLoanSplitGroup(userId: string, txnIds: string[], opts: { property_id: string; interest_pct: number }): Promise<{ applied: number; skipped: number; interest_cents: number }>;
   applyCorrectionBatch(userId: string, txnIds: string[], edits: { field: string; value: string }[], opts?: { learnRule?: boolean }): Promise<{ batch_id: string; updated: number; failures: { txnId: string; error: string }[]; rules_created?: number }>;
   undoCorrectionBatch(userId: string, batchId: string): Promise<{ reverted: number }>;
+  aiWriteEntity(userId: string, spec: { kind: string; op: "create" | "update"; id?: string; data: Record<string, unknown>; source?: "ai_confirmed" | "manual"; sessionId?: string; batchId?: string; actionId?: string }): Promise<{ id: string; action_id: string; deduped?: boolean }>;
+  undoAiEdit(userId: string, actionId: string): Promise<{ reverted: number }>;
+  undoAiEditBatch(userId: string, batchId: string): Promise<{ reverted: number }>;
+  listAiEdits(userId: string, limit?: number): Promise<{ edits: { action_id: string; entity_type: string; entity_id: string; op: string; source: string; created_at: string; reverted_at: string | null; summary: string }[] }>;
   deleteTransactionBatch(userId: string, txnIds: string[]): Promise<{ deleted: number }>;
   matchClaim(userId: string, claimId: string): Promise<{ claim_id: string; rule_id: string | null; candidates: import("./lib/claim-match").ScoredTxn[]; linked: string[] }>;
   attachClaim(userId: string, claimId: string, txnId: string): Promise<{ ok: boolean; status: string }>;

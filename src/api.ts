@@ -76,6 +76,31 @@ const json = (data: unknown, status = 200) =>
   new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json" } });
 
 /**
+ * Manual entity create/update routing (Phase 4). When ai_edit_feed is ON, route the write through the
+ * audited DO path (aiWriteEntity → ai_edits + audit_log → undoable); OFF ⇒ the existing direct-to-D1
+ * write, byte-identical. Deletes are deliberately NOT routed (they stay direct so DeleteBlockedError
+ * keeps its 409 blockers/archivable shape, which wouldn't survive the RPC boundary). `direct` returns
+ * the new id on create.
+ */
+async function routedEntityWrite(
+  env: Env,
+  stub: TaxAgentRpc,
+  uid: string,
+  kind: "person" | "property" | "entity" | "rule",
+  op: "create" | "update",
+  id: string | null,
+  data: Record<string, unknown>,
+  direct: () => Promise<string | void>,
+): Promise<Response> {
+  if (featureOn(env, "ai_edit_feed")) {
+    const r = await stub.aiWriteEntity(uid, { kind, op, id: id ?? undefined, data, source: "manual" });
+    return op === "create" ? json({ id: r.id }) : json({ ok: true });
+  }
+  const res = await direct();
+  return op === "create" ? json({ id: res as string }) : json({ ok: true });
+}
+
+/**
  * Web API router. Everything here is already authenticated (the caller verified
  * Cloudflare Access) and scoped to `user.userId`. Reads hit D1; audited writes go
  * through the Durable Object `stub`.
@@ -308,6 +333,19 @@ export async function handleApi(
     }
   }
 
+  // AI changes feed + undo (Phase 4, flag ai_edit_feed). GET → recent entity edits; POST /undo → revert
+  // one action or a whole batch. All writes/undos go through the DO (serialised + hash-chained).
+  if (resource === "ai-edits") {
+    if (!featureOn(env, "ai_edit_feed")) return json({ error: "not available" }, 404);
+    if (m === "GET" && !id) return json(await stub.listAiEdits(uid));
+    if (m === "POST" && id === "undo") {
+      const { action_id, batch_id } = (await req.json().catch(() => ({}))) as { action_id?: string; batch_id?: string };
+      if (batch_id) return json(await stub.undoAiEditBatch(uid, batch_id));
+      if (action_id) return json(await stub.undoAiEdit(uid, action_id));
+      return json({ error: "action_id or batch_id required" }, 400);
+    }
+  }
+
   // GET /api/dashboard — aggregates. Opportunistically apply any finished async batch jobs
   // (cheap no-op when there are none) so results land without waiting for the cron.
   if (resource === "dashboard" && m === "GET") {
@@ -446,16 +484,15 @@ export async function handleApi(
   // ── Situation writes (Settings + web onboarding) ──────────────────────────
   // Persons (taxpayers). The list is returned by GET /api/situation (getSituation).
   if (resource === "persons") {
-    if (m === "POST" && !id) return json({ id: await addPerson(env, uid, await req.json()) });
+    if (m === "POST" && !id) { const body = (await req.json()) as Record<string, unknown>; return routedEntityWrite(env, stub, uid, "person", "create", null, body, () => addPerson(env, uid, body as { display_name: string })); }
     if (m === "PUT" && id) {
-      const body = (await req.json()) as { role?: string };
+      const body = (await req.json()) as { role?: string } & Record<string, unknown>;
       // Don't let an edit reassign the 'self' role (would orphan the anchor or create two selves).
       if (body.role !== undefined) {
         const cur = await env.DB.prepare(`SELECT role FROM persons WHERE id = ? AND user_id = ?`).bind(id, uid).first<{ role: string }>();
         if ((cur?.role === "self") !== (body.role === "self")) return json({ error: "the primary taxpayer role can't be reassigned" }, 409);
       }
-      await updatePerson(env, uid, id, body);
-      return json({ ok: true });
+      return routedEntityWrite(env, stub, uid, "person", "update", id, body, () => updatePerson(env, uid, id, body));
     }
     if (m === "DELETE" && id) {
       // The 'self' person anchors entities/properties/income (person_id FK) — never delete it,
@@ -467,7 +504,7 @@ export async function handleApi(
     }
   }
   if (resource === "properties") {
-    if (m === "POST") return json({ id: await addProperty(env, uid, await req.json()) });
+    if (m === "POST") { const body = (await req.json()) as Record<string, unknown>; return routedEntityWrite(env, stub, uid, "property", "create", null, body, () => addProperty(env, uid, body as { label: string })); }
     // GET /api/properties/:id/cgt — indicative CGT on a disposed property.
     if (m === "GET" && id && sub === "cgt") {
       try {
@@ -476,21 +513,15 @@ export async function handleApi(
         return json({ error: (e as Error).message }, 400);
       }
     }
-    if (m === "PUT" && id) {
-      await updateProperty(env, uid, id, await req.json());
-      return json({ ok: true });
-    }
+    if (m === "PUT" && id) { const body = (await req.json()) as Record<string, unknown>; return routedEntityWrite(env, stub, uid, "property", "update", id, body, () => updateProperty(env, uid, id, body)); }
     if (m === "DELETE" && id) {
       await deleteRow(env, uid, "properties", id);
       return json({ ok: true });
     }
   }
   if (resource === "entities") {
-    if (m === "POST") return json({ id: await addEntity(env, uid, await req.json()) });
-    if (m === "PUT" && id) {
-      await updateEntity(env, uid, id, await req.json());
-      return json({ ok: true });
-    }
+    if (m === "POST") { const body = (await req.json()) as Record<string, unknown>; return routedEntityWrite(env, stub, uid, "entity", "create", null, body, () => addEntity(env, uid, body as { kind: string })); }
+    if (m === "PUT" && id) { const body = (await req.json()) as Record<string, unknown>; return routedEntityWrite(env, stub, uid, "entity", "update", id, body, () => updateEntity(env, uid, id, body)); }
     // Non-destructive archive (hide from pickers, keep history) — the safe alternative
     // surfaced when a delete is blocked because records still reference this entity.
     if (m === "POST" && id && sub === "archive") {
@@ -526,11 +557,11 @@ export async function handleApi(
     if (m === "DELETE" && id) { await deleteRow(env, uid, "income_activities", id); return json({ ok: true }); }
   }
   if (resource === "rules") {
-    if (m === "POST") return json({ id: await addRule(env, uid, await req.json()) });
+    if (m === "POST") { const body = (await req.json()) as Record<string, unknown>; return routedEntityWrite(env, stub, uid, "rule", "create", null, body, () => addRule(env, uid, body as { pattern: string; bucket: string; ato_label: string })); }
     if (m === "PUT" && id) {
       try {
-        await updateRule(env, uid, id, await req.json());
-        return json({ ok: true });
+        const body = (await req.json()) as Record<string, unknown>;
+        return await routedEntityWrite(env, stub, uid, "rule", "update", id, body, () => updateRule(env, uid, id, body));
       } catch (e) {
         return json({ error: (e as Error).message }, 400); // unknown bucket
       }

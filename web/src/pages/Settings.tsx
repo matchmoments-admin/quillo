@@ -5,6 +5,7 @@ import { api, isDeleteBlocked } from "../api";
 import { useFeatures } from "../lib/features";
 import { BUCKETS } from "../types";
 import { Card, Spinner, BUCKET_LABEL, InfoTip, money } from "../components/ui";
+import { AiChangesFeed } from "../components/AiChangesFeed";
 
 // Run a delete; on a blocked-delete (409, dependent records still reference the row) surface the
 // reason and offer Archive when the parent supports it — instead of silently swallowing the error.
@@ -59,6 +60,9 @@ export function Settings() {
   return (
     <div className="space-y-8">
       <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
+
+      {/* Recent (audited, reversible) changes — self-gates on ai_edit_feed. */}
+      <AiChangesFeed />
 
       {/* Privacy & AI processing (APP-8 consent dashboard) */}
       <PrivacyPanel

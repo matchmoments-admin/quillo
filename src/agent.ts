@@ -1,7 +1,7 @@
 import { Agent } from "agents";
 import type { Env } from "./env";
 import { getProfile, getSituation, renderSituation, type Profile, type Situation, type UserRule } from "./lib/db";
-import { addRule, addAccount, syncIncomeCgtFromComponents, clearIncomeCgt } from "./lib/situation-write";
+import { addRule, addAccount, syncIncomeCgtFromComponents, clearIncomeCgt, addPerson, updatePerson, addProperty, updateProperty, addEntity, updateEntity, updateRule, deleteRow } from "./lib/situation-write";
 import { ordinaryAssessableCents, validateComponents, parseAmmaComponents, type AmmaComponents } from "./lib/managed-fund";
 import { QuickBooksAdapter } from "./ledger/qbo";
 import { revokeAndDisconnect } from "./lib/qbo-oauth";
@@ -3463,6 +3463,156 @@ export class TaxAgent extends Agent<Env> {
     if (changed.size) await this.stampDeductibility(userId, { txnIds: [...changed], reResolve: true });
     await this.audit(userId, "correction_batch_undo", JSON.stringify({ batch_id: batchId, reverted: changed.size }));
     return { reverted: changed.size };
+  }
+
+  // ── ai_edits: audited, reversible whole-entity writes (0057; Phases 3-4) ────────────────────────
+  // The AI write tools (and, later, the manual Settings path) route create/update of the four core
+  // entity types THROUGH here so every change is (a) serialised per tenant by the DO, (b) recorded in
+  // ai_edits with full old/new snapshots for one-click undo, and (c) mirrored to the hash-chained
+  // audit_log. We REUSE the existing situation-write functions unchanged — this only wraps them with
+  // capture + recording, so the write itself (and its side-effects) is byte-identical to today.
+  private static readonly AI_ENTITY_MAP: Record<string, { table: string }> = {
+    person: { table: "persons" },
+    property: { table: "properties" },
+    entity: { table: "entities" },
+    rule: { table: "user_rules" },
+  };
+
+  private async aiEntitySnapshot(userId: string, table: string, id: string): Promise<Record<string, unknown> | null> {
+    // table is from AI_ENTITY_MAP (fixed allowlist) — safe to interpolate.
+    return await this.env.DB.prepare(`SELECT * FROM ${table} WHERE id = ? AND user_id = ?`).bind(id, userId).first<Record<string, unknown>>();
+  }
+
+  /**
+   * Apply one AI-proposed (or manual) entity write and record it for undo. `op` is create|update only —
+   * deletes stay on the direct path so DeleteBlockedError keeps its 409 shape (it wouldn't survive the
+   * RPC boundary). Idempotent on `actionId`: a repeat with the same id returns the prior entity without
+   * re-writing (double-confirm / retry safety). Returns the entity id + the action id.
+   */
+  async aiWriteEntity(
+    userId: string,
+    spec: { kind: string; op: "create" | "update"; id?: string; data: Record<string, unknown>; source?: "ai_confirmed" | "manual"; sessionId?: string; batchId?: string; actionId?: string },
+  ): Promise<{ id: string; action_id: string; deduped?: boolean }> {
+    const m = TaxAgent.AI_ENTITY_MAP[spec.kind];
+    if (!m) throw new Error("unknown_entity_kind");
+    const actionId = spec.actionId || crypto.randomUUID();
+    const source = spec.source ?? "ai_confirmed";
+    if (spec.actionId) {
+      const existing = await this.env.DB.prepare(`SELECT entity_id FROM ai_edits WHERE user_id = ? AND action_id = ? AND reverted_at IS NULL ORDER BY created_at DESC LIMIT 1`).bind(userId, spec.actionId).first<{ entity_id: string }>();
+      if (existing) return { id: existing.entity_id, action_id: actionId, deduped: true };
+    }
+    let entityId: string;
+    let oldJson: string | null = null;
+    if (spec.op === "update") {
+      if (!spec.id) throw new Error("update_requires_id");
+      const old = await this.aiEntitySnapshot(userId, m.table, spec.id);
+      if (!old) throw new Error("entity_not_found");
+      oldJson = JSON.stringify(old);
+      entityId = spec.id;
+      await this.applyEntityWrite(userId, spec.kind, "update", entityId, spec.data);
+    } else {
+      entityId = await this.applyEntityWrite(userId, spec.kind, "create", null, spec.data);
+    }
+    const newRow = await this.aiEntitySnapshot(userId, m.table, entityId);
+    await this.env.DB.prepare(
+      `INSERT INTO ai_edits (id, user_id, batch_id, action_id, entity_type, entity_id, op, old_json, new_json, source, session_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(crypto.randomUUID(), userId, spec.batchId ?? null, actionId, spec.kind, entityId, spec.op, oldJson, newRow ? JSON.stringify(newRow) : null, source, spec.sessionId ?? null).run();
+    await this.audit(userId, `ai_edit_${spec.op}`, JSON.stringify({ kind: spec.kind, entity_id: entityId, action_id: actionId, source }));
+    return { id: entityId, action_id: actionId };
+  }
+
+  /** Dispatch to the existing situation-write add/update fn for a kind. Centralises the one place the
+   *  generic ai_edits path touches typed payloads (the fns validate/normalise their own fields). */
+  private async applyEntityWrite(userId: string, kind: string, op: "create" | "update", id: string | null, data: Record<string, unknown>): Promise<string> {
+    // The situation-write fns validate/normalise their own fields; on create we assert the one required
+    // field per kind up front so a malformed proposal fails loudly here, not with a NOT NULL deep in D1.
+    const req = (k: string) => {
+      if (op === "create" && (data[k] == null || data[k] === "")) throw new Error(`missing_${k}`);
+    };
+    if (kind === "person") { req("display_name"); return op === "create" ? addPerson(this.env, userId, data as { display_name: string }) : (await updatePerson(this.env, userId, id!, data), id!); }
+    if (kind === "property") { req("label"); return op === "create" ? addProperty(this.env, userId, data as { label: string }) : (await updateProperty(this.env, userId, id!, data), id!); }
+    if (kind === "entity") { req("kind"); return op === "create" ? addEntity(this.env, userId, data as { kind: string }) : (await updateEntity(this.env, userId, id!, data), id!); }
+    if (kind === "rule") { req("pattern"); req("bucket"); return op === "create" ? addRule(this.env, userId, data as { pattern: string; bucket: string; ato_label: string }) : (await updateRule(this.env, userId, id!, data), id!); }
+    throw new Error("unknown_entity_kind");
+  }
+
+  /** Undo every ai_edits row sharing this action_id (usually one), newest first. create→delete,
+   *  update→restore old_json. Idempotent (skips already-reverted); a blocked delete is left applied. */
+  async undoAiEdit(userId: string, actionId: string): Promise<{ reverted: number }> {
+    if (!actionId) return { reverted: 0 };
+    const rows = (await this.env.DB.prepare(`SELECT id, entity_type, entity_id, op, old_json FROM ai_edits WHERE user_id = ? AND action_id = ? AND reverted_at IS NULL ORDER BY created_at DESC`).bind(userId, actionId).all<{ id: string; entity_type: string; entity_id: string; op: string; old_json: string | null }>()).results ?? [];
+    let reverted = 0;
+    for (const r of rows) {
+      if (await this.revertOneAiEdit(userId, r)) reverted++;
+    }
+    if (reverted) await this.audit(userId, "ai_edit_undo", JSON.stringify({ action_id: actionId, reverted }));
+    return { reverted };
+  }
+
+  /** Undo a whole batch (multi-action AI change) atomically-ish, newest first. */
+  async undoAiEditBatch(userId: string, batchId: string): Promise<{ reverted: number }> {
+    if (!batchId) return { reverted: 0 };
+    const rows = (await this.env.DB.prepare(`SELECT id, entity_type, entity_id, op, old_json FROM ai_edits WHERE user_id = ? AND batch_id = ? AND reverted_at IS NULL ORDER BY created_at DESC`).bind(userId, batchId).all<{ id: string; entity_type: string; entity_id: string; op: string; old_json: string | null }>()).results ?? [];
+    let reverted = 0;
+    for (const r of rows) {
+      if (await this.revertOneAiEdit(userId, r)) reverted++;
+    }
+    if (reverted) await this.audit(userId, "ai_edit_batch_undo", JSON.stringify({ batch_id: batchId, reverted }));
+    return { reverted };
+  }
+
+  private async revertOneAiEdit(userId: string, r: { id: string; entity_type: string; entity_id: string; op: string; old_json: string | null }): Promise<boolean> {
+    const m = TaxAgent.AI_ENTITY_MAP[r.entity_type];
+    if (!m) return false;
+    try {
+      if (r.op === "create") {
+        // Inverse of a create is a delete (RESTRICT: a blocked delete throws → leave the edit applied).
+        await deleteRow(this.env, userId, m.table as Parameters<typeof deleteRow>[2], r.entity_id);
+      } else {
+        // Inverse of an update is restoring the prior snapshot. Column names come from SELECT * (schema
+        // columns, not user input) → safe to interpolate. v1: an unconditional restore if the row exists.
+        if (!r.old_json) return false;
+        const old = JSON.parse(r.old_json) as Record<string, unknown>;
+        const cols = Object.keys(old).filter((c) => c !== "id" && c !== "user_id");
+        if (!cols.length) return false;
+        const exists = await this.aiEntitySnapshot(userId, m.table, r.entity_id);
+        if (!exists) return false;
+        await this.env.DB.prepare(`UPDATE ${m.table} SET ${cols.map((c) => `${c} = ?`).join(", ")} WHERE id = ? AND user_id = ?`).bind(...cols.map((c) => old[c]), r.entity_id, userId).run();
+      }
+      await this.env.DB.prepare(`UPDATE ai_edits SET reverted_at = datetime('now') WHERE id = ? AND user_id = ?`).bind(r.id, userId).run();
+      return true;
+    } catch {
+      return false; // e.g. a blocked delete — leave the edit applied; the caller reports the count
+    }
+  }
+
+  /** Recent entity edits for the "AI changes — undo" feed. Newest first, still-applied flagged. */
+  async listAiEdits(userId: string, limit = 30): Promise<{ edits: { action_id: string; entity_type: string; entity_id: string; op: string; source: string; created_at: string; reverted_at: string | null; summary: string }[] }> {
+    const rows = (await this.env.DB.prepare(
+      `SELECT action_id, entity_type, entity_id, op, source, new_json, old_json, created_at, reverted_at
+         FROM ai_edits WHERE user_id = ? ORDER BY created_at DESC LIMIT ?`,
+    ).bind(userId, Math.min(Math.max(1, limit), 100)).all<{ action_id: string; entity_type: string; entity_id: string; op: string; source: string; new_json: string | null; old_json: string | null; created_at: string; reverted_at: string | null }>()).results ?? [];
+    const label = (json: string | null): string => {
+      if (!json) return "";
+      try {
+        const o = JSON.parse(json) as Record<string, unknown>;
+        return String(o.label ?? o.display_name ?? o.name ?? o.pattern ?? o.id ?? "");
+      } catch {
+        return "";
+      }
+    };
+    const edits = rows.map((r) => ({
+      action_id: r.action_id,
+      entity_type: r.entity_type,
+      entity_id: r.entity_id,
+      op: r.op,
+      source: r.source,
+      created_at: r.created_at,
+      reverted_at: r.reverted_at,
+      summary: `${r.op === "create" ? "Added" : "Updated"} ${r.entity_type} ${label(r.new_json) || label(r.old_json)}`.trim(),
+    }));
+    return { edits };
   }
 
   /** Hard-delete many transactions (bulk bar). Tolerant of missing ids; reuses deleteTransaction's R2 + audit path per row. */

@@ -7,7 +7,7 @@ import { InfoTip } from "./ui";
 // identical controls (single source of truth for the situation fields the categoriser reads).
 export const fieldInput = "rounded-lg border border-line bg-card px-3 py-2 text-sm";
 
-export const ENTITY_KINDS = ["company", "employment", "novated_lease", "individual", "trust", "smsf"] as const;
+export const ENTITY_KINDS = ["company", "employment", "novated_lease", "individual", "trust", "smsf", "partnership"] as const;
 
 // Hand-mirror of PROPERTY_STATUSES in src/lib/taxonomy.ts — keep in sync. Two relationship groups:
 // "own" (landlord/occupier) vs "rent" (tenant). Tenant statuses have no cost base / CGT / ownership %.

@@ -993,6 +993,12 @@ console.log("readiness");
   // No trust → no trust finding.
   check("no trust entity → no trust finding", !run(mkReport(), noSignals()).findings.some((f) => f.id.startsWith("trust_resolution:")));
 
+  // E: a partnership distribution renders as an assessable "income" position line (buildReport already
+  // added it to the headline), distinct from the trust line.
+  const partn = run(mkReport({ partnership: { assessable_cents: 5_000_000, franking_credit_cents: 1_500_000, by_character: { franked_dividend: 5_000_000 } }, taxable_position_cents: 5_000_000, total_income_cents: 5_000_000 }), noSignals());
+  check("partnership distribution → assessable income line", partn.position.lines.some((l) => l.group === "income" && l.label === "partnership_distribution" && l.amount_cents === 5_000_000));
+  check("no partnership → no partnership line", !run(mkReport(), noSignals()).position.lines.some((l) => l.label === "partnership_distribution"));
+
   // Capital-loss carry-in → a defer-to-agent info finding, and it is NEVER applied to the headline
   // (capital losses offset capital gains only). taxable_position must equal the report's, unchanged.
   const capLoss = run(trustReport, noSignals({ capitalLossCarryinCents: 800_000 }));
@@ -1062,7 +1068,7 @@ console.log("readiness");
   // THE INVARIANT: no generated finding/position text asserts tax payable, a refund, or a rate.
   // (The fixed position caption intentionally NEGATES those words and is excluded — it's a vetted constant.)
   const denylist = /refund|tax payable|marginal rate|\b\d{1,2}%\s*(tax|bracket)/i;
-  const everything = [unknown, franking, rental, iawo, disposed, judged, clean, trust, capLoss, psi, psiApplies, div293Hit, gstOver, nonCash, pension, mainRes, mfCb];
+  const everything = [unknown, franking, rental, iawo, disposed, judged, clean, trust, capLoss, psi, psiApplies, div293Hit, gstOver, nonCash, pension, mainRes, mfCb, partn];
   const generatedText = everything.flatMap((r) => [
     ...r.findings.flatMap((f) => [f.title, f.general_info_note]),
     ...r.position.lines.flatMap((l) => [l.basis, l.why]),

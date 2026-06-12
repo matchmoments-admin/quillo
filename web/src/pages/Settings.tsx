@@ -160,6 +160,13 @@ export function Settings() {
         </Section>
       )}
 
+      {/* Partnership distributions (Slice E) — your share of partnership net income, character retained */}
+      {has("partnership_distributions") && (
+        <Section title={<>Partnership distributions <InfoTip tip="Your share of a partnership's net income, with its character retained (a franked dividend stays franked, a discounted capital gain stays discounted). It's assessable to you; the partnership lodges its own return. Add a partnership entity above first. General information — confirm with a registered tax agent." /></>}>
+          <PartnershipDistributions partnerships={s.entities.filter((e) => e.kind === "partnership")} />
+        </Section>
+      )}
+
       {/* SMSF members + balances (#140) — drives the ECPI exempt fraction. Fund earnings are recorded
           as income against the SMSF entity (Income page). SMSF is a separate taxpayer. */}
       {has("smsf_engine") && (
@@ -831,6 +838,50 @@ function AddTrustDistribution({ trusts, onDone }: { trusts: { id: string; name: 
         <input className={input} inputMode="decimal" placeholder="Franking $ (optional)" value={franking} onChange={(e) => setFranking(e.target.value)} />
       </div>
       <button className={btn} onClick={() => add.mutate()} disabled={add.isPending || !amount || !trustId}>{add.isPending ? "Saving…" : "Save distribution"}</button>
+      {add.error && <p className="text-sm text-danger">{(add.error as Error).message}</p>}
+    </div>
+  );
+}
+
+// Slice E: partnership distributions — your share of partnership net income, character retained.
+function PartnershipDistributions({ partnerships }: { partnerships: { id: string; name: string | null }[] }) {
+  const qc = useQueryClient();
+  const dists = useQuery({ queryKey: ["partnership-distributions"], queryFn: () => api.partnershipDistributions() });
+  const [adding, setAdding] = useState(false);
+  const invalidate = () => { qc.invalidateQueries({ queryKey: ["partnership-distributions"] }); qc.invalidateQueries({ queryKey: ["report"] }); };
+  if (!partnerships.length) return <Empty>Add a partnership entity above first, then record your share of its net income.</Empty>;
+  return (
+    <div className="space-y-2">
+      {(dists.data ?? []).map((d) => (
+        <Row key={d.id} label={`${CHAR_LABEL[d.character] ?? d.character} · ${money(d.amount_cents)}${d.franking_credit_cents ? ` (franking ${money(d.franking_credit_cents)})` : ""} · ${d.fy}`} onDelete={() => api.deletePartnershipDistribution(d.id).then(invalidate)} />
+      ))}
+      {adding ? (
+        <AddPartnershipDistribution partnerships={partnerships} onDone={() => { setAdding(false); invalidate(); }} />
+      ) : (
+        <button className={btn} onClick={() => setAdding(true)}>+ Add distribution</button>
+      )}
+    </div>
+  );
+}
+
+function AddPartnershipDistribution({ partnerships, onDone }: { partnerships: { id: string; name: string | null }[]; onDone: () => void }) {
+  const [partnershipId, setPartnershipId] = useState(partnerships[0]?.id ?? "");
+  const [amount, setAmount] = useState("");
+  const [character, setCharacter] = useState("ordinary");
+  const [franking, setFranking] = useState("");
+  const add = useMutation({
+    mutationFn: () => api.addPartnershipDistribution({ partnership_entity_id: partnershipId, amount_cents: Math.round(parseFloat(amount || "0") * 100), character, franking_credit_cents: Math.round(parseFloat(franking || "0") * 100) }),
+    onSuccess: onDone,
+  });
+  return (
+    <div className="space-y-2 rounded-lg border border-line p-3">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <select className={input} value={partnershipId} onChange={(e) => setPartnershipId(e.target.value)}>{partnerships.map((t) => <option key={t.id} value={t.id}>{t.name ?? "Partnership"}</option>)}</select>
+        <select className={input} value={character} onChange={(e) => setCharacter(e.target.value)}>{TRUST_CHARACTERS.map((c) => <option key={c} value={c}>{CHAR_LABEL[c]}</option>)}</select>
+        <input className={input} inputMode="decimal" placeholder="Your share $" value={amount} onChange={(e) => setAmount(e.target.value)} />
+        <input className={input} inputMode="decimal" placeholder="Franking $ (optional)" value={franking} onChange={(e) => setFranking(e.target.value)} />
+      </div>
+      <button className={btn} onClick={() => add.mutate()} disabled={add.isPending || !amount || !partnershipId}>{add.isPending ? "Saving…" : "Save distribution"}</button>
       {add.error && <p className="text-sm text-danger">{(add.error as Error).message}</p>}
     </div>
   );

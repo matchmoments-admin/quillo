@@ -802,6 +802,7 @@ CREATE TABLE IF NOT EXISTS trust_distributions (
   franking_credit_cents INTEGER NOT NULL DEFAULT 0,
   resolution_dated_before_30jun INTEGER NOT NULL DEFAULT 0,
   upe_present           INTEGER NOT NULL DEFAULT 0,
+  source_kind           TEXT NOT NULL DEFAULT 'trust',   -- 0056 (Slice E): trust|partnership. trust_entity_id holds the partnership entity for a partnership row; the resolution/UPE columns stay 0 for partnerships
   created_at            TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_trust_dist_user ON trust_distributions(user_id, fy);

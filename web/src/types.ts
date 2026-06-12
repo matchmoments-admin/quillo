@@ -576,6 +576,18 @@ export interface TrustDistributionRow {
   franking_credit_cents: number;
 }
 
+// Slice E: partnership distributions share the trust_distributions table (source_kind='partnership').
+export interface PartnershipDistributionRow {
+  id: string;
+  partnership_entity_id: string;
+  fy: string;
+  beneficiary_person_id: string | null;
+  share_pct: number | null;
+  amount_cents: number;
+  character: string;
+  franking_credit_cents: number;
+}
+
 export interface SmsfMemberRow {
   id: string;
   smsf_entity_id: string;

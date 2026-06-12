@@ -44,7 +44,7 @@ for (const f of fs.readdirSync(path.join(root, "migrations")).filter((f) => f.en
   db.exec(fs.readFileSync(path.join(root, "migrations", f), "utf8"));
 }
 
-const env = { DB: new D1(db), FEATURES: "attribution_engine,position_excludes_nondeductible,loan_split,wfh_car_methods,refund_netting,income_dedupe,cgt_engine,ess_engine,gst_bas,car_logbook,trust_distributions,smsf_engine,accountant_schedule" } as unknown as Env;
+const env = { DB: new D1(db), FEATURES: "attribution_engine,position_excludes_nondeductible,loan_split,wfh_car_methods,refund_netting,income_dedupe,cgt_engine,ess_engine,gst_bas,car_logbook,trust_distributions,partnership_distributions,smsf_engine,accountant_schedule" } as unknown as Env;
 
 // tiny seed helper
 const run = (sql: string, ...p: unknown[]) => db.prepare(sql).run(...(p as never[]));
@@ -498,6 +498,25 @@ async function main() {
     inc("p15bmf", u2, "managed_fund_distribution", 1800000); // single $18k gross, no components
     const r15b = await buildReport(env, u2, 2025);
     check("P15 B: a no-components managed-fund row is byte-identical (full gross, no CGT)", r15b.income.gross_cents === 1800000 && r15b.taxable_position_cents === 1800000 && r15b.capital_gains === undefined);
+  }
+
+  // ── Persona 16: partnership partner — distribution share (Slice E) ──
+  // A partner's share of partnership net income (character retained) feeds the personal position exactly
+  // like a trust distribution. A trust distribution in the SAME tenant must NOT cross-contaminate.
+  {
+    const u = "p16";
+    seedTenant(u, "P16 partnership partner");
+    run(`INSERT INTO entities (id, user_id, kind, name, person_id, entity_type) VALUES ('p16ePart', ?, 'partnership', 'Smith & Co Partnership', ?, 'partnership')`, u, `person_self_${u}`);
+    run(`INSERT INTO entities (id, user_id, kind, name, person_id, entity_type) VALUES ('p16eTrust', ?, 'trust', 'Family Trust', ?, 'trust')`, u, `person_self_${u}`);
+    // Partnership distributes $50k as a FRANKED dividend ($15k franking) — source_kind='partnership'.
+    run(`INSERT INTO trust_distributions (id, user_id, trust_entity_id, fy, beneficiary_person_id, amount_cents, character, franking_credit_cents, source_kind) VALUES ('p16pdist', ?, 'p16ePart', '2025-26', ?, 5000000, 'franked_dividend', 1500000, 'partnership')`, u, `person_self_${u}`);
+    // Trust distributes $20k ordinary — source_kind defaults to 'trust'.
+    run(`INSERT INTO trust_distributions (id, user_id, trust_entity_id, fy, beneficiary_person_id, amount_cents, character) VALUES ('p16tdist', ?, 'p16eTrust', '2025-26', ?, 2000000, 'ordinary')`, u, `person_self_${u}`);
+
+    const r16 = await buildReport(env, u, 2025);
+    check("P16 E: partnership share is assessable to the partner ($50k)", r16.partnership?.assessable_cents === 5000000 && r16.partnership?.franking_credit_cents === 1500000);
+    check("P16 E: trust + partnership don't cross-contaminate (trust $20k stays in trust)", r16.trust?.assessable_cents === 2000000);
+    check("P16 E: taxable position = $50k partnership + $20k trust = $70k", r16.taxable_position_cents === 7000000);
   }
 
   // ── Accountant schedule (#179/#181): goldens + the tie-back-by-construction loop ──

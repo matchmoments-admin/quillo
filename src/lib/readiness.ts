@@ -229,6 +229,13 @@ export function assessReadiness(input: {
       basis: report.trust.franking_credit_cents > 0 ? `incl. ${money(report.trust.franking_credit_cents)} franking credit` : "trust net income distributed to you",
       why: "Your share of a trust's net income, distributed to you with its character retained (e.g. a franked dividend stays franked, a discounted capital gain stays discounted). It's assessable to you. Trust streaming, s100A and Division 7A are specialist — confirm with a registered tax agent." });
   }
+  // Slice E: a partner's share of partnership net income — buildReport added it to taxable_position, so it
+  // renders as an "income" line too (lines-sum == headline).
+  if (report.partnership && report.partnership.assessable_cents > 0) {
+    lines.push({ group: "income", label: "partnership_distribution", amount_cents: report.partnership.assessable_cents,
+      basis: report.partnership.franking_credit_cents > 0 ? `incl. ${money(report.partnership.franking_credit_cents)} franking credit` : "your share of partnership net income",
+      why: "Your share of a partnership's net income, with its character retained (a franked dividend stays franked, a discounted capital gain stays discounted). It's assessable to you; the partnership lodges its own return. A partnership loss may instead be deductible — confirm the split and the partnership's lodgment with a registered tax agent." });
+  }
   // Deduction lines come from the deductibility-split breakdown so the SAME classifier that computed
   // the headline routes each row to its section ("deduction" sums to the headline; "excluded"/"company"
   // are shown apart). This both fixes the number AND explains what dropped out and why.

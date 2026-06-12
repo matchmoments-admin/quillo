@@ -1,6 +1,6 @@
 import type { Env } from "../env";
 import { COUNTABLE, COUNTABLE_INCOME } from "./queries";
-import { incomeTotals, depreciationTotals, attributionTotals, companyPositions, cgtTotals, essTotals, gstTotals, paygInstalmentsTotal, carLogbookPosition, trustTotals, smsfFundPositions, separateTaxpayerEntityIds, superConcessionalDeduction, fyStartYearStr, type IncomeTotals, type AttributionTotals, type CompanyPosition, type GstPosition, type CarLogbookPosition, type SmsfFundPosition, type RulePackThresholds, type SuperDeduction } from "./ledger-totals";
+import { incomeTotals, depreciationTotals, attributionTotals, companyPositions, cgtTotals, essTotals, gstTotals, paygInstalmentsTotal, carLogbookPosition, trustTotals, partnershipTotals, smsfFundPositions, separateTaxpayerEntityIds, superConcessionalDeduction, fyStartYearStr, type IncomeTotals, type AttributionTotals, type CompanyPosition, type GstPosition, type CarLogbookPosition, type SmsfFundPosition, type RulePackThresholds, type SuperDeduction } from "./ledger-totals";
 import type { TrustTotals } from "./trust";
 import type { CgtPortfolioResult } from "./cgt";
 import type { EssAssessable } from "./ess";
@@ -164,6 +164,9 @@ export interface Report {
   // Phase #139: assessable trust distributions to this person (character retained). ADDED to
   // taxable_position_cents. Present only when the trust_distributions flag is on AND there are rows.
   trust?: TrustTotals;
+  // Slice E: a partner's share of partnership net income (character retained, ITAA36 Div 5). ADDED to
+  // taxable_position_cents like a trust distribution. Present only when partnership_distributions is on AND rows exist.
+  partnership?: TrustTotals;
   // Phase #140: per-SMSF fund position (a SEPARATE taxpayer, like a company). Fund taxable income after
   // ECPI. NEVER added to the member's personal taxable_position (the member's pension is tax-free, and
   // the fund's income is excluded from the personal headline). Present only when smsf_engine is on and
@@ -666,11 +669,17 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
     const t = await trustTotals(env, userId, startYear);
     if (t.assessable_cents > 0 || t.franking_credit_cents > 0) trust = t;
   }
+  // Slice E: a partner's share of partnership net income — assessable like a trust distribution. Flag-gated.
+  let partnership: TrustTotals | undefined;
+  if (featureOn(env, "partnership_distributions")) {
+    const p = await partnershipTotals(env, userId, startYear);
+    if (p.assessable_cents > 0 || p.franking_credit_cents > 0) partnership = p;
+  }
   // Phase 3a: franking credits are assessable income (gross-up, s207-20). The credit (income.franking +
-  // any trust franking) is ADDED to the position when the flag is on. Off ⇒ byte-identical.
+  // any trust/partnership franking) is ADDED to the position when the flag is on. Off ⇒ byte-identical.
   let franking_gross_up_cents: number | undefined;
   if (featureOn(env, "franking_gross_up")) {
-    const fc = income.franking_credit_cents + (trust?.franking_credit_cents ?? 0);
+    const fc = income.franking_credit_cents + (trust?.franking_credit_cents ?? 0) + (partnership?.franking_credit_cents ?? 0);
     if (fc > 0) franking_gross_up_cents = fc;
   }
   // Phase 3a: personal-deductible super contributions reduce assessable income (s290-150), capped. Only
@@ -682,7 +691,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
     if (sd.contributed_cents > 0) super_deduction = sd;
   }
   const taxable_position_cents =
-    income.gross_cents + (capital_gains?.net_capital_gain_cents ?? 0) + (ess?.assessable_discount_cents ?? 0) + (trust?.assessable_cents ?? 0)
+    income.gross_cents + (capital_gains?.net_capital_gain_cents ?? 0) + (ess?.assessable_discount_cents ?? 0) + (trust?.assessable_cents ?? 0) + (partnership?.assessable_cents ?? 0)
     + (franking_gross_up_cents ?? 0) - total_deductions_cents - dep.total_cents - (super_deduction?.claimed_cents ?? 0);
   // Phase #137: indicative BAS position — SEPARATE from income tax (never added to taxable_position).
   // Flag-gated; only surfaced when a business is GST-registered.
@@ -768,6 +777,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
     payg_instalments_cents,
     car_logbook,
     trust,
+    partnership,
     smsf_funds,
     franking_gross_up_cents,
     super_deduction,

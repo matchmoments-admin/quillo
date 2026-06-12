@@ -77,7 +77,7 @@ crons = ["0 8 * * 1", "*/10 * * * *"]
 JURISDICTION = "AU"
 # Enabled feature flags (comma-separated; see src/lib/features.ts). Each new behaviour ships
 # behind a flag so it can be disabled with one edit + redeploy (instant rollback, no data change).
-FEATURES = "refund_netting,income_dedupe,asset_defaults,bulk_import,deductibility_review,guide_me,claim_review,position_excludes_nondeductible,accountant_pass,wfh_car_methods,loan_split,attribution_engine,cgt_engine,ess_engine,car_logbook,trust_distributions,apply_to_siblings,loan_interest_v2,gst_bas,smsf_engine,ask_quillo,accountant_schedule,ask_actions,advisory_layer,advisory_partners_energy,franking_gross_up,super_deduction,mf_components"
+FEATURES = "refund_netting,income_dedupe,asset_defaults,bulk_import,deductibility_review,guide_me,claim_review,position_excludes_nondeductible,accountant_pass,wfh_car_methods,loan_split,attribution_engine,cgt_engine,ess_engine,car_logbook,trust_distributions,apply_to_siblings,loan_interest_v2,gst_bas,smsf_engine,ask_quillo,accountant_schedule,ask_actions,advisory_layer,advisory_partners_energy,franking_gross_up,super_deduction,mf_components,partnership_distributions"
 # Per-user daily AI-spend budget in cents (measured, credit insurance). 0/unset = unlimited.
 # e.g. 500 = $5/day. Replaces the old count cap; over budget → receipts queue as needs_review.
 MAX_DAILY_COST_CENTS = "500"

@@ -1712,6 +1712,24 @@ export class TaxAgent extends Agent<Env> {
     return id;
   }
 
+  // Slice E: a partner's share of partnership net income — same distributions table, source_kind='partnership'.
+  // partnership_entity_id is stored in the (generic) trust_entity_id column.
+  async recordPartnershipDistribution(
+    userId: string,
+    d: { partnership_entity_id: string; fy?: string | null; beneficiary_person_id?: string | null; share_pct?: number | null; amount_cents: number; character?: string | null; franking_credit_cents?: number },
+  ): Promise<string> {
+    const id = crypto.randomUUID();
+    const fy = d.fy ?? this.currentFyLabel();
+    await this.env.DB.prepare(
+      `INSERT INTO trust_distributions (id, user_id, trust_entity_id, fy, beneficiary_person_id, share_pct, amount_cents, character, franking_credit_cents, source_kind)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'partnership')`,
+    )
+      .bind(id, userId, d.partnership_entity_id, fy, d.beneficiary_person_id ?? `person_self_${userId}`, d.share_pct ?? null, d.amount_cents ?? 0, d.character ?? "ordinary", d.franking_credit_cents ?? 0)
+      .run();
+    await this.audit(userId, "partnership_distribution_recorded", JSON.stringify({ id, partnership: d.partnership_entity_id, fy }));
+    return id;
+  }
+
   // ── SMSF (#140): fund members (phase + balances) + super contributions (src/lib/smsf.ts). ──
   async recordSmsfMember(
     userId: string,

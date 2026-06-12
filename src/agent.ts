@@ -5025,6 +5025,7 @@ export class TaxAgent extends Agent<Env> {
     // Phase 2 (chat_nav): only honour a client-supplied page route from the allowlist, so a crafted
     // request can't smuggle arbitrary text into the system prompt. Off ⇒ no nav, no page line.
     const wantNav = featureOn(this.env, "chat_nav");
+    const wantEntityActions = featureOn(this.env, "ask_actions_v2");
     const pageRouteOk = wantNav && pageRoute && (ALLOWED_NAV_ROUTES as readonly string[]).includes(pageRoute) ? pageRoute : undefined;
     const [situation, report, digestRows] = await Promise.all([
       getSituation(this.env, userId, profile),
@@ -5032,9 +5033,9 @@ export class TaxAgent extends Agent<Env> {
       wantActions ? fetchAskDigestRows(this.env, userId, sessionFy) : Promise.resolve(undefined),
     ]);
     const digest = digestRows ? renderTxnDigest(digestRows.rows, digestRows.total) : undefined;
-    const system = buildAskSystem(redact(renderSituation(situation)), summariseReportForAsk(report), digest?.text, { pageRoute: pageRouteOk, nav: wantNav });
+    const system = buildAskSystem(redact(renderSituation(situation)), summariseReportForAsk(report), digest?.text, { pageRoute: pageRouteOk, nav: wantNav, entityWrites: wantEntityActions });
     const userMsg = redact(text).slice(0, 600);
-    const result = await extractAnswer(llm, system, [...history, { role: "user", content: userMsg }], digest && { aliasToId: digest.aliasToId }, wantNav);
+    const result = await extractAnswer(llm, system, [...history, { role: "user", content: userMsg }], digest && { aliasToId: digest.aliasToId }, wantNav, wantEntityActions);
 
     // Persist both turns (the redacted question + the answer — no PII in storage).
     await this.env.DB.batch([

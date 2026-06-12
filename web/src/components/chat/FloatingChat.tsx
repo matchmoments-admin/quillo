@@ -16,7 +16,7 @@ import { useFeatures } from "../../lib/features";
 import { ProposedActionCard } from "../AskQuillo";
 import { BUCKET_LABEL } from "../ui";
 import { useChatUI } from "./ChatProvider";
-import type { AskAnswer } from "../../types";
+import type { AskAnswer, EntityAction } from "../../types";
 
 /**
  * Floating "Ask Quillo" widget (flag `floating_chat`). The agent stays 100% server-side: this is a
@@ -139,7 +139,7 @@ function FloatingChatInner() {
                   message.role === "user" ? (
                     <UserBubble message={message as unknown as RenderMsg} />
                   ) : (
-                    <AssistantBubble message={message as unknown as RenderMsg} onNavigate={closeChat} />
+                    <AssistantBubble message={message as unknown as RenderMsg} onNavigate={closeChat} sessionId={sessionId} />
                   )
                 }
               </ThreadPrimitive.Messages>
@@ -229,7 +229,7 @@ function UserBubble({ message }: { message: RenderMsg }) {
   return <p className="ml-auto max-w-[85%] whitespace-pre-wrap rounded-2xl bg-ink px-3 py-2 text-sm text-cream">{msgText(message)}</p>;
 }
 
-function AssistantBubble({ message, onNavigate }: { message: RenderMsg; onNavigate: () => void }) {
+function AssistantBubble({ message, onNavigate, sessionId }: { message: RenderMsg; onNavigate: () => void; sessionId?: string }) {
   const extra = message.metadata?.custom?.extra as AskAnswer | undefined;
   return (
     <div className="max-w-[92%] space-y-2 rounded-2xl border border-line bg-surface p-3 text-sm">
@@ -243,8 +243,49 @@ function AssistantBubble({ message, onNavigate }: { message: RenderMsg; onNaviga
       )}
       {!!extra?.see_also?.length && <p className="text-xs text-muted">See also: {extra.see_also.join(" · ")}</p>}
       {extra?.proposed_actions?.map((a, j) => <ProposedActionCard key={j} action={a} />)}
+      {extra?.entity_actions?.map((a, j) => <EntityActionCard key={j} action={a} sessionId={sessionId} />)}
       {extra?.suggested_rule && <SaveRuleInline rule={extra.suggested_rule} />}
       {extra?.navigate && <NavigateButton navigate={extra.navigate} onNavigate={onNavigate} />}
+    </div>
+  );
+}
+
+// Phase 3 (ask_actions_v2): a model-PROPOSED create/edit of a setup record (property/entity/person/
+// rule). Never autonomous — the user confirms here, then it executes via the audited DO path
+// (/api/ai-edits/apply → aiWriteEntity → ai_edits + audit_log), undoable from "Recent changes". A
+// stable per-card action_id makes a double-click idempotent server-side.
+function EntityActionCard({ action, sessionId }: { action: EntityAction; sessionId?: string }) {
+  const qc = useQueryClient();
+  const [actionId] = useState(uid);
+  const apply = useMutation({
+    mutationFn: () => api.applyEntityAction({ kind: action.kind, entity_id: action.entity_id, fields: action.fields, action_id: actionId, session_id: sessionId }),
+    onSuccess: () => {
+      for (const k of ["situation", "dashboard", "rules", "report", "ai-edits"]) qc.invalidateQueries({ queryKey: [k] });
+    },
+  });
+  const fieldList = Object.entries(action.fields)
+    .map(([k, v]) => `${k.replace(/_/g, " ")}: ${String(v)}`)
+    .join(" · ");
+  return (
+    <div className="space-y-1 rounded-lg border border-dashed border-line bg-card p-2 text-xs">
+      <p className="font-medium text-ink">{action.title}</p>
+      {action.rationale && <p className="text-muted">{action.rationale}</p>}
+      <p className="text-ink-2">{fieldList}</p>
+      <div className="flex flex-wrap items-center gap-2">
+        {apply.isSuccess ? (
+          <span className="font-medium text-safe">Saved ✓</span>
+        ) : (
+          <button
+            onClick={() => apply.mutate()}
+            disabled={apply.isPending}
+            className="rounded-lg border border-line bg-surface px-2 py-1 font-medium hover:bg-card disabled:opacity-50"
+          >
+            {apply.isPending ? "Saving…" : action.kind.startsWith("create") ? "Add it" : "Apply change"}
+          </button>
+        )}
+        {apply.isError && <span className="text-danger">{(apply.error as Error).message}</span>}
+      </div>
+      <p className="text-[10px] text-muted">You're confirming this change — it's recorded and reversible under “Recent changes”. General information only.</p>
     </div>
   );
 }

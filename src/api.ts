@@ -1,5 +1,6 @@
 import type { Env, TaxAgentRpc } from "./env";
 import type { AuthedUser } from "./auth/access";
+import { entityActionSpec } from "./extract";
 import { getProfile, getSituation } from "./lib/db";
 import {
   listTransactions,
@@ -333,9 +334,31 @@ export async function handleApi(
     }
   }
 
-  // AI changes feed + undo (Phase 4, flag ai_edit_feed). GET → recent entity edits; POST /undo → revert
-  // one action or a whole batch. All writes/undos go through the DO (serialised + hash-chained).
+  // AI changes feed + undo (Phase 4, flag ai_edit_feed) and the Phase-3 apply path (flag ask_actions_v2).
+  // GET → recent entity edits; POST /undo → revert one action/batch; POST /apply → execute a
+  // user-CONFIRMED entity-write proposal. All writes/undos go through the DO (serialised + hash-chained).
   if (resource === "ai-edits") {
+    // /apply is the write surface — gated by ask_actions_v2 (which needs ai_edit_feed for the undo
+    // backstop, so both must be on). Re-validates kind + re-allowlists fields server-side before writing.
+    if (m === "POST" && id === "apply") {
+      if (!featureOn(env, "ask_actions_v2") || !featureOn(env, "ai_edit_feed")) return json({ error: "not available" }, 404);
+      const body = (await req.json().catch(() => ({}))) as { kind?: string; entity_id?: string; fields?: Record<string, unknown>; action_id?: string; session_id?: string };
+      const spec = body.kind ? entityActionSpec(body.kind) : undefined;
+      if (!spec) return json({ error: "unknown action kind" }, 400);
+      if (spec.op === "update" && !body.entity_id) return json({ error: "entity_id required for an edit" }, 400);
+      const data: Record<string, unknown> = {};
+      for (const f of spec.fields) {
+        const v = body.fields?.[f];
+        if (v !== undefined && v !== null && v !== "") data[f] = v;
+      }
+      if (!Object.keys(data).length) return json({ error: "no fields to write" }, 400);
+      try {
+        const r = await stub.aiWriteEntity(uid, { kind: spec.entity, op: spec.op, id: body.entity_id, data, source: "ai_confirmed", sessionId: body.session_id, actionId: body.action_id });
+        return json({ ok: true, id: r.id, action_id: r.action_id });
+      } catch (e) {
+        return json({ error: (e as Error).message }, 400);
+      }
+    }
     if (!featureOn(env, "ai_edit_feed")) return json({ error: "not available" }, 404);
     if (m === "GET" && !id) return json(await stub.listAiEdits(uid));
     if (m === "POST" && id === "undo") {

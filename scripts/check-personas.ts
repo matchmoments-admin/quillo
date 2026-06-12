@@ -600,6 +600,20 @@ async function main() {
     check("3a ON: position = income + franking − capped super", rOn.taxable_position_cents === incomeGross + 30000 - 3000000);
   }
 
+  // ── Phase 3b: WFH/car rates only exist for FY2024-25+. A prior FY (active-FY switcher allows it) must
+  //    NOT silently apply the current rate (over-claim) — skip the deduction + flag it instead. ──
+  {
+    const u = "p3bwu";
+    run(`INSERT INTO tenants (user_id, display_name) VALUES (?, 'P3BWU')`, u);
+    run(`INSERT INTO persons (id, user_id, display_name, role) VALUES (?, ?, 'You', 'self')`, `person_self_${u}`, u);
+    run(`INSERT INTO work_use_inputs (user_id, fy, wfh_hours, car_work_km) VALUES (?, 2021, 1000, 5000)`, u); // prior FY — no rate block in au-v1
+    run(`INSERT INTO work_use_inputs (user_id, fy, wfh_hours, car_work_km) VALUES (?, 2025, 1000, 5000)`, u); // current FY — has rates
+    const rPrior = await buildReport(env, u, 2021);
+    const rCurrent = await buildReport(env, u, 2025);
+    check("3b: prior FY with no configured rate → NO work-method deduction (avoids over-claim) + flagged", rPrior.work_method === undefined && rPrior.work_method_rates_unavailable === true);
+    check("3b: current FY with configured rates → work-method still computed (byte-identical)", rCurrent.work_method !== undefined && !rCurrent.work_method_rates_unavailable);
+  }
+
   console.log(`\n=== personas: ${pass} passed, ${fail} failed ===`);
   if (fail > 0) process.exit(1);
 }

@@ -769,8 +769,14 @@ export async function handleApi(
 
   // ── Trust distributions (#139) ────────────────────────────────────────────
   if (resource === "trust-distributions") {
-    if (m === "GET" && !id) return json({ trust_distributions: (await env.DB.prepare(`SELECT id, trust_entity_id, fy, beneficiary_person_id, share_pct, amount_cents, character, franking_credit_cents FROM trust_distributions WHERE user_id = ? ORDER BY fy DESC`).bind(uid).all()).results ?? [] });
+    if (m === "GET" && !id) return json({ trust_distributions: (await env.DB.prepare(`SELECT id, trust_entity_id, fy, beneficiary_person_id, share_pct, amount_cents, character, franking_credit_cents FROM trust_distributions WHERE user_id = ? AND COALESCE(source_kind,'trust') = 'trust' ORDER BY fy DESC`).bind(uid).all()).results ?? [] });
     if (m === "POST" && !id) return json({ id: await stub.recordTrustDistribution(uid, await req.json()) });
+    if (m === "DELETE" && id) { await deleteRow(env, uid, "trust_distributions", id); return json({ ok: true }); }
+  }
+  // Slice E: partnership distributions share the trust_distributions table (source_kind='partnership').
+  if (resource === "partnership-distributions") {
+    if (m === "GET" && !id) return json({ partnership_distributions: (await env.DB.prepare(`SELECT id, trust_entity_id AS partnership_entity_id, fy, beneficiary_person_id, share_pct, amount_cents, character, franking_credit_cents FROM trust_distributions WHERE user_id = ? AND source_kind = 'partnership' ORDER BY fy DESC`).bind(uid).all()).results ?? [] });
+    if (m === "POST" && !id) return json({ id: await stub.recordPartnershipDistribution(uid, await req.json()) });
     if (m === "DELETE" && id) { await deleteRow(env, uid, "trust_distributions", id); return json({ ok: true }); }
   }
 

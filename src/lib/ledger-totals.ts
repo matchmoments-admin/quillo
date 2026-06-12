@@ -406,18 +406,34 @@ export function basPositionFrom(recorded: { n: number; output_gst_cents: number;
  * Pre-0041 / no rows → all-zero (report byte-identical).
  */
 export async function trustTotals(env: Env, userId: string, startYear: number): Promise<TrustTotals> {
+  return distributionTotals(env, userId, startYear, "trust");
+}
+
+/**
+ * Slice E: a partner's share of partnership net income, character retained (ITAA36 Div 5 / Subdiv 207-B) —
+ * fed to the partner's taxable_position exactly like a trust distribution. Same table, source_kind filter.
+ * Flag-gated by partnership_distributions. Pre-0056 / no rows → all-zero (report byte-identical).
+ */
+export async function partnershipTotals(env: Env, userId: string, startYear: number): Promise<TrustTotals> {
+  return distributionTotals(env, userId, startYear, "partnership");
+}
+
+/** Shared reader: sum the FY's distributions of one source_kind for the individual beneficiary. Legacy rows
+ *  have source_kind 'trust' (the 0056 DEFAULT), so trustTotals is byte-identical. */
+async function distributionTotals(env: Env, userId: string, startYear: number, sourceKind: "trust" | "partnership"): Promise<TrustTotals> {
   const fy = fyLabel(startYear);
   const zero: TrustTotals = { assessable_cents: 0, franking_credit_cents: 0, by_character: {} };
   try {
     const rows = (await env.DB.prepare(
       `SELECT character, amount_cents, franking_credit_cents
          FROM trust_distributions
-        WHERE user_id = ? AND fy = ? AND beneficiary_person_id IS NOT NULL`,
-    ).bind(userId, fy).all<{ character: string; amount_cents: number; franking_credit_cents: number }>()).results ?? [];
+        WHERE user_id = ? AND fy = ? AND beneficiary_person_id IS NOT NULL
+          AND COALESCE(source_kind,'trust') = ?`,
+    ).bind(userId, fy, sourceKind).all<{ character: string; amount_cents: number; franking_credit_cents: number }>()).results ?? [];
     if (!rows.length) return zero;
     return summariseTrustDistributions(rows);
   } catch (e) {
-    if (/no such table/i.test((e as Error).message)) return zero;
+    if (/no such table|no such column/i.test((e as Error).message)) return zero;
     throw e;
   }
 }

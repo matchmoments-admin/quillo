@@ -1,4 +1,4 @@
-import type { Txn, TxnDetail, Situation, SituationDraft, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse, UsageData, StatementInfo, IncomeRow, DocRow, AssetRow, ScheduleRow, ChecklistItem, ClaimSuggestion, FilingReadiness, ReviewSummary, Progress, AdminTenant, AdminOverview, ClaimReview, OccupationRulesDraft, OccupationRuleCandidate, MovementSweep, BatchResult, ClarifyQuestion, ClarifyAnswer, ClaimMatch, AccountantSummary, SuggestedDeduction, WorkUse, CapitalLoss, OpeningDepreciation, AttributionState, AttributionInput, AttributionRow, IncomeActivity, PropertyOwner, EntityRole, CgtAssetRow, CgtEventRow, EssGrantRow, VehicleLogbookRow, TrustDistributionRow, SmsfMemberRow, SuperContributionRow, BasPeriodRow, PaygInstalmentRow, AskAnswer, SavingsData, PartnerPortal, AmmaComponents } from "./types";
+import type { Txn, TxnDetail, Situation, SituationDraft, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse, UsageData, StatementInfo, IncomeRow, DocRow, AssetRow, ScheduleRow, ChecklistItem, ClaimSuggestion, FilingReadiness, ReviewSummary, Progress, AdminTenant, AdminOverview, ClaimReview, OccupationRulesDraft, OccupationRuleCandidate, MovementSweep, BatchResult, ClarifyQuestion, ClarifyAnswer, ClaimMatch, AccountantSummary, SuggestedDeduction, WorkUse, CapitalLoss, OpeningDepreciation, AttributionState, AttributionInput, AttributionRow, IncomeActivity, PropertyOwner, EntityRole, CgtAssetRow, CgtEventRow, EssGrantRow, VehicleLogbookRow, TrustDistributionRow, SmsfMemberRow, SuperContributionRow, BasPeriodRow, PaygInstalmentRow, AskAnswer, SavingsData, PartnerPortal, AmmaComponents, PartnershipDistributionRow } from "./types";
 
 // Clerk session token getter, wired from <TokenBridge> inside ClerkProvider (main.tsx).
 // Clerk tokens are short-lived, so we fetch a fresh one per request (getToken caches/refreshes).
@@ -269,6 +269,10 @@ export const api = {
   trustDistributions: () => get<{ trust_distributions: TrustDistributionRow[] }>("/api/trust-distributions").then((r) => r.trust_distributions),
   addTrustDistribution: (b: Partial<TrustDistributionRow>) => post<{ id: string }>("/api/trust-distributions", b),
   deleteTrustDistribution: (id: string) => send<{ ok: boolean }>("DELETE", `/api/trust-distributions/${id}`),
+  // Partnership distributions (Slice E)
+  partnershipDistributions: () => get<{ partnership_distributions: PartnershipDistributionRow[] }>("/api/partnership-distributions").then((r) => r.partnership_distributions),
+  addPartnershipDistribution: (b: Partial<PartnershipDistributionRow>) => post<{ id: string }>("/api/partnership-distributions", b),
+  deletePartnershipDistribution: (id: string) => send<{ ok: boolean }>("DELETE", `/api/partnership-distributions/${id}`),
   smsfMembers: () => get<{ smsf_members: SmsfMemberRow[] }>("/api/smsf-members").then((r) => r.smsf_members),
   addSmsfMember: (b: Partial<SmsfMemberRow>) => post<{ id: string }>("/api/smsf-members", b),
   deleteSmsfMember: (id: string) => send<{ ok: boolean }>("DELETE", `/api/smsf-members/${id}`),

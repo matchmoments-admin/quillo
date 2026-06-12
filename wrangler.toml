@@ -66,7 +66,7 @@ not_found_handling = "single-page-application"
 # "/" and "/waitlist" are listed so the Worker runs first for the apex marketing page
 # and waitlist POST (run_worker_first matches PATH, not host — the in-code Host branch
 # decides what each host returns; on the app host "/" is handed back to ASSETS).
-run_worker_first = ["/", "/waitlist", "/terms", "/privacy", "/api/*", "/ingest", "/correct", "/consent", "/healthz", "/agents/*"]
+run_worker_first = ["/", "/waitlist", "/terms", "/privacy", "/api/*", "/ingest", "/correct", "/consent", "/healthz", "/csp-report", "/agents/*"]
 
 # --- Cron: proactive suggestion engine (weekly Mon 08:00 UTC) ---
 [triggers]

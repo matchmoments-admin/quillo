@@ -3,7 +3,7 @@ import { enabledFeatures, featureOn } from "./features";
 import { billingPolicy, billableCents } from "./billing";
 import { getProfile } from "./db";
 import { isAdmin, isPartner } from "./roles";
-import { fyBounds } from "./ledger-totals";
+import { fyBounds, normaliseFyLabel } from "./ledger-totals";
 import { annualiseSpendCents, runRateCopy, ADVISORY_DISCLAIMER } from "./advisory";
 import { matchEnergyOffer, ctaFromOffer, opportunityTakesEnergyCta, type PartnerDB } from "./partners";
 
@@ -425,8 +425,11 @@ export async function listDepreciation(env: Env, userId: string, assetId: string
 
 /** FY checklist items (kickoff/wrap-up), newest-open first. */
 export async function listChecklist(env: Env, userId: string, fy?: string) {
-  const where = fy ? "user_id = ? AND fy = ?" : "user_id = ?";
-  const binds = fy ? [userId, fy] : [userId];
+  // fy_checklist.fy is the canonical LABEL ('2025-26'); normalise whatever the caller passed (a label,
+  // a start year, or '2025') so a non-label query param can't silently match nothing.
+  const nf = normaliseFyLabel(fy);
+  const where = nf ? "user_id = ? AND fy = ?" : "user_id = ?";
+  const binds = nf ? [userId, nf] : [userId];
   const res = await env.DB.prepare(
     `SELECT id, fy, item_key, title, rationale, status, trigger_bucket, due_hint, created_at
        FROM fy_checklist WHERE ${where} ORDER BY (status='open') DESC, created_at LIMIT 200`,

@@ -16,7 +16,7 @@ import { extractReceipt, extractReceipts, extractFromText, extractColumnMap, ext
 import { fyForDate, buildReport } from "./lib/report";
 import { getProgress } from "./lib/progress";
 import { buildGuidePrompt, buildAskSystem, summariseReportForAsk, renderTxnDigest } from "./lib/guide";
-import { fyLabel, fyBounds } from "./lib/ledger-totals";
+import { fyLabel, fyBounds, fyStartYearStr, parseFyStartYear, normaliseFyLabel } from "./lib/ledger-totals";
 import { assessReadiness, type FilingReadiness, type FilingReadinessSignals } from "./lib/readiness";
 import { rollSchedule, balancingAdjustment, fyStartYearOf, isLowCostAsset, looksLikePersonalTransfer, assetDepreciatesForTaxpayer, type DepAsset } from "./lib/depreciation";
 import { matchClaimRules, suggestionText, enumerateSituationClaims, classifyClaim, uncoveredOccupations, ruleKey, type ClaimRule, type ClaimContext, type ClaimSituation } from "./lib/claimability";
@@ -653,7 +653,7 @@ export class TaxAgent extends Agent<Env> {
       .bind(userId, accountId)
       .all<{ fy: string }>();
     for (const row of parsed.results ?? []) {
-      if (byFy.has(Number(row.fy))) continue;
+      if (byFy.has(parseFyStartYear(row.fy))) continue;
       await this.env.DB.prepare(
         `DELETE FROM loan_interest_summaries WHERE user_id = ? AND loan_account_id = ? AND fy = ? AND source = 'statement_parsed'`,
       )
@@ -3109,7 +3109,7 @@ export class TaxAgent extends Agent<Env> {
   async generateChecklist(userId: string, fy?: string): Promise<{ items: number }> {
     const profile = await this.requireProfile(userId);
     const situation = await getSituation(this.env, userId, profile);
-    const targetFy = fy ?? this.currentFyLabel();
+    const targetFy = normaliseFyLabel(fy) ?? this.currentFyLabel();
     const personId = `person_self_${userId}`;
     const hasRented = situation.properties.some((p) => p.status === "rented");
     const hasVacant = situation.properties.some((p) => p.status === "vacant");
@@ -3626,7 +3626,7 @@ export class TaxAgent extends Agent<Env> {
            direction = excluded.direction, suggested_json = excluded.suggested_json
          WHERE clarify_questions.status = 'open'`,
       )
-        .bind(crypto.randomUUID(), userId, String(startYear), g.group_key, g.sample_desc, g.direction, g.n, g.total_cents, JSON.stringify(g.suggestions))
+        .bind(crypto.randomUUID(), userId, fyStartYearStr(startYear), g.group_key, g.sample_desc, g.direction, g.n, g.total_cents, JSON.stringify(g.suggestions))
         .run();
       questions += res.meta?.changes ?? 0;
     }
@@ -3637,7 +3637,7 @@ export class TaxAgent extends Agent<Env> {
   /** Open clarify questions (optionally scoped to one FY start year), biggest-dollar first. */
   async listClarifyQuestions(userId: string, startYear?: number): Promise<ClarifyQuestion[]> {
     const where = startYear != null ? "user_id = ? AND status = 'open' AND fy = ?" : "user_id = ? AND status = 'open'";
-    const binds = startYear != null ? [userId, String(startYear)] : [userId];
+    const binds = startYear != null ? [userId, fyStartYearStr(startYear)] : [userId];
     const res = await this.env.DB.prepare(
       `SELECT id, fy, group_key, sample_desc, direction, n, total_cents, suggested_json, status
          FROM clarify_questions WHERE ${where} ORDER BY total_cents DESC LIMIT 200`,
@@ -3705,7 +3705,7 @@ export class TaxAgent extends Agent<Env> {
     // Resolve the group's CURRENT rows using the SAME leftover filter the scan used (so the answer
     // acts only on the uncategorised/low-confidence rows the user actually saw — never re-touching a
     // row a prior correction already finalised, and never overshooting the count shown).
-    const { start, end } = fyBounds(Number(q.fy));
+    const { start, end } = fyBounds(parseFyStartYear(q.fy));
     const rowsRes = await this.env.DB.prepare(
       `SELECT id, raw_description, merchant, direction, amount_cents, amount_aud_cents, currency, matched_income_id, txn_date
          FROM transactions
@@ -3736,7 +3736,7 @@ export class TaxAgent extends Agent<Env> {
           currency: r.currency ?? "AUD",
           property_id: answer.property_id ?? null,
           txn_date: r.txn_date,
-          fy: fyLabel(Number(q.fy)),
+          fy: fyLabel(parseFyStartYear(q.fy)),
         });
         await this.env.DB.prepare(`UPDATE transactions SET matched_income_id = ?, status = 'ignored' WHERE id = ? AND user_id = ?`).bind(incomeId, r.id, userId).run();
         income_recorded++;
@@ -4008,7 +4008,7 @@ export class TaxAgent extends Agent<Env> {
    * interactive cards (movement sweep / clarify / claims) let the user act on the counts.
    */
   async runAccountantPass(userId: string, startYear: number): Promise<AccountantSummary> {
-    const fy = String(startYear);
+    const fy = fyStartYearStr(startYear); // accountant_runs.fy is the start-year string ('2025')
     // In-flight lock (B2): refuse to start a second pass for the same (user, fy). A 'running' row
     // older than 15 min is treated as STALE (a crashed/evicted run) so the lock can't wedge forever.
     const active = await this.env.DB.prepare(

@@ -1,6 +1,6 @@
 import type { Env } from "../env";
 import { COUNTABLE, COUNTABLE_INCOME } from "./queries";
-import { incomeTotals, depreciationTotals, attributionTotals, companyPositions, cgtTotals, essTotals, gstTotals, paygInstalmentsTotal, carLogbookPosition, trustTotals, smsfFundPositions, separateTaxpayerEntityIds, type IncomeTotals, type AttributionTotals, type CompanyPosition, type GstPosition, type CarLogbookPosition, type SmsfFundPosition } from "./ledger-totals";
+import { incomeTotals, depreciationTotals, attributionTotals, companyPositions, cgtTotals, essTotals, gstTotals, paygInstalmentsTotal, carLogbookPosition, trustTotals, smsfFundPositions, separateTaxpayerEntityIds, fyStartYearStr, type IncomeTotals, type AttributionTotals, type CompanyPosition, type GstPosition, type CarLogbookPosition, type SmsfFundPosition } from "./ledger-totals";
 import type { TrustTotals } from "./trust";
 import type { CgtPortfolioResult } from "./cgt";
 import type { EssAssessable } from "./ess";
@@ -265,7 +265,7 @@ export async function loanInterestV2Context(env: Env, userId: string, startYear:
   const sumsRes = await env.DB.prepare(
     `SELECT loan_account_id, interest_cents, source FROM loan_interest_summaries WHERE user_id = ? AND fy = ?`,
   )
-    .bind(userId, String(startYear))
+    .bind(userId, fyStartYearStr(startYear))
     .all<{ loan_account_id: string; interest_cents: number; source: string }>();
   const sumByLoan = new Map((sumsRes.results ?? []).map((s) => [s.loan_account_id, { interest_cents: s.interest_cents, source: s.source as LoanInterestSource }]));
   for (const link of links.results ?? []) {

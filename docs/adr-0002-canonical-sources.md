@@ -22,13 +22,24 @@ double-counting or silently dropping money.
 | **Company-bucket spend with 2+ companies** | only attributed (entity-tagged) spend enters a company position | A bare `bucket='company'` row carries no `entity_id`; with multiple companies it is **surfaced as unattributed** (`company_unattributed_*` + readiness finding), never dropped or pinned to `companies[0]`. Single-company behaviour is byte-identical. **H3** | "H3" goldens |
 | **Asset identity (depreciation vs CGT)** | `assets` (Div 40/43 decline-in-value) and `cgt_assets` (CGT cost base) are **intentionally separate** — a depreciating asset is not a CGT parcel | No shared link today; correct by design (financial assets never live in `assets`). Revisit only if a single economic asset must carry both a decline-in-value and a CGT cost base. | — (documented, not enforced) |
 
-## Reserved / dark tables (no drop in this slice)
+## Dark tables — dropped (migration 0052)
 
-`blackhole_costs` (no reads, no writes), `shareholder_loans` (written by `attribution-write.ts`, balance
-read inline rather than from the table), and `company_tax_positions` / `rd_claims` (read-only inputs with
-no in-app writer yet) are **retained**. Dropping a table is non-additive/destructive and needs an explicit
-go + reverse plan (working-agreement STOP-and-ask); they're tracked as defer-to-agent / future-UI (issue
-#126), not silently-wrong — the engines treat empty inputs as zero.
+`blackhole_costs` (no reads, no writes) and `shareholder_loans` (written but never read — the balance is
+recomputed inline from `transaction_attributions` in `companyPositions`) were **dropped in migration
+0052** after confirming 0 prod rows. The former `syncShareholderLoans` writer was removed; the report
+figure is unchanged. `transaction_attributions.shareholder_loan_id` (always-NULL) is kept to avoid a
+table rebuild. `company_tax_positions` / `rd_claims` are **retained** — read-only inputs with no in-app
+writer yet (defer-to-agent / future-UI, issue #126); engines treat empty inputs as zero.
+
+## Money + fy representation (deferred backlog, shipped)
+
+- **Money is integer.** `daily_cost` and `llm_usage` store cost as an integer at scale ×10,000 (1 unit =
+  1e-4 cent) in `cents_e4` / `cost_e4` — exact under `SUM`, divided to cents once at read. The old REAL
+  columns are dual-written as an audit mirror (migration 0051). Helpers `toE4`/`centsFromE4` in `usage.ts`.
+- **`fy` has a canonical seam.** Three internally-consistent stored forms (LABEL `'2025-26'`, START-STRING
+  `'2025'`, INTEGER `2025`); `fyLabel` / `fyStartYearStr` / `parseFyStartYear` / `normaliseFyLabel`
+  (`ledger-totals.ts`) are the only sanctioned producers/parsers — never open-code `String(startYear)` /
+  `Number(row.fy)`. A `check-units` golden locks the per-table format.
 
 ## Consequences
 

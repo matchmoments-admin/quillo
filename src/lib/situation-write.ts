@@ -417,8 +417,6 @@ const CHILD_REFS: Record<string, ReadonlyArray<{ table: string; column: string; 
     { table: "company_tax_positions", column: "entity_id", label: "company tax positions" },
     { table: "bas_periods", column: "entity_id", label: "BAS periods" },
     { table: "payg_instalments", column: "entity_id", label: "PAYG instalments" },
-    { table: "blackhole_costs", column: "entity_id", label: "blackhole costs" },
-    { table: "shareholder_loans", column: "company_entity_id", label: "shareholder loans" },
     { table: "rd_claims", column: "entity_id", label: "R&D claims" },
     { table: "trust_distributions", column: "trust_entity_id", label: "trust distributions" },
     { table: "smsf_members", column: "smsf_entity_id", label: "SMSF members" },
@@ -439,7 +437,6 @@ const CHILD_REFS: Record<string, ReadonlyArray<{ table: string; column: string; 
     { table: "super_contributions", column: "person_id", label: "super contributions" },
     { table: "cgt_assets", column: "person_id", label: "CGT assets" },
     { table: "ess_grants", column: "person_id", label: "ESS grants" },
-    { table: "shareholder_loans", column: "shareholder_person_id", label: "shareholder loans" },
   ],
   assets: [
     { table: "depreciation_schedule", column: "asset_id", label: "depreciation schedules" },

@@ -203,7 +203,6 @@ const asset = (id: string, u: string, costCents: number, depCents: number, prope
   const u = "p9";
   seedTenant(u, "P9 Aisha founder");
   run(`INSERT INTO entities (id, user_id, kind, name, person_id, entity_type, base_rate_entity) VALUES ('p9eCo', ?, 'company', 'Startup Pty Ltd', ?, 'company', 1)`, u, `person_self_${u}`);
-  run(`INSERT INTO blackhole_costs (id, user_id, entity_id, incurred_date, amount_cents, description, immediate_deduction) VALUES ('p9bh', ?, 'p9eCo', ?, 500000, 'ASIC + structure advice (s40-880)', 1)`, u, FY_DATE);
   run(`INSERT INTO rd_claims (id, user_id, entity_id, fy, eligible_expenditure_cents, aggregated_turnover_cents, offset_type, registered_with_ausindustry) VALUES ('p9rd', ?, 'p9eCo', '2025-26', 4000000, 0, 'refundable', 0)`, u); // NOT registered
   // #141: ESS — a staff startup-concession option (eligible, ≤10% → defers to CGT, $0 income now) and a
   // taxed-upfront grant (discount assessable now).

@@ -46,8 +46,7 @@ export const PURGE_TABLES = [
   "income_activities",       // 0033
   "transaction_attributions",// 0034
   "company_tax_positions",   // 0035
-  "blackhole_costs",         // 0035
-  "shareholder_loans",       // 0035
+  // blackhole_costs + shareholder_loans dropped in 0052 (dark tables — no live read path)
   "rd_claims",               // 0035
   "cgt_assets",              // 0037 (#138)
   "cgt_events",              // 0037 (#138)

@@ -287,9 +287,9 @@ export async function companyPositions(env: Env, userId: string, startYear: numb
         GROUP BY ta.entity_id`,
     ).bind(userId, start, end).all<{ entity_id: string; ded: number }>()).results ?? [];
     const attrBy = new Map(attrRows.map((r) => [r.entity_id, r]));
-    // Shareholder-loan balance is a CUMULATIVE stock (across all FYs), so it's computed all-time — the
-    // SAME filter syncShareholderLoans persists with (countable, reimbursed-excluded), so the on-screen
-    // figure and the persisted hand-off agree.
+    // Shareholder-loan balance is a CUMULATIVE stock (across all FYs), so it's computed all-time from
+    // the attribution rows here (countable, reimbursed-excluded). This is the SOLE source — the old
+    // shareholder_loans persistence was dark and was dropped in 0052.
     const loanRows = (await env.DB.prepare(
       `SELECT ta.entity_id AS entity_id, COALESCE(SUM(ta.attributed_amount_cents),0) AS loan
          FROM transaction_attributions ta

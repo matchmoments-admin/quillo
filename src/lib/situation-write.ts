@@ -1,5 +1,7 @@
 import type { Env } from "../env";
 import { BUCKETS } from "./taxonomy";
+import { propertyToCgtInputs } from "./cgt";
+import { fyForDate } from "./report";
 
 // Situation mutations for the Settings + onboarding-web flows. These rows are not
 // hash-chained (unlike corrections/consent/audit), so they're written directly to D1.
@@ -117,6 +119,86 @@ export async function updateProperty(
       p.acquired_date ?? null, p.main_residence_flag ?? null, id, userId,
     )
     .run();
+  // Slice F: keep the property's CGT materialisation in sync with its disposal fields.
+  await syncPropertyDisposalToCgt(env, userId, id);
+}
+
+/**
+ * Slice F: materialise (or clear) a property's disposal into the CGT engine. Idempotent REBUILD keyed on
+ * cgt_assets.property_id: drop any prior property-sourced asset/events for this property, then recreate one
+ * cgt_asset + cgt_event when the disposal is complete and it isn't a flagged main residence. A
+ * manually-entered cgt_asset (property_id NULL) is never touched, so there's no double-count. Gated at read
+ * time by cgt_engine; un-setting a disposal removes the synthetic rows so the position can never go stale.
+ */
+export async function syncPropertyDisposalToCgt(env: Env, userId: string, propertyId: string): Promise<void> {
+  try {
+    // Rebuild-from-scratch: drop any prior property-sourced asset/events, then (when applicable) recreate
+    // exactly one asset + event. The mutations run as a single atomic batch() so two concurrent rebuilds of
+    // the same property can't interleave into "both delete, only one inserts → zero rows".
+    const delEvents = env.DB.prepare(
+      `DELETE FROM cgt_events WHERE user_id = ? AND cgt_asset_id IN (SELECT id FROM cgt_assets WHERE user_id = ? AND property_id = ?)`,
+    ).bind(userId, userId, propertyId);
+    const delAssets = env.DB.prepare(`DELETE FROM cgt_assets WHERE user_id = ? AND property_id = ?`).bind(userId, propertyId);
+
+    const prop = await env.DB.prepare(
+      `SELECT p.label, p.cost_base_cents, p.disposal_proceeds_cents, p.disposal_date, p.acquired_date,
+              p.ownership_pct, p.main_residence_flag, p.person_id, COALESCE(pe.tax_residency, 'AU') AS tax_residency
+         FROM properties p LEFT JOIN persons pe ON pe.id = p.person_id
+        WHERE p.id = ? AND p.user_id = ?`,
+    ).bind(propertyId, userId).first<{
+      label: string; cost_base_cents: number | null; disposal_proceeds_cents: number | null;
+      disposal_date: string | null; acquired_date: string | null; ownership_pct: number | null;
+      main_residence_flag: number; person_id: string | null; tax_residency: string;
+    }>();
+    // Nothing to materialise until the disposal is fully specified — but still drop any stale synthetic rows
+    // (e.g. the user un-set the disposal) so the position can't go stale.
+    if (!prop || prop.cost_base_cents == null || prop.disposal_proceeds_cents == null || !prop.disposal_date || !prop.acquired_date) {
+      await env.DB.batch([delEvents, delAssets]);
+      return;
+    }
+
+    // Div 43 capital-works deductions claimed against this property reduce its cost base.
+    const div43 = await env.DB.prepare(
+      `SELECT COALESCE(SUM(d.deduction_cents),0) AS total FROM depreciation_schedule d
+         JOIN assets a ON a.id = d.asset_id
+        WHERE d.user_id = ? AND a.property_id = ? AND d.method_applied = 'div43'`,
+    ).bind(userId, propertyId).first<{ total: number }>();
+
+    const synth = propertyToCgtInputs({
+      cost_base_cents: prop.cost_base_cents,
+      proceeds_cents: prop.disposal_proceeds_cents,
+      div43_claimed_cents: div43?.total ?? 0,
+      acquired_date: prop.acquired_date,
+      disposal_date: prop.disposal_date,
+      ownership_pct: prop.ownership_pct,
+      is_resident_individual: prop.tax_residency === "AU",
+      main_residence_exempt: prop.main_residence_flag === 1,
+    });
+    // Main residence → no event (the engine never auto-exempts); just clear stale rows and let readiness
+    // surface a defer nudge instead.
+    if ("defer" in synth) {
+      await env.DB.batch([delEvents, delAssets]);
+      return;
+    }
+
+    const assetId = uid();
+    const fy = fyForDate(prop.disposal_date);
+    const insAsset = env.DB.prepare(
+      `INSERT INTO cgt_assets (id, user_id, person_id, asset_kind, label, acquired_date, cost_base_cents, main_residence_exempt, status, property_id)
+       VALUES (?, ?, ?, 'property', ?, ?, ?, 0, 'disposed', ?)`,
+    ).bind(assetId, userId, prop.person_id ?? selfPersonId(userId), prop.label, synth.asset.acquired_date, synth.asset.cost_base_cents, propertyId);
+    const insEvent = env.DB.prepare(
+      `INSERT INTO cgt_events (id, user_id, cgt_asset_id, fy, event_type, event_date, proceeds_cents, cost_base_used_cents, discount_eligible)
+       VALUES (?, ?, ?, ?, 'disposal', ?, ?, ?, ?)`,
+    ).bind(uid(), userId, assetId, fy, synth.event.event_date, synth.event.proceeds_cents, synth.event.cost_base_used_cents, synth.event.discount_eligible ? 1 : 0);
+    // Atomic rebuild: delete-then-insert in one batch.
+    await env.DB.batch([delEvents, delAssets, insAsset, insEvent]);
+  } catch (e) {
+    // If the CGT tables/column aren't present yet (pre-0054), skip silently — the disposal stays captured
+    // on the property and is materialised once the migration lands.
+    if (/no such table|no such column/i.test((e as Error).message)) return;
+    throw e;
+  }
 }
 
 // Map the legacy `kind` to the 0032 entity_type so a freshly-created entity isn't NULL (which would

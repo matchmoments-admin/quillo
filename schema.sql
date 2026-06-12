@@ -695,10 +695,12 @@ CREATE TABLE IF NOT EXISTS cgt_assets (
   reduced_cost_base_cents INTEGER,
   main_residence_exempt  INTEGER NOT NULL DEFAULT 0,
   status                 TEXT NOT NULL DEFAULT 'held',
+  property_id            TEXT,                       -- 0054 (Slice F): provenance for a property-sourced asset (dedup key); NULL for a manually-entered asset
   created_at             TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_cgt_assets_user ON cgt_assets(user_id, asset_kind);
 CREATE INDEX IF NOT EXISTS idx_cgt_assets_person ON cgt_assets(user_id, person_id);
+CREATE INDEX IF NOT EXISTS idx_cgt_assets_property ON cgt_assets(user_id, property_id);
 
 CREATE TABLE IF NOT EXISTS cgt_events (
   id                  TEXT PRIMARY KEY,

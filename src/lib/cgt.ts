@@ -63,6 +63,51 @@ export function computeCapitalGain(i: CgtInputs): CgtResult {
   };
 }
 
+// ── Property disposal → CGT engine (Slice F) ───────────────────────────────────
+// A disposed property's facts live on the properties table (cost_base/disposal_*). To reach the
+// portfolio engine they must be materialised into a cgt_asset + cgt_event. This pure helper turns a
+// property's disposal fields into those synthetic rows — apportioned by ownership share, with the Div 43
+// cost-base reduction applied and the discount gated on residency + the 12-month clock. A main-residence
+// flag is NOT auto-exempted here: we return a defer signal so the caller skips materialising the event
+// (the engine never reads main_residence_exempt) and surfaces a "confirm with your agent" nudge instead —
+// this stops the engine from both auto-taxing a home AND auto-applying an exemption.
+
+export interface PropertyDisposalInputs {
+  cost_base_cents: number;
+  proceeds_cents: number;
+  div43_claimed_cents?: number;       // capital-works deductions claimed → REDUCE the cost base
+  acquired_date: string;
+  disposal_date: string;
+  ownership_pct?: number | null;      // taxpayer's share (default 100)
+  is_resident_individual?: boolean;   // 50% discount eligibility
+  main_residence_exempt?: boolean;    // flagged main residence → defer (no event)
+}
+
+export type PropertyCgtSynthesis =
+  | { defer: "main_residence" }
+  | {
+      asset: { asset_kind: "property"; acquired_date: string; cost_base_cents: number; main_residence_exempt: number };
+      event: { event_date: string; proceeds_cents: number; cost_base_used_cents: number; discount_eligible: boolean };
+    };
+
+/** Synthesise the cgt_asset/cgt_event for a disposed property, or a main-residence defer signal. Pure. */
+export function propertyToCgtInputs(i: PropertyDisposalInputs): PropertyCgtSynthesis {
+  if (i.main_residence_exempt) return { defer: "main_residence" };
+  const share = (i.ownership_pct ?? 100) / 100;
+  const adjustedCostBase = i.cost_base_cents - (i.div43_claimed_cents ?? 0);
+  const proceeds = Math.round(i.proceeds_cents * share);
+  const costBaseUsed = Math.round(adjustedCostBase * share);
+  // Set discount eligibility explicitly (not left to the date-derive default) so a non-resident is denied
+  // the 50% discount even though they held > 12 months.
+  const discount_eligible = !!i.is_resident_individual && heldMoreThan12Months(i.acquired_date, i.disposal_date);
+  // The asset records the SAME Div-43-adjusted, apportioned cost base the event uses, so the stored asset
+  // reconciles with the computed gain (no pre/post-adjustment asymmetry for an auditor).
+  return {
+    asset: { asset_kind: "property", acquired_date: i.acquired_date, cost_base_cents: costBaseUsed, main_residence_exempt: 0 },
+    event: { event_date: i.disposal_date, proceeds_cents: proceeds, cost_base_used_cents: costBaseUsed, discount_eligible },
+  };
+}
+
 // ── Portfolio aggregation (#138) ───────────────────────────────────────────────
 // computeCapitalGain above is per-DISPOSAL. A taxpayer has MANY disposals across shares/crypto/property
 // in an FY, plus carried-forward losses, and the loss-offset ORDER changes the result. This aggregates

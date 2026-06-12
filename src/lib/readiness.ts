@@ -70,6 +70,7 @@ export interface FilingReadinessSignals {
   isGstRegistered?: boolean; // tenant default profiles.gst_registered OR any entity flag (mirrors gstTotals); suppresses the registration nudge
   psiAppliesDeclared?: boolean; // S2: the user marked psi_status='psi_applies' on a business activity → sharpened PSI nudge
   psiAllAssessed?: boolean; // S2: every business activity has a recorded psi_status → stop prompting them to assess
+  mainResidenceDisposalN?: number; // F: disposed properties flagged as a main residence this FY → defer nudge (we never auto-apply the exemption)
 }
 
 export interface FilingReadiness {
@@ -404,6 +405,15 @@ export function assessReadiness(input: {
     findings.push(f("disposed_assets", "depreciation", "review", `${signals.disposedAssetsN} asset(s) were disposed this year`,
       `A disposal can trigger a balancing adjustment and/or a capital gain. Your registered tax agent will confirm the treatment.${DEFER}`, true,
       [{ kind: "asset", count: signals.disposedAssetsN }]));
+  }
+  // F: a disposed property flagged as a main residence is kept OUT of the computed capital gain (we never
+  // auto-apply the exemption — the main-residence exemption, the 6-year rule and partial exemption are
+  // fact-specific). Surface it as a defer nudge so the gain isn't silently treated as either fully exempt
+  // or fully taxable.
+  if ((signals.mainResidenceDisposalN ?? 0) > 0) {
+    findings.push(f("main_residence_disposal", "judgement", "review", `${signals.mainResidenceDisposalN} disposed property flagged as a main residence`,
+      `A property you disposed of is flagged as a main residence, so its capital gain is NOT included in your indicative position. Whether the main-residence exemption applies in full or part — and the 6-year absence rule — are fact-specific. Confirm the CGT treatment with a registered tax agent.${DEFER}`, true,
+      [{ kind: "property" }]));
   }
   // Rental property earning income but with nothing depreciating → likely a missed QS schedule.
   for (const p of report.per_property) {

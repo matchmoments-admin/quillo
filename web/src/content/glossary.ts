@@ -184,6 +184,10 @@ export const GLOSSARY = {
     short:
       "What running the AI categorisation actually cost — measured from real token usage, not estimated. Shown for transparency; the 'billable' figure adds our fee but isn't charged yet.",
   },
+  psi_status: {
+    term: "PSI (Personal Services Income) status",
+    short: `Whether the Personal Services Income rules (Division 86) apply to this business activity. If your sole-trader income is mainly a reward for your personal skills or labour — common for contractors, freelancers and many creators — the PSI rules can limit which expenses stay deductible (e.g. home occupancy costs and payments to family). It's a fact-specific judgement we don't decide for you; record the outcome here so we can tailor the guidance. ${DEFER}`,
+  },
 } as const satisfies Record<string, GlossaryEntry>;
 
 export type GlossaryKey = keyof typeof GLOSSARY;

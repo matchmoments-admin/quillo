@@ -407,6 +407,7 @@ CREATE TABLE IF NOT EXISTS income_activities (
   occupation_scope TEXT,                         -- rule-pack scope key (e.g. it_professional)
   fy               TEXT,                         -- nullable: cross-FY activities allowed
   label            TEXT,
+  psi_status       TEXT,                         -- S2: self-declared PSI/Div 86 status (NULL=not assessed | not_psi | psi_applies); drives a defer nudge, never removes deductions
   created_at       TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_income_act_user   ON income_activities(user_id, activity_type);

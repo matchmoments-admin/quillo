@@ -3056,6 +3056,10 @@ export class TaxAgent extends Agent<Env> {
     // entity is flagged (mirrors gstTotals' registration test in ledger-totals.ts).
     const entGstReg = (await this.env.DB.prepare(`SELECT COUNT(*) AS n FROM entities WHERE user_id = ? AND COALESCE(gst_registered,0) = 1`).bind(userId).first<{ n: number }>())?.n ?? 0;
     const isGstRegistered = (profile.gst_registered ?? 0) === 1 || entGstReg > 0;
+    // S2: self-declared PSI status across the user's business activities → sharpen/suppress the PSI nudge.
+    const psiRows = (await this.env.DB.prepare(`SELECT psi_status FROM income_activities WHERE user_id = ? AND activity_type = 'business'`).bind(userId).all<{ psi_status: string | null }>()).results ?? [];
+    const psiAppliesDeclared = psiRows.some((r) => r.psi_status === "psi_applies");
+    const psiAllAssessed = psiRows.length > 0 && psiRows.every((r) => r.psi_status != null);
     const signals: FilingReadinessSignals = {
       unknownBucketCents: unknownRow?.total_cents ?? 0,
       unknownBucketN: unknownRow?.n ?? 0,
@@ -3072,6 +3076,8 @@ export class TaxAgent extends Agent<Env> {
       div293ThresholdCents: thresholds[fy]?.div293_threshold_cents ?? null,
       gstRegistrationThresholdCents: thresholds[fy]?.gst_registration_threshold_cents ?? null,
       isGstRegistered,
+      psiAppliesDeclared,
+      psiAllAssessed,
     };
 
     const readiness = assessReadiness({ report, situation, claimMatches: [...matchedById.values()], signals, generatedAt: new Date().toISOString(), excludeNonDeductible: featureOn(this.env, "position_excludes_nondeductible") });

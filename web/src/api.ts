@@ -380,6 +380,7 @@ export const api = {
   clearTxnAttributions: (txnId: string) => send<{ ok: boolean }>("DELETE", `/api/transactions/${txnId}/attributions`),
   incomeActivities: () => get<{ income_activities: IncomeActivity[] }>("/api/income-activities").then((r) => r.income_activities),
   addIncomeActivity: (b: Partial<IncomeActivity>) => post<{ id: string }>("/api/income-activities", b),
+  setIncomeActivityPsiStatus: (id: string, psi_status: string | null) => send<{ ok: boolean }>("PUT", `/api/income-activities/${id}`, { psi_status }),
   deleteIncomeActivity: (id: string) => send<{ ok: boolean }>("DELETE", `/api/income-activities/${id}`),
   propertyOwners: () => get<{ property_owners: PropertyOwner[] }>("/api/property-owners").then((r) => r.property_owners),
   addPropertyOwner: (b: { property_id: string; person_id: string; ownership_pct?: number }) => post<{ id: string }>("/api/property-owners", b),

@@ -23,6 +23,8 @@ const INCOME_TYPES = [
   "managed_fund_distribution",
   "foreign_pension",
   "foreign_rent",
+  "foreign_business",
+  "non_cash_benefit",
   "other",
 ] as const;
 
@@ -35,6 +37,8 @@ const TYPE_LABEL: Record<string, string> = {
   managed_fund_distribution: "Managed fund",
   foreign_pension: "Foreign pension",
   foreign_rent: "Foreign rent",
+  foreign_business: "Foreign business income",
+  non_cash_benefit: "Non-cash benefit (captured, not in position)",
   other: "Other",
 };
 

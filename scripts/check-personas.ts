@@ -381,6 +381,37 @@ async function main() {
     check("P11 #157: headline deductions match across both engines ($15.5k)", r11legacy.total_deductions_cents === r11.total_deductions_cents && r11.total_deductions_cents === 1550000);
   }
 
+  // ── Persona 12 (S3/S4): content creator — the generalised self-employed spine ──
+  // Brand-deal business income, foreign-sourced platform (AdSense) income WITH foreign tax (→ FITO), a
+  // gifted product captured at market value but EXCLUDED from the position, a part-time salary + bank
+  // interest (multi-income aggregation), and a camera that depreciates. One taxpayer exercising S3
+  // (foreign_business assessable), S4 (non_cash excluded) and multi-income aggregation on the SAME engines.
+  {
+    const u = "p12";
+    seedTenant(u, "P12 content creator");
+    run(`INSERT INTO income_activities (id, user_id, activity_type, label, psi_status) VALUES ('p12iaBiz', ?, 'business', 'Content creation', 'not_psi')`, u);
+    inc("p12iSal", u, "salary_payg", 3000000);       // part-time day job ($30k)
+    inc("p12iBrand", u, "business", 6000000);         // brand / sponsor deals ($60k)
+    inc("p12iAds", u, "foreign_business", 2500000, { foreign_tax_paid_cents: 300000 }); // AdSense ($25k, $3k foreign tax)
+    inc("p12iInt", u, "interest", 200000);            // bank interest ($2k)
+    inc("p12iGift", u, "non_cash_benefit", 500000);   // gifted products at market value ($5k) — EXCLUDED
+    asset("p12cam", u, 400000, 100000);               // camera: $4k cost, $1k decline-in-value
+
+    const r12 = await buildReport(env, u, 2025);
+    const fb = r12.income.by_type.find((t) => t.income_type === "foreign_business");
+    check("P12 S3: foreign business income is assessable + kept as its own type ($25k)", fb?.gross_cents === 2500000);
+    check("P12 S3: foreign tax paid is carried for FITO ($3k)", r12.income.foreign_tax_paid_cents === 300000);
+    check("P12: income aggregates salary+business+foreign_business+interest ($30k+$60k+$25k+$2k=$117k); non-cash EXCLUDED", r12.income.gross_cents === 11700000);
+    check("P12 S4: the gifted product is captured but EXCLUDED from assessable income ($5k → non_cash_cents)", r12.income.non_cash_cents === 500000 && !r12.income.by_type.some((t) => t.income_type === "non_cash_benefit"));
+    check("P12: camera decline-in-value is captured ($1k)", r12.depreciation_cents === 100000);
+    check("P12: taxable position = $117k income − $1k depreciation = $116k (non-cash NEVER added)", r12.taxable_position_cents === 11600000);
+    // Regression guard: the accountant schedule re-derives income straight from the DB — it must exclude
+    // the same non-cash benefit, or its income section won't tie back to the report's total_income_cents.
+    const sched12 = await buildAccountantSchedule(env, u, 2025, { report: r12 });
+    const inc12 = sched12.sections.find((s) => s.key === "income");
+    check("P12 S4: accountant schedule income section ties back (non-cash excluded, no double-count)", inc12?.tie_back?.ok === true && inc12?.subtotal_cents === 11700000);
+  }
+
   // ── Accountant schedule (#179/#181): goldens + the tie-back-by-construction loop ──
 
   // Golden A (#179) — Maya: the schedule's claiming sections sum EXACTLY to her report deductions,

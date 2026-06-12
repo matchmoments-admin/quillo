@@ -77,13 +77,19 @@ crons = ["0 8 * * 1", "*/10 * * * *"]
 JURISDICTION = "AU"
 # Enabled feature flags (comma-separated; see src/lib/features.ts). Each new behaviour ships
 # behind a flag so it can be disabled with one edit + redeploy (instant rollback, no data change).
-FEATURES = "refund_netting,income_dedupe,asset_defaults,bulk_import,deductibility_review,guide_me,claim_review,position_excludes_nondeductible,accountant_pass,wfh_car_methods,loan_split,attribution_engine,cgt_engine,ess_engine,car_logbook,trust_distributions,apply_to_siblings,loan_interest_v2,gst_bas,smsf_engine,ask_quillo,accountant_schedule,ask_actions,advisory_layer,advisory_partners_energy,franking_gross_up,super_deduction,mf_components,partnership_distributions,jurisdiction_period"
+FEATURES = "refund_netting,income_dedupe,asset_defaults,bulk_import,deductibility_review,guide_me,claim_review,position_excludes_nondeductible,accountant_pass,wfh_car_methods,loan_split,attribution_engine,cgt_engine,ess_engine,car_logbook,trust_distributions,apply_to_siblings,loan_interest_v2,gst_bas,smsf_engine,ask_quillo,accountant_schedule,ask_actions,advisory_layer,advisory_partners_energy,franking_gross_up,super_deduction,mf_components,partnership_distributions,jurisdiction_period,floating_chat"
 # Per-user daily AI-spend budget in cents (measured, credit insurance). 0/unset = unlimited.
 # e.g. 500 = $5/day. Replaces the old count cap; over budget → receipts queue as needs_review.
 MAX_DAILY_COST_CENTS = "500"
 # Platform-wide daily AI-spend ceiling across ALL tenants (the multi-tenant backstop). 0/unset =
 # unlimited. e.g. 2500 = $25/day total; over it, new AI work degrades to needs_review for everyone.
 MAX_DAILY_COST_CENTS_GLOBAL = "2500"
+# Ask Quillo chat rate limits (anti-abuse, enforced server-side BEFORE any model call, alongside the
+# daily $ budget). 0/unset = no limit. Per-tenant only (the DO serialises a tenant's turns, so the KV
+# counter is race-free per tenant). A blocked turn returns 429 (per-minute/day) or 400 (oversize).
+CHAT_MAX_TURNS_PER_MIN = "12"     # burst cap: turns per rolling minute per tenant
+CHAT_MAX_TURNS_PER_DAY = "300"    # daily turn cap per tenant (defence in depth under the $ budget)
+CHAT_MAX_MESSAGE_CHARS = "2000"   # reject oversize prompts before grounding/model work (token-bomb guard)
 # Default statement-categorisation path (per-tenant override: profiles.categorise_mode).
 #   auto  → size-based: >60 lines go to the async Batch API (~50% cheaper), else synchronous live.
 #   live  → always synchronous Claude calls (instant, full price). Huge jobs fall back to batch.

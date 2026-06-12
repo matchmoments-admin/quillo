@@ -408,6 +408,23 @@ export interface AdminOverview {
   daily_cap_cents: number;
 }
 
+export interface AdminSpendTenant {
+  user_id: string;
+  today_cents: number;
+  week_cents: number;
+  ask_today_cents: number;
+  calls_today: number;
+  hit_cap_today: boolean;
+  pct_of_global: number;
+}
+export interface AdminSpend {
+  per_tenant_cap_cents: number;
+  global_ceiling_cents: number;
+  spend_today_global_cents: number;
+  flagged: number;
+  tenants: AdminSpendTenant[];
+}
+
 export interface UsageData {
   today_cents: number;
   month_cents: number;

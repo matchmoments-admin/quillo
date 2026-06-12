@@ -11,6 +11,8 @@ import { FySwitcher, useActiveFy } from "./lib/activeFy";
 import { NextActionBar } from "./components/NextAction";
 import { TabGuide } from "./components/TabGuide";
 import { Coachmarks } from "./components/Coachmarks";
+import { ChatProvider } from "./components/chat/ChatProvider";
+import { FloatingChat } from "./components/chat/FloatingChat";
 
 type NavItem = { to: string; label: string; icon: IconName; end?: boolean; badge?: boolean; flag?: string; admin?: boolean; partner?: boolean };
 type NavGroup = { label: string; items: NavItem[] };
@@ -118,11 +120,16 @@ export function App() {
 
   return (
     <Tooltip.Provider delayDuration={200} skipDelayDuration={400}>
+    <ChatProvider>
     <div className="min-h-screen bg-paper text-ink">
       <div className="grain" aria-hidden />
       <FirstRunGate />
       <Coachmarks pathname={pathname} />
       <Toaster position="bottom-right" richColors closeButton toastOptions={{ duration: 6000 }} />
+      {/* Floating "Ask Quillo" bubble — self-gates on the `floating_chat` flag (renders nothing when
+          off, so this is byte-identical until enabled). Portals to document.body and persists across
+          route changes because App is the durable layout that never unmounts. */}
+      <FloatingChat />
 
       {/* Mobile top bar */}
       <div className="sticky top-0 z-30 flex items-center gap-3 border-b border-line bg-paper/90 px-4 py-3 backdrop-blur lg:hidden">
@@ -190,6 +197,7 @@ export function App() {
         </div>
       </div>
     </div>
+    </ChatProvider>
     </Tooltip.Provider>
   );
 }

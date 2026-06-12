@@ -744,3 +744,44 @@ export async function platformOverview(env: Env) {
     daily_cap_cents: Number(env.MAX_DAILY_COST_CENTS_GLOBAL ?? 0),
   };
 }
+
+/**
+ * Cross-tenant AI-spend + abuse view for the founder /admin page. One grouped pass over the last 7
+ * days of llm_usage gives per-tenant today/7-day spend + the "ask" (chat/Q&A) slice + call counts;
+ * we then derive, in JS, who tripped the per-tenant daily cap today and each tenant's share of the
+ * global daily ceiling. Read-only, integer cost_e4 ÷ 10000 (no float drift), capped to the top
+ * spenders so a large tenant base can't blow the response up. Answers "is a bad actor running up
+ * spend?" at a glance — complements the pre-call budget gate, it does not replace it.
+ */
+export async function platformSpend(env: Env) {
+  const day = new Date().toISOString().slice(0, 10);
+  const perTenantCap = Number(env.MAX_DAILY_COST_CENTS ?? 0);
+  const globalCeiling = Number(env.MAX_DAILY_COST_CENTS_GLOBAL ?? 0);
+  const rows = await env.DB.prepare(
+    `SELECT user_id,
+       COALESCE(SUM(CASE WHEN substr(created_at,1,10) = ? THEN cost_e4 ELSE 0 END),0)/10000.0 AS today_cents,
+       COALESCE(SUM(cost_e4),0)/10000.0 AS week_cents,
+       COALESCE(SUM(CASE WHEN substr(created_at,1,10) = ? AND feature = 'ask' THEN cost_e4 ELSE 0 END),0)/10000.0 AS ask_today_cents,
+       SUM(CASE WHEN substr(created_at,1,10) = ? THEN 1 ELSE 0 END) AS calls_today
+       FROM llm_usage
+      WHERE created_at >= datetime('now','-7 days')
+      GROUP BY user_id
+      ORDER BY week_cents DESC
+      LIMIT 50`,
+  )
+    .bind(day, day, day)
+    .all<{ user_id: string; today_cents: number; week_cents: number; ask_today_cents: number; calls_today: number }>();
+  const spendToday = (await env.DB.prepare(`SELECT cents_e4 FROM daily_cost WHERE scope = 'global' AND day = ?`).bind(day).first<{ cents_e4: number }>())?.cents_e4 ?? 0;
+  const tenants = (rows.results ?? []).map((r) => ({
+    ...r,
+    hit_cap_today: perTenantCap > 0 && r.today_cents >= perTenantCap,
+    pct_of_global: globalCeiling > 0 ? Math.round((r.today_cents / globalCeiling) * 100) : 0,
+  }));
+  return {
+    per_tenant_cap_cents: perTenantCap,
+    global_ceiling_cents: globalCeiling,
+    spend_today_global_cents: spendToday / 10000,
+    flagged: tenants.filter((t) => t.hit_cap_today).length,
+    tenants,
+  };
+}

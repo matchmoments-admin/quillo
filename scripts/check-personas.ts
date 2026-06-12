@@ -557,6 +557,25 @@ async function main() {
     check("Canonical income: a matched credit is NOT double-counted (only the $200 unmatched credit shows)", ibb === 20000);
   }
 
+  // ── Phase 2: the report engines now HONOUR rule_pack_ver / the KV pack (was statically bypassed —
+  //    a KV/jurisdiction pack's thresholds were silently ignored by cgtTotals/companyPositions/work-use). ──
+  {
+    const u = "pcgtpack";
+    run(`INSERT INTO tenants (user_id, display_name) VALUES (?, 'PCGTPACK')`, u);
+    run(`INSERT INTO persons (id, user_id, display_name, role) VALUES (?, ?, 'You', 'self')`, `person_self_${u}`, u);
+    run(`INSERT INTO profiles (user_id, rule_pack_ver) VALUES (?, 'test-cgt')`, u);
+    run(`INSERT INTO cgt_assets (id, user_id, person_id, asset_kind, code, units, acquired_date, cost_base_cents) VALUES ('pcgtA', ?, ?, 'crypto', 'BTC', 0.5, '2023-01-01', 2000000)`, u, `person_self_${u}`);
+    run(`INSERT INTO cgt_events (id, user_id, cgt_asset_id, fy, event_date, proceeds_cents, cost_base_used_cents) VALUES ('pcgtE', ?, 'pcgtA', '2025-26', '2025-09-01', 3000000, 2000000)`, u); // $10k gain, held >12mo
+    // Control: no KV binding → bundled au-v1 (keep 0.5 = 50% discount) → $5k net.
+    const rDefault = await buildReport(env, u, 2025);
+    check("Phase 2 control: default pack applies the 50% CGT discount ($5k net)", rDefault.capital_gains?.net_capital_gain_cents === 500000);
+    // Override: a KV pack 'rulepack:test-cgt' with cgt_discount_keep_fraction=1.0 (NO discount) MUST now be honoured.
+    const customPack = { thresholds_by_fy: { "2025-26": { cgt_discount_keep_fraction: 1.0 } } };
+    const envKv = { ...env, RULES: { get: async (k: string) => (k === "rulepack:test-cgt" ? customPack : null) } } as unknown as Env;
+    const rOverride = await buildReport(envKv, u, 2025);
+    check("Phase 2: a KV rule-pack override flows into the report (no discount → $10k net)", rOverride.capital_gains?.net_capital_gain_cents === 1000000);
+  }
+
   console.log(`\n=== personas: ${pass} passed, ${fail} failed ===`);
   if (fail > 0) process.exit(1);
 }

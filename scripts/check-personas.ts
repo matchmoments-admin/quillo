@@ -714,6 +714,32 @@ async function main() {
     check("Phase 2: a KV rule-pack override flows into the report (no discount → $10k net)", rOverride.capital_gains?.net_capital_gain_cents === 1000000);
   }
 
+  // ── Rule-pack/jurisdiction SPLIT-BRAIN fix: the report pack id now comes from the resolved descriptor
+  //    (jurisdiction default), not an independent profiles.rule_pack_ver read. A UK tenant whose
+  //    rule_pack_ver column is still the legacy 'au-v1' default MUST resolve the UK pack (uk-2025), so a
+  //    KV 'rulepack:uk-2025' is honoured — previously it silently loaded au-v1 (UK period under AU pack). ──
+  {
+    const u = "puksplit";
+    run(`INSERT INTO tenants (user_id, display_name) VALUES (?, 'PUKSPLIT')`, u);
+    run(`INSERT INTO persons (id, user_id, display_name, role) VALUES (?, ?, 'You', 'self')`, `person_self_${u}`, u);
+    run(`INSERT INTO profiles (user_id, jurisdiction) VALUES (?, 'UK')`, u); // rule_pack_ver stays the 'au-v1' default
+    run(`INSERT INTO cgt_assets (id, user_id, person_id, asset_kind, code, units, acquired_date, cost_base_cents) VALUES ('puksA', ?, ?, 'crypto', 'BTC', 0.5, '2023-01-01', 2000000)`, u, `person_self_${u}`);
+    run(`INSERT INTO cgt_events (id, user_id, cgt_asset_id, fy, event_date, proceeds_cents, cost_base_used_cents) VALUES ('puksE', ?, 'puksA', '2025-26', '2025-09-01', 3000000, 2000000)`, u);
+    const ukPack = { thresholds_by_fy: { "2025-26": { cgt_discount_keep_fraction: 1.0 } } };
+    const envUk = { ...env, RULES: { get: async (k: string) => (k === "rulepack:uk-2025" ? ukPack : null) } } as unknown as Env;
+    const rUk = await buildReport(envUk, u, 2025);
+    check("Split-brain fix: a UK tenant resolves the uk-2025 pack (not au-v1) → uk pack's no-discount applies ($10k)", rUk.capital_gains?.net_capital_gain_cents === 1000000);
+    // AU control on the SAME shape: an AU tenant with the same KV mock must NOT pick up uk-2025 → keeps 50%.
+    const au = "pausplit";
+    run(`INSERT INTO tenants (user_id, display_name) VALUES (?, 'PAUSPLIT')`, au);
+    run(`INSERT INTO persons (id, user_id, display_name, role) VALUES (?, ?, 'You', 'self')`, `person_self_${au}`, au);
+    run(`INSERT INTO profiles (user_id, jurisdiction) VALUES (?, 'AU')`, au);
+    run(`INSERT INTO cgt_assets (id, user_id, person_id, asset_kind, code, units, acquired_date, cost_base_cents) VALUES ('pausA', ?, ?, 'crypto', 'BTC', 0.5, '2023-01-01', 2000000)`, au, `person_self_${au}`);
+    run(`INSERT INTO cgt_events (id, user_id, cgt_asset_id, fy, event_date, proceeds_cents, cost_base_used_cents) VALUES ('pausE', ?, 'pausA', '2025-26', '2025-09-01', 3000000, 2000000)`, au);
+    const rAu = await buildReport(envUk, au, 2025);
+    check("Split-brain fix: an AU tenant ignores the uk-2025 KV pack → bundled au-v1 50% discount ($5k)", rAu.capital_gains?.net_capital_gain_cents === 500000);
+  }
+
   // ── Phase 3a: franking gross-up (s207-20) + personal-deductible super (s290-150). Flag-gated:
   //    OFF ⇒ byte-identical; ON ⇒ franking ADDS to assessable income, personal-deductible super SUBTRACTS
   //    (capped), and employer SG is NEVER deducted. ──

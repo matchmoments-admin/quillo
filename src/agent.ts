@@ -3325,7 +3325,8 @@ export class TaxAgent extends Agent<Env> {
     if (!row) throw new Error("transaction not found");
 
     // A user confirm/correct is a stronger signal than any model score: stamp confidence=1.0 so the
-    // row deterministically leaves NEEDS_REVIEW (which also excludes status='corrected').
+    // row deterministically leaves NEEDS_REVIEW (whose confidence clause is guarded against
+    // status='corrected', so a known-bucket confirmed row no longer matches any of its clauses).
     await this.env.DB.prepare(
       `UPDATE transactions SET ${column} = ?, status='corrected', confidence=1.0 WHERE id = ? AND user_id = ?`,
     )

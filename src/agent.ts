@@ -10,7 +10,7 @@ import { purgeTenant as purgeTenantData, exportTenant as exportTenantData, flagO
 import { COUNTABLE, fetchAskDigestRows, spendRunRate } from "./lib/queries";
 import { billerNormalize, detectRecurrence, classifyBiller, paymentsPerYear, recurringCopy, signpostFor, type RecurringOccurrence } from "./lib/advisory";
 import { matchEnergyOffer, getOfferById, buildReferralUrl, opportunityTakesEnergyCta, type PartnerDB } from "./lib/partners";
-import { deriveWfhHours } from "./lib/work-use";
+import { deriveWfhHours, generateWfhDiary, type WfhLeaveRange } from "./lib/work-use";
 import { applyUserRules, RULE_CREDIT_BUCKETS } from "./lib/rules";
 import { sha256hex, sha256hexBytes } from "./lib/base64";
 import { getLLM, type LLM } from "./llm";
@@ -3204,21 +3204,32 @@ export class TaxAgent extends Agent<Env> {
    * cents-per-km deductions (#67). One row per (user, fy). Inert until the wfh_car_methods flag is on
    * (buildReport reads it then). Stores the raw inputs only — the $ figure is computed in report.ts.
    */
-  async setWorkUseInputs(userId: string, input: { fy: number; wfh_hours: number | null; car_work_km: number | null; wfh_days_per_week?: number | null; wfh_weeks?: number | null; has_dedicated_home_office?: boolean; wfh_has_record?: boolean }): Promise<{ ok: true }> {
+  async setWorkUseInputs(userId: string, input: { fy: number; wfh_hours: number | null; car_work_km: number | null; wfh_days_per_week?: number | null; wfh_weeks?: number | null; has_dedicated_home_office?: boolean; wfh_has_record?: boolean; wfh_weekdays?: number[] | null; wfh_leave_ranges?: WfhLeaveRange[] | null; wfh_generate_diary?: boolean }): Promise<{ ok: true }> {
     await this.requireProfile(userId);
-    // 0036: hours stay authoritative. When the caller supplies days/week but no explicit hours (the
-    // wizard path), DERIVE hours so the figure is set transparently; an explicit hours edit always wins.
     const days = input.wfh_days_per_week ?? null;
     const weeks = input.wfh_weeks ?? null;
-    const hours = input.wfh_hours != null ? input.wfh_hours : deriveWfhHours(days, weeks);
     // 0058: capture-only context flags (guidance, not the $ figure).
     const office = input.has_dedicated_home_office ? 1 : 0;
     const record = input.wfh_has_record ? 1 : 0;
+    // 0059: diary inputs. Normalise weekdays (ints 0..6, unique, sorted) + leave ranges (valid ISO pairs).
+    const weekdays = Array.from(new Set((input.wfh_weekdays ?? []).filter((d) => Number.isInteger(d) && d >= 0 && d <= 6))).sort((a, b) => a - b);
+    const leaveRanges = (input.wfh_leave_ranges ?? []).filter((r) => r && typeof r.start === "string" && typeof r.end === "string" && r.start <= r.end).map((r) => ({ start: r.start, end: r.end, ...(r.label ? { label: String(r.label).slice(0, 60) } : {}) }));
+    const generateDiary = input.wfh_generate_diary ? 1 : 0;
+    // Hours precedence (hours stay authoritative): an explicit edit wins; else, when the diary is on AND
+    // the user isn't supplying their own record, the diary's total_hours becomes the figure; else fall
+    // back to the days/week derivation. Keeps the legacy days/week path byte-identical when diary is off.
+    let hours = input.wfh_hours != null ? input.wfh_hours : null;
+    if (hours == null && generateDiary && !record && weekdays.length > 0) {
+      // Use the SAME jurisdiction the accountant-schedule diary uses, so the stored hours and the CSV
+      // diary total reconcile (AU = Jul–Jun; a non-AU period must not silently use AU bounds here).
+      hours = generateWfhDiary({ fyStartYear: input.fy, weekdays, leaveRanges, descriptor: await this.jurisdictionFor(userId) }).total_hours;
+    }
+    if (hours == null) hours = deriveWfhHours(days, weeks);
     await this.env.DB.prepare(
-      `INSERT INTO work_use_inputs (user_id, fy, wfh_hours, car_work_km, wfh_days_per_week, wfh_weeks, has_dedicated_home_office, wfh_has_record, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-       ON CONFLICT(user_id, fy) DO UPDATE SET wfh_hours = excluded.wfh_hours, car_work_km = excluded.car_work_km, wfh_days_per_week = excluded.wfh_days_per_week, wfh_weeks = excluded.wfh_weeks, has_dedicated_home_office = excluded.has_dedicated_home_office, wfh_has_record = excluded.wfh_has_record, updated_at = datetime('now')`,
+      `INSERT INTO work_use_inputs (user_id, fy, wfh_hours, car_work_km, wfh_days_per_week, wfh_weeks, has_dedicated_home_office, wfh_has_record, wfh_weekdays, wfh_leave_ranges, wfh_generate_diary, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+       ON CONFLICT(user_id, fy) DO UPDATE SET wfh_hours = excluded.wfh_hours, car_work_km = excluded.car_work_km, wfh_days_per_week = excluded.wfh_days_per_week, wfh_weeks = excluded.wfh_weeks, has_dedicated_home_office = excluded.has_dedicated_home_office, wfh_has_record = excluded.wfh_has_record, wfh_weekdays = excluded.wfh_weekdays, wfh_leave_ranges = excluded.wfh_leave_ranges, wfh_generate_diary = excluded.wfh_generate_diary, updated_at = datetime('now')`,
     )
-      .bind(userId, input.fy, hours, input.car_work_km, days, weeks, office, record)
+      .bind(userId, input.fy, hours, input.car_work_km, days, weeks, office, record, JSON.stringify(weekdays), JSON.stringify(leaveRanges), generateDiary)
       .run();
     await this.audit(userId, "work_use_set", JSON.stringify({ ...input, wfh_hours: hours }));
     return { ok: true };
@@ -3313,8 +3324,10 @@ export class TaxAgent extends Agent<Env> {
       .first<{ old: string | null }>();
     if (!row) throw new Error("transaction not found");
 
+    // A user confirm/correct is a stronger signal than any model score: stamp confidence=1.0 so the
+    // row deterministically leaves NEEDS_REVIEW (which also excludes status='corrected').
     await this.env.DB.prepare(
-      `UPDATE transactions SET ${column} = ?, status='corrected' WHERE id = ? AND user_id = ?`,
+      `UPDATE transactions SET ${column} = ?, status='corrected', confidence=1.0 WHERE id = ? AND user_id = ?`,
     )
       .bind(newValue, txnId, userId)
       .run();
@@ -3397,7 +3410,7 @@ export class TaxAgent extends Agent<Env> {
         continue;
       }
       const group: D1PreparedStatement[] = [
-        this.env.DB.prepare(`UPDATE transactions SET ${setClause}, status='corrected' WHERE id = ? AND user_id = ?`).bind(...norm.map((n) => n.value), txnId, userId),
+        this.env.DB.prepare(`UPDATE transactions SET ${setClause}, status='corrected', confidence=1.0 WHERE id = ? AND user_id = ?`).bind(...norm.map((n) => n.value), txnId, userId),
       ];
       for (const n of norm) {
         group.push(

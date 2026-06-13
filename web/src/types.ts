@@ -976,4 +976,8 @@ export interface WorkUse {
   // 0058: capture-only context (guidance, not the $ figure). GET returns 0/1; POST accepts boolean.
   has_dedicated_home_office?: number | boolean | null;
   wfh_has_record?: number | boolean | null;
+  // 0059: WFH diary inputs (off by default; gated by the wfh_generate_diary feature flag).
+  wfh_weekdays?: number[] | null;                                   // 0=Mon..6=Sun
+  wfh_leave_ranges?: { start: string; end: string; label?: string }[] | null;
+  wfh_generate_diary?: number | boolean | null;                     // GET returns 0/1; POST accepts boolean
 }

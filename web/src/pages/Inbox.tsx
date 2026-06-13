@@ -214,8 +214,13 @@ function Row({ txn, selected, onToggle, showConfirm = false }: { txn: Txn; selec
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["transactions"] });
       qc.invalidateQueries({ queryKey: ["dashboard"] });
+      qc.invalidateQueries({ queryKey: ["report"] });
+      qc.invalidateQueries({ queryKey: ["filing-readiness"] });
     },
   });
+  // You can't "confirm as-is" an unknown row — that would re-write bucket='unknown' and the row would
+  // never leave the queue. Force such rows into the detail page to pick a real category.
+  const canConfirm = !!txn.bucket && txn.bucket !== "unknown";
   return (
     // The checkbox + confirm button sit OUTSIDE the <Link> — interactive controls nested inside an <a>
     // are invalid HTML and swallow the navigation click.
@@ -268,8 +273,8 @@ function Row({ txn, selected, onToggle, showConfirm = false }: { txn: Txn; selec
         <div className="flex-none">
           <button
             onClick={() => confirm.mutate()}
-            disabled={confirm.isPending || !txn.bucket}
-            title={txn.bucket ? "Accept the current category and clear it from review" : "Open it to choose a category first"}
+            disabled={confirm.isPending || !canConfirm}
+            title={canConfirm ? "Accept the current category and clear it from review" : "Open it to choose a category first"}
             className="rounded-lg border border-line px-3 py-2 text-sm font-medium transition hover:bg-surface disabled:opacity-50"
           >
             {confirm.isPending ? "…" : "Confirm ✓"}

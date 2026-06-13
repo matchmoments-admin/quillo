@@ -41,9 +41,15 @@ export const COUNTABLE_INCOME =
 // and the Inbox "Needs review" tab can't drift (previously the dashboard counted unknown/low-conf
 // rows the inbox tab — filtering only status='needs_review' — never surfaced, so a "882 needs
 // review" badge sat next to an empty queue).
+// A user confirm/correct (status='corrected') is a stronger signal than model confidence: it must NOT
+// re-match here via the `confidence < 0.85` clause (the confirm-does-nothing bug — a low-confidence row
+// the user confirmed stayed stuck in the queue). So that clause is guarded with `status != 'corrected'`.
+// We deliberately do NOT exclude 'corrected' wholesale: a row corrected on a NON-bucket field (e.g. a
+// date fix) while still bucket='unknown' must stay in review — it's uncategorised — so the unknown-bucket
+// clause has no corrected guard. (applyCorrection also bumps confidence to 1.0 as belt-and-braces.)
 export const NEEDS_REVIEW =
   "status NOT IN ('duplicate','ignored','matched_receipt') " +
-  "AND (status IN ('needs_review','needs_extraction','blocked_consent') OR bucket = 'unknown' OR confidence < 0.85)";
+  "AND (status IN ('needs_review','needs_extraction','blocked_consent') OR bucket = 'unknown' OR (confidence < 0.85 AND status != 'corrected'))";
 
 // "This row can't be assigned to any FY" — a NULL or non-ISO txn_date. Defined here (the shared
 // query module) so the dashboard's undated chip, the progress "to date" count and the report's

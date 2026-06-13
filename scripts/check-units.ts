@@ -3,7 +3,7 @@
 // categorisation. No worker runtime / D1 / Claude — these are the fast, deterministic
 // regression guards for the rules we keep re-learning. Run: npm run test:units
 import { reconcileStatement, deriveBalances, isTransferLike, isLoanInterestLine, classifyMovement, movementTreatment, signedCents, lineFingerprint, type StatementLine } from "../src/lib/statements";
-import { groupKey, groupForClarify, rulePatternForStem, isClarifyLeftover } from "../src/lib/clarify";
+import { groupKey, groupForClarify, rulePatternForStem, isClarifyLeftover, isInsuranceLikeStem, suggestionsFor } from "../src/lib/clarify";
 import { resolveLoanInterest, deductibleInterestCents } from "../src/lib/loan-interest";
 import { scoreClaimMatches } from "../src/lib/claim-match";
 import { batchStatementStatus, isStaleBatch, BATCH_MAX_AGE_MS } from "../src/lib/batch";
@@ -13,7 +13,7 @@ import { isValidAbn, normaliseAbn } from "../web/src/lib/abn";
 import { billableCents } from "../src/lib/billing";
 import { costCents, isPricedModel, toE4, centsFromE4 } from "../src/lib/usage";
 import { LLM_MODEL_IDS } from "../src/llm";
-import { computeWorkMethodDeductions, workUseRatesForFy, deriveWfhHours } from "../src/lib/work-use";
+import { computeWorkMethodDeductions, workUseRatesForFy, deriveWfhHours, generateWfhDiary } from "../src/lib/work-use";
 import { BUCKETS } from "../src/lib/taxonomy";
 import {
   billerNormalize, classifyBiller, annualiseSpendCents, daysBetween, detectRecurrence,
@@ -253,6 +253,16 @@ console.log("clarify.groupForClarify");
   check("tenant + rent group → 'rent I pay (private)' offered", rentTenant[0]!.suggestions.some((s) => /rent I pay/i.test(s.label) && s.bucket === "payg" && s.ato_label === "personal-spend"));
   check("non-tenant + rent group → no rent-private suggestion", !groupForClarify(rentRows, undefined, { hasTenantHome: false })[0]!.suggestions.some((s) => /rent I pay/i.test(s.label)));
   check("tenant + non-rent group → no rent-private suggestion", !groupForClarify([mk("Coles 1234", "debit", 30000)], undefined, { hasTenantHome: true })[0]!.suggestions.some((s) => /rent I pay/i.test(s.label)));
+  // Part B (claimable-only grouping): an income-protection / life insurer stem surfaces the ONE
+  // claimable insurance answer; a generic stem and a HEALTH fund do not (health = private, not claimable).
+  check("isInsuranceLikeStem matches income-protection / life insurers", isInsuranceLikeStem("TAL income protection") && isInsuranceLikeStem("Zurich life insurance") && isInsuranceLikeStem("AIA salary continuance"));
+  check("isInsuranceLikeStem excludes health funds + generic debits", !isInsuranceLikeStem("BUPA AUSTRALIA") && !isInsuranceLikeStem("Medibank Private") && !isInsuranceLikeStem("Coles 1234"));
+  const ipDebit = suggestionsFor("debit", { isInsuranceLike: true });
+  const genericDebit = suggestionsFor("debit", {});
+  check("insurer-like debit → income-protection one-tap (claimable, outside super)", ipDebit.some((s) => s.kind === "bucket" && s.ato_label === "insurance:income-protection"));
+  check("generic debit → NO income-protection option (only shown on insurer-like stems)", !genericDebit.some((s) => s.ato_label === "insurance:income-protection"));
+  check("donation + union one-tap present in every debit set (common + claimable)", genericDebit.some((s) => s.ato_label === "donation") && genericDebit.some((s) => s.ato_label === "union-fees"));
+  check("no private-health one-tap label is offered (owner: claimable-only)", !genericDebit.concat(ipDebit).some((s) => /health/i.test(s.label)));
 }
 
 // ── Sort S1: isClarifyLeftover — the SINGLE predicate the scan, answer + apply-to-siblings share ──
@@ -1100,6 +1110,14 @@ console.log("deductibility (deny-by-default)");
   check("DGR donation → suggested_deductible", verdictForTxn("payg", "payg:donation", "RSPCA donation", section).deductibility === "suggested_deductible");
   check("a SUGGESTION is excluded from the position until confirmed (B1)", deductionGroupForRow("payg", "suggested_deductible", true) === "excluded" && deductionGroupForRow("payg", "suggested_deductible", false) === "excluded");
   check("deny still wins over suggest (groceries stay denied)", verdictForTxn("payg", "payg:groceries", "Coles", section).deductibility === "likely_not");
+  // Part B (claimable-only grouping): the new one-tap insurance/donation/union labels must stamp the
+  // verdict the clarify card promises. Income-protection is claimable (outside super); private health
+  // + life/TPD are NOT — and 'insurance:income-protection' must NOT be caught by the life/health deny.
+  check("income-protection (outside super) → suggested_deductible", verdictForTxn("payg", "insurance:income-protection", "TAL income protection", section).deductibility === "suggested_deductible");
+  check("private health insurance → likely_not (private — rebate/MLS, not a deduction)", verdictForTxn("payg", "health:private-insurance", "BUPA AUSTRALIA", section).deductibility === "likely_not");
+  check("life/TPD insurance → likely_not", verdictForTxn("payg", "insurance:life", "Zurich life insurance", section).deductibility === "likely_not");
+  check("donation label → suggested_deductible", verdictForTxn("payg", "donation", "Direct Debit RSPCA", section).deductibility === "suggested_deductible");
+  check("union-fees label → suggested_deductible", verdictForTxn("payg", "union-fees", "ASU membership", section).deductibility === "suggested_deductible");
   // Phase 3 deny-list precision: flowers + swimwear are private spend → likely_not (belt-and-suspenders;
   // they were already excluded as 'undetermined', this just stamps them clearly and keeps them out of suggestions).
   check("florist → likely_not", verdictForTxn("payg", "payg:other", "Flawless Flowers florist", section).deductibility === "likely_not");
@@ -1245,6 +1263,26 @@ console.log("deductibility (deny-by-default)");
   check("WFH days/week: explicit weeks override (3 days × 44 weeks)", deriveWfhHours(3, 44) === Math.round(3 * 7.6 * 44));
   check("WFH days/week: no days → null (nothing to derive)", deriveWfhHours(null, 48) === null && deriveWfhHours(0, 48) === null);
   check("workUseRatesForFy falls back to defaults when a field is missing", workUseRatesForFy({}).car_cents_per_km === 88 && workUseRatesForFy(undefined).wfh_cents_per_hour === 70);
+
+  // Part 1 — generateWfhDiary: deterministic per-day record over the real FY bounds (jurisdiction-aware,
+  // leap-year safe). total_hours = total_days × 7.6; leave + weekday selection exclude days correctly.
+  {
+    // FY2025 (AU = 2025-07-01 .. 2026-06-30, non-leap) — every weekday ticked → 365 days walked.
+    const allDays = generateWfhDiary({ fyStartYear: 2025, weekdays: [0, 1, 2, 3, 4, 5, 6], leaveRanges: [] });
+    check("diary walks every day of a non-leap FY (365)", allDays.total_days === 365 && allDays.days.length === 365);
+    check("total_hours = total_days × 7.6", allDays.total_hours === Math.round(365 * 7.6 * 10) / 10);
+    // FY2023 spans the 29 Feb 2024 leap day → 366 days, and the diary contains that exact date (no off-by-one).
+    const leap = generateWfhDiary({ fyStartYear: 2023, weekdays: [0, 1, 2, 3, 4, 5, 6], leaveRanges: [] });
+    check("diary is leap-year safe (366 days, includes 2024-02-29)", leap.total_days === 366 && leap.days.some((d) => d.date === "2024-02-29"));
+    // Weekdays-only (Mon–Fri) excludes weekends.
+    const wkdays = generateWfhDiary({ fyStartYear: 2025, weekdays: [0, 1, 2, 3, 4], leaveRanges: [] });
+    check("weekends excluded unless ticked", wkdays.total_days < 365 && wkdays.days.every((d) => d.weekday <= 4));
+    // Leave range (all of July 2025, inclusive) drops exactly 31 days from the all-day diary.
+    const withLeave = generateWfhDiary({ fyStartYear: 2025, weekdays: [0, 1, 2, 3, 4, 5, 6], leaveRanges: [{ start: "2025-07-01", end: "2025-07-31" }] });
+    check("inclusive leave range excludes its days (−31)", withLeave.total_days === 334 && !withLeave.days.some((d) => d.date >= "2025-07-01" && d.date <= "2025-07-31"));
+    check("no weekdays ticked → empty diary (0 days/hours)", generateWfhDiary({ fyStartYear: 2025, weekdays: [], leaveRanges: [] }).total_days === 0);
+    check("hoursPerDay override flows through", generateWfhDiary({ fyStartYear: 2025, weekdays: [2], leaveRanges: [], hoursPerDay: 5 }).days.every((d) => d.hours === 5));
+  }
 
   // Readiness renders the computed amounts as "deduction" lines (so lines-sum still == headline) and
   // says they REPLACE the itemised costs (no double-claim). Mock a report carrying work_method.
@@ -1609,6 +1647,13 @@ console.log("money integer scale (0051: cost_e4 / cents_e4)");
   check("budget gate reads the integer tally (cents_e4)", /SELECT cents_e4 FROM daily_cost/.test(usageSrc));
   check("daily_cost upsert increments cents_e4", /cents_e4 = cents_e4 \+ excluded\.cents_e4/.test(usageSrc));
   check("spend rollups SUM the integer column (cost_e4), not the float", /SUM\(cost_e4\)/.test(queriesSrc) && !/SUM\(cost_cents\)/.test(queriesSrc));
+  // A user confirm/correct stamps status='corrected'. The confidence clause must be guarded with
+  // `status != 'corrected'` so a low-confidence CONFIRMED row leaves the queue (the confirm-does-nothing
+  // bug), WITHOUT excluding 'corrected' wholesale — an unknown-bucket row corrected on a non-bucket field
+  // (e.g. a date fix) must stay in review (it's still uncategorised), so the unknown clause has no guard.
+  const needsReviewClause = (queriesSrc.match(/NEEDS_REVIEW\s*=\s*([\s\S]*?);/) ?? [])[1] ?? "";
+  check("NEEDS_REVIEW guards the confidence clause against confirmed rows", /confidence < 0\.85 AND status != 'corrected'/.test(needsReviewClause));
+  check("NEEDS_REVIEW does NOT exclude 'corrected' wholesale (unknown-bucket rows stay in review)", !/NOT IN \([^)]*'corrected'[^)]*\)/.test(needsReviewClause) && /bucket = 'unknown'/.test(needsReviewClause));
 }
 
 console.log("fy representation seam (canonical helpers + guardrail)");

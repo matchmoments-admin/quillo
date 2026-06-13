@@ -155,8 +155,16 @@ const StatementToolInput = z.object({
   lines: z
     .array(
       z.object({
-        date: z.string().nullable().default(null),
-        description: z.string().default(""),
+        // Coerce, don't reject: the model very occasionally emits a non-string for a date or
+        // description (e.g. a numeric reference as the narrative). Plain z.string() would reject
+        // the line and fail the WHOLE chunk's safeParse — surfacing as "layout wasn't recognised"
+        // and killing a multi-page statement. So tolerate one odd row instead of sinking the file.
+        // Date: a non-string is a glitch (the model is told to emit ISO YYYY-MM-DD or null), and a
+        // stringified number like "20250116" would mis-bucket the financial year downstream — so
+        // map any non-string to null ("unknown date"), which the whole pipeline already handles.
+        // Description is free narrative, so stringify a stray number rather than drop it.
+        date: z.preprocess((v) => (typeof v === "string" ? v : null), z.string().nullable()).default(null),
+        description: z.preprocess((v) => (v == null ? "" : typeof v === "string" ? v : String(v)), z.string()).default(""),
         amount: z.coerce.number(), // dollars as printed, absolute
         direction: z.preprocess(
           (v) => (typeof v === "string" ? (DIRECTION_WORDS[v.trim().toLowerCase()] ?? v.trim().toLowerCase()) : v),

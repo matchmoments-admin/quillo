@@ -9,7 +9,7 @@ import { resolveLoanInterest, deductibleInterestCents, type LoanInterestSource }
 import auV1RulePack from "../rulepacks/au-v1.json";
 import { computeWorkMethodDeductions, workUseRatesForFy, type WorkMethodDeductions } from "./work-use";
 import { fyBounds, fyLabel as fyLabelOf } from "./ledger-totals";
-import { resolveJurisdictionForUser, currentFyStartYearFor, fyStartYearForDate, AU_DESCRIPTOR, type JurisdictionDescriptor } from "./jurisdiction";
+import { resolveJurisdictionForUser, currentFyStartYearFor, fyStartYearForDate, baseCurrencyOf, AU_DESCRIPTOR, type JurisdictionDescriptor } from "./jurisdiction";
 
 // Tax period is jurisdiction-driven (jurisdiction.ts). The optional descriptor defaults to AU so every
 // existing caller stays byte-identical (AU = Jul 1 .. Jun 30); pass a resolved descriptor for a UK tenant.
@@ -100,6 +100,12 @@ export interface Report {
   fy: string;
   start: string;
   end: string;
+  // UK epic stop 2: the tenant's BASE currency (UK 'GBP', etc.), via baseCurrencyOf. All money figures
+  // (amount_aud_cents) are in this currency. The SPA/CSV use it to render the right symbol/label.
+  // OMITTED when the base is the legacy 'AUD' default (AU tenant, or the currency_base flag OFF) so the
+  // AU report payload is BYTE-IDENTICAL (no new key) — every consumer defaults absent ⇒ 'AUD'/'$'/'en-AU'.
+  // This is what keeps the AU report-snapshot fixture green and the owner's real AU return unperturbed.
+  base_currency?: string;
   by_bucket: ReportRow[];               // expense buckets collapsed by (bucket, ato_label) — legacy display/CSV shape
   deduction_breakdown: ReportRow[];     // same rows split by deductibility (carries `deductibility`) — drives the position lines
   income_by_bucket: ReportRow[];        // money-in (bank credits) grouped by income bucket — informational, see note
@@ -751,10 +757,14 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   // headline now that attributed txns are excluded from the raw resolved sum above (D.0).
   const resolved_deductible_cents = (resolved?.total ?? 0) + attr.individual_deduction_cents + attr_property_total_cents;
 
+  // Emit base_currency ONLY when it's not the legacy 'AUD' default — an AU report (or flag OFF) stays
+  // byte-identical (no new key in the payload / snapshot); a UK tenant surfaces 'GBP' for display.
+  const baseCurrency = baseCurrencyOf(env, jurisdiction);
   return {
     fy: fyLabel,
     start,
     end,
+    ...(baseCurrency !== "AUD" ? { base_currency: baseCurrency } : {}),
     by_bucket: rows,
     deduction_breakdown: breakdown,
     income_by_bucket: incomeByBucket.results ?? [],
@@ -810,13 +820,16 @@ export function fyForDate(txnDate: string | null, descriptor: JurisdictionDescri
 
 export function reportToCsv(r: Report): string {
   const d = (c: number) => (c / 100).toFixed(2);
+  // Base-currency-aware column headers (stop 2). AU ⇒ base='AUD' ⇒ '(AUD)' ⇒ byte-identical. The
+  // figures themselves are base-currency cents regardless; only the header label changes for UK.
+  const cur = r.base_currency ?? "AUD";
   const lines: string[] = [
     `Quillo tax summary,FY ${r.fy},${r.start} to ${r.end}`,
     `ABN,${r.abn ?? "(not set)"}`,
     `GST credits (ITC) on company expenses,${d(r.gst_credits_cents)}`,
     "General information only — not tax advice. Confirm with a registered tax/BAS agent.",
     "",
-    "Tax position (indicative),Amount (AUD)",
+    `Tax position (indicative),Amount (${cur})`,
     `Total income (gross),${d(r.total_income_cents)}`,
     ...(r.refunds_cents > 0 ? [`Refunds/reimbursements (netted against deductions),${d(r.refunds_cents)}`] : []),
     ...(r.work_method && r.work_method.wfh_cents > 0 ? [`  • Working from home (fixed rate: ${r.work_method.wfh_hours} hrs × ${r.work_method.rates.wfh_cents_per_hour}c/hr),${d(r.work_method.wfh_cents)}`] : []),
@@ -826,23 +839,23 @@ export function reportToCsv(r: Report): string {
     `Indicative taxable position (individual),${d(r.taxable_position_cents)}`,
     ...(r.company_tracked_cents > 0 ? [`Business/company spend (tracked separately — not in the individual position),${d(r.company_tracked_cents)}`] : []),
     "",
-    "Income type,Count,Gross (AUD),Withholding,Franking credit,Foreign tax paid",
+    `Income type,Count,Gross (${cur}),Withholding,Franking credit,Foreign tax paid`,
   ];
   for (const it of r.income.by_type) {
     lines.push(`${it.income_type},${it.n},${d(it.gross_cents)},${d(it.withholding_cents)},${d(it.franking_credit_cents)},${d(it.foreign_tax_paid_cents)}`);
   }
-  lines.push("", "Bucket,ATO label,Count,Total (AUD),GST");
+  lines.push("", `Bucket,ATO label,Count,Total (${cur}),GST`);
   for (const b of r.by_bucket) {
     lines.push(`${b.bucket},${b.ato_label ?? ""},${b.n},${d(b.total_cents)},${d(b.gst_cents)}`);
   }
-  lines.push("", "Property,Rent income (AUD),Deductions,Depreciation,Net (negative gearing)");
+  lines.push("", `Property,Rent income (${cur}),Deductions,Depreciation,Net (negative gearing)`);
   for (const p of r.per_property) {
     lines.push(`${(p.label ?? p.property_id).replace(/,/g, " ")},${d(p.income_cents)},${d(p.deduction_cents)},${d(p.depreciation_cents)},${d(p.net_cents)}`);
   }
-  lines.push("", "Company BAS quarter,Total (AUD),GST");
+  lines.push("", `Company BAS quarter,Total (${cur}),GST`);
   for (const q of r.company_quarters) lines.push(`${q.quarter},${d(q.total_cents)},${d(q.gst_cents)}`);
   if (r.undated_detail.length) {
-    lines.push("", "Undated (assign a date so these land in an FY),Amount (AUD)");
+    lines.push("", `Undated (assign a date so these land in an FY),Amount (${cur})`);
     for (const u of r.undated_detail) lines.push(`${(u.merchant ?? "—").replace(/,/g, " ")},${d(u.total_cents)}`);
   }
   return lines.join("\n") + "\n";

@@ -1,6 +1,6 @@
 import type { Env } from "../env";
 import { featureOn } from "./features";
-import { resolveJurisdiction, AU_DESCRIPTOR } from "./jurisdiction";
+import { resolveJurisdiction, baseCurrencyOf, AU_DESCRIPTOR } from "./jurisdiction";
 
 export interface Profile {
   user_id: string;
@@ -93,6 +93,10 @@ export interface Situation {
   // (flag-gated; AU 7/1 by default). The SPA reads this so the active-FY default follows the tenant's
   // period instead of a client-side Jul–Jun hardcode — the server stays the single source of period truth.
   tax_period: { start_month: number; start_day: number };
+  // UK epic stop 2: the tenant's BASE currency (UK 'GBP', etc.), via baseCurrencyOf. The SPA sets money()'s
+  // symbol/locale from this once on load. OMITTED for the legacy 'AUD' default (AU, or currency_base OFF)
+  // so the situation payload is byte-identical for AU and the SPA keeps '$'/'en-AU' when it's absent.
+  base_currency?: string;
 }
 
 /** Load everything the categoriser needs to know about who this tenant is. */
@@ -121,6 +125,9 @@ export async function getSituation(env: Env, userId: string, profile: Profile): 
   const jur = featureOn(env, "jurisdiction_period") ? resolveJurisdiction(profile.jurisdiction) : AU_DESCRIPTOR;
   const tp = jur.taxPeriod;
   const tax_period = tp.kind === "straddle" ? { start_month: tp.startMonth, start_day: tp.startDay } : { start_month: 1, start_day: 1 };
+  // base_currency: omit the legacy 'AUD' default so the AU situation payload is byte-identical (the SPA
+  // defaults money() to '$'/'en-AU' when it's absent); surface 'GBP' etc. only for a non-AUD base.
+  const base_currency = baseCurrencyOf(env, jur);
   return {
     profile,
     persons: persons.results ?? [],
@@ -129,6 +136,7 @@ export async function getSituation(env: Env, userId: string, profile: Profile): 
     rules: rules.results ?? [],
     loans_properties: loansProps.results ?? [],
     tax_period,
+    ...(base_currency !== "AUD" ? { base_currency } : {}),
   };
 }
 

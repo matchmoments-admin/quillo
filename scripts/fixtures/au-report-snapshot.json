@@ -1,0 +1,133 @@
+{
+  "abn": null,
+  "by_bucket": [
+    {
+      "ato_label": null,
+      "bucket": "property_rented",
+      "gst_cents": 0,
+      "n": 2,
+      "total_cents": 3150000
+    }
+  ],
+  "by_property": [
+    {
+      "label": "Beach house (family, rent-free)",
+      "n": 1,
+      "property_id": "ausBeach",
+      "total_cents": 150000
+    },
+    {
+      "label": "Co-owned rental",
+      "n": 1,
+      "property_id": "ausRental",
+      "total_cents": 3000000
+    }
+  ],
+  "company_quarters": [
+    {
+      "gst_cents": 0,
+      "quarter": "Q1 Jul–Sep",
+      "total_cents": 0
+    },
+    {
+      "gst_cents": 0,
+      "quarter": "Q2 Oct–Dec",
+      "total_cents": 0
+    },
+    {
+      "gst_cents": 0,
+      "quarter": "Q3 Jan–Mar",
+      "total_cents": 0
+    },
+    {
+      "gst_cents": 0,
+      "quarter": "Q4 Apr–Jun",
+      "total_cents": 0
+    }
+  ],
+  "company_tracked_cents": 0,
+  "deduction_breakdown": [
+    {
+      "ato_label": null,
+      "bucket": "property_rented",
+      "deductibility": "likely_deductible",
+      "gst_cents": 0,
+      "n": 1,
+      "reimbursed": 0,
+      "total_cents": 3000000,
+      "use_status_denied": 0
+    },
+    {
+      "ato_label": null,
+      "bucket": "property_rented",
+      "deductibility": "undetermined",
+      "gst_cents": 0,
+      "n": 1,
+      "reimbursed": 0,
+      "total_cents": 150000,
+      "use_status_denied": 1
+    }
+  ],
+  "depreciation_cents": 2000000,
+  "end": "2026-06-30",
+  "fy": "2025-26",
+  "gst_credits_cents": 0,
+  "income": {
+    "by_type": [
+      {
+        "foreign_tax_paid_cents": 0,
+        "franking_credit_cents": 0,
+        "gross_cents": 13000000,
+        "income_type": "salary_payg",
+        "n": 1,
+        "net_cents": 13000000,
+        "withholding_cents": 0
+      },
+      {
+        "foreign_tax_paid_cents": 0,
+        "franking_credit_cents": 0,
+        "gross_cents": 2000000,
+        "income_type": "rent",
+        "n": 1,
+        "net_cents": 2000000,
+        "withholding_cents": 0
+      }
+    ],
+    "excluded_by_type": [],
+    "foreign_tax_paid_cents": 0,
+    "franking_credit_cents": 0,
+    "gross_cents": 15000000,
+    "non_cash_cents": 0,
+    "withholding_cents": 0
+  },
+  "income_by_bucket": [],
+  "per_property": [
+    {
+      "deduction_cents": 0,
+      "depreciation_cents": 0,
+      "income_cents": 0,
+      "label": "Beach house (family, rent-free)",
+      "net_cents": 0,
+      "property_id": "ausBeach"
+    },
+    {
+      "deduction_cents": 3000000,
+      "depreciation_cents": 2000000,
+      "income_cents": 2000000,
+      "label": "Co-owned rental",
+      "net_cents": -3000000,
+      "property_id": "ausRental"
+    }
+  ],
+  "refunds_cents": 0,
+  "resolved_deductible_cents": 3000000,
+  "start": "2025-07-01",
+  "taxable_position_cents": 10000000,
+  "total_deductions_cents": 3000000,
+  "total_income_cents": 15000000,
+  "undated": {
+    "n": 0,
+    "total_cents": 0
+  },
+  "undated_detail": []
+}

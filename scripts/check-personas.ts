@@ -44,7 +44,7 @@ for (const f of fs.readdirSync(path.join(root, "migrations")).filter((f) => f.en
   db.exec(fs.readFileSync(path.join(root, "migrations", f), "utf8"));
 }
 
-const env = { DB: new D1(db), FEATURES: "attribution_engine,position_excludes_nondeductible,loan_split,wfh_car_methods,refund_netting,income_dedupe,cgt_engine,ess_engine,gst_bas,car_logbook,trust_distributions,partnership_distributions,smsf_engine,accountant_schedule,jurisdiction_period" } as unknown as Env;
+const env = { DB: new D1(db), FEATURES: "attribution_engine,position_excludes_nondeductible,loan_split,wfh_car_methods,refund_netting,income_dedupe,cgt_engine,ess_engine,gst_bas,car_logbook,trust_distributions,partnership_distributions,smsf_engine,accountant_schedule,jurisdiction_period,currency_base" } as unknown as Env;
 
 // tiny seed helper
 const run = (sql: string, ...p: unknown[]) => db.prepare(sql).run(...(p as never[]));
@@ -804,6 +804,41 @@ async function main() {
     const rAu24 = await buildReport(envOff, u, 2024);
     check("UK seam GATE: flag OFF ⇒ AU Jul–Jun — none of the Apr/May 2025 rows fall in AU FY2025 ($0)", rAu25.total_deductions_cents === 0);
     check("UK seam GATE: flag OFF ⇒ all three rows lump into AU FY2024 (Jul 2024 – Jun 2025) = $600", rAu24.total_deductions_cents === 60000);
+  }
+
+  // ── UK epic stop 2: currency de-anchoring. A UK tenant's money model is in GBP, not AUD. amount_aud_cents
+  //    now holds BASE-currency (GBP) cents; the report sums them currency-agnostically. A GBP row and a
+  //    converted USD→GBP row both count; a USD row whose conversion FAILED (amount_aud_cents NULL) is
+  //    excluded by FX_CONVERTED (never summed un-converted). buildReport reports base_currency='GBP'.
+  //    Reuses the stop-1 puk tenant (UK jurisdiction). With currency_base ON + jurisdiction='UK' ⇒ base GBP;
+  //    flag OFF ⇒ base reverts to 'AUD' (the byte-identical gate). ──
+  {
+    const u = "pukbase";
+    run(`INSERT INTO tenants (user_id, display_name) VALUES (?, 'PUKBASE')`, u);
+    run(`INSERT INTO persons (id, user_id, display_name, role) VALUES (?, ?, 'You', 'self')`, `person_self_${u}`, u);
+    run(`INSERT INTO profiles (user_id, jurisdiction) VALUES (?, 'UK')`, u);
+    // All rows in UK FY2025 (6 Apr 2025 – 5 Apr 2026), deductible payg spend. amount_aud_cents = GBP cents.
+    const ukRow = (id: string, currency: string, amountCents: number, baseCents: number | null) =>
+      run(
+        `INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, currency, amount_aud_cents, txn_date, bucket, direction, deductibility) VALUES (?, ?, 'upload', 'categorised', 'bank_line', ?, ?, ?, '2025-05-01', 'payg', 'debit', 'likely_deductible')`,
+        id, u, amountCents, currency, baseCents,
+      );
+    ukRow("pukbGbp", "GBP", 10000, 10000);   // £100 base-currency spend (passthrough) — counts
+    ukRow("pukbUsdOk", "USD", 12000, 9000);  // a USD receipt converted to £90 (amount_aud_cents set) — counts
+    ukRow("pukbUsdBad", "USD", 5000, null);  // a USD receipt whose conversion FAILED (NULL) — EXCLUDED
+
+    const rUk = await buildReport(env, u, 2025);
+    check("UK base: report.base_currency === 'GBP'", rUk.base_currency === "GBP");
+    check("UK base: GBP passthrough (£100) + converted USD (£90) count, failed USD excluded ⇒ £190", rUk.total_deductions_cents === 19000);
+
+    // Flag OFF ⇒ base reverts to 'AUD' regardless of the stored 'UK' code (the byte-identical gate). The
+    // GBP/USD rows are then treated as foreign-vs-AUD: GBP & USD <> 'AUD', so only the two with a non-NULL
+    // amount_aud_cents count (same £/$ cents values), the NULL one still excludes ⇒ 19000. base_currency is
+    // OMITTED for the 'AUD' default ⇒ the payload is byte-identical (no new key) — the AU-snapshot guard.
+    const envBaseOff = { ...env, FEATURES: `${(env as { FEATURES: string }).FEATURES.replace(",currency_base", "")}` } as unknown as Env;
+    const rOff = await buildReport(envBaseOff, u, 2025);
+    check("UK base GATE: currency_base OFF ⇒ base reverts to 'AUD' ⇒ base_currency OMITTED (byte-identical payload)", rOff.base_currency === undefined);
+    check("UK base GATE: the FX_CONVERTED guard is base-agnostic ⇒ same countable total (19000)", rOff.total_deductions_cents === 19000);
   }
 
   console.log(`\n=== personas: ${pass} passed, ${fail} failed ===`);

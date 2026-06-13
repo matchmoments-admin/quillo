@@ -28,11 +28,28 @@ export interface CalendarTaxPeriod {
 }
 export type TaxPeriod = StraddleTaxPeriod | CalendarTaxPeriod;
 
+/**
+ * The consumption-tax shape of a jurisdiction — structural metadata only, INERT this stop. The *rate*
+ * deliberately lives in the rule pack (KV `rulepack:<id>`), NOT here, so we never recreate the
+ * period/pack split-brain (the descriptor selects the engine; the pack carries volatile rates).
+ *   - 'input-credit' → a VAT/GST with input credits (AU GST, UK VAT, CA GST/HST, IE VAT).
+ *   - 'sales-tax'    → a US-style retail sales tax (no input-credit mechanism for individuals).
+ *   - 'none'         → no consumption tax (HK; irrelevant to individuals).
+ * `gst.ts` is NOT rewired to read this yet — that's the consumption-tax + labels stop.
+ */
+export interface ConsumptionTax {
+  kind: "input-credit" | "none" | "sales-tax";
+  label: string; // 'GST' | 'VAT' — the user-facing name of the tax
+}
+
 export interface JurisdictionDescriptor {
   code: string; // 'AU' | 'UK'
   taxPeriod: TaxPeriod;
-  baseCurrency: string; // 'AUD' | 'GBP' — RESERVED (consumed by the currency-de-anchoring stop)
+  baseCurrency: string; // 'AUD' | 'GBP' — the tenant's BASE currency. Consumed by the currency-de-anchoring stop
+                        // via baseCurrencyOf(); IMMUTABLE per taxable unit (fixed at the first ingest — a
+                        // jurisdiction change would need a base-conversion migration, not a live re-read).
   rulePackId: string; // 'au-v1' | 'uk-2025' — RESERVED (mirrors profiles.rule_pack_ver, for later stops)
+  consumptionTax: ConsumptionTax; // INERT this stop (structural metadata; rate lives in the rule pack)
 }
 
 export const AU_DESCRIPTOR: JurisdictionDescriptor = {
@@ -40,6 +57,7 @@ export const AU_DESCRIPTOR: JurisdictionDescriptor = {
   taxPeriod: { kind: "straddle", startMonth: 7, startDay: 1 },
   baseCurrency: "AUD",
   rulePackId: "au-v1",
+  consumptionTax: { kind: "input-credit", label: "GST" },
 };
 
 export const UK_DESCRIPTOR: JurisdictionDescriptor = {
@@ -47,6 +65,7 @@ export const UK_DESCRIPTOR: JurisdictionDescriptor = {
   taxPeriod: { kind: "straddle", startMonth: 4, startDay: 6 }, // 6 April – 5 April
   baseCurrency: "GBP",
   rulePackId: "uk-2025",
+  consumptionTax: { kind: "input-credit", label: "VAT" },
 };
 
 const BY_CODE: Record<string, JurisdictionDescriptor> = { AU: AU_DESCRIPTOR, UK: UK_DESCRIPTOR };
@@ -55,6 +74,23 @@ const BY_CODE: Record<string, JurisdictionDescriptor> = { AU: AU_DESCRIPTOR, UK:
 export function resolveJurisdiction(code: string | null | undefined): JurisdictionDescriptor {
   if (!code) return AU_DESCRIPTOR;
   return BY_CODE[String(code).toUpperCase()] ?? AU_DESCRIPTOR;
+}
+
+/**
+ * The effective BASE currency for the tenant — the SINGLE chokepoint every base-currency read routes
+ * through (no inlined `descriptor.baseCurrency` or `'AUD'` literal anywhere else). The `currency_base`
+ * flag is the master gate: OFF ⇒ always 'AUD' (byte-identical, ignores the descriptor) — even for a
+ * UK-jurisdiction tenant. ON ⇒ the descriptor's base (AU 'AUD', UK 'GBP'). ON + AU profile ⇒ 'AUD',
+ * still byte-identical.
+ *
+ * Immutability note: a taxable unit's base currency is fixed at its first ingest (Xero/MYOB/QBO model:
+ * base currency is set at org setup and never changes live). amount_aud_cents stores base-currency cents
+ * under that fixed base; a future jurisdiction change for an existing tenant needs a base-CONVERSION
+ * migration of stored rows, never a live re-read through a different base. This helper is the swap point
+ * for a per-row base snapshot (US epic) if that's ever needed.
+ */
+export function baseCurrencyOf(env: Env, descriptor: JurisdictionDescriptor): string {
+  return featureOn(env, "currency_base") ? descriptor.baseCurrency : "AUD";
 }
 
 function pad2(n: number): string {

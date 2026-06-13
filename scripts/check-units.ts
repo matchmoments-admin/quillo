@@ -40,7 +40,9 @@ import { validateProposedActions } from "../src/extract";
 import type { Progress } from "../src/lib/progress";
 import { fyBounds, fyLabel, basPositionFrom, fyStartYearStr, parseFyStartYear, normaliseFyLabel } from "../src/lib/ledger-totals";
 import { currentFyStartYear, reportToCsv, type Report } from "../src/lib/report";
-import { resolveJurisdiction, fyBoundsFor, fyStartYearForDate, fyStartYearSqlExpr, AU_DESCRIPTOR, UK_DESCRIPTOR } from "../src/lib/jurisdiction";
+import { resolveJurisdiction, fyBoundsFor, fyStartYearForDate, fyStartYearSqlExpr, baseCurrencyOf, AU_DESCRIPTOR, UK_DESCRIPTOR } from "../src/lib/jurisdiction";
+import { toBaseCurrency } from "../src/lib/fx";
+import { currencySymbol, currencyLocale } from "../web/src/lib/currency";
 import { csvCell, substantiationStatus, impliedWorkUsePct, scheduleToCsv, type AccountantSchedule } from "../src/lib/accountant-schedule";
 import { exclusionReason } from "../src/lib/readiness";
 import fs from "node:fs";
@@ -2125,6 +2127,59 @@ console.log("jurisdiction — the tax-period seam (AU byte-identical; UK = 6 Apr
     auSql === "CAST(substr(created_at,1,4) AS INTEGER) - (CASE WHEN CAST(substr(created_at,6,2) AS INTEGER) >= 7 THEN 0 ELSE 1 END)");
   check("UK SQL gate is day-aware on the boundary month (incl. day >= 6)",
     fyStartYearSqlExpr(UK_DESCRIPTOR, "created_at").includes("CAST(substr(created_at,9,2) AS INTEGER) >= 6"));
+}
+
+// ── UK epic stop 2: currency de-anchoring — toBaseCurrency + baseCurrencyOf + the currency symbol map.
+//    No network: passthrough never fetches; the USD→GBP conversion is served from a SEEDED KV cache hit.
+console.log("currency de-anchoring (toBaseCurrency / baseCurrencyOf / currencySymbol)");
+{
+  // A fake RULES KV: get reads a seeded Map, put writes to it. fetch is never reached in these tests.
+  const store = new Map<string, string>();
+  const fakeEnv = {
+    FEATURES: "currency_base",
+    RULES: {
+      get: async (k: string) => store.get(k) ?? null,
+      put: async (k: string, v: string) => { store.set(k, v); },
+    },
+  } as unknown as import("../src/env").Env;
+
+  // baseCurrencyOf chokepoint: flag ON ⇒ descriptor base; flag OFF ⇒ always 'AUD' (the byte-identical gate).
+  check("baseCurrencyOf: flag ON ⇒ AU 'AUD', UK 'GBP'",
+    baseCurrencyOf(fakeEnv, AU_DESCRIPTOR) === "AUD" && baseCurrencyOf(fakeEnv, UK_DESCRIPTOR) === "GBP");
+  const offEnv = { FEATURES: "" } as unknown as import("../src/env").Env;
+  check("baseCurrencyOf: flag OFF ⇒ 'AUD' even for a UK descriptor (byte-identical gate)",
+    baseCurrencyOf(offEnv, UK_DESCRIPTOR) === "AUD" && baseCurrencyOf(offEnv, AU_DESCRIPTOR) === "AUD");
+
+  // AUD-base passthrough is byte-identical to the legacy toAud: rate 1, no fetch, no cache write.
+  const audPass = await toBaseCurrency(fakeEnv, 12345, "AUD", "AUD", "2025-09-01");
+  check("AUD→AUD passthrough: rate 1, amount unchanged, no cache write",
+    audPass.amount_aud_cents === 12345 && audPass.fx_rate === 1 && audPass.fx_date === null && store.size === 0);
+  // A lowercase/whitespace currency normalises to the base ⇒ still passthrough.
+  const audNorm = await toBaseCurrency(fakeEnv, 500, " aud ", "AUD", null);
+  check("AUD passthrough normalises currency case/whitespace ⇒ rate 1", audNorm.amount_aud_cents === 500 && audNorm.fx_rate === 1);
+  // null amount ⇒ null result (no fetch, no throw).
+  const audNull = await toBaseCurrency(fakeEnv, null, "USD", "AUD", "2025-09-01");
+  check("null amount ⇒ null base cents (no conversion attempted)", audNull.amount_aud_cents === null && audNull.fx_rate === null);
+
+  // GBP-base passthrough (UK tenant, a GBP amount): rate 1, no fetch.
+  const gbpPass = await toBaseCurrency(fakeEnv, 9900, "GBP", "GBP", "2025-09-01");
+  check("GBP→GBP passthrough: rate 1, amount unchanged, no fetch", gbpPass.amount_aud_cents === 9900 && gbpPass.fx_rate === 1 && store.size === 0);
+
+  // USD→GBP via a SEEDED KV cache hit — the cache key MUST be base-aware (fx:USD:GBP:day), and the URL
+  // would be ?from=USD&to=GBP (asserted indirectly: a hit on the GBP-keyed entry means no network).
+  store.set("fx:USD:GBP:2025-09-01", JSON.stringify({ rate: 0.75, date: "2025-09-01" }));
+  const usdGbp = await toBaseCurrency(fakeEnv, 10000, "USD", "GBP", "2025-09-01");
+  check("USD→GBP via KV-cached rate: $100 × 0.75 = £75 (base cents), no network",
+    usdGbp.amount_aud_cents === 7500 && usdGbp.fx_rate === 0.75 && usdGbp.fx_date === "2025-09-01");
+  // The same currency under a DIFFERENT base uses a DIFFERENT cache key (proves the key carries the base).
+  check("cache key is base-scoped: fx:USD:GBP:… exists, fx:USD:AUD:… does not", store.has("fx:USD:GBP:2025-09-01") && !store.has("fx:USD:AUD:2025-09-01"));
+
+  // currencySymbol / currencyLocale map: AUD→$/en-AU is the AU byte-identical default; unknown ⇒ code+space.
+  check("currencySymbol: AUD→$, GBP→£, USD→US$, EUR→€, NZD→NZ$",
+    currencySymbol("AUD") === "$" && currencySymbol("GBP") === "£" && currencySymbol("USD") === "US$" && currencySymbol("EUR") === "€" && currencySymbol("NZD") === "NZ$");
+  check("currencySymbol: unknown ⇒ 'CODE ', absent ⇒ '$' (AU default)", currencySymbol("CAD") === "CAD " && currencySymbol(null) === "$" && currencySymbol(undefined) === "$");
+  check("currencyLocale: AUD/absent ⇒ 'en-AU' (byte-identical default), GBP ⇒ 'en-GB', unknown ⇒ 'en-AU'",
+    currencyLocale("AUD") === "en-AU" && currencyLocale(null) === "en-AU" && currencyLocale("GBP") === "en-GB" && currencyLocale("ZZ") === "en-AU");
 }
 
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);

@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api";
-import { BucketPill, Button, ConfidencePill, Card, Spinner, money } from "../components/ui";
+import { BucketPill, Button, ConfidencePill, Card, Spinner, money, getBaseCurrency } from "../components/ui";
 import { AccountantPassCard } from "../components/AccountantPassCard";
 import { SortFlow } from "../components/SortFlow";
 import { BulkBar, type BulkDone } from "../components/BulkBar";
@@ -259,10 +259,10 @@ function Row({ txn, selected, onToggle, showConfirm = false }: { txn: Txn; selec
         <div className="flex-none text-right">
           <div className="font-semibold tabular-nums">
             {money(txn.amount_cents)}
-            {txn.currency && txn.currency !== "AUD" && <span className="ml-1 text-xs text-muted">{txn.currency}</span>}
+            {txn.currency && txn.currency !== getBaseCurrency() && <span className="ml-1 text-xs text-muted">{txn.currency}</span>}
           </div>
-          {txn.currency && txn.currency !== "AUD" ? (
-            <div className="text-xs text-muted">≈ {money(txn.amount_aud_cents)} AUD</div>
+          {txn.currency && txn.currency !== getBaseCurrency() ? (
+            <div className="text-xs text-muted">≈ {money(txn.amount_aud_cents)} {getBaseCurrency()}</div>
           ) : (
             txn.gst_cents != null && <div className="text-xs text-muted">GST {money(txn.gst_cents)}</div>
           )}

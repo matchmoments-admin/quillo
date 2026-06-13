@@ -1,7 +1,7 @@
 import { Agent } from "agents";
 import type { Env } from "./env";
 import { getProfile, getSituation, renderSituation, type Profile, type Situation, type UserRule } from "./lib/db";
-import { addRule, addAccount, updateAccount, syncIncomeCgtFromComponents, clearIncomeCgt, syncPropertyDisposalToCgt, addPerson, updatePerson, addProperty, updateProperty, addEntity, updateEntity, updateRule, deleteRow, DeleteBlockedError, addPropertyOwner, addEntityRole, addIncomeActivity, addLoanProperty, updateLoanProperty } from "./lib/situation-write";
+import { addRule, addAccount, updateAccount, syncIncomeCgtFromComponents, clearIncomeCgt, syncPropertyDisposalToCgt, addPerson, updatePerson, addProperty, updateProperty, addEntity, updateEntity, updateRule, deleteRow, DeleteBlockedError, addPropertyOwner, addEntityRole, addIncomeActivity, addLoanProperty, updateLoanProperty, assertOwns, assertNoBlockingChildren, assertNoBlockingChildrenExcept } from "./lib/situation-write";
 import type { DeleteBlocker } from "./lib/situation-write";
 import { ordinaryAssessableCents, validateComponents, parseAmmaComponents, type AmmaComponents } from "./lib/managed-fund";
 import { QuickBooksAdapter } from "./ledger/qbo";
@@ -1671,6 +1671,11 @@ export class TaxAgent extends Agent<Env> {
     userId: string,
     g: { person_id?: string | null; employer_entity_id?: string | null; scheme_type: string; grant_date?: string | null; taxing_point_date?: string | null; shares_or_options?: string | null; units?: number | null; discount_cents: number; market_value_cents?: number | null; ownership_gt_10pct?: number },
   ): Promise<string> {
+    // Cross-tenant guard: a supplied person/employer must belong to this tenant (defaults are own).
+    await assertOwns(this.env, userId, [
+      { table: "persons", id: g.person_id, label: "person" },
+      { table: "entities", id: g.employer_entity_id, label: "employer entity" },
+    ]);
     const id = crypto.randomUUID();
     await this.env.DB.prepare(
       `INSERT INTO ess_grants (id, user_id, person_id, employer_entity_id, scheme_type, grant_date, taxing_point_date, shares_or_options, units, discount_cents, market_value_cents, ownership_gt_10pct)
@@ -3493,8 +3498,25 @@ export class TaxAgent extends Agent<Env> {
   // otherwise go stale after an undo. Each hook is an idempotent rebuild keyed on the entity id, so it's
   // safe to run unconditionally in every direction: after an update/delete-re-insert it re-syncs from the
   // restored row; after a create→delete it finds no row and drops the orphaned derived rows.
+  // NB: only kinds with a derived materialisation need a hook. income/cgt_assets/cgt_events stay off
+  // the audited path (direct writes, not undoable) by design — if a CGT-materialising kind is ever
+  // added to AI_ENTITY_MAP, it MUST get a RESTORE_HOOKS entry or undo will leave a stale projection.
   private static readonly RESTORE_HOOKS: Record<string, (env: Env, uid: string, id: string) => Promise<void>> = {
     property: (env, uid, id) => syncPropertyDisposalToCgt(env, uid, id),
+  };
+
+  // Rows addEntity/addProperty auto-seed for a parent (situation-write.ts). Undoing the parent's
+  // CREATE must drop these first — they live in the parent's CHILD_REFS, so otherwise the parent's
+  // own seeded child blocks the delete and the undo silently no-ops (reverted:0). Tables are a static
+  // allowlist (entity_roles / income_activities) → safe to interpolate. For an entity only one of the
+  // co/sal activities exists; deleting the other id is a harmless no-op.
+  private static readonly AUTOSEED_CHILDREN: Record<string, (id: string) => Array<{ table: string; id: string }>> = {
+    entity: (id) => [
+      { table: "entity_roles", id: "erole_" + id },
+      { table: "income_activities", id: "iact_co_" + id },
+      { table: "income_activities", id: "iact_sal_" + id },
+    ],
+    property: (id) => [{ table: "income_activities", id: "iact_prop_" + id }],
   };
 
   private async aiEntitySnapshot(userId: string, table: string, id: string): Promise<Record<string, unknown> | null> {
@@ -3630,8 +3652,24 @@ export class TaxAgent extends Agent<Env> {
     if (!m) return false;
     try {
       if (r.op === "create") {
-        // Inverse of a create is a delete (RESTRICT: a blocked delete throws → leave the edit applied).
-        await deleteRow(this.env, userId, m.table as Parameters<typeof deleteRow>[2], r.entity_id);
+        // Inverse of a create is a delete. addEntity/addProperty auto-seed children that live in the
+        // parent's CHILD_REFS, so a naive delete is RESTRICT-blocked → reverted:0. Faithful + atomic:
+        // the parent's only permitted children are the seeded rows (anything else — real income or
+        // attributions the user added since — still blocks the undo), and each seeded child must
+        // itself be a leaf. Both checks pass → drop the seeded children + parent in one batch so a
+        // later block can't leave a half-deleted parent.
+        const seeded = TaxAgent.AUTOSEED_CHILDREN[r.entity_type]?.(r.entity_id) ?? [];
+        if (seeded.length) {
+          await assertNoBlockingChildrenExcept(this.env, userId, m.table, r.entity_id, seeded);
+          for (const c of seeded) await assertNoBlockingChildren(this.env, userId, c.table, c.id);
+          await this.env.DB.batch([
+            ...seeded.map((c) => this.env.DB.prepare(`DELETE FROM ${c.table} WHERE id = ? AND user_id = ?`).bind(c.id, userId)),
+            this.env.DB.prepare(`DELETE FROM ${m.table} WHERE id = ? AND user_id = ?`).bind(r.entity_id, userId),
+          ]);
+        } else {
+          // No auto-seeded children for this kind → plain RESTRICT delete (blocked delete throws → leave applied).
+          await deleteRow(this.env, userId, m.table as Parameters<typeof deleteRow>[2], r.entity_id);
+        }
       } else if (r.op === "delete") {
         // Inverse of a delete is re-inserting the snapshot. A delete only succeeds on a leaf (RESTRICT
         // blocks any row with children), so a faithful single-row re-insert is safe. Columns come from

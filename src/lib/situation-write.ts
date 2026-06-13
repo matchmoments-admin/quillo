@@ -69,6 +69,8 @@ export async function addProperty(
   userId: string,
   p: { label: string; address?: string; status?: string; use_status?: string; ownership_pct?: number; acquired_date?: string; notes?: string; person_id?: string },
 ): Promise<string> {
+  // Validate only an explicitly-supplied owner; the default (selfPersonId) is always this tenant's own.
+  await assertOwns(env, userId, [{ table: "persons", id: p.person_id, label: "person" }]);
   const id = uid();
   await env.DB.prepare(
     `INSERT INTO properties (id, user_id, label, address, status, use_status, ownership_pct, acquired_date, notes, person_id)
@@ -287,6 +289,8 @@ function entityTypeForKind(kind: string): string {
 }
 
 export async function addEntity(env: Env, userId: string, e: { kind: string; name?: string; detail?: unknown; person_id?: string }): Promise<string> {
+  // Validate only an explicitly-supplied owner; the default (selfPersonId) is always this tenant's own.
+  await assertOwns(env, userId, [{ table: "persons", id: e.person_id, label: "person" }]);
   const id = uid();
   const personId = e.person_id ?? selfPersonId(userId);
   const entityType = entityTypeForKind(e.kind);
@@ -321,6 +325,8 @@ export async function addRule(
   if (!(BUCKETS as readonly string[]).includes(r.bucket)) {
     throw new Error(`unknown bucket '${r.bucket}' — must be one of: ${BUCKETS.join(", ")}`);
   }
+  // A property-scoped rule must reference a property this tenant owns (optional; skipped when absent).
+  await assertOwns(env, userId, [{ table: "properties", id: r.property_id, label: "property" }]);
   const id = uid();
   await env.DB.prepare(
     `INSERT INTO user_rules (id, user_id, match_type, pattern, bucket, ato_label, property_id, priority)
@@ -421,16 +427,12 @@ export async function addLoanProperty(
   lp: { loan_account_id: string; property_id: string; deductible_interest_pct?: number },
 ): Promise<string> {
   if (!lp.loan_account_id || !lp.property_id) throw new Error("loan_account_id and property_id are required");
-  // Ownership check: both ids must belong to THIS tenant. Stops a dangling/cross-tenant reference
-  // (which Phase 5 would later try to pre-fill a split from) — every join must be user_id-scoped.
-  const owns = await env.DB.prepare(
-    `SELECT (SELECT COUNT(*) FROM accounts   WHERE id = ? AND user_id = ?) AS acct,
-            (SELECT COUNT(*) FROM properties WHERE id = ? AND user_id = ?) AS prop`,
-  )
-    .bind(lp.loan_account_id, userId, lp.property_id, userId)
-    .first<{ acct: number; prop: number }>();
-  if (!owns || owns.acct === 0) throw new Error("loan account not found");
-  if (owns.prop === 0) throw new Error("property not found");
+  // Both ids must belong to THIS tenant. Stops a dangling/cross-tenant reference (which Phase 5 would
+  // later try to pre-fill a split from) — every join must be user_id-scoped. (shared assertOwns guard)
+  await assertOwns(env, userId, [
+    { table: "accounts", id: lp.loan_account_id, label: "loan account" },
+    { table: "properties", id: lp.property_id, label: "property" },
+  ]);
   const id = uid();
   // INSERT OR IGNORE on the UNIQUE(user_id, loan_account_id, property_id) so re-linking is idempotent.
   await env.DB.prepare(
@@ -607,13 +609,51 @@ const CHILD_REFS: Record<string, ReadonlyArray<{ table: string; column: string; 
   ],
 };
 
+// Validate that every supplied foreign id belongs to THIS tenant before a write creates a join to
+// it. user_id is always server-derived, so a foreign id can't leak data — but a dangling cross-tenant
+// reference violates the multi-tenant invariant and silently breaks user_id-scoped joins. One batched
+// round-trip; tables come from the static call-site allowlist (never user input) → safe to interpolate.
+// Optional refs pass `id` as null/undefined and are skipped (an absent ref is not a violation).
+export async function assertOwns(
+  env: Env,
+  userId: string,
+  refs: ReadonlyArray<{ table: string; id: string | null | undefined; label: string }>,
+): Promise<void> {
+  const present = refs.filter((r) => r.id != null && r.id !== "");
+  if (!present.length) return;
+  const rows = await env.DB.batch(
+    present.map((r) => env.DB.prepare(`SELECT COUNT(*) AS n FROM ${r.table} WHERE id = ? AND user_id = ?`).bind(r.id, userId)),
+  );
+  present.forEach((r, i) => {
+    if (((rows[i]?.results?.[0] as { n?: number } | undefined)?.n ?? 0) === 0) throw new Error(`${r.label} not found`);
+  });
+}
+
 // Throws DeleteBlockedError if any child row still references this parent. One batched
 // round-trip; tables/columns come from the static allowlist above (never user input).
 export async function assertNoBlockingChildren(env: Env, userId: string, parentTable: string, parentId: string): Promise<void> {
+  return assertNoBlockingChildrenExcept(env, userId, parentTable, parentId, []);
+}
+
+// As above, but ignores a known set of child rows by id — e.g. the rows addEntity/addProperty
+// auto-seed for a parent, which undoing the parent's create legitimately removes first. Excepted ids
+// only ever live in entity_roles / income_activities (both keyed by `id`); the NOT IN is scoped to
+// refs whose table matches an excepted id, so no other child table is touched.
+export async function assertNoBlockingChildrenExcept(
+  env: Env,
+  userId: string,
+  parentTable: string,
+  parentId: string,
+  except: ReadonlyArray<{ table: string; id: string }>,
+): Promise<void> {
   const refs = CHILD_REFS[parentTable];
   if (!refs || refs.length === 0) return;
   const rows = await env.DB.batch(
-    refs.map((r) => env.DB.prepare(`SELECT COUNT(*) AS n FROM ${r.table} WHERE ${r.column} = ? AND user_id = ?`).bind(parentId, userId)),
+    refs.map((r) => {
+      const ex = except.filter((e) => e.table === r.table).map((e) => e.id);
+      const clause = ex.length ? ` AND id NOT IN (${ex.map(() => "?").join(", ")})` : "";
+      return env.DB.prepare(`SELECT COUNT(*) AS n FROM ${r.table} WHERE ${r.column} = ? AND user_id = ?${clause}`).bind(parentId, userId, ...ex);
+    }),
   );
   // Aggregate by label (transactions appear twice for accounts/persons via two columns).
   const byLabel = new Map<string, DeleteBlocker>();
@@ -650,6 +690,10 @@ export async function archiveRow(env: Env, userId: string, table: "accounts" | "
 // the scalar fast paths (properties.ownership_pct / entities.person_id) when rows exist.
 
 export async function addPropertyOwner(env: Env, userId: string, o: { property_id: string; person_id: string; ownership_pct?: number }): Promise<string> {
+  await assertOwns(env, userId, [
+    { table: "properties", id: o.property_id, label: "property" },
+    { table: "persons", id: o.person_id, label: "person" },
+  ]);
   const id = uid();
   await env.DB.prepare(`INSERT INTO property_owners (id, user_id, property_id, person_id, ownership_pct) VALUES (?, ?, ?, ?, ?)`)
     .bind(id, userId, o.property_id, o.person_id, o.ownership_pct ?? 100)
@@ -662,6 +706,10 @@ export async function listPropertyOwners(env: Env, userId: string) {
 }
 
 export async function addEntityRole(env: Env, userId: string, r: { person_id: string; entity_id: string; role: string; ownership_pct?: number; start_date?: string; end_date?: string }): Promise<string> {
+  await assertOwns(env, userId, [
+    { table: "persons", id: r.person_id, label: "person" },
+    { table: "entities", id: r.entity_id, label: "entity" },
+  ]);
   const id = uid();
   await env.DB.prepare(`INSERT INTO entity_roles (id, user_id, person_id, entity_id, role, ownership_pct, start_date, end_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
     .bind(id, userId, r.person_id, r.entity_id, r.role, r.ownership_pct ?? null, r.start_date ?? null, r.end_date ?? null)
@@ -706,6 +754,10 @@ export async function addIncomeActivity(
   userId: string,
   a: { entity_id?: string | null; activity_type?: string; property_id?: string | null; occupation_scope?: string | null; label?: string | null; fy?: string | null; psi_status?: string | null },
 ): Promise<string> {
+  await assertOwns(env, userId, [
+    { table: "entities", id: a.entity_id, label: "entity" },
+    { table: "properties", id: a.property_id, label: "property" },
+  ]);
   const id = uid();
   const ACTIVITY_TYPES = ["salary_wages", "rental_property", "business", "investment", "private"];
   const activityType = a.activity_type && ACTIVITY_TYPES.includes(a.activity_type) ? a.activity_type : "business";

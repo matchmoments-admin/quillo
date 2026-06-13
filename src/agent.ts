@@ -1,7 +1,8 @@
 import { Agent } from "agents";
 import type { Env } from "./env";
 import { getProfile, getSituation, renderSituation, type Profile, type Situation, type UserRule } from "./lib/db";
-import { addRule, addAccount, syncIncomeCgtFromComponents, clearIncomeCgt, addPerson, updatePerson, addProperty, updateProperty, addEntity, updateEntity, updateRule, deleteRow } from "./lib/situation-write";
+import { addRule, addAccount, updateAccount, syncIncomeCgtFromComponents, clearIncomeCgt, syncPropertyDisposalToCgt, addPerson, updatePerson, addProperty, updateProperty, addEntity, updateEntity, updateRule, deleteRow, DeleteBlockedError, addPropertyOwner, addEntityRole, addIncomeActivity, addLoanProperty, updateLoanProperty } from "./lib/situation-write";
+import type { DeleteBlocker } from "./lib/situation-write";
 import { ordinaryAssessableCents, validateComponents, parseAmmaComponents, type AmmaComponents } from "./lib/managed-fund";
 import { QuickBooksAdapter } from "./ledger/qbo";
 import { revokeAndDisconnect } from "./lib/qbo-oauth";
@@ -3479,6 +3480,21 @@ export class TaxAgent extends Agent<Env> {
     property: { table: "properties" },
     entity: { table: "entities" },
     rule: { table: "user_rules" },
+    account: { table: "accounts" },
+    property_owner: { table: "property_owners" },
+    entity_role: { table: "entity_roles" },
+    income_activity: { table: "income_activities" },
+    loan_property: { table: "loans_properties" },
+  };
+
+  // Per-entity side-effects to re-run after ANY revert (create→delete, update→restore, delete→re-insert).
+  // The raw column restore/re-insert only touches the entity's own table, so a derived materialisation
+  // (e.g. a property's disposal → synthetic cgt_assets/cgt_events via syncPropertyDisposalToCgt) would
+  // otherwise go stale after an undo. Each hook is an idempotent rebuild keyed on the entity id, so it's
+  // safe to run unconditionally in every direction: after an update/delete-re-insert it re-syncs from the
+  // restored row; after a create→delete it finds no row and drops the orphaned derived rows.
+  private static readonly RESTORE_HOOKS: Record<string, (env: Env, uid: string, id: string) => Promise<void>> = {
+    property: (env, uid, id) => syncPropertyDisposalToCgt(env, uid, id),
   };
 
   private async aiEntitySnapshot(userId: string, table: string, id: string): Promise<Record<string, unknown> | null> {
@@ -3525,6 +3541,43 @@ export class TaxAgent extends Agent<Env> {
     return { id: entityId, action_id: actionId };
   }
 
+  /**
+   * Apply one entity delete and record it for undo. Snapshots the row first (old_json) so undo can
+   * re-insert it. A blocked delete (RESTRICT: dependent financial records still reference the row) is
+   * RETURNED as a structured `{ blocked }` result rather than thrown — DeleteBlockedError's
+   * blockers/archivable payload wouldn't survive the DO RPC boundary as an exception, so api.ts
+   * reconstructs the same 409 the direct path produces. Idempotent on actionId.
+   */
+  async aiDeleteEntity(
+    userId: string,
+    spec: { kind: string; id: string; source?: "ai_confirmed" | "manual"; sessionId?: string; actionId?: string },
+  ): Promise<{ ok: true; action_id: string; deduped?: boolean } | { blocked: true; parentTable: string; blockers: DeleteBlocker[]; archivable: boolean; message: string }> {
+    const m = TaxAgent.AI_ENTITY_MAP[spec.kind];
+    if (!m) throw new Error("unknown_entity_kind");
+    const actionId = spec.actionId || crypto.randomUUID();
+    const source = spec.source ?? "manual";
+    if (spec.actionId) {
+      // Match aiWriteEntity: only a still-applied delete dedupes. A reverted (undone) delete must be
+      // allowed to re-run, so the row gets deleted again rather than falsely reported as a no-op.
+      const existing = await this.env.DB.prepare(`SELECT id FROM ai_edits WHERE user_id = ? AND action_id = ? AND op = 'delete' AND reverted_at IS NULL LIMIT 1`).bind(userId, spec.actionId).first<{ id: string }>();
+      if (existing) return { ok: true, action_id: actionId, deduped: true };
+    }
+    const old = await this.aiEntitySnapshot(userId, m.table, spec.id);
+    if (!old) throw new Error("entity_not_found");
+    try {
+      await deleteRow(this.env, userId, m.table as Parameters<typeof deleteRow>[2], spec.id);
+    } catch (e) {
+      if (e instanceof DeleteBlockedError) return { blocked: true, parentTable: e.parentTable, blockers: e.blockers, archivable: e.archivable, message: e.message };
+      throw e;
+    }
+    await this.env.DB.prepare(
+      `INSERT INTO ai_edits (id, user_id, batch_id, action_id, entity_type, entity_id, op, old_json, new_json, source, session_id)
+       VALUES (?, ?, ?, ?, ?, ?, 'delete', ?, NULL, ?, ?)`,
+    ).bind(crypto.randomUUID(), userId, null, actionId, spec.kind, spec.id, JSON.stringify(old), source, spec.sessionId ?? null).run();
+    await this.audit(userId, "ai_edit_delete", JSON.stringify({ kind: spec.kind, entity_id: spec.id, action_id: actionId, source }));
+    return { ok: true, action_id: actionId };
+  }
+
   /** Dispatch to the existing situation-write add/update fn for a kind. Centralises the one place the
    *  generic ai_edits path touches typed payloads (the fns validate/normalise their own fields). */
   private async applyEntityWrite(userId: string, kind: string, op: "create" | "update", id: string | null, data: Record<string, unknown>): Promise<string> {
@@ -3537,6 +3590,13 @@ export class TaxAgent extends Agent<Env> {
     if (kind === "property") { req("label"); return op === "create" ? addProperty(this.env, userId, data as { label: string }) : (await updateProperty(this.env, userId, id!, data), id!); }
     if (kind === "entity") { req("kind"); return op === "create" ? addEntity(this.env, userId, data as { kind: string }) : (await updateEntity(this.env, userId, id!, data), id!); }
     if (kind === "rule") { req("pattern"); req("bucket"); return op === "create" ? addRule(this.env, userId, data as { pattern: string; bucket: string; ato_label: string }) : (await updateRule(this.env, userId, id!, data), id!); }
+    if (kind === "account") { req("name"); return op === "create" ? addAccount(this.env, userId, data as { name: string }) : (await updateAccount(this.env, userId, id!, data), id!); }
+    if (kind === "loan_property") { req("loan_account_id"); req("property_id"); return op === "create" ? addLoanProperty(this.env, userId, data as { loan_account_id: string; property_id: string }) : (await updateLoanProperty(this.env, userId, id!, data), id!); }
+    // property_owner / entity_role / income_activity: create-only here (no generic update fn — their PUT
+    // routes, where present, stay direct). Delete is handled generically by aiDeleteEntity via the map.
+    if (kind === "property_owner") { req("property_id"); req("person_id"); if (op === "update") throw new Error("update_unsupported"); return addPropertyOwner(this.env, userId, data as { property_id: string; person_id: string }); }
+    if (kind === "entity_role") { req("person_id"); req("entity_id"); req("role"); if (op === "update") throw new Error("update_unsupported"); return addEntityRole(this.env, userId, data as { person_id: string; entity_id: string; role: string }); }
+    if (kind === "income_activity") { if (op === "update") throw new Error("update_unsupported"); return addIncomeActivity(this.env, userId, data); }
     throw new Error("unknown_entity_kind");
   }
 
@@ -3572,6 +3632,20 @@ export class TaxAgent extends Agent<Env> {
       if (r.op === "create") {
         // Inverse of a create is a delete (RESTRICT: a blocked delete throws → leave the edit applied).
         await deleteRow(this.env, userId, m.table as Parameters<typeof deleteRow>[2], r.entity_id);
+      } else if (r.op === "delete") {
+        // Inverse of a delete is re-inserting the snapshot. A delete only succeeds on a leaf (RESTRICT
+        // blocks any row with children), so a faithful single-row re-insert is safe. Columns come from
+        // SELECT * (schema columns, not user input) → safe to interpolate; keep id + user_id so refs hold.
+        if (!r.old_json) return false;
+        const old = JSON.parse(r.old_json) as Record<string, unknown>;
+        const cols = Object.keys(old);
+        if (!cols.length) return false;
+        await this.env.DB.prepare(`INSERT OR IGNORE INTO ${m.table} (${cols.join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`).bind(...cols.map((c) => old[c])).run();
+        // Confirm the row is actually back. OR IGNORE swallows a UNIQUE conflict from an equivalent row
+        // recreated since the delete — without this check we'd falsely mark the edit reverted while the
+        // original snapshot was never restored. (Idempotent on retry: a prior re-insert leaves it present.)
+        const restored = await this.aiEntitySnapshot(userId, m.table, r.entity_id);
+        if (!restored) return false;
       } else {
         // Inverse of an update is restoring the prior snapshot. Column names come from SELECT * (schema
         // columns, not user input) → safe to interpolate. v1: an unconditional restore if the row exists.
@@ -3583,6 +3657,10 @@ export class TaxAgent extends Agent<Env> {
         if (!exists) return false;
         await this.env.DB.prepare(`UPDATE ${m.table} SET ${cols.map((c) => `${c} = ?`).join(", ")} WHERE id = ? AND user_id = ?`).bind(...cols.map((c) => old[c]), r.entity_id, userId).run();
       }
+      // Re-run any derived-materialisation side-effect for this entity so an undo can't leave a stale
+      // projection (e.g. a property's disposal → synthetic CGT rows). Idempotent; safe in every direction.
+      const hook = TaxAgent.RESTORE_HOOKS[r.entity_type];
+      if (hook) await hook(this.env, userId, r.entity_id);
       await this.env.DB.prepare(`UPDATE ai_edits SET reverted_at = datetime('now') WHERE id = ? AND user_id = ?`).bind(r.id, userId).run();
       return true;
     } catch {
@@ -3613,7 +3691,7 @@ export class TaxAgent extends Agent<Env> {
       source: r.source,
       created_at: r.created_at,
       reverted_at: r.reverted_at,
-      summary: `${r.op === "create" ? "Added" : "Updated"} ${r.entity_type} ${label(r.new_json) || label(r.old_json)}`.trim(),
+      summary: `${r.op === "create" ? "Added" : r.op === "delete" ? "Removed" : "Updated"} ${r.entity_type} ${label(r.new_json) || label(r.old_json)}`.trim(),
     }));
     return { edits };
   }

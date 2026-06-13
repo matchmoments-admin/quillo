@@ -87,7 +87,7 @@ async function routedEntityWrite(
   env: Env,
   stub: TaxAgentRpc,
   uid: string,
-  kind: "person" | "property" | "entity" | "rule",
+  kind: "person" | "property" | "entity" | "rule" | "account" | "property_owner" | "entity_role" | "income_activity" | "loan_property",
   op: "create" | "update",
   id: string | null,
   data: Record<string, unknown>,
@@ -99,6 +99,30 @@ async function routedEntityWrite(
   }
   const res = await direct();
   return op === "create" ? json({ id: res as string }) : json({ ok: true });
+}
+
+/**
+ * Manual entity delete routing (Phase 4 convergence, #225). When ai_edit_feed is ON, route the delete
+ * through the audited DO path (aiDeleteEntity → ai_edits snapshot + audit_log → undoable). A blocked
+ * delete comes back as a structured `{ blocked }` result (DeleteBlockedError can't cross the RPC boundary
+ * as a throw) which we turn into the SAME 409 the direct path's DeleteBlockedError produces in index.ts.
+ * OFF ⇒ the existing direct deleteRow, which throws DeleteBlockedError → caught in index.ts → identical 409.
+ */
+async function routedEntityDelete(
+  env: Env,
+  stub: TaxAgentRpc,
+  uid: string,
+  kind: "person" | "property" | "entity" | "rule" | "account" | "property_owner" | "entity_role" | "income_activity" | "loan_property",
+  id: string,
+  direct: () => Promise<void>,
+): Promise<Response> {
+  if (featureOn(env, "ai_edit_feed")) {
+    const r = await stub.aiDeleteEntity(uid, { kind, id, source: "manual" });
+    if ("blocked" in r) return Response.json({ error: r.message, blockers: r.blockers, parentTable: r.parentTable, archivable: r.archivable }, { status: 409 });
+    return json({ ok: true });
+  }
+  await direct();
+  return json({ ok: true });
 }
 
 /**
@@ -522,8 +546,7 @@ export async function handleApi(
       // even via a direct API call (the UI already hides the button).
       const p = await env.DB.prepare(`SELECT role FROM persons WHERE id = ? AND user_id = ?`).bind(id, uid).first<{ role: string }>();
       if (p?.role === "self") return json({ error: "the primary taxpayer can't be deleted" }, 409);
-      await deleteRow(env, uid, "persons", id);
-      return json({ ok: true });
+      return routedEntityDelete(env, stub, uid, "person", id, () => deleteRow(env, uid, "persons", id));
     }
   }
   if (resource === "properties") {
@@ -537,10 +560,7 @@ export async function handleApi(
       }
     }
     if (m === "PUT" && id) { const body = (await req.json()) as Record<string, unknown>; return routedEntityWrite(env, stub, uid, "property", "update", id, body, () => updateProperty(env, uid, id, body)); }
-    if (m === "DELETE" && id) {
-      await deleteRow(env, uid, "properties", id);
-      return json({ ok: true });
-    }
+    if (m === "DELETE" && id) return routedEntityDelete(env, stub, uid, "property", id, () => deleteRow(env, uid, "properties", id));
   }
   if (resource === "entities") {
     if (m === "POST") { const body = (await req.json()) as Record<string, unknown>; return routedEntityWrite(env, stub, uid, "entity", "create", null, body, () => addEntity(env, uid, body as { kind: string })); }
@@ -551,33 +571,25 @@ export async function handleApi(
       const ok = await archiveRow(env, uid, "entities", id);
       return ok ? json({ ok: true, archived: true }) : json({ error: "not found" }, 404);
     }
-    if (m === "DELETE" && id) {
-      await deleteRow(env, uid, "entities", id);
-      return json({ ok: true });
-    }
+    if (m === "DELETE" && id) return routedEntityDelete(env, stub, uid, "entity", id, () => deleteRow(env, uid, "entities", id));
   }
   // ── Co-ownership + income-activity spine (Phase B / G2) ──────────────────────
   if (resource === "property-owners") {
     if (m === "GET" && !id) return json({ property_owners: await listPropertyOwners(env, uid) });
-    if (m === "POST" && !id) return json({ id: await addPropertyOwner(env, uid, await req.json()) });
-    if (m === "DELETE" && id) {
-      await deleteRow(env, uid, "property_owners", id);
-      return json({ ok: true });
-    }
+    if (m === "POST" && !id) { const body = (await req.json()) as Record<string, unknown>; return routedEntityWrite(env, stub, uid, "property_owner", "create", null, body, () => addPropertyOwner(env, uid, body as { property_id: string; person_id: string })); }
+    if (m === "DELETE" && id) return routedEntityDelete(env, stub, uid, "property_owner", id, () => deleteRow(env, uid, "property_owners", id));
   }
   if (resource === "entity-roles") {
     if (m === "GET" && !id) return json({ entity_roles: await listEntityRoles(env, uid) });
-    if (m === "POST" && !id) return json({ id: await addEntityRole(env, uid, await req.json()) });
-    if (m === "DELETE" && id) {
-      await deleteRow(env, uid, "entity_roles", id);
-      return json({ ok: true });
-    }
+    if (m === "POST" && !id) { const body = (await req.json()) as Record<string, unknown>; return routedEntityWrite(env, stub, uid, "entity_role", "create", null, body, () => addEntityRole(env, uid, body as { person_id: string; entity_id: string; role: string })); }
+    if (m === "DELETE" && id) return routedEntityDelete(env, stub, uid, "entity_role", id, () => deleteRow(env, uid, "entity_roles", id));
   }
   if (resource === "income-activities") {
     if (m === "GET" && !id) return json({ income_activities: await listIncomeActivities(env, uid) });
-    if (m === "POST" && !id) return json({ id: await addIncomeActivity(env, uid, await req.json()) });
+    if (m === "POST" && !id) { const body = (await req.json()) as Record<string, unknown>; return routedEntityWrite(env, stub, uid, "income_activity", "create", null, body, () => addIncomeActivity(env, uid, body)); }
+    // PSI-status toggle stays on the direct path — it's a narrow status write, not a generic field edit.
     if (m === "PUT" && id) { await updateIncomeActivityPsiStatus(env, uid, id, (await req.json() as { psi_status?: unknown }).psi_status); return json({ ok: true }); }
-    if (m === "DELETE" && id) { await deleteRow(env, uid, "income_activities", id); return json({ ok: true }); }
+    if (m === "DELETE" && id) return routedEntityDelete(env, stub, uid, "income_activity", id, () => deleteRow(env, uid, "income_activities", id));
   }
   if (resource === "rules") {
     if (m === "POST") { const body = (await req.json()) as Record<string, unknown>; return routedEntityWrite(env, stub, uid, "rule", "create", null, body, () => addRule(env, uid, body as { pattern: string; bucket: string; ato_label: string })); }
@@ -589,19 +601,13 @@ export async function handleApi(
         return json({ error: (e as Error).message }, 400); // unknown bucket
       }
     }
-    if (m === "DELETE" && id) {
-      await deleteRow(env, uid, "user_rules", id);
-      return json({ ok: true });
-    }
+    if (m === "DELETE" && id) return routedEntityDelete(env, stub, uid, "rule", id, () => deleteRow(env, uid, "user_rules", id));
   }
   // ── Accounts (bank/card/investment) ───────────────────────────────────────
   if (resource === "accounts") {
     if (m === "GET" && !id) return json({ accounts: await listAccounts(env, uid) });
-    if (m === "POST" && !id) return json({ id: await addAccount(env, uid, await req.json()) });
-    if (m === "PUT" && id) {
-      await updateAccount(env, uid, id, await req.json());
-      return json({ ok: true });
-    }
+    if (m === "POST" && !id) { const body = (await req.json()) as Record<string, unknown>; return routedEntityWrite(env, stub, uid, "account", "create", null, body, () => addAccount(env, uid, body as { name: string })); }
+    if (m === "PUT" && id && !sub) { const body = (await req.json()) as Record<string, unknown>; return routedEntityWrite(env, stub, uid, "account", "update", id, body, () => updateAccount(env, uid, id, body)); }
     if (m === "POST" && id && sub === "source") {
       const { source } = (await req.json()) as { source: string };
       await stub.setAccountSource(uid, id, source);
@@ -612,10 +618,7 @@ export async function handleApi(
       const ok = await archiveRow(env, uid, "accounts", id);
       return ok ? json({ ok: true, archived: true }) : json({ error: "not found" }, 404);
     }
-    if (m === "DELETE" && id) {
-      await deleteRow(env, uid, "accounts", id);
-      return json({ ok: true });
-    }
+    if (m === "DELETE" && id) return routedEntityDelete(env, stub, uid, "account", id, () => deleteRow(env, uid, "accounts", id));
   }
   // ── Prior-year carry-ins (capture-only; surfaced as defer findings, never auto-applied) ──
   if (resource === "capital-losses") {
@@ -659,19 +662,14 @@ export async function handleApi(
   if (resource === "loans-properties") {
     if (m === "POST" && !id) {
       try {
-        return json({ id: await addLoanProperty(env, uid, await req.json()) });
+        const body = (await req.json()) as Record<string, unknown>;
+        return await routedEntityWrite(env, stub, uid, "loan_property", "create", null, body, () => addLoanProperty(env, uid, body as { loan_account_id: string; property_id: string }));
       } catch (e) {
         return json({ error: (e as Error).message }, 400);
       }
     }
-    if (m === "PUT" && id) {
-      await updateLoanProperty(env, uid, id, await req.json());
-      return json({ ok: true });
-    }
-    if (m === "DELETE" && id) {
-      await deleteRow(env, uid, "loans_properties", id);
-      return json({ ok: true });
-    }
+    if (m === "PUT" && id) { const body = (await req.json()) as Record<string, unknown>; return routedEntityWrite(env, stub, uid, "loan_property", "update", id, body, () => updateLoanProperty(env, uid, id, body)); }
+    if (m === "DELETE" && id) return routedEntityDelete(env, stub, uid, "loan_property", id, () => deleteRow(env, uid, "loans_properties", id));
   }
 
   // ── Loan interest evidence (flag loan_interest_v2) — actual FY interest per loan ──────

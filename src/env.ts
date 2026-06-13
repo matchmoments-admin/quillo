@@ -130,6 +130,7 @@ export interface TaxAgentRpc {
   applyCorrectionBatch(userId: string, txnIds: string[], edits: { field: string; value: string }[], opts?: { learnRule?: boolean }): Promise<{ batch_id: string; updated: number; failures: { txnId: string; error: string }[]; rules_created?: number }>;
   undoCorrectionBatch(userId: string, batchId: string): Promise<{ reverted: number }>;
   aiWriteEntity(userId: string, spec: { kind: string; op: "create" | "update"; id?: string; data: Record<string, unknown>; source?: "ai_confirmed" | "manual"; sessionId?: string; batchId?: string; actionId?: string }): Promise<{ id: string; action_id: string; deduped?: boolean }>;
+  aiDeleteEntity(userId: string, spec: { kind: string; id: string; source?: "ai_confirmed" | "manual"; sessionId?: string; actionId?: string }): Promise<{ ok: true; action_id: string; deduped?: boolean } | { blocked: true; parentTable: string; blockers: { table: string; label: string; count: number }[]; archivable: boolean; message: string }>;
   undoAiEdit(userId: string, actionId: string): Promise<{ reverted: number }>;
   undoAiEditBatch(userId: string, batchId: string): Promise<{ reverted: number }>;
   listAiEdits(userId: string, limit?: number): Promise<{ edits: { action_id: string; entity_type: string; entity_id: string; op: string; source: string; created_at: string; reverted_at: string | null; summary: string }[] }>;

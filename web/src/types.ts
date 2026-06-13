@@ -147,6 +147,9 @@ export interface Situation {
   // UK epic stop 1: the tenant's tax-period start (month/day), from the server descriptor (AU 7/1 by
   // default). Drives the active-FY default so a UK tenant follows Apr 6 – Apr 5, not a hardcoded Jul–Jun.
   tax_period?: { start_month: number; start_day: number };
+  // UK epic stop 2: the tenant's BASE currency (AU 'AUD', UK 'GBP'). The app shell sets money()'s symbol
+  // + locale from this once on load; absent (old/cached payload) ⇒ money() keeps '$'/'en-AU'.
+  base_currency?: string;
 }
 
 export interface LoanProperty {
@@ -666,6 +669,7 @@ export interface Report {
   fy: string;
   start: string;
   end: string;
+  base_currency?: string; // UK epic stop 2: tenant's base currency (AU 'AUD', UK 'GBP'); all figures are in it
   by_bucket: { bucket: string; ato_label: string | null; n: number; total_cents: number; gst_cents: number }[];
   income_by_bucket: { bucket: string; ato_label: string | null; n: number; total_cents: number; gst_cents: number }[];
   by_property: { property_id: string; label: string | null; n: number; total_cents: number }[];

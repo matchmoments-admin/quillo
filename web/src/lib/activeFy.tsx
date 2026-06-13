@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../api";
+import { setMoneyCurrency } from "../components/ui";
 
 /**
  * FY start year for "today". The period defaults to AU (Jul 1) so existing call sites are byte-identical;
@@ -44,6 +45,11 @@ export function ActiveFyProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (fy === null && sit.data) setFyState(parseStored(sit.data.profile?.ui_state) ?? currentFyStart(sit.data.tax_period));
   }, [sit.data, fy]);
+  // Stop 2: set the session's base currency once from the server (drives money()'s symbol + locale). AU
+  // tenant ⇒ 'AUD' ⇒ '$'/'en-AU' (byte-identical). Absent (old/cached situation) ⇒ setMoneyCurrency no-ops.
+  useEffect(() => {
+    if (sit.data?.base_currency) setMoneyCurrency(sit.data.base_currency);
+  }, [sit.data?.base_currency]);
   const effFy = fy ?? currentFyStart(sit.data?.tax_period);
   const setFy: ActiveFy["setFy"] = (next) => {
     const y = typeof next === "function" ? next(effFy) : next;

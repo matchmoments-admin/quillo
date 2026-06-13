@@ -3,7 +3,7 @@ import { useParams, useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import { BUCKETS } from "../types";
-import { BUCKET_LABEL, Card, Spinner, money, ConfidencePill, InfoTip } from "../components/ui";
+import { BUCKET_LABEL, Card, Spinner, money, ConfidencePill, InfoTip, getBaseCurrency } from "../components/ui";
 import { GLOSSARY, type GlossaryKey } from "../content/glossary";
 import { AttributionPanel } from "../components/AttributionPanel";
 import { useFeatures } from "../lib/features";
@@ -166,15 +166,15 @@ export function TxnDetail() {
           <Card className="divide-y divide-line text-sm">
             <Field
               k="Amount"
-              v={`${money(txn.amount_cents)}${txn.currency && txn.currency !== "AUD" ? ` ${txn.currency}` : ""}`}
+              v={`${money(txn.amount_cents)}${txn.currency && txn.currency !== getBaseCurrency() ? ` ${txn.currency}` : ""}`}
             />
-            {txn.currency && txn.currency !== "AUD" && (
+            {txn.currency && txn.currency !== getBaseCurrency() && (
               <Field
-                k="AUD (est.)"
+                k={`${getBaseCurrency()} (est.)`}
                 v={`${money(txn.amount_aud_cents)}${txn.fx_rate ? ` @ ${txn.fx_rate.toFixed(4)}` : " — set manually"}`}
               />
             )}
-            <Field k="GST" tipKey="gst" v={txn.currency && txn.currency !== "AUD" ? "n/a (overseas)" : money(txn.gst_cents)} />
+            <Field k="GST" tipKey="gst" v={txn.currency && txn.currency !== getBaseCurrency() ? "n/a (overseas)" : money(txn.gst_cents)} />
             <Field k="Date" tipKey="fy" v={`${txn.txn_date ?? "— undated —"}${fyLabel(txn.txn_date) ? `  ·  FY ${fyLabel(txn.txn_date)}` : ""}`} />
             {txn.paid_account && <Field k="Paid via" tipKey="paid_via" v={txn.paid_account} />}
             <Field k="Source" v={txn.source} />

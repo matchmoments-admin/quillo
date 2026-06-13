@@ -2,9 +2,37 @@ import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode } from "react
 import { useState } from "react";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import { GLOSSARY, type GlossaryKey } from "../content/glossary";
+import { currencySymbol, currencyLocale } from "../lib/currency";
+
+// UK epic stop 2 — base-currency-aware money(). The SPA is single-tenant-per-session, so the base
+// currency is module-level state set ONCE from situation.base_currency (see setMoneyCurrency, called by
+// the app shell). money() keeps its (cents) signature so all ~149 call sites are unchanged.
+//
+// AU byte-identical contract: the defaults are '$' + 'en-AU' (AU's symbol/locale). The SPA has no
+// currency_base kill-switch — display follows the payload's base_currency — so AU byte-identity rests
+// ENTIRELY on these defaults holding when base_currency is absent/cached-missing/'AUD'. setMoneyCurrency
+// is a no-op for those, so an old/cached situation with no base_currency renders exactly as before.
+let _baseCurrency = "AUD";
+let _moneySymbol = "$";
+let _moneyLocale = "en-AU";
+
+/** Set the session's base currency (call once from the app shell when situation loads). Falsy/absent ⇒
+ *  leaves the AU defaults ($/en-AU) in place, so a missing payload field never perturbs AU rendering. */
+export function setMoneyCurrency(code: string | null | undefined): void {
+  if (!code) return; // absent ⇒ keep AU defaults (byte-identical)
+  _baseCurrency = code.trim().toUpperCase();
+  _moneySymbol = currencySymbol(_baseCurrency);
+  _moneyLocale = currencyLocale(_baseCurrency);
+}
+
+/** The session's base currency code (e.g. 'AUD' | 'GBP'). Used by display discriminators that compare a
+ *  row's own currency against the tenant base (e.g. "show ≈ converted amount only for FOREIGN rows"). */
+export function getBaseCurrency(): string {
+  return _baseCurrency;
+}
 
 export const money = (cents: number | null): string =>
-  cents == null ? "—" : `$${(cents / 100).toLocaleString("en-AU", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  cents == null ? "—" : `${_moneySymbol}${(cents / 100).toLocaleString(_moneyLocale, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 export const BUCKET_LABEL: Record<string, string> = {
   payg: "PAYG",

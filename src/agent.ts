@@ -19,7 +19,7 @@ import { fyForDate, buildReport } from "./lib/report";
 import { getProgress } from "./lib/progress";
 import { buildGuidePrompt, buildAskSystem, summariseReportForAsk, renderTxnDigest } from "./lib/guide";
 import { fyLabel, fyBounds, fyStartYearStr, parseFyStartYear, normaliseFyLabel } from "./lib/ledger-totals";
-import { resolveJurisdictionForUser, currentFyStartYearFor, AU_DESCRIPTOR, type JurisdictionDescriptor } from "./lib/jurisdiction";
+import { resolveJurisdictionForUser, currentFyStartYearFor, baseCurrencyOf, AU_DESCRIPTOR, type JurisdictionDescriptor } from "./lib/jurisdiction";
 import { assessReadiness, type FilingReadiness, type FilingReadinessSignals } from "./lib/readiness";
 import { rollSchedule, balancingAdjustment, fyStartYearOf, isLowCostAsset, looksLikePersonalTransfer, assetDepreciatesForTaxpayer, type DepAsset } from "./lib/depreciation";
 import { matchClaimRules, suggestionText, enumerateSituationClaims, classifyClaim, uncoveredOccupations, ruleKey, type ClaimRule, type ClaimContext, type ClaimSituation } from "./lib/claimability";
@@ -31,7 +31,7 @@ import { cleanMerchant } from "./lib/bank-parsers";
 import { pdfPageCount, splitPdf, normalizePdf } from "./lib/pdf";
 import { getLedger, LedgerNotConnectedError, LedgerReauthError, type LedgerExpense } from "./ledger";
 import { redact } from "./lib/redact";
-import { toAud } from "./lib/fx";
+import { toBaseCurrency } from "./lib/fx";
 import { spentTodayCents, spentTodayGlobalCents, noteMeteringError, usageStatements } from "./lib/usage";
 import { parseTransactionAlert } from "./lib/bank-parsers";
 import auV1RulePack from "./rulepacks/au-v1.json";
@@ -493,6 +493,9 @@ export class TaxAgent extends Agent<Env> {
     const profile = await this.requireProfile(userId);
     const situation = await getSituation(this.env, userId, profile);
     const rulePack = await this.loadRulePack(profile.rule_pack_ver);
+    // The statement is denominated in the tenant's BASE currency (a UK bank statement is in GBP). AU ⇒
+    // base='AUD' ⇒ byte-identical to the previous hardcoded 'AUD' literal + amount_aud_cents=amount_cents.
+    const baseCur = baseCurrencyOf(this.env, await this.jurisdictionFor(userId));
 
     // Existing fingerprints for this account → skip re-uploaded/overlapping lines.
     const seen = new Set<string>();
@@ -533,7 +536,7 @@ export class TaxAgent extends Agent<Env> {
           `INSERT INTO transactions
              (id, user_id, source, status, kind, account_id, statement_id, line_fingerprint, raw_description,
               merchant, amount_cents, currency, amount_aud_cents, txn_date, direction, bucket, ato_label, confidence)
-           VALUES (?, ?, 'statement', ?, 'bank_line', ?, ?, ?, ?, ?, ?, 'AUD', ?, ?, ?, ?, ?, ?)
+           VALUES (?, ?, 'statement', ?, 'bank_line', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(user_id, account_id, line_fingerprint) DO NOTHING`,
         ).bind(
           crypto.randomUUID(),
@@ -545,7 +548,8 @@ export class TaxAgent extends Agent<Env> {
           line.raw_description,
           line.description,
           line.amount_cents,
-          line.amount_cents, // AU statement = AUD
+          baseCur,           // statement is denominated in the tenant's base currency (AU ⇒ 'AUD')
+          line.amount_cents, // base-currency statement = 1:1 (the amount IS in base)
           line.date,
           line.direction,
           cat?.bucket ?? null,
@@ -1464,15 +1468,17 @@ export class TaxAgent extends Agent<Env> {
         }
       : parsed;
 
-    // Currency: AU GST only applies to AUD supplies — force null for anything foreign
-    // (defensive, on top of the prompt rule). Convert to AUD for reporting (estimate; the
-    // authoritative AUD is the reconciled bank-feed line).
+    // Currency: AU GST only applies to base-currency (AUD) supplies — force null for anything foreign
+    // (defensive, on top of the prompt rule). Convert to the tenant's BASE currency for reporting
+    // (estimate; the authoritative base amount is the reconciled bank-feed line). AU ⇒ base='AUD' ⇒
+    // byte-identical to the legacy `=== "AUD"` behaviour.
+    const base = baseCurrencyOf(this.env, await this.jurisdictionFor(userId));
     const currency = (final.currency ?? "AUD").trim().toUpperCase();
-    const gstCents = currency === "AUD" ? final.gst_cents : null;
-    const fx = await toAud(this.env, final.amount_cents, currency, final.txn_date);
-    // A foreign amount we couldn't convert (fx_rate null) has NO AUD value — flag it for review so
+    const gstCents = currency === base ? final.gst_cents : null;
+    const fx = await toBaseCurrency(this.env, final.amount_cents, currency, base, final.txn_date);
+    // A foreign amount we couldn't convert (fx_rate null) has NO base value — flag it for review so
     // it's excluded-and-surfaced rather than summed un-converted into the position.
-    const fxUnconverted = currency !== "AUD" && fx.fx_rate == null;
+    const fxUnconverted = currency !== base && fx.fx_rate == null;
     const status = fxUnconverted ? "needs_review" : "extracted";
 
     await this.env.DB.prepare(
@@ -1582,6 +1588,7 @@ export class TaxAgent extends Agent<Env> {
     const id = crypto.randomUUID();
     const currency = (inc.currency ?? "AUD").trim().toUpperCase();
     const jur = await this.jurisdictionFor(userId);
+    const baseCur = baseCurrencyOf(this.env, jur); // tenant's base currency (AU 'AUD' ⇒ byte-identical)
     const fy = inc.fy ?? fyForDate(inc.txn_date ?? null, jur) ?? this.currentFyLabel(jur);
     // ── Slice B: managed-fund (AMMA) component split (flag-gated AND presence-gated). When a
     // managed_fund_distribution carries components, the row's assessable gross is the ORDINARY portion only;
@@ -1602,22 +1609,23 @@ export class TaxAgent extends Agent<Env> {
       let base: Record<string, unknown> = {};
       try { base = inc.detail_json ? (JSON.parse(inc.detail_json) as Record<string, unknown>) : {}; } catch { base = {}; }
       detailJson = JSON.stringify({ ...base, components: comps });
-      // v1 safety: only split into the CGT engine when AUD (components aren't FX-converted) and personal
-      // (cgtTotals isn't entity-scoped, so an entity's CG would leak into the personal headline). Otherwise
-      // record the ordinary income + components but flag for review and DON'T materialise the gain.
-      const safeToSplit = valid && currency === "AUD" && !inc.entity_id;
+      // v1 safety: only split into the CGT engine when the income is in the base currency (components
+      // aren't FX-converted) and personal (cgtTotals isn't entity-scoped, so an entity's CG would leak
+      // into the personal headline). Otherwise record the ordinary income + components but flag for
+      // review and DON'T materialise the gain. AU ⇒ base='AUD' ⇒ byte-identical.
+      const safeToSplit = valid && currency === baseCur && !inc.entity_id;
       componentNeedsReview = safeToSplit ? 0 : 1;
       materialiseCg = safeToSplit;
     }
-    const fx = await toAud(this.env, grossCents, currency, inc.txn_date ?? null);
-    // Convert the non-gross money columns to AUD with the SAME rate as gross, so the reporting
-    // seam (which sums these columns directly) never mixes currencies. AUD income → rate 1 (no-op).
-    // Franking credits are an AU imputation amount, always AUD, so they're never converted.
-    // A foreign amount we couldn't convert (fx_rate null) gets NO fabricated rate: leave every AUD
+    const fx = await toBaseCurrency(this.env, grossCents, currency, baseCur, inc.txn_date ?? null);
+    // Convert the non-gross money columns to the base currency with the SAME rate as gross, so the
+    // reporting seam (which sums these columns directly) never mixes currencies. Base-currency income →
+    // rate 1 (no-op). Franking credits are an AU imputation amount, always AUD, so they're never converted.
+    // A foreign amount we couldn't convert (fx_rate null) gets NO fabricated rate: leave every base
     // column NULL and flag the row for review so the position excludes-and-surfaces it (instead of
-    // counting un-converted foreign cents, or rate-1 placeholders, as AUD).
-    const fxUnconverted = currency !== "AUD" && fx.fx_rate == null;
-    const rate = currency === "AUD" ? 1 : fx.fx_rate ?? null;
+    // counting un-converted foreign cents, or rate-1 placeholders, as base). AU ⇒ base='AUD' ⇒ identical.
+    const fxUnconverted = currency !== baseCur && fx.fx_rate == null;
+    const rate = currency === baseCur ? 1 : fx.fx_rate ?? null;
     const toAudCents = (c: number | null | undefined): number | null => (c == null || rate == null ? null : Math.round(c * rate));
     const needsReview = (inc.needs_review ?? 0) || (fxUnconverted ? 1 : 0) || componentNeedsReview;
     await this.env.DB.prepare(
@@ -2358,6 +2366,7 @@ export class TaxAgent extends Agent<Env> {
         ? true
         : Math.abs(sumIncome - sumExpense - ext.net_disbursed_cents) <= Math.max(100, Math.round(sumIncome * 0.01));
     const jur = await this.jurisdictionFor(userId);
+    const baseCur = baseCurrencyOf(this.env, jur); // agent statement is in the tenant's base currency (AU ⇒ 'AUD')
     const fy = fyForDate(ext.period_end ?? ext.period_start ?? null, jur) ?? this.currentFyLabel(jur);
     const needsReview = !reconOk || ext.confidence < CONFIDENCE_THRESHOLD ? 1 : 0;
 
@@ -2379,11 +2388,11 @@ export class TaxAgent extends Agent<Env> {
       await this.env.DB.prepare(
         `INSERT INTO transactions (id, user_id, source, status, kind, merchant, amount_cents, currency,
            amount_aud_cents, txn_date, bucket, ato_label, property_id, document_id, confidence, reasoning, is_capital)
-         VALUES (?, ?, 'agent_statement', ?, 'receipt', ?, ?, 'AUD', ?, ?, 'property_rented', ?, ?, ?, ?, ?, 0)`,
+         VALUES (?, ?, 'agent_statement', ?, 'receipt', ?, ?, ?, ?, ?, 'property_rented', ?, ?, ?, ?, ?, 0)`,
       )
         .bind(
           crypto.randomUUID(), userId, needsReview ? "needs_review" : "extracted", e.description,
-          Math.abs(e.amount_cents), Math.abs(e.amount_cents), e.date ?? ext.period_end ?? null,
+          Math.abs(e.amount_cents), baseCur, Math.abs(e.amount_cents), e.date ?? ext.period_end ?? null,
           `rental:${e.category ?? "expense"}`, propertyId, docId, ext.confidence,
           `From agent statement (${ext.agent_name ?? "agent"}).`,
         )

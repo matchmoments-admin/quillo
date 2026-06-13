@@ -159,6 +159,8 @@ export async function buildAccountantSchedule(
   opts?: { report?: Report },
 ): Promise<AccountantSchedule> {
   const report = opts?.report ?? (await buildReport(env, userId, startYear));
+  // Base-currency-aware column headers (stop 2). AU ⇒ base='AUD' ⇒ '(AUD)' ⇒ byte-identical CSV.
+  const cur = report.base_currency ?? "AUD";
   const jurisdiction = await resolveJurisdictionForUser(env, userId);
   const { start, end } = fyBounds(startYear, jurisdiction);
   const fy = fyLabel(startYear);
@@ -452,7 +454,7 @@ export async function buildAccountantSchedule(
     r.deductibility,
     SUBSTANTIATION_LABEL[substantiationStatus(r)],
   ];
-  const ITEM_COLS = ["Date", "Merchant", "Category", "Gross (AUD)", "Work-use %", "Counted (AUD)", "Deductibility", "Substantiation"];
+  const ITEM_COLS = ["Date", "Merchant", "Category", `Gross (${cur})`, "Work-use %", `Counted (${cur})`, "Deductibility", "Substantiation"];
 
   // 1. Summary — every line verbatim from the Report; tie-back recomputes total deductions from
   // the schedule's own components (raw itemised + attributed + loan v2 + work methods − refunds).
@@ -475,7 +477,7 @@ export async function buildAccountantSchedule(
     sections.push({
       key: "summary",
       title: "Summary — indicative position",
-      columns: ["Line", "Amount (AUD)"],
+      columns: ["Line", `Amount (${cur})`],
       rows,
       tie_back: { label: "total deductions (recomputed from itemised sections)", report_cents: report.total_deductions_cents, actual_cents: recomputedDeductions, ok: recomputedDeductions === report.total_deductions_cents },
     });
@@ -504,7 +506,7 @@ export async function buildAccountantSchedule(
     sections.push({
       key: "income",
       title: "Income (documented)",
-      columns: ["Date", "Type", "ATO label", "Property", "Gross (AUD)", "Withholding", "Franking credit", "Foreign tax paid", "Substantiation"],
+      columns: ["Date", "Type", "ATO label", "Property", `Gross (${cur})`, "Withholding", "Franking credit", "Foreign tax paid", "Substantiation"],
       rows: capped(assessableIncomeRows, notes).map((r) => [
         r.txn_date,
         r.income_type,
@@ -528,7 +530,7 @@ export async function buildAccountantSchedule(
     sections.push({
       key: "income_bank_credits",
       title: "Income seen as bank credits (informational — not added to the income total above)",
-      columns: ["Bucket", "ATO label", "Count", "Total (AUD)"],
+      columns: ["Bucket", "ATO label", "Count", `Total (${cur})`],
       rows: report.income_by_bucket.map((r) => [r.bucket, r.ato_label, r.n, d(r.total_cents)]),
       subtotal_cents: total,
       notes: ["Shown separately so a salary that also arrived via a payslip is never double-counted."],
@@ -564,7 +566,7 @@ export async function buildAccountantSchedule(
     sections.push({
       key: "work_methods",
       title: "Work-use method deductions",
-      columns: ["Method", "Basis", "Amount (AUD)"],
+      columns: ["Method", "Basis", `Amount (${cur})`],
       rows,
       // No subtotal when only the informational logbook comparison renders — a "Subtotal 0.00" under
       // a logbook figure would read as a claimed-zero, which it isn't (nothing is claimed via methods).
@@ -651,7 +653,7 @@ export async function buildAccountantSchedule(
     sections.push({
       key: "depreciation",
       title: "Decline in value (per-asset schedule, this FY)",
-      columns: ["Asset", "Class", "Cost (AUD)", "Acquired", "Method", "Opening value", "Days held", "Deduction (AUD)", "Closing value", "Ownership %", "Business use %", "Property"],
+      columns: ["Asset", "Class", `Cost (${cur})`, "Acquired", "Method", "Opening value", "Days held", `Deduction (${cur})`, "Closing value", "Ownership %", "Business use %", "Property"],
       rows: capped(depRows, notes).map((r) => [
         r.label, r.asset_class, d(r.cost_cents), r.acquired_date, r.method_applied,
         d(r.opening_adjustable_value_cents), r.days_held, d(r.deduction_cents), d(r.closing_adjustable_value_cents),
@@ -672,7 +674,7 @@ export async function buildAccountantSchedule(
     sections.push({
       key: "attributed",
       title: "Attributed deductions (who claims what — ownership share × work use)",
-      columns: ["Date", "Merchant", "Claimed by", "Track", "Owner share %", "Work use %", "Attributed (AUD)"],
+      columns: ["Date", "Merchant", "Claimed by", "Track", "Owner share %", "Work use %", `Attributed (${cur})`],
       rows: capped(all, notes).map(({ r, track }) => [
         r.txn_date, r.merchant ?? "—",
         track === "company" ? (r.entity_name ?? "company") : track === "property" ? `property (${r.property_id ? (propLabels.get(r.property_id) ?? r.property_id) : "—"})` : "you",
@@ -701,7 +703,7 @@ export async function buildAccountantSchedule(
     sections.push({
       key: "cgt",
       title: "Capital gains (per disposal)",
-      columns: ["Date", "Asset", "Kind", "Units", "Acquired", "Proceeds (AUD)", "Cost base (AUD)", "Gain/loss (AUD)"],
+      columns: ["Date", "Asset", "Kind", "Units", "Acquired", `Proceeds (${cur})`, `Cost base (${cur})`, `Gain/loss (${cur})`],
       rows,
       subtotal_cents: cg.net_capital_gain_cents,
       tie_back: { label: "gross capital gains", report_cents: cg.gross_capital_gains_cents, actual_cents: grossFromEvents, ok: grossFromEvents === cg.gross_capital_gains_cents },
@@ -723,7 +725,7 @@ export async function buildAccountantSchedule(
     sections.push({
       key: "ess",
       title: "Employee share scheme (per grant)",
-      columns: ["Taxing point", "Scheme", "Shares/options", "Units", "Discount (AUD)", "Treatment"],
+      columns: ["Taxing point", "Scheme", "Shares/options", "Units", `Discount (${cur})`, "Treatment"],
       rows,
       subtotal_cents: e.assessable_discount_cents,
       tie_back: { label: "ESS discounts (assessable + deferred)", report_cents: e.assessable_discount_cents + e.startup_deferred_to_cgt_cents, actual_cents: totalGrants, ok: totalGrants === e.assessable_discount_cents + e.startup_deferred_to_cgt_cents },
@@ -739,7 +741,7 @@ export async function buildAccountantSchedule(
     sections.push({
       key: "trust",
       title: "Trust distributions (to you)",
-      columns: ["Trust", "Character", "Share %", "Amount (AUD)", "Franking credit (AUD)"],
+      columns: ["Trust", "Character", "Share %", `Amount (${cur})`, `Franking credit (${cur})`],
       rows: capped(trustRows, notes).map((r) => [r.trust_name ?? "—", r.character, r.share_pct, d(r.amount_cents), d(r.franking_credit_cents)]),
       subtotal_cents: t.assessable_cents,
       tie_back: { label: "assessable trust distributions", report_cents: t.assessable_cents, actual_cents: total, ok: total === t.assessable_cents },
@@ -793,7 +795,7 @@ export async function buildAccountantSchedule(
     sections.push({
       key: "gst_bas",
       title: "GST / BAS (separate from income tax)",
-      columns: ["Line", "Amount (AUD)", "Source"],
+      columns: ["Line", `Amount (${cur})`, "Source"],
       rows,
       tie_back: paygTie,
       notes: ["GST is never added to the income-tax position. Quillo never lodges — confirm BAS figures with a registered BAS agent."],
@@ -805,7 +807,7 @@ export async function buildAccountantSchedule(
     sections.push({
       key: "smsf",
       title: "SMSF funds (separate taxpayers — never in your personal position)",
-      columns: ["Fund", "Assessable income (AUD)", "ECPI exempt %", "Exempt (AUD)", "Fund taxable income (AUD)"],
+      columns: ["Fund", `Assessable income (${cur})`, "ECPI exempt %", `Exempt (${cur})`, `Fund taxable income (${cur})`],
       rows: report.smsf_funds.map((f) => [f.name ?? f.entity_id, d(f.assessable_income_cents), Math.round(f.ecpi_exempt_fraction * 100), d(f.ecpi_exempt_cents), d(f.fund_taxable_income_cents)]),
       notes: ["SMSF compliance (ECPI, actuarial certificates, pension standards) is specialist — confirm with the fund's accountant/auditor."],
     });
@@ -828,7 +830,7 @@ export async function buildAccountantSchedule(
     sections.push({
       key: "not_claimed",
       title: "EXPLICITLY NOT CLAIMED — considered and excluded, with reasons",
-      columns: ["Date", "Item", "Category", "Amount (AUD)", "Why it isn't claimed", "Substantiation"],
+      columns: ["Date", "Item", "Category", `Amount (${cur})`, "Why it isn't claimed", "Substantiation"],
       rows,
       subtotal_cents: total,
       notes: [...notes, "Shown so your accountant can see what was considered. If any item IS work-related, confirm it in the app and the position updates."],
@@ -840,7 +842,7 @@ export async function buildAccountantSchedule(
     sections.push({
       key: "substantiation_gaps",
       title: "Substantiation gaps — claims backed only by a bank line (a bank line alone is not substantiation)",
-      columns: ["Section", "Items", "Total (AUD)"],
+      columns: ["Section", "Items", `Total (${cur})`],
       rows: gaps.map((g) => [g.section, g.n, d(g.total_cents)]),
       subtotal_cents: gaps.reduce((s, g) => s + g.total_cents, 0),
       notes: ["Attach the tax invoice / receipt / annual statement for these in the app, or note for your agent why none exists."],
@@ -852,7 +854,7 @@ export async function buildAccountantSchedule(
     sections.push({
       key: "undated",
       title: "Undated items (assign a date so these land in a financial year)",
-      columns: ["Merchant", "Amount (AUD)"],
+      columns: ["Merchant", `Amount (${cur})`],
       rows: report.undated_detail.map((u) => [u.merchant ?? "—", d(u.total_cents)]),
       subtotal_cents: report.undated.total_cents,
     });

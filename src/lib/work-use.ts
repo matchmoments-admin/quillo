@@ -8,6 +8,8 @@
 // PURE + deterministic (no I/O), like deductibility.ts / depreciation.ts — the DO reads the inputs +
 // FY rates and hands plain values here. GENERAL INFO ONLY; never asserts tax payable or a refund.
 
+import { AU_DESCRIPTOR, fyBoundsFor, type JurisdictionDescriptor } from "./jurisdiction";
+
 export interface WorkUseInputs {
   wfh_hours: number | null;
   car_work_km: number | null;
@@ -74,4 +76,54 @@ export function deriveWfhHours(daysPerWeek: number | null | undefined, weeks: nu
 export function hasWorkMethodInput(inputs: WorkUseInputs | null | undefined): boolean {
   if (!inputs) return false;
   return (inputs.wfh_hours ?? 0) > 0 || (inputs.car_work_km ?? 0) > 0;
+}
+
+// ── WFH diary generator (Part 1) ───────────────────────────────────────────────────────────────
+// From 2022-23 the ATO fixed-rate method requires a record of the TOTAL ACTUAL hours worked from home
+// for the whole year (a 4-week estimate is no longer accepted). This builds a contemporaneous-style
+// diary from the user's declared WFH weekdays and leave periods so they have a per-day record to review
+// and adjust. PURE + deterministic. GENERAL INFO ONLY — it's a starting record, not a claim of actual hours.
+
+/** Short Mon-first weekday names; index 0=Mon … 6=Sun (matches the diary's weekday field + UI order). */
+export const WFH_WEEKDAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
+
+export interface WfhDiaryDay { date: string; weekday: number; hours: number }
+export interface WfhLeaveRange { start: string; end: string; label?: string }
+export interface WfhDiaryInputs {
+  fyStartYear: number;                  // matches buildReport(startYear)
+  weekdays: number[];                   // 0=Mon … 6=Sun — the days normally worked from home
+  leaveRanges: { start: string; end: string }[]; // inclusive ranges NOT worked from home
+  hoursPerDay?: number;                 // default DEFAULT_WFH_HOURS_PER_DAY (7.6)
+  descriptor?: JurisdictionDescriptor;  // FY bounds source (defaults to AU — Jul 1 .. Jun 30)
+}
+export interface WfhDiary { days: WfhDiaryDay[]; total_days: number; total_hours: number }
+
+/**
+ * Build a per-day WFH diary for an FY: every date whose weekday is a declared WFH day and which is NOT
+ * inside any (inclusive) leave range contributes `hoursPerDay`. Walks the real FY bounds via
+ * `fyBoundsFor` (jurisdiction-aware — never hard-codes Jul 1 – Jun 30) so it's leap-year and UK safe.
+ * `total_hours` (= total_days × hoursPerDay) is the authoritative WFH figure when the diary is used.
+ */
+export function generateWfhDiary(inputs: WfhDiaryInputs): WfhDiary {
+  const hoursPerDay = inputs.hoursPerDay != null && inputs.hoursPerDay > 0 ? inputs.hoursPerDay : DEFAULT_WFH_HOURS_PER_DAY;
+  const wanted = new Set((inputs.weekdays ?? []).filter((d) => Number.isInteger(d) && d >= 0 && d <= 6));
+  const days: WfhDiaryDay[] = [];
+  if (wanted.size === 0) return { days, total_days: 0, total_hours: 0 };
+  const { start, end } = fyBoundsFor(inputs.descriptor ?? AU_DESCRIPTOR, inputs.fyStartYear);
+  // Inclusive leave ranges. ISO YYYY-MM-DD strings compare lexicographically, so no Date maths needed.
+  const ranges = (inputs.leaveRanges ?? []).filter((r) => r && r.start && r.end);
+  const onLeave = (iso: string) => ranges.some((r) => iso >= r.start && iso <= r.end);
+  // Iterate in UTC to avoid any local-timezone day drift.
+  const cursor = new Date(`${start}T00:00:00Z`);
+  const last = new Date(`${end}T00:00:00Z`).getTime();
+  for (; cursor.getTime() <= last; cursor.setUTCDate(cursor.getUTCDate() + 1)) {
+    const weekday = (cursor.getUTCDay() + 6) % 7; // JS 0=Sun..6=Sat → 0=Mon..6=Sun
+    if (!wanted.has(weekday)) continue;
+    const iso = cursor.toISOString().slice(0, 10);
+    if (onLeave(iso)) continue;
+    days.push({ date: iso, weekday, hours: hoursPerDay });
+  }
+  const total_days = days.length;
+  const total_hours = Math.round(total_days * hoursPerDay * 10) / 10; // 1dp — keeps 7.6 sums honest
+  return { days, total_days, total_hours };
 }

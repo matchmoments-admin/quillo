@@ -937,6 +937,10 @@ CREATE TABLE IF NOT EXISTS work_use_inputs (
   -- 0058: capture-only context that drives GUIDANCE, not the fixed-rate $ figure (no position impact).
   has_dedicated_home_office INTEGER DEFAULT 0,   -- dedicated room (actual-cost method / cleaning eligibility)
   wfh_has_record            INTEGER DEFAULT 0,   -- user keeps a contemporaneous record of actual hours (ATO requirement from 1 Mar 2023)
+  -- 0059: WFH diary inputs (off by default; gated by the wfh_generate_diary feature flag — no position impact).
+  wfh_weekdays       TEXT,                       -- JSON int[] 0=Mon..6=Sun: days normally worked from home
+  wfh_leave_ranges   TEXT,                       -- JSON [{start,end,label?}]: inclusive ranges NOT worked from home
+  wfh_generate_diary INTEGER DEFAULT 0,          -- 1 = emit the generated diary in the hand-off CSV
   updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (user_id, fy)
 );

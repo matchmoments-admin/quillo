@@ -1,4 +1,5 @@
 import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode } from "react";
+import { useState } from "react";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import { GLOSSARY, type GlossaryKey } from "../content/glossary";
 
@@ -183,8 +184,9 @@ function tipBody(k?: GlossaryKey, tip?: ReactNode): ReactNode | null {
   return tip ?? (k ? GLOSSARY[k].short : null);
 }
 
-/** The floating bubble — shared by InfoTip and Term. Card surface, ink text, above everything. */
-function TipBubble({ children }: { children: ReactNode }) {
+/** The floating bubble — shared by InfoTip and Term. Card surface, ink text, above everything.
+ * `onDismiss` closes the controlled tip when the user taps/clicks outside it (the touch-dismiss path). */
+function TipBubble({ children, onDismiss }: { children: ReactNode; onDismiss?: () => void }) {
   return (
     <Tooltip.Portal>
       <Tooltip.Content
@@ -192,6 +194,7 @@ function TipBubble({ children }: { children: ReactNode }) {
         align="center"
         sideOffset={6}
         collisionPadding={12}
+        onPointerDownOutside={onDismiss}
         className="z-[70] max-w-[18rem] select-none rounded-xl border border-line bg-card px-3 py-2.5 text-xs leading-relaxed text-ink-2 shadow-card"
       >
         {children}
@@ -208,22 +211,28 @@ function TipBubble({ children }: { children: ReactNode }) {
  */
 export function InfoTip({ k, tip, label, className = "" }: { k?: GlossaryKey; tip?: ReactNode; label?: string; className?: string }) {
   const body = tipBody(k, tip);
+  // Controlled so the tip also opens on TAP: Radix Tooltip only reacts to hover/focus, neither of
+  // which fires on touch devices, so the ⓘ was dead on mobile/tablet. We keep hover/focus (via
+  // onOpenChange) for desktop and add an explicit tap toggle + outside-tap dismiss.
+  const [open, setOpen] = useState(false);
   if (!body) return null;
   return (
-    <Tooltip.Root>
+    <Tooltip.Root open={open} onOpenChange={setOpen}>
       <Tooltip.Trigger asChild>
         <button
           type="button"
           aria-label={label ?? (k ? `What's this? ${GLOSSARY[k].term}` : "What's this?")}
-          // Many tips sit inside a <label>; without this, clicking the ⓘ would activate the label's
-          // control (e.g. toggle a checkbox). Inert click — the tip already shows on hover/focus.
-          onClick={(e) => e.preventDefault()}
+          // Many tips sit inside a <label>; preventDefault stops the ⓘ from activating the label's
+          // control (e.g. toggling a checkbox). Open (don't toggle) on tap: Android focuses the button
+          // on tap which already opens it via onOpenChange, so a toggle would race-close it; dismissal is
+          // handled by outside-tap (TipBubble onDismiss) + Escape instead.
+          onClick={(e) => { e.preventDefault(); setOpen(true); }}
           className={`inline-grid h-[15px] w-[15px] flex-none translate-y-[-1px] place-items-center rounded-full border border-ink-3/40 align-middle text-[10px] font-bold leading-none text-ink-3 transition hover:border-ink/50 hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-ink/25 ${className}`}
         >
           i
         </button>
       </Tooltip.Trigger>
-      <TipBubble>{body}</TipBubble>
+      <TipBubble onDismiss={() => setOpen(false)}>{body}</TipBubble>
     </Tooltip.Root>
   );
 }
@@ -236,19 +245,22 @@ export function InfoTip({ k, tip, label, className = "" }: { k?: GlossaryKey; ti
 export function Term({ k, tip, children }: { k?: GlossaryKey; tip?: ReactNode; children?: ReactNode }) {
   const body = tipBody(k, tip);
   const text = children ?? (k ? GLOSSARY[k].term : null);
+  // Controlled for tap-to-open on touch (see InfoTip) — keeps hover/focus for desktop.
+  const [open, setOpen] = useState(false);
   if (!body) return <>{text}</>;
   return (
-    <Tooltip.Root>
+    <Tooltip.Root open={open} onOpenChange={setOpen}>
       <Tooltip.Trigger asChild>
         <button
           type="button"
-          onClick={(e) => e.preventDefault()}
+          // Open (not toggle) on tap — see InfoTip; dismissal is outside-tap + Escape.
+          onClick={(e) => { e.preventDefault(); setOpen(true); }}
           className="cursor-help rounded-sm underline decoration-dotted decoration-ink-3/60 underline-offset-2 transition hover:decoration-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-ink/25"
         >
           {text}
         </button>
       </Tooltip.Trigger>
-      <TipBubble>{body}</TipBubble>
+      <TipBubble onDismiss={() => setOpen(false)}>{body}</TipBubble>
     </Tooltip.Root>
   );
 }

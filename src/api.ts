@@ -894,15 +894,20 @@ export async function handleApi(
   if (resource === "work-use") {
     const fy = Number(url.searchParams.get("fy")) || defaultFy();
     if (m === "GET") {
-      const row = await env.DB.prepare(`SELECT wfh_hours, car_work_km, wfh_days_per_week, wfh_weeks, has_dedicated_home_office, wfh_has_record FROM work_use_inputs WHERE user_id = ? AND fy = ?`)
+      const row = await env.DB.prepare(`SELECT wfh_hours, car_work_km, wfh_days_per_week, wfh_weeks, has_dedicated_home_office, wfh_has_record, wfh_weekdays, wfh_leave_ranges, wfh_generate_diary FROM work_use_inputs WHERE user_id = ? AND fy = ?`)
         .bind(uid, fy)
-        .first<{ wfh_hours: number | null; car_work_km: number | null; wfh_days_per_week: number | null; wfh_weeks: number | null; has_dedicated_home_office: number | null; wfh_has_record: number | null }>();
-      return json({ work_use: row ?? { wfh_hours: null, car_work_km: null, wfh_days_per_week: null, wfh_weeks: null, has_dedicated_home_office: 0, wfh_has_record: 0 } });
+        .first<{ wfh_hours: number | null; car_work_km: number | null; wfh_days_per_week: number | null; wfh_weeks: number | null; has_dedicated_home_office: number | null; wfh_has_record: number | null; wfh_weekdays: string | null; wfh_leave_ranges: string | null; wfh_generate_diary: number | null }>();
+      // Diary columns are stored as JSON text; parse them back to arrays for the SPA (tolerant of nulls).
+      const parseJson = <T>(s: string | null, fallback: T): T => { try { return s ? (JSON.parse(s) as T) : fallback; } catch { return fallback; } };
+      const work_use = row
+        ? { ...row, wfh_weekdays: parseJson<number[]>(row.wfh_weekdays, []), wfh_leave_ranges: parseJson<{ start: string; end: string; label?: string }[]>(row.wfh_leave_ranges, []) }
+        : { wfh_hours: null, car_work_km: null, wfh_days_per_week: null, wfh_weeks: null, has_dedicated_home_office: 0, wfh_has_record: 0, wfh_weekdays: [], wfh_leave_ranges: [], wfh_generate_diary: 0 };
+      return json({ work_use });
     }
     if (m === "POST") {
-      const body = (await req.json().catch(() => ({}))) as { wfh_hours?: number | null; car_work_km?: number | null; wfh_days_per_week?: number | null; wfh_weeks?: number | null; has_dedicated_home_office?: boolean; wfh_has_record?: boolean };
+      const body = (await req.json().catch(() => ({}))) as { wfh_hours?: number | null; car_work_km?: number | null; wfh_days_per_week?: number | null; wfh_weeks?: number | null; has_dedicated_home_office?: boolean; wfh_has_record?: boolean; wfh_weekdays?: number[] | null; wfh_leave_ranges?: { start: string; end: string; label?: string }[] | null; wfh_generate_diary?: boolean };
       const num = (v: unknown): number | null => (v === null || v === undefined || v === "" || !Number.isFinite(Number(v)) ? null : Math.max(0, Number(v)));
-      return json(await stub.setWorkUseInputs(uid, { fy, wfh_hours: num(body.wfh_hours), car_work_km: num(body.car_work_km), wfh_days_per_week: num(body.wfh_days_per_week), wfh_weeks: num(body.wfh_weeks), has_dedicated_home_office: !!body.has_dedicated_home_office, wfh_has_record: !!body.wfh_has_record }));
+      return json(await stub.setWorkUseInputs(uid, { fy, wfh_hours: num(body.wfh_hours), car_work_km: num(body.car_work_km), wfh_days_per_week: num(body.wfh_days_per_week), wfh_weeks: num(body.wfh_weeks), has_dedicated_home_office: !!body.has_dedicated_home_office, wfh_has_record: !!body.wfh_has_record, wfh_weekdays: Array.isArray(body.wfh_weekdays) ? body.wfh_weekdays : [], wfh_leave_ranges: Array.isArray(body.wfh_leave_ranges) ? body.wfh_leave_ranges : [], wfh_generate_diary: !!body.wfh_generate_diary }));
     }
   }
 

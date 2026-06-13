@@ -109,13 +109,25 @@ export const DEFAULT_CLARIFY_THRESHOLDS: ClarifyThresholds = { minCount: 3, minT
 
 /** Optional context that tailors the suggestions to the tenant's situation. */
 export interface SuggestionContext {
-  isRentLike?: boolean;     // the group's stem looks like rent/lease
-  hasTenantHome?: boolean;  // the tenant has a renting_residence (own-home rental) property
+  isRentLike?: boolean;       // the group's stem looks like rent/lease
+  hasTenantHome?: boolean;    // the tenant has a renting_residence (own-home rental) property
+  isInsuranceLike?: boolean;  // the group's stem looks like a life / income-protection insurer
 }
 
 /** True when a group's stem/description reads like rent or a lease payment. */
 export function isRentLikeStem(s: string | null | undefined): boolean {
   return /\b(rent|lease|tenancy|landlord)\b/i.test(s ?? "");
+}
+
+/**
+ * True when a group's stem looks like a life / income-protection insurer — i.e. where an
+ * income-protection deduction MIGHT apply (premiums held OUTSIDE super). Deliberately excludes health
+ * funds (BUPA/Medibank/HCF/NIB — private health, never deductible; auto-classified via merchant_hints
+ * to the generic "private" answer) and generic car/home insurance, so we only ever surface the ONE
+ * claimable insurance answer where it could genuinely apply (owner decision: claimable-only labels).
+ */
+export function isInsuranceLikeStem(s: string | null | undefined): boolean {
+  return /\b(income[\s-]?protection|salary[\s-]?continuance|life[\s-]?insurance|asteron|onepath|metlife|comminsure|clearview|zurich|tal|aia)\b/i.test(s ?? "");
 }
 
 /** Direction-aware suggested answers — one tap each. Concrete fields are filled in by the UI/server. */
@@ -137,10 +149,21 @@ export function suggestionsFor(direction: "debit" | "credit" | "mixed", ctx: Sug
   if (ctx.isRentLike && ctx.hasTenantHome) {
     out.push({ label: "Rent I pay on my home (private — not deductible)", kind: "bucket", bucket: "payg", ato_label: "personal-spend" });
   }
+  // Insurer-like group: lead with the ONE claimable insurance answer. Income-protection premiums held
+  // OUTSIDE super are generally deductible; the deductibility matcher stamps it suggested_deductible
+  // (never auto-counted) and the user confirms it's not a life/TPD/trauma policy. Health funds and
+  // life cover are intentionally NOT offered (private — not claimable; owner decision: claimable-only).
+  if (ctx.isInsuranceLike) {
+    out.push({ label: "Income protection insurance (deductible if held outside super)", kind: "bucket", bucket: "payg", ato_label: "insurance:income-protection" });
+  }
   out.push(
     { label: "Private / personal (not deductible)", kind: "bucket", bucket: "payg", ato_label: "personal-spend" },
     { label: "Loan repayment / transfer (ignore)", kind: "ignore" },
     { label: "Work-related deduction (choose category)", kind: "bucket", bucket: "payg" },
+    // Two very common, unambiguously-claimable recurring debits get a one-tap answer (both stamp
+    // suggested_deductible via the rule pack, so deny-by-default still holds until the user confirms).
+    { label: "Donation (DGR — deductible)", kind: "bucket", bucket: "payg", ato_label: "donation" },
+    { label: "Union / professional membership (deductible)", kind: "bucket", bucket: "payg", ato_label: "union-fees" },
     { label: "Rental-property expense", kind: "bucket", bucket: "property_rented" },
     // A deposit into a share/brokerage app (Stake, CommSec, Pearler…) is a CAPITAL movement — not a
     // deduction and not income, but CGT-relevant. Parks it excluded + tagged for a future CGT feature.
@@ -177,7 +200,11 @@ export function groupForClarify(rows: ClarifyRow[], thresholds: ClarifyThreshold
       n: g.rows.length,
       total_cents: g.total,
       direction,
-      suggestions: suggestionsFor(direction, { ...ctx, isRentLike: isRentLikeStem(g.sample) || isRentLikeStem(key) }),
+      suggestions: suggestionsFor(direction, {
+        ...ctx,
+        isRentLike: isRentLikeStem(g.sample) || isRentLikeStem(key),
+        isInsuranceLike: isInsuranceLikeStem(g.sample) || isInsuranceLikeStem(key),
+      }),
     });
   }
   // Biggest-dollar patterns first — that's where the position correction matters most.

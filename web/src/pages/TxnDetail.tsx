@@ -49,14 +49,18 @@ export function TxnDetail() {
       if (label !== (txn.ato_label ?? "")) ops.push(api.correct(id, "ato_label", label));
       if (propertyId !== (txn.property_id ?? "")) ops.push(api.correct(id, "property_id", propertyId));
       if (date !== (txn.txn_date ?? "")) ops.push(api.correct(id, "txn_date", date));
-      // "Confirm as-is" when nothing changed: record acceptance of the current bucket.
-      if (ops.length === 0 && txn.bucket) ops.push(api.correct(id, "bucket", txn.bucket));
+      // "Confirm as-is" when nothing changed: record acceptance of the current bucket. Skip for an
+      // unknown bucket — re-writing bucket='unknown' would keep the row stuck in Needs-review; the
+      // user must pick a real category (the BUCKETS dropdown above) before it can be confirmed.
+      if (ops.length === 0 && txn.bucket && txn.bucket !== "unknown") ops.push(api.correct(id, "bucket", txn.bucket));
       await Promise.all(ops);
     },
     onSuccess: async () => {
       qc.invalidateQueries({ queryKey: ["transactions"] });
       qc.invalidateQueries({ queryKey: ["dashboard"] });
       qc.invalidateQueries({ queryKey: ["txn", id] });
+      qc.invalidateQueries({ queryKey: ["report"] });
+      qc.invalidateQueries({ queryKey: ["filing-readiness"] });
       // Flag-gated: after categorising one line to a spend/asset bucket, offer to apply it to the
       // still-to-review look-alikes. Flag OFF (or no siblings) ⇒ navigate immediately, as before.
       if (has("apply_to_siblings") && isSpendBucket(bucket)) {

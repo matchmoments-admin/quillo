@@ -16,6 +16,7 @@ import { resolveJurisdictionForUser } from "./jurisdiction";
 import { classifyAttribution, splitAttribution } from "./attribution";
 import { exclusionReason } from "./readiness";
 import { featureOn } from "./features";
+import { generateWfhDiary, WFH_WEEKDAY_NAMES } from "./work-use";
 
 // ── The itemised accountant deliverable (#179 + #181, EPIC #178) ─────────────
 // A persona-aware, multi-section schedule an accountant can audit: per-transaction lines with
@@ -158,7 +159,8 @@ export async function buildAccountantSchedule(
   opts?: { report?: Report },
 ): Promise<AccountantSchedule> {
   const report = opts?.report ?? (await buildReport(env, userId, startYear));
-  const { start, end } = fyBounds(startYear, await resolveJurisdictionForUser(env, userId));
+  const jurisdiction = await resolveJurisdictionForUser(env, userId);
+  const { start, end } = fyBounds(startYear, jurisdiction);
   const fy = fyLabel(startYear);
 
   // The SAME flag context buildReport ran under — the shared clause builders guarantee the itemised
@@ -570,6 +572,45 @@ export async function buildAccountantSchedule(
       tie_back: wm ? { label: "work-method deductions", report_cents: wm.total_cents, actual_cents: (wm.wfh_cents ?? 0) + (wm.car_cents ?? 0), ok: (wm.wfh_cents ?? 0) + (wm.car_cents ?? 0) === wm.total_cents } : undefined,
       notes: ["The fixed-rate / cents-per-km methods already cover the running costs they replace — those receipts stay in NOT CLAIMED, so nothing is claimed twice."],
     });
+  }
+
+  // 5b. WFH diary (generated record) — additive + OFF by default. Emits a per-day diary ONLY when the
+  // wfh_generate_diary flag is on, the user asked for a generated diary, and they're NOT supplying their
+  // own record (wfh_has_record) — a generated diary would then be misleading/duplicative. Gating on the
+  // flag first keeps the flag-OFF CSV byte-identical (the diary read never runs).
+  if (featureOn(env, "wfh_generate_diary")) {
+    const di = await env.DB.prepare(
+      `SELECT wfh_weekdays, wfh_leave_ranges, wfh_generate_diary, wfh_has_record FROM work_use_inputs WHERE user_id = ? AND fy = ?`,
+    )
+      .bind(userId, startYear)
+      .first<{ wfh_weekdays: string | null; wfh_leave_ranges: string | null; wfh_generate_diary: number | null; wfh_has_record: number | null }>();
+    const parse = <T>(s: string | null | undefined, f: T): T => { try { return s ? (JSON.parse(s) as T) : f; } catch { return f; } };
+    const weekdays = parse<number[]>(di?.wfh_weekdays, []);
+    if (di?.wfh_generate_diary && !di.wfh_has_record && weekdays.length > 0) {
+      const leaveRanges = parse<{ start: string; end: string }[]>(di.wfh_leave_ranges, []);
+      const diary = generateWfhDiary({ fyStartYear: startYear, weekdays, leaveRanges, descriptor: jurisdiction });
+      const notes: string[] = [];
+      const rows: Cell[][] = capped(diary.days, notes).map((day) => [day.date, WFH_WEEKDAY_NAMES[day.weekday] ?? "", day.hours]);
+      rows.push(["Total days", null, diary.total_days]);
+      rows.push(["Total hours", null, diary.total_hours]);
+      // Reconcile the diary to the section-5 fixed-rate WFH hours (units are HOURS, not money, so this is
+      // a plain note rather than the money-typed tie_back). They should match; flag it if they diverge.
+      const wmHours = report.work_method?.wfh_hours ?? null;
+      if (wmHours != null && Math.round(wmHours * 10) !== Math.round(diary.total_hours * 10)) {
+        notes.push(`This diary totals ${diary.total_hours} hours, but the fixed-rate WFH claim above uses ${wmHours} hours — review so the diary and the claimed hours agree.`);
+      }
+      notes.push(
+        "Generated from your declared work-from-home days and leave periods. From 2022-23 the ATO requires a record of your ACTUAL hours worked from home for the whole year (a 4-week estimate is not accepted for the fixed-rate method). Review this diary and adjust it to reflect the hours you actually worked.",
+        "General information only — not tax advice. Confirm your method and hours with a registered tax agent.",
+      );
+      sections.push({
+        key: "wfh_diary",
+        title: "Work-from-home diary (generated for your records)",
+        columns: ["Date", "Weekday", "Hours worked from home"],
+        rows,
+        notes,
+      });
+    }
   }
 
   // 6. One section per property: itemised expenses + loan-interest evidence + the position lines.

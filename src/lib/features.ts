@@ -18,6 +18,7 @@ export const FEATURE_KEYS = [
   "position_excludes_nondeductible",
   "accountant_pass",
   "wfh_car_methods",
+  "wfh_generate_diary",  // 0059 (Part 1): emit a generated WFH diary section in the accountant CSV. OFF by default — flag-OFF + own-record paths keep the legacy CSV byte-identical.
   "loan_split",
   "attribution_engine", // 0032-0034: sum transaction_attributions for the position (payer≠claimant, ownership split). OFF in prod until validated.
   "cgt_engine",         // 0037 (#138): add net capital gain (shares/crypto/property disposals; 50% discount; loss offset) to the position. OFF in prod until validated.

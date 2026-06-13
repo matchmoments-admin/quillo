@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { api, isDeleteBlocked } from "../api";
+import { api, ApiError, isDeleteBlocked } from "../api";
 import { useFeatures } from "../lib/features";
 import { useActiveFy } from "../lib/activeFy";
 import { Button, Card, Spinner, money, InfoTip } from "../components/ui";
@@ -161,10 +161,49 @@ function AddAccount({ onAdded }: { onAdded: () => void }) {
   );
 }
 
+// Per-file state for a multi-file (batch) upload. The single per-tenant Durable Object only safely
+// parses one statement at a time (a second concurrent parse queues behind it and can 502), so a
+// batch is run STRICTLY SEQUENTIALLY client-side — this queue is just the visible progress of that
+// loop. Each parsed file persists server-side as a 'parsed' statement; the page-level "Import all
+// reconciled" button then commits them in one go.
+type QStatus = "pending" | "parsing" | "balanced" | "mismatch" | "noverify" | "dup" | "error" | "skipped";
+type QItem = { name: string; status: QStatus; detail?: string };
+
+// Map a parse result to a one-line verdict, mirroring the single-file reconciliation banner.
+function verdictFor(p: StatementParse): { status: QStatus; detail: string } {
+  if (p.duplicate) return { status: "dup", detail: "already imported" };
+  const r = p.reconciliation;
+  if (r?.available && r.ok) return { status: "balanced", detail: `balances · ${p.rowCount} txns` };
+  if (r?.available && !r.ok) return { status: "mismatch", detail: `off by ${money(Math.abs(r.diff_cents))} · review` };
+  return { status: "noverify", detail: `${p.rowCount} txns · eyeball` };
+}
+
+const Q_GLYPH: Record<QStatus, string> = {
+  pending: "·",
+  parsing: "…",
+  balanced: "✓",
+  mismatch: "⚠",
+  noverify: "•",
+  dup: "↺",
+  error: "✕",
+  skipped: "–",
+};
+const Q_TONE: Record<QStatus, string> = {
+  pending: "text-muted",
+  parsing: "text-muted",
+  balanced: "text-safe",
+  mismatch: "text-danger",
+  noverify: "text-warn",
+  dup: "text-muted",
+  error: "text-danger",
+  skipped: "text-muted",
+};
+
 function AccountRow({ account, statements }: { account: Account; statements: StatementInfo[] }) {
   const qc = useQueryClient();
   const fileRef = useRef<HTMLInputElement>(null);
   const [parse, setParse] = useState<StatementParse | null>(null);
+  const [queue, setQueue] = useState<QItem[] | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   // A parse holds the single per-tenant Durable Object; let only one run at a time so a second
@@ -193,6 +232,45 @@ function AccountRow({ account, statements }: { account: Account; statements: Sta
       setNote(`Couldn't read: ${(e as Error).message}`);
       toast.error(`Couldn't read ${account.name}'s statement`, { description: (e as Error).message });
     },
+  });
+
+  // Sequential batch parse. Shares the ["parseStatement"] key so `anyParsing` disables every other
+  // row's upload while a batch runs (the single-DO 502 guard). A 429 (AI budget) / 403 (consent)
+  // halts the run and marks the remaining files skipped — those are whole-session conditions that
+  // won't clear mid-batch, so there's no point hammering them; everything parsed so far is kept.
+  const doBatch = useMutation({
+    mutationKey: ["parseStatement"],
+    mutationFn: async (files: File[]) => {
+      const set = (i: number, patch: Partial<QItem>) => setQueue((q) => (q ? q.map((it, idx) => (idx === i ? { ...it, ...patch } : it)) : q));
+      let parsed = 0;
+      for (let i = 0; i < files.length; i++) {
+        set(i, { status: "parsing" });
+        try {
+          const p = await api.parseStatement(files[i], account.id);
+          set(i, verdictFor(p));
+          if (!p.duplicate) parsed++;
+        } catch (e) {
+          const status = e instanceof ApiError ? e.status : 0;
+          set(i, { status: "error", detail: (e as Error).message });
+          if (status === 429 || status === 403) {
+            setQueue((q) => (q ? q.map((it, idx) => (idx > i ? { ...it, status: "skipped" as QStatus, detail: status === 403 ? "consent needed" : "AI paused for today" } : it)) : q));
+            return { parsed, halted: true as const };
+          }
+        }
+      }
+      return { parsed, halted: false as const };
+    },
+    onSettled: () => invalidate(), // surface the freshly-'parsed' statements as chips + light up "Import all reconciled"
+    onSuccess: ({ parsed, halted }) => {
+      if (parsed > 0) {
+        toast.success(`Parsed ${parsed} statement(s)`, {
+          description: `Use “Import all reconciled” at the top of the page to import ${parsed === 1 ? "it" : "them"}.`,
+        });
+      } else if (halted) {
+        toast.error("Couldn't parse the batch", { description: "AI is paused or consent is needed — nothing was imported." });
+      }
+    },
+    onError: (e) => toast.error("Batch upload failed", { description: (e as Error).message }),
   });
 
   const doConfirm = useMutation({
@@ -275,17 +353,27 @@ function AccountRow({ account, statements }: { account: Account; statements: Sta
             {!isFeed && (
               <>
                 <Button variant="ghost" onClick={() => fileRef.current?.click()} disabled={anyParsing}>
-                  {doParse.isPending ? "Reading…" : anyParsing ? "Waiting…" : "Upload statement (CSV/PDF)"}
+                  {doParse.isPending || doBatch.isPending ? "Reading…" : anyParsing ? "Waiting…" : "Upload statements (CSV/PDF)"}
                 </Button>
                 <input
                   ref={fileRef}
                   type="file"
+                  multiple
                   accept=".csv,text/csv,.pdf,application/pdf"
                   className="hidden"
                   onChange={(e) => {
-                    const f = e.target.files?.[0];
-                    if (f) doParse.mutate(f);
+                    const files = Array.from(e.target.files ?? []);
                     e.currentTarget.value = "";
+                    if (files.length === 0) return;
+                    // One file keeps the rich inline preview; many files run the sequential queue.
+                    if (files.length === 1) {
+                      doParse.mutate(files[0]);
+                      return;
+                    }
+                    setParse(null);
+                    setNote(null);
+                    setQueue(files.map((f) => ({ name: f.name, status: "pending" })));
+                    doBatch.mutate(files);
                   }}
                 />
               </>
@@ -315,6 +403,45 @@ function AccountRow({ account, statements }: { account: Account; statements: Sta
         )}
 
         {note && <p className="mt-2 text-sm text-muted">{note}</p>}
+
+        {queue &&
+          (() => {
+            const done = queue.filter((q) => q.status !== "pending" && q.status !== "parsing").length;
+            const ready = queue.filter((q) => q.status === "balanced" || q.status === "noverify" || q.status === "mismatch").length;
+            return (
+              <div className="mt-3 space-y-2">
+                <div className="flex items-center justify-between text-sm">
+                  <span className="font-medium">
+                    {doBatch.isPending ? `Uploading ${queue.length} statements…` : `Parsed ${done} of ${queue.length}`}
+                  </span>
+                  <span className="tabular-nums text-muted">
+                    {done}/{queue.length}
+                  </span>
+                </div>
+                <ul className="max-h-64 overflow-auto rounded-lg border border-line text-sm">
+                  {queue.map((q, i) => (
+                    <li key={i} className="flex items-center gap-2 border-t border-line px-3 py-1.5 first:border-0">
+                      {q.status === "parsing" ? (
+                        <span className="h-3.5 w-3.5 flex-none animate-spin rounded-full border-2 border-line border-t-ink" />
+                      ) : (
+                        <span className={`w-4 flex-none text-center ${Q_TONE[q.status]}`}>{Q_GLYPH[q.status]}</span>
+                      )}
+                      <span className="min-w-0 flex-1 truncate">{q.name}</span>
+                      {q.detail && <span className={`flex-none text-xs ${Q_TONE[q.status]}`}>{q.detail}</span>}
+                    </li>
+                  ))}
+                </ul>
+                {!doBatch.isPending && (
+                  <div className="flex items-center gap-3">
+                    {ready > 0 && <span className="text-sm text-muted">{ready} ready — use “Import all reconciled” at the top of the page.</span>}
+                    <Button variant="ghost" onClick={() => setQueue(null)}>
+                      Done
+                    </Button>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
         {parse &&
           (() => {

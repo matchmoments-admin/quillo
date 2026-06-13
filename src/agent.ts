@@ -346,9 +346,20 @@ export class TaxAgent extends Agent<Env> {
         const chunks = await splitPdf(pdfBytes, perChunk);
         // Extract chunks CONCURRENTLY (each is an independent sub-PDF) — running them in a
         // sequential loop made a multi-page statement do N back-to-back model calls (~90s with a
-        // retry), long enough for Cloudflare's gateway to 502 the request. Promise.all preserves
-        // order, so the opening/closing stitching and reconciliation are unchanged.
-        const exts = await Promise.all(chunks.map((c) => extractStatement(llm, c, "application/pdf", { isLiability })));
+        // retry), long enough for Cloudflare's gateway to 502 the request.
+        // BUT don't let one chunk sink the whole file: when a long statement fans out to many
+        // concurrent Haiku calls, a single chunk can transiently 429/529 (or hit a one-off bad
+        // extraction). Promise.all would abort the entire upload on that one rejection — which is
+        // exactly how a 12-page statement failed with "layout wasn't recognised". So gather with
+        // allSettled, then RETRY any failed chunk once SEQUENTIALLY (no concurrency pressure the
+        // second time, which clears transient overloads). Order is preserved for stitching; only a
+        // genuine second failure hard-fails, so we never silently drop pages.
+        const settled = await Promise.allSettled(chunks.map((c) => extractStatement(llm, c, "application/pdf", { isLiability })));
+        const exts: ExtractedStatement[] = [];
+        for (let i = 0; i < chunks.length; i++) {
+          const s = settled[i];
+          exts.push(s && s.status === "fulfilled" ? s.value : await extractStatement(llm, chunks[i]!, "application/pdf", { isLiability }));
+        }
         const all: StatementLine[] = [];
         let opening: number | null = null;
         let closing: number | null = null;

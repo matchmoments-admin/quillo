@@ -636,8 +636,8 @@ export interface SmsfMemberRow {
 // card and the click calls the existing write endpoint (deductibility / correct-batch / rules).
 export type ProposedAction =
   | { kind: "set_deductibility"; title: string; rationale: string; txn_ids: string[]; state: string; deductible_amount_cents?: number }
-  | { kind: "recategorise"; title: string; rationale: string; txn_ids: string[]; bucket: string; ato_label?: string }
-  | { kind: "add_rule"; title: string; rationale: string; pattern: string; bucket: string; ato_label?: string };
+  | { kind: "recategorise"; title: string; rationale: string; txn_ids: string[]; bucket: string; ato_label?: string; property_id?: string }
+  | { kind: "add_rule"; title: string; rationale: string; pattern: string; bucket: string; ato_label?: string; property_id?: string };
 
 export interface EntityAction {
   kind: string; // create_person | edit_person | create_property | edit_property | create_entity | edit_entity | create_rule

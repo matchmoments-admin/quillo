@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import { Card, money } from "./ui";
+import { PropertyFields, propertyToBody, emptyProperty, type PropertyValue } from "./SituationFields";
 import type { ClarifyQuestion, ClarifySuggestion, ClarifyAnswer } from "../types";
 
 /**
@@ -57,6 +58,12 @@ function ClarifyRow({
   // Inline label entry for the one suggestion that needs a category name (replaces a window.prompt).
   const [labelFor, setLabelFor] = useState<number | null>(null);
   const [label, setLabel] = useState("");
+  // Inline property selection: revealed ONLY after a property-related category is tapped (R1/R2).
+  // Holds the suggestion index being applied; null while hidden. The selector is a child of the
+  // chosen category, never a header sibling — so it can't imply a property on a salary/transfer.
+  const [propertyFor, setPropertyFor] = useState<number | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [draft, setDraft] = useState<PropertyValue>(emptyProperty());
 
   const answer = useMutation({
     mutationFn: (a: ClarifyAnswer) => api.answerClarify(q.id, a),
@@ -67,7 +74,17 @@ function ClarifyRow({
     },
   });
   const dismiss = useMutation({ mutationFn: () => api.dismissClarify(q.id), onSuccess: onDone });
-  const busy = answer.isPending || dismiss.isPending;
+  // Inline "+ Add property" (R4): create without leaving the Sort screen, then default to the new one.
+  const addProperty = useMutation({
+    mutationFn: () => api.addProperty(propertyToBody(draft)),
+    onSuccess: async ({ id }) => {
+      await qc.invalidateQueries({ queryKey: ["situation"] });
+      setPropertyId(id);
+      setAdding(false);
+      setDraft(emptyProperty());
+    },
+  });
+  const busy = answer.isPending || dismiss.isPending || addProperty.isPending;
 
   const apply = (s: ClarifySuggestion, atoLabel?: string) => {
     const a: ClarifyAnswer = { kind: s.kind, bucket: s.bucket, ato_label: atoLabel ?? s.ato_label };
@@ -81,9 +98,24 @@ function ClarifyRow({
   const pick = (s: ClarifySuggestion, i: number) => {
     // "Work-related deduction (choose category)" carries no label — collect one inline.
     if (s.kind === "bucket" && s.bucket === "payg" && !s.ato_label) {
+      setPropertyFor(null);
       setLabelFor(i);
       return;
     }
+    // Property-related category (rental income / rental-property expense) — reveal the selector inline
+    // instead of applying. The selector is shown ONLY here, never up front (R1/R2).
+    if (s.needs_property) {
+      if (!propertyId && properties[0]) setPropertyId(properties[0].id);
+      setLabelFor(null);
+      // A tenant with no properties yet can't pick from an empty list — drop them straight into the
+      // inline add form (R4) so they're never stuck on a rental category with nothing to choose.
+      setAdding(properties.length === 0);
+      setPropertyFor(i);
+      return;
+    }
+    // Any non-property category clears the inline selector; apply() attaches no property_id, so a
+    // switch away from rental can't carry a stale association (R3).
+    setPropertyFor(null);
     apply(s);
   };
 
@@ -95,25 +127,12 @@ function ClarifyRow({
           {q.n}× · {money(q.total_cents)} · {q.direction}
         </span>
       </div>
-      {q.suggestions.some((s) => s.needs_property) && properties.length > 0 && (
-        <select
-          value={propertyId}
-          onChange={(e) => setPropertyId(e.target.value)}
-          className="mt-2 rounded-lg border border-line px-2 py-1 text-sm"
-        >
-          {properties.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.label}
-            </option>
-          ))}
-        </select>
-      )}
       <div className="mt-2 flex flex-wrap gap-2">
         {q.suggestions.map((s, i) => (
           <button
             key={i}
             onClick={() => pick(s, i)}
-            disabled={busy || (s.needs_property && properties.length === 0)}
+            disabled={busy}
             className="rounded-lg border border-line px-2.5 py-1 text-xs hover:bg-surface disabled:opacity-50"
           >
             {s.label}
@@ -153,6 +172,71 @@ function ClarifyRow({
           >
             Cancel
           </button>
+        </div>
+      )}
+      {propertyFor != null && (
+        <div className="mt-2 space-y-2 rounded-lg border border-line bg-surface p-2.5">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs text-muted">Which property?</span>
+            <select
+              value={adding ? "__add__" : propertyId}
+              onChange={(e) => {
+                if (e.target.value === "__add__") {
+                  setAdding(true);
+                } else {
+                  setAdding(false);
+                  setPropertyId(e.target.value);
+                }
+              }}
+              aria-label="Property"
+              className="rounded-lg border border-line bg-card px-2 py-1 text-sm"
+            >
+              {properties.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.label}
+                </option>
+              ))}
+              <option value="__add__">+ Add new property</option>
+            </select>
+            {!adding && (
+              <button
+                onClick={() => {
+                  if (!propertyId) return;
+                  apply(q.suggestions[propertyFor]);
+                  setPropertyFor(null);
+                }}
+                disabled={busy || !propertyId}
+                className="rounded-lg border border-line bg-card px-2.5 py-1 text-xs font-medium hover:bg-surface disabled:opacity-50"
+              >
+                Apply to all {q.n}
+              </button>
+            )}
+            <button
+              onClick={() => {
+                setPropertyFor(null);
+                setAdding(false);
+                setDraft(emptyProperty());
+              }}
+              className="px-2 py-1 text-xs text-muted hover:text-ink"
+            >
+              Cancel
+            </button>
+          </div>
+          {adding && (
+            <div className="space-y-2 rounded-lg border border-line bg-card p-2.5">
+              <PropertyFields value={draft} onChange={setDraft} />
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => addProperty.mutate()}
+                  disabled={busy || !draft.label.trim()}
+                  className="rounded-lg border border-line bg-surface px-2.5 py-1 text-xs font-medium hover:bg-card disabled:opacity-50"
+                >
+                  {addProperty.isPending ? "Saving…" : "Save property"}
+                </button>
+                {addProperty.isError && <span className="text-xs text-danger">{(addProperty.error as Error).message}</span>}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </li>

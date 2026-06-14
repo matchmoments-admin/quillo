@@ -1247,8 +1247,8 @@ export type ProposableDeductibility = (typeof PROPOSABLE_DEDUCTIBILITY_STATES)[n
 
 export type ProposedAction =
   | { kind: "set_deductibility"; title: string; rationale: string; txn_ids: string[]; state: ProposableDeductibility; deductible_amount_cents?: number }
-  | { kind: "recategorise"; title: string; rationale: string; txn_ids: string[]; bucket: string; ato_label?: string }
-  | { kind: "add_rule"; title: string; rationale: string; pattern: string; bucket: string; ato_label?: string };
+  | { kind: "recategorise"; title: string; rationale: string; txn_ids: string[]; bucket: string; ato_label?: string; property_id?: string }
+  | { kind: "add_rule"; title: string; rationale: string; pattern: string; bucket: string; ato_label?: string; property_id?: string };
 
 export interface AnswerResult {
   answer: string;
@@ -1313,6 +1313,9 @@ export function entityActionSpec(kind: string): { entity: "person" | "property" 
 }
 
 const CREDIT_OR_UNKNOWN_BUCKETS = new Set(["income_business", "income_property", "income_personal", "refund", "unknown"]);
+// Buckets where a property association is meaningful — a recategorise/add_rule may carry a property_id
+// ONLY for these, and ONLY when the id is one the tenant actually owns (validated against the set).
+const PROPERTY_BUCKETS = new Set(["property_rented", "property_vacant"]);
 
 export const MAX_PROPOSALS_PER_TURN = 3;
 export const MAX_TXN_REFS_PER_PROPOSAL = 50;
@@ -1324,15 +1327,20 @@ export const MAX_TXN_REFS_PER_PROPOSAL = 50;
  * more than the ref cap of DISTINCT targets is dropped WHOLE (truncating it would silently apply a
  * different change than the title describes).
  */
-export function validateProposedActions(raw: unknown, aliasToId: Map<string, DigestRef>): ProposedAction[] {
+export function validateProposedActions(raw: unknown, aliasToId: Map<string, DigestRef>, validPropertyIds?: Set<string>): ProposedAction[] {
   if (!Array.isArray(raw)) return [];
   const out: ProposedAction[] = [];
   for (const item of raw.slice(0, MAX_PROPOSALS_PER_TURN)) {
-    const a = item as { kind?: unknown; title?: unknown; rationale?: unknown; txn_refs?: unknown; state?: unknown; deductible_amount_cents?: unknown; bucket?: unknown; ato_label?: unknown; pattern?: unknown };
+    const a = item as { kind?: unknown; title?: unknown; rationale?: unknown; txn_refs?: unknown; state?: unknown; deductible_amount_cents?: unknown; bucket?: unknown; ato_label?: unknown; pattern?: unknown; property_id?: unknown };
     if (typeof a.title !== "string" || !a.title.trim() || typeof a.rationale !== "string" || !a.rationale.trim()) continue;
     const title = a.title.trim().slice(0, 60);
     const rationale = a.rationale.trim().slice(0, 200);
     const atoLabel = typeof a.ato_label === "string" && a.ato_label.trim() ? a.ato_label.trim().slice(0, 60) : undefined;
+    // A property_id is honoured ONLY for a property bucket AND only when it's one the tenant owns —
+    // otherwise dropped (the action still applies, just without an attribution). Guards a hallucinated
+    // or cross-tenant id from ever reaching the write path.
+    const propertyIdFor = (bucket: string): string | undefined =>
+      typeof a.property_id === "string" && PROPERTY_BUCKETS.has(bucket) && validPropertyIds?.has(a.property_id) ? a.property_id : undefined;
     const resolveRefs = (): DigestRef[] | null => {
       if (!Array.isArray(a.txn_refs)) return null;
       const seen = new Map<string, DigestRef>();
@@ -1364,10 +1372,12 @@ export function validateProposedActions(raw: unknown, aliasToId: Map<string, Dig
     } else if (a.kind === "recategorise") {
       const refs = resolveRefs();
       if (!refs || !validBucket) continue;
-      out.push({ kind: "recategorise", title, rationale, txn_ids: refs.map((r) => r.id), bucket: a.bucket as string, ...(atoLabel ? { ato_label: atoLabel } : {}) });
+      const propertyId = propertyIdFor(a.bucket as string);
+      out.push({ kind: "recategorise", title, rationale, txn_ids: refs.map((r) => r.id), bucket: a.bucket as string, ...(atoLabel ? { ato_label: atoLabel } : {}), ...(propertyId ? { property_id: propertyId } : {}) });
     } else if (a.kind === "add_rule") {
       if (typeof a.pattern !== "string" || !a.pattern.trim() || !validBucket) continue;
-      out.push({ kind: "add_rule", title, rationale, pattern: a.pattern.trim().slice(0, 60), bucket: a.bucket as string, ...(atoLabel ? { ato_label: atoLabel } : {}) });
+      const propertyId = propertyIdFor(a.bucket as string);
+      out.push({ kind: "add_rule", title, rationale, pattern: a.pattern.trim().slice(0, 60), bucket: a.bucket as string, ...(atoLabel ? { ato_label: atoLabel } : {}), ...(propertyId ? { property_id: propertyId } : {}) });
     }
   }
   return out;
@@ -1404,6 +1414,7 @@ const ANSWER_TOOL_WITH_ACTIONS: Anthropic.Tool = {
             deductible_amount_cents: { type: "integer", description: "Optional partial claim, only with confirmed_deductible." },
             bucket: { type: "string", description: "Debit spend bucket (recategorise / add_rule): payg | company | property_rented | property_vacant | asset." },
             ato_label: { type: "string", description: "Optional ATO label / deduction category." },
+            property_id: { type: "string", description: "Optional, recategorise / add_rule with a property_rented or property_vacant bucket ONLY: the id of one of the user's KNOWN properties to attribute the expense to. Never invent an id." },
             pattern: { type: "string", description: "add_rule only: merchant text to match (e.g. 'Adobe')." },
           },
         },
@@ -1423,7 +1434,7 @@ export async function extractAnswer(
   llm: LLM,
   system: string,
   messages: { role: "user" | "assistant"; content: string }[],
-  actions?: { aliasToId: Map<string, DigestRef> },
+  actions?: { aliasToId: Map<string, DigestRef>; propertyIds?: Set<string> },
   nav?: boolean,
   entityActions?: boolean,
 ): Promise<AnswerResult> {
@@ -1464,7 +1475,7 @@ export async function extractAnswer(
   if (!actions) return { answer, caveats: strList(input.caveats), see_also: strList(input.see_also), suggested_rule, navigate, ...withEntityActions };
   // Actions mode: one confirm-card channel. A stray suggested_rule (the schema dropped it, but a model
   // can echo old-turn shapes) folds into an add_rule proposal rather than rendering a second UI path.
-  let proposed_actions = validateProposedActions(input.proposed_actions, actions.aliasToId);
+  let proposed_actions = validateProposedActions(input.proposed_actions, actions.aliasToId, actions.propertyIds);
   if (suggested_rule && proposed_actions.length < MAX_PROPOSALS_PER_TURN && !proposed_actions.some((p) => p.kind === "add_rule")) {
     proposed_actions = [...proposed_actions, {
       kind: "add_rule",

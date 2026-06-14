@@ -248,6 +248,9 @@ console.log("clarify.groupForClarify");
   // Direction-aware suggestions.
   check("credit group suggests rental income with property pick", groups[0]!.suggestions.some((s) => s.kind === "income_property" && s.needs_property));
   check("debit group suggests private (payg) + ignore", big[0]!.suggestions.some((s) => s.kind === "bucket" && s.bucket === "payg") && big[0]!.suggestions.some((s) => s.kind === "ignore"));
+  // Debit "Rental-property expense" now carries needs_property so the UI captures + persists a
+  // property_id (was unattributed before) — symmetric with the credit rental-income answer.
+  check("debit group offers Rental-property expense needing a property", big[0]!.suggestions.some((s) => s.kind === "bucket" && s.bucket === "property_rented" && s.needs_property === true));
   // Phase 6d — own-home rent routing: a tenant (renting_residence) sees a "rent I pay (private)" answer
   // on a rent-like debit group; without a tenant home, or on a non-rent group, it isn't offered.
   const rentRows = [mk("ANZ CARDS rent payment", "debit", 250000), mk("ANZ CARDS rent payment", "debit", 250000), mk("ANZ CARDS rent payment", "debit", 250000)];
@@ -1414,6 +1417,14 @@ console.log("Ask Quillo C3 (ask_actions): digest + proposed-action validation");
   ]);
   check("a valid set_deductibility + recategorise + add_rule trio passes through", trio.length === 3 && trio.map((t) => t.kind).join(",") === "set_deductibility,recategorise,add_rule");
   check("missing title/rationale dropped", v([{ kind: "add_rule", pattern: "Adobe", bucket: "payg" }]).length === 0);
+  // property_id routing (chat track): honoured ONLY for a property bucket AND an owned id.
+  const owned = new Set(["prop9"]);
+  const vp = (raw: unknown) => validateProposedActions(raw, aliases, owned);
+  check("property_id kept on a property-bucket recategorise to an OWNED property", (vp([{ ...base, kind: "recategorise", bucket: "property_rented", txn_refs: ["T2"], property_id: "prop9" }])[0] as { property_id?: string }).property_id === "prop9");
+  check("property_id kept on an add_rule to an OWNED property", (vp([{ ...base, kind: "add_rule", pattern: "Smith RE", bucket: "property_rented", property_id: "prop9" }])[0] as { property_id?: string }).property_id === "prop9");
+  check("property_id dropped on a NON-property bucket (payg) even if owned", (vp([{ ...base, kind: "recategorise", bucket: "payg", txn_refs: ["T1"], property_id: "prop9" }])[0] as { property_id?: string }).property_id === undefined);
+  check("property_id dropped when the id is NOT one the tenant owns", (vp([{ ...base, kind: "recategorise", bucket: "property_rented", txn_refs: ["T2"], property_id: "ghost" }])[0] as { property_id?: string }).property_id === undefined);
+  check("property_id dropped when no owned-property set is supplied (single-turn ask)", (v([{ ...base, kind: "recategorise", bucket: "property_rented", txn_refs: ["T2"], property_id: "prop9" }])[0] as { property_id?: string }).property_id === undefined);
 }
 
 console.log("roles");

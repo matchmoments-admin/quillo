@@ -164,7 +164,7 @@ export function suggestionsFor(direction: "debit" | "credit" | "mixed", ctx: Sug
     // suggested_deductible via the rule pack, so deny-by-default still holds until the user confirms).
     { label: "Donation (DGR — deductible)", kind: "bucket", bucket: "payg", ato_label: "donation" },
     { label: "Union / professional membership (deductible)", kind: "bucket", bucket: "payg", ato_label: "union-fees" },
-    { label: "Rental-property expense", kind: "bucket", bucket: "property_rented" },
+    { label: "Rental-property expense", kind: "bucket", bucket: "property_rented", needs_property: true },
     // A deposit into a share/brokerage app (Stake, CommSec, Pearler…) is a CAPITAL movement — not a
     // deduction and not income, but CGT-relevant. Parks it excluded + tagged for a future CGT feature.
     { label: "Investment / shares (capital — not deductible)", kind: "capital" },

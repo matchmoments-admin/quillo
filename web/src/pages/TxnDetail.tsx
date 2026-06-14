@@ -41,13 +41,19 @@ export function TxnDetail() {
     setSeededId(id);
   }
 
+  // A property_id only belongs on a property bucket. The selector is merely HIDDEN on other buckets,
+  // so without this a stale property_id would persist (and fan onto siblings) when re-bucketing away
+  // from a rental — counting the amount against that property. Clear it whenever the bucket isn't one
+  // the property selector is shown for.
+  const effPropId = isPropertyBucket(bucket) ? propertyId : "";
+
   const save = useMutation({
     mutationFn: async () => {
       if (!txn) return;
       const ops: Promise<unknown>[] = [];
       if (bucket && bucket !== txn.bucket) ops.push(api.correct(id, "bucket", bucket));
       if (label !== (txn.ato_label ?? "")) ops.push(api.correct(id, "ato_label", label));
-      if (propertyId !== (txn.property_id ?? "")) ops.push(api.correct(id, "property_id", propertyId));
+      if (effPropId !== (txn.property_id ?? "")) ops.push(api.correct(id, "property_id", effPropId));
       if (date !== (txn.txn_date ?? "")) ops.push(api.correct(id, "txn_date", date));
       // "Confirm as-is" when nothing changed: record acceptance of the current bucket. Skip for an
       // unknown bucket — re-writing bucket='unknown' would keep the row stuck in Needs-review; the
@@ -67,7 +73,7 @@ export function TxnDetail() {
         try {
           const preview = await api.siblingsPreview(id);
           if (preview.n > 0) {
-            setApplyTo({ n: preview.n, total_cents: preview.total_cents, edit: { bucket, ato_label: label || undefined, property_id: propertyId || undefined } });
+            setApplyTo({ n: preview.n, total_cents: preview.total_cents, edit: { bucket, ato_label: label || undefined, property_id: effPropId || undefined } });
             return; // hold on the page to show the prompt
           }
         } catch {
@@ -234,7 +240,7 @@ export function TxnDetail() {
 
             {/* Property applies to rental EXPENSE buckets and to rent INCOME (income_property) — a rent
                 credit must be attributable to its property, or its rental income never ties in. */}
-            {(bucket === "property_rented" || bucket === "property_vacant" || bucket === "income_property") && (
+            {isPropertyBucket(bucket) && (
               <label className="block">
                 <span className="text-xs font-medium uppercase tracking-wide text-muted">Property <InfoTip tip={bucket === "income_property" ? "Which property this rent was received for, so it counts as that property's rental income." : "Which of your investment properties this cost belongs to, so per-property totals stay accurate."} /></span>
                 <select
@@ -432,6 +438,13 @@ export function TxnDetail() {
 const MONEY_IN_BUCKETS = ["income_business", "income_property", "income_personal", "refund"];
 function isSpendBucket(b: string): boolean {
   return !!b && !MONEY_IN_BUCKETS.includes(b);
+}
+
+// Buckets the property selector is shown for (rental expense + rent income) — must match the render
+// gate below. A property_id is cleared on any other bucket so it can't ride along on, e.g., a payg row.
+const PROPERTY_BUCKETS = ["property_rented", "property_vacant", "income_property"];
+function isPropertyBucket(b: string): boolean {
+  return PROPERTY_BUCKETS.includes(b);
 }
 
 // AU financial year (Jul–Jun) label for a YYYY-MM-DD date, or null if missing/unparseable.

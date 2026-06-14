@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { LLM } from "./llm";
 import { bytesToBase64 } from "./lib/base64";
 import type { ColumnMap } from "./lib/statements";
-import { BUCKETS, ENTITY_KINDS, PROPERTY_STATUSES, DOC_TYPES, ASSET_CLASSES, ATO_LABEL_MAX, CLAIM_TYPES, isBucket, normalizeAtoLabel } from "./lib/taxonomy";
+import { BUCKETS, ENTITY_KINDS, PROPERTY_STATUSES, DOC_TYPES, ASSET_CLASSES, ATO_LABEL_MAX, CLAIM_TYPES, isBucket, isPropertyBucket, normalizeAtoLabel } from "./lib/taxonomy";
 import type { DigestRef } from "./lib/guide";
 
 export const Extracted = z
@@ -1313,9 +1313,6 @@ export function entityActionSpec(kind: string): { entity: "person" | "property" 
 }
 
 const CREDIT_OR_UNKNOWN_BUCKETS = new Set(["income_business", "income_property", "income_personal", "refund", "unknown"]);
-// Buckets where a property association is meaningful — a recategorise/add_rule may carry a property_id
-// ONLY for these, and ONLY when the id is one the tenant actually owns (validated against the set).
-const PROPERTY_BUCKETS = new Set(["property_rented", "property_vacant"]);
 
 export const MAX_PROPOSALS_PER_TURN = 3;
 export const MAX_TXN_REFS_PER_PROPOSAL = 50;
@@ -1340,7 +1337,7 @@ export function validateProposedActions(raw: unknown, aliasToId: Map<string, Dig
     // otherwise dropped (the action still applies, just without an attribution). Guards a hallucinated
     // or cross-tenant id from ever reaching the write path.
     const propertyIdFor = (bucket: string): string | undefined =>
-      typeof a.property_id === "string" && PROPERTY_BUCKETS.has(bucket) && validPropertyIds?.has(a.property_id) ? a.property_id : undefined;
+      typeof a.property_id === "string" && isPropertyBucket(bucket) && validPropertyIds?.has(a.property_id) ? a.property_id : undefined;
     const resolveRefs = (): DigestRef[] | null => {
       if (!Array.isArray(a.txn_refs)) return null;
       const seen = new Map<string, DigestRef>();

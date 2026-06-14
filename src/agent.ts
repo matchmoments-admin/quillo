@@ -35,7 +35,7 @@ import { toBaseCurrency } from "./lib/fx";
 import { spentTodayCents, spentTodayGlobalCents, noteMeteringError, usageStatements } from "./lib/usage";
 import { parseTransactionAlert } from "./lib/bank-parsers";
 import auV1RulePack from "./rulepacks/au-v1.json";
-import { assertBucketKeys, isBucket, normalizeAtoLabel, DEDUCTIBILITY_STATES } from "./lib/taxonomy";
+import { assertBucketKeys, isBucket, isPropertyBucket, normalizeAtoLabel, DEDUCTIBILITY_STATES } from "./lib/taxonomy";
 import { verdictForTxn } from "./lib/deductibility";
 import { featureOn, categoriseMode } from "./lib/features";
 
@@ -535,8 +535,8 @@ export class TaxAgent extends Agent<Env> {
         this.env.DB.prepare(
           `INSERT INTO transactions
              (id, user_id, source, status, kind, account_id, statement_id, line_fingerprint, raw_description,
-              merchant, amount_cents, currency, amount_aud_cents, txn_date, direction, bucket, ato_label, confidence)
-           VALUES (?, ?, 'statement', ?, 'bank_line', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              merchant, amount_cents, currency, amount_aud_cents, txn_date, direction, bucket, ato_label, confidence, property_id)
+           VALUES (?, ?, 'statement', ?, 'bank_line', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(user_id, account_id, line_fingerprint) DO NOTHING`,
         ).bind(
           crypto.randomUUID(),
@@ -555,6 +555,7 @@ export class TaxAgent extends Agent<Env> {
           cat?.bucket ?? null,
           cat?.ato_label ?? null,
           cat ? cat.confidence : null,
+          cat?.property_id ?? null, // property-scoped rule re-attaches its property on import (M1)
         ),
       );
     }
@@ -1253,9 +1254,12 @@ export class TaxAgent extends Agent<Env> {
     rules: UserRule[],
     rulePack: typeof DEFAULT_RULE_PACK,
     opts: { skipHints?: boolean; direction?: string | null } = {},
-  ): { bucket: string; ato_label: string; confidence: number } | null {
+  ): { bucket: string; ato_label: string; confidence: number; property_id?: string | null } | null {
     const rule = applyUserRules(merchant, rules, opts.direction);
-    if (rule) return { bucket: rule.bucket, ato_label: rule.ato_label, confidence: 1 };
+    // A property-scoped rule carries its property_id so a learned rental rule re-attaches the property
+    // on future imports (without this the line re-buckets to property_rented but lands property_id=NULL
+    // → counted in the individual headline, not the property's schedule).
+    if (rule) return { bucket: rule.bucket, ato_label: rule.ato_label, confidence: 1, property_id: rule.property_id ?? null };
     // Merchant hints are EXPENSE-oriented (SaaS, cloud, hardware) — never apply them to a credit
     // line or a refund from a SaaS vendor would be mis-bucketed as a company expense. Credits get
     // only user rules deterministically; the LLM (direction-aware) handles the rest.
@@ -3325,6 +3329,9 @@ export class TaxAgent extends Agent<Env> {
       if (!clean) throw new Error(`invalid ato_label: ${newValue}`);
       newValue = clean;
     }
+    // Clearing a property_id (re-bucketed away from a property) must persist as NULL, not '', or the
+    // report's `property_id IS NOT NULL` filter treats the dangling '' as a real attribution.
+    const bound: string | null = field === "property_id" && !newValue ? null : newValue;
 
     const row = await this.env.DB.prepare(
       `SELECT ${column} AS old FROM transactions WHERE id = ? AND user_id = ?`,
@@ -3339,13 +3346,13 @@ export class TaxAgent extends Agent<Env> {
     await this.env.DB.prepare(
       `UPDATE transactions SET ${column} = ?, status='corrected', confidence=1.0 WHERE id = ? AND user_id = ?`,
     )
-      .bind(newValue, txnId, userId)
+      .bind(bound, txnId, userId)
       .run();
     await this.env.DB.prepare(
       `INSERT INTO corrections (id, user_id, txn_id, field, old_value, new_value)
        VALUES (?, ?, ?, ?, ?, ?)`,
     )
-      .bind(crypto.randomUUID(), userId, txnId, field, row.old, newValue)
+      .bind(crypto.randomUUID(), userId, txnId, field, row.old, bound)
       .run();
 
     // If the user re-bucketed a line to 'asset', create + link its depreciating asset now.
@@ -3393,6 +3400,17 @@ export class TaxAgent extends Agent<Env> {
       }
       norm.push({ field: e.field, column, value });
     }
+    // Invariant: a property_id may only ride on a property bucket. When this batch re-buckets the rows
+    // to a NON-property bucket (e.g. property_rented → payg via BulkBar / apply-to-siblings), force the
+    // property_id clear so its amount can't keep counting against that property. Covers every batch
+    // write path server-side, regardless of what the client sent. (No bucket edit ⇒ a targeted
+    // property correction on an already-property row ⇒ left untouched.)
+    const bucketNorm = norm.find((n) => n.field === "bucket");
+    if (bucketNorm && !isPropertyBucket(bucketNorm.value)) {
+      const pid = norm.find((n) => n.field === "property_id");
+      if (pid) pid.value = "";
+      else norm.push({ field: "property_id", column: "property_id", value: "" });
+    }
     const ids = txnIds.slice(0, 500);
     const batchId = crypto.randomUUID();
     const selectCols = [...new Set(norm.map((n) => n.column))];
@@ -3409,6 +3427,9 @@ export class TaxAgent extends Agent<Env> {
         pending = [];
       }
     };
+    // An empty property_id clear must persist as NULL (not ''), or report's `property_id IS NOT NULL`
+    // filter would treat the dangling '' as a real attribution.
+    const bindVal = (n: { field: string; value: string }): string | null => (n.field === "property_id" && !n.value ? null : n.value);
     for (const txnId of ids) {
       const row = await this.env.DB.prepare(
         `SELECT ${selectCols.join(", ")} FROM transactions WHERE id = ? AND user_id = ?`,
@@ -3420,13 +3441,13 @@ export class TaxAgent extends Agent<Env> {
         continue;
       }
       const group: D1PreparedStatement[] = [
-        this.env.DB.prepare(`UPDATE transactions SET ${setClause}, status='corrected', confidence=1.0 WHERE id = ? AND user_id = ?`).bind(...norm.map((n) => n.value), txnId, userId),
+        this.env.DB.prepare(`UPDATE transactions SET ${setClause}, status='corrected', confidence=1.0 WHERE id = ? AND user_id = ?`).bind(...norm.map(bindVal), txnId, userId),
       ];
       for (const n of norm) {
         group.push(
           this.env.DB.prepare(
             `INSERT INTO corrections (id, user_id, txn_id, field, old_value, new_value, batch_id) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-          ).bind(crypto.randomUUID(), userId, txnId, n.field, row[n.column] ?? null, n.value, batchId),
+          ).bind(crypto.randomUUID(), userId, txnId, n.field, row[n.column] ?? null, bindVal(n), batchId),
         );
         if (n.field === "bucket" && n.value === "asset") anyAsset = true;
         if (n.field === "bucket" || n.field === "ato_label" || n.field === "merchant") reStampNeeded = true;
@@ -5118,7 +5139,7 @@ export class TaxAgent extends Agent<Env> {
     // of aggregates (no PII digit strings), so it is NOT redacted (redact would mangle the *_cents the
     // answer must cite). The situation text can carry names, so it stays redacted.
     const system = buildAskSystem(redact(renderSituation(situation)), summariseReportForAsk(report), digest?.text);
-    const result = await extractAnswer(llm, system, [{ role: "user", content: redact(q).slice(0, 600) }], digest && { aliasToId: digest.aliasToId });
+    const result = await extractAnswer(llm, system, [{ role: "user", content: redact(q).slice(0, 600) }], digest && { aliasToId: digest.aliasToId, propertyIds: new Set(situation.properties.map((p) => p.id)) });
     await this.audit(userId, "ask", JSON.stringify({ q_len: q.length, fy, proposals: result.proposed_actions?.length ?? 0 }));
     return result;
   }

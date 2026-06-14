@@ -5188,7 +5188,7 @@ export class TaxAgent extends Agent<Env> {
     const digest = digestRows ? renderTxnDigest(digestRows.rows, digestRows.total) : undefined;
     const system = buildAskSystem(redact(renderSituation(situation)), summariseReportForAsk(report), digest?.text, { pageRoute: pageRouteOk, nav: wantNav, entityWrites: wantEntityActions });
     const userMsg = redact(text).slice(0, 600);
-    const result = await extractAnswer(llm, system, [...history, { role: "user", content: userMsg }], digest && { aliasToId: digest.aliasToId }, wantNav, wantEntityActions);
+    const result = await extractAnswer(llm, system, [...history, { role: "user", content: userMsg }], digest && { aliasToId: digest.aliasToId, propertyIds: new Set(situation.properties.map((p) => p.id)) }, wantNav, wantEntityActions);
 
     // Persist both turns (the redacted question + the answer — no PII in storage).
     await this.env.DB.batch([

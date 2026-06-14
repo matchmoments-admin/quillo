@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import { Card, Button, BUCKET_LABEL, money } from "./ui";
 import { useActiveFy } from "../lib/activeFy";
@@ -110,16 +110,24 @@ const STATE_LABEL: Record<string, string> = {
  */
 export function ProposedActionCard({ action }: { action: ProposedAction }) {
   const qc = useQueryClient();
+  // Map a routed property_id → its label for the summary (cached situation query, shared app-wide).
+  const { data: situation } = useQuery({ queryKey: ["situation"], queryFn: api.situation });
+  const propertyId = action.kind === "recategorise" || action.kind === "add_rule" ? action.property_id : undefined;
+  const propertyLabel = propertyId ? situation?.properties?.find((p) => p.id === propertyId)?.label : undefined;
   const apply = useMutation({
     mutationFn: async () => {
       if (action.kind === "set_deductibility") {
         return api.resolveDeductibility({ state: action.state, txnIds: action.txn_ids, deductibleAmountCents: action.deductible_amount_cents ?? null });
       }
       if (action.kind === "recategorise") {
-        const edits = [{ field: "bucket", value: action.bucket }, ...(action.ato_label ? [{ field: "ato_label", value: action.ato_label }] : [])];
+        const edits = [
+          { field: "bucket", value: action.bucket },
+          ...(action.ato_label ? [{ field: "ato_label", value: action.ato_label }] : []),
+          ...(action.property_id ? [{ field: "property_id", value: action.property_id }] : []),
+        ];
         return api.correctBatch(action.txn_ids, edits, false);
       }
-      return api.addRule({ pattern: action.pattern, bucket: action.bucket, ato_label: action.ato_label ?? "" });
+      return api.addRule({ pattern: action.pattern, bucket: action.bucket, ato_label: action.ato_label ?? "", ...(action.property_id ? { property_id: action.property_id } : {}) });
     },
     onSuccess: () => {
       // The applied fix moves money figures — refresh every surface that shows them.
@@ -130,8 +138,8 @@ export function ProposedActionCard({ action }: { action: ProposedAction }) {
     action.kind === "set_deductibility"
       ? `${action.txn_ids.length} transaction(s) → ${STATE_LABEL[action.state] ?? action.state}${action.deductible_amount_cents != null ? ` (${money(action.deductible_amount_cents)} claimable)` : ""}`
       : action.kind === "recategorise"
-        ? `${action.txn_ids.length} transaction(s) → ${BUCKET_LABEL[action.bucket] ?? action.bucket}${action.ato_label ? ` (${action.ato_label})` : ""}`
-        : `“${action.pattern}” → ${BUCKET_LABEL[action.bucket] ?? action.bucket}${action.ato_label ? ` (${action.ato_label})` : ""} on future imports`;
+        ? `${action.txn_ids.length} transaction(s) → ${BUCKET_LABEL[action.bucket] ?? action.bucket}${action.ato_label ? ` (${action.ato_label})` : ""}${propertyLabel ? ` · ${propertyLabel}` : ""}`
+        : `“${action.pattern}” → ${BUCKET_LABEL[action.bucket] ?? action.bucket}${action.ato_label ? ` (${action.ato_label})` : ""}${propertyLabel ? ` · ${propertyLabel}` : ""} on future imports`;
   return (
     <div className="space-y-1 rounded-lg border border-dashed border-line bg-card p-2 text-xs">
       <p className="font-medium text-ink">{action.title}</p>

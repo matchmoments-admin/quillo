@@ -33,6 +33,17 @@ export function isIncomeBucket(bucket: string | null | undefined): boolean {
   return bucket != null && (INCOME_BUCKETS as readonly string[]).includes(bucket);
 }
 
+/** The buckets where a transaction property_id is VALID: rental-property expense (property_rented /
+ * property_vacant) and rent income (income_property). A property_id must NEVER ride along on any
+ * other bucket — switching a line to e.g. payg has to clear it, or its amount is silently counted
+ * against that property. Single source of truth for the property selector's render gate, the
+ * correction-batch clearing guard, and the chat-action validator (which independently restricts to
+ * DEBIT property buckets via the credit-bucket guard, so income_property never routes through chat). */
+export const PROPERTY_BUCKETS = ["property_rented", "property_vacant", "income_property"] as const;
+export function isPropertyBucket(bucket: string | null | undefined): boolean {
+  return bucket != null && (PROPERTY_BUCKETS as readonly string[]).includes(bucket);
+}
+
 /** First-class income kinds (income is modelled, never inferred from bank credits). */
 export const INCOME_TYPES = [
   "salary_payg",

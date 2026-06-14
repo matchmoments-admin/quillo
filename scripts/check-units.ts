@@ -251,6 +251,12 @@ console.log("clarify.groupForClarify");
   // Debit "Rental-property expense" now carries needs_property so the UI captures + persists a
   // property_id (was unattributed before) — symmetric with the credit rental-income answer.
   check("debit group offers Rental-property expense needing a property", big[0]!.suggestions.some((s) => s.kind === "bucket" && s.bucket === "property_rented" && s.needs_property === true));
+  // A mixed-direction group (same stem, both a credit and a debit) is treated as spend: it gets the
+  // DEBIT suggestion set (incl. the property-needing rental-expense answer) and NOT the credit-only
+  // rental-income answer — so a property selector still appears via the debit path, consistently.
+  const mixed = groupForClarify([mk("Smith Real Estate", "debit", 40000), mk("Smith Real Estate", "credit", 40000), mk("Smith Real Estate", "debit", 40000)]);
+  check("mixed-direction group is 'mixed'", mixed.length === 1 && mixed[0]!.direction === "mixed");
+  check("mixed group uses the debit set: Rental-property expense (needs_property), NOT income_property", mixed[0]!.suggestions.some((s) => s.bucket === "property_rented" && s.needs_property === true) && !mixed[0]!.suggestions.some((s) => s.kind === "income_property"));
   // Phase 6d — own-home rent routing: a tenant (renting_residence) sees a "rent I pay (private)" answer
   // on a rent-like debit group; without a tenant home, or on a non-rent group, it isn't offered.
   const rentRows = [mk("ANZ CARDS rent payment", "debit", 250000), mk("ANZ CARDS rent payment", "debit", 250000), mk("ANZ CARDS rent payment", "debit", 250000)];
@@ -1421,6 +1427,7 @@ console.log("Ask Quillo C3 (ask_actions): digest + proposed-action validation");
   const owned = new Set(["prop9"]);
   const vp = (raw: unknown) => validateProposedActions(raw, aliases, owned);
   check("property_id kept on a property-bucket recategorise to an OWNED property", (vp([{ ...base, kind: "recategorise", bucket: "property_rented", txn_refs: ["T2"], property_id: "prop9" }])[0] as { property_id?: string }).property_id === "prop9");
+  check("property_id kept on a property_vacant recategorise (both PROPERTY_BUCKETS members)", (vp([{ ...base, kind: "recategorise", bucket: "property_vacant", txn_refs: ["T2"], property_id: "prop9" }])[0] as { property_id?: string }).property_id === "prop9");
   check("property_id kept on an add_rule to an OWNED property", (vp([{ ...base, kind: "add_rule", pattern: "Smith RE", bucket: "property_rented", property_id: "prop9" }])[0] as { property_id?: string }).property_id === "prop9");
   check("property_id dropped on a NON-property bucket (payg) even if owned", (vp([{ ...base, kind: "recategorise", bucket: "payg", txn_refs: ["T1"], property_id: "prop9" }])[0] as { property_id?: string }).property_id === undefined);
   check("property_id dropped when the id is NOT one the tenant owns", (vp([{ ...base, kind: "recategorise", bucket: "property_rented", txn_refs: ["T2"], property_id: "ghost" }])[0] as { property_id?: string }).property_id === undefined);

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import { Button, BUCKET_LABEL } from "./ui";
 import { BUCKETS } from "../types";
@@ -8,6 +8,10 @@ import { BUCKETS } from "../types";
 // through an income answer in Clarify). "unknown" isn't a real target. The server rejects these too.
 const CREDIT_OR_UNKNOWN = new Set(["income_business", "income_property", "income_personal", "refund", "unknown"]);
 const PICKABLE = BUCKETS.filter((b) => !CREDIT_OR_UNKNOWN.has(b));
+// Rental-expense buckets need a property — a bulk re-bucket to one without a property_id would land
+// the rows unattributed (same defect #240 fixed in Clarify). Mirror that here: reveal a selector and
+// block Apply until a property is chosen.
+const PROPERTY_PICK = new Set(["property_rented", "property_vacant"]);
 
 export interface BulkDone {
   message: string;
@@ -24,7 +28,11 @@ export interface BulkDone {
 export function BulkBar({ ids, onClear, onDone }: { ids: string[]; onClear: () => void; onDone: (d: BulkDone) => void }) {
   const qc = useQueryClient();
   const [bucket, setBucket] = useState<string>("");
+  const [propertyId, setPropertyId] = useState<string>("");
   const [learnRule, setLearnRule] = useState(false);
+  const { data: situation } = useQuery({ queryKey: ["situation"], queryFn: api.situation });
+  const properties = situation?.properties ?? [];
+  const needsProperty = PROPERTY_PICK.has(bucket);
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ["transactions"] });
@@ -32,7 +40,12 @@ export function BulkBar({ ids, onClear, onDone }: { ids: string[]; onClear: () =
   };
 
   const apply = useMutation({
-    mutationFn: () => api.correctBatch(ids, [{ field: "bucket", value: bucket }], learnRule),
+    mutationFn: () =>
+      api.correctBatch(
+        ids,
+        [{ field: "bucket", value: bucket }, ...(needsProperty && propertyId ? [{ field: "property_id", value: propertyId }] : [])],
+        learnRule,
+      ),
     onSuccess: (r) => {
       const failed = r.failures.length ? `, ${r.failures.length} skipped` : "";
       const rule = r.rules_created ? ` · ${r.rules_created} rule${r.rules_created === 1 ? "" : "s"} remembered` : "";
@@ -60,7 +73,10 @@ export function BulkBar({ ids, onClear, onDone }: { ids: string[]; onClear: () =
       <span className="text-sm font-medium">{ids.length} selected</span>
       <select
         value={bucket}
-        onChange={(e) => setBucket(e.target.value)}
+        onChange={(e) => {
+          setBucket(e.target.value);
+          if (!PROPERTY_PICK.has(e.target.value)) setPropertyId(""); // leaving a property bucket clears the pick
+        }}
         disabled={busy}
         className="rounded-lg border border-white/20 bg-ink px-2 py-1 text-sm"
       >
@@ -71,11 +87,30 @@ export function BulkBar({ ids, onClear, onDone }: { ids: string[]; onClear: () =
           </option>
         ))}
       </select>
+      {needsProperty &&
+        (properties.length > 0 ? (
+          <select
+            value={propertyId}
+            onChange={(e) => setPropertyId(e.target.value)}
+            disabled={busy}
+            aria-label="Property"
+            className="rounded-lg border border-white/20 bg-ink px-2 py-1 text-sm"
+          >
+            <option value="">Which property?</option>
+            {properties.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.label}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <span className="text-xs text-white/70">Add a property first (Settings)</span>
+        ))}
       <label className="flex items-center gap-1.5 text-xs text-white/80" title="Also create a rule so future imports of these merchants are categorised automatically">
         <input type="checkbox" checked={learnRule} onChange={(e) => setLearnRule(e.target.checked)} disabled={busy} className="h-3.5 w-3.5" />
         Remember as a rule
       </label>
-      <Button onClick={() => apply.mutate()} disabled={busy || !bucket}>
+      <Button onClick={() => apply.mutate()} disabled={busy || !bucket || (needsProperty && !propertyId)}>
         {apply.isPending ? "Applying…" : "Apply"}
       </Button>
       <button

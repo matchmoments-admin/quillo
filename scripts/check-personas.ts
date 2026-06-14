@@ -382,6 +382,23 @@ async function main() {
     check("P11 #157: headline deductions match across both engines ($15.5k)", r11legacy.total_deductions_cents === r11.total_deductions_cents && r11.total_deductions_cents === 1550000);
   }
 
+  // ── Attribution regression (#240 follow-up): a property_rented debit attributes to a property ONLY
+  // when it carries a property_id. The harness is engine-only (buildReport), so this pins the behaviour
+  // the import/clarify paths feed: a learned property-scoped rule MUST stamp property_id (M1), or the
+  // expense deducts at the headline but never appears in the property's schedule. ──
+  {
+    const u = "pattr";
+    seedTenant(u, "Attribution");
+    run(`INSERT INTO properties (id, user_id, label, status, use_status) VALUES ('paUnit', ?, 'Attr Unit', 'rented', 'rented')`, u);
+    exp("paWith", u, 60000, "property_rented", "likely_deductible", "paUnit"); // $600 attributed to paUnit
+    exp("paNull", u, 40000, "property_rented", "likely_deductible", null);      // $400 with NO property
+    const ra = await buildReport(env, u, 2025);
+    const prop = ra.per_property?.find((p) => p.property_id === "paUnit");
+    check("#240: a property_rented debit WITH property_id lands in that property's deductions ($600)", prop?.deduction_cents === 60000);
+    check("#240: a NULL-property rental expense does NOT inflate the property ($600, not $1000)", prop?.deduction_cents === 60000);
+    check("#240: both rental expenses still deduct at the headline ($1000) — attribution ≠ deductibility", ra.total_deductions_cents === 100000);
+  }
+
   // ── Persona 12 (S3/S4): content creator — the generalised self-employed spine ──
   // Brand-deal business income, foreign-sourced platform (AdSense) income WITH foreign tax (→ FITO), a
   // gifted product captured at market value but EXCLUDED from the position, a part-time salary + bank

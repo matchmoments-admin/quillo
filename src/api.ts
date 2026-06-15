@@ -170,6 +170,16 @@ export async function handleApi(
       return json({ error: (e as Error).message }, 400);
     }
   }
+  // #130: one-click — record a money-in (credit) line as income for its tagged property, linked so it
+  // counts once. Flag-gated (record_credit_income); the per-txn equivalent of the Clarify income answer.
+  if (resource === "transactions" && id && sub === "record-income" && m === "POST") {
+    if (!featureOn(env, "record_credit_income")) return json({ error: "not available" }, 404);
+    try {
+      return json(await stub.recordTxnAsIncome(uid, id));
+    } catch (e) {
+      return json({ error: (e as Error).message }, 400);
+    }
+  }
 
   // GET /api/transactions  ·  GET /api/transactions/:id
   if (resource === "transactions" && m === "GET") {

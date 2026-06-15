@@ -147,6 +147,11 @@ export interface Report {
   // Excluded from every company position and surfaced as a review item — never silently dropped.
   company_unattributed_cents?: number;
   company_unattributed_n?: number;
+  // Rental-bucketed spend (property_rented/property_vacant) with property_id IS NULL: deducts at the
+  // headline but is absent from every per-property schedule, so a property's position is silently short.
+  // Surfaced as a readiness review item (set the property on those lines). Mirrors company_unattributed.
+  property_unattributed_cents?: number;
+  property_unattributed_n?: number;
   // Phase #138: net capital gain (shares/crypto/property disposals; 50% discount; loss offset/carry).
   // Present only when the cgt_engine flag is on AND there are CGT events. net_capital_gain_cents is
   // ADDED to taxable_position_cents (it's assessable income). undefined ⇒ byte-identical legacy totals.
@@ -397,6 +402,20 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   )
     .bind(userId, start, end, ...supersededLoanIds)
     .all<{ property_id: string; label: string | null; deductibility: string; reimbursed: number; use_status_denied: number; n: number; total_cents: number }>();
+
+  // Rental-bucketed spend with NO property: it counts at the headline (byBucket has no property filter)
+  // but is absent from every per-property schedule (byPropertyRaw filters property_id IS NOT NULL), so a
+  // property's negative-gearing position is silently short. Surfaced as a readiness 'review' nudge —
+  // mirrors company_unattributed. Same filter set as byBucket so the count is exactly the headline rows.
+  const propertyUnattributed = await env.DB.prepare(
+    `SELECT COUNT(*) AS n, COALESCE(SUM(${amtExpr}),0) AS total_cents
+       FROM transactions
+      WHERE user_id = ? AND txn_date >= ? AND txn_date <= ?
+        AND bucket IN ('property_rented','property_vacant') AND property_id IS NULL
+        AND ${COUNTABLE}${notAttributed("transactions.id")}${excludeSplitInterest("")}`,
+  )
+    .bind(userId, start, end, ...supersededLoanIds)
+    .first<{ n: number; total_cents: number }>();
 
   // Receipts with no (or unparseable) date can't be assigned to any FY — surface them
   // explicitly instead of letting the date filter silently drop them from every report.
@@ -793,6 +812,8 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
     company_positions: company_positions.length ? company_positions : undefined,
     company_unattributed_cents: companyResult.unattributed_cents || undefined,
     company_unattributed_n: companyResult.unattributed_n || undefined,
+    property_unattributed_cents: (propertyUnattributed?.total_cents || 0) || undefined,
+    property_unattributed_n: (propertyUnattributed?.n || 0) || undefined,
     capital_gains,
     ess,
     gst,

@@ -3,15 +3,12 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import { Button, BUCKET_LABEL } from "./ui";
 import { BUCKETS } from "../types";
+import { isPropertyBucket } from "../lib/buckets";
 
 // Income/refund are credits — re-categorising them here would double-count income (they must route
 // through an income answer in Clarify). "unknown" isn't a real target. The server rejects these too.
 const CREDIT_OR_UNKNOWN = new Set(["income_business", "income_property", "income_personal", "refund", "unknown"]);
 const PICKABLE = BUCKETS.filter((b) => !CREDIT_OR_UNKNOWN.has(b));
-// Rental-expense buckets need a property — a bulk re-bucket to one without a property_id would land
-// the rows unattributed (same defect #240 fixed in Clarify). Mirror that here: reveal a selector and
-// block Apply until a property is chosen.
-const PROPERTY_PICK = new Set(["property_rented", "property_vacant"]);
 
 export interface BulkDone {
   message: string;
@@ -32,7 +29,7 @@ export function BulkBar({ ids, onClear, onDone }: { ids: string[]; onClear: () =
   const [learnRule, setLearnRule] = useState(false);
   const { data: situation } = useQuery({ queryKey: ["situation"], queryFn: api.situation });
   const properties = situation?.properties ?? [];
-  const needsProperty = PROPERTY_PICK.has(bucket);
+  const needsProperty = isPropertyBucket(bucket); // pickable property buckets are property_rented/_vacant (income_property isn't selectable here)
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ["transactions"] });
@@ -75,7 +72,7 @@ export function BulkBar({ ids, onClear, onDone }: { ids: string[]; onClear: () =
         value={bucket}
         onChange={(e) => {
           setBucket(e.target.value);
-          if (!PROPERTY_PICK.has(e.target.value)) setPropertyId(""); // leaving a property bucket clears the pick
+          if (!isPropertyBucket(e.target.value)) setPropertyId(""); // leaving a property bucket clears the pick
         }}
         disabled={busy}
         className="rounded-lg border border-white/20 bg-ink px-2 py-1 text-sm"

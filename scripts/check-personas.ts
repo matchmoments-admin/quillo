@@ -397,6 +397,8 @@ async function main() {
     check("#240: a property_rented debit WITH property_id lands in that property's deductions ($600)", prop?.deduction_cents === 60000);
     check("#240: a NULL-property rental expense does NOT inflate the property ($600, not $1000)", prop?.deduction_cents === 60000);
     check("#240: both rental expenses still deduct at the headline ($1000) — attribution ≠ deductibility", ra.total_deductions_cents === 100000);
+    // Slice A (#189): the NULL-property rental expense ($400 paNull) is surfaced as an unattributed count.
+    check("#189: NULL-property rental spend is counted as unattributed (1 txn / $400)", ra.property_unattributed_n === 1 && ra.property_unattributed_cents === 40000);
   }
 
   // ── Persona 12 (S3/S4): content creator — the generalised self-employed spine ──

@@ -989,6 +989,12 @@ console.log("readiness");
   check("rental income + no agent summary → finding", rental.findings.some((f) => f.id === "rental_no_summary:p1"));
   check("rental income + no depreciation → info finding", rental.findings.some((f) => f.id === "no_depreciation:p1" && f.severity === "info"));
 
+  // #189 — rental spend with no property → 'review' nudge (doesn't block readiness); zero ⇒ no finding.
+  const propUnattr = run(mkReport({ property_unattributed_n: 2, property_unattributed_cents: 80_000 }), noSignals());
+  check("unattributed rental spend → property_unattributed review finding", propUnattr.findings.some((f) => f.id === "property_unattributed" && f.severity === "review"));
+  check("property_unattributed is a review item, not a blocker", !propUnattr.findings.some((f) => f.id === "property_unattributed" && f.severity === "blocker"));
+  check("no unattributed rental spend → no property_unattributed finding", !run(mkReport(), noSignals()).findings.some((f) => f.id === "property_unattributed"));
+
   // IAWO threshold change → info + defer.
   const iawo = run(mkReport(), noSignals({ instantAssetWriteOffCentsThisFy: 10_000_000, instantAssetWriteOffCentsPrevFy: 200_000_000 }));
   check("IAWO threshold change → defer finding", iawo.findings.some((f) => f.id === "iawo_threshold_changed" && f.defer_to_agent));

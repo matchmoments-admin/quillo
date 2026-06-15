@@ -365,6 +365,8 @@ export const api = {
   siblingsPreview: (txnId: string) => get<{ n: number; total_cents: number; group_key: string | null }>(`/api/transactions/${txnId}/siblings`),
   applyToSiblings: (txnId: string, edit: { bucket?: string; ato_label?: string; property_id?: string }, learn_rule = true) =>
     post<{ applied: number; batch_id: string; rule_created: boolean; group_key: string | null }>(`/api/transactions/${txnId}/apply-to-siblings`, { edit, learn_rule }),
+  // #130: record a money-in line as income for its tagged property, linked so it counts once.
+  recordTxnIncome: (txnId: string) => post<{ income_id: string | null }>(`/api/transactions/${txnId}/record-income`, {}),
 
   // Phase 4 — "Do my books" accountant pass
   runAccountantPass: (fy?: number) => post<AccountantSummary>(`/api/accountant/run${fy != null ? `?fy=${fy}` : ""}`),

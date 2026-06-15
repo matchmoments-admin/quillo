@@ -7,6 +7,7 @@ import { BUCKET_LABEL, Card, Spinner, money, ConfidencePill, InfoTip, getBaseCur
 import { GLOSSARY, type GlossaryKey } from "../content/glossary";
 import { AttributionPanel } from "../components/AttributionPanel";
 import { useFeatures } from "../lib/features";
+import { isPropertyBucket } from "../lib/buckets";
 
 export function TxnDetail() {
   const { id = "" } = useParams();
@@ -103,6 +104,17 @@ export function TxnDetail() {
       navigate("/inbox");
     },
   });
+
+  // #130: record a rent credit (already tagged to a property + saved) as that property's rental income,
+  // linked so it counts once. Reads the PERSISTED bucket/property, so the user saves the tag first.
+  const recordIncome = useMutation({
+    mutationFn: () => api.recordTxnIncome(id),
+    onSuccess: () => {
+      for (const k of ["income", "report", "dashboard", "transactions", "filing-readiness"]) qc.invalidateQueries({ queryKey: [k] });
+      qc.invalidateQueries({ queryKey: ["txn", id] });
+    },
+  });
+  const canRecordIncome = has("record_credit_income") && txn?.bucket === "income_property" && !!txn?.property_id && txn?.direction === "credit" && txn?.status !== "ignored";
 
   const reimb = useMutation({
     mutationFn: (v: boolean) => api.setTxnReimbursed(id, v),
@@ -259,7 +271,21 @@ export function TxnDetail() {
                   ))}
                 </select>
                 {bucket === "income_property" && (
-                  <span className="mt-1 block text-xs text-muted">Tagging the property attributes this credit. To make it count in the position, record it as rental income (or link it under "possible duplicate income"). General info only.</span>
+                  canRecordIncome ? (
+                    <div className="mt-1 flex flex-wrap items-center gap-2">
+                      <button
+                        onClick={() => recordIncome.mutate()}
+                        disabled={recordIncome.isPending || recordIncome.isSuccess}
+                        className="rounded-lg border border-line bg-surface px-2.5 py-1 text-xs font-medium hover:bg-card disabled:opacity-50"
+                      >
+                        {recordIncome.isSuccess ? "Recorded ✓" : recordIncome.isPending ? "Recording…" : "Record as rental income"}
+                      </button>
+                      <span className="text-xs text-muted">Counts it once as this property's rent (links the credit). General info only.</span>
+                      {recordIncome.isError && <span className="text-xs text-danger">{(recordIncome.error as Error).message}</span>}
+                    </div>
+                  ) : (
+                    <span className="mt-1 block text-xs text-muted">Tagging the property attributes this credit. Save it, then "Record as rental income" makes it count once (or link it under "possible duplicate income"). General info only.</span>
+                  )
                 )}
               </label>
             )}
@@ -438,13 +464,6 @@ export function TxnDetail() {
 const MONEY_IN_BUCKETS = ["income_business", "income_property", "income_personal", "refund"];
 function isSpendBucket(b: string): boolean {
   return !!b && !MONEY_IN_BUCKETS.includes(b);
-}
-
-// Buckets the property selector is shown for (rental expense + rent income) — must match the render
-// gate below. A property_id is cleared on any other bucket so it can't ride along on, e.g., a payg row.
-const PROPERTY_BUCKETS = ["property_rented", "property_vacant", "income_property"];
-function isPropertyBucket(b: string): boolean {
-  return PROPERTY_BUCKETS.includes(b);
 }
 
 // AU financial year (Jul–Jun) label for a YYYY-MM-DD date, or null if missing/unparseable.

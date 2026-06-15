@@ -1590,6 +1590,9 @@ export class TaxAgent extends Agent<Env> {
     },
   ): Promise<string> {
     const id = crypto.randomUUID();
+    // A property_id reaching the income table from the untrusted POST must belong to this tenant —
+    // assertOwns no-ops on null/undefined, so trusted internal callers (clarify/payslip) are unaffected.
+    await assertOwns(this.env, userId, [{ table: "properties", id: inc.property_id ?? undefined, label: "property" }]);
     const currency = (inc.currency ?? "AUD").trim().toUpperCase();
     const jur = await this.jurisdictionFor(userId);
     const baseCur = baseCurrencyOf(this.env, jur); // tenant's base currency (AU 'AUD' ⇒ byte-identical)
@@ -4100,6 +4103,57 @@ export class TaxAgent extends Agent<Env> {
    * and exclude the bank credit (status='ignored') so the rent counts exactly once (B4/B5). Re-bucket
    * answers go through the Phase-2 applyCorrectionBatch seam (shared batch_id, deductibility re-stamp).
    */
+  /**
+   * Record ONE credit bank-line as income and link it (matched_income_id + status='ignored') so the
+   * credit and the income row count once. Passes the NATIVE amount + currency so recordIncome does the
+   * AUD conversion and preserves FX provenance. Returns the income id, or null when the line isn't an
+   * eligible unlinked credit. Shared by the Clarify group answer and the single-txn "record as income".
+   */
+  private async recordCreditAsIncome(
+    userId: string,
+    r: { id: string; direction: string | null; matched_income_id: string | null; amount_cents: number | null; amount_aud_cents: number | null; currency: string | null; txn_date: string | null },
+    opts: { incomeType: string; propertyId?: string | null; fy: string | null },
+  ): Promise<string | null> {
+    if (r.direction !== "credit") return null; // income answers act on credits only
+    if (r.matched_income_id) return null; // already linked → dedupe (B4)
+    const incomeId = await this.recordIncome(userId, {
+      income_type: opts.incomeType,
+      gross_cents: r.amount_cents ?? r.amount_aud_cents ?? 0,
+      currency: r.currency ?? "AUD",
+      property_id: opts.propertyId ?? null,
+      txn_date: r.txn_date,
+      fy: opts.fy,
+    });
+    await this.env.DB.prepare(`UPDATE transactions SET matched_income_id = ?, status = 'ignored' WHERE id = ? AND user_id = ?`).bind(incomeId, r.id, userId).run();
+    return incomeId;
+  }
+
+  /**
+   * #130: one-click — record a single rent/income credit as income for its tagged property and link
+   * it (single-count). Derives income_type from the line's bucket (income_property→rent). Flag-gated
+   * (`record_credit_income`) at the route. The per-txn equivalent of the Clarify group income answer.
+   */
+  async recordTxnAsIncome(userId: string, txnId: string): Promise<{ income_id: string | null }> {
+    const r = await this.env.DB.prepare(
+      `SELECT id, direction, matched_income_id, amount_cents, amount_aud_cents, currency, txn_date, bucket, property_id
+         FROM transactions WHERE id = ? AND user_id = ?`,
+    )
+      .bind(txnId, userId)
+      .first<{ id: string; direction: string | null; matched_income_id: string | null; amount_cents: number | null; amount_aud_cents: number | null; currency: string | null; txn_date: string | null; bucket: string | null; property_id: string | null }>();
+    if (!r) throw new Error("transaction not found");
+    if (r.direction !== "credit") throw new Error("only a money-in (credit) line can be recorded as income");
+    if (r.matched_income_id) throw new Error("this line is already recorded as income");
+    // Only an income-bucketed credit can be recorded as income — guard against a mis-bucketed (payg /
+    // company / unknown) line being silently filed as 'personal' income.
+    if (r.bucket !== "income_property" && r.bucket !== "income_business" && r.bucket !== "income_personal")
+      throw new Error("categorise this as income (rental / business / personal) before recording it");
+    const incomeType = r.bucket === "income_property" ? "rent" : r.bucket === "income_business" ? "business" : "personal";
+    // fy: null ⇒ recordIncome derives it from the line's date (its standard fallback).
+    const incomeId = await this.recordCreditAsIncome(userId, r, { incomeType, propertyId: r.property_id, fy: null });
+    await this.audit(userId, "record_txn_income", JSON.stringify({ txnId, income_id: incomeId, income_type: incomeType }));
+    return { income_id: incomeId };
+  }
+
   async answerClarify(userId: string, questionId: string, answer: ClarifyAnswer): Promise<{ applied: number; income_recorded: number }> {
     const q = await this.env.DB.prepare(
       `SELECT id, fy, group_key, status FROM clarify_questions WHERE id = ? AND user_id = ?`,
@@ -4148,20 +4202,8 @@ export class TaxAgent extends Agent<Env> {
       const incomeType = answer.kind === "income_property" ? "rent" : answer.kind === "income_business" ? "business" : "personal";
       let income_recorded = 0;
       for (const r of group) {
-        if (r.direction !== "credit") continue; // income answers act on credits only
-        if (r.matched_income_id) continue; // already linked → dedupe (B4)
-        // Pass the NATIVE amount + currency so recordIncome does the AUD conversion and preserves FX
-        // provenance (a foreign rent credit must not be relabelled native-AUD).
-        const incomeId = await this.recordIncome(userId, {
-          income_type: incomeType,
-          gross_cents: r.amount_cents ?? r.amount_aud_cents ?? 0,
-          currency: r.currency ?? "AUD",
-          property_id: answer.property_id ?? null,
-          txn_date: r.txn_date,
-          fy: fyLabel(parseFyStartYear(q.fy)),
-        });
-        await this.env.DB.prepare(`UPDATE transactions SET matched_income_id = ?, status = 'ignored' WHERE id = ? AND user_id = ?`).bind(incomeId, r.id, userId).run();
-        income_recorded++;
+        const incomeId = await this.recordCreditAsIncome(userId, r, { incomeType, propertyId: answer.property_id ?? null, fy: fyLabel(parseFyStartYear(q.fy)) });
+        if (incomeId) income_recorded++;
       }
       // NB: deliberately NO user_rule for income — a bucketing rule would tag future credits
       // income_* WITHOUT recording them in the income table (the headline source), under-counting

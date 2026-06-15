@@ -40,6 +40,7 @@ async function runDelete(
 }
 import { EntityFields, PropertyFields, PersonFields, entityToBody, entityToValue, propertyToBody, personToBody, personToValue, emptyEntity, emptyProperty, emptyPerson, OWNED_STATUSES, TENANT_STATUSES, USE_STATUSES, DENY_USE_STATUSES, isTenantStatus, useStatusLabel, propertyStatusLabel, type EntityValue, type PersonValue, type PropertyValue } from "../components/SituationFields";
 import type { Person, Account, Property, LoanProperty, IncomeActivity } from "../types";
+import { isPropertyBucket } from "../lib/buckets";
 
 const input = "rounded-lg border border-line bg-card px-3 py-2 text-sm";
 const btn = "rounded-lg bg-ink px-3 py-2 text-sm font-medium text-white hover:bg-ink/90 disabled:opacity-50";
@@ -189,10 +190,10 @@ export function Settings() {
       {/* Rules */}
       <Section title={<>Per-user rules <InfoTip k="user_rules" /></>}>
         {s.rules.map((r) => (
-          <EditableRule key={r.id} rule={r} onDone={invalidate} />
+          <EditableRule key={r.id} rule={r} properties={s.properties} onDone={invalidate} />
         ))}
         {!s.rules.length && <Empty>No rules yet. Add a shortcut like "Ray White → rental agent" — or just correct the same merchant twice and Quillo will offer to learn it for you.</Empty>}
-        <AddRule onDone={invalidate} />
+        <AddRule properties={s.properties} onDone={invalidate} />
         <p className="px-1 pt-1 text-xs text-muted">
           Matching is case-insensitive and matches any merchant <em>containing</em> the text; the highest-priority rule wins.
           Quillo also auto-learns a rule when you correct the same merchant twice — you'll get an alert when it does.
@@ -676,18 +677,23 @@ function EditableEntity({ entity, onDone }: { entity: { id: string; kind: string
   );
 }
 
-function EditableRule({ rule, onDone }: { rule: { id: string; pattern: string; bucket: string; ato_label: string }; onDone: () => void }) {
+function EditableRule({ rule, properties, onDone }: { rule: { id: string; pattern: string; bucket: string; ato_label: string; property_id?: string | null }; properties: Property[]; onDone: () => void }) {
   const [editing, setEditing] = useState(false);
   const [pattern, setPattern] = useState(rule.pattern);
   const [bucket, setBucket] = useState(rule.bucket);
   const [label, setLabel] = useState(rule.ato_label);
-  const save = useMutation({ mutationFn: () => api.updateRule(rule.id, { pattern, bucket, ato_label: label }), onSuccess: () => { setEditing(false); onDone(); } });
+  const [propertyId, setPropertyId] = useState(rule.property_id ?? "");
+  // A property only belongs on a property bucket — clear it (→ NULL) when the rule isn't one, so a
+  // learned rule can't route, e.g., a payg expense to a property.
+  const effPropId = isPropertyBucket(bucket) ? propertyId : "";
+  const save = useMutation({ mutationFn: () => api.updateRule(rule.id, { pattern, bucket, ato_label: label, property_id: effPropId || null }), onSuccess: () => { setEditing(false); onDone(); } });
   if (!editing) {
+    const propLabel = rule.property_id ? properties.find((p) => p.id === rule.property_id)?.label : null;
     return (
       <div className="flex items-center justify-between rounded-lg bg-surface px-3 py-2 text-sm">
-        <span className="truncate">"{rule.pattern}" → {BUCKET_LABEL[rule.bucket] ?? rule.bucket} · {rule.ato_label}</span>
+        <span className="truncate">"{rule.pattern}" → {BUCKET_LABEL[rule.bucket] ?? rule.bucket} · {rule.ato_label}{propLabel ? ` · ${propLabel}` : ""}</span>
         <div className="flex flex-none gap-3">
-          <button onClick={() => { setPattern(rule.pattern); setBucket(rule.bucket); setLabel(rule.ato_label); setEditing(true); }} className={del}>edit</button>
+          <button onClick={() => { setPattern(rule.pattern); setBucket(rule.bucket); setLabel(rule.ato_label); setPropertyId(rule.property_id ?? ""); setEditing(true); }} className={del}>edit</button>
           <button onClick={() => api.deleteRule(rule.id).then(onDone)} className={del}>delete</button>
         </div>
       </div>
@@ -702,6 +708,14 @@ function EditableRule({ rule, onDone }: { rule: { id: string; pattern: string; b
         ))}
       </select>
       <input className={`${input} flex-1`} value={label} onChange={(e) => setLabel(e.target.value)} />
+      {isPropertyBucket(bucket) && (
+        <select className={input} value={propertyId} onChange={(e) => setPropertyId(e.target.value)} aria-label="Property">
+          <option value="">— property (optional) —</option>
+          {properties.map((p) => (
+            <option key={p.id} value={p.id}>{p.label}</option>
+          ))}
+        </select>
+      )}
       <button className={btn} disabled={!pattern || !label || save.isPending} onClick={() => save.mutate()}>Save</button>
       <button className={del} onClick={() => setEditing(false)}>cancel</button>
     </div>
@@ -751,13 +765,15 @@ function AddEntity({ onDone }: { onDone: () => void }) {
   );
 }
 
-function AddRule({ onDone }: { onDone: () => void }) {
+function AddRule({ properties, onDone }: { properties: Property[]; onDone: () => void }) {
   const [pattern, setPattern] = useState("");
   const [bucket, setBucket] = useState("company");
   const [label, setLabel] = useState("");
+  const [propertyId, setPropertyId] = useState("");
+  const effPropId = isPropertyBucket(bucket) ? propertyId : "";
   const m = useMutation({
-    mutationFn: () => api.addRule({ pattern, bucket, ato_label: label }),
-    onSuccess: () => { setPattern(""); setLabel(""); onDone(); },
+    mutationFn: () => api.addRule({ pattern, bucket, ato_label: label, property_id: effPropId || undefined }),
+    onSuccess: () => { setPattern(""); setLabel(""); setPropertyId(""); onDone(); },
   });
   return (
     <div className="flex flex-wrap gap-2 pt-2">
@@ -770,6 +786,14 @@ function AddRule({ onDone }: { onDone: () => void }) {
         ))}
       </select>
       <input className={`${input} flex-1`} placeholder="ATO label" value={label} onChange={(e) => setLabel(e.target.value)} />
+      {isPropertyBucket(bucket) && (
+        <select className={input} value={propertyId} onChange={(e) => setPropertyId(e.target.value)} aria-label="Property">
+          <option value="">— property (optional) —</option>
+          {properties.map((p) => (
+            <option key={p.id} value={p.id}>{p.label}</option>
+          ))}
+        </select>
+      )}
       <button className={btn} disabled={!pattern || !label || m.isPending} onClick={() => m.mutate()}>
         Add
       </button>

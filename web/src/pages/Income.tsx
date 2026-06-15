@@ -396,12 +396,17 @@ function AddIncomeForm({ fy, onDone }: { fy: string; onDone: () => void }) {
   const [franking, setFranking] = useState("");
   const [date, setDate] = useState("");
   const [entityId, setEntityId] = useState("");
+  const [propertyId, setPropertyId] = useState("");
   const [mf, setMf] = useState<Record<MfKey, string>>(() => Object.fromEntries(MF_FIELDS.map((f) => [f.key, ""])) as Record<MfKey, string>);
   // Entities you can attribute income to (company / trust / SMSF). Default "" = you (the individual).
   // SMSF/company/trust are separate taxpayers, so attributing fund earnings here keeps them off your
   // personal position and feeds the per-entity reads (e.g. smsfFundPositions sums income by entity_id).
   const { data: sit } = useQuery({ queryKey: ["situation"], queryFn: () => api.situation() });
   const entities = (sit?.entities ?? []).filter((e) => e.kind === "company" || e.kind === "trust" || e.kind === "smsf");
+  // Rent income must attribute to a property, or it never reaches that property's per-property schedule
+  // (report filters property_id IS NOT NULL). Required when the tenant has any property.
+  const properties = sit?.properties ?? [];
+  const needsProperty = type === "rent" || type === "foreign_rent";
 
   // The component form shows ONLY for a personal managed-fund distribution (cgtTotals isn't entity-scoped,
   // so an entity's capital gain would leak into the personal headline → component capture is personal-only).
@@ -427,6 +432,7 @@ function AddIncomeForm({ fy, onDone }: { fy: string; onDone: () => void }) {
             income_type: type, fy,
             gross_cents: c(gross), withholding_cents: c(withheld), franking_credit_cents: c(franking),
             txn_date: date || null, entity_id: entityId || null,
+            property_id: needsProperty ? propertyId || null : null,
           }),
     onSuccess: onDone,
   });
@@ -443,6 +449,14 @@ function AddIncomeForm({ fy, onDone }: { fy: string; onDone: () => void }) {
             <select className="mt-1 w-full rounded-lg border border-line px-3 py-2 text-sm" value={entityId} onChange={(e) => setEntityId(e.target.value)}>
               <option value="">Me (individual)</option>
               {entities.map((e) => <option key={e.id} value={e.id}>{e.name ?? e.kind}</option>)}
+            </select>
+          </label>
+        )}
+        {needsProperty && properties.length > 0 && (
+          <label className="text-sm">Property
+            <select className="mt-1 w-full rounded-lg border border-line px-3 py-2 text-sm" value={propertyId} onChange={(e) => setPropertyId(e.target.value)}>
+              <option value="">— choose —</option>
+              {properties.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
             </select>
           </label>
         )}
@@ -477,7 +491,8 @@ function AddIncomeForm({ fy, onDone }: { fy: string; onDone: () => void }) {
         <p className="text-xs text-muted">Component capture is for personal distributions only right now — attributing to an entity records a single gross amount.</p>
       )}
 
-      <Button onClick={() => add.mutate()} disabled={add.isPending || (isMf ? !mfHasAny : !gross)}>{add.isPending ? "Saving…" : "Save income"}</Button>
+      <Button onClick={() => add.mutate()} disabled={add.isPending || (isMf ? !mfHasAny : !gross) || (needsProperty && properties.length > 0 && !propertyId)}>{add.isPending ? "Saving…" : "Save income"}</Button>
+      {needsProperty && properties.length > 0 && !propertyId && <p className="text-xs text-muted">Choose which property this rent is for so it counts in that property's position.</p>}
       {add.error && <p className="text-sm text-danger">{(add.error as Error).message}</p>}
     </Card>
   );

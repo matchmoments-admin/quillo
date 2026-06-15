@@ -366,6 +366,11 @@ export function assessReadiness(input: {
       `These total ${money(report.company_unattributed_cents ?? 0)}. With more than one company, a plain "company" expense can't be auto-assigned, so it's EXCLUDED from every company's position. Assign each to the company that incurred it (set its attribution) so it's counted.`, false,
       [{ kind: "transaction", count: report.company_unattributed_n }]));
   }
+  if ((report.property_unattributed_n ?? 0) > 0) {
+    findings.push(f("property_unattributed", "classification", "review", `${report.property_unattributed_n} rental-property expense(s) aren't assigned to a property`,
+      `These total ${money(report.property_unattributed_cents ?? 0)}. They still reduce your overall deductions, but without a property they're absent from each property's per-property schedule — so a property's negative-gearing position reads short. Open each line and set which property it belongs to.`, false,
+      [{ kind: "transaction", count: report.property_unattributed_n }]));
+  }
   if (signals.needsReviewAssetsN > 0) {
     findings.push(f("assets_needs_review", "depreciation", "review", `${signals.needsReviewAssetsN} asset(s) flagged for review`,
       `Some depreciating assets need confirmation (cost, date or effective life) before their decline-in-value is reliable.`, false,

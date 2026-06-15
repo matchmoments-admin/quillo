@@ -125,7 +125,10 @@ export function ProposedActionCard({ action }: { action: ProposedAction }) {
           ...(action.ato_label ? [{ field: "ato_label", value: action.ato_label }] : []),
           ...(action.property_id ? [{ field: "property_id", value: action.property_id }] : []),
         ];
-        return api.correctBatch(action.txn_ids, edits, false);
+        // learn_rule=true: also remember this merchant so future imports auto-apply (parity with the
+        // Clarify / apply-to-siblings paths — chat was the only correction that didn't). Surfaced in the
+        // card copy below so it's never silent. Server rejects credit buckets + dedupes the rule.
+        return api.correctBatch(action.txn_ids, edits, true);
       }
       return api.addRule({ pattern: action.pattern, bucket: action.bucket, ato_label: action.ato_label ?? "", ...(action.property_id ? { property_id: action.property_id } : {}) });
     },
@@ -138,7 +141,7 @@ export function ProposedActionCard({ action }: { action: ProposedAction }) {
     action.kind === "set_deductibility"
       ? `${action.txn_ids.length} transaction(s) → ${STATE_LABEL[action.state] ?? action.state}${action.deductible_amount_cents != null ? ` (${money(action.deductible_amount_cents)} claimable)` : ""}`
       : action.kind === "recategorise"
-        ? `${action.txn_ids.length} transaction(s) → ${BUCKET_LABEL[action.bucket] ?? action.bucket}${action.ato_label ? ` (${action.ato_label})` : ""}${propertyLabel ? ` · ${propertyLabel}` : ""}`
+        ? `${action.txn_ids.length} transaction(s) → ${BUCKET_LABEL[action.bucket] ?? action.bucket}${action.ato_label ? ` (${action.ato_label})` : ""}${propertyLabel ? ` · ${propertyLabel}` : ""} · and remember this merchant`
         : `“${action.pattern}” → ${BUCKET_LABEL[action.bucket] ?? action.bucket}${action.ato_label ? ` (${action.ato_label})` : ""}${propertyLabel ? ` · ${propertyLabel}` : ""} on future imports`;
   return (
     <div className="space-y-1 rounded-lg border border-dashed border-line bg-card p-2 text-xs">

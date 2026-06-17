@@ -170,9 +170,11 @@ export function exclusionReason(
   deductibility: string | null | undefined,
   reimbursed?: number | null,
   useStatusDenied?: number | null,
+  propertyUndetermined?: number | null,
 ): string {
   if (reimbursed) return "Employer-reimbursed — the employer bore the cost, so it isn't a deductible loss or outgoing (s8-1).";
   if (useStatusDenied) return "Property held rent-free / off-market while renovating — it earns no assessable income, so holding costs aren't deductible (s8-1); CGT cost base may still accrue.";
+  if (propertyUndetermined) return "Property expense not yet attributed to an income-producing property — it has no property assigned, or the property's rental status isn't set to rented / genuinely available for rent. It can't be claimed until you confirm the property and that it earns (or is genuinely available to earn) assessable rent. General information only — confirm with a registered tax agent.";
   return excludedWhy(bucket, deductibility);
 }
 
@@ -187,9 +189,11 @@ export function assessReadiness(input: {
   signals: FilingReadinessSignals;
   generatedAt: string;
   excludeNonDeductible?: boolean; // mirrors the `position_excludes_nondeductible` flag (default off = legacy)
+  excludePropertyUndetermined?: boolean; // mirrors the `position_excludes_property_undetermined` flag (#254; default off = legacy)
 }): FilingReadiness {
   const { report, situation, claimMatches, signals, generatedAt } = input;
   const excludeNonDeductible = input.excludeNonDeductible ?? false;
+  const excludePropertyUndetermined = input.excludePropertyUndetermined ?? false;
   const findings: ReadinessFinding[] = [];
 
   // ── (1) position with reasoning — straight from the report, no new maths ──
@@ -243,9 +247,15 @@ export function assessReadiness(input: {
   let paygUnresolvedN = 0;
   for (const b of report.deduction_breakdown) {
     if (b.bucket === "unknown") continue; // surfaced via the unknown_bucket blocker, not as a line
-    const group = deductionGroupForRow(b.bucket, b.deductibility, excludeNonDeductible, b.reimbursed, b.use_status_denied);
+    const group = deductionGroupForRow(b.bucket, b.deductibility, excludeNonDeductible, b.reimbursed, b.use_status_denied, b.property_undetermined);
     const label = b.ato_label ? `${b.bucket} · ${b.ato_label}` : b.bucket;
-    const why = group === "deduction" ? bucketWhy(b.bucket) : group === "company" ? bucketWhy("company") : excludedWhy(b.bucket, b.deductibility);
+    // A property-undetermined row (#254) is excluded for a SPECIFIC reason — explain it via exclusionReason
+    // rather than the generic excludedWhy (which keys off deductibility and would mislead, e.g. printing a
+    // "likely deductible" rationale for a row the position is actually dropping). Only fires when the flag
+    // is on (b.property_undetermined is 0 otherwise), so the legacy excluded `why` is byte-identical.
+    const why = group === "deduction" ? bucketWhy(b.bucket) : group === "company" ? bucketWhy("company")
+      : b.property_undetermined ? exclusionReason(b.bucket, b.deductibility, b.reimbursed, b.use_status_denied, b.property_undetermined)
+      : excludedWhy(b.bucket, b.deductibility);
     lines.push({ group, label, amount_cents: b.total_cents, basis: `${b.n} countable transaction(s)`, why });
     if (excludeNonDeductible && b.bucket === "payg" && (b.deductibility ?? "undetermined") === "undetermined") {
       paygUnresolvedCents += b.total_cents;
@@ -367,8 +377,14 @@ export function assessReadiness(input: {
       [{ kind: "transaction", count: report.company_unattributed_n }]));
   }
   if ((report.property_unattributed_n ?? 0) > 0) {
+    // #254: when the deny-by-default flag is on, an unassigned rental-property expense is NOT counted at all
+    // (it can't land in an income-producing property), so the nudge must say "not counted until you assign
+    // it" — not the legacy "still reduces your deductions" (which is only true with the flag off).
+    const propUnattribWhy = excludePropertyUndetermined
+      ? `These total ${money(report.property_unattributed_cents ?? 0)}. They are NOT being counted toward your deductions yet — a rental expense can only be claimed once it's tied to a property that earns (or is genuinely available to earn) rent. Open each line and set which property it belongs to so it counts.`
+      : `These total ${money(report.property_unattributed_cents ?? 0)}. They still reduce your overall deductions, but without a property they're absent from each property's per-property schedule — so a property's negative-gearing position reads short. Open each line and set which property it belongs to.`;
     findings.push(f("property_unattributed", "classification", "review", `${report.property_unattributed_n} rental-property expense(s) aren't assigned to a property`,
-      `These total ${money(report.property_unattributed_cents ?? 0)}. They still reduce your overall deductions, but without a property they're absent from each property's per-property schedule — so a property's negative-gearing position reads short. Open each line and set which property it belongs to.`, false,
+      propUnattribWhy, false,
       [{ kind: "transaction", count: report.property_unattributed_n }]));
   }
   if (signals.needsReviewAssetsN > 0) {

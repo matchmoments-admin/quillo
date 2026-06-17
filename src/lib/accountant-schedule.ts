@@ -4,6 +4,7 @@ import {
   buildReport,
   claimExpr,
   useStatusDeniedExpr,
+  propertyUndeterminedGatedExpr,
   notAttributedExpr,
   excludeSplitInterestExpr,
   loanInterestV2Context,
@@ -129,6 +130,7 @@ interface ItemRow {
   deductibility: string;
   reimbursed: number;
   use_status_denied: number;
+  property_undetermined: number; // #254: 1 when this property-bucket row can't yet land in an income-producing property (flag-gated; 0 when off)
   gross_cents: number;
   counted_cents: number; // the amount the engine's SUM expressions count (claimExpr when loan_split on)
   deductible_amount_cents: number | null;
@@ -186,6 +188,7 @@ export async function buildAccountantSchedule(
               COALESCE(deductibility,'undetermined') AS deductibility,
               COALESCE(reimbursed,0) AS reimbursed,
               ${useStatusDeniedExpr("transactions.property_id")} AS use_status_denied,
+              ${propertyUndeterminedGatedExpr(env, "bucket", "transactions.property_id")} AS property_undetermined,
               COALESCE(amount_aud_cents, amount_cents) AS gross_cents,
               ${amtExpr} AS counted_cents,
               deductible_amount_cents, gst_cents, property_id, kind, receipt_key, document_id,
@@ -397,7 +400,7 @@ export async function buildAccountantSchedule(
   let rawDeductionItemised = 0; // every classifier-"deduction" row, wherever it renders
 
   for (const r of items) {
-    const group = deductionGroupForRow(r.bucket, r.deductibility, excludeNonDeductible, r.reimbursed, r.use_status_denied);
+    const group = deductionGroupForRow(r.bucket, r.deductibility, excludeNonDeductible, r.reimbursed, r.use_status_denied, r.property_undetermined);
     if (group === "deduction") rawDeductionItemised += r.counted_cents;
     if (r.bucket === "company") {
       companyItems.push(r);
@@ -409,12 +412,12 @@ export async function buildAccountantSchedule(
         list.push(r);
         byPropertyItems.set(r.property_id, list);
       } else {
-        notClaimed.push({ row: r, reason: exclusionReason(r.bucket, r.deductibility, r.reimbursed, r.use_status_denied) });
+        notClaimed.push({ row: r, reason: exclusionReason(r.bucket, r.deductibility, r.reimbursed, r.use_status_denied, r.property_undetermined) });
       }
       continue;
     }
     if (group === "deduction") workRelated.push(r);
-    else notClaimed.push({ row: r, reason: exclusionReason(r.bucket, r.deductibility, r.reimbursed, r.use_status_denied) });
+    else notClaimed.push({ row: r, reason: exclusionReason(r.bucket, r.deductibility, r.reimbursed, r.use_status_denied, r.property_undetermined) });
   }
 
   // Attribution routing (same classifier as attributionTotals).

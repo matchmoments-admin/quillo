@@ -114,6 +114,22 @@ const asset = (id: string, u: string, costCents: number, depCents: number, prope
   run(`INSERT INTO depreciation_schedule (id, user_id, asset_id, fy, opening_adjustable_value_cents, days_held, deduction_cents, closing_adjustable_value_cents, method_applied) VALUES (?, ?, ?, '2025-26', ?, 365, ?, ?, 'diminishing_value')`, `${id}_s`, u, id, costCents, depCents, costCents - depCents);
 };
 
+// ── #254 (Wave 1): property deny-by-default — undetermined rental status / no property_id ──
+// The FY24-25 E2E proved the position over-states when property-bucketed spend counts even though it
+// can't land in an income-producing property: a row with NO property_id, or a property whose granular
+// rental status (use_status) was never set. Option B denies both until confirmed + attributed (mirrors
+// the payg 'undetermined' deny). Flag-gated, so this is the ONLY persona that turns it on; every other
+// persona runs flag-OFF (byte-identical legacy behaviour).
+{
+  const u = "p254";
+  seedTenant(u, "P254 property deny-by-default");
+  run(`INSERT INTO properties (id, user_id, label, status, use_status) VALUES ('p254let', ?, 'Let rental', 'rented', 'rented')`, u); // income-producing — always counts
+  run(`INSERT INTO properties (id, user_id, label, status) VALUES ('p254undet', ?, 'New rental (rental status not yet set)', 'rented')`, u); // use_status left NULL ⇒ undetermined (the granular rental status is the determinant, and it's unset)
+  exp("p254a", u, 100000, "property_rented", "likely_deductible", "p254let");   // $1,000 on the let rental — counts on/off
+  exp("p254b", u, 80000, "property_rented", "likely_deductible", "p254undet");  // $800 on an undetermined-status property — denied when flag ON
+  exp("p254c", u, 50000, "property_rented", "likely_deductible", null);          // $500 property-bucketed but UNATTRIBUTED — denied when flag ON
+}
+
 // ── Persona 3: Lukas, tradie (PAYG + tools/ute + a CASH side job) ──
 {
   const u = "p3";
@@ -273,6 +289,17 @@ async function main() {
   const rentOff = r2off.per_property.find((p) => p.property_id === "p2pRent");
   check("P2 (flag off): co-owned bill counts at its full raw $1000 (no 50% split)", rentOff?.deduction_cents === 100000);
   check("P2 (flag off): no attribution block on the report", r2off.attribution === undefined);
+
+  // ── #254 (Wave 1): property deny-by-default ──
+  const env254 = { ...env, FEATURES: `${(env as { FEATURES: string }).FEATURES},position_excludes_property_undetermined` } as unknown as Env;
+  const r254on = await buildReport(env254, "p254", 2025);
+  const r254off = await buildReport(env, "p254", 2025); // default env: new flag OFF ⇒ legacy
+  check("#254 (flag OFF): legacy — all property spend counts ($1,000 + $800 + $500 = $2,300)", r254off.total_deductions_cents === 230000);
+  check("#254 (flag ON): only the let rental's $1,000 counts (undetermined + unattributed denied)", r254on.total_deductions_cents === 100000);
+  const p254let = r254on.per_property.find((p) => p.property_id === "p254let");
+  const p254undet = r254on.per_property.find((p) => p.property_id === "p254undet");
+  check("#254 (flag ON): the let rental keeps its $1,000 per-property deduction", p254let?.deduction_cents === 100000);
+  check("#254 (flag ON): the undetermined-status property yields $0 (deny until determined)", !p254undet || p254undet.deduction_cents === 0);
 
   // ── Persona 3: tradie ──
   const r3 = await buildReport(env, "p3", 2025);

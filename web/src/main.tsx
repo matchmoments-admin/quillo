@@ -1,7 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { QueryClient, QueryClientProvider, MutationCache } from "@tanstack/react-query";
-import { createBrowserRouter, RouterProvider } from "react-router-dom";
+import { createBrowserRouter, RouterProvider, Navigate } from "react-router-dom";
 import { ClerkProvider, SignIn, SignUp, SignedIn, SignedOut, RedirectToSignIn, useAuth } from "@clerk/clerk-react";
 import "./index.css";
 import { App } from "./App";
@@ -27,6 +27,18 @@ import { Assets } from "./pages/Assets";
 import { Glossary } from "./pages/Glossary";
 import { setTokenGetter } from "./api";
 import { ActiveFyProvider } from "./lib/activeFy";
+import { useFeatures } from "./lib/features";
+import { Spinner } from "./components/ui";
+
+// Research Slice 1: when `unified_transactions` is ON the Inbox review queue lives as the "Needs
+// review" tab of the merged Transactions page, so /inbox (and every navigate("/inbox") / server
+// next-action href that still points here) redirects into it. Flag OFF ⇒ the standalone Inbox, so
+// the experience is unchanged. Wait for the flag to load before deciding to avoid a redirect flash.
+function InboxRoute() {
+  const { has, loaded } = useFeatures();
+  if (!loaded) return <Spinner />;
+  return has("unified_transactions") ? <Navigate to="/transactions?view=review" replace /> : <Inbox />;
+}
 
 const PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY as string | undefined;
 
@@ -103,7 +115,7 @@ const router = createBrowserRouter([
     element: <Protected />,
     children: [
       { index: true, element: <Dashboard /> },
-      { path: "inbox", element: <Inbox /> },
+      { path: "inbox", element: <InboxRoute /> },
       { path: "transactions", element: <Transactions /> },
       { path: "txn/:id", element: <TxnDetail /> },
       { path: "dashboard", element: <Dashboard /> },

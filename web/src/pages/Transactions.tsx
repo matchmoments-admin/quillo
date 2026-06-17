@@ -6,6 +6,7 @@ import { Panel, PanelHead, Card, BucketPill, Input, Spinner, money, BUCKET_LABEL
 import { useActiveFy } from "../lib/activeFy";
 import { BulkBar, type BulkDone } from "../components/BulkBar";
 import { UndoToast } from "../components/UndoToast";
+import { ReviewView } from "../components/ReviewView";
 import { useFeatures } from "../lib/features";
 import { BUCKETS } from "../types";
 import type { Txn } from "../types";
@@ -47,9 +48,10 @@ export function Transactions() {
   const { has } = useFeatures();
   const qc = useQueryClient();
   const bulk = has("txn_bulk_edit"); // #252: multi-select + BulkBar on this page
+  const unified = has("unified_transactions"); // Research Slice 1: Inbox review queue merged in as a tab
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [flash, setFlash] = useState<BulkDone | null>(null);
-  const [params] = useSearchParams();
+  const [params, setSearchParams] = useSearchParams();
   const [allYears, setAllYears] = useState(false);
   const [showExcluded, setShowExcluded] = useState(false);
   const [search, setSearch] = useState("");
@@ -58,7 +60,31 @@ export function Transactions() {
   // Seed category/property from a Dashboard drill-through (?bucket= / ?property=).
   const [bucket, setBucket] = useState(params.get("bucket") ?? "");
   const [propertyId, setPropertyId] = useState(params.get("property") ?? "");
+  const [kind, setKind] = useState(""); // "" | "receipt" | "bank_line" — absorbs the old Inbox Receipts/Bank-lines tabs
   const [group, setGroup] = useState<GroupKey>("none");
+
+  // Needs review (default) / All segmented control, persisted in ?view=. Default to review unless a
+  // Dashboard drill-through (?bucket= / ?property=) is present, which lands on the browse view.
+  const drill = !!(params.get("bucket") || params.get("property"));
+  const viewParam = params.get("view");
+  const view: "review" | "all" = !unified
+    ? "all"
+    : viewParam === "all"
+      ? "all"
+      : viewParam === "review"
+        ? "review"
+        : drill
+          ? "all"
+          : "review";
+  const setView = (v: "review" | "all") =>
+    setSearchParams(
+      (prev) => {
+        const n = new URLSearchParams(prev);
+        n.set("view", v);
+        return n;
+      },
+      { replace: true },
+    );
 
   const { data: situation } = useQuery({ queryKey: ["situation"], queryFn: api.situation });
   const { data: accounts } = useQuery({ queryKey: ["accounts"], queryFn: api.accounts });
@@ -70,6 +96,8 @@ export function Transactions() {
     // countable here only drops duplicate/ignored (keeps both directions) — see listTransactions.
     queryKey: ["transactions-all", allYears ? "all" : activeFy, showExcluded],
     queryFn: () => fetchAll({ fy: allYears ? undefined : activeFy, countable: !showExcluded }),
+    // Skip the full-scope load while the review tab is showing (it has its own all-time query).
+    enabled: view === "all",
   });
 
   const all = data ?? [];
@@ -80,6 +108,7 @@ export function Transactions() {
     return all.filter((t) => {
       if (bucket && t.bucket !== bucket) return false;
       if (propertyId && t.property_id !== propertyId) return false;
+      if (kind && t.kind !== kind) return false;
       if (from && (!t.txn_date || t.txn_date < from)) return false;
       if (to && (!t.txn_date || t.txn_date > to)) return false;
       if (q) {
@@ -88,7 +117,7 @@ export function Transactions() {
       }
       return true;
     });
-  }, [all, search, from, to, bucket, propertyId]);
+  }, [all, search, from, to, bucket, propertyId, kind]);
 
   // Headline: count + spend/income split (summing across directions would be meaningless).
   const spend = filtered.filter((t) => !isCredit(t)).reduce((s, t) => s + Math.abs(amt(t)), 0);
@@ -130,6 +159,29 @@ export function Transactions() {
             year control. "All years" below is the only page-scoped year toggle. */}
       </div>
 
+      {/* Research Slice 1 (unified_transactions): one transaction surface with a Needs review / All
+          segmented control — matches Xero/QBO/MYOB. Needs review is the all-time backlog; All is the
+          FY-scoped browse. Hidden (flag OFF) ⇒ this page is the browse view exactly as before. */}
+      {unified && (
+        <div className="inline-flex rounded-lg border border-line p-0.5 text-sm" role="tablist" aria-label="Transaction view">
+          {(["review", "all"] as const).map((v) => (
+            <button
+              key={v}
+              role="tab"
+              aria-selected={view === v}
+              onClick={() => setView(v)}
+              className={`rounded-md px-3 py-1.5 font-medium transition ${view === v ? "bg-ink text-white" : "text-muted hover:text-ink"}`}
+            >
+              {v === "review" ? "Needs review" : "All"}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {unified && view === "review" ? (
+        <ReviewView />
+      ) : (
+        <>
       {/* Toolbar — search, date range, category/property filters, group-by, scope toggles. */}
       <Card className="space-y-3 p-4">
         <div className="flex flex-wrap items-center gap-2">
@@ -155,10 +207,20 @@ export function Transactions() {
               {properties.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
             </select>
           )}
+          {/* Kind filter — absorbs the old Inbox Receipts / Bank-lines tabs into the one browse view.
+              Only when unified: with the flag OFF those tabs still live on the standalone Inbox, and
+              this page must stay byte-identical to before (no new control). */}
+          {unified && (
+            <select value={kind} onChange={(e) => { setKind(e.target.value); }} aria-label="Kind" className="rounded-lg border border-line bg-card px-2 py-2">
+              <option value="">All kinds</option>
+              <option value="receipt">Receipts</option>
+              <option value="bank_line">Bank lines</option>
+            </select>
+          )}
           <label className="flex items-center gap-1.5 text-xs text-muted">From <Input type="date" value={from} onChange={(e) => { setFrom(e.target.value); }} className="px-2 py-1.5" /></label>
           <label className="flex items-center gap-1.5 text-xs text-muted">to <Input type="date" value={to} onChange={(e) => { setTo(e.target.value); }} className="px-2 py-1.5" /></label>
-          {(search || from || to || bucket || propertyId) && (
-            <button onClick={() => { setSearch(""); setFrom(""); setTo(""); setBucket(""); setPropertyId(""); }} className="text-xs font-medium text-muted hover:text-ink">
+          {(search || from || to || bucket || propertyId || kind) && (
+            <button onClick={() => { setSearch(""); setFrom(""); setTo(""); setBucket(""); setPropertyId(""); setKind(""); }} className="text-xs font-medium text-muted hover:text-ink">
               Clear filters ✕
             </button>
           )}
@@ -236,6 +298,8 @@ export function Transactions() {
         />
       )}
       {flash && <UndoToast flash={flash} onClose={() => setFlash(null)} />}
+        </>
+      )}
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import type { Txn, TxnDetail, Situation, SituationDraft, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse, UsageData, StatementInfo, IncomeRow, DocRow, AssetRow, ScheduleRow, ChecklistItem, ClaimSuggestion, FilingReadiness, ReviewSummary, Progress, AdminTenant, AdminOverview, AdminSpend, AiEdit, ClaimReview, OccupationRulesDraft, OccupationRuleCandidate, MovementSweep, BatchResult, ClarifyQuestion, ClarifyAnswer, ClaimMatch, AccountantSummary, SuggestedDeduction, WorkUse, CapitalLoss, OpeningDepreciation, AttributionState, AttributionInput, AttributionRow, IncomeActivity, PropertyOwner, EntityRole, CgtAssetRow, CgtEventRow, EssGrantRow, VehicleLogbookRow, TrustDistributionRow, SmsfMemberRow, SuperContributionRow, BasPeriodRow, PaygInstalmentRow, AskAnswer, SavingsData, PartnerPortal, AmmaComponents, PartnershipDistributionRow } from "./types";
+import type { Txn, TxnDetail, Situation, SituationDraft, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse, UsageData, StatementInfo, IncomeRow, DocRow, AssetRow, ScheduleRow, ChecklistItem, ClaimSuggestion, FilingReadiness, ReviewSummary, Progress, AdminTenant, AdminOverview, AdminSpend, AiEdit, ClaimReview, OccupationRulesDraft, OccupationRuleCandidate, MovementSweep, BatchResult, ClarifyQuestion, ClarifyAnswer, ClaimMatch, AccountantSummary, SuggestedDeduction, WorkUse, CarUse, CapitalLoss, OpeningDepreciation, AttributionState, AttributionInput, AttributionRow, IncomeActivity, PropertyOwner, EntityRole, CgtAssetRow, CgtEventRow, EssGrantRow, VehicleLogbookRow, TrustDistributionRow, SmsfMemberRow, SuperContributionRow, BasPeriodRow, PaygInstalmentRow, AskAnswer, SavingsData, PartnerPortal, AmmaComponents, PartnershipDistributionRow } from "./types";
 
 // Clerk session token getter, wired from <TokenBridge> inside ClerkProvider (main.tsx).
 // Clerk tokens are short-lived, so we fetch a fresh one per request (getToken caches/refreshes).
@@ -354,9 +354,12 @@ export const api = {
   generateChecklist: (fy?: string) => post<{ items: number }>(`/api/checklist/generate${fy ? `?fy=${fy}` : ""}`),
   setChecklistStatus: (id: string, status: string) => send<{ ok: boolean }>("PATCH", `/api/checklist/${id}`, { status }),
 
-  // Work-use inputs (computed WFH fixed-rate + car cents-per-km deductions). fy = FY start year.
+  // Work-use inputs (computed WFH fixed-rate deduction). fy = FY start year.
   workUse: (fy: number) => get<{ work_use: WorkUse }>(`/api/work-use?fy=${fy}`).then((r) => r.work_use),
   setWorkUse: (fy: number, body: WorkUse) => post<{ ok: true }>(`/api/work-use?fy=${fy}`, body),
+  // Car cents-per-km input (#245) — separate from WFH (its own car_inputs table). fy = FY start year.
+  carUse: (fy: number) => get<{ car_use: CarUse }>(`/api/car-use?fy=${fy}`).then((r) => r.car_use),
+  setCarUse: (fy: number, body: CarUse) => post<{ ok: true }>(`/api/car-use?fy=${fy}`, body),
 
   // v2 — Claimability suggestions
   claims: () => get<{ claims: ClaimSuggestion[] }>("/api/claims").then((r) => r.claims),

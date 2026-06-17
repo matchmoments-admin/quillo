@@ -35,7 +35,6 @@ export function WorkMethodsCard({ fyNum }: { fyNum: number }) {
   const [weeks, setWeeks] = useState<string>("");
   const [hours, setHours] = useState<string>("");
   const [hoursTouched, setHoursTouched] = useState(false); // did the user type hours directly? (then it wins)
-  const [km, setKm] = useState<string>("");
   const [office, setOffice] = useState(false);
   const [hasRecord, setHasRecord] = useState(false);
   // 0059 diary inputs.
@@ -49,7 +48,6 @@ export function WorkMethodsCard({ fyNum }: { fyNum: number }) {
     setWeeks(data.wfh_weeks != null ? String(data.wfh_weeks) : "");
     setHours(data.wfh_hours != null ? String(data.wfh_hours) : "");
     setHoursTouched(false);
-    setKm(data.car_work_km != null ? String(data.car_work_km) : "");
     setOffice(!!data.has_dedicated_home_office);
     setHasRecord(!!data.wfh_has_record);
     const savedWeekdays = Array.isArray(data.wfh_weekdays) && data.wfh_weekdays.length > 0;
@@ -92,7 +90,7 @@ export function WorkMethodsCard({ fyNum }: { fyNum: number }) {
     mutationFn: () =>
       api.setWorkUse(fyNum, {
         wfh_hours: diaryActive && !hoursTouched ? null : hours.trim() === "" ? null : Math.max(0, Number(hours)),
-        car_work_km: km.trim() === "" ? null : Math.max(0, Number(km)),
+        car_work_km: null, // #245: car moved to its own tool (CarMethodsCard); WFH panel no longer carries it
         wfh_days_per_week: days.trim() === "" ? null : Math.max(0, Number(days)),
         wfh_weeks: weeks.trim() === "" ? null : Math.max(0, Number(weeks)),
         has_dedicated_home_office: office,
@@ -106,7 +104,7 @@ export function WorkMethodsCard({ fyNum }: { fyNum: number }) {
       qc.invalidateQueries({ queryKey: ["filing-readiness"] });
       qc.invalidateQueries({ queryKey: ["report"] });
       qc.invalidateQueries({ queryKey: ["dashboard"] });
-      toast.success("Saved your work-from-home & car inputs.");
+      toast.success("Saved your work-from-home inputs.");
     },
     onError: (e) => toast.error("Couldn't save", { description: (e as Error).message }),
   });
@@ -116,16 +114,17 @@ export function WorkMethodsCard({ fyNum }: { fyNum: number }) {
   const diaryApproxHours = deriveHours(weekdays.length, Number(weeks) || DEFAULT_WEEKS);
   const effectiveHours = diaryActive && !hoursTouched ? diaryApproxHours : Number(hours) || 0;
   const estWfh = Math.round(effectiveHours * 70);
-  const estCar = Math.round(Math.min(Number(km) || 0, 5000) * 88);
 
   return (
     <Card className="space-y-3 p-4">
       <div>
-        <div className="text-sm font-semibold">Working from home &amp; car (fixed-rate methods)</div>
+        <div className="text-sm font-semibold">Working from home (fixed-rate method)</div>
         <div className="text-xs text-muted">
-          Tell us how many days a week you work from home and we'll estimate your hours. The home-office fixed
-          rate covers electricity, internet, phone &amp; stationery, so those receipts aren't claimed again. Keep a
-          record of your actual hours. General information only — confirm with a registered tax agent.
+          <span className="font-medium text-ink">Why this matters:</span> from 1 July 2024 the ATO needs a record of your{" "}
+          <span className="font-medium">actual hours</span> worked from home for the whole year — a blanket "I worked X days"
+          number isn't accepted. The real job here is to build a defensible record; the dollar figure (70c/hr, covering
+          electricity, internet, phone &amp; stationery) is the by-product. General information only — confirm with a
+          registered tax agent.
         </div>
       </div>
       <div className="grid gap-3 sm:grid-cols-2">
@@ -147,11 +146,6 @@ export function WorkMethodsCard({ fyNum }: { fyNum: number }) {
             ? ` · from your diary (≈ ${weekdays.length} day(s)/week — exact hours generated in your hand-off)`
             : days.trim() !== "" ? ` · derived from ${days} day(s)/week` : ""}
         </span>
-      </label>
-      <label className="block text-sm">
-        <span className="text-xs font-medium uppercase tracking-wide text-muted">Work-related car km this year</span>
-        <Input type="number" min="0" value={km} onChange={(e) => setKm(e.target.value)} placeholder="e.g. 1200" />
-        <span className="mt-0.5 block text-xs text-muted">≈ {money(estCar)} at 88c/km (max 5,000 km)</span>
       </label>
       <div className="space-y-2 border-t border-line pt-3">
         <label className="flex items-start gap-2 text-sm">

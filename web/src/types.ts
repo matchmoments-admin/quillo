@@ -974,6 +974,11 @@ export interface SuggestedDeduction {
 }
 
 // Per-FY work-use inputs for the computed WFH fixed-rate + car cents-per-km deductions (#67).
+// #245: car cents-per-km input, its own per-FY unit (car_inputs table), separate from WFH.
+export interface CarUse {
+  work_km: number | null;
+}
+
 export interface WorkUse {
   wfh_hours: number | null;
   car_work_km: number | null;

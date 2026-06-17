@@ -6,6 +6,7 @@ import { useActiveFy } from "../lib/activeFy";
 import { Panel, PanelHead, KpiCard, Meter, Pill, Spinner, Button, money, BUCKET_LABEL, InfoTip } from "../components/ui";
 import { FindAndAttachSheet } from "../components/FindAndAttachSheet";
 import { WorkMethodsCard } from "../components/WorkMethodsCard";
+import { CarMethodsCard } from "../components/CarMethodsCard";
 import { SetupChecklist } from "../components/SetupChecklist";
 import { AskQuillo } from "../components/AskQuillo";
 import { useFeatures } from "../lib/features";
@@ -89,8 +90,10 @@ export function Dashboard() {
       {has("ask_quillo") && !has("floating_chat") && <AskQuillo />}
 
       {/* Working-from-home + car: the #1 PAYG claims, captured here on the Position surface (the one
-          canonical place — Review no longer carries a second copy). */}
+          canonical place — Review no longer carries a second copy). #245: WFH and car are now separate
+          tools (car has nothing to do with WFH). */}
       {has("wfh_car_methods") && <WorkMethodsCard fyNum={fy} />}
+      {(has("car_methods") || has("car_logbook")) && <CarMethodsCard fyNum={fy} />}
 
       <ChecklistCard />
       <ClaimsCard />

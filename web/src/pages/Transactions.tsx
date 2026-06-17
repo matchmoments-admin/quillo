@@ -1,9 +1,12 @@
 import { useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import { Panel, PanelHead, Card, BucketPill, Input, Spinner, money, BUCKET_LABEL } from "../components/ui";
-import { FySwitcher, useActiveFy } from "../lib/activeFy";
+import { useActiveFy } from "../lib/activeFy";
+import { BulkBar, type BulkDone } from "../components/BulkBar";
+import { UndoToast } from "../components/UndoToast";
+import { useFeatures } from "../lib/features";
 import { BUCKETS } from "../types";
 import type { Txn } from "../types";
 
@@ -40,7 +43,12 @@ const amt = (t: Txn) => t.amount_aud_cents ?? t.amount_cents ?? 0;
 const isCredit = (t: Txn) => (t.direction ?? "debit") === "credit";
 
 export function Transactions() {
-  const { fy: activeFy } = useActiveFy();
+  const { fy: activeFy, label: fyLabelStr } = useActiveFy();
+  const { has } = useFeatures();
+  const qc = useQueryClient();
+  const bulk = has("txn_bulk_edit"); // #252: multi-select + BulkBar on this page
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [flash, setFlash] = useState<BulkDone | null>(null);
   const [params] = useSearchParams();
   const [allYears, setAllYears] = useState(false);
   const [showExcluded, setShowExcluded] = useState(false);
@@ -109,11 +117,17 @@ export function Transactions() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filtered, group, situation, accounts]);
 
+  // #252: selection helpers for bulk edit (flag txn_bulk_edit).
+  const toggle = (id: string) => setSelected((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+  const selectAll = () => setSelected(new Set(filtered.map((t) => t.id)));
+  const clearSel = () => setSelected(new Set());
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold tracking-tight">Transactions</h1>
-        <FySwitcher />
+        {/* #251: no page-level FY switcher — the global one in the app header is the single canonical
+            year control. "All years" below is the only page-scoped year toggle. */}
       </div>
 
       {/* Toolbar — search, date range, category/property filters, group-by, scope toggles. */}
@@ -166,7 +180,14 @@ export function Transactions() {
         <Panel>
           <PanelHead
             title="All transactions"
-            sub={`${filtered.length} of ${all.length} · spend ${money(spend)} · income ${money(income)}`}
+            sub={`${filtered.length} shown · ${all.length} ${allYears ? "across all years" : `in FY ${fyLabelStr}`}${showExcluded ? " · incl. excluded" : ""} · spend ${money(spend)} · income ${money(income)}`}
+            right={
+              bulk && filtered.length > 0
+                ? selected.size > 0
+                  ? <button onClick={clearSel} className="text-xs font-medium text-muted hover:text-ink">Clear selection ({selected.size})</button>
+                  : <button onClick={selectAll} className="text-xs font-medium text-muted hover:text-ink">Select all ({filtered.length})</button>
+                : undefined
+            }
           />
           {filtered.length === 0 ? (
             <div className="py-6 text-sm text-muted">No transactions match these filters.</div>
@@ -182,8 +203,19 @@ export function Transactions() {
                   )}
                   <ul className="divide-y divide-line">
                     {g.rows.map((t) => (
-                      <li key={t.id}>
-                        <TxnRow t={t} propLabel={propLabel(t.property_id)} acctLabel={acctLabel(t.account_id)} />
+                      <li key={t.id} className="flex items-center gap-2">
+                        {bulk && (
+                          <input
+                            type="checkbox"
+                            checked={selected.has(t.id)}
+                            onChange={() => toggle(t.id)}
+                            aria-label={`Select ${t.merchant ?? "transaction"}`}
+                            className="h-4 w-4 shrink-0"
+                          />
+                        )}
+                        <div className="min-w-0 flex-1">
+                          <TxnRow t={t} propLabel={propLabel(t.property_id)} acctLabel={acctLabel(t.account_id)} />
+                        </div>
                       </li>
                     ))}
                   </ul>
@@ -193,6 +225,17 @@ export function Transactions() {
           )}
         </Panel>
       )}
+
+      {/* #252: bulk re-categorise — select look-alikes (search/filter/group above isolate them) and
+          apply a category + property in one audited, undoable batch, optionally learning a rule. */}
+      {bulk && selected.size > 0 && (
+        <BulkBar
+          ids={[...selected]}
+          onClear={clearSel}
+          onDone={(d) => { qc.invalidateQueries({ queryKey: ["transactions-all"] }); setFlash(d); }}
+        />
+      )}
+      {flash && <UndoToast flash={flash} onClose={() => setFlash(null)} />}
     </div>
   );
 }

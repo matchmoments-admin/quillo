@@ -6,6 +6,7 @@ import { BucketPill, Button, ConfidencePill, Card, Spinner, money, getBaseCurren
 import { AccountantPassCard } from "../components/AccountantPassCard";
 import { SortFlow } from "../components/SortFlow";
 import { BulkBar, type BulkDone } from "../components/BulkBar";
+import { UndoToast } from "../components/UndoToast";
 import { useFeatures } from "../lib/features";
 import { useActiveFy } from "../lib/activeFy";
 import type { Txn } from "../types";
@@ -171,37 +172,6 @@ export function Inbox() {
   );
 }
 
-function UndoToast({ flash, onClose }: { flash: BulkDone; onClose: () => void }) {
-  const qc = useQueryClient();
-  const undo = useMutation({
-    mutationFn: (batchId: string) => api.undoBatch(batchId),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["transactions"] });
-      qc.invalidateQueries({ queryKey: ["dashboard"] });
-      onClose();
-    },
-  });
-  // Auto-dismiss after 10s (re-armed whenever a new outcome arrives).
-  useEffect(() => {
-    const t = setTimeout(onClose, 10_000);
-    return () => clearTimeout(t);
-  }, [flash, onClose]);
-  return (
-    <div className="sticky bottom-3 z-10 mx-auto flex w-full max-w-2xl items-center justify-between gap-3 rounded-xl border border-line bg-ink px-3 py-2 text-sm text-white shadow-lg">
-      <span>{undo.isPending ? "Undoing…" : flash.message}</span>
-      <div className="flex items-center gap-2">
-        {flash.batchId && !undo.isPending && (
-          <button onClick={() => undo.mutate(flash.batchId!)} className="font-medium underline">
-            Undo
-          </button>
-        )}
-        <button onClick={onClose} className="text-white/60 hover:text-white" aria-label="Dismiss">
-          ✕
-        </button>
-      </div>
-    </div>
-  );
-}
 
 function Row({ txn, selected, onToggle, showConfirm = false }: { txn: Txn; selected: boolean; onToggle: () => void; showConfirm?: boolean }) {
   const qc = useQueryClient();

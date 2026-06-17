@@ -14,6 +14,7 @@ import { billableCents } from "../src/lib/billing";
 import { costCents, isPricedModel, toE4, centsFromE4 } from "../src/lib/usage";
 import { LLM_MODEL_IDS } from "../src/llm";
 import { computeWorkMethodDeductions, workUseRatesForFy, deriveWfhHours, generateWfhDiary } from "../src/lib/work-use";
+import { runScan } from "../src/lib/scan";
 import { BUCKETS } from "../src/lib/taxonomy";
 import {
   billerNormalize, classifyBiller, annualiseSpendCents, daysBetween, detectRecurrence,
@@ -2208,6 +2209,44 @@ console.log("currency de-anchoring (toBaseCurrency / baseCurrencyOf / currencySy
   check("currencySymbol: unknown ⇒ 'CODE ', absent ⇒ '$' (AU default)", currencySymbol("CAD") === "CAD " && currencySymbol(null) === "$" && currencySymbol(undefined) === "$");
   check("currencyLocale: AUD/absent ⇒ 'en-AU' (byte-identical default), GBP ⇒ 'en-GB', unknown ⇒ 'en-AU'",
     currencyLocale("AUD") === "en-AU" && currencyLocale(null) === "en-AU" && currencyLocale("GBP") === "en-GB" && currencyLocale("ZZ") === "en-AU");
+}
+
+// ── #256 double-check scan (src/lib/scan.ts) — deterministic over-claim + missed detection ──
+{
+  const section = (rulePack as { payg_deductibility?: import("../src/lib/deductibility").DeductibilitySection }).payg_deductibility;
+  const base = { txn_date: "2025-09-01", reimbursed: 0, use_status_denied: 0, property_undetermined: 0 } as const;
+  const rows: import("../src/lib/scan").ScanTxn[] = [
+    // OVER-CLAIM: groceries filed as a property expense and counting (mirrors the founder's ~$15k personal-in-property).
+    { ...base, id: "t_groc", merchant: "WOOLWORTHS", ato_label: null, bucket: "property_rented", deductibility: "likely_deductible", amount_cents: 25000 },
+    // OVER-CLAIM: a personal transfer counting in payg.
+    { ...base, id: "t_xfer", merchant: "Transfer to Mum", ato_label: null, bucket: "payg", deductibility: "confirmed_deductible", amount_cents: 50000 },
+    // MISSED: union fees sitting undetermined in payg (suggestible, not counting under deny-by-default).
+    { ...base, id: "t_union", merchant: "ASU UNION FEES", ato_label: null, bucket: "payg", deductibility: "undetermined", amount_cents: 40000 },
+    // MISSED (apportion): a self-education course undetermined — needs a work-use portion, no one-tap.
+    { ...base, id: "t_course", merchant: "Udemy course", ato_label: null, bucket: "payg", deductibility: "undetermined", amount_cents: 23400 },
+    // NEITHER: a legitimately-deductible, already-counting work expense should NOT be flagged.
+    { ...base, id: "t_ok", merchant: "Bunnings safety boots", ato_label: "D3", bucket: "payg", deductibility: "confirmed_deductible", amount_cents: 12000 },
+    // NEITHER: groceries left undetermined in payg (not counting) — correctly silent (deny-by-default already excludes it).
+    { ...base, id: "t_groc_payg", merchant: "COLES", ato_label: null, bucket: "payg", deductibility: "undetermined", amount_cents: 8000 },
+  ];
+  const res = runScan(rows, { taxable_position_cents: 9_000_000, taxable_position_confirmed_cents: 9_500_000 }, section, { excludeNonDeductible: true });
+  const byId = (id: string) => res.findings.find((f) => f.affected_txn_ids.includes(id));
+
+  check("scan: groceries counting in property → over_claim, sign '-', set_deductibility→likely_not", (() => {
+    const f = byId("t_groc"); return !!f && f.category === "over_claim" && f.sign === "-" && f.dollar_impact_cents === 25000 && f.proposed_action?.kind === "set_deductibility" && f.proposed_action.state === "likely_not";
+  })());
+  check("scan: personal transfer counting in payg → over_claim", (() => { const f = byId("t_xfer"); return !!f && f.category === "over_claim" && f.sign === "-"; })());
+  check("scan: union fees undetermined → missed, sign '+', one-tap confirm_deductible with exact amount", (() => {
+    const f = byId("t_union"); return !!f && f.category === "missed" && f.sign === "+" && f.proposed_action?.kind === "set_deductibility" && f.proposed_action.state === "confirmed_deductible" && f.proposed_action.deductible_amount_cents === 40000;
+  })());
+  check("scan: self-education undetermined → missed (apportion), NO one-tap action", (() => { const f = byId("t_course"); return !!f && f.category === "missed" && f.severity === "info" && !f.proposed_action; })());
+  check("scan: a legitimate counting deduction is NOT flagged", !byId("t_ok"));
+  check("scan: groceries left undetermined in payg (not counting) is NOT flagged", !byId("t_groc_payg"));
+  check("scan: over-claims rank before missed", res.findings[0].category === "over_claim");
+  check("scan: summary tallies + carries the confirmed→tracked range", (() => {
+    const s = res.summary;
+    return s.overclaim_downside_cents === 75000 && s.missed_upside_cents === 63400 && s.finding_count === 4 && s.position_confirmed_cents === 9_500_000 && s.position_tracked_cents === 9_000_000;
+  })());
 }
 
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);

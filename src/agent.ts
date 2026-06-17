@@ -15,7 +15,8 @@ import { applyUserRules, RULE_CREDIT_BUCKETS } from "./lib/rules";
 import { sha256hex, sha256hexBytes } from "./lib/base64";
 import { getLLM, type LLM } from "./llm";
 import { extractReceipt, extractReceipts, extractFromText, extractColumnMap, extractStatement, extractBatch, extractSituationDraft, extractOccupationRules, extractGuide, extractAnswer, classifyDocument, extractPayslip, extractAgentStatement, extractDepreciationSchedule, extractDividend, batchParams, parseBatchMessage, mapBatchItems, ALLOWED_NAV_ROUTES, type Extracted, type ExtractedStatement, type SituationDraft, type OccupationRulesDraft, type AnswerResult } from "./extract";
-import { fyForDate, buildReport } from "./lib/report";
+import { fyForDate, buildReport, useStatusDeniedExpr, propertyUndeterminedGatedExpr } from "./lib/report";
+import { runScan, type ScanResult, type ScanTxn } from "./lib/scan";
 import { getProgress } from "./lib/progress";
 import { buildGuidePrompt, buildAskSystem, summariseReportForAsk, renderTxnDigest } from "./lib/guide";
 import { fyLabel, fyBounds, fyStartYearStr, parseFyStartYear, normaliseFyLabel } from "./lib/ledger-totals";
@@ -3094,6 +3095,34 @@ export class TaxAgent extends Agent<Env> {
     }
     if (ids.length) await this.audit(userId, "claim_rules_added", JSON.stringify({ count: ids.length }));
     return { inserted: ids.length, ids };
+  }
+
+  /**
+   * #256 — pre-handoff "double-check my transactions" scan. DETERMINISTIC: gathers the FY ledger rows +
+   * the report's confirmed→tracked position, then runs the pure runScan() engine (rule-pack deny/suggest
+   * + the report's own counting classifier). NO LLM ⇒ no APP-8/budget gate; mutates nothing (every finding
+   * is a proposal the user confirms via the existing audited write endpoints). Read-only.
+   */
+  async scanTransactions(userId: string, startYear: number): Promise<ScanResult> {
+    const profile = await this.requireProfile(userId);
+    const { start, end } = fyBounds(startYear, await this.jurisdictionFor(userId));
+    const [report, pack] = await Promise.all([buildReport(this.env, userId, startYear), this.loadRulePack(profile.rule_pack_ver)]);
+    // Same column expressions the report uses, so "is this row counting?" matches the headline exactly.
+    const rows = (await this.env.DB.prepare(
+      `SELECT id, txn_date, merchant, ato_label, bucket, deductibility,
+              COALESCE(amount_aud_cents, amount_cents) AS amount_cents,
+              COALESCE(reimbursed,0) AS reimbursed,
+              ${useStatusDeniedExpr("property_id")} AS use_status_denied,
+              ${propertyUndeterminedGatedExpr(this.env, "bucket", "property_id")} AS property_undetermined
+         FROM transactions
+        WHERE user_id = ? AND txn_date >= ? AND txn_date <= ? AND ${COUNTABLE}
+        ORDER BY COALESCE(amount_aud_cents, amount_cents) DESC
+        LIMIT 500`,
+    ).bind(userId, start, end).all<ScanTxn>()).results ?? [];
+    const section = (pack as { payg_deductibility?: import("./lib/deductibility").DeductibilitySection }).payg_deductibility;
+    const result = runScan(rows, report, section, { excludeNonDeductible: featureOn(this.env, "position_excludes_nondeductible") });
+    await this.audit(userId, "txn_scan", JSON.stringify({ fy: fyLabel(startYear), findings: result.summary.finding_count }));
+    return result;
   }
 
   // ── FILING READINESS: compose the report + rules + signals into a capstone view ──

@@ -131,7 +131,9 @@ export interface Report {
   total_income_cents: number;
   total_deductions_cents: number;      // CAPTURED tracked spend this FY (pending review — NOT claimable yet)
   company_tracked_cents: number;       // BUSINESS/'company'-bucket spend this FY — tracked, NOT in the individual position
-  refunds_cents: number;               // refund/reimbursement credits this FY (0 unless refund_netting is on)
+  refunds_cents: number;               // refund/reimbursement credits this FY netted against deductions (0 unless refund_netting is on; v2: only matched-deductible refunds)
+  refunds_unmatched_cents?: number;    // #258: refund credits NOT netted (unlinked, or matched to a non-deductible/personal expense). Set only when refund_netting_v2 is on; drives the "link your refunds" nudge.
+  refunds_unmatched_n?: number;
   resolved_deductible_cents: number;   // spend a year-end review has CONFIRMED deductible (~0 until review)
   // Computed WFH (fixed-rate) + car (cents-per-km) deductions from the per-FY work_use_inputs. Present
   // only when the `wfh_car_methods` flag is on AND the user supplied hours/km. Included in
@@ -681,15 +683,60 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   // credits from total deductions (floored at 0). Per-expense pairing is a later refinement.
   // When the flag is off, refunds_cents stays 0 and deductions are byte-identical to before.
   let refunds_cents = 0;
+  let refunds_unmatched_cents = 0; // #258: refunds NOT netted (unlinked, or linked to a non-deductible/personal expense) — the nudge signal
+  let refunds_unmatched_n = 0;
   if (featureOn(env, "refund_netting")) {
-    const refundRow = await env.DB.prepare(
-      `SELECT COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS total
-         FROM transactions
-        WHERE user_id = ? AND txn_date >= ? AND txn_date <= ? AND bucket = 'refund' AND ${COUNTABLE_INCOME}`,
-    )
-      .bind(userId, start, end)
-      .first<{ total: number }>();
-    refunds_cents = refundRow?.total ?? 0;
+    if (featureOn(env, "refund_netting_v2")) {
+      // #258: net a refund ONLY against the specific DEDUCTIBLE expense it reverses (refund_for_txn_id),
+      // capped at that expense's amount. A refund with no link, or one whose matched expense isn't a
+      // deduction (personal/non-deductible), is POSITION-NEUTRAL — a flatmate reimbursement or a personal
+      // return must not reduce unrelated work/property deductions. Reuses deductionGroupForRow (same
+      // use_status/property gates, alias 'e') so "deductible" means EXACTLY what the headline counts.
+      const refundRows = await env.DB.prepare(
+        `SELECT COALESCE(r.amount_aud_cents, r.amount_cents) AS refund_cents,
+                r.refund_for_txn_id AS matched_id,
+                e.bucket AS e_bucket, COALESCE(e.deductibility,'undetermined') AS e_deductibility,
+                COALESCE(e.reimbursed,0) AS e_reimbursed,
+                ${useStatusDenied("e.property_id")} AS e_use_status_denied,
+                ${propUndetermined("e.bucket", "e.property_id")} AS e_property_undetermined,
+                ${honorApportion ? claimExpr("e.") : "COALESCE(e.amount_aud_cents, e.amount_cents)"} AS e_cents
+           FROM transactions r
+           LEFT JOIN transactions e ON e.id = r.refund_for_txn_id AND e.user_id = r.user_id
+          WHERE r.user_id = ? AND r.txn_date >= ? AND r.txn_date <= ? AND r.bucket = 'refund'
+            AND ${COUNTABLE_INCOME.replace(/\b(status|kind|matched_txn_id|direction|currency|amount_aud_cents)\b/g, "r.$1")}`,
+      )
+        .bind(userId, start, end)
+        .all<{ refund_cents: number; matched_id: string | null; e_bucket: string | null; e_deductibility: string; e_reimbursed: number; e_use_status_denied: number; e_property_undetermined: number; e_cents: number | null }>();
+      // Cap netting PER matched expense at the amount that expense actually contributed to deductions
+      // (e_cents is the claim-aware amount — apportioned via claimExpr when loan_split is on — so a
+      // partly-deductible cost can't be over-netted). Track cumulative netting per expense so several
+      // refunds pointing at the SAME expense can't collectively net more than it gave (a $400 + $300
+      // refund on one $500 cost nets $500, not $700).
+      const nettedPerExpense = new Map<string, number>();
+      for (const r of refundRows.results ?? []) {
+        const matchedDeductible = !!r.matched_id && !!r.e_bucket &&
+          deductionGroupForRow(r.e_bucket, r.e_deductibility, excludeNonDeductible, r.e_reimbursed, r.e_use_status_denied, r.e_property_undetermined) === "deduction";
+        if (matchedDeductible) {
+          const already = nettedPerExpense.get(r.matched_id as string) ?? 0;
+          const toNet = Math.max(0, Math.min(r.refund_cents ?? 0, (r.e_cents ?? 0) - already));
+          refunds_cents += toNet;
+          nettedPerExpense.set(r.matched_id as string, already + toNet);
+        } else {
+          refunds_unmatched_n += 1;
+          refunds_unmatched_cents += r.refund_cents ?? 0;
+        }
+      }
+    } else {
+      // v1 (legacy): net ALL refund credits globally against the deduction pool.
+      const refundRow = await env.DB.prepare(
+        `SELECT COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS total
+           FROM transactions
+          WHERE user_id = ? AND txn_date >= ? AND txn_date <= ? AND bucket = 'refund' AND ${COUNTABLE_INCOME}`,
+      )
+        .bind(userId, start, end)
+        .first<{ total: number }>();
+      refunds_cents = refundRow?.total ?? 0;
+    }
   }
   // Computed work-use deductions (WFH fixed-rate + car cents-per-km), flag-gated. These are NOT a %
   // of tracked spend — they're calculated from the per-FY work_use_inputs and REPLACE the itemised
@@ -832,6 +879,8 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
     total_deductions_cents,
     company_tracked_cents,
     refunds_cents,
+    refunds_unmatched_cents: refunds_unmatched_cents || undefined,
+    refunds_unmatched_n: refunds_unmatched_n || undefined,
     resolved_deductible_cents,
     work_method,
     work_method_rates_unavailable: work_method_rates_unavailable || undefined,

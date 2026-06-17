@@ -387,6 +387,15 @@ export function assessReadiness(input: {
       propUnattribWhy, false,
       [{ kind: "transaction", count: report.property_unattributed_n }]));
   }
+  if ((report.refunds_unmatched_n ?? 0) > 0) {
+    // #258: under refund-netting v2 a refund only reduces deductions when it's linked to the specific
+    // deductible expense it reverses. Unlinked refunds (or ones tied to personal spend) are NOT reducing
+    // the position — which is correct for a flatmate reimbursement or a personal return, but if any
+    // genuinely refunds a work/property cost the user should link it. 0 when v2 is off ⇒ no nudge.
+    findings.push(f("refunds_unmatched", "classification", "review", `${report.refunds_unmatched_n} refund(s) aren't linked to an expense`,
+      `These total ${money(report.refunds_unmatched_cents ?? 0)} and are NOT reducing your deductions. That's right for a personal reimbursement (e.g. a flatmate paying you back) or a return on a personal purchase. But if a refund reverses a work or rental expense you claimed, open it and link it to that expense so the deduction is netted correctly. General information only.`, false,
+      [{ kind: "transaction", count: report.refunds_unmatched_n }]));
+  }
   if (signals.needsReviewAssetsN > 0) {
     findings.push(f("assets_needs_review", "depreciation", "review", `${signals.needsReviewAssetsN} asset(s) flagged for review`,
       `Some depreciating assets need confirmation (cost, date or effective life) before their decline-in-value is reliable.`, false,

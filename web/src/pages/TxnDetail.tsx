@@ -21,6 +21,7 @@ export function TxnDetail() {
   const [bucket, setBucket] = useState<string>("");
   const [label, setLabel] = useState<string>("");
   const [propertyId, setPropertyId] = useState<string>("");
+  const [refundForId, setRefundForId] = useState<string>(""); // #258: which expense this refund reverses
   const [date, setDate] = useState<string>("");
   const [seededId, setSeededId] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
@@ -37,6 +38,7 @@ export function TxnDetail() {
     setBucket(txn.bucket ?? "");
     setLabel(txn.ato_label ?? "");
     setPropertyId(txn.property_id ?? "");
+    setRefundForId(txn.refund_for_txn_id ?? "");
     setDate(txn.txn_date ?? "");
     setDirty(false);
     setSeededId(id);
@@ -47,6 +49,9 @@ export function TxnDetail() {
   // from a rental — counting the amount against that property. Clear it whenever the bucket isn't one
   // the property selector is shown for.
   const effPropId = isPropertyBucket(bucket) ? propertyId : "";
+  // #258: a refund→expense link only belongs on a 'refund' credit; clear it on any other bucket so a
+  // stale link can't persist (and net) when the row is re-bucketed away from 'refund'.
+  const effRefundFor = bucket === "refund" ? refundForId : "";
 
   const save = useMutation({
     mutationFn: async () => {
@@ -55,6 +60,7 @@ export function TxnDetail() {
       if (bucket && bucket !== txn.bucket) ops.push(api.correct(id, "bucket", bucket));
       if (label !== (txn.ato_label ?? "")) ops.push(api.correct(id, "ato_label", label));
       if (effPropId !== (txn.property_id ?? "")) ops.push(api.correct(id, "property_id", effPropId));
+      if (effRefundFor !== (txn.refund_for_txn_id ?? "")) ops.push(api.correct(id, "refund_for_txn_id", effRefundFor));
       if (date !== (txn.txn_date ?? "")) ops.push(api.correct(id, "txn_date", date));
       // "Confirm as-is" when nothing changed: record acceptance of the current bucket. Skip for an
       // unknown bucket — re-writing bucket='unknown' would keep the row stuck in Needs-review; the
@@ -145,6 +151,14 @@ export function TxnDetail() {
   const looksPhoneInternet = /\b(telstra|optus|vodafone|tpg|iinet|aussie ?broadband|belong|superloop|internet|broadband|nbn|mobile|phone plan)\b/.test(desc);
   const fyStart = txn?.txn_date && /^\d{4}-\d{2}-\d{2}$/.test(txn.txn_date) ? (Number(txn.txn_date.slice(5, 7)) >= 7 ? Number(txn.txn_date.slice(0, 4)) : Number(txn.txn_date.slice(0, 4)) - 1) : null;
   const wfhQ = useQuery({ queryKey: ["work-use", fyStart], queryFn: () => api.workUse(fyStart as number), enabled: looksPhoneInternet && fyStart != null });
+  // #258: candidate expenses to link a refund to (countable debits in the same FY). Only fetched for a
+  // refund credit when refund_netting_v2 is on — the picker is hidden otherwise, so no wasted call.
+  const isRefund = txn?.bucket === "refund" && txn?.direction === "credit";
+  const refundCandQ = useQuery({
+    queryKey: ["txn-expenses", fyStart],
+    queryFn: () => api.transactions({ fy: fyStart as number, countable: true, limit: 500 }),
+    enabled: has("refund_netting_v2") && isRefund && fyStart != null,
+  });
 
   if (txnQ.isLoading) return <Spinner />;
   if (!txn) return <Card className="p-6 text-sm text-muted">Transaction not found.</Card>;
@@ -287,6 +301,28 @@ export function TxnDetail() {
                     <span className="mt-1 block text-xs text-muted">Tagging the property attributes this credit. Save it, then "Record as rental income" makes it count once (or link it under "possible duplicate income"). General info only.</span>
                   )
                 )}
+              </label>
+            )}
+
+            {/* #258: a refund credit can be linked to the specific deductible expense it reverses, so it
+                nets ONLY against that expense. Left unlinked, it's position-neutral — correct for a
+                personal reimbursement (a flatmate paying you back) or a return on a personal purchase. */}
+            {has("refund_netting_v2") && isRefund && (
+              <label className="block">
+                <span className="text-xs font-medium uppercase tracking-wide text-muted">This refunds which expense? <InfoTip tip="Link this refund to the work/rental expense it reverses, so the deduction is reduced by the refund. Leave it unlinked for a personal reimbursement or a return on a personal purchase — those don't affect your deductions. General info only." /></span>
+                <select
+                  value={refundForId}
+                  onChange={(e) => { setRefundForId(e.target.value); setDirty(true); }}
+                  className="mt-1 w-full rounded-lg border border-line bg-card px-3 py-2"
+                >
+                  <option value="">— unlinked (personal reimbursement — doesn't reduce deductions) —</option>
+                  {(refundCandQ.data ?? []).filter((e) => e.id !== id).map((e) => (
+                    <option key={e.id} value={e.id}>
+                      {e.merchant ?? "Unknown"} · {money(e.amount_aud_cents ?? e.amount_cents)} · {e.txn_date ?? "undated"}
+                    </option>
+                  ))}
+                </select>
+                {refundCandQ.isLoading && <span className="mt-1 block text-xs text-muted">Loading your expenses…</span>}
               </label>
             )}
 

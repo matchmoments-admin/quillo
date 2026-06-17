@@ -6,6 +6,7 @@ import { useActiveFy } from "../lib/activeFy";
 import { Panel, PanelHead, KpiCard, Meter, Pill, Spinner, Button, money, BUCKET_LABEL, InfoTip } from "../components/ui";
 import { FindAndAttachSheet } from "../components/FindAndAttachSheet";
 import { WorkMethodsCard } from "../components/WorkMethodsCard";
+import { SetupChecklist } from "../components/SetupChecklist";
 import { AskQuillo } from "../components/AskQuillo";
 import { useFeatures } from "../lib/features";
 import type { ChecklistItem } from "../types";
@@ -74,6 +75,10 @@ export function Dashboard() {
           <span className="font-semibold text-forest">add dates to include them →</span>
         </Link>
       )}
+
+      {/* #246: onboarding-completeness — "bring these in" evidence checklist, derived from the user's
+          situation. Near the top so a half-set-up user sees what's missing before working the numbers. */}
+      {has("onboarding_checklist") && <SetupChecklist />}
 
       {/* Savings run-rate — the "yearly wake-up figure" (factual annualisation), links into the Save tab. */}
       {has("advisory_layer") && <RunRateStrip fy={fy} />}

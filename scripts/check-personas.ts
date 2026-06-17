@@ -11,7 +11,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Env } from "../src/env";
-import { buildReport } from "../src/lib/report";
+import { buildReport, useStatusDeniedExpr, propertyUndeterminedGatedExpr } from "../src/lib/report";
+import { runScan, type ScanTxn } from "../src/lib/scan";
+import auV1RulePack from "../src/rulepacks/au-v1.json";
+import { COUNTABLE } from "../src/lib/queries";
+import { fyBounds } from "../src/lib/ledger-totals";
 import { buildAccountantSchedule, tieBackChecks } from "../src/lib/accountant-schedule";
 import { fetchAskDigestRows, listAccounts } from "../src/lib/queries";
 import { deleteRow, archiveRow, DeleteBlockedError, syncPropertyDisposalToCgt, syncIncomeCgtFromComponents } from "../src/lib/situation-write";
@@ -1012,6 +1016,38 @@ async function main() {
     const fOn = await buildReport(env, u2, 2025);
     const fOff = await buildReport(envCarOff, u2, 2025);
     check("P-car fallback: legacy-only persona is byte-identical car_cents on==off (3,000km × 88c = $2,640)", fOn.work_method?.car_cents === 264000 && fOn.work_method?.car_cents === fOff.work_method?.car_cents);
+  }
+
+  // ── #256 double-check scan: SQL + engine integration over a realistic persona ──
+  // Plants an OVER-CLAIM (groceries counting in property_rented — the founder's $15k pattern) and a
+  // MISSED deduction (union fees sitting undetermined in payg), then runs the SAME query + runScan the DO
+  // uses. Proves the scan surfaces both AND that the report position is untouched (read-only/additive).
+  {
+    const u = "pscan";
+    run(`INSERT INTO tenants (user_id, display_name) VALUES (?, 'P-scan')`, u);
+    run(`INSERT INTO persons (id, user_id, display_name, role) VALUES (?, ?, 'You', 'self')`, `person_self_${u}`, u);
+    run(`INSERT INTO properties (id, user_id, label, status, use_status, ownership_pct) VALUES ('pscanProp', ?, 'Rental', 'rented', 'rented', 100)`, u);
+    run(`INSERT INTO income (id, user_id, income_type, fy, gross_cents, amount_aud_cents) VALUES ('pscanSal', ?, 'salary_payg', '2025-26', 10000000, 10000000)`, u);
+    run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, property_id, direction, deductibility) VALUES ('pscanGroc', ?, 'upload', 'categorised', 'bank_line', 25000, 25000, ?, 'property_rented', 'pscanProp', 'debit', 'likely_deductible')`, u, FY_DATE);
+    run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, direction, deductibility, merchant) VALUES ('pscanGrocM', ?, 'upload', 'categorised', 'bank_line', 25000, 25000, ?, 'property_rented', 'debit', 'likely_deductible', 'WOOLWORTHS')`, u, FY_DATE);
+    run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, direction, deductibility, merchant) VALUES ('pscanUnion', ?, 'upload', 'categorised', 'bank_line', 40000, 40000, ?, 'payg', 'debit', 'undetermined', 'ASU UNION FEES')`, u, FY_DATE);
+    const reportScan = await buildReport(env, u, 2025);
+    const { start, end } = fyBounds(2025);
+    const scanRows = (await env.DB.prepare(
+      `SELECT id, txn_date, merchant, ato_label, bucket, deductibility,
+              COALESCE(amount_aud_cents, amount_cents) AS amount_cents,
+              COALESCE(reimbursed,0) AS reimbursed,
+              ${useStatusDeniedExpr("property_id")} AS use_status_denied,
+              ${propertyUndeterminedGatedExpr(env, "bucket", "property_id")} AS property_undetermined
+         FROM transactions WHERE user_id = ? AND txn_date >= ? AND txn_date <= ? AND ${COUNTABLE}
+        ORDER BY COALESCE(amount_aud_cents, amount_cents) DESC LIMIT 500`,
+    ).bind(u, start, end).all<ScanTxn>()).results ?? [];
+    const section = (auV1RulePack as { payg_deductibility?: import("../src/lib/deductibility").DeductibilitySection }).payg_deductibility;
+    const scan = runScan(scanRows, reportScan, section, { excludeNonDeductible: true });
+    check("scan: surfaces the WOOLWORTHS-in-property over-claim (counting)", scan.findings.some((f) => f.affected_txn_ids.includes("pscanGrocM") && f.category === "over_claim"));
+    check("scan: surfaces the union-fee missed deduction (payg undetermined)", scan.findings.some((f) => f.affected_txn_ids.includes("pscanUnion") && f.category === "missed"));
+    check("scan: carries the confirmed→tracked range from the report", scan.summary.position_tracked_cents === reportScan.taxable_position_cents && scan.summary.position_confirmed_cents === (reportScan.taxable_position_confirmed_cents ?? reportScan.taxable_position_cents));
+    check("scan: read-only — the report position is byte-identical after scanning", (await buildReport(env, u, 2025)).taxable_position_cents === reportScan.taxable_position_cents);
   }
 
   console.log(`\n=== personas: ${pass} passed, ${fail} failed ===`);

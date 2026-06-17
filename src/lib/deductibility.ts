@@ -64,6 +64,23 @@ function listHits(list: DeductibilityList, haystack: string): boolean {
  * output. Only the 'payg' bucket is classified; every other bucket returns 'undetermined' (the
  * report handles them by bucket). Within payg the precedence is deny → apportion → allow → default.
  */
+/**
+ * #256: does this line match a DENY (private/domestic) pattern, regardless of bucket? verdictForTxn only
+ * classifies the payg bucket, but the double-check scan needs to spot personal merchants that landed in a
+ * PROPERTY bucket too (the founder's ~$15k of pub/groceries/pharmacy filed as property_rented). Returns
+ * the matched GENERAL-INFO note, or null when nothing denies. Pure.
+ */
+export function denyNoteFor(
+  atoLabel: string | null | undefined,
+  merchant: string | null | undefined,
+  section: DeductibilitySection | null | undefined,
+): string | null {
+  if (!section) return null;
+  const haystack = `${atoLabel ?? ""} ${merchant ?? ""}`.toLowerCase();
+  for (const l of section.deny ?? []) if (listHits(l, haystack)) return l.note;
+  return null;
+}
+
 export function verdictForTxn(
   bucket: string | null | undefined,
   atoLabel: string | null | undefined,

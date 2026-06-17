@@ -1077,6 +1077,13 @@ export async function handleApi(
   }
 
   // ── Year-end report (Phase 5) ─────────────────────────────────────────────
+  // #256: pre-handoff double-check scan — deterministic, read-only. Flag-gated (404 when off ⇒ byte-identical).
+  if (resource === "scan" && m === "GET") {
+    if (!featureOn(env, "txn_scan")) return json({ error: "not_found" }, 404);
+    const fy = Number(url.searchParams.get("fy")) || defaultFy();
+    return json(await stub.scanTransactions(uid, fy));
+  }
+
   if (resource === "report" && m === "GET") {
     const fy = Number(url.searchParams.get("fy")) || defaultFy();
     const rep = await buildReport(env, uid, fy);

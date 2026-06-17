@@ -1,15 +1,28 @@
+import { useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { api, saveBlob } from "../api";
 import { useActiveFy } from "../lib/activeFy";
 import { useFeatures } from "../lib/features";
 import { Card, Spinner, money, BUCKET_LABEL, InfoTip } from "../components/ui";
+import { ScanFindings } from "../components/ScanFindings";
 
 export function Reports() {
   // Driven by the global active-FY switcher (in the app header); change the year there.
   const { fy, label } = useActiveFy();
   const features = useFeatures();
+  const scanOn = features.has("txn_scan");
   const { data, isLoading, error } = useQuery({ queryKey: ["report", fy], queryFn: () => api.report(fy) });
   const download = useMutation({ mutationFn: () => api.reportCsv(fy), onSuccess: ({ blob, filename }) => saveBlob(blob, filename) });
+  // #256 pre-handoff gate: on Download, run the (instant, deterministic) scan first; if it finds anything,
+  // show a NON-BLOCKING "N things worth checking" panel (Review / Download anyway). Never blocks; flag-off
+  // is the untouched direct-download path.
+  const [gateCount, setGateCount] = useState<number | null>(null);
+  const precheck = useMutation({
+    mutationFn: () => api.scan(fy),
+    onSuccess: (res) => { if (res.summary.finding_count > 0) setGateCount(res.summary.finding_count); else download.mutate(); },
+    onError: () => download.mutate(), // if the scan can't run, never block the hand-off
+  });
+  const onDownload = () => { if (scanOn) precheck.mutate(); else download.mutate(); };
 
   return (
     <div className="space-y-6">
@@ -25,17 +38,36 @@ export function Reports() {
       </div>
 
       <button
-        onClick={() => download.mutate()}
-        disabled={download.isPending}
+        onClick={onDownload}
+        disabled={download.isPending || precheck.isPending}
         className="inline-block rounded-lg bg-ink px-4 py-2 text-sm font-medium text-white hover:bg-ink/90 disabled:opacity-60"
       >
         {download.isPending
           ? "Preparing…"
-          : features.has("accountant_schedule")
-            ? "Download accountant schedule (CSV)"
-            : "Download CSV for your tax agent"}
+          : precheck.isPending
+            ? "Double-checking…"
+            : features.has("accountant_schedule")
+              ? "Download accountant schedule (CSV)"
+              : "Download CSV for your tax agent"}
       </button>
       {download.isError && <p className="text-xs text-danger">Couldn't download: {(download.error as Error).message}</p>}
+      {gateCount != null && (
+        <Card className="flex flex-wrap items-center gap-3 border-warn/40 bg-warn/5 p-3 text-sm">
+          <span className="font-medium text-ink">We found {gateCount} thing{gateCount === 1 ? "" : "s"} worth checking before you hand off.</span>
+          <button
+            onClick={() => { setGateCount(null); document.getElementById("double-check")?.scrollIntoView({ behavior: "smooth" }); }}
+            className="rounded-lg border border-line bg-surface px-3 py-1.5 text-sm font-medium hover:bg-card"
+          >
+            Review
+          </button>
+          <button
+            onClick={() => { setGateCount(null); download.mutate(); }}
+            className="rounded-lg border border-line px-3 py-1.5 text-sm text-muted hover:bg-surface"
+          >
+            Download anyway
+          </button>
+        </Card>
+      )}
 
       {isLoading ? (
         <Spinner />
@@ -97,6 +129,8 @@ export function Reports() {
               </>
             )}
           </p>
+
+          {scanOn && <div id="double-check"><ScanFindings fyNum={fy} /></div>}
 
           {(data!.income.franking_credit_cents > 0 || data!.income.foreign_tax_paid_cents > 0) && (
             <Card className="grid grid-cols-2 gap-4 p-4 sm:grid-cols-3">

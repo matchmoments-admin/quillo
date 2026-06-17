@@ -54,6 +54,23 @@ babysit branching. Do the due diligence below, then ship.
 
 CI (`evals.yml`) runs the categorisation eval on PRs — it's a signal, not a deploy gate (deploys are manual via wrangler). Don't block a merge on an unrelated pre-existing eval drift; flag it instead.
 
+### Issue hygiene (keep the backlog honest)
+The backlog lives in **GitHub Issues** (`gh` CLI); epics are tracking issues labelled `epic`, with
+children linked to their epic (no issue gets two epics). Labels already in use: `severity:{blocker,
+high,medium,low}`, `area:*`, `priority:{p1,p2,p3}`, `epic`, `needs-decision` (owner sign-off — touches
+money/tax output or is net-new). Treat triage as part of the loop, not a separate chore:
+- **Sweep** at the start of any new wave/epic, and whenever a PR closes issues: bucket each open issue
+  as **keep / done / superseded / wontfix / needs-decision**. Cross-check against recent commits,
+  closed issues, and the code before deciding — don't guess from the title.
+- **Every closure cites evidence** (commit, PR, closed-issue #, or code path) in a one-line closing
+  comment. Set the reason: `state_reason=completed` for shipped work, `not_planned` for superseded /
+  won't-do (name the successor). With this older `gh` (no `--reason` flag): `gh issue comment N -b …`
+  then `gh api repos/{owner}/{repo}/issues/N -X PATCH -f state=closed -f state_reason=…`.
+- **Epics:** when an epic's headline item ships, re-evaluate the umbrella for closure — don't leave
+  parking issues open once their core item lands.
+- **`needs-decision` is never auto-closed.** Surface the fork via `AskUserQuestion` and hold — this
+  composes with "When to STOP and ask" below.
+
 ### When to STOP and ask (do not auto-ship)
 - A migration is **destructive or non-additive** (DROP/rename/data rewrite) — needs an explicit go + a reverse plan.
 - The change would alter **money/tax outputs** in a way that's a genuine product/judgement call, not a clear bug fix.

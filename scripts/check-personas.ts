@@ -44,7 +44,7 @@ for (const f of fs.readdirSync(path.join(root, "migrations")).filter((f) => f.en
   db.exec(fs.readFileSync(path.join(root, "migrations", f), "utf8"));
 }
 
-const env = { DB: new D1(db), FEATURES: "attribution_engine,position_excludes_nondeductible,loan_split,wfh_car_methods,refund_netting,income_dedupe,cgt_engine,ess_engine,gst_bas,car_logbook,trust_distributions,partnership_distributions,smsf_engine,accountant_schedule,jurisdiction_period,currency_base" } as unknown as Env;
+const env = { DB: new D1(db), FEATURES: "attribution_engine,position_excludes_nondeductible,loan_split,wfh_car_methods,refund_netting,income_dedupe,cgt_engine,ess_engine,gst_bas,car_logbook,trust_distributions,partnership_distributions,smsf_engine,accountant_schedule,jurisdiction_period,currency_base,position_confirmed_range" } as unknown as Env;
 
 // tiny seed helper
 const run = (sql: string, ...p: unknown[]) => db.prepare(sql).run(...(p as never[]));
@@ -926,6 +926,64 @@ async function main() {
     const rOff = await buildReport(envBaseOff, u, 2025);
     check("UK base GATE: currency_base OFF ⇒ base reverts to 'AUD' ⇒ base_currency OMITTED (byte-identical payload)", rOff.base_currency === undefined);
     check("UK base GATE: the FX_CONVERTED guard is base-agnostic ⇒ same countable total (19000)", rOff.total_deductions_cents === 19000);
+  }
+
+  // ── #255 (Wave 3): confirmed-vs-tracked position range (position_confirmed_range) ──
+  // A rental owner with $1,000 salary and two rental expenses: one CONFIRMED-deductible ($300) and one
+  // captured-but-UNDETERMINED ($400, pending review). A property-bucket expense left 'undetermined'
+  // still counts as TRACKED spend (deny-by-default applies to payg, not to a let property — see
+  // deductionGroupForRow), but it is NOT resolved-deductible until a review confirms it. So the confirmed
+  // position must sit ABOVE the tracked one by exactly that unresolved $400 — the founder's real gap
+  // (mostly un-reviewed rental spend), and the range the Reports headline renders.
+  {
+    const u = "pcrange";
+    run(`INSERT INTO tenants (user_id, display_name) VALUES (?, 'P-range')`, u);
+    run(`INSERT INTO persons (id, user_id, display_name, role) VALUES (?, ?, 'You', 'self')`, `person_self_${u}`, u);
+    run(`INSERT INTO properties (id, user_id, label, status, use_status, ownership_pct) VALUES ('pcrProp', ?, 'Rental', 'rented', 'rented', 100)`, u);
+    run(`INSERT INTO income (id, user_id, income_type, fy, gross_cents, amount_aud_cents) VALUES ('pcrSal', ?, 'salary_payg', '2025-26', 100000, 100000)`, u);
+    run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, property_id, direction, deductibility, reimbursed) VALUES ('pcrConf', ?, 'upload', 'categorised', 'bank_line', 30000, 30000, ?, 'property_rented', 'pcrProp', 'debit', 'likely_deductible', 0)`, u, FY_DATE);
+    run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, property_id, direction, deductibility, reimbursed) VALUES ('pcrUnd', ?, 'upload', 'categorised', 'bank_line', 40000, 40000, ?, 'property_rented', 'pcrProp', 'debit', 'undetermined', 0)`, u, FY_DATE);
+
+    const r = await buildReport(env, u, 2025);
+    check("range: confirmed position is present when the flag is on", r.taxable_position_confirmed_cents != null);
+    // Identity against the report's OWN figures (no work_method/dep/super here), so the assert can't drift
+    // with the gating: confirmed − tracked === tracked-discretionary spend − resolved-deductible spend.
+    const gap = (r.taxable_position_confirmed_cents ?? 0) - r.taxable_position_cents;
+    check("range: confirmed ≥ tracked (confirmed is the conservative endpoint)", (r.taxable_position_confirmed_cents ?? 0) >= r.taxable_position_cents);
+    check("range: gap === tracked discretionary − resolved deductible", gap === r.total_deductions_cents - r.resolved_deductible_cents);
+    check("range: the $400 undetermined spend is exactly the unresolved gap", gap === 40000);
+    check("range: confirmed = income − resolved ($300) ⇒ 100000 − 30000 = 70000", r.taxable_position_confirmed_cents === 70000);
+    check("range: tracked = income − tracked ($700) ⇒ 100000 − 70000 = 30000", r.taxable_position_cents === 30000);
+
+    // Gate: flag OFF ⇒ the field is omitted entirely ⇒ byte-identical payload (the AU-snapshot contract).
+    const envOff = { ...env, FEATURES: (env as { FEATURES: string }).FEATURES.replace(",position_confirmed_range", "") } as unknown as Env;
+    const rOff = await buildReport(envOff, u, 2025);
+    check("range GATE: flag OFF ⇒ taxable_position_confirmed_cents omitted (byte-identical)", rOff.taxable_position_confirmed_cents === undefined);
+    check("range GATE: flag OFF ⇒ taxable_position_cents unchanged", rOff.taxable_position_cents === r.taxable_position_cents);
+  }
+
+  // ── #255 refund clamp: refunds net the TRACKED total but not resolved_deductible_cents, so a refund on
+  // a CONFIRMED-deductible expense could push confirmed deductions above tracked ⇒ the range inverts
+  // (confirmed below tracked). The confirmed discretionary deduction is capped at the refund-netted
+  // tracked spend, so confirmed ≥ tracked always holds. (refund_netting is ON in the harness env.)
+  {
+    const u = "pcrefund";
+    run(`INSERT INTO tenants (user_id, display_name) VALUES (?, 'P-refund')`, u);
+    run(`INSERT INTO persons (id, user_id, display_name, role) VALUES (?, ?, 'You', 'self')`, `person_self_${u}`, u);
+    run(`INSERT INTO income (id, user_id, income_type, fy, gross_cents, amount_aud_cents) VALUES ('pcrfSal', ?, 'salary_payg', '2025-26', 100000, 100000)`, u);
+    // A confirmed-deductible $500 work expense (counts in BOTH tracked and resolved) ...
+    run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, direction, deductibility, reimbursed) VALUES ('pcrfE', ?, 'upload', 'categorised', 'bank_line', 50000, 50000, ?, 'payg', 'debit', 'confirmed_deductible', 0)`, u, FY_DATE);
+    // ... with a $200 refund that nets the tracked total down to $300 (but leaves resolved at $500).
+    run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, direction, refund_for_txn_id) VALUES ('pcrfR', ?, 'upload', 'categorised', 'bank_line', 20000, 20000, ?, 'refund', 'credit', 'pcrfE')`, u, FY_DATE);
+
+    const r = await buildReport(env, u, 2025);
+    // income $1,000 = 100000c; gross deductions $500 = 50000c; refund $200 = 20000c nets tracked to 30000c.
+    // Without the clamp: confirmed would subtract resolved 50000c vs tracked's netted 30000c ⇒ confirmed
+    // (50000c) BELOW tracked (70000c), inverting the range. The clamp caps confirmed deductions at the
+    // 30000c netted tracked spend ⇒ confirmed == tracked == 70000c, invariant intact.
+    check("refund clamp: tracked nets the refund ⇒ taxable_position_cents = 100000 − 30000 = 70000", r.taxable_position_cents === 70000);
+    check("refund clamp: confirmed ≥ tracked (range never inverts under refund netting)", (r.taxable_position_confirmed_cents ?? 0) >= r.taxable_position_cents);
+    check("refund clamp: confirmed capped at netted tracked spend ⇒ 70000 (not the un-netted 50000)", r.taxable_position_confirmed_cents === 70000);
   }
 
   console.log(`\n=== personas: ${pass} passed, ${fail} failed ===`);

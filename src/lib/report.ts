@@ -201,6 +201,7 @@ export interface Report {
   // Present only when super_deduction is on AND there are personal_deductible contributions.
   super_deduction?: { claimed_cents: number; contributed_cents: number; cap_cents: number; over_cap: boolean };
   taxable_position_cents: number;      // total_income + net capital gain + ESS discount + trust distributions + franking gross-up − deductions − depreciation − super (indicative)
+  taxable_position_confirmed_cents?: number; // #255: CONFIRMED end of the range — as above but discretionary tracked spend swapped for resolved_deductible_cents (method-based deductions stay). ≥ taxable_position_cents. Present only when position_confirmed_range is on ⇒ byte-identical off.
 }
 
 /**
@@ -855,6 +856,33 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   // headline now that attributed txns are excluded from the raw resolved sum above (D.0).
   const resolved_deductible_cents = (resolved?.total ?? 0) + attr.individual_deduction_cents + attr_property_total_cents;
 
+  // #255 (Wave 3): the CONFIRMED end of the position range. taxable_position_cents above is the TRACKED
+  // (optimistic) end — it subtracts total_deductions_cents (captured spend pending review). This mirrors
+  // it but swaps that discretionary tracked spend for resolved_deductible_cents (only what a year-end
+  // review has CONFIRMED). Method-based, evidence-backed deductions (work-from-home/car methods,
+  // depreciation, personal-deductible super) stay in the confirmed floor — they're substantiated by
+  // calculation, not pending line-review. The gap (confirmed − tracked position) is exactly the
+  // unresolved discretionary spend, so the Reports page can render confirmed→tracked as a range with the
+  // optimistic part flagged "pending review". ADDITIVE: taxable_position_cents is unchanged; the field is
+  // only emitted when the flag is on ⇒ byte-identical off.
+  //
+  // Clamp note (refund asymmetry): total_deductions_cents NETS refunds (max(0, gross − refunds)) but
+  // resolved_deductible_cents does NOT (a refund row is bucket='refund', outside the resolved set, and
+  // nothing decrements the matched expense's deductible amount). A refund netted against a resolved
+  // expense would otherwise make confirmed_deductions > tracked deductions ⇒ confirmed position BELOW
+  // tracked ⇒ the range inverts on a money surface. Cap the confirmed discretionary deduction at the
+  // refund-netted tracked spend: you can't confirm-claim more than what's tracked net of refunds. This
+  // restores the confirmed ≥ taxable_position_cents invariant (fewer deductions ⇒ higher taxable
+  // position, so confirmed is the conservative endpoint) without over-penalising refunds that landed on
+  // UNRESOLVED spend (min, not subtract).
+  let taxable_position_confirmed_cents: number | undefined;
+  if (featureOn(env, "position_confirmed_range")) {
+    const confirmed_deductions_cents = Math.min(resolved_deductible_cents, Math.max(0, gross_deductions_cents - refunds_cents)) + (work_method?.total_cents ?? 0);
+    taxable_position_confirmed_cents =
+      income.gross_cents + (capital_gains?.net_capital_gain_cents ?? 0) + (ess?.assessable_discount_cents ?? 0) + (trust?.assessable_cents ?? 0) + (partnership?.assessable_cents ?? 0)
+      + (franking_gross_up_cents ?? 0) - confirmed_deductions_cents - dep.total_cents - (super_deduction?.claimed_cents ?? 0);
+  }
+
   // Emit base_currency ONLY when it's not the legacy 'AUD' default — an AU report (or flag OFF) stays
   // byte-identical (no new key in the payload / snapshot); a UK tenant surfaces 'GBP' for display.
   const baseCurrency = baseCurrencyOf(env, jurisdiction);
@@ -906,6 +934,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
     franking_gross_up_cents,
     super_deduction,
     taxable_position_cents,
+    taxable_position_confirmed_cents,
   };
 }
 

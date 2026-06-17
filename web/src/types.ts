@@ -698,6 +698,7 @@ export interface Report {
   franking_gross_up_cents?: number;     // 3a — franking credits grossed up INTO assessable income (s207-20)
   super_deduction?: { claimed_cents: number; contributed_cents: number; cap_cents: number; over_cap: boolean }; // 3a — personal-deductible super (s290-150)
   taxable_position_cents: number;
+  taxable_position_confirmed_cents?: number; // #255 — CONFIRMED end of the range (resolved deductions only); present only when position_confirmed_range is on. ≥ taxable_position_cents.
 }
 
 // Year-end deductibility review summary (mirror of TaxAgent.reviewSummary).

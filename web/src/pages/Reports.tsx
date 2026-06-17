@@ -1,5 +1,5 @@
-import { useQuery } from "@tanstack/react-query";
-import { api } from "../api";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { api, saveBlob } from "../api";
 import { useActiveFy } from "../lib/activeFy";
 import { useFeatures } from "../lib/features";
 import { Card, Spinner, money, BUCKET_LABEL, InfoTip } from "../components/ui";
@@ -9,6 +9,7 @@ export function Reports() {
   const { fy, label } = useActiveFy();
   const features = useFeatures();
   const { data, isLoading, error } = useQuery({ queryKey: ["report", fy], queryFn: () => api.report(fy) });
+  const download = useMutation({ mutationFn: () => api.reportCsv(fy), onSuccess: ({ blob, filename }) => saveBlob(blob, filename) });
 
   return (
     <div className="space-y-6">
@@ -23,9 +24,18 @@ export function Reports() {
         </span>
       </div>
 
-      <a href={api.reportCsvUrl(fy)} className="inline-block rounded-lg bg-ink px-4 py-2 text-sm font-medium text-white hover:bg-ink/90">
-        {features.has("accountant_schedule") ? "Download accountant schedule (CSV)" : "Download CSV for your tax agent"}
-      </a>
+      <button
+        onClick={() => download.mutate()}
+        disabled={download.isPending}
+        className="inline-block rounded-lg bg-ink px-4 py-2 text-sm font-medium text-white hover:bg-ink/90 disabled:opacity-60"
+      >
+        {download.isPending
+          ? "Preparing…"
+          : features.has("accountant_schedule")
+            ? "Download accountant schedule (CSV)"
+            : "Download CSV for your tax agent"}
+      </button>
+      {download.isError && <p className="text-xs text-danger">Couldn't download: {(download.error as Error).message}</p>}
 
       {isLoading ? (
         <Spinner />

@@ -603,22 +603,6 @@ function EditAccount({
   // shown in dollars. Empty string ⇒ clear (null); only sent for loan accounts.
   const [rate, setRate] = useState(account.interest_rate_pct != null ? String(account.interest_rate_pct) : "");
   const [balance, setBalance] = useState(account.balance_cents != null ? String(account.balance_cents / 100) : "");
-  const save = useMutation({
-    mutationFn: () =>
-      api.updateAccount(account.id, {
-        name,
-        institution,
-        last4,
-        type,
-        ...(type === "loan"
-          ? {
-              interest_rate_pct: parseDecimal(rate), // null when blank/invalid (comma/$ tolerant) — #249
-              balance_cents: parseMoneyToCents(balance),
-            }
-          : {}),
-      }),
-    onSuccess: onSaved,
-  });
 
   // Evidence-first loan interest (S5, flag loan_interest_v2): record the lender's ACTUAL interest for
   // the active FY against this loan — the figure that flows to the property's deductible interest
@@ -633,19 +617,49 @@ function EditAccount({
   useEffect(() => {
     setFyInterest(existing ? String(existing.interest_cents / 100) : "");
   }, [existing?.id, existing?.interest_cents]);
-  const setLi = useMutation({
-    mutationFn: () => {
-      const interest_cents = parseMoneyToCents(fyInterest); // #249: comma/$ tolerant; null ⇒ surface, don't POST NaN
-      if (interest_cents == null) throw new Error("Enter a valid amount, e.g. 12000 or 12,000.50");
-      return api.setLoanInterest(account.id, { fy, interest_cents, source: "lender_summary" });
+  // #250: one Save per card. A single button commits everything in this panel — the account
+  // facts and (when shown + changed) the FY loan interest — even though two endpoints are involved.
+  // Account facts go first; if they fail the whole save fails. The interest write is wrapped so its
+  // failure never discards the already-saved facts — we report it as partial failure instead.
+  const saveAll = useMutation({
+    mutationFn: async (): Promise<{ interestError?: string }> => {
+      await api.updateAccount(account.id, {
+        name,
+        institution,
+        last4,
+        type,
+        ...(type === "loan"
+          ? {
+              interest_rate_pct: parseDecimal(rate), // null when blank/invalid (comma/$ tolerant) — #249
+              balance_cents: parseMoneyToCents(balance),
+            }
+          : {}),
+      });
+      const seeded = existing ? String(existing.interest_cents / 100) : "";
+      if (v2 && fyInterest.trim() !== seeded) {
+        try {
+          const interest_cents = parseMoneyToCents(fyInterest); // #249: comma/$ tolerant; null ⇒ surface, don't POST NaN
+          if (interest_cents == null) throw new Error("Enter a valid amount, e.g. 12000 or 12,000.50");
+          await api.setLoanInterest(account.id, { fy, interest_cents, source: "lender_summary" });
+          qc.invalidateQueries({ queryKey: ["loan-interest", fy] });
+          qc.invalidateQueries({ queryKey: ["report"] });
+          qc.invalidateQueries({ queryKey: ["dashboard"] });
+        } catch (e) {
+          return { interestError: (e as Error).message };
+        }
+      }
+      return {};
     },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["loan-interest", fy] });
-      qc.invalidateQueries({ queryKey: ["report"] });
-      qc.invalidateQueries({ queryKey: ["dashboard"] });
-      toast.success("Loan interest saved");
+    onSuccess: (r) => {
+      if (r.interestError) {
+        // Account facts saved; the interest didn't — keep the panel open so the user can fix just that.
+        toast.warning("Account saved — but the interest didn't", { description: r.interestError });
+      } else {
+        toast.success("Account saved");
+        onSaved();
+      }
     },
-    onError: (e) => toast.error("Couldn't save loan interest", { description: (e as Error).message }), // #249: was silent
+    onError: (e) => toast.error("Couldn't save account", { description: (e as Error).message }),
   });
   return (
     <div className="mt-3 space-y-3 rounded-lg border border-line bg-surface p-3">
@@ -683,8 +697,8 @@ function EditAccount({
             </label>
           </>
         )}
-        <Button onClick={() => save.mutate()} disabled={save.isPending || !name}>
-          {save.isPending ? "Saving…" : "Save"}
+        <Button onClick={() => saveAll.mutate()} disabled={saveAll.isPending || !name}>
+          {saveAll.isPending ? "Saving…" : "Save"}
         </Button>
       </div>
       {type === "loan" && (
@@ -700,9 +714,6 @@ function EditAccount({
             </span>
             <input value={fyInterest} onChange={(e) => setFyInterest(e.target.value)} inputMode="decimal" placeholder="12000" className="mt-1 w-full rounded-lg border border-line px-3 py-2" />
           </label>
-          <Button onClick={() => setLi.mutate()} disabled={setLi.isPending || fyInterest.trim() === ""}>
-            {setLi.isPending ? "Saving…" : "Save interest"}
-          </Button>
           <p className="w-full text-xs text-muted">
             The actual interest from your lender's annual summary or statements — this is what flows to the property's deductible interest, replacing the per-line split
             {existing ? ` (recorded: ${money(existing.interest_cents)}${existing.source === "estimate" ? " · estimate" : ""})` : ""}. General information only — not tax advice.

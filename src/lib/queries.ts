@@ -72,6 +72,7 @@ export interface TxnRow {
   bucket: string | null;
   ato_label: string | null;
   property_id: string | null;
+  refund_for_txn_id: string | null; // #258: on a refund credit, the expense it reverses
   paid_account: string | null;
   confidence: number | null;
   reasoning: string | null;
@@ -90,7 +91,7 @@ export interface TxnRow {
 // Columns returned for transaction reads (kept in one place so list + detail agree).
 const TXN_COLS =
   "id, source, status, merchant, amount_cents, currency, amount_aud_cents, fx_rate, fx_date, " +
-  "gst_cents, txn_date, bucket, ato_label, property_id, paid_account, confidence, reasoning, " +
+  "gst_cents, txn_date, bucket, ato_label, property_id, refund_for_txn_id, paid_account, confidence, reasoning, " +
   "duplicate_of, kind, account_id, statement_id, matched_txn_id, direction, raw_description, " +
   "ledger_ref, COALESCE(reimbursed,0) AS reimbursed, created_at";
 

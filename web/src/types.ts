@@ -13,6 +13,7 @@ export interface Txn {
   bucket: string | null;
   ato_label: string | null;
   property_id: string | null;
+  refund_for_txn_id?: string | null; // #258: on a refund credit, the expense it reverses
   paid_account: string | null;
   confidence: number | null;
   reasoning: string | null;

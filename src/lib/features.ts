@@ -9,6 +9,7 @@ import type { Env } from "../env";
  */
 export const FEATURE_KEYS = [
   "refund_netting",
+  "refund_netting_v2", // #258 (Wave 1): net a refund ONLY against the specific DEDUCTIBLE expense it reverses (refund_for_txn_id), capped at that expense; unlinked/personal refunds are position-neutral. Fixes v1's global netting that subtracted personal reimbursements from unrelated deductions (under-claim). Separate flag from refund_netting (which is ON in prod) so this money-output change flips deliberately. OFF ⇒ v1 global netting ⇒ byte-identical.
   "income_dedupe",
   "asset_defaults",
   "bulk_import",

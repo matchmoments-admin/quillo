@@ -142,6 +142,7 @@ const CORRECTABLE: Record<string, string> = {
   txn_date: "txn_date", // lets undated receipts be fixed so they land in an FY
   merchant: "merchant",
   property_id: "property_id",
+  refund_for_txn_id: "refund_for_txn_id", // #258: on a refund credit, the deductible expense it reverses
   paid_account: "paid_account", // drives reconcile-vs-push in Phase 3
 };
 
@@ -3332,9 +3333,17 @@ export class TaxAgent extends Agent<Env> {
       if (!clean) throw new Error(`invalid ato_label: ${newValue}`);
       newValue = clean;
     }
-    // Clearing a property_id (re-bucketed away from a property) must persist as NULL, not '', or the
-    // report's `property_id IS NOT NULL` filter treats the dangling '' as a real attribution.
-    const bound: string | null = field === "property_id" && !newValue ? null : newValue;
+    // #258: a refund→expense link is a cross-row FK, so validate the target like the H1 cross-tenant
+    // guard (#231): it must be THIS user's transaction, an expense (debit), and not the refund itself.
+    if (field === "refund_for_txn_id" && newValue) {
+      if (newValue === txnId) throw new Error("a refund can't link to itself");
+      const ref = await this.env.DB.prepare(`SELECT COALESCE(direction,'debit') AS direction FROM transactions WHERE id = ? AND user_id = ?`).bind(newValue, userId).first<{ direction: string }>();
+      if (!ref) throw new Error("refund target expense not found");
+      if (ref.direction !== "debit") throw new Error("a refund must link to an expense (a debit), not another credit");
+    }
+    // Clearing a property_id / refund link (e.g. unlinking) must persist as NULL, not '', or the
+    // report's `IS NOT NULL` / join filters treat the dangling '' as a real reference.
+    const bound: string | null = (field === "property_id" || field === "refund_for_txn_id") && !newValue ? null : newValue;
 
     const row = await this.env.DB.prepare(
       `SELECT ${column} AS old FROM transactions WHERE id = ? AND user_id = ?`,
@@ -3394,6 +3403,10 @@ export class TaxAgent extends Agent<Env> {
     for (const e of edits) {
       const column = CORRECTABLE[e.field];
       if (!column) throw new Error(`field not correctable: ${e.field}`);
+      // #258: a refund→expense link is a cross-row FK needing per-row ownership/direction validation,
+      // which the batch path doesn't do — it's only ever set one-at-a-time via applyCorrection. Reject
+      // it here so it can't slip through the bulk path unvalidated (cross-tenant FK guard, mirrors #231).
+      if (e.field === "refund_for_txn_id") throw new Error("refund_for_txn_id is set per-transaction, not in a batch");
       let value = e.value;
       if (e.field === "bucket" && !isBucket(value)) throw new Error(`invalid bucket: ${value}`);
       if (e.field === "ato_label") {

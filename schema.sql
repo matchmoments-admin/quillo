@@ -106,6 +106,9 @@ CREATE TABLE IF NOT EXISTS transactions (
   payer_person_id     TEXT,
   paid_via_account_id TEXT,
   biller_key   TEXT,  -- 0047: normalised biller identity (channel-stripped) for recurring-bill grouping
+  -- 0060 (#258): on a refund credit, the deductible expense it reverses — refund-netting v2 nets a
+  --   refund ONLY against this matched expense (unlinked ⇒ position-neutral). NULL => legacy/unlinked.
+  refund_for_txn_id TEXT,
   created_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_txn_imghash ON transactions(user_id, image_hash);
@@ -119,6 +122,7 @@ CREATE INDEX IF NOT EXISTS idx_txn_kind     ON transactions(user_id, kind, statu
 CREATE INDEX IF NOT EXISTS idx_txn_matched  ON transactions(user_id, matched_txn_id);
 CREATE INDEX IF NOT EXISTS idx_txn_acct_date ON transactions(user_id, account_id, txn_date);
 CREATE INDEX IF NOT EXISTS idx_txn_matched_income ON transactions(user_id, matched_income_id);
+CREATE INDEX IF NOT EXISTS idx_txn_refund_for ON transactions(user_id, refund_for_txn_id); -- 0060 (#258)
 CREATE INDEX IF NOT EXISTS idx_txn_user_date ON transactions(user_id, txn_date); -- per-FY dashboard/progress range scans (migration 0018)
 
 -- ── Bank / card / investment accounts (per tenant) ────────────────────────────

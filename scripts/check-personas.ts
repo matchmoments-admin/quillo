@@ -130,6 +130,33 @@ const asset = (id: string, u: string, costCents: number, depCents: number, prope
   exp("p254c", u, 50000, "property_rented", "likely_deductible", null);          // $500 property-bucketed but UNATTRIBUTED — denied when flag ON
 }
 
+// ── #258 (Wave 1): matched refund-netting — personal reimbursements must NOT net deductions ──
+// v1 nets ALL refund credits against the deduction pool, so the founder's flatmate cost-sharing +
+// personal returns wrongly reduced work deductions (under-claim). v2 nets a refund ONLY against the
+// specific deductible expense it reverses (refund_for_txn_id), capped at that expense; unlinked refunds
+// and ones tied to non-deductible spend are position-neutral.
+{
+  const u = "p258";
+  seedTenant(u, "P258 matched refund-netting");
+  exp("p258e1", u, 50000, "payg", "likely_deductible");  // $500 deductible work expense
+  exp("p258e2", u, 20000, "unknown", "likely_not");        // $200 personal/non-deductible expense
+  // $200 refund reversing the DEDUCTIBLE expense → nets under v2
+  run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, direction, refund_for_txn_id) VALUES ('p258r1', ?, 'upload', 'categorised', 'bank_line', 20000, 20000, ?, 'refund', 'credit', 'p258e1')`, u, FY_DATE);
+  // $300 personal reimbursement, UNLINKED → position-neutral under v2 (but v1 wrongly nets it)
+  run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, direction) VALUES ('p258r2', ?, 'upload', 'categorised', 'bank_line', 30000, 30000, ?, 'refund', 'credit')`, u, FY_DATE);
+  // $50 refund linked to a NON-deductible expense → matched but not a deduction ⇒ neutral
+  run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, direction, refund_for_txn_id) VALUES ('p258r3', ?, 'upload', 'categorised', 'bank_line', 5000, 5000, ?, 'refund', 'credit', 'p258e2')`, u, FY_DATE);
+}
+
+// #258 cumulative cap: several refunds pointing at the SAME expense must not net more than it contributed.
+{
+  const u = "p258b";
+  seedTenant(u, "P258b refund cumulative cap");
+  exp("p258be", u, 50000, "payg", "likely_deductible"); // $500 deductible expense
+  run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, direction, refund_for_txn_id) VALUES ('p258br1', ?, 'upload', 'categorised', 'bank_line', 40000, 40000, ?, 'refund', 'credit', 'p258be')`, u, FY_DATE); // $400 → e
+  run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, direction, refund_for_txn_id) VALUES ('p258br2', ?, 'upload', 'categorised', 'bank_line', 30000, 30000, ?, 'refund', 'credit', 'p258be')`, u, FY_DATE); // $300 → same e
+}
+
 // ── Persona 3: Lukas, tradie (PAYG + tools/ute + a CASH side job) ──
 {
   const u = "p3";
@@ -300,6 +327,20 @@ async function main() {
   const p254undet = r254on.per_property.find((p) => p.property_id === "p254undet");
   check("#254 (flag ON): the let rental keeps its $1,000 per-property deduction", p254let?.deduction_cents === 100000);
   check("#254 (flag ON): the undetermined-status property yields $0 (deny until determined)", !p254undet || p254undet.deduction_cents === 0);
+
+  // ── #258 (Wave 1): matched refund-netting ──
+  const env258 = { ...env, FEATURES: `${(env as { FEATURES: string }).FEATURES},refund_netting_v2` } as unknown as Env;
+  const r258on = await buildReport(env258, "p258", 2025);
+  const r258off = await buildReport(env, "p258", 2025); // default env: refund_netting ON, v2 OFF ⇒ v1 global netting
+  // v1: nets ALL $550 of refunds vs the $500 deductible expense → floored at $0 (the under-claim bug).
+  check("#258 (v2 OFF): v1 nets all refunds globally — $500 deduction − $550 refunds → $0", r258off.total_deductions_cents === 0);
+  // v2: only the $200 refund matched to the deductible expense nets → $500 − $200 = $300.
+  check("#258 (v2 ON): only the matched-deductible refund nets ($500 − $200 = $300)", r258on.total_deductions_cents === 30000);
+  check("#258 (v2 ON): refunds_cents reflects only the matched refund ($200)", r258on.refunds_cents === 20000);
+  check("#258 (v2 ON): unlinked + non-deductible-matched refunds are flagged, not netted ($350, 2)", r258on.refunds_unmatched_cents === 35000 && r258on.refunds_unmatched_n === 2);
+  // cumulative cap: $400 + $300 refunds on ONE $500 expense net $500 total (not $700) → deductions $0.
+  const r258b = await buildReport(env258, "p258b", 2025);
+  check("#258 (v2 ON): refunds on the same expense are capped at it ($500, not $700)", r258b.refunds_cents === 50000 && r258b.total_deductions_cents === 0);
 
   // ── Persona 3: tradie ──
   const r3 = await buildReport(env, "p3", 2025);

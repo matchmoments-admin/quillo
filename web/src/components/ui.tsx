@@ -34,6 +34,23 @@ export function getBaseCurrency(): string {
 export const money = (cents: number | null): string =>
   cents == null ? "—" : `${_moneySymbol}${(cents / 100).toLocaleString(_moneyLocale, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
+// #249: parse a user-entered money/number string TOLERANTLY. Users type figures exactly as printed on
+// a statement — "$48,963.37", "1,234.56" — but `Number("48,963.37")` is NaN, which JSON-encodes to
+// null and 400s server-side with no feedback. Strip the currency symbol, thousands separators and
+// whitespace first. Returns null for empty/junk so callers surface an error instead of POSTing NaN.
+const _cleanNum = (s: string): number | null => {
+  if (s == null || String(s).trim() === "") return null;
+  const n = Number(String(s).replace(/[$,\s]/g, ""));
+  return Number.isFinite(n) ? n : null;
+};
+/** Parse a money string to integer cents (comma/$/space tolerant). null when not a number. */
+export const parseMoneyToCents = (s: string): number | null => {
+  const n = _cleanNum(s);
+  return n == null ? null : Math.round(n * 100);
+};
+/** Parse a plain decimal (e.g. an interest rate %), comma/$/space tolerant. null when not a number. */
+export const parseDecimal = (s: string): number | null => _cleanNum(s);
+
 export const BUCKET_LABEL: Record<string, string> = {
   payg: "PAYG",
   company: "Company",

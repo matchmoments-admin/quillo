@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import { api, isDeleteBlocked } from "../api";
 import { useFeatures } from "../lib/features";
 import { BUCKETS } from "../types";
-import { Card, Spinner, BUCKET_LABEL, InfoTip, money } from "../components/ui";
+import { Card, Spinner, BUCKET_LABEL, InfoTip, money, parseMoneyToCents } from "../components/ui";
 import { AiChangesFeed } from "../components/AiChangesFeed";
 
 // Run a delete; on a blocked-delete (409, dependent records still reference the row) surface the
@@ -561,7 +561,7 @@ function CarryIns() {
   const qc = useQueryClient();
   const losses = useQuery({ queryKey: ["capital-losses"], queryFn: () => api.capitalLosses() });
   const openings = useQuery({ queryKey: ["opening-depreciation"], queryFn: () => api.openingDepreciation() });
-  const toCents = (s: string) => Math.round((parseFloat(s) || 0) * 100);
+  const toCents = (s: string) => parseMoneyToCents(s) ?? 0; // #249: comma/$ tolerant
 
   const [lossFy, setLossFy] = useState("");
   const [lossAmt, setLossAmt] = useState("");

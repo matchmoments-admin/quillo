@@ -54,6 +54,17 @@ async function errFrom(res: Response): Promise<Error> {
   return new ApiError(text || `${res.status} ${res.statusText}`, res.status);
 }
 
+// Trigger a browser download for a fetched Blob (used by Bearer-authed downloads that can't be a
+// plain <a href> — the href wouldn't carry the Authorization header).
+export function saveBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 30_000);
+}
+
 // Same-origin: the SPA is served by the Worker, so /api/* needs no base URL.
 // In dev, Vite proxies /api to the local Worker (see vite.config.ts).
 async function get<T>(path: string): Promise<T> {
@@ -216,7 +227,16 @@ export const api = {
 
   // Phase 5
   report: (fy?: number) => get<Report>(`/api/report${fy ? `?fy=${fy}` : ""}`),
-  reportCsvUrl: (fy?: number) => `/api/report?format=csv${fy ? `&fy=${fy}` : ""}`,
+  // Accountant schedule CSV. A plain <a href> to this 401s (no Authorization header) AND drops the
+  // fy param — so fetch it Bearer-authed as a Blob (like exportData) and let the caller saveBlob() it.
+  reportCsv: async (fy?: number): Promise<{ blob: Blob; filename: string }> => {
+    const res = await fetch(`/api/report?format=csv${fy ? `&fy=${fy}` : ""}`, { credentials: "include", headers: await authHeaders() });
+    if (!res.ok) throw await errFrom(res);
+    const cd = res.headers.get("content-disposition") ?? "";
+    const m = /filename=([^;]+)/.exec(cd);
+    const filename = m ? m[1].trim().replace(/^"|"$/g, "") : `quillo-report-${fy ?? "current"}.csv`;
+    return { blob: await res.blob(), filename };
+  },
   filingReadiness: (fy?: number) => get<FilingReadiness>(`/api/filing-readiness${fy ? `?fy=${fy}` : ""}`),
   // Soft per-FY sign-off (attestation only — Quillo never lodges)
   fySignoff: (fy?: number) => get<{ signoff: { signed_off_at: string } | null }>(`/api/signoff${fy ? `?fy=${fy}` : ""}`).then((r) => r.signoff),

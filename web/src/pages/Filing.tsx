@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api } from "../api";
+import { api, saveBlob } from "../api";
 import { useActiveFy } from "../lib/activeFy";
 import { useFeatures } from "../lib/features";
 import { Card, Spinner, money } from "../components/ui";
@@ -64,6 +64,7 @@ export function Filing() {
   const { fy, label } = useActiveFy();
   const features = useFeatures();
   const { data, isLoading, error } = useQuery({ queryKey: ["filing-readiness", fy], queryFn: () => api.filingReadiness(fy) });
+  const downloadCsv = useMutation({ mutationFn: () => api.reportCsv(fy), onSuccess: ({ blob, filename }) => saveBlob(blob, filename) });
 
   return (
     <div className="space-y-6">
@@ -114,7 +115,7 @@ export function Filing() {
               </div>
               <div className="flex flex-none gap-2 print:hidden">
                 <button onClick={() => window.print()} className="rounded-lg bg-ink px-4 py-2 text-sm font-medium text-white hover:bg-ink/90">Print / Save as PDF</button>
-                <a href={api.reportCsvUrl(fy)} className="rounded-lg border border-line px-4 py-2 text-sm font-medium hover:bg-surface">{features.has("accountant_schedule") ? "Accountant schedule (CSV)" : "CSV for your agent"}</a>
+                <button onClick={() => downloadCsv.mutate()} disabled={downloadCsv.isPending} className="rounded-lg border border-line px-4 py-2 text-sm font-medium hover:bg-surface disabled:opacity-60">{downloadCsv.isPending ? "Preparing…" : features.has("accountant_schedule") ? "Accountant schedule (CSV)" : "CSV for your agent"}</button>
               </div>
             </div>
           </Card>

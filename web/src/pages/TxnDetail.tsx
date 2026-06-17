@@ -25,6 +25,7 @@ export function TxnDetail() {
   const [date, setDate] = useState<string>("");
   const [seededId, setSeededId] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
+  const [showDetail, setShowDetail] = useState(false); // #253: "Add detail" disclosure (categorise_v2)
   // "Edit one → update its look-alikes": after a categorisation save, hold on the page to offer
   // fanning the same edit out to the still-to-review siblings (+ learn a rule). Null = navigate away.
   const [applyTo, setApplyTo] = useState<{ n: number; total_cents: number; edit: { bucket?: string; ato_label?: string; property_id?: string } } | null>(null);
@@ -167,6 +168,13 @@ export function TxnDetail() {
   const props = sitQ.data?.properties ?? [];
   const looksRent = /\brent\b|rental payment|real estate|property manager|tenancy/.test(desc) && (txn.bucket === "payg" || txn.bucket === "unknown" || txn.bucket == null);
   const wfhActive = (wfhQ.data?.wfh_hours ?? 0) > 0;
+  // #253: collapse the secondary fields behind "Add detail" when categorise_v2 is on, so the screen is
+  // one decision (Category) + one button. Never hide a field that already carries content — an existing
+  // ATO label, a property/refund that needs choosing, or an undated row — so the disclosure auto-opens
+  // for those. Flag OFF ⇒ detailOpen is always true ⇒ every field inline as before (byte-identical).
+  const v2cat = has("categorise_v2");
+  const detailRelevant = !!label || !date || isPropertyBucket(bucket) || (has("refund_netting_v2") && isRefund);
+  const detailOpen = !v2cat || showDetail || detailRelevant;
 
   return (
     <div className="space-y-6">
@@ -251,6 +259,17 @@ export function TxnDetail() {
               </select>
             </label>
 
+            {v2cat && !detailRelevant && (
+              <button
+                type="button"
+                onClick={() => setShowDetail((s) => !s)}
+                className="text-xs font-semibold text-ink-3 underline underline-offset-2 hover:text-ink"
+              >
+                {showDetail ? "Hide detail" : "Add detail (ATO label, date…)"}
+              </button>
+            )}
+            {detailOpen && (
+            <>
             <label className="block">
               <span className="text-xs font-medium uppercase tracking-wide text-muted">ATO label <InfoTip k="ato_label" /></span>
               <input
@@ -340,6 +359,8 @@ export function TxnDetail() {
                 className="mt-1 w-full rounded-lg border border-line bg-card px-3 py-2"
               />
             </label>
+            </>
+            )}
 
             <button
               onClick={() => save.mutate()}

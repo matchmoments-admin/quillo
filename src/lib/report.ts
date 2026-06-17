@@ -26,6 +26,7 @@ export interface ReportRow {
   deductibility?: string | null; // set on deduction_breakdown rows; absent on collapsed by_bucket/income rows
   reimbursed?: number | null;    // 0030: set on deduction_breakdown rows; reimbursed spend is excluded from the headline
   use_status_denied?: number | null; // 0031: 1 when the row's property is rent-free/renovating (excluded from the headline, kept visible)
+  property_undetermined?: number | null; // #254: 1 when a property-bucket row can't yet land in an income-producing property (no property_id, or use_status not rented/available). Excluded from the headline when the flag is on, kept visible. 0 when the flag is off ⇒ byte-identical.
 }
 
 /**
@@ -51,6 +52,7 @@ export function deductionGroupForRow(
   excludeNonDeductible: boolean,
   reimbursed: number | null | undefined = 0,
   propertyDenied: number | null | undefined = 0,
+  propertyUndetermined: number | null | undefined = 0,
 ): DeductionGroup {
   if (bucket === "company") return "company";
   // 0030: employer-reimbursed spend is never a deductible loss/outgoing (the employer bore the cost).
@@ -60,6 +62,11 @@ export function deductionGroupForRow(
   // drops them. Default 0 keeps legacy callers byte-identical.
   if (reimbursed) return "excluded";
   if (propertyDenied) return "excluded";
+  // #254: a property-bucket expense that can't yet land in an income-producing property — no
+  // property_id, or a property whose use_status isn't rented/genuinely-available — earns no assessable
+  // rent yet, so deny-by-default (mirrors payg 'undetermined'). The caller passes a flag-gated 0/1
+  // marker (0 when the flag is off), so this is byte-identical until the flag flips. Kept visible.
+  if (propertyUndetermined) return "excluded";
   if (bucket === "asset" || bucket === "unknown") return "excluded";
   // A positive SUGGESTION is NEVER counted until the user confirms it → confirmed_deductible (B1).
   // Excluded regardless of the flag — a suggestion must not move the headline.
@@ -78,11 +85,13 @@ export function deductionGroupForRow(
  * Shared with the accountant schedule so its per-property itemised rows tie back exactly.
  */
 export function propertyRowCounts(
-  r: { deductibility?: string | null; reimbursed?: number | null; use_status_denied?: number | null },
+  r: { deductibility?: string | null; reimbursed?: number | null; use_status_denied?: number | null; property_undetermined?: number | null },
   excludeNonDeductible: boolean,
 ): boolean {
   const d = r.deductibility ?? "undetermined";
-  return !r.reimbursed && !r.use_status_denied && (!excludeNonDeductible || !(d === "likely_not" || d === "confirmed_not" || d === "needs_apportionment"));
+  // property_undetermined (#254) is a flag-gated 0/1 marker (0 when the flag is off), so adding it here
+  // is byte-identical until the flag flips — at which point a property left undetermined stops counting.
+  return !r.reimbursed && !r.use_status_denied && !r.property_undetermined && (!excludeNonDeductible || !(d === "likely_not" || d === "confirmed_not" || d === "needs_apportionment"));
 }
 
 // Per-property tax position (the negative-gearing figure): rent income − rental deductions −
@@ -237,6 +246,25 @@ export const claimExpr = (p: string) =>
 export const useStatusDeniedExpr = (col: string) =>
   `(CASE WHEN EXISTS (SELECT 1 FROM properties pp WHERE pp.id = ${col} AND pp.use_status IN ('private_use_rent_free','under_renovation_not_available')) THEN 1 ELSE 0 END)`;
 
+// #254 (Wave 1): a property-bucket expense (property_rented/property_vacant) that can't yet land in an
+// income-producing property earns no assessable rent, so it's not a deduction yet (deny-by-default,
+// mirroring payg 'undetermined'). It's "undetermined" when EITHER the row has no property_id (it can't
+// land in any per-property schedule) OR its property's use_status isn't an income-producing one
+// ('rented' / 'genuinely_available_for_rent') — i.e. NULL/undetermined/vacant_land/owner_occupied.
+// MARKED 0/1 (kept visible as excluded tracked-spend, like 0030/0031); only the headline + per-property
+// classifier drop it. UNLIKE useStatusDeniedExpr this MUST be flag-gated by the caller (return "0" when
+// off) because existing data DOES trigger it (the unattributed property spend that over-states the
+// position), so the change has to flip deliberately rather than the day the code ships. `bucketCol`/
+// `idCol` are the surrounding query's bucket + property_id columns (alias-prefixed as needed).
+export const propertyUndeterminedExpr = (bucketCol: string, idCol: string) =>
+  `(CASE WHEN ${bucketCol} IN ('property_rented','property_vacant') AND (${idCol} IS NULL OR NOT EXISTS (SELECT 1 FROM properties pp WHERE pp.id = ${idCol} AND pp.use_status IN ('rented','genuinely_available_for_rent'))) THEN 1 ELSE 0 END)`;
+
+// #254: the flag-GATED form — the literal "0" when the flag is off (⇒ byte-identical SQL/grouping),
+// the real marker when on. Single source of truth for the gate so report.ts and accountant-schedule.ts
+// can never disagree on the flag name or the off-value (mirrors how both share useStatusDeniedExpr).
+export const propertyUndeterminedGatedExpr = (env: Env, bucketCol: string, idCol: string) =>
+  featureOn(env, "position_excludes_property_undetermined") ? propertyUndeterminedExpr(bucketCol, idCol) : "0";
+
 // Phase B / G2: when the attribution_engine flag is on, a transaction that has explicit
 // transaction_attributions is counted via those (attributionTotals) instead of its raw amount — so
 // it must be EXCLUDED from the raw byBucket/byPropertyRaw/company/resolved sums to avoid double
@@ -347,6 +375,8 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   const amtExprT = honorApportion ? claimExpr("t.") : "COALESCE(t.amount_aud_cents, t.amount_cents)";
 
   const useStatusDenied = (col: string) => useStatusDeniedExpr(col);
+  // #254: flag-gated property deny-by-default marker (the literal "0" when off ⇒ byte-identical SQL).
+  const propUndetermined = (bucketCol: string, idCol: string) => propertyUndeterminedGatedExpr(env, bucketCol, idCol);
 
   const useAttributions = featureOn(env, "attribution_engine");
   const notAttributed = (col: string) => notAttributedExpr(col, useAttributions);
@@ -363,12 +393,13 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   const byBucket = await env.DB.prepare(
     `SELECT bucket, ato_label, COALESCE(deductibility,'undetermined') AS deductibility,
             COALESCE(reimbursed,0) AS reimbursed, ${useStatusDenied("transactions.property_id")} AS use_status_denied,
+            ${propUndetermined("bucket", "transactions.property_id")} AS property_undetermined,
             COUNT(*) AS n,
             COALESCE(SUM(${amtExpr}),0) AS total_cents,
             COALESCE(SUM(gst_cents),0) AS gst_cents
        FROM transactions
       WHERE user_id = ? AND txn_date >= ? AND txn_date <= ? AND bucket IS NOT NULL AND ${COUNTABLE}${notAttributed("transactions.id")}${excludeSplitInterest("")}
-      GROUP BY bucket, ato_label, deductibility, reimbursed, use_status_denied ORDER BY bucket, total_cents DESC`,
+      GROUP BY bucket, ato_label, deductibility, reimbursed, use_status_denied, property_undetermined ORDER BY bucket, total_cents DESC`,
   )
     .bind(userId, start, end, ...supersededLoanIds)
     .all<ReportRow>();
@@ -394,14 +425,15 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   const byPropertyRaw = await env.DB.prepare(
     `SELECT t.property_id, p.label, COALESCE(t.deductibility,'undetermined') AS deductibility,
             COALESCE(t.reimbursed,0) AS reimbursed, ${useStatusDenied("t.property_id")} AS use_status_denied,
+            ${propUndetermined("t.bucket", "t.property_id")} AS property_undetermined,
             COUNT(*) AS n,
             COALESCE(SUM(${amtExprT}),0) AS total_cents
        FROM transactions t LEFT JOIN properties p ON p.id = t.property_id
       WHERE t.user_id = ? AND t.txn_date >= ? AND t.txn_date <= ? AND t.property_id IS NOT NULL AND ${COUNTABLE.replace(/\b(status|kind|matched_txn_id|direction|currency|amount_aud_cents)\b/g, "t.$1")}${notAttributed("t.id")}${excludeSplitInterest("t.")}
-      GROUP BY t.property_id, deductibility, reimbursed, use_status_denied`,
+      GROUP BY t.property_id, deductibility, reimbursed, use_status_denied, property_undetermined`,
   )
     .bind(userId, start, end, ...supersededLoanIds)
-    .all<{ property_id: string; label: string | null; deductibility: string; reimbursed: number; use_status_denied: number; n: number; total_cents: number }>();
+    .all<{ property_id: string; label: string | null; deductibility: string; reimbursed: number; use_status_denied: number; property_undetermined: number; n: number; total_cents: number }>();
 
   // Rental-bucketed spend with NO property: it counts at the headline (byBucket has no property filter)
   // but is absent from every per-property schedule (byPropertyRaw filters property_id IS NOT NULL), so a
@@ -634,7 +666,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   const attr_property_total_cents = attr.by_property.reduce((s, a) => s + a.deduction_cents, 0);
   const gross_deductions_cents =
     breakdown
-      .filter((b) => deductionGroupForRow(b.bucket, b.deductibility, excludeNonDeductible, b.reimbursed, b.use_status_denied) === "deduction")
+      .filter((b) => deductionGroupForRow(b.bucket, b.deductibility, excludeNonDeductible, b.reimbursed, b.use_status_denied, b.property_undetermined) === "deduction")
       .reduce((s, b) => s + (b.total_cents ?? 0), 0) +
     attr.individual_deduction_cents +
     attr_property_total_cents +

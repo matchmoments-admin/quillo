@@ -3198,7 +3198,7 @@ export class TaxAgent extends Agent<Env> {
       mfCostBaseAdjustmentCents,
     };
 
-    const readiness = assessReadiness({ report, situation, claimMatches: [...matchedById.values()], signals, generatedAt: new Date().toISOString(), excludeNonDeductible: featureOn(this.env, "position_excludes_nondeductible") });
+    const readiness = assessReadiness({ report, situation, claimMatches: [...matchedById.values()], signals, generatedAt: new Date().toISOString(), excludeNonDeductible: featureOn(this.env, "position_excludes_nondeductible"), excludePropertyUndetermined: featureOn(this.env, "position_excludes_property_undetermined") });
     await this.audit(userId, "readiness_assessed", JSON.stringify({ fy, blockers: readiness.readiness_score.blockers, review: readiness.readiness_score.review, findings: readiness.findings.length }));
     return readiness;
   }

@@ -16,6 +16,7 @@ export const FEATURE_KEYS = [
   "guide_me",
   "claim_review",
   "position_excludes_nondeductible",
+  "position_excludes_property_undetermined", // #254 (Wave 1): deny-by-default for property-bucket spend that can't yet land in an income-producing property — no property_id, or a property whose use_status isn't 'rented'/'genuinely_available_for_rent'. Mirrors the payg 'undetermined' deny. Separate flag (NOT folded into position_excludes_nondeductible, which is already ON in prod) so the money-output change flips deliberately. OFF ⇒ the SQL marker is the literal "0" ⇒ byte-identical.
   "accountant_pass",
   "wfh_car_methods",
   "wfh_generate_diary",  // 0059 (Part 1): emit a generated WFH diary section in the accountant CSV. OFF by default — flag-OFF + own-record paths keep the legacy CSV byte-identical.

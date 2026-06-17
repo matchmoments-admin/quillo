@@ -640,6 +640,29 @@ export type ProposedAction =
   | { kind: "recategorise"; title: string; rationale: string; txn_ids: string[]; bucket: string; ato_label?: string; property_id?: string }
   | { kind: "add_rule"; title: string; rationale: string; pattern: string; bucket: string; ato_label?: string; property_id?: string };
 
+// #256 — pre-handoff double-check scan (mirror of src/lib/scan.ts).
+export interface ScanFinding {
+  key: string;
+  category: "missed" | "over_claim";
+  severity: "high" | "review" | "info";
+  sign: "+" | "-";
+  dollar_impact_cents: number;
+  reason: string;
+  affected_txn_ids: string[];
+  proposed_action?: ProposedAction;
+}
+export interface ScanSummary {
+  finding_count: number;
+  missed_upside_cents: number;
+  overclaim_downside_cents: number;
+  position_confirmed_cents: number;
+  position_tracked_cents: number;
+}
+export interface ScanResult {
+  summary: ScanSummary;
+  findings: ScanFinding[];
+}
+
 export interface EntityAction {
   kind: string; // create_person | edit_person | create_property | edit_property | create_entity | edit_entity | create_rule
   title: string;

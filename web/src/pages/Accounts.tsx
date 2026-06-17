@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import { api, ApiError, isDeleteBlocked } from "../api";
 import { useFeatures } from "../lib/features";
 import { useActiveFy } from "../lib/activeFy";
-import { Button, Card, Spinner, money, InfoTip } from "../components/ui";
+import { Button, Card, Spinner, money, InfoTip, parseMoneyToCents, parseDecimal } from "../components/ui";
 import type { Account, StatementInfo, StatementParse } from "../types";
 
 const SOURCE_LABEL: Record<string, string> = {
@@ -612,8 +612,8 @@ function EditAccount({
         type,
         ...(type === "loan"
           ? {
-              interest_rate_pct: rate.trim() === "" ? null : Number(rate),
-              balance_cents: balance.trim() === "" ? null : Math.round(Number(balance) * 100),
+              interest_rate_pct: parseDecimal(rate), // null when blank/invalid (comma/$ tolerant) — #249
+              balance_cents: parseMoneyToCents(balance),
             }
           : {}),
       }),
@@ -634,13 +634,18 @@ function EditAccount({
     setFyInterest(existing ? String(existing.interest_cents / 100) : "");
   }, [existing?.id, existing?.interest_cents]);
   const setLi = useMutation({
-    mutationFn: () => api.setLoanInterest(account.id, { fy, interest_cents: Math.round(Number(fyInterest) * 100), source: "lender_summary" }),
+    mutationFn: () => {
+      const interest_cents = parseMoneyToCents(fyInterest); // #249: comma/$ tolerant; null ⇒ surface, don't POST NaN
+      if (interest_cents == null) throw new Error("Enter a valid amount, e.g. 12000 or 12,000.50");
+      return api.setLoanInterest(account.id, { fy, interest_cents, source: "lender_summary" });
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["loan-interest", fy] });
       qc.invalidateQueries({ queryKey: ["report"] });
       qc.invalidateQueries({ queryKey: ["dashboard"] });
       toast.success("Loan interest saved");
     },
+    onError: (e) => toast.error("Couldn't save loan interest", { description: (e as Error).message }), // #249: was silent
   });
   return (
     <div className="mt-3 space-y-3 rounded-lg border border-line bg-surface p-3">

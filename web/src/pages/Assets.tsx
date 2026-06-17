@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import { useFeatures } from "../lib/features";
-import { Card, Spinner, Button, Input, money } from "../components/ui";
+import { Card, Spinner, Button, Input, money, parseMoneyToCents } from "../components/ui";
 import type { AssetRow, ScheduleRow } from "../types";
 
 const CLASS_LABEL: Record<string, string> = {
@@ -128,7 +128,7 @@ function AddAssetForm({ onDone }: { onDone: () => void }) {
       api.addAsset({
         label,
         asset_class: assetClass,
-        cost_cents: Math.round(parseFloat(cost || "0") * 100),
+        cost_cents: parseMoneyToCents(cost) ?? 0, // #249: comma/$ tolerant
         acquired_date: acquired,
         effective_life_years: life ? parseFloat(life) : null,
         method: assetClass === "div40_plant" ? method : null,

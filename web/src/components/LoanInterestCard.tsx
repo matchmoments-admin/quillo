@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
-import { Button, Card, Spinner, money } from "./ui";
+import { Button, Card, Spinner, money, parseMoneyToCents } from "./ui";
 
 /**
  * "Confirm loan interest" — the Sort step that REPLACES the retired manual loan-interest/principal
@@ -46,7 +46,11 @@ function LoanInterestRow({
   const seed = loan.recorded_cents != null ? loan.recorded_cents : loan.estimate_cents;
   const [value, setValue] = useState(seed != null ? String(seed / 100) : "");
   const save = useMutation({
-    mutationFn: () => api.setLoanInterest(loan.loan_account_id, { fy, interest_cents: Math.round(Number(value) * 100), source: "lender_summary" }),
+    mutationFn: () => {
+      const interest_cents = parseMoneyToCents(value);
+      if (interest_cents == null) throw new Error("Enter a valid amount, e.g. 12000 or 12,000.50");
+      return api.setLoanInterest(loan.loan_account_id, { fy, interest_cents, source: "lender_summary" });
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["loan-interest-review", fy] });
       qc.invalidateQueries({ queryKey: ["loan-interest", fy] });

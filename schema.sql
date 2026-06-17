@@ -949,6 +949,17 @@ CREATE TABLE IF NOT EXISTS work_use_inputs (
   PRIMARY KEY (user_id, fy)
 );
 
+-- See migrations/0061_car_inputs.sql (#245). Car cents-per-km km, split out of work_use_inputs so WFH
+-- and car are separate typed units. One row per user per FY. Flag-gated (car_methods) in report.ts;
+-- the logbook method has its own table (vehicle_logbooks).
+CREATE TABLE IF NOT EXISTS car_inputs (
+  user_id      TEXT NOT NULL,
+  fy           INTEGER NOT NULL,
+  work_km      REAL,
+  updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (user_id, fy)
+);
+
 -- ── Ask Quillo C2 chat (0046, #173) ───────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS chat_sessions (
   id         TEXT PRIMARY KEY,

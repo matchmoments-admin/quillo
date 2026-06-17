@@ -11,6 +11,12 @@ export function businessUsePct(businessKm: number | null | undefined, totalKm: n
   return Math.max(0, Math.min(100, (b / t) * 100));
 }
 
+/** Cents-per-km deduction = min(work_km, km cap) × c/km. Whole cents; negatives floored to 0. (#245) */
+export function centsPerKmDeductionCents(workKm: number | null | undefined, centsPerKm: number, kmCap: number): number {
+  const km = Math.max(0, workKm ?? 0);
+  return Math.round(Math.min(km, Math.max(0, kmCap)) * Math.max(0, centsPerKm));
+}
+
 /** Logbook deduction = business-use % × (running costs + car decline-in-value). Whole cents. */
 export function logbookDeductionCents(runningCostsCents: number, carDepCents: number, pct: number): number {
   const base = Math.max(0, runningCostsCents) + Math.max(0, carDepCents);

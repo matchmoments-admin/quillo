@@ -739,7 +739,7 @@ import { computeCapitalGain, computeNetCapitalGain, propertyToCgtInputs, DEFAULT
 import { ordinaryAssessableCents, totalDistributionCents, validateComponents, ammaToCgtEvents, parseAmmaComponents, type AmmaComponents } from "../src/lib/managed-fund";
 import { essAssessable } from "../src/lib/ess";
 import { gstFromInclusiveCents, computeBasNet } from "../src/lib/gst";
-import { businessUsePct, logbookDeductionCents, chooseCarMethod } from "../src/lib/car-logbook";
+import { businessUsePct, logbookDeductionCents, chooseCarMethod, centsPerKmDeductionCents } from "../src/lib/car-logbook";
 import { occupationGuide, occupationScopes } from "../src/lib/occupations";
 import { summariseTrustDistributions } from "../src/lib/trust";
 import { ecpiExemptFraction, computeSmsfPosition } from "../src/lib/smsf";
@@ -901,6 +901,10 @@ console.log("car logbook (#142)");
   check("higher method wins (logbook)", win.method === "logbook" && win.deduction_cents === 900_000);
   // a low-business-use car → cents-per-km wins; tie favours cents-per-km.
   check("tie favours cents-per-km", chooseCarMethod(440_000, 440_000).method === "cents_per_km");
+  // #245 cents-per-km helper: 4,000 km × 88c = $3,520; over the 5,000 km cap clamps; negatives floor to 0.
+  check("cents-per-km = min(km,cap) × c/km", centsPerKmDeductionCents(4_000, 88, 5_000) === 352_000);
+  check("cents-per-km caps at the km limit", centsPerKmDeductionCents(8_000, 88, 5_000) === 440_000);
+  check("cents-per-km floors negatives to 0", centsPerKmDeductionCents(-100, 88, 5_000) === 0);
 }
 
 console.log("occupations (#143)");

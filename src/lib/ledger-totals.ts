@@ -507,6 +507,24 @@ export async function separateTaxpayerEntityIds(env: Env, userId: string): Promi
   }
 }
 
+/**
+ * #245: resolve the work-related car km for the cents-per-km method from the dedicated car_inputs table,
+ * falling back to `fallbackKm` (the legacy work_use_inputs.car_work_km, read by the caller) when there's
+ * no car_inputs row yet — the 0061 backfill seeds existing data, so flag-ON is identical for it. Read
+ * only when the car_methods flag is on; the fallback keeps un-migrated/new-input cases correct.
+ */
+export async function carWorkKmFor(env: Env, userId: string, startYear: number, fallbackKm: number | null): Promise<number | null> {
+  try {
+    const row = await env.DB.prepare(`SELECT work_km FROM car_inputs WHERE user_id = ? AND fy = ?`)
+      .bind(userId, startYear)
+      .first<{ work_km: number | null }>();
+    return row?.work_km ?? fallbackKm;
+  } catch (e) {
+    if (/no such table|no such column/i.test((e as Error).message)) return fallbackKm;
+    throw e;
+  }
+}
+
 export interface CarLogbookPosition {
   business_use_pct: number;
   running_costs_cents: number;

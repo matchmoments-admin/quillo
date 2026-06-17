@@ -44,18 +44,9 @@ export function Dashboard() {
         </Link>
       </div>
 
-      {/* "Still to sort" leads as its own banner — it's an ALL-TIME backlog (it must match the Inbox
-          badge, which isn't FY-scoped), so it can't sit in the per-FY KPI grid below without misleading. */}
-      {d.needs_review > 0 && (
-        <Link
-          to="/inbox"
-          className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-xl border border-line bg-card px-3 py-2 text-sm text-ink-2 shadow-card transition hover:border-ink/40"
-        >
-          <span className="font-semibold text-ink">{d.needs_review} still to sort</span>
-          <span className="text-ink-3">across all years —</span>
-          <span className="font-semibold text-forest">open the inbox to categorise them →</span>
-        </Link>
-      )}
+      {/* The all-time "still to sort" backlog is surfaced canonically by the NextActionBar (the active CTA)
+          and the JourneySpine "Sort" badge directly above — a third copy here was redundant (#256 follow-up:
+          de-duplicate the dashboard chrome), so it's removed. */}
 
       {/* KPI row — every figure here is scoped to the active FY. */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">

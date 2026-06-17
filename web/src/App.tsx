@@ -168,11 +168,12 @@ export function App() {
               {/* Clarity spine + per-tab guide — hidden on the full-screen onboarding wizard. */}
               {pathname !== "/onboarding" && (
                 <>
+                  {/* Stacks on mobile (NextActionBar full-width above the controls) → side-by-side from sm. */}
                   <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
-                    <div className="min-w-0 flex-1">
+                    <div className="w-full min-w-0 sm:w-auto sm:flex-1">
                       <NextActionBar />
                     </div>
-                    <div className="flex flex-none items-center gap-3">
+                    <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:flex-none sm:gap-3">
                       <FySwitcher />
                       <TabGuide pathname={pathname} />
                     </div>

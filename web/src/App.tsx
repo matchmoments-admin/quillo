@@ -9,6 +9,7 @@ import { api } from "./api";
 import { useFeatures, useAdminAccess, usePartnerAccess } from "./lib/features";
 import { FySwitcher, useActiveFy } from "./lib/activeFy";
 import { NextActionBar } from "./components/NextAction";
+import { JourneySpine } from "./components/JourneySpine";
 import { TabGuide } from "./components/TabGuide";
 import { Coachmarks } from "./components/Coachmarks";
 import { ChatProvider } from "./components/chat/ChatProvider";
@@ -105,6 +106,7 @@ function FirstRunGate() {
 export function App() {
   const [drawer, setDrawer] = useState(false);
   const { pathname } = useLocation();
+  const { has } = useFeatures();
   // Inbox review badge — reuses the shared ["dashboard", fy] query (the Dashboard page + feature
   // hooks use the same key, so this is one cache entry / one fetch per FY). `needs_review` itself is
   // all-time (a cross-year backlog that matches the Inbox), so the badge value doesn't change with
@@ -165,15 +167,23 @@ export function App() {
             <div className="mx-auto max-w-5xl px-5 py-8 sm:px-8">
               {/* Clarity spine + per-tab guide — hidden on the full-screen onboarding wizard. */}
               {pathname !== "/onboarding" && (
-                <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
-                  <div className="min-w-0 flex-1">
-                    <NextActionBar />
+                <>
+                  <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <NextActionBar />
+                    </div>
+                    <div className="flex flex-none items-center gap-3">
+                      <FySwitcher />
+                      <TabGuide pathname={pathname} />
+                    </div>
                   </div>
-                  <div className="flex flex-none items-center gap-3">
-                    <FySwitcher />
-                    <TabGuide pathname={pathname} />
-                  </div>
-                </div>
+                  {/* #247/#244: persistent journey breadcrumb (where am I in Set up→…→File). */}
+                  {has("journey_spine") && (
+                    <div className="mb-5 -mt-2">
+                      <JourneySpine pathname={pathname} />
+                    </div>
+                  )}
+                </>
               )}
               <Outlet />
             </div>

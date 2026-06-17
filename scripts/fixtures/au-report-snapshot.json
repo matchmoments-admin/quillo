@@ -53,6 +53,7 @@
       "deductibility": "likely_deductible",
       "gst_cents": 0,
       "n": 1,
+      "property_undetermined": 0,
       "reimbursed": 0,
       "total_cents": 3000000,
       "use_status_denied": 0
@@ -63,6 +64,7 @@
       "deductibility": "undetermined",
       "gst_cents": 0,
       "n": 1,
+      "property_undetermined": 0,
       "reimbursed": 0,
       "total_cents": 150000,
       "use_status_denied": 1

@@ -55,6 +55,7 @@ export const PURGE_TABLES = [
   "bas_periods",             // 0039 (#137)
   "payg_instalments",        // 0039 (#137)
   "vehicle_logbooks",        // 0040 (#142)
+  "car_inputs",              // 0061 (#245)
   "trust_distributions",     // 0041 (#139)
   "smsf_members",            // 0042 (#140)
   "super_contributions",     // 0042 (#140)

@@ -44,7 +44,7 @@ for (const f of fs.readdirSync(path.join(root, "migrations")).filter((f) => f.en
   db.exec(fs.readFileSync(path.join(root, "migrations", f), "utf8"));
 }
 
-const env = { DB: new D1(db), FEATURES: "attribution_engine,position_excludes_nondeductible,loan_split,wfh_car_methods,refund_netting,income_dedupe,cgt_engine,ess_engine,gst_bas,car_logbook,trust_distributions,partnership_distributions,smsf_engine,accountant_schedule,jurisdiction_period,currency_base,position_confirmed_range" } as unknown as Env;
+const env = { DB: new D1(db), FEATURES: "attribution_engine,position_excludes_nondeductible,loan_split,wfh_car_methods,car_methods,refund_netting,income_dedupe,cgt_engine,ess_engine,gst_bas,car_logbook,trust_distributions,partnership_distributions,smsf_engine,accountant_schedule,jurisdiction_period,currency_base,position_confirmed_range" } as unknown as Env;
 
 // tiny seed helper
 const run = (sql: string, ...p: unknown[]) => db.prepare(sql).run(...(p as never[]));
@@ -984,6 +984,34 @@ async function main() {
     check("refund clamp: tracked nets the refund ⇒ taxable_position_cents = 100000 − 30000 = 70000", r.taxable_position_cents === 70000);
     check("refund clamp: confirmed ≥ tracked (range never inverts under refund netting)", (r.taxable_position_confirmed_cents ?? 0) >= r.taxable_position_cents);
     check("refund clamp: confirmed capped at netted tracked spend ⇒ 70000 (not the un-netted 50000)", r.taxable_position_confirmed_cents === 70000);
+  }
+
+  // ── #245 Slice 1: car cents-per-km decouple (car_methods → car_inputs, byte-identical off) ──
+  // Seed BOTH the legacy work_use_inputs.car_work_km AND a DIFFERENT car_inputs.work_km so we can prove
+  // (a) flag-ON reads car_inputs (the decouple works), (b) flag-OFF reads the legacy column (byte-identical),
+  // and (c) the report has a single car figure regardless of source. P3/P4 above already prove flag-ON
+  // falls back to the legacy column when there's no car_inputs row.
+  {
+    const u = "pcardecouple";
+    run(`INSERT INTO tenants (user_id, display_name) VALUES (?, 'P-car')`, u);
+    run(`INSERT INTO persons (id, user_id, display_name, role) VALUES (?, ?, 'You', 'self')`, `person_self_${u}`, u);
+    run(`INSERT INTO work_use_inputs (user_id, fy, car_work_km) VALUES (?, 2025, 1000)`, u); // legacy column: 1,000 km
+    run(`INSERT INTO car_inputs (user_id, fy, work_km) VALUES (?, 2025, 2000)`, u);          // new table: 2,000 km
+    const rOn = await buildReport(env, u, 2025);
+    const envCarOff = { ...env, FEATURES: (env as { FEATURES: string }).FEATURES.replace(",car_methods", "") } as unknown as Env;
+    const rOff = await buildReport(envCarOff, u, 2025);
+    // 88c/km: car_inputs 2,000 km → $1,760 ; legacy 1,000 km → $880.
+    check("P-car: car_methods ON reads car_inputs (2,000km × 88c = $1,760)", rOn.work_method?.car_cents === 176000);
+    check("P-car: car_methods OFF reads the legacy work_use_inputs.car_work_km (1,000km × 88c = $880)", rOff.work_method?.car_cents === 88000);
+    check("P-car: the two sources actually differ (the decouple is load-bearing)", rOn.work_method?.car_cents !== rOff.work_method?.car_cents);
+    // Identity: a persona using ONLY the legacy column must be byte-identical on/off (P3 mirror).
+    const u2 = "pcarfallback";
+    run(`INSERT INTO tenants (user_id, display_name) VALUES (?, 'P-car2')`, u2);
+    run(`INSERT INTO persons (id, user_id, display_name, role) VALUES (?, ?, 'You', 'self')`, `person_self_${u2}`, u2);
+    run(`INSERT INTO work_use_inputs (user_id, fy, car_work_km) VALUES (?, 2025, 3000)`, u2); // legacy only, no car_inputs row
+    const fOn = await buildReport(env, u2, 2025);
+    const fOff = await buildReport(envCarOff, u2, 2025);
+    check("P-car fallback: legacy-only persona is byte-identical car_cents on==off (3,000km × 88c = $2,640)", fOn.work_method?.car_cents === 264000 && fOn.work_method?.car_cents === fOff.work_method?.car_cents);
   }
 
   console.log(`\n=== personas: ${pass} passed, ${fail} failed ===`);

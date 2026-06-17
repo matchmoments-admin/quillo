@@ -3248,7 +3248,26 @@ export class TaxAgent extends Agent<Env> {
     )
       .bind(userId, input.fy, hours, input.car_work_km, days, weeks, office, record, JSON.stringify(weekdays), JSON.stringify(leaveRanges), generateDiary)
       .run();
+    // #245: keep the dedicated car_inputs table in sync while the legacy WFH panel still carries car km
+    // (the car_methods reader prefers car_inputs). Dual-write is removed once the WFH UI is WFH-only.
+    if (input.car_work_km != null) await this.setCarInputs(userId, { fy: input.fy, work_km: input.car_work_km });
     await this.audit(userId, "work_use_set", JSON.stringify({ ...input, wfh_hours: hours }));
+    return { ok: true };
+  }
+
+  /**
+   * Upsert the per-FY car cents-per-km input (#245). One row per (user, fy). Inert until the car_methods
+   * flag is on (buildReport reads it then, preferring it over the legacy work_use_inputs.car_work_km).
+   */
+  async setCarInputs(userId: string, input: { fy: number; work_km: number | null }): Promise<{ ok: true }> {
+    await this.requireProfile(userId);
+    await this.env.DB.prepare(
+      `INSERT INTO car_inputs (user_id, fy, work_km, updated_at) VALUES (?, ?, ?, datetime('now'))
+       ON CONFLICT(user_id, fy) DO UPDATE SET work_km = excluded.work_km, updated_at = datetime('now')`,
+    )
+      .bind(userId, input.fy, input.work_km)
+      .run();
+    await this.audit(userId, "car_use_set", JSON.stringify(input));
     return { ok: true };
   }
 

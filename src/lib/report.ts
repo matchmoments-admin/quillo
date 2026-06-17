@@ -1,13 +1,13 @@
 import type { Env } from "../env";
 import { COUNTABLE, COUNTABLE_INCOME } from "./queries";
-import { incomeTotals, depreciationTotals, attributionTotals, companyPositions, cgtTotals, essTotals, gstTotals, paygInstalmentsTotal, carLogbookPosition, trustTotals, partnershipTotals, smsfFundPositions, separateTaxpayerEntityIds, superConcessionalDeduction, fyStartYearStr, type IncomeTotals, type AttributionTotals, type CompanyPosition, type GstPosition, type CarLogbookPosition, type SmsfFundPosition, type RulePackThresholds, type SuperDeduction } from "./ledger-totals";
+import { incomeTotals, depreciationTotals, attributionTotals, companyPositions, cgtTotals, essTotals, gstTotals, paygInstalmentsTotal, carLogbookPosition, carWorkKmFor, trustTotals, partnershipTotals, smsfFundPositions, separateTaxpayerEntityIds, superConcessionalDeduction, fyStartYearStr, type IncomeTotals, type AttributionTotals, type CompanyPosition, type GstPosition, type CarLogbookPosition, type SmsfFundPosition, type RulePackThresholds, type SuperDeduction } from "./ledger-totals";
 import type { TrustTotals } from "./trust";
 import type { CgtPortfolioResult } from "./cgt";
 import type { EssAssessable } from "./ess";
 import { featureOn } from "./features";
 import { resolveLoanInterest, deductibleInterestCents, type LoanInterestSource } from "./loan-interest";
 import auV1RulePack from "../rulepacks/au-v1.json";
-import { computeWorkMethodDeductions, workUseRatesForFy, type WorkMethodDeductions } from "./work-use";
+import { computeWorkMethodDeductions, workUseRatesForFy, type WorkMethodDeductions, type WorkUseInputs } from "./work-use";
 import { fyBounds, fyLabel as fyLabelOf } from "./ledger-totals";
 import { resolveJurisdictionForUser, currentFyStartYearFor, fyStartYearForDate, baseCurrencyOf, AU_DESCRIPTOR, type JurisdictionDescriptor } from "./jurisdiction";
 
@@ -750,14 +750,21 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
     const wu = await env.DB.prepare(`SELECT wfh_hours, car_work_km FROM work_use_inputs WHERE user_id = ? AND fy = ?`)
       .bind(userId, startYear)
       .first<{ wfh_hours: number | null; car_work_km: number | null }>();
-    if (wu && ((wu.wfh_hours ?? 0) > 0 || (wu.car_work_km ?? 0) > 0)) {
+    // #245 Slice 1: car cents-per-km km now lives in its own car_inputs table. When car_methods is on,
+    // source it there (falling back to the legacy work_use_inputs.car_work_km read above when there's no
+    // car_inputs row — the 0061 backfill seeds existing data). Off ⇒ the legacy column only ⇒ byte-identical.
+    const car_work_km = featureOn(env, "car_methods")
+      ? await carWorkKmFor(env, userId, startYear, wu?.car_work_km ?? null)
+      : (wu?.car_work_km ?? null);
+    const inputs: WorkUseInputs = { wfh_hours: wu?.wfh_hours ?? null, car_work_km };
+    if ((inputs.wfh_hours ?? 0) > 0 || (inputs.car_work_km ?? 0) > 0) {
       const thresholds = (rulePack as { thresholds_by_fy?: Record<string, { wfh_fixed_rate_cents_per_hour?: number; car_cents_per_km?: number; car_km_cap?: number }> }).thresholds_by_fy?.[fyLabel];
       // Only compute when THIS FY has configured rates. Otherwise the rate resolver would silently apply
       // the CURRENT-FY default (70c WFH / 88c km) to a prior year — over-claiming, since the active-FY
       // switcher lets users do prior-year work. No rates ⇒ skip + flag, never a wrong figure.
       const hasRates = !!thresholds && (thresholds.wfh_fixed_rate_cents_per_hour != null || thresholds.car_cents_per_km != null);
       if (hasRates) {
-        const computed = computeWorkMethodDeductions(wu, workUseRatesForFy(thresholds));
+        const computed = computeWorkMethodDeductions(inputs, workUseRatesForFy(thresholds));
         if (computed.total_cents > 0) work_method = computed;
       } else {
         work_method_rates_unavailable = true;

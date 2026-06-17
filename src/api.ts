@@ -921,6 +921,22 @@ export async function handleApi(
     }
   }
 
+  // ── Car cents-per-km input (#245) — separate from work-use (WFH) ──────────
+  if (resource === "car-use") {
+    const fy = Number(url.searchParams.get("fy")) || defaultFy();
+    if (m === "GET") {
+      const row = await env.DB.prepare(`SELECT work_km FROM car_inputs WHERE user_id = ? AND fy = ?`)
+        .bind(uid, fy)
+        .first<{ work_km: number | null }>();
+      return json({ car_use: row ?? { work_km: null } });
+    }
+    if (m === "POST") {
+      const body = (await req.json().catch(() => ({}))) as { work_km?: number | null };
+      const num = (v: unknown): number | null => (v === null || v === undefined || v === "" || !Number.isFinite(Number(v)) ? null : Math.max(0, Number(v)));
+      return json(await stub.setCarInputs(uid, { fy, work_km: num(body.work_km) }));
+    }
+  }
+
   // ── FY checklist ──────────────────────────────────────────────────────────
   if (resource === "checklist") {
     if (m === "GET" && !id) return json({ checklist: await listChecklist(env, uid, url.searchParams.get("fy") ?? undefined) });

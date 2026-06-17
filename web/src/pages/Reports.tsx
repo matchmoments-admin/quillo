@@ -59,7 +59,22 @@ export function Reports() {
                 figure — deductibility is decided at year-end review (see the caveat below). */}
             <Stat label={<>Tracked spend (pending review) <InfoTip k="deductible_vs_claimable" /></>} value={money(data!.total_deductions_cents)} />
             <Stat label="Depreciation" value={money(data!.depreciation_cents)} />
-            <Stat label="Indicative position (individual)" value={money(data!.taxable_position_cents)} />
+            {data!.taxable_position_confirmed_cents != null ? (
+              // #255: present as a range so the optimistic (tracked) figure is never shown alone as THE
+              // position. Lead with the defensible/confirmed number; the tracked figure is the floor it
+              // falls toward as pending spend is confirmed deductible.
+              <div>
+                <div className="text-xs uppercase tracking-wide text-muted">
+                  Indicative position (individual) <InfoTip tip="A range: the first figure reflects only deductions confirmed so far (what you could defend today); it falls toward the second as you confirm the spend you've captured. General information only — not tax advice." />
+                </div>
+                <div className="mt-1 text-lg font-semibold tabular-nums">{money(data!.taxable_position_confirmed_cents)}</div>
+                <div className="text-xs font-normal tabular-nums text-muted">
+                  → {money(data!.taxable_position_cents)} if all tracked spend is confirmed deductible
+                </div>
+              </div>
+            ) : (
+              <Stat label="Indicative position (individual)" value={money(data!.taxable_position_cents)} />
+            )}
           </Card>
           <p className="px-1 text-xs text-muted">
             "Tracked spend" is what you've captured in deductible-context buckets — not a claimable amount.

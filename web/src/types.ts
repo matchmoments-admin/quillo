@@ -382,6 +382,38 @@ export interface SavingsData {
   disclaimer: string;
 }
 
+// ── Private Health Extras Tracker (flag phi_extras_tracker) — FACTUAL engagement surface ──
+export interface PhiCategoryLine {
+  limit_id: string;
+  category: string;
+  label: string;
+  annual_limit_cents: number;
+  used_cents: number;
+  remaining_cents: number;
+  copy: string;
+}
+export interface PhiPolicyView {
+  id: string;
+  person_id: string | null;
+  insurer: string | null;
+  cover_type: string | null;
+  reset_basis: string;
+  source: string;
+  reset_date: string;       // ISO yyyy-mm-dd of the next reset
+  weeks_to_reset: number;
+  total_limit_cents: number;
+  total_used_cents: number;
+  total_unused_cents: number;
+  categories: PhiCategoryLine[];
+}
+export interface PhiOverview {
+  consented: boolean;
+  private_health: number;
+  policies: PhiPolicyView[];
+  category_options: { value: string; label: string }[];
+  disclaimer: string;
+}
+
 // Platform roles (mirror of src/lib/roles.ts ROLES). 'individual' is the default.
 export const ROLES = ["individual", "admin", "accountant", "bookkeeper", "support", "partner"] as const;
 export type Role = (typeof ROLES)[number];

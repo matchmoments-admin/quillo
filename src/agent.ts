@@ -8,7 +8,7 @@ import { QuickBooksAdapter } from "./ledger/qbo";
 import { revokeAndDisconnect } from "./lib/qbo-oauth";
 import { purgeTenant as purgeTenantData, exportTenant as exportTenantData, flagOldData as flagOldDataSweep, hasPendingNudge, type PurgeResult } from "./lib/retention";
 import { COUNTABLE, fetchAskDigestRows, spendRunRate } from "./lib/queries";
-import { billerNormalize, detectRecurrence, classifyBiller, paymentsPerYear, recurringCopy, signpostFor, type RecurringOccurrence } from "./lib/advisory";
+import { billerNormalize, detectRecurrence, classifyBiller, paymentsPerYear, recurringCopy, signpostFor, insurerResetBasis, nextResetDate, weeksUntil, phiResetNudgeCopy, phiDetectedCopy, type RecurringOccurrence, type ResetBasis } from "./lib/advisory";
 import { matchEnergyOffer, getOfferById, buildReferralUrl, opportunityTakesEnergyCta, type PartnerDB } from "./lib/partners";
 import { deriveWfhHours, generateWfhDiary, type WfhLeaveRange } from "./lib/work-use";
 import { applyUserRules, RULE_CREDIT_BUCKETS } from "./lib/rules";
@@ -4962,6 +4962,210 @@ export class TaxAgent extends Agent<Env> {
       .bind(userId, id)
       .run();
     return { ok: true };
+  }
+
+  // ── Private Health Extras Tracker (engagement; gated by phi_extras_tracker at the route/cron) ──
+  // Health-service categories are "sensitive information" (Privacy Act) — every WRITE below requires a
+  // separate, dated health-data consent (profiles.health_extras_consent_at). This is NOT the existing
+  // cross-border /consent gate; it is its own marker (set by recordHealthExtrasConsent). None of this
+  // ever touches report.ts — extras tracking is display only.
+
+  /** Record (or re-affirm) the separate health-data consent that unlocks the PHI writes. */
+  async recordHealthExtrasConsent(userId: string, text: string, method: string): Promise<{ ok: true; consented_at: string }> {
+    await this.env.DB.prepare(
+      `UPDATE profiles SET health_extras_consent_at = datetime('now') WHERE user_id = ?`,
+    ).bind(userId).run();
+    const row = await this.env.DB.prepare(`SELECT health_extras_consent_at AS at FROM profiles WHERE user_id = ?`)
+      .bind(userId).first<{ at: string }>();
+    await this.audit(userId, "consent_health_extras", JSON.stringify({ method, text: text.slice(0, 200) }));
+    return { ok: true, consented_at: row?.at ?? "" };
+  }
+
+  /** Withdraw the health-data consent (clears the marker ⇒ PHI writes blocked again). Data is kept. */
+  async withdrawHealthExtrasConsent(userId: string): Promise<{ ok: true }> {
+    await this.env.DB.prepare(`UPDATE profiles SET health_extras_consent_at = NULL WHERE user_id = ?`).bind(userId).run();
+    await this.audit(userId, "consent_health_extras_withdrawn", "{}");
+    return { ok: true };
+  }
+
+  /** Set whether the tenant holds private HOSPITAL cover (the MLS pivot; analogous to gst_registered). */
+  async setPrivateHealth(userId: string, holds: boolean): Promise<{ ok: true; private_health: number }> {
+    const v = holds ? 1 : 0;
+    await this.env.DB.prepare(`UPDATE profiles SET private_health = ? WHERE user_id = ?`).bind(v, userId).run();
+    await this.audit(userId, "private_health_set", JSON.stringify({ private_health: v }));
+    return { ok: true, private_health: v };
+  }
+
+  private async requireHealthConsent(userId: string): Promise<void> {
+    const row = await this.env.DB.prepare(`SELECT health_extras_consent_at AS at FROM profiles WHERE user_id = ?`)
+      .bind(userId).first<{ at: string | null }>();
+    if (!row?.at) throw new Error("Health-data consent required");
+  }
+
+  private async assertOwnsPolicy(userId: string, policyId: string): Promise<void> {
+    const row = await this.env.DB.prepare(`SELECT 1 AS ok FROM phi_policy WHERE id = ? AND user_id = ?`)
+      .bind(policyId, userId).first<{ ok: number }>();
+    if (!row) throw new Error("policy not found");
+  }
+
+  /** Create or update a private-health policy (consent-gated). Returns the policy id. */
+  async savePhiPolicy(
+    userId: string,
+    p: { id?: string | null; person_id?: string | null; insurer?: string | null; cover_type?: string | null;
+         reset_basis?: string | null; reset_date?: string | null; source?: string | null },
+  ): Promise<{ id: string }> {
+    await this.requireHealthConsent(userId);
+    // Only treat a VALID basis in the payload as "provided"; null ⇒ keep the stored basis on update
+    // (don't silently recompute it from the insurer default and clobber a user-set anniversary/FY basis).
+    const provided = (["calendar", "financial_year", "anniversary"].includes(p.reset_basis ?? "")
+      ? p.reset_basis
+      : null) as ResetBasis | null;
+    if (p.id) {
+      await this.assertOwnsPolicy(userId, p.id);
+      await this.env.DB.prepare(
+        `UPDATE phi_policy SET person_id=?, insurer=?, cover_type=?,
+                reset_basis=COALESCE(?, reset_basis), reset_date=COALESCE(?, reset_date), updated_at=datetime('now')
+          WHERE id = ? AND user_id = ?`,
+      ).bind(p.person_id ?? null, p.insurer ?? null, p.cover_type ?? null, provided, p.reset_date ?? null, p.id, userId).run();
+      await this.audit(userId, "phi_policy_updated", JSON.stringify({ id: p.id, insurer: p.insurer }));
+      return { id: p.id };
+    }
+    const basis = provided ?? insurerResetBasis(p.insurer);
+    const id = crypto.randomUUID();
+    await this.env.DB.prepare(
+      `INSERT INTO phi_policy (id, user_id, person_id, insurer, cover_type, reset_basis, reset_date, source)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(id, userId, p.person_id ?? null, p.insurer ?? null, p.cover_type ?? null, basis, p.reset_date ?? null, p.source ?? "manual").run();
+    await this.audit(userId, "phi_policy_created", JSON.stringify({ id, insurer: p.insurer, source: p.source ?? "manual" }));
+    return { id };
+  }
+
+  /** Delete a policy and its limits + usage (consent-gated). */
+  async deletePhiPolicy(userId: string, id: string): Promise<{ ok: true }> {
+    await this.requireHealthConsent(userId);
+    await this.assertOwnsPolicy(userId, id);
+    await this.env.DB.batch([
+      this.env.DB.prepare(`DELETE FROM phi_benefit_usage WHERE user_id = ? AND policy_id = ?`).bind(userId, id),
+      this.env.DB.prepare(`DELETE FROM phi_limit WHERE user_id = ? AND policy_id = ?`).bind(userId, id),
+      this.env.DB.prepare(`DELETE FROM phi_policy WHERE user_id = ? AND id = ?`).bind(userId, id),
+    ]);
+    await this.audit(userId, "phi_policy_deleted", JSON.stringify({ id }));
+    return { ok: true };
+  }
+
+  /** Create or update a per-category annual limit (idempotent on policy+category; consent-gated). */
+  async savePhiLimit(
+    userId: string,
+    l: { policy_id: string; category: string; annual_limit_cents: number; period?: string | null },
+  ): Promise<{ id: string }> {
+    await this.requireHealthConsent(userId);
+    await this.assertOwnsPolicy(userId, l.policy_id);
+    const cents = Math.max(0, Math.round(Number(l.annual_limit_cents) || 0));
+    const existing = await this.env.DB.prepare(
+      `SELECT id FROM phi_limit WHERE user_id = ? AND policy_id = ? AND category = ?`,
+    ).bind(userId, l.policy_id, l.category).first<{ id: string }>();
+    if (existing) {
+      await this.env.DB.prepare(
+        `UPDATE phi_limit SET annual_limit_cents=?, period=?, updated_at=datetime('now') WHERE id = ? AND user_id = ?`,
+      ).bind(cents, l.period ?? "annual", existing.id, userId).run();
+      await this.audit(userId, "phi_limit_updated", JSON.stringify({ id: existing.id, category: l.category, cents }));
+      return { id: existing.id };
+    }
+    const id = crypto.randomUUID();
+    await this.env.DB.prepare(
+      `INSERT INTO phi_limit (id, user_id, policy_id, category, annual_limit_cents, period) VALUES (?, ?, ?, ?, ?, ?)`,
+    ).bind(id, userId, l.policy_id, l.category, cents, l.period ?? "annual").run();
+    await this.audit(userId, "phi_limit_created", JSON.stringify({ id, category: l.category, cents }));
+    return { id };
+  }
+
+  /** Delete a per-category limit (consent-gated). */
+  async deletePhiLimit(userId: string, id: string): Promise<{ ok: true }> {
+    await this.requireHealthConsent(userId);
+    await this.env.DB.prepare(`DELETE FROM phi_limit WHERE user_id = ? AND id = ?`).bind(userId, id).run();
+    await this.audit(userId, "phi_limit_deleted", JSON.stringify({ id }));
+    return { ok: true };
+  }
+
+  /** Record a benefit used against a limit (append; consent-gated). The bank debit is the out-of-pocket
+   *  GAP — this is the BENEFIT the fund paid, which the user enters from their statement/app. */
+  async recordPhiUsage(
+    userId: string,
+    u: { policy_id: string; category: string; amount_used_cents: number; txn_id?: string | null; used_on?: string | null },
+  ): Promise<{ id: string }> {
+    await this.requireHealthConsent(userId);
+    await this.assertOwnsPolicy(userId, u.policy_id);
+    const id = crypto.randomUUID();
+    const cents = Math.max(0, Math.round(Number(u.amount_used_cents) || 0));
+    await this.env.DB.prepare(
+      `INSERT INTO phi_benefit_usage (id, user_id, policy_id, category, amount_used_cents, txn_id, used_on)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(id, userId, u.policy_id, u.category, cents, u.txn_id ?? null, u.used_on ?? null).run();
+    await this.audit(userId, "phi_usage_recorded", JSON.stringify({ id, category: u.category, cents }));
+    return { id };
+  }
+
+  /**
+   * Weekly (cron, gated by phi_extras_tracker): deterministic, NO-LLM. Two factual outputs:
+   *  (1) a setup nudge when a private-health premium is detected but no policy is tracked yet, and
+   *  (2) a reset reminder when material extras cover is unused close to the reset date.
+   * Writes only to opportunities + notifications (no phi_ tables ⇒ no consent gate). De-dup guarded.
+   */
+  async detectBenefitsReset(userId: string): Promise<{ setups: number; resets: number }> {
+    const now = new Date();
+    const policies = (await this.env.DB.prepare(
+      `SELECT id, insurer, reset_basis, reset_date FROM phi_policy WHERE user_id = ?`,
+    ).bind(userId).all<{ id: string; insurer: string | null; reset_basis: string | null; reset_date: string | null }>()).results ?? [];
+
+    const oppUpserts: D1PreparedStatement[] = [];
+    let setups = 0;
+
+    // (1) Setup nudge — only when NO policy is tracked yet (don't nag once they've set one up).
+    if (policies.length === 0) {
+      const health = (await this.env.DB.prepare(
+        `SELECT biller_key, label FROM recurring_bills
+          WHERE user_id = ? AND category = 'health' AND status NOT IN ('dismissed','ended')
+          ORDER BY annual_amount_cents DESC LIMIT 3`,
+      ).bind(userId).all<{ biller_key: string; label: string | null }>()).results ?? [];
+      for (const h of health) {
+        const label = (h.label ?? h.biller_key).slice(0, 40);
+        oppUpserts.push(this.upsertOpportunity(userId, "phi_extras", `setup:${h.biller_key}`, {
+          fy: null, category: "health", title: "Track your private-health extras",
+          body: phiDetectedCopy(label), amount_cents: 0, signpost: null, recurringBillId: null,
+        }));
+        setups++;
+      }
+    }
+
+    // (2) Reset reminder — per policy with limits: total unused + weeks-to-reset. Notify at ~6wk & ~2wk
+    // when material cover is unused. Deterministic; in-app only.
+    let resets = 0;
+    const THRESHOLD_CENTS = 5000; // $50 — only nudge on material unused cover
+    for (const p of policies) {
+      const basis = ((p.reset_basis as string) || "calendar") as ResetBasis;
+      const resetIso = nextResetDate(basis, p.reset_date ?? null, now);
+      const weeks = weeksUntil(resetIso, now);
+      const agg = await this.env.DB.prepare(
+        `SELECT COALESCE((SELECT SUM(annual_limit_cents) FROM phi_limit WHERE user_id=? AND policy_id=?),0) AS lim,
+                COALESCE((SELECT SUM(amount_used_cents) FROM phi_benefit_usage WHERE user_id=? AND policy_id=?),0) AS used`,
+      ).bind(userId, p.id, userId, p.id).first<{ lim: number; used: number }>();
+      const unused = Math.max(0, (agg?.lim ?? 0) - (agg?.used ?? 0));
+      if (unused < THRESHOLD_CENTS) continue;
+      // Always keep a standing dashboard/Save opportunity current (no notify spam).
+      oppUpserts.push(this.upsertOpportunity(userId, "phi_extras", `reset:${p.id}`, {
+        fy: null, category: "health", title: "Unused extras before reset",
+        body: phiResetNudgeCopy(unused, resetIso, weeks), amount_cents: unused, signpost: null, recurringBillId: null,
+      }));
+      // Push a notification only inside the nudge windows, de-duped per reset cycle.
+      if (weeks <= 6 && !(await hasPendingNudge(this.env, userId, "%extras cover is unused%", { withinDays: 21 }))) {
+        await this.notify(userId, phiResetNudgeCopy(unused, resetIso, weeks), null);
+        resets++;
+      }
+    }
+
+    await this.batchChunked(oppUpserts);
+    await this.audit(userId, "detect_benefits_reset", JSON.stringify({ setups, resets, policies: policies.length }));
+    return { setups, resets };
   }
 
   /**

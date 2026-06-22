@@ -21,8 +21,12 @@ import { cleanMerchant } from "./bank-parsers";
 // (Kept deliberately broad; "save"/"saving" is allowed only as a neutral noun in links, never as a
 // "save up to $X" claim — see assertFactual which catches the dangerous bigrams.)
 const BANNED_TOKEN_RE =
-  /\b(should|recommend|recommended|best|cheapest|invest|investing|investment|gamble|gambling|guaranteed|projected|projection)\b/i;
-const BANNED_PHRASE_RE = /\b(save up to|you could save|whole[ -]of[ -]market|we compared|too (?:high|much)|better off)\b/i;
+  /\b(should|recommend|recommended|best|cheapest|invest|investing|investment|gamble|gambling|guaranteed|projected|projection|overdue)\b/i;
+// Includes clinical/treatment-steer phrases for the PHI extras card: a factual "you have $X of physio
+// cover left" is fine, but "go see a physio / book a check-up / switch to better cover" crosses into
+// health or product advice. "overdue" (above) blocks "your cover is overdue" framing.
+const BANNED_PHRASE_RE =
+  /\b(save up to|you could save|whole[ -]of[ -]market|we compared|too (?:high|much)|better off|you need|switch to|better cover|book a|see (?:a |an |your )?(?:physio|dentist|doctor|gp|specialist|practitioner|chiro|optometrist))\b/i;
 
 /** True when copy stays on the factual side of the advice line (no recommend/projection/comparison). */
 export function assertFactual(text: string): boolean {
@@ -291,4 +295,97 @@ export function recurringCopy(billerLabel: string, d: RecurringDetection): strin
     : `${billerLabel}: about ${money(d.typical_amount_cents)} per ${per} (${kind})` +
       (annual > 0 ? ` — roughly ${money(annual)} a year.` : ".");
   return base;
+}
+
+// ── Private Health Extras Tracker (factual copy + reset arithmetic) ────────────
+// Extras tracking = engagement/display ONLY (never a tax output). Every string here is FACTUAL —
+// the user's own balance + a real reset date — and must pass the (extended) assertFactual. We never
+// tell the user to seek treatment, book an appointment, or switch cover; the PHI card also deliberately
+// does NOT carry signpostFor("health") (a product comparator in a usage context = advice adjacency).
+
+/** Canonical extras benefit categories (the phi_limit / phi_benefit_usage `category` value set). */
+export const EXTRAS_CATEGORIES = [
+  "dental.general", "dental.major", "orthodontics", "optical", "physiotherapy", "chiropractic",
+  "osteopathy", "remedial_massage", "psychology", "podiatry", "acupuncture_natural", "pharmacy",
+  "speech_therapy", "dietetics", "appliances", "allied_other",
+] as const;
+export type ExtrasCategory = (typeof EXTRAS_CATEGORIES)[number];
+
+/** Human labels for the extras categories (UI + copy). */
+export const EXTRAS_CATEGORY_LABEL: Record<string, string> = {
+  "dental.general": "General dental", "dental.major": "Major dental", orthodontics: "Orthodontics",
+  optical: "Optical", physiotherapy: "Physiotherapy", chiropractic: "Chiropractic", osteopathy: "Osteopathy",
+  remedial_massage: "Remedial massage", psychology: "Psychology", podiatry: "Podiatry",
+  acupuncture_natural: "Acupuncture / natural therapies", pharmacy: "Pharmacy",
+  speech_therapy: "Speech therapy", dietetics: "Dietetics", appliances: "Appliances / aids",
+  allied_other: "Other allied health",
+};
+
+export type ResetBasis = "calendar" | "financial_year" | "anniversary";
+
+/** Per-insurer reset-basis default (most AU funds reset extras on the calendar year; a few on the FY).
+ *  A pre-filled-but-editable starting point only — the user confirms the real basis. */
+export function insurerResetBasis(insurer: string | null | undefined): ResetBasis {
+  const s = (insurer ?? "").toLowerCase();
+  if (/\b(ahm|peoplecare|rt health|phoenix health|teachers health|nurses)\b/.test(s)) return "financial_year";
+  return "calendar";
+}
+
+function isoDay(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+/** The next date extras limits reset (ISO yyyy-mm-dd), given the basis and a reference date.
+ *  calendar → next 1 Jan; financial_year → next 1 Jul; anniversary → the stored month/day rolled forward. */
+export function nextResetDate(basis: ResetBasis, anniversary: string | null, from: Date): string {
+  const y = from.getUTCFullYear();
+  const today = isoDay(from);
+  if (basis === "anniversary" && anniversary && /^\d{4}-\d{2}-\d{2}$/.test(anniversary)) {
+    const md = anniversary.slice(5); // mm-dd
+    const thisYear = `${y}-${md}`;
+    return thisYear > today ? thisYear : `${y + 1}-${md}`;
+  }
+  if (basis === "financial_year") {
+    const julThis = `${y}-07-01`;
+    return today < julThis ? julThis : `${y + 1}-07-01`;
+  }
+  // calendar: the next 1 Jan is always in the following year (this year's has passed for any date but 1 Jan).
+  return `${y + 1}-01-01`;
+}
+
+/** Whole weeks from `from` until an ISO date (floored at 0). */
+export function weeksUntil(dateIso: string, from: Date): number {
+  const ms = Date.parse(`${dateIso}T00:00:00Z`) - from.getTime();
+  return Math.max(0, Math.ceil(ms / (7 * 24 * 3600 * 1000)));
+}
+
+/** "2027-01-01" → "1 January 2027". */
+export function formatResetDate(iso: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  if (!m) return iso;
+  const months = ["January", "February", "March", "April", "May", "June", "July",
+    "August", "September", "October", "November", "December"];
+  return `${Number(m[3])} ${months[Number(m[2]) - 1]} ${Number(m[1])}`;
+}
+
+/** Factual per-category extras line: used vs limit, remaining, and the reset date. No advice/steer. */
+export function phiExtrasCopy(categoryLabel: string, usedCents: number, limitCents: number, resetDateIso: string): string {
+  const reset = formatResetDate(resetDateIso);
+  if (limitCents <= 0) {
+    return `${categoryLabel}: ${money(usedCents)} recorded this period. Your limits reset on ${reset}.`;
+  }
+  const remaining = Math.max(0, limitCents - usedCents);
+  return `${categoryLabel}: you've used ${money(usedCents)} of your ${money(limitCents)} limit — ${money(remaining)} unused. Your limits reset on ${reset}.`;
+}
+
+/** Factual reset reminder body (the in-app nudge): total unused + how long until reset. */
+export function phiResetNudgeCopy(unusedCents: number, resetDateIso: string, weeks: number): string {
+  const reset = formatResetDate(resetDateIso);
+  const when = weeks <= 1 ? "in about a week" : `in about ${weeks} weeks`;
+  return `Heads up: ${money(unusedCents)} of your private-health extras cover is unused and your limits reset on ${reset} (${when}). After that the balance starts fresh. General information only.`;
+}
+
+/** Factual opportunity body shown when a private-health premium is detected — points to the tracker. */
+export function phiDetectedCopy(insurerLabel: string): string {
+  return `We spotted a private-health premium from ${insurerLabel}. Add your extras limits to track what's unused before they reset. General information only.`;
 }

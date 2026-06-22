@@ -23,6 +23,7 @@ import {
   platformSpend,
   listSuggestedDeductions,
   savingsOverview,
+  phiExtrasOverview,
   referralFunnelAdmin,
 } from "./lib/queries";
 import { isAdmin, isPartner, normaliseRoles } from "./lib/roles";
@@ -443,6 +444,57 @@ export async function handleApi(
   if (resource === "recurring-bills" && id && sub === "confirm" && m === "POST") {
     if (!featureOn(env, "advisory_layer")) return json({ error: "not available" }, 404);
     return json(await stub.confirmRecurringBill(uid, id));
+  }
+
+  // ── Private Health Extras Tracker (flag phi_extras_tracker) — FACTUAL engagement surface ──
+  // GET  /api/phi                 → policies + per-category limits/used/remaining + reset countdown
+  // POST /api/phi/consent         → record the separate health-data consent (unlocks writes)
+  // POST /api/phi/consent/withdraw→ withdraw it
+  // POST /api/phi/hospital {holds}→ set the private-hospital-cover flag (MLS pivot)
+  // POST /api/phi/policy          → create/update a policy   · DELETE /api/phi/policy/:id
+  // POST /api/phi/limit           → create/update a limit     · DELETE /api/phi/limit/:id
+  // POST /api/phi/usage           → record a benefit used
+  // POST /api/phi/scan            → run the deterministic reset/setup detector on demand
+  if (resource === "phi") {
+    if (!featureOn(env, "phi_extras_tracker")) return json({ error: "not available" }, 404);
+    if (!id && m === "GET") {
+      return json(await phiExtrasOverview(env, uid));
+    }
+    if (id === "consent" && !sub && m === "POST") {
+      const b = (await req.json().catch(() => ({}))) as { text?: unknown; method?: unknown };
+      return json(await stub.recordHealthExtrasConsent(uid, typeof b.text === "string" ? b.text : "", typeof b.method === "string" ? b.method : "web"));
+    }
+    if (id === "consent" && sub === "withdraw" && m === "POST") {
+      return json(await stub.withdrawHealthExtrasConsent(uid));
+    }
+    if (id === "hospital" && m === "POST") {
+      const b = (await req.json().catch(() => ({}))) as { holds?: unknown };
+      return json(await stub.setPrivateHealth(uid, !!b.holds));
+    }
+    if (id === "policy" && !sub && m === "POST") {
+      const b = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+      try { return json(await stub.savePhiPolicy(uid, b)); } catch (e) { return json({ error: (e as Error).message }, 400); }
+    }
+    if (id === "policy" && sub && m === "DELETE") {
+      try { return json(await stub.deletePhiPolicy(uid, sub)); } catch (e) { return json({ error: (e as Error).message }, 400); }
+    }
+    if (id === "limit" && !sub && m === "POST") {
+      const b = (await req.json().catch(() => ({}))) as { policy_id?: unknown; category?: unknown; annual_limit_cents?: unknown; period?: unknown };
+      if (typeof b.policy_id !== "string" || typeof b.category !== "string") return json({ error: "policy_id and category required" }, 400);
+      try { return json(await stub.savePhiLimit(uid, { policy_id: b.policy_id, category: b.category, annual_limit_cents: Number(b.annual_limit_cents) || 0, period: typeof b.period === "string" ? b.period : null })); } catch (e) { return json({ error: (e as Error).message }, 400); }
+    }
+    if (id === "limit" && sub && m === "DELETE") {
+      try { return json(await stub.deletePhiLimit(uid, sub)); } catch (e) { return json({ error: (e as Error).message }, 400); }
+    }
+    if (id === "usage" && !sub && m === "POST") {
+      const b = (await req.json().catch(() => ({}))) as { policy_id?: unknown; category?: unknown; amount_used_cents?: unknown; txn_id?: unknown; used_on?: unknown };
+      if (typeof b.policy_id !== "string" || typeof b.category !== "string") return json({ error: "policy_id and category required" }, 400);
+      try { return json(await stub.recordPhiUsage(uid, { policy_id: b.policy_id, category: b.category, amount_used_cents: Number(b.amount_used_cents) || 0, txn_id: typeof b.txn_id === "string" ? b.txn_id : null, used_on: typeof b.used_on === "string" ? b.used_on : null })); } catch (e) { return json({ error: (e as Error).message }, 400); }
+    }
+    if (id === "scan" && m === "POST") {
+      return json(await stub.detectBenefitsReset(uid));
+    }
+    return json({ error: "not found" }, 404);
   }
 
   // POST /api/referrals { opportunity_id } — user-initiated Tier-1 energy referral (flag

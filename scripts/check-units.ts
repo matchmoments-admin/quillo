@@ -20,6 +20,7 @@ import {
   billerNormalize, classifyBiller, annualiseSpendCents, daysBetween, detectRecurrence,
   classifyCadence, paymentsPerYear, runRateCopy, recurringCopy, assertFactual, signpostFor,
   ADVISORY_DISCLAIMER, savingsProjection, savingsProjectionCopy,
+  phiExtrasCopy, phiResetNudgeCopy, phiDetectedCopy, nextResetDate, weeksUntil, formatResetDate, insurerResetBasis,
 } from "../src/lib/advisory";
 import { applyUserRules } from "../src/lib/rules";
 import type { UserRule } from "../src/lib/db";
@@ -2106,6 +2107,31 @@ console.log("advisory.copy is FACTUAL (no advice/projection/comparison tokens)")
   check("guardrail catches an investment steer", !assertFactual("Invest your surplus for a projected return"));
   // Energy is signposted to the government comparator (whole-of-market, no commission); streaming isn't.
   check("energy → Energy Made Easy signpost; streaming → none", signpostFor("energy")!.url.includes("energymadeeasy") && signpostFor("streaming") === null);
+  // PHI extras copy is FACTUAL (used/limit/remaining + reset date — no advice/steer).
+  const phi = phiExtrasCopy("Physiotherapy", 32000, 50000, "2027-01-01");
+  check("phi extras copy renders used/limit/remaining + reset and is factual",
+    phi.includes("$320") && phi.includes("$500") && phi.includes("$180") && phi.includes("1 January 2027") && assertFactual(phi));
+  const phiNudge = phiResetNudgeCopy(18000, "2027-01-01", 3);
+  check("phi reset nudge renders unused + weeks + is factual", phiNudge.includes("$180") && phiNudge.includes("3 weeks") && assertFactual(phiNudge));
+  check("phi detected copy is factual", assertFactual(phiDetectedCopy("Bupa")));
+  // The EXTENDED guardrail must REJECT clinical/treatment-steer copy (so the PHI copy contract has teeth).
+  check("guardrail catches a clinical steer (see a physio)", !assertFactual("You should go see a physio before your limits reset"));
+  check("guardrail catches book-a / overdue framing", !assertFactual("Book a dental check-up — your cover is overdue"));
+  check("guardrail catches a product steer (switch to better cover)", !assertFactual("Switch to better cover to use your extras"));
+  // …but the genuine factual PHI strings still pass (no false positives from the new tokens).
+  check("extended guardrail keeps the real PHI copy factual", assertFactual(phi) && assertFactual(phiNudge));
+}
+
+console.log("advisory.phi reset arithmetic (deterministic dates)");
+{
+  const ref = new Date("2026-11-20T00:00:00Z");
+  check("calendar basis → next 1 Jan", nextResetDate("calendar", null, ref) === "2027-01-01");
+  check("financial_year basis (pre-Jul) → this 1 Jul", nextResetDate("financial_year", null, new Date("2026-03-01T00:00:00Z")) === "2026-07-01");
+  check("financial_year basis (post-Jul) → next 1 Jul", nextResetDate("financial_year", null, new Date("2026-09-01T00:00:00Z")) === "2027-07-01");
+  check("anniversary basis rolls the stored month/day forward", nextResetDate("anniversary", "2025-03-15", ref) === "2027-03-15");
+  check("weeksUntil floors at whole weeks", weeksUntil("2026-12-18", ref) === 4);
+  check("formatResetDate renders a readable date", formatResetDate("2027-01-01") === "1 January 2027");
+  check("insurer reset default: Bupa → calendar, ahm → financial_year", insurerResetBasis("Bupa") === "calendar" && insurerResetBasis("ahm health") === "financial_year");
 }
 
 console.log("advisory.savingsProjection (factual SAVING calculator — no product, no projection token)");

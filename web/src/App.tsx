@@ -63,7 +63,10 @@ const GROUPS: NavGroup[] = [
   },
   {
     label: "5 · Save",
-    items: [{ to: "/savings", label: "Savings", icon: "income", flag: "advisory_layer" }],
+    items: [
+      { to: "/savings", label: "Savings", icon: "income", flag: "advisory_layer" },
+      { to: "/extras", label: "Extras", icon: "shield", flag: "phi_extras_tracker" },
+    ],
   },
   {
     label: "6 · File",

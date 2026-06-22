@@ -383,13 +383,19 @@ export interface SavingsData {
 }
 
 // ── Private Health Extras Tracker (flag phi_extras_tracker) — FACTUAL engagement surface ──
+export interface PhiUsageEntry {
+  id: string;
+  amount_used_cents: number;
+  used_on: string | null;
+}
 export interface PhiCategoryLine {
-  limit_id: string;
+  limit_id: string | null; // null when a category has usage but no limit set yet
   category: string;
   label: string;
   annual_limit_cents: number;
   used_cents: number;
   remaining_cents: number;
+  entries: PhiUsageEntry[];
   copy: string;
 }
 export interface PhiPolicyView {

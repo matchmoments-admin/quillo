@@ -491,6 +491,9 @@ export async function handleApi(
       if (typeof b.policy_id !== "string" || typeof b.category !== "string") return json({ error: "policy_id and category required" }, 400);
       try { return json(await stub.recordPhiUsage(uid, { policy_id: b.policy_id, category: b.category, amount_used_cents: Number(b.amount_used_cents) || 0, txn_id: typeof b.txn_id === "string" ? b.txn_id : null, used_on: typeof b.used_on === "string" ? b.used_on : null })); } catch (e) { return json({ error: (e as Error).message }, 400); }
     }
+    if (id === "usage" && sub && m === "DELETE") {
+      try { return json(await stub.deletePhiUsage(uid, sub)); } catch (e) { return json({ error: (e as Error).message }, 400); }
+    }
     if (id === "scan" && m === "POST") {
       return json(await stub.detectBenefitsReset(uid));
     }

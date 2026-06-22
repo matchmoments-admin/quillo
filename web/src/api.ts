@@ -151,6 +151,7 @@ export const api = {
   phiSaveLimit: (l: { policy_id: string; category: string; annual_limit_cents: number }) => post<{ id: string }>("/api/phi/limit", l),
   phiDeleteLimit: (id: string) => send<{ ok: true }>("DELETE", `/api/phi/limit/${id}`),
   phiRecordUsage: (u: { policy_id: string; category: string; amount_used_cents: number; used_on?: string | null }) => post<{ id: string }>("/api/phi/usage", u),
+  phiDeleteUsage: (id: string) => send<{ ok: true }>("DELETE", `/api/phi/usage/${id}`),
   phiScan: () => post<{ setups: number; resets: number }>("/api/phi/scan"),
   notifications: () => get<{ notifications: Notification[] }>("/api/notifications").then((r) => r.notifications),
   markRead: (id: string) => post<{ ok: boolean }>(`/api/notifications/${id}/read`),

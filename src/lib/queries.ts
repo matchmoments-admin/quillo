@@ -640,39 +640,56 @@ export async function phiExtrasOverview(env: Env, userId: string) {
     env.DB.prepare(
       `SELECT id, policy_id, category, annual_limit_cents, period FROM phi_limit WHERE user_id = ?`,
     ).bind(userId).all<Record<string, unknown>>(),
+    // Individual usage rows (not just the sum) so the UI can list + delete a single mis-entry.
     env.DB.prepare(
-      `SELECT policy_id, category, COALESCE(SUM(amount_used_cents),0) AS used_cents
-         FROM phi_benefit_usage WHERE user_id = ? GROUP BY policy_id, category`,
+      `SELECT id, policy_id, category, amount_used_cents, used_on
+         FROM phi_benefit_usage WHERE user_id = ? ORDER BY COALESCE(used_on, created_at) DESC, created_at DESC`,
     ).bind(userId).all<Record<string, unknown>>(),
   ]);
 
   const limits = limitsRes.results ?? [];
+  // Per (policy, category): the recorded total + the individual entries (for edit/delete).
   const usedByKey = new Map<string, number>();
+  const entriesByKey = new Map<string, { id: string; amount_used_cents: number; used_on: string | null }[]>();
   for (const u of usageRes.results ?? []) {
-    usedByKey.set(`${u.policy_id}::${u.category}`, Number(u.used_cents) || 0);
+    const key = `${u.policy_id}::${u.category}`;
+    const cents = Number(u.amount_used_cents) || 0;
+    usedByKey.set(key, (usedByKey.get(key) ?? 0) + cents);
+    const arr = entriesByKey.get(key) ?? [];
+    arr.push({ id: u.id as string, amount_used_cents: cents, used_on: (u.used_on as string) ?? null });
+    entriesByKey.set(key, arr);
   }
 
   const policies = (policiesRes.results ?? []).map((p) => {
     const basis = ((p.reset_basis as string) || "calendar") as ResetBasis;
     const resetIso = nextResetDate(basis, (p.reset_date as string) ?? null, now);
     const weeks = weeksUntil(resetIso, now);
-    const categories = limits
-      .filter((l) => l.policy_id === p.id)
-      .map((l) => {
-        const cat = l.category as string;
-        const label = EXTRAS_CATEGORY_LABEL[cat] ?? cat;
-        const limit = Number(l.annual_limit_cents) || 0;
-        const used = usedByKey.get(`${p.id}::${cat}`) ?? 0;
-        return {
-          limit_id: l.id as string,
-          category: cat,
-          label,
-          annual_limit_cents: limit,
-          used_cents: used,
-          remaining_cents: Math.max(0, limit - used),
-          copy: phiExtrasCopy(label, used, limit, resetIso),
-        };
-      });
+    // Category set = the union of limit categories AND any category that has usage but no limit yet,
+    // so a recorded benefit is never hidden just because its limit hasn't been entered.
+    const limitByCat = new Map<string, Record<string, unknown>>();
+    for (const l of limits) if (l.policy_id === p.id) limitByCat.set(l.category as string, l);
+    const usageCats = new Set<string>();
+    for (const key of entriesByKey.keys()) {
+      const [pid, cat] = key.split("::");
+      if (pid === p.id) usageCats.add(cat!);
+    }
+    const catSet = new Set<string>([...limitByCat.keys(), ...usageCats]);
+    const categories = [...catSet].map((cat) => {
+      const l = limitByCat.get(cat);
+      const label = EXTRAS_CATEGORY_LABEL[cat] ?? cat;
+      const limit = l ? Number(l.annual_limit_cents) || 0 : 0;
+      const used = usedByKey.get(`${p.id}::${cat}`) ?? 0;
+      return {
+        limit_id: (l?.id as string) ?? null,
+        category: cat,
+        label,
+        annual_limit_cents: limit,
+        used_cents: used,
+        remaining_cents: Math.max(0, limit - used),
+        entries: entriesByKey.get(`${p.id}::${cat}`) ?? [],
+        copy: phiExtrasCopy(label, used, limit, resetIso),
+      };
+    }).sort((a, b) => a.label.localeCompare(b.label));
     const total_limit_cents = categories.reduce((n, c) => n + c.annual_limit_cents, 0);
     const total_used_cents = categories.reduce((n, c) => n + c.used_cents, 0);
     return {

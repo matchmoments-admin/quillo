@@ -27,6 +27,7 @@ import {
   referralFunnelAdmin,
 } from "./lib/queries";
 import { phisProductList } from "./lib/phis-seed";
+import { createTopupCheckout } from "./lib/stripe";
 import { isAdmin, isPartner, normaliseRoles } from "./lib/roles";
 import { REFERRAL_STATUSES, canAdvanceReferral, sanitizeRevenueCents, partnerPortalData } from "./lib/partners";
 import { RULE_CREDIT_BUCKETS } from "./lib/rules";
@@ -445,6 +446,30 @@ export async function handleApi(
   if (resource === "recurring-bills" && id && sub === "confirm" && m === "POST") {
     if (!featureOn(env, "advisory_layer")) return json({ error: "not available" }, 404);
     return json(await stub.confirmRecurringBill(uid, id));
+  }
+
+  // ── Usage-based billing wallet (flag billing) ──
+  // GET  /api/billing        → balance + markup + recent grants/top-ups (grants the free allowance on first view)
+  // POST /api/billing/topup  → a Stripe Checkout URL for a credit top-up (503 until Stripe is configured)
+  if (resource === "billing") {
+    if (!featureOn(env, "billing")) return json({ error: "not available" }, 404);
+    if (!id && m === "GET") {
+      await stub.grantSignupCredits(uid); // idempotent — the one-off free allowance, lazily on first view
+      return json(await stub.getBillingOverview(uid));
+    }
+    if (id === "topup" && m === "POST") {
+      const b = (await req.json().catch(() => ({}))) as { amount_cents?: unknown };
+      const cents = Math.round(Number(b.amount_cents) || 0);
+      if (cents < 100) return json({ error: "Minimum top-up is $1" }, 400);
+      try {
+        const checkoutUrl = await createTopupCheckout(env, uid, cents);
+        if (!checkoutUrl) return json({ error: "Billing isn't configured yet" }, 503);
+        return json({ url: checkoutUrl });
+      } catch (e) {
+        return json({ error: (e as Error).message }, 400);
+      }
+    }
+    return json({ error: "not found" }, 404);
   }
 
   // ── Private Health Extras Tracker (flag phi_extras_tracker) — FACTUAL engagement surface ──

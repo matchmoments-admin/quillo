@@ -52,6 +52,8 @@ CREATE TABLE IF NOT EXISTS profiles (
   ui_state               TEXT,                        -- per-tenant UI state JSON (e.g. walkthrough seen) — no localStorage
   roles              TEXT NOT NULL DEFAULT '["individual"]', -- 0017: platform roles JSON (admin|accountant|bookkeeper|support|individual)
   email              TEXT,                            -- 0017: signup email (from Clerk JWT) for the admin signups list
+  credit_balance_e4  INTEGER NOT NULL DEFAULT 0,      -- 0065: usage-billing wallet, 1e-4-cent units
+  free_grant_at      TEXT,                            -- 0065: when the one-off free credit allowance was granted
   created_at         TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -963,6 +965,19 @@ CREATE TABLE IF NOT EXISTS car_inputs (
   updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (user_id, fy)
 );
+
+-- ── Usage-based billing wallet (0065) ──────────────────────────────────────────
+-- Grants + Stripe top-ups; debits adjust profiles.credit_balance_e4 directly (itemised in llm_usage).
+CREATE TABLE IF NOT EXISTS credit_ledger (
+  id          TEXT PRIMARY KEY,
+  user_id     TEXT NOT NULL,
+  kind        TEXT NOT NULL,
+  amount_e4   INTEGER NOT NULL,
+  ref         TEXT,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_credit_ledger_user ON credit_ledger(user_id, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_credit_ledger_ref ON credit_ledger(user_id, ref); -- 0065: one credit per (user, ref) — idempotent grants/top-ups
 
 -- ── Private Health Extras Tracker (0062) ───────────────────────────────────────
 -- Engagement/display ONLY — never feeds report.ts (taxable position byte-identical with the flags off).

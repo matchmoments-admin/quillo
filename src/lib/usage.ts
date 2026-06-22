@@ -1,4 +1,6 @@
 import type { Env } from "../env";
+import { featureOn } from "./features";
+import { billingPolicy, billableE4 } from "./billing";
 
 // Inference cost accounting. Every Claude call (via the metered LLM seam in llm.ts) records
 // its real token usage + computed cost here, so spend is MEASURED, not estimated — and the
@@ -97,27 +99,33 @@ export function usageStatements(
   const round4 = (n: number) => Math.round(n * 10_000) / 10_000; // bound float drift to 4dp
   const cents = round4(costCents(model, usage) * discount);
   const day = new Date().toISOString().slice(0, 10);
-  return {
-    cents,
-    stmts: [
-      bumpDailyCost(env, userId, day, cents),
-      bumpDailyCost(env, "global", day, cents),
-      env.DB.prepare(
-        `INSERT INTO llm_usage (id, user_id, feature, model, input_tokens, output_tokens, cache_read_tokens, cost_cents, cost_e4)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      ).bind(
-        crypto.randomUUID(),
-        userId,
-        feature,
-        model,
-        usage.input_tokens ?? 0,
-        usage.output_tokens ?? 0,
-        usage.cache_read_input_tokens ?? 0,
-        cents,
-        toE4(cents),
-      ),
-    ],
-  };
+  const stmts = [
+    bumpDailyCost(env, userId, day, cents),
+    bumpDailyCost(env, "global", day, cents),
+    env.DB.prepare(
+      `INSERT INTO llm_usage (id, user_id, feature, model, input_tokens, output_tokens, cache_read_tokens, cost_cents, cost_e4)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(
+      crypto.randomUUID(),
+      userId,
+      feature,
+      model,
+      usage.input_tokens ?? 0,
+      usage.output_tokens ?? 0,
+      usage.cache_read_input_tokens ?? 0,
+      cents,
+      toE4(cents),
+    ),
+  ];
+  // Usage-based billing (flag `billing`): debit the user's wallet for this call's cost + margin, in the
+  // SAME atomic batch as the cost tally so a crash can't meter-without-debiting. OFF ⇒ no debit added.
+  if (featureOn(env, "billing")) {
+    const debit = billableE4(toE4(cents), billingPolicy(env).markupPct);
+    if (debit > 0) {
+      stmts.push(env.DB.prepare(`UPDATE profiles SET credit_balance_e4 = credit_balance_e4 - ? WHERE user_id = ?`).bind(debit, userId));
+    }
+  }
+  return { cents, stmts };
 }
 
 /** Record one call's usage: atomic per-user + global daily-cost counters + a D1 history row. */

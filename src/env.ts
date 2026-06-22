@@ -25,6 +25,13 @@ export interface Env {
   // Vars (wrangler.toml [vars])
   JURISDICTION: string;
   MAX_DAILY_COST_CENTS?: string;        // per-user daily AI spend budget in cents (0/unset = unlimited)
+  // ── Usage-based billing (flag `billing`) — all optional; absent ⇒ billing inert / not configured ──
+  // (COST_MARKUP_PCT + APP_FEE_CENTS are declared below in the existing pricing-policy block.)
+  FREE_CREDIT_GRANT_CENTS?: string;     // one-off free credit allowance granted on signup (default 200 = $2)
+  STRIPE_SECRET_KEY?: string;           // SECRET — Stripe API key (sk_...); absent ⇒ top-up returns "not configured"
+  STRIPE_WEBHOOK_SECRET?: string;       // SECRET — Stripe webhook signing secret (whsec_...); absent ⇒ webhook 503
+  BILLING_SUCCESS_URL?: string;         // where Stripe Checkout returns on success (default app.quillo.au/billing?topup=ok)
+  BILLING_CANCEL_URL?: string;          // where Stripe Checkout returns on cancel
   MAX_DAILY_COST_CENTS_GLOBAL?: string; // platform-wide daily AI spend ceiling across ALL tenants (0/unset = unlimited)
   CHAT_MAX_TURNS_PER_MIN?: string;      // Ask Quillo: per-tenant chat turns per rolling minute (0/unset = unlimited)
   CHAT_MAX_TURNS_PER_DAY?: string;      // Ask Quillo: per-tenant chat turns per day (0/unset = unlimited)
@@ -130,6 +137,9 @@ export interface TaxAgentRpc {
   applyPhiProduct(userId: string, productId: string): Promise<{ policy_id: string; limits: number }>;
   confirmPhiPolicyLimits(userId: string, policyId: string): Promise<{ confirmed: number }>;
   detectBenefitsReset(userId: string): Promise<{ setups: number; resets: number }>;
+  grantSignupCredits(userId: string): Promise<{ granted_e4: number }>;
+  creditWallet(userId: string, amountE4: number, kind: string, ref: string | null): Promise<{ balance_e4: number }>;
+  getBillingOverview(userId: string): Promise<{ configured: boolean; balance_e4: number; markup_pct: number; free_grant_e4: number; ledger: { kind: string; amount_e4: number; ref: string | null; created_at: string }[] }>;
   createReferral(userId: string, opportunityId: string, offerId?: string): Promise<{ token: string; url: string; partner_name: string }>;
   recordConsent(userId: string, text: string, method: string): Promise<void>;
   draftSituation(userId: string, message: string): Promise<import("./extract").SituationDraft>;

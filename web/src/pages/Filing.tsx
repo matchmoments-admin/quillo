@@ -80,6 +80,7 @@ export function Filing() {
   const features = useFeatures();
   const { data, isLoading, error } = useQuery({ queryKey: ["filing-readiness", fy], queryFn: () => api.filingReadiness(fy) });
   const downloadCsv = useMutation({ mutationFn: () => api.reportCsv(fy), onSuccess: ({ blob, filename }) => saveBlob(blob, filename) });
+  const downloadXlsx = useMutation({ mutationFn: () => api.reportXlsx(fy), onSuccess: ({ blob, filename }) => saveBlob(blob, filename) });
 
   return (
     <div className="space-y-6">
@@ -149,6 +150,9 @@ export function Filing() {
               </div>
               <div className="flex flex-none gap-2 print:hidden">
                 <button onClick={() => window.print()} className="rounded-lg bg-ink px-4 py-2 text-sm font-medium text-white hover:bg-ink/90">Print / Save as PDF</button>
+                {features.has("accountant_xlsx") && (
+                  <button onClick={() => downloadXlsx.mutate()} disabled={downloadXlsx.isPending} className="rounded-lg border border-line px-4 py-2 text-sm font-medium hover:bg-surface disabled:opacity-60">{downloadXlsx.isPending ? "Preparing…" : "Accountant workbook (Excel)"}</button>
+                )}
                 <button onClick={() => downloadCsv.mutate()} disabled={downloadCsv.isPending} className="rounded-lg border border-line px-4 py-2 text-sm font-medium hover:bg-surface disabled:opacity-60">{downloadCsv.isPending ? "Preparing…" : features.has("accountant_schedule") ? "Accountant schedule (CSV)" : "CSV for your agent"}</button>
               </div>
             </div>

@@ -15,6 +15,8 @@ import { costCents, isPricedModel, toE4, centsFromE4 } from "../src/lib/usage";
 import { LLM_MODEL_IDS } from "../src/llm";
 import { computeWorkMethodDeductions, workUseRatesForFy, deriveWfhHours, generateWfhDiary } from "../src/lib/work-use";
 import { runScan } from "../src/lib/scan";
+import { scheduleToXlsx, type AccountantSchedule } from "../src/lib/accountant-schedule";
+import { unzipSync, strFromU8 } from "fflate";
 import { BUCKETS } from "../src/lib/taxonomy";
 import {
   billerNormalize, classifyBiller, annualiseSpendCents, daysBetween, detectRecurrence,
@@ -2325,6 +2327,57 @@ console.log("currency de-anchoring (toBaseCurrency / baseCurrencyOf / currencySy
     const s = res.summary;
     return s.overclaim_downside_cents === 75000 && s.missed_upside_cents === 63400 && s.finding_count === 4 && s.position_confirmed_cents === 9_500_000 && s.position_tracked_cents === 9_000_000;
   })());
+}
+
+// ── Accountant workbook (scheduleToXlsx) — re-projection of the same sections into a multi-tab .xlsx.
+// Guards the OOXML-over-fflate.zipSync emitter: valid zip parts, sanitised/unique tab names, numeric
+// money cells, the formula-injection guard, and the tie-back !ok warning row (mirrors the CSV).
+{
+  const sched: AccountantSchedule = {
+    fy: "2024-25", start: "2024-07-01", end: "2025-06-30", abn: "72695772313",
+    disclaimer: "General information only — not tax advice.",
+    sections: [
+      { key: "summary", title: "Summary — indicative position", columns: ["Line", "Amount (AUD)"],
+        rows: [["Total income (gross)", "246272.60"], ["Total deductions", "53097.01"]] },
+      { key: "property:104-Womerah Ave", title: "Property — 104 Womerah Ave (a long ATO-style title that exceeds the 31-char Excel tab limit)",
+        columns: ["Date", "Merchant", "Gross (AUD)", "Count"],
+        rows: [["2024-07-08", "=cmd|evil", "1396.00", 3]], subtotal_cents: 139600,
+        tie_back: { label: "property", report_cents: 139600, actual_cents: 139600, ok: true } },
+      { key: "property:104a", title: "Property — 104a", columns: ["Date", "Amount (AUD)"],
+        rows: [["2024-08-01", "100.00"]], subtotal_cents: 10000,
+        tie_back: { label: "mismatch demo", report_cents: 9999, actual_cents: 10000, ok: false } },
+      // Itemised section where the money column ("Counted") is NOT last, a text column holds a value
+      // that looks like money ("100.00" merchant), and a merchant carries an illegal XML control byte.
+      { key: "work_related", title: "Work-related & other deductions",
+        columns: ["Date", "Merchant", "Category", "Gross (AUD)", "Work-use %", "Counted (AUD)", "Deductibility", "Substantiation"],
+        rows: [
+          ["2024-07-01", "100.00", "saas · D5", "33.68", 100, "33.68", "confirmed_deductible", "Receipt on file"],
+          ["2024-07-05", "Kindle\u0007 store", "education", "20.00", 50, "10.00", "confirmed_deductible", "Bank line only"],
+        ],
+        subtotal_cents: 4368 }, // 33.68 + 10.00 = 43.68 (Counted column, index 5)
+    ],
+  };
+  const buf = scheduleToXlsx(sched);
+  const files = unzipSync(buf);
+  const names = Object.keys(files);
+  check("xlsx: emits the required OOXML parts", ["[Content_Types].xml", "_rels/.rels", "xl/workbook.xml", "xl/_rels/workbook.xml.rels", "xl/styles.xml", "xl/worksheets/sheet1.xml"].every((n) => names.includes(n)));
+  check("xlsx: one worksheet per section", names.filter((n) => /^xl\/worksheets\/sheet\d+\.xml$/.test(n)).length === sched.sections.length);
+  // Decode the entities the workbook escapes into the name attribute (& → &amp;) so we measure the
+  // real Excel tab name, not its escaped form.
+  const unescapeXml = (s: string) => s.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"');
+  const tabs = [...strFromU8(files["xl/workbook.xml"]).matchAll(/<sheet name="([^"]+)"/g)].map((m) => unescapeXml(m[1] as string));
+  check("xlsx: Summary is the first tab", tabs[0] === "Summary");
+  check("xlsx: tab names obey the 31-char Excel limit", tabs.every((t) => t.length <= 31));
+  check("xlsx: tab names are unique (de-duped)", new Set(tabs.map((t) => t.toLowerCase())).size === tabs.length);
+  const s2 = strFromU8(files["xl/worksheets/sheet2.xml"]);
+  check("xlsx: formula-injection guard prefixes a leading '=' merchant", s2.includes("&apos;=cmd|evil") || s2.includes("'=cmd|evil"));
+  check("xlsx: a money string is written as a numeric cell", s2.includes("<v>1396</v>"));
+  check("xlsx: a count stays a numeric cell", s2.includes("<v>3</v>"));
+  check("xlsx: a tie-back mismatch emits the warning row", strFromU8(files["xl/worksheets/sheet3.xml"]).includes("does not tie to the report"));
+  const s4 = strFromU8(files["xl/worksheets/sheet4.xml"]);
+  check("xlsx: a '100.00'-looking value in a TEXT column stays a string (not coerced to money)", s4.includes('<t xml:space="preserve">100.00</t>'));
+  check("xlsx: illegal XML control byte is stripped (workbook stays well-formed)", !s4.includes("\u0007") && s4.includes("Kindle store"));
+  check("xlsx: subtotal aligns under the money column it sums, not the last column", /<c r="F\d+"[^>]*s="3"[^>]*><v>43\.68<\/v>/.test(s4));
 }
 
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);

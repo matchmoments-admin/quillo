@@ -5706,9 +5706,18 @@ export class TaxAgent extends Agent<Env> {
     // allowance OR a Stripe top-up). The actual debit happens in usageStatements AFTER the call; this
     // gate stops the NEXT call once credits hit zero. OFF ⇒ skipped entirely ⇒ byte-identical.
     if (featureOn(this.env, "billing")) {
-      const w = await this.env.DB.prepare(`SELECT credit_balance_e4 FROM profiles WHERE user_id = ?`)
-        .bind(userId).first<{ credit_balance_e4: number }>();
-      if ((w?.credit_balance_e4 ?? 0) <= 0) {
+      const readBalance = async () => Number(
+        (await this.env.DB.prepare(`SELECT credit_balance_e4 AS b FROM profiles WHERE user_id = ?`).bind(userId).first<{ b: number }>())?.b ?? 0,
+      );
+      let bal = await readBalance();
+      if (bal <= 0) {
+        // First AI use: hand out the one-off free allowance before blocking (idempotent — granted once
+        // per tenant). Ensures a user who never opened the Billing page still gets their free credits at
+        // the moment they first need AI, rather than hitting a $0 wall.
+        await this.grantSignupCredits(userId);
+        bal = await readBalance();
+      }
+      if (bal <= 0) {
         if (txnId) {
           await this.markStatus(txnId, "needs_review");
           await this.notify(userId, "You're out of AI credits. Top up in Billing to keep using AI features — this was saved for review until then.", txnId);

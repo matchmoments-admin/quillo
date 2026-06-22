@@ -16,6 +16,21 @@ const SEVERITY_CLASS: Record<ReadinessFinding["severity"], string> = {
 };
 const GROUP_LABEL: Record<PositionLine["group"], string> = { income: "Income", deduction: "Deductions", depreciation: "Depreciation", property: "Per-property position", company: "Company (separate return — not in your position)", excluded: "Excluded as private / non-deductible" };
 
+// Where to go to fix a flagged finding — derived from the kind of evidence it points at, mirroring
+// FindMyClaims' evidenceLink convention below. A blocker without evidence_refs falls back to the
+// Inbox (where uncategorised transactions are sorted), the most common thing to fix.
+function findingFixLink(f: ReadinessFinding): { to: string; label: string } {
+  const kind = f.evidence_refs[0]?.kind;
+  switch (kind) {
+    case "asset": return { to: "/assets", label: "Review assets" };
+    case "income": return { to: "/income", label: "Review income" };
+    case "property": return { to: "/income", label: "Review property records" };
+    case "document": return { to: "/inbox", label: "Add evidence" };
+    case "transaction":
+    default: return { to: "/inbox", label: "Sort it out" };
+  }
+}
+
 // Soft, per-FY sign-off: the user's own attestation that this position is ready to hand to their
 // agent. Re-openable (not a lock); a later import doesn't auto-clear it, so the timestamp stays
 // visible. Quillo never lodges — this is the user's record, for their accountant.
@@ -100,10 +115,15 @@ export function Filing() {
         </Card>
       ) : data ? (
         <>
-          {/* Readiness banner */}
+          {/* Readiness banner. When not ready, surface the ACTUAL blocking findings (title + note +
+              a deep-link to where to fix each) right here — a bare count left the user asking "what
+              do I fix?". The full findings list still renders in "Things to double-check" below. */}
+          {(() => {
+            const blockers = data.findings.filter((x) => x.severity === "blocker");
+            return (
           <Card className={`p-4 ${data.readiness_score.ready ? "border-safe/40" : "border-warn/40"}`}>
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0">
                 <div className="text-lg font-semibold">
                   {data.readiness_score.ready
                     ? data.readiness_score.review > 0
@@ -111,7 +131,21 @@ export function Filing() {
                       : "Nothing flagged — but always confirm with your agent"
                     : `${data.readiness_score.blockers} item(s) to fix first`}
                 </div>
-                <div className="mt-0.5 text-sm text-muted">{data.handoff.situation_summary}</div>
+                {!data.readiness_score.ready && blockers.length > 0 && (
+                  <ul className="mt-2 space-y-2">
+                    {blockers.map((b) => {
+                      const link = findingFixLink(b);
+                      return (
+                        <li key={b.id} className="rounded-lg bg-warn/5 px-3 py-2 text-sm">
+                          <div className="font-medium">{b.title}</div>
+                          <div className="mt-0.5 text-muted">{b.general_info_note}</div>
+                          <Link to={link.to} className="mt-1 inline-block text-ink underline underline-offset-2 print:hidden">{link.label} →</Link>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+                <div className="mt-2 text-sm text-muted">{data.handoff.situation_summary}</div>
               </div>
               <div className="flex flex-none gap-2 print:hidden">
                 <button onClick={() => window.print()} className="rounded-lg bg-ink px-4 py-2 text-sm font-medium text-white hover:bg-ink/90">Print / Save as PDF</button>
@@ -119,6 +153,8 @@ export function Filing() {
               </div>
             </div>
           </Card>
+            );
+          })()}
 
           {/* Soft sign-off — the user's own "ready to hand off" attestation (re-openable, never a lock). */}
           <SignOff fy={fy} ready={data.readiness_score.ready} />

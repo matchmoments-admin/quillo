@@ -3,13 +3,13 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { api } from "../api";
 import { useFeatures } from "../lib/features";
-import { Panel, PanelHead, KpiCard, Pill, Spinner, Button, Input, Meter, money } from "../components/ui";
+import { Panel, PanelHead, KpiCard, Pill, Spinner, Button, Input, Meter, InfoTip, Term, money } from "../components/ui";
 import type { PhiOverview, PhiPolicyView } from "../types";
 
 // Private Health Extras Tracker — FACTUAL engagement surface. Track per-category extras limits vs
 // spend-to-date against the reset date ("use it before you lose it"). Never a tax output; never advice.
 
-const SELECT_CLS = "mt-1 w-full rounded-lg border border-line px-3 py-2 text-sm";
+const SELECT_CLS = "mt-1 w-full rounded-lg border border-line bg-card px-3 py-2 text-sm outline-none transition focus:border-ink/40 focus:ring-2 focus:ring-ink/10";
 const COVER_TYPES = [
   { v: "hospital", l: "Hospital" },
   { v: "extras", l: "Extras" },
@@ -41,7 +41,12 @@ export function Extras() {
   });
   const scan = useMutation({
     mutationFn: () => api.phiScan(),
-    onSuccess: (r) => { toast.success(`Checked — ${r.resets} reminder${r.resets === 1 ? "" : "s"}`); invalidate(); },
+    onSuccess: (r) => { toast.success(`Checked — ${r.resets} reminder${r.resets === 1 ? "" : "s"}${r.setups ? `, ${r.setups} to set up` : ""}`); invalidate(); },
+    onError: (e) => toast.error((e as Error).message),
+  });
+  const withdraw = useMutation({
+    mutationFn: () => api.phiWithdrawConsent(),
+    onSuccess: () => { toast.success("Tracking off — your extras data is kept; you can delete it in Settings → Privacy"); invalidate(); },
     onError: (e) => toast.error((e as Error).message),
   });
 
@@ -71,14 +76,14 @@ export function Extras() {
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        <KpiCard variant="feature" label="Unused extras cover" value={money(totalUnused)} foot={totalLimit > 0 ? `of ${money(totalLimit)} in tracked limits` : "Add your limits below"} />
-        <KpiCard variant="accent" label="Next reset" value={soonest ? fmtDate(soonest.reset_date) : "—"} foot={soonest ? `in about ${soonest.weeks_to_reset} week${soonest.weeks_to_reset === 1 ? "" : "s"}` : "Add a policy to track this"} />
+        <KpiCard variant="feature" label={<>Unused extras cover <InfoTip k="phi_unused" /></>} value={money(totalUnused)} foot={totalLimit > 0 ? `of ${money(totalLimit)} in tracked limits` : d.policies.length === 0 ? "Add a policy to start tracking" : "Add your limits below"} />
+        <KpiCard variant="accent" label={<>Next reset <InfoTip k="phi_reset_basis" /></>} value={soonest ? fmtDate(soonest.reset_date) : "—"} foot={soonest ? `in about ${soonest.weeks_to_reset} week${soonest.weeks_to_reset === 1 ? "" : "s"}` : "Add a policy to track this"} />
         <KpiCard label="Policies tracked" value={String(d.policies.length)} foot={d.policies.length === 0 ? "None yet" : "Across your household"} />
       </div>
 
       {d.policies.length === 0 ? (
         <Panel className="text-sm text-ink-2">
-          No policies yet. Add your private-health policy below, then enter each extras limit (e.g. physio $500, dental $700) and the benefits you've used so far. Quillo will track what's unused before your limits reset.
+          No policies yet. Add your private-health policy below, then enter each extras limit (e.g. physio $500, dental $700) and the benefits you've used so far. Quillo will track what's unused before your <Term k="phi_reset_basis">limits reset</Term>.
         </Panel>
       ) : (
         d.policies.map((p) => <PolicyCard key={p.id} p={p} options={d.category_options} onChange={invalidate} />)
@@ -86,7 +91,15 @@ export function Extras() {
 
       <AddPolicyForm onDone={invalidate} />
 
-      <p className="text-xs text-ink-3">{d.disclaimer} Extras tracking is general information to help you use your own cover — it is not health or financial advice, and it does not change your tax position.</p>
+      <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line pt-4">
+        <p className="max-w-2xl text-xs text-ink-3">{d.disclaimer} Extras tracking is general information to help you use your own cover — it is not health or financial advice, and it does not change your tax position. You can stop tracking and withdraw consent anytime; your data is kept until you delete it in Settings → Privacy.</p>
+        <button
+          className="shrink-0 text-xs text-ink-3 underline hover:text-danger"
+          onClick={() => { if (confirm("Stop tracking and withdraw health-data consent? Your saved policies and limits are kept (delete them in Settings → Privacy), but new edits are blocked until you consent again.")) withdraw.mutate(); }}
+        >
+          Stop tracking &amp; withdraw consent
+        </button>
+      </div>
     </div>
   );
 }
@@ -104,12 +117,12 @@ function ConsentGate({ onConsent, pending, disclaimer }: { onConsent: () => void
           To track your extras (physio, dental, optical and the like) Quillo stores your policy, your per-category
           limits and the benefits you've used. That's <strong>health information</strong>, which the Privacy Act treats
           as sensitive — so we ask for a separate opt-in before saving any of it. It's kept in your account only, never
-          shared, and you can withdraw consent or delete it anytime in Settings → Privacy.
+          shared. You can withdraw consent anytime from this page, and export or delete the data in Settings → Privacy.
         </p>
         <ul className="list-disc space-y-1 pl-5 text-sm text-ink-2">
           <li>Factual tracking only — your balances and reset dates. No treatment suggestions, no provider steering.</li>
           <li>It never affects your tax position.</li>
-          <li>Stored in your account; export or delete it whenever you like.</li>
+          <li>Withdraw consent here anytime; export or delete the data in Settings → Privacy.</li>
         </ul>
         <Button onClick={onConsent} disabled={pending}>{pending ? "Saving…" : "I consent — turn on extras tracking"}</Button>
         <p className="text-xs text-ink-3">{disclaimer}</p>
@@ -132,7 +145,7 @@ function PolicyCard({ p, options, onChange }: { p: PhiPolicyView; options: { val
         right={
           <div className="flex items-center gap-2">
             {coverLabel ? <Pill tone="info">{coverLabel}</Pill> : null}
-            {p.source === "detected" ? <Pill tone="warn">Detected</Pill> : null}
+            {p.source === "detected" ? <span className="inline-flex items-center gap-1"><Pill tone="info">Detected</Pill><InfoTip k="phi_detected" /></span> : null}
             <button className="text-xs text-ink-3 underline hover:text-danger" onClick={() => { if (confirm("Delete this policy and its limits/usage?")) del.mutate(); }}>Delete</button>
           </div>
         }
@@ -144,16 +157,19 @@ function PolicyCard({ p, options, onChange }: { p: PhiPolicyView; options: { val
         <div className="space-y-3">
           {p.categories.map((c) => {
             const frac = c.annual_limit_cents > 0 ? Math.min(1, c.used_cents / c.annual_limit_cents) : 0;
-            const tone = c.remaining_cents <= 0 ? "ok" : frac >= 0.85 ? "ok" : "warn";
+            // "Unused is the thing to notice": flag a category with lots still available (ochre);
+            // green once most of it is used; neutral when fully used (nothing left to flag).
+            const tone = c.remaining_cents <= 0 ? "neutral" : frac < 0.5 ? "warn" : "ok";
             return (
               <div key={c.limit_id} className="rounded-xl border border-line bg-paper px-4 py-3">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="font-semibold text-ink">{c.label}</span>
-                  <Pill tone={tone === "warn" ? "warn" : "ok"}>{money(c.remaining_cents)} unused</Pill>
+                  <InfoTip k="phi_annual_limit" />
+                  <Pill tone={tone}>{money(c.remaining_cents)} unused</Pill>
                   <span className="flex-1" />
                   <button className="text-xs text-ink-3 underline hover:text-danger" onClick={() => delLimit.mutate(c.limit_id)}>Remove</button>
                 </div>
-                <div className="mt-2"><Meter frac={frac} /></div>
+                <Meter frac={frac} className={frac < 0.5 ? "bg-warn" : "bg-green"} />
                 <div className="mt-1 text-xs text-ink-3">{money(c.used_cents)} used of {money(c.annual_limit_cents)} limit</div>
               </div>
             );
@@ -172,8 +188,10 @@ function PolicyCard({ p, options, onChange }: { p: PhiPolicyView; options: { val
 function LimitForm({ policyId, options, onDone }: { policyId: string; options: { value: string; label: string }[]; onDone: () => void }) {
   const [category, setCategory] = useState(options[0]?.value ?? "physiotherapy");
   const [amount, setAmount] = useState("");
+  const parsed = parseFloat(amount);
+  const valid = Number.isFinite(parsed) && parsed > 0;
   const save = useMutation({
-    mutationFn: () => api.phiSaveLimit({ policy_id: policyId, category, annual_limit_cents: Math.round(parseFloat(amount || "0") * 100) }),
+    mutationFn: () => api.phiSaveLimit({ policy_id: policyId, category, annual_limit_cents: Math.round(parsed * 100) }),
     onSuccess: () => { setAmount(""); onDone(); },
     onError: (e) => toast.error((e as Error).message),
   });
@@ -186,11 +204,11 @@ function LimitForm({ policyId, options, onDone }: { policyId: string; options: {
             {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
         </label>
-        <label className="text-sm">Annual limit ($)
+        <label className="text-sm">Annual limit ($) <InfoTip k="phi_annual_limit" />
           <Input className="mt-1 w-full" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="500" />
         </label>
       </div>
-      <Button className="mt-3 h-9 px-4 text-xs uppercase tracking-wide" onClick={() => save.mutate()} disabled={save.isPending || !amount}>
+      <Button className="mt-3 h-9 px-4 text-xs uppercase tracking-wide" onClick={() => save.mutate()} disabled={save.isPending || !valid}>
         {save.isPending ? "Saving…" : "Save limit"}
       </Button>
     </div>
@@ -201,8 +219,10 @@ function UsageForm({ policyId, options, onDone }: { policyId: string; options: {
   const [category, setCategory] = useState(options[0]?.value ?? "physiotherapy");
   const [amount, setAmount] = useState("");
   const [usedOn, setUsedOn] = useState("");
+  const parsed = parseFloat(amount);
+  const valid = Number.isFinite(parsed) && parsed > 0;
   const save = useMutation({
-    mutationFn: () => api.phiRecordUsage({ policy_id: policyId, category, amount_used_cents: Math.round(parseFloat(amount || "0") * 100), used_on: usedOn || null }),
+    mutationFn: () => api.phiRecordUsage({ policy_id: policyId, category, amount_used_cents: Math.round(parsed * 100), used_on: usedOn || null }),
     onSuccess: () => { setAmount(""); setUsedOn(""); onDone(); },
     onError: (e) => toast.error((e as Error).message),
   });
@@ -215,14 +235,15 @@ function UsageForm({ policyId, options, onDone }: { policyId: string; options: {
             {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
         </label>
-        <label className="text-sm">Benefit used ($)
+        <label className="text-sm">Benefit used ($) <InfoTip k="phi_benefit_used" />
           <Input className="mt-1 w-full" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="80" />
         </label>
         <label className="col-span-2 text-sm">Date (optional)
           <Input className="mt-1 w-full" type="date" value={usedOn} onChange={(e) => setUsedOn(e.target.value)} />
         </label>
       </div>
-      <Button className="mt-3 h-9 px-4 text-xs uppercase tracking-wide" onClick={() => save.mutate()} disabled={save.isPending || !amount}>
+      <p className="mt-1 text-xs text-ink-3">Enter the rebate your fund paid back, not the full amount you paid the clinic.</p>
+      <Button className="mt-3 h-9 px-4 text-xs uppercase tracking-wide" onClick={() => save.mutate()} disabled={save.isPending || !valid}>
         {save.isPending ? "Saving…" : "Record usage"}
       </Button>
     </div>
@@ -247,12 +268,12 @@ function AddPolicyForm({ onDone }: { onDone: () => void }) {
         <label className="text-sm">Insurer
           <Input className="mt-1 w-full" value={insurer} onChange={(e) => setInsurer(e.target.value)} placeholder="Bupa, Medibank, HCF…" />
         </label>
-        <label className="text-sm">Cover type
+        <label className="text-sm">Cover type <InfoTip k="phi_cover_type" />
           <select className={SELECT_CLS} value={coverType} onChange={(e) => setCoverType(e.target.value)}>
             {COVER_TYPES.map((c) => <option key={c.v} value={c.v}>{c.l}</option>)}
           </select>
         </label>
-        <label className="text-sm">Limits reset on
+        <label className="text-sm">Limits reset on <InfoTip k="phi_reset_basis" />
           <select className={SELECT_CLS} value={resetBasis} onChange={(e) => setResetBasis(e.target.value)}>
             {RESET_BASES.map((r) => <option key={r.v} value={r.v}>{r.l}</option>)}
           </select>

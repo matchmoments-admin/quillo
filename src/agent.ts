@@ -34,7 +34,7 @@ import { pdfPageCount, splitPdf, normalizePdf } from "./lib/pdf";
 import { getLedger, LedgerNotConnectedError, LedgerReauthError, type LedgerExpense } from "./ledger";
 import { redact } from "./lib/redact";
 import { toBaseCurrency } from "./lib/fx";
-import { spentTodayCents, spentTodayGlobalCents, noteMeteringError, usageStatements } from "./lib/usage";
+import { spentTodayCents, spentTodayGlobalCents, spentThisMonthGlobalCents, noteMeteringError, usageStatements } from "./lib/usage";
 import { billingPolicy, freeCreditGrantE4 } from "./lib/billing";
 import { parseTransactionAlert } from "./lib/bank-parsers";
 import auV1RulePack from "./rulepacks/au-v1.json";
@@ -5738,6 +5738,28 @@ export class TaxAgent extends Agent<Env> {
           await this.env.RULES.put(gflag, "1", { expirationTtl: 60 * 60 * 26 });
           console.warn(`platform AI spend $${(gspent / 100).toFixed(2)} of $${(globalBudget / 100).toFixed(2)} global daily ceiling (≥80%)`);
           await this.audit(userId, "global_cost_alert", JSON.stringify({ gspent_cents: gspent, ceiling_cents: globalBudget }));
+        }
+      }
+    }
+    // Platform-wide MONTHLY ceiling — a firm upper bound on AI spend beyond the daily cap (set it to,
+    // say, your AWS credit budget). Over it, AI pauses for everyone until the month rolls over. The app
+    // still works (data is saved for review). 0/unset ⇒ off ⇒ no extra query.
+    const monthlyBudget = Number(this.env.MAX_MONTHLY_COST_CENTS_GLOBAL ?? 0);
+    if (monthlyBudget > 0) {
+      const mspent = await spentThisMonthGlobalCents(this.env);
+      if (mspent >= monthlyBudget) {
+        if (txnId) {
+          await this.markStatus(txnId, "needs_review");
+          await this.notify(userId, "AI is paused for the rest of the month (the platform's monthly limit was reached). Saved for review — it resumes next month.", txnId);
+        }
+        return false;
+      }
+      if (mspent >= monthlyBudget * 0.8) {
+        const mflag = `costalert:globalmonth:${new Date().toISOString().slice(0, 7)}`;
+        if (!(await this.env.RULES.get(mflag))) {
+          await this.env.RULES.put(mflag, "1", { expirationTtl: 60 * 60 * 24 * 40 });
+          console.warn(`platform AI spend $${(mspent / 100).toFixed(2)} of $${(monthlyBudget / 100).toFixed(2)} MONTHLY ceiling (≥80%)`);
+          await this.audit(userId, "global_month_cost_alert", JSON.stringify({ mspent_cents: mspent, ceiling_cents: monthlyBudget }));
         }
       }
     }

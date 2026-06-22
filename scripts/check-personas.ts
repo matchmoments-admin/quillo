@@ -636,6 +636,13 @@ async function main() {
       gapRows.some((r) => r[0] === "work_related" && r[1] === 1 && r[2] === "150.00"));
     check("Schedule A: itemised rows label substantiation (receipt vs bank line)",
       (workRelated?.rows ?? []).some((r) => r.includes("Receipt on file")) && (workRelated?.rows ?? []).some((r) => r.includes("Bank line only")));
+    // Phase 2c: the "Deductions mapped to return labels" routing section. The itemised work-related
+    // rows (grouped by D-label) sum EXACTLY to the work_related section subtotal — routing preserves
+    // the money, it just tags each group with where it lands on the return.
+    const byLabel = sec("deductions_by_label");
+    const itemisedRouted = (byLabel?.rows ?? []).filter((r) => r[1] === "Work-related deductions (itemised)");
+    check("Schedule A (Phase 2c): work-related deductions route to return labels and sum to the work-related subtotal",
+      !!byLabel && itemisedRouted.length > 0 && itemisedRouted.reduce((s, r) => s + Math.round(parseFloat(String(r[3])) * 100), 0) === (workRelated?.subtotal_cents ?? 0));
   }
 
   // Golden B (#181) — Susan & Greg: the rent-free beach-house holding cost lands in NOT-CLAIMED with

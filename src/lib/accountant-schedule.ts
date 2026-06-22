@@ -154,6 +154,13 @@ const NOT_CLAIMED_SEGMENT_LABEL: Record<NotClaimedSegment, string> = {
 };
 const NOT_CLAIMED_SEGMENT_ORDER: Record<NotClaimedSegment, number> = { review: 0, excluded: 1 };
 
+// Map a work-related row's ato_label to the individual-return deduction label it feeds (D1–D10 etc.).
+// ato_label already carries the D-label for most work-related buckets ("D5", "D3/D5", "D1", "D9" …);
+// anything else (or null) is surfaced as a confirm-with-your-agent placeholder rather than guessed.
+export function atoReturnLabel(ato_label: string | null | undefined): string {
+  return ato_label && /^D\d/.test(ato_label) ? ato_label : "Work-related (confirm label)";
+}
+
 // ── Row shapes from the itemised queries ──────────────────────────────────────
 
 interface ItemRow {
@@ -519,6 +526,45 @@ export async function buildAccountantSchedule(
       rows,
       tie_back: { label: "total deductions (recomputed from itemised sections)", report_cents: report.total_deductions_cents, actual_cents: recomputedDeductions, ok: recomputedDeductions === report.total_deductions_cents },
     });
+  }
+
+  // 1b. Deductions mapped to return labels — an indicative "where does each deduction go on the
+  // return" overview for the agent: work-related grouped by D-label, work methods (WFH → D5, car →
+  // D1), each rental property → item 21, and company spend flagged as a separate return. INFORMATIONAL
+  // (no tie-back) — refund netting / attribution make an exact label-sum brittle; the itemised
+  // sections remain the source of truth. Owner-approved ATO-label tagging.
+  {
+    const wm = report.work_method;
+    type LabelRow = { label: string; basis: string; n: number; cents: number };
+    const wr = new Map<string, LabelRow>();
+    for (const r of workRelated) {
+      const label = atoReturnLabel(r.ato_label);
+      const g = wr.get(label) ?? { label, basis: "Work-related deductions (itemised)", n: 0, cents: 0 };
+      g.n++;
+      g.cents += r.counted_cents;
+      wr.set(label, g);
+    }
+    const rows: Cell[][] = [...wr.values()]
+      .sort((a, b) => b.cents - a.cents)
+      .map((g) => [g.label, g.basis, g.n, d(g.cents)]);
+    if (wm && wm.wfh_cents > 0) rows.push(["D5", "Working from home (fixed-rate method)", null, d(wm.wfh_cents)]);
+    if (wm && wm.car_cents > 0) rows.push(["D1", "Car (cents-per-km method)", null, d(wm.car_cents)]);
+    for (const p of report.per_property) {
+      if (p.deduction_cents > 0) rows.push([`Rental schedule → item 21 (${p.label ?? p.property_id})`, "Net rental deductions for this property", null, d(p.deduction_cents)]);
+    }
+    if (report.company_tracked_cents > 0) rows.push(["Company return (separate)", "Tracked apart — NOT in your individual position", null, d(report.company_tracked_cents)]);
+    if (rows.length) {
+      sections.push({
+        key: "deductions_by_label",
+        title: "Deductions mapped to return labels (indicative routing)",
+        columns: ["Claim against", "Basis", "Count", `Amount (${cur})`],
+        rows,
+        notes: [
+          "Indicative routing of your deductions onto the individual return labels (D1–D10) and the rental schedule (item 21). Company spend lodges on a separate return. Where a work-related label couldn't be determined it reads \"confirm label\".",
+          "General information only — confirm the exact labels with a registered tax agent.",
+        ],
+      });
+    }
   }
 
   // 2. Income (documented) — itemised; ties to total_income_cents. S4/D: capture-only income (non-cash

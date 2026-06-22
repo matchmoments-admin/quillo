@@ -422,6 +422,11 @@ export interface PhiOverview {
   category_options: { value: string; label: string }[];
   disclaimer: string;
 }
+export interface PhiInsurerOption {
+  insurer_id: string;
+  insurer_name: string;
+  products: { id: string; name: string }[];
+}
 
 // Platform roles (mirror of src/lib/roles.ts ROLES). 'individual' is the default.
 export const ROLES = ["individual", "admin", "accountant", "bookkeeper", "support", "partner"] as const;

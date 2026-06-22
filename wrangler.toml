@@ -84,6 +84,10 @@ MAX_DAILY_COST_CENTS = "500"
 # Platform-wide daily AI-spend ceiling across ALL tenants (the multi-tenant backstop). 0/unset =
 # unlimited. e.g. 2500 = $25/day total; over it, new AI work degrades to needs_review for everyone.
 MAX_DAILY_COST_CENTS_GLOBAL = "2500"
+# Platform-wide MONTHLY AI-spend ceiling — a firm upper bound beyond the daily cap so spend can never
+# run away across a month. 0/unset = unlimited. 20000 = $200/month (≈ the AWS credit budget); over it
+# AI pauses for everyone until the month rolls over (data is saved for review). Tune as you grow.
+MAX_MONTHLY_COST_CENTS_GLOBAL = "20000"
 # Ask Quillo chat rate limits (anti-abuse, enforced server-side BEFORE any model call, alongside the
 # daily $ budget). 0/unset = no limit. Per-tenant only (the DO serialises a tenant's turns, so the KV
 # counter is race-free per tenant). A blocked turn returns 429 (per-minute/day) or 400 (oversize).

@@ -154,6 +154,16 @@ export async function spentTodayGlobalCents(env: Env): Promise<number> {
   return spentToday(env, "global");
 }
 
+/** This calendar month's platform-wide spend in cents — for the global MONTHLY ceiling (a firm upper
+ *  bound on AI spend beyond the daily cap). Sums the exact integer daily tallies for scope='global'. */
+export async function spentThisMonthGlobalCents(env: Env): Promise<number> {
+  const month = new Date().toISOString().slice(0, 7); // YYYY-MM
+  const row = await env.DB.prepare(
+    `SELECT COALESCE(SUM(cents_e4), 0) AS s FROM daily_cost WHERE scope = 'global' AND day LIKE ?`,
+  ).bind(`${month}-%`).first<{ s: number }>();
+  return Number(row?.s ?? 0) / MONEY_E4;
+}
+
 async function spentToday(env: Env, scope: string): Promise<number> {
   const day = new Date().toISOString().slice(0, 10);
   // Read the exact integer tally and divide to cents ONCE (no float accumulation drift).

@@ -33,6 +33,7 @@ export interface Env {
   BILLING_SUCCESS_URL?: string;         // where Stripe Checkout returns on success (default app.quillo.au/billing?topup=ok)
   BILLING_CANCEL_URL?: string;          // where Stripe Checkout returns on cancel
   MAX_DAILY_COST_CENTS_GLOBAL?: string; // platform-wide daily AI spend ceiling across ALL tenants (0/unset = unlimited)
+  MAX_MONTHLY_COST_CENTS_GLOBAL?: string; // platform-wide MONTHLY AI spend ceiling (firm upper bound; 0/unset = unlimited)
   CHAT_MAX_TURNS_PER_MIN?: string;      // Ask Quillo: per-tenant chat turns per rolling minute (0/unset = unlimited)
   CHAT_MAX_TURNS_PER_DAY?: string;      // Ask Quillo: per-tenant chat turns per day (0/unset = unlimited)
   CHAT_MAX_MESSAGE_CHARS?: string;      // Ask Quillo: max chars per chat message (0/unset = unlimited)

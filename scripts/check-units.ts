@@ -20,7 +20,7 @@ import {
   billerNormalize, classifyBiller, annualiseSpendCents, daysBetween, detectRecurrence,
   classifyCadence, paymentsPerYear, runRateCopy, recurringCopy, assertFactual, signpostFor,
   ADVISORY_DISCLAIMER, savingsProjection, savingsProjectionCopy,
-  phiExtrasCopy, phiResetNudgeCopy, phiDetectedCopy, nextResetDate, weeksUntil, formatResetDate, insurerResetBasis,
+  phiExtrasCopy, phiResetNudgeCopy, phiDetectedCopy, nextResetDate, weeksUntil, formatResetDate, insurerResetBasis, poolExtrasTotals,
 } from "../src/lib/advisory";
 import { applyUserRules } from "../src/lib/rules";
 import type { UserRule } from "../src/lib/db";
@@ -2132,6 +2132,26 @@ console.log("advisory.phi reset arithmetic (deterministic dates)");
   check("weeksUntil floors at whole weeks", weeksUntil("2026-12-18", ref) === 4);
   check("formatResetDate renders a readable date", formatResetDate("2027-01-01") === "1 January 2027");
   check("insurer reset default: Bupa → calendar, ahm → financial_year", insurerResetBasis("Bupa") === "calendar" && insurerResetBasis("ahm health") === "financial_year");
+}
+
+console.log("advisory.poolExtrasTotals (shared limit pools don't double-count)");
+{
+  // Real Qantas Active Extras shape: physio/chiro/osteo share ONE $750 pool; dental + optical standalone.
+  const lines = [
+    { annual_limit_cents: 75000, used_cents: 30000, combined_group: "physio_pool" }, // physio: $300 used
+    { annual_limit_cents: 75000, used_cents: 10000, combined_group: "physio_pool" }, // chiro:  $100 used
+    { annual_limit_cents: 75000, used_cents: 0,     combined_group: "physio_pool" }, // osteo:  $0 used
+    { annual_limit_cents: 70000, used_cents: 20000, combined_group: null },          // general dental $700, $200 used
+    { annual_limit_cents: 25000, used_cents: 0,     combined_group: null },          // optical $250
+  ];
+  const t = poolExtrasTotals(lines);
+  // limit: $750 (pool counted ONCE) + $700 + $250 = $1,700 — NOT 3×$750.
+  check("pooled limit counted once → total limit $1,700", t.total_limit_cents === 170000);
+  check("usage summed across all categories → $600", t.total_used_cents === 60000);
+  check("unused = $1,100", t.total_unused_cents === 110000);
+  // Degenerate: all standalone behaves like a plain sum.
+  const flat = poolExtrasTotals([{ annual_limit_cents: 50000, used_cents: 10000, combined_group: null }, { annual_limit_cents: 30000, used_cents: 0, combined_group: null }]);
+  check("no pools → plain sum ($800 limit, $100 used)", flat.total_limit_cents === 80000 && flat.total_used_cents === 10000);
 }
 
 console.log("advisory.savingsProjection (factual SAVING calculator — no product, no projection token)");

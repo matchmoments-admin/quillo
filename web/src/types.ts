@@ -393,8 +393,11 @@ export interface PhiCategoryLine {
   category: string;
   label: string;
   annual_limit_cents: number;
-  used_cents: number;
-  remaining_cents: number;
+  used_cents: number;       // for a pooled line, the SHARED pool's used (not just this category)
+  remaining_cents: number;  // for a pooled line, the SHARED pool's remaining
+  combined_group: string | null; // non-null ⇒ this limit is shared across a pool of services
+  source: string;           // manual | sourced | extracted
+  verified: number;         // 0 ⇒ awaiting member confirmation (sourced/extracted)
   entries: PhiUsageEntry[];
   copy: string;
 }

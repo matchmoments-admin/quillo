@@ -989,6 +989,9 @@ CREATE TABLE IF NOT EXISTS phi_limit (
   category           TEXT NOT NULL,
   annual_limit_cents INTEGER NOT NULL DEFAULT 0,
   period             TEXT NOT NULL DEFAULT 'annual',
+  combined_group     TEXT,                                  -- 0064: shared-pool id (NULL = standalone)
+  source             TEXT NOT NULL DEFAULT 'manual',        -- 0064: manual | sourced | extracted
+  verified           INTEGER NOT NULL DEFAULT 1,            -- 0064: 1=member-confirmed, 0=awaiting confirm
   enc_ver            INTEGER NOT NULL DEFAULT 0,
   created_at         TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at         TEXT NOT NULL DEFAULT (datetime('now'))

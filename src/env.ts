@@ -123,7 +123,7 @@ export interface TaxAgentRpc {
   setPrivateHealth(userId: string, holds: boolean): Promise<{ ok: true; private_health: number }>;
   savePhiPolicy(userId: string, p: { id?: string | null; person_id?: string | null; insurer?: string | null; cover_type?: string | null; reset_basis?: string | null; reset_date?: string | null; source?: string | null }): Promise<{ id: string }>;
   deletePhiPolicy(userId: string, id: string): Promise<{ ok: true }>;
-  savePhiLimit(userId: string, l: { policy_id: string; category: string; annual_limit_cents: number; period?: string | null }): Promise<{ id: string }>;
+  savePhiLimit(userId: string, l: { policy_id: string; category: string; annual_limit_cents: number; period?: string | null; combined_group?: string | null; source?: string | null; verified?: boolean }): Promise<{ id: string }>;
   deletePhiLimit(userId: string, id: string): Promise<{ ok: true }>;
   recordPhiUsage(userId: string, u: { policy_id: string; category: string; amount_used_cents: number; txn_id?: string | null; used_on?: string | null }): Promise<{ id: string }>;
   deletePhiUsage(userId: string, id: string): Promise<{ ok: true }>;

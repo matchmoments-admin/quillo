@@ -26,6 +26,7 @@ import {
   phiExtrasOverview,
   referralFunnelAdmin,
 } from "./lib/queries";
+import { phisProductList } from "./lib/phis-seed";
 import { isAdmin, isPartner, normaliseRoles } from "./lib/roles";
 import { REFERRAL_STATUSES, canAdvanceReferral, sanitizeRevenueCents, partnerPortalData } from "./lib/partners";
 import { RULE_CREDIT_BUCKETS } from "./lib/rules";
@@ -459,6 +460,19 @@ export async function handleApi(
     if (!featureOn(env, "phi_extras_tracker")) return json({ error: "not available" }, 404);
     if (!id && m === "GET") {
       return json(await phiExtrasOverview(env, uid));
+    }
+    if (id === "products" && m === "GET") {
+      return json({ insurers: phisProductList() });
+    }
+    if (id === "apply-product" && m === "POST") {
+      const b = (await req.json().catch(() => ({}))) as { product_id?: unknown };
+      if (typeof b.product_id !== "string") return json({ error: "product_id required" }, 400);
+      try { return json(await stub.applyPhiProduct(uid, b.product_id)); } catch (e) { return json({ error: (e as Error).message }, 400); }
+    }
+    if (id === "confirm" && m === "POST") {
+      const b = (await req.json().catch(() => ({}))) as { policy_id?: unknown };
+      if (typeof b.policy_id !== "string") return json({ error: "policy_id required" }, 400);
+      try { return json(await stub.confirmPhiPolicyLimits(uid, b.policy_id)); } catch (e) { return json({ error: (e as Error).message }, 400); }
     }
     if (id === "consent" && !sub && m === "POST") {
       const b = (await req.json().catch(() => ({}))) as { text?: unknown; method?: unknown };

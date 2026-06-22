@@ -21,7 +21,9 @@ import {
   classifyCadence, paymentsPerYear, runRateCopy, recurringCopy, assertFactual, signpostFor,
   ADVISORY_DISCLAIMER, savingsProjection, savingsProjectionCopy,
   phiExtrasCopy, phiResetNudgeCopy, phiDetectedCopy, nextResetDate, weeksUntil, formatResetDate, insurerResetBasis, poolExtrasTotals,
+  EXTRAS_CATEGORIES,
 } from "../src/lib/advisory";
+import { PHIS_SEED, findPhisProduct } from "../src/lib/phis-seed";
 import { applyUserRules } from "../src/lib/rules";
 import type { UserRule } from "../src/lib/db";
 import { parseRoles, hasRole, isAdmin, isPartner, normaliseRoles, ROLES } from "../src/lib/roles";
@@ -2152,6 +2154,23 @@ console.log("advisory.poolExtrasTotals (shared limit pools don't double-count)")
   // Degenerate: all standalone behaves like a plain sum.
   const flat = poolExtrasTotals([{ annual_limit_cents: 50000, used_cents: 10000, combined_group: null }, { annual_limit_cents: 30000, used_cents: 0, combined_group: null }]);
   check("no pools → plain sum ($800 limit, $100 used)", flat.total_limit_cents === 80000 && flat.total_used_cents === 10000);
+}
+
+console.log("phis-seed integrity (auto-source products)");
+{
+  const valid = new Set<string>(EXTRAS_CATEGORIES);
+  const bad: string[] = [];
+  for (const ins of PHIS_SEED) for (const p of ins.products) for (const l of p.limits) if (!valid.has(l.category)) bad.push(`${p.id}:${l.category}`);
+  check("every seeded limit maps to a known EXTRAS_CATEGORY", bad.length === 0);
+  const qa = findPhisProduct("qantas-active-extras");
+  check("Qantas Active Extras resolves from the seed", !!qa && qa.product.reset_basis === "calendar");
+  check("Qantas physio/chiro/osteo share ONE pool (qa_physio ×3)", (qa?.product.limits.filter((l) => l.combined_group === "qa_physio").length) === 3);
+  check("Qantas general dental seeded at $700", qa?.product.limits.find((l) => l.category === "dental.general")?.annual_limit_cents === 70000);
+  // poolExtrasTotals over the real Qantas schedule must not double-count the two pools.
+  const used = new Map<string, number>();
+  const t = poolExtrasTotals(qa!.product.limits.map((l) => ({ annual_limit_cents: l.annual_limit_cents, used_cents: used.get(l.category) ?? 0, combined_group: l.combined_group ?? null })));
+  // $700+$1000+$250 + $750(pool) + $400(pool) + $100+$300+$150+$250+$300+$300+$200+$200+$100 = $5,000.
+  check("Qantas total annual cover = $5,000 (pools counted once)", t.total_limit_cents === 500000);
 }
 
 console.log("advisory.savingsProjection (factual SAVING calculator — no product, no projection token)");

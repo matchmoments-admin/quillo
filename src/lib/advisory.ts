@@ -307,7 +307,8 @@ export function recurringCopy(billerLabel: string, d: RecurringDetection): strin
 export const EXTRAS_CATEGORIES = [
   "dental.general", "dental.major", "orthodontics", "optical", "physiotherapy", "chiropractic",
   "osteopathy", "remedial_massage", "psychology", "podiatry", "acupuncture_natural", "pharmacy",
-  "speech_therapy", "dietetics", "appliances", "allied_other",
+  "speech_therapy", "dietetics", "appliances", "exercise_physiology", "occupational_therapy",
+  "health_management", "preventative_tests", "allied_other",
 ] as const;
 export type ExtrasCategory = (typeof EXTRAS_CATEGORIES)[number];
 
@@ -316,8 +317,10 @@ export const EXTRAS_CATEGORY_LABEL: Record<string, string> = {
   "dental.general": "General dental", "dental.major": "Major dental", orthodontics: "Orthodontics",
   optical: "Optical", physiotherapy: "Physiotherapy", chiropractic: "Chiropractic", osteopathy: "Osteopathy",
   remedial_massage: "Remedial massage", psychology: "Psychology", podiatry: "Podiatry",
-  acupuncture_natural: "Acupuncture / natural therapies", pharmacy: "Pharmacy",
-  speech_therapy: "Speech therapy", dietetics: "Dietetics", appliances: "Appliances / aids",
+  acupuncture_natural: "Acupuncture / natural therapies", pharmacy: "Pharmacy (non-PBS)",
+  speech_therapy: "Speech therapy", dietetics: "Dietetics", appliances: "Health aids / appliances",
+  exercise_physiology: "Exercise physiology", occupational_therapy: "Occupational therapy",
+  health_management: "Healthier-lifestyle programs", preventative_tests: "Preventative health tests",
   allied_other: "Other allied health",
 };
 

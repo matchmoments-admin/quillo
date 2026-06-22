@@ -83,13 +83,16 @@ export function Extras() {
 
       {d.policies.length === 0 ? (
         <Panel className="text-sm text-ink-2">
-          No policies yet. Add your private-health policy below, then enter each extras limit (e.g. physio $500, dental $700) and the benefits you've used so far. Quillo will track what's unused before your <Term k="phi_reset_basis">limits reset</Term>.
+          No policies yet. The quickest way: <strong>auto-fill from your fund</strong> below — pick your product and we pre-fill the standard limits for you to confirm. Then add what you've used so far, and Quillo tracks what's unused before your <Term k="phi_reset_basis">limits reset</Term>.
         </Panel>
       ) : (
         d.policies.map((p) => <PolicyCard key={p.id} p={p} options={d.category_options} onChange={invalidate} />)
       )}
 
-      <AddPolicyForm onDone={invalidate} />
+      <div className="grid gap-4 lg:grid-cols-2">
+        <AutoSetupForm onDone={invalidate} />
+        <AddPolicyForm onDone={invalidate} />
+      </div>
 
       <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line pt-4">
         <p className="max-w-2xl text-xs text-ink-3">{d.disclaimer} Extras tracking is general information to help you use your own cover — it is not health or financial advice, and it does not change your tax position. You can stop tracking and withdraw consent anytime; your data is kept until you delete it in Settings → Privacy.</p>
@@ -136,8 +139,10 @@ function PolicyCard({ p, options, onChange }: { p: PhiPolicyView; options: { val
   const del = useMutation({ mutationFn: () => api.phiDeletePolicy(p.id), onSuccess: onChange, onError: (e) => toast.error((e as Error).message) });
   const delLimit = useMutation({ mutationFn: (id: string) => api.phiDeleteLimit(id), onSuccess: onChange, onError: (e) => toast.error((e as Error).message) });
   const delUsage = useMutation({ mutationFn: (id: string) => api.phiDeleteUsage(id), onSuccess: onChange, onError: (e) => toast.error((e as Error).message) });
+  const confirmAll = useMutation({ mutationFn: () => api.phiConfirm(p.id), onSuccess: () => { toast.success("Limits confirmed"); onChange(); }, onError: (e) => toast.error((e as Error).message) });
 
   const coverLabel = COVER_TYPES.find((c) => c.v === p.cover_type)?.l ?? null;
+  const unverified = p.categories.filter((c) => c.verified === 0).length;
 
   return (
     <Panel className="space-y-4">
@@ -155,6 +160,13 @@ function PolicyCard({ p, options, onChange }: { p: PhiPolicyView; options: { val
       />
 
       {editing && <EditPolicyForm p={p} onDone={() => { setEditing(false); onChange(); }} />}
+
+      {unverified > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-sage/40 bg-sage/10 px-4 py-2.5 text-sm">
+          <span className="text-ink-2">We pre-filled {unverified} limit{unverified === 1 ? "" : "s"} from the standard product — check them against your fund's app, then confirm. Edit any that differ.</span>
+          <Button className="h-8 shrink-0 px-3 text-xs uppercase tracking-wide" onClick={() => confirmAll.mutate()} disabled={confirmAll.isPending}>{confirmAll.isPending ? "…" : "Confirm all"}</Button>
+        </div>
+      )}
 
       {p.categories.length === 0 ? (
         <p className="text-sm text-muted">No limits yet — add one below (e.g. Physiotherapy $500).</p>
@@ -304,6 +316,39 @@ function UsageForm({ policyId, options, onDone }: { policyId: string; options: {
         {save.isPending ? "Saving…" : "Record usage"}
       </Button>
     </div>
+  );
+}
+
+function AutoSetupForm({ onDone }: { onDone: () => void }) {
+  const { data: insurers } = useQuery({ queryKey: ["phi-products"], queryFn: () => api.phiProducts(), staleTime: 300_000 });
+  const [insurerId, setInsurerId] = useState("");
+  const [productId, setProductId] = useState("");
+  const apply = useMutation({
+    mutationFn: () => api.phiApplyProduct(productId),
+    onSuccess: (r) => { toast.success(`Loaded ${r.limits} limits — check & confirm them`); setProductId(""); onDone(); },
+    onError: (e) => toast.error((e as Error).message),
+  });
+  const insurer = insurers?.find((i) => i.insurer_id === insurerId);
+  return (
+    <Panel className="space-y-3">
+      <PanelHead title="Auto-fill from your fund" sub="Pick your product — we pre-fill the standard limits for you to confirm" />
+      <div className="grid gap-3 sm:grid-cols-2">
+        <label className="text-sm">Insurer
+          <select className={SELECT_CLS} value={insurerId} onChange={(e) => { setInsurerId(e.target.value); setProductId(""); }}>
+            <option value="">Choose…</option>
+            {insurers?.map((i) => <option key={i.insurer_id} value={i.insurer_id}>{i.insurer_name}</option>)}
+          </select>
+        </label>
+        <label className="text-sm">Product
+          <select className={SELECT_CLS} value={productId} onChange={(e) => setProductId(e.target.value)} disabled={!insurer}>
+            <option value="">Choose…</option>
+            {insurer?.products.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+        </label>
+      </div>
+      <Button onClick={() => apply.mutate()} disabled={apply.isPending || !productId}>{apply.isPending ? "Loading…" : "Auto-fill my extras"}</Button>
+      <p className="text-xs text-ink-3">We pre-fill each service's standard limit from the public product information (PHIS). Your actual limits can differ with loyalty/tenure, so you'll confirm or edit them — then add what you've used. Can't find your product? Add it manually on the right.</p>
+    </Panel>
   );
 }
 

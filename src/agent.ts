@@ -9,6 +9,7 @@ import { revokeAndDisconnect } from "./lib/qbo-oauth";
 import { purgeTenant as purgeTenantData, exportTenant as exportTenantData, flagOldData as flagOldDataSweep, hasPendingNudge, type PurgeResult } from "./lib/retention";
 import { COUNTABLE, fetchAskDigestRows, spendRunRate } from "./lib/queries";
 import { billerNormalize, detectRecurrence, classifyBiller, paymentsPerYear, recurringCopy, signpostFor, insurerResetBasis, nextResetDate, weeksUntil, phiResetNudgeCopy, phiDetectedCopy, type RecurringOccurrence, type ResetBasis } from "./lib/advisory";
+import { findPhisProduct } from "./lib/phis-seed";
 import { matchEnergyOffer, getOfferById, buildReferralUrl, opportunityTakesEnergyCta, type PartnerDB } from "./lib/partners";
 import { deriveWfhHours, generateWfhDiary, type WfhLeaveRange } from "./lib/work-use";
 import { applyUserRules, RULE_CREDIT_BUCKETS } from "./lib/rules";
@@ -5108,6 +5109,42 @@ export class TaxAgent extends Agent<Env> {
     ).bind(id, userId, u.policy_id, u.category, cents, u.txn_id ?? null, u.used_on ?? null).run();
     await this.audit(userId, "phi_usage_recorded", JSON.stringify({ id, category: u.category, cents }));
     return { id };
+  }
+
+  /**
+   * Auto-fill a policy + its pooled extras schedule from a bundled PHIS product (the "auto-source" path).
+   * Deterministic, NO model call, NO external fetch — the schedule is public standardised data we bundle
+   * (src/lib/phis-seed.ts). Limits land source='sourced', verified=0 so the member CONFIRMS them (standard
+   * product limits can differ by tier/loyalty). Consent-gated. Returns the new policy id.
+   */
+  async applyPhiProduct(userId: string, productId: string): Promise<{ policy_id: string; limits: number }> {
+    await this.requireHealthConsent(userId);
+    const found = findPhisProduct(productId);
+    if (!found) throw new Error("unknown product");
+    const { insurer, product } = found;
+    const { id: policyId } = await this.savePhiPolicy(userId, {
+      insurer: insurer.name, cover_type: product.cover_type, reset_basis: product.reset_basis, source: "sourced",
+    });
+    for (const l of product.limits) {
+      await this.savePhiLimit(userId, {
+        policy_id: policyId, category: l.category, annual_limit_cents: l.annual_limit_cents,
+        combined_group: l.combined_group ?? null, source: "sourced", verified: false,
+      });
+    }
+    await this.audit(userId, "phi_product_applied", JSON.stringify({ productId, policy_id: policyId, limits: product.limits.length }));
+    return { policy_id: policyId, limits: product.limits.length };
+  }
+
+  /** Confirm all unverified (sourced/extracted) limits on a policy — the member's "these are right" step. */
+  async confirmPhiPolicyLimits(userId: string, policyId: string): Promise<{ confirmed: number }> {
+    await this.requireHealthConsent(userId);
+    await this.assertOwnsPolicy(userId, policyId);
+    const r = await this.env.DB.prepare(
+      `UPDATE phi_limit SET verified=1, updated_at=datetime('now') WHERE user_id = ? AND policy_id = ? AND verified = 0`,
+    ).bind(userId, policyId).run();
+    const n = r.meta?.changes ?? 0;
+    await this.audit(userId, "phi_limits_confirmed", JSON.stringify({ policyId, confirmed: n }));
+    return { confirmed: n };
   }
 
   /** Delete a single recorded benefit-usage entry (consent-gated). Lets a user fix a mis-entry so the

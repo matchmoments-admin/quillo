@@ -5,7 +5,10 @@ import { getProfile } from "./db";
 import { isAdmin, isPartner } from "./roles";
 import { fyBounds, normaliseFyLabel } from "./ledger-totals";
 import { resolveJurisdictionForUser, fyStartYearSqlExpr } from "./jurisdiction";
-import { annualiseSpendCents, runRateCopy, ADVISORY_DISCLAIMER } from "./advisory";
+import {
+  annualiseSpendCents, runRateCopy, ADVISORY_DISCLAIMER,
+  nextResetDate, weeksUntil, phiExtrasCopy, EXTRAS_CATEGORIES, EXTRAS_CATEGORY_LABEL, type ResetBasis,
+} from "./advisory";
 import { matchEnergyOffer, ctaFromOffer, opportunityTakesEnergyCta, type PartnerDB } from "./partners";
 
 // Read-side queries for the web API. Reads hit D1 directly from the Worker; audited
@@ -619,6 +622,82 @@ export async function listRecurringBills(env: Env, userId: string) {
     .bind(userId)
     .all();
   return res.results ?? [];
+}
+
+/**
+ * Private Health Extras Tracker overview: every policy with its per-category limits, recorded usage,
+ * remaining balance, and the next reset date + weeks-to-reset. FACTUAL display only — never a tax
+ * output. Reads phi_policy + phi_limit + phi_benefit_usage; computes remaining = limit − recorded usage.
+ */
+export async function phiExtrasOverview(env: Env, userId: string) {
+  const now = new Date();
+  const [profile, policiesRes, limitsRes, usageRes] = await Promise.all([
+    getProfile(env, userId),
+    env.DB.prepare(
+      `SELECT id, person_id, insurer, cover_type, reset_basis, reset_date, source
+         FROM phi_policy WHERE user_id = ? ORDER BY created_at ASC`,
+    ).bind(userId).all<Record<string, unknown>>(),
+    env.DB.prepare(
+      `SELECT id, policy_id, category, annual_limit_cents, period FROM phi_limit WHERE user_id = ?`,
+    ).bind(userId).all<Record<string, unknown>>(),
+    env.DB.prepare(
+      `SELECT policy_id, category, COALESCE(SUM(amount_used_cents),0) AS used_cents
+         FROM phi_benefit_usage WHERE user_id = ? GROUP BY policy_id, category`,
+    ).bind(userId).all<Record<string, unknown>>(),
+  ]);
+
+  const limits = limitsRes.results ?? [];
+  const usedByKey = new Map<string, number>();
+  for (const u of usageRes.results ?? []) {
+    usedByKey.set(`${u.policy_id}::${u.category}`, Number(u.used_cents) || 0);
+  }
+
+  const policies = (policiesRes.results ?? []).map((p) => {
+    const basis = ((p.reset_basis as string) || "calendar") as ResetBasis;
+    const resetIso = nextResetDate(basis, (p.reset_date as string) ?? null, now);
+    const weeks = weeksUntil(resetIso, now);
+    const categories = limits
+      .filter((l) => l.policy_id === p.id)
+      .map((l) => {
+        const cat = l.category as string;
+        const label = EXTRAS_CATEGORY_LABEL[cat] ?? cat;
+        const limit = Number(l.annual_limit_cents) || 0;
+        const used = usedByKey.get(`${p.id}::${cat}`) ?? 0;
+        return {
+          limit_id: l.id as string,
+          category: cat,
+          label,
+          annual_limit_cents: limit,
+          used_cents: used,
+          remaining_cents: Math.max(0, limit - used),
+          copy: phiExtrasCopy(label, used, limit, resetIso),
+        };
+      });
+    const total_limit_cents = categories.reduce((n, c) => n + c.annual_limit_cents, 0);
+    const total_used_cents = categories.reduce((n, c) => n + c.used_cents, 0);
+    return {
+      id: p.id as string,
+      person_id: (p.person_id as string) ?? null,
+      insurer: (p.insurer as string) ?? null,
+      cover_type: (p.cover_type as string) ?? null,
+      reset_basis: basis,
+      source: (p.source as string) ?? "manual",
+      reset_date: resetIso,
+      weeks_to_reset: weeks,
+      total_limit_cents,
+      total_used_cents,
+      total_unused_cents: Math.max(0, total_limit_cents - total_used_cents),
+      categories,
+    };
+  });
+
+  return {
+    consented: !!profile?.health_extras_consent_at,
+    private_health: profile?.private_health ?? 0,
+    policies,
+    category_options: EXTRAS_CATEGORIES.map((c) => ({ value: c, label: EXTRAS_CATEGORY_LABEL[c] ?? c })),
+    disclaimer: ADVISORY_DISCLAIMER,
+  };
 }
 
 /** Year-over-year total countable spend (this FY vs prior FY) — factual delta, no commentary. */

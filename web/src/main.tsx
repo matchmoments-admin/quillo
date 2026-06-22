@@ -15,6 +15,7 @@ import { Onboarding } from "./pages/Onboarding";
 import { QuickBooks } from "./pages/QuickBooks";
 import { Reports } from "./pages/Reports";
 import { Savings } from "./pages/Savings";
+import { Extras } from "./pages/Extras";
 import { Review } from "./pages/Review";
 import { Filing } from "./pages/Filing";
 import { Admin } from "./pages/Admin";
@@ -130,6 +131,7 @@ const router = createBrowserRouter([
       { path: "quickbooks", element: <QuickBooks /> },
       { path: "reports", element: <Reports /> },
       { path: "savings", element: <Savings /> },
+      { path: "extras", element: <Extras /> },
       { path: "review", element: <Review /> },
       { path: "filing", element: <Filing /> },
       { path: "admin", element: <Admin /> },

@@ -118,6 +118,15 @@ export interface TaxAgentRpc {
   dismissOpportunity(userId: string, id: string): Promise<{ ok: boolean }>;
   dismissRecurringBill(userId: string, id: string): Promise<{ ok: boolean }>;
   confirmRecurringBill(userId: string, id: string): Promise<{ ok: boolean }>;
+  recordHealthExtrasConsent(userId: string, text: string, method: string): Promise<{ ok: true; consented_at: string }>;
+  withdrawHealthExtrasConsent(userId: string): Promise<{ ok: true }>;
+  setPrivateHealth(userId: string, holds: boolean): Promise<{ ok: true; private_health: number }>;
+  savePhiPolicy(userId: string, p: { id?: string | null; person_id?: string | null; insurer?: string | null; cover_type?: string | null; reset_basis?: string | null; reset_date?: string | null; source?: string | null }): Promise<{ id: string }>;
+  deletePhiPolicy(userId: string, id: string): Promise<{ ok: true }>;
+  savePhiLimit(userId: string, l: { policy_id: string; category: string; annual_limit_cents: number; period?: string | null }): Promise<{ id: string }>;
+  deletePhiLimit(userId: string, id: string): Promise<{ ok: true }>;
+  recordPhiUsage(userId: string, u: { policy_id: string; category: string; amount_used_cents: number; txn_id?: string | null; used_on?: string | null }): Promise<{ id: string }>;
+  detectBenefitsReset(userId: string): Promise<{ setups: number; resets: number }>;
   createReferral(userId: string, opportunityId: string, offerId?: string): Promise<{ token: string; url: string; partner_name: string }>;
   recordConsent(userId: string, text: string, method: string): Promise<void>;
   draftSituation(userId: string, message: string): Promise<import("./extract").SituationDraft>;

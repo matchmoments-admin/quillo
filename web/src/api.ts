@@ -1,4 +1,4 @@
-import type { Txn, TxnDetail, Situation, SituationDraft, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse, UsageData, StatementInfo, IncomeRow, DocRow, AssetRow, ScheduleRow, ChecklistItem, ClaimSuggestion, FilingReadiness, ReviewSummary, Progress, AdminTenant, AdminOverview, AdminSpend, AiEdit, ClaimReview, OccupationRulesDraft, OccupationRuleCandidate, MovementSweep, BatchResult, ClarifyQuestion, ClarifyAnswer, ClaimMatch, AccountantSummary, SuggestedDeduction, WorkUse, CarUse, ScanResult, CapitalLoss, OpeningDepreciation, AttributionState, AttributionInput, AttributionRow, IncomeActivity, PropertyOwner, EntityRole, CgtAssetRow, CgtEventRow, EssGrantRow, VehicleLogbookRow, TrustDistributionRow, SmsfMemberRow, SuperContributionRow, BasPeriodRow, PaygInstalmentRow, AskAnswer, SavingsData, PartnerPortal, AmmaComponents, PartnershipDistributionRow } from "./types";
+import type { Txn, TxnDetail, Situation, SituationDraft, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse, UsageData, StatementInfo, IncomeRow, DocRow, AssetRow, ScheduleRow, ChecklistItem, ClaimSuggestion, FilingReadiness, ReviewSummary, Progress, AdminTenant, AdminOverview, AdminSpend, AiEdit, ClaimReview, OccupationRulesDraft, OccupationRuleCandidate, MovementSweep, BatchResult, ClarifyQuestion, ClarifyAnswer, ClaimMatch, AccountantSummary, SuggestedDeduction, WorkUse, CarUse, ScanResult, CapitalLoss, OpeningDepreciation, AttributionState, AttributionInput, AttributionRow, IncomeActivity, PropertyOwner, EntityRole, CgtAssetRow, CgtEventRow, EssGrantRow, VehicleLogbookRow, TrustDistributionRow, SmsfMemberRow, SuperContributionRow, BasPeriodRow, PaygInstalmentRow, AskAnswer, SavingsData, PhiOverview, PartnerPortal, AmmaComponents, PartnershipDistributionRow } from "./types";
 
 // Clerk session token getter, wired from <TokenBridge> inside ClerkProvider (main.tsx).
 // Clerk tokens are short-lived, so we fetch a fresh one per request (getToken caches/refreshes).
@@ -141,6 +141,17 @@ export const api = {
   confirmRecurringBill: (id: string) => post<{ ok: boolean }>(`/api/recurring-bills/${id}/confirm`),
   // Tier-1 energy referral (flag advisory_partners_energy) — returns the tokened outbound URL to open.
   createReferral: (opportunityId: string, offerId?: string) => post<{ token: string; url: string; partner_name: string }>("/api/referrals", { opportunity_id: opportunityId, offer_id: offerId }),
+  // Private Health Extras Tracker (flag phi_extras_tracker) — FACTUAL engagement surface.
+  phi: () => get<PhiOverview>("/api/phi"),
+  phiConsent: (text: string) => post<{ ok: true; consented_at: string }>("/api/phi/consent", { text, method: "web" }),
+  phiWithdrawConsent: () => post<{ ok: true }>("/api/phi/consent/withdraw"),
+  phiSetHospital: (holds: boolean) => post<{ ok: true; private_health: number }>("/api/phi/hospital", { holds }),
+  phiSavePolicy: (p: { id?: string; insurer?: string | null; cover_type?: string | null; reset_basis?: string | null; reset_date?: string | null }) => post<{ id: string }>("/api/phi/policy", p),
+  phiDeletePolicy: (id: string) => send<{ ok: true }>("DELETE", `/api/phi/policy/${id}`),
+  phiSaveLimit: (l: { policy_id: string; category: string; annual_limit_cents: number }) => post<{ id: string }>("/api/phi/limit", l),
+  phiDeleteLimit: (id: string) => send<{ ok: true }>("DELETE", `/api/phi/limit/${id}`),
+  phiRecordUsage: (u: { policy_id: string; category: string; amount_used_cents: number; used_on?: string | null }) => post<{ id: string }>("/api/phi/usage", u),
+  phiScan: () => post<{ setups: number; resets: number }>("/api/phi/scan"),
   notifications: () => get<{ notifications: Notification[] }>("/api/notifications").then((r) => r.notifications),
   markRead: (id: string) => post<{ ok: boolean }>(`/api/notifications/${id}/read`),
 

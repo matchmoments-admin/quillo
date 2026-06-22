@@ -310,6 +310,9 @@ export default {
           // Savings & Opportunities: deterministic recurring-bill detection + factual opportunities
           // (no LLM → no AI-spend interaction). Flag-gated so OFF ⇒ no read/write path, byte-identical.
           if (featureOn(env, "advisory_layer")) await stub.detectAdvisory(u.user_id);
+          // PHI Extras Tracker: deterministic (no-LLM) setup nudge + reset reminder. Writes only to
+          // opportunities + notifications. Flag-gated ⇒ OFF means no read/write path, byte-identical.
+          if (featureOn(env, "phi_extras_tracker")) await stub.detectBenefitsReset(u.user_id);
         } catch (e) {
           console.error(`weekly cron failed for ${u.user_id}: ${(e as Error).message}`);
         }

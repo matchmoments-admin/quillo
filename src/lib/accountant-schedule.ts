@@ -128,6 +128,32 @@ export function tieBackChecks(s: AccountantSchedule): TieBack[] {
   return s.sections.flatMap((sec) => (sec.tie_back ? [sec.tie_back] : []));
 }
 
+// Confidence segmentation for the not-claimed tail (the owner's "confidence score" idea). Rather than
+// drop low-confidence items — which would hide deductions the agent might legitimately claim — we
+// SEGMENT them: "worth a second look" = items the agent may still be able to claim (AI-suggested,
+// needs apportionment, not yet confirmed as work-related, or a property expense not yet attributed),
+// vs "not claimable" = structurally excluded for you (private spend, employer-reimbursed, rent-free
+// holding costs, capital purchases claimed over time). Nothing is hidden; the uncertain items lead.
+export type NotClaimedSegment = "review" | "excluded";
+export function notClaimedSegment(r: {
+  deductibility?: string | null;
+  bucket: string;
+  reimbursed?: number | null;
+  use_status_denied?: number | null;
+  property_undetermined?: number | null;
+}): NotClaimedSegment {
+  if (r.property_undetermined) return "review";
+  if (r.reimbursed || r.use_status_denied || r.bucket === "asset") return "excluded";
+  if (r.deductibility === "suggested_deductible" || r.deductibility === "needs_apportionment") return "review";
+  if (r.deductibility === "likely_not" || r.deductibility === "confirmed_not") return "excluded";
+  return "review"; // undetermined / not yet confirmed — the agent may still be able to claim it
+}
+const NOT_CLAIMED_SEGMENT_LABEL: Record<NotClaimedSegment, string> = {
+  review: "Worth a second look",
+  excluded: "Not claimable",
+};
+const NOT_CLAIMED_SEGMENT_ORDER: Record<NotClaimedSegment, number> = { review: 0, excluded: 1 };
+
 // ── Row shapes from the itemised queries ──────────────────────────────────────
 
 interface ItemRow {
@@ -825,23 +851,62 @@ export async function buildAccountantSchedule(
     });
   }
 
-  // 15. EXPLICITLY NOT CLAIMED — every excluded item with its reason (#181).
+  // 15. NOT CLAIMED — every excluded item, considered and excluded with its reason (#181).
   if (notClaimed.length || depDenied.length) {
+    const depDeniedReason = (a: (typeof depDenied)[number]): string =>
+      a.owned_by === "employer"
+        ? "Employer-owned asset — no decline in value to you (Div 40 needs you to own and bear the cost)."
+        : exclusionReason("asset", null, a.reimbursed, a.use_status_denied);
+    const total = notClaimed.reduce((s, x) => s + x.row.counted_cents, 0) + depDenied.reduce((s, r) => s + r.deduction_cents, 0);
+
+    // 15a. GROUPED summary (the headline): collapse the per-transaction tail — which is the bulk of
+    // the deliverable — into one row per (confidence segment, category, reason), with a count + total.
+    // The "worth a second look" groups sort to the top so the agent sees what might still be claimed.
+    {
+      type Group = { segment: NotClaimedSegment; category: string; reason: string; n: number; cents: number };
+      const groups = new Map<string, Group>();
+      const add = (segment: NotClaimedSegment, category: string, reason: string, c: number) => {
+        const key = `${segment} ${category} ${reason}`;
+        const g = groups.get(key) ?? { segment, category, reason, n: 0, cents: 0 };
+        g.n++;
+        g.cents += c;
+        groups.set(key, g);
+      };
+      for (const { row: r, reason } of notClaimed) {
+        add(notClaimedSegment(r), r.ato_label ? `${r.bucket} · ${r.ato_label}` : r.bucket, reason, r.counted_cents);
+      }
+      for (const a of depDenied) add("excluded", `asset · ${a.asset_class}`, depDeniedReason(a), a.deduction_cents);
+      const sorted = [...groups.values()].sort(
+        (a, b) => NOT_CLAIMED_SEGMENT_ORDER[a.segment] - NOT_CLAIMED_SEGMENT_ORDER[b.segment] || b.cents - a.cents,
+      );
+      const reviewTotal = sorted.filter((g) => g.segment === "review").reduce((s, g) => s + g.cents, 0);
+      sections.push({
+        key: "not_claimed_summary",
+        title: "Not claimed — grouped by reason (worth a second look vs not claimable)",
+        columns: ["Confidence", "Category", "Count", `Amount (${cur})`, "Why it isn't claimed"],
+        rows: sorted.map((g) => [NOT_CLAIMED_SEGMENT_LABEL[g.segment], g.category, g.n, d(g.cents), g.reason]),
+        subtotal_cents: total,
+        notes: [
+          reviewTotal > 0
+            ? `${d(reviewTotal)} of this is "worth a second look" — not claimed by default, but your registered tax agent may be able to. The rest is private / non-deductible / capital.`
+            : "Everything here is private, non-deductible or capital — not claimable in your position.",
+          "Per-item detail for every line is in the next section.",
+        ],
+      });
+    }
+
+    // 15b. Full per-transaction DETAIL (drill-down, its own tab in the workbook) — unchanged shape so
+    // an accountant can still audit every excluded line. Persona Golden B asserts these row indices.
     const notes: string[] = [];
     const rows: Cell[][] = capped(notClaimed, notes).map(({ row: r, reason }) => [
       r.txn_date, r.merchant ?? "—", r.ato_label ? `${r.bucket} · ${r.ato_label}` : r.bucket, d(r.counted_cents), reason, SUBSTANTIATION_LABEL[substantiationStatus(r)],
     ]);
     for (const a of depDenied) {
-      rows.push([a.acquired_date, a.label, `asset · ${a.asset_class}`, d(a.deduction_cents),
-        a.owned_by === "employer"
-          ? "Employer-owned asset — no decline in value to you (Div 40 needs you to own and bear the cost)."
-          : exclusionReason("asset", null, a.reimbursed, a.use_status_denied),
-        null]);
+      rows.push([a.acquired_date, a.label, `asset · ${a.asset_class}`, d(a.deduction_cents), depDeniedReason(a), null]);
     }
-    const total = notClaimed.reduce((s, x) => s + x.row.counted_cents, 0) + depDenied.reduce((s, r) => s + r.deduction_cents, 0);
     sections.push({
       key: "not_claimed",
-      title: "EXPLICITLY NOT CLAIMED — considered and excluded, with reasons",
+      title: "Not claimed — full detail (every excluded item, with reasons)",
       columns: ["Date", "Item", "Category", `Amount (${cur})`, "Why it isn't claimed", "Substantiation"],
       rows,
       subtotal_cents: total,

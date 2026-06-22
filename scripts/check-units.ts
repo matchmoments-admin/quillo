@@ -15,7 +15,7 @@ import { costCents, isPricedModel, toE4, centsFromE4 } from "../src/lib/usage";
 import { LLM_MODEL_IDS } from "../src/llm";
 import { computeWorkMethodDeductions, workUseRatesForFy, deriveWfhHours, generateWfhDiary } from "../src/lib/work-use";
 import { runScan } from "../src/lib/scan";
-import { scheduleToXlsx, type AccountantSchedule } from "../src/lib/accountant-schedule";
+import { scheduleToXlsx, notClaimedSegment, type AccountantSchedule } from "../src/lib/accountant-schedule";
 import { unzipSync, strFromU8 } from "fflate";
 import { BUCKETS } from "../src/lib/taxonomy";
 import {
@@ -2378,6 +2378,21 @@ console.log("currency de-anchoring (toBaseCurrency / baseCurrencyOf / currencySy
   check("xlsx: a '100.00'-looking value in a TEXT column stays a string (not coerced to money)", s4.includes('<t xml:space="preserve">100.00</t>'));
   check("xlsx: illegal XML control byte is stripped (workbook stays well-formed)", !s4.includes("\u0007") && s4.includes("Kindle store"));
   check("xlsx: subtotal aligns under the money column it sums, not the last column", /<c r="F\d+"[^>]*s="3"[^>]*><v>43\.68<\/v>/.test(s4));
+}
+
+// ── Not-claimed confidence segmentation (the owner's "confidence score" idea): items the agent might
+// still claim ("review") vs structurally not-claimable ("excluded"). Pure classifier, every branch.
+{
+  const seg = (r: Parameters<typeof notClaimedSegment>[0]) => notClaimedSegment(r);
+  check("segment: AI-suggested deductible → worth a second look", seg({ deductibility: "suggested_deductible", bucket: "payg" }) === "review");
+  check("segment: needs apportionment → worth a second look", seg({ deductibility: "needs_apportionment", bucket: "payg" }) === "review");
+  check("segment: undetermined / not yet confirmed → worth a second look", seg({ deductibility: "undetermined", bucket: "payg" }) === "review");
+  check("segment: property not yet attributed → worth a second look", seg({ deductibility: "likely_not", bucket: "property_rented", property_undetermined: 1 }) === "review");
+  check("segment: private / likely-not spend → not claimable", seg({ deductibility: "likely_not", bucket: "payg" }) === "excluded");
+  check("segment: confirmed-not spend → not claimable", seg({ deductibility: "confirmed_not", bucket: "payg" }) === "excluded");
+  check("segment: employer-reimbursed → not claimable (even if otherwise suggested)", seg({ deductibility: "suggested_deductible", bucket: "payg", reimbursed: 1 }) === "excluded");
+  check("segment: rent-free / use-status denied → not claimable", seg({ deductibility: "undetermined", bucket: "property_rented", use_status_denied: 1 }) === "excluded");
+  check("segment: capital asset → not claimable (claimed over time as decline in value)", seg({ deductibility: "undetermined", bucket: "asset" }) === "excluded");
 }
 
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);

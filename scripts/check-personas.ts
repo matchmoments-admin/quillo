@@ -651,6 +651,30 @@ async function main() {
     check("Schedule B (#181): the rent-free property claims $0 deductions (and ties back)",
       (!beachSec || beachSec.subtotal_cents === 0) && rB.per_property.find((p) => p.property_id === "p6beach")?.deduction_cents === 0);
     check("Schedule B: P6's pinned position is unmoved by the schedule tenant data ($100k)", rB.taxable_position_cents === 10000000);
+    // Phase 2: the grouped NOT-CLAIMED summary collapses the per-txn detail to count+total groups and
+    // ties EXACTLY to the detail total — the rent-free holding cost is "Not claimable" (excluded).
+    const ncSum = sB.sections.find((s) => s.key === "not_claimed_summary");
+    check("Schedule B (Phase 2): grouped not-claimed summary subtotal == detail subtotal",
+      !!ncSum && ncSum.subtotal_cents === nc?.subtotal_cents);
+    check("Schedule B (Phase 2): grouped summary has fewer rows than the detail (it aggregates)",
+      !!ncSum && (ncSum.rows.length) <= (nc?.rows.length ?? 0));
+    check("Schedule B (Phase 2): the rent-free holding cost is segmented 'Not claimable'",
+      (ncSum?.rows ?? []).some((r) => String(r[4]).includes("rent-free") && r[0] === "Not claimable"));
+  }
+  // Phase 2 — P2 has 'undetermined' rows (fixable): they must surface as "Worth a second look" in the
+  // grouped not-claimed summary (the agent may still be able to claim them — nothing is hidden).
+  {
+    const r2 = await buildReport(env, "p2", 2025);
+    const s2 = await buildAccountantSchedule(env, "p2", 2025, { report: r2 });
+    const sum2 = s2.sections.find((s) => s.key === "not_claimed_summary");
+    const det2 = s2.sections.find((s) => s.key === "not_claimed");
+    check("Schedule (Phase 2) P2: grouped summary ties to the detail total",
+      !!sum2 && !!det2 && sum2.subtotal_cents === det2.subtotal_cents);
+    // Every grouped-summary row carries a valid confidence segment label (the "worth a second look"
+    // path itself is unit-tested on notClaimedSegment — no persona seed currently leaves an
+    // undetermined/suggested item UNCLAIMED, so it can't be exercised end-to-end here).
+    check("Schedule (Phase 2) P2: every grouped row has a valid confidence label",
+      (sum2?.rows ?? []).every((r) => r[0] === "Worth a second look" || r[0] === "Not claimable"));
   }
 
   // Tie-back loop — for EVERY tenant, every section that declares a tie-back must equal its

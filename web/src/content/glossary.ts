@@ -188,6 +188,43 @@ export const GLOSSARY = {
     term: "PSI (Personal Services Income) status",
     short: `Whether the Personal Services Income rules (Division 86) apply to this business activity. If your sole-trader income is mainly a reward for your personal skills or labour — common for contractors, freelancers and many creators — the PSI rules can limit which expenses stay deductible (e.g. home occupancy costs and payments to family). It's a fact-specific judgement we don't decide for you; record the outcome here so we can tailor the guidance. ${DEFER}`,
   },
+
+  // ── Private health extras (FACTUAL engagement; NOT deductibility — no DEFER) ──
+  phi_extras: {
+    term: "Extras (ancillary cover)",
+    short:
+      "The part of private health cover that pays toward services outside hospital — dental, optical, physio and similar. Each service usually has its own yearly benefit limit. Tracking it is general information to help you use your own cover; it's not health or financial advice and doesn't change your tax position.",
+  },
+  phi_cover_type: {
+    term: "Cover type",
+    short:
+      "Whether a policy is hospital cover, extras (ancillary) cover, or combined. Only extras cover has the per-service yearly limits this tracker follows.",
+  },
+  phi_reset_basis: {
+    term: "When limits reset",
+    short:
+      "The date your yearly extras limits return to zero and start fresh. Most Australian funds reset on the calendar year (1 Jan); some on the financial year (1 Jul); a few on your policy anniversary. After the reset, any unused balance doesn't carry over.",
+  },
+  phi_annual_limit: {
+    term: "Annual limit",
+    short:
+      "The most a fund will pay toward a service in one reset period (e.g. $500 of physiotherapy). It's the fund's benefit cap, not what you paid.",
+  },
+  phi_benefit_used: {
+    term: "Benefit used",
+    short:
+      "The amount your fund has already paid you back for a service this period, counted against that service's annual limit. Enter the rebate the fund paid — find it on your fund's app or statement — not the full amount you paid the clinic.",
+  },
+  phi_unused: {
+    term: "Unused cover",
+    short:
+      "Annual limit minus the benefit used so far — what's still available before the limits reset. General information to help you use your own cover.",
+  },
+  phi_detected: {
+    term: "Detected",
+    short:
+      "This policy was suggested from a private-health premium spotted in your transactions, rather than added by hand. Check the details and edit anything that's not right.",
+  },
 } as const satisfies Record<string, GlossaryEntry>;
 
 export type GlossaryKey = keyof typeof GLOSSARY;

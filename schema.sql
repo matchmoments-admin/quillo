@@ -994,6 +994,7 @@ CREATE TABLE IF NOT EXISTS phi_limit (
   updated_at         TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_phi_limit_user ON phi_limit(user_id, policy_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_phi_limit_uniq ON phi_limit(user_id, policy_id, category); -- 0063: backs the savePhiLimit upsert (no duplicate category rows)
 CREATE TABLE IF NOT EXISTS phi_benefit_usage (
   id                TEXT PRIMARY KEY,
   user_id           TEXT NOT NULL,

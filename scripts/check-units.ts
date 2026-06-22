@@ -15,7 +15,7 @@ import { costCents, isPricedModel, toE4, centsFromE4 } from "../src/lib/usage";
 import { LLM_MODEL_IDS } from "../src/llm";
 import { computeWorkMethodDeductions, workUseRatesForFy, deriveWfhHours, generateWfhDiary } from "../src/lib/work-use";
 import { runScan } from "../src/lib/scan";
-import { scheduleToXlsx, notClaimedSegment, type AccountantSchedule } from "../src/lib/accountant-schedule";
+import { scheduleToXlsx, notClaimedSegment, atoReturnLabel, type AccountantSchedule } from "../src/lib/accountant-schedule";
 import { unzipSync, strFromU8 } from "fflate";
 import { BUCKETS } from "../src/lib/taxonomy";
 import {
@@ -2393,6 +2393,16 @@ console.log("currency de-anchoring (toBaseCurrency / baseCurrencyOf / currencySy
   check("segment: employer-reimbursed → not claimable (even if otherwise suggested)", seg({ deductibility: "suggested_deductible", bucket: "payg", reimbursed: 1 }) === "excluded");
   check("segment: rent-free / use-status denied → not claimable", seg({ deductibility: "undetermined", bucket: "property_rented", use_status_denied: 1 }) === "excluded");
   check("segment: capital asset → not claimable (claimed over time as decline in value)", seg({ deductibility: "undetermined", bucket: "asset" }) === "excluded");
+}
+
+// ── ATO return-label routing: a work-related ato_label maps to its D-label; anything else is a
+// confirm-with-your-agent placeholder (never a guessed label).
+{
+  check("atoReturnLabel: D-label passes through (D5)", atoReturnLabel("D5") === "D5");
+  check("atoReturnLabel: combined D-label passes through (D3/D5)", atoReturnLabel("D3/D5") === "D3/D5");
+  check("atoReturnLabel: D10 passes through", atoReturnLabel("D10") === "D10");
+  check("atoReturnLabel: a non-D label is NOT guessed", atoReturnLabel("rental:repairs") === "Work-related (confirm label)");
+  check("atoReturnLabel: null → confirm placeholder", atoReturnLabel(null) === "Work-related (confirm label)");
 }
 
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);

@@ -292,6 +292,15 @@ async function main() {
   check("P1: employer-owned laptop earns NO decline-in-value (monitor only) → $200 dep", r1.depreciation_cents === 20000);
   check("P1: a reimbursed work expense is excluded; only the $300 genuine one counts", r1.total_deductions_cents === 30000);
 
+  // ── PHI Extras Tracker (0062): extras tracking is engagement/display ONLY and must NOT touch the
+  // tax position. Flipping phi_extras_tracker (and the held-OFF phi_tax_inputs) ON must leave
+  // taxable_position_cents byte-identical — the feature never feeds report.ts. This is the persona
+  // contract for the additive, flag-gated spine; later slices that wire detection/UI keep it green. ──
+  const envPhi = { ...env, FEATURES: `${(env as { FEATURES: string }).FEATURES},phi_extras_tracker,phi_tax_inputs` } as unknown as Env;
+  const r1phi = await buildReport(envPhi, "p1", 2025);
+  check("PHI (flag ON): taxable position byte-identical (extras tracking is display-only)", r1phi.taxable_position_cents === r1.taxable_position_cents);
+  check("PHI (flag ON): deductions byte-identical (no allied-health auto-claim)", r1phi.total_deductions_cents === r1.total_deductions_cents);
+
   // ── Persona 2 ──
   const r2 = await buildReport(env, "p2", 2025);
   const dad = r2.per_property.find((p) => p.property_id === "p2pDad");

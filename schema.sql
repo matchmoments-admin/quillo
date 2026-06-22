@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS profiles (
   jurisdiction       TEXT NOT NULL DEFAULT 'AU',
   rule_pack_ver      TEXT NOT NULL DEFAULT 'au-v1',
   gst_registered     INTEGER NOT NULL DEFAULT 0,
+  private_health     INTEGER NOT NULL DEFAULT 0,   -- 0062: holds private HOSPITAL cover (the MLS pivot); 0=unknown/no. Must-ask (bank stream can't tell hospital from extras).
   buckets            TEXT NOT NULL DEFAULT '["payg","company","property"]',  -- JSON
   ledger_provider    TEXT NOT NULL DEFAULT 'qbo',   -- 'qbo' | 'xero' (adapter selector)
   -- Inference seam (finding: easy model switch): 'anthropic' (US) | 'bedrock' (AU residency)
@@ -44,6 +45,9 @@ CREATE TABLE IF NOT EXISTS profiles (
   consent_xborder_at     TEXT,
   consent_xborder_method TEXT,
   consent_xborder_text   TEXT,
+  -- 0062: APP-3 typed consent for health (extras) data. NULL ⇒ not granted ⇒ PHI writes blocked.
+  -- Separate from the cross-border consent above — health data is "sensitive information".
+  health_extras_consent_at TEXT,
   retention_years        INTEGER NOT NULL DEFAULT 5,  -- data-retention window for the flag sweep (lib/retention.ts)
   ui_state               TEXT,                        -- per-tenant UI state JSON (e.g. walkthrough seen) — no localStorage
   roles              TEXT NOT NULL DEFAULT '["individual"]', -- 0017: platform roles JSON (admin|accountant|bookkeeper|support|individual)
@@ -959,6 +963,63 @@ CREATE TABLE IF NOT EXISTS car_inputs (
   updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (user_id, fy)
 );
+
+-- ── Private Health Extras Tracker (0062) ───────────────────────────────────────
+-- Engagement/display ONLY — never feeds report.ts (taxable position byte-identical with the flags off).
+-- enc_ver reserves sealing of the health-revealing fields (token-crypto.ts) once writers land; writes
+-- are gated by phi_extras_tracker and require profiles.health_extras_consent_at. See migrations/0062.
+CREATE TABLE IF NOT EXISTS phi_policy (
+  id           TEXT PRIMARY KEY,
+  user_id      TEXT NOT NULL,
+  person_id    TEXT,
+  insurer      TEXT,
+  cover_type   TEXT,
+  reset_basis  TEXT NOT NULL DEFAULT 'calendar',
+  reset_date   TEXT,
+  source       TEXT NOT NULL DEFAULT 'manual',
+  enc_ver      INTEGER NOT NULL DEFAULT 0,
+  created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_phi_policy_user ON phi_policy(user_id);
+CREATE TABLE IF NOT EXISTS phi_limit (
+  id                 TEXT PRIMARY KEY,
+  user_id            TEXT NOT NULL,
+  policy_id          TEXT NOT NULL,
+  category           TEXT NOT NULL,
+  annual_limit_cents INTEGER NOT NULL DEFAULT 0,
+  period             TEXT NOT NULL DEFAULT 'annual',
+  enc_ver            INTEGER NOT NULL DEFAULT 0,
+  created_at         TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at         TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_phi_limit_user ON phi_limit(user_id, policy_id);
+CREATE TABLE IF NOT EXISTS phi_benefit_usage (
+  id                TEXT PRIMARY KEY,
+  user_id           TEXT NOT NULL,
+  policy_id         TEXT NOT NULL,
+  category          TEXT NOT NULL,
+  amount_used_cents INTEGER NOT NULL DEFAULT 0,
+  txn_id            TEXT,
+  used_on           TEXT,
+  enc_ver           INTEGER NOT NULL DEFAULT 0,
+  created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_phi_benefit_usage_user ON phi_benefit_usage(user_id, policy_id);
+CREATE TABLE IF NOT EXISTS phi_statement (
+  id                       TEXT PRIMARY KEY,
+  user_id                  TEXT NOT NULL,
+  fy                       INTEGER NOT NULL,
+  fund                     TEXT,
+  policy                   TEXT,
+  premiums_eligible_cents  INTEGER NOT NULL DEFAULT 0,
+  rebate_received_cents    INTEGER NOT NULL DEFAULT 0,
+  days_covered             INTEGER NOT NULL DEFAULT 0,
+  tier                     TEXT,
+  enc_ver                  INTEGER NOT NULL DEFAULT 0,
+  created_at               TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_phi_statement_user ON phi_statement(user_id, fy);
 
 -- ── Ask Quillo C2 chat (0046, #173) ───────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS chat_sessions (

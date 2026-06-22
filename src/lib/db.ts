@@ -7,6 +7,7 @@ export interface Profile {
   jurisdiction: string;
   rule_pack_ver: string;
   gst_registered: number;
+  private_health: number; // 0062: holds private HOSPITAL cover (the MLS pivot); 0 = unknown/no
   buckets: string;
   ledger_provider: string;
   inference_provider: string | null;
@@ -20,15 +21,16 @@ export interface Profile {
   ui_state: string | null;
   roles: string;        // 0017: JSON array of platform roles (see lib/roles.ts)
   email: string | null; // 0017: signup email
+  health_extras_consent_at: string | null; // 0062: APP-3 typed consent for health data (NULL ⇒ PHI writes blocked)
 }
 
 /** Load a tenant profile; returns null if the tenant has no profile row yet. */
 export async function getProfile(env: Env, userId: string): Promise<Profile | null> {
   return env.DB.prepare(
-    `SELECT user_id, jurisdiction, rule_pack_ver, gst_registered, buckets,
+    `SELECT user_id, jurisdiction, rule_pack_ver, gst_registered, private_health, buckets,
             ledger_provider, inference_provider, inference_region, categorise_mode,
             consent_xborder, consent_xborder_at, consent_xborder_method, consent_xborder_text,
-            retention_years, ui_state, roles, email
+            retention_years, ui_state, roles, email, health_extras_consent_at
        FROM profiles WHERE user_id = ?`
   )
     .bind(userId)

@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api";
 import { BucketPill, Button, ConfidencePill, Card, Spinner, money, getBaseCurrency } from "../components/ui";

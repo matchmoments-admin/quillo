@@ -67,6 +67,10 @@ export const PURGE_TABLES = [
   "partner_members",         // 0049 (advisory phase 2 scaffold) — staff↔org link
   "referrals",               // 0049 — consumer referrals (user_id = the consumer)
   "referral_consents",       // 0049 — Tier-2 consent (created now, used in Phase 3)
+  "phi_policy",              // 0062 (PHI extras tracker) — policy + reset basis
+  "phi_limit",              // 0062 — per-category annual extras limit
+  "phi_benefit_usage",      // 0062 — benefit recorded against a limit
+  "phi_statement",          // 0062 — PHI annual tax statement (rebate/MLS inputs)
 ] as const;
 
 // Columns that must NEVER leave the system in an APP-12 export, even though the row belongs to the

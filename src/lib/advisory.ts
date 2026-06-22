@@ -389,3 +389,30 @@ export function phiResetNudgeCopy(unusedCents: number, resetDateIso: string, wee
 export function phiDetectedCopy(insurerLabel: string): string {
   return `We spotted a private-health premium from ${insurerLabel}. Add your extras limits to track what's unused before they reset. General information only.`;
 }
+
+/**
+ * Headline extras totals WITHOUT double-counting shared pools. Real policies share one annual limit
+ * across several services (e.g. physio + chiro + osteo draw on ONE $750 pool): each such category row
+ * carries the SAME limit and the same `combined_group`, so summing per-category would overstate cover.
+ * Here a group's limit is counted ONCE; standalone (null-group) categories count individually. Usage is
+ * always summed across every category. Pure + deterministic so it lands as a unit golden.
+ */
+export function poolExtrasTotals(
+  lines: { annual_limit_cents: number; used_cents: number; combined_group?: string | null }[],
+): { total_limit_cents: number; total_used_cents: number; total_unused_cents: number } {
+  let totalUsed = 0;
+  let standaloneLimit = 0;
+  const groupLimit = new Map<string, number>();
+  for (const l of lines) {
+    totalUsed += Math.max(0, l.used_cents);
+    if (l.combined_group) {
+      // Pooled: the group shares one limit — take the max declared (rows in a group should match).
+      groupLimit.set(l.combined_group, Math.max(groupLimit.get(l.combined_group) ?? 0, Math.max(0, l.annual_limit_cents)));
+    } else {
+      standaloneLimit += Math.max(0, l.annual_limit_cents);
+    }
+  }
+  let totalLimit = standaloneLimit;
+  for (const v of groupLimit.values()) totalLimit += v;
+  return { total_limit_cents: totalLimit, total_used_cents: totalUsed, total_unused_cents: Math.max(0, totalLimit - totalUsed) };
+}

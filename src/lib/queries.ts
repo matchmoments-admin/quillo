@@ -7,7 +7,7 @@ import { fyBounds, normaliseFyLabel } from "./ledger-totals";
 import { resolveJurisdictionForUser, fyStartYearSqlExpr } from "./jurisdiction";
 import {
   annualiseSpendCents, runRateCopy, ADVISORY_DISCLAIMER,
-  nextResetDate, weeksUntil, phiExtrasCopy, EXTRAS_CATEGORIES, EXTRAS_CATEGORY_LABEL, type ResetBasis,
+  nextResetDate, weeksUntil, phiExtrasCopy, poolExtrasTotals, EXTRAS_CATEGORIES, EXTRAS_CATEGORY_LABEL, type ResetBasis,
 } from "./advisory";
 import { matchEnergyOffer, ctaFromOffer, opportunityTakesEnergyCta, type PartnerDB } from "./partners";
 
@@ -638,7 +638,7 @@ export async function phiExtrasOverview(env: Env, userId: string) {
          FROM phi_policy WHERE user_id = ? ORDER BY created_at ASC`,
     ).bind(userId).all<Record<string, unknown>>(),
     env.DB.prepare(
-      `SELECT id, policy_id, category, annual_limit_cents, period FROM phi_limit WHERE user_id = ?`,
+      `SELECT id, policy_id, category, annual_limit_cents, period, combined_group, source, verified FROM phi_limit WHERE user_id = ?`,
     ).bind(userId).all<Record<string, unknown>>(),
     // Individual usage rows (not just the sum) so the UI can list + delete a single mis-entry.
     env.DB.prepare(
@@ -674,11 +674,21 @@ export async function phiExtrasOverview(env: Env, userId: string) {
       if (pid === p.id) usageCats.add(cat!);
     }
     const catSet = new Set<string>([...limitByCat.keys(), ...usageCats]);
-    const categories = [...catSet].map((cat) => {
+    // Pooled limits: categories sharing a non-null combined_group draw on ONE limit. Sum usage across
+    // the whole group so each pooled line shows the SHARED used/remaining (not its own slice).
+    const groupUsed = new Map<string, number>();
+    for (const cat of catSet) {
+      const g = limitByCat.get(cat)?.combined_group as string | null | undefined;
+      if (g) groupUsed.set(g, (groupUsed.get(g) ?? 0) + (usedByKey.get(`${p.id}::${cat}`) ?? 0));
+    }
+    const rawLines = [...catSet].map((cat) => {
       const l = limitByCat.get(cat);
       const label = EXTRAS_CATEGORY_LABEL[cat] ?? cat;
       const limit = l ? Number(l.annual_limit_cents) || 0 : 0;
-      const used = usedByKey.get(`${p.id}::${cat}`) ?? 0;
+      const group = (l?.combined_group as string) ?? null;
+      const ownUsed = usedByKey.get(`${p.id}::${cat}`) ?? 0;
+      // For a pooled category, the limit + used/remaining reflect the shared pool.
+      const used = group ? (groupUsed.get(group) ?? 0) : ownUsed;
       return {
         limit_id: (l?.id as string) ?? null,
         category: cat,
@@ -686,12 +696,19 @@ export async function phiExtrasOverview(env: Env, userId: string) {
         annual_limit_cents: limit,
         used_cents: used,
         remaining_cents: Math.max(0, limit - used),
+        combined_group: group,
+        source: (l?.source as string) ?? "manual",
+        verified: l ? Number(l.verified ?? 1) : 1,
         entries: entriesByKey.get(`${p.id}::${cat}`) ?? [],
         copy: phiExtrasCopy(label, used, limit, resetIso),
       };
     }).sort((a, b) => a.label.localeCompare(b.label));
-    const total_limit_cents = categories.reduce((n, c) => n + c.annual_limit_cents, 0);
-    const total_used_cents = categories.reduce((n, c) => n + c.used_cents, 0);
+    // Headline totals dedupe shared pools (count a group's limit once); usage is each category's own.
+    const totals = poolExtrasTotals(rawLines.map((c) => ({
+      annual_limit_cents: c.annual_limit_cents,
+      used_cents: usedByKey.get(`${p.id}::${c.category}`) ?? 0, // own usage (avoid counting a pool's usage N times)
+      combined_group: c.combined_group,
+    })));
     return {
       id: p.id as string,
       person_id: (p.person_id as string) ?? null,
@@ -701,10 +718,10 @@ export async function phiExtrasOverview(env: Env, userId: string) {
       source: (p.source as string) ?? "manual",
       reset_date: resetIso,
       weeks_to_reset: weeks,
-      total_limit_cents,
-      total_used_cents,
-      total_unused_cents: Math.max(0, total_limit_cents - total_used_cents),
-      categories,
+      total_limit_cents: totals.total_limit_cents,
+      total_used_cents: totals.total_used_cents,
+      total_unused_cents: totals.total_unused_cents,
+      categories: rawLines,
     };
   });
 

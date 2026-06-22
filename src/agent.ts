@@ -5056,26 +5056,31 @@ export class TaxAgent extends Agent<Env> {
   /** Create or update a per-category annual limit (idempotent on policy+category; consent-gated). */
   async savePhiLimit(
     userId: string,
-    l: { policy_id: string; category: string; annual_limit_cents: number; period?: string | null },
+    l: { policy_id: string; category: string; annual_limit_cents: number; period?: string | null;
+         combined_group?: string | null; source?: string | null; verified?: boolean },
   ): Promise<{ id: string }> {
     await this.requireHealthConsent(userId);
     await this.assertOwnsPolicy(userId, l.policy_id);
     const cents = Math.max(0, Math.round(Number(l.annual_limit_cents) || 0));
+    const group = l.combined_group ?? null;
+    const source = ["manual", "sourced", "extracted"].includes(l.source ?? "") ? l.source! : "manual";
+    // Manual entry is member-confirmed; sourced/extracted limits default to unverified until confirmed.
+    const verified = l.verified != null ? (l.verified ? 1 : 0) : source === "manual" ? 1 : 0;
     const existing = await this.env.DB.prepare(
       `SELECT id FROM phi_limit WHERE user_id = ? AND policy_id = ? AND category = ?`,
     ).bind(userId, l.policy_id, l.category).first<{ id: string }>();
     if (existing) {
       await this.env.DB.prepare(
-        `UPDATE phi_limit SET annual_limit_cents=?, period=?, updated_at=datetime('now') WHERE id = ? AND user_id = ?`,
-      ).bind(cents, l.period ?? "annual", existing.id, userId).run();
-      await this.audit(userId, "phi_limit_updated", JSON.stringify({ id: existing.id, category: l.category, cents }));
+        `UPDATE phi_limit SET annual_limit_cents=?, period=?, combined_group=?, source=?, verified=?, updated_at=datetime('now') WHERE id = ? AND user_id = ?`,
+      ).bind(cents, l.period ?? "annual", group, source, verified, existing.id, userId).run();
+      await this.audit(userId, "phi_limit_updated", JSON.stringify({ id: existing.id, category: l.category, cents, source }));
       return { id: existing.id };
     }
     const id = crypto.randomUUID();
     await this.env.DB.prepare(
-      `INSERT INTO phi_limit (id, user_id, policy_id, category, annual_limit_cents, period) VALUES (?, ?, ?, ?, ?, ?)`,
-    ).bind(id, userId, l.policy_id, l.category, cents, l.period ?? "annual").run();
-    await this.audit(userId, "phi_limit_created", JSON.stringify({ id, category: l.category, cents }));
+      `INSERT INTO phi_limit (id, user_id, policy_id, category, annual_limit_cents, period, combined_group, source, verified) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(id, userId, l.policy_id, l.category, cents, l.period ?? "annual", group, source, verified).run();
+    await this.audit(userId, "phi_limit_created", JSON.stringify({ id, category: l.category, cents, source }));
     return { id };
   }
 

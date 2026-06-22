@@ -173,6 +173,8 @@ function PolicyCard({ p, options, onChange }: { p: PhiPolicyView; options: { val
                   {c.annual_limit_cents > 0
                     ? <Pill tone={tone}>{money(c.remaining_cents)} unused</Pill>
                     : <Pill tone="neutral">no limit set</Pill>}
+                  {c.combined_group ? <Pill tone="info">shared limit</Pill> : null}
+                  {c.verified === 0 ? <Pill tone="warn">confirm</Pill> : null}
                   <span className="flex-1" />
                   {c.limit_id ? <button className="text-xs text-ink-3 underline hover:text-danger" onClick={() => delLimit.mutate(c.limit_id!)}>Remove limit</button> : null}
                 </div>

@@ -132,8 +132,10 @@ function ConsentGate({ onConsent, pending, disclaimer }: { onConsent: () => void
 }
 
 function PolicyCard({ p, options, onChange }: { p: PhiPolicyView; options: { value: string; label: string }[]; onChange: () => void }) {
+  const [editing, setEditing] = useState(false);
   const del = useMutation({ mutationFn: () => api.phiDeletePolicy(p.id), onSuccess: onChange, onError: (e) => toast.error((e as Error).message) });
   const delLimit = useMutation({ mutationFn: (id: string) => api.phiDeleteLimit(id), onSuccess: onChange, onError: (e) => toast.error((e as Error).message) });
+  const delUsage = useMutation({ mutationFn: (id: string) => api.phiDeleteUsage(id), onSuccess: onChange, onError: (e) => toast.error((e as Error).message) });
 
   const coverLabel = COVER_TYPES.find((c) => c.v === p.cover_type)?.l ?? null;
 
@@ -146,10 +148,13 @@ function PolicyCard({ p, options, onChange }: { p: PhiPolicyView; options: { val
           <div className="flex items-center gap-2">
             {coverLabel ? <Pill tone="info">{coverLabel}</Pill> : null}
             {p.source === "detected" ? <span className="inline-flex items-center gap-1"><Pill tone="info">Detected</Pill><InfoTip k="phi_detected" /></span> : null}
+            <button className="text-xs text-ink-3 underline hover:text-ink" onClick={() => setEditing((v) => !v)}>{editing ? "Close" : "Edit"}</button>
             <button className="text-xs text-ink-3 underline hover:text-danger" onClick={() => { if (confirm("Delete this policy and its limits/usage?")) del.mutate(); }}>Delete</button>
           </div>
         }
       />
+
+      {editing && <EditPolicyForm p={p} onDone={() => { setEditing(false); onChange(); }} />}
 
       {p.categories.length === 0 ? (
         <p className="text-sm text-muted">No limits yet — add one below (e.g. Physiotherapy $500).</p>
@@ -161,16 +166,32 @@ function PolicyCard({ p, options, onChange }: { p: PhiPolicyView; options: { val
             // green once most of it is used; neutral when fully used (nothing left to flag).
             const tone = c.remaining_cents <= 0 ? "neutral" : frac < 0.5 ? "warn" : "ok";
             return (
-              <div key={c.limit_id} className="rounded-xl border border-line bg-paper px-4 py-3">
+              <div key={c.category} className="rounded-xl border border-line bg-paper px-4 py-3">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="font-semibold text-ink">{c.label}</span>
                   <InfoTip k="phi_annual_limit" />
-                  <Pill tone={tone}>{money(c.remaining_cents)} unused</Pill>
+                  {c.annual_limit_cents > 0
+                    ? <Pill tone={tone}>{money(c.remaining_cents)} unused</Pill>
+                    : <Pill tone="neutral">no limit set</Pill>}
                   <span className="flex-1" />
-                  <button className="text-xs text-ink-3 underline hover:text-danger" onClick={() => delLimit.mutate(c.limit_id)}>Remove</button>
+                  {c.limit_id ? <button className="text-xs text-ink-3 underline hover:text-danger" onClick={() => delLimit.mutate(c.limit_id!)}>Remove limit</button> : null}
                 </div>
                 <Meter frac={frac} className={frac < 0.5 ? "bg-warn" : "bg-green"} />
-                <div className="mt-1 text-xs text-ink-3">{money(c.used_cents)} used of {money(c.annual_limit_cents)} limit</div>
+                <div className="mt-1 text-xs text-ink-3">
+                  {c.annual_limit_cents > 0 ? <>{money(c.used_cents)} used of {money(c.annual_limit_cents)} limit</> : <>{money(c.used_cents)} recorded · add a limit to track what's left</>}
+                </div>
+                {c.entries.length > 0 && (
+                  <ul className="mt-2 space-y-1 border-t border-line pt-2">
+                    {c.entries.map((e) => (
+                      <li key={e.id} className="flex items-center gap-2 text-xs text-ink-3">
+                        <span className="tnum text-ink-2">{money(e.amount_used_cents)}</span>
+                        <span>{e.used_on ? fmtDate(e.used_on) : "no date"}</span>
+                        <span className="flex-1" />
+                        <button className="underline hover:text-danger" onClick={() => delUsage.mutate(e.id)} aria-label="Delete this entry">Delete</button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </div>
             );
           })}
@@ -182,6 +203,40 @@ function PolicyCard({ p, options, onChange }: { p: PhiPolicyView; options: { val
         <UsageForm policyId={p.id} options={options} onDone={onChange} />
       </div>
     </Panel>
+  );
+}
+
+function EditPolicyForm({ p, onDone }: { p: PhiPolicyView; onDone: () => void }) {
+  const [insurer, setInsurer] = useState(p.insurer ?? "");
+  const [coverType, setCoverType] = useState(p.cover_type ?? "combined");
+  const [resetBasis, setResetBasis] = useState(p.reset_basis);
+  const save = useMutation({
+    mutationFn: () => api.phiSavePolicy({ id: p.id, insurer: insurer || null, cover_type: coverType, reset_basis: resetBasis }),
+    onSuccess: onDone,
+    onError: (e) => toast.error((e as Error).message),
+  });
+  return (
+    <div className="rounded-xl border border-line bg-card p-4">
+      <div className="text-xs font-bold uppercase tracking-wide text-ink-3">Edit policy</div>
+      <div className="mt-2 grid gap-3 sm:grid-cols-3">
+        <label className="text-sm">Insurer
+          <Input className="mt-1 w-full" value={insurer} onChange={(e) => setInsurer(e.target.value)} placeholder="Bupa, Medibank, HCF…" />
+        </label>
+        <label className="text-sm">Cover type <InfoTip k="phi_cover_type" />
+          <select className={SELECT_CLS} value={coverType} onChange={(e) => setCoverType(e.target.value)}>
+            {COVER_TYPES.map((c) => <option key={c.v} value={c.v}>{c.l}</option>)}
+          </select>
+        </label>
+        <label className="text-sm">Limits reset on <InfoTip k="phi_reset_basis" />
+          <select className={SELECT_CLS} value={resetBasis} onChange={(e) => setResetBasis(e.target.value)}>
+            {RESET_BASES.map((r) => <option key={r.v} value={r.v}>{r.l}</option>)}
+          </select>
+        </label>
+      </div>
+      <Button className="mt-3 h-9 px-4 text-xs uppercase tracking-wide" onClick={() => save.mutate()} disabled={save.isPending}>
+        {save.isPending ? "Saving…" : "Save changes"}
+      </Button>
+    </div>
   );
 }
 

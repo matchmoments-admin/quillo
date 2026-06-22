@@ -5105,6 +5105,15 @@ export class TaxAgent extends Agent<Env> {
     return { id };
   }
 
+  /** Delete a single recorded benefit-usage entry (consent-gated). Lets a user fix a mis-entry so the
+   *  per-category balance reconciles with their fund's app — usage is otherwise append-only. */
+  async deletePhiUsage(userId: string, id: string): Promise<{ ok: true }> {
+    await this.requireHealthConsent(userId);
+    await this.env.DB.prepare(`DELETE FROM phi_benefit_usage WHERE user_id = ? AND id = ?`).bind(userId, id).run();
+    await this.audit(userId, "phi_usage_deleted", JSON.stringify({ id }));
+    return { ok: true };
+  }
+
   /**
    * Weekly (cron, gated by phi_extras_tracker): deterministic, NO-LLM. Two factual outputs:
    *  (1) a setup nudge when a private-health premium is detected but no policy is tracked yet, and

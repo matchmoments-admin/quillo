@@ -126,6 +126,7 @@ export interface TaxAgentRpc {
   savePhiLimit(userId: string, l: { policy_id: string; category: string; annual_limit_cents: number; period?: string | null }): Promise<{ id: string }>;
   deletePhiLimit(userId: string, id: string): Promise<{ ok: true }>;
   recordPhiUsage(userId: string, u: { policy_id: string; category: string; amount_used_cents: number; txn_id?: string | null; used_on?: string | null }): Promise<{ id: string }>;
+  deletePhiUsage(userId: string, id: string): Promise<{ ok: true }>;
   detectBenefitsReset(userId: string): Promise<{ setups: number; resets: number }>;
   createReferral(userId: string, opportunityId: string, offerId?: string): Promise<{ token: string; url: string; partner_name: string }>;
   recordConsent(userId: string, text: string, method: string): Promise<void>;

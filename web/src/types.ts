@@ -428,6 +428,21 @@ export interface PhiInsurerOption {
   products: { id: string; name: string }[];
 }
 
+// ── Usage-based billing wallet (flag billing) ──
+export interface BillingLedgerRow {
+  kind: string;          // grant | topup
+  amount_e4: number;
+  ref: string | null;
+  created_at: string;
+}
+export interface BillingOverview {
+  configured: boolean;   // Stripe wired (top-up available)
+  balance_e4: number;    // 1e-4-cent units; dollars = balance_e4 / 1e6
+  markup_pct: number;
+  free_grant_e4: number;
+  ledger: BillingLedgerRow[];
+}
+
 // Platform roles (mirror of src/lib/roles.ts ROLES). 'individual' is the default.
 export const ROLES = ["individual", "admin", "accountant", "bookkeeper", "support", "partner"] as const;
 export type Role = (typeof ROLES)[number];

@@ -35,6 +35,7 @@ import { getLedger, LedgerNotConnectedError, LedgerReauthError, type LedgerExpen
 import { redact } from "./lib/redact";
 import { toBaseCurrency } from "./lib/fx";
 import { spentTodayCents, spentTodayGlobalCents, noteMeteringError, usageStatements } from "./lib/usage";
+import { billingPolicy, freeCreditGrantE4 } from "./lib/billing";
 import { parseTransactionAlert } from "./lib/bank-parsers";
 import auV1RulePack from "./rulepacks/au-v1.json";
 import { assertBucketKeys, isBucket, isPropertyBucket, normalizeAtoLabel, DEDUCTIBILITY_STATES } from "./lib/taxonomy";
@@ -5655,7 +5656,66 @@ export class TaxAgent extends Agent<Env> {
    * hit MAX_DAILY_COST_CENTS — caller degrades to needs_review. Emits a one-time soft alert at
    * 80%. 0/unset budget = unlimited.
    */
+  // ── Usage-based billing wallet (flag `billing`) ──────────────────────────────
+  /** Grant the one-off free credit allowance, once per tenant (idempotent on profiles.free_grant_at). */
+  async grantSignupCredits(userId: string): Promise<{ granted_e4: number }> {
+    const grant = freeCreditGrantE4(this.env);
+    if (grant <= 0) return { granted_e4: 0 };
+    // Idempotent on the UNIQUE(user_id, ref) ledger constraint: a second concurrent grant INSERTs 0 rows.
+    const ins = await this.env.DB.prepare(
+      `INSERT OR IGNORE INTO credit_ledger (id, user_id, kind, amount_e4, ref) VALUES (?, ?, 'grant', ?, 'signup free allowance')`,
+    ).bind(crypto.randomUUID(), userId, grant).run();
+    if ((ins.meta?.changes ?? 0) === 0) return { granted_e4: 0 }; // already granted
+    await this.env.DB.prepare(`UPDATE profiles SET credit_balance_e4 = credit_balance_e4 + ?, free_grant_at = datetime('now') WHERE user_id = ?`).bind(grant, userId).run();
+    await this.audit(userId, "credit_granted", JSON.stringify({ amount_e4: grant }));
+    return { granted_e4: grant };
+  }
+
+  /** Add credits to the wallet (a verified Stripe top-up, from the webhook). Idempotent on the
+   *  UNIQUE(user_id, ref) ledger constraint so a re-delivered webhook can't double-credit. */
+  async creditWallet(userId: string, amountE4: number, kind: string, ref: string | null): Promise<{ balance_e4: number }> {
+    const amt = Math.max(0, Math.round(amountE4 || 0));
+    if (amt > 0) {
+      const ins = await this.env.DB.prepare(
+        `INSERT OR IGNORE INTO credit_ledger (id, user_id, kind, amount_e4, ref) VALUES (?, ?, ?, ?, ?)`,
+      ).bind(crypto.randomUUID(), userId, kind === "topup" ? "topup" : "grant", amt, ref).run();
+      if ((ins.meta?.changes ?? 0) > 0) {
+        await this.env.DB.prepare(`UPDATE profiles SET credit_balance_e4 = credit_balance_e4 + ? WHERE user_id = ?`).bind(amt, userId).run();
+        await this.audit(userId, "credit_topup", JSON.stringify({ amount_e4: amt, kind, ref }));
+      }
+    }
+    const b = await this.env.DB.prepare(`SELECT credit_balance_e4 AS b FROM profiles WHERE user_id = ?`).bind(userId).first<{ b: number }>();
+    return { balance_e4: b?.b ?? 0 };
+  }
+
+  /** Billing surface: balance, the markup %, and recent grants/top-ups. `configured` = Stripe wired. */
+  async getBillingOverview(userId: string): Promise<{ configured: boolean; balance_e4: number; markup_pct: number; free_grant_e4: number; ledger: { kind: string; amount_e4: number; ref: string | null; created_at: string }[] }> {
+    const p = await this.env.DB.prepare(`SELECT credit_balance_e4 AS b FROM profiles WHERE user_id = ?`).bind(userId).first<{ b: number }>();
+    const led = await this.env.DB.prepare(`SELECT kind, amount_e4, ref, created_at FROM credit_ledger WHERE user_id = ? ORDER BY created_at DESC LIMIT 20`).bind(userId).all<{ kind: string; amount_e4: number; ref: string | null; created_at: string }>();
+    return {
+      configured: !!this.env.STRIPE_SECRET_KEY,
+      balance_e4: p?.b ?? 0,
+      markup_pct: billingPolicy(this.env).markupPct,
+      free_grant_e4: freeCreditGrantE4(this.env),
+      ledger: led.results ?? [],
+    };
+  }
+
   private async withinBudget(userId: string, txnId: string | null): Promise<boolean> {
+    // Usage-based billing (flag `billing`): a model call also needs a positive credit balance (the free
+    // allowance OR a Stripe top-up). The actual debit happens in usageStatements AFTER the call; this
+    // gate stops the NEXT call once credits hit zero. OFF ⇒ skipped entirely ⇒ byte-identical.
+    if (featureOn(this.env, "billing")) {
+      const w = await this.env.DB.prepare(`SELECT credit_balance_e4 FROM profiles WHERE user_id = ?`)
+        .bind(userId).first<{ credit_balance_e4: number }>();
+      if ((w?.credit_balance_e4 ?? 0) <= 0) {
+        if (txnId) {
+          await this.markStatus(txnId, "needs_review");
+          await this.notify(userId, "You're out of AI credits. Top up in Billing to keep using AI features — this was saved for review until then.", txnId);
+        }
+        return false;
+      }
+    }
     // Global daily ceiling across ALL tenants — the multi-tenant backstop (N testers × the per-tenant
     // cap would otherwise be unbounded). Over it, stop spending and degrade (the app still works).
     const globalBudget = Number(this.env.MAX_DAILY_COST_CENTS_GLOBAL ?? 0);

@@ -10,7 +10,7 @@ import { batchStatementStatus, isStaleBatch, BATCH_MAX_AGE_MS } from "../src/lib
 import { extractSituationDraft, parseBatchMessage, mapBatchItems, type BatchItem } from "../src/extract";
 import type { LLM } from "../src/llm";
 import { isValidAbn, normaliseAbn } from "../web/src/lib/abn";
-import { billableCents } from "../src/lib/billing";
+import { billableCents, billableE4, freeCreditGrantE4 } from "../src/lib/billing";
 import { costCents, isPricedModel, toE4, centsFromE4 } from "../src/lib/usage";
 import { LLM_MODEL_IDS } from "../src/llm";
 import { computeWorkMethodDeductions, workUseRatesForFy, deriveWfhHours, generateWfhDiary } from "../src/lib/work-use";
@@ -1720,6 +1720,19 @@ console.log("billableCents");
   check("rounds to whole cents (33c +30% = 42.9 → 43)", billableCents(33, 30, 0) === 43);
   check("never bills less than measured cost (markup ≥ 0)", billableCents(250, 0, 0) >= 250);
   check("negative/garbage inputs floor at 0", billableCents(-100, -5, -5) === 0);
+}
+
+console.log("billableE4 (wallet debit, sub-cent exact) + free grant");
+{
+  // 1e-4-cent units: 1,000,000 e4 = $1. A sub-cent raw call still debits its true cost+margin.
+  check("e4 markup: 1,000,000 +15% → 1,150,000", billableE4(1_000_000, 15) === 1_150_000);
+  check("e4 zero policy is pass-through", billableE4(5000, 0) === 5000);
+  check("e4 sub-cent call debits (not rounded to free): 3000 +15% → 3450", billableE4(3000, 15) === 3450);
+  check("e4 flat fee adds on top", billableE4(1000, 0, 200) === 1200);
+  check("e4 garbage floors at 0", billableE4(-1, -5, -5) === 0);
+  // Free grant: default $2 = 2,000,000 e4; env override respected.
+  check("free grant default $2 → 2,000,000 e4", freeCreditGrantE4({} as Env) === 2_000_000);
+  check("free grant env override $5 → 5,000,000 e4", freeCreditGrantE4({ FREE_CREDIT_GRANT_CENTS: "500" } as unknown as Env) === 5_000_000);
 }
 
 // ── Progress / next-action engine: the "what do I do now" precedence (pure, offline) ─────────

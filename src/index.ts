@@ -6,6 +6,7 @@ import { requireClerk } from "./auth/clerk";
 import { handleApi } from "./api";
 import { DeleteBlockedError } from "./lib/situation-write";
 import { handleCallback } from "./lib/qbo-oauth";
+import { verifyStripeWebhook } from "./lib/stripe";
 import { marketingResponse } from "./marketing/landing";
 import { legalResponse } from "./marketing/legal";
 import { handleWaitlist } from "./marketing/waitlist";
@@ -184,6 +185,24 @@ export default {
       };
       await stubFor(env, verified.userId).applyCorrection(verified.userId, txnId, field, value);
       return Response.json({ ok: true });
+    }
+
+    // Stripe webhook (usage-billing top-ups). Public + UNauthenticated by Clerk — Stripe calls it
+    // server-to-server, verified by the webhook signing secret. Credits the user's wallet on a paid
+    // checkout. Inert (503) until STRIPE_WEBHOOK_SECRET is set; idempotent on the session id.
+    if (url.pathname === "/api/stripe/webhook" && req.method === "POST") {
+      const payload = await req.text();
+      const event = await verifyStripeWebhook(env, payload, req.headers.get("stripe-signature"));
+      if (!event) return new Response(env.STRIPE_WEBHOOK_SECRET ? "bad signature" : "billing not configured", { status: env.STRIPE_WEBHOOK_SECRET ? 400 : 503 });
+      if (event.type === "checkout.session.completed") {
+        const s = (event.data?.object ?? {}) as { id?: string; payment_status?: string; metadata?: { user_id?: string; credit_e4?: string } };
+        const userId = s.metadata?.user_id;
+        const creditE4 = Number(s.metadata?.credit_e4 ?? 0);
+        if (s.payment_status === "paid" && userId && creditE4 > 0) {
+          await stubFor(env, userId).creditWallet(userId, creditE4, "topup", s.id ?? null);
+        }
+      }
+      return Response.json({ received: true });
     }
 
     // Record explicit APP-8 cross-border consent (fix H7).

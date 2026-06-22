@@ -36,3 +36,24 @@ export function billableCents(rawCostCents: number, markupPct: number, appFeeCen
   const marked = raw * (1 + (markupPct || 0) / 100);
   return Math.round(marked) + Math.max(0, appFeeCents || 0);
 }
+
+// ── Usage-based wallet billing (flag `billing`) ────────────────────────────────
+// Pricing model (owner decision): free to join + a small free credit allowance, then the user pays
+// their ACTUAL AI cost + a tiny margin (markupPct). The wallet balance is held in 1e-4-cent units
+// (`credit_balance_e4`) to match the daily_cost ledger's sub-cent precision, so even a fraction-of-a-
+// cent Haiku call debits its true cost+margin instead of rounding to free.
+
+/** Free credit allowance granted once on signup (so new users can try AI features before paying).
+ *  Env-overridable via FREE_CREDIT_GRANT_CENTS; default $2.00. Returned in 1e-4-cent units. */
+export function freeCreditGrantE4(env: Env): number {
+  const cents = Number(env.FREE_CREDIT_GRANT_CENTS ?? 200);
+  return Math.max(0, Math.round((Number.isFinite(cents) ? cents : 200) * 10_000));
+}
+
+/** What a `rawE4` (1e-4-cent) call debits from the wallet: raw × (1 + margin%) + optional flat fee.
+ *  Same shape as billableCents but in e4 units, so debits stay sub-cent-exact. */
+export function billableE4(rawE4: number, markupPct: number, flatFeeE4 = 0): number {
+  const raw = Math.max(0, rawE4 || 0);
+  if (raw <= 0) return 0;
+  return Math.round(raw * (1 + (markupPct || 0) / 100)) + Math.max(0, flatFeeE4 || 0);
+}

@@ -77,6 +77,7 @@ const GROUPS: NavGroup[] = [
     items: [
       { to: "/quickbooks", label: "QuickBooks", icon: "check" },
       { to: "/notifications", label: "Alerts", icon: "bell" },
+      { to: "/billing", label: "Billing", icon: "card", flag: "billing" },
     ],
   },
   {

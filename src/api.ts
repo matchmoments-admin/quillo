@@ -72,7 +72,7 @@ import { QuickBooksAdapter } from "./ledger/qbo";
 import { LedgerReauthError } from "./ledger";
 import { buildReport, reportToCsv, currentFyStartYear } from "./lib/report";
 import { resolveJurisdictionForUser } from "./lib/jurisdiction";
-import { buildAccountantSchedule, scheduleToCsv } from "./lib/accountant-schedule";
+import { buildAccountantSchedule, scheduleToCsv, scheduleToXlsx } from "./lib/accountant-schedule";
 import { getProgress } from "./lib/progress";
 import { featureOn } from "./lib/features";
 
@@ -1181,6 +1181,22 @@ export async function handleApi(
   if (resource === "report" && m === "GET") {
     const fy = Number(url.searchParams.get("fy")) || defaultFy();
     const rep = await buildReport(env, uid, fy);
+    if (url.searchParams.get("format") === "xlsx") {
+      // Accountant-handoff Phase 1: the same itemised schedule the CSV builds, re-projected into a
+      // multi-tab workbook. Requires BOTH the itemised schedule and the xlsx flag; flag off ⇒ 404
+      // (CSV path is the byte-identical fallback). Presentation-only — no engine change.
+      if (!featureOn(env, "accountant_schedule") || !featureOn(env, "accountant_xlsx")) {
+        return json({ error: "not_found" }, 404);
+      }
+      const sched = await buildAccountantSchedule(env, uid, fy, { report: rep });
+      const buf = scheduleToXlsx(sched);
+      return new Response(buf, {
+        headers: {
+          "content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          "content-disposition": `attachment; filename=quillo-accountant-schedule-${rep.fy}.xlsx`,
+        },
+      });
+    }
     if (url.searchParams.get("format") === "csv") {
       // #179/#181: the itemised accountant schedule replaces the thin summary CSV when the flag is
       // on. Flag off ⇒ the identical legacy code path (byte-identical output by construction).

@@ -254,6 +254,16 @@ export const api = {
     const filename = m ? m[1].trim().replace(/^"|"$/g, "") : `quillo-report-${fy ?? "current"}.csv`;
     return { blob: await res.blob(), filename };
   },
+  // Accountant schedule as a multi-tab .xlsx workbook (flag accountant_xlsx). Same Bearer-authed
+  // blob-download pattern as reportCsv — a plain <a href> would 401 and drop the fy param.
+  reportXlsx: async (fy?: number): Promise<{ blob: Blob; filename: string }> => {
+    const res = await fetch(`/api/report?format=xlsx${fy ? `&fy=${fy}` : ""}`, { credentials: "include", headers: await authHeaders() });
+    if (!res.ok) throw await errFrom(res);
+    const cd = res.headers.get("content-disposition") ?? "";
+    const m = /filename=([^;]+)/.exec(cd);
+    const filename = m ? m[1].trim().replace(/^"|"$/g, "") : `quillo-accountant-schedule-${fy ?? "current"}.xlsx`;
+    return { blob: await res.blob(), filename };
+  },
   filingReadiness: (fy?: number) => get<FilingReadiness>(`/api/filing-readiness${fy ? `?fy=${fy}` : ""}`),
   // Soft per-FY sign-off (attestation only — Quillo never lodges)
   fySignoff: (fy?: number) => get<{ signoff: { signed_off_at: string } | null }>(`/api/signoff${fy ? `?fy=${fy}` : ""}`).then((r) => r.signoff),

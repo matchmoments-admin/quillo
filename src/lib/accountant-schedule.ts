@@ -18,6 +18,7 @@ import { classifyAttribution, splitAttribution } from "./attribution";
 import { exclusionReason } from "./readiness";
 import { featureOn } from "./features";
 import { generateWfhDiary, WFH_WEEKDAY_NAMES } from "./work-use";
+import { buildXlsx, type XlsxCell, type XlsxSheet } from "./xlsx";
 
 // ── The itemised accountant deliverable (#179 + #181, EPIC #178) ─────────────
 // A persona-aware, multi-section schedule an accountant can audit: per-transaction lines with
@@ -69,11 +70,19 @@ export const MAX_SECTION_ROWS = 5000;
  * from uploaded statements (attacker-influenceable), so a leading = + - @ is prefixed with ' to stop
  * spreadsheet formula execution. Numbers pass through untouched; null → empty.
  */
+/**
+ * Neutralise spreadsheet formula injection: a string starting with = + - @ (attacker-influenceable
+ * merchant/description text from uploaded statements) is prefixed with ' so a spreadsheet renders it
+ * as a literal rather than evaluating it. Shared by the CSV and xlsx emitters so the two never drift.
+ */
+export function neutraliseFormula(s: string): string {
+  return /^[=+\-@]/.test(s) ? `'${s}` : s;
+}
+
 export function csvCell(v: Cell): string {
   if (v == null) return "";
   if (typeof v === "number") return String(v);
-  let s = v;
-  if (/^[=+\-@]/.test(s)) s = `'${s}`;
+  let s = neutraliseFormula(v);
   if (/[",\r\n]/.test(s)) s = `"${s.replace(/"/g, '""')}"`;
   return s;
 }
@@ -885,4 +894,102 @@ export function scheduleToCsv(s: AccountantSchedule): string {
     for (const n of sec.notes ?? []) lines.push(csvCell(`Note: ${n}`));
   }
   return lines.join("\n") + "\n";
+}
+
+// ── xlsx emission ───────────────────────────────────────────────────────────
+// Re-projection of the SAME sections (no engine change): one worksheet per section, Summary first,
+// so an accountant gets a tabbed workbook instead of one 2000-line flat sheet. Tie-backs, subtotals,
+// notes and the formula-injection guard are preserved verbatim from the CSV path.
+
+// Amounts are stored in the section rows as 2-dp strings via d() (e.g. "1396.00"); the xlsx path
+// re-types them as real numeric cells so Excel can sum/filter. To avoid misreading a non-money cell
+// that merely looks like "N.NN" (a merchant literally named "100.00", a 2-dp quantity), money is
+// detected at the COLUMN level (isMoneyColumn) — a stray numeric-looking value in an otherwise-text
+// column stays text.
+const MONEY_RE = /^-?\d+\.\d{2}$/;
+const cents = (c: string): number => Math.round(parseFloat(c) * 100);
+
+/**
+ * A column is "money" iff every non-empty cell in it is a d()-formatted amount — so a Gross/Counted
+ * column qualifies, but a Merchant column with one "100.00" entry (and other text) does not, and a
+ * numeric Count / Work-use % column (real `number`s, not 2-dp strings) does not.
+ */
+function moneyColumns(sec: ScheduleSection): boolean[] {
+  const n = sec.columns.length;
+  const hits = new Array<number>(n).fill(0);
+  const other = new Array<number>(n).fill(0);
+  for (const row of sec.rows) {
+    for (let j = 0; j < n; j++) {
+      const c = row[j];
+      if (c == null || c === "") continue;
+      if (typeof c === "string" && MONEY_RE.test(c)) hits[j] = (hits[j] ?? 0) + 1;
+      else other[j] = (other[j] ?? 0) + 1;
+    }
+  }
+  return hits.map((h, j) => (h ?? 0) > 0 && (other[j] ?? 0) === 0);
+}
+
+function cellToXlsx(c: Cell, isMoney: boolean): XlsxCell {
+  if (c == null) return { v: "" };
+  if (typeof c === "number") return { v: c };
+  if (isMoney && MONEY_RE.test(c)) return { v: parseFloat(c), money: true };
+  return { v: neutraliseFormula(c) };
+}
+
+export function scheduleToXlsx(s: AccountantSchedule): Uint8Array {
+  const sheets: XlsxSheet[] = s.sections.map((sec) => {
+    const rows: XlsxCell[][] = [];
+    // Cover block on the Summary sheet only; every other sheet leads with its own title.
+    if (sec.key === "summary") {
+      rows.push([{ v: `Quillo accountant schedule`, bold: true }]);
+      rows.push([{ v: `FY ${s.fy} · ${s.start} to ${s.end}` }]);
+      rows.push([{ v: `ABN: ${s.abn ?? "(not set)"}` }]);
+      rows.push([{ v: s.disclaimer }]);
+      rows.push([]);
+    }
+    rows.push([{ v: sec.title, bold: true }]);
+    rows.push([]);
+    rows.push(sec.columns.map((c) => ({ v: c, bold: true } as XlsxCell)));
+    const isMoney = moneyColumns(sec);
+    for (const row of sec.rows) rows.push(row.map((c, j) => cellToXlsx(c, isMoney[j] ?? false)));
+    if (sec.subtotal_cents != null) {
+      // Place the subtotal value under the money column it actually sums (the column whose cents
+      // total equals subtotal_cents); fall back to the first money column, else column 2. NEVER the
+      // last column blindly — that's often a "Substantiation"/"Deductibility" text field.
+      const ncols = Math.max(sec.columns.length, 1);
+      let target = -1;
+      for (let j = 0; j < ncols; j++) {
+        if (!isMoney[j]) continue;
+        const sum = sec.rows.reduce((acc, row) => {
+          const cell = row[j];
+          return acc + (typeof cell === "string" && MONEY_RE.test(cell) ? cents(cell) : 0);
+        }, 0);
+        if (sum === sec.subtotal_cents) { target = j; break; }
+      }
+      if (target < 0) target = isMoney.findIndex(Boolean);
+      if (target < 0) target = Math.min(1, ncols - 1);
+      const subRow: XlsxCell[] = Array.from({ length: Math.max(ncols, target + 1) }, () => ({ v: "" as string | number }));
+      subRow[target] = { v: sec.subtotal_cents / 100, money: true, bold: true };
+      if (target !== 0) subRow[0] = { v: "Subtotal", bold: true };
+      rows.push(subRow);
+    }
+    if (sec.tie_back && !sec.tie_back.ok) {
+      rows.push([{ v: `NOTE: this section does not tie to the report ${sec.tie_back.label} (section ${d(sec.tie_back.actual_cents)} vs report ${d(sec.tie_back.report_cents)}) — review in the app.`, bold: true }]);
+    }
+    for (const n of sec.notes ?? []) rows.push([{ v: `Note: ${n}` }]);
+    // Tab name from the section key (short, ascii, stable) — buildXlsx sanitises + de-dupes; the
+    // full human title lives in the sheet's A1 caption so nothing is lost to the 31-char limit.
+    return { name: tabNameFor(sec), rows };
+  });
+  return buildXlsx(sheets);
+}
+
+// A short, human tab label per section. Property sections carry a long title; prefer a compact form.
+function tabNameFor(sec: ScheduleSection): string {
+  if (sec.key === "summary") return "Summary";
+  if (sec.key.startsWith("property:")) {
+    // "property:104-Womerah" → "104-Womerah"; the full ATO-style title stays in A1.
+    return sec.key.slice("property:".length) || sec.title;
+  }
+  return sec.title;
 }

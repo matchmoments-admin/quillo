@@ -2393,6 +2393,11 @@ console.log("currency de-anchoring (toBaseCurrency / baseCurrencyOf / currencySy
   check("segment: employer-reimbursed → not claimable (even if otherwise suggested)", seg({ deductibility: "suggested_deductible", bucket: "payg", reimbursed: 1 }) === "excluded");
   check("segment: rent-free / use-status denied → not claimable", seg({ deductibility: "undetermined", bucket: "property_rented", use_status_denied: 1 }) === "excluded");
   check("segment: capital asset → not claimable (claimed over time as decline in value)", seg({ deductibility: "undetermined", bucket: "asset" }) === "excluded");
+  // Transfers / repayments are never deductions — must NOT read as "worth a second look" even while undetermined.
+  check("segment: a transfer is not claimable (not 'worth a second look')", seg({ deductibility: "undetermined", bucket: "unknown", ato_label: "unknown:transfer" }) === "excluded");
+  check("segment: an opaque transfer is not claimable", seg({ deductibility: "needs_apportionment", bucket: "payg", ato_label: "unknown:transfer-opaque" }) === "excluded");
+  check("segment: a credit-card repayment is not claimable", seg({ deductibility: "undetermined", bucket: "payg", ato_label: "payg:credit-card-repay" }) === "excluded");
+  check("segment: a genuinely unknown payg item is still worth a second look", seg({ deductibility: "undetermined", bucket: "payg", ato_label: "payg:unknown" }) === "review");
 }
 
 // ── ATO return-label routing: a work-related ato_label maps to its D-label; anything else is a

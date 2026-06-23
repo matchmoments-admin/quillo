@@ -135,15 +135,22 @@ export function tieBackChecks(s: AccountantSchedule): TieBack[] {
 // vs "not claimable" = structurally excluded for you (private spend, employer-reimbursed, rent-free
 // holding costs, capital purchases claimed over time). Nothing is hidden; the uncertain items lead.
 export type NotClaimedSegment = "review" | "excluded";
+// A transfer / card-or-loan repayment is never itself a deduction (the underlying expense, if any, is
+// claimed directly), so it must NOT read as "your agent may be able to claim this" even while it sits
+// as undetermined in the ledger. Matched on the category label (e.g. "unknown:transfer",
+// "payg:credit-card-repay", "transfer-opaque").
+const TRANSFER_LIKE_LABEL = /transfer|credit.?card.?repay|card.?repay|repayment|loan.?repay/i;
 export function notClaimedSegment(r: {
   deductibility?: string | null;
   bucket: string;
+  ato_label?: string | null;
   reimbursed?: number | null;
   use_status_denied?: number | null;
   property_undetermined?: number | null;
 }): NotClaimedSegment {
-  if (r.property_undetermined) return "review";
   if (r.reimbursed || r.use_status_denied || r.bucket === "asset") return "excluded";
+  if (r.ato_label && TRANSFER_LIKE_LABEL.test(r.ato_label)) return "excluded"; // transfers/repayments are never deductions
+  if (r.property_undetermined) return "review";
   if (r.deductibility === "suggested_deductible" || r.deductibility === "needs_apportionment") return "review";
   if (r.deductibility === "likely_not" || r.deductibility === "confirmed_not") return "excluded";
   return "review"; // undetermined / not yet confirmed — the agent may still be able to claim it

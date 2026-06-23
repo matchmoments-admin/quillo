@@ -388,6 +388,45 @@ export function phiResetNudgeCopy(unusedCents: number, resetDateIso: string, wee
   return `Heads up: ${money(unusedCents)} of your private-health extras cover is unused and your limits reset on ${reset} (${when}). After that the balance starts fresh. General information only.`;
 }
 
+/** Best-guess extras category from a merchant string — for one-tap logging of a detected allied-health
+ *  transaction against an extras limit (the user confirms/changes it). */
+export function suggestExtrasCategory(merchant: string | null | undefined): ExtrasCategory {
+  const s = (merchant ?? "").toLowerCase();
+  if (/\b(dental|dentist|orthodont|denticare)\b/.test(s)) return "dental.general";
+  if (/physio/.test(s)) return "physiotherapy";
+  if (/chiro/.test(s)) return "chiropractic";
+  if (/osteo/.test(s)) return "osteopathy";
+  if (/optical|optometr|specsavers|opsm|laubman/.test(s)) return "optical";
+  if (/psycholog/.test(s)) return "psychology";
+  if (/podiatr/.test(s)) return "podiatry";
+  if (/massage|myotherap/.test(s)) return "remedial_massage";
+  if (/acupunct|naturopath|chinese medicine|herbal/.test(s)) return "acupuncture_natural";
+  if (/dietit|dietet|nutrition/.test(s)) return "dietetics";
+  if (/exercise physio/.test(s)) return "exercise_physiology";
+  if (/occupational therap/.test(s)) return "occupational_therapy";
+  if (/speech/.test(s)) return "speech_therapy";
+  if (/pharmac|chemist/.test(s)) return "pharmacy";
+  return "allied_other";
+}
+
+/** The government's Healthdirect service finder — a NEUTRAL, no-commission directory of AU health
+ *  providers. We signpost to it (factual, opt-in), never recommend a specific provider. */
+export const HEALTHDIRECT_FINDER_URL = "https://www.healthdirect.gov.au/australian-health-services";
+
+/** The provider type to search for, for an extras category (empty ⇒ no provider-finder link, e.g. for
+ *  pharmacy/appliances where "find a provider" doesn't apply). */
+export function providerSearchTerm(category: string): string {
+  const map: Record<string, string> = {
+    "dental.general": "dentist", "dental.major": "dentist", orthodontics: "orthodontist",
+    optical: "optometrist", physiotherapy: "physiotherapist", chiropractic: "chiropractor",
+    osteopathy: "osteopath", remedial_massage: "remedial massage therapist", psychology: "psychologist",
+    podiatry: "podiatrist", acupuncture_natural: "acupuncturist", dietetics: "dietitian",
+    exercise_physiology: "exercise physiologist", occupational_therapy: "occupational therapist",
+    speech_therapy: "speech pathologist",
+  };
+  return map[category] ?? "";
+}
+
 /** Factual opportunity body shown when a private-health premium is detected — points to the tracker. */
 export function phiDetectedCopy(insurerLabel: string): string {
   return `We spotted a private-health premium from ${insurerLabel}. Add your extras limits to track what's unused before they reset. General information only.`;

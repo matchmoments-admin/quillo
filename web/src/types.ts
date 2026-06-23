@@ -398,6 +398,7 @@ export interface PhiCategoryLine {
   combined_group: string | null; // non-null ⇒ this limit is shared across a pool of services
   source: string;           // manual | sourced | extracted
   verified: number;         // 0 ⇒ awaiting member confirmation (sourced/extracted)
+  provider_term: string;    // "" or a service term for the "find a provider near you" signpost
   entries: PhiUsageEntry[];
   copy: string;
 }
@@ -415,10 +416,18 @@ export interface PhiPolicyView {
   total_unused_cents: number;
   categories: PhiCategoryLine[];
 }
+export interface PhiLoggable {
+  txn_id: string;
+  merchant: string;
+  amount_cents: number;
+  txn_date: string;
+  suggested_category: string;
+}
 export interface PhiOverview {
   consented: boolean;
   private_health: number;
   policies: PhiPolicyView[];
+  loggable: PhiLoggable[];
   category_options: { value: string; label: string }[];
   disclaimer: string;
 }

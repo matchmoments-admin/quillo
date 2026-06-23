@@ -314,6 +314,19 @@ function ProviderFinder({ category, providerTerm }: { category: string; provider
 
       {q.isSuccess && providers.length > 0 && (
         <>
+          {res?.embed_key && (
+            // Interactive Google map of the area (Maps Embed API — free). It has a built-in "View
+            // larger map" that opens the native Maps app. Only the typed query (term + postcode) is
+            // sent — no identity. Rendered only when the public embed key is configured.
+            <iframe
+              title={`Map of nearby ${providerTerm}s`}
+              className="mt-3 h-56 w-full rounded-xl border border-line"
+              loading="lazy"
+              referrerPolicy="no-referrer-when-downgrade"
+              allowFullScreen
+              src={`https://www.google.com/maps/embed/v1/search?key=${res.embed_key}&q=${encodeURIComponent(`${providerTerm} near ${submitted} Australia`)}`}
+            />
+          )}
           <p className="mt-3 text-xs text-ink-3">Nearby {providerTerm}s (may be incomplete) — <strong>confirm they accept your fund / health cover with the provider.</strong> Quillo earns nothing from these listings — no paid placement.</p>
           <ul className="mt-2 space-y-2">
             {providers.map((pv, i) => <ProviderRow key={`${pv.name}-${i}`} pv={pv} />)}

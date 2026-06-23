@@ -35,7 +35,7 @@ const CSP_DIRECTIVES = [
   "img-src 'self' data: blob: https://*.clerk.com https://img.clerk.com",
   "connect-src 'self' https://*.clerk.accounts.dev https://*.clerk.com",
   "worker-src 'self' blob:",
-  "frame-src 'self' https://*.clerk.com https://challenges.cloudflare.com",
+  "frame-src 'self' https://*.clerk.com https://challenges.cloudflare.com https://www.google.com",
   "form-action 'self'",
   "report-uri /csp-report",
 ].join("; ");

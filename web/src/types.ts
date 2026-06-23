@@ -450,6 +450,7 @@ export interface PhiProvidersResult {
   providers: PhiProvider[];
   finder_url: string;
   attribution: { text: string; href: string };
+  embed_key?: string | null; // PUBLIC Maps Embed API key (or null) → in-app interactive map
 }
 
 // ── Usage-based billing wallet (flag billing) ──

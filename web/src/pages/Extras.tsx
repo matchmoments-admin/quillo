@@ -303,7 +303,14 @@ function ProviderFinder({ category, providerTerm }: { category: string; provider
       </div>
 
       {q.isFetching && <p className="mt-2 text-xs text-ink-3">Searching nearby {providerTerm}s…</p>}
-      {q.isError && <p className="mt-2 text-xs text-danger">Couldn't search just now — try the Healthdirect finder below.</p>}
+      {q.isError && (
+        <p className="mt-2 text-xs text-ink-2">
+          {(q.error as Error)?.message || "Couldn't search just now."}{" "}
+          <a href={allInMapsUrl} target="_blank" rel="noopener noreferrer" className="font-semibold text-forest underline">Open in Maps ↗</a>
+          {" · "}
+          <a href={finderUrl} target="_blank" rel="noopener noreferrer" className="font-semibold text-forest underline">Healthdirect ↗</a>
+        </p>
+      )}
 
       {q.isSuccess && providers.length > 0 && (
         <>

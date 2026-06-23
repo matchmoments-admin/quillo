@@ -28,7 +28,7 @@ import {
 } from "./lib/queries";
 import { phisProductList } from "./lib/phis-seed";
 import { providerSearchTerm, HEALTHDIRECT_FINDER_URL } from "./lib/advisory";
-import { fetchProviders, PROVIDER_ATTRIBUTION } from "./lib/phi-providers";
+import { fetchProviders, withinProviderSearchCap, PROVIDER_ATTRIBUTION } from "./lib/phi-providers";
 import { createTopupCheckout } from "./lib/stripe";
 import { isAdmin, isPartner, normaliseRoles } from "./lib/roles";
 import { REFERRAL_STATUSES, canAdvanceReferral, sanitizeRevenueCents, partnerPortalData } from "./lib/partners";
@@ -501,6 +501,11 @@ export async function handleApi(
       if (!/^\d{4}$/.test(postcode)) return json({ error: "valid 4-digit postcode required" }, 400);
       const term = providerSearchTerm(url.searchParams.get("category") ?? "");
       if (!term) return json({ providers: [], finder_url: HEALTHDIRECT_FINDER_URL, attribution: PROVIDER_ATTRIBUTION });
+      // Per-tenant daily cap before the billable Google call (cost guardrail). Over cap ⇒ the SPA still
+      // shows the zero-cost "Open in Maps" + Healthdirect fallback, so it degrades gracefully.
+      if (!(await withinProviderSearchCap(env, uid))) {
+        return json({ error: "Daily provider-search limit reached — use the Maps link below, or try again tomorrow." }, 429);
+      }
       const providers = await fetchProviders(env, term, postcode);
       return json({ providers, finder_url: HEALTHDIRECT_FINDER_URL, attribution: PROVIDER_ATTRIBUTION });
     }

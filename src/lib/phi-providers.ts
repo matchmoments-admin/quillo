@@ -32,6 +32,31 @@ export const PROVIDER_ATTRIBUTION = {
 } as const;
 
 const MAX_RESULTS = 20;
+const DEFAULT_MAX_SEARCHES_PER_DAY = 200; // safe default per tenant when PHI_PROVIDER_MAX_PER_DAY is unset
+
+/**
+ * Per-tenant daily cap on provider searches — a cheap server-side guardrail so a buggy/abusive client
+ * can't spin the Google Places meter. Mirrors the KV-counter pattern in usage.ts (lossy under high
+ * concurrency, which is fine here — the Google-side daily quota is the hard global ceiling; this just
+ * stops one tenant running away). `PHI_PROVIDER_MAX_PER_DAY` overrides the default; "0" = unlimited.
+ * Returns true if the call is allowed (and counts it), false if the tenant is over today's cap.
+ */
+export async function withinProviderSearchCap(env: Env, userId: string): Promise<boolean> {
+  const cap = env.PHI_PROVIDER_MAX_PER_DAY != null && env.PHI_PROVIDER_MAX_PER_DAY !== ""
+    ? Number(env.PHI_PROVIDER_MAX_PER_DAY)
+    : DEFAULT_MAX_SEARCHES_PER_DAY;
+  if (!Number.isFinite(cap) || cap <= 0) return true; // 0/invalid ⇒ unlimited (matches env convention)
+  try {
+    const day = new Date().toISOString().slice(0, 10);
+    const key = `phi:providers:count:${userId}:${day}`;
+    const cur = Number((await env.RULES.get(key)) ?? 0);
+    if (cur >= cap) return false;
+    await env.RULES.put(key, String(cur + 1), { expirationTtl: 60 * 60 * 26 });
+    return true;
+  } catch {
+    return true; // never let a KV hiccup block a legitimate search — the Google quota is the hard cap
+  }
+}
 
 /**
  * The Google Places Text Search query for a provider noun near a postcode. PURE (no network) so it's

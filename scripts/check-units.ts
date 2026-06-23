@@ -2202,11 +2202,12 @@ console.log("phi-providers (interim Geoapify finder — neutral shape + dental-v
   check("normaliser omits absent phone/website (no empty keys)", norm[1].phone === undefined && norm[1].website === undefined);
   check("normaliser leaks NO place_id/category/score field", Object.keys(norm[0]).every((k) => ["name", "address", "phone", "website"].includes(k)));
   check("normaliser is null-safe", normaliseGeoapify(null).length === 0 && normaliseGeoapify(undefined).length === 0);
-  // Dental → category filter; every other allied-health noun → name= text search (no Geoapify category).
+  // Dental → its own category (no name). Every other noun → the broad clinic category AND a name
+  // narrow — Geoapify REQUIRES `categories` on every Places call, so a name-only query 400s.
   const dental = geoapifyPlacesQuery("dentist", 151.2, -33.86);
   const physio = geoapifyPlacesQuery("physiotherapist", 151.2, -33.86);
-  check("dental term → categories=healthcare.dentist (not name=)", dental.includes("categories=healthcare.dentist") && !dental.includes("name="));
-  check("physio term → name=physiotherapist (not a category)", physio.includes("name=physiotherapist") && !physio.includes("categories="));
+  check("dental term → categories=healthcare.dentist (no name=)", dental.includes("categories=healthcare.dentist") && !dental.includes("name="));
+  check("non-dental → required category + name narrow (not name-only, which 400s)", physio.includes("categories=healthcare.clinic_or_praxis") && physio.includes("name=physiotherapist"));
   check("query scopes to the postcode centroid (circle filter + bias)", physio.includes("filter=circle") && physio.includes("bias=proximity"));
 }
 

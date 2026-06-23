@@ -45,9 +45,14 @@ function isDentalTerm(providerTerm: string): boolean {
  */
 export function geoapifyPlacesQuery(providerTerm: string, lon: number, lat: number): string {
   const p = new URLSearchParams();
+  // Geoapify REQUIRES `categories` on every Places call. Dental has its own category; for every other
+  // allied-health noun there is NO granular category, so we scope to the broad clinic category and
+  // narrow by practitioner name. Name-match recall is the documented interim limitation — empty
+  // results fall back to the Healthdirect signpost, and NHSD replaces this body entirely (~3mo).
   if (isDentalTerm(providerTerm)) {
     p.set("categories", "healthcare.dentist");
   } else {
+    p.set("categories", "healthcare.clinic_or_praxis");
     p.set("name", providerTerm);
   }
   p.set("filter", `circle:${lon},${lat},${PLACES_RADIUS_M}`);

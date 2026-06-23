@@ -436,6 +436,19 @@ export interface PhiInsurerOption {
   insurer_name: string;
   products: { id: string; name: string }[];
 }
+// Interim provider finder (flag phi_provider_directory). FACTUAL/neutral: a provider of a TYPE near a
+// postcode — no ranking/commission/fund-status. attribution carries the Geoapify free-plan obligations.
+export interface PhiProvider {
+  name: string;
+  address: string;
+  phone?: string;
+  website?: string;
+}
+export interface PhiProvidersResult {
+  providers: PhiProvider[];
+  finder_url: string;
+  attribution: { text: string; href: string };
+}
 
 // ── Usage-based billing wallet (flag billing) ──
 export interface BillingLedgerRow {

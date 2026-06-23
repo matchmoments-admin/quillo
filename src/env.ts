@@ -55,6 +55,10 @@ export interface Env {
   // Only present when a tenant uses inference_provider=bedrock:
   AWS_ACCESS_KEY_ID?: string;
   AWS_SECRET_ACCESS_KEY?: string;
+  // Optional (flag phi_provider_directory): Geoapify Places/Geocoding API key for the interim
+  // Extras provider finder. Server-side only — never reaches the SPA. Absent ⇒ fetchProviders
+  // returns [] (the UI falls back to the Healthdirect signpost).
+  GEOAPIFY_KEY?: string;
 }
 
 /**

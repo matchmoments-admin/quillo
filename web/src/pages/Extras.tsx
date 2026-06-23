@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import { api } from "../api";
 import { useFeatures } from "../lib/features";
 import { Panel, PanelHead, KpiCard, Pill, Spinner, Button, Input, Meter, InfoTip, Term, money } from "../components/ui";
-import type { PhiOverview, PhiPolicyView, PhiLoggable } from "../types";
+import type { PhiOverview, PhiPolicyView, PhiLoggable, PhiProvider } from "../types";
 
 // Government health-service finder (Healthdirect) — a neutral, no-commission directory we signpost to.
 const HEALTHDIRECT_FINDER_URL = "https://www.healthdirect.gov.au/australian-health-services";
@@ -201,9 +201,7 @@ function PolicyCard({ p, options, onChange }: { p: PhiPolicyView; options: { val
                 <div className="mt-1 flex flex-wrap items-center gap-x-3 text-xs text-ink-3">
                   <span>{c.annual_limit_cents > 0 ? <>{money(c.used_cents)} used of {money(c.annual_limit_cents)} limit</> : <>{money(c.used_cents)} recorded · add a limit to track what's left</>}</span>
                   {c.provider_term && c.remaining_cents > 0 && (
-                    <a href={HEALTHDIRECT_FINDER_URL} target="_blank" rel="noopener noreferrer" className="font-semibold text-forest underline">
-                      Find a {c.provider_term} near you ↗
-                    </a>
+                    <ProviderFinder category={c.category} providerTerm={c.provider_term} />
                   )}
                 </div>
                 {c.entries.length > 0 && (
@@ -229,6 +227,116 @@ function PolicyCard({ p, options, onChange }: { p: PhiPolicyView; options: { val
         <UsageForm policyId={p.id} options={options} onDone={onChange} />
       </div>
     </Panel>
+  );
+}
+
+// Interim "where can I spend my extras?" finder (flag phi_provider_directory). Flag OFF ⇒ today's
+// exact static Healthdirect link (byte-identical). Flag ON ⇒ an opt-in, per-tap disclosure: enter a
+// postcode → a FACTUAL list of nearby providers of this TYPE (no ranking/commission/fund-status). Only
+// the postcode + category leave Quillo. Mobile-first: full-width stacked controls, tap-friendly links.
+function ProviderFinder({ category, providerTerm }: { category: string; providerTerm: string }) {
+  const { has } = useFeatures();
+  const [open, setOpen] = useState(false);
+  const [postcode, setPostcode] = useState("");
+  const [submitted, setSubmitted] = useState("");
+  const valid = /^\d{4}$/.test(postcode);
+  const q = useQuery({
+    queryKey: ["phi-providers", category, submitted],
+    queryFn: () => api.phiProviders(category, submitted),
+    enabled: /^\d{4}$/.test(submitted),
+    staleTime: 3_600_000, // matches the 24h server cache horizon; postcodes rarely change mid-session
+  });
+
+  // Flag OFF ⇒ render today's exact static link. No DOM difference vs before the feature.
+  if (!has("phi_provider_directory")) {
+    return (
+      <a href={HEALTHDIRECT_FINDER_URL} target="_blank" rel="noopener noreferrer" className="font-semibold text-forest underline">
+        Find a {providerTerm} near you ↗
+      </a>
+    );
+  }
+
+  if (!open) {
+    return (
+      <button type="button" onClick={() => setOpen(true)} className="font-semibold text-forest underline">
+        Find a {providerTerm} near you
+      </button>
+    );
+  }
+
+  const res = q.data;
+  const providers = res?.providers ?? [];
+  const finderUrl = res?.finder_url ?? HEALTHDIRECT_FINDER_URL;
+  const empty = q.isSuccess && providers.length === 0;
+  // Searching the SAME postcode again (e.g. after an error) wouldn't change the queryKey, so
+  // react-query wouldn't refetch — force it. A new postcode just updates `submitted`.
+  const search = () => { if (!valid) return; if (submitted === postcode) q.refetch(); else setSubmitted(postcode); };
+
+  return (
+    // w-full forces this panel onto its own line within the parent flex-wrap row.
+    <div className="mt-2 w-full rounded-xl border border-line bg-card p-3 text-ink-2">
+      <div className="flex flex-wrap items-end gap-2">
+        <label className="min-w-0 flex-1 text-xs font-semibold text-ink-3">
+          Your postcode
+          <Input
+            className="mt-1 w-full"
+            inputMode="numeric"
+            maxLength={4}
+            value={postcode}
+            placeholder="e.g. 2000"
+            onChange={(e) => setPostcode(e.target.value.replace(/\D/g, "").slice(0, 4))}
+            onKeyDown={(e) => { if (e.key === "Enter") search(); }}
+          />
+        </label>
+        <Button className="h-9 shrink-0 px-4 text-xs uppercase tracking-wide" onClick={search} disabled={!valid || q.isFetching}>
+          {q.isFetching ? "Searching…" : "Search"}
+        </Button>
+        <button type="button" className="h-9 shrink-0 self-end px-2 text-xs text-ink-3 underline hover:text-ink" onClick={() => setOpen(false)}>Close</button>
+      </div>
+
+      {q.isFetching && <p className="mt-2 text-xs text-ink-3">Searching nearby {providerTerm}s…</p>}
+      {q.isError && <p className="mt-2 text-xs text-danger">Couldn't search just now — try the Healthdirect finder below.</p>}
+
+      {q.isSuccess && providers.length > 0 && (
+        <>
+          <p className="mt-3 text-xs text-ink-3">Nearby {providerTerm}s (may be incomplete) — <strong>confirm they accept your fund / health cover with the provider.</strong> Quillo earns nothing from these listings — no paid placement.</p>
+          <ul className="mt-2 space-y-2">
+            {providers.map((pv, i) => <ProviderRow key={`${pv.name}-${i}`} pv={pv} />)}
+          </ul>
+        </>
+      )}
+
+      {empty && (
+        <div className="mt-3 rounded-lg border border-sage/40 bg-sage/10 px-3 py-2.5 text-xs text-ink-2">
+          No nearby {providerTerm}s found for {submitted}. Try the government finder:{" "}
+          <a href={finderUrl} target="_blank" rel="noopener noreferrer" className="font-semibold text-forest underline">Healthdirect service finder ↗</a>
+        </div>
+      )}
+
+      {/* Footer: Geoapify free-plan attribution (all three) + a secondary Healthdirect link when we DID
+          show results (when empty it's already the primary CTA above). */}
+      <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-line pt-2 text-[11px] text-ink-3">
+        <a href={res?.attribution?.href ?? "https://www.geoapify.com/"} target="_blank" rel="noopener noreferrer" className="underline hover:text-ink">
+          {res?.attribution?.text ?? "Powered by Geoapify · © OpenStreetMap contributors"}
+        </a>
+        {q.isSuccess && providers.length > 0 && (
+          <a href={finderUrl} target="_blank" rel="noopener noreferrer" className="underline hover:text-ink">Or use Healthdirect ↗</a>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ProviderRow({ pv }: { pv: PhiProvider }) {
+  return (
+    <li className="rounded-lg border border-line bg-paper px-3 py-2">
+      <div className="text-sm font-semibold text-ink">{pv.name}</div>
+      {pv.address && <div className="text-xs text-ink-3">{pv.address}</div>}
+      <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+        {pv.phone && <a href={`tel:${pv.phone.replace(/\s/g, "")}`} className="font-semibold text-forest underline">Call {pv.phone}</a>}
+        {pv.website && <a href={pv.website} target="_blank" rel="noopener noreferrer" className="font-semibold text-forest underline">Website ↗</a>}
+      </div>
+    </li>
   );
 }
 
@@ -279,7 +387,7 @@ function LimitForm({ policyId, options, onDone }: { policyId: string; options: {
   return (
     <div className="rounded-xl border border-line bg-card p-4">
       <div className="text-xs font-bold uppercase tracking-wide text-ink-3">Add / update a limit</div>
-      <div className="mt-2 grid grid-cols-2 gap-3">
+      <div className="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-2">
         <label className="text-sm">Category
           <select className={SELECT_CLS} value={category} onChange={(e) => setCategory(e.target.value)}>
             {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
@@ -310,7 +418,7 @@ function UsageForm({ policyId, options, onDone }: { policyId: string; options: {
   return (
     <div className="rounded-xl border border-line bg-card p-4">
       <div className="text-xs font-bold uppercase tracking-wide text-ink-3">Record a benefit used</div>
-      <div className="mt-2 grid grid-cols-2 gap-3">
+      <div className="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-2">
         <label className="text-sm">Category
           <select className={SELECT_CLS} value={category} onChange={(e) => setCategory(e.target.value)}>
             {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
@@ -319,7 +427,7 @@ function UsageForm({ policyId, options, onDone }: { policyId: string; options: {
         <label className="text-sm">Benefit used ($) <InfoTip k="phi_benefit_used" />
           <Input className="mt-1 w-full" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="80" />
         </label>
-        <label className="col-span-2 text-sm">Date (optional)
+        <label className="text-sm sm:col-span-2">Date (optional)
           <Input className="mt-1 w-full" type="date" value={usedOn} onChange={(e) => setUsedOn(e.target.value)} />
         </label>
       </div>

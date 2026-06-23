@@ -5,157 +5,125 @@ import type { Env } from "../env";
  *
  * Given an extras-category provider noun (from `providerSearchTerm`, e.g. "physiotherapist") and a
  * 4-digit postcode, return a FACTUAL, neutral list of nearby providers of that type — name, address,
- * phone, website. This is information display, identical in kind to the live Healthdirect signpost it
- * augments: NO ranking/recommendation/commission, NO "accepts your fund" claim, no clinical advice.
+ * phone, website. Information display, identical in kind to the live Healthdirect signpost it augments:
+ * NO ranking/recommendation/commission, NO "accepts your fund" claim, no clinical advice.
  *
- * Source is Geoapify Places (OSM-derived, on commercial managed infra whose ToS explicitly permit
- * caching/storing results — the reason it's chosen over Google/Foursquare/HERE). The key stays
- * server-side; only postcode + service type ever leave Quillo (no identity/fund/ledger — matches the
- * NO-PII referral precedent). NHSD/Healthdirect FHIR later drops into THIS SAME seam + neutral shape
- * (ref SD-207047, ~3 months) — only `fetchProviders`' body changes, no UI/route/shape change.
+ * Source is **Google Places Text Search (New)**. We started on Geoapify (OSM-derived) but it has NO
+ * allied-health place categories — only dentist/pharmacy/hospital/clinic_or_praxis(doctor specialties)
+ * — so ~10 of the 14 extras categories (physio, chiro, podiatry, acupuncture, dietetics, …) returned
+ * zero even in dense metro. Google has real allied-health place types and full AU coverage. The key
+ * stays server-side; only postcode + service type ever leave Quillo (no identity/fund/ledger).
  *
- * Keystone: Geoapify has no granular allied-health categories. Dental uses the
- * `categories=healthcare.dentist` filter; every other allied-health noun uses Geoapify `name=` text
- * search. Both are scoped to the postcode centroid (geocoded via Geoapify) with a radius filter + bias.
+ * Google ToS: place IDs may be cached, but other Places content may NOT be stored — so there is NO KV
+ * cache here (one live call per explicit user Search; volume is tiny). NHSD/Healthdirect FHIR later
+ * drops into THIS SAME seam + neutral shape (ref SD-207047, ~3mo) — only this body changes.
  */
 
-/** Provider-agnostic shape. Deliberately carries NO place_id / category / ranking field — NHSD must be
- *  able to populate the identical shape, and a score field would invite "best for you" steering. */
-export type Provider = { name: string; address: string; phone?: string; website?: string };
+/** Provider-agnostic shape. Deliberately carries NO Google place_id / rating field — NHSD must populate
+ *  the identical shape, and a score field would invite "best for you" steering. lat/lng are optional
+ *  generic geo (used only to build a maps deep-link client-side). */
+export type Provider = { name: string; address: string; phone?: string; website?: string; lat?: number; lng?: number };
 
-/** The Geoapify free-plan attribution obligations (all three) — rendered verbatim on the list surface. */
-export const GEOAPIFY_ATTRIBUTION = {
-  text: "Powered by Geoapify · © OpenStreetMap contributors",
-  href: "https://www.geoapify.com/",
+/** Attribution shown on the list surface. Google requires "Powered by Google" when Places data is shown
+ *  without a Google map. */
+export const PROVIDER_ATTRIBUTION = {
+  text: "Powered by Google",
+  href: "https://www.google.com",
 } as const;
 
-const PLACES_RADIUS_M = 15000; // ~15km around the postcode centroid — metro-tight, covers regional towns.
-const MAX_RESULTS = 20; // 1 Geoapify credit per 20 results; a single category lookup stays at 1 credit.
-
-/** Dental categories map to the only relevant Geoapify category; everything else has none. */
-function isDentalTerm(providerTerm: string): boolean {
-  return /dentist|orthodontist/i.test(providerTerm);
-}
+const MAX_RESULTS = 20;
 
 /**
- * Build the Geoapify Places query string for a provider noun around a centroid. PURE (no network) so
- * the dental-category-vs-name-search split is unit-assertable. Dental → the `healthcare.dentist`
- * category filter; all other allied-health → a `name=` text search (no Geoapify category exists for
- * them). Both scoped to a circle around the centroid + proximity bias, capped at MAX_RESULTS.
+ * The Google Places Text Search query for a provider noun near a postcode. PURE (no network) so it's
+ * unit-assertable. "near {postcode} Australia" lets Google geocode the area itself — no separate
+ * geocoding call, and no hard distance cap (Google ranks by relevance/proximity).
  */
-export function geoapifyPlacesQuery(providerTerm: string, lon: number, lat: number): string {
-  const p = new URLSearchParams();
-  // Geoapify REQUIRES `categories` on every Places call. Dental has its own category; for every other
-  // allied-health noun there is NO granular category, so we scope to the broad clinic category and
-  // narrow by practitioner name. Name-match recall is the documented interim limitation — empty
-  // results fall back to the Healthdirect signpost, and NHSD replaces this body entirely (~3mo).
-  if (isDentalTerm(providerTerm)) {
-    p.set("categories", "healthcare.dentist");
-  } else {
-    p.set("categories", "healthcare.clinic_or_praxis");
-    p.set("name", providerTerm);
-  }
-  p.set("filter", `circle:${lon},${lat},${PLACES_RADIUS_M}`);
-  p.set("bias", `proximity:${lon},${lat}`);
-  p.set("limit", String(MAX_RESULTS));
-  return p.toString();
+export function googleTextQuery(providerTerm: string, postcode: string): string {
+  return `${providerTerm} near ${postcode} Australia`;
 }
 
-/** A minimal view of the Geoapify FeatureCollection we depend on (other fields ignored). */
-type GeoapifyFeature = {
-  properties?: {
-    name?: unknown;
-    formatted?: unknown;
-    address_line2?: unknown;
-    contact?: { phone?: unknown };
-    phone?: unknown;
-    website?: unknown;
-    datasource?: { raw?: { website?: unknown; phone?: unknown } };
-  };
+/** A minimal view of the Google `places:searchText` response we depend on (other fields ignored). */
+type GooglePlace = {
+  displayName?: { text?: unknown };
+  formattedAddress?: unknown;
+  nationalPhoneNumber?: unknown;
+  internationalPhoneNumber?: unknown;
+  websiteUri?: unknown;
+  location?: { latitude?: unknown; longitude?: unknown };
 };
-type GeoapifyFeatureCollection = { features?: GeoapifyFeature[] };
+type GoogleSearchResponse = { places?: GooglePlace[] };
 
 function str(v: unknown): string | undefined {
   return typeof v === "string" && v.trim() ? v.trim() : undefined;
 }
+function num(v: unknown): number | undefined {
+  return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+}
 
 /**
- * Normalise a Geoapify Places FeatureCollection to the neutral `Provider[]` shape. PURE + deterministic
- * (the unit-golden target). Drops nameless features (a result with no provider name is unusable), maps
- * only the neutral fields, preserves API order (distance — never re-ranked), and caps at MAX_RESULTS.
+ * Normalise a Google `places:searchText` response to the neutral `Provider[]` shape. PURE +
+ * deterministic (the unit-golden target). Drops nameless places, maps only the neutral fields,
+ * preserves Google's order (relevance/distance — never re-ranked), and caps at MAX_RESULTS.
  */
-export function normaliseGeoapify(payload: GeoapifyFeatureCollection | null | undefined): Provider[] {
-  const feats = Array.isArray(payload?.features) ? payload!.features! : [];
+export function normaliseGoogle(payload: GoogleSearchResponse | null | undefined): Provider[] {
+  const places = Array.isArray(payload?.places) ? payload!.places! : [];
   const out: Provider[] = [];
-  for (const f of feats) {
-    const pr = f?.properties ?? {};
-    const name = str(pr.name);
-    if (!name) continue; // unnamed POI — not a usable listing
-    const address = str(pr.formatted) ?? str(pr.address_line2) ?? "";
-    const phone = str(pr.contact?.phone) ?? str(pr.phone) ?? str(pr.datasource?.raw?.phone);
-    const website = str(pr.website) ?? str(pr.datasource?.raw?.website);
-    out.push({ name, address, ...(phone ? { phone } : {}), ...(website ? { website } : {}) });
+  for (const p of places) {
+    const name = str(p?.displayName?.text);
+    if (!name) continue; // unnamed place — not a usable listing
+    const address = str(p.formattedAddress) ?? "";
+    const phone = str(p.nationalPhoneNumber) ?? str(p.internationalPhoneNumber);
+    const website = str(p.websiteUri);
+    const lat = num(p.location?.latitude);
+    const lng = num(p.location?.longitude);
+    out.push({
+      name,
+      address,
+      ...(phone ? { phone } : {}),
+      ...(website ? { website } : {}),
+      ...(lat != null && lng != null ? { lat, lng } : {}),
+    });
     if (out.length >= MAX_RESULTS) break;
   }
   return out;
 }
 
-/** Geocode a 4-digit AU postcode to a centroid via Geoapify. Returns null on miss/error. */
-async function geocodePostcode(apiKey: string, postcode: string): Promise<{ lon: number; lat: number } | null> {
-  const p = new URLSearchParams({
-    text: postcode,
-    filter: "countrycode:au",
-    type: "postcode",
-    limit: "1",
-    apiKey,
-  });
-  const res = await fetch(`https://api.geoapify.com/v1/geocode/search?${p.toString()}`);
-  if (!res.ok) {
-    // Surface auth/quota failures (401 bad key, 429 over-limit) — otherwise they're indistinguishable
-    // from a genuine coverage gap. Behaviour is unchanged (caller falls back to Healthdirect).
-    console.warn(`[phi-providers] geocode failed: ${res.status}`);
-    return null;
-  }
-  const j = (await res.json()) as GeoapifyFeatureCollection & {
-    features?: { geometry?: { coordinates?: unknown } }[];
-  };
-  const coords = j.features?.[0]?.geometry?.coordinates;
-  if (!Array.isArray(coords) || typeof coords[0] !== "number" || typeof coords[1] !== "number") return null;
-  return { lon: coords[0], lat: coords[1] };
-}
-
 /**
- * Fetch nearby providers of `providerTerm` around `postcode`. Server-side: the GEOAPIFY_KEY never
- * reaches the SPA. Cached 24h in the RULES KV under a NON-user-scoped key (`provider_term:postcode`,
- * no PII) — Geoapify's ToS permit caching/storing results. Any failure (no key, geocode miss, fetch
- * error) returns [] so the UI shows the Healthdirect signpost as the primary CTA rather than a blank.
+ * Fetch nearby providers of `providerTerm` around `postcode` via Google Places Text Search. Server-side:
+ * GOOGLE_PLACES_KEY never reaches the SPA. The FieldMask requests only the neutral fields (the cheap
+ * SKU). No caching (Google ToS). Any failure (no key, fetch error, non-OK) returns [] so the UI shows
+ * the "Open in Maps" + Healthdirect fallback rather than a blank.
  */
 export async function fetchProviders(env: Env, providerTerm: string, postcode: string): Promise<Provider[]> {
-  const apiKey = env.GEOAPIFY_KEY;
-  if (!apiKey) return [];
+  const apiKey = env.GOOGLE_PLACES_KEY;
+  if (!apiKey) return []; // not configured — UI falls back to maps + Healthdirect
 
-  const cacheKey = `phi:providers:${providerTerm}:${postcode}`;
   try {
-    const cached = await env.RULES.get(cacheKey, "json");
-    if (cached) return cached as Provider[];
-
-    const centroid = await geocodePostcode(apiKey, postcode);
-    if (!centroid) return [];
-
-    const q = geoapifyPlacesQuery(providerTerm, centroid.lon, centroid.lat);
-    const res = await fetch(`https://api.geoapify.com/v2/places?${q}&apiKey=${encodeURIComponent(apiKey)}`);
+    const res = await fetch("https://places.googleapis.com/v1/places:searchText", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": apiKey,
+        // Minimal mask = the cheap Text Search SKU. Requesting more fields raises the per-call price.
+        "X-Goog-FieldMask":
+          "places.displayName,places.formattedAddress,places.nationalPhoneNumber,places.internationalPhoneNumber,places.websiteUri,places.location",
+      },
+      body: JSON.stringify({
+        textQuery: googleTextQuery(providerTerm, postcode),
+        regionCode: "AU",
+        languageCode: "en",
+        maxResultCount: MAX_RESULTS,
+      }),
+    });
     if (!res.ok) {
-      // Don't cache an error as if it were "no providers" — only cache a real parsed result below.
-      console.warn(`[phi-providers] places failed: ${res.status}`);
+      // Surface auth/quota failures (e.g. 403 bad key, 429 over-limit) — otherwise they're
+      // indistinguishable from a genuine coverage gap. Behaviour unchanged (UI falls back).
+      console.warn(`[phi-providers] google searchText failed: ${res.status}`);
       return [];
     }
-    const providers = normaliseGeoapify((await res.json()) as GeoapifyFeatureCollection);
-
-    // Cache even an empty result (24h) — a genuine coverage gap shouldn't re-hit Geoapify on every tap.
-    await env.RULES.put(cacheKey, JSON.stringify(providers), { expirationTtl: 60 * 60 * 24 });
-    return providers;
+    return normaliseGoogle((await res.json()) as GoogleSearchResponse);
   } catch (e) {
     console.warn(`[phi-providers] fetch error: ${(e as Error).message}`);
-    return []; // network/parse failure — UI falls back to Healthdirect
+    return []; // network/parse failure — UI falls back to maps + Healthdirect
   }
 }

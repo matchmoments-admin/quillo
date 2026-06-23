@@ -26,7 +26,7 @@ import {
   EXTRAS_CATEGORIES, suggestExtrasCategory, providerSearchTerm,
 } from "../src/lib/advisory";
 import { PHIS_SEED, findPhisProduct } from "../src/lib/phis-seed";
-import { normaliseGeoapify, geoapifyPlacesQuery } from "../src/lib/phi-providers";
+import { normaliseGoogle, googleTextQuery } from "../src/lib/phi-providers";
 import { applyUserRules } from "../src/lib/rules";
 import type { UserRule } from "../src/lib/db";
 import { parseRoles, hasRole, isAdmin, isPartner, normaliseRoles, ROLES } from "../src/lib/roles";
@@ -2186,29 +2186,24 @@ console.log("advisory.poolExtrasTotals (shared limit pools don't double-count)")
   check("no pools → plain sum ($800 limit, $100 used)", flat.total_limit_cents === 80000 && flat.total_used_cents === 10000);
 }
 
-console.log("phi-providers (interim Geoapify finder — neutral shape + dental-vs-name split)");
+console.log("phi-providers (interim Google Places finder — neutral shape + text query)");
 {
-  // Normaliser: a stubbed Geoapify Places FeatureCollection → the neutral provider-agnostic shape.
+  // Normaliser: a stubbed Google places:searchText response → the neutral provider-agnostic shape.
   const payload = {
-    features: [
-      { properties: { name: "Smile Dental", formatted: "1 King St, Sydney NSW 2000", contact: { phone: "02 9000 0000" }, website: "https://smile.example", place_id: "abc", categories: ["healthcare.dentist"] } },
-      { properties: { formatted: "No-name clinic, Sydney" } }, // nameless → dropped (unusable)
-      { properties: { name: "Harbour Physio", formatted: "9 Bay Rd, Sydney NSW 2000" } }, // no phone/website
+    places: [
+      { displayName: { text: "Surry Hills Physio" }, formattedAddress: "1 Crown St, Surry Hills NSW 2010", nationalPhoneNumber: "02 9000 0000", websiteUri: "https://shphysio.example", location: { latitude: -33.88, longitude: 151.21 }, id: "ChIJabc", rating: 4.8 },
+      { formattedAddress: "No-name place, Sydney" }, // no displayName → dropped (unusable)
+      { displayName: { text: "Inner West Physio" }, formattedAddress: "9 Bay Rd, Sydney NSW 2000" }, // no phone/website/geo
     ],
   };
-  const norm = normaliseGeoapify(payload as never);
-  check("normaliser drops nameless features (2 usable of 3)", norm.length === 2);
-  check("normaliser maps name/address/phone/website", norm[0].name === "Smile Dental" && norm[0].address.includes("King St") && norm[0].phone === "02 9000 0000" && norm[0].website === "https://smile.example");
-  check("normaliser omits absent phone/website (no empty keys)", norm[1].phone === undefined && norm[1].website === undefined);
-  check("normaliser leaks NO place_id/category/score field", Object.keys(norm[0]).every((k) => ["name", "address", "phone", "website"].includes(k)));
-  check("normaliser is null-safe", normaliseGeoapify(null).length === 0 && normaliseGeoapify(undefined).length === 0);
-  // Dental → its own category (no name). Every other noun → the broad clinic category AND a name
-  // narrow — Geoapify REQUIRES `categories` on every Places call, so a name-only query 400s.
-  const dental = geoapifyPlacesQuery("dentist", 151.2, -33.86);
-  const physio = geoapifyPlacesQuery("physiotherapist", 151.2, -33.86);
-  check("dental term → categories=healthcare.dentist (no name=)", dental.includes("categories=healthcare.dentist") && !dental.includes("name="));
-  check("non-dental → required category + name narrow (not name-only, which 400s)", physio.includes("categories=healthcare.clinic_or_praxis") && physio.includes("name=physiotherapist"));
-  check("query scopes to the postcode centroid (circle filter + bias)", physio.includes("filter=circle") && physio.includes("bias=proximity"));
+  const norm = normaliseGoogle(payload as never);
+  check("normaliser drops nameless places (2 usable of 3)", norm.length === 2);
+  check("normaliser maps name/address/phone/website/geo", norm[0].name === "Surry Hills Physio" && norm[0].address.includes("Crown St") && norm[0].phone === "02 9000 0000" && norm[0].website === "https://shphysio.example" && norm[0].lat === -33.88 && norm[0].lng === 151.21);
+  check("normaliser omits absent phone/website/geo (no empty keys)", norm[1].phone === undefined && norm[1].website === undefined && norm[1].lat === undefined);
+  check("normaliser leaks NO place_id/rating field", Object.keys(norm[0]).every((k) => ["name", "address", "phone", "website", "lat", "lng"].includes(k)));
+  check("normaliser is null-safe", normaliseGoogle(null).length === 0 && normaliseGoogle(undefined).length === 0);
+  // Text query: a postcode-scoped "near" search Google geocodes itself — one call, no hard distance cap.
+  check("text query → '<term> near <postcode> Australia'", googleTextQuery("physiotherapist", "2010") === "physiotherapist near 2010 Australia");
 }
 
 console.log("phis-seed integrity (auto-source products)");

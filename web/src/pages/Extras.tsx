@@ -9,6 +9,12 @@ import type { PhiOverview, PhiPolicyView, PhiLoggable, PhiProvider } from "../ty
 // Government health-service finder (Healthdirect) — a neutral, no-commission directory we signpost to.
 const HEALTHDIRECT_FINDER_URL = "https://www.healthdirect.gov.au/australian-health-services";
 
+// Google universal Maps search URL — opens the native Maps app on mobile (Android/iOS) or maps.google
+// on web, cross-platform, with NO API call. Used both per-result and as the "Open in Maps" option.
+function mapsSearchUrl(query: string): string {
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`;
+}
+
 // Private Health Extras Tracker — FACTUAL engagement surface. Track per-category extras limits vs
 // spend-to-date against the reset date ("use it before you lose it"). Never a tax output; never advice.
 
@@ -244,7 +250,7 @@ function ProviderFinder({ category, providerTerm }: { category: string; provider
     queryKey: ["phi-providers", category, submitted],
     queryFn: () => api.phiProviders(category, submitted),
     enabled: /^\d{4}$/.test(submitted),
-    staleTime: 3_600_000, // matches the 24h server cache horizon; postcodes rarely change mid-session
+    staleTime: 600_000, // 10min in-memory only (no persisted cache — Google ToS); avoids re-calling on repeat taps
   });
 
   // Flag OFF ⇒ render today's exact static link. No DOM difference vs before the feature.
@@ -268,6 +274,8 @@ function ProviderFinder({ category, providerTerm }: { category: string; provider
   const providers = res?.providers ?? [];
   const finderUrl = res?.finder_url ?? HEALTHDIRECT_FINDER_URL;
   const empty = q.isSuccess && providers.length === 0;
+  // "Open in Maps" for the whole TYPE near the searched postcode — a real map search, zero API calls.
+  const allInMapsUrl = mapsSearchUrl(`${providerTerm} near ${submitted} Australia`);
   // Searching the SAME postcode again (e.g. after an error) wouldn't change the queryKey, so
   // react-query wouldn't refetch — force it. A new postcode just updates `submitted`.
   const search = () => { if (!valid) return; if (submitted === postcode) q.refetch(); else setSubmitted(postcode); };
@@ -308,19 +316,24 @@ function ProviderFinder({ category, providerTerm }: { category: string; provider
 
       {empty && (
         <div className="mt-3 rounded-lg border border-sage/40 bg-sage/10 px-3 py-2.5 text-xs text-ink-2">
-          No nearby {providerTerm}s found for {submitted}. Try the government finder:{" "}
-          <a href={finderUrl} target="_blank" rel="noopener noreferrer" className="font-semibold text-forest underline">Healthdirect service finder ↗</a>
+          We couldn't list {providerTerm}s here for {submitted}. Open a live map search instead:{" "}
+          <a href={allInMapsUrl} target="_blank" rel="noopener noreferrer" className="font-semibold text-forest underline">Open in Maps ↗</a>
+          {" · "}
+          <a href={finderUrl} target="_blank" rel="noopener noreferrer" className="font-semibold text-forest underline">Healthdirect ↗</a>
         </div>
       )}
 
-      {/* Footer: Geoapify free-plan attribution (all three) + a secondary Healthdirect link when we DID
-          show results (when empty it's already the primary CTA above). */}
+      {/* Footer: attribution + the always-available "Open in Maps" option (and a secondary Healthdirect
+          link when we DID show in-app results — when empty those CTAs are already primary above). */}
       <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-line pt-2 text-[11px] text-ink-3">
-        <a href={res?.attribution?.href ?? "https://www.geoapify.com/"} target="_blank" rel="noopener noreferrer" className="underline hover:text-ink">
-          {res?.attribution?.text ?? "Powered by Geoapify · © OpenStreetMap contributors"}
+        <a href={res?.attribution?.href ?? "https://www.google.com"} target="_blank" rel="noopener noreferrer" className="underline hover:text-ink">
+          {res?.attribution?.text ?? "Powered by Google"}
         </a>
         {q.isSuccess && providers.length > 0 && (
-          <a href={finderUrl} target="_blank" rel="noopener noreferrer" className="underline hover:text-ink">Or use Healthdirect ↗</a>
+          <>
+            <a href={allInMapsUrl} target="_blank" rel="noopener noreferrer" className="underline hover:text-ink">Open all in Maps ↗</a>
+            <a href={finderUrl} target="_blank" rel="noopener noreferrer" className="underline hover:text-ink">Healthdirect ↗</a>
+          </>
         )}
       </div>
     </div>
@@ -328,6 +341,8 @@ function ProviderFinder({ category, providerTerm }: { category: string; provider
 }
 
 function ProviderRow({ pv }: { pv: PhiProvider }) {
+  // Open this specific provider in Maps — by name+address (cross-platform, no API call).
+  const mapUrl = mapsSearchUrl([pv.name, pv.address].filter(Boolean).join(" "));
   return (
     <li className="rounded-lg border border-line bg-paper px-3 py-2">
       <div className="text-sm font-semibold text-ink">{pv.name}</div>
@@ -335,6 +350,7 @@ function ProviderRow({ pv }: { pv: PhiProvider }) {
       <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
         {pv.phone && <a href={`tel:${pv.phone.replace(/\s/g, "")}`} className="font-semibold text-forest underline">Call {pv.phone}</a>}
         {pv.website && <a href={pv.website} target="_blank" rel="noopener noreferrer" className="font-semibold text-forest underline">Website ↗</a>}
+        <a href={mapUrl} target="_blank" rel="noopener noreferrer" className="font-semibold text-forest underline">Open in Maps ↗</a>
       </div>
     </li>
   );

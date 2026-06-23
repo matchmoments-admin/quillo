@@ -28,7 +28,7 @@ import {
 } from "./lib/queries";
 import { phisProductList } from "./lib/phis-seed";
 import { providerSearchTerm, HEALTHDIRECT_FINDER_URL } from "./lib/advisory";
-import { fetchProviders, GEOAPIFY_ATTRIBUTION } from "./lib/phi-providers";
+import { fetchProviders, PROVIDER_ATTRIBUTION } from "./lib/phi-providers";
 import { createTopupCheckout } from "./lib/stripe";
 import { isAdmin, isPartner, normaliseRoles } from "./lib/roles";
 import { REFERRAL_STATUSES, canAdvanceReferral, sanitizeRevenueCents, partnerPortalData } from "./lib/partners";
@@ -500,9 +500,9 @@ export async function handleApi(
       const postcode = url.searchParams.get("postcode") ?? "";
       if (!/^\d{4}$/.test(postcode)) return json({ error: "valid 4-digit postcode required" }, 400);
       const term = providerSearchTerm(url.searchParams.get("category") ?? "");
-      if (!term) return json({ providers: [], finder_url: HEALTHDIRECT_FINDER_URL, attribution: GEOAPIFY_ATTRIBUTION });
+      if (!term) return json({ providers: [], finder_url: HEALTHDIRECT_FINDER_URL, attribution: PROVIDER_ATTRIBUTION });
       const providers = await fetchProviders(env, term, postcode);
-      return json({ providers, finder_url: HEALTHDIRECT_FINDER_URL, attribution: GEOAPIFY_ATTRIBUTION });
+      return json({ providers, finder_url: HEALTHDIRECT_FINDER_URL, attribution: PROVIDER_ATTRIBUTION });
     }
     if (id === "apply-product" && m === "POST") {
       const b = (await req.json().catch(() => ({}))) as { product_id?: unknown };

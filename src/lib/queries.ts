@@ -7,7 +7,7 @@ import { fyBounds, normaliseFyLabel } from "./ledger-totals";
 import { resolveJurisdictionForUser, fyStartYearSqlExpr } from "./jurisdiction";
 import {
   annualiseSpendCents, runRateCopy, ADVISORY_DISCLAIMER,
-  nextResetDate, weeksUntil, phiExtrasCopy, poolExtrasTotals, EXTRAS_CATEGORIES, EXTRAS_CATEGORY_LABEL, type ResetBasis,
+  nextResetDate, weeksUntil, phiExtrasCopy, poolExtrasTotals, suggestExtrasCategory, providerSearchTerm, EXTRAS_CATEGORIES, EXTRAS_CATEGORY_LABEL, type ResetBasis,
 } from "./advisory";
 import { matchEnergyOffer, ctaFromOffer, opportunityTakesEnergyCta, type PartnerDB } from "./partners";
 
@@ -699,6 +699,7 @@ export async function phiExtrasOverview(env: Env, userId: string) {
         combined_group: group,
         source: (l?.source as string) ?? "manual",
         verified: l ? Number(l.verified ?? 1) : 1,
+        provider_term: providerSearchTerm(cat),
         entries: entriesByKey.get(`${p.id}::${cat}`) ?? [],
         copy: phiExtrasCopy(label, used, limit, resetIso),
       };
@@ -725,10 +726,31 @@ export async function phiExtrasOverview(env: Env, userId: string) {
     };
   });
 
+  // Quick-log (Path A): recent allied-health debits we've detected (ato_label='health:allied') that
+  // haven't been logged against a limit yet — one tap to record, no typing/AI. Excludes premiums
+  // (health:private-insurance) and anything already linked to a usage row.
+  const loggableRes = await env.DB.prepare(
+    `SELECT id, COALESCE(merchant, raw_description) AS merchant,
+            COALESCE(amount_aud_cents, amount_cents) AS amount_cents, txn_date
+       FROM transactions
+      WHERE user_id = ? AND direction = 'debit' AND ato_label = 'health:allied'
+        AND status NOT IN ('duplicate','ignored')
+        AND id NOT IN (SELECT txn_id FROM phi_benefit_usage WHERE user_id = ? AND txn_id IS NOT NULL)
+      ORDER BY txn_date DESC LIMIT 10`,
+  ).bind(userId, userId).all<{ id: string; merchant: string | null; amount_cents: number; txn_date: string }>();
+  const loggable = (loggableRes.results ?? []).map((t) => ({
+    txn_id: t.id,
+    merchant: t.merchant ?? "Health expense",
+    amount_cents: Number(t.amount_cents) || 0,
+    txn_date: t.txn_date,
+    suggested_category: suggestExtrasCategory(t.merchant),
+  }));
+
   return {
     consented: !!profile?.health_extras_consent_at,
     private_health: profile?.private_health ?? 0,
     policies,
+    loggable,
     category_options: EXTRAS_CATEGORIES.map((c) => ({ value: c, label: EXTRAS_CATEGORY_LABEL[c] ?? c })),
     disclaimer: ADVISORY_DISCLAIMER,
   };

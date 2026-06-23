@@ -4,7 +4,10 @@ import { toast } from "sonner";
 import { api } from "../api";
 import { useFeatures } from "../lib/features";
 import { Panel, PanelHead, KpiCard, Pill, Spinner, Button, Input, Meter, InfoTip, Term, money } from "../components/ui";
-import type { PhiOverview, PhiPolicyView } from "../types";
+import type { PhiOverview, PhiPolicyView, PhiLoggable } from "../types";
+
+// Government health-service finder (Healthdirect) — a neutral, no-commission directory we signpost to.
+const HEALTHDIRECT_FINDER_URL = "https://www.healthdirect.gov.au/australian-health-services";
 
 // Private Health Extras Tracker — FACTUAL engagement surface. Track per-category extras limits vs
 // spend-to-date against the reset date ("use it before you lose it"). Never a tax output; never advice.
@@ -87,6 +90,10 @@ export function Extras() {
         </Panel>
       ) : (
         d.policies.map((p) => <PolicyCard key={p.id} p={p} options={d.category_options} onChange={invalidate} />)
+      )}
+
+      {d.policies.length > 0 && d.loggable.length > 0 && (
+        <QuickLogCard loggable={d.loggable} policyId={d.policies[0].id} options={d.category_options} onChange={invalidate} />
       )}
 
       <div className="grid gap-4 lg:grid-cols-2">
@@ -191,8 +198,13 @@ function PolicyCard({ p, options, onChange }: { p: PhiPolicyView; options: { val
                   {c.limit_id ? <button className="text-xs text-ink-3 underline hover:text-danger" onClick={() => delLimit.mutate(c.limit_id!)}>Remove limit</button> : null}
                 </div>
                 <Meter frac={frac} className={frac < 0.5 ? "bg-warn" : "bg-green"} />
-                <div className="mt-1 text-xs text-ink-3">
-                  {c.annual_limit_cents > 0 ? <>{money(c.used_cents)} used of {money(c.annual_limit_cents)} limit</> : <>{money(c.used_cents)} recorded · add a limit to track what's left</>}
+                <div className="mt-1 flex flex-wrap items-center gap-x-3 text-xs text-ink-3">
+                  <span>{c.annual_limit_cents > 0 ? <>{money(c.used_cents)} used of {money(c.annual_limit_cents)} limit</> : <>{money(c.used_cents)} recorded · add a limit to track what's left</>}</span>
+                  {c.provider_term && c.remaining_cents > 0 && (
+                    <a href={HEALTHDIRECT_FINDER_URL} target="_blank" rel="noopener noreferrer" className="font-semibold text-forest underline">
+                      Find a {c.provider_term} near you ↗
+                    </a>
+                  )}
                 </div>
                 {c.entries.length > 0 && (
                   <ul className="mt-2 space-y-1 border-t border-line pt-2">
@@ -315,6 +327,39 @@ function UsageForm({ policyId, options, onDone }: { policyId: string; options: {
       <Button className="mt-3 h-9 px-4 text-xs uppercase tracking-wide" onClick={() => save.mutate()} disabled={save.isPending || !valid}>
         {save.isPending ? "Saving…" : "Record usage"}
       </Button>
+    </div>
+  );
+}
+
+// Quick-log (Path A): one-tap recording of detected allied-health transactions against an extras limit
+// — no typing/AI. Each row prefills the merchant, amount, date + a best-guess category to confirm.
+function QuickLogCard({ loggable, policyId, options, onChange }: { loggable: PhiLoggable[]; policyId: string; options: { value: string; label: string }[]; onChange: () => void }) {
+  return (
+    <Panel className="space-y-3">
+      <PanelHead title="Recent health spending — log it" sub="We spotted these in your transactions. One tap records them against your extras. Enter the rebate your fund paid if it differs from what you paid the clinic." />
+      <div className="space-y-2">
+        {loggable.map((t) => <QuickLogRow key={t.txn_id} t={t} policyId={policyId} options={options} onChange={onChange} />)}
+      </div>
+    </Panel>
+  );
+}
+
+function QuickLogRow({ t, policyId, options, onChange }: { t: PhiLoggable; policyId: string; options: { value: string; label: string }[]; onChange: () => void }) {
+  const [category, setCategory] = useState(t.suggested_category);
+  const log = useMutation({
+    mutationFn: () => api.phiRecordUsage({ policy_id: policyId, category, amount_used_cents: t.amount_cents, used_on: t.txn_date, txn_id: t.txn_id }),
+    onSuccess: () => { toast.success("Logged against your extras"); onChange(); },
+    onError: (e) => toast.error((e as Error).message),
+  });
+  return (
+    <div className="flex flex-wrap items-center gap-2 rounded-xl border border-line bg-paper px-3 py-2 text-sm">
+      <span className="min-w-0 flex-1 truncate font-medium text-ink">{t.merchant}</span>
+      <span className="text-xs text-ink-3">{fmtDate(t.txn_date)}</span>
+      <span className="tnum font-semibold text-ink">{money(t.amount_cents)}</span>
+      <select className="rounded-lg border border-line bg-card px-2 py-1 text-xs" value={category} onChange={(e) => setCategory(e.target.value)}>
+        {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+      </select>
+      <Button className="h-8 px-3 text-xs uppercase tracking-wide" onClick={() => log.mutate()} disabled={log.isPending}>{log.isPending ? "…" : "Log"}</Button>
     </div>
   );
 }

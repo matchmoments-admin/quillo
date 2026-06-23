@@ -23,7 +23,7 @@ import {
   classifyCadence, paymentsPerYear, runRateCopy, recurringCopy, assertFactual, signpostFor,
   ADVISORY_DISCLAIMER, savingsProjection, savingsProjectionCopy,
   phiExtrasCopy, phiResetNudgeCopy, phiDetectedCopy, nextResetDate, weeksUntil, formatResetDate, insurerResetBasis, poolExtrasTotals,
-  EXTRAS_CATEGORIES,
+  EXTRAS_CATEGORIES, suggestExtrasCategory, providerSearchTerm,
 } from "../src/lib/advisory";
 import { PHIS_SEED, findPhisProduct } from "../src/lib/phis-seed";
 import { applyUserRules } from "../src/lib/rules";
@@ -2149,6 +2149,20 @@ console.log("advisory.phi reset arithmetic (deterministic dates)");
   check("weeksUntil floors at whole weeks", weeksUntil("2026-12-18", ref) === 4);
   check("formatResetDate renders a readable date", formatResetDate("2027-01-01") === "1 January 2027");
   check("insurer reset default: Bupa → calendar, ahm → financial_year", insurerResetBasis("Bupa") === "calendar" && insurerResetBasis("ahm health") === "financial_year");
+}
+
+console.log("advisory.phi quick-log category guess + provider signpost");
+{
+  // Merchant → best-guess extras category (one-tap logging of a detected health txn).
+  check("SMILE DENTAL → dental.general", suggestExtrasCategory("SMILE DENTAL CLINIC") === "dental.general");
+  check("City Physiotherapy → physiotherapy", suggestExtrasCategory("City Physiotherapy") === "physiotherapy");
+  check("Specsavers → optical", suggestExtrasCategory("SPECSAVERS PTY LTD") === "optical");
+  check("unknown health merchant → allied_other", suggestExtrasCategory("Wellness Hub") === "allied_other");
+  check("null merchant is safe → allied_other", suggestExtrasCategory(null) === "allied_other");
+  // Provider-finder term per category (empty ⇒ no signpost, e.g. pharmacy/appliances).
+  check("physiotherapy → physiotherapist term", providerSearchTerm("physiotherapy") === "physiotherapist");
+  check("dental.general → dentist term", providerSearchTerm("dental.general") === "dentist");
+  check("pharmacy → no provider term (empty)", providerSearchTerm("pharmacy") === "");
 }
 
 console.log("advisory.poolExtrasTotals (shared limit pools don't double-count)");

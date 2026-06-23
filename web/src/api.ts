@@ -150,7 +150,7 @@ export const api = {
   phiDeletePolicy: (id: string) => send<{ ok: true }>("DELETE", `/api/phi/policy/${id}`),
   phiSaveLimit: (l: { policy_id: string; category: string; annual_limit_cents: number }) => post<{ id: string }>("/api/phi/limit", l),
   phiDeleteLimit: (id: string) => send<{ ok: true }>("DELETE", `/api/phi/limit/${id}`),
-  phiRecordUsage: (u: { policy_id: string; category: string; amount_used_cents: number; used_on?: string | null }) => post<{ id: string }>("/api/phi/usage", u),
+  phiRecordUsage: (u: { policy_id: string; category: string; amount_used_cents: number; used_on?: string | null; txn_id?: string | null }) => post<{ id: string }>("/api/phi/usage", u),
   phiDeleteUsage: (id: string) => send<{ ok: true }>("DELETE", `/api/phi/usage/${id}`),
   phiProducts: () => get<{ insurers: PhiInsurerOption[] }>("/api/phi/products").then((r) => r.insurers),
   phiApplyProduct: (productId: string) => post<{ policy_id: string; limits: number }>("/api/phi/apply-product", { product_id: productId }),

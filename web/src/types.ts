@@ -443,6 +443,8 @@ export interface PhiProvider {
   address: string;
   phone?: string;
   website?: string;
+  lat?: number;
+  lng?: number;
 }
 export interface PhiProvidersResult {
   providers: PhiProvider[];

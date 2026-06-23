@@ -55,9 +55,13 @@ export interface Env {
   // Only present when a tenant uses inference_provider=bedrock:
   AWS_ACCESS_KEY_ID?: string;
   AWS_SECRET_ACCESS_KEY?: string;
-  // Optional (flag phi_provider_directory): Geoapify Places/Geocoding API key for the interim
-  // Extras provider finder. Server-side only — never reaches the SPA. Absent ⇒ fetchProviders
-  // returns [] (the UI falls back to the Healthdirect signpost).
+  // Optional (flag phi_provider_directory): Google Places API (New) key for the interim Extras
+  // provider finder. Server-side only — never reaches the SPA. Absent ⇒ fetchProviders returns []
+  // (the UI falls back to "Open in Maps" + the Healthdirect signpost). Set via
+  // `wrangler secret put GOOGLE_PLACES_KEY` after enabling Places API (New) in Google Cloud.
+  GOOGLE_PLACES_KEY?: string;
+  // Legacy: the original Geoapify-backed finder. Geoapify has no allied-health categories, so the
+  // finder moved to Google (above). Declared but unused — removable in a later cleanup.
   GEOAPIFY_KEY?: string;
 }
 

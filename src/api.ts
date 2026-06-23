@@ -27,6 +27,8 @@ import {
   referralFunnelAdmin,
 } from "./lib/queries";
 import { phisProductList } from "./lib/phis-seed";
+import { providerSearchTerm, HEALTHDIRECT_FINDER_URL } from "./lib/advisory";
+import { fetchProviders, GEOAPIFY_ATTRIBUTION } from "./lib/phi-providers";
 import { createTopupCheckout } from "./lib/stripe";
 import { isAdmin, isPartner, normaliseRoles } from "./lib/roles";
 import { REFERRAL_STATUSES, canAdvanceReferral, sanitizeRevenueCents, partnerPortalData } from "./lib/partners";
@@ -488,6 +490,19 @@ export async function handleApi(
     }
     if (id === "products" && m === "GET") {
       return json({ insurers: phisProductList() });
+    }
+    // GET /api/phi/providers?category=&postcode= — interim FACTUAL provider finder (flag
+    // phi_provider_directory). Only postcode + service type leave Quillo (NO PII — mirrors the
+    // referral precedent below). Empty term (pharmacy/appliances) or 0 results ⇒ the SPA shows the
+    // Healthdirect signpost. NHSD later drops into this same seam + neutral shape (no UI change).
+    if (id === "providers" && m === "GET") {
+      if (!featureOn(env, "phi_provider_directory")) return json({ error: "not available" }, 404);
+      const postcode = url.searchParams.get("postcode") ?? "";
+      if (!/^\d{4}$/.test(postcode)) return json({ error: "valid 4-digit postcode required" }, 400);
+      const term = providerSearchTerm(url.searchParams.get("category") ?? "");
+      if (!term) return json({ providers: [], finder_url: HEALTHDIRECT_FINDER_URL, attribution: GEOAPIFY_ATTRIBUTION });
+      const providers = await fetchProviders(env, term, postcode);
+      return json({ providers, finder_url: HEALTHDIRECT_FINDER_URL, attribution: GEOAPIFY_ATTRIBUTION });
     }
     if (id === "apply-product" && m === "POST") {
       const b = (await req.json().catch(() => ({}))) as { product_id?: unknown };

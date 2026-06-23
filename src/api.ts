@@ -507,7 +507,9 @@ export async function handleApi(
         return json({ error: "Daily provider-search limit reached — use the Maps link below, or try again tomorrow." }, 429);
       }
       const providers = await fetchProviders(env, term, postcode);
-      return json({ providers, finder_url: HEALTHDIRECT_FINDER_URL, attribution: PROVIDER_ATTRIBUTION });
+      // embed_key is the PUBLIC, referrer-restricted Maps Embed API key (or null) — the SPA renders the
+      // in-app interactive map from it. Absent ⇒ the SPA shows the list + "Open in Maps" links only.
+      return json({ providers, finder_url: HEALTHDIRECT_FINDER_URL, attribution: PROVIDER_ATTRIBUTION, embed_key: env.MAPS_EMBED_KEY ?? null });
     }
     if (id === "apply-product" && m === "POST") {
       const b = (await req.json().catch(() => ({}))) as { product_id?: unknown };

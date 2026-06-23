@@ -61,6 +61,11 @@ export interface Env {
   // `wrangler secret put GOOGLE_PLACES_KEY` after enabling Places API (New) in Google Cloud.
   GOOGLE_PLACES_KEY?: string;
   PHI_PROVIDER_MAX_PER_DAY?: string;    // per-tenant daily cap on provider-finder searches (cost guardrail). Unset ⇒ 200; "0" ⇒ unlimited.
+  // Optional (flag phi_provider_directory): Google **Maps Embed API** key for the in-app interactive
+  // map. PUBLIC by design (it goes into the iframe URL in the browser) — restrict it to the Maps Embed
+  // API + the app's HTTP referrers. The Embed API is free/unlimited. Absent ⇒ no in-app map (the list +
+  // "Open in Maps" links still work). Distinct from the server-only GOOGLE_PLACES_KEY.
+  MAPS_EMBED_KEY?: string;
   // Legacy: the original Geoapify-backed finder. Geoapify has no allied-health categories, so the
   // finder moved to Google (above). Declared but unused — removable in a later cleanup.
   GEOAPIFY_KEY?: string;

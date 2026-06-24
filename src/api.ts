@@ -509,6 +509,7 @@ export async function handleApi(
       const providers = await fetchProviders(env, term, postcode);
       // embed_key is the PUBLIC, referrer-restricted Maps Embed API key (or null) — the SPA renders the
       // in-app interactive map from it. Absent ⇒ the SPA shows the list + "Open in Maps" links only.
+      if (!env.MAPS_EMBED_KEY) console.warn("[phi-providers] MAPS_EMBED_KEY not set — SPA shows list + 'Open in Maps' only (no in-app map)");
       return json({ providers, finder_url: HEALTHDIRECT_FINDER_URL, attribution: PROVIDER_ATTRIBUTION, embed_key: env.MAPS_EMBED_KEY ?? null });
     }
     if (id === "apply-product" && m === "POST") {

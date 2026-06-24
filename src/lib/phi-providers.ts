@@ -121,7 +121,12 @@ export function normaliseGoogle(payload: GoogleSearchResponse | null | undefined
  */
 export async function fetchProviders(env: Env, providerTerm: string, postcode: string): Promise<Provider[]> {
   const apiKey = env.GOOGLE_PLACES_KEY;
-  if (!apiKey) return []; // not configured — UI falls back to maps + Healthdirect
+  if (!apiKey) {
+    // Not configured — UI falls back to maps + Healthdirect. Warn so a missing/unpropagated secret
+    // is never silent: a 200 with `providers: []` is otherwise indistinguishable from a coverage gap.
+    console.warn("[phi-providers] GOOGLE_PLACES_KEY not set — returning [] (UI falls back to Maps + Healthdirect)");
+    return [];
+  }
 
   try {
     const res = await fetch("https://places.googleapis.com/v1/places:searchText", {

@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { type ChangeEvent, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { api } from "../api";
 import { useFeatures } from "../lib/features";
@@ -672,21 +672,50 @@ function LimitForm({ policyId, options, onDone }: { policyId: string; options: {
   );
 }
 
-// Record a benefit used. `prefill` seeds the form (from a category row, or — Phase 3 — a scanned receipt).
+// Record a benefit used. `prefill` seeds the form (from a category row); a "Snap a receipt" input runs
+// Claude-vision OCR to prefill from a photo. The receipt is retained (receipt_key) when the claim is saved.
 function UsageForm({ policyId, options, onDone, prefill }: { policyId: string; options: { value: string; label: string }[]; onDone: () => void; prefill?: { category?: string; amount?: string; usedOn?: string } }) {
   const [category, setCategory] = useState(prefill?.category ?? options[0]?.value ?? "physiotherapy");
   const [amount, setAmount] = useState(prefill?.amount ?? "");
   const [usedOn, setUsedOn] = useState(prefill?.usedOn ?? "");
+  const [receiptKey, setReceiptKey] = useState<string | null>(null);
+  const [scanning, setScanning] = useState(false);
   const parsed = parseFloat(amount);
   const valid = Number.isFinite(parsed) && parsed > 0;
   const save = useMutation({
-    mutationFn: () => api.phiRecordUsage({ policy_id: policyId, category, amount_used_cents: Math.round(parsed * 100), used_on: usedOn || null }),
-    onSuccess: () => { setAmount(""); setUsedOn(""); onDone(); },
+    mutationFn: () => api.phiRecordUsage({ policy_id: policyId, category, amount_used_cents: Math.round(parsed * 100), used_on: usedOn || null, receipt_key: receiptKey }),
+    onSuccess: () => { setAmount(""); setUsedOn(""); setReceiptKey(null); onDone(); },
     onError: (e) => toast.error((e as Error).message),
   });
+
+  const onFile = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // allow re-picking the same file
+    if (!file) return;
+    setScanning(true);
+    try {
+      const r = await api.phiScanReceipt(file);
+      if (r.category) setCategory(r.category);
+      if (r.amount_cents != null) setAmount((r.amount_cents / 100).toString());
+      if (r.used_on) setUsedOn(r.used_on);
+      setReceiptKey(r.receipt_key);
+      toast.success(r.amount_cents != null ? "Read your receipt — check it's the rebate your fund paid, then log it." : "Read your receipt — add the rebate your fund paid, then log it.");
+    } catch (err) {
+      toast.error((err as Error).message || "Couldn't read that receipt — type the claim in instead.");
+    } finally {
+      setScanning(false);
+    }
+  };
+
   return (
     <div className="rounded-xl border border-line bg-card p-4">
-      <div className="text-xs font-bold uppercase tracking-wide text-ink-3">Log a claim</div>
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-xs font-bold uppercase tracking-wide text-ink-3">Log a claim</div>
+        <label className={`inline-flex cursor-pointer items-center gap-1 rounded-full bg-surface px-3 py-1.5 text-[11px] font-semibold text-green ${scanning ? "opacity-60" : "hover:bg-sage/40"}`}>
+          <input type="file" accept="image/*,application/pdf" capture="environment" className="hidden" onChange={onFile} disabled={scanning} />
+          📷 {scanning ? "Reading…" : "Snap a receipt"}
+        </label>
+      </div>
       <div className="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-2">
         <label className="text-sm">Category
           <select className={SELECT_CLS} value={category} onChange={(e) => setCategory(e.target.value)}>
@@ -700,7 +729,7 @@ function UsageForm({ policyId, options, onDone, prefill }: { policyId: string; o
           <Input className="mt-1 w-full" type="date" value={usedOn} onChange={(e) => setUsedOn(e.target.value)} />
         </label>
       </div>
-      <p className="mt-1 text-xs text-ink-3">Enter the rebate your fund paid back, not the full amount you paid the clinic.</p>
+      <p className="mt-1 text-xs text-ink-3">{receiptKey ? "From your receipt — confirm it's the rebate your fund paid, not the full amount." : "Enter the rebate your fund paid back, not the full amount you paid the clinic."}</p>
       <Button className="mt-3 h-9 px-4 text-xs uppercase tracking-wide" onClick={() => save.mutate()} disabled={save.isPending || !valid}>
         {save.isPending ? "Saving…" : "Record claim"}
       </Button>

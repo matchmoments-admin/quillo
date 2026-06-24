@@ -42,6 +42,7 @@ const SEARCH_RADIUS_M = 25000;
 const AU_LAT = [-44, -9] as const;
 const AU_LNG = [112, 154] as const;
 const DEFAULT_MAX_SEARCHES_PER_DAY = 200; // safe default per tenant when PHI_PROVIDER_MAX_PER_DAY is unset
+const DEFAULT_MAX_SCANS_PER_DAY = 20; // safe default per tenant for the billable receipt-OCR scan (PHI_SCAN_MAX_PER_DAY)
 
 /**
  * Per-tenant daily cap on provider searches — a cheap server-side guardrail so a buggy/abusive client
@@ -64,6 +65,29 @@ export async function withinProviderSearchCap(env: Env, userId: string): Promise
     return true;
   } catch {
     return true; // never let a KV hiccup block a legitimate search — the Google quota is the hard cap
+  }
+}
+
+/**
+ * Per-tenant daily cap on receipt-OCR scans (the "snap to log a claim" path). This is a PAID LLM call,
+ * so the cap is tighter than the provider-search one. Same lossy KV-counter pattern; the per-user $
+ * budget (withinBudget) is the hard cost ceiling, this just stops one tenant spinning the meter.
+ * `PHI_SCAN_MAX_PER_DAY` overrides the default; "0" = unlimited. Returns true if allowed (and counts it).
+ */
+export async function withinPhiScanCap(env: Env, userId: string): Promise<boolean> {
+  const cap = env.PHI_SCAN_MAX_PER_DAY != null && env.PHI_SCAN_MAX_PER_DAY !== ""
+    ? Number(env.PHI_SCAN_MAX_PER_DAY)
+    : DEFAULT_MAX_SCANS_PER_DAY;
+  if (!Number.isFinite(cap) || cap <= 0) return true;
+  try {
+    const day = new Date().toISOString().slice(0, 10);
+    const key = `phi:scan:count:${userId}:${day}`;
+    const cur = Number((await env.RULES.get(key)) ?? 0);
+    if (cur >= cap) return false;
+    await env.RULES.put(key, String(cur + 1), { expirationTtl: 60 * 60 * 26 });
+    return true;
+  } catch {
+    return true; // a KV hiccup shouldn't block a legitimate scan — withinBudget is the hard cost cap
   }
 }
 

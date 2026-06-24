@@ -29,6 +29,7 @@ import { PHIS_SEED, findPhisProduct } from "../src/lib/phis-seed";
 import { normaliseGoogle, googleTextQuery, googleSearchBody, parseAuLatLng } from "../src/lib/phi-providers";
 import { postcodeCentroid } from "../src/lib/au-postcodes";
 import { computeSuggestions, haversineKm, formatKm } from "../web/src/lib/phi-suggestions";
+import { ExtractedHealthClaim } from "../src/extract";
 import { applyUserRules } from "../src/lib/rules";
 import type { UserRule } from "../src/lib/db";
 import { parseRoles, hasRole, isAdmin, isPartner, normaliseRoles, ROLES } from "../src/lib/roles";
@@ -2258,6 +2259,14 @@ console.log("phi-suggestions (Extras 'suggested next' ranking + distance — Ext
   check("haversineKm is large for a far point", (haversineKm(here, { lat: -37.81, lng: 144.96 }) ?? 0) > 600);
   check("haversineKm → null when the provider has no coordinates", haversineKm(here, {}) === null);
   check("formatKm: 1dp close in, whole km further out", formatKm(0.4) === "0.4 km" && formatKm(12.6) === "13 km");
+}
+
+console.log("phi receipt OCR schema (record_health_claim → benefit-used prefill)");
+{
+  const ok = ExtractedHealthClaim.parse({ provider_name: "City Dental", service_date: "2026-06-10", category_guess: "dental.general", benefit_paid_cents: 6500, amount_charged_cents: 18000, confidence: 0.9 });
+  check("parses a valid health-claim tool result (fund rebate + category)", ok.category_guess === "dental.general" && ok.benefit_paid_cents === 6500);
+  const bad = ExtractedHealthClaim.parse({ provider_name: null, service_date: null, category_guess: "not_a_category", benefit_paid_cents: null, amount_charged_cents: null, confidence: 0.2 });
+  check("an out-of-list category coerces to null (never writes a junk category)", bad.category_guess === null);
 }
 
 console.log("phis-seed integrity (auto-source products)");

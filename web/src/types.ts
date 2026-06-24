@@ -446,6 +446,15 @@ export interface PhiProvider {
   lat?: number;
   lng?: number;
 }
+// Result of POST /api/phi/usage/scan — a benefit-used prefill read from a receipt by Claude vision.
+export interface PhiScanResult {
+  receipt_key: string;
+  provider: string | null;
+  category: string | null;        // a canonical EXTRAS category, or null if unclear
+  amount_cents: number | null;    // the fund benefit/rebate (preferred) or the charged total
+  used_on: string | null;         // ISO yyyy-mm-dd
+  confidence: number;
+}
 export interface PhiProvidersResult {
   providers: PhiProvider[];
   finder_url: string;

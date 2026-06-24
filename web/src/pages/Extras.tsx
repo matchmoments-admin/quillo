@@ -240,18 +240,47 @@ function PolicyCard({ p, options, onChange }: { p: PhiPolicyView; options: { val
 // exact static Healthdirect link (byte-identical). Flag ON ⇒ an opt-in, per-tap disclosure: enter a
 // postcode → a FACTUAL list of nearby providers of this TYPE (no ranking/commission/fund-status). Only
 // the postcode + category leave Quillo. Mobile-first: full-width stacked controls, tap-friendly links.
+// The active search target: device coordinates (geolocation) OR a typed postcode.
+type SearchTarget = { lat: number; lng: number } | { postcode: string };
+type GeoState = "idle" | "locating" | "denied" | "unsupported";
+
 function ProviderFinder({ category, providerTerm }: { category: string; providerTerm: string }) {
   const { has } = useFeatures();
   const [open, setOpen] = useState(false);
   const [postcode, setPostcode] = useState("");
-  const [submitted, setSubmitted] = useState("");
+  const [target, setTarget] = useState<SearchTarget | null>(null);
+  const [nonce, setNonce] = useState(0); // bumped on each explicit search → forces a refetch even for an identical target (retry)
+  const [geo, setGeo] = useState<GeoState>("idle");
   const valid = /^\d{4}$/.test(postcode);
+
   const q = useQuery({
-    queryKey: ["phi-providers", category, submitted],
-    queryFn: () => api.phiProviders(category, submitted),
-    enabled: /^\d{4}$/.test(submitted),
+    queryKey: ["phi-providers", category, target, nonce],
+    queryFn: () => (target && "postcode" in target
+      ? api.phiProviders(category, { postcode: target.postcode })
+      : api.phiProviders(category, { lat: (target as { lat: number }).lat, lng: (target as { lng: number }).lng })),
+    enabled: !!target,
     staleTime: 600_000, // 10min in-memory only (no persisted cache — Google ToS); avoids re-calling on repeat taps
   });
+
+  // Ask the device for location — "near you" without typing. The browser shows its own permission prompt;
+  // denial/timeout/unsupported just falls back to the postcode field below. Coordinates are coarsened to
+  // ~1km (2 dp) BEFORE they leave the device — enough to bias the search, never precise-location PII.
+  const locate = () => {
+    if (typeof navigator === "undefined" || !("geolocation" in navigator)) { setGeo("unsupported"); return; }
+    setGeo("locating");
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const lat = Math.round(pos.coords.latitude * 100) / 100;
+        const lng = Math.round(pos.coords.longitude * 100) / 100;
+        setGeo("idle");
+        setTarget({ lat, lng });
+        setNonce((n) => n + 1);
+      },
+      () => setGeo("denied"),
+      { enableHighAccuracy: false, timeout: 8000, maximumAge: 600_000 },
+    );
+  };
+  const searchPostcode = () => { if (!valid) return; setTarget({ postcode }); setNonce((n) => n + 1); };
 
   // Flag OFF ⇒ render today's exact static link. No DOM difference vs before the feature.
   if (!has("phi_provider_directory")) {
@@ -263,8 +292,9 @@ function ProviderFinder({ category, providerTerm }: { category: string; provider
   }
 
   if (!open) {
+    // Opening the finder immediately attempts device location (location-first); the postcode field is the fallback.
     return (
-      <button type="button" onClick={() => setOpen(true)} className="font-semibold text-forest underline">
+      <button type="button" onClick={() => { setOpen(true); locate(); }} className="font-semibold text-forest underline">
         Find a {providerTerm} near you
       </button>
     );
@@ -274,11 +304,14 @@ function ProviderFinder({ category, providerTerm }: { category: string; provider
   const providers = res?.providers ?? [];
   const finderUrl = res?.finder_url ?? HEALTHDIRECT_FINDER_URL;
   const empty = q.isSuccess && providers.length === 0;
-  // "Open in Maps" for the whole TYPE near the searched postcode — a real map search, zero API calls.
-  const allInMapsUrl = mapsSearchUrl(`${providerTerm} near ${submitted} Australia`);
-  // Searching the SAME postcode again (e.g. after an error) wouldn't change the queryKey, so
-  // react-query wouldn't refetch — force it. A new postcode just updates `submitted`.
-  const search = () => { if (!valid) return; if (submitted === postcode) q.refetch(); else setSubmitted(postcode); };
+  const center = res?.center ?? null;
+  const usingLocation = !!target && !("postcode" in target);
+  const locationLabel = usingLocation ? "your area" : (target && "postcode" in target ? target.postcode : "");
+  // "Open in Maps" for the whole TYPE — centred on the searched point when we have it (coords or postcode
+  // centroid), else a plain text search. Zero API calls either way.
+  const allInMapsUrl = center
+    ? `https://www.google.com/maps/search/${encodeURIComponent(providerTerm)}/@${center.lat},${center.lng},12z`
+    : mapsSearchUrl(`${providerTerm} near ${locationLabel} Australia`);
 
   return (
     // w-full forces this panel onto its own line within the parent flex-wrap row.
@@ -293,14 +326,27 @@ function ProviderFinder({ category, providerTerm }: { category: string; provider
             value={postcode}
             placeholder="e.g. 2000"
             onChange={(e) => setPostcode(e.target.value.replace(/\D/g, "").slice(0, 4))}
-            onKeyDown={(e) => { if (e.key === "Enter") search(); }}
+            onKeyDown={(e) => { if (e.key === "Enter") searchPostcode(); }}
           />
         </label>
-        <Button className="h-9 shrink-0 px-4 text-xs uppercase tracking-wide" onClick={search} disabled={!valid || q.isFetching}>
+        <Button className="h-9 shrink-0 px-4 text-xs uppercase tracking-wide" onClick={searchPostcode} disabled={!valid || q.isFetching}>
           {q.isFetching ? "Searching…" : "Search"}
         </Button>
         <button type="button" className="h-9 shrink-0 self-end px-2 text-xs text-ink-3 underline hover:text-ink" onClick={() => setOpen(false)}>Close</button>
       </div>
+
+      {/* Location-first control: re-trigger the device prompt, or recover after a denial. */}
+      <button
+        type="button"
+        onClick={locate}
+        disabled={geo === "locating"}
+        className="mt-2 inline-flex items-center gap-1 text-xs font-semibold text-forest underline disabled:no-underline disabled:text-ink-3"
+      >
+        📍 {geo === "locating" ? "Finding your location…" : "Use my location"}
+      </button>
+      {geo === "denied" && <p className="mt-1 text-xs text-ink-3">Couldn't access your location — enter a postcode above instead.</p>}
+      {geo === "unsupported" && <p className="mt-1 text-xs text-ink-3">Location isn't available on this device — enter a postcode above.</p>}
+      {usingLocation && q.isSuccess && <p className="mt-1 text-xs text-ink-3">📍 Showing results near your location.</p>}
 
       {q.isFetching && <p className="mt-2 text-xs text-ink-3">Searching nearby {providerTerm}s…</p>}
       {q.isError && (
@@ -315,16 +361,18 @@ function ProviderFinder({ category, providerTerm }: { category: string; provider
       {q.isSuccess && providers.length > 0 && (
         <>
           {res?.embed_key && (
-            // Interactive Google map of the area (Maps Embed API — free). It has a built-in "View
-            // larger map" that opens the native Maps app. Only the typed query (term + postcode) is
-            // sent — no identity. Rendered only when the public embed key is configured.
+            // Interactive Google map (Maps Embed API — free), centred on the SAME point the list was biased
+            // to (device coords or postcode centroid) so the map and list agree. Only the service term +
+            // approximate point are sent — no identity. Rendered only when the public embed key is configured.
             <iframe
               title={`Map of nearby ${providerTerm}s`}
               className="mt-3 h-56 w-full rounded-xl border border-line"
               loading="lazy"
               referrerPolicy="no-referrer-when-downgrade"
               allowFullScreen
-              src={`https://www.google.com/maps/embed/v1/search?key=${res.embed_key}&q=${encodeURIComponent(`${providerTerm} near ${submitted} Australia`)}`}
+              src={center
+                ? `https://www.google.com/maps/embed/v1/search?key=${res.embed_key}&q=${encodeURIComponent(providerTerm)}&center=${center.lat},${center.lng}&zoom=12`
+                : `https://www.google.com/maps/embed/v1/search?key=${res.embed_key}&q=${encodeURIComponent(`${providerTerm} near ${locationLabel} Australia`)}`}
             />
           )}
           <p className="mt-3 text-xs text-ink-3">Nearby {providerTerm}s (may be incomplete) — <strong>confirm they accept your fund / health cover with the provider.</strong> Quillo earns nothing from these listings — no paid placement.</p>
@@ -336,7 +384,7 @@ function ProviderFinder({ category, providerTerm }: { category: string; provider
 
       {empty && (
         <div className="mt-3 rounded-lg border border-sage/40 bg-sage/10 px-3 py-2.5 text-xs text-ink-2">
-          We couldn't list {providerTerm}s here for {submitted}. Open a live map search instead:{" "}
+          We couldn't list {providerTerm}s for {locationLabel}. Open a live map search instead:{" "}
           <a href={allInMapsUrl} target="_blank" rel="noopener noreferrer" className="font-semibold text-forest underline">Open in Maps ↗</a>
           {" · "}
           <a href={finderUrl} target="_blank" rel="noopener noreferrer" className="font-semibold text-forest underline">Healthdirect ↗</a>

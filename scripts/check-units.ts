@@ -26,7 +26,8 @@ import {
   EXTRAS_CATEGORIES, suggestExtrasCategory, providerSearchTerm,
 } from "../src/lib/advisory";
 import { PHIS_SEED, findPhisProduct } from "../src/lib/phis-seed";
-import { normaliseGoogle, googleTextQuery } from "../src/lib/phi-providers";
+import { normaliseGoogle, googleTextQuery, googleSearchBody, parseAuLatLng } from "../src/lib/phi-providers";
+import { postcodeCentroid } from "../src/lib/au-postcodes";
 import { applyUserRules } from "../src/lib/rules";
 import type { UserRule } from "../src/lib/db";
 import { parseRoles, hasRole, isAdmin, isPartner, normaliseRoles, ROLES } from "../src/lib/roles";
@@ -2204,6 +2205,24 @@ console.log("phi-providers (interim Google Places finder — neutral shape + tex
   check("normaliser is null-safe", normaliseGoogle(null).length === 0 && normaliseGoogle(undefined).length === 0);
   // Text query: a postcode-scoped "near" search Google geocodes itself — one call, no hard distance cap.
   check("text query → '<term> near <postcode> Australia'", googleTextQuery("physiotherapist", "2010") === "physiotherapist near 2010 Australia");
+  // Coordinate validation: only finite, in-AU points pass; everything else falls back to the centroid.
+  check("parseAuLatLng accepts an in-AU point", JSON.stringify(parseAuLatLng("-33.88", "151.21")) === JSON.stringify({ lat: -33.88, lng: 151.21 }));
+  check("parseAuLatLng rejects out-of-AU / garbage / missing", parseAuLatLng("51.5", "-0.12") === null && parseAuLatLng("abc", "151.2") === null && parseAuLatLng(null, "151.2") === null);
+  // Search body: with a bias point we search the bare term + a circle (no ambiguous postcode in the query);
+  // without one we keep the legacy "near <postcode>" string. This is the relevance fix (#327 follow-up).
+  const biased = googleSearchBody("acupuncturist", "2010", { lat: -33.88, lng: 151.21 }) as { textQuery: string; locationBias?: { circle: { center: { latitude: number; longitude: number }; radius: number } } };
+  check("search body (biased) → bare term + circle locationBias", biased.textQuery === "acupuncturist" && biased.locationBias?.circle.center.latitude === -33.88 && biased.locationBias.circle.radius > 0);
+  const unbiased = googleSearchBody("acupuncturist", "2010", null) as { textQuery: string; locationBias?: unknown };
+  check("search body (no bias) → legacy 'near <postcode>' text query", unbiased.textQuery === "acupuncturist near 2010 Australia" && unbiased.locationBias === undefined);
+}
+
+console.log("au-postcodes centroid table (postcode → in-AU coordinate)");
+{
+  const syd = postcodeCentroid("2010"); // Surry Hills, Sydney
+  check("2010 → Sydney metro coordinate", !!syd && syd[0] > -34.1 && syd[0] < -33.7 && syd[1] > 151.0 && syd[1] < 151.4);
+  const bne = postcodeCentroid("4006"); // Bowen Hills, Brisbane (the bug case — list showed national results)
+  check("4006 → Brisbane metro coordinate (not the bad postcode-level geocode)", !!bne && bne[0] > -27.6 && bne[0] < -27.3 && bne[1] > 152.9 && bne[1] < 153.2);
+  check("unknown postcode → null", postcodeCentroid("9999") === null && postcodeCentroid("") === null);
 }
 
 console.log("phis-seed integrity (auto-source products)");

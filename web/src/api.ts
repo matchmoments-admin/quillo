@@ -153,8 +153,14 @@ export const api = {
   phiRecordUsage: (u: { policy_id: string; category: string; amount_used_cents: number; used_on?: string | null; txn_id?: string | null }) => post<{ id: string }>("/api/phi/usage", u),
   phiDeleteUsage: (id: string) => send<{ ok: true }>("DELETE", `/api/phi/usage/${id}`),
   phiProducts: () => get<{ insurers: PhiInsurerOption[] }>("/api/phi/products").then((r) => r.insurers),
-  // Interim provider finder (flag phi_provider_directory) — only postcode + category leave the SPA.
-  phiProviders: (category: string, postcode: string) => get<PhiProvidersResult>(`/api/phi/providers?category=${encodeURIComponent(category)}&postcode=${encodeURIComponent(postcode)}`),
+  // Interim provider finder (flag phi_provider_directory) — only an approximate location (device coords,
+  // already coarsened, OR a postcode) + the category leave the SPA. No identity.
+  phiProviders: (category: string, loc: { postcode?: string; lat?: number; lng?: number }) => {
+    const p = new URLSearchParams({ category });
+    if (loc.lat != null && loc.lng != null) { p.set("lat", String(loc.lat)); p.set("lng", String(loc.lng)); }
+    if (loc.postcode) p.set("postcode", loc.postcode);
+    return get<PhiProvidersResult>(`/api/phi/providers?${p.toString()}`);
+  },
   phiApplyProduct: (productId: string) => post<{ policy_id: string; limits: number }>("/api/phi/apply-product", { product_id: productId }),
   phiConfirm: (policyId: string) => post<{ confirmed: number }>("/api/phi/confirm", { policy_id: policyId }),
   phiScan: () => post<{ setups: number; resets: number }>("/api/phi/scan"),

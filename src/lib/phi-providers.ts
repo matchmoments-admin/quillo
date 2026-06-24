@@ -24,6 +24,9 @@ import type { Env } from "../env";
  *  generic geo (used only to build a maps deep-link client-side). */
 export type Provider = { name: string; address: string; phone?: string; website?: string; lat?: number; lng?: number };
 
+/** A location bias point for the search — from device geolocation (coarsened) or a postcode centroid. */
+export type LatLng = { lat: number; lng: number };
+
 /** Attribution shown on the list surface. Google requires "Powered by Google" when Places data is shown
  *  without a Google map. */
 export const PROVIDER_ATTRIBUTION = {
@@ -32,6 +35,12 @@ export const PROVIDER_ATTRIBUTION = {
 } as const;
 
 const MAX_RESULTS = 20;
+// Radius (metres) for the Places location bias. ~25km covers a metro area; this is a soft bias (not a
+// hard restriction), so in sparse/rural areas Google still returns the nearest match beyond it.
+const SEARCH_RADIUS_M = 25000;
+// AU bounding box (mainland + Tasmania) — coordinates outside this are rejected as bad/spoofed input.
+const AU_LAT = [-44, -9] as const;
+const AU_LNG = [112, 154] as const;
 const DEFAULT_MAX_SEARCHES_PER_DAY = 200; // safe default per tenant when PHI_PROVIDER_MAX_PER_DAY is unset
 
 /**
@@ -65,6 +74,39 @@ export async function withinProviderSearchCap(env: Env, userId: string): Promise
  */
 export function googleTextQuery(providerTerm: string, postcode: string): string {
   return `${providerTerm} near ${postcode} Australia`;
+}
+
+/**
+ * Parse + validate a lat/lng pair (from request params). PURE. Returns the point only if both are
+ * finite numbers inside the AU bounding box — otherwise null (caller falls back to the postcode
+ * centroid). Rejects spoofed/garbage coordinates so they can't steer the billable Google call abroad.
+ */
+export function parseAuLatLng(latRaw: string | null, lngRaw: string | null): LatLng | null {
+  if (latRaw == null || lngRaw == null) return null;
+  const lat = Number(latRaw);
+  const lng = Number(lngRaw);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  if (lat < AU_LAT[0] || lat > AU_LAT[1] || lng < AU_LNG[0] || lng > AU_LNG[1]) return null;
+  return { lat, lng };
+}
+
+/**
+ * Build the Places `searchText` request body. PURE (no network) so it's unit-assertable. With a bias
+ * point (from device geolocation or the postcode centroid) we search the bare provider term and bias to
+ * that circle — a 4-digit postcode left in the query string is ambiguous (Google reads it as much like a
+ * year as a place), which made it fall back to prominent results AU-wide. Without a point (unknown
+ * postcode) we keep the legacy "<term> near <postcode> Australia" string and let Google geocode it.
+ */
+export function googleSearchBody(providerTerm: string, postcode: string, bias: LatLng | null) {
+  const base = { regionCode: "AU", languageCode: "en", maxResultCount: MAX_RESULTS };
+  if (bias) {
+    return {
+      ...base,
+      textQuery: providerTerm,
+      locationBias: { circle: { center: { latitude: bias.lat, longitude: bias.lng }, radius: SEARCH_RADIUS_M } },
+    };
+  }
+  return { ...base, textQuery: googleTextQuery(providerTerm, postcode) };
 }
 
 /** A minimal view of the Google `places:searchText` response we depend on (other fields ignored). */
@@ -119,7 +161,7 @@ export function normaliseGoogle(payload: GoogleSearchResponse | null | undefined
  * SKU). No caching (Google ToS). Any failure (no key, fetch error, non-OK) returns [] so the UI shows
  * the "Open in Maps" + Healthdirect fallback rather than a blank.
  */
-export async function fetchProviders(env: Env, providerTerm: string, postcode: string): Promise<Provider[]> {
+export async function fetchProviders(env: Env, providerTerm: string, postcode: string, bias: LatLng | null = null): Promise<Provider[]> {
   const apiKey = env.GOOGLE_PLACES_KEY;
   if (!apiKey) {
     // Not configured — UI falls back to maps + Healthdirect. Warn so a missing/unpropagated secret
@@ -138,12 +180,7 @@ export async function fetchProviders(env: Env, providerTerm: string, postcode: s
         "X-Goog-FieldMask":
           "places.displayName,places.formattedAddress,places.nationalPhoneNumber,places.internationalPhoneNumber,places.websiteUri,places.location",
       },
-      body: JSON.stringify({
-        textQuery: googleTextQuery(providerTerm, postcode),
-        regionCode: "AU",
-        languageCode: "en",
-        maxResultCount: MAX_RESULTS,
-      }),
+      body: JSON.stringify(googleSearchBody(providerTerm, postcode, bias)),
     });
     if (!res.ok) {
       // Surface auth/quota failures (e.g. 403 bad key, 429 over-limit) — otherwise they're

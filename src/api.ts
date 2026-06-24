@@ -28,7 +28,8 @@ import {
 } from "./lib/queries";
 import { phisProductList } from "./lib/phis-seed";
 import { providerSearchTerm, HEALTHDIRECT_FINDER_URL } from "./lib/advisory";
-import { fetchProviders, withinProviderSearchCap, PROVIDER_ATTRIBUTION } from "./lib/phi-providers";
+import { fetchProviders, withinProviderSearchCap, PROVIDER_ATTRIBUTION, parseAuLatLng } from "./lib/phi-providers";
+import { postcodeCentroid } from "./lib/au-postcodes";
 import { createTopupCheckout } from "./lib/stripe";
 import { isAdmin, isPartner, normaliseRoles } from "./lib/roles";
 import { REFERRAL_STATUSES, canAdvanceReferral, sanitizeRevenueCents, partnerPortalData } from "./lib/partners";
@@ -498,7 +499,13 @@ export async function handleApi(
     if (id === "providers" && m === "GET") {
       if (!featureOn(env, "phi_provider_directory")) return json({ error: "not available" }, 404);
       const postcode = url.searchParams.get("postcode") ?? "";
-      if (!/^\d{4}$/.test(postcode)) return json({ error: "valid 4-digit postcode required" }, 400);
+      // Location bias for the search: coarsened device coordinates win; else the typed postcode's centroid.
+      // A bare postcode in the text query is ambiguous (reads as a year) and made Google return AU-wide
+      // results — the coordinates constrain the search to genuinely-nearby providers. NO identity leaves
+      // Quillo: only an approximate point (or postcode) + the service type, same as the Healthdirect signpost.
+      const coords = parseAuLatLng(url.searchParams.get("lat"), url.searchParams.get("lng"));
+      const validPostcode = /^\d{4}$/.test(postcode);
+      if (!coords && !validPostcode) return json({ error: "valid 4-digit postcode or location required" }, 400);
       const term = providerSearchTerm(url.searchParams.get("category") ?? "");
       if (!term) return json({ providers: [], finder_url: HEALTHDIRECT_FINDER_URL, attribution: PROVIDER_ATTRIBUTION });
       // Per-tenant daily cap before the billable Google call (cost guardrail). Over cap ⇒ the SPA still
@@ -506,11 +513,16 @@ export async function handleApi(
       if (!(await withinProviderSearchCap(env, uid))) {
         return json({ error: "Daily provider-search limit reached — use the Maps link below, or try again tomorrow." }, 429);
       }
-      const providers = await fetchProviders(env, term, postcode);
+      // Resolve the bias centre: explicit coordinates, else the postcode centroid (null if unknown postcode
+      // ⇒ fetchProviders falls back to the legacy "near <postcode>" text query). Returned as `center` so the
+      // SPA can centre the map on the same point the list was biased to (they otherwise diverge).
+      const pc = validPostcode ? postcodeCentroid(postcode) : null;
+      const center = coords ?? (pc ? { lat: pc[0], lng: pc[1] } : null);
+      const providers = await fetchProviders(env, term, postcode, center);
       // embed_key is the PUBLIC, referrer-restricted Maps Embed API key (or null) — the SPA renders the
       // in-app interactive map from it. Absent ⇒ the SPA shows the list + "Open in Maps" links only.
       if (!env.MAPS_EMBED_KEY) console.warn("[phi-providers] MAPS_EMBED_KEY not set — SPA shows list + 'Open in Maps' only (no in-app map)");
-      return json({ providers, finder_url: HEALTHDIRECT_FINDER_URL, attribution: PROVIDER_ATTRIBUTION, embed_key: env.MAPS_EMBED_KEY ?? null });
+      return json({ providers, finder_url: HEALTHDIRECT_FINDER_URL, attribution: PROVIDER_ATTRIBUTION, embed_key: env.MAPS_EMBED_KEY ?? null, center });
     }
     if (id === "apply-product" && m === "POST") {
       const b = (await req.json().catch(() => ({}))) as { product_id?: unknown };

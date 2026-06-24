@@ -451,6 +451,7 @@ export interface PhiProvidersResult {
   finder_url: string;
   attribution: { text: string; href: string };
   embed_key?: string | null; // PUBLIC Maps Embed API key (or null) → in-app interactive map
+  center?: { lat: number; lng: number } | null; // the point the search was biased to (device coords or postcode centroid) — centre the map here
 }
 
 // ── Usage-based billing wallet (flag billing) ──

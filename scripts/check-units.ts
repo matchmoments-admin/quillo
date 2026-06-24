@@ -28,6 +28,7 @@ import {
 import { PHIS_SEED, findPhisProduct } from "../src/lib/phis-seed";
 import { normaliseGoogle, googleTextQuery, googleSearchBody, parseAuLatLng } from "../src/lib/phi-providers";
 import { postcodeCentroid } from "../src/lib/au-postcodes";
+import { computeSuggestions, haversineKm, formatKm } from "../web/src/lib/phi-suggestions";
 import { applyUserRules } from "../src/lib/rules";
 import type { UserRule } from "../src/lib/db";
 import { parseRoles, hasRole, isAdmin, isPartner, normaliseRoles, ROLES } from "../src/lib/roles";
@@ -2223,6 +2224,40 @@ console.log("au-postcodes centroid table (postcode → in-AU coordinate)");
   const bne = postcodeCentroid("4006"); // Bowen Hills, Brisbane (the bug case — list showed national results)
   check("4006 → Brisbane metro coordinate (not the bad postcode-level geocode)", !!bne && bne[0] > -27.6 && bne[0] < -27.3 && bne[1] > 152.9 && bne[1] < 153.2);
   check("unknown postcode → null", postcodeCentroid("9999") === null && postcodeCentroid("") === null);
+}
+
+console.log("phi-suggestions (Extras 'suggested next' ranking + distance — Extras Dashboard v2)");
+{
+  const stub = {
+    consented: true, private_health: 1, category_options: [], disclaimer: "",
+    policies: [{
+      id: "pol1", person_id: null, insurer: "NIB", cover_type: "combined", reset_basis: "calendar",
+      source: "manual", reset_date: "2027-01-01", weeks_to_reset: 28,
+      total_limit_cents: 145000, total_used_cents: 0, total_unused_cents: 145000,
+      categories: [
+        { limit_id: "l1", category: "dental.major", label: "Major dental", annual_limit_cents: 100000, used_cents: 0, remaining_cents: 100000, combined_group: null, source: "manual", verified: 1, provider_term: "dentist", entries: [], copy: "" },
+        { limit_id: "l2", category: "optical", label: "Optical", annual_limit_cents: 25000, used_cents: 0, remaining_cents: 25000, combined_group: null, source: "manual", verified: 0, provider_term: "optometrist", entries: [], copy: "" },
+        { limit_id: "l3", category: "pharmacy", label: "Pharmacy", annual_limit_cents: 20000, used_cents: 0, remaining_cents: 20000, combined_group: null, source: "manual", verified: 1, provider_term: "", entries: [], copy: "" },
+      ],
+    }],
+    loggable: [{ txn_id: "t1", merchant: "City Physio", amount_cents: 8000, txn_date: "2026-06-01", suggested_category: "physiotherapy" }],
+  };
+  const sg = computeSuggestions(stub as never);
+  check("suggested next leads with the detected (loggable) spend", sg[0]?.kind === "log" && sg[0]?.loggable?.txn_id === "t1");
+  check("then the biggest unused-cover category with a provider term", sg[1]?.kind === "find" && sg[1]?.category === "dental.major");
+  check("then the next-biggest (optical before pharmacy)", sg[2]?.kind === "find" && sg[2]?.category === "optical");
+  check("capped at 3 (confirm pushed out)", sg.length === 3);
+  check("a category with NO provider term is never a 'find' card", !sg.some((s) => s.kind === "find" && s.category === "pharmacy"));
+  const empty = computeSuggestions({ consented: true, policies: [], loggable: [], category_options: [], disclaimer: "", private_health: 0 } as never);
+  check("no policies → single 'setup' suggestion", empty.length === 1 && empty[0].kind === "setup");
+  check("not consented → no suggestions", computeSuggestions({ consented: false, policies: [], loggable: [] } as never).length === 0);
+  // Distance: same-ish point is sub-2km; far point is large; missing coords → null (chip omitted).
+  const here = { lat: -33.87, lng: 151.21 };
+  const near = haversineKm(here, { lat: -33.88, lng: 151.22 });
+  check("haversineKm returns a small distance for a nearby point", near !== null && near > 0 && near < 2);
+  check("haversineKm is large for a far point", (haversineKm(here, { lat: -37.81, lng: 144.96 }) ?? 0) > 600);
+  check("haversineKm → null when the provider has no coordinates", haversineKm(here, {}) === null);
+  check("formatKm: 1dp close in, whole km further out", formatKm(0.4) === "0.4 km" && formatKm(12.6) === "13 km");
 }
 
 console.log("phis-seed integrity (auto-source products)");

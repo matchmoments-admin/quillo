@@ -1,4 +1,4 @@
-import type { Txn, TxnDetail, Situation, SituationDraft, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse, UsageData, StatementInfo, IncomeRow, DocRow, AssetRow, ScheduleRow, ChecklistItem, ClaimSuggestion, FilingReadiness, ReviewSummary, Progress, AdminTenant, AdminOverview, AdminSpend, AiEdit, ClaimReview, OccupationRulesDraft, OccupationRuleCandidate, MovementSweep, BatchResult, ClarifyQuestion, ClarifyAnswer, ClaimMatch, AccountantSummary, SuggestedDeduction, WorkUse, CarUse, ScanResult, CapitalLoss, OpeningDepreciation, AttributionState, AttributionInput, AttributionRow, IncomeActivity, PropertyOwner, EntityRole, CgtAssetRow, CgtEventRow, EssGrantRow, VehicleLogbookRow, TrustDistributionRow, SmsfMemberRow, SuperContributionRow, BasPeriodRow, PaygInstalmentRow, AskAnswer, SavingsData, PhiOverview, PhiInsurerOption, PhiProvidersResult, BillingOverview, PartnerPortal, AmmaComponents, PartnershipDistributionRow } from "./types";
+import type { Txn, TxnDetail, Situation, SituationDraft, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse, UsageData, StatementInfo, IncomeRow, DocRow, AssetRow, ScheduleRow, ChecklistItem, ClaimSuggestion, FilingReadiness, ReviewSummary, Progress, AdminTenant, AdminOverview, AdminSpend, AiEdit, ClaimReview, OccupationRulesDraft, OccupationRuleCandidate, MovementSweep, BatchResult, ClarifyQuestion, ClarifyAnswer, ClaimMatch, AccountantSummary, SuggestedDeduction, WorkUse, CarUse, ScanResult, CapitalLoss, OpeningDepreciation, AttributionState, AttributionInput, AttributionRow, IncomeActivity, PropertyOwner, EntityRole, CgtAssetRow, CgtEventRow, EssGrantRow, VehicleLogbookRow, TrustDistributionRow, SmsfMemberRow, SuperContributionRow, BasPeriodRow, PaygInstalmentRow, AskAnswer, SavingsData, PhiOverview, PhiInsurerOption, PhiProvidersResult, PhiScanResult, BillingOverview, PartnerPortal, AmmaComponents, PartnershipDistributionRow } from "./types";
 
 // Clerk session token getter, wired from <TokenBridge> inside ClerkProvider (main.tsx).
 // Clerk tokens are short-lived, so we fetch a fresh one per request (getToken caches/refreshes).
@@ -150,8 +150,18 @@ export const api = {
   phiDeletePolicy: (id: string) => send<{ ok: true }>("DELETE", `/api/phi/policy/${id}`),
   phiSaveLimit: (l: { policy_id: string; category: string; annual_limit_cents: number }) => post<{ id: string }>("/api/phi/limit", l),
   phiDeleteLimit: (id: string) => send<{ ok: true }>("DELETE", `/api/phi/limit/${id}`),
-  phiRecordUsage: (u: { policy_id: string; category: string; amount_used_cents: number; used_on?: string | null; txn_id?: string | null }) => post<{ id: string }>("/api/phi/usage", u),
+  phiRecordUsage: (u: { policy_id: string; category: string; amount_used_cents: number; used_on?: string | null; txn_id?: string | null; receipt_key?: string | null }) => post<{ id: string }>("/api/phi/usage", u),
   phiDeleteUsage: (id: string) => send<{ ok: true }>("DELETE", `/api/phi/usage/${id}`),
+  // Snap a receipt → Claude-vision OCR returns a benefit-used prefill (writes nothing). Multipart; the
+  // browser sets the multipart boundary. Errors (over cap / consent / budget) surface for a manual fallback.
+  phiScanReceipt: async (file: File): Promise<PhiScanResult> => {
+    const fd = new FormData();
+    fd.append("file", file);
+    const res = await fetch("/api/phi/usage/scan", { method: "POST", credentials: "include", headers: await authHeaders(), body: fd });
+    if (res.status === 401) throw new Error("unauthorized");
+    if (!res.ok) throw await errFrom(res);
+    return res.json();
+  },
   phiProducts: () => get<{ insurers: PhiInsurerOption[] }>("/api/phi/products").then((r) => r.insurers),
   // Interim provider finder (flag phi_provider_directory) — only an approximate location (device coords,
   // already coarsened, OR a postcode) + the category leave the SPA. No identity.

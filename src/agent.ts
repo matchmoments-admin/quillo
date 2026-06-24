@@ -15,7 +15,7 @@ import { deriveWfhHours, generateWfhDiary, type WfhLeaveRange } from "./lib/work
 import { applyUserRules, RULE_CREDIT_BUCKETS } from "./lib/rules";
 import { sha256hex, sha256hexBytes } from "./lib/base64";
 import { getLLM, type LLM } from "./llm";
-import { extractReceipt, extractReceipts, extractFromText, extractColumnMap, extractStatement, extractBatch, extractSituationDraft, extractOccupationRules, extractGuide, extractAnswer, classifyDocument, extractPayslip, extractAgentStatement, extractDepreciationSchedule, extractDividend, batchParams, parseBatchMessage, mapBatchItems, ALLOWED_NAV_ROUTES, type Extracted, type ExtractedStatement, type SituationDraft, type OccupationRulesDraft, type AnswerResult } from "./extract";
+import { extractReceipt, extractReceipts, extractFromText, extractColumnMap, extractStatement, extractBatch, extractSituationDraft, extractOccupationRules, extractGuide, extractAnswer, classifyDocument, extractPayslip, extractAgentStatement, extractDepreciationSchedule, extractDividend, extractHealthClaim, batchParams, parseBatchMessage, mapBatchItems, ALLOWED_NAV_ROUTES, type Extracted, type ExtractedStatement, type SituationDraft, type OccupationRulesDraft, type AnswerResult } from "./extract";
 import { fyForDate, buildReport, useStatusDeniedExpr, propertyUndeterminedGatedExpr } from "./lib/report";
 import { runScan, type ScanResult, type ScanTxn } from "./lib/scan";
 import { getProgress } from "./lib/progress";
@@ -5098,18 +5098,61 @@ export class TaxAgent extends Agent<Env> {
    *  GAP — this is the BENEFIT the fund paid, which the user enters from their statement/app. */
   async recordPhiUsage(
     userId: string,
-    u: { policy_id: string; category: string; amount_used_cents: number; txn_id?: string | null; used_on?: string | null },
+    u: { policy_id: string; category: string; amount_used_cents: number; txn_id?: string | null; used_on?: string | null; receipt_key?: string | null },
   ): Promise<{ id: string }> {
     await this.requireHealthConsent(userId);
     await this.assertOwnsPolicy(userId, u.policy_id);
     const id = crypto.randomUUID();
     const cents = Math.max(0, Math.round(Number(u.amount_used_cents) || 0));
+    // receipt_key is tenant-scoped (only accept our own ${userId}/phi/... keys — never trust a client path).
+    const receiptKey = typeof u.receipt_key === "string" && u.receipt_key.startsWith(`${userId}/phi/`) ? u.receipt_key : null;
     await this.env.DB.prepare(
-      `INSERT INTO phi_benefit_usage (id, user_id, policy_id, category, amount_used_cents, txn_id, used_on)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    ).bind(id, userId, u.policy_id, u.category, cents, u.txn_id ?? null, u.used_on ?? null).run();
+      `INSERT INTO phi_benefit_usage (id, user_id, policy_id, category, amount_used_cents, txn_id, used_on, receipt_key)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(id, userId, u.policy_id, u.category, cents, u.txn_id ?? null, u.used_on ?? null, receiptKey).run();
     await this.audit(userId, "phi_usage_recorded", JSON.stringify({ id, category: u.category, cents }));
     return { id };
+  }
+
+  /**
+   * Snap-to-log: read a private-health extras receipt and return a benefit-used PREFILL — writes nothing
+   * to the ledger. Stores the image in R2 (evidence the user can keep if they submit the claim) and runs
+   * the Claude-vision extractor. Bounded to ONE image; gated by health consent + the APP-8 cross-border
+   * inference consent + the per-user $ budget (the per-tenant daily scan cap is enforced at the route).
+   * Any failure throws a typed message so the UI degrades to manual typing.
+   */
+  async scanPhiReceipt(
+    userId: string,
+    bytes: ArrayBuffer,
+    mime: string,
+  ): Promise<{ receipt_key: string; provider: string | null; category: string | null; amount_cents: number | null; used_on: string | null; confidence: number }> {
+    await this.requireHealthConsent(userId);
+    const profile = await this.requireProfile(userId);
+    const provider = profile.inference_provider ?? this.env.DEFAULT_INFERENCE_PROVIDER;
+    if (provider === "anthropic" && profile.consent_xborder !== 1) throw new Error("consent_required");
+    if (!(await this.withinBudget(userId, null))) throw new Error("ai_budget_reached");
+
+    const llm = await getLLM(this.env, profile, { userId });
+    await this.auditXborderInference(userId, provider, "phi_claim", llm.modelId);
+    const claim = await extractHealthClaim(llm, bytes, mime);
+
+    // Store the image only AFTER a successful read — a failed OCR (bad photo) leaves no orphan bytes.
+    const receiptId = crypto.randomUUID();
+    const key = `${userId}/phi/${receiptId}`;
+    await this.env.RECEIPTS.put(key, bytes, { httpMetadata: { contentType: mime } });
+    await this.audit(userId, "phi_receipt_scanned", JSON.stringify({ receiptId, category: claim.category_guess, confidence: claim.confidence }));
+
+    // Prefer the fund rebate (what counts against the limit); fall back to the charged total. The user
+    // confirms/edits before logging — the receipt's fee is not always the benefit the fund paid.
+    const amount = claim.benefit_paid_cents ?? claim.amount_charged_cents ?? null;
+    return {
+      receipt_key: key,
+      provider: claim.provider_name,
+      category: claim.category_guess,
+      amount_cents: amount != null ? Math.max(0, Math.round(amount)) : null,
+      used_on: claim.service_date,
+      confidence: claim.confidence,
+    };
   }
 
   /**

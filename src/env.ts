@@ -61,6 +61,7 @@ export interface Env {
   // `wrangler secret put GOOGLE_PLACES_KEY` after enabling Places API (New) in Google Cloud.
   GOOGLE_PLACES_KEY?: string;
   PHI_PROVIDER_MAX_PER_DAY?: string;    // per-tenant daily cap on provider-finder searches (cost guardrail). Unset ⇒ 200; "0" ⇒ unlimited.
+  PHI_SCAN_MAX_PER_DAY?: string;        // per-tenant daily cap on receipt-OCR scans (paid LLM call). Unset ⇒ 20; "0" ⇒ unlimited.
   // Optional (flag phi_provider_directory): Google **Maps Embed API** key for the in-app interactive
   // map. PUBLIC by design (it goes into the iframe URL in the browser) — restrict it to the Maps Embed
   // API + the app's HTTP referrers. The Embed API is free/unlimited. Absent ⇒ no in-app map (the list +
@@ -147,7 +148,8 @@ export interface TaxAgentRpc {
   deletePhiPolicy(userId: string, id: string): Promise<{ ok: true }>;
   savePhiLimit(userId: string, l: { policy_id: string; category: string; annual_limit_cents: number; period?: string | null; combined_group?: string | null; source?: string | null; verified?: boolean }): Promise<{ id: string }>;
   deletePhiLimit(userId: string, id: string): Promise<{ ok: true }>;
-  recordPhiUsage(userId: string, u: { policy_id: string; category: string; amount_used_cents: number; txn_id?: string | null; used_on?: string | null }): Promise<{ id: string }>;
+  recordPhiUsage(userId: string, u: { policy_id: string; category: string; amount_used_cents: number; txn_id?: string | null; used_on?: string | null; receipt_key?: string | null }): Promise<{ id: string }>;
+  scanPhiReceipt(userId: string, bytes: ArrayBuffer, mime: string): Promise<{ receipt_key: string; provider: string | null; category: string | null; amount_cents: number | null; used_on: string | null; confidence: number }>;
   deletePhiUsage(userId: string, id: string): Promise<{ ok: true }>;
   applyPhiProduct(userId: string, productId: string): Promise<{ policy_id: string; limits: number }>;
   confirmPhiPolicyLimits(userId: string, policyId: string): Promise<{ confirmed: number }>;

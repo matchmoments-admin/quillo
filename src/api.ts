@@ -28,7 +28,7 @@ import {
 } from "./lib/queries";
 import { phisProductList } from "./lib/phis-seed";
 import { providerSearchTerm, HEALTHDIRECT_FINDER_URL } from "./lib/advisory";
-import { fetchProviders, withinProviderSearchCap, PROVIDER_ATTRIBUTION, parseAuLatLng } from "./lib/phi-providers";
+import { fetchProviders, withinProviderSearchCap, withinPhiScanCap, PROVIDER_ATTRIBUTION, parseAuLatLng } from "./lib/phi-providers";
 import { postcodeCentroid } from "./lib/au-postcodes";
 import { createTopupCheckout } from "./lib/stripe";
 import { isAdmin, isPartner, normaliseRoles } from "./lib/roles";
@@ -561,11 +561,23 @@ export async function handleApi(
       try { return json(await stub.deletePhiLimit(uid, sub)); } catch (e) { return json({ error: (e as Error).message }, 400); }
     }
     if (id === "usage" && !sub && m === "POST") {
-      const b = (await req.json().catch(() => ({}))) as { policy_id?: unknown; category?: unknown; amount_used_cents?: unknown; txn_id?: unknown; used_on?: unknown };
+      const b = (await req.json().catch(() => ({}))) as { policy_id?: unknown; category?: unknown; amount_used_cents?: unknown; txn_id?: unknown; used_on?: unknown; receipt_key?: unknown };
       if (typeof b.policy_id !== "string" || typeof b.category !== "string") return json({ error: "policy_id and category required" }, 400);
-      try { return json(await stub.recordPhiUsage(uid, { policy_id: b.policy_id, category: b.category, amount_used_cents: Number(b.amount_used_cents) || 0, txn_id: typeof b.txn_id === "string" ? b.txn_id : null, used_on: typeof b.used_on === "string" ? b.used_on : null })); } catch (e) { return json({ error: (e as Error).message }, 400); }
+      try { return json(await stub.recordPhiUsage(uid, { policy_id: b.policy_id, category: b.category, amount_used_cents: Number(b.amount_used_cents) || 0, txn_id: typeof b.txn_id === "string" ? b.txn_id : null, used_on: typeof b.used_on === "string" ? b.used_on : null, receipt_key: typeof b.receipt_key === "string" ? b.receipt_key : null })); } catch (e) { return json({ error: (e as Error).message }, 400); }
     }
-    if (id === "usage" && sub && m === "DELETE") {
+    // POST /api/phi/usage/scan — multipart `file` (1 image/PDF) → Claude-vision OCR returns a benefit-used
+    // PREFILL (writes nothing). Per-tenant daily scan cap before the billable call; consent + budget gated
+    // in the DO. Over cap / any failure ⇒ the SPA falls back to manual typing.
+    if (id === "usage" && sub === "scan" && m === "POST") {
+      if (!(await withinPhiScanCap(env, uid))) return json({ error: "Daily receipt-scan limit reached — type the claim in, or try again tomorrow." }, 429);
+      const form = await req.formData();
+      const blob = (form.getAll("file") as unknown as Array<Blob | string>).find((f): f is Blob => typeof f !== "string");
+      if (!blob) return json({ error: "no file" }, 400);
+      const bytes = await blob.arrayBuffer();
+      if (bytes.byteLength === 0) return json({ error: "empty file" }, 400);
+      try { return json(await stub.scanPhiReceipt(uid, bytes, blob.type || "image/jpeg")); } catch (e) { return json({ error: (e as Error).message }, 400); }
+    }
+    if (id === "usage" && sub && sub !== "scan" && m === "DELETE") {
       try { return json(await stub.deletePhiUsage(uid, sub)); } catch (e) { return json({ error: (e as Error).message }, 400); }
     }
     if (id === "scan" && m === "POST") {

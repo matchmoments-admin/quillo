@@ -4,6 +4,7 @@ import type { LLM } from "./llm";
 import { bytesToBase64 } from "./lib/base64";
 import type { ColumnMap } from "./lib/statements";
 import { BUCKETS, ENTITY_KINDS, PROPERTY_STATUSES, DOC_TYPES, ASSET_CLASSES, ATO_LABEL_MAX, CLAIM_TYPES, isBucket, isPropertyBucket, normalizeAtoLabel } from "./lib/taxonomy";
+import { EXTRAS_CATEGORIES } from "./lib/advisory";
 import type { DigestRef } from "./lib/guide";
 
 export const Extracted = z
@@ -787,6 +788,69 @@ export async function extractDividend(llm: LLM, bytes: ArrayBuffer, mime: string
   const toolUse = msg.content.find((c): c is Anthropic.ToolUseBlock => c.type === "tool_use" && c.name === DIVIDEND_TOOL.name);
   if (!toolUse) throw new Error("model did not return a record_dividend call");
   return ExtractedDividend.parse(toolUse.input);
+}
+
+// ── Private-health EXTRAS claim (HICAPS slip / provider receipt → a benefit-used prefill) ──────────
+// Powers "snap a receipt → log a claim" on the Extras page. Distinct from record_receipt: an extras
+// claim tracks the BENEFIT the fund paid (what counts against the limit), not the tax-deductible spend.
+export const ExtractedHealthClaim = z.object({
+  provider_name: z.string().nullable(),
+  service_date: z.string().nullable(),
+  category_guess: z.enum(EXTRAS_CATEGORIES).nullable().catch(null),
+  benefit_paid_cents: z.number().int().nullable(),
+  amount_charged_cents: z.number().int().nullable(),
+  confidence: z.number().min(0).max(1),
+});
+export type ExtractedHealthClaim = z.infer<typeof ExtractedHealthClaim>;
+
+const HEALTH_CLAIM_TOOL: Anthropic.Tool = {
+  name: "record_health_claim",
+  description:
+    "Read a private-health EXTRAS receipt or HICAPS slip and record it as one benefit-used claim. Call exactly once.",
+  input_schema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["provider_name", "service_date", "category_guess", "benefit_paid_cents", "amount_charged_cents", "confidence"],
+    properties: {
+      provider_name: { type: ["string", "null"], description: "Clinic / provider name as printed, or null." },
+      service_date: { type: ["string", "null"], description: "Service date ISO YYYY-MM-DD, or null if not shown." },
+      category_guess: {
+        type: ["string", "null"],
+        enum: [...EXTRAS_CATEGORIES, null],
+        description: "Best-match extras benefit category from the allowed list, or null if unclear from the receipt.",
+      },
+      benefit_paid_cents: {
+        type: ["integer", "null"],
+        description:
+          "The HEALTH-FUND BENEFIT/REBATE paid, in cents — the 'Health Fund' / 'Benefit' / HICAPS rebate line. This is what counts against an extras limit. Null if the receipt does not show a fund rebate.",
+      },
+      amount_charged_cents: { type: ["integer", "null"], description: "Total fee charged in cents, if shown; else null." },
+      confidence: { type: "number", description: "0..1 confidence in the category + amounts." },
+    },
+  },
+};
+
+/** Extract a private-health extras receipt → a benefit-used prefill. Single forced-tool-use call. */
+export async function extractHealthClaim(llm: LLM, bytes: ArrayBuffer, mime: string): Promise<ExtractedHealthClaim> {
+  const msg = await llm.create(
+    {
+      model: llm.modelId,
+      max_tokens: 512,
+      tools: [HEALTH_CLAIM_TOOL],
+      tool_choice: { type: "tool", name: HEALTH_CLAIM_TOOL.name },
+      messages: [{
+        role: "user",
+        content: [
+          receiptBlock(bytes, mime),
+          { type: "text", text: "Read this private-health extras receipt. Prefer the health-fund benefit/rebate amount (what the fund paid) for benefit_paid_cents — that is what counts against an extras limit. Call record_health_claim once." },
+        ],
+      }],
+    },
+    "phi_claim",
+  );
+  const toolUse = msg.content.find((c): c is Anthropic.ToolUseBlock => c.type === "tool_use" && c.name === HEALTH_CLAIM_TOOL.name);
+  if (!toolUse) throw new Error("model did not return a record_health_claim call");
+  return ExtractedHealthClaim.parse(toolUse.input);
 }
 
 // ── Quantity-surveyor depreciation schedule → bulk assets ──────────────────────

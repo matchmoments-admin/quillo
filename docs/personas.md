@@ -53,6 +53,7 @@ Legend — **engine**: backend computes it (✓ live behind flag); **UI**: a web
 | Trust distributions / streaming | ✓ | ✓ | ✓ | `trust_distributions` (ON) | 8 |
 | SMSF / pension / ECPI | ✓ | ✓ entity kind + member balances (#171) | ✓ | `smsf_engine` (ON) | 10 |
 | Accountant schedule export (itemised CSV: per-txn lines, engine schedules, NOT-CLAIMED, substantiation) | ✓ | ✓ Reports/Filing download | ✓ | `accountant_schedule` | all |
+| Quillo fee → D10 "cost of managing tax affairs" deduction (auto-recorded on a paid Stripe top-up) | ✓ | ✓ Billing top-up | ✓ | `quillo_fee_deduction` (ON) | all (golden: pfeeon/pfeeoff) |
 
 **Bottom line (2026-06-10).** The *engines* for all 10 personas are live and **every persona flag is
 ON in prod** — `cgt_engine, ess_engine, car_logbook, trust_distributions, attribution_engine, gst_bas,

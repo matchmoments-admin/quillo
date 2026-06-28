@@ -270,6 +270,25 @@ const asset = (id: string, u: string, costCents: number, depCents: number, prope
   run(`INSERT INTO work_use_inputs (user_id, fy, wfh_hours) VALUES (?, 2025, 400)`, u); // 400h × 70c = $280
 }
 
+// ── quillo_fee_deduction: a paid Quillo top-up auto-recorded as the customer's own D10 "cost of
+// managing tax affairs" deduction (s25-5). The flag gates the WRITE (creditWallet → recordFeeDeduction);
+// buildReport just reads rows, so the golden pins that the EXACT row recordFeeDeduction emits
+// (source='quillo', status='extracted', kind='receipt', bucket='payg', ato_label='D10',
+// deductibility='confirmed_deductible', debit) is COUNTED as a deduction, and that its absence is
+// byte-identical. Two otherwise-identical PAYG tenants: pfeeoff (no fee) vs pfeeon (one $10 fee row). ──
+{
+  const u = "pfeeoff";
+  seedTenant(u, "Quillo fee — control (no fee recorded)");
+  inc("pfeeoffSal", u, "salary_payg", 5000000); // $50k salary, no expenses
+}
+{
+  const u = "pfeeon";
+  seedTenant(u, "Quillo fee — recorded D10 deduction");
+  inc("pfeeonSal", u, "salary_payg", 5000000); // identical $50k salary
+  // Mirror recordFeeDeduction's INSERT exactly (a paid $10 top-up):
+  run(`INSERT INTO transactions (id, user_id, source, status, kind, merchant, amount_cents, currency, amount_aud_cents, gst_cents, txn_date, bucket, ato_label, deductibility, deductible_amount_cents, direction, confidence, reasoning, ledger_ref) VALUES ('pfeeonT', ?, 'quillo', 'extracted', 'receipt', 'Quillo', 1000, 'AUD', 1000, NULL, ?, 'payg', 'D10', 'confirmed_deductible', 1000, 'debit', 1.0, 'Quillo subscription fee — cost of managing tax affairs (s25-5, label D10)', 'cs_test_persona')`, u, FY_DATE); // $10 fee
+}
+
 // ── Persona 10: Margaret, SMSF retiree + crypto ──
 {
   const u = "p10";
@@ -300,6 +319,13 @@ async function main() {
   const r1phi = await buildReport(envPhi, "p1", 2025);
   check("PHI (flag ON): taxable position byte-identical (extras tracking is display-only)", r1phi.taxable_position_cents === r1.taxable_position_cents);
   check("PHI (flag ON): deductions byte-identical (no allied-health auto-claim)", r1phi.total_deductions_cents === r1.total_deductions_cents);
+
+  // ── quillo_fee_deduction: the recorded $10 Quillo fee counts as a D10 deduction; absent ⇒ byte-identical ──
+  const rFeeOff = await buildReport(env, "pfeeoff", 2025);
+  const rFeeOn = await buildReport(env, "pfeeon", 2025);
+  check("Fee D10: control PAYG tenant (no fee) has zero deductions", rFeeOff.total_deductions_cents === 0);
+  check("Fee D10: the recorded $10 Quillo fee is counted as a deduction", rFeeOn.total_deductions_cents === 1000);
+  check("Fee D10: the fee (and only the fee) lowers the taxable position by $10", rFeeOn.taxable_position_cents === rFeeOff.taxable_position_cents - 1000);
 
   // ── Persona 2 ──
   const r2 = await buildReport(env, "p2", 2025);

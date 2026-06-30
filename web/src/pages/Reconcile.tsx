@@ -10,6 +10,7 @@ export function Reconcile() {
   const qc = useQueryClient();
   const { data, isLoading, error } = useQuery({ queryKey: ["reconcile"], queryFn: () => api.reconcilePairs() });
   const [picked, setPicked] = useState<Txn | null>(null);
+  const [limit, setLimit] = useState(60); // bank-line list is windowed; "show all" reveals the rest
 
   const link = useMutation({
     mutationFn: (line: Txn) => api.matchLink(picked!.id, line.id),
@@ -70,7 +71,7 @@ export function Reconcile() {
             <Empty>No unmatched bank lines. Import a statement from Accounts.</Empty>
           ) : (
             <ul className="divide-y divide-line">
-              {candidates.slice(0, 60).map((l) => (
+              {candidates.slice(0, limit).map((l) => (
                 <li key={l.id} className="flex items-center justify-between px-4 py-2.5 text-sm">
                   <span className="min-w-0">
                     <span className="block truncate">{l.merchant ?? l.raw_description}</span>
@@ -91,6 +92,14 @@ export function Reconcile() {
                 </li>
               ))}
             </ul>
+          )}
+          {candidates.length > limit && (
+            <button
+              onClick={() => setLimit((n) => n + 100)}
+              className="w-full border-t border-line px-4 py-2.5 text-center text-sm font-medium text-muted hover:text-ink"
+            >
+              Show more ({candidates.length - limit} hidden)
+            </button>
           )}
         </Card>
       </div>

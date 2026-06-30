@@ -854,7 +854,7 @@ function AddTrustDistribution({ trusts, onDone }: { trusts: { id: string; name: 
   const [character, setCharacter] = useState("ordinary");
   const [franking, setFranking] = useState("");
   const add = useMutation({
-    mutationFn: () => api.addTrustDistribution({ trust_entity_id: trustId, amount_cents: Math.round(parseFloat(amount || "0") * 100), character, franking_credit_cents: Math.round(parseFloat(franking || "0") * 100) }),
+    mutationFn: () => api.addTrustDistribution({ trust_entity_id: trustId, amount_cents: parseMoneyToCents(amount) ?? 0, character, franking_credit_cents: parseMoneyToCents(franking) ?? 0 }),
     onSuccess: onDone,
   });
   return (
@@ -898,7 +898,7 @@ function AddPartnershipDistribution({ partnerships, onDone }: { partnerships: { 
   const [character, setCharacter] = useState("ordinary");
   const [franking, setFranking] = useState("");
   const add = useMutation({
-    mutationFn: () => api.addPartnershipDistribution({ partnership_entity_id: partnershipId, amount_cents: Math.round(parseFloat(amount || "0") * 100), character, franking_credit_cents: Math.round(parseFloat(franking || "0") * 100) }),
+    mutationFn: () => api.addPartnershipDistribution({ partnership_entity_id: partnershipId, amount_cents: parseMoneyToCents(amount) ?? 0, character, franking_credit_cents: parseMoneyToCents(franking) ?? 0 }),
     onSuccess: onDone,
   });
   return (
@@ -951,8 +951,8 @@ function AddSmsfMember({ funds, onDone }: { funds: { id: string; name: string | 
     mutationFn: () => api.addSmsfMember({
       smsf_entity_id: fundId,
       phase,
-      pension_balance_cents: Math.round(parseFloat(pension || "0") * 100),
-      accumulation_balance_cents: Math.round(parseFloat(accum || "0") * 100),
+      pension_balance_cents: parseMoneyToCents(pension) ?? 0,
+      accumulation_balance_cents: parseMoneyToCents(accum) ?? 0,
     }),
     onSuccess: onDone,
   });
@@ -1003,7 +1003,7 @@ function AddBasPeriod({ onDone }: { onDone: () => void }) {
   const [out, setOut] = useState("");
   const [inp, setInp] = useState("");
   const add = useMutation({
-    mutationFn: () => api.addBasPeriod({ period_start: start, period_end: end, output_gst_cents: Math.round(parseFloat(out || "0") * 100), input_gst_cents: Math.round(parseFloat(inp || "0") * 100), status: "finalised" }),
+    mutationFn: () => api.addBasPeriod({ period_start: start, period_end: end, output_gst_cents: parseMoneyToCents(out) ?? 0, input_gst_cents: parseMoneyToCents(inp) ?? 0, status: "finalised" }),
     onSuccess: onDone,
   });
   return (
@@ -1027,7 +1027,7 @@ function AddPaygInstalment({ onDone }: { onDone: () => void }) {
   const [quarter, setQuarter] = useState("");
   const [amount, setAmount] = useState("");
   const add = useMutation({
-    mutationFn: () => api.addPaygInstalment({ fy: fy.trim() || undefined, quarter: quarter ? Number(quarter) : null, instalment_cents: Math.round(parseFloat(amount || "0") * 100) }),
+    mutationFn: () => api.addPaygInstalment({ fy: fy.trim() || undefined, quarter: quarter ? Number(quarter) : null, instalment_cents: parseMoneyToCents(amount) ?? 0 }),
     onSuccess: onDone,
   });
   return (
@@ -1165,7 +1165,7 @@ function AddSuperContribution({ persons, onDone }: { persons: { id: string; disp
   const [type, setType] = useState<string>("concessional");
   const [amount, setAmount] = useState("");
   const add = useMutation({
-    mutationFn: () => api.addSuperContribution({ person_id: personId || null, type, amount_cents: Math.round(parseFloat(amount || "0") * 100) }),
+    mutationFn: () => api.addSuperContribution({ person_id: personId || null, type, amount_cents: parseMoneyToCents(amount) ?? 0 }),
     onSuccess: onDone,
   });
   return (

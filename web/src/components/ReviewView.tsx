@@ -4,8 +4,8 @@ import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import { api } from "../api";
 import { BucketPill, Button, ConfidencePill, Card, Spinner, money, getBaseCurrency, BUCKET_LABEL } from "./ui";
-import { BUCKETS } from "../types";
 import { isPropertyBucket } from "../lib/buckets";
+import { CategoryPicker } from "./CategoryPicker";
 import { AccountantPassCard } from "./AccountantPassCard";
 import { SortFlow } from "./SortFlow";
 import { BulkBar, type BulkDone } from "./BulkBar";
@@ -13,11 +13,6 @@ import { UndoToast } from "./UndoToast";
 import { useFeatures } from "../lib/features";
 import { useActiveFy } from "../lib/activeFy";
 import type { Txn } from "../types";
-
-// Buckets a user can pick inline (#343). Mirrors BulkBar: income/refund/unknown aren't re-categorisation
-// targets here — income must route through an income answer, and the server rejects them too.
-const CREDIT_OR_UNKNOWN = new Set(["income_business", "income_property", "income_personal", "refund", "unknown"]);
-const PICKABLE = BUCKETS.filter((b) => !CREDIT_OR_UNKNOWN.has(b));
 
 /**
  * ReviewView — the "Needs review" experience, rendered as a tab of the merged Transactions page when
@@ -391,24 +386,17 @@ function Row({ txn, selected, onToggle, onDone }: { txn: Txn; selected: boolean;
     </div>
     {inlineEdit && editing && (
       <div className="flex flex-wrap items-center gap-2 rounded-xl border border-line bg-surface p-3 text-sm">
-        <select
-          value={bucket}
-          onChange={(e) => { setBucket(e.target.value); if (!isPropertyBucket(e.target.value)) setPropertyId(""); }}
-          aria-label="Category"
-          className="rounded-lg border border-line bg-card px-2 py-1.5"
-        >
-          <option value="">Choose category…</option>
-          {PICKABLE.map((b) => <option key={b} value={b}>{BUCKET_LABEL[b] ?? b}</option>)}
-        </select>
-        {needsProperty &&
-          (properties.length > 0 ? (
-            <select value={propertyId} onChange={(e) => setPropertyId(e.target.value)} aria-label="Property" className="rounded-lg border border-line bg-card px-2 py-1.5">
-              <option value="">Which property?</option>
-              {properties.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
-            </select>
-          ) : (
-            <span className="text-xs text-muted">Add a property first (Settings)</span>
-          ))}
+        <CategoryPicker
+          bucket={bucket}
+          propertyId={propertyId}
+          onBucket={setBucket}
+          onProperty={setPropertyId}
+          properties={properties}
+          bucketPlaceholder="Choose category…"
+          bucketAriaLabel="Category"
+          selectClassName="rounded-lg border border-line bg-card px-2 py-1.5"
+          mutedClassName="text-xs text-muted"
+        />
         <button
           onClick={() => save.mutate()}
           disabled={save.isPending || !bucket || (needsProperty && !propertyId)}

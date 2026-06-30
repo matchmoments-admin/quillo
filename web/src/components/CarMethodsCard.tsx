@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api } from "../api";
 import { useFeatures } from "../lib/features";
-import { Card, Button, Input, money } from "./ui";
+import { Card, Button, Input, money, parseMoneyToCents } from "./ui";
 import type { AssetRow } from "../types";
 
 // Car deductions — its own tool (#245), split out of the work-from-home panel: car has nothing to do
@@ -116,7 +116,7 @@ function AddLogbookForm({ assets, onDone }: { assets: AssetRow[]; onDone: () => 
       asset_id: assetId || null,
       business_km: businessKm ? Number(businessKm) : null,
       total_km: totalKm ? Number(totalKm) : null,
-      running_costs_cents: Math.round(parseFloat(running || "0") * 100),
+      running_costs_cents: parseMoneyToCents(running) ?? 0,
     }),
     onSuccess: onDone,
   });
@@ -133,7 +133,9 @@ function AddLogbookForm({ assets, onDone }: { assets: AssetRow[]; onDone: () => 
         <label className="text-sm">Total km<Input className="mt-1 w-full" inputMode="numeric" value={totalKm} onChange={(e) => setTotalKm(e.target.value)} /></label>
         <label className="text-sm">Running costs ($)<Input className="mt-1 w-full" inputMode="decimal" value={running} onChange={(e) => setRunning(e.target.value)} placeholder="fuel, rego, insurance…" /></label>
       </div>
-      <Button onClick={() => add.mutate()} disabled={add.isPending || !running}>{add.isPending ? "Saving…" : "Save logbook"}</Button>
+      {/* Require both km figures: without them business_use_pct can't be derived and the row is dead
+          weight (and total_km=0 would make the %-of-business calc meaningless). */}
+      <Button onClick={() => add.mutate()} disabled={add.isPending || !running || !businessKm.trim() || !(Number(totalKm) > 0)}>{add.isPending ? "Saving…" : "Save logbook"}</Button>
       {add.error && <p className="text-sm text-danger">{(add.error as Error).message}</p>}
     </Card>
   );

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api } from "../api";
@@ -491,8 +492,15 @@ function AddIncomeForm({ fy, onDone }: { fy: string; onDone: () => void }) {
         <p className="text-xs text-muted">Component capture is for personal distributions only right now — attributing to an entity records a single gross amount.</p>
       )}
 
-      <Button onClick={() => add.mutate()} disabled={add.isPending || (isMf ? !mfHasAny : !gross) || (needsProperty && properties.length > 0 && !propertyId)}>{add.isPending ? "Saving…" : "Save income"}</Button>
-      {needsProperty && properties.length > 0 && !propertyId && <p className="text-xs text-muted">Choose which property this rent is for so it counts in that property's position.</p>}
+      {/* Rent MUST attach to a property (the engine keys the income on property_id). Disable on the
+          zero-property case too — previously the selector was hidden and save stayed enabled, so rent
+          saved with no property and 400'd server-side with no feedback. */}
+      <Button onClick={() => add.mutate()} disabled={add.isPending || (isMf ? !mfHasAny : !gross) || (needsProperty && !propertyId)}>{add.isPending ? "Saving…" : "Save income"}</Button>
+      {needsProperty && properties.length === 0 ? (
+        <p className="text-xs text-muted">Add a rental property first in <Link to="/settings" className="font-medium text-ink underline">Settings → Properties</Link>, then come back to record its rent.</p>
+      ) : needsProperty && !propertyId ? (
+        <p className="text-xs text-muted">Choose which property this rent is for so it counts in that property's position.</p>
+      ) : null}
       {add.error && <p className="text-sm text-danger">{(add.error as Error).message}</p>}
     </Card>
   );

@@ -126,7 +126,9 @@ function AddAssetForm({ onDone }: { onDone: () => void }) {
         asset_class: assetClass,
         cost_cents: parseMoneyToCents(cost) ?? 0, // #249: comma/$ tolerant
         acquired_date: acquired,
-        effective_life_years: life ? parseFloat(life) : null,
+        // Effective life only belongs to a div40 plant asset — gate it by class (like `method` below)
+        // so a stale value entered before switching class can't ride along onto a capital-works asset.
+        effective_life_years: assetClass === "div40_plant" && life ? parseFloat(life) : null,
         method: assetClass === "div40_plant" ? method : null,
         div43_rate: assetClass === "div43_capital_works" ? 0.025 : null,
         owned_by: ownedBy,
@@ -141,7 +143,20 @@ function AddAssetForm({ onDone }: { onDone: () => void }) {
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
         <label className="text-sm">Label<Input className="mt-1 w-full" value={label} onChange={(e) => setLabel(e.target.value)} /></label>
         <label className="text-sm">Class
-          <select className="mt-1 w-full rounded-lg border border-line px-3 py-2 text-sm" value={assetClass} onChange={(e) => setAssetClass(e.target.value)}>
+          <select
+            className="mt-1 w-full rounded-lg border border-line px-3 py-2 text-sm"
+            value={assetClass}
+            onChange={(e) => {
+              const next = e.target.value;
+              setAssetClass(next);
+              // Leaving plant clears the plant-only fields so the form and the payload agree (no hidden
+              // effective-life/method lingering behind a class that doesn't use them).
+              if (next !== "div40_plant") {
+                setLife("");
+                setMethod("diminishing_value");
+              }
+            }}
+          >
             {Object.entries(CLASS_LABEL).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
           </select>
         </label>

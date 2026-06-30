@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api } from "../api";
 import { Card, money } from "./ui";
-import { PropertyFields, propertyToBody, emptyProperty, type PropertyValue } from "./SituationFields";
+import { PropertyFields, propertyToBody, propertyError, emptyProperty, type PropertyValue } from "./SituationFields";
 import type { ClarifyQuestion, ClarifySuggestion, ClarifyAnswer } from "../types";
 
 /**
@@ -234,7 +234,8 @@ function ClarifyRow({
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => addProperty.mutate()}
-                  disabled={busy || !draft.label.trim()}
+                  disabled={busy || !!propertyError(draft)}
+                  title={propertyError(draft) ?? undefined}
                   className="rounded-lg border border-line bg-surface px-2.5 py-1 text-xs font-medium hover:bg-card disabled:opacity-50"
                 >
                   {addProperty.isPending ? "Saving…" : "Save property"}

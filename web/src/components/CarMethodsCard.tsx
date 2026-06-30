@@ -18,7 +18,8 @@ export function CarMethodsCard({ fyNum }: { fyNum: number }) {
   const centsPerKmEnabled = has("car_methods");
   const data = useQuery({ queryKey: ["car-use", fyNum], queryFn: () => api.carUse(fyNum), enabled: centsPerKmEnabled });
   const report = useQuery({ queryKey: ["report", fyNum], queryFn: () => api.report(fyNum) });
-  const assets = useQuery({ queryKey: ["assets"], queryFn: () => api.assets() });
+  // Assets feed only the logbook block — don't fetch them unless that block renders.
+  const assets = useQuery({ queryKey: ["assets"], queryFn: () => api.assets(), enabled: has("car_logbook") });
   const [km, setKm] = useState<string>("");
   const [seeded, setSeeded] = useState<number | null>(null);
   if (centsPerKmEnabled && data.data && seeded !== fyNum) {

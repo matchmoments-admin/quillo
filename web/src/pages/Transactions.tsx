@@ -60,12 +60,15 @@ export function Transactions() {
   // Seed category/property from a Dashboard drill-through (?bucket= / ?property=).
   const [bucket, setBucket] = useState(params.get("bucket") ?? "");
   const [propertyId, setPropertyId] = useState(params.get("property") ?? "");
+  // ?undated=true lands here from the Dashboard "add dates" CTA — show only items missing a date so the
+  // user can open each and add one (the CTA used to point at the read-only report, where they couldn't).
+  const [undatedOnly, setUndatedOnly] = useState(params.get("undated") === "true");
   const [kind, setKind] = useState(""); // "" | "receipt" | "bank_line" — absorbs the old Inbox Receipts/Bank-lines tabs
   const [group, setGroup] = useState<GroupKey>("none");
 
   // Needs review (default) / All segmented control, persisted in ?view=. Default to review unless a
   // Dashboard drill-through (?bucket= / ?property=) is present, which lands on the browse view.
-  const drill = !!(params.get("bucket") || params.get("property"));
+  const drill = !!(params.get("bucket") || params.get("property") || params.get("undated"));
   const viewParam = params.get("view");
   const view: "review" | "all" = !unified
     ? "all"
@@ -94,8 +97,10 @@ export function Transactions() {
 
   const { data, isLoading, error } = useQuery({
     // countable here only drops duplicate/ignored (keeps both directions) — see listTransactions.
-    queryKey: ["transactions-all", allYears ? "all" : activeFy, showExcluded],
-    queryFn: () => fetchAll({ fy: allYears ? undefined : activeFy, countable: !showExcluded }),
+    // Undated items belong to no FY, so the FY-scoped fetch would never include them — load all years
+    // when filtering to undated.
+    queryKey: ["transactions-all", allYears || undatedOnly ? "all" : activeFy, showExcluded],
+    queryFn: () => fetchAll({ fy: allYears || undatedOnly ? undefined : activeFy, countable: !showExcluded }),
     // Skip the full-scope load while the review tab is showing (it has its own all-time query).
     enabled: view === "all",
   });
@@ -108,6 +113,7 @@ export function Transactions() {
     return all.filter((t) => {
       if (bucket && t.bucket !== bucket) return false;
       if (propertyId && t.property_id !== propertyId) return false;
+      if (undatedOnly && t.txn_date) return false;
       if (kind && t.kind !== kind) return false;
       if (from && (!t.txn_date || t.txn_date < from)) return false;
       if (to && (!t.txn_date || t.txn_date > to)) return false;
@@ -117,7 +123,7 @@ export function Transactions() {
       }
       return true;
     });
-  }, [all, search, from, to, bucket, propertyId, kind]);
+  }, [all, search, from, to, bucket, propertyId, kind, undatedOnly]);
 
   // Headline: count + spend/income split (summing across directions would be meaningless).
   const spend = filtered.filter((t) => !isCredit(t)).reduce((s, t) => s + Math.abs(amt(t)), 0);
@@ -219,8 +225,14 @@ export function Transactions() {
           )}
           <label className="flex items-center gap-1.5 text-xs text-muted">From <Input type="date" value={from} onChange={(e) => { setFrom(e.target.value); }} className="px-2 py-1.5" /></label>
           <label className="flex items-center gap-1.5 text-xs text-muted">to <Input type="date" value={to} onChange={(e) => { setTo(e.target.value); }} className="px-2 py-1.5" /></label>
-          {(search || from || to || bucket || propertyId || kind) && (
-            <button onClick={() => { setSearch(""); setFrom(""); setTo(""); setBucket(""); setPropertyId(""); setKind(""); }} className="text-xs font-medium text-muted hover:text-ink">
+          {undatedOnly && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-warn/10 px-2 py-0.5 text-xs font-medium text-warn">
+              Undated only
+              <button onClick={() => setUndatedOnly(false)} aria-label="Clear undated filter" className="hover:text-ink">✕</button>
+            </span>
+          )}
+          {(search || from || to || bucket || propertyId || kind || undatedOnly) && (
+            <button onClick={() => { setSearch(""); setFrom(""); setTo(""); setBucket(""); setPropertyId(""); setKind(""); setUndatedOnly(false); }} className="text-xs font-medium text-muted hover:text-ink">
               Clear filters ✕
             </button>
           )}

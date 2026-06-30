@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useLocation } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import { Card, Button, BUCKET_LABEL, money } from "./ui";
@@ -16,12 +17,14 @@ type Turn = { role: "user" | "assistant"; content: string; extra?: AskAnswer };
 
 export function AskQuillo() {
   const { fy } = useActiveFy();
+  const { pathname } = useLocation();
   const [q, setQ] = useState("");
   const [turns, setTurns] = useState<Turn[]>([]);
   const [sessionId, setSessionId] = useState<string | undefined>();
 
   const chat = useMutation({
-    mutationFn: (message: string) => api.chat(message, sessionId, fy),
+    // Pass the current page so the agent can ground its answer (parity with FloatingChat).
+    mutationFn: (message: string) => api.chat(message, sessionId, fy, pathname),
     onSuccess: (r) => {
       setSessionId(r.session_id);
       setTurns((t) => [...t, { role: "assistant", content: r.answer, extra: r }]);

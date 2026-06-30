@@ -1,8 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 import { Link } from "react-router-dom";
+import { toast } from "sonner";
 import { api } from "../api";
-import { BucketPill, Button, ConfidencePill, Card, Spinner, money, getBaseCurrency } from "./ui";
+import { BucketPill, Button, ConfidencePill, Card, Spinner, money, getBaseCurrency, BUCKET_LABEL } from "./ui";
+import { BUCKETS } from "../types";
+import { isPropertyBucket } from "../lib/buckets";
 import { AccountantPassCard } from "./AccountantPassCard";
 import { SortFlow } from "./SortFlow";
 import { BulkBar, type BulkDone } from "./BulkBar";
@@ -10,6 +13,11 @@ import { UndoToast } from "./UndoToast";
 import { useFeatures } from "../lib/features";
 import { useActiveFy } from "../lib/activeFy";
 import type { Txn } from "../types";
+
+// Buckets a user can pick inline (#343). Mirrors BulkBar: income/refund/unknown aren't re-categorisation
+// targets here — income must route through an income answer, and the server rejects them too.
+const CREDIT_OR_UNKNOWN = new Set(["income_business", "income_property", "income_personal", "refund", "unknown"]);
+const PICKABLE = BUCKETS.filter((b) => !CREDIT_OR_UNKNOWN.has(b));
 
 /**
  * ReviewView — the "Needs review" experience, rendered as a tab of the merged Transactions page when
@@ -136,6 +144,7 @@ export function ReviewView() {
               return next;
             })
           }
+          onDone={setFlash}
           limit={limit}
           onLoadMore={() => setLimit((l) => l + 50)}
           total={txns.length}
@@ -154,7 +163,7 @@ export function ReviewView() {
           <ul className="space-y-3">
             {txns.map((t) => (
               <li key={t.id}>
-                <Row txn={t} selected={selected.has(t.id)} onToggle={() => toggleSel(t.id)} />
+                <Row txn={t} selected={selected.has(t.id)} onToggle={() => toggleSel(t.id)} onDone={setFlash} />
               </li>
             ))}
           </ul>
@@ -187,6 +196,7 @@ function GroupedList({
   selected,
   onToggleOne,
   onSetMany,
+  onDone,
   limit,
   onLoadMore,
   total,
@@ -195,6 +205,7 @@ function GroupedList({
   selected: Set<string>;
   onToggleOne: (id: string) => void;
   onSetMany: (ids: string[], on: boolean) => void;
+  onDone: (d: BulkDone) => void;
   limit: number;
   onLoadMore: () => void;
   total: number;
@@ -214,9 +225,9 @@ function GroupedList({
     <div className="space-y-3">
       {groups.map((rows) =>
         rows.length > 1 ? (
-          <GroupBlock key={rows[0]!.id} rows={rows} selected={selected} onToggleOne={onToggleOne} onSetMany={onSetMany} />
+          <GroupBlock key={rows[0]!.id} rows={rows} selected={selected} onToggleOne={onToggleOne} onSetMany={onSetMany} onDone={onDone} />
         ) : (
-          <Row key={rows[0]!.id} txn={rows[0]!} selected={selected.has(rows[0]!.id)} onToggle={() => onToggleOne(rows[0]!.id)} />
+          <Row key={rows[0]!.id} txn={rows[0]!} selected={selected.has(rows[0]!.id)} onToggle={() => onToggleOne(rows[0]!.id)} onDone={onDone} />
         ),
       )}
       {total >= limit && (
@@ -233,11 +244,13 @@ function GroupBlock({
   selected,
   onToggleOne,
   onSetMany,
+  onDone,
 }: {
   rows: Txn[];
   selected: Set<string>;
   onToggleOne: (id: string) => void;
   onSetMany: (ids: string[], on: boolean) => void;
+  onDone: (d: BulkDone) => void;
 }) {
   const ids = rows.map((r) => r.id);
   const allSel = ids.every((id) => selected.has(id));
@@ -260,7 +273,7 @@ function GroupBlock({
       <ul className="space-y-2 border-t border-line p-2">
         {rows.map((t) => (
           <li key={t.id}>
-            <Row txn={t} selected={selected.has(t.id)} onToggle={() => onToggleOne(t.id)} />
+            <Row txn={t} selected={selected.has(t.id)} onToggle={() => onToggleOne(t.id)} onDone={onDone} />
           </li>
         ))}
       </ul>
@@ -268,26 +281,48 @@ function GroupBlock({
   );
 }
 
-function Row({ txn, selected, onToggle }: { txn: Txn; selected: boolean; onToggle: () => void }) {
+function Row({ txn, selected, onToggle, onDone }: { txn: Txn; selected: boolean; onToggle: () => void; onDone?: (d: BulkDone) => void }) {
   const qc = useQueryClient();
+  const { has } = useFeatures();
+  const inlineEdit = has("txn_inline_edit"); // #343
   const isLine = txn.kind === "bank_line";
+  const [editing, setEditing] = useState(false);
+  const [bucket, setBucket] = useState(txn.bucket ?? "");
+  const [propertyId, setPropertyId] = useState(txn.property_id ?? "");
+  const { data: situation } = useQuery({ queryKey: ["situation"], queryFn: api.situation, enabled: inlineEdit });
+  const properties = situation?.properties ?? [];
+  const needsProperty = isPropertyBucket(bucket);
+
+  const invalidate = () => {
+    for (const k of ["transactions", "transactions-all", "dashboard", "report", "filing-readiness"]) qc.invalidateQueries({ queryKey: [k] });
+  };
   // Inline "Confirm as-is": accept the current bucket and drop the row from the queue without bouncing
   // through the detail page. Mirrors TxnDetail's confirm — re-applying the same bucket records
   // acceptance and clears needs_review.
   const confirm = useMutation({
     mutationFn: () => api.correct(txn.id, "bucket", txn.bucket!),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["transactions"] });
-      qc.invalidateQueries({ queryKey: ["transactions-all"] });
-      qc.invalidateQueries({ queryKey: ["dashboard"] });
-      qc.invalidateQueries({ queryKey: ["report"] });
-      qc.invalidateQueries({ queryKey: ["filing-readiness"] });
+    onSuccess: invalidate,
+  });
+  // #343 inline edit — recategorise this one line (+ property) via the audited correctBatch seam, then
+  // surface the SHARED Undo toast (onDone) and stay in place. No navigation to the detail page.
+  const save = useMutation({
+    mutationFn: () =>
+      api.correctBatch(
+        [txn.id],
+        [{ field: "bucket", value: bucket }, ...(needsProperty && propertyId ? [{ field: "property_id", value: propertyId }] : [])],
+      ),
+    onSuccess: (r) => {
+      invalidate();
+      onDone?.({ message: `Recategorised to ${BUCKET_LABEL[bucket] ?? bucket}.`, batchId: r.batch_id || null });
+      setEditing(false);
     },
+    onError: (e) => toast.error("Couldn't save", { description: (e as Error).message }),
   });
   // You can't "confirm as-is" an unknown row — that would re-write bucket='unknown' and it would never
   // leave the queue. Force such rows into the detail page to pick a real category.
   const canConfirm = !!txn.bucket && txn.bucket !== "unknown";
   return (
+    <div className="space-y-2">
     <div className="flex items-center gap-2">
       <input type="checkbox" checked={selected} onChange={onToggle} className="h-4 w-4 flex-none" aria-label="Select transaction" />
       <Link to={`/txn/${txn.id}`} className="min-w-0 flex-1">
@@ -333,7 +368,16 @@ function Row({ txn, selected, onToggle }: { txn: Txn; selected: boolean; onToggl
           </div>
         </Card>
       </Link>
-      <div className="flex-none">
+      <div className="flex flex-none items-center gap-1.5">
+        {inlineEdit && (
+          <button
+            onClick={() => { setBucket(txn.bucket ?? ""); setPropertyId(txn.property_id ?? ""); setEditing((v) => !v); }}
+            title="Change the category here without leaving the list"
+            className="rounded-lg border border-line px-3 py-2 text-sm font-medium transition hover:bg-surface"
+          >
+            {editing ? "Close" : "Edit"}
+          </button>
+        )}
         <button
           onClick={() => confirm.mutate()}
           disabled={confirm.isPending || !canConfirm}
@@ -344,6 +388,37 @@ function Row({ txn, selected, onToggle }: { txn: Txn; selected: boolean; onToggl
         </button>
         {confirm.isError && <p className="mt-1 max-w-[7rem] text-right text-xs text-danger">{(confirm.error as Error).message}</p>}
       </div>
+    </div>
+    {inlineEdit && editing && (
+      <div className="flex flex-wrap items-center gap-2 rounded-xl border border-line bg-surface p-3 text-sm">
+        <select
+          value={bucket}
+          onChange={(e) => { setBucket(e.target.value); if (!isPropertyBucket(e.target.value)) setPropertyId(""); }}
+          aria-label="Category"
+          className="rounded-lg border border-line bg-card px-2 py-1.5"
+        >
+          <option value="">Choose category…</option>
+          {PICKABLE.map((b) => <option key={b} value={b}>{BUCKET_LABEL[b] ?? b}</option>)}
+        </select>
+        {needsProperty &&
+          (properties.length > 0 ? (
+            <select value={propertyId} onChange={(e) => setPropertyId(e.target.value)} aria-label="Property" className="rounded-lg border border-line bg-card px-2 py-1.5">
+              <option value="">Which property?</option>
+              {properties.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
+            </select>
+          ) : (
+            <span className="text-xs text-muted">Add a property first (Settings)</span>
+          ))}
+        <button
+          onClick={() => save.mutate()}
+          disabled={save.isPending || !bucket || (needsProperty && !propertyId)}
+          className="rounded-lg bg-ink px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+        >
+          {save.isPending ? "Saving…" : "Save"}
+        </button>
+        <Link to={`/txn/${txn.id}`} className="text-xs font-medium text-muted hover:text-ink">Full editor →</Link>
+      </div>
+    )}
     </div>
   );
 }

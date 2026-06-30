@@ -1,7 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api } from "../api";
-import { useFeatures } from "../lib/features";
 
 // #247/#244 (Wave 3): the persistent journey breadcrumb. The app already has the "what's next" action
 // (NextActionBar) and per-tab "what do I do here" (TabGuide); the missing piece the research flagged is
@@ -13,30 +12,19 @@ type Stop = { key: string; label: string; href: string; match: string[] };
 
 // The canonical spine (CLAUDE.md / Coachmarks): Set up → Bring in → Sort → Check → Position → File.
 // `match` maps the data-entry / sub-pages onto their stop so the breadcrumb stays oriented everywhere.
-// When `unified_transactions` is ON, the Sort stop points at /transactions (its "Needs review" tab) and
-// owns that route, so it moves out of Position's match. Flag OFF ⇒ the original mapping (Sort → /inbox).
-function stopsFor(unified: boolean): Stop[] {
-  return [
-    { key: "setup", label: "Set up", href: "/settings", match: ["/settings", "/onboarding"] },
-    { key: "bring", label: "Bring in", href: "/accounts", match: ["/accounts", "/income", "/assets", "/documents"] },
-    unified
-      ? { key: "sort", label: "Sort", href: "/transactions", match: ["/inbox", "/transactions"] }
-      : { key: "sort", label: "Sort", href: "/inbox", match: ["/inbox"] },
-    { key: "check", label: "Check", href: "/reconcile", match: ["/reconcile"] },
-    {
-      key: "position",
-      label: "Position",
-      href: "/",
-      match: unified ? ["/", "/dashboard", "/reports"] : ["/", "/dashboard", "/reports", "/transactions"],
-    },
-    { key: "file", label: "File", href: "/filing", match: ["/filing"] },
-  ];
-}
+// The Sort stop owns /transactions (its "Needs review" tab) + the legacy /inbox redirect, so it's out
+// of Position's match.
+const STOPS: Stop[] = [
+  { key: "setup", label: "Set up", href: "/settings", match: ["/settings", "/onboarding"] },
+  { key: "bring", label: "Bring in", href: "/accounts", match: ["/accounts", "/income", "/assets", "/documents"] },
+  { key: "sort", label: "Sort", href: "/transactions", match: ["/inbox", "/transactions"] },
+  { key: "check", label: "Check", href: "/reconcile", match: ["/reconcile"] },
+  { key: "position", label: "Position", href: "/", match: ["/", "/dashboard", "/reports"] },
+  { key: "file", label: "File", href: "/filing", match: ["/filing"] },
+];
 
 export function JourneySpine({ pathname }: { pathname: string }) {
   const { data } = useQuery({ queryKey: ["progress"], queryFn: () => api.progress(), staleTime: 15_000 });
-  const { has } = useFeatures();
-  const STOPS = stopsFor(has("unified_transactions"));
 
   if (pathname === "/onboarding") return null;
   const currentIdx = STOPS.findIndex((s) => s.match.includes(pathname));

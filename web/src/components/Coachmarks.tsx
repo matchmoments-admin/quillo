@@ -31,9 +31,9 @@ const STEPS: Step[] = [
   },
   {
     title: "2 · Sort what's flagged",
-    body: "Anything Quillo wasn't confident about lands in your Inbox. Open an item to see the category and confidence, then confirm or change it — that teaches Quillo.",
-    href: "/inbox",
-    cta: "Open Inbox",
+    body: "Anything Quillo wasn't confident about lands in Transactions → Needs review. Open an item to see the category and confidence, then confirm or change it — that teaches Quillo.",
+    href: "/transactions?view=review",
+    cta: "Open Transactions",
   },
   {
     title: "3 · Check the evidence",

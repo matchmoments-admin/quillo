@@ -43,10 +43,8 @@ const GROUPS: NavGroup[] = [
   },
   {
     label: "2 · Sort",
-    items: [
-      { to: "/inbox", label: "Inbox", icon: "inbox", badge: true },
-      { to: "/transactions", label: "Transactions", icon: "list" },
-    ],
+    // One transaction surface: the Inbox review queue is the "Needs review" tab of Transactions.
+    items: [{ to: "/transactions", label: "Transactions", icon: "list", badge: true }],
   },
   {
     label: "3 · Check",
@@ -247,14 +245,7 @@ function Sidebar({ needsReview, open }: { needsReview: number; open: boolean }) 
 
       <nav className="-mx-1 flex-1 overflow-y-auto px-1">
         {GROUPS.map((g) => {
-          // Research Slice 1 (unified_transactions): the Sort step collapses to ONE Transactions
-          // destination (the Inbox review queue is now its "Needs review" tab). The review badge
-          // moves onto Transactions. Flag OFF ⇒ the two separate items, unchanged.
-          const groupItems: NavItem[] =
-            g.label === "2 · Sort" && has("unified_transactions")
-              ? [{ to: "/transactions", label: "Transactions", icon: "list", badge: true }]
-              : g.items;
-          const items = groupItems.filter((it) => (!it.flag || has(it.flag)) && (!it.admin || isAdmin) && (!it.partner || isPartner));
+          const items = g.items.filter((it) => (!it.flag || has(it.flag)) && (!it.admin || isAdmin) && (!it.partner || isPartner));
           if (!items.length) return null; // hide a group whose every item is gated off (e.g. Platform for non-admins)
           return (
           <div key={g.label || "home"} className="mt-5 first:mt-1">

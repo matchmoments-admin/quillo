@@ -1781,7 +1781,7 @@ console.log("progress next-action engine");
 
   // The spec's worked example: imported, no receipts, 6 low-confidence + 2 undated.
   const work: ProgressCounts = { ...imported, needs_review: 6, undated: 2 };
-  check("needs_review>0 → review (/inbox), count 6", nextAction(work).kind === "review" && nextAction(work).count === 6 && nextAction(work).href === "/inbox");
+  check("needs_review>0 → review (/transactions?view=review), count 6", nextAction(work).kind === "review" && nextAction(work).count === 6 && nextAction(work).href === "/transactions?view=review");
   check("outstanding exceptions → not done", isDone(work) === false);
   const wp = buildProgress(work);
   check("progress surfaces 6 review / 2 undated, done=false", wp.needs_review === 6 && wp.undated === 2 && wp.done === false);

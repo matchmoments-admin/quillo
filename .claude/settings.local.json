@@ -1,0 +1,33 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(rm -rf /private/tmp/claude-501/*/tasks/*)",
+      "Bash(rm -rf /private/tmp/claude-501/*/*/tasks/*)",
+      "Bash(gh issue *)",
+      "Bash(npm run *)",
+      "Bash(git checkout *)",
+      "Bash(git pull *)",
+      "Bash(npm test *)",
+      "Skill(code-review)",
+      "Bash(git diff *)",
+      "Read(//tmp/**)",
+      "Bash(export TMPDIR=/Users/brendanmilton/Desktop/tax-agent/.tmpclaude)",
+      "Bash(grep -n \"answerClarify\\\\|clarify\" /Users/brendanmilton/Desktop/tax-agent/src/api.ts)",
+      "Bash(sed -n 1,25p /Users/brendanmilton/Desktop/tax-agent/web/src/content/occupations.ts)",
+      "Bash(python3 -c ' *)",
+      "Bash(sed -n 495,545p /Users/brendanmilton/Desktop/tax-agent/src/agent.ts)",
+      "Bash(sed -n 4690,4745p /Users/brendanmilton/Desktop/tax-agent/src/agent.ts)",
+      "Bash(awk '/interface Report|per_property|propertyBreakdown|perProp/ {print NR\": \"$0}' /Users/brendanmilton/Desktop/tax-agent/src/lib/report.ts)",
+      "Bash(sed -n 2270,2310p /Users/brendanmilton/Desktop/tax-agent/src/agent.ts)",
+      "Bash(sed -n 3600,3626p /Users/brendanmilton/Desktop/tax-agent/src/agent.ts)",
+      "Bash(awk *)",
+      "Bash(sed -n 95,120p /Users/brendanmilton/Desktop/tax-agent/src/lib/db.ts)",
+      "Bash(sed -n 1,40p /Users/brendanmilton/Desktop/tax-agent/src/lib/rules.ts)",
+      "Bash(export TMPDIR=/Users/brendanmilton/Desktop/tax-agent/.claude-tmp)",
+      "Bash(grep -n \"per_property\" /Users/brendanmilton/Desktop/tax-agent/src/lib/report.ts)",
+      "Bash(mktemp *)",
+      "Bash(git restore *)",
+      "Bash(git branch *)"
+    ]
+  }
+}

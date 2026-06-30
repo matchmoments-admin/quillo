@@ -69,11 +69,10 @@ export function tabKeyForPath(pathname: string): TabKey | null {
 const items = (n: number) => `${n} ${n === 1 ? "item" : "items"}`;
 
 /**
- * The guide copy for a tab given the current progress (may be undefined while it loads). `unified`
- * reflects the `unified_transactions` flag: when ON, the Transactions page hosts the review queue as
- * its "Needs review" tab, so its guide changes to describe both tabs instead of pointing at the Inbox.
+ * The guide copy for a tab given the current progress (may be undefined while it loads). The
+ * Transactions page hosts the review queue as its "Needs review" tab, so its guide describes both tabs.
  */
-export function tabGuide(tab: TabKey, p?: Progress, unified = false): GuideCopy {
+export function tabGuide(tab: TabKey, p?: Progress): GuideCopy {
   const hasData = !!p && p.imported.transactions > 0;
   const needs = p?.needs_review ?? 0;
   const undated = p?.undated ?? 0;
@@ -96,20 +95,14 @@ export function tabGuide(tab: TabKey, p?: Progress, unified = false): GuideCopy 
       };
 
     case "transactions":
-      if (unified) {
-        if (needs > 0)
-          return {
-            title: `${items(needs)} to review`,
-            body: "Start in the Needs review tab — Quillo wasn't sure on these; confirm or change each, and it's done. The All tab is the full record: search, filter by tax year or date range, and group by category, property, account or month.",
-          };
+      if (needs > 0)
         return {
-          title: "Every transaction, in one place",
-          body: "Needs review is empty — you're all caught up. The All tab is the full record: search, filter by tax year or date range, and group by category, property, account or month.",
+          title: `${items(needs)} to review`,
+          body: "Start in the Needs review tab — Quillo wasn't sure on these; confirm or change each, and it's done. The All tab is the full record: search, filter by tax year or date range, and group by category, property, account or month.",
         };
-      }
       return {
-        title: "Every transaction, searchable",
-        body: "The full record of everything in the system — search, filter by tax year or date range, and group by category, property, account or month. This is for browsing and finding; the Inbox is where you clear what's flagged.",
+        title: "Every transaction, in one place",
+        body: "Needs review is empty — you're all caught up. The All tab is the full record: search, filter by tax year or date range, and group by category, property, account or month.",
       };
 
     case "dashboard":

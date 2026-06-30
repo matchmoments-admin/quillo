@@ -22,7 +22,7 @@ export function TabGuide({ pathname }: { pathname: string }) {
   const guideAI = useMutation({ mutationFn: () => api.guideMe(tab as string) });
 
   if (!tab) return null;
-  const guide = tabGuide(tab, data, has("unified_transactions"));
+  const guide = tabGuide(tab, data);
   const ai = guideAI.data;
   const aiErr = guideAI.error ? friendlyGuideError((guideAI.error as Error).message) : null;
   const close = () => { setOpen(false); guideAI.reset(); };

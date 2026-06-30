@@ -48,7 +48,6 @@ export function Transactions() {
   const { has } = useFeatures();
   const qc = useQueryClient();
   const bulk = has("txn_bulk_edit"); // #252: multi-select + BulkBar on this page
-  const unified = has("unified_transactions"); // Research Slice 1: Inbox review queue merged in as a tab
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [flash, setFlash] = useState<BulkDone | null>(null);
   const [params, setSearchParams] = useSearchParams();
@@ -70,15 +69,7 @@ export function Transactions() {
   // Dashboard drill-through (?bucket= / ?property=) is present, which lands on the browse view.
   const drill = !!(params.get("bucket") || params.get("property") || params.get("undated"));
   const viewParam = params.get("view");
-  const view: "review" | "all" = !unified
-    ? "all"
-    : viewParam === "all"
-      ? "all"
-      : viewParam === "review"
-        ? "review"
-        : drill
-          ? "all"
-          : "review";
+  const view: "review" | "all" = viewParam === "all" ? "all" : viewParam === "review" ? "review" : drill ? "all" : "review";
   const setView = (v: "review" | "all") =>
     setSearchParams(
       (prev) => {
@@ -165,11 +156,10 @@ export function Transactions() {
             year control. "All years" below is the only page-scoped year toggle. */}
       </div>
 
-      {/* Research Slice 1 (unified_transactions): one transaction surface with a Needs review / All
+      {/* One transaction surface with a Needs review / All
           segmented control — matches Xero/QBO/MYOB. Needs review is the all-time backlog; All is the
           FY-scoped browse. Hidden (flag OFF) ⇒ this page is the browse view exactly as before. */}
-      {unified && (
-        <div className="inline-flex rounded-lg border border-line p-0.5 text-sm" role="tablist" aria-label="Transaction view">
+      <div className="inline-flex rounded-lg border border-line p-0.5 text-sm" role="tablist" aria-label="Transaction view">
           {(["review", "all"] as const).map((v) => (
             <button
               key={v}
@@ -182,9 +172,8 @@ export function Transactions() {
             </button>
           ))}
         </div>
-      )}
 
-      {unified && view === "review" ? (
+      {view === "review" ? (
         <ReviewView />
       ) : (
         <>
@@ -213,16 +202,12 @@ export function Transactions() {
               {properties.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
             </select>
           )}
-          {/* Kind filter — absorbs the old Inbox Receipts / Bank-lines tabs into the one browse view.
-              Only when unified: with the flag OFF those tabs still live on the standalone Inbox, and
-              this page must stay byte-identical to before (no new control). */}
-          {unified && (
-            <select value={kind} onChange={(e) => { setKind(e.target.value); }} aria-label="Kind" className="rounded-lg border border-line bg-card px-2 py-2">
-              <option value="">All kinds</option>
-              <option value="receipt">Receipts</option>
-              <option value="bank_line">Bank lines</option>
-            </select>
-          )}
+          {/* Kind filter — absorbs the old Inbox Receipts / Bank-lines tabs into the one browse view. */}
+          <select value={kind} onChange={(e) => { setKind(e.target.value); }} aria-label="Kind" className="rounded-lg border border-line bg-card px-2 py-2">
+            <option value="">All kinds</option>
+            <option value="receipt">Receipts</option>
+            <option value="bank_line">Bank lines</option>
+          </select>
           <label className="flex items-center gap-1.5 text-xs text-muted">From <Input type="date" value={from} onChange={(e) => { setFrom(e.target.value); }} className="px-2 py-1.5" /></label>
           <label className="flex items-center gap-1.5 text-xs text-muted">to <Input type="date" value={to} onChange={(e) => { setTo(e.target.value); }} className="px-2 py-1.5" /></label>
           {undatedOnly && (

@@ -15,15 +15,11 @@ import { useActiveFy } from "../lib/activeFy";
 import type { Txn } from "../types";
 
 /**
- * ReviewView — the "Needs review" experience, rendered as a tab of the merged Transactions page when
- * `unified_transactions` is ON. This is the still-to-review backlog (review=true): single transactions
- * are the unit of work, confirmed inline. It is deliberately ALL-TIME (a cross-year backlog) and so
- * ignores the global FY switcher — matching the standalone Inbox it replaces. The Receipts / Bank-lines
- * filters that used to live alongside it now live in the "All" browse view as a kind filter.
- *
- * NOTE: this duplicates the needs-review portion of pages/Inbox.tsx. Inbox.tsx is retained intact for
- * the flag-OFF path (so OFF is byte-identical) and is slated for deletion in a later cleanup slice once
- * the flag is permanently ON. General information only.
+ * ReviewView — the "Needs review" experience, rendered as the default tab of the Transactions page.
+ * This is the still-to-review backlog (review=true): single transactions are the unit of work, confirmed
+ * inline. It is deliberately ALL-TIME (a cross-year backlog) and so ignores the global FY switcher. The
+ * Receipts / Bank-lines filters live here (kind filter) and on the "All" browse tab. It replaced the
+ * standalone Inbox page (now deleted; /inbox redirects here). General information only.
  */
 export function ReviewView() {
   const qc = useQueryClient();

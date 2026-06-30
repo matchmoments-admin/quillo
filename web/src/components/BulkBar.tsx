@@ -2,13 +2,8 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import { Button, BUCKET_LABEL } from "./ui";
-import { BUCKETS } from "../types";
 import { isPropertyBucket } from "../lib/buckets";
-
-// Income/refund are credits — re-categorising them here would double-count income (they must route
-// through an income answer in Clarify). "unknown" isn't a real target. The server rejects these too.
-const CREDIT_OR_UNKNOWN = new Set(["income_business", "income_property", "income_personal", "refund", "unknown"]);
-const PICKABLE = BUCKETS.filter((b) => !CREDIT_OR_UNKNOWN.has(b));
+import { CategoryPicker } from "./CategoryPicker";
 
 export interface BulkDone {
   message: string;
@@ -68,41 +63,17 @@ export function BulkBar({ ids, onClear, onDone }: { ids: string[]; onClear: () =
   return (
     <div className="sticky bottom-3 z-10 mx-auto flex w-full max-w-2xl flex-wrap items-center gap-2 rounded-xl border border-line bg-ink px-3 py-2 text-white shadow-lg">
       <span className="text-sm font-medium">{ids.length} selected</span>
-      <select
-        value={bucket}
-        onChange={(e) => {
-          setBucket(e.target.value);
-          if (!isPropertyBucket(e.target.value)) setPropertyId(""); // leaving a property bucket clears the pick
-        }}
+      <CategoryPicker
+        bucket={bucket}
+        propertyId={propertyId}
+        onBucket={setBucket}
+        onProperty={setPropertyId}
+        properties={properties}
         disabled={busy}
-        className="rounded-lg border border-white/20 bg-ink px-2 py-1 text-sm"
-      >
-        <option value="">Change category to…</option>
-        {PICKABLE.map((b) => (
-          <option key={b} value={b}>
-            {BUCKET_LABEL[b] ?? b}
-          </option>
-        ))}
-      </select>
-      {needsProperty &&
-        (properties.length > 0 ? (
-          <select
-            value={propertyId}
-            onChange={(e) => setPropertyId(e.target.value)}
-            disabled={busy}
-            aria-label="Property"
-            className="rounded-lg border border-white/20 bg-ink px-2 py-1 text-sm"
-          >
-            <option value="">Which property?</option>
-            {properties.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.label}
-              </option>
-            ))}
-          </select>
-        ) : (
-          <span className="text-xs text-white/70">Add a property first (Settings)</span>
-        ))}
+        bucketPlaceholder="Change category to…"
+        selectClassName="rounded-lg border border-white/20 bg-ink px-2 py-1 text-sm"
+        mutedClassName="text-xs text-white/70"
+      />
       <label className="flex items-center gap-1.5 text-xs text-white/80" title="Also create a rule so future imports of these merchants are categorised automatically">
         <input type="checkbox" checked={learnRule} onChange={(e) => setLearnRule(e.target.checked)} disabled={busy} className="h-3.5 w-3.5" />
         Remember as a rule

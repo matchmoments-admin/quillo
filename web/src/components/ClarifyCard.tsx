@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { api } from "../api";
 import { Card, money } from "./ui";
 import { PropertyFields, propertyToBody, emptyProperty, type PropertyValue } from "./SituationFields";
@@ -72,8 +73,13 @@ function ClarifyRow({
       for (const k of ["transactions", "dashboard", "income", "report"]) qc.invalidateQueries({ queryKey: [k] });
       onDone();
     },
+    onError: (e) => toast.error("Couldn't apply that category", { description: (e as Error).message }),
   });
-  const dismiss = useMutation({ mutationFn: () => api.dismissClarify(q.id), onSuccess: onDone });
+  const dismiss = useMutation({
+    mutationFn: () => api.dismissClarify(q.id),
+    onSuccess: onDone,
+    onError: (e) => toast.error("Couldn't dismiss", { description: (e as Error).message }),
+  });
   // Inline "+ Add property" (R4): create without leaving the Sort screen, then default to the new one.
   const addProperty = useMutation({
     mutationFn: () => api.addProperty(propertyToBody(draft)),

@@ -131,6 +131,37 @@ export function Spinner() {
   return <div className="mx-auto my-16 h-6 w-6 animate-spin rounded-full border-2 border-line border-t-ink" />;
 }
 
+/**
+ * Persistent inline error surface for a FAILED data load. Use it wherever a component would otherwise
+ * render nothing (or a misleading empty state) when a query errors — a silent `return null` hides
+ * backend failures and makes "couldn't load" look like "nothing here / all done", which is the single
+ * most common defect in this app. Pairs a plain explanation with an optional Retry. For transient
+ * ACTION (mutation) failures, prefer a sonner `toast.error` instead — those don't leave a hole in the UI.
+ */
+export function QueryError({
+  error,
+  onRetry,
+  what = "this",
+  className = "",
+}: {
+  error?: unknown;
+  onRetry?: () => void;
+  what?: string;
+  className?: string;
+}) {
+  const msg = error instanceof Error ? error.message : typeof error === "string" && error ? error : "something went wrong";
+  return (
+    <Card className={`flex flex-wrap items-center justify-between gap-3 p-4 text-sm ${className}`}>
+      <span className="text-danger">Couldn't load {what}: {msg}</span>
+      {onRetry && (
+        <button onClick={onRetry} className="rounded-lg border border-line px-3 py-1.5 text-xs font-semibold transition hover:bg-surface">
+          Retry
+        </button>
+      )}
+    </Card>
+  );
+}
+
 // ============================================================================
 // Green "Organic-Brutalist" primitives — shared by the Dashboard and other pages.
 // ============================================================================

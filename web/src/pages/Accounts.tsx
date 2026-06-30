@@ -134,6 +134,7 @@ function AddAccount({ onAdded }: { onAdded: () => void }) {
       setInstitution("");
       onAdded();
     },
+    onError: (e) => toast.error("Couldn't add account", { description: (e as Error).message }),
   });
   return (
     <Card className="flex flex-wrap items-end gap-3 p-4">
@@ -294,6 +295,7 @@ function AccountRow({ account, statements }: { account: Account; statements: Sta
   const setSource = useMutation({
     mutationFn: (source: string) => api.setAccountSource(account.id, source),
     onSuccess: invalidate,
+    onError: (e) => toast.error("Couldn't change account source", { description: (e as Error).message }),
   });
   const archive = useMutation({
     mutationFn: () => api.archiveAccount(account.id),

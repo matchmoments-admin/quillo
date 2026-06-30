@@ -183,8 +183,10 @@ export function TxnDetail() {
         <Card className="overflow-hidden">
           {isPdf ? (
             <div className="grid h-64 place-items-center bg-surface text-sm text-muted">PDF receipt</div>
-          ) : (
+          ) : txn.receipt_key ? (
             <img src={api.receiptUrl(id)} alt="receipt" className="max-h-[28rem] w-full object-contain bg-surface" />
+          ) : (
+            <div className="grid h-64 place-items-center bg-surface text-sm text-muted">No receipt attached</div>
           )}
         </Card>
 

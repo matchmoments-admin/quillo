@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { api } from "../api";
-import { Button, Card, Spinner, money, parseMoneyToCents } from "./ui";
+import { Button, Card, QueryError, Spinner, money, parseMoneyToCents } from "./ui";
 
 /**
  * "Confirm loan interest" — the Sort step that REPLACES the retired manual loan-interest/principal
@@ -13,6 +14,7 @@ import { Button, Card, Spinner, money, parseMoneyToCents } from "./ui";
 export function LoanInterestCard({ fy }: { fy: number }) {
   const q = useQuery({ queryKey: ["loan-interest-review", fy], queryFn: () => api.loanInterestReview(fy) });
   if (q.isLoading) return <Spinner />;
+  if (q.isError) return <QueryError what="loans to confirm" error={q.error} onRetry={() => q.refetch()} />;
   // Only the loans still to confirm (no user-entered lender_summary yet) — matches SortFlow's count, so
   // the card never re-prompts a figure the user already confirmed (which risked an accidental overwrite).
   const loans = (q.data ?? []).filter((l) => l.source !== "lender_summary");
@@ -57,7 +59,9 @@ function LoanInterestRow({
       qc.invalidateQueries({ queryKey: ["report"] });
       qc.invalidateQueries({ queryKey: ["dashboard"] });
       qc.invalidateQueries({ queryKey: ["filing-readiness"] });
+      toast.success("Loan interest confirmed.");
     },
+    onError: (e) => toast.error("Couldn't save loan interest", { description: (e as Error).message }),
   });
   const props = loan.properties.map((p) => p.label ?? "—").join(", ");
   return (

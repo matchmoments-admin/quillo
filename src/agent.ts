@@ -5725,10 +5725,61 @@ export class TaxAgent extends Agent<Env> {
       if ((ins.meta?.changes ?? 0) > 0) {
         await this.env.DB.prepare(`UPDATE profiles SET credit_balance_e4 = credit_balance_e4 + ? WHERE user_id = ?`).bind(amt, userId).run();
         await this.audit(userId, "credit_topup", JSON.stringify({ amount_e4: amt, kind, ref }));
+        // A PAID top-up is itself a deductible expense for the customer — the fee they paid Quillo to
+        // manage their tax affairs (s25-5, ATO label D10). Record it as their own claim, ONCE per Stripe
+        // session (we're inside the changes>0 guard, so a re-delivered webhook can't double-record).
+        // Only paid top-ups, never the free signup grant. Flag-gated: OFF ⇒ no row ⇒ byte-identical.
+        if (kind === "topup" && featureOn(this.env, "quillo_fee_deduction")) {
+          // Best-effort: recording the fee as a deduction must NEVER break the wallet credit or 500 the
+          // Stripe webhook (a 500 forces a redelivery that — since the ledger row now exists — skips this
+          // block and would lose the row anyway). On failure, log; it's backfillable from credit_ledger.
+          try {
+            await this.recordFeeDeduction(userId, Math.round(amt / 10_000), ref);
+          } catch (e) {
+            console.error(`recordFeeDeduction failed for ${userId} (ref=${ref}): ${(e as Error).message}`);
+          }
+        }
       }
     }
     const b = await this.env.DB.prepare(`SELECT credit_balance_e4 AS b FROM profiles WHERE user_id = ?`).bind(userId).first<{ b: number }>();
     return { balance_e4: b?.b ?? 0 };
+  }
+
+  /** Record a paid Quillo fee as the customer's own D10 "cost of managing tax affairs" deduction
+   *  (flag `quillo_fee_deduction`). Writes a payg/D10/confirmed_deductible receipt row that the report
+   *  counts immediately (COUNTABLE + deductionGroupForRow). `amountCents` is the gross AUD paid;
+   *  `ref` is the Stripe session id (stored in ledger_ref for traceability). Called only from inside
+   *  creditWallet's once-per-session idempotency guard, so no extra dedupe is needed here. */
+  private async recordFeeDeduction(userId: string, amountCents: number, ref: string | null): Promise<void> {
+    if (!(amountCents > 0)) return;
+    // Self-idempotent: never write two fee rows for the same Stripe session (defensive — the caller
+    // already guards on the once-per-session credit_ledger insert).
+    if (ref) {
+      const existing = await this.env.DB.prepare(
+        `SELECT 1 FROM transactions WHERE user_id = ? AND ledger_ref = ? AND source = 'quillo' LIMIT 1`,
+      ).bind(userId, ref).first();
+      if (existing) return;
+    }
+    // Date the expense in Australian local time, not UTC: the financial-year boundary is 1 July local,
+    // so a top-up just after midnight 1 July AEST must land in the new FY (UTC would back-date it to 30 June).
+    const today = new Date().toLocaleDateString("en-CA", { timeZone: "Australia/Sydney" }); // YYYY-MM-DD
+    await this.env.DB.prepare(
+      `INSERT INTO transactions
+         (id, user_id, source, status, kind, merchant, amount_cents, currency, amount_aud_cents, gst_cents,
+          txn_date, bucket, ato_label, deductibility, deductible_amount_cents, direction, confidence, reasoning, ledger_ref)
+       VALUES (?, ?, 'quillo', 'extracted', 'receipt', 'Quillo', ?, 'AUD', ?, NULL,
+               ?, 'payg', 'D10', 'confirmed_deductible', ?, 'debit', 1.0, ?, ?)`,
+    ).bind(
+      crypto.randomUUID(),
+      userId,
+      amountCents,
+      amountCents,
+      today,
+      amountCents,
+      "Quillo subscription fee — cost of managing tax affairs (s25-5, label D10)",
+      ref,
+    ).run();
+    await this.audit(userId, "fee_deduction_recorded", JSON.stringify({ amount_cents: amountCents, ato_label: "D10", ref }));
   }
 
   /** Billing surface: balance, the markup %, and recent grants/top-ups. `configured` = Stripe wired. */

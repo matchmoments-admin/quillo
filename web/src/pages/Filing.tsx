@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { api, saveBlob } from "../api";
 import { useActiveFy } from "../lib/activeFy";
 import { useFeatures } from "../lib/features";
@@ -310,6 +311,7 @@ function FindMyClaims({ fy }: { fy?: number }) {
       // Re-run the sweep so the confirmed occupation rules now surface in the groups.
       runReview.mutate();
     },
+    onError: (e) => toast.error("Couldn't add the selected claims", { description: (e as Error).message }),
   });
 
   const busy = runReview.isPending || confirmGaps.isPending;

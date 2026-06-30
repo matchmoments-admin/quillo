@@ -1,7 +1,7 @@
 import { type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../api";
-import { Card } from "./ui";
+import { Card, QueryError } from "./ui";
 import { useFeatures } from "../lib/features";
 import { MovementSweepCard } from "./MovementSweepCard";
 import { LoanInterestCard } from "./LoanInterestCard";
@@ -68,11 +68,32 @@ export function SortFlow({ fy, hasAccountantPass }: { fy: number; hasAccountantP
     });
   if (moveCount > 0) cards.push({ key: "movements", node: <MovementSweepCard /> });
 
-  if (cards.length === 0) return null; // nothing to finish — keep the page quiet (the list is above)
+  // A failed query here would otherwise read as count=0 ⇒ the card silently doesn't render ⇒ the user
+  // thinks they have nothing to finish. Surface which group couldn't load instead. (Only enabled
+  // queries can error; the disabled ones stay idle.)
+  const failed = [
+    sweep.isError && "transfers to exclude",
+    clarify.isError && "repeat merchants",
+    suggestions.isError && "suggested deductions",
+    loanInterest.isError && "loan interest",
+  ].filter(Boolean) as string[];
+
+  if (cards.length === 0 && failed.length === 0) return null; // nothing to finish — keep the page quiet
 
   return (
     <div className="space-y-3">
       <h2 className="px-1 text-sm font-semibold text-muted">Finish these</h2>
+      {failed.length > 0 && (
+        <QueryError
+          what={`your ${failed.join(", ")}`}
+          onRetry={() => {
+            if (sweep.isError) sweep.refetch();
+            if (clarify.isError) clarify.refetch();
+            if (suggestions.isError) suggestions.refetch();
+            if (loanInterest.isError) loanInterest.refetch();
+          }}
+        />
+      )}
       {cards.map((c) => (
         <div key={c.key}>{c.node}</div>
       ))}

@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api } from "../api";
 import { useActiveFy } from "../lib/activeFy";
-import { Panel, PanelHead } from "./ui";
+import { Panel, PanelHead, QueryError } from "./ui";
 
 // #246 (Wave 3): the onboarding-completeness checklist. Tells the user WHICH evidence to bring in and
 // WHY, so nothing is discovered missing at hand-off (the founder-E2E gap). It DERIVES status from data
@@ -37,6 +37,23 @@ export function SetupChecklist() {
   // Render nothing until the inputs are loaded (avoids a flicker of wrong states). Each query is also
   // used elsewhere, so this is almost always warm from cache.
   if (sitQ.isLoading || accQ.isLoading || incQ.isLoading || wuQ.isLoading) return null;
+  // If a source query ERRORED, the derived "done" status would be wrong (e.g. income exists but its
+  // query failed ⇒ the item shows as still-to-do, or a real gap is masked). Surface it instead of
+  // silently deriving the checklist from undefined data.
+  if (sitQ.isError || accQ.isError || incQ.isError || wuQ.isError) {
+    return (
+      <QueryError
+        what="your setup checklist"
+        error={sitQ.error ?? accQ.error ?? incQ.error ?? wuQ.error}
+        onRetry={() => {
+          sitQ.refetch();
+          accQ.refetch();
+          incQ.refetch();
+          wuQ.refetch();
+        }}
+      />
+    );
+  }
 
   const sit = sitQ.data;
   const accounts = accQ.data ?? [];

@@ -1,6 +1,7 @@
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../api";
+import { QueryError } from "./ui";
 
 // The cross-tab "where am I / what's next" spine. Ambient (always visible, never modal), oriented
 // to one goal: getting the year ready to hand off to your agent. Reads the shared ["progress"] query so it can't drift
@@ -11,9 +12,11 @@ import { api } from "../api";
 // so the spine updates when the user confirms/dates an item, without a refetch storm on navigation.
 export function NextActionBar() {
   const navigate = useNavigate();
-  const { data } = useQuery({ queryKey: ["progress"], queryFn: () => api.progress() });
+  const { data, isError, error, refetch } = useQuery({ queryKey: ["progress"], queryFn: () => api.progress() });
 
-  if (!data) return null;
+  // Never let the primary "what's next" CTA silently vanish on a failed load — surface it with a retry.
+  if (isError) return <QueryError what="what's next" error={error} onRetry={() => refetch()} />;
+  if (!data) return null; // still loading (the bar is ambient — no spinner needed)
   const { imported, categorised, needs_review, undated, done, next_action } = data;
 
   // Build the ambient summary: "412 transactions, all categorised · 6 to review · 2 to date".

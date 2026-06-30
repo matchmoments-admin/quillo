@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { api } from "../api";
 import { money } from "./ui";
 import type { ScoredTxn } from "../types";
@@ -10,16 +11,33 @@ import type { ScoredTxn } from "../types";
  */
 export function FindAndAttachSheet({ claimId }: { claimId: string }) {
   const qc = useQueryClient();
-  const { data, isLoading } = useQuery({ queryKey: ["claim-match", claimId], queryFn: () => api.matchClaim(claimId) });
+  const { data, isLoading, isError, error, refetch } = useQuery({ queryKey: ["claim-match", claimId], queryFn: () => api.matchClaim(claimId) });
 
   const refresh = () => {
     qc.invalidateQueries({ queryKey: ["claim-match", claimId] });
     qc.invalidateQueries({ queryKey: ["claims"] });
   };
-  const attach = useMutation({ mutationFn: (txnId: string) => api.attachClaim(claimId, txnId), onSuccess: refresh });
-  const detach = useMutation({ mutationFn: (txnId: string) => api.detachClaim(claimId, txnId), onSuccess: refresh });
+  const attach = useMutation({
+    mutationFn: (txnId: string) => api.attachClaim(claimId, txnId),
+    onSuccess: refresh,
+    onError: (e) => toast.error("Couldn't attach evidence", { description: (e as Error).message }),
+  });
+  const detach = useMutation({
+    mutationFn: (txnId: string) => api.detachClaim(claimId, txnId),
+    onSuccess: refresh,
+    onError: (e) => toast.error("Couldn't remove evidence", { description: (e as Error).message }),
+  });
 
   if (isLoading) return <p className="py-2 text-xs text-muted">Finding matching transactions…</p>;
+  // Distinguish a real fetch failure from a genuine "no matches" — otherwise a backend error reads as
+  // "nothing to attach" and the user stops looking.
+  if (isError)
+    return (
+      <p className="py-2 text-xs text-danger">
+        Couldn't find matches: {(error as Error).message}{" "}
+        <button onClick={() => refetch()} className="font-medium underline">Retry</button>
+      </p>
+    );
   const candidates = data?.candidates ?? [];
   const linked = data?.linked ?? [];
 

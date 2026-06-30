@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api } from "../api";
-import { Button, Card, money } from "./ui";
+import { Button, Card, QueryError, money } from "./ui";
 import type { MovementCandidate } from "../types";
 
 const KLASS_LABEL: Record<string, string> = {
@@ -22,7 +22,7 @@ const KLASS_LABEL: Record<string, string> = {
  */
 export function MovementSweepCard() {
   const qc = useQueryClient();
-  const { data, isLoading } = useQuery({ queryKey: ["movements-sweep"], queryFn: api.sweepMovements });
+  const { data, isLoading, error, refetch } = useQuery({ queryKey: ["movements-sweep"], queryFn: api.sweepMovements });
   const ignorable = data?.ignorable ?? [];
   // Selection defaults to ALL candidates (pre-checked); recomputed when the candidate id set changes.
   const allIds = useMemo(() => ignorable.map((c) => c.id), [ignorable]);
@@ -44,7 +44,9 @@ export function MovementSweepCard() {
     onError: (e) => setNote(`Couldn't apply: ${(e as Error).message}`),
   });
 
-  if (isLoading || !data) return null;
+  if (isLoading) return null;
+  if (error) return <QueryError what="transfers to exclude" error={error} onRetry={() => refetch()} />;
+  if (!data) return null;
   // Loan-repayment lines that may carry deductible investment-loan interest — read-only review box.
   // (The legacy per-line "Split loan interest" UI was retired; loan_interest_v2 captures the deductible
   // figure against the loan account, so these just route the user to categorise each line.)

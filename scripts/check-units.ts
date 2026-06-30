@@ -267,6 +267,17 @@ console.log("clarify.groupForClarify");
   const mixed = groupForClarify([mk("Smith Real Estate", "debit", 40000), mk("Smith Real Estate", "credit", 40000), mk("Smith Real Estate", "debit", 40000)]);
   check("mixed-direction group is 'mixed'", mixed.length === 1 && mixed[0]!.direction === "mixed");
   check("mixed group uses the debit set: Rental-property expense (needs_property), NOT income_property", mixed[0]!.suggestions.some((s) => s.bucket === "property_rented" && s.needs_property === true) && !mixed[0]!.suggestions.some((s) => s.kind === "income_property"));
+  // #341 golden (flag clarify_direction_guard): a mixed merchant group (rent credits + e.g. refund
+  // debits) is direction-blind today — it offers ONLY spend answers, so 'ignore'/an expense bucket
+  // silently drop/convert the income credits. ON: the income answers are ALSO offered so the credit
+  // side can be recorded; OFF (default) it is byte-identical to the spend-only set asserted above.
+  const mixedGuarded = groupForClarify([mk("Smith Real Estate", "debit", 40000), mk("Smith Real Estate", "credit", 40000)], undefined, { directionGuard: true });
+  check("#341 ON: mixed group ALSO offers the income answers (income_property + income_business)", mixedGuarded[0]!.suggestions.some((s) => s.kind === "income_property") && mixedGuarded[0]!.suggestions.some((s) => s.kind === "income_business"));
+  check("#341 ON: mixed group STILL offers the spend answers (debit set intact)", mixedGuarded[0]!.suggestions.some((s) => s.bucket === "property_rented" && s.needs_property === true));
+  check("#341 OFF (default): mixed group offers NO income answer — byte-identical to today", !mixed[0]!.suggestions.some((s) => s.kind === "income_property"));
+  // The guard is mixed-only: a pure-debit or pure-credit group is unaffected by the flag (byte-identical).
+  check("#341: pure-debit suggestions unchanged by the guard", JSON.stringify(suggestionsFor("debit", { directionGuard: true })) === JSON.stringify(suggestionsFor("debit", {})));
+  check("#341: pure-credit suggestions unchanged by the guard", JSON.stringify(suggestionsFor("credit", { directionGuard: true })) === JSON.stringify(suggestionsFor("credit", {})));
   // Phase 6d — own-home rent routing: a tenant (renting_residence) sees a "rent I pay (private)" answer
   // on a rent-like debit group; without a tenant home, or on a non-rent group, it isn't offered.
   const rentRows = [mk("ANZ CARDS rent payment", "debit", 250000), mk("ANZ CARDS rent payment", "debit", 250000), mk("ANZ CARDS rent payment", "debit", 250000)];

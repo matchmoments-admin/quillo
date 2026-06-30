@@ -4099,7 +4099,7 @@ export class TaxAgent extends Agent<Env> {
     const leftovers = (rows.results ?? []).filter(isClarifyLeftover);
     // Tenant paying rent on their own home → clarify offers a "rent I pay (private)" answer.
     const hasTenantHome = situation.properties.some((p) => p.status === "renting_residence");
-    const groups = groupForClarify(leftovers, undefined, { hasTenantHome });
+    const groups = groupForClarify(leftovers, undefined, { hasTenantHome, directionGuard: featureOn(this.env, "clarify_direction_guard") });
     let questions = 0;
     for (const g of groups) {
       // Skip a stem a DIRECTION-PURE group's user_rule already covers — those lines auto-apply on
@@ -4260,6 +4260,9 @@ export class TaxAgent extends Agent<Env> {
     const group = (rowsRes.results ?? []).filter(
       (r) => groupKey(r.raw_description ?? r.merchant ?? "") === q.group_key && isClarifyLeftover(r),
     );
+    // #341 (flag): when ON, ignore/bucket act on the money-OUT side only so a mixed merchant group's
+    // income credits aren't silently dropped/converted. OFF ⇒ whole group (today's behaviour).
+    const directionGuard = featureOn(this.env, "clarify_direction_guard");
 
     if (answer.kind === "income_property" || answer.kind === "income_business" || answer.kind === "income_personal") {
       const incomeType = answer.kind === "income_property" ? "rent" : answer.kind === "income_business" ? "business" : "personal";
@@ -4276,9 +4279,16 @@ export class TaxAgent extends Agent<Env> {
     }
 
     if (answer.kind === "ignore") {
-      const ids = group.map((r) => r.id);
+      // DIRECTION GUARD (flag): in a MIXED group, ignore the money-OUT side only — a credit there is
+      // income, not a transfer; ignoring it would silently drop it from the income table. But 'ignore'
+      // is ALSO the right answer on a PURE-CREDIT group (genuine transfers-in / gifts), so only drop
+      // credits when the group actually has a debit — otherwise a pure-credit 'ignore' would match no
+      // rows and leave them stuck. Credits in a mixed group re-surface for an income answer / next scan.
+      const hasDebit = group.some((r) => r.direction !== "credit");
+      const targets = directionGuard && hasDebit ? group.filter((r) => r.direction !== "credit") : group;
+      const ids = targets.map((r) => r.id);
       const stmts: D1PreparedStatement[] = [];
-      for (const r of group) {
+      for (const r of targets) {
         stmts.push(
           this.env.DB.prepare(`UPDATE transactions SET status = 'ignored' WHERE id = ? AND user_id = ?`).bind(r.id, userId),
           this.env.DB.prepare(`INSERT INTO corrections (id, user_id, txn_id, field, old_value, new_value) VALUES (?, ?, ?, 'status', 'clarify', 'ignored')`).bind(crypto.randomUUID(), userId, r.id),
@@ -4317,7 +4327,11 @@ export class TaxAgent extends Agent<Env> {
     const edits: { field: string; value: string }[] = [{ field: "bucket", value: answer.bucket! }];
     if (answer.ato_label) edits.push({ field: "ato_label", value: answer.ato_label });
     if (answer.property_id) edits.push({ field: "property_id", value: answer.property_id });
-    const ids = group.map((r) => r.id);
+    // DIRECTION GUARD (flag): re-bucket the money-OUT side only — a credit in a mixed merchant group is
+    // income; rebucketing it into a spend bucket converts income into an expense. Credits are left to be
+    // recorded via an income answer. Flag-OFF ⇒ whole group (byte-identical).
+    const targets = directionGuard ? group.filter((r) => r.direction !== "credit") : group;
+    const ids = targets.map((r) => r.id);
     const res = await this.applyCorrectionBatch(userId, ids, edits);
     await this.ensureClarifyRule(userId, q.group_key, answer.bucket!, answer.ato_label ?? "", answer.property_id);
     await this.audit(userId, "clarify_answer", JSON.stringify({ questionId, kind: "bucket", bucket: answer.bucket, applied: res.updated }));

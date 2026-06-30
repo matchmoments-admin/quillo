@@ -112,6 +112,7 @@ export interface SuggestionContext {
   isRentLike?: boolean;       // the group's stem looks like rent/lease
   hasTenantHome?: boolean;    // the tenant has a renting_residence (own-home rental) property
   isInsuranceLike?: boolean;  // the group's stem looks like a life / income-protection insurer
+  directionGuard?: boolean;   // #341 flag ON: offer income answers for a MIXED (credit+debit) group
 }
 
 /** True when a group's stem/description reads like rent or a lease payment. */
@@ -132,16 +133,25 @@ export function isInsuranceLikeStem(s: string | null | undefined): boolean {
 
 /** Direction-aware suggested answers — one tap each. Concrete fields are filled in by the UI/server. */
 export function suggestionsFor(direction: "debit" | "credit" | "mixed", ctx: SuggestionContext = {}): ClarifySuggestion[] {
+  const incomeAnswers: ClarifySuggestion[] = [
+    { label: "Rental income (choose property)", kind: "income_property", needs_property: true },
+    { label: "Business income", kind: "income_business" },
+  ];
   if (direction === "credit") {
     return [
-      { label: "Rental income (choose property)", kind: "income_property", needs_property: true },
-      { label: "Business income", kind: "income_business" },
+      ...incomeAnswers,
       { label: "Transfer between my own accounts (ignore)", kind: "ignore" },
       { label: "Personal / gift (not income)", kind: "ignore" },
     ];
   }
   // debit (or mixed — treat as spend by default; the user can still pick ignore)
   const out: ClarifySuggestion[] = [];
+  // #341 (flag): a MIXED group shares a merchant across credits AND debits. Without the guard it falls
+  // through to spend-only here, so its income side has NO answer — and 'ignore'/an expense bucket then
+  // silently drop or convert the credits (under-reporting income). Offer the income answers up front so
+  // the credit side can be recorded (via the direction-safe recordCreditAsIncome); the answer handlers,
+  // gated by the same flag, apply ignore/bucket to debits only. Flag-OFF ⇒ no prepend ⇒ byte-identical.
+  if (direction === "mixed" && ctx.directionGuard) out.push(...incomeAnswers);
   // Tenant paying rent on their OWN home: lead with the correct answer — it's private, not deductible.
   // (Only WFH running costs are claimable, separately — never the rent itself.) Reuses the existing
   // payg/personal-spend bucket; no new answer kind. Business-premises rent is deliberately NOT offered

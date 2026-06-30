@@ -463,7 +463,7 @@ console.log("extractSituationDraft");
 }
 
 // ── Depreciation engine: exact-cents golden tests (the deterministic core) ────
-import { computeFyDeduction, rollSchedule, daysInFy, daysHeldInFy, balancingAdjustment, depreciableCostCents, isLowCostAsset, looksLikePersonalTransfer, assetDepreciatesForTaxpayer, type DepAsset } from "../src/lib/depreciation";
+import { computeFyDeduction, rollSchedule, daysInFy, daysHeldInFy, balancingAdjustment, depreciableCostCents, isLowCostAsset, looksLikePersonalTransfer, assetDepreciatesForTaxpayer, resolveDiv40Life, type DepAsset } from "../src/lib/depreciation";
 
 console.log("asset auto-classification heuristics (isLowCostAsset / looksLikePersonalTransfer)");
 {
@@ -487,6 +487,18 @@ console.log("asset auto-classification heuristics (isLowCostAsset / looksLikePer
   check("employer-owned → no decline-in-value", assetDepreciatesForTaxpayer({ owned_by: "employer", reimbursed: 0 }) === false);
   check("reimbursed → no decline-in-value", assetDepreciatesForTaxpayer({ owned_by: "self", reimbursed: 1 }) === false);
   check("missing fields default to depreciating (legacy assets unchanged)", assetDepreciatesForTaxpayer({}) === true);
+}
+
+// resolveDiv40Life — a div40 asset must never persist a null effective life ($0-schedule bug). Flag
+// asset_life_default ON ⇒ createAsset binds this resolved value for a blank div40 life.
+console.log("depreciation: resolveDiv40Life (no silent $0 schedule for a blank div40 life)");
+{
+  check("supplied life always wins (passthrough)", resolveDiv40Life("div40_plant", 8, 5) === 8);
+  check("blank div40 life → resolved default (not null/0)", resolveDiv40Life("div40_plant", null, 5) === 5);
+  check("blank div40 life uses a merchant-hinted default when given (laptop 4y)", resolveDiv40Life("div40_plant", null, 4) === 4);
+  check("undefined treated as blank for div40", resolveDiv40Life("div40_plant", undefined, 5) === 5);
+  check("non-div40 (capital works) keeps null — it has no effective life", resolveDiv40Life("div43_capital_works", null, 5) === null);
+  check("non-div40 (immediate) keeps null", resolveDiv40Life("immediate", null, 5) === null);
 }
 
 console.log("depreciation: Div 40 diminishing value (ATO worked example $80k, 5yr life)");

@@ -23,7 +23,7 @@ import { buildGuidePrompt, buildAskSystem, summariseReportForAsk, renderTxnDiges
 import { fyLabel, fyBounds, fyStartYearStr, parseFyStartYear, normaliseFyLabel } from "./lib/ledger-totals";
 import { resolveJurisdictionForUser, currentFyStartYearFor, baseCurrencyOf, AU_DESCRIPTOR, type JurisdictionDescriptor } from "./lib/jurisdiction";
 import { assessReadiness, type FilingReadiness, type FilingReadinessSignals } from "./lib/readiness";
-import { rollSchedule, balancingAdjustment, fyStartYearOf, isLowCostAsset, looksLikePersonalTransfer, assetDepreciatesForTaxpayer, type DepAsset } from "./lib/depreciation";
+import { rollSchedule, balancingAdjustment, fyStartYearOf, isLowCostAsset, looksLikePersonalTransfer, assetDepreciatesForTaxpayer, resolveDiv40Life, type DepAsset } from "./lib/depreciation";
 import { matchClaimRules, suggestionText, enumerateSituationClaims, classifyClaim, uncoveredOccupations, ruleKey, type ClaimRule, type ClaimContext, type ClaimSituation } from "./lib/claimability";
 import { parseCsv, applyColumnMap, lineFingerprint, deriveBalances, reconcileStatement, isLiabilityAccount, fuzzyMerchant, isTransferLike, isLoanInterestLine, classifyMovement, movementTreatment, type ColumnMap, type Reconciliation, type StatementLine, type MovementClass } from "./lib/statements";
 import { groupKey, groupForClarify, rulePatternForStem, isClarifyLeftover, CLARIFY_LEFTOVER_WHERE, type ClarifyRow } from "./lib/clarify";
@@ -2443,6 +2443,16 @@ export class TaxAgent extends Agent<Env> {
     },
   ): Promise<string> {
     const id = crypto.randomUUID();
+    // #341-followup (flag asset_life_default): never persist a div40 asset with a null effective life —
+    // that silently zeroes its depreciation schedule (rollSchedule: life ?? 0 → `if (life<=0) break`).
+    // Resolve the rulepack/merchant-hinted default (else legacy 5y) when the user left it blank. OFF ⇒
+    // bind the raw value (today's behaviour, which is the $0 bug). A supplied life always wins.
+    let effectiveLife: number | null = a.effective_life_years ?? null;
+    if (featureOn(this.env, "asset_life_default") && a.asset_class === "div40_plant" && effectiveLife == null) {
+      const profile = await this.requireProfile(userId);
+      const rulePack = await this.loadRulePack(profile.rule_pack_ver);
+      effectiveLife = resolveDiv40Life(a.asset_class, null, this.assetDefaultsFor(a.label, rulePack).effective_life_years);
+    }
     await this.env.DB.prepare(
       `INSERT INTO assets (id, user_id, person_id, property_id, entity_id, label, asset_class, cost_cents,
          acquired_date, effective_life_years, method, dv_rate_pct, div43_rate, is_second_hand, business_use_pct,
@@ -2451,7 +2461,7 @@ export class TaxAgent extends Agent<Env> {
     )
       .bind(
         id, userId, `person_self_${userId}`, a.property_id ?? null, a.entity_id ?? null, a.label, a.asset_class,
-        a.cost_cents, a.acquired_date, a.effective_life_years ?? null, a.method ?? null, a.dv_rate_pct ?? 200, a.div43_rate ?? null,
+        a.cost_cents, a.acquired_date, effectiveLife, a.method ?? null, a.dv_rate_pct ?? 200, a.div43_rate ?? null,
         a.is_second_hand ? 1 : 0, a.business_use_pct ?? 100, a.source_doc_id ?? null, a.needs_review ?? 0,
         a.owned_by ?? "self", a.reimbursed ?? 0, a.is_car ?? 0,
       )

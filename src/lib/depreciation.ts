@@ -95,6 +95,22 @@ export function assetDepreciatesForTaxpayer(asset: { owned_by?: string | null; r
   return (asset.owned_by ?? "self") !== "employer" && !asset.reimbursed;
 }
 
+/**
+ * The effective life to PERSIST for a new asset. A div40 (plant) asset MUST NOT be stored with a null
+ * effective life: rollSchedule reads `life = effective_life_years ?? 0` and then `if (life <= 0) break`,
+ * so a null silently produces a $0 depreciation schedule. When the user didn't supply a life, fall back
+ * to the resolved default (rulepack/merchant-hinted, else the legacy 5y). Non-div40 classes keep null
+ * (immediate write-off / div43 capital works don't use an effective life). A supplied life always wins.
+ */
+export function resolveDiv40Life(
+  assetClass: string,
+  providedLife: number | null | undefined,
+  defaultLife: number,
+): number | null {
+  if (providedLife != null) return providedLife;
+  return assetClass === "div40_plant" ? defaultLife : null;
+}
+
 function utcDays(dateIso: string): number {
   const [y, m, d] = dateIso.split("-").map(Number);
   return Math.floor(Date.UTC(y ?? 1970, (m ?? 1) - 1, d ?? 1) / 86_400_000);

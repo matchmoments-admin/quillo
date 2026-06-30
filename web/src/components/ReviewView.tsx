@@ -31,6 +31,8 @@ export function ReviewView() {
   const [flash, setFlash] = useState<BulkDone | null>(null);
   const { has } = useFeatures();
   const hasAccountantPass = has("accountant_pass");
+  const grouped = has("grouped_review"); // #342: merchant-grouped review + kind filter
+  const [kind, setKind] = useState<"" | "receipt" | "bank_line">(""); // restored receipt/bank-line filter
   const { fy: activeFy } = useActiveFy();
   const toggleSel = (id: string) =>
     setSelected((prev) => {
@@ -102,8 +104,42 @@ export function ReviewView() {
       />
       {note && <p className="text-sm text-muted">{note}</p>}
 
+      {/* #342: receipt/bank-line filter — restored from the old Inbox (ReviewView had dropped it). Only
+          when grouped_review is ON, so flag-OFF stays byte-identical. */}
+      {grouped && txns.length > 0 && (
+        <div className="inline-flex rounded-lg border border-line p-0.5 text-xs" role="tablist" aria-label="Filter by kind">
+          {([["", "All"], ["receipt", "Receipts"], ["bank_line", "Bank lines"]] as const).map(([v, label]) => (
+            <button
+              key={v}
+              role="tab"
+              aria-selected={kind === v}
+              onClick={() => setKind(v)}
+              className={`rounded-md px-2.5 py-1 font-medium transition ${kind === v ? "bg-ink text-white" : "text-muted hover:text-ink"}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+
       {txns.length === 0 ? (
         <Card className="p-8 text-center text-sm text-muted">Nothing needs review — you're all caught up.</Card>
+      ) : grouped ? (
+        <GroupedList
+          txns={kind ? txns.filter((t) => (t.kind ?? "") === kind) : txns}
+          selected={selected}
+          onToggleOne={toggleSel}
+          onSetMany={(ids, on) =>
+            setSelected((prev) => {
+              const next = new Set(prev);
+              for (const id of ids) on ? next.add(id) : next.delete(id);
+              return next;
+            })
+          }
+          limit={limit}
+          onLoadMore={() => setLimit((l) => l + 50)}
+          total={txns.length}
+        />
       ) : (
         <>
           <label className="flex items-center gap-2 px-1 text-xs text-muted">
@@ -137,6 +173,98 @@ export function ReviewView() {
       {selected.size > 0 && <BulkBar ids={[...selected]} onClear={() => setSelected(new Set())} onDone={setFlash} />}
       {flash && <UndoToast flash={flash} onClose={() => setFlash(null)} />}
     </div>
+  );
+}
+
+/**
+ * #342 — the merchant-grouped review list. Lines that normalise to the same merchant are gathered into
+ * one collapsible group ("5× Coles · $200") with a single 'select all in group' checkbox that feeds the
+ * EXISTING BulkBar — so a whole look-alike set is categorised in one action instead of row-by-row.
+ * Singletons render as plain rows. Biggest groups lead (most lines cleared per action).
+ */
+function GroupedList({
+  txns,
+  selected,
+  onToggleOne,
+  onSetMany,
+  limit,
+  onLoadMore,
+  total,
+}: {
+  txns: Txn[];
+  selected: Set<string>;
+  onToggleOne: (id: string) => void;
+  onSetMany: (ids: string[], on: boolean) => void;
+  limit: number;
+  onLoadMore: () => void;
+  total: number;
+}) {
+  const m = new Map<string, Txn[]>();
+  for (const t of txns) {
+    const key = (t.merchant ?? t.raw_description ?? "Unknown").toLowerCase().trim() || "unknown";
+    const arr = m.get(key);
+    if (arr) arr.push(t);
+    else m.set(key, [t]);
+  }
+  const groups = [...m.values()].sort((a, b) => b.length - a.length);
+
+  if (txns.length === 0) return <Card className="p-6 text-center text-sm text-muted">Nothing matches this filter.</Card>;
+
+  return (
+    <div className="space-y-3">
+      {groups.map((rows) =>
+        rows.length > 1 ? (
+          <GroupBlock key={rows[0]!.id} rows={rows} selected={selected} onToggleOne={onToggleOne} onSetMany={onSetMany} />
+        ) : (
+          <Row key={rows[0]!.id} txn={rows[0]!} selected={selected.has(rows[0]!.id)} onToggle={() => onToggleOne(rows[0]!.id)} />
+        ),
+      )}
+      {total >= limit && (
+        <button onClick={onLoadMore} className="w-full rounded-lg border border-line py-2 text-sm text-muted hover:text-ink">
+          Load more
+        </button>
+      )}
+    </div>
+  );
+}
+
+function GroupBlock({
+  rows,
+  selected,
+  onToggleOne,
+  onSetMany,
+}: {
+  rows: Txn[];
+  selected: Set<string>;
+  onToggleOne: (id: string) => void;
+  onSetMany: (ids: string[], on: boolean) => void;
+}) {
+  const ids = rows.map((r) => r.id);
+  const allSel = ids.every((id) => selected.has(id));
+  const label = rows[0]!.merchant ?? rows[0]!.raw_description ?? "Unknown";
+  const total = rows.reduce((s, r) => s + Math.abs(r.amount_cents ?? 0), 0);
+  return (
+    <details open className="rounded-2xl border border-line bg-card">
+      <summary className="flex cursor-pointer items-center gap-3 p-3 text-sm marker:content-none">
+        <input
+          type="checkbox"
+          className="h-4 w-4 flex-none"
+          checked={allSel}
+          onClick={(e) => e.stopPropagation()}
+          onChange={(e) => onSetMany(ids, e.target.checked)}
+          aria-label={`Select all ${rows.length} ${label}`}
+        />
+        <span className="min-w-0 flex-1 truncate font-medium">{label}</span>
+        <span className="flex-none text-xs tabular-nums text-muted">{rows.length}× · {money(total)}</span>
+      </summary>
+      <ul className="space-y-2 border-t border-line p-2">
+        {rows.map((t) => (
+          <li key={t.id}>
+            <Row txn={t} selected={selected.has(t.id)} onToggle={() => onToggleOne(t.id)} />
+          </li>
+        ))}
+      </ul>
+    </details>
   );
 }
 

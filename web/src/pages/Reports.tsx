@@ -1,10 +1,12 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { api, saveBlob } from "../api";
 import { useActiveFy } from "../lib/activeFy";
 import { useFeatures } from "../lib/features";
 import { Card, Spinner, money, BUCKET_LABEL, InfoTip } from "../components/ui";
 import { ScanFindings } from "../components/ScanFindings";
+import { WorkMethodsCard } from "../components/WorkMethodsCard";
+import { CarMethodsCard } from "../components/CarMethodsCard";
 
 export function Reports() {
   // Driven by the global active-FY switcher (in the app header); change the year there.
@@ -132,6 +134,17 @@ export function Reports() {
 
           {scanOn && <div id="double-check"><ScanFindings fyNum={fy} /></div>}
 
+          {/* Inputs that shape the deductions above — the same WFH + car method cards as the Dashboard,
+              so the figures that feed this report can be reviewed/adjusted where the report is read
+              (the audit found the report otherwise gave no WFH/car visibility). Gated exactly as on the
+              Dashboard so flag-OFF leaves this report byte-identical. */}
+          {(features.has("wfh_car_methods") || features.has("car_methods") || features.has("car_logbook")) && (
+            <CollapsibleSection title="Your work-from-home & car claim (edit)" defaultOpen={false}>
+              {features.has("wfh_car_methods") && <WorkMethodsCard fyNum={fy} />}
+              {(features.has("car_methods") || features.has("car_logbook")) && <CarMethodsCard fyNum={fy} />}
+            </CollapsibleSection>
+          )}
+
           {(data!.income.franking_credit_cents > 0 || data!.income.foreign_tax_paid_cents > 0) && (
             <Card className="grid grid-cols-2 gap-4 p-4 sm:grid-cols-3">
               <Stat label="PAYG withheld" value={money(data!.income.withholding_cents)} />
@@ -158,7 +171,11 @@ export function Reports() {
             </Card>
           )}
 
-          {/* EPIC #134 engine outputs — each renders only when its flag is on and there's data. */}
+          {/* EPIC #134 engine outputs — each renders only when its flag is on and there's data. Grouped
+              under one collapsible so the densest detail folds away when it isn't relevant; the whole
+              group is omitted (not an empty header) when a simple PAYG return has none of it. */}
+          {(data!.capital_gains || data!.ess || data!.trust || data!.franking_gross_up_cents != null || data!.super_deduction || data!.car_logbook || data!.gst || (data!.smsf_funds && data!.smsf_funds.length > 0)) && (
+          <CollapsibleSection title="Detailed tax positions">
           {data!.capital_gains && (
             <Card className="overflow-hidden">
               <Th>Capital gains (CGT) — net gain is assessable income</Th>
@@ -260,21 +277,21 @@ export function Reports() {
               </table>
             </Card>
           )}
+          </CollapsibleSection>
+          )}
 
           {data!.per_property.length > 0 && (
             <Card className="overflow-hidden">
               <Th>Per-property position (rent − deductions − depreciation)</Th>
               <table className="w-full text-sm">
-                <tbody>
-                  {data!.per_property.map((p) => (
+                <PagedRows rows={data!.per_property} cols={4} render={(p) => (
                     <tr key={p.property_id} className="border-t border-line">
                       <td className="px-4 py-2">{p.label ?? p.property_id}</td>
                       <td className="px-4 py-2 text-right tabular-nums text-muted">rent {money(p.income_cents)}</td>
                       <td className="px-4 py-2 text-right tabular-nums text-muted">−{money(p.deduction_cents)} −{money(p.depreciation_cents)}</td>
                       <td className={`px-4 py-2 text-right tabular-nums font-medium ${p.net_cents < 0 ? "text-danger" : ""}`}>{money(p.net_cents)}</td>
                     </tr>
-                  ))}
-                </tbody>
+                  )} />
               </table>
             </Card>
           )}
@@ -282,17 +299,18 @@ export function Reports() {
           <Card className="overflow-hidden">
             <Th>By category + ATO label <InfoTip k="ato_label" /></Th>
             <table className="w-full text-sm">
-              <tbody>
-                {data!.by_bucket.map((b, i) => (
+              {data!.by_bucket.length ? (
+                <PagedRows rows={data!.by_bucket} cols={4} render={(b, i) => (
                   <tr key={i} className="border-t border-line">
                     <td className="px-4 py-2">{BUCKET_LABEL[b.bucket] ?? b.bucket}</td>
                     <td className="px-4 py-2 text-muted">{b.ato_label ?? "—"}</td>
                     <td className="px-4 py-2 text-right tabular-nums">{money(b.total_cents)}</td>
                     <td className="px-4 py-2 text-right tabular-nums text-muted">GST {money(b.gst_cents)}</td>
                   </tr>
-                ))}
-                {!data!.by_bucket.length && <Empty cols={4} />}
-              </tbody>
+                )} />
+              ) : (
+                <tbody><Empty cols={4} /></tbody>
+              )}
             </table>
           </Card>
 
@@ -300,16 +318,14 @@ export function Reports() {
             <Card className="overflow-hidden">
               <Th>Income from bank credits (separate from documented income above)</Th>
               <table className="w-full text-sm">
-                <tbody>
-                  {data!.income_by_bucket.map((b, i) => (
+                <PagedRows rows={data!.income_by_bucket} cols={4} render={(b, i) => (
                     <tr key={i} className="border-t border-line">
                       <td className="px-4 py-2">{BUCKET_LABEL[b.bucket] ?? b.bucket}</td>
                       <td className="px-4 py-2 text-muted">{b.ato_label ?? "—"}</td>
                       <td className="px-4 py-2 text-right tabular-nums">{money(b.total_cents)}</td>
                       <td className="px-4 py-2"></td>
                     </tr>
-                  ))}
-                </tbody>
+                  )} />
               </table>
             </Card>
           )}
@@ -317,15 +333,16 @@ export function Reports() {
           <Card className="overflow-hidden">
             <Th>Rental schedule (by property) <InfoTip tip="Per-property totals, mirroring how rental income and expenses are reported separately for each property on a tax return." /></Th>
             <table className="w-full text-sm">
-              <tbody>
-                {data!.by_property.map((p) => (
+              {data!.by_property.length ? (
+                <PagedRows rows={data!.by_property} cols={2} render={(p) => (
                   <tr key={p.property_id} className="border-t border-line">
                     <td className="px-4 py-2">{p.label ?? p.property_id}</td>
                     <td className="px-4 py-2 text-right tabular-nums">{money(p.total_cents)}</td>
                   </tr>
-                ))}
-                {!data!.by_property.length && <Empty cols={2} />}
-              </tbody>
+                )} />
+              ) : (
+                <tbody><Empty cols={2} /></tbody>
+              )}
             </table>
           </Card>
 
@@ -348,14 +365,12 @@ export function Reports() {
             <Card className="overflow-hidden border-warn/40">
               <Th>Undated — assign a date so these land in an FY ({data!.undated.n}) <InfoTip tip="Receipts with no readable date can't be placed in a financial year. Add a date so they're counted in the right year." /></Th>
               <table className="w-full text-sm">
-                <tbody>
-                  {data!.undated_detail.map((u, i) => (
+                <PagedRows rows={data!.undated_detail} cols={2} render={(u, i) => (
                     <tr key={i} className="border-t border-line">
                       <td className="px-4 py-2">{u.merchant ?? "—"}</td>
                       <td className="px-4 py-2 text-right tabular-nums">{money(u.total_cents)}</td>
                     </tr>
-                  ))}
-                </tbody>
+                  )} />
               </table>
             </Card>
           )}
@@ -371,6 +386,47 @@ export function Reports() {
 
 function Th({ children }: { children: React.ReactNode }) {
   return <div className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-muted">{children}</div>;
+}
+
+/**
+ * A `<tbody>` that windows long lists: shows the first `initial` rows, then a "Show all N" toggle, so a
+ * landlord with 80 properties or a heavy importer with 300 categories doesn't render hundreds of <tr>
+ * at once (the report scale cliff). Renders its own tbody — drop it in place of a hand-written one.
+ */
+function PagedRows<T>({ rows, render, cols, initial = 12 }: { rows: T[]; render: (r: T, i: number) => ReactNode; cols: number; initial?: number }) {
+  const [all, setAll] = useState(false);
+  const shown = all ? rows : rows.slice(0, initial);
+  return (
+    <tbody>
+      {shown.map((r, i) => render(r, i))}
+      {rows.length > initial && (
+        <tr className="border-t border-line">
+          <td colSpan={cols} className="px-4 py-2 text-center">
+            <button onClick={() => setAll((v) => !v)} className="text-sm font-medium text-muted hover:text-ink">
+              {all ? "Show fewer" : `Show all ${rows.length}`}
+            </button>
+          </td>
+        </tr>
+      )}
+    </tbody>
+  );
+}
+
+/**
+ * A collapsible card group, so the rarer/denser tax-position detail (CGT, ESS, trust, super, GST, SMSF…)
+ * is grouped under one heading the user can fold away — the summary up top stays the hero. Defaults open
+ * so nothing in the deliverable is hidden by default; the user collapses what's not relevant to them.
+ */
+function CollapsibleSection({ title, children, defaultOpen = true }: { title: ReactNode; children: ReactNode; defaultOpen?: boolean }) {
+  return (
+    <details open={defaultOpen} className="group space-y-4">
+      <summary className="flex cursor-pointer items-center gap-2 px-1 text-sm font-semibold text-ink marker:content-none">
+        <span className="text-muted transition group-open:rotate-90">›</span>
+        {title}
+      </summary>
+      <div className="space-y-4 pt-1">{children}</div>
+    </details>
+  );
 }
 function Stat({ label, value }: { label: React.ReactNode; value: string }) {
   return (

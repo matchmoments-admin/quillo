@@ -69,15 +69,20 @@ export function computeSuggestions(overview: PhiOverview, limit = 3): Suggestion
   // Largest unused cover first — the "biggest win".
   find.sort((a, b) => (b.amountCents ?? 0) - (a.amountCents ?? 0));
 
-  const log: Suggestion[] = overview.loggable.map((t) => ({
-    kind: "log",
-    key: `log:${t.txn_id}`,
-    title: "Log a recent visit",
-    body: `We spotted ${t.merchant} (${money(t.amount_cents)}) in your transactions — one tap logs it against your extras.`,
-    sub: "Detected",
-    policyId: overview.policies[0].id,
-    loggable: t,
-  }));
+  const log: Suggestion[] = overview.loggable.map((t) => {
+    // Route the detected visit to the policy that actually covers its category — a multi-policy member
+    // would otherwise have every visit logged against policies[0] regardless of which fund covers it.
+    const policy = overview.policies.find((p) => p.categories.some((c) => c.category === t.suggested_category)) ?? overview.policies[0];
+    return {
+      kind: "log" as const,
+      key: `log:${t.txn_id}`,
+      title: "Log a recent visit",
+      body: `We spotted ${t.merchant} (${money(t.amount_cents)}) in your transactions — one tap logs it against your extras.`,
+      sub: "Detected",
+      policyId: policy.id,
+      loggable: t,
+    };
+  });
 
   const unverified = overview.policies.reduce(
     (n, p) => n + p.categories.filter((c) => c.verified === 0).length,

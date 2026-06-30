@@ -32,7 +32,7 @@ const GROUPS: NavGroup[] = [
     items: [{ to: "/", label: "Dashboard", icon: "grid", end: true }],
   },
   {
-    label: "1 · Set up",
+    label: "1 · Bring in",
     items: [
       // Accounts is where you add accounts AND bring in statements/CSVs (the "Bring in" stop).
       { to: "/accounts", label: "Accounts & import", icon: "card" },

@@ -67,10 +67,10 @@ function FindingGroup({ title, tone, findings }: { title: string; tone: "danger"
           </div>
           {f.proposed_action ? (
             <ProposedActionCard action={f.proposed_action} />
+          ) : f.affected_txn_ids[0] ? (
+            <Link to={`/txn/${f.affected_txn_ids[0]}`} className="text-xs font-medium text-forest hover:underline">Review this transaction →</Link>
           ) : (
-            f.affected_txn_ids[0] && (
-              <Link to={`/transactions/${f.affected_txn_ids[0]}`} className="text-xs font-medium text-forest hover:underline">Review this transaction →</Link>
-            )
+            <span className="text-xs text-muted">No action needed — just a heads-up.</span>
           )}
         </div>
       ))}

@@ -59,7 +59,7 @@ export function Dashboard() {
           per-year totals can be trusted as complete, with a one-click route to add the dates. */}
       {d.undated.n > 0 && (
         <Link
-          to="/reports"
+          to="/transactions?undated=true"
           className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-xl border border-line bg-card px-3 py-2 text-sm text-ink-2 shadow-card transition hover:border-ink/40"
         >
           <span className="font-semibold text-ink">{d.undated.n} undated {d.undated.n === 1 ? "item" : "items"}</span>

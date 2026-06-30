@@ -91,8 +91,12 @@ export function Extras() {
 
   const onFind = (_policyId: string, category: string) => {
     setFocus(category);
-    // Defer to let the row mount/expand, then bring it into view.
-    setTimeout(() => document.getElementById(`cat-${category}`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 60);
+    // Defer past the render that mounts/expands the row, then bring it into view. Two RAFs fire after
+    // React commits + paints, which is reliable regardless of device speed (the old fixed 60ms could
+    // miss on a slow render — getElementById returned null and the scroll never happened).
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => document.getElementById(`cat-${category}`)?.scrollIntoView({ behavior: "smooth", block: "center" })),
+    );
   };
   const insurers = Array.from(new Set(d.policies.map((p) => p.insurer).filter(Boolean))) as string[];
 

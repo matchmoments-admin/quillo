@@ -9,6 +9,7 @@ import {
   PersonFields,
   entityToBody,
   propertyToBody,
+  propertyError,
   personToBody,
   personToValue,
   emptyEntity,
@@ -91,7 +92,9 @@ export function Onboarding() {
       else await api.addPerson(personToBody({ ...self, role: "self" }));
       for (const p of extraPersons) if (p.display_name.trim()) await api.addPerson(personToBody(p));
       for (const e of entities) if (e.name.trim()) await api.addEntity(entityToBody(e));
-      for (const p of properties) if (p.label.trim()) await api.addProperty(propertyToBody(p));
+      // Skip a property that isn't ready (e.g. a let property missing its address) rather than POST a
+      // row that can't carry its expenses — the user can complete it later in Settings → Properties.
+      for (const p of properties) if (p.label.trim() && !propertyError(p)) await api.addProperty(propertyToBody(p));
       for (const r of rules) if (r.accept) await api.addRule({ pattern: r.pattern, bucket: r.bucket, ato_label: r.ato_label });
       // WFH days/week → derive hours for the current FY (server derives; she refines on the Dashboard).
       if (wfhDays.trim() !== "") {

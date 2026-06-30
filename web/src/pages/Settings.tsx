@@ -38,7 +38,7 @@ async function runDelete(
     }
   }
 }
-import { EntityFields, PropertyFields, PersonFields, entityToBody, entityToValue, propertyToBody, personToBody, personToValue, emptyEntity, emptyProperty, emptyPerson, OWNED_STATUSES, TENANT_STATUSES, USE_STATUSES, DENY_USE_STATUSES, isTenantStatus, useStatusLabel, propertyStatusLabel, type EntityValue, type PersonValue, type PropertyValue } from "../components/SituationFields";
+import { EntityFields, PropertyFields, PersonFields, entityToBody, entityToValue, propertyToBody, propertyError, personToBody, personToValue, emptyEntity, emptyProperty, emptyPerson, OWNED_STATUSES, TENANT_STATUSES, USE_STATUSES, DENY_USE_STATUSES, isTenantStatus, useStatusLabel, propertyStatusLabel, type EntityValue, type PersonValue, type PropertyValue } from "../components/SituationFields";
 import type { Person, Account, Property, LoanProperty, IncomeActivity } from "../types";
 import { isPropertyBucket } from "../lib/buckets";
 
@@ -446,7 +446,7 @@ function AddProperty({ onDone }: { onDone: () => void }) {
       <div className="flex-1">
         <PropertyFields value={value} onChange={setValue} />
       </div>
-      <button className={btn} disabled={!value.label || m.isPending} onClick={() => m.mutate()}>
+      <button className={btn} disabled={!!propertyError(value) || m.isPending} onClick={() => m.mutate()} title={propertyError(value) ?? undefined}>
         Add
       </button>
     </div>

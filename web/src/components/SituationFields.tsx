@@ -191,8 +191,9 @@ export function PropertyFields({ value, onChange }: { value: PropertyValue; onCh
       <div className="flex flex-wrap gap-2">
         <input className={`${fieldInput} flex-1`} placeholder="Label e.g. Rental 1" value={value.label} onChange={(e) => set({ label: e.target.value })} />
         <input
-          className={`${fieldInput} flex-1`}
-          placeholder="Address e.g. 14 Rental St, Sydney NSW"
+          className={`${fieldInput} flex-1 ${addressMissing ? "border-warn" : ""}`}
+          placeholder={addressMissing ? "Address (required) e.g. 14 Rental St, Sydney NSW" : "Address e.g. 14 Rental St, Sydney NSW"}
+          aria-invalid={addressMissing}
           value={value.address}
           onChange={(e) => set({ address: e.target.value })}
         />
@@ -244,6 +245,20 @@ export function PropertyFields({ value, onChange }: { value: PropertyValue; onCh
       )}
     </div>
   );
+}
+
+/**
+ * Validation for one property before it's saved. A let property or rented business premises needs an
+ * address to attribute its expenses to the right property (the engine keys deductions on property_id);
+ * every property needs a label. Returns a user-facing reason when it isn't ready to save, else null —
+ * callers disable their save button on a non-null result so we never POST a property that can't carry
+ * its costs. Owner-occupied / private-rented homes need no address (nothing claimable rides on them).
+ */
+export function propertyError(v: PropertyValue): string | null {
+  if (!v.label.trim()) return "Give the property a label.";
+  if ((v.status === "rented" || v.status === "renting_business") && !v.address.trim())
+    return "Add the address so rental expenses attribute to the right property.";
+  return null;
 }
 
 // ── Persons (taxpayers) ──────────────────────────────────────────────────────

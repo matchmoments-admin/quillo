@@ -1121,6 +1121,13 @@ export interface CarUse {
   work_km: number | null;
 }
 
+// Per-FY display rates for the cents-per-km estimate — served from the same rule-pack seam as the
+// report engine (never hardcode a rate in the SPA). null when the FY has no configured rates.
+export interface CarUseRates {
+  cents_per_km: number;
+  km_cap: number;
+}
+
 export interface WorkUse {
   wfh_hours: number | null;
   car_work_km: number | null;

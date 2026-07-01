@@ -38,12 +38,12 @@
     { "id": "au-vacant-holding", "scope_type": "property_status", "scope_value": "vacant", "ato_label": "rental:holding-costs", "claim_type": "apportioned", "general_info_note": "Holding costs are only deductible while the property is genuinely available for rent; vacant land holding costs are generally not deductible since 1 July 2019.", "defer_to_agent": 1 },
     { "id": "au-novated-car", "scope_type": "entity_kind", "scope_value": "novated_lease", "ato_label": "car:novated", "claim_type": "not_deductible", "general_info_note": "Car expenses on a novated lease are not deductible to the employee — the employer leases the car. The reportable fringe benefits amount (RFBA) is reportable.", "defer_to_agent": 1 },
     { "id": "au-occ-nurse", "scope_type": "occupation", "scope_value": "nurse", "merchant_hint": "uniform,scrubs,union,nursing,ahpra", "ato_label": "D3/D5", "claim_type": "immediate", "general_info_note": "Compulsory uniforms, union/professional fees and CPD self-education are commonly deductible for nurses. The initial cost of getting registered is not deductible.", "defer_to_agent": 0 },
-    { "id": "au-occ-it-professional", "scope_type": "occupation", "scope_value": "it_professional", "merchant_hint": "home office,internet,computer,monitor,keyboard,laptop", "ato_label": "D5", "claim_type": "apportioned", "default_method": "diminishing_value", "general_info_note": "Home-office running costs can be claimed at the 70c/hr fixed rate for 2024-25 and 2025-26; a work computer over $300 is depreciated rather than claimed immediately.", "defer_to_agent": 0 },
+    { "id": "au-occ-it-professional", "scope_type": "occupation", "scope_value": "it_professional", "merchant_hint": "home office,internet,computer,monitor,keyboard,laptop", "ato_label": "D5", "claim_type": "apportioned", "default_method": "diminishing_value", "general_info_note": "Home-office running costs can be claimed at the ATO's fixed rate per hour worked from home; a work computer over $300 is depreciated rather than claimed immediately.", "defer_to_agent": 0 },
     { "id": "au-renting-residence", "scope_type": "property_status", "scope_value": "renting_residence", "claim_type": "not_deductible", "general_info_note": "Rent you pay on your own home is generally a private expense and not deductible. Only a sole trader running a genuine 'place of business' from home can apportion occupancy costs — employees and remote workers generally cannot claim rent (only running costs).", "defer_to_agent": 1 },
     { "id": "au-renting-business", "scope_type": "property_status", "scope_value": "renting_business", "ato_label": "business:rent", "claim_type": "apportioned", "general_info_note": "Rent on business or commercial premises you lease is generally deductible. If the premises is partly private, only the business-use portion is claimable.", "defer_to_agent": 1 },
     { "id": "au-renting-business-company", "scope_type": "property_status", "scope_value": "renting_business", "requires_entity_kind": "company", "ato_label": "company:rent", "claim_type": "apportioned", "general_info_note": "Commercial premises rent paid by your company is generally a deductible business expense. Apportion out any private use.", "defer_to_agent": 1 },
 
-    { "id": "au-gen-wfh", "scope_type": "occupation", "scope_value": "all", "merchant_hint": "home office,internet,electricity,power,energy,phone,mobile,stationery,printer ink,broadband", "ato_label": "D5", "claim_type": "apportioned", "general_info_note": "Additional running costs of working from home (electricity, internet, phone, stationery) can be claimed using the 70c/hr fixed-rate method or the actual-cost method, for the hours you genuinely work from home. You cannot claim occupancy costs (rent, mortgage interest, rates) unless your home is a genuine place of business, and you must keep a record of your hours.", "defer_to_agent": 1 },
+    { "id": "au-gen-wfh", "scope_type": "occupation", "scope_value": "all", "merchant_hint": "home office,internet,electricity,power,energy,phone,mobile,stationery,printer ink,broadband", "ato_label": "D5", "claim_type": "apportioned", "general_info_note": "Additional running costs of working from home (electricity, internet, phone, stationery) can be claimed using the ATO's fixed-rate-per-hour method or the actual-cost method, for the hours you genuinely work from home. You cannot claim occupancy costs (rent, mortgage interest, rates) unless your home is a genuine place of business, and you must keep a record of your hours.", "defer_to_agent": 1 },
     { "id": "au-gen-self-education", "scope_type": "occupation", "scope_value": "all", "merchant_hint": "course,training,tafe,university,udemy,coursera,seminar,conference,textbook,workshop,certification,cpd,cpe", "ato_label": "D4", "claim_type": "apportioned", "general_info_note": "Self-education and professional-development costs are generally deductible when the study has a sufficient connection to your current income-earning work. Study to get a new job or enter a new field is generally not deductible, and apportionment is needed where there is private use.", "defer_to_agent": 1 },
     { "id": "au-gen-donations", "scope_type": "occupation", "scope_value": "all", "merchant_hint": "donation,red cross,rspca,salvation army,unicef,oxfam,smith family,beyond blue,cancer council,world vision,charity,dgr", "ato_label": "D9", "claim_type": "immediate", "general_info_note": "Gifts and donations to an organisation endorsed as a deductible gift recipient (DGR) are generally deductible above the minimum-gift threshold. The gift must be genuine with nothing material received in return, and you should keep the receipt. Buying raffle tickets, chocolates or attendance at fundraising events is generally not a deductible gift.", "defer_to_agent": 0 },
     { "id": "au-gen-income-protection", "scope_type": "occupation", "scope_value": "all", "merchant_hint": "income protection,income-protection,salary continuance,tal,aia,zurich,clearview,mlc insurance", "ato_label": "D15", "claim_type": "immediate", "general_info_note": "Premiums for income-protection (salary-continuance) insurance are generally deductible where the policy covers loss of income, but only the income-protection portion held outside super. Premiums for life, trauma or total-and-permanent-disability cover, and cover held inside superannuation, are generally not deductible.", "defer_to_agent": 1 },
@@ -63,16 +63,17 @@
   "thresholds_by_fy": {
     "_note": "All dollar thresholds in CENTS. These change yearly and are policy-dependent — the depreciation engine + claimability brain read them per FY, never inline. Confirm against ATO before relying on them.",
     "_reference_only_keys": {
-      "_note": "REFERENCE-ONLY: these per-FY keys are NOT used in any $ calculation in the engines. They are informational only — `div293_threshold_cents` informs a defer-to-agent readiness nudge (never a computed liability); `mls_single_threshold_cents` and the company-tax rates (`base_rate_company_tax_pct`/`full_company_tax_pct`) are unconsumed (the product never computes tax payable, by design — see CLAUDE.md). Do not wire these into any position maths without a registered-tax-agent review; surcharge/levy/company-tax computation is out of scope.",
-      "keys": ["div293_threshold_cents", "mls_single_threshold_cents", "base_rate_company_tax_pct", "full_company_tax_pct"]
+      "_note": "REFERENCE-ONLY: these per-FY keys are NOT used in any $ calculation in the engines. They are informational only — `div293_threshold_cents` informs a defer-to-agent readiness nudge (never a computed liability); `super_non_concessional_cap_cents` is informational only (bring-forward + total-super-balance conditions make any breach determination agent territory); `mls_single_threshold_cents` and the company-tax rates (`base_rate_company_tax_pct`/`full_company_tax_pct`) are unconsumed (the product never computes tax payable, by design — see CLAUDE.md); `div7a_benchmark_rate_pct` is unconsumed and re-verified each July when the ATO publishes the new rate. Do not wire these into any position maths without a registered-tax-agent review; surcharge/levy/company-tax computation is out of scope.",
+      "keys": ["div293_threshold_cents", "mls_single_threshold_cents", "base_rate_company_tax_pct", "full_company_tax_pct", "super_non_concessional_cap_cents", "div7a_benchmark_rate_pct"]
     },
     "2024-25": {
       "instant_asset_write_off_cents": 2000000,
-      "car_limit_cents": 6920900,
+      "car_limit_cents": 6967400,
       "low_value_pool_threshold_cents": 100000,
       "immediate_non_business_cents": 30000,
       "gst_registration_threshold_cents": 7500000,
       "super_concessional_cap_cents": 3000000,
+      "super_non_concessional_cap_cents": 12000000,
       "wfh_fixed_rate_cents_per_hour": 70,
       "car_cents_per_km": 88,
       "car_km_cap": 5000,
@@ -92,6 +93,7 @@
       "immediate_non_business_cents": 30000,
       "gst_registration_threshold_cents": 7500000,
       "super_concessional_cap_cents": 3000000,
+      "super_non_concessional_cap_cents": 12000000,
       "wfh_fixed_rate_cents_per_hour": 70,
       "car_cents_per_km": 88,
       "car_km_cap": 5000,
@@ -99,29 +101,30 @@
       "full_company_tax_pct": 30,
       "rd_refundable_turnover_cap_cents": 2000000000,
       "rd_premium_pct": 18.5,
-      "div7a_benchmark_rate_pct": 8.77,
+      "div7a_benchmark_rate_pct": 8.37,
       "div293_threshold_cents": 25000000,
       "s40_880_years": 5,
       "mls_single_threshold_cents": 10100000
     },
     "2026-27": {
       "instant_asset_write_off_cents": 100000,
-      "car_limit_cents": 6967400,
+      "car_limit_cents": 6988300,
       "low_value_pool_threshold_cents": 100000,
       "immediate_non_business_cents": 30000,
       "gst_registration_threshold_cents": 7500000,
       "super_concessional_cap_cents": 3250000,
+      "super_non_concessional_cap_cents": 13000000,
       "wfh_fixed_rate_cents_per_hour": 70,
-      "car_cents_per_km": 88,
+      "car_cents_per_km": 91,
       "car_km_cap": 5000,
       "base_rate_company_tax_pct": 25,
       "full_company_tax_pct": 30,
       "rd_refundable_turnover_cap_cents": 2000000000,
       "rd_premium_pct": 18.5,
-      "div7a_benchmark_rate_pct": 8.77,
+      "div7a_benchmark_rate_pct": 8.37,
       "div293_threshold_cents": 25000000,
       "s40_880_years": 5,
-      "mls_single_threshold_cents": 10100000
+      "mls_single_threshold_cents": 10500000
     }
   },
   "payg_deductibility": {
@@ -139,9 +142,9 @@
       { "match": "florist,floral,bouquet,flowers", "note": "Flowers are a private/personal expense and generally not deductible (s8-1(2)(b))." }
     ],
     "apportion": [
-      { "match": "home office,home-office,wfh,electricity,power,energy,gas,internet,broadband,nbn,phone,mobile,stationery,printer ink,consumables,utilities", "note": "Additional running costs of working from home can be claimed at the 70c/hr fixed rate (PCG 2023/1) or the actual-cost method for the hours you genuinely work from home — the fixed rate already bundles energy, internet, phone and stationery, so don't also claim those items separately. Needs your hours before it can be claimed." },
+      { "match": "home office,home-office,wfh,electricity,power,energy,gas,internet,broadband,nbn,phone,mobile,stationery,printer ink,consumables,utilities", "note": "Additional running costs of working from home can be claimed at the ATO's fixed rate per hour (PCG 2023/1) or the actual-cost method for the hours you genuinely work from home — the fixed rate already bundles energy, internet, phone and stationery, so don't also claim those items separately. Needs your hours before it can be claimed." },
       { "match": "course,training,tafe,university,udemy,coursera,seminar,conference,textbook,workshop,certification,cpd,cpe,self-education,education", "note": "Self-education is deductible only where the study has a sufficient connection to your CURRENT income-earning work (TR 2024/3). Study to get a new job is not. Needs apportionment for any private use." },
-      { "match": "car,fuel,petrol,logbook,toll,parking,rego,vehicle,mileage,travel-work,work travel,uber,taxi,rideshare", "note": "Work-related car/travel may be claimed by the cents-per-kilometre (88c/km, max 5,000km for 2024-25) or logbook method. Travel between home and a regular workplace is private. Needs your work-use portion before it can be claimed." }
+      { "match": "car,fuel,petrol,logbook,toll,parking,rego,vehicle,mileage,travel-work,work travel,uber,taxi,rideshare", "note": "Work-related car/travel may be claimed by the cents-per-kilometre (a set ATO rate per km, capped at 5,000 work km per car per year) or logbook method. Travel between home and a regular workplace is private. Needs your work-use portion before it can be claimed." }
     ],
     "allow_suggest": [
       { "match": "union,union-fees,professional-association,professional association,professional-fees,professional-subscription,asic,cpa,chartered accountant,registration fee,membership-professional", "note": "Union fees and professional-association subscriptions directly related to earning your income are generally deductible (s8-1). Confirm the amount and that it relates to your work, then mark it as a deduction." },
@@ -203,14 +206,14 @@
     "it_professional": {
       "label": "IT professional",
       "suggest": [
-        "Work-related portion of home-office running costs (70c/hr fixed rate).",
+        "Work-related portion of home-office running costs (the ATO fixed rate per hour).",
         "Self-education and certifications relevant to your current role.",
         "Professional association/union fees.",
         "Depreciation of self-bought work equipment (laptop, monitor) for the work-use portion.",
         "Income-protection insurance premiums (outside super)."
       ],
       "warn": [
-        "Don't double-dip phone/internet on top of the 70c WFH fixed rate — it already bundles them.",
+        "Don't double-dip phone/internet on top of the WFH fixed rate — it already bundles them.",
         "An employer-supplied laptop isn't yours to depreciate.",
         "Home-to-work travel is private."
       ]

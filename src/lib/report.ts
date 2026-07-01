@@ -7,7 +7,7 @@ import type { EssAssessable } from "./ess";
 import { featureOn } from "./features";
 import { resolveLoanInterest, deductibleInterestCents, type LoanInterestSource } from "./loan-interest";
 import auV1RulePack from "../rulepacks/au-v1.json";
-import { computeWorkMethodDeductions, workUseRatesForFy, type WorkMethodDeductions, type WorkUseInputs } from "./work-use";
+import { computeWorkMethodDeductions, workUseRatesForFy, type WorkMethodDeductions, type WorkUseInputs, type WorkUseRates } from "./work-use";
 import { fyBounds, fyLabel as fyLabelOf } from "./ledger-totals";
 import { resolveJurisdictionForUser, currentFyStartYearFor, fyStartYearForDate, baseCurrencyOf, AU_DESCRIPTOR, type JurisdictionDescriptor } from "./jurisdiction";
 
@@ -360,6 +360,20 @@ async function resolveRulePack(env: Env, userId: string, descriptor: Jurisdictio
     if (override) return override as RulePackThresholds;
   } catch { /* KV unavailable (test env) → bundled default */ }
   return auV1RulePack as unknown as RulePackThresholds;
+}
+
+/**
+ * Per-FY work-use rates for DISPLAY surfaces (e.g. the SPA's cents-per-km inline estimate) —
+ * resolved through the SAME descriptor + KV-pack seam as buildReport, so an on-screen rate can
+ * never disagree with the engine. Returns null when the FY has no configured rates, mirroring
+ * the engine's refusal to compute a work-method deduction for an unconfigured (prior) year.
+ */
+export async function workUseRatesForUserFy(env: Env, userId: string, startYear: number): Promise<WorkUseRates | null> {
+  const jurisdiction = await resolveJurisdictionForUser(env, userId);
+  const rulePack = await resolveRulePack(env, userId, jurisdiction);
+  const thresholds = rulePack.thresholds_by_fy?.[fyLabelOf(startYear)];
+  const hasRates = !!thresholds && (thresholds.wfh_fixed_rate_cents_per_hour != null || thresholds.car_cents_per_km != null);
+  return hasRates ? workUseRatesForFy(thresholds) : null;
 }
 
 export async function buildReport(env: Env, userId: string, startYear: number): Promise<Report> {

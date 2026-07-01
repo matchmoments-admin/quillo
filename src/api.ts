@@ -74,7 +74,7 @@ import { listNoaCarryovers, confirmNoaCarryover, deleteNoaCarryover } from "./li
 import { buildConnectUrl, qboStatus } from "./lib/qbo-oauth";
 import { QuickBooksAdapter } from "./ledger/qbo";
 import { LedgerReauthError } from "./ledger";
-import { buildReport, reportToCsv, currentFyStartYear } from "./lib/report";
+import { buildReport, reportToCsv, currentFyStartYear, workUseRatesForUserFy } from "./lib/report";
 import { resolveJurisdictionForUser } from "./lib/jurisdiction";
 import { buildAccountantSchedule, scheduleToCsv, scheduleToXlsx } from "./lib/accountant-schedule";
 import { getProgress } from "./lib/progress";
@@ -1082,7 +1082,10 @@ export async function handleApi(
       const row = await env.DB.prepare(`SELECT work_km FROM car_inputs WHERE user_id = ? AND fy = ?`)
         .bind(uid, fy)
         .first<{ work_km: number | null }>();
-      return json({ car_use: row ?? { work_km: null } });
+      // Per-FY rate for the SPA's inline estimate — same pack seam as the report engine, so the
+      // on-screen cents/km can never disagree with the computed position. null ⇒ FY unconfigured.
+      const rates = await workUseRatesForUserFy(env, uid, fy);
+      return json({ car_use: row ?? { work_km: null }, rates: rates ? { cents_per_km: rates.car_cents_per_km, km_cap: rates.car_km_cap } : null });
     }
     if (m === "POST") {
       const body = (await req.json().catch(() => ({}))) as { work_km?: number | null };

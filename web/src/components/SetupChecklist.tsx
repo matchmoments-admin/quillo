@@ -25,7 +25,7 @@ function readMarks(): Marks {
 
 type Item = { id: string; title: string; why: string; href: string; done: boolean; manual: boolean };
 
-export function SetupChecklist() {
+export function SetupChecklist({ embedded = false }: { embedded?: boolean } = {}) {
   const { fy } = useActiveFy();
   const [marks, setMarks] = useState<Marks>(readMarks);
 
@@ -119,37 +119,53 @@ export function SetupChecklist() {
 
   const doneCount = visible.length - remaining.length;
 
+  const itemsList = (
+    <div className="space-y-2">
+      {visible.map((it) => (
+        <div key={it.id} className="flex items-start gap-3 rounded-lg border border-line bg-surface px-3 py-2.5">
+          <span
+            aria-hidden
+            className={`mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-full text-[11px] font-bold ${it.done ? "bg-safe text-white" : "border border-line bg-card text-muted"}`}
+          >
+            {it.done ? "✓" : ""}
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className={`text-sm font-medium ${it.done ? "text-muted line-through" : "text-ink"}`}>{it.title}</div>
+            {!it.done && <div className="text-xs text-ink-3">{it.why}</div>}
+          </div>
+          {!it.done && (
+            <div className="flex shrink-0 items-center gap-2">
+              <Link to={it.href} className="rounded-full bg-ink px-3 py-1 text-xs font-semibold text-cream hover:bg-green">Add</Link>
+              {it.manual && (
+                <button onClick={() => mark("done", it.id)} className="text-xs text-muted hover:text-ink">Done</button>
+              )}
+              <button onClick={() => mark("skip", it.id)} className="text-xs text-muted hover:text-ink">Skip</button>
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+
+  // Slice 8 (checklist_v2): rendered INSIDE ChecklistCard's Panel as a "Bring these in" sub-section
+  // (no own Panel), so the two checklists read as one. Same items/marks/GENERAL-INFO — just unwrapped.
+  if (embedded) {
+    return (
+      <div>
+        <div className="mb-1 text-sm font-semibold text-ink">Bring these in <span className="font-normal text-muted">· {doneCount} of {visible.length} done</span></div>
+        <p className="mb-3 text-xs text-ink-2">A few evidence sources so nothing's missing when you hand off your year. General information only — not tax advice.</p>
+        {itemsList}
+      </div>
+    );
+  }
+
   return (
     <Panel>
       <PanelHead title="Bring these in" sub={`${doneCount} of ${visible.length} done`} />
       <p className="-mt-1 mb-3 text-sm text-ink-2">
         A few evidence sources so nothing's missing when you hand off your year. General information only — not tax advice.
       </p>
-      <div className="space-y-2">
-        {visible.map((it) => (
-          <div key={it.id} className="flex items-start gap-3 rounded-lg border border-line bg-surface px-3 py-2.5">
-            <span
-              aria-hidden
-              className={`mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-full text-[11px] font-bold ${it.done ? "bg-safe text-white" : "border border-line bg-card text-muted"}`}
-            >
-              {it.done ? "✓" : ""}
-            </span>
-            <div className="min-w-0 flex-1">
-              <div className={`text-sm font-medium ${it.done ? "text-muted line-through" : "text-ink"}`}>{it.title}</div>
-              {!it.done && <div className="text-xs text-ink-3">{it.why}</div>}
-            </div>
-            {!it.done && (
-              <div className="flex shrink-0 items-center gap-2">
-                <Link to={it.href} className="rounded-full bg-ink px-3 py-1 text-xs font-semibold text-cream hover:bg-green">Add</Link>
-                {it.manual && (
-                  <button onClick={() => mark("done", it.id)} className="text-xs text-muted hover:text-ink">Done</button>
-                )}
-                <button onClick={() => mark("skip", it.id)} className="text-xs text-muted hover:text-ink">Skip</button>
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
+      {itemsList}
     </Panel>
   );
 }

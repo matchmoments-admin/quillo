@@ -71,7 +71,7 @@ export function Dashboard() {
 
       {/* #246: onboarding-completeness — "bring these in" evidence checklist, derived from the user's
           situation. Near the top so a half-set-up user sees what's missing before working the numbers. */}
-      {has("onboarding_checklist") && <SetupChecklist />}
+      {has("onboarding_checklist") && !has("checklist_v2") && <SetupChecklist />}
 
       {/* Savings run-rate — the "yearly wake-up figure" (factual annualisation), links into the Save tab. */}
       {has("advisory_layer") && <RunRateStrip fy={fy} />}
@@ -170,7 +170,10 @@ export function Dashboard() {
 
 function ChecklistCard() {
   const qc = useQueryClient();
+  const { has } = useFeatures();
   const { label } = useActiveFy();
+  // Slice 8: when checklist_v2 is on, the SetupChecklist evidence items fold in here as one checklist.
+  const showEvidence = has("checklist_v2") && has("onboarding_checklist");
   const invalidate = () => qc.invalidateQueries({ queryKey: ["checklist", label] });
   const { data, isLoading } = useQuery({ queryKey: ["checklist", label], queryFn: () => api.checklist(label) });
   const gen = useMutation({ mutationFn: () => api.generateChecklist(label), onSuccess: invalidate });
@@ -195,7 +198,8 @@ function ChecklistCard() {
 
   // Empty → the situation-driven checklist auto-generates on first visit (the effect above), so this is
   // just a quiet placeholder; no manual "Generate" button (the loaded-state "Refresh" covers re-runs).
-  if (!isLoading && !items.length) {
+  // With checklist_v2, keep rendering the Panel so the folded-in "Bring these in" evidence still shows.
+  if (!isLoading && !items.length && !showEvidence) {
     return (
       <div className="flex flex-wrap items-center gap-4 rounded-2xl border border-sage bg-sage px-6 py-5">
         <span className="grid h-11 w-11 flex-none place-items-center rounded-xl bg-forest text-cream">
@@ -224,8 +228,11 @@ function ChecklistCard() {
           </Button>
         }
       />
+      {showEvidence && <div className="mb-4 border-b border-line pb-4"><SetupChecklist embedded /></div>}
       {isLoading ? (
         <div className="py-4"><Spinner /></div>
+      ) : !items.length ? (
+        <p className="py-1 text-sm text-muted">No FY tasks yet — they'll fill in as you add your situation.</p>
       ) : (
         <div className="divide-y divide-line">
           {items.map((i) => (

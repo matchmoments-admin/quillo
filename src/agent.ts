@@ -3427,6 +3427,7 @@ export class TaxAgent extends Agent<Env> {
       psiAllAssessed,
       mainResidenceDisposalN: mainResDisposal?.n ?? 0,
       mfCostBaseAdjustmentCents,
+      ...(featureOn(this.env, "non_cash_income") ? { nonCashIncomeEnabled: true } : {}),
       ...(integrityOn ? {
         frankingHoldingThresholdCents: integrityThresholds?.franking_holding_rule_threshold_cents ?? null,
         fitoDeMinimisCents: integrityThresholds?.fito_de_minimis_cents ?? null,

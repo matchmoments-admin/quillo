@@ -590,6 +590,10 @@ export async function gstTotals(env: Env, userId: string, startYear: number, des
     const profReg = (await env.DB.prepare(`SELECT COALESCE(gst_registered,0) AS g FROM profiles WHERE user_id = ?`).bind(userId).first<{ g: number }>())?.g ?? 0;
     if (entReg === 0 && profReg === 0) return notRegistered;
     // Taxable supplies: sole-trader / business income for the FY (GST-inclusive).
+    // DELIBERATE narrowness (audit wave 4 review): only cash 'business' sales feed the indicative
+    // output-GST estimate. Barter (non_cash_business) IS a taxable supply for a registered business,
+    // but auto-adding 1/11th of a user-estimated market value to an indicative BAS is a money-output
+    // judgement — defer nudges cover it; widen only with an owner-signed golden.
     const sales = (await env.DB.prepare(`SELECT COALESCE(SUM(COALESCE(amount_aud_cents, gross_cents)),0) AS s FROM income WHERE user_id = ? AND fy = ? AND income_type = 'business' AND ${FX_CONVERTED}`).bind(userId, fy).first<{ s: number }>())?.s ?? 0;
     // Input credits: GST captured on countable business inputs this FY. Reimbursed acquisitions carry no
     // claimable ITC (you didn't bear the cost), so exclude them — mirrors the headline reimbursed gate (0030).

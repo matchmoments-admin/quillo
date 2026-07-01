@@ -1844,9 +1844,9 @@ console.log("progress next-action engine");
   const wp = buildProgress(work);
   check("progress surfaces 6 review / 2 undated, done=false", wp.needs_review === 6 && wp.undated === 2 && wp.done === false);
 
-  // Precedence branch 2: review cleared, undated remains → date (→ /reports).
+  // Precedence branch 2: review cleared, undated remains → date (→ the EDITABLE undated view, not /reports).
   const dated: ProgressCounts = { ...imported, needs_review: 0, undated: 2 };
-  check("review cleared, undated>0 → date (/reports), count 2", nextAction(dated).kind === "date" && nextAction(dated).count === 2 && nextAction(dated).href === "/reports");
+  check("review cleared, undated>0 → date (/transactions?undated=true), count 2", nextAction(dated).kind === "date" && nextAction(dated).count === 2 && nextAction(dated).href === "/transactions?undated=true");
 
   // Precedence branch 3: needs_review takes priority over undated.
   check("needs_review precedes undated", nextAction({ ...imported, needs_review: 1, undated: 5 }).kind === "review");

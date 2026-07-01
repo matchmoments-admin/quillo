@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api } from "../api";
 import { useFeatures } from "../lib/features";
+import { useActiveFy } from "../lib/activeFy";
 import { Card, Spinner, Button, Input, money } from "../components/ui";
 import type { IncomeRow, CgtAssetRow } from "../types";
 
@@ -11,12 +12,9 @@ import type { IncomeRow, CgtAssetRow } from "../types";
 // from the assessable position. Keep in sync with the server (the source of truth for the math).
 const NON_ASSESSABLE_INCOME_TYPES = new Set(["non_cash_benefit", "super_pension", "employment_lump_sum"]);
 
-function fyLabel(startYear: number): string {
-  return `${startYear}-${String((startYear + 1) % 100).padStart(2, "0")}`;
-}
-function defaultFyStart(): number {
-  const now = new Date();
-  return now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear() - 1;
+// AU financial-year bounds for a start year (1 Jul → 30 Jun). Used to FY-scope client-side lists.
+function fyBounds(startYear: number): { from: string; to: string } {
+  return { from: `${startYear}-07-01`, to: `${startYear + 1}-06-30` };
 }
 
 const INCOME_TYPES = [
@@ -50,8 +48,8 @@ const TYPE_LABEL: Record<string, string> = {
 };
 
 export function Income() {
-  const [fyStart, setFyStart] = useState(defaultFyStart());
-  const fy = fyLabel(fyStart);
+  // Single source of truth for the FY: the app-wide header switcher (no second control on this page).
+  const { fy: fyStart, label: fy } = useActiveFy();
   const qc = useQueryClient();
   const { has } = useFeatures();
   const { data, isLoading, error } = useQuery({ queryKey: ["income", fy], queryFn: () => api.income({ fy }) });
@@ -100,39 +98,8 @@ export function Income() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold tracking-tight">Income</h1>
-        <div className="flex items-center gap-2 text-sm">
-          <button className="rounded-lg border border-line px-2 py-1" onClick={() => setFyStart((y) => y - 1)}>←</button>
-          <span className="tabular-nums">FY {fy}</span>
-          <button className="rounded-lg border border-line px-2 py-1" onClick={() => setFyStart((y) => y + 1)}>→</button>
-        </div>
+        <span className="text-sm tabular-nums text-muted">FY {fy}</span>
       </div>
-
-      <div className="grid grid-cols-3 gap-3">
-        <Card className="p-4"><div className="text-xs uppercase tracking-wide text-muted">Gross income</div><div className="mt-1 text-xl font-semibold tabular-nums">{money(total)}</div></Card>
-        <Card className="p-4"><div className="text-xs uppercase tracking-wide text-muted">PAYG withheld</div><div className="mt-1 text-xl font-semibold tabular-nums">{money(withholding)}</div></Card>
-        <Card className="p-4"><div className="text-xs uppercase tracking-wide text-muted">Franking credits</div><div className="mt-1 text-xl font-semibold tabular-nums">{money(franking)}</div></Card>
-      </div>
-
-      <IncomeDedupe />
-
-      {capturedRows.length > 0 && (
-        <Card className="border-warn/30 bg-warn/5 p-4">
-          <div className="text-sm font-semibold text-ink">Captured — not in your assessable position</div>
-          <p className="mt-0.5 text-xs text-muted">
-            These have special treatment we don't compute (e.g. tax-free redundancy, super pension). They're kept
-            for your records but excluded from the Gross income above — confirm their treatment with a registered
-            tax agent. General information only.
-          </p>
-          <ul className="mt-2 divide-y divide-line text-sm">
-            {capturedRows.map((r) => (
-              <li key={r.id} className="flex items-center justify-between py-1.5">
-                <span className="text-ink">{r.ato_label ?? r.income_type}</span>
-                <span className="tabular-nums text-muted">{money(r.amount_aud_cents ?? r.gross_cents)}</span>
-              </li>
-            ))}
-          </ul>
-        </Card>
-      )}
 
       <div className="flex flex-wrap items-center gap-2">
         <Button variant="ghost" onClick={() => setAdding((v) => !v)}>{adding ? "Cancel" : "+ Add income manually"}</Button>
@@ -153,6 +120,33 @@ export function Income() {
       </div>
       {note && <p className="text-sm text-muted">{note}</p>}
       {adding && <AddIncomeForm fy={fy} onDone={() => { setAdding(false); qc.invalidateQueries({ queryKey: ["income", fy] }); }} />}
+
+      <div className="grid grid-cols-3 gap-3">
+        <Card className="p-4"><div className="text-xs uppercase tracking-wide text-muted">Gross income</div><div className="mt-1 text-xl font-semibold tabular-nums">{money(total)}</div></Card>
+        <Card className="p-4"><div className="text-xs uppercase tracking-wide text-muted">PAYG withheld</div><div className="mt-1 text-xl font-semibold tabular-nums">{money(withholding)}</div></Card>
+        <Card className="p-4"><div className="text-xs uppercase tracking-wide text-muted">Franking credits</div><div className="mt-1 text-xl font-semibold tabular-nums">{money(franking)}</div></Card>
+      </div>
+
+      <IncomeDedupe fyStart={fyStart} />
+
+      {capturedRows.length > 0 && (
+        <Card className="border-warn/30 bg-warn/5 p-4">
+          <div className="text-sm font-semibold text-ink">Captured — not in your assessable position</div>
+          <p className="mt-0.5 text-xs text-muted">
+            These have special treatment we don't compute (e.g. tax-free redundancy, super pension). They're kept
+            for your records but excluded from the Gross income above — confirm their treatment with a registered
+            tax agent. General information only.
+          </p>
+          <ul className="mt-2 divide-y divide-line text-sm">
+            {capturedRows.map((r) => (
+              <li key={r.id} className="flex items-center justify-between py-1.5">
+                <span className="text-ink">{r.ato_label ?? r.income_type}</span>
+                <span className="tabular-nums text-muted">{money(r.amount_aud_cents ?? r.gross_cents)}</span>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
 
       {isLoading ? (
         <Spinner />
@@ -375,7 +369,7 @@ function AddEssGrantForm({ onDone }: { onDone: () => void }) {
 // Income de-dup (flag income_dedupe): surfaces credit bank-lines that look like a documented
 // income row so the user can confirm the pair counts once (not double). Suggest-only — nothing is
 // merged until the user clicks Link. Hidden when the flag is off or there's nothing to reconcile.
-function IncomeDedupe() {
+function IncomeDedupe({ fyStart }: { fyStart: number }) {
   const { has } = useFeatures();
   const qc = useQueryClient();
   const enabled = has("income_dedupe");
@@ -395,7 +389,13 @@ function IncomeDedupe() {
     onSuccess: () => { toast.success("Unlinked — the credit counts on its own again."); refresh(); },
     onError: (e) => toast.error("Couldn't unlink", { description: (e as Error).message }),
   });
-  if (!enabled || !data || (!data.suggestions.length && !data.matched.length)) return null;
+  // FY-scope to the active year: a credit/income pair only makes sense against the FY you're viewing
+  // (a 2024-25 rent credit shouldn't surface while you're on 2025-26). Null dates fall through (kept).
+  const { from, to } = fyBounds(fyStart);
+  const inFy = (d?: string | null) => !d || (d >= from && d <= to);
+  const suggestions = (data?.suggestions ?? []).filter((s) => inFy(s.income_date ?? s.txn_date));
+  const matched = (data?.matched ?? []).filter((m) => inFy(m.txn_date));
+  if (!enabled || !data || (!suggestions.length && !matched.length)) return null;
   return (
     <Card className="space-y-3 p-4">
       <div className="text-sm font-semibold">Possible duplicate income</div>
@@ -403,7 +403,7 @@ function IncomeDedupe() {
         A bank credit that looks like a payslip/documented income row would otherwise count twice.
         Link a pair so it counts once. General information only — confirm with a registered tax agent.
       </p>
-      {data.suggestions.map((s) => (
+      {suggestions.map((s) => (
         <div key={s.txn_id} className="flex flex-wrap items-center justify-between gap-2 border-t border-line pt-2 text-sm">
           <div>
             <span className="font-medium">{s.merchant ?? "Bank credit"}</span>{" "}
@@ -416,7 +416,7 @@ function IncomeDedupe() {
           </Button>
         </div>
       ))}
-      {data.matched.map((m) => (
+      {matched.map((m) => (
         <div key={m.txn_id} className="flex flex-wrap items-center justify-between gap-2 border-t border-line pt-2 text-sm text-muted">
           <div>
             Linked: <span className="font-medium text-ink">{m.merchant ?? "Bank credit"}</span>{" "}

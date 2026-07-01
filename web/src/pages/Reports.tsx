@@ -174,7 +174,7 @@ export function Reports() {
           {/* EPIC #134 engine outputs — each renders only when its flag is on and there's data. Grouped
               under one collapsible so the densest detail folds away when it isn't relevant; the whole
               group is omitted (not an empty header) when a simple PAYG return has none of it. */}
-          {(data!.capital_gains || data!.ess || data!.trust || data!.franking_gross_up_cents != null || data!.super_deduction || data!.car_logbook || data!.gst || (data!.smsf_funds && data!.smsf_funds.length > 0)) && (
+          {(data!.capital_gains || data!.ess || data!.trust || data!.franking_gross_up_cents != null || data!.super_deduction || data!.trading_stock || data!.car_logbook || data!.gst || (data!.smsf_funds && data!.smsf_funds.length > 0)) && (
           <CollapsibleSection title="Detailed tax positions">
           {data!.capital_gains && (
             <Card className="overflow-hidden">
@@ -216,6 +216,17 @@ export function Reports() {
               <div className="grid grid-cols-2 gap-4 p-4 sm:grid-cols-3">
                 <Stat label="Added to assessable income" value={money(data!.franking_gross_up_cents)} />
                 <Stat label="Also a tax offset" value="Reduces tax payable (not shown here)" />
+              </div>
+            </Card>
+          )}
+
+          {data!.trading_stock && (
+            <Card className="overflow-hidden">
+              <Th>Trading stock (s 70-35)</Th>
+              <div className="grid grid-cols-2 gap-4 p-4 sm:grid-cols-3">
+                <Stat label="Opening stock" value={money(data!.trading_stock.opening_cents)} />
+                <Stat label="Closing stock" value={money(data!.trading_stock.closing_cents)} />
+                <Stat label={data!.trading_stock.adjustment_cents >= 0 ? "Added to income" : "Deducted"} value={money(Math.abs(data!.trading_stock.adjustment_cents))} />
               </div>
             </Card>
           )}

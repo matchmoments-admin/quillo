@@ -1197,3 +1197,21 @@ CREATE TABLE IF NOT EXISTS referral_consents (
   revoked_at                TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_referral_consents_user ON referral_consents(user_id);
+-- 0068 (audit wave 4): trading stock for goods-selling sole traders (s 70-35). One row per business
+-- per FY: opening + closing values; assessable adjustment (closing − opening) applied by report.ts
+-- only when the trading_stock flag is on. entity_id NULL = personal sole-trader business; an
+-- entity-scoped row is captured but stays out of the personal headline (separate taxpayer).
+-- valuation_basis: s 70-45 choice (cost | market_selling_value | replacement), record-keeping only.
+CREATE TABLE IF NOT EXISTS trading_stock (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  entity_id TEXT,
+  fy TEXT NOT NULL,
+  opening_cents INTEGER NOT NULL DEFAULT 0,
+  closing_cents INTEGER NOT NULL DEFAULT 0,
+  valuation_basis TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_trading_stock_unique ON trading_stock(user_id, fy, COALESCE(entity_id, ''));
+CREATE INDEX IF NOT EXISTS idx_trading_stock_user_fy ON trading_stock(user_id, fy);

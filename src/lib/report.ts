@@ -1,6 +1,6 @@
 import type { Env } from "../env";
 import { COUNTABLE, COUNTABLE_INCOME } from "./queries";
-import { incomeTotals, depreciationTotals, attributionTotals, companyPositions, cgtTotals, carriedTaxLossCents, essTotals, gstTotals, paygInstalmentsTotal, carLogbookPosition, carWorkKmFor, trustTotals, partnershipTotals, smsfFundPositions, separateTaxpayerEntityIds, superConcessionalDeduction, fyStartYearStr, type IncomeTotals, type AttributionTotals, type CompanyPosition, type GstPosition, type CarLogbookPosition, type SmsfFundPosition, type RulePackThresholds, type SuperDeduction } from "./ledger-totals";
+import { incomeTotals, depreciationTotals, attributionTotals, companyPositions, cgtTotals, carriedTaxLossCents, essTotals, gstTotals, paygInstalmentsTotal, carLogbookPosition, carWorkKmFor, trustTotals, partnershipTotals, smsfFundPositions, separateTaxpayerEntityIds, superConcessionalDeduction, tradingStockAdjustment, fyStartYearStr, type IncomeTotals, type AttributionTotals, type CompanyPosition, type GstPosition, type CarLogbookPosition, type SmsfFundPosition, type RulePackThresholds, type SuperDeduction, type TradingStock } from "./ledger-totals";
 import type { TrustTotals } from "./trust";
 import type { CgtPortfolioResult } from "./cgt";
 import type { EssAssessable } from "./ess";
@@ -200,6 +200,7 @@ export interface Report {
   // concessional cap. SUBTRACTED from the position. Employer SG / salary-sacrifice are pre-tax → never here.
   // Present only when super_deduction is on AND there are personal_deductible contributions.
   super_deduction?: SuperDeduction; // FY aggregate incl. its return label (D12; D11 is foreign-pension UPP, never super)
+  trading_stock?: TradingStock; // audit wave 4: s 70-35 adjustment for the personal sole-trader business (flag trading_stock)
   taxable_position_cents: number;      // total_income + net capital gain + ESS discount + trust distributions + franking gross-up − deductions − depreciation − super (indicative)
   taxable_position_confirmed_cents?: number; // #255: CONFIRMED end of the range — as above but discretionary tracked spend swapped for resolved_deductible_cents (method-based deductions stay). ≥ taxable_position_cents. Present only when position_confirmed_range is on ⇒ byte-identical off.
 }
@@ -830,13 +831,21 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
     const sd = await superConcessionalDeduction(env, userId, startYear, cap);
     if (sd.contributed_cents > 0) super_deduction = sd;
   }
+  // Audit wave 4 (trading_stock): the s 70-35 trading-stock adjustment for a goods-selling sole
+  // trader — closing − opening stock is assessable when positive, deductible when negative. Personal
+  // (entity_id NULL) business only; entity rows stay out (separate taxpayer). Off/no row ⇒ byte-identical.
+  let trading_stock: TradingStock | undefined;
+  if (featureOn(env, "trading_stock")) {
+    const ts = await tradingStockAdjustment(env, userId, startYear);
+    if (ts) trading_stock = ts;
+  }
   // B2 (#71): prior-year ordinary tax loss from a confirmed NOA. Fetched once and applied to BOTH the
   // tracked and the confirmed-range positions below (it's an ATO-confirmed reduction, so it belongs in
   // the conservative floor too — like depreciation/super). Off ⇒ 0 ⇒ byte-identical for both.
   const carried_tax_loss_cents = featureOn(env, "carryforward_position") ? await carriedTaxLossCents(env, userId, startYear) : 0;
   const preLossPosition =
     income.gross_cents + (capital_gains?.net_capital_gain_cents ?? 0) + (ess?.assessable_discount_cents ?? 0) + (trust?.assessable_cents ?? 0) + (partnership?.assessable_cents ?? 0)
-    + (franking_gross_up_cents ?? 0) - total_deductions_cents - dep.total_cents - (super_deduction?.claimed_cents ?? 0);
+    + (franking_gross_up_cents ?? 0) + (trading_stock?.adjustment_cents ?? 0) - total_deductions_cents - dep.total_cents - (super_deduction?.claimed_cents ?? 0);
   // The loss offsets ONLY positive income — it can't push the position below zero; the unused remainder
   // stays carried (not modelled further).
   const tax_losses_applied_cents = Math.min(carried_tax_loss_cents, Math.max(0, preLossPosition));
@@ -909,9 +918,12 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   let taxable_position_confirmed_cents: number | undefined;
   if (featureOn(env, "position_confirmed_range")) {
     const confirmed_deductions_cents = Math.min(resolved_deductible_cents, Math.max(0, gross_deductions_cents - refunds_cents)) + (work_method?.total_cents ?? 0);
+    // The trading-stock adjustment is calculation-substantiated (like depreciation/super), not
+    // discretionary tracked spend — it belongs in BOTH endpoints or the range inverts by the
+    // adjustment (confirmed ≥ tracked invariant).
     const confirmedPreLoss =
       income.gross_cents + (capital_gains?.net_capital_gain_cents ?? 0) + (ess?.assessable_discount_cents ?? 0) + (trust?.assessable_cents ?? 0) + (partnership?.assessable_cents ?? 0)
-      + (franking_gross_up_cents ?? 0) - confirmed_deductions_cents - dep.total_cents - (super_deduction?.claimed_cents ?? 0);
+      + (franking_gross_up_cents ?? 0) + (trading_stock?.adjustment_cents ?? 0) - confirmed_deductions_cents - dep.total_cents - (super_deduction?.claimed_cents ?? 0);
     // B2: the carried tax loss is ATO-confirmed, so it reduces the confirmed floor too (capped at the
     // confirmed pre-loss position). Off ⇒ carried_tax_loss_cents=0 ⇒ byte-identical.
     taxable_position_confirmed_cents = confirmedPreLoss - Math.min(carried_tax_loss_cents, Math.max(0, confirmedPreLoss));
@@ -967,6 +979,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
     smsf_funds,
     franking_gross_up_cents,
     super_deduction,
+    trading_stock,
     taxable_position_cents,
     taxable_position_confirmed_cents,
     // B2: surface the applied carried tax loss so the display layer can show the line. Omitted when zero

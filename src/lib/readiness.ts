@@ -250,6 +250,21 @@ export function assessReadiness(input: {
       basis: report.partnership.franking_credit_cents > 0 ? `incl. ${money(report.partnership.franking_credit_cents)} franking credit` : "your share of partnership net income",
       why: "Your share of a partnership's net income, with its character retained (a franked dividend stays franked, a discounted capital gain stays discounted). It's assessable to you; the partnership lodges its own return. A partnership loss may instead be deductible — confirm the split and the partnership's lodgment with a registered tax agent." });
   }
+  // Audit wave 4 (trading_stock): buildReport added the s 70-35 adjustment to taxable_position, so it
+  // renders as a line too (lines-sum == headline). An increase is an "income" line; a decrease renders
+  // as a deduction line with the deducted amount.
+  if (report.trading_stock && report.trading_stock.adjustment_cents !== 0) {
+    const ts = report.trading_stock;
+    lines.push({
+      group: ts.adjustment_cents > 0 ? "income" : "deduction",
+      label: "trading_stock_adjustment",
+      amount_cents: Math.abs(ts.adjustment_cents),
+      basis: `closing ${money(ts.closing_cents)} − opening ${money(ts.opening_cents)}`,
+      why: ts.adjustment_cents > 0
+        ? "Your trading stock grew over the year — the increase counts as business income (s 70-35). Valuation basis and the small-business movement election are confirmed with your registered tax agent."
+        : "Your trading stock shrank over the year — the decrease is deductible (s 70-35). Valuation basis and the small-business movement election are confirmed with your registered tax agent.",
+    });
+  }
   // Deduction lines come from the deductibility-split breakdown so the SAME classifier that computed
   // the headline routes each row to its section ("deduction" sums to the headline; "excluded"/"company"
   // are shown apart). This both fixes the number AND explains what dropped out and why.
@@ -592,6 +607,14 @@ export function assessReadiness(input: {
   if (signals.div293ThresholdCents != null && report.income.gross_cents >= signals.div293ThresholdCents) {
     findings.push(f("div293_income", "threshold", "review", "Income is around the Div 293 super threshold",
       `Your recorded income (${money(report.income.gross_cents)}) is near or above the Division 293 threshold (${money(signals.div293ThresholdCents)}). Higher earners can pay an extra 15% on their concessional (before-tax) super contributions. This is a separate ATO assessment, not part of the position shown here — your registered tax agent will work out whether it applies.${DEFER}`, true, []));
+  }
+  // Audit wave 4 (trading_stock): the report carries a trading-stock adjustment only when the flag is
+  // on and a row exists — surface the s 70-45 valuation-basis choice + the small-business movement
+  // election as a defer nudge (the adjustment itself is already in the position).
+  if (report.trading_stock) {
+    const ts = report.trading_stock;
+    findings.push(f("trading_stock_basis", "judgement", "review", "Trading stock recorded — confirm the valuation basis",
+      `Opening stock ${money(ts.opening_cents)} and closing stock ${money(ts.closing_cents)}: the ${money(Math.abs(ts.adjustment_cents))} difference is ${ts.adjustment_cents >= 0 ? "added to" : "deducted from"} your business position. Each item can be valued at cost, market selling value or replacement value${ts.valuation_basis ? ` (you chose ${ts.valuation_basis.replace(/_/g, " ")})` : " — you haven't recorded which basis you used"}, and a small business whose stock moved by $5,000 or less can choose not to account for the change. Confirm the basis and the election with a registered tax agent.${DEFER}`, true, []));
   }
   // integrity_nudges: non-concessional (after-tax) super contributions above the reference cap. The cap
   // interacts with the 3-year bring-forward and the total-super-balance test, so we NEVER assert a

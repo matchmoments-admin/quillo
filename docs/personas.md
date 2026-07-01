@@ -72,6 +72,14 @@ super contributions, activity-create). So end-to-end in the app today:
 
 Verify flag state against `wrangler.toml` FEATURES (the source of truth) rather than trusting this prose.
 
+### Audit wave 4 additions (2026-07)
+
+- **Persona TS (Erin, e-commerce sole trader)** — trading stock (s 70-35, flag `trading_stock`,
+  migration 0068): $90k goods sales + opening $8k / closing $12k stock ⇒ a +$4k assessable
+  adjustment in the position; a company-scoped stock row is asserted to stay OUT of the personal
+  headline (separate taxpayer); flag OFF asserted byte-identical. Engine ✓ (`tradingStockAdjustment`)
+  + UI ✓ (Income → Trading stock card) + display ✓ (position, readiness nudge, accountant schedule).
+
 ## How it's wired (for maintainers)
 
 - **Engines** are pure libs: `src/lib/{cgt,ess,gst,trust,smsf,car-logbook,occupations}.ts` + the

@@ -176,6 +176,138 @@ export function TxnDetail() {
   const detailRelevant = !!label || !date || isPropertyBucket(bucket) || (has("refund_netting_v2") && isRefund);
   const detailOpen = !v2cat || showDetail || detailRelevant;
 
+  // Slice 6 (txn_drawer): the secondary fields as named pieces. Primary column = Category + property
+  // (+ record-income) + Save; everything else folds into ONE "More options" drawer that auto-opens on
+  // the FULL detailRelevant condition (so a dated supplier refund's link picker is never buried — a
+  // silent money bug). OFF ⇒ these consts render in exactly today's positions ⇒ byte-identical.
+  const drawer = has("txn_drawer");
+  const atoLabelField = (
+    <label className="block">
+      <span className="text-xs font-medium uppercase tracking-wide text-muted">ATO label <InfoTip k="ato_label" /></span>
+      <input
+        value={label}
+        onChange={(e) => { setLabel(e.target.value); setDirty(true); }}
+        placeholder="e.g. company:office-supplies"
+        className="mt-1 w-full rounded-lg border border-line bg-card px-3 py-2"
+      />
+    </label>
+  );
+  const propertyField = isPropertyBucket(bucket) ? (
+    <label className="block">
+      <span className="text-xs font-medium uppercase tracking-wide text-muted">Property <InfoTip tip={bucket === "income_property" ? "Which property this rent was received for, so it counts as that property's rental income." : "Which of your investment properties this cost belongs to, so per-property totals stay accurate."} /></span>
+      <select
+        value={propertyId}
+        onChange={(e) => { setPropertyId(e.target.value); setDirty(true); }}
+        className="mt-1 w-full rounded-lg border border-line bg-card px-3 py-2"
+      >
+        <option value="">— choose —</option>
+        {props.map((p) => (
+          <option key={p.id} value={p.id}>{p.label} ({p.status})</option>
+        ))}
+      </select>
+      {bucket === "income_property" && (
+        canRecordIncome ? (
+          <div className="mt-1 flex flex-wrap items-center gap-2">
+            <button
+              onClick={() => recordIncome.mutate()}
+              disabled={recordIncome.isPending || recordIncome.isSuccess}
+              className="rounded-lg border border-line bg-surface px-2.5 py-1 text-xs font-medium hover:bg-card disabled:opacity-50"
+            >
+              {recordIncome.isSuccess ? "Recorded ✓" : recordIncome.isPending ? "Recording…" : "Record as rental income"}
+            </button>
+            <span className="text-xs text-muted">Counts it once as this property's rent (links the credit). General info only.</span>
+            {recordIncome.isError && <span className="text-xs text-danger">{(recordIncome.error as Error).message}</span>}
+          </div>
+        ) : (
+          <span className="mt-1 block text-xs text-muted">Tagging the property attributes this credit. Save it, then "Record as rental income" makes it count once (or link it under "possible duplicate income"). General info only.</span>
+        )
+      )}
+    </label>
+  ) : null;
+  const refundField = has("refund_netting_v2") && isRefund ? (
+    <label className="block">
+      <span className="text-xs font-medium uppercase tracking-wide text-muted">This refunds which expense? <InfoTip tip="Link this refund to the work/rental expense it reverses, so the deduction is reduced by the refund. Leave it unlinked for a personal reimbursement or a return on a personal purchase — those don't affect your deductions. General info only." /></span>
+      <select
+        value={refundForId}
+        onChange={(e) => { setRefundForId(e.target.value); setDirty(true); }}
+        className="mt-1 w-full rounded-lg border border-line bg-card px-3 py-2"
+      >
+        <option value="">— unlinked (personal reimbursement — doesn't reduce deductions) —</option>
+        {(refundCandQ.data ?? []).filter((e) => e.id !== id).map((e) => (
+          <option key={e.id} value={e.id}>{e.merchant ?? "Unknown"} · {money(e.amount_aud_cents ?? e.amount_cents)} · {e.txn_date ?? "undated"}</option>
+        ))}
+      </select>
+      {refundCandQ.isLoading && <span className="mt-1 block text-xs text-muted">Loading your expenses…</span>}
+    </label>
+  ) : null;
+  const dateField = (
+    <label className="block">
+      <span className="text-xs font-medium uppercase tracking-wide text-muted">
+        Date {date ? `· FY ${fyLabel(date) ?? "?"}` : "· undated — set one so it lands in a tax year"}
+      </span>
+      <input
+        type="date"
+        value={date}
+        onChange={(e) => { setDate(e.target.value); setDirty(true); }}
+        className="mt-1 w-full rounded-lg border border-line bg-card px-3 py-2"
+      />
+    </label>
+  );
+  const reimbursedCard = (txn.direction ?? "debit") === "debit" && txn.bucket !== "refund" ? (
+    <Card className="space-y-1 p-4 text-sm">
+      <label className="flex items-center gap-2">
+        <input type="checkbox" checked={!!txn.reimbursed} disabled={reimb.isPending} onChange={(e) => reimb.mutate(e.target.checked)} />
+        <span className="font-medium">My employer reimbursed me for this</span>
+      </label>
+      <p className="text-xs text-muted">Reimbursed spend isn't deductible — you didn't bear the cost. Ticking this excludes it from your position. General information only.</p>
+    </Card>
+  ) : null;
+  const attributionCard = has("attribution_engine") ? (
+    <AttributionPanel key={id} txnId={id} txnAmountCents={txn.amount_aud_cents ?? txn.amount_cents ?? 0} entities={sitQ.data?.entities ?? []} persons={sitQ.data?.persons ?? []} />
+  ) : null;
+  const qboSection = txn.bucket === "company" ? (
+    <Card className="space-y-2 p-4 text-sm">
+      <div className="text-xs font-medium uppercase tracking-wide text-muted">QuickBooks</div>
+      {txn.ledger_ref ? (
+        <p className="text-safe">Posted to QuickBooks · {txn.ledger_ref}</p>
+      ) : (
+        <>
+          <p className="text-muted">
+            If this is on a <span className="font-medium text-ink">connected</span> account, leave it — your bank
+            feed posts it and you reconcile. Only push if it's <span className="font-medium text-ink">not</span>{" "}
+            in your QuickBooks feed (cash, a separate Amex).
+          </p>
+          <button onClick={() => push.mutate()} disabled={push.isPending} className="rounded-lg border border-line px-3 py-2 font-medium transition hover:bg-surface disabled:opacity-50">
+            {push.isPending ? "Pushing…" : "Push to QuickBooks (non-feed)"}
+          </button>
+          {pushMsg && <p className="text-muted">{pushMsg}</p>}
+        </>
+      )}
+    </Card>
+  ) : null;
+  const deleteBtn = (
+    <>
+      <button
+        onClick={() => { if (confirm("Delete this receipt permanently? This removes the image and can't be undone.")) del.mutate(); }}
+        disabled={del.isPending}
+        className="w-full rounded-lg border border-danger/30 py-2 text-sm font-medium text-danger transition hover:bg-danger/5 disabled:opacity-50"
+      >
+        {del.isPending ? "Deleting…" : "Delete receipt"}
+      </button>
+      {del.isError && <p className="text-sm text-danger">Couldn't delete: {(del.error as Error).message}</p>}
+    </>
+  );
+  const historySection = txn.corrections.length > 0 ? (
+    <Card className="p-4 text-sm">
+      <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted">Correction history</div>
+      <ul className="space-y-1 text-muted">
+        {txn.corrections.map((c, i) => (
+          <li key={i}><span className="text-ink">{c.field}</span>: {c.old_value ?? "∅"} → {c.new_value ?? "∅"}</li>
+        ))}
+      </ul>
+    </Card>
+  ) : null;
+
   return (
     <div className="space-y-6">
       <div className="grid gap-6 sm:grid-cols-[1fr_1.2fr]">
@@ -261,107 +393,30 @@ export function TxnDetail() {
               </select>
             </label>
 
-            {v2cat && !detailRelevant && (
-              <button
-                type="button"
-                onClick={() => setShowDetail((s) => !s)}
-                className="text-xs font-semibold text-ink-3 underline underline-offset-2 hover:text-ink"
-              >
-                {showDetail ? "Hide detail" : "Add detail (ATO label, date…)"}
-              </button>
-            )}
-            {detailOpen && (
-            <>
-            <label className="block">
-              <span className="text-xs font-medium uppercase tracking-wide text-muted">ATO label <InfoTip k="ato_label" /></span>
-              <input
-                value={label}
-                onChange={(e) => {
-                  setLabel(e.target.value);
-                  setDirty(true);
-                }}
-                placeholder="e.g. company:office-supplies"
-                className="mt-1 w-full rounded-lg border border-line bg-card px-3 py-2"
-              />
-            </label>
-
-            {/* Property applies to rental EXPENSE buckets and to rent INCOME (income_property) — a rent
-                credit must be attributable to its property, or its rental income never ties in. */}
-            {isPropertyBucket(bucket) && (
-              <label className="block">
-                <span className="text-xs font-medium uppercase tracking-wide text-muted">Property <InfoTip tip={bucket === "income_property" ? "Which property this rent was received for, so it counts as that property's rental income." : "Which of your investment properties this cost belongs to, so per-property totals stay accurate."} /></span>
-                <select
-                  value={propertyId}
-                  onChange={(e) => {
-                    setPropertyId(e.target.value);
-                    setDirty(true);
-                  }}
-                  className="mt-1 w-full rounded-lg border border-line bg-card px-3 py-2"
-                >
-                  <option value="">— choose —</option>
-                  {props.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.label} ({p.status})
-                    </option>
-                  ))}
-                </select>
-                {bucket === "income_property" && (
-                  canRecordIncome ? (
-                    <div className="mt-1 flex flex-wrap items-center gap-2">
-                      <button
-                        onClick={() => recordIncome.mutate()}
-                        disabled={recordIncome.isPending || recordIncome.isSuccess}
-                        className="rounded-lg border border-line bg-surface px-2.5 py-1 text-xs font-medium hover:bg-card disabled:opacity-50"
-                      >
-                        {recordIncome.isSuccess ? "Recorded ✓" : recordIncome.isPending ? "Recording…" : "Record as rental income"}
-                      </button>
-                      <span className="text-xs text-muted">Counts it once as this property's rent (links the credit). General info only.</span>
-                      {recordIncome.isError && <span className="text-xs text-danger">{(recordIncome.error as Error).message}</span>}
-                    </div>
-                  ) : (
-                    <span className="mt-1 block text-xs text-muted">Tagging the property attributes this credit. Save it, then "Record as rental income" makes it count once (or link it under "possible duplicate income"). General info only.</span>
-                  )
+            {drawer ? (
+              /* Slice 6: primary column keeps just the property selector + record-income; ATO label,
+                 date and refund-link live in the "More options" drawer below (auto-opens when relevant). */
+              propertyField
+            ) : (
+              <>
+                {v2cat && !detailRelevant && (
+                  <button
+                    type="button"
+                    onClick={() => setShowDetail((s) => !s)}
+                    className="text-xs font-semibold text-ink-3 underline underline-offset-2 hover:text-ink"
+                  >
+                    {showDetail ? "Hide detail" : "Add detail (ATO label, date…)"}
+                  </button>
                 )}
-              </label>
-            )}
-
-            {/* #258: a refund credit can be linked to the specific deductible expense it reverses, so it
-                nets ONLY against that expense. Left unlinked, it's position-neutral — correct for a
-                personal reimbursement (a flatmate paying you back) or a return on a personal purchase. */}
-            {has("refund_netting_v2") && isRefund && (
-              <label className="block">
-                <span className="text-xs font-medium uppercase tracking-wide text-muted">This refunds which expense? <InfoTip tip="Link this refund to the work/rental expense it reverses, so the deduction is reduced by the refund. Leave it unlinked for a personal reimbursement or a return on a personal purchase — those don't affect your deductions. General info only." /></span>
-                <select
-                  value={refundForId}
-                  onChange={(e) => { setRefundForId(e.target.value); setDirty(true); }}
-                  className="mt-1 w-full rounded-lg border border-line bg-card px-3 py-2"
-                >
-                  <option value="">— unlinked (personal reimbursement — doesn't reduce deductions) —</option>
-                  {(refundCandQ.data ?? []).filter((e) => e.id !== id).map((e) => (
-                    <option key={e.id} value={e.id}>
-                      {e.merchant ?? "Unknown"} · {money(e.amount_aud_cents ?? e.amount_cents)} · {e.txn_date ?? "undated"}
-                    </option>
-                  ))}
-                </select>
-                {refundCandQ.isLoading && <span className="mt-1 block text-xs text-muted">Loading your expenses…</span>}
-              </label>
-            )}
-
-            <label className="block">
-              <span className="text-xs font-medium uppercase tracking-wide text-muted">
-                Date {date ? `· FY ${fyLabel(date) ?? "?"}` : "· undated — set one so it lands in a tax year"}
-              </span>
-              <input
-                type="date"
-                value={date}
-                onChange={(e) => {
-                  setDate(e.target.value);
-                  setDirty(true);
-                }}
-                className="mt-1 w-full rounded-lg border border-line bg-card px-3 py-2"
-              />
-            </label>
-            </>
+                {detailOpen && (
+                  <>
+                    {atoLabelField}
+                    {propertyField}
+                    {refundField}
+                    {dateField}
+                  </>
+                )}
+              </>
             )}
 
             <button
@@ -417,99 +472,54 @@ export function TxnDetail() {
             </Card>
           )}
 
-          {/* Reimbursement (G2) + who-paid-vs-who-claims attribution (Phase B). With apply_to_siblings on,
-              the default detail view is category → property → apply-to-siblings, and these power-user
-              controls tuck into a collapsed "Advanced" section (#166). Flag-off ⇒ rendered inline, exactly
-              as before (byte-identical). */}
-          {(() => {
-            const reimbursedCard =
-              (txn.direction ?? "debit") === "debit" && txn.bucket !== "refund" ? (
-                <Card className="space-y-1 p-4 text-sm">
-                  <label className="flex items-center gap-2">
-                    <input type="checkbox" checked={!!txn.reimbursed} disabled={reimb.isPending} onChange={(e) => reimb.mutate(e.target.checked)} />
-                    <span className="font-medium">My employer reimbursed me for this</span>
-                  </label>
-                  <p className="text-xs text-muted">Reimbursed spend isn't deductible — you didn't bear the cost. Ticking this excludes it from your position. General information only.</p>
-                </Card>
-              ) : null;
-            const attributionCard = has("attribution_engine") ? (
-              <AttributionPanel
-                key={id}
-                txnId={id}
-                txnAmountCents={txn.amount_aud_cents ?? txn.amount_cents ?? 0}
-                entities={sitQ.data?.entities ?? []}
-                persons={sitQ.data?.persons ?? []}
-              />
-            ) : null;
-            if (!reimbursedCard && !attributionCard) return null;
-            if (has("apply_to_siblings")) {
-              return (
-                <details className="rounded-2xl border border-line bg-card">
-                  <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-ink-2">Advanced — reimbursement &amp; who claims</summary>
-                  <div className="space-y-3 px-4 pb-4">
-                    {reimbursedCard}
-                    {attributionCard}
-                  </div>
-                </details>
-              );
-            }
-            return (
-              <>
+          {drawer ? (
+            /* Slice 6: ONE "More options" drawer replacing today's two disclosures. Auto-opens on the FULL
+               detailRelevant condition so a dated supplier refund's link picker is never buried (money bug). */
+            <details className="rounded-2xl border border-line bg-card" open={detailRelevant}>
+              <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-ink-2">More options — ATO label, date, refund link, who claims, delete</summary>
+              <div className="space-y-3 px-4 pb-4">
+                {atoLabelField}
+                {dateField}
+                {refundField}
                 {reimbursedCard}
                 {attributionCard}
-              </>
-            );
-          })()}
-
-          {/* QuickBooks: reconcile-vs-push. Fed accounts reconcile (don't push); use this
-              only for a NON-FEED company expense (cash / a card not connected to QBO). */}
-          {txn.bucket === "company" && (
-            <Card className="space-y-2 p-4 text-sm">
-              <div className="text-xs font-medium uppercase tracking-wide text-muted">QuickBooks</div>
-              {txn.ledger_ref ? (
-                <p className="text-safe">Posted to QuickBooks · {txn.ledger_ref}</p>
-              ) : (
-                <>
-                  <p className="text-muted">
-                    If this is on a <span className="font-medium text-ink">connected</span> account, leave it — your bank
-                    feed posts it and you reconcile. Only push if it's <span className="font-medium text-ink">not</span>{" "}
-                    in your QuickBooks feed (cash, a separate Amex).
-                  </p>
-                  <button
-                    onClick={() => push.mutate()}
-                    disabled={push.isPending}
-                    className="rounded-lg border border-line px-3 py-2 font-medium transition hover:bg-surface disabled:opacity-50"
-                  >
-                    {push.isPending ? "Pushing…" : "Push to QuickBooks (non-feed)"}
-                  </button>
-                  {pushMsg && <p className="text-muted">{pushMsg}</p>}
-                </>
-              )}
-            </Card>
-          )}
-
-          <button
-            onClick={() => {
-              if (confirm("Delete this receipt permanently? This removes the image and can't be undone.")) del.mutate();
-            }}
-            disabled={del.isPending}
-            className="w-full rounded-lg border border-danger/30 py-2 text-sm font-medium text-danger transition hover:bg-danger/5 disabled:opacity-50"
-          >
-            {del.isPending ? "Deleting…" : "Delete receipt"}
-          </button>
-          {del.isError && <p className="text-sm text-danger">Couldn't delete: {(del.error as Error).message}</p>}
-
-          {txn.corrections.length > 0 && (
-            <Card className="p-4 text-sm">
-              <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted">Correction history</div>
-              <ul className="space-y-1 text-muted">
-                {txn.corrections.map((c, i) => (
-                  <li key={i}>
-                    <span className="text-ink">{c.field}</span>: {c.old_value ?? "∅"} → {c.new_value ?? "∅"}
-                  </li>
-                ))}
-              </ul>
-            </Card>
+                {qboSection}
+                {deleteBtn}
+                {historySection}
+              </div>
+            </details>
+          ) : (
+            <>
+              {/* Reimbursement (G2) + who-paid-vs-who-claims attribution (Phase B). With apply_to_siblings on,
+                  the default detail view is category → property → apply-to-siblings, and these power-user
+                  controls tuck into a collapsed "Advanced" section (#166). Flag-off ⇒ rendered inline, exactly
+                  as before (byte-identical). */}
+              {(() => {
+                if (!reimbursedCard && !attributionCard) return null;
+                if (has("apply_to_siblings")) {
+                  return (
+                    <details className="rounded-2xl border border-line bg-card">
+                      <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-ink-2">Advanced — reimbursement &amp; who claims</summary>
+                      <div className="space-y-3 px-4 pb-4">
+                        {reimbursedCard}
+                        {attributionCard}
+                      </div>
+                    </details>
+                  );
+                }
+                return (
+                  <>
+                    {reimbursedCard}
+                    {attributionCard}
+                  </>
+                );
+              })()}
+              {/* QuickBooks: reconcile-vs-push. Fed accounts reconcile (don't push); use this
+                  only for a NON-FEED company expense (cash / a card not connected to QBO). */}
+              {qboSection}
+              {deleteBtn}
+              {historySection}
+            </>
           )}
         </div>
       </div>

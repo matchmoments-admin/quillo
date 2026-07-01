@@ -1015,14 +1015,42 @@ console.log("car logbook (#142)");
   check("cents-per-km floors negatives to 0", centsPerKmDeductionCents(-100, 88, 5_000) === 0);
 }
 
-console.log("occupations (#143)");
+console.log("occupations (#143 + audit wave 3 Tier-1 packs)");
 {
   const nurse = occupationGuide("nurse");
   check("nurse guide has suggestions + warnings", !!nurse && nurse.suggest.length > 0 && nurse.warn.length > 0);
   check("nurse warning pre-empts the conventional-clothing error", !!nurse && nurse.warn.some((w) => /conventional clothing/i.test(w)));
-  check("tradie guide covers tools + PPE", (occupationGuide("tradie")?.suggest.join(" ") ?? "").match(/tool/i) != null);
+  check("tradesperson guide covers tools + PPE (picklist token)", (occupationGuide("tradesperson")?.suggest.join(" ") ?? "").match(/tool/i) != null);
+  check("legacy 'tradie' scope aliases to the tradesperson guide", occupationGuide("tradie")?.scope === "tradesperson");
   check("unknown scope → null", occupationGuide("astronaut") === null && occupationGuide(null) === null);
   check("scopes exclude the _note metadata key", occupationScopes().length >= 4 && !occupationScopes().includes("_note"));
+
+  // Coverage contract: every picklist token has an authored guide (this is exactly the gap that let
+  // the tradie/tradesperson mismatch ship — the guide key and the picklist token drifted apart).
+  const PICKLIST_TOKENS = ["nurse", "healthcare_worker", "aged_care_worker", "it_professional", "office_professional", "teacher", "tradesperson", "apprentice", "driver", "hospitality_worker", "retail_worker", "sales_professional", "real_estate_agent", "adf_member", "police_officer", "security_guard", "cleaner"]; // mirror web/src/content/occupations.ts
+  check("every picklist occupation token has a guide", PICKLIST_TOKENS.every((t) => occupationGuide(t) !== null));
+  check("no picklist token missing from occupationScopes", PICKLIST_TOKENS.every((t) => occupationScopes().includes(t)));
+
+  // Scrutiny contract: every guide blocks the two cross-cutting ATO over-claims — conventional/plain
+  // clothing (incl. suits/attire/plain wording) and home-to-work / commuting travel.
+  const clothingRe = /conventional clothing|business attire|everyday clothing|plain (black|dark|clothing)/i;
+  const travelRe = /home[- ]to[- ]\w+|commut/i;
+  for (const t of PICKLIST_TOKENS) {
+    const g = occupationGuide(t)!;
+    // A guide addresses the clothing trap either by warning on conventional clothing OR by steering
+    // to the deductible kind (uniform/protective/PPE) in its suggestions.
+    check(`${t}: warns on conventional clothing or names its clothing trap`, g.warn.some((w) => clothingRe.test(w)) || /uniform|protective clothing|ppe|hi-vis/i.test(g.suggest.join(" ")));
+    check(`${t}: warns on home-to-work travel`, g.warn.some((w) => travelRe.test(w)));
+  }
+  // Occupation-specific scrutiny flags from the ATO guides.
+  check("ADF/police block grooming despite appearance standards", [occupationGuide("adf_member"), occupationGuide("police_officer")].every((g) => g!.warn.some((w) => /grooming|haircut/i.test(w))));
+  check("security/real-estate block the FIRST-licence pre-employment trap", [occupationGuide("security_guard"), occupationGuide("real_estate_agent")].every((g) => g!.warn.join(" ").match(/first (security )?licence|first licence\/certificate/i)));
+  check("driver guide carries the cents-per-km no-double-dip + first-dollar GST flags", (occupationGuide("driver")?.warn.join(" ") ?? "").match(/on top of the cents-per-km/i) != null && (occupationGuide("driver")?.warn.join(" ") ?? "").match(/first dollar/i) != null);
+  check("retail blocks store-range clothing", (occupationGuide("retail_worker")?.warn.join(" ") ?? "").match(/store's own range|store's colours/i) != null);
+  // Copy lint: guide text never predicts tax payable / a refund / a rate.
+  const occDenylist = /refund|tax payable|marginal rate|\b\d{1,2}%\s*(tax|bracket)/i;
+  const allGuideText = occupationScopes().flatMap((t) => { const g = occupationGuide(t)!; return [...g.suggest, ...g.warn, g.label]; });
+  check("occupation guide copy passes the tax-advice denylist", !allGuideText.some((t) => occDenylist.test(t)));
 }
 
 console.log("trust distributions (#139)");

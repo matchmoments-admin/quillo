@@ -60,6 +60,28 @@ export const GLOSSARY = {
     short: "We couldn't confidently place this one, so it isn't counted in any total until you categorise it. Clearing these keeps your numbers accurate.",
   },
 
+  // ── Core tax concepts (the "learn tax" foundations) ───────────────────────────────────────
+  deduction: {
+    term: "Deduction",
+    short: `A deduction is a work- or income-related cost you subtract from your income, so you're taxed on less (and often get more back). To claim one you generally must have paid it yourself, it must relate to earning your income, and you need a record (receipt/invoice). ${DEFER}`,
+  },
+  depreciation: {
+    term: "Depreciation (decline in value)",
+    short: `Instead of claiming a lasting item (a laptop, tools, rental fixtures) all in one year, you spread its cost over its effective life — a portion is deductible each year until it's written down. Items under the instant-write-off threshold can be claimed in full. ${DEFER}`,
+  },
+  capital_gains: {
+    term: "Capital gains tax (CGT)",
+    short: `When you sell an asset — shares, crypto, an investment property — the profit (proceeds minus cost base) is added to your income. Hold it more than 12 months and generally only HALF the gain is taxed (the 50% CGT discount); capital losses offset capital gains and any excess carries forward. ${DEFER}`,
+  },
+  franking_credit: {
+    term: "Franking credit",
+    short: `A franking (imputation) credit is company tax already paid on a franked dividend. You declare the dividend PLUS the credit as income, then the credit reduces your tax — so the profit isn't taxed twice, and it can even add to a refund. ${DEFER}`,
+  },
+  home_office: {
+    term: "Working-from-home costs",
+    short: `As an employee, the rent or mortgage on your own home isn't deductible — but the extra RUNNING costs of working from home (electricity, internet, phone, some equipment) generally are, via the fixed-rate (per hour) or actual-cost method. You need a record of your actual hours. ${DEFER}`,
+  },
+
   // ── Categorisation mechanics ──────────────────────────────────────────────────────────────
   confidence: {
     term: "Confidence",

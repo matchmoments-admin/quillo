@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import { api } from "../api";
 import { useFeatures } from "../lib/features";
 import { useActiveFy } from "../lib/activeFy";
-import { Card, Spinner, Button, Input, money } from "../components/ui";
+import { Card, Spinner, Button, Input, money, InfoTip } from "../components/ui";
 import { CapitalEquity } from "../components/income/CapitalEquity";
 import { EssGrants } from "../components/income/EssGrants";
 import type { IncomeRow } from "../types";
@@ -126,7 +126,7 @@ export function Income() {
       <div className="grid grid-cols-3 gap-3">
         <Card className="p-4"><div className="text-xs uppercase tracking-wide text-muted">Gross income</div><div className="mt-1 text-xl font-semibold tabular-nums">{money(total)}</div></Card>
         <Card className="p-4"><div className="text-xs uppercase tracking-wide text-muted">PAYG withheld</div><div className="mt-1 text-xl font-semibold tabular-nums">{money(withholding)}</div></Card>
-        <Card className="p-4"><div className="text-xs uppercase tracking-wide text-muted">Franking credits</div><div className="mt-1 text-xl font-semibold tabular-nums">{money(franking)}</div></Card>
+        <Card className="p-4"><div className="text-xs uppercase tracking-wide text-muted">Franking credits <InfoTip k="franking_credit" /></div><div className="mt-1 text-xl font-semibold tabular-nums">{money(franking)}</div></Card>
       </div>
 
       <IncomeDedupe fyStart={fyStart} />

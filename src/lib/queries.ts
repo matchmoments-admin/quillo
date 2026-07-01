@@ -413,7 +413,7 @@ export async function listDocuments(env: Env, userId: string, opts: { type?: str
 export async function listAssets(env: Env, userId: string, fy?: string) {
   const res = await env.DB.prepare(
     `SELECT a.id, a.label, a.asset_class, a.cost_cents, a.acquired_date, a.method, a.effective_life_years,
-            a.property_id, a.entity_id, a.is_second_hand, a.status, a.needs_review,
+            a.property_id, a.entity_id, a.is_second_hand, a.is_car, a.status, a.needs_review,
             (SELECT deduction_cents FROM depreciation_schedule d WHERE d.asset_id = a.id AND d.fy = COALESCE(?, d.fy) ORDER BY d.fy DESC LIMIT 1) AS this_fy_deduction_cents,
             (SELECT closing_adjustable_value_cents FROM depreciation_schedule d WHERE d.asset_id = a.id ORDER BY d.fy DESC LIMIT 1) AS adjustable_value_cents
        FROM assets a WHERE a.user_id = ? ORDER BY a.created_at DESC LIMIT 500`,

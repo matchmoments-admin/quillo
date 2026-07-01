@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
+import { useFeatures } from "../lib/features";
 import { Card, Spinner, Button, Input, money, parseMoneyToCents } from "../components/ui";
 import type { AssetRow, ScheduleRow } from "../types";
 
@@ -14,6 +15,8 @@ const CLASS_LABEL: Record<string, string> = {
 
 export function Assets() {
   const qc = useQueryClient();
+  const { has } = useFeatures();
+  const showCar = has("asset_class_defaults");
   const { data, isLoading, error } = useQuery({ queryKey: ["assets"], queryFn: () => api.assets() });
   const [adding, setAdding] = useState(false);
 
@@ -48,7 +51,7 @@ export function Assets() {
               </tr>
             </thead>
             <tbody>
-              {(data ?? []).map((a) => <AssetLine key={a.id} a={a} />)}
+              {(data ?? []).map((a) => <AssetLine key={a.id} a={a} showCar={showCar} />)}
               {!(data ?? []).length && (
                 <tr className="border-t border-line"><td colSpan={6} className="px-4 py-6 text-muted">No assets yet.</td></tr>
               )}
@@ -60,7 +63,7 @@ export function Assets() {
   );
 }
 
-function AssetLine({ a }: { a: AssetRow }) {
+function AssetLine({ a, showCar }: { a: AssetRow; showCar: boolean }) {
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
   const sched = useQuery({ queryKey: ["schedule", a.id], queryFn: () => api.assetSchedule(a.id), enabled: open });
@@ -70,6 +73,7 @@ function AssetLine({ a }: { a: AssetRow }) {
       <tr className="border-t border-line">
         <td className="px-4 py-2">
           <button className="text-left hover:underline" onClick={() => setOpen((v) => !v)}>{a.label}</button>
+          {showCar && a.is_car ? <span className="ml-2 rounded-full bg-surface px-2 py-0.5 text-xs text-muted">Car</span> : null}
           {a.is_second_hand ? <span className="ml-2 rounded-full bg-surface px-2 py-0.5 text-xs text-muted">2nd-hand</span> : null}
           {a.needs_review ? <span className="ml-2 rounded-full bg-warn/10 px-2 py-0.5 text-xs text-warn">review</span> : null}
         </td>
@@ -108,6 +112,8 @@ function AssetLine({ a }: { a: AssetRow }) {
 }
 
 function AddAssetForm({ onDone }: { onDone: () => void }) {
+  const { has } = useFeatures();
+  const carClass = has("asset_class_defaults"); // slice 11: "Motor vehicle" as a class + optional-life framing
   const [label, setLabel] = useState("");
   const [assetClass, setAssetClass] = useState("div40_plant");
   const [cost, setCost] = useState("");
@@ -145,10 +151,17 @@ function AddAssetForm({ onDone }: { onDone: () => void }) {
         <label className="text-sm">Class
           <select
             className="mt-1 w-full rounded-lg border border-line px-3 py-2 text-sm"
-            value={assetClass}
+            value={carClass && assetClass === "div40_plant" && isCar ? "motor_vehicle" : assetClass}
             onChange={(e) => {
               const next = e.target.value;
+              // slice 11: "Motor vehicle" is a Div-40 plant asset flagged is_car (replaces the orphan checkbox).
+              if (next === "motor_vehicle") {
+                setAssetClass("div40_plant");
+                setIsCar(true);
+                return;
+              }
               setAssetClass(next);
+              if (carClass) setIsCar(false); // choosing a non-vehicle class clears the car flag (flag-on only)
               // Leaving plant clears the plant-only fields so the form and the payload agree (no hidden
               // effective-life/method lingering behind a class that doesn't use them).
               if (next !== "div40_plant") {
@@ -157,14 +170,25 @@ function AddAssetForm({ onDone }: { onDone: () => void }) {
               }
             }}
           >
-            {Object.entries(CLASS_LABEL).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+            {carClass ? (
+              <>
+                <option value="div40_plant">{CLASS_LABEL.div40_plant}</option>
+                <option value="motor_vehicle">Motor vehicle (Div 40)</option>
+                {Object.entries(CLASS_LABEL).filter(([v]) => v !== "div40_plant").map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+              </>
+            ) : (
+              Object.entries(CLASS_LABEL).map(([v, l]) => <option key={v} value={v}>{l}</option>)
+            )}
           </select>
         </label>
         <label className="text-sm">Cost ($)<Input className="mt-1 w-full" inputMode="decimal" value={cost} onChange={(e) => setCost(e.target.value)} /></label>
         <label className="text-sm">Acquired<Input className="mt-1 w-full" type="date" value={acquired} onChange={(e) => setAcquired(e.target.value)} /></label>
         {assetClass === "div40_plant" && (
           <>
-            <label className="text-sm">Effective life (yrs)<Input className="mt-1 w-full" inputMode="decimal" value={life} onChange={(e) => setLife(e.target.value)} /></label>
+            <label className="text-sm">Effective life (yrs){carClass ? <span className="text-muted"> — optional</span> : null}
+              <Input className="mt-1 w-full" inputMode="decimal" value={life} onChange={(e) => setLife(e.target.value)} placeholder={carClass ? "standard life if blank" : undefined} />
+              {carClass ? <span className="mt-0.5 block text-[11px] text-muted">Leave blank and we'll use the ATO standard life for this asset. Override only if your schedule specifies one.</span> : null}
+            </label>
             <label className="text-sm">Method
               <select className="mt-1 w-full rounded-lg border border-line px-3 py-2 text-sm" value={method} onChange={(e) => setMethod(e.target.value)}>
                 <option value="diminishing_value">Diminishing value</option>
@@ -184,10 +208,12 @@ function AddAssetForm({ onDone }: { onDone: () => void }) {
           <input type="checkbox" checked={reimbursed} onChange={(e) => setReimbursed(e.target.checked)} />
           My employer reimbursed me for this
         </label>
-        <label className="flex items-center gap-2 text-sm sm:col-span-3">
-          <input type="checkbox" checked={isCar} onChange={(e) => setIsCar(e.target.checked)} />
-          This is a motor vehicle (enables the logbook method below)
-        </label>
+        {!carClass && (
+          <label className="flex items-center gap-2 text-sm sm:col-span-3">
+            <input type="checkbox" checked={isCar} onChange={(e) => setIsCar(e.target.checked)} />
+            This is a motor vehicle (enables the logbook method below)
+          </label>
+        )}
       </div>
       {notMine && (
         <p className="rounded-lg bg-surface px-3 py-2 text-xs text-muted">

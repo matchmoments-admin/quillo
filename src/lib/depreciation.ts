@@ -108,7 +108,10 @@ export function resolveDiv40Life(
   defaultLife: number,
 ): number | null {
   if (providedLife != null) return providedLife;
-  return assetClass === "div40_plant" ? defaultLife : null;
+  if (assetClass !== "div40_plant") return null;
+  // Defend against a malformed KV rulepack whose default/hint life is 0/negative — that would re-create
+  // the very $0-schedule bug this guards. Fall back to the legacy 5y so a div40 asset always depreciates.
+  return defaultLife > 0 ? defaultLife : 5;
 }
 
 function utcDays(dateIso: string): number {

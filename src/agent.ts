@@ -2383,15 +2383,30 @@ export class TaxAgent extends Agent<Env> {
     let salary = 0;
     let lumps = 0;
     let superseded = 0;
+    const unplaced = new Set<string>();
     for (const row of mapped.rows) {
+      const employer = String((row.detail as { employer?: unknown }).employer ?? "");
       const fy = row.txn_date ? fyLabel(fyStartYearOf(row.txn_date)) : null;
+      // Never file a row we can't place in an FY (missing period_end) — that would land it in the CURRENT
+      // FY and skip the supersede below (wrong-year + double-count). Skip it; the user re-uploads / adds it
+      // manually. The extractor's tool prompt asks for the period, so this is a rare read-failure.
+      if (!fy) {
+        unplaced.add(employer || "an employer");
+        continue;
+      }
       if (row.income_type === "salary_payg") {
         salary++;
-        const employer = String((row.detail as { employer?: unknown }).employer ?? "");
-        if (employer && fy) {
+        if (employer) {
+          // Supersede prior per-period payslip + hand-keyed PERSONAL salary rows for this employer+FY, so the
+          // authoritative annual gross replaces them (never adds on top). Scoped to person_id/entity_id NULL
+          // (this statement records the tenant's OWN salary — never touch a spouse's or an entity's same-name
+          // row) and to OTHER documents (`source_doc_id IS NOT` this docId, null-safe so manual rows still
+          // match) so two blocks for the same employer in ONE statement coexist and re-uploads still supersede.
           const priors = await this.env.DB.prepare(
-            `SELECT id FROM income WHERE user_id = ? AND income_type = 'salary_payg' AND fy = ? AND lower(json_extract(detail_json, '$.employer')) = lower(?)`,
-          ).bind(userId, fy, employer).all<{ id: string }>();
+            `SELECT id FROM income WHERE user_id = ? AND income_type = 'salary_payg' AND fy = ?
+               AND person_id IS NULL AND entity_id IS NULL AND source_doc_id IS NOT ?
+               AND lower(json_extract(detail_json, '$.employer')) = lower(?)`,
+          ).bind(userId, fy, docId, employer).all<{ id: string }>();
           const ids = (priors.results ?? []).map((p) => p.id);
           for (const id of ids) {
             await this.env.DB.prepare(`DELETE FROM income WHERE id = ? AND user_id = ?`).bind(id, userId).run();
@@ -2420,7 +2435,8 @@ export class TaxAgent extends Agent<Env> {
     const skip = mapped.skipped_employers.length
       ? ` ${mapped.skipped_employers.length} employer${mapped.skipped_employers.length === 1 ? "" : "s"} not yet "Tax ready" — re-upload once finalised.`
       : "";
-    await this.notify(userId, `Income statement read: recorded salary for ${salary} employer${salary === 1 ? "" : "s"}.${sup}${lp}${skip} General information only.`, null);
+    const un = unplaced.size ? ` Couldn't read the period for ${unplaced.size} — add ${unplaced.size === 1 ? "it" : "them"} manually.` : "";
+    await this.notify(userId, `Income statement read: recorded salary for ${salary} employer${salary === 1 ? "" : "s"}.${sup}${lp}${skip}${un} General information only.`, null);
   }
 
   async decomposeAgentStatement(

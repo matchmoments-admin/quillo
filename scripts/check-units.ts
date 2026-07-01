@@ -501,6 +501,7 @@ console.log("depreciation: resolveDiv40Life (no silent $0 schedule for a blank d
   check("undefined treated as blank for div40", resolveDiv40Life("div40_plant", undefined, 5) === 5);
   check("non-div40 (capital works) keeps null — it has no effective life", resolveDiv40Life("div43_capital_works", null, 5) === null);
   check("non-div40 (immediate) keeps null", resolveDiv40Life("immediate", null, 5) === null);
+  check("malformed rulepack default (<=0) falls back to legacy 5y, never $0", resolveDiv40Life("div40_plant", null, 0) === 5 && resolveDiv40Life("div40_plant", null, -3) === 5);
 }
 
 // A1 #304: mapIncomeStatementToRows — the tax-correct mapping of a multi-employer ATO income statement.

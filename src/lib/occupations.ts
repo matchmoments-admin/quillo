@@ -14,13 +14,19 @@ export interface OccupationGuide {
 
 type OccBlock = { label?: string; suggest?: string[]; warn?: string[] };
 
-/** The occupation guide for a scope (e.g. 'nurse', 'tradie'), or null when the scope isn't covered. */
+// Stored → canonical scope aliases. The pack's guide key was historically 'tradie' while the picklist
+// token is 'tradesperson' (the guide silently never fired for a picklist tradesperson — audit wave 1);
+// the pack now keys 'tradesperson', and legacy stored values resolve through here.
+const SCOPE_ALIASES: Record<string, string> = { tradie: "tradesperson" };
+
+/** The occupation guide for a scope (e.g. 'nurse', 'tradesperson'), or null when the scope isn't covered. */
 export function occupationGuide(scope: string | null | undefined): OccupationGuide | null {
   if (!scope) return null;
+  const key = SCOPE_ALIASES[scope] ?? scope;
   const occupations = (auV1RulePack as unknown as { occupations?: Record<string, OccBlock> }).occupations;
-  const block = occupations?.[scope];
+  const block = occupations?.[key];
   if (!block) return null;
-  return { scope, label: block.label ?? scope, suggest: block.suggest ?? [], warn: block.warn ?? [] };
+  return { scope: key, label: block.label ?? key, suggest: block.suggest ?? [], warn: block.warn ?? [] };
 }
 
 /** Every occupation scope the rule pack covers (excludes the leading '_note' metadata key). */

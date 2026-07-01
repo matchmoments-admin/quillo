@@ -58,7 +58,15 @@
     { "id": "au-occ-office", "scope_type": "occupation", "scope_value": "office_professional", "merchant_hint": "home office,internet,phone,laptop,monitor,desk,professional membership,subscription,stationery", "ato_label": "D5", "claim_type": "apportioned", "general_info_note": "Office professionals can generally claim the work-use portion of home-office running costs, phone and internet, professional memberships and work-related subscriptions. Equipment above the immediate-deduction threshold is depreciated rather than claimed immediately, and conventional business attire is not deductible.", "defer_to_agent": 0 },
     { "id": "au-occ-driver", "scope_type": "occupation", "scope_value": "driver", "merchant_hint": "fuel,logbook,toll,rego,registration,servicing,tyres,insurance,car wash,parking", "ato_label": "D1", "claim_type": "apportioned", "general_info_note": "Drivers who use their own vehicle for work can generally claim work-related car expenses using the cents-per-kilometre or logbook method (not both). Travel between home and a regular workplace is private. A logbook and odometer records are needed to support the actual-cost method.", "defer_to_agent": 1 },
     { "id": "au-occ-hospitality", "scope_type": "occupation", "scope_value": "hospitality_worker", "merchant_hint": "uniform,chef whites,apron,non-slip shoes,knife,knives,rsa,food handling,union", "ato_label": "D3/D5", "claim_type": "immediate", "general_info_note": "Hospitality workers can generally claim compulsory or distinctive uniforms (such as chef's whites and logo'd aprons) and their laundry, plus tools of trade like a chef's knife set used for work. Renewals such as RSA and food-handling certificates needed for your current role may also be claimable; plain black-and-white clothing is not.", "defer_to_agent": 0 },
-    { "id": "au-occ-sales", "scope_type": "occupation", "scope_value": "sales_professional", "merchant_hint": "phone,car,fuel,logbook,client,samples,advertising,professional membership,subscription", "ato_label": "D1/D5", "claim_type": "apportioned", "general_info_note": "Sales professionals can generally claim the work-use portion of phone and car expenses for work travel and client visits, plus work-related subscriptions and memberships. Entertaining clients (meals, drinks, events) is generally not deductible, and home-to-work travel is private.", "defer_to_agent": 1 }
+    { "id": "au-occ-sales", "scope_type": "occupation", "scope_value": "sales_professional", "merchant_hint": "phone,car,fuel,logbook,client,samples,advertising,professional membership,subscription", "ato_label": "D1/D5", "claim_type": "apportioned", "general_info_note": "Sales professionals can generally claim the work-use portion of phone and car expenses for work travel and client visits, plus work-related subscriptions and memberships. Entertaining clients (meals, drinks, events) is generally not deductible, and home-to-work travel is private.", "defer_to_agent": 1 },
+    {"id": "au-occ-adf", "scope_type": "occupation", "scope_value": "adf_member", "merchant_hint": "uniform,camouflage,mess dress,laundry,defence,adf,army,navy,air force disposals", "ato_label": "D3/D5", "claim_type": "immediate", "general_info_note": "ADF members can generally claim their distinctive service uniform items and laundry, and work-specific equipment they paid for. Haircuts/grooming are not deductible even under appearance standards, and fitness costs are only claimable in narrow special-duty cases — confirm those with a registered tax agent.", "defer_to_agent": 0},
+    {"id": "au-occ-police", "scope_type": "occupation", "scope_value": "police_officer", "merchant_hint": "police association,police union,uniform,laundry,holster,handcuff,torch,duty belt", "ato_label": "D3/D5", "claim_type": "immediate", "general_info_note": "Police officers can generally claim police association/union fees, their distinctive uniform and its laundry, and duty equipment they bought themselves. Plain-clothes/detective business attire is conventional clothing and not deductible even with a clothing allowance.", "defer_to_agent": 0},
+    {"id": "au-occ-aged-care", "scope_type": "occupation", "scope_value": "aged_care_worker", "merchant_hint": "uniform,scrubs,non-slip,gloves,mask,ppe,first aid,cpr,union,carer", "ato_label": "D3/D5", "claim_type": "immediate", "general_info_note": "Aged and disability care workers can generally claim logo'd/occupation-specific uniforms and laundry, PPE (gloves, masks, non-slip shoes), first-aid/CPR renewals for the current role, and union fees. A police check or NDIS worker screening for a NEW job is a pre-employment cost and not deductible.", "defer_to_agent": 0},
+    {"id": "au-occ-cleaner", "scope_type": "occupation", "scope_value": "cleaner", "merchant_hint": "cleaning supplies,mop,vacuum,chemicals,detergent,gloves,ppe,non-slip,bunnings cleaning", "ato_label": "D5", "claim_type": "immediate", "general_info_note": "Cleaners can generally claim cleaning supplies and equipment they paid for (immediate write-off at or under $300; depreciated above), PPE and logo'd uniforms with laundry. Equipment or supplies the employer provides or reimburses can't be claimed.", "defer_to_agent": 0},
+    {"id": "au-occ-retail", "scope_type": "occupation", "scope_value": "retail_worker", "merchant_hint": "uniform,logo,laundry,name badge,union,sda", "ato_label": "D3/D5", "claim_type": "immediate", "general_info_note": "Retail workers can generally claim a compulsory logo'd uniform and its laundry, and union fees (e.g. SDA). Plain clothing in the store's colours - or items from the store's own range you were told to wear - is conventional clothing and NOT deductible.", "defer_to_agent": 0},
+    {"id": "au-occ-real-estate", "scope_type": "occupation", "scope_value": "real_estate_agent", "merchant_hint": "real estate institute,reiv,reiq,rein,licence renewal,marketing,advertising,signboard,property photography,staging", "ato_label": "D5", "claim_type": "apportioned", "general_info_note": "Real estate employees can generally claim their licence/registration RENEWAL (not the first licence to enter the industry), professional-institute fees, and marketing costs they genuinely bear themselves - agency cost-sharing splits are fact-specific. Suits and business attire are conventional clothing and not deductible.", "defer_to_agent": 1},
+    {"id": "au-occ-security", "scope_type": "occupation", "scope_value": "security_guard", "merchant_hint": "security licence,licence renewal,crowd control,uniform,torch,boots,first aid,union", "ato_label": "D3/D5", "claim_type": "immediate", "general_info_note": "Security guards can generally claim their licence RENEWAL (the FIRST licence to get the job is not deductible), distinctive uniform and laundry, protective equipment they bought, first-aid renewals and union fees. Plain dark clothing without logos is conventional clothing and not deductible.", "defer_to_agent": 0},
+    {"id": "au-occ-apprentice", "scope_type": "occupation", "scope_value": "apprentice", "merchant_hint": "tools,toolbox,tafe,trade school,apprentice,ppe,boots,hi-vis,total tools,sydney tools", "ato_label": "D5", "claim_type": "apportioned", "general_info_note": "Apprentices and trainees can generally claim tools they paid for (immediate at or under $300, depreciated above), protective clothing/PPE and union fees. Course/TAFE fees are only deductible where connected to the CURRENT apprenticeship and actually borne by you (government subsidies and employer reimbursements are not) - fee treatment is fact-specific.", "defer_to_agent": 1}
   ],
   "thresholds_by_fy": {
     "_note": "All dollar thresholds in CENTS. These change yearly and are policy-dependent — the depreciation engine + claimability brain read them per FY, never inline. Confirm against ATO before relying on them.",
@@ -178,7 +186,7 @@
         "You can't claim home-to-work travel, or anything your employer reimbursed."
       ]
     },
-    "tradie": {
+    "tradesperson": {
       "label": "Tradesperson",
       "suggest": [
         "Tools and equipment: immediate write-off ≤$300; depreciate >$300 (a tool SET >$300 is depreciated even if each piece is <$300).",
@@ -221,7 +229,214 @@
       "warn": [
         "Don't double-dip phone/internet on top of the WFH fixed rate — it already bundles them.",
         "An employer-supplied laptop isn't yours to depreciate.",
+        "Home-to-work travel is private.",
+        "Conventional clothing and business attire are private — not deductible."
+      ]
+    },
+    "healthcare_worker": {
+      "label": "Healthcare worker",
+      "suggest": [
+        "Professional registration renewals (e.g. AHPRA) required for your current role.",
+        "Occupation-specific clothing (scrubs, logo'd polos) and its laundry; non-slip work shoes.",
+        "PPE you paid for: gloves, masks, protective glasses.",
+        "Self-education directly connected to your CURRENT role.",
+        "Professional association and union fees.",
+        "Income-protection insurance premiums (outside super)."
+      ],
+      "warn": [
+        "Conventional clothing (plain pants, everyday shoes) is NOT deductible even if worn only at work.",
+        "Home-to-work travel is private; travel BETWEEN workplaces can be claimable.",
+        "Anything your employer reimbursed can't be claimed.",
+        "Grooming and personal-care costs are private."
+      ]
+    },
+    "office_professional": {
+      "label": "Office professional",
+      "suggest": [
+        "Work-related portion of home-office running costs (the ATO fixed rate per hour, with a record of hours).",
+        "Professional memberships, subscriptions and union fees tied to your work.",
+        "Self-education connected to your CURRENT role.",
+        "Depreciation of self-bought work equipment (laptop, monitor) for the work-use portion.",
+        "Income-protection insurance premiums (outside super)."
+      ],
+      "warn": [
+        "Business attire (suits, corporate wear) is conventional clothing — NOT deductible even if your employer requires it.",
+        "Coffee, lunches and commuting are private.",
+        "Don't claim phone/internet separately on top of the WFH fixed rate — it already bundles them.",
+        "An employer-supplied laptop isn't yours to depreciate."
+      ]
+    },
+    "driver": {
+      "label": "Driver (rideshare / delivery / truck)",
+      "suggest": [
+        "Car expenses via a 12-week logbook (typical for rideshare) or cents-per-km — one method per car.",
+        "Platform commissions and fees charged against your fares/deliveries.",
+        "Work-use portion of your phone and phone mounts/chargers.",
+        "Cleaning costs for a car used for ride-sourcing.",
+        "Safety gear and hi-vis for delivery/truck work."
+      ],
+      "warn": [
+        "You can't claim fuel, rego or servicing ON TOP of the cents-per-km rate — it already covers them.",
+        "Travel from home to your first job/pickup is generally private.",
+        "Taxi and ride-sourcing drivers must register for GST from the FIRST dollar of fares — the usual turnover threshold doesn't apply.",
+        "Fines and penalties are never deductible."
+      ]
+    },
+    "hospitality_worker": {
+      "label": "Hospitality worker",
+      "suggest": [
+        "Chef's whites, logo'd aprons and other compulsory/distinctive uniform items, plus laundry.",
+        "Tools of trade you paid for (e.g. a chef's knife set — depreciated if the set cost over $300).",
+        "RSA, RCG and food-safety certificate RENEWALS needed for your current role.",
+        "Union fees."
+      ],
+      "warn": [
+        "Plain black-and-white clothing is conventional clothing — NOT deductible even if the venue requires it.",
+        "Your own meals and coffees during shifts are private.",
+        "Home-to-work travel is private, including late-night shifts.",
+        "The FIRST RSA/certificate that got you the job is a pre-employment cost, not deductible."
+      ]
+    },
+    "sales_professional": {
+      "label": "Sales professional",
+      "suggest": [
+        "Car expenses for client visits and between-site travel (cents-per-km or logbook) — not home-to-work.",
+        "Work-use portion of phone and internet.",
+        "Professional subscriptions, memberships and union fees.",
+        "Self-education connected to your CURRENT role.",
+        "Work-related travel (fares, accommodation) with records."
+      ],
+      "warn": [
+        "Suits and business attire are conventional clothing — NOT deductible.",
+        "Entertaining clients (meals, drinks, events) is generally NOT deductible (Division 32).",
+        "Home-to-work travel is private.",
+        "Grooming and personal presentation costs are private."
+      ]
+    },
+    "adf_member": {
+      "label": "ADF member",
+      "suggest": [
+        "Distinctive service uniform items you paid for (camouflage, mess dress, service shirts) and their laundry.",
+        "Work-specific equipment you bought and weren't reimbursed for.",
+        "Self-education directly connected to your CURRENT service role.",
+        "Income-protection insurance premiums (outside super)."
+      ],
+      "warn": [
+        "Haircuts and grooming are NOT deductible — even under military appearance standards.",
+        "Gym and fitness costs are generally private; only narrow special-duty cases differ — confirm with a registered tax agent.",
+        "Home-to-base travel is private.",
+        "Mess subscriptions and social functions are private."
+      ]
+    },
+    "police_officer": {
+      "label": "Police officer",
+      "suggest": [
+        "Police association / union fees.",
+        "Distinctive uniform items and their laundry/dry-cleaning.",
+        "Duty equipment you bought yourself (torch, holsters, utility belt items).",
+        "Self-education connected to your CURRENT policing role.",
+        "Income-protection insurance premiums (outside super)."
+      ],
+      "warn": [
+        "Plain-clothes/detective business attire is conventional clothing — NOT deductible even with a clothing allowance.",
+        "Haircuts and grooming are NOT deductible despite appearance standards.",
+        "Gym and fitness costs are generally private; narrow exceptions for specialist tactical roles — confirm with a registered tax agent.",
+        "Home-to-station travel is private."
+      ]
+    },
+    "aged_care_worker": {
+      "label": "Aged & disability care worker",
+      "suggest": [
+        "Logo'd or occupation-specific uniform and its laundry; non-slip shoes.",
+        "PPE you paid for: gloves, masks, aprons, hand sanitiser for client work.",
+        "First-aid, CPR and manual-handling RENEWALS for your current role.",
+        "Union fees.",
+        "Car travel BETWEEN clients or facilities during your shift (not home-to-work)."
+      ],
+      "warn": [
+        "Conventional clothing is NOT deductible even if you only wear it to work.",
+        "Home to your FIRST client and home from your last is generally private.",
+        "A police check or NDIS worker screening for a NEW job is a pre-employment cost — not deductible.",
+        "Anything your employer reimbursed can't be claimed."
+      ]
+    },
+    "cleaner": {
+      "label": "Cleaner",
+      "suggest": [
+        "Cleaning supplies and equipment you paid for (immediate write-off at or under $300; depreciated above).",
+        "PPE: gloves, masks, non-slip shoes.",
+        "Logo'd uniform and its laundry.",
+        "Car travel BETWEEN cleaning jobs/sites (not home-to-work).",
+        "Union fees."
+      ],
+      "warn": [
+        "Conventional clothing is NOT deductible even if it only gets worn (and ruined) at work.",
+        "Home to your first site is generally private.",
+        "Supplies and equipment your employer provides or reimburses can't be claimed.",
+        "Declare cash-job income — it's assessable."
+      ]
+    },
+    "retail_worker": {
+      "label": "Retail worker",
+      "suggest": [
+        "A compulsory, logo'd/distinctive uniform and its laundry.",
+        "Union fees (e.g. SDA).",
+        "Self-education connected to your CURRENT role.",
+        "Work-use portion of your phone where your role genuinely requires it."
+      ],
+      "warn": [
+        "Plain clothing in the store's colours — or items from the store's own range you were told to wear — is conventional clothing and NOT deductible.",
+        "Buying the products you sell is private spending.",
+        "Makeup and grooming are NOT deductible even where the store requires a presented look.",
         "Home-to-work travel is private."
+      ]
+    },
+    "real_estate_agent": {
+      "label": "Real estate agent",
+      "suggest": [
+        "Licence/registration RENEWAL and professional-institute fees (REIV/REIQ etc.).",
+        "Car expenses for inspections and client visits via a logbook (usually the better method for high work km).",
+        "Work-use portion of phone and internet.",
+        "Marketing and advertising costs you genuinely bear yourself (not the vendor's or agency's share).",
+        "Self-education connected to your CURRENT role."
+      ],
+      "warn": [
+        "Suits and business attire are conventional clothing — NOT deductible even though presentation matters in the job.",
+        "Your FIRST licence/certificate of registration (to enter the industry) is not deductible.",
+        "Grooming is private.",
+        "Home-to-office travel is private; travel between inspections during the day is claimable with records.",
+        "Client entertainment and gifts have strict limits (Division 32) — confirm with a registered tax agent."
+      ]
+    },
+    "security_guard": {
+      "label": "Security guard",
+      "suggest": [
+        "Security licence RENEWAL (required to keep working).",
+        "Distinctive/logo'd uniform and its laundry.",
+        "Protective equipment you bought: torch, duty boots, hi-vis.",
+        "First-aid renewals and union fees.",
+        "Car travel BETWEEN sites during a shift (not home-to-work)."
+      ],
+      "warn": [
+        "Your FIRST security licence (to get the job) is a pre-employment cost — not deductible.",
+        "Plain dark clothing without logos is conventional clothing and NOT deductible.",
+        "Gym and fitness costs are private.",
+        "Home-to-site travel is private."
+      ]
+    },
+    "apprentice": {
+      "label": "Apprentice / trainee",
+      "suggest": [
+        "Tools you paid for: immediate write-off at or under $300, depreciated above (a tool SET over $300 is depreciated even if each piece is under).",
+        "Protective clothing/PPE: steel-caps, hi-vis, safety glasses.",
+        "Union fees.",
+        "Course fees connected to your CURRENT apprenticeship that YOU actually paid (not subsidised or reimbursed) — treatment is fact-specific, confirm with a registered tax agent."
+      ],
+      "warn": [
+        "Tools your employer supplied or reimbursed can't be claimed.",
+        "Home-to-work travel is private (unless you're carrying bulky tools with no secure storage at work — keep evidence).",
+        "Study to qualify for a DIFFERENT job is not deductible.",
+        "Government incentives and allowances aren't deductions — and they may be assessable income."
       ]
     }
   }

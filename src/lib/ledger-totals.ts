@@ -651,6 +651,38 @@ export async function superConcessionalDeduction(env: Env, userId: string, start
   return { claimed_cents: Math.min(contributed, capCents), contributed_cents: contributed, cap_cents: capCents, over_cap: contributed > capCents, ato_label: "D12" };
 }
 
+export interface TradingStock {
+  opening_cents: number;
+  closing_cents: number;
+  adjustment_cents: number; // closing − opening (signed): an increase is assessable, a decrease deducts (s 70-35)
+  valuation_basis: string | null; // s 70-45 choice — record-keeping only, never computed
+}
+
+/**
+ * Audit wave 4 (trading_stock): the s 70-35 trading-stock adjustment for the PERSONAL (sole-trader)
+ * business — the entity_id IS NULL row for the FY. Entity-scoped rows are captured but stay out of the
+ * personal headline (separate taxpayer). Flag-gated by the caller; no row (or no table in a minimal
+ * test DB) → null → report byte-identical.
+ */
+export async function tradingStockAdjustment(env: Env, userId: string, startYear: number): Promise<TradingStock | null> {
+  const fy = fyLabel(startYear);
+  try {
+    const row = await env.DB.prepare(
+      `SELECT opening_cents, closing_cents, valuation_basis FROM trading_stock WHERE user_id = ? AND fy = ? AND entity_id IS NULL`,
+    ).bind(userId, fy).first<{ opening_cents: number; closing_cents: number; valuation_basis: string | null }>();
+    if (!row) return null;
+    return {
+      opening_cents: row.opening_cents,
+      closing_cents: row.closing_cents,
+      adjustment_cents: row.closing_cents - row.opening_cents,
+      valuation_basis: row.valuation_basis ?? null,
+    };
+  } catch (e) {
+    if (!/no such table|no such column/i.test((e as Error).message)) throw e;
+    return null;
+  }
+}
+
 /**
  * Phase #141: assessable ESS discount for an FY. Sums ess_grants whose taxing point falls in the FY,
  * classifying upfront/deferral as assessable income now and the startup concession as deferred-to-CGT.

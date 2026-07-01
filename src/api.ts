@@ -1093,6 +1093,23 @@ export async function handleApi(
     }
   }
 
+  // ── Trading stock (audit wave 4, flag trading_stock) — opening/closing stock per business × FY ──
+  if (resource === "trading-stock") {
+    if (!featureOn(env, "trading_stock")) return json({ error: "not found" }, 404);
+    const fy = url.searchParams.get("fy");
+    if (m === "GET") {
+      const rows = await env.DB.prepare(
+        `SELECT id, entity_id, fy, opening_cents, closing_cents, valuation_basis FROM trading_stock WHERE user_id = ?${fy ? " AND fy = ?" : ""} ORDER BY fy DESC`,
+      ).bind(...(fy ? [uid, fy] : [uid])).all<{ id: string; entity_id: string | null; fy: string; opening_cents: number; closing_cents: number; valuation_basis: string | null }>();
+      return json({ trading_stock: rows.results ?? [] });
+    }
+    if (m === "POST") {
+      const b = (await req.json().catch(() => ({}))) as { entity_id?: string | null; fy?: string; opening_cents?: number; closing_cents?: number; valuation_basis?: string | null } | null;
+      if (!b || typeof b !== "object") return json({ error: "body required" }, 400);
+      return json(await stub.setTradingStock(uid, b));
+    }
+  }
+
   // ── Car cents-per-km input (#245) — separate from work-use (WFH) ──────────
   if (resource === "car-use") {
     const fy = Number(url.searchParams.get("fy")) || defaultFy();

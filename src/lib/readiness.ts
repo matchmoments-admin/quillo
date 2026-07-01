@@ -593,6 +593,14 @@ export function assessReadiness(input: {
     findings.push(f("div293_income", "threshold", "review", "Income is around the Div 293 super threshold",
       `Your recorded income (${money(report.income.gross_cents)}) is near or above the Division 293 threshold (${money(signals.div293ThresholdCents)}). Higher earners can pay an extra 15% on their concessional (before-tax) super contributions. This is a separate ATO assessment, not part of the position shown here — your registered tax agent will work out whether it applies.${DEFER}`, true, []));
   }
+  // Audit wave 4 (trading_stock): the report carries a trading-stock adjustment only when the flag is
+  // on and a row exists — surface the s 70-45 valuation-basis choice + the small-business movement
+  // election as a defer nudge (the adjustment itself is already in the position).
+  if (report.trading_stock) {
+    const ts = report.trading_stock;
+    findings.push(f("trading_stock_basis", "judgement", "review", "Trading stock recorded — confirm the valuation basis",
+      `Opening stock ${money(ts.opening_cents)} and closing stock ${money(ts.closing_cents)}: the ${money(Math.abs(ts.adjustment_cents))} difference is ${ts.adjustment_cents >= 0 ? "added to" : "deducted from"} your business position. Each item can be valued at cost, market selling value or replacement value${ts.valuation_basis ? ` (you chose ${ts.valuation_basis.replace(/_/g, " ")})` : " — you haven't recorded which basis you used"}, and a small business whose stock moved by $5,000 or less can choose not to account for the change. Confirm the basis and the election with a registered tax agent.${DEFER}`, true, []));
+  }
   // integrity_nudges: non-concessional (after-tax) super contributions above the reference cap. The cap
   // interacts with the 3-year bring-forward and the total-super-balance test, so we NEVER assert a
   // breach — the nudge names the cap and defers. (The NCC cap is a reference-only pack value.)

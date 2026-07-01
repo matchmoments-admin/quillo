@@ -101,6 +101,7 @@ export interface TaxAgentRpc {
   recordBasPeriod(userId: string, b: { entity_id?: string | null; period_start: string; period_end: string; output_gst_cents?: number; input_gst_cents?: number; payg_withholding_cents?: number; payg_instalment_cents?: number; status?: string }): Promise<string>;
   recordPaygInstalment(userId: string, p: { entity_id?: string | null; fy?: string | null; quarter?: number | null; instalment_cents: number; basis?: string | null }): Promise<string>;
   computeDepreciation(userId: string, assetId: string, toStartYear?: number, opts?: { overrideMethodLock?: boolean }): Promise<{ rows: number }>;
+  setTradingStock(userId: string, b: { entity_id?: string | null; fy?: string; opening_cents?: number; closing_cents?: number; valuation_basis?: string | null }): Promise<{ ok: true }>;
   rollForward(userId: string, toStartYear: number): Promise<{ assets: number }>;
   reclassMisbucketedAssets(userId: string): Promise<{ removed: number; reclassed: number }>;
   disposeAsset(userId: string, assetId: string, disposedDate: string, disposalValueCents: number): Promise<{ balancing_adjustment_cents: number }>;

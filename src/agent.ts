@@ -3501,6 +3501,31 @@ export class TaxAgent extends Agent<Env> {
     return { ok: true };
   }
 
+  /**
+   * Audit wave 4 (trading_stock): upsert the per-business × FY opening/closing stock values (s 70-35).
+   * Manual UPDATE-then-INSERT rather than ON CONFLICT — the uniqueness is an EXPRESSION index
+   * (user_id, fy, COALESCE(entity_id,'')) and a conflict target can't name it portably. Audited write.
+   */
+  async setTradingStock(userId: string, b: { entity_id?: string | null; fy?: string; opening_cents?: number; closing_cents?: number; valuation_basis?: string | null }): Promise<{ ok: true }> {
+    await this.requireProfile(userId);
+    const fy = normaliseFyLabel(b.fy) ?? this.currentFyLabel(await this.jurisdictionFor(userId));
+    const entityId = b.entity_id ?? null;
+    const opening = Math.max(0, Math.round(Number(b.opening_cents) || 0));
+    const closing = Math.max(0, Math.round(Number(b.closing_cents) || 0));
+    const basis = b.valuation_basis && ["cost", "market_selling_value", "replacement"].includes(b.valuation_basis) ? b.valuation_basis : null;
+    const upd = await this.env.DB.prepare(
+      `UPDATE trading_stock SET opening_cents = ?, closing_cents = ?, valuation_basis = ?, updated_at = datetime('now')
+        WHERE user_id = ? AND fy = ? AND COALESCE(entity_id, '') = COALESCE(?, '')`,
+    ).bind(opening, closing, basis, userId, fy, entityId).run();
+    if ((upd.meta?.changes ?? 0) === 0) {
+      await this.env.DB.prepare(
+        `INSERT INTO trading_stock (id, user_id, entity_id, fy, opening_cents, closing_cents, valuation_basis) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ).bind(crypto.randomUUID(), userId, entityId, fy, opening, closing, basis).run();
+    }
+    await this.audit(userId, "trading_stock_set", JSON.stringify({ fy, entity_id: entityId, opening_cents: opening, closing_cents: closing, valuation_basis: basis }));
+    return { ok: true };
+  }
+
   async generateChecklist(userId: string, fy?: string): Promise<{ items: number }> {
     const profile = await this.requireProfile(userId);
     const situation = await getSituation(this.env, userId, profile);

@@ -1067,6 +1067,23 @@ export async function buildAccountantSchedule(
       });
     }
 
+    // ── Audit wave 4 (trading_stock): the s 70-35 stock adjustment, itemised for the agent. Present
+    //    only when the flag put the aggregate on the report (informational; the adjustment is already
+    //    inside the business position).
+    if (report.trading_stock) {
+      const ts = report.trading_stock;
+      sections.push({
+        key: "trading_stock",
+        title: "Trading stock (s 70-35)",
+        columns: [`Opening (${cur})`, `Closing (${cur})`, `Adjustment (${cur})`, "Valuation basis"],
+        rows: [[d(ts.opening_cents), d(ts.closing_cents), d(ts.adjustment_cents), ts.valuation_basis ? ts.valuation_basis.replace(/_/g, " ") : "(not recorded)"]],
+        notes: [
+          "Adjustment = closing − opening: an increase is assessable income, a decrease is deductible. Already included in the business position.",
+          "Valuation per item at cost / market selling value / replacement (s 70-45); the ≤$5,000 small-business movement election is the agent's call. General information only.",
+        ],
+      });
+    }
+
     // ── Audit wave 1 (PR-4): personal super contributions at their return label (D12 — deductible
     //    personal super; D11 is the foreign-pension UPP label, never super). Only present when the
     //    super_deduction flag put the aggregate on the report; informational (no tie-back).

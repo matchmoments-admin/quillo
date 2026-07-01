@@ -205,6 +205,20 @@ const asset = (id: string, u: string, costCents: number, depCents: number, prope
   run(`INSERT INTO work_use_inputs (user_id, fy, wfh_hours) VALUES (?, 2025, 600)`, u); // WFH fixed-rate DOES work
 }
 
+// ── Persona TS (audit wave 4): Erin, e-commerce sole trader with trading stock ──
+{
+  const u = "pts";
+  seedTenant(u, "PTS Erin e-commerce");
+  run(`INSERT INTO entities (id, user_id, kind, name, person_id, entity_type) VALUES ('ptseInd', ?, 'individual', 'Erin (sole trader)', ?, 'individual')`, u, `person_self_${u}`);
+  run(`INSERT INTO income_activities (id, user_id, entity_id, activity_type, label) VALUES ('ptsiaBiz', ?, 'ptseInd', 'business', 'Online store')`, u);
+  inc("ptsiSales", u, "business", 9000000); // $90k of goods sales
+  // Personal (entity_id NULL) stock: opening $8k → closing $12k ⇒ +$4k assessable (s 70-35).
+  run(`INSERT INTO trading_stock (id, user_id, entity_id, fy, opening_cents, closing_cents, valuation_basis) VALUES ('ptsts', ?, NULL, '2025-26', 800000, 1200000, 'cost')`, u);
+  // An ENTITY-scoped stock row (separate taxpayer) that must NEVER reach the personal headline.
+  run(`INSERT INTO entities (id, user_id, kind, name, entity_type) VALUES ('ptseCo', ?, 'company', 'Erin Pty Ltd', 'company')`, u);
+  run(`INSERT INTO trading_stock (id, user_id, entity_id, fy, opening_cents, closing_cents) VALUES ('ptsts2', ?, 'ptseCo', '2025-26', 0, 5000000)`, u);
+}
+
 // ── Persona 6: Susan & Greg, co-owned negatively-geared landlords ──
 {
   const u = "p6";
@@ -402,6 +416,17 @@ async function main() {
   const r5 = await buildReport(env, "p5", 2025);
   check("P5: WFH fixed-rate works (600h × 70c = $420)", r5.work_method?.wfh_cents === 42000);
   check("P5 #136: sole-trader business software ($3k) now nets into the individual position", r5.attribution?.individual_cents === 300000 && r5.company_tracked_cents === 0 && r5.taxable_position_cents === 11000000 - 300000 - 42000);
+
+  // ── Persona TS (audit wave 4): trading stock — flag-gated s 70-35 adjustment ──
+  // Local env override (P-car pattern): the base harness env never sets trading_stock, so the other
+  // personas prove OFF ⇒ byte-identical by construction.
+  const envTS = { DB: (env as unknown as { DB: unknown }).DB, FEATURES: `${(env as unknown as { FEATURES: string }).FEATURES},trading_stock` } as unknown as Env;
+  const rTsOn = await buildReport(envTS, "pts", 2025);
+  check("PTS: +$4k stock adjustment (closing $12k − opening $8k) lands in the position", rTsOn.taxable_position_cents === 9000000 + 400000);
+  check("PTS: the report carries the itemised trading_stock block", rTsOn.trading_stock?.adjustment_cents === 400000 && rTsOn.trading_stock?.opening_cents === 800000 && rTsOn.trading_stock?.closing_cents === 1200000);
+  check("PTS: the company's stock row (separate taxpayer) stays OUT of the personal headline", rTsOn.taxable_position_cents === 9400000); // $50k company closing stock would have shown here
+  const rTsOff = await buildReport(env, "pts", 2025);
+  check("PTS: flag OFF ⇒ no field, no adjustment (byte-identical)", rTsOff.taxable_position_cents === 9000000 && rTsOff.trading_stock === undefined);
 
   // ── Persona 6: co-owned negatively-geared landlords (verifies neg-gearing NETS) ──
   const r6 = await buildReport(env, "p6", 2025);

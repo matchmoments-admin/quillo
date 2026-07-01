@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import { api } from "../api";
 import { useFeatures } from "../lib/features";
 import { useActiveFy } from "../lib/activeFy";
-import { Card, Spinner, Button, Input, money, InfoTip } from "../components/ui";
+import { Card, Spinner, Button, Input, money, parseMoneyToCents, InfoTip } from "../components/ui";
 import { CapitalEquity } from "../components/income/CapitalEquity";
 import { EssGrants } from "../components/income/EssGrants";
 import type { IncomeRow } from "../types";
@@ -128,6 +128,9 @@ export function Income() {
         <Card className="p-4"><div className="text-xs uppercase tracking-wide text-muted">PAYG withheld</div><div className="mt-1 text-xl font-semibold tabular-nums">{money(withholding)}</div></Card>
         <Card className="p-4"><div className="text-xs uppercase tracking-wide text-muted">Franking credits <InfoTip k="franking_credit" /></div><div className="mt-1 text-xl font-semibold tabular-nums">{money(franking)}</div></Card>
       </div>
+
+      {/* trading_stock (audit wave 4): opening/closing stock for a goods-selling sole trader. */}
+      {has("trading_stock") && <TradingStockCard fy={fy} />}
 
       <IncomeDedupe fyStart={fyStart} />
 
@@ -395,6 +398,69 @@ function AddIncomeForm({ fy, onDone }: { fy: string; onDone: () => void }) {
         <p className="text-xs text-muted">Choose which property this rent is for so it counts in that property's position.</p>
       ) : null}
       {add.error && <p className="text-sm text-danger">{(add.error as Error).message}</p>}
+    </Card>
+  );
+}
+
+
+// ── trading_stock (audit wave 4): s 70-35 opening/closing stock for a goods-selling sole trader ──
+// Personal (sole-trader) business row for the active FY; the report adds closing − opening to the
+// position when the flag is on. GENERAL INFORMATION ONLY — the valuation basis (cost / market selling
+// value / replacement, s 70-45) and the ≤$5,000 movement election are agent territory.
+function TradingStockCard({ fy }: { fy: string }) {
+  const qc = useQueryClient();
+  const row = useQuery({ queryKey: ["trading-stock", fy], queryFn: () => api.tradingStock(fy) });
+  const personal = (row.data ?? []).find((r) => r.entity_id === null);
+  const [opening, setOpening] = useState("");
+  const [closing, setClosing] = useState("");
+  const [basis, setBasis] = useState("");
+  const [seeded, setSeeded] = useState<string | null>(null);
+  if (row.data && seeded !== fy) {
+    setOpening(personal ? (personal.opening_cents / 100).toFixed(2) : "");
+    setClosing(personal ? (personal.closing_cents / 100).toFixed(2) : "");
+    setBasis(personal?.valuation_basis ?? "");
+    setSeeded(fy);
+  }
+  const save = useMutation({
+    mutationFn: () =>
+      api.setTradingStock({
+        fy,
+        opening_cents: parseMoneyToCents(opening) ?? 0,
+        closing_cents: parseMoneyToCents(closing) ?? 0,
+        valuation_basis: basis || null,
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["trading-stock", fy] });
+      qc.invalidateQueries({ queryKey: ["report"] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+  });
+  const adj = (parseMoneyToCents(closing) ?? 0) - (parseMoneyToCents(opening) ?? 0);
+  return (
+    <Card className="space-y-3 p-4">
+      <div>
+        <div className="text-sm font-semibold">Trading stock (sole-trader business)</div>
+        <div className="text-xs text-muted">
+          If your business sells goods, record the value of stock on hand at the start and end of the year. The difference adjusts your
+          business income (an increase adds; a decrease deducts). General information only — the valuation basis and the small-business
+          election are for your registered tax agent.
+        </div>
+      </div>
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <label className="text-sm">Opening stock ($)<Input className="mt-1 w-full" inputMode="decimal" value={opening} onChange={(e) => setOpening(e.target.value)} /></label>
+        <label className="text-sm">Closing stock ($)<Input className="mt-1 w-full" inputMode="decimal" value={closing} onChange={(e) => setClosing(e.target.value)} /></label>
+        <label className="text-sm">Valuation basis
+          <select className="mt-1 w-full rounded-lg border border-line px-3 py-2 text-sm" value={basis} onChange={(e) => setBasis(e.target.value)}>
+            <option value="">— not sure —</option>
+            <option value="cost">Cost</option>
+            <option value="market_selling_value">Market selling value</option>
+            <option value="replacement">Replacement value</option>
+          </select>
+        </label>
+        <div className="flex items-end pb-1 text-sm text-muted">Adjustment: <span className="ml-1 font-semibold tabular-nums text-ink">{money(adj)}</span></div>
+      </div>
+      <Button onClick={() => save.mutate()} disabled={save.isPending}>{save.isPending ? "Saving…" : "Save trading stock"}</Button>
+      {save.error && <p className="text-sm text-danger">{(save.error as Error).message}</p>}
     </Card>
   );
 }

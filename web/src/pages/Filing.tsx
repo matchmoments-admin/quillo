@@ -6,7 +6,7 @@ import { api, saveBlob } from "../api";
 import { useActiveFy } from "../lib/activeFy";
 import { useFeatures } from "../lib/features";
 import { Card, Spinner, money } from "../components/ui";
-import type { PositionLine, ReadinessFinding, ClaimReview, ClaimReviewItem, OccupationRuleCandidate, NoaCarryover } from "../types";
+import type { PositionLine, ReadinessFinding, ClaimReview, ClaimReviewItem, OccupationRuleCandidate } from "../types";
 
 const fyLabelOf = (start: number) => `${start}-${String((start + 1) % 100).padStart(2, "0")}`;
 

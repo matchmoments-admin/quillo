@@ -1116,6 +1116,42 @@ async function main() {
     check("scan: read-only — the report position is byte-identical after scanning", (await buildReport(env, u, 2025)).taxable_position_cents === reportScan.taxable_position_cents);
   }
 
+  // ── Feature B2 (#71, carryforward_position): prior-year ORDINARY tax losses from a CONFIRMED NOA
+  //    reduce the indicative taxable position (capped at income; flag OFF ⇒ byte-identical). ──
+  {
+    seedTenant("pB2", "P-B2 carried tax loss");
+    inc("pB2Inc", "pB2", "salary_payg", 5000000); // $50k salary, no deductions ⇒ pre-loss position $50k
+    // A confirmed NOA for FY 2024-25 (source_fy 2024 → target_fy 2025) carrying $8,000 of ordinary tax loss.
+    run(`INSERT INTO fy_carryovers (id, user_id, source_fy, target_fy, status, prior_year_tax_losses_cf_cents) VALUES (?, ?, 2024, 2025, 'confirmed', 800000)`, "pB2co", "pB2");
+    const envB2 = { ...env, FEATURES: `${(env as { FEATURES: string }).FEATURES},carryforward_position` } as unknown as Env;
+    check("B2 (flag ON): $50k income − $8k carried tax loss = $42k position", (await buildReport(envB2, "pB2", 2025)).taxable_position_cents === 4200000);
+    check("B2 (flag OFF): carried loss NOT applied — position stays $50k (byte-identical)", (await buildReport(env, "pB2", 2025)).taxable_position_cents === 5000000);
+    // The env has position_confirmed_range ON, so the CONFIRMED floor must ALSO drop by the loss (it's an
+    // ATO-confirmed reduction) — locks the confirmed-range fix (was $50k when the loss was tracked-only).
+    check("B2: the carried loss reduces the CONFIRMED-range position too, not just tracked", (await buildReport(envB2, "pB2", 2025)).taxable_position_confirmed_cents === 4200000);
+    // The applied amount is surfaced for the display layer; omitted (no key) when off/zero.
+    check("B2: applied loss surfaced (tax_losses_applied_cents) when ON", (await buildReport(envB2, "pB2", 2025)).tax_losses_applied_cents === 800000);
+    check("B2 (flag OFF): tax_losses_applied_cents omitted — no new key", (await buildReport(env, "pB2", 2025)).tax_losses_applied_cents === undefined);
+    run(`UPDATE fy_carryovers SET status='draft' WHERE id='pB2co'`);
+    check("B2: a DRAFT (unconfirmed) NOA carryover does NOT offset the position", (await buildReport(envB2, "pB2", 2025)).taxable_position_cents === 5000000);
+    run(`UPDATE fy_carryovers SET status='confirmed' WHERE id='pB2co'`);
+    // Only the NOA carrying INTO this FY (target_fy === startYear) applies: an OLDER NOA (target_fy 2024,
+    // a huge loss) must NOT apply to FY 2025-26 and must NOT be summed — locks target_fy = startYear.
+    run(`INSERT INTO fy_carryovers (id, user_id, source_fy, target_fy, status, prior_year_tax_losses_cf_cents) VALUES (?, ?, 2023, 2024, 'confirmed', 9900000)`, "pB2co2", "pB2");
+    check("B2: only the NOA whose target_fy = this FY applies — older/other NOAs are neither applied nor summed", (await buildReport(envB2, "pB2", 2025)).taxable_position_cents === 4200000);
+    // The loss offsets only positive income — it floors the position at 0, never negative.
+    seedTenant("pB2z", "P-B2 loss exceeds income");
+    inc("pB2zInc", "pB2z", "salary_payg", 300000); // $3k income
+    run(`INSERT INTO fy_carryovers (id, user_id, source_fy, target_fy, status, prior_year_tax_losses_cf_cents) VALUES (?, ?, 2024, 2025, 'confirmed', 5000000)`, "pB2zco", "pB2z"); // $50k loss
+    check("B2: loss capped at income — position floors at $0, never negative", (await buildReport(envB2, "pB2z", 2025)).taxable_position_cents === 0);
+    // A negative pre-loss position (deductions > income) must apply 0 loss — never deepen it below zero.
+    seedTenant("pB2n", "P-B2 negative pre-loss year");
+    inc("pB2nInc", "pB2n", "salary_payg", 1000000); // $10k income
+    exp("pB2nExp", "pB2n", 3000000, "payg", "confirmed_deductible"); // $30k deductible ⇒ pre-loss position negative
+    run(`INSERT INTO fy_carryovers (id, user_id, source_fy, target_fy, status, prior_year_tax_losses_cf_cents) VALUES (?, ?, 2024, 2025, 'confirmed', 500000)`, "pB2nco", "pB2n");
+    check("B2: negative pre-loss year — carried loss applies 0, position unchanged (not deepened)", (await buildReport(envB2, "pB2n", 2025)).taxable_position_cents === (await buildReport(env, "pB2n", 2025)).taxable_position_cents);
+  }
+
   console.log(`\n=== personas: ${pass} passed, ${fail} failed ===`);
   if (fail > 0) process.exit(1);
 }

@@ -704,3 +704,24 @@ export async function cgtTotals(env: Env, userId: string, startYear: number, rul
     throw e;
   }
 }
+
+// B2 (carryforward_position, #71): the prior-year ORDINARY tax loss available to offset this FY's income,
+// read from a CONFIRMED NOA (fy_carryovers). We apply the loss ONLY to the year it carries INTO
+// (target_fy === startYear = source_fy + 1) — NOT to every later year. Without a fresh NOA for the
+// intervening year we can't know the residual after that year's income consumed it, so re-applying the
+// full balance to out-years would OVER-state relief (a taxpayer behind on filing). Under-applying (0 in
+// an out-year until they file + upload that year's NOA, which reports the residual) is the safe,
+// self-correcting choice. One NOA per target_fy (B1 supersedes same-year re-uploads), so never a sum.
+export async function carriedTaxLossCents(env: Env, userId: string, startYear: number): Promise<number> {
+  try {
+    const row = await env.DB.prepare(
+      `SELECT prior_year_tax_losses_cf_cents AS loss FROM fy_carryovers
+         WHERE user_id = ? AND status = 'confirmed' AND target_fy = ?
+         ORDER BY created_at DESC LIMIT 1`,
+    ).bind(userId, startYear).first<{ loss: number }>();
+    return Math.max(0, row?.loss ?? 0);
+  } catch (e) {
+    if (/no such table|no such column/i.test((e as Error).message)) return 0;
+    throw e;
+  }
+}

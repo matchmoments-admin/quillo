@@ -65,10 +65,15 @@ export function Income() {
     onMutate: () => setNote("Reading your income statement with Claude…"),
     onSuccess: (r) => {
       if (r.routed && r.doc_type === "payslip") {
-        setNote("Income statement read — check the new row below (confirm anything flagged for review).");
-        qc.invalidateQueries({ queryKey: ["income", fy] });
+        setNote("Income statement read — check the row below (switch to the statement's FY; confirm anything flagged for review).");
+        qc.invalidateQueries({ queryKey: ["income"] }); // any FY — the statement may land in a different year
         qc.invalidateQueries({ queryKey: ["dashboard"] });
         qc.invalidateQueries({ queryKey: ["transactions"] });
+      } else if (!r.routed && r.doc_type === "payslip") {
+        // The exact-duplicate guard short-circuits a re-upload of the same file — it's not a read failure.
+        setNote("You've already uploaded this exact file — it's in Documents. To re-read it, delete it there first, then upload again.");
+      } else if (r.doc_type === "unknown") {
+        setNote("Couldn't process it — this usually means AI consent (onboarding/Settings) or budget. Check Documents.");
       } else {
         setNote(`Filed to Documents as "${r.doc_type}" — that didn't read as an income statement. Add it manually below if needed.`);
       }

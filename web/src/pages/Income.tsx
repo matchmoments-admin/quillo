@@ -7,6 +7,10 @@ import { useFeatures } from "../lib/features";
 import { Card, Spinner, Button, Input, money } from "../components/ui";
 import type { IncomeRow, CgtAssetRow } from "../types";
 
+// Mirror of src/lib/ledger-totals.ts NON_ASSESSABLE_INCOME_TYPES — income types captured but EXCLUDED
+// from the assessable position. Keep in sync with the server (the source of truth for the math).
+const NON_ASSESSABLE_INCOME_TYPES = new Set(["non_cash_benefit", "super_pension", "employment_lump_sum"]);
+
 function fyLabel(startYear: number): string {
   return `${startYear}-${String((startYear + 1) % 100).padStart(2, "0")}`;
 }
@@ -75,9 +79,17 @@ export function Income() {
     },
   });
 
-  const total = (data ?? []).reduce((s, r) => s + (r.amount_aud_cents ?? r.gross_cents), 0);
-  const withholding = (data ?? []).reduce((s, r) => s + r.withholding_cents, 0);
-  const franking = (data ?? []).reduce((s, r) => s + r.franking_credit_cents, 0);
+  // The "Gross income" card must show the ASSESSABLE total — capture-only types (lump sums, super pension,
+  // non-cash) are excluded from the position (mirrors NON_ASSESSABLE_INCOME_TYPES in ledger-totals.ts).
+  // Gated on income_statement_multi so OFF is byte-identical (and this also fixes a pre-existing bug where
+  // super_pension/non_cash inflated the card). Inert when the user has no such rows.
+  const showAssessableSplit = has("income_statement_multi");
+  const rows = data ?? [];
+  const capturedRows = showAssessableSplit ? rows.filter((r) => NON_ASSESSABLE_INCOME_TYPES.has(r.income_type)) : [];
+  const assessableRows = showAssessableSplit ? rows.filter((r) => !NON_ASSESSABLE_INCOME_TYPES.has(r.income_type)) : rows;
+  const total = assessableRows.reduce((s, r) => s + (r.amount_aud_cents ?? r.gross_cents), 0);
+  const withholding = assessableRows.reduce((s, r) => s + r.withholding_cents, 0);
+  const franking = assessableRows.reduce((s, r) => s + r.franking_credit_cents, 0);
 
   return (
     <div className="space-y-6">
@@ -97,6 +109,25 @@ export function Income() {
       </div>
 
       <IncomeDedupe />
+
+      {capturedRows.length > 0 && (
+        <Card className="border-warn/30 bg-warn/5 p-4">
+          <div className="text-sm font-semibold text-ink">Captured — not in your assessable position</div>
+          <p className="mt-0.5 text-xs text-muted">
+            These have special treatment we don't compute (e.g. tax-free redundancy, super pension). They're kept
+            for your records but excluded from the Gross income above — confirm their treatment with a registered
+            tax agent. General information only.
+          </p>
+          <ul className="mt-2 divide-y divide-line text-sm">
+            {capturedRows.map((r) => (
+              <li key={r.id} className="flex items-center justify-between py-1.5">
+                <span className="text-ink">{r.ato_label ?? r.income_type}</span>
+                <span className="tabular-nums text-muted">{money(r.amount_aud_cents ?? r.gross_cents)}</span>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
 
       <div className="flex flex-wrap items-center gap-2">
         <Button variant="ghost" onClick={() => setAdding((v) => !v)}>{adding ? "Cancel" : "+ Add income manually"}</Button>

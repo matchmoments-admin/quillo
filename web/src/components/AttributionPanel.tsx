@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
+import { useFeatures } from "../lib/features";
 import { Card, Spinner, money } from "./ui";
 import type { Person, IncomeActivity, AttributionInput } from "../types";
 
@@ -24,6 +25,19 @@ const PROVISIONS = [
   { v: "private_non_deductible", label: "Private — not deductible" },
 ];
 
+// Slice 9 (attribution_labels): the SAME provisions, grouped by tax character so the long flat list is
+// easier to scan. Values are identical to PROVISIONS above — the save payload is unchanged.
+const PROVISION_GROUPS: { group: string; items: { v: string; label: string }[] }[] = [
+  { group: "Salary / work", items: [{ v: "s8-1_general", label: "General work deduction (s8-1)" }] },
+  { group: "Capital asset", items: [
+    { v: "div40", label: "Depreciation — plant (Div 40)" },
+    { v: "div43", label: "Capital works (Div 43)" },
+    { v: "s40-880", label: "Start-up cost (s40-880)" },
+  ] },
+  { group: "Working from home", items: [{ v: "wfh_fixed_rate", label: "Working-from-home (fixed rate)" }] },
+  { group: "Private", items: [{ v: "private_non_deductible", label: "Private — not deductible" }] },
+];
+
 const pct = (s: string) => (s.trim() === "" ? 100 : Math.max(0, Math.min(100, Number(s) || 0)));
 
 /**
@@ -33,6 +47,8 @@ const pct = (s: string) => (s.trim() === "" ? 100 : Math.max(0, Math.min(100, Nu
  */
 export function AttributionPanel({ txnId, txnAmountCents, entities, persons }: { txnId: string; txnAmountCents: number; entities: EntityLite[]; persons: Person[] }) {
   const qc = useQueryClient();
+  const { has } = useFeatures();
+  const labelsV2 = has("attribution_labels");
   const stateQ = useQuery({ queryKey: ["attributions", txnId], queryFn: () => api.txnAttributions(txnId) });
   const actsQ = useQuery({ queryKey: ["income-activities"], queryFn: () => api.incomeActivities() });
 
@@ -113,7 +129,7 @@ export function AttributionPanel({ txnId, txnAmountCents, entities, persons }: {
 
       <div className="space-y-3">
         {(rows ?? []).map((r, i) => (
-          <div key={i} className="space-y-2 rounded-lg border border-line bg-surface p-3">
+          <div key={i} className={`space-y-2 rounded-lg border bg-surface p-3 ${labelsV2 && pctSum > 100 ? "border-danger" : "border-line"}`}>
             <div className="flex items-center justify-between">
               <span className="text-xs font-medium uppercase tracking-wide text-muted">Claimed by</span>
               <button onClick={() => removeRow(i)} className="text-xs text-danger hover:underline">remove</button>
@@ -136,12 +152,25 @@ export function AttributionPanel({ txnId, txnAmountCents, entities, persons }: {
               </label>
             </div>
             <select value={r.deduction_provision} onChange={(e) => setRow(i, { deduction_provision: e.target.value })} className="w-full rounded-lg border border-line bg-card px-3 py-2 text-sm">
-              {PROVISIONS.map((p) => <option key={p.v} value={p.v}>{p.label}</option>)}
+              {labelsV2
+                ? PROVISION_GROUPS.map((g) => (
+                    <optgroup key={g.group} label={g.group}>
+                      {g.items.map((p) => <option key={p.v} value={p.v}>{p.label}</option>)}
+                    </optgroup>
+                  ))
+                : PROVISIONS.map((p) => <option key={p.v} value={p.v}>{p.label}</option>)}
             </select>
-            <div className="flex items-center justify-between text-xs">
-              <span className="text-muted">Claimed amount</span>
-              <span className="font-medium tabular-nums">{money(previewCents(r))}</span>
-            </div>
+            {labelsV2 ? (
+              <div className="flex items-center justify-between rounded-lg bg-ink/5 px-3 py-2">
+                <span className="text-xs font-medium text-muted">This costs you</span>
+                <span className="text-sm font-semibold tabular-nums text-ink">{money(previewCents(r))}</span>
+              </div>
+            ) : (
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-muted">Claimed amount</span>
+                <span className="font-medium tabular-nums">{money(previewCents(r))}</span>
+              </div>
+            )}
             {companyIds.has(r.entity_id) && (
               <p className="text-[11px] text-muted">Recorded as a loan from you to the company (not a Division 7A dividend — that risk runs the other way).</p>
             )}

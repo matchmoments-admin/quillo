@@ -745,6 +745,25 @@ async function main() {
     if (bad.length) for (const b of bad) console.log(`      ✗ p11 ${b.label}: section ${b.actual_cents} vs report ${b.report_cents}`);
   }
 
+  // ── Mission-audit handoff (#5/#3b, accountant_schedule_v2): a loan register + an FX-excluded list ──
+  {
+    const envSch = { ...env, FEATURES: `${(env as { FEATURES: string }).FEATURES},accountant_schedule_v2` } as unknown as Env;
+    const u = "pschv2";
+    seedTenant(u, "P-schedule-v2");
+    run(`INSERT INTO properties (id, user_id, label, status, use_status) VALUES ('psv2prop', ?, 'Rental', 'rented', 'rented')`, u);
+    run(`INSERT INTO accounts (id, user_id, name, type, source, balance_cents, interest_rate_pct) VALUES ('psv2loan', ?, 'Over-split loan', 'loan', 'statement', 40000000, 6.0)`, u);
+    run(`INSERT INTO loans_properties (id, user_id, loan_account_id, property_id, deductible_interest_pct) VALUES ('psv2lp', ?, 'psv2loan', 'psv2prop', 120)`, u); // 120% ⇒ over-100% warning
+    run(`INSERT INTO income (id, user_id, income_type, fy, gross_cents, currency) VALUES ('psv2fx', ?, 'dividend', '2025-26', 100000, 'USD')`, u); // amount_aud_cents NULL ⇒ FX-excluded
+    const sOn = await buildAccountantSchedule(envSch, u, 2025, { report: await buildReport(envSch, u, 2025) });
+    const loanSec = sOn.sections.find((s) => s.key === "loan_register");
+    const fxSec = sOn.sections.find((s) => s.key === "fx_excluded");
+    check("schedule_v2: loan register lists the loan", !!loanSec && loanSec.rows.length === 1);
+    check("schedule_v2: apportionment >100% is flagged in the loan register", !!loanSec && (loanSec.notes ?? []).some((n) => n.includes("over 100%")));
+    check("schedule_v2: FX-excluded section lists the unconverted USD dividend", !!fxSec && fxSec.rows.length === 1);
+    const sOff = await buildAccountantSchedule(env, u, 2025, { report: await buildReport(env, u, 2025) });
+    check("schedule_v2 OFF: no loan_register / fx_excluded sections (schedule byte-identical)", !sOff.sections.some((s) => s.key === "loan_register") && !sOff.sections.some((s) => s.key === "fx_excluded"));
+  }
+
   // ── Delete integrity (H1): RESTRICT + archive — no FK cascade, so a parent delete must not
   //    silently orphan rows that the tax position still sums. ──
   {

@@ -742,6 +742,65 @@ export async function extractIncomeStatement(llm: LLM, bytes: ArrayBuffer, mime:
   return ExtractedIncomeStatement.parse(toolUse.input);
 }
 
+// ── Notice of Assessment extractor (B1 noa_capture, #71/#304) ────────────────────
+// An ATO NOA finalises a lodged year: taxable income, tax assessed, carried-forward losses (net capital
+// + ordinary tax losses), HELP/HECS balance, MLS, and any franking refund. We read these as reference
+// facts for a confirm-before-write FY close — we NEVER compute a refund/liability from them.
+export const ExtractedNoticeOfAssessment = z.object({
+  assessed_fy: z.number().int(), // FY start year, e.g. 2024 for the 2024-25 year
+  taxable_income_cents: z.number().int().default(0),
+  tax_assessed_cents: z.number().int().default(0),
+  net_capital_losses_cf_cents: z.number().int().default(0),
+  prior_year_tax_losses_cf_cents: z.number().int().default(0),
+  opening_depreciation_cents: z.number().int().default(0),
+  hecs_balance_cents: z.number().int().nullable().default(null),
+  mls_debt_cents: z.number().int().nullable().default(null),
+  franking_refund_cents: z.number().int().nullable().default(null),
+  confidence: z.number().min(0).max(1),
+});
+export type ExtractedNoticeOfAssessment = z.infer<typeof ExtractedNoticeOfAssessment>;
+
+const NOTICE_OF_ASSESSMENT_TOOL: Anthropic.Tool = {
+  name: "record_notice_of_assessment",
+  description:
+    "Record an ATO Notice of Assessment (NOA). assessed_fy is the FINANCIAL-YEAR START YEAR of the year being assessed — for the 2024-25 year return 2024. taxable_income_cents = the 'Taxable income' line; tax_assessed_cents = tax assessed / 'Tax on your taxable income'. Carried-forward losses: net_capital_losses_cf_cents = net capital losses carried forward; prior_year_tax_losses_cf_cents = tax (revenue) losses carried forward — return 0 if a line is absent. hecs_balance_cents / mls_debt_cents = HELP-HECS account balance and Medicare levy surcharge if shown, else null. franking_refund_cents = any franking/imputation credit refund, else null. opening_depreciation_cents is almost never on a NOA — return 0 unless explicitly stated. Amounts in cents. Call once.",
+  input_schema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["assessed_fy", "confidence"],
+    properties: {
+      assessed_fy: { type: "integer", description: "FY start year of the assessed year (2024 = the 2024-25 year)." },
+      taxable_income_cents: { type: "integer", description: "'Taxable income' in cents." },
+      tax_assessed_cents: { type: "integer", description: "Tax assessed on taxable income, in cents." },
+      net_capital_losses_cf_cents: { type: "integer", description: "Net capital losses carried forward, in cents (0 if none)." },
+      prior_year_tax_losses_cf_cents: { type: "integer", description: "Tax (revenue) losses carried forward, in cents (0 if none)." },
+      opening_depreciation_cents: { type: "integer", description: "Opening adjustable value if stated (rare on a NOA); else 0." },
+      hecs_balance_cents: { type: ["integer", "null"], description: "HELP/HECS account balance in cents, or null." },
+      mls_debt_cents: { type: ["integer", "null"], description: "Medicare levy surcharge in cents, or null." },
+      franking_refund_cents: { type: ["integer", "null"], description: "Franking/imputation credit refund in cents, or null." },
+      confidence: { type: "number", description: "0..1 confidence in the read." },
+    },
+  },
+};
+
+export async function extractNoticeOfAssessment(llm: LLM, bytes: ArrayBuffer, mime: string): Promise<ExtractedNoticeOfAssessment> {
+  const msg = await llm.create(
+    {
+      model: llm.modelId,
+      max_tokens: 1024,
+      tools: [NOTICE_OF_ASSESSMENT_TOOL],
+      tool_choice: { type: "tool", name: NOTICE_OF_ASSESSMENT_TOOL.name },
+      messages: [
+        { role: "user", content: [receiptBlock(bytes, mime), { type: "text", text: "Extract this ATO Notice of Assessment. Call record_notice_of_assessment once." }] },
+      ],
+    },
+    "notice_of_assessment",
+  );
+  const toolUse = msg.content.find((c): c is Anthropic.ToolUseBlock => c.type === "tool_use" && c.name === NOTICE_OF_ASSESSMENT_TOOL.name);
+  if (!toolUse) throw new Error("model did not return a record_notice_of_assessment call");
+  return ExtractedNoticeOfAssessment.parse(toolUse.input);
+}
+
 // ── Agent rental summary extractor (DECOMPOSABLE → income + expense lines) ──────
 export const ExtractedAgentStatement = z.object({
   agent_name: z.string().nullable().default(null),

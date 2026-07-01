@@ -125,6 +125,7 @@ export const DOC_TYPES = [
   "super_statement",
   "loan_statement",
   "invoice",
+  "notice_of_assessment",
   "unknown",
 ] as const;
 export type DocType = (typeof DOC_TYPES)[number];

@@ -185,8 +185,35 @@ CREATE TABLE IF NOT EXISTS fy_signoff (
   user_id       TEXT NOT NULL,
   fy            INTEGER NOT NULL,
   signed_off_at TEXT NOT NULL DEFAULT (datetime('now')),
+  noa_document_id TEXT,
+  status        TEXT,
   PRIMARY KEY (user_id, fy)
 );
+
+-- 0067 (noa_capture): ATO-confirmed carry-over facts read off a Notice of Assessment. Written as a DRAFT
+-- at upload; turned into carry-in rows only on user confirm. Keyed by source FY (assessed) → target FY.
+CREATE TABLE IF NOT EXISTS fy_carryovers (
+  id                             TEXT PRIMARY KEY,
+  user_id                        TEXT NOT NULL,
+  source_fy                      INTEGER NOT NULL,
+  target_fy                      INTEGER NOT NULL,
+  noa_document_id                TEXT,
+  status                         TEXT NOT NULL DEFAULT 'draft',
+  taxable_income_cents           INTEGER,
+  tax_assessed_cents             INTEGER,
+  net_capital_losses_cf_cents    INTEGER NOT NULL DEFAULT 0,
+  prior_year_tax_losses_cf_cents INTEGER NOT NULL DEFAULT 0,
+  opening_depreciation_cents     INTEGER NOT NULL DEFAULT 0,
+  hecs_balance_cents             INTEGER,
+  mls_debt_cents                 INTEGER,
+  franking_refund_cents          INTEGER,
+  capital_loss_carryin_id        TEXT,
+  depreciation_opening_id        TEXT,
+  confidence                     REAL,
+  created_at                     TEXT NOT NULL DEFAULT (datetime('now')),
+  confirmed_at                   TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_fy_carryovers_user ON fy_carryovers(user_id, source_fy);
 
 -- 0029: prior-year carry-ins captured at Set-up. CAPTURE-ONLY — surfaced as defer-to-agent findings,
 -- never auto-applied to the headline (capital losses offset capital gains only; opening adjustable

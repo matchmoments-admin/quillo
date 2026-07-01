@@ -41,6 +41,7 @@ export const PURGE_TABLES = [
   "work_use_inputs",
   "loans_properties",
   "fy_signoff",
+  "fy_carryovers",           // 0067 (noa_capture) — NOA-derived carry-over facts
   "capital_loss_carryins",
   "depreciation_opening_balances",
   "entity_roles",            // 0032

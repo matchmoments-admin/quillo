@@ -296,6 +296,11 @@ export const api = {
   addOpeningDepreciation: (b: { fy: number; opening_adjustable_value_cents: number; notes?: string }) => post<{ id: string }>("/api/opening-depreciation", b),
   deleteOpeningDepreciation: (id: string) => send<{ ok: boolean }>("DELETE", `/api/opening-depreciation/${id}`),
 
+  // NOA carry-overs (B1 noa_capture): confirm-before-write FY close
+  noaCarryovers: (fy?: number) => get<{ carryovers: NoaCarryover[] }>(`/api/noa${fy != null ? `?fy=${fy}` : ""}`).then((r) => r.carryovers),
+  confirmNoa: (id: string) => post<{ carryover: NoaCarryover }>(`/api/noa/${id}`, {}),
+  deleteNoa: (id: string) => send<{ ok: boolean }>("DELETE", `/api/noa/${id}`),
+
   // Find My Claims (flag claim_review) — read-only situational sweep, AI gap-fill draft, confirm write.
   claimReview: (fy?: number) => get<ClaimReview>(`/api/claim-review${fy ? `?fy=${fy}` : ""}`),
   // POST may surface consent_required (403) / "AI is paused…" (429) — caller shows a friendly inline message.

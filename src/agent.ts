@@ -15,7 +15,8 @@ import { deriveWfhHours, generateWfhDiary, type WfhLeaveRange } from "./lib/work
 import { applyUserRules, RULE_CREDIT_BUCKETS } from "./lib/rules";
 import { sha256hex, sha256hexBytes } from "./lib/base64";
 import { getLLM, type LLM } from "./llm";
-import { extractReceipt, extractReceipts, extractFromText, extractColumnMap, extractStatement, extractBatch, extractSituationDraft, extractOccupationRules, extractGuide, extractAnswer, classifyDocument, extractPayslip, extractAgentStatement, extractDepreciationSchedule, extractDividend, extractHealthClaim, batchParams, parseBatchMessage, mapBatchItems, ALLOWED_NAV_ROUTES, type Extracted, type ExtractedStatement, type SituationDraft, type OccupationRulesDraft, type AnswerResult } from "./extract";
+import { extractReceipt, extractReceipts, extractFromText, extractColumnMap, extractStatement, extractBatch, extractSituationDraft, extractOccupationRules, extractGuide, extractAnswer, classifyDocument, extractPayslip, extractIncomeStatement, extractAgentStatement, extractDepreciationSchedule, extractDividend, extractHealthClaim, batchParams, parseBatchMessage, mapBatchItems, ALLOWED_NAV_ROUTES, type Extracted, type ExtractedStatement, type SituationDraft, type OccupationRulesDraft, type AnswerResult } from "./extract";
+import { mapIncomeStatementToRows } from "./lib/income-statement";
 import { fyForDate, buildReport, useStatusDeniedExpr, propertyUndeterminedGatedExpr } from "./lib/report";
 import { runScan, type ScanResult, type ScanTxn } from "./lib/scan";
 import { getProgress } from "./lib/progress";
@@ -2297,6 +2298,13 @@ export class TaxAgent extends Agent<Env> {
         return { docId, doc_type: cls.doc_type, routed: true };
       }
       case "payslip": {
+        // A1 #304: a multi-employer ATO "Income statements" page classifies as 'payslip' too. When the
+        // engine flag is ON, decompose it (all employers, lump sums, supersede guard); OFF ⇒ today's
+        // single-employer path verbatim (byte-identical; the shipped upload button is unaffected).
+        if (featureOn(this.env, "income_statement_multi")) {
+          await this.decomposeIncomeStatement(userId, docId, bytes, mime, llm);
+          return { docId, doc_type: cls.doc_type, routed: true };
+        }
         const p = await extractPayslip(llm, bytes, mime);
         await this.recordIncome(userId, {
           entity_id: null,
@@ -2360,6 +2368,61 @@ export class TaxAgent extends Agent<Env> {
    * to a property, with a reconciliation assertion (Σrent − Σexpenses = net disbursed). Sub-threshold
    * extraction or a failed reconcile flags the income row needs_review rather than dropping it.
    */
+  /**
+   * Feature A1 (flag income_statement_multi): a multi-employer ATO income statement → income rows.
+   * One FINALISED ("Tax ready") salary row per employer at the PRINTED Total gross (mapper enforces the
+   * tax-correctness: leave already inside gross, SG/RESC/RFB reference-only), plus capture-only
+   * employment_lump_sum rows. The statement is AUTHORITATIVE, so a salary row SUPERSEDES prior per-period
+   * payslip + hand-keyed salary rows for the same employer+FY (matched on the detail_json.employer NAME —
+   * per-period/manual rows carry no ABN — so the annual gross is never ADDED on top). Deletion is audited;
+   * manual rows with no employer field are never matched. Not-"Tax ready" employers are surfaced, not
+   * recorded. Mirrors decomposeAgentStatement (extract → map → loop recordIncome).
+   */
+  async decomposeIncomeStatement(userId: string, docId: string, bytes: ArrayBuffer, mime: string, llm: LLM): Promise<void> {
+    const mapped = mapIncomeStatementToRows(await extractIncomeStatement(llm, bytes, mime));
+    let salary = 0;
+    let lumps = 0;
+    let superseded = 0;
+    for (const row of mapped.rows) {
+      const fy = row.txn_date ? fyLabel(fyStartYearOf(row.txn_date)) : null;
+      if (row.income_type === "salary_payg") {
+        salary++;
+        const employer = String((row.detail as { employer?: unknown }).employer ?? "");
+        if (employer && fy) {
+          const priors = await this.env.DB.prepare(
+            `SELECT id FROM income WHERE user_id = ? AND income_type = 'salary_payg' AND fy = ? AND lower(json_extract(detail_json, '$.employer')) = lower(?)`,
+          ).bind(userId, fy, employer).all<{ id: string }>();
+          const ids = (priors.results ?? []).map((p) => p.id);
+          for (const id of ids) {
+            await this.env.DB.prepare(`DELETE FROM income WHERE id = ? AND user_id = ?`).bind(id, userId).run();
+            superseded++;
+          }
+          if (ids.length) await this.audit(userId, "income_superseded", JSON.stringify({ employer, fy, replaced: ids.length, docId }));
+        }
+      } else if (row.income_type === "employment_lump_sum") {
+        lumps++;
+      }
+      await this.recordIncome(userId, {
+        income_type: row.income_type,
+        ato_label: row.ato_label,
+        fy,
+        gross_cents: row.gross_cents,
+        withholding_cents: row.withholding_cents,
+        net_cents: row.gross_cents - row.withholding_cents,
+        txn_date: row.txn_date,
+        source_doc_id: docId,
+        detail_json: JSON.stringify(row.detail),
+        needs_review: row.needs_review,
+      });
+    }
+    const sup = superseded ? ` Replaced ${superseded} earlier salary ${superseded === 1 ? "entry" : "entries"}.` : "";
+    const lp = lumps ? ` ${lumps} lump-sum ${lumps === 1 ? "amount" : "amounts"} captured (special treatment — confirm with a registered tax agent).` : "";
+    const skip = mapped.skipped_employers.length
+      ? ` ${mapped.skipped_employers.length} employer${mapped.skipped_employers.length === 1 ? "" : "s"} not yet "Tax ready" — re-upload once finalised.`
+      : "";
+    await this.notify(userId, `Income statement read: recorded salary for ${salary} employer${salary === 1 ? "" : "s"}.${sup}${lp}${skip} General information only.`, null);
+  }
+
   async decomposeAgentStatement(
     userId: string,
     docId: string,

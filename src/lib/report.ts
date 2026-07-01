@@ -1,6 +1,6 @@
 import type { Env } from "../env";
 import { COUNTABLE, COUNTABLE_INCOME } from "./queries";
-import { incomeTotals, depreciationTotals, attributionTotals, companyPositions, cgtTotals, essTotals, gstTotals, paygInstalmentsTotal, carLogbookPosition, carWorkKmFor, trustTotals, partnershipTotals, smsfFundPositions, separateTaxpayerEntityIds, superConcessionalDeduction, fyStartYearStr, type IncomeTotals, type AttributionTotals, type CompanyPosition, type GstPosition, type CarLogbookPosition, type SmsfFundPosition, type RulePackThresholds, type SuperDeduction } from "./ledger-totals";
+import { incomeTotals, depreciationTotals, attributionTotals, companyPositions, cgtTotals, carriedTaxLossCents, essTotals, gstTotals, paygInstalmentsTotal, carLogbookPosition, carWorkKmFor, trustTotals, partnershipTotals, smsfFundPositions, separateTaxpayerEntityIds, superConcessionalDeduction, fyStartYearStr, type IncomeTotals, type AttributionTotals, type CompanyPosition, type GstPosition, type CarLogbookPosition, type SmsfFundPosition, type RulePackThresholds, type SuperDeduction } from "./ledger-totals";
 import type { TrustTotals } from "./trust";
 import type { CgtPortfolioResult } from "./cgt";
 import type { EssAssessable } from "./ess";
@@ -814,9 +814,17 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
     const sd = await superConcessionalDeduction(env, userId, startYear, cap);
     if (sd.contributed_cents > 0) super_deduction = sd;
   }
-  const taxable_position_cents =
+  const preLossPosition =
     income.gross_cents + (capital_gains?.net_capital_gain_cents ?? 0) + (ess?.assessable_discount_cents ?? 0) + (trust?.assessable_cents ?? 0) + (partnership?.assessable_cents ?? 0)
     + (franking_gross_up_cents ?? 0) - total_deductions_cents - dep.total_cents - (super_deduction?.claimed_cents ?? 0);
+  // B2 (#71): prior-year ordinary tax losses (from a confirmed NOA) offset ONLY positive income — they
+  // can't push the position below zero; the unused remainder stays carried (not modelled further). Off ⇒
+  // 0 applied ⇒ byte-identical.
+  let tax_losses_applied_cents = 0;
+  if (featureOn(env, "carryforward_position")) {
+    tax_losses_applied_cents = Math.min(await carriedTaxLossCents(env, userId, startYear), Math.max(0, preLossPosition));
+  }
+  const taxable_position_cents = preLossPosition - tax_losses_applied_cents;
   // Phase #137: indicative BAS position — SEPARATE from income tax (never added to taxable_position).
   // Flag-gated; only surfaced when a business is GST-registered.
   let gst: GstPosition | undefined;

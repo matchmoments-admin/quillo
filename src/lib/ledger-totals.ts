@@ -704,3 +704,21 @@ export async function cgtTotals(env: Env, userId: string, startYear: number, rul
     throw e;
   }
 }
+
+// B2 (carryforward_position, #71): the prior-year ORDINARY tax loss available to offset this FY's income,
+// read from a CONFIRMED NOA (fy_carryovers). A NOA's "tax losses carried forward" is a CUMULATIVE balance,
+// so the LATEST confirmed NOA that has reached this FY (max target_fy ≤ startYear) is authoritative — take
+// its figure, never a sum across NOAs (that would double-count, the same trap fixed for capital losses).
+export async function carriedTaxLossCents(env: Env, userId: string, startYear: number): Promise<number> {
+  try {
+    const row = await env.DB.prepare(
+      `SELECT prior_year_tax_losses_cf_cents AS loss FROM fy_carryovers
+         WHERE user_id = ? AND status = 'confirmed' AND target_fy <= ?
+         ORDER BY target_fy DESC LIMIT 1`,
+    ).bind(userId, startYear).first<{ loss: number }>();
+    return Math.max(0, row?.loss ?? 0);
+  } catch (e) {
+    if (/no such table/i.test((e as Error).message)) return 0;
+    throw e;
+  }
+}

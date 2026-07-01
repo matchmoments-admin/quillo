@@ -8,7 +8,9 @@ import type { AssetRow } from "../types";
 
 // Car deductions — its own tool (#245), split out of the work-from-home panel: car has nothing to do
 // with WFH. Two ATO methods, you claim ONE:
-//   • Cents-per-km: min(work km, 5,000) × 88c. Simple, no receipts; best for ≤5,000 work km.
+//   • Cents-per-km: min(work km, FY cap) × the FY's ATO rate. Simple, no receipts; best for low work km.
+//     The rate/cap come from the server's rule pack per FY — never hardcoded here, so the estimate
+//     can't disagree with the report engine.
 //   • Logbook: a 12-week logbook gives business-use %, applied to actual running costs + car decline-in-
 //     value, with no km cap; best for heavy/expensive-car use. The report computes both and recommends
 //     the higher. GENERAL INFO ONLY — confirm with a registered tax agent.
@@ -23,10 +25,13 @@ export function CarMethodsCard({ fyNum }: { fyNum: number }) {
   const [km, setKm] = useState<string>("");
   const [seeded, setSeeded] = useState<number | null>(null);
   if (centsPerKmEnabled && data.data && seeded !== fyNum) {
-    setKm(data.data.work_km != null ? String(data.data.work_km) : "");
+    setKm(data.data.car_use.work_km != null ? String(data.data.car_use.work_km) : "");
     setSeeded(fyNum);
   }
-  const estCar = Math.round(Math.min(Number(km) || 0, 5000) * 88);
+  // rates === null/undefined ⇒ this FY has no configured rate (prior year) — show no estimate rather
+  // than a wrong one, mirroring the engine's refusal to compute (work_method_rates_unavailable).
+  const rates = data.data?.rates ?? null;
+  const estCar = rates ? Math.round(Math.min(Number(km) || 0, rates.km_cap) * rates.cents_per_km) : null;
   const cl = report.data?.car_logbook;
 
   const save = useMutation({
@@ -55,7 +60,9 @@ export function CarMethodsCard({ fyNum }: { fyNum: number }) {
         <label className="block text-sm">
           <span className="text-xs font-medium uppercase tracking-wide text-muted">Work-related car km this year (cents-per-km)</span>
           <Input type="number" min="0" value={km} onChange={(e) => setKm(e.target.value)} placeholder="e.g. 1200" />
-          <span className="mt-0.5 block text-xs text-muted">≈ {money(estCar)} at 88c/km (max 5,000 km)</span>
+          {rates && estCar != null && (
+            <span className="mt-0.5 block text-xs text-muted">≈ {money(estCar)} at {rates.cents_per_km}c/km (max {rates.km_cap.toLocaleString()} km)</span>
+          )}
           <div className="mt-2"><Button onClick={() => save.mutate()} disabled={save.isPending}>{save.isPending ? "Saving…" : "Save km"}</Button></div>
         </label>
       )}

@@ -48,7 +48,7 @@ import {
 import { buildGuidePrompt, buildAskSystem, summariseReportForAsk, renderTxnDigest } from "../src/lib/guide";
 import { validateProposedActions } from "../src/extract";
 import type { Progress } from "../src/lib/progress";
-import { fyBounds, fyLabel, basPositionFrom, fyStartYearStr, parseFyStartYear, normaliseFyLabel } from "../src/lib/ledger-totals";
+import { fyBounds, fyLabel, basPositionFrom, fyStartYearStr, parseFyStartYear, normaliseFyLabel, type RulePackThresholds } from "../src/lib/ledger-totals";
 import { currentFyStartYear, reportToCsv, type Report } from "../src/lib/report";
 import { resolveJurisdiction, fyBoundsFor, fyStartYearForDate, fyStartYearSqlExpr, baseCurrencyOf, AU_DESCRIPTOR, UK_DESCRIPTOR } from "../src/lib/jurisdiction";
 import { toBaseCurrency } from "../src/lib/fx";
@@ -2005,6 +2005,66 @@ console.log("fyBounds / currentFyStartYear (per-FY scoping)");
   // currentFyStartYear: AU FY rolls over on 1 July. June → prior start year; July → new start year.
   check("30 Jun 2026 → FY start 2025", currentFyStartYear(new Date("2026-06-30T00:00:00Z")) === 2025);
   check("1 Jul 2026 → FY start 2026", currentFyStartYear(new Date("2026-07-01T00:00:00Z")) === 2026);
+}
+
+// ── Threshold register: FY-coverage guard ────────────────────────────────────
+// Deliberately wall-clock-dependent: this is the process guard that fails the suite before a new
+// FY starts with no thresholds block (and, within 45 days of 30 June, before next FY's block is
+// staged). The same structural rules gate `npm run rulepack:push` (scripts/push-rulepack.mjs —
+// REQUIRED_KEYS mirrored there), so a stale/malformed pack can't reach the KV shadow either.
+// On failure: update src/rulepacks/au-v1.json per docs/threshold-register.md, re-pin the values
+// below, and `npm run rulepack:push` after deploy.
+console.log("threshold register (thresholds_by_fy FY-coverage guard)");
+{
+  const byFy = (rulePack as unknown as RulePackThresholds).thresholds_by_fy ?? {};
+  // Non-FY keys follow the underscore convention (_note, _reference_only_keys); anything else must
+  // BE a canonical FY label — a typo'd block key must fail loudly, not silently drop out of the guard.
+  const fyBlocks = Object.keys(byFy).filter((k) => !k.startsWith("_"));
+  for (const k of fyBlocks) check(`threshold block key '${k}' is a canonical FY label`, normaliseFyLabel(k) === k);
+  // Keys the engines actually consume per-FY — mirrored in scripts/push-rulepack.mjs.
+  const REQUIRED_KEYS = [
+    "instant_asset_write_off_cents",
+    "car_limit_cents",
+    "low_value_pool_threshold_cents",
+    "immediate_non_business_cents",
+    "gst_registration_threshold_cents",
+    "super_concessional_cap_cents",
+    "wfh_fixed_rate_cents_per_hour",
+    "car_cents_per_km",
+    "car_km_cap",
+  ];
+  // Every block (current, staged-next, historical) must carry every consumed key as a real number —
+  // a staged "91" string or null would otherwise sail through until the FY went live.
+  for (const fy of fyBlocks) {
+    check(`${fy}: all engine-consumed keys present and numeric`, REQUIRED_KEYS.every((key) => typeof byFy[fy]?.[key] === "number" && Number.isFinite(byFy[fy][key])));
+  }
+  // A key added to one year only silently skews cross-FY behaviour — force lockstep key sets.
+  const keySets = new Set(fyBlocks.map((fy) => Object.keys(byFy[fy]).sort().join(",")));
+  check("all FY blocks share an identical key set", keySets.size === 1);
+  const now = new Date();
+  const startYear = currentFyStartYear(now);
+  const currentFy = fyLabel(startYear);
+  check(`current FY (${currentFy}) has a thresholds block`, !!byFy[currentFy]);
+  // Within 45 days of the next FY's first day (from the sanctioned period math, not a hardcoded
+  // 1 July), the incoming FY's block must already be staged.
+  const daysUntilNextFy = (Date.parse(`${fyBounds(startYear + 1).start}T00:00:00Z`) - now.getTime()) / 86_400_000;
+  if (daysUntilNextFy <= 45) {
+    check(`next FY (${fyLabel(startYear + 1)}) block staged before the FY starts`, !!byFy[fyLabel(startYear + 1)]);
+  }
+
+  // Pin the statutory values per FY, read RAW from the pack — deliberately NOT via workUseRatesForFy,
+  // whose fallback defaults equal the 2025-26 values and would mask a missing/renamed key.
+  // Legal sources in docs/threshold-register.md.
+  check("2024-25: 88c/km, 5,000 km cap, WFH 70c/hr", byFy["2024-25"]?.car_cents_per_km === 88 && byFy["2024-25"]?.car_km_cap === 5000 && byFy["2024-25"]?.wfh_fixed_rate_cents_per_hour === 70);
+  check("2025-26: 88c/km, 5,000 km cap, WFH 70c/hr", byFy["2025-26"]?.car_cents_per_km === 88 && byFy["2025-26"]?.car_km_cap === 5000 && byFy["2025-26"]?.wfh_fixed_rate_cents_per_hour === 70);
+  check("2026-27: 91c/km (LI 2026/19), 5,000 km cap, WFH 70c/hr", byFy["2026-27"]?.car_cents_per_km === 91 && byFy["2026-27"]?.car_km_cap === 5000 && byFy["2026-27"]?.wfh_fixed_rate_cents_per_hour === 70);
+  check("2024-25: car limit $69,674", byFy["2024-25"]?.car_limit_cents === 6_967_400);
+  check("2025-26: car limit $69,674 (unchanged by indexation)", byFy["2025-26"]?.car_limit_cents === 6_967_400);
+  check("2026-27: car limit $69,883", byFy["2026-27"]?.car_limit_cents === 6_988_300);
+  check("2024-25/2025-26: IAWO $20,000 (law)", byFy["2024-25"]?.instant_asset_write_off_cents === 2_000_000 && byFy["2025-26"]?.instant_asset_write_off_cents === 2_000_000);
+  check("2026-27: IAWO drops to $1,000 (current law)", byFy["2026-27"]?.instant_asset_write_off_cents === 100_000);
+  check("concessional cap: $30k → $32,500 from 1 Jul 2026", byFy["2025-26"]?.super_concessional_cap_cents === 3_000_000 && byFy["2026-27"]?.super_concessional_cap_cents === 3_250_000);
+  check("NCC cap staged (reference-only): $120k → $130k", byFy["2025-26"]?.super_non_concessional_cap_cents === 12_000_000 && byFy["2026-27"]?.super_non_concessional_cap_cents === 13_000_000);
 }
 
 // ── Batch AI categorisation: validation + id-mapping (review High #1 + the index-vs-id bug) ──

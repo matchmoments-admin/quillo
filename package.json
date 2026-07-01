@@ -5,7 +5,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "deploy": "wrangler deploy && npm run rulepack:push",
     "schema": "wrangler d1 execute tax-agent-db --file=schema.sql",
     "schema:local": "wrangler d1 execute tax-agent-db --local --file=schema.sql",
     "eval": "promptfoo eval -c evals/promptfooconfig.yaml --output evals/results.json --no-write",

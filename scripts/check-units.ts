@@ -465,6 +465,7 @@ console.log("extractSituationDraft");
 // ── Depreciation engine: exact-cents golden tests (the deterministic core) ────
 import { computeFyDeduction, rollSchedule, daysInFy, daysHeldInFy, balancingAdjustment, depreciableCostCents, isLowCostAsset, looksLikePersonalTransfer, assetDepreciatesForTaxpayer, resolveDiv40Life, type DepAsset } from "../src/lib/depreciation";
 import { mapIncomeStatementToRows, type IncomeStatementEmployer } from "../src/lib/income-statement";
+import { planNoaCarryovers, type NoaFacts } from "../src/lib/noa";
 import { NON_ASSESSABLE_INCOME_TYPES } from "../src/lib/ledger-totals";
 
 console.log("asset auto-classification heuristics (isLowCostAsset / looksLikePersonalTransfer)");
@@ -538,6 +539,24 @@ console.log("income statement: mapIncomeStatementToRows (Total gross as printed 
     const r2 = mapIncomeStatementToRows({ employers: [emp({ employer: "RED ONLY", total_gross_cents: 0, lump_sums: [{ type: "D", cents: 700000 }] })] });
     return r2.rows.length === 1 && r2.rows[0]!.income_type === "employment_lump_sum";
   })());
+}
+
+// B1 #71/#304: planNoaCarryovers — the pure NOA-facts → carry-over WRITE plan the confirm path executes.
+console.log("notice of assessment: planNoaCarryovers (net capital loss → carry-in for the FOLLOWING year · nothing written when 0)");
+{
+  const facts = (o: Partial<NoaFacts> & { assessed_fy: number }): NoaFacts => ({
+    taxable_income_cents: 0, tax_assessed_cents: 0, net_capital_losses_cf_cents: 0, prior_year_tax_losses_cf_cents: 0,
+    opening_depreciation_cents: 0, hecs_balance_cents: null, mls_debt_cents: null, franking_refund_cents: null, confidence: 0.95, ...o,
+  });
+  // A 2024-25 NOA (assessed_fy = 2024) with a $12,000 net capital loss carried forward.
+  const p = planNoaCarryovers(facts({ assessed_fy: 2024, net_capital_losses_cf_cents: 1_200_000, opening_depreciation_cents: 50_000 }));
+  check("source_fy = assessed year, target_fy = the following year", p.source_fy === 2024 && p.target_fy === 2025);
+  check("net capital loss → capital_loss_carryins with prior_fy = source_fy (available from target_fy on)", p.capital_loss!.prior_fy === 2024 && p.capital_loss!.loss_cents === 1_200_000);
+  check("opening depreciation → depreciation_opening_balances for the TARGET fy", p.opening_depreciation!.fy === 2025 && p.opening_depreciation!.opening_adjustable_value_cents === 50_000);
+  // No losses / no opening value ⇒ NOTHING is written (a NOA that just confirms the year).
+  const none = planNoaCarryovers(facts({ assessed_fy: 2023, taxable_income_cents: 8_500_000, tax_assessed_cents: 1_900_000 }));
+  check("zero carry-overs ⇒ no capital-loss and no depreciation write (year just closes)", none.capital_loss === null && none.opening_depreciation === null);
+  check("negative/garbage cents are floored to a no-write, never a negative carry-in", planNoaCarryovers(facts({ assessed_fy: 2024, net_capital_losses_cf_cents: -500 })).capital_loss === null);
 }
 
 console.log("depreciation: Div 40 diminishing value (ATO worked example $80k, 5yr life)");

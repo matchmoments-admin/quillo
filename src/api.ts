@@ -70,6 +70,7 @@ import {
   clearIncomeCgt,
 } from "./lib/situation-write";
 import { setAttributions, getAttributions, clearAttributions } from "./lib/attribution-write";
+import { listNoaCarryovers, confirmNoaCarryover, deleteNoaCarryover } from "./lib/noa-store";
 import { buildConnectUrl, qboStatus } from "./lib/qbo-oauth";
 import { QuickBooksAdapter } from "./ledger/qbo";
 import { LedgerReauthError } from "./ledger";
@@ -806,6 +807,18 @@ export async function handleApi(
     }
     if (m === "DELETE") {
       await clearSignOffFy(env, uid, fy);
+      return json({ ok: true });
+    }
+  }
+  // ── NOA carry-overs (B1 noa_capture): confirm-before-write FY close ───────────
+  if (resource === "noa" && featureOn(env, "noa_capture")) {
+    if (m === "GET" && !id) {
+      const n = Number(url.searchParams.get("fy"));
+      return json({ carryovers: await listNoaCarryovers(env, uid, Number.isFinite(n) && n > 0 ? n : undefined) });
+    }
+    if (m === "POST" && id) return json({ carryover: await confirmNoaCarryover(env, uid, id) });
+    if (m === "DELETE" && id) {
+      await deleteNoaCarryover(env, uid, id);
       return json({ ok: true });
     }
   }

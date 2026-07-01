@@ -3,6 +3,7 @@ import type { Env } from "./env";
 import { getProfile, getSituation, renderSituation, type Profile, type Situation, type UserRule } from "./lib/db";
 import { addRule, addAccount, updateAccount, syncIncomeCgtFromComponents, clearIncomeCgt, syncPropertyDisposalToCgt, addPerson, updatePerson, addProperty, updateProperty, addEntity, updateEntity, updateRule, deleteRow, DeleteBlockedError, addPropertyOwner, addEntityRole, addIncomeActivity, addLoanProperty, updateLoanProperty, assertOwns, assertNoBlockingChildren, assertNoBlockingChildrenExcept } from "./lib/situation-write";
 import type { DeleteBlocker } from "./lib/situation-write";
+import { captureNoaDraft } from "./lib/noa-store";
 import { ordinaryAssessableCents, validateComponents, parseAmmaComponents, type AmmaComponents } from "./lib/managed-fund";
 import { QuickBooksAdapter } from "./ledger/qbo";
 import { revokeAndDisconnect } from "./lib/qbo-oauth";
@@ -15,7 +16,7 @@ import { deriveWfhHours, generateWfhDiary, type WfhLeaveRange } from "./lib/work
 import { applyUserRules, RULE_CREDIT_BUCKETS } from "./lib/rules";
 import { sha256hex, sha256hexBytes } from "./lib/base64";
 import { getLLM, type LLM } from "./llm";
-import { extractReceipt, extractReceipts, extractFromText, extractColumnMap, extractStatement, extractBatch, extractSituationDraft, extractOccupationRules, extractGuide, extractAnswer, classifyDocument, extractPayslip, extractIncomeStatement, extractAgentStatement, extractDepreciationSchedule, extractDividend, extractHealthClaim, batchParams, parseBatchMessage, mapBatchItems, ALLOWED_NAV_ROUTES, type Extracted, type ExtractedStatement, type SituationDraft, type OccupationRulesDraft, type AnswerResult } from "./extract";
+import { extractReceipt, extractReceipts, extractFromText, extractColumnMap, extractStatement, extractBatch, extractSituationDraft, extractOccupationRules, extractGuide, extractAnswer, classifyDocument, extractPayslip, extractIncomeStatement, extractNoticeOfAssessment, extractAgentStatement, extractDepreciationSchedule, extractDividend, extractHealthClaim, batchParams, parseBatchMessage, mapBatchItems, ALLOWED_NAV_ROUTES, type Extracted, type ExtractedStatement, type SituationDraft, type OccupationRulesDraft, type AnswerResult } from "./extract";
 import { mapIncomeStatementToRows } from "./lib/income-statement";
 import { fyForDate, buildReport, useStatusDeniedExpr, propertyUndeterminedGatedExpr } from "./lib/report";
 import { runScan, type ScanResult, type ScanTxn } from "./lib/scan";
@@ -2345,6 +2346,23 @@ export class TaxAgent extends Agent<Env> {
           needs_review: dv.confidence < CONFIDENCE_THRESHOLD ? 1 : 0,
         });
         await this.notify(userId, `Dividend from ${dv.payer ?? "issuer"}: $${(gross / 100).toFixed(2)}${dv.franking_credit_cents ? `, franking credit $${(dv.franking_credit_cents / 100).toFixed(2)}` : ""}.`, null);
+        return { docId, doc_type: cls.doc_type, routed: true };
+      }
+      case "notice_of_assessment": {
+        // B1 (noa_capture): read the NOA into a DRAFT carry-over the user confirms in File — nothing is
+        // written to the position here. OFF ⇒ fall through to file-for-review (no NOA is otherwise touched).
+        if (featureOn(this.env, "noa_capture")) {
+          const noa = await extractNoticeOfAssessment(llm, bytes, mime);
+          await captureNoaDraft(this.env, userId, docId, noa);
+          await this.notify(
+            userId,
+            `Read your ${fyLabel(noa.assessed_fy)} Notice of Assessment — open File (switch to ${fyLabel(noa.assessed_fy)}) to review the carry-overs and close the year. General information only.`,
+            null,
+          );
+          return { docId, doc_type: cls.doc_type, routed: true };
+        }
+        const na = cls.doc_type.replace(/_/g, " ");
+        await this.notify(userId, `Filed your ${na} to Documents for your records — enter any figures manually if they belong in this year's return.`, null);
         return { docId, doc_type: cls.doc_type, routed: true };
       }
       default: {

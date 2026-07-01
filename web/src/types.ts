@@ -220,6 +220,27 @@ export interface OpeningDepreciation {
   notes: string | null;
 }
 
+// NOA-derived carry-over (B1 noa_capture) — a draft the user confirms in File to close a year.
+export interface NoaCarryover {
+  id: string;
+  source_fy: number;
+  target_fy: number;
+  noa_document_id: string | null;
+  status: "draft" | "confirmed";
+  taxable_income_cents: number | null;
+  tax_assessed_cents: number | null;
+  net_capital_losses_cf_cents: number;
+  prior_year_tax_losses_cf_cents: number;
+  opening_depreciation_cents: number;
+  hecs_balance_cents: number | null;
+  mls_debt_cents: number | null;
+  franking_refund_cents: number | null;
+  capital_loss_carryin_id: string | null;
+  depreciation_opening_id: string | null;
+  confidence: number | null;
+  confirmed_at: string | null;
+}
+
 // Mirror of the server taxonomy (src/lib/taxonomy.ts BUCKETS) — keep in sync. Drives the rule
 // bucket <select> (Settings) and the per-transaction correction dropdown (TxnDetail). Previously
 // stale at 5, which silently hid income_*/refund/asset from both the rule editor and corrections

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -6,7 +6,9 @@ import { api, saveBlob } from "../api";
 import { useActiveFy } from "../lib/activeFy";
 import { useFeatures } from "../lib/features";
 import { Card, Spinner, money } from "../components/ui";
-import type { PositionLine, ReadinessFinding, ClaimReview, ClaimReviewItem, OccupationRuleCandidate } from "../types";
+import type { PositionLine, ReadinessFinding, ClaimReview, ClaimReviewItem, OccupationRuleCandidate, NoaCarryover } from "../types";
+
+const fyLabelOf = (start: number) => `${start}-${String((start + 1) % 100).padStart(2, "0")}`;
 
 const SEVERITY_ORDER: ReadinessFinding["severity"][] = ["blocker", "review", "info"];
 const SEVERITY_LABEL: Record<ReadinessFinding["severity"], string> = { blocker: "Must fix", review: "Review", info: "Good to know" };
@@ -164,6 +166,9 @@ export function Filing() {
           {/* Soft sign-off — the user's own "ready to hand off" attestation (re-openable, never a lock). */}
           <SignOff fy={fy} ready={data.readiness_score.ready} />
 
+          {/* B1 (noa_capture): close the year off an ATO Notice of Assessment + capture the carry-overs. */}
+          {features.has("noa_capture") && <NoaCloseOff />}
+
           {/* Indicative position with reasoning */}
           <Card className="p-4">
             <div className="text-xs uppercase tracking-wide text-muted">Indicative taxable position</div>
@@ -235,6 +240,109 @@ export function Filing() {
         </>
       ) : null}
     </div>
+  );
+}
+
+// ── Close the year off a Notice of Assessment (B1 noa_capture) ────────────────
+// Upload the ATO NOA → we read it into a DRAFT and show the figures → you confirm → we write the
+// carry-overs (net capital losses flow through the CGT offset; opening depreciation is captured) and
+// mark the year closed. Confirm-before-write: nothing hits your position until you press Confirm.
+// General information only — never a computed refund/liability.
+function NoaCloseOff() {
+  const qc = useQueryClient();
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [note, setNote] = useState<string | null>(null);
+  // List every NOA carry-over, not just the active FY's — a NOA you upload is filed under ITS assessed
+  // year (usually a prior year), so scoping to the page FY would hide the draft you just uploaded.
+  const { data: carryovers } = useQuery({ queryKey: ["noa"], queryFn: () => api.noaCarryovers() });
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: ["noa"] });
+    qc.invalidateQueries({ queryKey: ["fy-signoff"] }); // the closed year may differ from the page FY
+    qc.invalidateQueries({ queryKey: ["filing-readiness"] });
+    qc.invalidateQueries({ queryKey: ["report"] }); // a confirmed capital loss changes the CGT position
+  };
+  const upload = useMutation({
+    mutationFn: (file: File) => api.uploadDocument(file),
+    onMutate: () => setNote("Reading your Notice of Assessment with Claude…"),
+    onSuccess: (r) => {
+      if (r.routed && r.doc_type === "notice_of_assessment") {
+        setNote("Read your Notice of Assessment — it's listed below (under its own tax year). Review the figures and confirm.");
+        invalidate();
+      } else if (r.doc_type === "notice_of_assessment") {
+        // routed:false covers a duplicate re-upload, a low-confidence read, OR the daily AI limit — be honest.
+        setNote("Saved to Documents but not auto-read as a Notice of Assessment — it may need review, be a duplicate, or the daily AI limit was hit. Check Documents (delete + re-upload if it's a duplicate).");
+      } else {
+        setNote(`Filed to Documents as "${r.doc_type.replace(/_/g, " ")}" — that didn't read as a Notice of Assessment.`);
+      }
+    },
+    onError: (e) => setNote((e as Error).message.includes("consent") ? "We need your consent to read documents with AI — set that up in Settings first." : `Couldn't read it: ${(e as Error).message}`),
+  });
+  const confirm = useMutation({
+    mutationFn: (id: string) => api.confirmNoa(id),
+    onSuccess: () => { toast.success("Year closed — carry-overs recorded."); setNote(null); invalidate(); },
+    onError: (e) => toast.error("Couldn't confirm", { description: (e as Error).message }),
+  });
+  const remove = useMutation({
+    mutationFn: (id: string) => api.deleteNoa(id),
+    onSuccess: () => { toast.success("Removed."); invalidate(); },
+    onError: (e) => toast.error("Couldn't remove", { description: (e as Error).message }),
+  });
+
+  const rows = carryovers ?? [];
+  return (
+    <Card className="space-y-3 p-4 print:hidden">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <div className="text-sm font-semibold">Close a tax year off your Notice of Assessment</div>
+          <p className="mt-0.5 text-xs text-muted">
+            Upload an ATO NOA (any year). We'll read the carried-forward losses and reference balances,
+            then you confirm before anything is recorded. Quillo doesn't lodge — general information only.
+          </p>
+        </div>
+        <div>
+          <input ref={fileRef} type="file" accept="image/*,application/pdf" className="hidden"
+            onChange={(e) => { const f = e.target.files?.[0]; if (f) upload.mutate(f); e.currentTarget.value = ""; }} />
+          <button onClick={() => fileRef.current?.click()} disabled={upload.isPending}
+            className="rounded-lg border border-line px-3 py-1.5 text-sm hover:bg-surface disabled:opacity-60">
+            {upload.isPending ? "Reading…" : "↑ Upload Notice of Assessment"}
+          </button>
+        </div>
+      </div>
+      {note && <p className="text-sm text-muted">{note}</p>}
+
+      {rows.map((c) => (
+        <div key={c.id} className={`rounded-lg border p-3 text-sm ${c.status === "confirmed" ? "border-safe/40 bg-safe/5" : "border-warn/40 bg-warn/5"}`}>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="font-medium">
+              {c.status === "confirmed" ? `FY ${fyLabelOf(c.source_fy)} closed off your NOA` : `We read your FY ${fyLabelOf(c.source_fy)} Notice of Assessment`}
+            </div>
+            {c.confidence != null && c.confidence < 0.66 && <span className="rounded-full bg-warn/10 px-2 py-0.5 text-xs text-warn">low confidence — double-check</span>}
+          </div>
+          <ul className="mt-2 space-y-0.5 text-muted">
+            {c.taxable_income_cents != null && <li>ATO taxable income: <span className="tabular-nums text-ink">{money(c.taxable_income_cents)}</span></li>}
+            <li>Net capital losses carried forward: <span className="tabular-nums text-ink">{money(c.net_capital_losses_cf_cents)}</span>{c.net_capital_losses_cf_cents > 0 ? ` → offsets capital gains from FY ${fyLabelOf(c.target_fy)}` : ""}</li>
+            <li>Prior-year tax losses carried forward: <span className="tabular-nums text-ink">{money(c.prior_year_tax_losses_cf_cents)}</span> <span className="text-xs">(captured — applied to your position in a later update; confirm with your agent)</span></li>
+            {c.opening_depreciation_cents > 0 && <li>Opening depreciation: <span className="tabular-nums text-ink">{money(c.opening_depreciation_cents)}</span></li>}
+            {c.hecs_balance_cents != null && <li>HELP/HECS balance: <span className="tabular-nums text-ink">{money(c.hecs_balance_cents)}</span></li>}
+            {c.mls_debt_cents != null && <li>Medicare levy surcharge: <span className="tabular-nums text-ink">{money(c.mls_debt_cents)}</span></li>}
+            {c.franking_refund_cents != null && <li>Franking credit refund (as assessed by the ATO on this notice): <span className="tabular-nums text-ink">{money(c.franking_refund_cents)}</span></li>}
+          </ul>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {c.status === "draft" ? (
+              <>
+                <button onClick={() => confirm.mutate(c.id)} disabled={confirm.isPending}
+                  className="rounded-lg bg-ink px-3 py-1.5 text-xs font-medium text-white hover:bg-ink/90 disabled:opacity-60">
+                  {confirm.isPending ? "…" : "Confirm & close the year"}
+                </button>
+                <button onClick={() => remove.mutate(c.id)} disabled={remove.isPending} className="rounded-lg border border-line px-3 py-1.5 text-xs hover:bg-surface disabled:opacity-60">Discard</button>
+              </>
+            ) : (
+              <button onClick={() => remove.mutate(c.id)} disabled={remove.isPending} className="rounded-lg border border-line px-3 py-1.5 text-xs hover:bg-surface disabled:opacity-60">Undo (re-open the year)</button>
+            )}
+          </div>
+        </div>
+      ))}
+    </Card>
   );
 }
 

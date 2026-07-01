@@ -63,7 +63,15 @@ export function Documents() {
   const upload = useMutation({
     mutationFn: (file: File) => api.uploadDocument(file),
     onSuccess: (r) => {
-      setNote(`Filed as ${DOC_LABEL[r.doc_type] ?? r.doc_type}${r.routed ? " and routed." : " — held for review."}`);
+      // Payslips / income statements route through the income engine — say so explicitly (same pipe as
+      // the Income page's "Upload income statement" button) so the user knows WHERE it landed.
+      if (r.routed && r.doc_type === "payslip") {
+        setNote("Filed as Payslip and recorded in Income — open Income and pick the statement's FY to check the row.");
+      } else if (!r.routed && r.doc_type === "payslip") {
+        setNote("You've already uploaded this exact file. To re-read it, delete it below first, then upload again.");
+      } else {
+        setNote(`Filed as ${DOC_LABEL[r.doc_type] ?? r.doc_type}${r.routed ? " and routed." : " — held for review."}`);
+      }
       qc.invalidateQueries({ queryKey: ["documents"] });
       qc.invalidateQueries({ queryKey: ["income"] });
     },

@@ -813,8 +813,8 @@ export async function handleApi(
   // ── NOA carry-overs (B1 noa_capture): confirm-before-write FY close ───────────
   if (resource === "noa" && featureOn(env, "noa_capture")) {
     if (m === "GET" && !id) {
-      const fyParam = url.searchParams.get("fy");
-      return json({ carryovers: await listNoaCarryovers(env, uid, fyParam != null && fyParam !== "" ? Number(fyParam) : undefined) });
+      const n = Number(url.searchParams.get("fy"));
+      return json({ carryovers: await listNoaCarryovers(env, uid, Number.isFinite(n) && n > 0 ? n : undefined) });
     }
     if (m === "POST" && id) return json({ carryover: await confirmNoaCarryover(env, uid, id) });
     if (m === "DELETE" && id) {

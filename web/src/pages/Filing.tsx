@@ -167,7 +167,7 @@ export function Filing() {
           <SignOff fy={fy} ready={data.readiness_score.ready} />
 
           {/* B1 (noa_capture): close the year off an ATO Notice of Assessment + capture the carry-overs. */}
-          {features.has("noa_capture") && <NoaCloseOff fy={fy} />}
+          {features.has("noa_capture") && <NoaCloseOff />}
 
           {/* Indicative position with reasoning */}
           <Card className="p-4">
@@ -248,14 +248,16 @@ export function Filing() {
 // carry-overs (net capital losses flow through the CGT offset; opening depreciation is captured) and
 // mark the year closed. Confirm-before-write: nothing hits your position until you press Confirm.
 // General information only — never a computed refund/liability.
-function NoaCloseOff({ fy }: { fy: number }) {
+function NoaCloseOff() {
   const qc = useQueryClient();
   const fileRef = useRef<HTMLInputElement>(null);
   const [note, setNote] = useState<string | null>(null);
-  const { data: carryovers } = useQuery({ queryKey: ["noa", fy], queryFn: () => api.noaCarryovers(fy) });
+  // List every NOA carry-over, not just the active FY's — a NOA you upload is filed under ITS assessed
+  // year (usually a prior year), so scoping to the page FY would hide the draft you just uploaded.
+  const { data: carryovers } = useQuery({ queryKey: ["noa"], queryFn: () => api.noaCarryovers() });
   const invalidate = () => {
-    qc.invalidateQueries({ queryKey: ["noa", fy] });
-    qc.invalidateQueries({ queryKey: ["fy-signoff", fy] });
+    qc.invalidateQueries({ queryKey: ["noa"] });
+    qc.invalidateQueries({ queryKey: ["fy-signoff"] }); // the closed year may differ from the page FY
     qc.invalidateQueries({ queryKey: ["filing-readiness"] });
     qc.invalidateQueries({ queryKey: ["report"] }); // a confirmed capital loss changes the CGT position
   };
@@ -264,10 +266,11 @@ function NoaCloseOff({ fy }: { fy: number }) {
     onMutate: () => setNote("Reading your Notice of Assessment with Claude…"),
     onSuccess: (r) => {
       if (r.routed && r.doc_type === "notice_of_assessment") {
-        setNote(`Read your Notice of Assessment — review the carry-overs below and confirm. If it's for a different year, switch the FY.`);
+        setNote("Read your Notice of Assessment — it's listed below (under its own tax year). Review the figures and confirm.");
         invalidate();
-      } else if (!r.routed && r.doc_type === "notice_of_assessment") {
-        setNote("You've already uploaded this exact file — delete it in Documents first to re-read it.");
+      } else if (r.doc_type === "notice_of_assessment") {
+        // routed:false covers a duplicate re-upload, a low-confidence read, OR the daily AI limit — be honest.
+        setNote("Saved to Documents but not auto-read as a Notice of Assessment — it may need review, be a duplicate, or the daily AI limit was hit. Check Documents (delete + re-upload if it's a duplicate).");
       } else {
         setNote(`Filed to Documents as "${r.doc_type.replace(/_/g, " ")}" — that didn't read as a Notice of Assessment.`);
       }
@@ -290,9 +293,9 @@ function NoaCloseOff({ fy }: { fy: number }) {
     <Card className="space-y-3 p-4 print:hidden">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <div className="text-sm font-semibold">Close FY {fyLabelOf(fy)} off your Notice of Assessment</div>
+          <div className="text-sm font-semibold">Close a tax year off your Notice of Assessment</div>
           <p className="mt-0.5 text-xs text-muted">
-            Upload the ATO NOA for this year. We'll read the carried-forward losses and reference balances,
+            Upload an ATO NOA (any year). We'll read the carried-forward losses and reference balances,
             then you confirm before anything is recorded. Quillo doesn't lodge — general information only.
           </p>
         </div>
@@ -322,7 +325,7 @@ function NoaCloseOff({ fy }: { fy: number }) {
             {c.opening_depreciation_cents > 0 && <li>Opening depreciation: <span className="tabular-nums text-ink">{money(c.opening_depreciation_cents)}</span></li>}
             {c.hecs_balance_cents != null && <li>HELP/HECS balance: <span className="tabular-nums text-ink">{money(c.hecs_balance_cents)}</span></li>}
             {c.mls_debt_cents != null && <li>Medicare levy surcharge: <span className="tabular-nums text-ink">{money(c.mls_debt_cents)}</span></li>}
-            {c.franking_refund_cents != null && <li>Franking credit refund: <span className="tabular-nums text-ink">{money(c.franking_refund_cents)}</span></li>}
+            {c.franking_refund_cents != null && <li>Franking credit refund (as assessed by the ATO on this notice): <span className="tabular-nums text-ink">{money(c.franking_refund_cents)}</span></li>}
           </ul>
           <div className="mt-2 flex flex-wrap gap-2">
             {c.status === "draft" ? (

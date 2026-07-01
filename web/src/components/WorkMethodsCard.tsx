@@ -30,6 +30,7 @@ export function WorkMethodsCard({ fyNum }: { fyNum: number }) {
   const qc = useQueryClient();
   const { has } = useFeatures();
   const diaryEnabled = has("wfh_generate_diary");
+  const hoursSimple = has("wfh_hours_simple"); // slice 10: one primary hours field + a one-way days×weeks estimator
   const { data } = useQuery({ queryKey: ["work-use", fyNum], queryFn: () => api.workUse(fyNum) });
   const [days, setDays] = useState<string>("");
   const [weeks, setWeeks] = useState<string>("");
@@ -71,6 +72,14 @@ export function WorkMethodsCard({ fyNum }: { fyNum: number }) {
     if (days.trim() !== "") setHours(String(deriveHours(Number(days) || 0, Number(v) || DEFAULT_WEEKS)));
   };
   const onHours = (v: string) => { setHours(v); setHoursTouched(true); };
+  // Slice 10 estimator: a ONE-WAY "fill the hours from days × weeks" action (mirrors onDays exactly —
+  // derives hours, keeps the diary weekdays in step, and leaves hours non-"touched" so a live diary still
+  // drives them). The days/weeks stay persisted for the diary pre-tick, same as the OFF layout.
+  const applyEstimate = () => {
+    setHours(String(deriveHours(Number(days) || 0, Number(weeks) || DEFAULT_WEEKS)));
+    if (!weekdaysTouched) setWeekdays(defaultWeekdays(days));
+    setHoursTouched(false);
+  };
   const toggleWeekday = (d: number) => {
     setWeekdaysTouched(true);
     setWeekdays((cur) => (cur.includes(d) ? cur.filter((x) => x !== d) : [...cur, d].sort((a, b) => a - b)));
@@ -127,26 +136,58 @@ export function WorkMethodsCard({ fyNum }: { fyNum: number }) {
           registered tax agent.
         </div>
       </div>
-      <div className="grid gap-3 sm:grid-cols-2">
-        <label className="block text-sm">
-          <span className="text-xs font-medium uppercase tracking-wide text-muted">Days per week from home</span>
-          <Input type="number" min="0" max="7" step="0.5" value={days} onChange={(e) => onDays(e.target.value)} placeholder="e.g. 2" />
-        </label>
-        <label className="block text-sm">
-          <span className="text-xs font-medium uppercase tracking-wide text-muted">Working weeks (≈48)</span>
-          <Input type="number" min="0" max="52" value={weeks} onChange={(e) => onWeeks(e.target.value)} placeholder="48" />
-        </label>
-      </div>
-      <label className="block text-sm">
-        <span className="text-xs font-medium uppercase tracking-wide text-muted">Hours worked from home this year (editable)</span>
-        <Input type="number" min="0" value={hours} onChange={(e) => onHours(e.target.value)} placeholder="e.g. 730" />
-        <span className="mt-0.5 block text-xs text-muted">
-          ≈ {money(estWfh)} at 70c/hr
-          {diaryActive && !hoursTouched
-            ? ` · from your diary (≈ ${weekdays.length} day(s)/week — exact hours generated in your hand-off)`
-            : days.trim() !== "" ? ` · derived from ${days} day(s)/week` : ""}
-        </span>
-      </label>
+      {hoursSimple ? (
+        /* Slice 10: one authoritative "hours" field; days×weeks demoted to a one-way estimator helper. */
+        <>
+          <label className="block text-sm">
+            <span className="text-xs font-medium uppercase tracking-wide text-muted">Hours worked from home this year</span>
+            <Input type="number" min="0" value={hours} onChange={(e) => onHours(e.target.value)} placeholder="e.g. 730" />
+            <span className="mt-0.5 block text-xs text-muted">
+              ≈ {money(estWfh)} at 70c/hr
+              {diaryActive && !hoursTouched
+                ? ` · from your diary (≈ ${weekdays.length} day(s)/week — exact hours generated in your hand-off)`
+                : hoursTouched || hours.trim() !== "" ? "" : " · enter your hours, or estimate them below"}
+            </span>
+          </label>
+          <details className="rounded-lg border border-line bg-surface px-3 py-2">
+            <summary className="cursor-pointer text-xs font-medium text-muted">Not sure of your hours? Estimate from days × weeks</summary>
+            <div className="mt-2 grid gap-3 sm:grid-cols-2">
+              <label className="block text-sm">
+                <span className="text-xs font-medium uppercase tracking-wide text-muted">Days per week from home</span>
+                <Input type="number" min="0" max="7" step="0.5" value={days} onChange={(e) => setDays(e.target.value)} placeholder="e.g. 2" />
+              </label>
+              <label className="block text-sm">
+                <span className="text-xs font-medium uppercase tracking-wide text-muted">Working weeks (≈48)</span>
+                <Input type="number" min="0" max="52" value={weeks} onChange={(e) => setWeeks(e.target.value)} placeholder="48" />
+              </label>
+            </div>
+            <Button variant="ghost" onClick={applyEstimate} className="mt-2 text-sm">Estimate ≈ {money(Math.round(deriveHours(Number(days) || 0, Number(weeks) || DEFAULT_WEEKS) * 70))} → fill the hours above</Button>
+          </details>
+        </>
+      ) : (
+        <>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="block text-sm">
+              <span className="text-xs font-medium uppercase tracking-wide text-muted">Days per week from home</span>
+              <Input type="number" min="0" max="7" step="0.5" value={days} onChange={(e) => onDays(e.target.value)} placeholder="e.g. 2" />
+            </label>
+            <label className="block text-sm">
+              <span className="text-xs font-medium uppercase tracking-wide text-muted">Working weeks (≈48)</span>
+              <Input type="number" min="0" max="52" value={weeks} onChange={(e) => onWeeks(e.target.value)} placeholder="48" />
+            </label>
+          </div>
+          <label className="block text-sm">
+            <span className="text-xs font-medium uppercase tracking-wide text-muted">Hours worked from home this year (editable)</span>
+            <Input type="number" min="0" value={hours} onChange={(e) => onHours(e.target.value)} placeholder="e.g. 730" />
+            <span className="mt-0.5 block text-xs text-muted">
+              ≈ {money(estWfh)} at 70c/hr
+              {diaryActive && !hoursTouched
+                ? ` · from your diary (≈ ${weekdays.length} day(s)/week — exact hours generated in your hand-off)`
+                : days.trim() !== "" ? ` · derived from ${days} day(s)/week` : ""}
+            </span>
+          </label>
+        </>
+      )}
       <div className="space-y-2 border-t border-line pt-3">
         <label className="flex items-start gap-2 text-sm">
           <input type="checkbox" checked={office} onChange={(e) => setOffice(e.target.checked)} className="mt-0.5 h-4 w-4 flex-none accent-forest" />

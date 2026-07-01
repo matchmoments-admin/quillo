@@ -118,6 +118,7 @@ function incomeTypeWhy(incomeType: string): string {
     case "interest": return "Interest you recorded (generally item 10).";
     case "managed_fund_distribution": return "Managed-fund distribution components you recorded (generally item 13U/20).";
     case "foreign_pension": return "Foreign pension income you recorded (generally item 20).";
+    case "non_cash_business": return "Non-cash business income (gifted products / barter received in the course of your business) included at market value — keep evidence of how you valued it.";
     default: return "Income you recorded for this year.";
   }
 }
@@ -502,7 +503,7 @@ export function assessReadiness(input: {
     if (ex.gross_cents <= 0) continue;
     if (ex.income_type === "non_cash_benefit") {
       findings.push(f("non_cash_benefit", "income", "review", "Non-cash benefits recorded (gifted products / barter)",
-        `You've recorded ${money(ex.gross_cents)} of non-cash benefits (e.g. gifted products received for promotion). These are EXCLUDED from your indicative position. If you're carrying on a business, benefits like these can be assessable at their market value — keep evidence of how you valued them and confirm the treatment with a registered tax agent.${DEFER}`, true,
+        `You've recorded ${money(ex.gross_cents)} of non-cash benefits (e.g. gifted products received for promotion). These are EXCLUDED from your indicative position. If you're carrying on a business, benefits like these can be assessable at their market value — record them as "non-cash business income" instead so they count, keep evidence of how you valued them, and confirm the treatment with a registered tax agent.${DEFER}`, true,
         [{ kind: "income", label: "non-cash benefits" }]));
     } else if (ex.income_type === "super_pension") {
       findings.push(f("super_pension", "income", "review", "Super pension income recorded (account-based / retirement pension)",

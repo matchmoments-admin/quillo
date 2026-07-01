@@ -1596,6 +1596,13 @@ export class TaxAgent extends Agent<Env> {
     },
   ): Promise<string> {
     const id = crypto.randomUUID();
+    // non_cash_income (audit wave 4): 'non_cash_business' is ASSESSABLE by construction (it is not in
+    // NON_ASSESSABLE_INCOME_TYPES), so its creation is gated — flag OFF ⇒ no rows can exist ⇒ every
+    // total is byte-identical. This is deliberately the only type check here: recordIncome otherwise
+    // accepts free-form types, and gating creation (not summation) keeps the engine untouched.
+    if (inc.income_type === "non_cash_business" && !featureOn(this.env, "non_cash_income")) {
+      throw new Error("non_cash_business income requires the non_cash_income feature");
+    }
     // A property_id reaching the income table from the untrusted POST must belong to this tenant —
     // assertOwns no-ops on null/undefined, so trusted internal callers (clarify/payslip) are unaffected.
     await assertOwns(this.env, userId, [{ table: "properties", id: inc.property_id ?? undefined, label: "property" }]);

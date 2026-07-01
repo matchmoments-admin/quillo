@@ -45,6 +45,7 @@ const TYPE_LABEL: Record<string, string> = {
   foreign_rent: "Foreign rent",
   foreign_business: "Foreign business income",
   non_cash_benefit: "Non-cash benefit (captured, not in position)",
+  non_cash_business: "Non-cash business income (market value)",
   super_pension: "Super pension (captured, not in position)",
   other: "Other",
 };
@@ -339,6 +340,10 @@ function AddIncomeForm({ fy, onDone }: { fy: string; onDone: () => void }) {
         <label className="text-sm">Type
           <select className="mt-1 w-full rounded-lg border border-line px-3 py-2 text-sm" value={type} onChange={(e) => setType(e.target.value)}>
             {INCOME_TYPES.map((t) => <option key={t} value={t}>{TYPE_LABEL[t]}</option>)}
+            {/* non_cash_income (audit wave 4): assessable non-cash BUSINESS income (barter/gifted
+                products received in a business, at market value). Only offered when the flag is on —
+                the server also rejects the type when off. */}
+            {has("non_cash_income") && <option value="non_cash_business">Non-cash business income (market value)</option>}
           </select>
         </label>
         {entities.length > 0 && (

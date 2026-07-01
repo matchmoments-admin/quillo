@@ -237,6 +237,21 @@ const asset = (id: string, u: string, costCents: number, depCents: number, prope
   exp("p6tBeach", u, 150000, "property_rented", "undetermined", "p6beach");
 }
 
+// ── Persona NC (audit wave 4): Ivy, influencer — non-cash business income at market value ──
+// Assessability is TYPE-driven (NON_ASSESSABLE_INCOME_TYPES is a denylist): a `non_cash_business` row
+// counts at market value; the same value as `non_cash_benefit` stays capture-only. The flag gates
+// CREATION (recordIncome rejects the type when off) — these rows are seeded directly, proving the
+// summation path needs no flag branch.
+{
+  const u = "pnc";
+  seedTenant(u, "PNC Ivy influencer");
+  run(`INSERT INTO entities (id, user_id, kind, name, person_id, entity_type) VALUES ('pnceInd', ?, 'individual', 'Ivy (sole trader)', ?, 'individual')`, u, `person_self_${u}`);
+  run(`INSERT INTO income_activities (id, user_id, entity_id, activity_type, label) VALUES ('pnciaBiz', ?, 'pnceInd', 'business', 'Content creation')`, u);
+  inc("pnciCash", u, "business", 4000000);            // $40k platform/brand cash income
+  inc("pnciGift", u, "non_cash_business", 600000);     // $6k of gifted product at market value → ASSESSABLE
+  inc("pnciHobby", u, "non_cash_benefit", 200000);     // $2k personal gift → capture-only, excluded
+}
+
 // ── Persona 7: Nadia, nurse with TWO employers (multi-income aggregation) ──
 {
   const u = "p7";
@@ -434,6 +449,12 @@ async function main() {
   const r6prop = r6.per_property.find((p) => p.property_id === "p6prop");
   check("P6: negative gearing NETS — ($130k salary + $20k rent) − $30k expenses − $20k dep = $100k", r6.taxable_position_cents === 10000000);
   check("P6: per-property shows the $30k rental loss", r6prop?.net_cents === -3000000);
+
+  // ── Persona NC (audit wave 4): non-cash business income ──
+  const rNc = await buildReport(env, "pnc", 2025);
+  check("PNC: non-cash BUSINESS income counts at market value ($40k cash + $6k gifted)", rNc.income.gross_cents === 4600000 && rNc.taxable_position_cents === 4600000);
+  check("PNC: a personal non-cash benefit stays capture-only (excluded_by_type carries the $2k)", (rNc.income.excluded_by_type ?? []).some((e) => e.income_type === "non_cash_benefit" && e.gross_cents === 200000));
+
 
   // ── Persona 7: nurse, two employers ──
   const r7 = await buildReport(env, "p7", 2025);

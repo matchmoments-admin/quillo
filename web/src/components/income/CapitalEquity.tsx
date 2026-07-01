@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../api";
-import { Card, Button, Input, money } from "../ui";
+import { Card, Button, Input, money, InfoTip } from "../ui";
 import type { CgtAssetRow } from "../../types";
 
 const CGT_KINDS = ["shares", "crypto", "property", "managed_fund", "other"] as const;
@@ -23,7 +23,7 @@ export function CapitalEquity() {
   return (
     <Card className="space-y-3 p-4">
       <div className="flex items-center justify-between">
-        <div className="text-sm font-semibold">Capital &amp; equity (CGT)</div>
+        <div className="text-sm font-semibold">Capital &amp; equity (CGT) <InfoTip k="capital_gains" /></div>
         <Button variant="ghost" onClick={() => setAddingAsset((v) => !v)}>{addingAsset ? "Cancel" : "+ Add a holding"}</Button>
       </div>
       <p className="text-xs text-muted">Record what you hold (shares, crypto, property) and what you sold. The net capital gain — after capital losses and the 50% discount on assets held 12+ months — appears on your year-end report. General information only; confirm with a registered tax agent.</p>

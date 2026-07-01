@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import { useFeatures } from "../lib/features";
-import { Card, Spinner, Button, Input, money, parseMoneyToCents } from "../components/ui";
+import { Card, Spinner, Button, Input, money, parseMoneyToCents, InfoTip } from "../components/ui";
 import type { AssetRow, ScheduleRow } from "../types";
 
 const CLASS_LABEL: Record<string, string> = {
@@ -27,7 +27,7 @@ export function Assets() {
         <Button variant="ghost" onClick={() => setAdding((v) => !v)}>{adding ? "Cancel" : "+ Add asset"}</Button>
       </div>
       <p className="text-sm text-muted">
-        Decline in value carries forward each year automatically. Upload a quantity-surveyor
+        Decline in value <InfoTip k="depreciation" /> carries forward each year automatically. Upload a quantity-surveyor
         schedule from Documents to bulk-import. General information only — not tax advice.
       </p>
 

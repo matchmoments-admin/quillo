@@ -163,9 +163,10 @@ export function App() {
           />
         )}
         <Sidebar needsReview={needsReview} open={drawer} />
+        {has("mobile_bottom_tabs") && <BottomTabBar needsReview={needsReview} onMore={() => setDrawer(true)} />}
 
         <div className="flex min-h-screen flex-col">
-          <main className="flex-1">
+          <main className={has("mobile_bottom_tabs") ? "flex-1 pb-16 lg:pb-0" : "flex-1"}>
             <div className="mx-auto max-w-5xl px-5 py-8 sm:px-8">
               {/* Clarity spine + per-tab guide — hidden on the full-screen onboarding wizard. */}
               {pathname !== "/onboarding" && (
@@ -226,10 +227,54 @@ function Brand() {
   );
 }
 
+// Slice 13 (nav_disclosure): the secondary groups tucked behind a "More" disclosure; the journey stops
+// + Dashboard stay expanded. Keyed by the exact GROUPS labels.
+const SECONDARY_GROUPS = new Set(["5 · Save", "Connections", "Partner", "Platform"]);
+
 function Sidebar({ needsReview, open }: { needsReview: number; open: boolean }) {
   const { has } = useFeatures();
   const { isAdmin } = useAdminAccess();
   const { isPartner } = usePartnerAccess();
+  const navDisclosure = has("nav_disclosure");
+  // One group → its nav block (or null when every item is gated off). Shared by the flat list and the
+  // "More" disclosure so both render identically.
+  const groupNode = (g: NavGroup) => {
+    const items = g.items.filter((it) => (!it.flag || has(it.flag)) && (!it.admin || isAdmin) && (!it.partner || isPartner));
+    if (!items.length) return null;
+    return (
+      <div key={g.label || "home"} className="mt-5 first:mt-1">
+        {g.label && <div className="px-3 pb-2 text-[10px] font-bold uppercase tracking-[0.2em] text-cream/45">{g.label}</div>}
+        {items.map((it) => (
+          <NavLink
+            key={it.to}
+            to={it.to}
+            end={it.end}
+            className={({ isActive }) =>
+              `flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold transition ${
+                isActive ? "bg-sage text-forest" : "text-cream/70 hover:bg-cream/10 hover:text-cream"
+              }`
+            }
+          >
+            {({ isActive }) => (
+              <>
+                <Icon name={it.icon} />
+                <span>{it.label}</span>
+                {it.badge && needsReview > 0 && (
+                  <span
+                    className={`ml-auto rounded-full px-2 py-0.5 text-[11px] font-bold tnum ${
+                      isActive ? "bg-forest text-sage" : "bg-green text-cream"
+                    }`}
+                  >
+                    {needsReview}
+                  </span>
+                )}
+              </>
+            )}
+          </NavLink>
+        ))}
+      </div>
+    );
+  };
   return (
     <aside
       className={`fixed inset-y-0 left-0 z-50 flex w-[252px] flex-col bg-forest px-4 py-5 text-cream transition-transform lg:sticky lg:top-0 lg:z-auto lg:h-screen lg:translate-x-0 ${
@@ -244,43 +289,23 @@ function Sidebar({ needsReview, open }: { needsReview: number; open: boolean }) 
       </div>
 
       <nav className="-mx-1 flex-1 overflow-y-auto px-1">
-        {GROUPS.map((g) => {
-          const items = g.items.filter((it) => (!it.flag || has(it.flag)) && (!it.admin || isAdmin) && (!it.partner || isPartner));
-          if (!items.length) return null; // hide a group whose every item is gated off (e.g. Platform for non-admins)
-          return (
-          <div key={g.label || "home"} className="mt-5 first:mt-1">
-            {g.label && <div className="px-3 pb-2 text-[10px] font-bold uppercase tracking-[0.2em] text-cream/45">{g.label}</div>}
-            {items.map((it) => (
-              <NavLink
-                key={it.to}
-                to={it.to}
-                end={it.end}
-                className={({ isActive }) =>
-                  `flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold transition ${
-                    isActive ? "bg-sage text-forest" : "text-cream/70 hover:bg-cream/10 hover:text-cream"
-                  }`
-                }
-              >
-                {({ isActive }) => (
-                  <>
-                    <Icon name={it.icon} />
-                    <span>{it.label}</span>
-                    {it.badge && needsReview > 0 && (
-                      <span
-                        className={`ml-auto rounded-full px-2 py-0.5 text-[11px] font-bold tnum ${
-                          isActive ? "bg-forest text-sage" : "bg-green text-cream"
-                        }`}
-                      >
-                        {needsReview}
-                      </span>
-                    )}
-                  </>
-                )}
-              </NavLink>
-            ))}
-          </div>
-          );
-        })}
+        {navDisclosure ? (
+          <>
+            {GROUPS.filter((g) => !SECONDARY_GROUPS.has(g.label)).map(groupNode)}
+            {(() => {
+              const secondary = GROUPS.filter((g) => SECONDARY_GROUPS.has(g.label)).map(groupNode).filter(Boolean);
+              if (!secondary.length) return null;
+              return (
+                <details className="mt-5">
+                  <summary className="cursor-pointer list-none px-3 pb-2 text-[10px] font-bold uppercase tracking-[0.2em] text-cream/45 hover:text-cream/70">More ▾</summary>
+                  {secondary}
+                </details>
+              );
+            })()}
+          </>
+        ) : (
+          GROUPS.map(groupNode)
+        )}
       </nav>
 
       <div className="mt-4 border-t border-cream/15 pt-3">
@@ -301,6 +326,36 @@ function Sidebar({ needsReview, open }: { needsReview: number; open: boolean }) 
         </div>
       </div>
     </aside>
+  );
+}
+
+// Slice 12 (mobile_bottom_tabs): a fixed bottom tab bar on <lg. Five thumb-reachable destinations that
+// mirror the journey (Home · Bring in · Sort · Position) + More (opens the existing drawer for everything
+// else). Routes reuse GROUPS; the Sort badge reuses the shared needsReview count. Desktop is untouched.
+const BOTTOM_TABS: { to: string; label: string; icon: IconName; end?: boolean; badge?: boolean }[] = [
+  { to: "/", label: "Home", icon: "grid", end: true },
+  { to: "/accounts", label: "Bring in", icon: "card" },
+  { to: "/transactions", label: "Sort", icon: "list", badge: true },
+  { to: "/reports", label: "Position", icon: "bars" },
+];
+function BottomTabBar({ needsReview, onMore }: { needsReview: number; onMore: () => void }) {
+  const cls = (isActive: boolean) => `relative flex flex-1 flex-col items-center gap-0.5 py-2 text-[11px] font-semibold ${isActive ? "text-forest" : "text-ink/55"}`;
+  return (
+    <nav className="fixed inset-x-0 bottom-0 z-30 flex border-t border-line bg-paper/95 backdrop-blur lg:hidden" aria-label="Primary">
+      {BOTTOM_TABS.map((t) => (
+        <NavLink key={t.to} to={t.to} end={t.end} className={({ isActive }) => cls(isActive)}>
+          <Icon name={t.icon} />
+          <span>{t.label}</span>
+          {t.badge && needsReview > 0 && (
+            <span className="absolute right-[22%] top-1 rounded-full bg-green px-1.5 text-[10px] font-bold text-cream tnum">{needsReview}</span>
+          )}
+        </NavLink>
+      ))}
+      <button type="button" onClick={onMore} className={cls(false)} aria-label="More">
+        <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M3 5h12M3 9h12M3 13h12" /></svg>
+        <span>More</span>
+      </button>
+    </nav>
   );
 }
 

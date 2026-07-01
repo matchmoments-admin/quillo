@@ -199,7 +199,7 @@ export interface Report {
   // Phase 3a: personal-deductible super contributions reduce assessable income (s290-150), capped at the
   // concessional cap. SUBTRACTED from the position. Employer SG / salary-sacrifice are pre-tax → never here.
   // Present only when super_deduction is on AND there are personal_deductible contributions.
-  super_deduction?: { claimed_cents: number; contributed_cents: number; cap_cents: number; over_cap: boolean };
+  super_deduction?: SuperDeduction; // FY aggregate incl. its return label (D12; D11 is foreign-pension UPP, never super)
   taxable_position_cents: number;      // total_income + net capital gain + ESS discount + trust distributions + franking gross-up − deductions − depreciation − super (indicative)
   taxable_position_confirmed_cents?: number; // #255: CONFIRMED end of the range — as above but discretionary tracked spend swapped for resolved_deductible_cents (method-based deductions stay). ≥ taxable_position_cents. Present only when position_confirmed_range is on ⇒ byte-identical off.
 }

@@ -626,6 +626,10 @@ export interface SuperDeduction {
   contributed_cents: number;  // total personal-deductible contributions for the FY
   cap_cents: number;          // concessional cap (from the rule pack)
   over_cap: boolean;          // contributed beyond the cap (excess isn't deductible + may be taxed)
+  // The individual-return label for personal super contributions is D12 (supplementary return).
+  // NEVER D11 — that's the deductible amount of a foreign pension/annuity's undeducted purchase
+  // price (UPP). Constant here (not a per-row field) because super is an FY aggregate, not a txn.
+  ato_label: "D12";
 }
 
 /**
@@ -644,7 +648,7 @@ export async function superConcessionalDeduction(env: Env, userId: string, start
   } catch (e) {
     if (!/no such table|no such column/i.test((e as Error).message)) throw e;
   }
-  return { claimed_cents: Math.min(contributed, capCents), contributed_cents: contributed, cap_cents: capCents, over_cap: contributed > capCents };
+  return { claimed_cents: Math.min(contributed, capCents), contributed_cents: contributed, cap_cents: capCents, over_cap: contributed > capCents, ato_label: "D12" };
 }
 
 /**

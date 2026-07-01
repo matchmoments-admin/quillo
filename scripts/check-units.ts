@@ -48,7 +48,7 @@ import {
 import { buildGuidePrompt, buildAskSystem, summariseReportForAsk, renderTxnDigest } from "../src/lib/guide";
 import { validateProposedActions } from "../src/extract";
 import type { Progress } from "../src/lib/progress";
-import { fyBounds, fyLabel, basPositionFrom, fyStartYearStr, parseFyStartYear, normaliseFyLabel, type RulePackThresholds } from "../src/lib/ledger-totals";
+import { fyBounds, fyLabel, basPositionFrom, fyStartYearStr, parseFyStartYear, normaliseFyLabel, superConcessionalDeduction, type RulePackThresholds } from "../src/lib/ledger-totals";
 import { currentFyStartYear, reportToCsv, type Report } from "../src/lib/report";
 import { resolveJurisdiction, fyBoundsFor, fyStartYearForDate, fyStartYearSqlExpr, baseCurrencyOf, AU_DESCRIPTOR, UK_DESCRIPTOR } from "../src/lib/jurisdiction";
 import { toBaseCurrency } from "../src/lib/fx";
@@ -2690,6 +2690,15 @@ console.log("currency de-anchoring (toBaseCurrency / baseCurrencyOf / currencySy
   check("atoReturnLabel: D10 passes through", atoReturnLabel("D10") === "D10");
   check("atoReturnLabel: a non-D label is NOT guessed", atoReturnLabel("rental:repairs") === "Work-related (confirm label)");
   check("atoReturnLabel: null → confirm placeholder", atoReturnLabel(null) === "Work-related (confirm label)");
+}
+
+// ── Personal super deduction: the return label is D12, never D11 (audit wave 1, PR-4). D11 is the
+// foreign-pension UPP label — mapping super there would report the deduction at the wrong item.
+{
+  const stubEnv = { DB: { prepare: () => ({ bind: () => ({ first: async () => { throw new Error("no such table: super_contributions"); } }) }) } } as unknown as Parameters<typeof superConcessionalDeduction>[0];
+  const sd = await superConcessionalDeduction(stubEnv, "u", 2025, 3_000_000);
+  check("personal super aggregate carries ato_label D12", sd.ato_label === "D12");
+  check("D12 label is constant even with zero contributions", sd.contributed_cents === 0 && sd.claimed_cents === 0 && sd.ato_label === "D12");
 }
 
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);

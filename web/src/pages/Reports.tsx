@@ -222,7 +222,7 @@ export function Reports() {
 
           {data!.super_deduction && (
             <Card className="overflow-hidden">
-              <Th>Personal super contributions (deduction)</Th>
+              <Th>Personal super contributions (deduction{data!.super_deduction.ato_label ? ` — ${data!.super_deduction.ato_label}` : ""})</Th>
               <div className="grid grid-cols-2 gap-4 p-4 sm:grid-cols-3">
                 <Stat label="Deduction claimed" value={money(data!.super_deduction.claimed_cents)} />
                 <Stat label="Contributed" value={money(data!.super_deduction.contributed_cents)} />

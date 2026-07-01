@@ -80,6 +80,7 @@ export interface FilingReadinessSignals {
   rideshareGstLikely?: boolean; // occupation/activity looks like taxi/ride-sourcing → GST from the first dollar (Div 144)
   superNonConcessionalCapCents?: number | null; // reference NCC cap for the FY
   nonConcessionalContributedCents?: number; // total type='non_concessional' super contributions this FY
+  nonCashIncomeEnabled?: boolean; // non_cash_income flag (audit wave 4) — gates the non_cash_benefit nudge's copy fork so OFF keeps the legacy wording verbatim
 }
 
 export interface FilingReadiness {
@@ -118,6 +119,7 @@ function incomeTypeWhy(incomeType: string): string {
     case "interest": return "Interest you recorded (generally item 10).";
     case "managed_fund_distribution": return "Managed-fund distribution components you recorded (generally item 13U/20).";
     case "foreign_pension": return "Foreign pension income you recorded (generally item 20).";
+    case "non_cash_business": return "Non-cash business income (gifted products / barter received in the course of your business) included at market value — keep evidence of how you valued it.";
     default: return "Income you recorded for this year.";
   }
 }
@@ -501,8 +503,14 @@ export function assessReadiness(input: {
   for (const ex of report.income.excluded_by_type ?? []) {
     if (ex.gross_cents <= 0) continue;
     if (ex.income_type === "non_cash_benefit") {
+      // Copy fork gated on the non_cash_income flag: pointing users at the "non-cash business income"
+      // type is only actionable (and only rendered in the form) when the flag is on — OFF keeps the
+      // legacy wording verbatim (byte-identical).
+      const ncCopy = signals.nonCashIncomeEnabled
+        ? `You've recorded ${money(ex.gross_cents)} of non-cash benefits (e.g. gifted products received for promotion). These are EXCLUDED from your indicative position. If you're carrying on a business, benefits like these can be assessable at their market value — record them as "non-cash business income" instead so they count, keep evidence of how you valued them, and confirm the treatment with a registered tax agent.${DEFER}`
+        : `You've recorded ${money(ex.gross_cents)} of non-cash benefits (e.g. gifted products received for promotion). These are EXCLUDED from your indicative position. If you're carrying on a business, benefits like these can be assessable at their market value — keep evidence of how you valued them and confirm the treatment with a registered tax agent.${DEFER}`;
       findings.push(f("non_cash_benefit", "income", "review", "Non-cash benefits recorded (gifted products / barter)",
-        `You've recorded ${money(ex.gross_cents)} of non-cash benefits (e.g. gifted products received for promotion). These are EXCLUDED from your indicative position. If you're carrying on a business, benefits like these can be assessable at their market value — keep evidence of how you valued them and confirm the treatment with a registered tax agent.${DEFER}`, true,
+        ncCopy, true,
         [{ kind: "income", label: "non-cash benefits" }]));
     } else if (ex.income_type === "super_pension") {
       findings.push(f("super_pension", "income", "review", "Super pension income recorded (account-based / retirement pension)",
@@ -562,7 +570,10 @@ export function assessReadiness(input: {
   // deductible. No engine branch yet (capture flag + Div 86 split is a later persona slice).
   // S2: three variants keyed off the self-declared psi_status on the business activity. We never remove
   // deductions (deny-by-default already excludes unconfirmed payg spend) — the value is sharper guidance.
-  const hasBusinessIncome = report.income.by_type.some((it) => it.income_type === "business" || it.income_type === "foreign_business");
+  // non_cash_business rows can only exist when the non_cash_income flag is on (creation-gated), so
+  // including them keeps flag-OFF byte-identical while barter-only businesses still get PSI/GST nudges.
+  const BUSINESS_INCOME_TYPES = new Set(["business", "foreign_business", "non_cash_business"]);
+  const hasBusinessIncome = report.income.by_type.some((it) => BUSINESS_INCOME_TYPES.has(it.income_type));
   if (hasBusinessIncome && signals.psiAppliesDeclared) {
     // Declared "PSI applies" → name the specific Div 86 restrictions so the user/agent can act on them.
     findings.push(f("psi_check", "judgement", "review", "PSI applies — some business deductions are restricted under Div 86",
@@ -580,7 +591,7 @@ export function assessReadiness(input: {
   // from the rule pack (AU GST $75k today; a UK VAT threshold swaps in via the pack), and "business"
   // turnover is the assessable business income types (incl. foreign-sourced business income).
   const businessTurnoverCents = report.income.by_type
-    .filter((it) => it.income_type === "business" || it.income_type === "foreign_business")
+    .filter((it) => BUSINESS_INCOME_TYPES.has(it.income_type)) // barter/non-cash consideration counts toward GST turnover
     .reduce((s, it) => s + it.gross_cents, 0);
   if (
     signals.gstRegistrationThresholdCents != null &&

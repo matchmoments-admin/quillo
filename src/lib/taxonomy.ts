@@ -58,6 +58,10 @@ export const INCOME_TYPES = [
   "foreign_pension",
   "foreign_rent",
   "foreign_business",    // S3: foreign-sourced business income (e.g. platform/AdSense revenue, overseas
+  "non_cash_business",   // audit wave 4 (flag non_cash_income): barter / gifted products received IN A
+                         // BUSINESS, assessable at market value (IT 2668). Assessable by construction
+                         // (not in NON_ASSESSABLE_INCOME_TYPES); creation is flag-gated in recordIncome.
+                         // Personal/hobby gifts stay `non_cash_benefit` (capture-only).
                          // clients). Assessable like 'business'; foreign_tax_paid_cents links to FITO.
                          // Jurisdiction-neutral: "foreign" is relative to profiles.jurisdiction.
   "non_cash_benefit",    // S4: gifted products / barter received for promotion, captured at market value.

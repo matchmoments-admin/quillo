@@ -921,7 +921,15 @@ export async function handleApi(
         }),
       });
     }
-    if (m === "POST" && !id) return json({ id: await stub.recordIncome(uid, await req.json()) });
+    if (m === "POST" && !id) {
+      try {
+        return json({ id: await stub.recordIncome(uid, await req.json()) });
+      } catch (e) {
+        // Feature-gated income types (non_cash_business) reject as a client error, not a server fault.
+        if (/requires the non_cash_income feature/.test((e as Error).message)) return json({ error: (e as Error).message }, 400);
+        throw e;
+      }
+    }
     // Income de-dup (flag income_dedupe): suggest + confirm/undo credit↔income links.
     if (m === "GET" && id === "matches") {
       if (!featureOn(env, "income_dedupe")) return json({ suggestions: [], matched: [] });

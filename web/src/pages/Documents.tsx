@@ -47,6 +47,19 @@ export function Documents() {
     }
   }
 
+  const del = useMutation({
+    mutationFn: (id: string) => api.deleteDocument(id),
+    onSuccess: (r) => {
+      const extra = [r.income_removed ? `${r.income_removed} income row${r.income_removed === 1 ? "" : "s"}` : "", r.txns_removed ? `${r.txns_removed} transaction${r.txns_removed === 1 ? "" : "s"}` : ""].filter(Boolean).join(" + ");
+      setNote(`Deleted the document${extra ? ` and the ${extra} it created` : ""}.`);
+      qc.invalidateQueries({ queryKey: ["documents"] });
+      qc.invalidateQueries({ queryKey: ["income"] });
+      qc.invalidateQueries({ queryKey: ["transactions"] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+    onError: (e) => setNote(`Couldn't delete: ${(e as Error).message}`),
+  });
+
   const upload = useMutation({
     mutationFn: (file: File) => api.uploadDocument(file),
     onSuccess: (r) => {
@@ -106,7 +119,21 @@ export function Documents() {
                   <td className="px-4 py-2 text-muted">{d.issuer ?? "—"}</td>
                   <td className="px-4 py-2 text-muted tabular-nums">{d.doc_date ?? "—"}</td>
                   <td className="px-4 py-2 text-muted tabular-nums">{d.classification_confidence == null ? "—" : `${Math.round(d.classification_confidence * 100)}%`}</td>
-                  <td className="px-4 py-2 text-right"><button type="button" className="text-xs text-ink underline disabled:opacity-50" onClick={() => openDoc(d.id)} disabled={opening === d.id}>{opening === d.id ? "opening…" : "open"}</button></td>
+                  <td className="px-4 py-2 text-right">
+                    <div className="flex items-center justify-end gap-3">
+                      <button type="button" className="text-xs text-ink underline disabled:opacity-50" onClick={() => openDoc(d.id)} disabled={opening === d.id}>{opening === d.id ? "opening…" : "open"}</button>
+                      <button
+                        type="button"
+                        className="text-xs text-danger hover:underline disabled:opacity-50"
+                        disabled={del.isPending}
+                        onClick={() => {
+                          if (confirm("Delete this document? It also removes the income / transactions it created here. This can't be undone.")) del.mutate(d.id);
+                        }}
+                      >
+                        {del.isPending && del.variables === d.id ? "deleting…" : "delete"}
+                      </button>
+                    </div>
+                  </td>
                 </tr>
               ))}
               {!(data ?? []).length && (

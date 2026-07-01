@@ -313,6 +313,7 @@ export const api = {
   },
   addIncome: (b: Partial<IncomeRow> & { components?: AmmaComponents }) => post<{ id: string }>("/api/income", b),
   deleteIncome: (id: string) => send<{ ok: boolean }>("DELETE", `/api/income/${id}`),
+  deleteDocument: (id: string) => send<{ deleted: boolean; income_removed: number; txns_removed: number }>("DELETE", `/api/documents/${id}`),
 
   // CGT (#138) — holdings + disposal events
   cgtAssets: () => get<{ cgt_assets: CgtAssetRow[] }>("/api/cgt-assets").then((r) => r.cgt_assets),

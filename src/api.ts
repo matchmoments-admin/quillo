@@ -1101,6 +1101,8 @@ export async function handleApi(
 
   // ── Documents shelf (Smart-Inbox sink + registry) ─────────────────────────
   if (resource === "documents") {
+    // DELETE /api/documents/:id — remove the doc + cascade the income/transactions it created.
+    if (m === "DELETE" && id) return json(await stub.deleteDocument(uid, id));
     if (m === "GET" && !id) {
       return json({
         documents: await listDocuments(env, uid, {

@@ -2369,6 +2369,25 @@ export class TaxAgent extends Agent<Env> {
    * extraction or a failed reconcile flags the income row needs_review rather than dropping it.
    */
   /**
+   * Delete an uploaded document + CASCADE the rows it created, so a mis-uploaded doc can be removed and
+   * cleanly re-uploaded (no orphaned income/transactions, and the image_hash dup guard won't block a
+   * re-upload). Scoped to the tenant. Removes: the income rows it routed (source_doc_id), the receipt/
+   * bank-line transactions it created (document_id), the R2 object, then the document record. Audited.
+   */
+  async deleteDocument(userId: string, docId: string): Promise<{ deleted: boolean; income_removed: number; txns_removed: number }> {
+    const doc = await this.env.DB.prepare(`SELECT r2_key FROM documents WHERE id = ? AND user_id = ?`).bind(docId, userId).first<{ r2_key: string | null }>();
+    if (!doc) return { deleted: false, income_removed: 0, txns_removed: 0 };
+    const inc = await this.env.DB.prepare(`DELETE FROM income WHERE user_id = ? AND source_doc_id = ?`).bind(userId, docId).run();
+    const txn = await this.env.DB.prepare(`DELETE FROM transactions WHERE user_id = ? AND document_id = ?`).bind(userId, docId).run();
+    await this.env.DB.prepare(`DELETE FROM documents WHERE id = ? AND user_id = ?`).bind(docId, userId).run();
+    if (doc.r2_key) await this.env.RECEIPTS.delete(doc.r2_key).catch(() => {});
+    const income_removed = inc.meta?.changes ?? 0;
+    const txns_removed = txn.meta?.changes ?? 0;
+    await this.audit(userId, "document_deleted", JSON.stringify({ docId, income_removed, txns_removed }));
+    return { deleted: true, income_removed, txns_removed };
+  }
+
+  /**
    * Feature A1 (flag income_statement_multi): a multi-employer ATO income statement → income rows.
    * One FINALISED ("Tax ready") salary row per employer at the PRINTED Total gross (mapper enforces the
    * tax-correctness: leave already inside gross, SG/RESC/RFB reference-only), plus capture-only

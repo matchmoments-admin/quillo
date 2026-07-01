@@ -99,6 +99,33 @@ export interface Situation {
   // symbol/locale from this once on load. OMITTED for the legacy 'AUD' default (AU, or currency_base OFF)
   // so the situation payload is byte-identical for AU and the SPA keeps '$'/'en-AU' when it's absent.
   base_currency?: string;
+  // payg_express (audit wave 2): true when the tenant looks like a single-PAYG-only taxpayer, so the
+  // SPA can hide the Assets/CGT surfaces they don't need. OMITTED when the flag is off (byte-identical).
+  // Eligibility self-heals — adding a property/business/CGT asset flips it off on the next fetch.
+  payg_express_eligible?: boolean;
+}
+
+/**
+ * Pure PAYG-Express eligibility test (audit wave 2): a single self taxpayer whose data has no business,
+ * property, CGT or separate-taxpayer structure — the user the full 6-stop surface area over-serves.
+ * Employment entities (their employer) and 'individual' are fine; anything else (company, trust,
+ * novated_lease, smsf…) means the full UI. Golden-tested in check-units; getSituation feeds live counts.
+ */
+export function paygExpressEligible(input: {
+  persons: { role: string }[];
+  entities: { kind: string }[];
+  properties: unknown[];
+  businessOrRentalActivityN: number;
+  cgtAssetN: number;
+}): boolean {
+  return (
+    input.persons.length === 1 &&
+    input.persons[0]?.role === "self" &&
+    input.entities.every((e) => e.kind === "individual" || e.kind === "employment") &&
+    input.properties.length === 0 &&
+    input.businessOrRentalActivityN === 0 &&
+    input.cgtAssetN === 0
+  );
 }
 
 /** Load everything the categoriser needs to know about who this tenant is. */
@@ -130,6 +157,28 @@ export async function getSituation(env: Env, userId: string, profile: Profile): 
   // base_currency: omit the legacy 'AUD' default so the AU situation payload is byte-identical (the SPA
   // defaults money() to '$'/'en-AU' when it's absent); surface 'GBP' etc. only for a non-AUD base.
   const base_currency = baseCurrencyOf(env, jur);
+  // payg_express: the two extra COUNTs run ONLY when the flag is on; the field is omitted when off so
+  // the situation payload stays byte-identical. try/catch tolerates a test DB without the tables.
+  let payg_express_eligible: boolean | undefined;
+  if (featureOn(env, "payg_express")) {
+    let businessOrRentalActivityN = 0;
+    let cgtAssetN = 0;
+    try {
+      const [acts, cgt] = await Promise.all([
+        env.DB.prepare(`SELECT COUNT(*) AS n FROM income_activities WHERE user_id = ? AND activity_type IN ('business','rental_property')`).bind(userId).first<{ n: number }>(),
+        env.DB.prepare(`SELECT COUNT(*) AS n FROM cgt_assets WHERE user_id = ?`).bind(userId).first<{ n: number }>(),
+      ]);
+      businessOrRentalActivityN = acts?.n ?? 0;
+      cgtAssetN = cgt?.n ?? 0;
+    } catch { /* missing table in a minimal test DB → counts stay 0 */ }
+    payg_express_eligible = paygExpressEligible({
+      persons: persons.results ?? [],
+      entities: ents.results ?? [],
+      properties: props.results ?? [],
+      businessOrRentalActivityN,
+      cgtAssetN,
+    });
+  }
   return {
     profile,
     persons: persons.results ?? [],
@@ -139,6 +188,7 @@ export async function getSituation(env: Env, userId: string, profile: Profile): 
     loans_properties: loansProps.results ?? [],
     tax_period,
     ...(base_currency !== "AUD" ? { base_currency } : {}),
+    ...(payg_express_eligible !== undefined ? { payg_express_eligible } : {}),
   };
 }
 

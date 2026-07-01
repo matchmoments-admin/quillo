@@ -1062,6 +1062,18 @@ console.log("readiness");
   check("clean PAYG → ready, no findings", clean.readiness_score.ready && clean.findings.length === 0);
   check("position mirrors report taxable position", clean.position.indicative_taxable_position_cents === 9_000_000);
 
+  // Mission-audit #7/#8 (readiness_audit_v2): extra safety/completeness findings only when the flag is ON.
+  {
+    const zeroRent = mkReport({ per_property: [{ property_id: "pz", label: "Empty flat", income_cents: 0, deduction_cents: 500_000, depreciation_cents: 0, net_cents: -500_000 }] });
+    const sitNoOcc = mkSituation({ persons: [{ id: "self", user_id: "u", display_name: "You", role: "self", occupation: null, tax_residency: "AU" } as Situation["persons"][number]] });
+    const base = { report: zeroRent, situation: sitNoOcc, claimMatches: [] as ClaimRule[], signals: noSignals(), generatedAt: "2026-06-03T00:00:00Z" };
+    const off = assessReadiness(base);
+    const on = assessReadiness({ ...base, auditFindingsV2: true });
+    check("readiness_audit_v2 OFF: no rental_zero_income / occupation_missing (byte-identical)", !off.findings.some((x) => x.id === "rental_zero_income" || x.id === "occupation_missing"));
+    check("readiness_audit_v2 ON: flags a rented property with $0 rent but deductions claimed", on.findings.some((x) => x.id === "rental_zero_income" && x.severity === "review"));
+    check("readiness_audit_v2 ON: flags a missing occupation", on.findings.some((x) => x.id === "occupation_missing"));
+  }
+
   // Unknown-bucket spend → BLOCKER finding + NOT ready (review Medium: the gate used to be vacuous).
   const unknown = run(mkReport({ by_bucket: [{ bucket: "unknown", ato_label: null, n: 3, total_cents: 50_000, gst_cents: 0 }] }), noSignals({ unknownBucketN: 3, unknownBucketCents: 50_000 }));
   check("unknown bucket → blocker finding", unknown.findings.some((f) => f.id === "unknown_bucket" && f.severity === "blocker"));

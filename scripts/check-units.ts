@@ -463,7 +463,7 @@ console.log("extractSituationDraft");
 }
 
 // ── Depreciation engine: exact-cents golden tests (the deterministic core) ────
-import { computeFyDeduction, rollSchedule, daysInFy, daysHeldInFy, balancingAdjustment, depreciableCostCents, isLowCostAsset, looksLikePersonalTransfer, assetDepreciatesForTaxpayer, resolveDiv40Life, type DepAsset } from "../src/lib/depreciation";
+import { computeFyDeduction, rollSchedule, daysInFy, daysHeldInFy, balancingAdjustment, depreciableCostCents, isLowCostAsset, looksLikePersonalTransfer, assetDepreciatesForTaxpayer, depMethodConflict, resolveDiv40Life, type DepAsset } from "../src/lib/depreciation";
 import { mapIncomeStatementToRows, type IncomeStatementEmployer } from "../src/lib/income-statement";
 import { planNoaCarryovers, type NoaFacts } from "../src/lib/noa";
 import { NON_ASSESSABLE_INCOME_TYPES } from "../src/lib/ledger-totals";
@@ -675,6 +675,23 @@ console.log("depreciation: balancing adjustment on disposal");
 {
   check("termination > adjustable → assessable (+)", balancingAdjustment(4_800_000, 5_000_000) === 200_000);
   check("termination < adjustable → deductible (−)", balancingAdjustment(4_800_000, 3_000_000) === -1_800_000);
+}
+
+// ── dep_method_lock: Div 40's one-election-per-asset rule (s 40-65) ──────────
+// Only the two ELECTED methods conflict; class-driven outcomes (immediate, pools, div43, the
+// second-hand lockout) are facts, not elections, and must never trip the lock.
+console.log("depMethodConflict (Div 40 method lock)");
+{
+  check("DV schedule + prime-cost asset → conflict", depMethodConflict("diminishing_value", "prime_cost"));
+  check("prime-cost schedule + DV asset → conflict", depMethodConflict("prime_cost", "diminishing_value"));
+  check("same elected method → no conflict", !depMethodConflict("diminishing_value", "diminishing_value") && !depMethodConflict("prime_cost", "prime_cost"));
+  check("null/absent method on either side → no conflict", !depMethodConflict(null, "prime_cost") && !depMethodConflict("diminishing_value", null) && !depMethodConflict(undefined, undefined));
+  check("class-driven method_applied values never conflict", !depMethodConflict("immediate", "prime_cost") && !depMethodConflict("low_value_pool", "diminishing_value") && !depMethodConflict("div43", "prime_cost") && !depMethodConflict("div40_locked", "diminishing_value") && !depMethodConflict("small_business_pool", "prime_cost"));
+  // An over-IAWO-threshold 'immediate'-class asset still HONOURS the election — its prefixed
+  // method_applied normalises to the underlying DV/PC choice (review-caught gap).
+  check("immediate_over_threshold_dv expresses the DV election (conflicts with PC)", depMethodConflict("immediate_over_threshold_dv", "prime_cost") && !depMethodConflict("immediate_over_threshold_dv", "diminishing_value"));
+  check("immediate_over_threshold_pc expresses the PC election (conflicts with DV)", depMethodConflict("immediate_over_threshold_pc", "diminishing_value") && !depMethodConflict("immediate_over_threshold_pc", "prime_cost"));
+  check("immediate_over_threshold_review is not an election → never conflicts", !depMethodConflict("immediate_over_threshold_review", "prime_cost") && !depMethodConflict("immediate_over_threshold_review", "diminishing_value"));
 }
 
 // ── Claimability matcher: rules-first, defer gating ───────────────────────────

@@ -645,6 +645,22 @@ async function main() {
     check("P16 E: taxable position = $50k partnership + $20k trust = $70k", r16.taxable_position_cents === 7000000);
   }
 
+  // ── Mission-audit #10 (partnership_losses): a partnership LOSS flows to the partner; a trust loss is trapped ──
+  {
+    const u = "p16loss";
+    seedTenant(u, "P16-loss partnership");
+    run(`INSERT INTO entities (id, user_id, kind, name, person_id, entity_type) VALUES ('plossPart', ?, 'partnership', 'Loss Partners', ?, 'partnership')`, u, `person_self_${u}`);
+    run(`INSERT INTO entities (id, user_id, kind, name, person_id, entity_type) VALUES ('plossTrust', ?, 'trust', 'Loss Trust', ?, 'trust')`, u, `person_self_${u}`);
+    run(`INSERT INTO trust_distributions (id, user_id, trust_entity_id, fy, beneficiary_person_id, amount_cents, character, source_kind) VALUES ('plossPd', ?, 'plossPart', '2025-26', ?, -1000000, 'ordinary', 'partnership')`, u, `person_self_${u}`); // $10k partnership LOSS
+    run(`INSERT INTO trust_distributions (id, user_id, trust_entity_id, fy, beneficiary_person_id, amount_cents, character) VALUES ('plossTd', ?, 'plossTrust', '2025-26', ?, -500000, 'ordinary')`, u, `person_self_${u}`); // $5k trust "loss" — trapped
+    const envPL = { ...env, FEATURES: `${(env as { FEATURES: string }).FEATURES},partnership_losses` } as unknown as Env;
+    const rOff = await buildReport(env, u, 2025);
+    const rOn = await buildReport(envPL, u, 2025);
+    check("partnership_losses OFF: partnership loss floored to 0 ⇒ position $0 (byte-identical)", (rOff.partnership?.assessable_cents ?? 0) === 0 && rOff.taxable_position_cents === 0);
+    check("partnership_losses ON: the $10k partnership loss flows through (position −$10k)", rOn.partnership?.assessable_cents === -1000000 && rOn.taxable_position_cents === -1000000);
+    check("partnership_losses ON: a TRUST loss stays trapped (not applied)", (rOn.trust?.assessable_cents ?? 0) === 0);
+  }
+
   // ── Accountant schedule (#179/#181): goldens + the tie-back-by-construction loop ──
 
   // Golden A (#179) — Maya: the schedule's claiming sections sum EXACTLY to her report deductions,

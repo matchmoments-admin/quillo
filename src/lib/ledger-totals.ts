@@ -6,6 +6,7 @@ import { essAssessable, type EssAssessable } from "./ess";
 import { computeBasNet, type BasNet } from "./gst";
 import { businessUsePct, logbookDeductionCents, chooseCarMethod } from "./car-logbook";
 import { summariseTrustDistributions, type TrustTotals } from "./trust";
+import { featureOn } from "./features";
 import { ecpiExemptFraction, computeSmsfPosition, type SmsfPosition } from "./smsf";
 import { fyBoundsFor, AU_DESCRIPTOR, type JurisdictionDescriptor } from "./jurisdiction";
 // Rule-pack thresholds are RESOLVED by the caller (buildReport → resolveRulePack, keyed by
@@ -438,7 +439,10 @@ async function distributionTotals(env: Env, userId: string, startYear: number, s
           AND COALESCE(source_kind,'trust') = ?`,
     ).bind(userId, fy, sourceKind).all<{ character: string; amount_cents: number; franking_credit_cents: number }>()).results ?? [];
     if (!rows.length) return zero;
-    return summariseTrustDistributions(rows);
+    // A partnership loss share flows through to the partner (Div 35 aside); a trust loss is trapped.
+    // Gated so OFF keeps today's floor-at-0 for both ⇒ byte-identical.
+    const allowLosses = sourceKind === "partnership" && featureOn(env, "partnership_losses");
+    return summariseTrustDistributions(rows, { allowLosses });
   } catch (e) {
     if (/no such table|no such column/i.test((e as Error).message)) return zero;
     throw e;

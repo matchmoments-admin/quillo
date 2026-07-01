@@ -797,7 +797,9 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   let partnership: TrustTotals | undefined;
   if (featureOn(env, "partnership_distributions")) {
     const p = await partnershipTotals(env, userId, startYear);
-    if (p.assessable_cents > 0 || p.franking_credit_cents > 0) partnership = p;
+    // `!== 0` (not `> 0`) so a NET LOSS is carried too — but only partnership_losses ON ever yields a
+    // negative here (OFF floors partnershipTotals to ≥0), so the OFF path stays byte-identical.
+    if (p.assessable_cents !== 0 || p.franking_credit_cents > 0) partnership = p;
   }
   // Phase 3a: franking credits are assessable income (gross-up, s207-20). The credit (income.franking +
   // any trust/partnership franking) is ADDED to the position when the flag is on. Off ⇒ byte-identical.

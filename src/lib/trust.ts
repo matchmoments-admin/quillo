@@ -17,13 +17,19 @@ export interface TrustTotals {
   by_character: Record<string, number>;
 }
 
-/** Summarise an individual beneficiary's trust distributions into the assessable amount + credits. */
-export function summariseTrustDistributions(rows: TrustDistributionInput[]): TrustTotals {
+/**
+ * Summarise an individual beneficiary/partner's distributions into the assessable amount + credits.
+ * `allowLosses` (partnerships only): a partnership loss share DOES flow through to the partner and can
+ * reduce their income (subject to the Div 35 non-commercial-loss tests — a defer-to-agent judgement). A
+ * TRUST loss, by contrast, is trapped in the trust and never distributed, so the default floors at 0.
+ */
+export function summariseTrustDistributions(rows: TrustDistributionInput[], opts?: { allowLosses?: boolean }): TrustTotals {
   let assessable = 0;
   let franking = 0;
   const byChar: Record<string, number> = {};
   for (const r of rows) {
-    const amt = Math.max(0, r.amount_cents ?? 0);
+    const raw = r.amount_cents ?? 0;
+    const amt = opts?.allowLosses ? raw : Math.max(0, raw);
     byChar[r.character] = (byChar[r.character] ?? 0) + amt;
     franking += Math.max(0, r.franking_credit_cents ?? 0);
     // Every distributed-income character is assessable to the beneficiary (the discount on a

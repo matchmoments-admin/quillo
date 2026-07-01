@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -53,6 +53,28 @@ export function Income() {
   const { data, isLoading, error } = useQuery({ queryKey: ["income", fy], queryFn: () => api.income({ fy }) });
   const [adding, setAdding] = useState(false);
 
+  // #A1: upload an income statement → the existing documents-upload → payslip-extract → recordIncome path.
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [note, setNote] = useState<string | null>(null);
+  const upload = useMutation({
+    mutationFn: (file: File) => api.uploadDocument(file),
+    onMutate: () => setNote("Reading your income statement with Claude…"),
+    onSuccess: (r) => {
+      if (r.routed && r.doc_type === "payslip") {
+        setNote("Income statement read — check the new row below (confirm anything flagged for review).");
+        qc.invalidateQueries({ queryKey: ["income", fy] });
+        qc.invalidateQueries({ queryKey: ["dashboard"] });
+        qc.invalidateQueries({ queryKey: ["transactions"] });
+      } else {
+        setNote(`Filed to Documents as "${r.doc_type}" — that didn't read as an income statement. Add it manually below if needed.`);
+      }
+    },
+    onError: (e) => {
+      const msg = (e as Error).message;
+      setNote(msg.includes("consent") ? "We need your consent to read documents with AI — set that up in onboarding/Settings first." : `Couldn't read it: ${msg}`);
+    },
+  });
+
   const total = (data ?? []).reduce((s, r) => s + (r.amount_aud_cents ?? r.gross_cents), 0);
   const withholding = (data ?? []).reduce((s, r) => s + r.withholding_cents, 0);
   const franking = (data ?? []).reduce((s, r) => s + r.franking_credit_cents, 0);
@@ -76,9 +98,24 @@ export function Income() {
 
       <IncomeDedupe />
 
-      <div>
+      <div className="flex flex-wrap items-center gap-2">
         <Button variant="ghost" onClick={() => setAdding((v) => !v)}>{adding ? "Cancel" : "+ Add income manually"}</Button>
+        {has("income_statement_upload") && (
+          <>
+            <input
+              ref={fileRef}
+              type="file"
+              accept="image/*,application/pdf"
+              className="hidden"
+              onChange={(e) => { const f = e.target.files?.[0]; if (f) upload.mutate(f); e.currentTarget.value = ""; }}
+            />
+            <Button variant="ghost" onClick={() => fileRef.current?.click()} disabled={upload.isPending}>
+              {upload.isPending ? "Reading…" : "↑ Upload income statement"}
+            </Button>
+          </>
+        )}
       </div>
+      {note && <p className="text-sm text-muted">{note}</p>}
       {adding && <AddIncomeForm fy={fy} onDone={() => { setAdding(false); qc.invalidateQueries({ queryKey: ["income", fy] }); }} />}
 
       {isLoading ? (

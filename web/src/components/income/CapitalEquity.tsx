@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../api";
 import { Card, Button, Input, money, InfoTip } from "../ui";
 import type { CgtAssetRow } from "../../types";
+import { useFeatures } from "../../lib/features";
 
 const CGT_KINDS = ["shares", "crypto", "property", "managed_fund", "other"] as const;
 const KIND_LABEL: Record<string, string> = { shares: "Shares", crypto: "Crypto", property: "Property", managed_fund: "Managed fund", other: "Other" };
@@ -97,12 +98,15 @@ function AddCgtAssetForm({ onDone }: { onDone: () => void }) {
 }
 
 function AddCgtEventForm({ assets, onDone }: { assets: CgtAssetRow[]; onDone: () => void }) {
+  const { has } = useFeatures();
+  const parcelMethod = has("cgt_parcel_method");
   const [assetId, setAssetId] = useState<string>(assets[0]?.id ?? "");
   const [date, setDate] = useState("");
   const [proceeds, setProceeds] = useState("");
   const [costUsed, setCostUsed] = useState("");
+  const [method, setMethod] = useState("specific_id");
   const add = useMutation({
-    mutationFn: () => api.addCgtEvent({ cgt_asset_id: assetId, event_date: date, proceeds_cents: Math.round(parseFloat(proceeds || "0") * 100), cost_base_used_cents: Math.round(parseFloat(costUsed || "0") * 100) }),
+    mutationFn: () => api.addCgtEvent({ cgt_asset_id: assetId, event_date: date, proceeds_cents: Math.round(parseFloat(proceeds || "0") * 100), cost_base_used_cents: Math.round(parseFloat(costUsed || "0") * 100), ...(parcelMethod ? { method } : {}) }),
     onSuccess: onDone,
   });
   return (
@@ -116,6 +120,16 @@ function AddCgtEventForm({ assets, onDone }: { assets: CgtAssetRow[]; onDone: ()
         <label className="text-sm">Disposal date<Input className="mt-1 w-full" type="date" value={date} onChange={(e) => setDate(e.target.value)} /></label>
         <label className="text-sm">Proceeds ($)<Input className="mt-1 w-full" inputMode="decimal" value={proceeds} onChange={(e) => setProceeds(e.target.value)} /></label>
         <label className="text-sm">Cost base used ($)<Input className="mt-1 w-full" inputMode="decimal" value={costUsed} onChange={(e) => setCostUsed(e.target.value)} /></label>
+        {/* cgt_parcel_method: records WHICH parcels the cost base represents. Parcel choice changes the
+            gain — general information only, confirm with a registered tax agent. */}
+        {parcelMethod && (
+          <label className="text-sm">Parcel selection
+            <select className="mt-1 w-full rounded-lg border border-line px-3 py-2 text-sm" value={method} onChange={(e) => setMethod(e.target.value)}>
+              <option value="specific_id">Specific parcels (I chose which)</option>
+              <option value="fifo">First in, first out (FIFO)</option>
+            </select>
+          </label>
+        )}
       </div>
       <Button onClick={() => add.mutate()} disabled={add.isPending || !date || !assetId}>{add.isPending ? "Saving…" : "Save disposal"}</Button>
       {add.error && <p className="text-sm text-danger">{(add.error as Error).message}</p>}

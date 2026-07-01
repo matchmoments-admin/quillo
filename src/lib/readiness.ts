@@ -190,9 +190,11 @@ export function assessReadiness(input: {
   generatedAt: string;
   excludeNonDeductible?: boolean; // mirrors the `position_excludes_nondeductible` flag (default off = legacy)
   excludePropertyUndetermined?: boolean; // mirrors the `position_excludes_property_undetermined` flag (#254; default off = legacy)
+  auditFindingsV2?: boolean; // mission-audit #7/#8 safety findings (readiness_audit_v2); default off ⇒ byte-identical
 }): FilingReadiness {
   const { report, situation, claimMatches, signals, generatedAt } = input;
   const excludeNonDeductible = input.excludeNonDeductible ?? false;
+  const auditFindingsV2 = input.auditFindingsV2 ?? false;
   const excludePropertyUndetermined = input.excludePropertyUndetermined ?? false;
   const findings: ReadinessFinding[] = [];
 
@@ -370,6 +372,25 @@ export function assessReadiness(input: {
     findings.push(f("fx_unconverted", "income", "review", `${signals.fxUnconvertedN} foreign-currency item(s) couldn't be converted to AUD`,
       `We couldn't fetch an exchange rate for these (unsupported currency, or a date with no published rate), so they're EXCLUDED from the indicative position rather than counted at the wrong value. Check the date/currency, or enter the AUD amount manually.`, false,
       [{ kind: "transaction", count: signals.fxUnconvertedN }]));
+  }
+  // Mission-audit #7/#8 safety + completeness findings. Gated ⇒ OFF adds none ⇒ byte-identical.
+  if (auditFindingsV2) {
+    for (const p of report.per_property) {
+      if (p.deduction_cents > 0 && p.income_cents === 0) {
+        findings.push(f("rental_zero_income", "income", "review", `${p.label ?? p.property_id}: deductions claimed but no rent recorded`,
+          `You're claiming ${money(p.deduction_cents)} of deductions on this property but recorded $0 rent this year. Holding costs are only deductible while a property is rented or GENUINELY AVAILABLE for rent at a market rate — confirm it was available (and why there's no rent).${DEFER}`, true,
+          [{ kind: "property", id: p.property_id, label: p.label ?? p.property_id }]));
+      }
+    }
+    const self = situation.persons.find((p) => p.role === "self");
+    if (self && !self.occupation) {
+      findings.push(f("occupation_missing", "completeness", "review", "Your occupation isn't set",
+        "Your occupation tailors which work-related deductions apply — without it, Quillo can't suggest the deductions specific to your job, and your agent lacks context. Add it in Settings before you hand off.", false, []));
+    }
+    if (report.ess && report.ess.assessable_discount_cents > 0) {
+      findings.push(f("ess_taxing_point", "income", "info", "Confirm your ESS discount and its taxing point",
+        `An employee-share-scheme discount of ${money(report.ess.assessable_discount_cents)} is in your assessable income. ESS valuation and the taxing point (taxed-upfront vs deferral) are fact-specific — confirm the market-value discount and timing.${DEFER}`, true, []));
+    }
   }
   if ((report.company_unattributed_n ?? 0) > 0) {
     findings.push(f("company_unattributed", "classification", "review", `${report.company_unattributed_n} company transaction(s) aren't assigned to a specific company`,

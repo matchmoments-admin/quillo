@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
@@ -161,6 +161,15 @@ export function TxnDetail() {
     enabled: has("refund_netting_v2") && isRefund && fyStart != null,
   });
 
+  // Detail is "relevant" (worth showing up front) when the row already carries an ATO label, is undated,
+  // is a property bucket, or is a refund whose link picker must be seen (hiding it silently under-nets a
+  // deduction). Computed before the early returns so the drawer-open effect below can be a real hook.
+  const detailRelevant = !!label || !date || isPropertyBucket(bucket) || (has("refund_netting_v2") && isRefund);
+  // Slice 6: the "More options" drawer auto-opens when relevance APPEARS (a one-way effect), but never
+  // fights a manual collapse — once the user closes it, it stays closed unless relevance re-appears.
+  const [moreOpen, setMoreOpen] = useState(false);
+  useEffect(() => { if (txnQ.data && detailRelevant) setMoreOpen(true); }, [txnQ.data, detailRelevant]);
+
   if (txnQ.isLoading) return <Spinner />;
   if (!txn) return <Card className="p-6 text-sm text-muted">Transaction not found.</Card>;
 
@@ -173,7 +182,6 @@ export function TxnDetail() {
   // ATO label, a property/refund that needs choosing, or an undated row — so the disclosure auto-opens
   // for those. Flag OFF ⇒ detailOpen is always true ⇒ every field inline as before (byte-identical).
   const v2cat = has("categorise_v2");
-  const detailRelevant = !!label || !date || isPropertyBucket(bucket) || (has("refund_netting_v2") && isRefund);
   const detailOpen = !v2cat || showDetail || detailRelevant;
 
   // Slice 6 (txn_drawer): the secondary fields as named pieces. Primary column = Category + property
@@ -475,8 +483,8 @@ export function TxnDetail() {
           {drawer ? (
             /* Slice 6: ONE "More options" drawer replacing today's two disclosures. Auto-opens on the FULL
                detailRelevant condition so a dated supplier refund's link picker is never buried (money bug). */
-            <details className="rounded-2xl border border-line bg-card" open={detailRelevant}>
-              <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-ink-2">More options — ATO label, date, refund link, who claims, delete</summary>
+            <details className="rounded-2xl border border-line bg-card" open={moreOpen} onToggle={(e) => setMoreOpen(e.currentTarget.open)}>
+              <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-ink-2">More options — ATO label · date · refund link · reimbursement · who claims · QuickBooks · delete</summary>
               <div className="space-y-3 px-4 pb-4">
                 {atoLabelField}
                 {dateField}

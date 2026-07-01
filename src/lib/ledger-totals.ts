@@ -98,7 +98,7 @@ export interface IncomeTotals {
 // S4/D: income types captured as evidence but NOT assessable in the indicative position (deny-by-default /
 // never-overstate). Kept out of by_type + gross_cents; surfaced via IncomeTotals.excluded_by_type. Exported
 // so every consumer that re-derives an income total (e.g. the accountant schedule) excludes the SAME set.
-export const NON_ASSESSABLE_INCOME_TYPES = new Set(["non_cash_benefit", "super_pension"]);
+export const NON_ASSESSABLE_INCOME_TYPES = new Set(["non_cash_benefit", "super_pension", "employment_lump_sum"]);
 
 /** Income for an FY, optionally scoped to a person/property. Reads the AUD value for reporting. */
 export async function incomeTotals(

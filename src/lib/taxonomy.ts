@@ -67,6 +67,13 @@ export const INCOME_TYPES = [
                          // position (see NON_ASSESSABLE_INCOME_TYPES). An over-60 ABP from a taxed fund is
                          // generally tax-free and we never compute the SAPTO offset; an under-60 / untaxed
                          // element MAY be assessable → surfaced as an excluded line + a defer nudge.
+  "employment_lump_sum", // A1 #304: an ATO income-statement "Lump sum amount" A/B/D/E/W (ato_label lump_sum:X).
+                         // CAPTURE-ONLY — EXCLUDED from the assessable position (see NON_ASSESSABLE_INCOME_TYPES).
+                         // Each type has special treatment (D genuine redundancy = TAX-FREE; A/W assessable;
+                         // E assessable-with-offset; B 5%) we DON'T compute — surfaced as an excluded line +
+                         // "confirm with a registered tax agent" defer nudge, so tax-free types are never taxed
+                         // and offsets we can't compute never inflate the headline (assessable-treatment fork
+                         // is a held needs-decision).
   "other",
 ] as const;
 export type IncomeType = (typeof INCOME_TYPES)[number];

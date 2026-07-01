@@ -48,7 +48,9 @@ export function nextAction(c: ProgressCounts): NextAction {
   if (c.needs_review > 0)
     return { kind: "review", count: c.needs_review, label: `${c.needs_review} ${plural(c.needs_review, "item")} to review`, href: "/transactions?view=review" };
   if (c.undated > 0)
-    return { kind: "date", count: c.undated, label: `${c.undated} ${plural(c.undated, "item")} to date`, href: "/reports" };
+    // Route to the EDITABLE undated view (each row opens to set a date), not read-only /reports where the
+    // user can't actually fix them — that was a dead-end in the mandatory Check phase (mission audit #1).
+    return { kind: "date", count: c.undated, label: `${c.undated} ${plural(c.undated, "item")} to date`, href: "/transactions?undated=true" };
   return { kind: "export", count: 0, label: "Ready — review your position and hand off", href: "/filing" };
 }
 

@@ -20,7 +20,7 @@ const STOPS: Stop[] = [
   { key: "setup", label: "Set up", href: "/settings", match: ["/settings", "/onboarding"] },
   { key: "bring", label: "Bring in", href: "/accounts", match: ["/accounts", "/income", "/assets", "/documents"] },
   { key: "sort", label: "Sort", href: "/transactions", match: ["/inbox", "/transactions"] },
-  { key: "check", label: "Check", href: "/reconcile", match: ["/reconcile"] },
+  { key: "check", label: "Check", href: "/reconcile", match: ["/reconcile", "/review"] },
   { key: "position", label: "Position", href: "/", match: ["/", "/dashboard", "/reports"] },
   { key: "file", label: "File", href: "/filing", match: ["/filing"] },
 ];

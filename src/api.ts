@@ -976,12 +976,20 @@ export async function handleApi(
     if (m === "DELETE" && id) { await deleteRow(env, uid, "cgt_assets", id); return json({ ok: true }); }
   }
   if (resource === "cgt-events") {
+    // cgt_parcel_method (audit wave 4): `method` records WHICH parcel-selection basis the disposal
+    // used (NULL = specific identification | 'fifo') — record-keeping only, the engine never reads it.
+    // The column is selected/accepted only when the flag is on, so OFF keeps the JSON byte-identical.
+    const parcelMethod = featureOn(env, "cgt_parcel_method");
     if (m === "GET" && !id) {
       const fy = url.searchParams.get("fy");
-      const events = (await env.DB.prepare(`SELECT id, cgt_asset_id, fy, event_type, event_date, proceeds_cents, cost_base_used_cents, units_disposed, discount_eligible FROM cgt_events WHERE user_id = ?${fy ? " AND fy = ?" : ""} ORDER BY event_date DESC`).bind(...(fy ? [uid, fy] : [uid])).all()).results ?? [];
+      const events = (await env.DB.prepare(`SELECT id, cgt_asset_id, fy, event_type, event_date, proceeds_cents, cost_base_used_cents, units_disposed, discount_eligible${parcelMethod ? ", method" : ""} FROM cgt_events WHERE user_id = ?${fy ? " AND fy = ?" : ""} ORDER BY event_date DESC`).bind(...(fy ? [uid, fy] : [uid])).all()).results ?? [];
       return json({ cgt_events: events });
     }
-    if (m === "POST" && !id) return json({ id: await stub.recordCgtEvent(uid, await req.json()) });
+    if (m === "POST" && !id) {
+      const body = (await req.json()) as Record<string, unknown>;
+      if (!parcelMethod) delete body.method;
+      return json({ id: await stub.recordCgtEvent(uid, body as Parameters<typeof stub.recordCgtEvent>[1]) });
+    }
     if (m === "DELETE" && id) { await deleteRow(env, uid, "cgt_events", id); return json({ ok: true }); }
   }
 

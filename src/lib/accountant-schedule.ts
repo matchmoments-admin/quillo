@@ -366,6 +366,9 @@ export async function buildAccountantSchedule(
     : Promise.resolve([] as AttrRow[]);
 
   // (5) Engine source rows — only fetched when the report carries that engine's output.
+  // cgt_parcel_method: the Method column (parcel-selection basis) joins the CGT section only when the
+  // flag is on — the schedule is live in prod, so an unconditional column would change CSV bytes.
+  const parcelMethodOn = featureOn(env, "cgt_parcel_method");
   const cgtEventsP = report.capital_gains
     ? safeAll<{
         event_date: string | null;
@@ -376,10 +379,11 @@ export async function buildAccountantSchedule(
         acquired_date: string | null;
         proceeds_cents: number;
         cost_base_used_cents: number;
+        method?: string | null;
       }>(
         env.DB.prepare(
           `SELECT ev.event_date, a.code, a.label, a.asset_kind, ev.units_disposed, a.acquired_date,
-                  ev.proceeds_cents, ev.cost_base_used_cents
+                  ev.proceeds_cents, ev.cost_base_used_cents${parcelMethodOn ? ", ev.method" : ""}
              FROM cgt_events ev JOIN cgt_assets a ON a.id = ev.cgt_asset_id AND a.user_id = ev.user_id
             WHERE ev.user_id = ? AND ev.fy = ? ORDER BY ev.event_date`,
         )
@@ -782,20 +786,22 @@ export async function buildAccountantSchedule(
   if (report.capital_gains) {
     const cg = report.capital_gains;
     const notes: string[] = [];
+    const pad: Cell[] = parcelMethodOn ? [null] : [];
     const rows: Cell[][] = capped(cgtEvents, notes).map((e) => [
       e.event_date, e.code ?? e.label ?? "—", e.asset_kind, e.units_disposed, e.acquired_date,
       d(e.proceeds_cents), d(e.cost_base_used_cents), d(e.proceeds_cents - e.cost_base_used_cents),
+      ...(parcelMethodOn ? [e.method === "fifo" ? "FIFO" : "specific identification"] : []),
     ]);
-    rows.push(["", "Gross capital gains", null, null, null, null, null, d(cg.gross_capital_gains_cents)]);
-    rows.push(["", "Capital losses applied", null, null, null, null, null, d(cg.capital_losses_cents)]);
-    rows.push(["", "50% discount applied", null, null, null, null, null, d(cg.discount_applied_cents)]);
-    if (cg.loss_carried_forward_cents > 0) rows.push(["", "Loss carried forward", null, null, null, null, null, d(cg.loss_carried_forward_cents)]);
-    rows.push(["", "NET CAPITAL GAIN (assessable)", null, null, null, null, null, d(cg.net_capital_gain_cents)]);
+    rows.push(["", "Gross capital gains", null, null, null, null, null, d(cg.gross_capital_gains_cents), ...pad]);
+    rows.push(["", "Capital losses applied", null, null, null, null, null, d(cg.capital_losses_cents), ...pad]);
+    rows.push(["", "50% discount applied", null, null, null, null, null, d(cg.discount_applied_cents), ...pad]);
+    if (cg.loss_carried_forward_cents > 0) rows.push(["", "Loss carried forward", null, null, null, null, null, d(cg.loss_carried_forward_cents), ...pad]);
+    rows.push(["", "NET CAPITAL GAIN (assessable)", null, null, null, null, null, d(cg.net_capital_gain_cents), ...pad]);
     const grossFromEvents = cgtEvents.reduce((s, e) => s + Math.max(0, e.proceeds_cents - e.cost_base_used_cents), 0);
     sections.push({
       key: "cgt",
       title: "Capital gains (per disposal)",
-      columns: ["Date", "Asset", "Kind", "Units", "Acquired", `Proceeds (${cur})`, `Cost base (${cur})`, `Gain/loss (${cur})`],
+      columns: ["Date", "Asset", "Kind", "Units", "Acquired", `Proceeds (${cur})`, `Cost base (${cur})`, `Gain/loss (${cur})`, ...(parcelMethodOn ? ["Parcel method"] : [])],
       rows,
       subtotal_cents: cg.net_capital_gain_cents,
       tie_back: { label: "gross capital gains", report_cents: cg.gross_capital_gains_cents, actual_cents: grossFromEvents, ok: grossFromEvents === cg.gross_capital_gains_cents },

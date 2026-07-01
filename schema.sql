@@ -774,7 +774,8 @@ CREATE TABLE IF NOT EXISTS cgt_events (
   cost_base_used_cents INTEGER NOT NULL DEFAULT 0,
   units_disposed      REAL,
   discount_eligible   INTEGER,
-  created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+  method              TEXT                -- 0069: parcel selection (NULL = specific identification | 'fifo'); record-keeping only, never computed
 );
 CREATE INDEX IF NOT EXISTS idx_cgt_events_user_fy ON cgt_events(user_id, fy);
 CREATE INDEX IF NOT EXISTS idx_cgt_events_asset ON cgt_events(user_id, cgt_asset_id);

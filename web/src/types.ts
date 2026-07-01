@@ -694,7 +694,7 @@ export interface CgtEventRow {
   proceeds_cents: number;
   cost_base_used_cents: number;
   units_disposed: number | null;
-  discount_eligible: number | null;
+  discount_eligible: number | null;  method?: string | null; // cgt_parcel_method: NULL = specific identification | 'fifo' (record-keeping only)
 }
 
 // ESS (#141) + logbook (#142) entry rows.

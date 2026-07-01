@@ -464,6 +464,8 @@ console.log("extractSituationDraft");
 
 // ── Depreciation engine: exact-cents golden tests (the deterministic core) ────
 import { computeFyDeduction, rollSchedule, daysInFy, daysHeldInFy, balancingAdjustment, depreciableCostCents, isLowCostAsset, looksLikePersonalTransfer, assetDepreciatesForTaxpayer, resolveDiv40Life, type DepAsset } from "../src/lib/depreciation";
+import { mapIncomeStatementToRows, type IncomeStatementEmployer } from "../src/lib/income-statement";
+import { NON_ASSESSABLE_INCOME_TYPES } from "../src/lib/ledger-totals";
 
 console.log("asset auto-classification heuristics (isLowCostAsset / looksLikePersonalTransfer)");
 {
@@ -499,6 +501,42 @@ console.log("depreciation: resolveDiv40Life (no silent $0 schedule for a blank d
   check("undefined treated as blank for div40", resolveDiv40Life("div40_plant", undefined, 5) === 5);
   check("non-div40 (capital works) keeps null — it has no effective life", resolveDiv40Life("div43_capital_works", null, 5) === null);
   check("non-div40 (immediate) keeps null", resolveDiv40Life("immediate", null, 5) === null);
+}
+
+// A1 #304: mapIncomeStatementToRows — the tax-correct mapping of a multi-employer ATO income statement.
+console.log("income statement: mapIncomeStatementToRows (Total gross as printed · SG/RESC/RFB not income · lump sums capture-only · Tax-ready gating)");
+{
+  const emp = (o: Partial<IncomeStatementEmployer> & { employer: string; total_gross_cents: number }): IncomeStatementEmployer => ({
+    employer_abn: null, tax_ready: true, period_start: "2025-07-01", period_end: "2026-06-30", bms_id: null,
+    paygw_cents: 0, leave_detail: [], lump_sums: [], allowances: [], resc_cents: 0, rfb_cents: 0, sg_cents: 0, confidence: 0.95, ...o,
+  });
+  // Real sample (MCH): Total gross $37,530.20 already INCLUDES leave ($5,056.66 + $3,819.11); PAYGW $10,037; SG $4,045.33.
+  const mch = emp({ employer: "MCH CORPORATE SERVICES PTY LTD", employer_abn: "55656989954", total_gross_cents: 3753020, paygw_cents: 1003700,
+    leave_detail: [{ type: "Other paid leave", cents: 505666 }, { type: "Unused leave on termination", cents: 381911 }], sg_cents: 404533 });
+  // Second job with a genuine-redundancy Lump D (TAX-FREE) + RESC + RFB.
+  const job2 = emp({ employer: "SECOND EMPLOYER PTY LTD", total_gross_cents: 5000000, paygw_cents: 1200000,
+    lump_sums: [{ type: "D", cents: 2000000 }], resc_cents: 300000, rfb_cents: 150000, confidence: 0.9 });
+  const prelim = emp({ employer: "STILL PROCESSING PTY LTD", tax_ready: false, total_gross_cents: 9999900 });
+
+  const out = mapIncomeStatementToRows({ employers: [mch, job2, prelim] });
+  const salary = out.rows.filter((r) => r.income_type === "salary_payg");
+  const lumps = out.rows.filter((r) => r.income_type === "employment_lump_sum");
+
+  check("one salary row per FINALISED employer (2), the not-'Tax ready' one skipped", salary.length === 2 && out.skipped_employers.length === 1 && out.skipped_employers[0] === "STILL PROCESSING PTY LTD");
+  check("gross = printed Total gross — leave NEVER re-added", salary.find((r) => (r.detail as { employer: string }).employer.startsWith("MCH"))!.gross_cents === 3753020);
+  check("PAYGW → withholding on the salary row", salary.find((r) => (r.detail as { employer: string }).employer.startsWith("MCH"))!.withholding_cents === 1003700);
+  check("SG is NOT in gross (reference only in detail)", !salary.some((r) => r.gross_cents === 404533) && (salary[0]!.detail as { sg_cents: number }).sg_cents === 404533);
+  check("RESC + RFB are NOT in gross (reference only)", !salary.some((r) => r.gross_cents === 300000 || r.gross_cents === 150000));
+  check("Lump D (tax-free redundancy) → employment_lump_sum, ato_label lump_sum:D, NOT salary", lumps.length === 1 && lumps[0]!.ato_label === "lump_sum:D" && lumps[0]!.gross_cents === 2000000);
+  check("employment_lump_sum is NON_ASSESSABLE (excluded from the headline)", NON_ASSESSABLE_INCOME_TYPES.has("employment_lump_sum") && !NON_ASSESSABLE_INCOME_TYPES.has("salary_payg"));
+  // The assessable total = salary only (leave already inside gross; lump sum + SG + RESC excluded).
+  const assessable = out.rows.filter((r) => !NON_ASSESSABLE_INCOME_TYPES.has(r.income_type)).reduce((s, r) => s + r.gross_cents, 0);
+  check("assessable headline = salary only ($37,530.20 + $50,000 = $87,530.20), lump/SG/RESC excluded", assessable === 3753020 + 5000000);
+  check("txn_date = period_end (partial-year safe)", salary.every((r) => r.txn_date === "2026-06-30"));
+  check("a 0-gross redundancy-only block records the lump sum but NO empty salary row", (() => {
+    const r2 = mapIncomeStatementToRows({ employers: [emp({ employer: "RED ONLY", total_gross_cents: 0, lump_sums: [{ type: "D", cents: 700000 }] })] });
+    return r2.rows.length === 1 && r2.rows[0]!.income_type === "employment_lump_sum";
+  })());
 }
 
 console.log("depreciation: Div 40 diminishing value (ATO worked example $80k, 5yr life)");

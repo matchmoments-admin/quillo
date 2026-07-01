@@ -660,6 +660,88 @@ export async function extractPayslip(llm: LLM, bytes: ArrayBuffer, mime: string)
   return ExtractedPayslip.parse(toolUse.input);
 }
 
+// ── Income-statement extractor (MULTI-employer myGov "Income statements") → mapped by lib/income-statement ─
+// Feature A1 increment 2 (flag income_statement_multi). The ATO "Income statements" page lists EVERY employer
+// for the FY; this returns them all so decomposeIncomeStatement can record one FINALISED salary row each +
+// capture-only lump sums. The tax-correctness (Total gross AS PRINTED, SG/RESC/RFB not income) is enforced
+// both in the tool description here AND in the pure mapper (lib/income-statement.ts mapIncomeStatementToRows).
+const EmployerBlock = z.object({
+  employer: z.string(),
+  employer_abn: z.string().nullable().default(null),
+  tax_ready: z.boolean().default(false),
+  period_start: z.string().nullable().default(null),
+  period_end: z.string().nullable().default(null),
+  bms_id: z.string().nullable().default(null),
+  total_gross_cents: z.number().int(),
+  paygw_cents: z.number().int().default(0),
+  leave_detail: z.array(z.object({ type: z.string(), cents: z.number().int() })).default([]),
+  lump_sums: z.array(z.object({ type: z.enum(["A", "B", "D", "E", "W"]), cents: z.number().int() })).default([]),
+  allowances: z.array(z.object({ label: z.string(), cents: z.number().int() })).default([]),
+  resc_cents: z.number().int().default(0),
+  rfb_cents: z.number().int().default(0),
+  sg_cents: z.number().int().default(0),
+  confidence: z.number().min(0).max(1),
+});
+export const ExtractedIncomeStatement = z.object({ employers: z.array(EmployerBlock) });
+export type ExtractedIncomeStatement = z.infer<typeof ExtractedIncomeStatement>;
+
+const INCOME_STATEMENT_TOOL: Anthropic.Tool = {
+  name: "record_income_statement",
+  description:
+    "Record an ATO 'Income statements' page: one entry per employer for the financial year. For EACH employer return the PRINTED 'Total gross amount' as total_gross_cents — do NOT re-sum the base gross plus the leave lines (the total already includes them). PAYGW amount → paygw_cents. Put each 'Lump sum payment A/B/D/E/W' as a separate lump_sums entry (omit $0 ones). tax_ready = true only when the block's Status is 'Tax ready'. The 'Employer superannuation contribution liability' (ordinary SG) is NOT income — put it in sg_cents for reference only. 'Reportable Employer Super Contribution' → resc_cents and 'Reportable fringe benefits - total' → rfb_cents (both reportable, NOT assessable income — never fold into gross). Call once with all employers.",
+  input_schema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["employers"],
+    properties: {
+      employers: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["employer", "tax_ready", "total_gross_cents", "paygw_cents", "confidence"],
+          properties: {
+            employer: { type: "string", description: "Employer name as printed." },
+            employer_abn: { type: ["string", "null"], description: "Employer ABN (digits) or null." },
+            tax_ready: { type: "boolean", description: "True only when Status is 'Tax ready' (finalised)." },
+            period_start: { type: ["string", "null"], description: "Period start ISO YYYY-MM-DD or null." },
+            period_end: { type: ["string", "null"], description: "Period end ISO YYYY-MM-DD or null." },
+            bms_id: { type: ["string", "null"], description: "BMS ID or null." },
+            total_gross_cents: { type: "integer", description: "PRINTED Total gross amount in cents (already includes leave lines — do NOT re-sum)." },
+            paygw_cents: { type: "integer", description: "PAYGW amount (tax withheld) in cents." },
+            leave_detail: { type: "array", description: "Leave lines for reference (already inside total gross).", items: { type: "object", additionalProperties: false, required: ["type", "cents"], properties: { type: { type: "string" }, cents: { type: "integer" } } } },
+            lump_sums: { type: "array", description: "Non-zero Lump sum payments.", items: { type: "object", additionalProperties: false, required: ["type", "cents"], properties: { type: { type: "string", enum: ["A", "B", "D", "E", "W"] }, cents: { type: "integer" } } } },
+            allowances: { type: "array", description: "Allowances (reference; not summed into gross).", items: { type: "object", additionalProperties: false, required: ["label", "cents"], properties: { label: { type: "string" }, cents: { type: "integer" } } } },
+            resc_cents: { type: "integer", description: "Reportable Employer Super Contribution in cents (NOT income)." },
+            rfb_cents: { type: "integer", description: "Reportable fringe benefits total in cents (NOT income)." },
+            sg_cents: { type: "integer", description: "Ordinary employer SG liability in cents (reference only, NOT income)." },
+            confidence: { type: "number", description: "0..1 confidence for this employer block." },
+          },
+        },
+      },
+    },
+  },
+};
+
+/** Extract a multi-employer ATO income statement → all employer blocks (mapped by lib/income-statement). */
+export async function extractIncomeStatement(llm: LLM, bytes: ArrayBuffer, mime: string): Promise<ExtractedIncomeStatement> {
+  const msg = await llm.create(
+    {
+      model: llm.modelId,
+      max_tokens: 2048,
+      tools: [INCOME_STATEMENT_TOOL],
+      tool_choice: { type: "tool", name: INCOME_STATEMENT_TOOL.name },
+      messages: [
+        { role: "user", content: [receiptBlock(bytes, mime), { type: "text", text: "Extract this ATO income statement. Return every employer. Call record_income_statement once." }] },
+      ],
+    },
+    "income_statement",
+  );
+  const toolUse = msg.content.find((c): c is Anthropic.ToolUseBlock => c.type === "tool_use" && c.name === INCOME_STATEMENT_TOOL.name);
+  if (!toolUse) throw new Error("model did not return a record_income_statement call");
+  return ExtractedIncomeStatement.parse(toolUse.input);
+}
+
 // ── Agent rental summary extractor (DECOMPOSABLE → income + expense lines) ──────
 export const ExtractedAgentStatement = z.object({
   agent_name: z.string().nullable().default(null),

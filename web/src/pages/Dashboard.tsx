@@ -18,6 +18,7 @@ const SWATCH = ["#0c3f26", "#15643a", "#1c7a48", "#97a86f", "#2f6bd6", "#9a6712"
 export function Dashboard() {
   const { fy, label } = useActiveFy();
   const { has } = useFeatures();
+  const adaptive = has("adaptive_dashboard"); // slice 14: hide empty breakdown panels
   const { data, isLoading, error } = useQuery({ queryKey: ["dashboard", fy], queryFn: () => api.dashboard(fy) });
   if (isLoading) return <Spinner />;
   if (error) return <Panel className="text-sm text-muted">Couldn't load: {(error as Error).message}</Panel>;
@@ -89,8 +90,12 @@ export function Dashboard() {
       <ChecklistCard />
       <ClaimsCard />
 
-      {/* Breakdowns */}
+      {/* Breakdowns. Slice 14 (adaptive_dashboard): hide a breakdown entirely when it has no rows (a
+          salary-only user shouldn't see an empty "By property" table). OFF ⇒ both panels always render
+          (with their Empty state) ⇒ byte-identical. */}
+      {(!adaptive || d.by_bucket.length > 0 || d.by_property.length > 0) && (
       <div className="grid gap-5 lg:grid-cols-2">
+        {(!adaptive || d.by_bucket.length > 0) && (
         <Panel>
           <PanelHead title={<>By category <InfoTip k="bucket" /></>} sub={d.by_bucket.length ? `${d.by_bucket.length} categories` : undefined} />
           {d.by_bucket.length ? (
@@ -111,7 +116,9 @@ export function Dashboard() {
             <Empty />
           )}
         </Panel>
+        )}
 
+        {(!adaptive || d.by_property.length > 0) && (
         <Panel>
           <PanelHead title={<>By property <InfoTip tip="Costs attributed to each investment property, so each one's position is clear at tax time. Whether a cost is claimable is confirmed in your year-end review." /></>} />
           {d.by_property.length ? (
@@ -131,7 +138,9 @@ export function Dashboard() {
             <Empty />
           )}
         </Panel>
+        )}
       </div>
+      )}
 
       {d.income_by_bucket.length > 0 && (
         <Panel>

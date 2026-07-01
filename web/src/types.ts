@@ -836,7 +836,7 @@ export interface Report {
   trust?: TrustTotals;                  // #139 — assessable distributions added to taxable_position_cents
   smsf_funds?: SmsfFundPosition[];      // #140 — per-fund position (separate taxpayer)
   franking_gross_up_cents?: number;     // 3a — franking credits grossed up INTO assessable income (s207-20)
-  super_deduction?: { claimed_cents: number; contributed_cents: number; cap_cents: number; over_cap: boolean }; // 3a — personal-deductible super (s290-150)
+  super_deduction?: { claimed_cents: number; contributed_cents: number; cap_cents: number; over_cap: boolean; ato_label?: "D12" }; // 3a — personal-deductible super (s290-150); D12 is the return label (D11 = foreign-pension UPP, never super)
   taxable_position_cents: number;
   taxable_position_confirmed_cents?: number; // #255 — CONFIRMED end of the range (resolved deductions only); present only when position_confirmed_range is on. ≥ taxable_position_cents.
   tax_losses_applied_cents?: number; // B2 (#71) — prior-year ordinary tax loss (from a confirmed NOA) applied to the position; present only when carryforward_position is on AND a loss was applied.

@@ -1066,6 +1066,23 @@ export async function buildAccountantSchedule(
         notes: ["These rows have no AUD conversion, so they are EXCLUDED from every total above. Add an exchange rate (or the bank's converted figure) to bring them in. General information only."],
       });
     }
+
+    // ── Audit wave 1 (PR-4): personal super contributions at their return label (D12 — deductible
+    //    personal super; D11 is the foreign-pension UPP label, never super). Only present when the
+    //    super_deduction flag put the aggregate on the report; informational (no tie-back).
+    if (report.super_deduction) {
+      const sd = report.super_deduction;
+      sections.push({
+        key: "super_deduction",
+        title: `Personal super contributions — ${sd.ato_label ?? "D12"}`,
+        columns: ["Label", `Contributed (${cur})`, `Concessional cap (${cur})`, `Deduction claimed (${cur})`, "Over cap?"],
+        rows: [[sd.ato_label ?? "D12", d(sd.contributed_cents), d(sd.cap_cents), d(sd.claimed_cents), sd.over_cap ? "YES — excess isn't deductible and may attract extra tax" : "no"]],
+        notes: [
+          "A personal super contribution is only deductible once a Notice of intent to claim (s 290-170) has been lodged with the fund AND the fund has acknowledged it — check the acknowledgment letter is on file before claiming.",
+          "General information only — confirm the claim with a registered tax agent.",
+        ],
+      });
+    }
   }
 
   return { fy: report.fy, start: report.start, end: report.end, abn: report.abn, disclaimer: SCHEDULE_DISCLAIMER, sections };

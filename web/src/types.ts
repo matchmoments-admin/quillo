@@ -150,7 +150,8 @@ export interface Situation {
   tax_period?: { start_month: number; start_day: number };
   // UK epic stop 2: the tenant's BASE currency (AU 'AUD', UK 'GBP'). The app shell sets money()'s symbol
   // + locale from this once on load; absent (old/cached payload) ⇒ money() keeps '$'/'en-AU'.
-  base_currency?: string;
+  base_currency?: string;  // payg_express (audit wave 2): present only when the flag is on; true ⇒ hide Assets/CGT surfaces.
+  payg_express_eligible?: boolean;
 }
 
 export interface LoanProperty {

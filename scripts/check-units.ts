@@ -677,6 +677,24 @@ console.log("depreciation: balancing adjustment on disposal");
   check("termination < adjustable → deductible (−)", balancingAdjustment(4_800_000, 3_000_000) === -1_800_000);
 }
 
+// ── payg_express: the single-PAYG simplified-surface eligibility test ─────────
+import { paygExpressEligible } from "../src/lib/db";
+console.log("paygExpressEligible (audit wave 2)");
+{
+  const self = [{ role: "self" }];
+  const base = { persons: self, entities: [] as { kind: string }[], properties: [] as unknown[], businessOrRentalActivityN: 0, cgtAssetN: 0 };
+  check("single self + nothing else → eligible", paygExpressEligible(base));
+  check("employment entities (their employer) stay eligible", paygExpressEligible({ ...base, entities: [{ kind: "employment" }, { kind: "individual" }] }));
+  check("a company entity → NOT eligible", !paygExpressEligible({ ...base, entities: [{ kind: "company" }] }));
+  check("a trust entity → NOT eligible", !paygExpressEligible({ ...base, entities: [{ kind: "trust" }] }));
+  check("a property → NOT eligible", !paygExpressEligible({ ...base, properties: [{}] }));
+  check("a business/rental activity → NOT eligible", !paygExpressEligible({ ...base, businessOrRentalActivityN: 1 }));
+  check("a CGT asset → NOT eligible", !paygExpressEligible({ ...base, cgtAssetN: 1 }));
+  check("a second person (spouse) → NOT eligible", !paygExpressEligible({ ...base, persons: [{ role: "self" }, { role: "spouse" }] }));
+  check("no persons → NOT eligible", !paygExpressEligible({ ...base, persons: [] }));
+  check("a sole non-self person → NOT eligible", !paygExpressEligible({ ...base, persons: [{ role: "spouse" }] }));
+}
+
 // ── dep_method_lock: Div 40's one-election-per-asset rule (s 40-65) ──────────
 // Only the two ELECTED methods conflict; class-driven outcomes (immediate, pools, div43, the
 // second-hand lockout) are facts, not elections, and must never trip the lock.

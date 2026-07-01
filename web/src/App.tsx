@@ -15,7 +15,7 @@ import { Coachmarks } from "./components/Coachmarks";
 import { ChatProvider } from "./components/chat/ChatProvider";
 import { FloatingChat } from "./components/chat/FloatingChat";
 
-type NavItem = { to: string; label: string; icon: IconName; end?: boolean; badge?: boolean; flag?: string; admin?: boolean; partner?: boolean };
+type NavItem = { to: string; label: string; icon: IconName; end?: boolean; badge?: boolean; flag?: string; admin?: boolean; partner?: boolean; expressHidden?: boolean };
 type NavGroup = { label: string; items: NavItem[] };
 
 // Grouped destinations — the forest sidebar, ordered as the six-stop work spine
@@ -37,7 +37,8 @@ const GROUPS: NavGroup[] = [
       // Accounts is where you add accounts AND bring in statements/CSVs (the "Bring in" stop).
       { to: "/accounts", label: "Accounts & import", icon: "card" },
       { to: "/income", label: "Income", icon: "income" },
-      { to: "/assets", label: "Assets", icon: "shield" },
+      // payg_express: a single-PAYG tenant has no depreciating-asset/CGT workflow — hide the surface.
+      { to: "/assets", label: "Assets", icon: "shield", expressHidden: true },
       { to: "/documents", label: "Documents", icon: "doc" },
     ],
   },
@@ -245,10 +246,16 @@ function Sidebar({ needsReview, open }: { needsReview: number; open: boolean }) 
   const { isAdmin } = useAdminAccess();
   const { isPartner } = usePartnerAccess();
   const navDisclosure = has("nav_disclosure");
+  // payg_express (audit wave 2): a single-PAYG tenant doesn't need the Assets/CGT surface — the server
+  // decides eligibility (situation.payg_express_eligible, present only when the flag is on) and the nav
+  // simply hides marked items. Reuses the shared ["situation"] query (no extra fetch); the mobile "More"
+  // drawer renders THIS sidebar, so one filter covers both.
+  const sitQ = useQuery({ queryKey: ["situation"], queryFn: () => api.situation(), enabled: has("payg_express") });
+  const paygExpress = has("payg_express") && sitQ.data?.payg_express_eligible === true;
   // One group → its nav block (or null when every item is gated off). Shared by the flat list and the
   // "More" disclosure so both render identically.
   const groupNode = (g: NavGroup) => {
-    const items = g.items.filter((it) => (!it.flag || has(it.flag)) && (!it.admin || isAdmin) && (!it.partner || isPartner));
+    const items = g.items.filter((it) => (!it.flag || has(it.flag)) && (!it.admin || isAdmin) && (!it.partner || isPartner) && (!it.expressHidden || !paygExpress));
     if (!items.length) return null;
     return (
       <div key={g.label || "home"} className="mt-5 first:mt-1">

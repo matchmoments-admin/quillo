@@ -1036,7 +1036,17 @@ export async function handleApi(
     if (m === "GET" && id && sub === "schedule") return json({ schedule: await listDepreciation(env, uid, id) });
     if (m === "POST" && id && sub === "compute") {
       const fy = Number(url.searchParams.get("fy")) || undefined;
-      return json(await stub.computeDepreciation(uid, id, fy));
+      const body = (await req.json().catch(() => ({}))) as { override_method_lock?: boolean };
+      try {
+        return json(await stub.computeDepreciation(uid, id, fy, { overrideMethodLock: !!body.override_method_lock }));
+      } catch (e) {
+        // dep_method_lock: surface the one-election-per-asset rule as a 409 the UI can explain,
+        // rather than a 500. Re-rolling deliberately requires override_method_lock: true (audited).
+        if (/^method_locked/.test((e as Error).message)) {
+          return json({ error: "This asset's depreciation method is locked: Div 40 allows one choice (diminishing value or prime cost) per asset, and a schedule already exists under the other method. General information only — confirm any change with a registered tax agent.", code: "method_locked" }, 409);
+        }
+        throw e;
+      }
     }
     if (m === "POST" && id && sub === "dispose") {
       const { disposed_date, disposal_value_cents } = (await req.json()) as { disposed_date: string; disposal_value_cents: number };

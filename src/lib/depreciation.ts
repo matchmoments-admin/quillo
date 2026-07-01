@@ -95,6 +95,24 @@ export function assetDepreciatesForTaxpayer(asset: { owned_by?: string | null; r
   return (asset.owned_by ?? "self") !== "employer" && !asset.reimbursed;
 }
 
+// Div 40's choice of decline-in-value method (s 40-65) is one-per-asset: once you've used diminishing
+// value or prime cost for an asset you cannot switch it for that asset. Only those two values are an
+// ELECTION — immediate write-offs, pooling, div43 and the second-hand lockout are outcomes of the
+// asset's class/facts, not a method choice, so a class change is never a "method conflict".
+const DIV40_ELECTED_METHODS = new Set(["diminishing_value", "prime_cost"]);
+
+/**
+ * True when an already-materialised schedule (its earliest row's method_applied) and the asset's
+ * current `method` field are BOTH Div 40 elections and they differ — i.e. recomputing would silently
+ * rewrite history under the other method. The single predicate computeDepreciation's method-lock
+ * guard uses (dep_method_lock).
+ */
+export function depMethodConflict(earliestScheduledMethod: string | null | undefined, assetMethod: string | null | undefined): boolean {
+  if (!earliestScheduledMethod || !assetMethod) return false;
+  if (!DIV40_ELECTED_METHODS.has(earliestScheduledMethod) || !DIV40_ELECTED_METHODS.has(assetMethod)) return false;
+  return earliestScheduledMethod !== assetMethod;
+}
+
 /**
  * The effective life to PERSIST for a new asset. A div40 (plant) asset MUST NOT be stored with a null
  * effective life: rollSchedule reads `life = effective_life_years ?? 0` and then `if (life <= 0) break`,

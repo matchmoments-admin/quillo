@@ -25,7 +25,7 @@ import { buildGuidePrompt, buildAskSystem, summariseReportForAsk, renderTxnDiges
 import { fyLabel, fyBounds, fyStartYearStr, parseFyStartYear, normaliseFyLabel } from "./lib/ledger-totals";
 import { resolveJurisdictionForUser, currentFyStartYearFor, baseCurrencyOf, AU_DESCRIPTOR, type JurisdictionDescriptor } from "./lib/jurisdiction";
 import { assessReadiness, type FilingReadiness, type FilingReadinessSignals } from "./lib/readiness";
-import { rollSchedule, balancingAdjustment, fyStartYearOf, isLowCostAsset, looksLikePersonalTransfer, assetDepreciatesForTaxpayer, resolveDiv40Life, type DepAsset } from "./lib/depreciation";
+import { rollSchedule, balancingAdjustment, fyStartYearOf, isLowCostAsset, looksLikePersonalTransfer, assetDepreciatesForTaxpayer, depMethodConflict, resolveDiv40Life, type DepAsset } from "./lib/depreciation";
 import { matchClaimRules, suggestionText, enumerateSituationClaims, classifyClaim, uncoveredOccupations, ruleKey, type ClaimRule, type ClaimContext, type ClaimSituation } from "./lib/claimability";
 import { parseCsv, applyColumnMap, lineFingerprint, deriveBalances, reconcileStatement, isLiabilityAccount, fuzzyMerchant, isTransferLike, isLoanInterestLine, classifyMovement, movementTreatment, type ColumnMap, type Reconciliation, type StatementLine, type MovementClass } from "./lib/statements";
 import { groupKey, groupForClarify, rulePatternForStem, isClarifyLeftover, CLARIFY_LEFTOVER_WHERE, type ClarifyRow } from "./lib/clarify";
@@ -2763,7 +2763,7 @@ export class TaxAgent extends Agent<Env> {
    * Materialise (or refresh) an asset's depreciation_schedule up to `toStartYear` (default: the
    * current FY). Deterministic — re-running yields identical rows (UNIQUE(asset_id, fy) upsert).
    */
-  async computeDepreciation(userId: string, assetId: string, toStartYear?: number): Promise<{ rows: number }> {
+  async computeDepreciation(userId: string, assetId: string, toStartYear?: number, opts?: { overrideMethodLock?: boolean }): Promise<{ rows: number }> {
     const row = await this.env.DB.prepare(
       `SELECT asset_class, cost_cents, acquired_date, effective_life_years, method, dv_rate_pct, div43_rate,
               is_second_hand, business_use_pct, disposed_date, owned_by, reimbursed FROM assets WHERE id = ? AND user_id = ?`,
@@ -2771,6 +2771,23 @@ export class TaxAgent extends Agent<Env> {
       .bind(assetId, userId)
       .first<{ asset_class: string; cost_cents: number; acquired_date: string; effective_life_years: number | null; method: string | null; dv_rate_pct: number | null; div43_rate: number | null; is_second_hand: number; business_use_pct: number | null; disposed_date: string | null; owned_by: string | null; reimbursed: number | null }>();
     if (!row) throw new Error("asset not found");
+
+    // dep_method_lock (audit wave 1): Div 40's DV-vs-prime-cost choice is one-per-asset (s 40-65), but
+    // `assets.method` was only "locked" by a schema comment — the upsert below silently rewrote history
+    // under the new method. Guard at the money chokepoint so EVERY write path (recompute, rollForward,
+    // dispose, any future updateAsset) is covered: once a schedule row exists under one elected method,
+    // recomputing under the other throws unless the caller passes an explicit override (audited).
+    if (featureOn(this.env, "dep_method_lock")) {
+      const first = await this.env.DB.prepare(
+        `SELECT method_applied FROM depreciation_schedule WHERE asset_id = ? AND user_id = ? ORDER BY fy LIMIT 1`,
+      ).bind(assetId, userId).first<{ method_applied: string | null }>();
+      if (depMethodConflict(first?.method_applied, row.method)) {
+        if (!opts?.overrideMethodLock) {
+          throw new Error("method_locked: this asset's depreciation method is locked — Div 40 allows one choice (diminishing value or prime cost) per asset, and a schedule already exists under the other method.");
+        }
+        await this.audit(userId, "depreciation_method_override", JSON.stringify({ assetId, from: first?.method_applied, to: row.method }));
+      }
+    }
 
     // 0030 / D.3 — fix at source: an employer-OWNED or REIMBURSED asset earns the taxpayer no
     // decline-in-value (Div 40 needs the taxpayer to own and bear the cost). Write NO schedule rows and

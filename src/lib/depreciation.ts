@@ -96,21 +96,29 @@ export function assetDepreciatesForTaxpayer(asset: { owned_by?: string | null; r
 }
 
 // Div 40's choice of decline-in-value method (s 40-65) is one-per-asset: once you've used diminishing
-// value or prime cost for an asset you cannot switch it for that asset. Only those two values are an
-// ELECTION — immediate write-offs, pooling, div43 and the second-hand lockout are outcomes of the
-// asset's class/facts, not a method choice, so a class change is never a "method conflict".
-const DIV40_ELECTED_METHODS = new Set(["diminishing_value", "prime_cost"]);
+// value or prime cost for an asset you cannot switch it for that asset. Only values that EXPRESS that
+// election participate — an over-IAWO-threshold 'immediate'-class asset still honours the election
+// (recorded as immediate_over_threshold_dv/_pc), so those normalise to their election too. Pure
+// class/fact outcomes (immediate, pooling, div43, the second-hand lockout, _review) are not a method
+// choice, so a class change is never a "method conflict".
+const DIV40_ELECTION_OF: ReadonlyMap<string, "diminishing_value" | "prime_cost"> = new Map([
+  ["diminishing_value", "diminishing_value"],
+  ["prime_cost", "prime_cost"],
+  ["immediate_over_threshold_dv", "diminishing_value"],
+  ["immediate_over_threshold_pc", "prime_cost"],
+]);
 
 /**
  * True when an already-materialised schedule (its earliest row's method_applied) and the asset's
- * current `method` field are BOTH Div 40 elections and they differ — i.e. recomputing would silently
- * rewrite history under the other method. The single predicate computeDepreciation's method-lock
- * guard uses (dep_method_lock).
+ * current `method` field BOTH express a Div 40 election and the elections differ — i.e. recomputing
+ * would silently rewrite history under the other method. The single predicate computeDepreciation's
+ * method-lock guard uses (dep_method_lock).
  */
 export function depMethodConflict(earliestScheduledMethod: string | null | undefined, assetMethod: string | null | undefined): boolean {
-  if (!earliestScheduledMethod || !assetMethod) return false;
-  if (!DIV40_ELECTED_METHODS.has(earliestScheduledMethod) || !DIV40_ELECTED_METHODS.has(assetMethod)) return false;
-  return earliestScheduledMethod !== assetMethod;
+  const scheduled = earliestScheduledMethod ? DIV40_ELECTION_OF.get(earliestScheduledMethod) : undefined;
+  const current = assetMethod ? DIV40_ELECTION_OF.get(assetMethod) : undefined;
+  if (!scheduled || !current) return false;
+  return scheduled !== current;
 }
 
 /**

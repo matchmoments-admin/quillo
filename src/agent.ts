@@ -2772,31 +2772,26 @@ export class TaxAgent extends Agent<Env> {
       .first<{ asset_class: string; cost_cents: number; acquired_date: string; effective_life_years: number | null; method: string | null; dv_rate_pct: number | null; div43_rate: number | null; is_second_hand: number; business_use_pct: number | null; disposed_date: string | null; owned_by: string | null; reimbursed: number | null }>();
     if (!row) throw new Error("asset not found");
 
-    // dep_method_lock (audit wave 1): Div 40's DV-vs-prime-cost choice is one-per-asset (s 40-65), but
-    // `assets.method` was only "locked" by a schema comment — the upsert below silently rewrote history
-    // under the new method. Guard at the money chokepoint so EVERY write path (recompute, rollForward,
-    // dispose, any future updateAsset) is covered: once a schedule row exists under one elected method,
-    // recomputing under the other throws unless the caller passes an explicit override (audited).
-    if (featureOn(this.env, "dep_method_lock")) {
-      const first = await this.env.DB.prepare(
-        `SELECT method_applied FROM depreciation_schedule WHERE asset_id = ? AND user_id = ? ORDER BY fy LIMIT 1`,
-      ).bind(assetId, userId).first<{ method_applied: string | null }>();
-      if (depMethodConflict(first?.method_applied, row.method)) {
-        if (!opts?.overrideMethodLock) {
-          throw new Error("method_locked: this asset's depreciation method is locked — Div 40 allows one choice (diminishing value or prime cost) per asset, and a schedule already exists under the other method.");
-        }
-        await this.audit(userId, "depreciation_method_override", JSON.stringify({ assetId, from: first?.method_applied, to: row.method }));
-      }
-    }
-
     // 0030 / D.3 — fix at source: an employer-OWNED or REIMBURSED asset earns the taxpayer no
     // decline-in-value (Div 40 needs the taxpayer to own and bear the cost). Write NO schedule rows and
     // clear any stale ones, so EVERY reader (Assets page, CGT div43 cost-base, the position) is correct
-    // without its own guard.
+    // without its own guard. Runs BEFORE the method lock — this branch deletes rows, it never re-rolls
+    // elected history, so the lock must not block the cleanup.
     if (!assetDepreciatesForTaxpayer(row)) {
       await this.env.DB.prepare(`DELETE FROM depreciation_schedule WHERE asset_id = ? AND user_id = ?`).bind(assetId, userId).run();
       await this.audit(userId, "depreciation_skipped_not_owned", JSON.stringify({ assetId, owned_by: row.owned_by, reimbursed: row.reimbursed }));
       return { rows: 0 };
+    }
+
+    // dep_method_lock (audit wave 1): Div 40's DV-vs-prime-cost choice is one-per-asset (s 40-65), but
+    // `assets.method` was only "locked" by a schema comment — the upsert below silently rewrote history
+    // under the new method. Guard at the money chokepoint so EVERY write path (recompute, rollForward,
+    // dispose, any future updateAsset) is covered: once a schedule row exists under one elected method,
+    // recomputing under the other throws unless the caller passes an explicit override. The override
+    // audit row is written AFTER the successful batch below — never before the re-roll actually lands.
+    const lock = await this.depMethodLockState(userId, assetId, row.method);
+    if (lock.conflict && !opts?.overrideMethodLock) {
+      throw new Error("method_locked: this asset's depreciation method is locked — Div 40 allows one choice (diminishing value or prime cost) per asset, and a schedule already exists under the other method.");
     }
 
     // Depreciation period stays AU-shaped this stop (UK capital-allowance period rides with the UK rule
@@ -2816,8 +2811,24 @@ export class TaxAgent extends Agent<Env> {
       ).bind(crypto.randomUUID(), userId, assetId, s.fy, s.opening_adjustable_value_cents, s.days_held, s.deduction_cents, s.closing_adjustable_value_cents, s.method_applied),
     );
     for (let i = 0; i < stmts.length; i += 50) await this.env.DB.batch(stmts.slice(i, i + 50));
+    // The override audit records a COMPLETED re-roll, so it must follow the batch (a failed batch must
+    // not leave a false "overridden" row in the evidence trail).
+    if (lock.conflict) await this.audit(userId, "depreciation_method_override", JSON.stringify({ assetId, from: lock.from, to: row.method }));
     await this.audit(userId, "depreciation_computed", JSON.stringify({ assetId, throughFy: fyLabel(target), rows: schedule.length }));
     return { rows: schedule.length };
+  }
+
+  /**
+   * dep_method_lock state for an asset: whether its current Div 40 election conflicts with the one its
+   * materialised schedule was rolled under (earliest FY row). No flag → never a conflict. fy is a TEXT
+   * label ('2024-25'), so lexicographic ORDER BY is chronologically correct for 4-digit years.
+   */
+  private async depMethodLockState(userId: string, assetId: string, assetMethod: string | null): Promise<{ conflict: boolean; from: string | null }> {
+    if (!featureOn(this.env, "dep_method_lock")) return { conflict: false, from: null };
+    const first = await this.env.DB.prepare(
+      `SELECT method_applied FROM depreciation_schedule WHERE asset_id = ? AND user_id = ? ORDER BY fy LIMIT 1`,
+    ).bind(assetId, userId).first<{ method_applied: string | null }>();
+    return { conflict: depMethodConflict(first?.method_applied, assetMethod), from: first?.method_applied ?? null };
   }
 
   /** Batch: roll every active asset's schedule into a new FY (called by the FY-rollover cron). */
@@ -2827,8 +2838,15 @@ export class TaxAgent extends Agent<Env> {
       .all<{ id: string }>();
     let n = 0;
     for (const a of assets.results ?? []) {
-      await this.computeDepreciation(userId, a.id, toStartYear);
-      n++;
+      try {
+        await this.computeDepreciation(userId, a.id, toStartYear);
+        n++;
+      } catch (e) {
+        // dep_method_lock: one conflicted asset must NOT abort the tenant's whole roll (or the cron
+        // steps that follow it) — skip the asset, audit the skip, keep rolling the rest.
+        if (!/^method_locked/.test((e as Error).message)) throw e;
+        await this.audit(userId, "depreciation_method_conflict_skipped", JSON.stringify({ assetId: a.id, toFy: fyLabel(toStartYear) }));
+      }
     }
     await this.audit(userId, "depreciation_rollforward", JSON.stringify({ toFy: fyLabel(toStartYear), assets: n }));
     return { assets: n };
@@ -2869,6 +2887,14 @@ export class TaxAgent extends Agent<Env> {
 
   /** Dispose of an asset: record the termination value + a balancing adjustment vs adjustable value. */
   async disposeAsset(userId: string, assetId: string, disposedDate: string, disposalValueCents: number): Promise<{ balancing_adjustment_cents: number }> {
+    // dep_method_lock: check BEFORE any state write — otherwise a conflicted asset would be marked
+    // disposed and then fail the recompute below, wedging it half-disposed (stale adjustable value,
+    // no balancing adjustment, and no retry path). Resolve the method first, then dispose.
+    const methodRow = await this.env.DB.prepare(`SELECT method FROM assets WHERE id = ? AND user_id = ?`).bind(assetId, userId).first<{ method: string | null }>();
+    const lock = await this.depMethodLockState(userId, assetId, methodRow?.method ?? null);
+    if (lock.conflict) {
+      throw new Error("method_locked: this asset's depreciation method conflicts with its existing schedule — Div 40 allows one choice (diminishing value or prime cost) per asset. Resolve the method (or recompute with an explicit override) before disposing.");
+    }
     // Set the disposal first so the engine caps days-held in the disposal FY, then materialise the
     // schedule THROUGH that FY — otherwise the adjustable value omits the disposal-year decline and
     // the balancing adjustment is computed against a stale (too-high) value.

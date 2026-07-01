@@ -687,6 +687,11 @@ console.log("depMethodConflict (Div 40 method lock)");
   check("same elected method → no conflict", !depMethodConflict("diminishing_value", "diminishing_value") && !depMethodConflict("prime_cost", "prime_cost"));
   check("null/absent method on either side → no conflict", !depMethodConflict(null, "prime_cost") && !depMethodConflict("diminishing_value", null) && !depMethodConflict(undefined, undefined));
   check("class-driven method_applied values never conflict", !depMethodConflict("immediate", "prime_cost") && !depMethodConflict("low_value_pool", "diminishing_value") && !depMethodConflict("div43", "prime_cost") && !depMethodConflict("div40_locked", "diminishing_value") && !depMethodConflict("small_business_pool", "prime_cost"));
+  // An over-IAWO-threshold 'immediate'-class asset still HONOURS the election — its prefixed
+  // method_applied normalises to the underlying DV/PC choice (review-caught gap).
+  check("immediate_over_threshold_dv expresses the DV election (conflicts with PC)", depMethodConflict("immediate_over_threshold_dv", "prime_cost") && !depMethodConflict("immediate_over_threshold_dv", "diminishing_value"));
+  check("immediate_over_threshold_pc expresses the PC election (conflicts with DV)", depMethodConflict("immediate_over_threshold_pc", "diminishing_value") && !depMethodConflict("immediate_over_threshold_pc", "prime_cost"));
+  check("immediate_over_threshold_review is not an election → never conflicts", !depMethodConflict("immediate_over_threshold_review", "prime_cost") && !depMethodConflict("immediate_over_threshold_review", "diminishing_value"));
 }
 
 // ── Claimability matcher: rules-first, defer gating ───────────────────────────

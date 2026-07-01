@@ -250,6 +250,21 @@ export function assessReadiness(input: {
       basis: report.partnership.franking_credit_cents > 0 ? `incl. ${money(report.partnership.franking_credit_cents)} franking credit` : "your share of partnership net income",
       why: "Your share of a partnership's net income, with its character retained (a franked dividend stays franked, a discounted capital gain stays discounted). It's assessable to you; the partnership lodges its own return. A partnership loss may instead be deductible — confirm the split and the partnership's lodgment with a registered tax agent." });
   }
+  // Audit wave 4 (trading_stock): buildReport added the s 70-35 adjustment to taxable_position, so it
+  // renders as a line too (lines-sum == headline). An increase is an "income" line; a decrease renders
+  // as a deduction line with the deducted amount.
+  if (report.trading_stock && report.trading_stock.adjustment_cents !== 0) {
+    const ts = report.trading_stock;
+    lines.push({
+      group: ts.adjustment_cents > 0 ? "income" : "deduction",
+      label: "trading_stock_adjustment",
+      amount_cents: Math.abs(ts.adjustment_cents),
+      basis: `closing ${money(ts.closing_cents)} − opening ${money(ts.opening_cents)}`,
+      why: ts.adjustment_cents > 0
+        ? "Your trading stock grew over the year — the increase counts as business income (s 70-35). Valuation basis and the small-business movement election are confirmed with your registered tax agent."
+        : "Your trading stock shrank over the year — the decrease is deductible (s 70-35). Valuation basis and the small-business movement election are confirmed with your registered tax agent.",
+    });
+  }
   // Deduction lines come from the deductibility-split breakdown so the SAME classifier that computed
   // the headline routes each row to its section ("deduction" sums to the headline; "excluded"/"company"
   // are shown apart). This both fixes the number AND explains what dropped out and why.

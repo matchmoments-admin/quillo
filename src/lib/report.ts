@@ -918,9 +918,12 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   let taxable_position_confirmed_cents: number | undefined;
   if (featureOn(env, "position_confirmed_range")) {
     const confirmed_deductions_cents = Math.min(resolved_deductible_cents, Math.max(0, gross_deductions_cents - refunds_cents)) + (work_method?.total_cents ?? 0);
+    // The trading-stock adjustment is calculation-substantiated (like depreciation/super), not
+    // discretionary tracked spend — it belongs in BOTH endpoints or the range inverts by the
+    // adjustment (confirmed ≥ tracked invariant).
     const confirmedPreLoss =
       income.gross_cents + (capital_gains?.net_capital_gain_cents ?? 0) + (ess?.assessable_discount_cents ?? 0) + (trust?.assessable_cents ?? 0) + (partnership?.assessable_cents ?? 0)
-      + (franking_gross_up_cents ?? 0) - confirmed_deductions_cents - dep.total_cents - (super_deduction?.claimed_cents ?? 0);
+      + (franking_gross_up_cents ?? 0) + (trading_stock?.adjustment_cents ?? 0) - confirmed_deductions_cents - dep.total_cents - (super_deduction?.claimed_cents ?? 0);
     // B2: the carried tax loss is ATO-confirmed, so it reduces the confirmed floor too (capped at the
     // confirmed pre-loss position). Off ⇒ carried_tax_loss_cents=0 ⇒ byte-identical.
     taxable_position_confirmed_cents = confirmedPreLoss - Math.min(carried_tax_loss_cents, Math.max(0, confirmedPreLoss));

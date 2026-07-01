@@ -425,6 +425,7 @@ async function main() {
   check("PTS: +$4k stock adjustment (closing $12k − opening $8k) lands in the position", rTsOn.taxable_position_cents === 9000000 + 400000);
   check("PTS: the report carries the itemised trading_stock block", rTsOn.trading_stock?.adjustment_cents === 400000 && rTsOn.trading_stock?.opening_cents === 800000 && rTsOn.trading_stock?.closing_cents === 1200000);
   check("PTS: the company's stock row (separate taxpayer) stays OUT of the personal headline", rTsOn.taxable_position_cents === 9400000); // $50k company closing stock would have shown here
+  check("PTS: confirmed-range floor carries the adjustment too (no range inversion)", rTsOn.taxable_position_confirmed_cents === 9400000);
   const rTsOff = await buildReport(env, "pts", 2025);
   check("PTS: flag OFF ⇒ no field, no adjustment (byte-identical)", rTsOff.taxable_position_cents === 9000000 && rTsOff.trading_stock === undefined);
 

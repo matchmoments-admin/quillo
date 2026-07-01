@@ -3509,18 +3509,33 @@ export class TaxAgent extends Agent<Env> {
   async setTradingStock(userId: string, b: { entity_id?: string | null; fy?: string; opening_cents?: number; closing_cents?: number; valuation_basis?: string | null }): Promise<{ ok: true }> {
     await this.requireProfile(userId);
     const fy = normaliseFyLabel(b.fy) ?? this.currentFyLabel(await this.jurisdictionFor(userId));
-    const entityId = b.entity_id ?? null;
-    const opening = Math.max(0, Math.round(Number(b.opening_cents) || 0));
-    const closing = Math.max(0, Math.round(Number(b.closing_cents) || 0));
+    // '' and NULL are the SAME upsert slot (COALESCE key) but only IS NULL reaches the personal
+    // position — coerce, and a non-null entity must belong to this tenant.
+    const entityId = b.entity_id || null;
+    await assertOwns(this.env, userId, [{ table: "entities", id: entityId ?? undefined, label: "entity" }]);
+    // Finite-only clamp: JSON can carry 1e999 → Infinity, which D1 rejects as a bind (500). 0 ≤ n ≤ $10B.
+    const toCents = (v: unknown): number => { const n = Number(v); return Number.isFinite(n) ? Math.min(Math.max(0, Math.round(n)), 1_000_000_000_000) : 0; };
+    const opening = toCents(b.opening_cents);
+    const closing = toCents(b.closing_cents);
     const basis = b.valuation_basis && ["cost", "market_selling_value", "replacement"].includes(b.valuation_basis) ? b.valuation_basis : null;
     const upd = await this.env.DB.prepare(
       `UPDATE trading_stock SET opening_cents = ?, closing_cents = ?, valuation_basis = ?, updated_at = datetime('now')
         WHERE user_id = ? AND fy = ? AND COALESCE(entity_id, '') = COALESCE(?, '')`,
     ).bind(opening, closing, basis, userId, fy, entityId).run();
     if ((upd.meta?.changes ?? 0) === 0) {
-      await this.env.DB.prepare(
-        `INSERT INTO trading_stock (id, user_id, entity_id, fy, opening_cents, closing_cents, valuation_basis) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      ).bind(crypto.randomUUID(), userId, entityId, fy, opening, closing, basis).run();
+      try {
+        await this.env.DB.prepare(
+          `INSERT INTO trading_stock (id, user_id, entity_id, fy, opening_cents, closing_cents, valuation_basis) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        ).bind(crypto.randomUUID(), userId, entityId, fy, opening, closing, basis).run();
+      } catch (e) {
+        // Concurrent first-save race (D1 awaits leave the DO input gate open): the loser re-runs the
+        // UPDATE instead of surfacing a spurious UNIQUE-constraint 500 on the happy path.
+        if (!/UNIQUE constraint/i.test((e as Error).message)) throw e;
+        await this.env.DB.prepare(
+          `UPDATE trading_stock SET opening_cents = ?, closing_cents = ?, valuation_basis = ?, updated_at = datetime('now')
+            WHERE user_id = ? AND fy = ? AND COALESCE(entity_id, '') = COALESCE(?, '')`,
+        ).bind(opening, closing, basis, userId, fy, entityId).run();
+      }
     }
     await this.audit(userId, "trading_stock_set", JSON.stringify({ fy, entity_id: entityId, opening_cents: opening, closing_cents: closing, valuation_basis: basis }));
     return { ok: true };

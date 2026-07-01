@@ -1200,10 +1200,41 @@ console.log("readiness");
   check("AMIT cost-base amount → defer info nudge", mfCb.findings.some((f) => f.id === "mf_cost_base" && f.defer_to_agent && f.severity === "info"));
   check("no AMIT cost-base amount → no such finding", !run(mkReport(), noSignals()).findings.some((f) => f.id === "mf_cost_base"));
 
+  // integrity_nudges (audit wave 1): the four extra defer nudges fire ONLY when their signals are
+  // populated (the caller gates population on the flag) — signal absent ⇒ findings byte-identical.
+  const frankingRich = (credits: number) => mkReport({ income: { by_type: [], gross_cents: 0, withholding_cents: 0, franking_credit_cents: credits, foreign_tax_paid_cents: 0 } });
+  const frankOver = run(frankingRich(600_000), noSignals({ hasDividendStatementDoc: true, frankingHoldingThresholdCents: 500_000 }));
+  check("franking > $5k boundary → 45-day defer review nudge", frankOver.findings.some((f) => f.id === "franking_45day" && f.defer_to_agent && f.severity === "review"));
+  const frankUnder = run(frankingRich(300_000), noSignals({ hasDividendStatementDoc: true, frankingHoldingThresholdCents: 500_000 }));
+  check("franking ≤ boundary → small-shareholder info note, no 45-day nudge", frankUnder.findings.some((f) => f.id === "franking_small_shareholder" && f.severity === "info") && !frankUnder.findings.some((f) => f.id === "franking_45day"));
+  check("no threshold signal (flag off) → neither franking-integrity finding", !run(frankingRich(600_000), noSignals({ hasDividendStatementDoc: true })).findings.some((f) => f.id === "franking_45day" || f.id === "franking_small_shareholder"));
+  // Trust/partnership franking shares count toward the $5k test.
+  const frankViaTrust = run(mkReport({ income: { by_type: [], gross_cents: 0, withholding_cents: 0, franking_credit_cents: 300_000, foreign_tax_paid_cents: 0 }, trust: { assessable_cents: 1_000_000, franking_credit_cents: 300_000, by_character: {} } }), noSignals({ hasDividendStatementDoc: true, frankingHoldingThresholdCents: 500_000 }));
+  check("direct + trust franking crosses the boundary together", frankViaTrust.findings.some((f) => f.id === "franking_45day"));
+
+  const fitoReport = (paid: number) => mkReport({ income: { by_type: [], gross_cents: 0, withholding_cents: 0, franking_credit_cents: 0, foreign_tax_paid_cents: paid } });
+  const fitoOver = run(fitoReport(150_000), noSignals({ fitoDeMinimisCents: 100_000 }));
+  check("foreign tax > $1k de-minimis → FITO escalates to review", fitoOver.findings.some((f) => f.id === "foreign_tax_fito" && f.severity === "review" && f.defer_to_agent));
+  const fitoUnder = run(fitoReport(50_000), noSignals({ fitoDeMinimisCents: 100_000 }));
+  check("foreign tax ≤ de-minimis → info nudge mentioning the de-minimis", fitoUnder.findings.some((f) => f.id === "foreign_tax_fito" && f.severity === "info" && f.general_info_note.includes("without the full offset-limit")));
+  const fitoLegacy = run(fitoReport(150_000), noSignals());
+  check("no de-minimis signal (flag off) → legacy FITO info wording", fitoLegacy.findings.some((f) => f.id === "foreign_tax_fito" && f.severity === "info" && f.general_info_note.includes("The offset limit is worked out")));
+
+  const rideshare = run(gstBiz(3_000_000), noSignals({ rideshareGstLikely: true, isGstRegistered: false, gstRegistrationThresholdCents: 7_500_000 }));
+  check("rideshare-likely + business income + not registered → first-dollar GST defer nudge", rideshare.findings.some((f) => f.id === "rideshare_gst_first_dollar" && f.defer_to_agent && f.severity === "review"));
+  check("rideshare nudge fires below the turnover threshold (that's the point)", !rideshare.findings.some((f) => f.id === "gst_registration_threshold"));
+  check("GST-registered rideshare → no first-dollar nudge", !run(gstBiz(3_000_000), noSignals({ rideshareGstLikely: true, isGstRegistered: true })).findings.some((f) => f.id === "rideshare_gst_first_dollar"));
+  check("no rideshare signal (flag off) → no first-dollar nudge", !run(gstBiz(3_000_000), noSignals({ isGstRegistered: false })).findings.some((f) => f.id === "rideshare_gst_first_dollar"));
+
+  const nccOver = run(mkReport(), noSignals({ superNonConcessionalCapCents: 12_000_000, nonConcessionalContributedCents: 15_000_000 }));
+  check("NCC contributions above the reference cap → bring-forward defer nudge", nccOver.findings.some((f) => f.id === "super_ncc_cap" && f.defer_to_agent && f.severity === "review"));
+  check("NCC within the cap → no nudge", !run(mkReport(), noSignals({ superNonConcessionalCapCents: 12_000_000, nonConcessionalContributedCents: 9_000_000 })).findings.some((f) => f.id === "super_ncc_cap"));
+  check("no NCC cap signal (flag off) → no nudge", !run(mkReport(), noSignals({ nonConcessionalContributedCents: 15_000_000 })).findings.some((f) => f.id === "super_ncc_cap"));
+
   // THE INVARIANT: no generated finding/position text asserts tax payable, a refund, or a rate.
   // (The fixed position caption intentionally NEGATES those words and is excluded — it's a vetted constant.)
   const denylist = /refund|tax payable|marginal rate|\b\d{1,2}%\s*(tax|bracket)/i;
-  const everything = [unknown, franking, rental, iawo, disposed, judged, clean, trust, capLoss, psi, psiApplies, div293Hit, gstOver, nonCash, pension, mainRes, mfCb, partn];
+  const everything = [unknown, franking, rental, iawo, disposed, judged, clean, trust, capLoss, psi, psiApplies, div293Hit, gstOver, nonCash, pension, mainRes, mfCb, partn, frankOver, frankUnder, frankViaTrust, fitoOver, fitoUnder, rideshare, nccOver];
   const generatedText = everything.flatMap((r) => [
     ...r.findings.flatMap((f) => [f.title, f.general_info_note]),
     ...r.position.lines.flatMap((l) => [l.basis, l.why]),

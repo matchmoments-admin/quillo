@@ -72,6 +72,14 @@ export interface FilingReadinessSignals {
   psiAllAssessed?: boolean; // S2: every business activity has a recorded psi_status → stop prompting them to assess
   mainResidenceDisposalN?: number; // F: disposed properties flagged as a main residence this FY → defer nudge (we never auto-apply the exemption)
   mfCostBaseAdjustmentCents?: number; // B: net AMIT cost-base amount across managed-fund distributions → defer nudge (not assessable; adjusts the units' cost base for a future CGT calc)
+  // integrity_nudges (audit wave 1) — the caller populates these ONLY when the flag is on, so OFF ⇒
+  // findings byte-identical. All four are pack REFERENCE values / booleans that drive defer nudges;
+  // holding periods, offset limits and cap breaches are NEVER computed as $ outcomes.
+  frankingHoldingThresholdCents?: number | null; // $5,000 small-shareholder boundary for the 45-day holding rule
+  fitoDeMinimisCents?: number | null; // $1,000 FITO de-minimis (above it the offset-limit calc is required)
+  rideshareGstLikely?: boolean; // occupation/activity looks like taxi/ride-sourcing → GST from the first dollar (Div 144)
+  superNonConcessionalCapCents?: number | null; // reference NCC cap for the FY
+  nonConcessionalContributedCents?: number; // total type='non_concessional' super contributions this FY
 }
 
 export interface FilingReadiness {
@@ -432,15 +440,46 @@ export function assessReadiness(input: {
       `You've recorded ${money(report.income.franking_credit_cents)} of franking credits. Upload the dividend/distribution statement so the claim is substantiated.`, false,
       [{ kind: "document", label: "dividend_statement" }]));
   }
+  // integrity_nudges: the 45-day holding rule / $5,000 small-shareholder exemption. The $5k test is on
+  // the TOTAL franking-credit entitlement (direct + trust + partnership shares). We never compute
+  // holding periods — above the boundary the whole question is agent territory (fail the rule above
+  // $5k and the credits are denied entirely, not capped).
+  if (signals.frankingHoldingThresholdCents != null) {
+    const totalFrankingCents = report.income.franking_credit_cents
+      + (report.trust?.franking_credit_cents ?? 0)
+      + (report.partnership?.franking_credit_cents ?? 0);
+    if (totalFrankingCents > signals.frankingHoldingThresholdCents) {
+      findings.push(f("franking_45day", "judgement", "review", "Franking credits are above the small-shareholder boundary — check the 45-day holding rule",
+        `Your total franking credits (${money(totalFrankingCents)}) are above ${money(signals.frankingHoldingThresholdCents)}, so the small-shareholder exemption doesn't cover them. The 45-day holding rule (90 days for preference shares, and the related-payments rule) can deny franking credits on shares not held at risk long enough. Quillo does not track holding periods — confirm each parcel's holding with a registered tax agent.${DEFER}`, true,
+        [{ kind: "income", label: "franking credits" }]));
+    } else if (totalFrankingCents > 0) {
+      findings.push(f("franking_small_shareholder", "judgement", "info", "Franking credits are within the small-shareholder exemption",
+        `Your total franking credits (${money(totalFrankingCents)}) are under ${money(signals.frankingHoldingThresholdCents)}, so the small-shareholder exemption generally means the 45-day holding rule doesn't apply to you. General information only.`, false,
+        [{ kind: "income", label: "franking credits" }]));
+    }
+  }
   for (const rp of signals.rentalPropsMissingSummary) {
     findings.push(f(`rental_no_summary:${rp.property_id}`, "evidence", "review", `Rental income recorded for "${rp.label ?? rp.property_id}" but no agent summary on file`,
       `Upload the agent's EOFY rental summary so the rent and agent-deducted expenses are substantiated and split correctly.`, false,
       [{ kind: "property", id: rp.property_id, label: rp.label ?? undefined }]));
   }
   if (report.income.foreign_tax_paid_cents > 0) {
-    findings.push(f("foreign_tax_fito", "income", "info", "Foreign tax paid recorded",
-      `You've recorded ${money(report.income.foreign_tax_paid_cents)} of foreign tax paid, which may give rise to a Foreign Income Tax Offset. The offset limit is worked out by your registered tax agent.${DEFER}`, true,
-      [{ kind: "income", label: "foreign tax paid" }]));
+    // integrity_nudges: branch on the $1,000 FITO de-minimis when the caller supplied it. Above it the
+    // full offset-limit calculation is required (agent territory, escalate to review); at/below it the
+    // offset is generally claimable without that calculation. Signal absent (flag off) ⇒ legacy wording.
+    if (signals.fitoDeMinimisCents != null && report.income.foreign_tax_paid_cents > signals.fitoDeMinimisCents) {
+      findings.push(f("foreign_tax_fito", "income", "review", "Foreign tax paid is above the FITO de-minimis — the offset limit applies",
+        `You've recorded ${money(report.income.foreign_tax_paid_cents)} of foreign tax paid. Above ${money(signals.fitoDeMinimisCents)}, the Foreign Income Tax Offset is capped at an offset limit that must be worked out (it compares your position with and without the foreign income); any excess is not carried forward. Your registered tax agent will calculate the limit.${DEFER}`, true,
+        [{ kind: "income", label: "foreign tax paid" }]));
+    } else if (signals.fitoDeMinimisCents != null) {
+      findings.push(f("foreign_tax_fito", "income", "info", "Foreign tax paid recorded",
+        `You've recorded ${money(report.income.foreign_tax_paid_cents)} of foreign tax paid, which may give rise to a Foreign Income Tax Offset. At or under ${money(signals.fitoDeMinimisCents)}, the offset can generally be claimed without the full offset-limit calculation — confirm the claim with your registered tax agent.${DEFER}`, true,
+        [{ kind: "income", label: "foreign tax paid" }]));
+    } else {
+      findings.push(f("foreign_tax_fito", "income", "info", "Foreign tax paid recorded",
+        `You've recorded ${money(report.income.foreign_tax_paid_cents)} of foreign tax paid, which may give rise to a Foreign Income Tax Offset. The offset limit is worked out by your registered tax agent.${DEFER}`, true,
+        [{ kind: "income", label: "foreign tax paid" }]));
+    }
   }
   // S4/D: captured-but-excluded income types — surface one defer nudge per type so the user knows it may be
   // assessable (we never assert it). Each type keeps its own wording; a pension is never called a gift.
@@ -536,6 +575,15 @@ export function assessReadiness(input: {
     findings.push(f("gst_registration_threshold", "threshold", "review", "Business turnover near the GST registration threshold",
       `Your recorded business turnover (${money(businessTurnoverCents)}) is at or above the GST registration threshold (${money(signals.gstRegistrationThresholdCents)}), and no GST registration is on file. A business that reaches the threshold is generally required to register for GST (and would then charge GST on its sales and claim credits on its purchases). Whether and from when you must register depends on the turnover test — confirm with a registered tax agent.${DEFER}`, true, []));
   }
+  // integrity_nudges: taxi / ride-sourcing GST — Div 144 requires GST registration from the FIRST dollar
+  // of fares, regardless of the turnover threshold. Fires only when the caller's heuristic says the
+  // business looks like ride-sourcing AND business income exists AND no registration is on file. We
+  // never assert they MUST register (food-delivery-only work follows the normal threshold) — the
+  // distinction is fact-specific, so the nudge names the rule and defers.
+  if (signals.rideshareGstLikely && hasBusinessIncome && !signals.isGstRegistered) {
+    findings.push(f("rideshare_gst_first_dollar", "threshold", "review", "Ride-sourcing income — GST registration is required from the first dollar",
+      `Your business income looks like taxi or ride-sourcing work (e.g. Uber, DiDi, Ola), and no GST registration is on file. Drivers providing taxi or ride-sourcing travel must be registered for GST from their first dollar of fares — the ${signals.gstRegistrationThresholdCents != null ? money(signals.gstRegistrationThresholdCents) : "usual"} turnover threshold does not apply to those fares (food-delivery-only work follows the normal threshold). Confirm your registration position with a registered tax agent.${DEFER}`, true, []));
+  }
   // Div 293 — an extra 15% tax on concessional super contributions for higher-income earners. It's a
   // separate assessment the ATO/agent computes (NOT part of the indicative position), so this is a
   // pure defer nudge triggered off recorded income vs the pack's reference-only threshold. We never
@@ -544,6 +592,13 @@ export function assessReadiness(input: {
   if (signals.div293ThresholdCents != null && report.income.gross_cents >= signals.div293ThresholdCents) {
     findings.push(f("div293_income", "threshold", "review", "Income is around the Div 293 super threshold",
       `Your recorded income (${money(report.income.gross_cents)}) is near or above the Division 293 threshold (${money(signals.div293ThresholdCents)}). Higher earners can pay an extra 15% on their concessional (before-tax) super contributions. This is a separate ATO assessment, not part of the position shown here — your registered tax agent will work out whether it applies.${DEFER}`, true, []));
+  }
+  // integrity_nudges: non-concessional (after-tax) super contributions above the reference cap. The cap
+  // interacts with the 3-year bring-forward and the total-super-balance test, so we NEVER assert a
+  // breach — the nudge names the cap and defers. (The NCC cap is a reference-only pack value.)
+  if (signals.superNonConcessionalCapCents != null && (signals.nonConcessionalContributedCents ?? 0) > signals.superNonConcessionalCapCents) {
+    findings.push(f("super_ncc_cap", "threshold", "review", "After-tax super contributions are above the annual non-concessional cap",
+      `You've recorded ${money(signals.nonConcessionalContributedCents ?? 0)} of non-concessional (after-tax) super contributions, above the ${money(signals.superNonConcessionalCapCents)} annual cap. That can be fine — the bring-forward rule lets you use up to three years of caps at once — but it depends on your total super balance and prior-year contributions, which Quillo doesn't model. Confirm the position with a registered tax agent before lodging.${DEFER}`, true, []));
   }
 
   // Trust entities lodge their own return and must resolve distributions before 30 June — surfaced

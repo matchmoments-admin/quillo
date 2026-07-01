@@ -3334,6 +3334,29 @@ export class TaxAgent extends Agent<Env> {
     const psiRows = (await this.env.DB.prepare(`SELECT psi_status FROM income_activities WHERE user_id = ? AND activity_type = 'business'`).bind(userId).all<{ psi_status: string | null }>()).results ?? [];
     const psiAppliesDeclared = psiRows.some((r) => r.psi_status === "psi_applies");
     const psiAllAssessed = psiRows.length > 0 && psiRows.every((r) => r.psi_status != null);
+    // integrity_nudges (audit wave 1): populate the four extra signals ONLY when the flag is on, so
+    // OFF ⇒ the readiness findings are byte-identical. Reference thresholds come from the pack (never
+    // computed into $ outcomes); the rideshare heuristic looks at occupations + business-activity labels.
+    const integrityOn = featureOn(this.env, "integrity_nudges");
+    let rideshareGstLikely = false;
+    let nonConcessionalContributedCents = 0;
+    if (integrityOn) {
+      const RIDESHARE_HINTS = ["uber", "didi", "ola", "rideshare", "ride-share", "ride sourcing", "ride-sourcing", "taxi"];
+      const bizActivities = (await this.env.DB.prepare(
+        `SELECT occupation_scope, label FROM income_activities WHERE user_id = ? AND activity_type = 'business'`,
+      ).bind(userId).all<{ occupation_scope: string | null; label: string | null }>()).results ?? [];
+      const looksRideshare = (s: string | null | undefined) => !!s && RIDESHARE_HINTS.some((h) => s.toLowerCase().includes(h));
+      rideshareGstLikely = occupations.includes("driver")
+        || bizActivities.some((a) => a.occupation_scope === "driver" || looksRideshare(a.label));
+      try {
+        nonConcessionalContributedCents = (await this.env.DB.prepare(
+          `SELECT COALESCE(SUM(amount_cents),0) AS c FROM super_contributions WHERE user_id = ? AND fy = ? AND type = 'non_concessional'`,
+        ).bind(userId, fy).first<{ c: number }>())?.c ?? 0;
+      } catch (e) {
+        if (!/no such table|no such column/i.test((e as Error).message)) throw e;
+      }
+    }
+    const integrityThresholds = thresholds[fy] as { franking_holding_rule_threshold_cents?: number; fito_de_minimis_cents?: number; super_non_concessional_cap_cents?: number } | undefined;
     const signals: FilingReadinessSignals = {
       unknownBucketCents: unknownRow?.total_cents ?? 0,
       unknownBucketN: unknownRow?.n ?? 0,
@@ -3354,6 +3377,13 @@ export class TaxAgent extends Agent<Env> {
       psiAllAssessed,
       mainResidenceDisposalN: mainResDisposal?.n ?? 0,
       mfCostBaseAdjustmentCents,
+      ...(integrityOn ? {
+        frankingHoldingThresholdCents: integrityThresholds?.franking_holding_rule_threshold_cents ?? null,
+        fitoDeMinimisCents: integrityThresholds?.fito_de_minimis_cents ?? null,
+        rideshareGstLikely,
+        superNonConcessionalCapCents: integrityThresholds?.super_non_concessional_cap_cents ?? null,
+        nonConcessionalContributedCents,
+      } : {}),
     };
 
     const readiness = assessReadiness({ report, situation, claimMatches: [...matchedById.values()], signals, generatedAt: new Date().toISOString(), excludeNonDeductible: featureOn(this.env, "position_excludes_nondeductible"), excludePropertyUndetermined: featureOn(this.env, "position_excludes_property_undetermined"), auditFindingsV2: featureOn(this.env, "readiness_audit_v2") });

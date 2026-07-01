@@ -63,8 +63,8 @@
   "thresholds_by_fy": {
     "_note": "All dollar thresholds in CENTS. These change yearly and are policy-dependent — the depreciation engine + claimability brain read them per FY, never inline. Confirm against ATO before relying on them.",
     "_reference_only_keys": {
-      "_note": "REFERENCE-ONLY: these per-FY keys are NOT used in any $ calculation in the engines. They are informational only — `div293_threshold_cents` informs a defer-to-agent readiness nudge (never a computed liability); `super_non_concessional_cap_cents` is informational only (bring-forward + total-super-balance conditions make any breach determination agent territory); `mls_single_threshold_cents` and the company-tax rates (`base_rate_company_tax_pct`/`full_company_tax_pct`) are unconsumed (the product never computes tax payable, by design — see CLAUDE.md); `div7a_benchmark_rate_pct` is unconsumed and re-verified each July when the ATO publishes the new rate. Do not wire these into any position maths without a registered-tax-agent review; surcharge/levy/company-tax computation is out of scope.",
-      "keys": ["div293_threshold_cents", "mls_single_threshold_cents", "base_rate_company_tax_pct", "full_company_tax_pct", "super_non_concessional_cap_cents", "div7a_benchmark_rate_pct"]
+      "_note": "REFERENCE-ONLY: these per-FY keys are NOT used in any $ calculation in the engines. They are informational only — `div293_threshold_cents` informs a defer-to-agent readiness nudge (never a computed liability); `super_non_concessional_cap_cents` is informational only (bring-forward + total-super-balance conditions make any breach determination agent territory); `mls_single_threshold_cents` and the company-tax rates (`base_rate_company_tax_pct`/`full_company_tax_pct`) are unconsumed (the product never computes tax payable, by design — see CLAUDE.md); `div7a_benchmark_rate_pct` is unconsumed and re-verified each July when the ATO publishes the new rate; `franking_holding_rule_threshold_cents` (the $5,000 small-shareholder exemption boundary for the 45-day holding rule) and `fito_de_minimis_cents` (the $1,000 FITO de-minimis below which the offset-limit calculation isn't required) drive defer-to-agent readiness nudges only — holding periods and offset limits are never computed. Do not wire these into any position maths without a registered-tax-agent review; surcharge/levy/company-tax computation is out of scope.",
+      "keys": ["div293_threshold_cents", "mls_single_threshold_cents", "base_rate_company_tax_pct", "full_company_tax_pct", "super_non_concessional_cap_cents", "div7a_benchmark_rate_pct", "franking_holding_rule_threshold_cents", "fito_de_minimis_cents"]
     },
     "2024-25": {
       "instant_asset_write_off_cents": 2000000,
@@ -83,6 +83,8 @@
       "rd_premium_pct": 18.5,
       "div7a_benchmark_rate_pct": 8.77,
       "div293_threshold_cents": 25000000,
+      "franking_holding_rule_threshold_cents": 500000,
+      "fito_de_minimis_cents": 100000,
       "s40_880_years": 5,
       "mls_single_threshold_cents": 9700000
     },
@@ -103,6 +105,8 @@
       "rd_premium_pct": 18.5,
       "div7a_benchmark_rate_pct": 8.37,
       "div293_threshold_cents": 25000000,
+      "franking_holding_rule_threshold_cents": 500000,
+      "fito_de_minimis_cents": 100000,
       "s40_880_years": 5,
       "mls_single_threshold_cents": 10100000
     },
@@ -123,6 +127,8 @@
       "rd_premium_pct": 18.5,
       "div7a_benchmark_rate_pct": 8.37,
       "div293_threshold_cents": 25000000,
+      "franking_holding_rule_threshold_cents": 500000,
+      "fito_de_minimis_cents": 100000,
       "s40_880_years": 5,
       "mls_single_threshold_cents": 10500000
     }

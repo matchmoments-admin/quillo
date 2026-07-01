@@ -14,6 +14,7 @@ import {
 } from "./report";
 import { fyLabel, fyBounds, separateTaxpayerEntityIds, NON_ASSESSABLE_INCOME_TYPES } from "./ledger-totals";
 import { resolveJurisdictionForUser } from "./jurisdiction";
+import { deductibleInterestCents } from "./loan-interest";
 import { classifyAttribution, splitAttribution } from "./attribution";
 import { exclusionReason } from "./readiness";
 import { featureOn } from "./features";
@@ -990,8 +991,87 @@ export async function buildAccountantSchedule(
     });
   }
 
+  // ── Audit #5/#3b (accountant_schedule_v2): a Loan Register the agent can audit + an FX-Excluded list
+  //    of unconverted foreign-currency rows silently dropped from every total. Both informational (no
+  //    tie-back). OFF ⇒ the schedule is byte-identical.
+  if (featureOn(env, "accountant_schedule_v2")) {
+    const loanRows = await safeAll<{ account: string; balance_cents: number | null; interest_rate_pct: number | null; loan_account_id: string; property_id: string; deductible_interest_pct: number; property_label: string | null; interest_cents: number | null; source: string | null; document_id: string | null }>(
+      env.DB.prepare(
+        `SELECT a.name AS account, a.balance_cents, a.interest_rate_pct, lp.loan_account_id,
+                lp.property_id, lp.deductible_interest_pct,
+                (SELECT label FROM properties WHERE id = lp.property_id AND user_id = lp.user_id) AS property_label,
+                lis.interest_cents, lis.source, lis.document_id
+           FROM loans_properties lp
+           JOIN accounts a ON a.id = lp.loan_account_id AND a.user_id = lp.user_id
+           LEFT JOIN loan_interest_summaries lis ON lis.loan_account_id = lp.loan_account_id AND lis.user_id = lp.user_id AND lis.fy = ?
+          WHERE lp.user_id = ?
+          ORDER BY a.name, property_label`,
+      ).bind(String(startYear), userId).all(),
+    );
+    if (loanRows.length) {
+      const loanNotes: string[] = [];
+      // Apportionment guard: a loan's deductible % across all its properties must not exceed 100%.
+      const pctByLoan = new Map<string, { name: string; pct: number }>();
+      for (const l of loanRows) {
+        const cur2 = pctByLoan.get(l.loan_account_id) ?? { name: l.account, pct: 0 };
+        cur2.pct += l.deductible_interest_pct || 0;
+        pctByLoan.set(l.loan_account_id, cur2);
+      }
+      for (const { name, pct } of pctByLoan.values()) {
+        if (pct > 100) loanNotes.push(`⚠ Loan "${name}" is apportioned ${pct}% across properties — over 100%. Fix the split so interest can't be over-claimed.`);
+      }
+      loanNotes.push("Informational — the deductible interest actually claimed appears in each Property section above. General information only.");
+      const rows: Cell[][] = loanRows.map((l) => {
+        const interest = l.interest_cents ?? (l.balance_cents != null && l.interest_rate_pct != null ? Math.round((l.balance_cents * l.interest_rate_pct) / 100) : null);
+        const deductible = interest != null ? deductibleInterestCents(interest, l.deductible_interest_pct) : null;
+        return [
+          l.account,
+          l.property_label ?? l.property_id,
+          l.balance_cents != null ? d(l.balance_cents) : "—",
+          l.interest_rate_pct != null ? l.interest_rate_pct : "—",
+          l.deductible_interest_pct,
+          interest != null ? d(interest) : "— (no summary or estimate)",
+          deductible != null ? d(deductible) : "—",
+          l.source ? l.source.replace(/_/g, " ") : "estimate",
+          l.document_id ? "on file" : "—",
+        ];
+      });
+      sections.push({
+        key: "loan_register",
+        title: "Loan register — deductible interest by loan",
+        columns: ["Loan account", "Property", `Balance (${cur})`, "Rate %", "Deductible %", `Interest (${cur})`, `Deductible interest (${cur})`, "Source", "Statement"],
+        rows,
+        notes: loanNotes,
+      });
+    }
+
+    const [fxTxns, fxIncome] = await Promise.all([
+      safeAll<{ txn_date: string | null; merchant: string | null; amount_cents: number | null; currency: string | null; fx_rate: number | null }>(
+        env.DB.prepare(`SELECT txn_date, merchant, amount_cents, currency, fx_rate FROM transactions WHERE user_id = ? AND txn_date >= ? AND txn_date <= ? AND COALESCE(currency,'AUD') <> 'AUD' AND amount_aud_cents IS NULL ORDER BY txn_date`).bind(userId, start, end).all(),
+      ),
+      safeAll<{ txn_date: string | null; income_type: string; gross_cents: number; currency: string | null; fx_rate: number | null }>(
+        env.DB.prepare(`SELECT txn_date, income_type, gross_cents, currency, fx_rate FROM income WHERE user_id = ? AND fy = ? AND COALESCE(currency,'AUD') <> 'AUD' AND amount_aud_cents IS NULL ORDER BY txn_date`).bind(userId, fy).all(),
+      ),
+    ]);
+    if (fxTxns.length || fxIncome.length) {
+      const rows: Cell[][] = [
+        ...fxTxns.map((t): Cell[] => [t.txn_date ?? "—", t.merchant ?? "—", "spend", `${t.currency} ${((t.amount_cents ?? 0) / 100).toFixed(2)}`, l_fx(t.fx_rate)]),
+        ...fxIncome.map((i): Cell[] => [i.txn_date ?? "—", i.income_type, "income", `${i.currency} ${(i.gross_cents / 100).toFixed(2)}`, l_fx(i.fx_rate)]),
+      ];
+      sections.push({
+        key: "fx_excluded",
+        title: "FX — excluded (unconverted foreign-currency rows)",
+        columns: ["Date", "Description", "Direction", "Amount (original)", "FX rate"],
+        rows,
+        notes: ["These rows have no AUD conversion, so they are EXCLUDED from every total above. Add an exchange rate (or the bank's converted figure) to bring them in. General information only."],
+      });
+    }
+  }
+
   return { fy: report.fy, start: report.start, end: report.end, abn: report.abn, disclaimer: SCHEDULE_DISCLAIMER, sections };
 }
+
+const l_fx = (r: number | null): Cell => (r != null ? r : "no rate");
 
 // ── CSV emission ──────────────────────────────────────────────────────────────
 

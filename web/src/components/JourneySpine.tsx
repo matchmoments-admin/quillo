@@ -1,6 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { api } from "../api";
+import { QueryError } from "./ui";
+import { TabGuide } from "./TabGuide";
 
 // #247/#244 (Wave 3): the persistent journey breadcrumb. The app already has the "what's next" action
 // (NextActionBar) and per-tab "what do I do here" (TabGuide); the missing piece the research flagged is
@@ -23,23 +25,31 @@ const STOPS: Stop[] = [
   { key: "file", label: "File", href: "/filing", match: ["/filing"] },
 ];
 
-export function JourneySpine({ pathname }: { pathname: string }) {
-  const { data } = useQuery({ queryKey: ["progress"], queryFn: () => api.progress(), staleTime: 15_000 });
+// `enhanced` (Slice 7, guidance_v2): the spine also carries the next-action CTA + summary + per-tab guide,
+// becoming the single guidance surface. OFF/un-enhanced ⇒ the breadcrumb-only spine, byte-identical.
+export function JourneySpine({ pathname, enhanced = false }: { pathname: string; enhanced?: boolean }) {
+  const navigate = useNavigate();
+  const { data, isError, error, refetch } = useQuery({ queryKey: ["progress"], queryFn: () => api.progress(), staleTime: 15_000 });
 
   if (pathname === "/onboarding") return null;
+  // As the single guidance surface, port NextActionBar's guard so the "what's next" CTA can't silently
+  // vanish on a failed load. Only in enhanced mode (the un-enhanced spine never showed a CTA).
+  if (enhanced && isError) return <QueryError what="what's next" error={error} onRetry={() => refetch()} />;
   const currentIdx = STOPS.findIndex((s) => s.match.includes(pathname));
 
   // Data-aware badge for the stop that has outstanding work (mirrors NextActionBar's signals, as a spine).
+  // The undated badge on Position is enhanced-only, so the un-enhanced (journey_spine) render is unchanged.
   const badgeFor = (key: string): string | null => {
     if (!data) return null;
     if (key === "bring") return data.imported.transactions === 0 ? "start" : null;
     if (key === "sort") return data.needs_review > 0 ? String(data.needs_review) : null;
     if (key === "check") return data.unreconciled_receipts > 0 ? String(data.unreconciled_receipts) : null;
+    if (key === "position") return enhanced && data.undated > 0 ? String(data.undated) : null;
     if (key === "file") return data.done ? "ready" : null;
     return null;
   };
 
-  return (
+  const spineNav = (
     <nav aria-label="Your tax-year journey" className="flex items-center gap-1 overflow-x-auto pb-0.5 text-xs">
       {STOPS.map((s, i) => {
         const current = i === currentIdx;
@@ -65,5 +75,46 @@ export function JourneySpine({ pathname }: { pathname: string }) {
         );
       })}
     </nav>
+  );
+
+  if (!enhanced) return spineNav;
+
+  // Enhanced: the merged next-action summary + CTA (ported from NextActionBar) and the per-tab guide
+  // (TabGuide, reused as-is — placed outside the overflow-x-auto nav so its popover isn't clipped).
+  const parts: string[] = [];
+  if (data) {
+    const { imported, categorised, needs_review, undated } = data;
+    if (imported.transactions > 0) {
+      parts.push(`${imported.transactions} ${imported.transactions === 1 ? "transaction" : "transactions"}`);
+      parts.push(categorised >= imported.transactions ? "all categorised" : `${categorised} categorised`);
+      if (needs_review > 0) parts.push(`${needs_review} to review`);
+      if (undated > 0) parts.push(`${undated} to date`);
+    } else {
+      parts.push("Nothing imported yet");
+    }
+  }
+
+  return (
+    <div className="space-y-2">
+      {spineNav}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="min-w-0 text-xs text-muted">{parts.join(" · ")}</span>
+        <div className="flex flex-none items-center gap-2">
+          {data && (
+            <button
+              type="button"
+              onClick={() => navigate(data.next_action.href)}
+              className="inline-flex items-center gap-1.5 rounded-full bg-ink px-3 py-1 text-xs font-semibold text-cream transition hover:bg-green"
+            >
+              {data.done ? "You're ready — open File to hand off" : data.next_action.label}
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+                <path d="M6 3l5 5-5 5" />
+              </svg>
+            </button>
+          )}
+          <TabGuide pathname={pathname} />
+        </div>
+      </div>
+    </div>
   );
 }

@@ -170,6 +170,14 @@ export function App() {
             <div className="mx-auto max-w-5xl px-5 py-8 sm:px-8">
               {/* Clarity spine + per-tab guide — hidden on the full-screen onboarding wizard. */}
               {pathname !== "/onboarding" && (
+                has("guidance_v2") ? (
+                  /* Slice 7: one guidance surface — the enhanced spine carries the CTA + summary + guide;
+                     the FySwitcher is re-homed above it so the controls aren't orphaned. */
+                  <div className="mb-5 space-y-2">
+                    <div className="flex justify-end"><FySwitcher /></div>
+                    <JourneySpine pathname={pathname} enhanced />
+                  </div>
+                ) : (
                 <>
                   {/* Stacks on mobile (NextActionBar full-width above the controls) → side-by-side from sm. */}
                   <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
@@ -188,6 +196,7 @@ export function App() {
                     </div>
                   )}
                 </>
+                )
               )}
               <Outlet />
             </div>

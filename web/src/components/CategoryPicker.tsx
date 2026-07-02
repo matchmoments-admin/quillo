@@ -1,6 +1,15 @@
 import { BUCKET_LABEL } from "./ui";
 import { PICKABLE, isPropertyBucket } from "../lib/buckets";
 
+// Picker-only labels: the compact pill text ("PAYG") reads as jargon inside a <select>, and testing
+// showed users don't know that picking a bucket is CONTEXT, not a claim. Pills stay compact via
+// BUCKET_LABEL; the picker spells it out. Falls back to BUCKET_LABEL for buckets not overridden.
+const PICKER_LABEL: Record<string, string> = {
+  payg: "Personal / work (PAYG)",
+  company: "Company (business books)",
+  asset: "Asset · capital (depreciates)",
+};
+
 /**
  * Controlled, presentational bucket (+ property) picker shared by BulkBar and the ReviewView inline
  * editor (#275 / slice 4). It owns the ONE rule both sites repeat: offer only the PICKABLE buckets
@@ -49,10 +58,17 @@ export function CategoryPicker({
         <option value="">{bucketPlaceholder}</option>
         {PICKABLE.map((b) => (
           <option key={b} value={b}>
-            {BUCKET_LABEL[b] ?? b}
+            {PICKER_LABEL[b] ?? BUCKET_LABEL[b] ?? b}
           </option>
         ))}
       </select>
+      {/* Bucket = CONTEXT, not a claim (deny-by-default): saying so here answers the #1 testing
+          question — "if I pick PAYG, how does it get claimed?" */}
+      {bucket === "payg" && (
+        <span className={mutedClassName}>
+          Files it as your personal/work spending — nothing is claimed yet. If it's work-related (e.g. software, courses, coaching for your current job), you'll confirm the deduction at year-end Review, or open the Full editor to set the claim label and work-use % now.
+        </span>
+      )}
       {needsProperty &&
         (properties.length > 0 ? (
           <select value={propertyId} onChange={(e) => onProperty(e.target.value)} disabled={disabled} aria-label="Property" className={selectClassName}>

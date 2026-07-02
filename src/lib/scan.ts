@@ -31,7 +31,7 @@ export interface ScanTxn {
   property_undetermined: number | null;  // 1 when a property row can't land in an income-producing property (#254)
 }
 
-export type ScanCategory = "missed" | "over_claim";
+export type ScanCategory = "missed" | "over_claim" | "check";
 
 export interface ScanFinding {
   key: string;                  // stable natural key (dedupe + idempotency), e.g. "over_claim:personal:<id>"
@@ -62,6 +62,32 @@ export interface ScanReportFacts {
   taxable_position_confirmed_cents?: number;
 }
 
+// ── txn_scan_v2 (audit #387/#288): pattern-aware facts the DO supplies when the flag is on. ──────
+// All OPTIONAL: facts absent ⇒ the v1 scan output is byte-identical. Pattern findings are category
+// "check" — completeness prompts with NO dollar impact (the user must enter data; nothing one-taps).
+export interface ScanRentalFacts {
+  property_id: string;
+  label: string | null;
+  rent_cents: number;             // rent income recorded this FY
+  deduction_cents: number;        // deductions counted against the property this FY
+  has_loan: boolean;              // a loans_properties link exists
+  loan_interest_present: boolean; // a loan_interest_summaries row exists for this FY
+}
+
+export interface ScanPatternFacts {
+  salary_income_cents: number;    // salary_payg gross this FY
+  wfh_hours_present: boolean;     // any work_use_inputs hours recorded for the FY
+  // Authored occupation guides for the tenant's occupation(s) — drives the proactive prompt.
+  occupation_guides: { scope: string; label: string; suggest: string[] }[];
+  rentals: ScanRentalFacts[];
+}
+
+// The $300 no-receipt work-expense threshold is the anchor for "essentially no deductions": below it a
+// salary earner hasn't even reached the record-free band. The salary floor keeps the prompt away from
+// low/part-year incomes where near-zero claims are entirely plausible.
+const PATTERN_SALARY_FLOOR_CENTS = 5_000_000; // $50,000
+const PATTERN_LOW_DEDUCTION_CENTS = 30_000;   // $300
+
 // Buckets whose rows reduce the INDIVIDUAL position (where an over-claim does damage). company = separate
 // taxpayer; asset = capital (depreciation engine); unknown = unsanctioned — none belong here.
 const DEDUCTIBLE_BUCKETS = new Set(["payg", "property_rented", "property_vacant"]);
@@ -77,12 +103,16 @@ export function runScan(
   report: ScanReportFacts,
   section: DeductibilitySection | null | undefined,
   opts: { excludeNonDeductible: boolean },
+  facts?: ScanPatternFacts | null,
 ): ScanResult {
   const findings: ScanFinding[] = [];
+  let paygCountingCents = 0; // counting payg deductions, for the low-deduction pattern below
 
   for (const r of rows) {
     const counts =
       deductionGroupForRow(r.bucket, r.deductibility, opts.excludeNonDeductible, r.reimbursed, r.use_status_denied, r.property_undetermined) === "deduction";
+
+    if (counts && r.bucket === "payg") paygCountingCents += r.amount_cents;
 
     // ── (B) OVER-CLAIM: a counting deductible-bucket row that looks personal/private. ──
     if (counts && DEDUCTIBLE_BUCKETS.has(r.bucket)) {
@@ -151,8 +181,79 @@ export function runScan(
     }
   }
 
-  // Rank: over-claims first (the dangerous direction), then missed; within each, biggest $ impact first.
-  const order = (c: ScanCategory) => (c === "over_claim" ? 0 : 1);
+  // ── txn_scan_v2 pattern + completeness checks (category "check", $0 impact — prompts, not claims). ──
+  if (facts) {
+    const dollars = (c: number) => `$${Math.round(c / 100).toLocaleString()}`;
+    // High salary, essentially no work deductions: the audit's "biggest refund lever" pattern. The
+    // occupation guides (when authored) make the prompt concrete without ever asserting a claim.
+    if (facts.salary_income_cents >= PATTERN_SALARY_FLOOR_CENTS && paygCountingCents < PATTERN_LOW_DEDUCTION_CENTS) {
+      const g = facts.occupation_guides[0];
+      const occLine = g && g.suggest.length
+        ? ` As a ${g.label.toLowerCase()}, people commonly claim things like: ${g.suggest.slice(0, 3).map((t) => t.replace(/\.$/, "")).join("; ")}.`
+        : "";
+      findings.push({
+        key: "check:pattern:low_work_deductions",
+        category: "check",
+        severity: "review",
+        sign: "+",
+        dollar_impact_cents: 0,
+        reason: `You've recorded ${dollars(facts.salary_income_cents)} of salary but under $300 of work-related deductions are counting. That can be exactly right — but most salary earners have SOME legitimate work costs.${occLine} Nothing is claimed automatically — only add costs you actually incurred and can substantiate. ${GENERAL_INFO}`,
+        affected_txn_ids: [],
+      });
+    }
+    // WFH hours: the fixed-rate method needs a contemporaneous record of actual hours — prompt when
+    // salary exists and no hours are recorded (working from home is the single most common claim).
+    if (facts.salary_income_cents > 0 && !facts.wfh_hours_present) {
+      findings.push({
+        key: "check:pattern:wfh_hours",
+        category: "check",
+        severity: "info",
+        sign: "+",
+        dollar_impact_cents: 0,
+        reason: `No working-from-home hours are recorded for this year. If you genuinely worked from home, the fixed-rate method needs a record of your actual hours — add them under the work-methods card. If you didn't, ignore this. ${GENERAL_INFO}`,
+        affected_txn_ids: [],
+      });
+    }
+    for (const p of facts.rentals) {
+      if (p.deduction_cents > 0 && p.rent_cents === 0) {
+        findings.push({
+          key: `check:rental:no_rent:${p.property_id}`,
+          category: "check",
+          severity: "review",
+          sign: "-",
+          dollar_impact_cents: 0,
+          reason: `"${p.label ?? p.property_id}" has ${dollars(p.deduction_cents)} of deductions counting but NO rent income recorded this year. Rent must be declared — add the income stream (holding costs are only deductible while the property earns or is genuinely available to earn rent). ${GENERAL_INFO}`,
+          affected_txn_ids: [],
+        });
+      }
+      if (p.rent_cents > 0 && p.deduction_cents === 0) {
+        findings.push({
+          key: `check:rental:no_expenses:${p.property_id}`,
+          category: "check",
+          severity: "info",
+          sign: "+",
+          dollar_impact_cents: 0,
+          reason: `"${p.label ?? p.property_id}" has rent income but no expenses recorded. Rates, insurance, agent fees and repairs are commonly claimable on a rental — bring in the statements that show them. ${GENERAL_INFO}`,
+          affected_txn_ids: [],
+        });
+      }
+      if (p.has_loan && !p.loan_interest_present) {
+        findings.push({
+          key: `check:rental:no_loan_interest:${p.property_id}`,
+          category: "check",
+          severity: "info",
+          sign: "+",
+          dollar_impact_cents: 0,
+          reason: `"${p.label ?? p.property_id}" has a linked loan but no interest recorded for this year. Loan interest is usually the biggest rental deduction — add the lender's interest summary or statement. ${GENERAL_INFO}`,
+          affected_txn_ids: [],
+        });
+      }
+    }
+  }
+
+  // Rank: over-claims first (the dangerous direction), then missed, then completeness checks; within
+  // each, biggest $ impact first.
+  const order = (c: ScanCategory) => (c === "over_claim" ? 0 : c === "missed" ? 1 : 2);
   findings.sort((a, b) => order(a.category) - order(b.category) || b.dollar_impact_cents - a.dollar_impact_cents);
 
   const summary: ScanSummary = {

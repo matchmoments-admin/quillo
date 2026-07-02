@@ -19,7 +19,8 @@ import { getLLM, type LLM } from "./llm";
 import { extractReceipt, extractReceipts, extractFromText, extractColumnMap, extractStatement, extractBatch, extractSituationDraft, extractOccupationRules, extractGuide, extractAnswer, classifyDocument, extractPayslip, extractIncomeStatement, extractNoticeOfAssessment, extractAgentStatement, extractDepreciationSchedule, extractDividend, extractHealthClaim, batchParams, parseBatchMessage, mapBatchItems, ALLOWED_NAV_ROUTES, type Extracted, type ExtractedStatement, type SituationDraft, type OccupationRulesDraft, type AnswerResult } from "./extract";
 import { mapIncomeStatementToRows } from "./lib/income-statement";
 import { fyForDate, buildReport, useStatusDeniedExpr, propertyUndeterminedGatedExpr } from "./lib/report";
-import { runScan, type ScanResult, type ScanTxn } from "./lib/scan";
+import { runScan, type ScanResult, type ScanTxn, type ScanPatternFacts } from "./lib/scan";
+import { occupationGuide } from "./lib/occupations";
 import { getProgress } from "./lib/progress";
 import { buildGuidePrompt, buildAskSystem, summariseReportForAsk, renderTxnDigest } from "./lib/guide";
 import { fyLabel, fyBounds, fyStartYearStr, parseFyStartYear, normaliseFyLabel } from "./lib/ledger-totals";
@@ -3301,7 +3302,40 @@ export class TaxAgent extends Agent<Env> {
         LIMIT 500`,
     ).bind(userId, start, end).all<ScanTxn>()).results ?? [];
     const section = (pack as { payg_deductibility?: import("./lib/deductibility").DeductibilitySection }).payg_deductibility;
-    const result = runScan(rows, report, section, { excludeNonDeductible: featureOn(this.env, "position_excludes_nondeductible") });
+    // txn_scan_v2 (audit #387/#288): pattern-aware facts — salary vs near-zero deductions with
+    // proactive occupation prompts, WFH-hours completeness, per-rental completeness. OFF ⇒ facts
+    // undefined ⇒ runScan output byte-identical to v1.
+    let facts: ScanPatternFacts | undefined;
+    if (featureOn(this.env, "txn_scan_v2")) {
+      const fy = fyLabel(startYear);
+      const [wfh, occRows, loanLinks, loanSummaries] = await Promise.all([
+        this.env.DB.prepare(`SELECT COUNT(*) AS n FROM work_use_inputs WHERE user_id = ? AND fy = ? AND COALESCE(wfh_hours,0) > 0`).bind(userId, startYear).first<{ n: number }>(),
+        this.env.DB.prepare(`SELECT DISTINCT occupation FROM persons WHERE user_id = ? AND occupation IS NOT NULL`).bind(userId).all<{ occupation: string }>(),
+        this.env.DB.prepare(`SELECT DISTINCT property_id FROM loans_properties WHERE user_id = ?`).bind(userId).all<{ property_id: string }>(),
+        this.env.DB.prepare(
+          `SELECT DISTINCT lp.property_id FROM loan_interest_summaries lis JOIN loans_properties lp ON lp.loan_account_id = lis.loan_account_id AND lp.user_id = lis.user_id WHERE lis.user_id = ? AND lis.fy = ?`,
+        ).bind(userId, String(startYear)).all<{ property_id: string }>(),
+      ]);
+      const loanProps = new Set((loanLinks.results ?? []).map((r) => r.property_id));
+      const interestProps = new Set((loanSummaries.results ?? []).map((r) => r.property_id));
+      facts = {
+        salary_income_cents: report.income.by_type.filter((t) => t.income_type === "salary_payg").reduce((a, t) => a + t.gross_cents, 0),
+        wfh_hours_present: (wfh?.n ?? 0) > 0,
+        occupation_guides: (occRows.results ?? [])
+          .map((r) => occupationGuide(r.occupation))
+          .filter((g): g is NonNullable<typeof g> => g !== null)
+          .map((g) => ({ scope: g.scope, label: g.label, suggest: g.suggest })),
+        rentals: report.per_property.map((p) => ({
+          property_id: p.property_id,
+          label: p.label,
+          rent_cents: p.income_cents,
+          deduction_cents: p.deduction_cents,
+          has_loan: loanProps.has(p.property_id),
+          loan_interest_present: interestProps.has(p.property_id),
+        })),
+      };
+    }
+    const result = runScan(rows, report, section, { excludeNonDeductible: featureOn(this.env, "position_excludes_nondeductible") }, facts);
     await this.audit(userId, "txn_scan", JSON.stringify({ fy: fyLabel(startYear), findings: result.summary.finding_count }));
     return result;
   }

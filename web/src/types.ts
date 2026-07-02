@@ -761,7 +761,7 @@ export type ProposedAction =
 // #256 — pre-handoff double-check scan (mirror of src/lib/scan.ts).
 export interface ScanFinding {
   key: string;
-  category: "missed" | "over_claim";
+  category: "missed" | "over_claim" | "check";
   severity: "high" | "review" | "info";
   sign: "+" | "-";
   dollar_impact_cents: number;

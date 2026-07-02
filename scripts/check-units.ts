@@ -2672,6 +2672,43 @@ console.log("currency de-anchoring (toBaseCurrency / baseCurrencyOf / currencySy
     const s = res.summary;
     return s.overclaim_downside_cents === 75000 && s.missed_upside_cents === 63400 && s.finding_count === 4 && s.position_confirmed_cents === 9_500_000 && s.position_tracked_cents === 9_000_000;
   })());
+
+  // ── txn_scan_v2 (audit #387/#288): pattern + completeness "check" findings ──
+  {
+    const facts: import("../src/lib/scan").ScanPatternFacts = {
+      salary_income_cents: 9_000_000, // $90k salary
+      wfh_hours_present: false,
+      occupation_guides: [{ scope: "nurse", label: "Nurse / midwife", suggest: ["AHPRA registration renewal (required to practise) is generally deductible.", "Union fees.", "Uniform laundry."] }],
+      rentals: [
+        { property_id: "prA", label: "Rental A", rent_cents: 0, deduction_cents: 900000, has_loan: false, loan_interest_present: false },
+        { property_id: "prB", label: "Rental B", rent_cents: 2000000, deduction_cents: 0, has_loan: true, loan_interest_present: false },
+        { property_id: "prC", label: "Rental C", rent_cents: 2000000, deduction_cents: 800000, has_loan: true, loan_interest_present: true },
+      ],
+    };
+    // Only the counting rows matter for the low-deduction pattern; the fixture's counting payg rows are
+    // t_xfer ($500) + t_ok ($120) = $620 > $300, so the pattern must NOT fire here…
+    const withCounting = runScan(rows, { taxable_position_cents: 0 }, section, { excludeNonDeductible: true }, facts);
+    check("v2: pattern does NOT fire when counting payg deductions exceed $300", !withCounting.findings.some((f) => f.key === "check:pattern:low_work_deductions"));
+    // …and MUST fire on a ledger with salary but essentially no counting work deductions.
+    const bare = runScan([], { taxable_position_cents: 0 }, section, { excludeNonDeductible: true }, facts);
+    const low = bare.findings.find((f) => f.key === "check:pattern:low_work_deductions");
+    check("v2: $90k salary + ~$0 deductions → low-deduction prompt quoting the occupation guide", !!low && low.category === "check" && low.severity === "review" && low.dollar_impact_cents === 0 && /nurse/i.test(low.reason) && /AHPRA/.test(low.reason));
+    check("v2: prompt never one-taps (user must enter data)", !low?.proposed_action);
+    check("v2: no WFH hours + salary → wfh completeness prompt", bare.findings.some((f) => f.key === "check:pattern:wfh_hours" && f.severity === "info"));
+    check("v2: deductions-but-no-rent rental → review check", bare.findings.some((f) => f.key === "check:rental:no_rent:prA" && f.severity === "review"));
+    check("v2: rent-but-no-expenses rental → info check", bare.findings.some((f) => f.key === "check:rental:no_expenses:prB"));
+    check("v2: linked loan without an interest summary → info check", bare.findings.some((f) => f.key === "check:rental:no_loan_interest:prB"));
+    check("v2: complete rental (rent + expenses + interest) → silent", !bare.findings.some((f) => f.key.endsWith(":prC")));
+    check("v2: checks rank AFTER over-claims and missed", withCounting.findings.every((f, i, a) => i === 0 || !(a[i - 1].category === "check" && f.category !== "check")));
+    check("v2: checks contribute $0 to the summary tallies", bare.summary.missed_upside_cents === 0 && bare.summary.overclaim_downside_cents === 0);
+    // Byte-identical seam: no facts ⇒ identical output to v1.
+    const v1 = runScan(rows, { taxable_position_cents: 9_000_000 }, section, { excludeNonDeductible: true });
+    const v1again = runScan(rows, { taxable_position_cents: 9_000_000 }, section, { excludeNonDeductible: true }, undefined);
+    check("v2: facts absent ⇒ output byte-identical to v1", JSON.stringify(v1) === JSON.stringify(v1again));
+    // Copy lint: no refund/tax-payable/rate language in the new prompts.
+    const denyRe = /refund|tax payable|marginal rate|\b\d{1,2}%\s*(tax|bracket)/i;
+    check("v2: check-finding copy passes the tax-advice denylist", !bare.findings.some((f) => denyRe.test(f.reason)));
+  }
 }
 
 // ── Accountant workbook (scheduleToXlsx) — re-projection of the same sections into a multi-tab .xlsx.

@@ -17,6 +17,7 @@ export function ScanFindings({ fyNum }: { fyNum: number }) {
 
   const over = data.findings.filter((f) => f.category === "over_claim");
   const missed = data.findings.filter((f) => f.category === "missed");
+  const checks = data.findings.filter((f) => f.category === "check"); // txn_scan_v2 completeness prompts ($0, no one-tap)
 
   if (data.summary.finding_count === 0) {
     return (
@@ -51,19 +52,29 @@ export function ScanFindings({ fyNum }: { fyNum: number }) {
           findings={missed}
         />
       )}
+      {checks.length > 0 && (
+        <FindingGroup
+          title="Worth checking for completeness"
+          tone="muted"
+          findings={checks}
+        />
+      )}
     </Card>
   );
 }
 
-function FindingGroup({ title, tone, findings }: { title: string; tone: "danger" | "safe"; findings: ScanFinding[] }) {
+function FindingGroup({ title, tone, findings }: { title: string; tone: "danger" | "safe" | "muted"; findings: ScanFinding[] }) {
   return (
     <div className="space-y-2">
-      <div className={`text-xs font-semibold uppercase tracking-wide ${tone === "danger" ? "text-danger" : "text-safe"}`}>{title}</div>
+      <div className={`text-xs font-semibold uppercase tracking-wide ${tone === "danger" ? "text-danger" : tone === "safe" ? "text-safe" : "text-muted"}`}>{title}</div>
       {findings.map((f) => (
         <div key={f.key} className="space-y-1">
           <div className="flex items-baseline justify-between gap-2 text-sm">
             <span className="text-ink">{f.reason}</span>
-            <span className={`flex-none tabular-nums font-medium ${f.sign === "-" ? "text-danger" : "text-safe"}`}>{f.sign}{money(f.dollar_impact_cents)}</span>
+            {/* Completeness prompts carry no dollar delta — showing "+$0.00" would be noise. */}
+            {f.dollar_impact_cents > 0 && (
+              <span className={`flex-none tabular-nums font-medium ${f.sign === "-" ? "text-danger" : "text-safe"}`}>{f.sign}{money(f.dollar_impact_cents)}</span>
+            )}
           </div>
           {f.proposed_action ? (
             <ProposedActionCard action={f.proposed_action} />

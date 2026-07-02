@@ -1335,6 +1335,12 @@ console.log("deductibility (deny-by-default)");
   check("private health insurance → likely_not (private — rebate/MLS, not a deduction)", verdictForTxn("payg", "health:private-insurance", "BUPA AUSTRALIA", section).deductibility === "likely_not");
   check("life/TPD insurance → likely_not", verdictForTxn("payg", "insurance:life", "Zurich life insurance", section).deductibility === "likely_not");
   check("donation label → suggested_deductible", verdictForTxn("payg", "donation", "Direct Debit RSPCA", section).deductibility === "suggested_deductible");
+  // Charity recall (audit follow-up, live-testing find): unambiguous AU DGR merchants are suggested;
+  // charity-run raffles/art unions/lotteries are DENIED (a chance to win is a material benefit — not a
+  // gift), and deny wins even when the merchant is also a charity.
+  check("Vinnies / Oxfam / Cancer Council merchants → suggested_deductible", ["ST VINCENT DE PAUL", "OXFAM AUSTRALIA", "Cancer Council SA"].every((m) => verdictForTxn("payg", null, m, section).deductibility === "suggested_deductible"));
+  check("charity raffle / art union / lottery → likely_not (material benefit, not a gift)", ["Yourtown Art Union draw 542", "RSL Art-Union prize home", "TattsLotto", "Surf Club raffle tickets"].every((m) => verdictForTxn("payg", null, m, section).deductibility === "likely_not"));
+  check("raffle deny beats the charity suggest when both match", verdictForTxn("payg", null, "Cancer Council raffle", section).deductibility === "likely_not");
   check("union-fees label → suggested_deductible", verdictForTxn("payg", "union-fees", "ASU membership", section).deductibility === "suggested_deductible");
   // Phase 3 deny-list precision: flowers + swimwear are private spend → likely_not (belt-and-suspenders;
   // they were already excluded as 'undetermined', this just stamps them clearly and keeps them out of suggestions).

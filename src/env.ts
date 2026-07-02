@@ -89,7 +89,7 @@ export interface TaxAgentRpc {
   linkIncome(userId: string, txnId: string, incomeId: string): Promise<void>;
   unlinkIncome(userId: string, txnId: string): Promise<void>;
   reviewSummary(userId: string, fy?: string): Promise<{ fy: string; rows: { bucket: string; ato_label: string | null; deductibility: string; n: number; total_cents: number; resolved_cents: number }[] }>;
-  setDeductibility(userId: string, txnIds: string[], state: string, deductibleAmountCents?: number | null): Promise<{ updated: number }>;
+  setDeductibility(userId: string, txnIds: string[], state: string, deductibleAmountCents?: number | null, businessUsePct?: number | null): Promise<{ updated: number }>;
   resolveByLabel(userId: string, opts: { fy?: string; bucket: string; atoLabel?: string | null; state: string; businessUsePct?: number | null }): Promise<{ updated: number }>;
   createAsset(userId: string, a: { label: string; asset_class: string; cost_cents: number; acquired_date: string; property_id?: string | null; entity_id?: string | null; effective_life_years?: number | null; method?: string | null; div43_rate?: number | null; dv_rate_pct?: number | null; is_second_hand?: boolean; business_use_pct?: number | null; source_doc_id?: string | null; needs_review?: number; owned_by?: string | null; reimbursed?: number; is_car?: number }): Promise<string>;
   recordEssGrant(userId: string, g: { person_id?: string | null; employer_entity_id?: string | null; scheme_type: string; grant_date?: string | null; taxing_point_date?: string | null; shares_or_options?: string | null; units?: number | null; discount_cents: number; market_value_cents?: number | null; ownership_gt_10pct?: number }): Promise<string>;

@@ -4,6 +4,8 @@ import { api } from "../api";
 import { Button, BUCKET_LABEL } from "./ui";
 import { isPropertyBucket } from "../lib/buckets";
 import { CategoryPicker } from "./CategoryPicker";
+import { ClaimPicker, claimEdits, claimResolve, claimSummary, claimIncomplete, type ClaimChoice } from "./ClaimPicker";
+import { useFeatures } from "../lib/features";
 
 export interface BulkDone {
   message: string;
@@ -22,6 +24,10 @@ export function BulkBar({ ids, onClear, onDone }: { ids: string[]; onClear: () =
   const [bucket, setBucket] = useState<string>("");
   const [propertyId, setPropertyId] = useState<string>("");
   const [learnRule, setLearnRule] = useState(false);
+  const { has } = useFeatures();
+  const inlineClaim = has("inline_claim"); // owner feedback: resolve claims (donation/%/full/not) in the mass edit
+  const [claim, setClaim] = useState<ClaimChoice>("");
+  const [pct, setPct] = useState<string>("");
   const { data: situation } = useQuery({ queryKey: ["situation"], queryFn: api.situation });
   const properties = situation?.properties ?? [];
   const needsProperty = isPropertyBucket(bucket); // pickable property buckets are property_rented/_vacant (income_property isn't selectable here)
@@ -32,17 +38,44 @@ export function BulkBar({ ids, onClear, onDone }: { ids: string[]; onClear: () =
   };
 
   const apply = useMutation({
-    mutationFn: () =>
-      api.correctBatch(
-        ids,
-        [{ field: "bucket", value: bucket }, ...(needsProperty && propertyId ? [{ field: "property_id", value: propertyId }] : [])],
-        learnRule,
-      ),
+    mutationFn: async () => {
+      // Corrections first (bucket/property + any claim-implied edits — one audited, undoable batch),
+      // THEN the claim state, so the post-correction re-stamp can't override the user's explicit
+      // confirmation. A donation FORCES bucket payg (claimEdits) — its bucket edit wins over the picker.
+      const claimBatch = inlineClaim ? claimEdits(claim) : [];
+      const edits = [
+        ...(bucket && !claimBatch.some((e) => e.field === "bucket") ? [{ field: "bucket", value: bucket }] : []),
+        ...(needsProperty && propertyId ? [{ field: "property_id", value: propertyId }] : []),
+        ...claimBatch,
+      ];
+      const parts: string[] = [];
+      let batchId: string | null = null;
+      if (edits.length) {
+        const r = await api.correctBatch(ids, edits, learnRule);
+        const failed = r.failures.length ? `, ${r.failures.length} skipped` : "";
+        const rule = r.rules_created ? ` · ${r.rules_created} rule${r.rules_created === 1 ? "" : "s"} remembered` : "";
+        const to = claim === "donation" ? "payg" : bucket;
+        parts.push(to ? `Re-categorised ${r.updated} to ${BUCKET_LABEL[to] ?? to}${failed}${rule}` : `Updated ${r.updated}${failed}${rule}`);
+        batchId = r.batch_id || null;
+      }
+      const resolve = inlineClaim ? claimResolve(claim, pct) : null;
+      if (resolve) {
+        try {
+          const d = await api.resolveDeductibility({ txnIds: ids, state: resolve.state, businessUsePct: resolve.businessUsePct });
+          parts.push(claimSummary(claim, pct, d.updated));
+          // A claim state can't be reverted by the corrections-only Undo — offering it would leave a
+          // phantom confirmed claim under the reverted label. Suppress Undo when a claim was written.
+          batchId = null;
+        } catch (e) {
+          // Partial failure must be HONEST: the corrections already applied (undo stays valid).
+          return { message: `${parts.join(" · ")} — but setting the claim failed (${(e as Error).message}). The category change DID apply; set the claim from Review.`, batchId };
+        }
+      }
+      return { message: `${parts.join(" · ")}.`, batchId };
+    },
     onSuccess: (r) => {
-      const failed = r.failures.length ? `, ${r.failures.length} skipped` : "";
-      const rule = r.rules_created ? ` · ${r.rules_created} rule${r.rules_created === 1 ? "" : "s"} remembered` : "";
       invalidate();
-      onDone({ message: `Re-categorised ${r.updated} to ${BUCKET_LABEL[bucket] ?? bucket}${failed}${rule}.`, batchId: r.batch_id || null });
+      onDone(r);
       onClear();
     },
     onError: (e) => onDone({ message: `Couldn't apply: ${(e as Error).message}`, batchId: null }),
@@ -64,21 +97,32 @@ export function BulkBar({ ids, onClear, onDone }: { ids: string[]; onClear: () =
     <div className="sticky bottom-3 z-10 mx-auto flex w-full max-w-2xl flex-wrap items-center gap-2 rounded-xl border border-line bg-ink px-3 py-2 text-white shadow-lg">
       <span className="text-sm font-medium">{ids.length} selected</span>
       <CategoryPicker
-        bucket={bucket}
+        bucket={claim === "donation" ? "payg" : bucket}
         propertyId={propertyId}
         onBucket={setBucket}
         onProperty={setPropertyId}
         properties={properties}
-        disabled={busy}
+        disabled={busy || claim === "donation"}
         bucketPlaceholder="Change category to…"
         selectClassName="rounded-lg border border-white/20 bg-ink px-2 py-1 text-sm"
         mutedClassName="text-xs text-white/70"
       />
+      {inlineClaim && (
+        <ClaimPicker
+          claim={claim}
+          pct={pct}
+          onClaim={setClaim}
+          onPct={setPct}
+          disabled={busy}
+          selectClassName="rounded-lg border border-white/20 bg-ink px-2 py-1 text-sm"
+          mutedClassName="w-full text-xs text-white/70"
+        />
+      )}
       <label className="flex items-center gap-1.5 text-xs text-white/80" title="Also create a rule so future imports of these merchants are categorised automatically">
         <input type="checkbox" checked={learnRule} onChange={(e) => setLearnRule(e.target.checked)} disabled={busy} className="h-3.5 w-3.5" />
         Remember as a rule
       </label>
-      <Button onClick={() => apply.mutate()} disabled={busy || !bucket || (needsProperty && !propertyId)}>
+      <Button onClick={() => apply.mutate()} disabled={busy || (!bucket && !(inlineClaim && claimResolve(claim, pct))) || (needsProperty && !propertyId) || (inlineClaim && claimIncomplete(claim, pct))}>
         {apply.isPending ? "Applying…" : "Apply"}
       </Button>
       <button

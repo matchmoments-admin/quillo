@@ -6,6 +6,7 @@ import { api } from "../api";
 import { BucketPill, Button, ConfidencePill, Card, Spinner, money, getBaseCurrency, BUCKET_LABEL } from "./ui";
 import { isPropertyBucket } from "../lib/buckets";
 import { CategoryPicker } from "./CategoryPicker";
+import { ClaimPicker, claimEdits, claimResolve, claimSummary, claimIncomplete, type ClaimChoice } from "./ClaimPicker";
 import { AccountantPassCard } from "./AccountantPassCard";
 import { SortFlow } from "./SortFlow";
 import { BulkBar, type BulkDone } from "./BulkBar";
@@ -280,6 +281,9 @@ function Row({ txn, selected, onToggle, onDone }: { txn: Txn; selected: boolean;
   const [editing, setEditing] = useState(false);
   const [bucket, setBucket] = useState(txn.bucket ?? "");
   const [propertyId, setPropertyId] = useState(txn.property_id ?? "");
+  const inlineClaim = has("inline_claim"); // owner feedback: resolve the claim right here (donation/%/full/not)
+  const [claim, setClaim] = useState<ClaimChoice>("");
+  const [pct, setPct] = useState("");
   const { data: situation } = useQuery({ queryKey: ["situation"], queryFn: api.situation, enabled: inlineEdit });
   const properties = situation?.properties ?? [];
   const needsProperty = isPropertyBucket(bucket);
@@ -297,14 +301,33 @@ function Row({ txn, selected, onToggle, onDone }: { txn: Txn; selected: boolean;
   // #343 inline edit — recategorise this one line (+ property) via the audited correctBatch seam, then
   // surface the SHARED Undo toast (onDone) and stay in place. No navigation to the detail page.
   const save = useMutation({
-    mutationFn: () =>
-      api.correctBatch(
+    mutationFn: async () => {
+      // Corrections first (bucket/property + claim-implied edits), THEN the claim state, so the
+      // post-correction re-stamp can't override the explicit confirmation. A donation forces bucket
+      // payg (claimEdits) — coherence with the D9 label.
+      const claimBatch = inlineClaim ? claimEdits(claim) : [];
+      const effBucket = claimBatch.some((e) => e.field === "bucket") ? "payg" : bucket;
+      const r = await api.correctBatch(
         [txn.id],
-        [{ field: "bucket", value: bucket }, ...(needsProperty && propertyId ? [{ field: "property_id", value: propertyId }] : [])],
-      ),
+        [...(claimBatch.some((e) => e.field === "bucket") ? [] : [{ field: "bucket", value: bucket }]), ...(needsProperty && propertyId ? [{ field: "property_id", value: propertyId }] : []), ...claimBatch],
+      );
+      const resolve = inlineClaim ? claimResolve(claim, pct) : null;
+      let claimNote = "";
+      let batchId: string | null = r.batch_id || null;
+      if (resolve) {
+        try {
+          const d = await api.resolveDeductibility({ txnIds: [txn.id], state: resolve.state, businessUsePct: resolve.businessUsePct });
+          claimNote = ` · ${claimSummary(claim, pct, d.updated)}`;
+          batchId = null; // Undo can't revert a claim state — don't offer it (phantom-claim guard)
+        } catch (e) {
+          claimNote = ` — but setting the claim failed (${(e as Error).message}); the category change DID apply. Set the claim from Review.`;
+        }
+      }
+      return { message: `Recategorised to ${BUCKET_LABEL[effBucket] ?? effBucket}${claimNote}.`, batchId };
+    },
     onSuccess: (r) => {
       invalidate();
-      onDone?.({ message: `Recategorised to ${BUCKET_LABEL[bucket] ?? bucket}.`, batchId: r.batch_id || null });
+      onDone?.(r);
       setEditing(false);
     },
     onError: (e) => toast.error("Couldn't save", { description: (e as Error).message }),
@@ -383,19 +406,31 @@ function Row({ txn, selected, onToggle, onDone }: { txn: Txn; selected: boolean;
     {inlineEdit && editing && (
       <div className="flex flex-wrap items-center gap-2 rounded-xl border border-line bg-surface p-3 text-sm">
         <CategoryPicker
-          bucket={bucket}
+          bucket={inlineClaim && claim === "donation" ? "payg" : bucket}
           propertyId={propertyId}
           onBucket={setBucket}
           onProperty={setPropertyId}
           properties={properties}
+          disabled={inlineClaim && claim === "donation"}
           bucketPlaceholder="Choose category…"
           bucketAriaLabel="Category"
           selectClassName="rounded-lg border border-line bg-card px-2 py-1.5"
           mutedClassName="text-xs text-muted"
         />
+        {inlineClaim && (
+          <ClaimPicker
+            claim={claim}
+            pct={pct}
+            onClaim={setClaim}
+            onPct={setPct}
+            disabled={save.isPending}
+            selectClassName="rounded-lg border border-line bg-card px-2 py-1.5"
+            mutedClassName="w-full text-xs text-muted"
+          />
+        )}
         <button
           onClick={() => save.mutate()}
-          disabled={save.isPending || !bucket || (needsProperty && !propertyId)}
+          disabled={save.isPending || (!bucket && claim !== "donation") || (needsProperty && !propertyId) || (inlineClaim && claimIncomplete(claim, pct))}
           className="rounded-lg bg-ink px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
         >
           {save.isPending ? "Saving…" : "Save"}

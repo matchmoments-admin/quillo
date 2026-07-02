@@ -1351,7 +1351,7 @@ export async function handleApi(
       fy?: string; bucket?: string; atoLabel?: string | null; businessUsePct?: number | null;
     };
     if (!b.state) return json({ error: "state is required" }, 400);
-    if (b.txnIds?.length) return json(await stub.setDeductibility(uid, b.txnIds, b.state, b.deductibleAmountCents));
+    if (b.txnIds?.length) return json(await stub.setDeductibility(uid, b.txnIds, b.state, b.deductibleAmountCents, b.businessUsePct));
     if (b.bucket) return json(await stub.resolveByLabel(uid, { fy: b.fy, bucket: b.bucket, atoLabel: b.atoLabel, state: b.state, businessUsePct: b.businessUsePct }));
     return json({ error: "provide txnIds or a bucket" }, 400);
   }

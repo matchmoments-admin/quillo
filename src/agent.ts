@@ -1992,20 +1992,31 @@ export class TaxAgent extends Agent<Env> {
   }
 
   /** Resolve deductibility for specific transactions (with an optional apportioned amount). Audited. */
-  async setDeductibility(userId: string, txnIds: string[], state: string, deductibleAmountCents?: number | null): Promise<{ updated: number }> {
+  async setDeductibility(userId: string, txnIds: string[], state: string, deductibleAmountCents?: number | null, businessUsePct?: number | null): Promise<{ updated: number }> {
     if (!TaxAgent.DEDUCTIBILITY_STATES.has(state)) throw new Error(`invalid deductibility state: ${state}`);
     if (!txnIds.length) return { updated: 0 };
+    // inline_claim (audit follow-up): a work-use % computes the claimable amount PER ROW (amount × pct)
+    // — the same expression resolveByLabel has always used — because stamping ONE flat amount across a
+    // batch is wrong the moment amounts differ (the exact defect the abandoned batch-review card had).
+    // pct wins over an explicit amount; both absent ⇒ NULL (the report falls back to the full amount
+    // for a 100%-deductible row).
+    const pct = businessUsePct == null ? null : Math.min(100, businessUsePct);
+    if (pct != null && (!Number.isFinite(pct) || pct <= 0)) throw new Error("businessUsePct must be between 1 and 100");
     const amt = deductibleAmountCents ?? null;
     const stmts = txnIds.map((id) =>
-      this.env.DB.prepare(`UPDATE transactions SET deductibility = ?, deductible_amount_cents = ? WHERE id = ? AND user_id = ?`)
-        .bind(state, amt, id, userId),
+      pct != null
+        ? this.env.DB.prepare(
+            `UPDATE transactions SET deductibility = ?, deductible_amount_cents = CAST(ROUND(COALESCE(amount_aud_cents, amount_cents) * ? / 100.0) AS INTEGER) WHERE id = ? AND user_id = ?`,
+          ).bind(state, pct, id, userId)
+        : this.env.DB.prepare(`UPDATE transactions SET deductibility = ?, deductible_amount_cents = ? WHERE id = ? AND user_id = ?`)
+            .bind(state, amt, id, userId),
     );
     let updated = 0;
     for (let i = 0; i < stmts.length; i += 50) {
       const res = await this.env.DB.batch(stmts.slice(i, i + 50));
       updated += res.reduce((s, r) => s + (r.meta?.changes ?? 0), 0);
     }
-    await this.audit(userId, "deductibility_resolved", JSON.stringify({ txnIds: txnIds.length, state, deductibleAmountCents: amt }));
+    await this.audit(userId, "deductibility_resolved", JSON.stringify({ txnIds: txnIds.length, state, deductibleAmountCents: amt, businessUsePct: pct }));
     return { updated };
   }
 

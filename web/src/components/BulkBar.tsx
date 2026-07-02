@@ -26,6 +26,11 @@ export function BulkBar({ ids, onClear, onDone }: { ids: string[]; onClear: () =
   const [learnRule, setLearnRule] = useState(false);
   const { has } = useFeatures();
   const inlineClaim = has("inline_claim"); // owner feedback: resolve claims (donation/%/full/not) in the mass edit
+  // mobile_bottom_tabs renders a FIXED bottom bar (z-30, <lg). The BulkBar previously sat at z-10 /
+  // bottom-3, so mid-scroll it stuck to the viewport bottom UNDERNEATH the tab bar — invisible until
+  // the user reached the very end of the page (live-testing find). Offset above the tabs on <lg and
+  // stack above them everywhere.
+  const tabsOn = has("mobile_bottom_tabs");
   const [claim, setClaim] = useState<ClaimChoice>("");
   const [pct, setPct] = useState<string>("");
   const { data: situation } = useQuery({ queryKey: ["situation"], queryFn: api.situation });
@@ -94,7 +99,7 @@ export function BulkBar({ ids, onClear, onDone }: { ids: string[]; onClear: () =
   const busy = apply.isPending || del.isPending;
 
   return (
-    <div className="sticky bottom-3 z-10 mx-auto flex w-full max-w-2xl flex-wrap items-center gap-2 rounded-xl border border-line bg-ink px-3 py-2 text-white shadow-lg">
+    <div className={`sticky ${tabsOn ? "bottom-20 lg:bottom-3" : "bottom-3"} z-40 mx-auto flex w-full max-w-2xl flex-wrap items-center gap-2 rounded-xl border border-line bg-ink px-3 py-2 text-white shadow-lg`}>
       <span className="text-sm font-medium">{ids.length} selected</span>
       <CategoryPicker
         bucket={claim === "donation" ? "payg" : bucket}

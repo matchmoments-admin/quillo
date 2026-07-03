@@ -27,6 +27,7 @@ export interface Txn {
   ledger_ref: string | null;
   reimbursed?: number | null;
   created_at: string;
+  group_key?: string | null; // grouped_review_v2: server-normalised merchant cluster key (null ⇒ no usable identity)
 }
 
 export interface Correction {

@@ -32,6 +32,7 @@ export function ReviewView() {
   const { has } = useFeatures();
   const hasAccountantPass = has("accountant_pass");
   const grouped = has("grouped_review"); // #342: merchant-grouped review + kind filter
+  const groupedV2 = has("grouped_review_v2"); // wave 3: cluster by the server's normalised group_key
   const [kind, setKind] = useState<"" | "receipt" | "bank_line">(""); // restored receipt/bank-line filter
   const { fy: activeFy } = useActiveFy();
   const toggleSel = (id: string) =>
@@ -125,22 +126,47 @@ export function ReviewView() {
       {txns.length === 0 ? (
         <Card className="p-8 text-center text-sm text-muted">Nothing needs review — you're all caught up.</Card>
       ) : grouped ? (
-        <GroupedList
-          txns={kind ? txns.filter((t) => (t.kind ?? "") === kind) : txns}
-          selected={selected}
-          onToggleOne={toggleSel}
-          onSetMany={(ids, on) =>
-            setSelected((prev) => {
-              const next = new Set(prev);
-              for (const id of ids) on ? next.add(id) : next.delete(id);
-              return next;
-            })
-          }
-          onDone={setFlash}
-          limit={limit}
-          onLoadMore={() => setLimit((l) => l + 50)}
-          total={txns.length}
-        />
+        (() => {
+          const visible = kind ? txns.filter((t) => (t.kind ?? "") === kind) : txns;
+          return (
+            <>
+              {/* Grouped mode previously dropped the flat view's page-level select-all — restore it so a
+                  whole page can feed the BulkBar in one tick (operates over the kind-filtered set). */}
+              <label className="flex items-center gap-2 px-1 text-xs text-muted">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4"
+                  checked={visible.length > 0 && visible.every((t) => selected.has(t.id))}
+                  onChange={(e) =>
+                    setSelected((prev) => {
+                      const next = new Set(prev);
+                      for (const t of visible) e.target.checked ? next.add(t.id) : next.delete(t.id);
+                      return next;
+                    })
+                  }
+                />
+                Select all on this page
+              </label>
+              <GroupedList
+                txns={visible}
+                v2={groupedV2}
+                selected={selected}
+                onToggleOne={toggleSel}
+                onSetMany={(ids, on) =>
+                  setSelected((prev) => {
+                    const next = new Set(prev);
+                    for (const id of ids) on ? next.add(id) : next.delete(id);
+                    return next;
+                  })
+                }
+                onDone={setFlash}
+                limit={limit}
+                onLoadMore={() => setLimit((l) => l + 50)}
+                total={txns.length}
+              />
+            </>
+          );
+        })()
       ) : (
         <>
           <label className="flex items-center gap-2 px-1 text-xs text-muted">
@@ -185,6 +211,7 @@ export function ReviewView() {
  */
 function GroupedList({
   txns,
+  v2,
   selected,
   onToggleOne,
   onSetMany,
@@ -194,6 +221,7 @@ function GroupedList({
   total,
 }: {
   txns: Txn[];
+  v2: boolean;
   selected: Set<string>;
   onToggleOne: (id: string) => void;
   onSetMany: (ids: string[], on: boolean) => void;
@@ -204,7 +232,11 @@ function GroupedList({
 }) {
   const m = new Map<string, Txn[]>();
   for (const t of txns) {
-    const key = (t.merchant ?? t.raw_description ?? "Unknown").toLowerCase().trim() || "unknown";
+    // grouped_review_v2: cluster by the server's normalised group_key (strips dates/reference numbers,
+    // so "RSL ART UNION 123456/123457" collapse into ONE group). A null key (no usable merchant identity)
+    // falls back to the row id so it stays its own singleton — never a junk group. Without v2, the legacy
+    // exact merchant-string key.
+    const key = v2 ? t.group_key || t.id : (t.merchant ?? t.raw_description ?? "Unknown").toLowerCase().trim() || "unknown";
     const arr = m.get(key);
     if (arr) arr.push(t);
     else m.set(key, [t]);

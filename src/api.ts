@@ -1535,7 +1535,13 @@ export async function handleApi(
     }
     if (m === "GET" && id === "suggestions") {
       const fy = Number(url.searchParams.get("fy")) || defaultFy();
-      return json({ suggestions: await listSuggestedDeductions(env, uid, fy) });
+      const rows = await listSuggestedDeductions(env, uid, fy);
+      // grouped_deductions: attach the normalised group_key so the SPA can cluster duplicate suggestions
+      // to the same merchant. Additive + flag-gated ⇒ OFF omits the field ⇒ byte-identical payload.
+      if (featureOn(env, "grouped_deductions")) {
+        return json({ suggestions: rows.map((r) => ({ ...r, group_key: groupKey(r.raw_description ?? r.merchant) })) });
+      }
+      return json({ suggestions: rows });
     }
     if (m === "POST" && id === "confirm") {
       const { txnId } = (await req.json().catch(() => ({}))) as { txnId?: unknown };

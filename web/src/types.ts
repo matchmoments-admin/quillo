@@ -1116,6 +1116,7 @@ export interface SuggestedDeduction {
   amount_cents: number | null;
   amount_aud_cents: number | null;
   txn_date: string | null;
+  group_key?: string | null; // grouped_deductions: server-normalised merchant cluster key (null ⇒ ungroupable)
 }
 
 // Per-FY work-use inputs for the computed WFH fixed-rate + car cents-per-km deductions (#67).

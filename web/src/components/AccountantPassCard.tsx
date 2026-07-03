@@ -1,6 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import { money } from "./ui";
+import { useFeatures } from "../lib/features";
+import type { SuggestedDeduction } from "../types";
 
 /**
  * "Do my books" — now invisible plumbing. The deterministic accountant pass (clean up transfers,
@@ -46,15 +48,37 @@ export function AccountantPassCard({ fy }: { fy: number }) {
 
 export function SuggestedDeductions({ fy }: { fy: number }) {
   const qc = useQueryClient();
+  const { has } = useFeatures();
+  const grouped = has("grouped_deductions");
   const { data } = useQuery({ queryKey: ["accountant-suggestions", fy], queryFn: () => api.accountantSuggestions(fy) });
+  const invalidate = () => {
+    for (const k of ["accountant-suggestions", "dashboard", "report", "transactions"]) qc.invalidateQueries({ queryKey: [k] });
+  };
+  // Confirm one suggestion, or every row in a cluster. "Add all" loops the SAME per-row confirmDeduction —
+  // which re-checks the current rule pack per row (so a since-denied item, e.g. a raffle, still can't be
+  // confirmed in) — rather than a bulk endpoint that would bypass that guard.
   const confirm = useMutation({
-    mutationFn: (txnId: string) => api.confirmDeduction(txnId),
-    onSuccess: () => {
-      for (const k of ["accountant-suggestions", "dashboard", "report", "transactions"]) qc.invalidateQueries({ queryKey: [k] });
-    },
+    mutationFn: (ids: string[]) => Promise.all(ids.map((id) => api.confirmDeduction(id))),
+    onSuccess: invalidate,
   });
   const rows = data ?? [];
   if (rows.length === 0) return null;
+
+  // grouped_deductions: cluster same-merchant suggestions (null key ⇒ own singleton, never a junk group).
+  const clusters: SuggestedDeduction[][] = [];
+  if (grouped) {
+    const m = new Map<string, SuggestedDeduction[]>();
+    for (const r of rows) {
+      const key = r.group_key || r.id;
+      const arr = m.get(key);
+      if (arr) arr.push(r);
+      else m.set(key, [r]);
+    }
+    clusters.push(...m.values());
+  } else {
+    for (const r of rows) clusters.push([r]);
+  }
+
   return (
     <div className="rounded-lg border border-line p-3">
       <p className="mb-1 text-sm font-medium">Possible deductions — confirm each to include it</p>
@@ -65,20 +89,27 @@ export function SuggestedDeductions({ fy }: { fy: number }) {
         received nothing in return. General information only — confirming doesn't predict a refund.
       </p>
       <ul className="space-y-1">
-        {rows.map((r) => (
-          <li key={r.id} className="flex items-center justify-between gap-2 text-sm">
-            <span className="min-w-0 flex-1 truncate">
-              {r.merchant || r.ato_label || "(no merchant)"} · {money(r.amount_aud_cents ?? r.amount_cents ?? 0)}
-            </span>
-            <button
-              onClick={() => confirm.mutate(r.id)}
-              disabled={confirm.isPending}
-              className="flex-none rounded border border-line px-2 py-0.5 text-xs hover:opacity-80 disabled:opacity-50"
-            >
-              Add to my deductions
-            </button>
-          </li>
-        ))}
+        {clusters.map((group) => {
+          const head = group[0]!;
+          const n = group.length;
+          const total = group.reduce((s, r) => s + (r.amount_aud_cents ?? r.amount_cents ?? 0), 0);
+          const ids = group.map((r) => r.id);
+          return (
+            <li key={head.id} className="flex items-center justify-between gap-2 text-sm">
+              <span className="min-w-0 flex-1 truncate">
+                {head.merchant || head.ato_label || "(no merchant)"}
+                {n > 1 ? ` · ${n}× · ${money(total)}` : ` · ${money(head.amount_aud_cents ?? head.amount_cents ?? 0)}`}
+              </span>
+              <button
+                onClick={() => confirm.mutate(ids)}
+                disabled={confirm.isPending}
+                className="flex-none rounded border border-line px-2 py-0.5 text-xs hover:opacity-80 disabled:opacity-50"
+              >
+                {n > 1 ? `Add all ${n}` : "Add to my deductions"}
+              </button>
+            </li>
+          );
+        })}
       </ul>
     </div>
   );

@@ -442,6 +442,9 @@ export const api = {
   // Bulk "Confirm as-is": accept each selected row's current AI category, clearing it from review without
   // changing anything (flag bulk_confirm). Rows with no/'unknown' category are reported in `failures`.
   confirmBatch: (txnIds: string[]) => post<{ batch_id: string; updated: number; failures: { txnId: string; error: string }[] }>("/api/confirm/batch", { txnIds }),
+  // grouped_review_v2 wave 3c: whole-queue merchant clusters so the review UI can "Select all N matching"
+  // even when a merchant spans more than the loaded page. `truncated` ⇒ the queue exceeded the scan cap.
+  reviewGroups: () => get<{ groups: { group_key: string; n: number; total_cents: number; ids: string[] }[]; truncated: boolean }>("/api/transactions/review-groups"),
 
   // Sort S1 — "edit one line → update its look-alikes" (flag apply_to_siblings; 404 when off)
   siblingsPreview: (txnId: string) => get<{ n: number; total_cents: number; group_key: string | null }>(`/api/transactions/${txnId}/siblings`),

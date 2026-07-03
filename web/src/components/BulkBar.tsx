@@ -40,6 +40,7 @@ export function BulkBar({ ids, onClear, onDone }: { ids: string[]; onClear: () =
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ["transactions"] });
+    qc.invalidateQueries({ queryKey: ["review-groups"] }); // grouped_review_v2: refresh whole-queue counts
     qc.invalidateQueries({ queryKey: ["dashboard"] });
   };
 

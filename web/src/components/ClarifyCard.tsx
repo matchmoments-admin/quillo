@@ -73,8 +73,10 @@ export function ClarifyRow({
   const answer = useMutation({
     mutationFn: (a: ClarifyAnswer) => api.answerClarify(q.id, a),
     onSuccess: () => {
-      // Income answers write to the income table → refresh income + report surfaces too.
-      for (const k of ["transactions", "dashboard", "income", "report"]) qc.invalidateQueries({ queryKey: [k] });
+      // Income answers write to the income table → refresh income + report surfaces too. review-groups:
+      // unified_review_groups drives inline group rendering off the whole-queue counts, so refresh them
+      // after an answer removes rows from a group (else a stale hiddenCount lingers for one refetch cycle).
+      for (const k of ["transactions", "review-groups", "dashboard", "income", "report"]) qc.invalidateQueries({ queryKey: [k] });
       onDone();
     },
     onError: (e) => toast.error("Couldn't apply that category", { description: (e as Error).message }),

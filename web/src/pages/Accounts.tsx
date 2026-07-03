@@ -615,10 +615,16 @@ function EditAccount({
   const qc = useQueryClient();
   const liQ = useQuery({ queryKey: ["loan-interest", fy], queryFn: () => api.loanInterest(fy), enabled: v2 });
   const existing = liQ.data?.find((s) => s.loan_account_id === account.id);
+  // Prefill from the recorded summary. Depend on the PRIMITIVE id/cents, not the `existing` object — a
+  // .find() returns a new reference every render, so depending on the object would reset the field (and
+  // clobber the user's edit) on every render. Referencing the primitives in the body keeps exhaustive-deps
+  // satisfied honestly.
+  const existingId = existing?.id ?? null;
+  const existingInterestCents = existing?.interest_cents ?? null;
   const [fyInterest, setFyInterest] = useState("");
   useEffect(() => {
-    setFyInterest(existing ? String(existing.interest_cents / 100) : "");
-  }, [existing?.id, existing?.interest_cents]);
+    setFyInterest(existingId != null ? String((existingInterestCents ?? 0) / 100) : "");
+  }, [existingId, existingInterestCents]);
   // #250: one Save per card. A single button commits everything in this panel — the account
   // facts and (when shown + changed) the FY loan interest — even though two endpoints are involved.
   // Account facts go first; if they fail the whole save fails. The interest write is wrapped so its

@@ -38,7 +38,7 @@ async function runDelete(
     }
   }
 }
-import { EntityFields, PropertyFields, PersonFields, entityToBody, entityToValue, propertyToBody, propertyError, personToBody, personToValue, emptyEntity, emptyProperty, emptyPerson, OWNED_STATUSES, TENANT_STATUSES, USE_STATUSES, DENY_USE_STATUSES, isTenantStatus, useStatusLabel, propertyStatusLabel, type EntityValue, type PersonValue, type PropertyValue } from "../components/SituationFields";
+import { EntityFields, PropertyFields, PersonFields, entityToBody, entityToValue, propertyToBody, propertyError, personToBody, personToValue, emptyEntity, emptyProperty, emptyPerson, OWNED_STATUSES, TENANT_STATUSES, USE_STATUSES, DENY_USE_STATUSES, isTenantStatus, statusLabel, propertyStatusLabel, type EntityValue, type PersonValue, type PropertyValue } from "../components/SituationFields";
 import type { Person, Account, Property, LoanProperty, IncomeActivity } from "../types";
 import { isPropertyBucket } from "../lib/buckets";
 
@@ -422,7 +422,7 @@ function EditableProperty({ property, onDone }: { property: { id: string; label:
       {!isTenantStatus(status) && status !== "sold" && (
         <select className={input} value={useStatus} onChange={(e) => setUseStatus(e.target.value)} title="How it was used this year (gates deductibility)">
           <option value="">used: — same —</option>
-          {USE_STATUSES.map((s) => <option key={s} value={s}>{useStatusLabel(s)}</option>)}
+          {USE_STATUSES.map((s) => <option key={s} value={s}>{statusLabel(s)}</option>)}
         </select>
       )}
       <button className={btn} disabled={!label || save.isPending} onClick={() => save.mutate()}>Save</button>

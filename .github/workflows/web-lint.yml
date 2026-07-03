@@ -1,0 +1,24 @@
+name: Web typecheck & hooks lint
+
+# The SPA can't run locally (repo is deploy-only), so a client render crash — e.g. the
+# React #310 Rules-of-Hooks class that reached prod once — only surfaces live unless a
+# static gate catches it. This runs the SPA typecheck + eslint-plugin-react-hooks
+# (rules-of-hooks = error) on every PR that touches web/, so that class fails the build.
+on:
+  pull_request:
+    paths:
+      - "web/**"
+
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm --prefix web ci
+      - name: Typecheck (tsc)
+        run: cd web && npx tsc --noEmit
+      - name: Lint (react-hooks/rules-of-hooks)
+        run: cd web && npm run lint

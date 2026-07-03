@@ -29,7 +29,7 @@ export function propertyStatusLabel(s: string): string {
 // deductible (the CGT cost base still accrues). Distinct from `status` (the own-vs-rent relationship).
 export const USE_STATUSES = ["rented", "genuinely_available_for_rent", "private_use_rent_free", "under_renovation_not_available", "vacant_land", "owner_occupied"] as const;
 export const DENY_USE_STATUSES = new Set(["private_use_rent_free", "under_renovation_not_available", "vacant_land"]);
-export function useStatusLabel(s: string): string {
+export function statusLabel(s: string): string {
   switch (s) {
     case "rented": return "Rented out";
     case "genuinely_available_for_rent": return "Genuinely available for rent";
@@ -229,7 +229,7 @@ export function PropertyFields({ value, onChange }: { value: PropertyValue; onCh
           <span className="text-xs font-medium uppercase tracking-wide text-muted">How was it used this year? <InfoTip tip="This decides whether its costs are deductible. A property earning no income — a relative living there rent-free, or renovating and off the rental market — generally has no deductions, though its CGT cost base still accrues. General info only." /></span>
           <select className={`${fieldInput} mt-1 w-full`} value={value.use_status} onChange={(e) => set({ use_status: e.target.value })}>
             <option value="">— same as above —</option>
-            {USE_STATUSES.map((s) => <option key={s} value={s}>{useStatusLabel(s)}</option>)}
+            {USE_STATUSES.map((s) => <option key={s} value={s}>{statusLabel(s)}</option>)}
           </select>
         </label>
       )}

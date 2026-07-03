@@ -69,20 +69,11 @@ export function ReviewView() {
 
   const pickFile = () => fileRef.current?.click();
 
-  if (isLoading) return <Spinner />;
-  if (error) {
-    const unauth = (error as Error).message === "unauthorized";
-    return (
-      <Card className="p-6 text-sm text-muted">
-        {unauth
-          ? "Not signed in. This app sits behind Cloudflare Access — open it through your Access URL."
-          : `Couldn't load transactions: ${(error as Error).message}`}
-      </Card>
-    );
-  }
-
   const txns = data ?? [];
 
+  // ── Rules of Hooks: EVERY hook below MUST stay above the isLoading/error early returns. A fresh load
+  // renders with isLoading=true first (fewer hooks) then re-renders with data (more hooks); if these sit
+  // after the return the hook count changes between renders → React error #310 crash. ──
   // grouped_review_v2 wave 3c: whole-queue merchant clusters, so a group's header can show its TRUE size
   // and "select all" the whole merchant even when it spans more than the loaded page. Indexed by group_key.
   const { data: reviewGroupsData } = useQuery({ queryKey: ["review-groups"], queryFn: api.reviewGroups, enabled: groupedV2 });
@@ -117,6 +108,18 @@ export function ReviewView() {
     }
     return keys;
   }, [unified, txns, kind, clarifyByKey, groupIndex]);
+
+  if (isLoading) return <Spinner />;
+  if (error) {
+    const unauth = (error as Error).message === "unauthorized";
+    return (
+      <Card className="p-6 text-sm text-muted">
+        {unauth
+          ? "Not signed in. This app sits behind Cloudflare Access — open it through your Access URL."
+          : `Couldn't load transactions: ${(error as Error).message}`}
+      </Card>
+    );
+  }
 
   return (
     <div className="space-y-6">

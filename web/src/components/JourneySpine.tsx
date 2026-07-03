@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { api } from "../api";
 import { QueryError } from "./ui";
 import { TabGuide } from "./TabGuide";
+import { useFeatures } from "../lib/features";
 
 // #247/#244 (Wave 3): the persistent journey breadcrumb. The app already has the "what's next" action
 // (NextActionBar) and per-tab "what do I do here" (TabGuide); the missing piece the research flagged is
@@ -29,6 +30,11 @@ const STOPS: Stop[] = [
 // becoming the single guidance surface. OFF/un-enhanced ⇒ the breadcrumb-only spine, byte-identical.
 export function JourneySpine({ pathname, enhanced = false }: { pathname: string; enhanced?: boolean }) {
   const navigate = useNavigate();
+  const { has } = useFeatures();
+  // Nav dedupe (enhanced only): when the bottom tab bar is the mobile primary nav, the spine's 6 pills
+  // duplicate it — so render the pills DESKTOP-ONLY and let the spine be a pure progress+CTA strip on
+  // mobile. Also drops the duplicated "N to review" from the summary (the CTA + tab badge carry it).
+  const progressStrip = enhanced && has("nav_progress_strip") && has("mobile_bottom_tabs");
   const { data, isError, error, refetch } = useQuery({ queryKey: ["progress"], queryFn: () => api.progress(), staleTime: 15_000 });
 
   if (pathname === "/onboarding") return null;
@@ -87,7 +93,9 @@ export function JourneySpine({ pathname, enhanced = false }: { pathname: string;
     if (imported.transactions > 0) {
       parts.push(`${imported.transactions} ${imported.transactions === 1 ? "transaction" : "transactions"}`);
       parts.push(categorised >= imported.transactions ? "all categorised" : `${categorised} categorised`);
-      if (needs_review > 0) parts.push(`${needs_review} to review`);
+      // Dedupe: the "N to review" signal is already the CTA (and the bottom-tab badge), so drop it from
+      // the summary line when the progress strip is active — one canonical place, not three.
+      if (needs_review > 0 && !progressStrip) parts.push(`${needs_review} to review`);
       if (undated > 0) parts.push(`${undated} to date`);
     } else {
       parts.push("Nothing imported yet");
@@ -96,7 +104,9 @@ export function JourneySpine({ pathname, enhanced = false }: { pathname: string;
 
   return (
     <div className="space-y-2">
-      {spineNav}
+      {/* progressStrip: the pills duplicate the mobile tab bar, so show them desktop-only; on mobile the
+          spine is just the progress summary + next-action CTA below. */}
+      {progressStrip ? <div className="hidden lg:block">{spineNav}</div> : spineNav}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="min-w-0 text-xs text-muted">{parts.join(" · ")}</span>
         <div className="flex flex-none items-center gap-2">

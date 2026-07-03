@@ -3872,10 +3872,12 @@ export class TaxAgent extends Agent<Env> {
    *
    * Position-NEUTRAL: a needs_review row that already has a bucket is already counted (COUNTABLE ignores
    * only duplicate/ignored), so this only clears the review flag — it does NOT re-stamp deductibility or
-   * touch the amount. Rows with no bucket / 'unknown' are skipped (nothing to accept; they must go to the
-   * detail page to pick a real category). A correction row per txn (old==new bucket, shared batch_id)
-   * records the acceptance for provenance, mirroring the single-row confirm. Clamps to 500. NOT offered
-   * as undoable (the category is unchanged, so there's nothing to revert; re-opening a row re-reviews it).
+   * touch the amount (the bucket is unchanged, so the deductibility/asset side-effects already ran when it
+   * was first categorised). Rows with no bucket / 'unknown' are skipped (nothing to accept; they must go
+   * to the detail page to pick a real category). Deliberately writes NO `corrections` row — a confirm is
+   * an acceptance, not a change (old==new bucket), and a spurious correction row would nudge the auto-rule
+   * / eval-case promotion counter; the acceptance is recorded in audit_log instead. Clamps to 500. NOT
+   * undoable (the category is unchanged, so there's nothing to revert; re-opening a row re-reviews it).
    */
   async confirmBatch(userId: string, txnIds: string[]): Promise<{ batch_id: string; updated: number; failures: { txnId: string; error: string }[] }> {
     if (!Array.isArray(txnIds) || txnIds.length === 0) return { batch_id: "", updated: 0, failures: [] };
@@ -3902,7 +3904,6 @@ export class TaxAgent extends Agent<Env> {
       }
       pending.push(
         this.env.DB.prepare(`UPDATE transactions SET status='corrected', confidence=1.0 WHERE id = ? AND user_id = ?`).bind(txnId, userId),
-        this.env.DB.prepare(`INSERT INTO corrections (id, user_id, txn_id, field, old_value, new_value, batch_id) VALUES (?, ?, ?, 'bucket', ?, ?, ?)`).bind(crypto.randomUUID(), userId, txnId, row.bucket, row.bucket, batchId),
       );
       changedIds.push(txnId);
       if (pending.length >= 80) await flush();

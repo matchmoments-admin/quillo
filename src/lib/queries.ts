@@ -10,6 +10,7 @@ import {
   nextResetDate, weeksUntil, phiExtrasCopy, poolExtrasTotals, suggestExtrasCategory, providerSearchTerm, EXTRAS_CATEGORIES, EXTRAS_CATEGORY_LABEL, type ResetBasis,
 } from "./advisory";
 import { matchEnergyOffer, ctaFromOffer, opportunityTakesEnergyCta, type PartnerDB } from "./partners";
+import { groupKey } from "./clarify";
 
 // Read-side queries for the web API. Reads hit D1 directly from the Worker; audited
 // writes (corrections, consent) go through the Durable Object RPC instead.
@@ -149,6 +150,47 @@ export async function listTransactions(
     .bind(...binds, limit, offset)
     .all<TxnRow>();
   return res.results ?? [];
+}
+
+// The paginated review list (listTransactions) groups only the loaded page, so a merchant with more
+// lines than the page splits across "Load more". Cap the whole-queue scan so a pathological queue can't
+// unbound the response — a queue this large is itself a signal, and the caller notes truncation.
+export const REVIEW_GROUP_SCAN = 2000;
+export interface ReviewGroup {
+  group_key: string;
+  n: number;
+  total_cents: number;
+  ids: string[];
+}
+/**
+ * grouped_review_v2 wave 3c: aggregate the ENTIRE review queue into merchant clusters so the SPA can
+ * offer "Select all N matching in review" — actioning a merchant's whole set in one go even when it
+ * spans more than the loaded page. Fetches every review row's grouping fields (id/merchant/raw/amount),
+ * computes the SAME normalised groupKey the SPA clusters by, and returns only the MULTI-member clusters
+ * (a singleton needs no escalation) with their full member ids + absolute total, biggest first. Bounded
+ * by REVIEW_GROUP_SCAN; `truncated` tells the caller the queue exceeded the scan so it can flag it.
+ */
+export async function listReviewGroups(env: Env, userId: string): Promise<{ groups: ReviewGroup[]; truncated: boolean }> {
+  const res = await env.DB.prepare(
+    `SELECT id, merchant, raw_description, COALESCE(amount_aud_cents, amount_cents) AS amount_cents
+       FROM transactions WHERE user_id = ? AND (${NEEDS_REVIEW}) LIMIT ${REVIEW_GROUP_SCAN + 1}`,
+  )
+    .bind(userId)
+    .all<{ id: string; merchant: string | null; raw_description: string | null; amount_cents: number | null }>();
+  const rows = res.results ?? [];
+  const truncated = rows.length > REVIEW_GROUP_SCAN;
+  const m = new Map<string, ReviewGroup>();
+  for (const r of rows.slice(0, REVIEW_GROUP_SCAN)) {
+    const key = groupKey(r.raw_description ?? r.merchant);
+    if (!key) continue; // ungroupable → never a cluster (matches the SPA's null-key → singleton)
+    const g = m.get(key) ?? { group_key: key, n: 0, total_cents: 0, ids: [] };
+    g.n += 1;
+    g.total_cents += Math.abs(r.amount_cents ?? 0);
+    g.ids.push(r.id);
+    m.set(key, g);
+  }
+  const groups = [...m.values()].filter((g) => g.n >= 2).sort((a, b) => b.n - a.n);
+  return { groups, truncated };
 }
 
 // ── Ask Quillo C3: the FY transaction digest (flag ask_actions) ───────────────

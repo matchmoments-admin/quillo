@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import { api } from "../api";
@@ -13,6 +13,10 @@ import { BulkBar, type BulkDone } from "./BulkBar";
 import { UndoToast } from "./UndoToast";
 import { useFeatures } from "../lib/features";
 import { useActiveFy } from "../lib/activeFy";
+
+// grouped_review_v2 wave 3c: a whole-review-queue merchant cluster (server-aggregated), used to show a
+// group's true size and select the whole merchant even when it spans more than the loaded page.
+type ReviewGroup = { group_key: string; n: number; total_cents: number; ids: string[] };
 import type { Txn } from "../types";
 
 /**
@@ -76,6 +80,15 @@ export function ReviewView() {
   }
 
   const txns = data ?? [];
+
+  // grouped_review_v2 wave 3c: whole-queue merchant clusters, so a group's header can show its TRUE size
+  // and "select all" the whole merchant even when it spans more than the loaded page. Indexed by group_key.
+  const { data: reviewGroupsData } = useQuery({ queryKey: ["review-groups"], queryFn: api.reviewGroups, enabled: groupedV2 });
+  const groupIndex = useMemo(() => {
+    const m = new Map<string, ReviewGroup>();
+    for (const g of reviewGroupsData?.groups ?? []) m.set(g.group_key, g);
+    return m;
+  }, [reviewGroupsData]);
 
   return (
     <div className="space-y-6">
@@ -153,6 +166,7 @@ export function ReviewView() {
               <GroupedList
                 txns={visible}
                 v2={groupedV2}
+                groupIndex={groupIndex}
                 selected={selected}
                 onToggleOne={toggleSel}
                 onSetMany={(ids, on) =>
@@ -215,6 +229,7 @@ export function ReviewView() {
 function GroupedList({
   txns,
   v2,
+  groupIndex,
   selected,
   onToggleOne,
   onSetMany,
@@ -225,6 +240,7 @@ function GroupedList({
 }: {
   txns: Txn[];
   v2: boolean;
+  groupIndex: Map<string, ReviewGroup>;
   selected: Set<string>;
   onToggleOne: (id: string) => void;
   onSetMany: (ids: string[], on: boolean) => void;
@@ -244,15 +260,17 @@ function GroupedList({
     if (arr) arr.push(t);
     else m.set(key, [t]);
   }
-  const groups = [...m.values()].sort((a, b) => b.length - a.length);
+  // Order by the FULL group size when known (v2) so the biggest merchants lead even if few of their rows
+  // are on this page; fall back to the loaded count.
+  const entries = [...m.entries()].sort((a, b) => (groupIndex.get(b[0])?.n ?? b[1].length) - (groupIndex.get(a[0])?.n ?? a[1].length));
 
   if (txns.length === 0) return <Card className="p-6 text-center text-sm text-muted">Nothing matches this filter.</Card>;
 
   return (
     <div className="space-y-3">
-      {groups.map((rows) =>
-        rows.length > 1 ? (
-          <GroupBlock key={rows[0]!.id} rows={rows} selected={selected} onToggleOne={onToggleOne} onSetMany={onSetMany} onDone={onDone} />
+      {entries.map(([key, rows]) =>
+        rows.length > 1 || (groupIndex.get(key)?.n ?? 0) > 1 ? (
+          <GroupBlock key={rows[0]!.id} rows={rows} full={v2 ? groupIndex.get(key) : undefined} selected={selected} onToggleOne={onToggleOne} onSetMany={onSetMany} onDone={onDone} />
         ) : (
           <Row key={rows[0]!.id} txn={rows[0]!} selected={selected.has(rows[0]!.id)} onToggle={() => onToggleOne(rows[0]!.id)} onDone={onDone} />
         ),
@@ -268,21 +286,27 @@ function GroupedList({
 
 function GroupBlock({
   rows,
+  full,
   selected,
   onToggleOne,
   onSetMany,
   onDone,
 }: {
   rows: Txn[];
+  full?: ReviewGroup;
   selected: Set<string>;
   onToggleOne: (id: string) => void;
   onSetMany: (ids: string[], on: boolean) => void;
   onDone: (d: BulkDone) => void;
 }) {
-  const ids = rows.map((r) => r.id);
-  const allSel = ids.every((id) => selected.has(id));
+  // `full` (grouped_review_v2) is the whole-queue cluster: its ids/count/total span the ENTIRE merchant,
+  // not just the loaded page, so the header checkbox selects the whole merchant and the count is honest.
+  const selIds = full ? full.ids : rows.map((r) => r.id);
+  const count = full?.n ?? rows.length;
+  const total = full?.total_cents ?? rows.reduce((s, r) => s + Math.abs(r.amount_cents ?? 0), 0);
+  const allSel = selIds.length > 0 && selIds.every((id) => selected.has(id));
+  const hiddenCount = full ? full.n - rows.length : 0; // members not on the loaded page
   const label = rows[0]!.merchant ?? rows[0]!.raw_description ?? "Unknown";
-  const total = rows.reduce((s, r) => s + Math.abs(r.amount_cents ?? 0), 0);
   return (
     <details open className="rounded-2xl border border-line bg-card">
       <summary className="flex cursor-pointer items-center gap-3 p-3 text-sm marker:content-none">
@@ -291,11 +315,14 @@ function GroupBlock({
           className="h-4 w-4 flex-none"
           checked={allSel}
           onClick={(e) => e.stopPropagation()}
-          onChange={(e) => onSetMany(ids, e.target.checked)}
-          aria-label={`Select all ${rows.length} ${label}`}
+          onChange={(e) => onSetMany(selIds, e.target.checked)}
+          aria-label={`Select all ${count} ${label}`}
         />
         <span className="min-w-0 flex-1 truncate font-medium">{label}</span>
-        <span className="flex-none text-xs tabular-nums text-muted">{rows.length}× · {money(total)}</span>
+        <span className="flex-none text-xs tabular-nums text-muted">
+          {count}× · {money(total)}
+          {hiddenCount > 0 && <span className="text-muted/70"> · {rows.length} shown</span>}
+        </span>
       </summary>
       <ul className="space-y-2 border-t border-line p-2">
         {rows.map((t) => (
@@ -324,7 +351,7 @@ function Row({ txn, selected, onToggle, onDone }: { txn: Txn; selected: boolean;
   const needsProperty = isPropertyBucket(bucket);
 
   const invalidate = () => {
-    for (const k of ["transactions", "transactions-all", "dashboard", "report", "filing-readiness"]) qc.invalidateQueries({ queryKey: [k] });
+    for (const k of ["transactions", "transactions-all", "review-groups", "dashboard", "report", "filing-readiness"]) qc.invalidateQueries({ queryKey: [k] });
   };
   // Inline "Confirm as-is": accept the current bucket and drop the row from the queue without bouncing
   // through the detail page. Mirrors TxnDetail's confirm — re-applying the same bucket records

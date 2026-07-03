@@ -4,6 +4,7 @@ import { entityActionSpec } from "./extract";
 import { getProfile, getSituation } from "./lib/db";
 import {
   listTransactions,
+  listReviewGroups,
   getTransaction,
   receiptKeyFor,
   listNotifications,
@@ -187,6 +188,13 @@ export async function handleApi(
     } catch (e) {
       return json({ error: (e as Error).message }, 400);
     }
+  }
+
+  // GET /api/transactions/review-groups → whole-queue merchant clusters for "Select all N matching"
+  // (grouped_review_v2 wave 3c). MUST precede the :id handler below (else 'review-groups' reads as an id).
+  if (resource === "transactions" && id === "review-groups" && m === "GET") {
+    if (!featureOn(env, "grouped_review_v2")) return json({ error: "not available" }, 404);
+    return json(await listReviewGroups(env, uid));
   }
 
   // GET /api/transactions  ·  GET /api/transactions/:id

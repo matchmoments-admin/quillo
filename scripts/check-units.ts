@@ -231,6 +231,9 @@ console.log("clarify.groupKey");
   check("a bare numeric/noise description → null (ungroupable)", groupKey("OSKO Deposit 123456 06/05") === null);
   check("empty → null", groupKey("") === null && groupKey(null) === null);
   check("amazon variants merge (short suffix dropped)", groupKey("AMAZON AU") === groupKey("AMAZON US") && groupKey("AMAZON AU") === "amazon");
+  // grouped_review_v2 headline case: per-ticket ref numbers must NOT fragment a merchant — the RSL
+  // art-union lines from the owner's screenshot collapse into ONE group (fixes the 11-tap → 1-tap case).
+  check("RSL ART UNION variants with different ref numbers merge to one group", groupKey("RSL ART UNION BRISBANE 123456") === groupKey("RSL ART UNION BRISBANE 123457") && groupKey("RSL ART UNION BRISBANE 123456") === "brisbane union");
   // The learned-rule pattern must be a REAL substring of the raw merchant (the sorted stem isn't).
   const stem = groupKey("BPAY Origin Energy 12345")!; // "energy origin"
   const pat = rulePatternForStem(stem);

@@ -79,6 +79,7 @@ import { resolveJurisdictionForUser } from "./lib/jurisdiction";
 import { buildAccountantSchedule, scheduleToCsv, scheduleToXlsx } from "./lib/accountant-schedule";
 import { getProgress } from "./lib/progress";
 import { featureOn } from "./lib/features";
+import { groupKey } from "./lib/clarify";
 
 const json = (data: unknown, status = 200) =>
   new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json" } });
@@ -205,6 +206,13 @@ export async function handleApi(
       limit: Number(url.searchParams.get("limit")) || undefined,
       offset: Number(url.searchParams.get("offset")) || undefined,
     });
+    // grouped_review_v2: attach the normalised group_key so the SPA can cluster near-identical merchants
+    // (strips dates/refs) instead of the exact string. Additive + flag-gated ⇒ OFF omits the field ⇒
+    // byte-identical payload. Computed from the raw description (falls back to merchant).
+    if (featureOn(env, "grouped_review_v2")) {
+      const withKeys = rows.map((r) => ({ ...r, group_key: groupKey(r.raw_description ?? r.merchant) }));
+      return json({ transactions: withKeys });
+    }
     return json({ transactions: rows });
   }
 

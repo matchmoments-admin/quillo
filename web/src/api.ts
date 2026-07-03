@@ -450,7 +450,9 @@ export const api = {
   // Phase 4 — "Do my books" accountant pass
   runAccountantPass: (fy?: number) => post<AccountantSummary>(`/api/accountant/run${fy != null ? `?fy=${fy}` : ""}`),
   accountantSuggestions: (fy?: number) => get<{ suggestions: SuggestedDeduction[] }>(`/api/accountant/suggestions${fy != null ? `?fy=${fy}` : ""}`).then((r) => r.suggestions),
-  confirmDeduction: (txnId: string) => post<{ ok: boolean }>("/api/accountant/confirm", { txnId }),
+  // `denied` ⇒ the current rule pack no longer allows this suggestion (e.g. a raffle/art-union the pack
+  // now denies); the server demotes it so the invalidated list drops the row rather than claiming it.
+  confirmDeduction: (txnId: string) => post<{ ok: boolean; denied?: boolean }>("/api/accountant/confirm", { txnId }),
 
   // Stage B — clarify-by-pattern
   clarifyQuestions: (fy?: number) => get<{ questions: ClarifyQuestion[] }>(`/api/clarify${fy != null ? `?fy=${fy}` : ""}`).then((r) => r.questions),

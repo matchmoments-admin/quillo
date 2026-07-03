@@ -555,6 +555,35 @@ async function main() {
     check("#189: NULL-property rental spend is counted as unattributed (1 txn / $400)", ra.property_unattributed_n === 1 && ra.property_unattributed_cents === 40000);
   }
 
+  // ── Attribution × inline-claim veto (review-flow fix): attribution owns the SPLIT amount (owner-share ×
+  // work-use, snapshotted), but the inline claim controls' deductibility verdict still GATES whether that
+  // amount counts — exactly as deductionGroupForRow does on the raw path. Before the fix an attributed
+  // cost the user marked "not deductible" was still claimed in full (an over-claim); a still-unconfirmed
+  // suggestion likewise leaked in. Two attributed business costs on the individual track: one confirmed,
+  // one marked not-deductible. Only the confirmed $600 may count. ──
+  {
+    const u = "pvet";
+    seedTenant(u, "Veto");
+    run(`INSERT INTO entities (id, user_id, kind, name, person_id, entity_type) VALUES ('pvEnt', ?, 'individual', 'Me', ?, 'individual')`, u, `person_self_${u}`);
+    run(`INSERT INTO income_activities (id, user_id, entity_id, activity_type, label) VALUES ('pvIa', ?, 'pvEnt', 'business', 'Side business')`, u);
+    run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, direction, deductibility) VALUES ('pvKeep', ?, 'upload', 'categorised', 'bank_line', 60000, 60000, ?, 'payg', 'debit', 'confirmed_deductible')`, u, FY_DATE);
+    run(`INSERT INTO transaction_attributions (id, user_id, transaction_id, entity_id, income_activity_id, attributed_amount_cents, deduction_provision) VALUES ('pvaKeep', ?, 'pvKeep', 'pvEnt', 'pvIa', 60000, 's8-1_general')`, u);
+    run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, direction, deductibility) VALUES ('pvNo', ?, 'upload', 'categorised', 'bank_line', 40000, 40000, ?, 'payg', 'debit', 'confirmed_not')`, u, FY_DATE);
+    run(`INSERT INTO transaction_attributions (id, user_id, transaction_id, entity_id, income_activity_id, attributed_amount_cents, deduction_provision) VALUES ('pvaNo', ?, 'pvNo', 'pvEnt', 'pvIa', 40000, 's8-1_general')`, u);
+    // The COMPANY track is a separate taxpayer whose authoritative deductions come from companyPositions
+    // (which has no deductibility gate), so the personal veto must NOT touch it — else company_tracked_cents
+    // would diverge from the company position card. A company-attributed cost marked not-deductible still
+    // counts here, byte-identical to pre-fix.
+    run(`INSERT INTO entities (id, user_id, kind, name, person_id, entity_type, base_rate_entity) VALUES ('pvCo', ?, 'company', 'Co Pty Ltd', ?, 'company', 1)`, u, `person_self_${u}`);
+    run(`INSERT INTO income_activities (id, user_id, entity_id, activity_type, label) VALUES ('pvIaCo', ?, 'pvCo', 'business', 'Co biz')`, u);
+    run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, direction, deductibility) VALUES ('pvCoNo', ?, 'upload', 'categorised', 'bank_line', 100000, 100000, ?, 'company', 'debit', 'confirmed_not')`, u, FY_DATE);
+    run(`INSERT INTO transaction_attributions (id, user_id, transaction_id, entity_id, income_activity_id, attributed_amount_cents, deduction_provision) VALUES ('pvaCoNo', ?, 'pvCoNo', 'pvCo', 'pvIaCo', 100000, 's8-1_general')`, u);
+    const rv = await buildReport(env, u, 2025);
+    check("veto: an attributed cost the user CONFIRMED deductible still counts ($600)", rv.attribution?.individual_cents === 60000);
+    check("veto: an attributed cost marked NOT deductible is vetoed, not claimed in full (individual = $600, not $1000)", rv.attribution?.individual_cents === 60000);
+    check("veto: the COMPANY track is NOT gated by the personal veto — a company-attributed not-deductible cost still counts ($1000)", rv.attribution?.company_cents === 100000);
+  }
+
   // ── Persona 12 (S3/S4): content creator — the generalised self-employed spine ──
   // Brand-deal business income, foreign-sourced platform (AdSense) income WITH foreign tax (→ FITO), a
   // gifted product captured at market value but EXCLUDED from the position, a part-time salary + bank

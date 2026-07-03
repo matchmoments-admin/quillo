@@ -388,6 +388,11 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   // Flag `loan_split`: when on, the position counts the claimable (apportioned) portion
   // (deductible_amount_cents) of a row instead of the gross — see positionAmountCents. The SUM
   // expressions below MUST mirror that helper exactly. Off ⇒ byte-identical legacy totals.
+  // DEPENDENCY: the inline_claim controls (work-use %) write deductible_amount_cents, so an inline
+  // work-use % only reduces the position while `loan_split` is ON; likewise an inline "not deductible"
+  // only drops from the headline while `position_excludes_nondeductible` is ON (deductionGroupForRow).
+  // Both are ON in prod, so inline_claim is correct there — but do not turn either off without also
+  // gating inline_claim, or every inline claim silently reverts to claiming the gross amount.
   const honorApportion = featureOn(env, "loan_split");
   const amtExpr = honorApportion ? claimExpr("") : "COALESCE(amount_aud_cents, amount_cents)";
   const amtExprT = honorApportion ? claimExpr("t.") : "COALESCE(t.amount_aud_cents, t.amount_cents)";

@@ -4,7 +4,7 @@ import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import { api } from "../api";
 import { BucketPill, Button, ConfidencePill, Card, Spinner, money, getBaseCurrency, BUCKET_LABEL } from "./ui";
-import { isPropertyBucket } from "../lib/buckets";
+import { isPropertyBucket, CREDIT_OR_UNKNOWN } from "../lib/buckets";
 import { CategoryPicker } from "./CategoryPicker";
 import { ClaimPicker, claimEdits, claimResolve, claimSummary, claimIncomplete, type ClaimChoice } from "./ClaimPicker";
 import { AccountantPassCard } from "./AccountantPassCard";
@@ -392,6 +392,7 @@ function Row({ txn, selected, onToggle, onDone }: { txn: Txn; selected: boolean;
   const qc = useQueryClient();
   const { has } = useFeatures();
   const inlineEdit = has("txn_inline_edit"); // #343
+  const ruleFromAction = has("rule_from_action"); // offer "always file <merchant> here" after an inline edit
   const isLine = txn.kind === "bank_line";
   const [editing, setEditing] = useState(false);
   const [bucket, setBucket] = useState(txn.bucket ?? "");
@@ -438,7 +439,18 @@ function Row({ txn, selected, onToggle, onDone }: { txn: Txn; selected: boolean;
           claimNote = ` — but setting the claim failed (${(e as Error).message}); the category change DID apply. Set the claim from Review.`;
         }
       }
-      return { message: `Recategorised to ${BUCKET_LABEL[effBucket] ?? effBucket}${claimNote}.`, batchId };
+      // rule_from_action: for a plain SPEND-bucket categorisation (not a donation/claim), peek at look-alikes
+      // so the toast can offer "always file <merchant> here". Best-effort — a preview failure (e.g.
+      // apply_to_siblings off, or no usable merchant key) just omits the offer. Skipped when a claim state
+      // was written (that path suppresses Undo and isn't a merchant→category rule).
+      let remember: BulkDone["remember"];
+      if (ruleFromAction && !resolve && bucket && !CREDIT_OR_UNKNOWN.has(bucket)) {
+        try {
+          const p = await api.siblingsPreview(txn.id);
+          remember = { txnId: txn.id, bucket, propertyId: needsProperty && propertyId ? propertyId : undefined, label: txn.merchant ?? txn.raw_description ?? "this merchant", n: p.n };
+        } catch { /* no offer */ }
+      }
+      return { message: `Recategorised to ${BUCKET_LABEL[effBucket] ?? effBucket}${claimNote}.`, batchId, remember };
     },
     onSuccess: (r) => {
       invalidate();

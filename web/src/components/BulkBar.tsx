@@ -10,6 +10,9 @@ import { useFeatures } from "../lib/features";
 export interface BulkDone {
   message: string;
   batchId: string | null; // present (and undoable) for a re-categorise; null for a delete
+  // rule_from_action: after a single inline spend-bucket edit, the toast offers "always file <merchant>
+  // here" (+ apply to n look-alikes). One tap routes through applyToSiblings (learn_rule=true).
+  remember?: { txnId: string; bucket: string; propertyId?: string; label: string; n: number };
 }
 
 /**

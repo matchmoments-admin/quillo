@@ -18,13 +18,15 @@ import type { ClarifyQuestion, ClarifySuggestion, ClarifyAnswer } from "../types
  * look-alikes), so this card no longer duplicates the full taxonomy picker. Renders nothing when
  * there are no open groups. General information only.
  */
-export function ClarifyCard({ fy }: { fy?: number }) {
+export function ClarifyCard({ fy, excludeKeys }: { fy?: number; excludeKeys?: Set<string> }) {
   const qc = useQueryClient();
   const { data: questions } = useQuery({ queryKey: ["clarify", fy], queryFn: () => api.clarifyQuestions(fy) });
   const { data: situation } = useQuery({ queryKey: ["situation"], queryFn: api.situation });
 
   const properties = situation?.properties ?? [];
-  const open = questions ?? [];
+  // unified_review_groups: groups already shown inline in the review list carry their own clarify answers,
+  // so hide them here — this card is then only the groups NOT currently visible in the list (nothing lost).
+  const open = (questions ?? []).filter((q) => !excludeKeys?.has(q.group_key));
   if (open.length === 0) return null; // discovery feed is empty — keep the page quiet
 
   return (
@@ -45,7 +47,9 @@ export function ClarifyCard({ fy }: { fy?: number }) {
   );
 }
 
-function ClarifyRow({
+// Exported for unified_review_groups: the review list's GroupBlock renders this inline for a matching
+// merchant cluster, so the clarify answers live in the group instead of a separate card.
+export function ClarifyRow({
   q,
   properties,
   onDone,

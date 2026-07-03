@@ -17,7 +17,8 @@ import { useActiveFy } from "../lib/activeFy";
 // grouped_review_v2 wave 3c: a whole-review-queue merchant cluster (server-aggregated), used to show a
 // group's true size and select the whole merchant even when it spans more than the loaded page.
 type ReviewGroup = { group_key: string; n: number; total_cents: number; ids: string[] };
-import type { Txn } from "../types";
+import type { Txn, ClarifyQuestion } from "../types";
+import { ClarifyRow } from "./ClarifyCard";
 
 /**
  * ReviewView — the "Needs review" experience, rendered as the default tab of the Transactions page.
@@ -37,6 +38,7 @@ export function ReviewView() {
   const hasAccountantPass = has("accountant_pass");
   const grouped = has("grouped_review"); // #342: merchant-grouped review + kind filter
   const groupedV2 = has("grouped_review_v2"); // wave 3: cluster by the server's normalised group_key
+  const unified = has("unified_review_groups") && groupedV2 && hasAccountantPass; // wave 4: clarify answers inline in the groups
   const [kind, setKind] = useState<"" | "receipt" | "bank_line">(""); // restored receipt/bank-line filter
   const { fy: activeFy } = useActiveFy();
   const toggleSel = (id: string) =>
@@ -89,6 +91,32 @@ export function ReviewView() {
     for (const g of reviewGroupsData?.groups ?? []) m.set(g.group_key, g);
     return m;
   }, [reviewGroupsData]);
+
+  // unified_review_groups (wave 4): pull the clarify smart-answers + properties so each matching group
+  // header can offer them inline (reusing ClarifyRow). Indexed by group_key; the set of keys visible in
+  // the loaded list is handed to SortFlow so the standalone card drops the groups now shown inline.
+  const { data: clarifyData } = useQuery({ queryKey: ["clarify", activeFy], queryFn: () => api.clarifyQuestions(activeFy), enabled: unified });
+  const { data: unifiedSituation } = useQuery({ queryKey: ["situation"], queryFn: api.situation, enabled: unified });
+  const clarifyByKey = useMemo(() => {
+    const m = new Map<string, ClarifyQuestion>();
+    for (const q of clarifyData ?? []) m.set(q.group_key, q);
+    return m;
+  }, [clarifyData]);
+  // A clarify group is "shown inline" — and so excluded from the standalone card — ONLY when it actually
+  // renders as a GroupBlock (which carries the inline ClarifyRow). That mirrors GroupedList's render test
+  // (>1 loaded row of the key, OR the whole-queue group has >1) over the kind-filtered set, so a lone
+  // loaded row that renders as a singleton stays in the card and nothing is lost.
+  const visibleClarifyKeys = useMemo(() => {
+    if (!unified) return undefined;
+    const loaded = kind ? txns.filter((t) => (t.kind ?? "") === kind) : txns;
+    const loadedByKey = new Map<string, number>();
+    for (const t of loaded) if (t.group_key) loadedByKey.set(t.group_key, (loadedByKey.get(t.group_key) ?? 0) + 1);
+    const keys = new Set<string>();
+    for (const [k, n] of loadedByKey) {
+      if (clarifyByKey.has(k) && (n > 1 || (groupIndex.get(k)?.n ?? 0) > 1)) keys.add(k);
+    }
+    return keys;
+  }, [unified, txns, kind, clarifyByKey, groupIndex]);
 
   return (
     <div className="space-y-6">
@@ -167,6 +195,9 @@ export function ReviewView() {
                 txns={visible}
                 v2={groupedV2}
                 groupIndex={groupIndex}
+                clarifyByKey={unified ? clarifyByKey : undefined}
+                clarifyProperties={unifiedSituation?.properties ?? []}
+                onClarifyDone={() => qc.invalidateQueries({ queryKey: ["clarify"] })}
                 selected={selected}
                 onToggleOne={toggleSel}
                 onSetMany={(ids, on) =>
@@ -212,7 +243,7 @@ export function ReviewView() {
 
       {/* "Finish these" — group-action wrap-up (sort repeat merchants, confirm loan interest, exclude
           transfers). Self-hides when there's nothing left. */}
-      <SortFlow fy={activeFy} hasAccountantPass={hasAccountantPass} />
+      <SortFlow fy={activeFy} hasAccountantPass={hasAccountantPass} excludeClarifyKeys={visibleClarifyKeys} />
 
       {selected.size > 0 && <BulkBar ids={[...selected]} onClear={() => setSelected(new Set())} onDone={setFlash} />}
       {flash && <UndoToast flash={flash} onClose={() => setFlash(null)} />}
@@ -230,6 +261,9 @@ function GroupedList({
   txns,
   v2,
   groupIndex,
+  clarifyByKey,
+  clarifyProperties,
+  onClarifyDone,
   selected,
   onToggleOne,
   onSetMany,
@@ -241,6 +275,9 @@ function GroupedList({
   txns: Txn[];
   v2: boolean;
   groupIndex: Map<string, ReviewGroup>;
+  clarifyByKey?: Map<string, ClarifyQuestion>;
+  clarifyProperties: { id: string; label: string }[];
+  onClarifyDone: () => void;
   selected: Set<string>;
   onToggleOne: (id: string) => void;
   onSetMany: (ids: string[], on: boolean) => void;
@@ -270,7 +307,7 @@ function GroupedList({
     <div className="space-y-3">
       {entries.map(([key, rows]) =>
         rows.length > 1 || (groupIndex.get(key)?.n ?? 0) > 1 ? (
-          <GroupBlock key={rows[0]!.id} rows={rows} full={v2 ? groupIndex.get(key) : undefined} selected={selected} onToggleOne={onToggleOne} onSetMany={onSetMany} onDone={onDone} />
+          <GroupBlock key={rows[0]!.id} rows={rows} full={v2 ? groupIndex.get(key) : undefined} clarifyQ={clarifyByKey?.get(key)} clarifyProperties={clarifyProperties} onClarifyDone={onClarifyDone} selected={selected} onToggleOne={onToggleOne} onSetMany={onSetMany} onDone={onDone} />
         ) : (
           <Row key={rows[0]!.id} txn={rows[0]!} selected={selected.has(rows[0]!.id)} onToggle={() => onToggleOne(rows[0]!.id)} onDone={onDone} />
         ),
@@ -287,6 +324,9 @@ function GroupedList({
 function GroupBlock({
   rows,
   full,
+  clarifyQ,
+  clarifyProperties,
+  onClarifyDone,
   selected,
   onToggleOne,
   onSetMany,
@@ -294,6 +334,9 @@ function GroupBlock({
 }: {
   rows: Txn[];
   full?: ReviewGroup;
+  clarifyQ?: ClarifyQuestion;
+  clarifyProperties: { id: string; label: string }[];
+  onClarifyDone: () => void;
   selected: Set<string>;
   onToggleOne: (id: string) => void;
   onSetMany: (ids: string[], on: boolean) => void;
@@ -324,6 +367,13 @@ function GroupBlock({
           {hiddenCount > 0 && <span className="text-muted/70"> · {rows.length} shown</span>}
         </span>
       </summary>
+      {/* unified_review_groups: the clarify smart-answers (income/ignore/capital/spend + rule-learning)
+          for this merchant, inline — the same answerClarify seam the standalone card uses. */}
+      {clarifyQ && (
+        <ul className="border-t border-line p-2">
+          <ClarifyRow q={clarifyQ} properties={clarifyProperties} onDone={onClarifyDone} />
+        </ul>
+      )}
       <ul className="space-y-2 border-t border-line p-2">
         {rows.map((t) => (
           <li key={t.id}>

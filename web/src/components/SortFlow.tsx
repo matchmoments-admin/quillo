@@ -19,7 +19,7 @@ import { SuggestedDeductions } from "./AccountantPassCard";
  * ["clarify", fy], ["accountant-suggestions", fy], ["loan-interest-review", fy]) — no extra fetches.
  * General information only.
  */
-export function SortFlow({ fy, hasAccountantPass }: { fy: number; hasAccountantPass: boolean }) {
+export function SortFlow({ fy, hasAccountantPass, excludeClarifyKeys }: { fy: number; hasAccountantPass: boolean; excludeClarifyKeys?: Set<string> }) {
   const { has } = useFeatures();
   const hasLoanInterest = has("loan_interest_v2");
 
@@ -45,7 +45,9 @@ export function SortFlow({ fy, hasAccountantPass }: { fy: number; hasAccountantP
   // "Split loan interest" UI was retired — evidence-first loan_interest_v2 owns the deductible figure),
   // so they count toward the movement sweep.
   const moveCount = (sweep.data?.ignorable.length ?? 0) + (sweep.data?.property_loan_review.length ?? 0);
-  const clarifyCount = clarify.data?.length ?? 0;
+  // unified_review_groups: groups already shown inline in the review list are excluded here (they carry
+  // their own clarify answers), so this count/card is only the groups NOT visible in the list.
+  const clarifyCount = (clarify.data ?? []).filter((q) => !excludeClarifyKeys?.has(q.group_key)).length;
   const suggCount = suggestions.data?.length ?? 0;
   // "To confirm" = every loan whose FY interest isn't a user-confirmed lender_summary yet — including
   // ones auto-prefilled from a parsed statement (source='statement_parsed', #165), which the user still
@@ -55,7 +57,7 @@ export function SortFlow({ fy, hasAccountantPass }: { fy: number; hasAccountantP
   // Order = the order you work them: sort repeat merchants first (most lines cleared per tap), then
   // confirm loan interest, confirm suggested deductions, then the transfer clean-up.
   const cards: { key: string; node: ReactNode }[] = [];
-  if (hasAccountantPass && clarifyCount > 0) cards.push({ key: "clarify", node: <ClarifyCard fy={fy} /> });
+  if (hasAccountantPass && clarifyCount > 0) cards.push({ key: "clarify", node: <ClarifyCard fy={fy} excludeKeys={excludeClarifyKeys} /> });
   if (hasLoanInterest && loanInterestCount > 0) cards.push({ key: "loanInterest", node: <LoanInterestCard fy={fy} /> });
   if (hasAccountantPass && suggCount > 0)
     cards.push({

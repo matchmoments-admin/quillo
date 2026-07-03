@@ -96,7 +96,7 @@ export function Transactions() {
     enabled: view === "all",
   });
 
-  const all = data ?? [];
+  const all = useMemo(() => data ?? [], [data]); // stable ref so `filtered` only recomputes on new data or filter change
 
   // Client-side search + date-range + category + property filters over the loaded scope.
   const filtered = useMemo(() => {

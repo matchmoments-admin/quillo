@@ -69,7 +69,7 @@ export function ReviewView() {
 
   const pickFile = () => fileRef.current?.click();
 
-  const txns = data ?? [];
+  const txns = useMemo(() => data ?? [], [data]); // stable ref so the group/clarify memos below don't recompute every render
 
   // ── Rules of Hooks: EVERY hook below MUST stay above the isLoading/error early returns. A fresh load
   // renders with isLoading=true first (fewer hooks) then re-renders with data (more hooks); if these sit

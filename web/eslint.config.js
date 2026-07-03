@@ -17,8 +17,11 @@ export default [
     },
     plugins: { "react-hooks": reactHooks },
     rules: {
+      // rules-of-hooks = the #310 crash guard. exhaustive-deps promoted to error now the slate is clean
+      // (stale-closure smells fail the gate); use a scoped `// eslint-disable-next-line` with a reason for
+      // a genuinely-intentional omission rather than loosening this back to a warning.
       "react-hooks/rules-of-hooks": "error",
-      "react-hooks/exhaustive-deps": "warn",
+      "react-hooks/exhaustive-deps": "error",
     },
   },
 ];

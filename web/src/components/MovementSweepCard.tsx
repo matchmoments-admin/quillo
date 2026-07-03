@@ -23,7 +23,7 @@ const KLASS_LABEL: Record<string, string> = {
 export function MovementSweepCard() {
   const qc = useQueryClient();
   const { data, isLoading, error, refetch } = useQuery({ queryKey: ["movements-sweep"], queryFn: api.sweepMovements });
-  const ignorable = data?.ignorable ?? [];
+  const ignorable = useMemo(() => data?.ignorable ?? [], [data]); // stable ref so allIds only recomputes on new data
   // Selection defaults to ALL candidates (pre-checked); recomputed when the candidate id set changes.
   const allIds = useMemo(() => ignorable.map((c) => c.id), [ignorable]);
   const [excluded, setExcluded] = useState<Set<string>>(new Set());

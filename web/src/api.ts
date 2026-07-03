@@ -439,6 +439,9 @@ export const api = {
     post<BatchResult>("/api/correct/batch", { txnIds, edits, learn_rule }),
   undoBatch: (batchId: string) => post<{ reverted: number }>("/api/correct/undo", { batchId }),
   deleteTxnBatch: (ids: string[]) => post<{ deleted: number }>("/api/transactions/batch-delete", { ids }),
+  // Bulk "Confirm as-is": accept each selected row's current AI category, clearing it from review without
+  // changing anything (flag bulk_confirm). Rows with no/'unknown' category are reported in `failures`.
+  confirmBatch: (txnIds: string[]) => post<{ batch_id: string; updated: number; failures: { txnId: string; error: string }[] }>("/api/confirm/batch", { txnIds }),
 
   // Sort S1 — "edit one line → update its look-alikes" (flag apply_to_siblings; 404 when off)
   siblingsPreview: (txnId: string) => get<{ n: number; total_cents: number; group_key: string | null }>(`/api/transactions/${txnId}/siblings`),

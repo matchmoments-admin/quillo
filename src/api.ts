@@ -657,6 +657,14 @@ export async function handleApi(
     if (typeof batchId !== "string" || !batchId) return json({ error: "batchId required" }, 400);
     return json(await stub.undoCorrectionBatch(uid, batchId));
   }
+  // POST /api/confirm/batch { txnIds } — bulk "Confirm as-is": accept each row's current AI category and
+  // clear it from review (flag bulk_confirm; 404 when off ⇒ byte-identical). No new category is applied.
+  if (resource === "confirm" && id === "batch" && m === "POST") {
+    if (!featureOn(env, "bulk_confirm")) return json({ error: "not available" }, 404);
+    const { txnIds } = (await req.json().catch(() => ({}))) as { txnIds?: unknown };
+    if (!Array.isArray(txnIds) || txnIds.some((x) => typeof x !== "string")) return json({ error: "txnIds must be an array of strings" }, 400);
+    return json(await stub.confirmBatch(uid, txnIds as string[]));
+  }
 
   // POST /api/correct  { txnId, field, value } — audited write via the DO.
   if (resource === "correct" && !id && m === "POST") {

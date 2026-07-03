@@ -26,6 +26,7 @@ export function BulkBar({ ids, onClear, onDone }: { ids: string[]; onClear: () =
   const [learnRule, setLearnRule] = useState(false);
   const { has } = useFeatures();
   const inlineClaim = has("inline_claim"); // owner feedback: resolve claims (donation/%/full/not) in the mass edit
+  const bulkConfirm = has("bulk_confirm"); // "Confirm as-is": accept the AI's current categories for the selection
   // mobile_bottom_tabs renders a FIXED bottom bar (z-30, <lg). The BulkBar previously sat at z-10 /
   // bottom-3, so mid-scroll it stuck to the viewport bottom UNDERNEATH the tab bar — invisible until
   // the user reached the very end of the page (live-testing find). Offset above the tabs on <lg and
@@ -96,11 +97,35 @@ export function BulkBar({ ids, onClear, onDone }: { ids: string[]; onClear: () =
     onError: (e) => onDone({ message: `Couldn't delete: ${(e as Error).message}`, batchId: null }),
   });
 
-  const busy = apply.isPending || del.isPending;
+  // "Confirm as-is": accept the AI's CURRENT category for the whole selection and clear it from review,
+  // without picking a new one. Position-neutral (the rows already count); not undoable (nothing changes
+  // but the review status). Rows with no category are reported as skipped.
+  const confirmAsIs = useMutation({
+    mutationFn: () => api.confirmBatch(ids),
+    onSuccess: (r) => {
+      invalidate();
+      const skipped = r.failures.length ? ` · ${r.failures.length} skipped (no category — open to categorise)` : "";
+      onDone({ message: `Confirmed ${r.updated}${skipped}.`, batchId: null });
+      onClear();
+    },
+    onError: (e) => onDone({ message: `Couldn't confirm: ${(e as Error).message}`, batchId: null }),
+  });
+
+  const busy = apply.isPending || del.isPending || confirmAsIs.isPending;
 
   return (
     <div className={`sticky ${tabsOn ? "bottom-20 lg:bottom-3" : "bottom-3"} z-40 mx-auto flex w-full max-w-2xl flex-wrap items-center gap-2 rounded-xl border border-line bg-ink px-3 py-2 text-white shadow-lg`}>
       <span className="text-sm font-medium">{ids.length} selected</span>
+      {bulkConfirm && (
+        <button
+          onClick={() => confirmAsIs.mutate()}
+          disabled={busy}
+          title="Accept the current category for all selected and clear them from review"
+          className="rounded-lg border border-white/25 bg-white/10 px-2.5 py-1 text-sm font-medium hover:bg-white/20 disabled:opacity-50"
+        >
+          {confirmAsIs.isPending ? "Confirming…" : "Confirm as-is"}
+        </button>
+      )}
       <CategoryPicker
         bucket={claim === "donation" ? "payg" : bucket}
         propertyId={propertyId}

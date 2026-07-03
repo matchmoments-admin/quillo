@@ -3864,6 +3864,55 @@ export class TaxAgent extends Agent<Env> {
   }
 
   /**
+   * Bulk "Confirm as-is" (flag bulk_confirm): accept each selected transaction's CURRENT (AI-suggested)
+   * category and clear it from the review queue, changing nothing else. This is the batched form of the
+   * per-row "Confirm ✓" (ReviewView Row.confirm — a self-correction re-applying the row's own bucket, so
+   * status='corrected' and it leaves needs_review). It's the single most common review action and was
+   * impossible in bulk because the BulkBar's Apply requires picking a NEW category.
+   *
+   * Position-NEUTRAL: a needs_review row that already has a bucket is already counted (COUNTABLE ignores
+   * only duplicate/ignored), so this only clears the review flag — it does NOT re-stamp deductibility or
+   * touch the amount. Rows with no bucket / 'unknown' are skipped (nothing to accept; they must go to the
+   * detail page to pick a real category). A correction row per txn (old==new bucket, shared batch_id)
+   * records the acceptance for provenance, mirroring the single-row confirm. Clamps to 500. NOT offered
+   * as undoable (the category is unchanged, so there's nothing to revert; re-opening a row re-reviews it).
+   */
+  async confirmBatch(userId: string, txnIds: string[]): Promise<{ batch_id: string; updated: number; failures: { txnId: string; error: string }[] }> {
+    if (!Array.isArray(txnIds) || txnIds.length === 0) return { batch_id: "", updated: 0, failures: [] };
+    const ids = txnIds.slice(0, 500);
+    const batchId = crypto.randomUUID();
+    const changedIds: string[] = [];
+    const failures: { txnId: string; error: string }[] = [];
+    let pending: D1PreparedStatement[] = [];
+    const flush = async () => {
+      if (pending.length) {
+        await this.env.DB.batch(pending);
+        pending = [];
+      }
+    };
+    for (const txnId of ids) {
+      const row = await this.env.DB.prepare(`SELECT bucket FROM transactions WHERE id = ? AND user_id = ?`).bind(txnId, userId).first<{ bucket: string | null }>();
+      if (!row) {
+        failures.push({ txnId, error: "not found" });
+        continue;
+      }
+      if (!row.bucket || row.bucket === "unknown") {
+        failures.push({ txnId, error: "no category to confirm" });
+        continue;
+      }
+      pending.push(
+        this.env.DB.prepare(`UPDATE transactions SET status='corrected', confidence=1.0 WHERE id = ? AND user_id = ?`).bind(txnId, userId),
+        this.env.DB.prepare(`INSERT INTO corrections (id, user_id, txn_id, field, old_value, new_value, batch_id) VALUES (?, ?, ?, 'bucket', ?, ?, ?)`).bind(crypto.randomUUID(), userId, txnId, row.bucket, row.bucket, batchId),
+      );
+      changedIds.push(txnId);
+      if (pending.length >= 80) await flush();
+    }
+    await flush();
+    await this.audit(userId, "confirm_batch", JSON.stringify({ batch_id: batchId, updated: changedIds.length, failures: failures.length }));
+    return { batch_id: batchId, updated: changedIds.length, failures };
+  }
+
+  /**
    * Undo a batch correction as a unit: write each per-txn old_value back to its column and stamp
    * reverted_at, for the corrections of `batchId` that are still applied (reverted_at IS NULL).
    * Re-stamps deductibility on the restored rows. Idempotent (already-reverted rows are skipped).

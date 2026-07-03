@@ -223,6 +223,23 @@ export interface AttributionTotals {
  * The caller excludes attributed transactions from the raw byBucket/byPropertyRaw sums so nothing is
  * double-counted. Reimbursed (0030) and rent-free/renovating-property (0031) spend is still gated out
  * here, mirroring the raw path. Empty table / zero rows → all zeros (legacy report unchanged).
+ *
+ * The inline claim controls write the transaction's `deductibility` (confirmed_not / suggested / etc.);
+ * attribution owns the SPLIT amount (owner-share × work-use, snapshotted), but a user's deductibility
+ * VETO still gates whether that amount counts: a positive suggestion never counts until confirmed, and
+ * — once `position_excludes_nondeductible` is on — a row the user marked not-deductible / needs-
+ * apportionment drops out. Without this an attributed row set "not deductible" was still counted in full
+ * (an over-claim). These two gates mirror deductionGroupForRow (report.ts:72-76).
+ *
+ * DELIBERATE difference from the raw path: we do NOT apply payg deny-by-default (report.ts:77, "bucket
+ * payg + undetermined ⇒ excluded"). An explicit attribution — the user attaching this cost to a business
+ * / rental income activity, with a deduction_provision — is itself the resolution that deny-by-default
+ * waits for, and stronger than the absence of a payg auto-verdict. This matches the existing design
+ * ("raw bucket is moot once attributed"): P4/P5 attribute business costs that count regardless of bucket.
+ * The veto also applies only to the INDIVIDUAL + PROPERTY tracks (the personal position the inline claim
+ * controls drive); the COMPANY track is a separate taxpayer whose authoritative deductions come from
+ * companyPositions (no such gate), so gating it here would diverge company_tracked_cents from the company
+ * position card — left byte-identical.
  */
 export async function attributionTotals(
   env: Env,
@@ -232,10 +249,13 @@ export async function attributionTotals(
 ): Promise<AttributionTotals> {
   const { start, end } = fyBounds(startYear, descriptor);
   const empty: AttributionTotals = { individual_deduction_cents: 0, company_deduction_cents: 0, by_property: [] };
+  // Mirror deductionGroupForRow's flag gate: not-deductible only drops once the headline excludes it.
+  const excludeNonDeductible = featureOn(env, "position_excludes_nondeductible");
   try {
     const res = await env.DB.prepare(
       `SELECT ta.attributed_amount_cents AS attributed_amount_cents, ta.attributed_pct AS attributed_pct,
               ta.work_use_pct AS work_use_pct, COALESCE(t.amount_aud_cents, t.amount_cents) AS txn_amount,
+              COALESCE(t.deductibility,'undetermined') AS deductibility,
               -- entity_type is set by 0032's backfill, but a NEW entity (situation-write) may not set it;
               -- fall back to kind so a freshly-created company still routes to the company track.
               COALESCE(e.entity_type, e.kind) AS entity_type,
@@ -253,13 +273,23 @@ export async function attributionTotals(
                             AND pp.use_status IN ('private_use_rent_free','under_renovation_not_available'))`,
     )
       .bind(userId, start, end)
-      .all<{ attributed_amount_cents: number | null; attributed_pct: number | null; work_use_pct: number | null; txn_amount: number | null; entity_type: string | null; activity_type: string | null; property_id: string | null; deduction_provision: string | null }>();
+      .all<{ attributed_amount_cents: number | null; attributed_pct: number | null; work_use_pct: number | null; txn_amount: number | null; deductibility: string | null; entity_type: string | null; activity_type: string | null; property_id: string | null; deduction_provision: string | null }>();
     let individual = 0;
     let company = 0;
     const byProp = new Map<string, number>();
     for (const r of res.results ?? []) {
       const track = classifyAttribution(r);
       if (track === "excluded") continue;
+      // Deductibility veto (see the doc comment): a positive suggestion never counts until confirmed
+      // (flag-independent); a "not deductible"/needs-apportionment verdict drops once the headline
+      // excludes non-deductibles. Applied to the personal (individual/property) tracks only — the company
+      // track stays byte-identical so it can't diverge from companyPositions. Undetermined still counts
+      // (attribution supersedes payg deny-by-default). Off-flag ⇒ only suggestions gate.
+      const d = r.deductibility ?? "undetermined";
+      if (track !== "company") {
+        if (d === "suggested_deductible") continue;
+        if (excludeNonDeductible && (d === "likely_not" || d === "confirmed_not" || d === "needs_apportionment")) continue;
+      }
       // Prefer the snapshot; if a row stored only attributed_pct (the schema's XOR alternative), derive
       // the amount from the txn via the SAME pure helper the writer uses, so nothing silently drops.
       const amt = r.attributed_amount_cents ?? splitAttribution({ amount_cents: r.txn_amount ?? 0, owner_share_pct: r.attributed_pct, work_use_pct: r.work_use_pct });

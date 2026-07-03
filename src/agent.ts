@@ -2054,11 +2054,15 @@ export class TaxAgent extends Agent<Env> {
    * of waiting for the year-end review. Called after every ingest/categorise pass and after a
    * re-bucket correction.
    *
-   * GUARD: never clobbers a user's explicit year-end decision. By default it only touches
-   * 'undetermined' rows; with {reResolve:true} (used after a correction changes the bucket/label) it
-   * also re-evaluates the matcher's own prior auto-verdicts (likely_x / needs_apportionment) but still
-   * leaves user-confirmed states (confirmed_deductible/confirmed_not) untouched. Best-effort: a
-   * failure here must never fail the upload/correction that already persisted.
+   * GUARD: never clobbers a user's explicit year-end decision. By default it re-evaluates
+   * 'undetermined' rows AND unconfirmed positive suggestions ('suggested_deductible') — the latter so
+   * a rule-pack change that now DENIES a category (e.g. #403's raffles/art-unions/lotteries) self-heals
+   * the stale suggestion on the next scan instead of leaving it confirmable into the position. A still-
+   * valid suggestion re-evaluates to the same 'suggested_deductible' (idempotent), so this is byte-
+   * identical when the pack is unchanged. With {reResolve:true} (used after a correction changes the
+   * bucket/label) it also re-evaluates the matcher's own prior auto-verdicts (likely_x /
+   * needs_apportionment). Either way user-confirmed states (confirmed_deductible/confirmed_not) are
+   * left untouched. Best-effort: a failure here must never fail the upload/correction that persisted.
    */
   private async stampDeductibility(userId: string, opts?: { txnIds?: string[]; reResolve?: boolean }): Promise<{ stamped: number }> {
     try {
@@ -2068,7 +2072,10 @@ export class TaxAgent extends Agent<Env> {
       // Only payg is classified; the guard limits what we may overwrite (see method doc).
       const guard = opts?.reResolve
         ? "deductibility NOT IN ('confirmed_deductible','confirmed_not')"
-        : "(deductibility IS NULL OR deductibility = 'undetermined')";
+        // Re-evaluate undetermined rows and unconfirmed suggestions — but only suggestions with NO
+        // explicit claimable amount, so a suggestion someone apportioned (deductible_amount_cents set)
+        // isn't silently wiped to NULL on the next scan; those are treated as a decision, left alone.
+        : "(deductibility IS NULL OR deductibility = 'undetermined' OR (deductibility = 'suggested_deductible' AND deductible_amount_cents IS NULL))";
       // Read candidate rows. When scoped to specific ids, CHUNK the IN-list: D1 caps bound params at
       // ~100/query, so a bulk re-bucket of hundreds of ids (batch correction) would otherwise throw
       // here and silently skip the re-stamp — leaving the position computed off stale deductibility.
@@ -4897,10 +4904,33 @@ export class TaxAgent extends Agent<Env> {
   }
 
   /** Confirm a SUGGESTED deduction (Stage D) → confirmed_deductible (it now counts). User-driven, audited. */
-  async confirmSuggestedDeduction(userId: string, txnId: string): Promise<{ ok: boolean }> {
-    const row = await this.env.DB.prepare(`SELECT deductibility FROM transactions WHERE id = ? AND user_id = ?`).bind(txnId, userId).first<{ deductibility: string | null }>();
+  async confirmSuggestedDeduction(userId: string, txnId: string): Promise<{ ok: boolean; denied?: boolean }> {
+    const row = await this.env.DB
+      .prepare(`SELECT deductibility, bucket, ato_label, merchant FROM transactions WHERE id = ? AND user_id = ?`)
+      .bind(txnId, userId)
+      .first<{ deductibility: string | null; bucket: string | null; ato_label: string | null; merchant: string | null }>();
     if (!row) throw new Error("transaction not found");
     if (row.deductibility !== "suggested_deductible") return { ok: false }; // only a live suggestion can be confirmed
+    // Re-check the CURRENT rule pack before it counts. A suggestion is a stored stamp written at
+    // categorise time; a later rule-pack change (e.g. #403 denying raffles/art-unions/lotteries) does
+    // NOT retro-touch it, so a stale suggestion could otherwise be confirmed into the position — an
+    // over-claim of something the pack now denies. Only a NEGATIVE re-verdict (the pack now denies, or
+    // requires apportionment) blocks the confirm and demotes the stale suggestion; if the pack still
+    // suggests it — or no longer matches either way (undetermined: a hint changed but nothing denies it)
+    // — honour the stored suggestion and confirm, so a legitimate donation isn't made un-confirmable.
+    const pack = await this.loadRulePack((await this.requireProfile(userId)).rule_pack_ver);
+    const section = (pack as { payg_deductibility?: Parameters<typeof verdictForTxn>[3] }).payg_deductibility ?? null;
+    const verdict = verdictForTxn(row.bucket, row.ato_label, row.merchant, section);
+    if (verdict.deductibility === "likely_not" || verdict.deductibility === "needs_apportionment") {
+      // deductible amount is 0 for a denied row, NULL for needs-apportionment (mirrors stampDeductibility).
+      const amt = verdict.deductibility === "likely_not" ? 0 : null;
+      await this.env.DB
+        .prepare(`UPDATE transactions SET deductibility = ?, deductible_amount_cents = ? WHERE id = ? AND user_id = ?`)
+        .bind(verdict.deductibility, amt, txnId, userId)
+        .run();
+      await this.audit(userId, "suggestion_denied_on_confirm", JSON.stringify({ txnId, verdict: verdict.deductibility }));
+      return { ok: false, denied: true };
+    }
     await this.env.DB.prepare(`UPDATE transactions SET deductibility = 'confirmed_deductible' WHERE id = ? AND user_id = ?`).bind(txnId, userId).run();
     await this.audit(userId, "confirm_deduction", JSON.stringify({ txnId }));
     return { ok: true };

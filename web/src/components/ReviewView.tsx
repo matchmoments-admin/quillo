@@ -131,22 +131,25 @@ export function ReviewView() {
           return (
             <>
               {/* Grouped mode previously dropped the flat view's page-level select-all — restore it so a
-                  whole page can feed the BulkBar in one tick (operates over the kind-filtered set). */}
-              <label className="flex items-center gap-2 px-1 text-xs text-muted">
-                <input
-                  type="checkbox"
-                  className="h-4 w-4"
-                  checked={visible.length > 0 && visible.every((t) => selected.has(t.id))}
-                  onChange={(e) =>
-                    setSelected((prev) => {
-                      const next = new Set(prev);
-                      for (const t of visible) e.target.checked ? next.add(t.id) : next.delete(t.id);
-                      return next;
-                    })
-                  }
-                />
-                Select all on this page
-              </label>
+                  whole page can feed the BulkBar in one tick (operates over the kind-filtered set). Gated
+                  by grouped_review_v2 so wave 3 stays fully dark (byte-identical) until that flag flips. */}
+              {groupedV2 && (
+                <label className="flex items-center gap-2 px-1 text-xs text-muted">
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4"
+                    checked={visible.length > 0 && visible.every((t) => selected.has(t.id))}
+                    onChange={(e) =>
+                      setSelected((prev) => {
+                        const next = new Set(prev);
+                        for (const t of visible) e.target.checked ? next.add(t.id) : next.delete(t.id);
+                        return next;
+                      })
+                    }
+                  />
+                  Select all on this page
+                </label>
+              )}
               <GroupedList
                 txns={visible}
                 v2={groupedV2}

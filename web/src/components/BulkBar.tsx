@@ -27,6 +27,7 @@ export function BulkBar({ ids, onClear, onDone }: { ids: string[]; onClear: () =
   const { has } = useFeatures();
   const inlineClaim = has("inline_claim"); // owner feedback: resolve claims (donation/%/full/not) in the mass edit
   const bulkConfirm = has("bulk_confirm"); // "Confirm as-is": accept the AI's current categories for the selection
+  const bulkIgnore = has("bulk_ignore"); // "Not spend": exclude the selection as non-spend (transfers the sweep missed)
   // mobile_bottom_tabs renders a FIXED bottom bar (z-30, <lg). The BulkBar previously sat at z-10 /
   // bottom-3, so mid-scroll it stuck to the viewport bottom UNDERNEATH the tab bar — invisible until
   // the user reached the very end of the page (live-testing find). Offset above the tabs on <lg and
@@ -112,7 +113,20 @@ export function BulkBar({ ids, onClear, onDone }: { ids: string[]; onClear: () =
     onError: (e) => onDone({ message: `Couldn't confirm: ${(e as Error).message}`, batchId: null }),
   });
 
-  const busy = apply.isPending || del.isPending || confirmAsIs.isPending;
+  // "Not spend": exclude the selection as non-spend (transfers/repayments the sweep detector missed).
+  // Undoable — the batch_id feeds the shared Undo toast — so no confirm dialog (undo-first).
+  const ignore = useMutation({
+    mutationFn: () => api.ignoreBatch(ids),
+    onSuccess: (r) => {
+      invalidate();
+      const skipped = r.failures.length ? ` · ${r.failures.length} already excluded` : "";
+      onDone({ message: `Excluded ${r.updated} as not spend${skipped}.`, batchId: r.batch_id || null });
+      onClear();
+    },
+    onError: (e) => onDone({ message: `Couldn't exclude: ${(e as Error).message}`, batchId: null }),
+  });
+
+  const busy = apply.isPending || del.isPending || confirmAsIs.isPending || ignore.isPending;
 
   return (
     <div className={`sticky ${tabsOn ? "bottom-20 lg:bottom-3" : "bottom-3"} z-40 mx-auto flex w-full max-w-2xl flex-wrap items-center gap-2 rounded-xl border border-line bg-ink px-3 py-2 text-white shadow-lg`}>
@@ -156,6 +170,16 @@ export function BulkBar({ ids, onClear, onDone }: { ids: string[]; onClear: () =
       <Button onClick={() => apply.mutate()} disabled={busy || (!bucket && !(inlineClaim && claimResolve(claim, pct))) || (needsProperty && !propertyId) || (inlineClaim && claimIncomplete(claim, pct))}>
         {apply.isPending ? "Applying…" : "Apply"}
       </Button>
+      {bulkIgnore && (
+        <button
+          onClick={() => ignore.mutate()}
+          disabled={busy}
+          title="Exclude these as non-spend (transfers/repayments) — kept out of your position. Undoable."
+          className="rounded-lg px-2 py-1 text-sm text-white/80 hover:text-white"
+        >
+          {ignore.isPending ? "Excluding…" : "Not spend"}
+        </button>
+      )}
       <button
         onClick={() => {
           if (confirm(`Delete ${ids.length} transaction(s)? This can't be undone.`)) del.mutate();

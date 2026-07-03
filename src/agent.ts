@@ -3914,6 +3914,50 @@ export class TaxAgent extends Agent<Env> {
   }
 
   /**
+   * Bulk "Not spend" (flag bulk_ignore): exclude the whole selection as non-spend — status='ignored',
+   * which drops it from COUNTABLE (every money sum) and the review queue. This is for the transfers /
+   * repayments the MovementSweep DETECTOR misses, so — unlike applyMovementSweep — there is NO
+   * movementTreatment guard: the user is explicitly overriding on a hand-picked selection. Already-ignored
+   * rows are skipped (idempotent). UNDOABLE: records a field='status' correction per row (prior status →
+   * 'ignored') sharing a batch_id, which undoCorrectionBatch restores — excluding touches the position, so
+   * undo-first beats a confirm dialog. Clamps 500, chunks at 80, user_id-scoped, audited.
+   */
+  async ignoreBatch(userId: string, txnIds: string[]): Promise<{ batch_id: string; updated: number; failures: { txnId: string; error: string }[] }> {
+    if (!Array.isArray(txnIds) || txnIds.length === 0) return { batch_id: "", updated: 0, failures: [] };
+    const ids = txnIds.slice(0, 500);
+    const batchId = crypto.randomUUID();
+    const changedIds: string[] = [];
+    const failures: { txnId: string; error: string }[] = [];
+    let pending: D1PreparedStatement[] = [];
+    const flush = async () => {
+      if (pending.length) {
+        await this.env.DB.batch(pending);
+        pending = [];
+      }
+    };
+    for (const txnId of ids) {
+      const row = await this.env.DB.prepare(`SELECT status FROM transactions WHERE id = ? AND user_id = ?`).bind(txnId, userId).first<{ status: string | null }>();
+      if (!row) {
+        failures.push({ txnId, error: "not found" });
+        continue;
+      }
+      if (row.status === "ignored") {
+        failures.push({ txnId, error: "already excluded" });
+        continue;
+      }
+      pending.push(
+        this.env.DB.prepare(`UPDATE transactions SET status='ignored' WHERE id = ? AND user_id = ?`).bind(txnId, userId),
+        this.env.DB.prepare(`INSERT INTO corrections (id, user_id, txn_id, field, old_value, new_value, batch_id) VALUES (?, ?, ?, 'status', ?, 'ignored', ?)`).bind(crypto.randomUUID(), userId, txnId, row.status, batchId),
+      );
+      changedIds.push(txnId);
+      if (pending.length >= 80) await flush();
+    }
+    await flush();
+    await this.audit(userId, "ignore_batch", JSON.stringify({ batch_id: batchId, updated: changedIds.length, failures: failures.length }));
+    return { batch_id: batchId, updated: changedIds.length, failures };
+  }
+
+  /**
    * Undo a batch correction as a unit: write each per-txn old_value back to its column and stamp
    * reverted_at, for the corrections of `batchId` that are still applied (reverted_at IS NULL).
    * Re-stamps deductibility on the restored rows. Idempotent (already-reverted rows are skipped).
@@ -3931,7 +3975,10 @@ export class TaxAgent extends Agent<Env> {
     const changed = new Set<string>();
     const stmts: D1PreparedStatement[] = [];
     for (const c of rows) {
-      const column = CORRECTABLE[c.field];
+      // `status` isn't user-correctable via /api/correct (not in CORRECTABLE), but it IS a real column
+      // that ignoreBatch records a field='status' correction for — so it can be restored here to make a
+      // bulk "Not spend" undoable. Only batched ignore corrections carry a batch_id, so nothing else undoes.
+      const column = CORRECTABLE[c.field] ?? (c.field === "status" ? "status" : undefined);
       if (!column) continue; // a non-correctable field never enters a batch, but guard anyway
       // Last-writer guard: only restore old_value if the column STILL holds this batch's new_value.
       // If a later correction overwrote it, undoing this batch must not clobber that newer value.

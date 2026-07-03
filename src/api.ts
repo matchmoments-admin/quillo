@@ -681,6 +681,14 @@ export async function handleApi(
     if (!Array.isArray(txnIds) || txnIds.some((x) => typeof x !== "string")) return json({ error: "txnIds must be an array of strings" }, 400);
     return json(await stub.confirmBatch(uid, txnIds as string[]));
   }
+  // POST /api/ignore/batch { txnIds } — bulk "Not spend": exclude the selection as non-spend
+  // (status='ignored'; flag bulk_ignore; 404 when off ⇒ byte-identical). Undoable via /api/correct/undo.
+  if (resource === "ignore" && id === "batch" && m === "POST") {
+    if (!featureOn(env, "bulk_ignore")) return json({ error: "not available" }, 404);
+    const { txnIds } = (await req.json().catch(() => ({}))) as { txnIds?: unknown };
+    if (!Array.isArray(txnIds) || txnIds.some((x) => typeof x !== "string")) return json({ error: "txnIds must be an array of strings" }, 400);
+    return json(await stub.ignoreBatch(uid, txnIds as string[]));
+  }
 
   // POST /api/correct  { txnId, field, value } — audited write via the DO.
   if (resource === "correct" && !id && m === "POST") {

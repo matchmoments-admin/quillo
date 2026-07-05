@@ -9,10 +9,14 @@ import type { AuthedUser } from "./access";
  * JWT: the SPA sends `Authorization: Bearer <token>` (a short-lived Clerk session token);
  * we verify it against the Clerk instance's JWKS and check the issuer + authorized party.
  *
- * Lockdown until launch: only Clerk user ids in CLERK_ALLOWED_USERS may use /api/*. Any
- * other (verified-but-not-allowed) user is rejected, so they cannot spend API credits.
- * The allowed founder maps to the existing pilot tenant "me" (preserves their data); real
- * per-user tenants come later.
+ * Access model: OPEN self-service signup. Any Clerk-verified user may use /api/* and gets their
+ * OWN isolated tenant (keyed by their sub); the founder sub maps to the legacy pilot tenant "me"
+ * for data continuity. Spend is bounded by the per-tenant + global daily/monthly cost caps
+ * (MAX_DAILY_COST_CENTS etc.) and the `billing` free-credit/top-up gate, not by who you are.
+ *
+ * Kill-switch: CLERK_ALLOWED_USERS is an OPTIONAL allow-list. Empty/unset ⇒ open (the default).
+ * Set it to a comma-separated list of subs to RE-LOCK /api/* to those users only (e.g. to pause
+ * signups or run a closed beta again) — instant via config, no code change.
  *
  * Local dev: when CLERK_ISSUER is unset there is no auth in front, so we fall back to the
  * pilot tenant "me" (unchanged dev ergonomics).
@@ -66,15 +70,15 @@ export async function requireClerk(req: Request, env: Env): Promise<ClerkAuthRes
     return { ok: false, status: 401 };
   }
 
-  // Single-user lockdown: only allowlisted Clerk users may use the API.
-  const allowed = new Set(
-    (env.CLERK_ALLOWED_USERS ?? "")
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean),
-  );
-  if (!allowed.has(sub)) {
-    // Log the verified sub so the founder's id can be captured on first sign-in.
+  // Optional allow-list (kill-switch). Empty/unset ⇒ OPEN access: any Clerk-verified user is let
+  // through to their own tenant. A NON-empty list re-locks /api/* to exactly those subs (closed
+  // beta / paused signups). The founder→"me" mapping below is independent of this gate.
+  const allowed = (env.CLERK_ALLOWED_USERS ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (allowed.length > 0 && !allowed.includes(sub)) {
+    // Log the verified sub so a would-be tester's id can be captured while the list is active.
     console.log(`clerk: verified but not allowlisted — sub=${sub} email=${email}`);
     return { ok: false, status: 403 };
   }

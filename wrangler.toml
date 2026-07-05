@@ -113,11 +113,13 @@ FREE_CREDIT_GRANT_CENTS = "500"
 # ${CLERK_ISSUER}/.well-known/jwks.json. Leave CLERK_ISSUER UNSET for local dev (the API
 # falls back to the pilot tenant, like the old Access seam).
 CLERK_ISSUER = "https://obliging-eel-28.clerk.accounts.dev"
-# Allow-list: ONLY these Clerk user ids (comma-separated) may use /api/*. Empty = deny everyone
-# (credit-safe). Add a tester's sub here after they sign up (it's logged on their first 403).
-CLERK_ALLOWED_USERS = "user_3EX9q24hvBuYNz3Hk6Pg6O5FfBq"
+# OPTIONAL allow-list / kill-switch. Empty (the default) = OPEN self-service signup: any Clerk-
+# verified user gets their own isolated tenant. Set to a comma-separated list of subs to RE-LOCK
+# /api/* to just those users (pause signups / closed beta) — instant via config, no code change.
+# Spend is bounded by the daily/monthly cost caps above, not by this list.
+CLERK_ALLOWED_USERS = ""
 # The founder's Clerk sub → mapped to the pilot tenant "me" (data continuity). Every OTHER
-# allow-listed user gets their own isolated tenant keyed by their sub. Unset → everyone maps to "me".
+# user gets their own isolated tenant keyed by their sub. Unset → everyone maps to "me".
 CLERK_FOUNDER_SUB = "user_3EX9q24hvBuYNz3Hk6Pg6O5FfBq"
 # Cloudflare Access (web UI auth). Leave UNSET for local dev (API falls back to the pilot
 # tenant). For production set these to your Access application's values:

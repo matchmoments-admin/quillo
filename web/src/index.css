@@ -8,7 +8,11 @@
        inset. ONE source of truth: the tab bar's own padding, the main content's bottom
        padding, the floating-chat launcher/panel and the sonner toast offset all derive
        from it, so they can never drift apart and re-create the overlap this replaced.
-       env() resolves to 0 unless index.html sets viewport-fit=cover — it does. */
+       env() resolves to 0 unless index.html sets viewport-fit=cover — it does.
+       --tabbar-h is a deliberate OVER-estimate: the bar measures ~54px (18px icon + 11px label
+       + py-2 + border), but 4rem preserves the spacing the old `pb-16` gave and leaves slack if
+       a tab gains a line. Over-estimating is safe (content clears the bar); under-estimating
+       hides content behind it. Measured by scripts/sim-mobile-shell.mjs. */
     --tabbar-h: 4rem;
     --safe-b: env(safe-area-inset-bottom, 0px);
     --tabbar-clearance: calc(var(--tabbar-h) + var(--safe-b) + 0.5rem);

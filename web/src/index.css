@@ -3,6 +3,24 @@
 @tailwind utilities;
 
 @layer base {
+  :root {
+    /* Height of the <lg bottom tab bar (mobile_bottom_tabs), plus the iOS home-indicator
+       inset. ONE source of truth: the tab bar's own padding, the main content's bottom
+       padding, the floating-chat launcher/panel and the sonner toast offset all derive
+       from it, so they can never drift apart and re-create the overlap this replaced.
+       env() resolves to 0 unless index.html sets viewport-fit=cover — it does. */
+    --tabbar-h: 4rem;
+    --safe-b: env(safe-area-inset-bottom, 0px);
+    --tabbar-clearance: calc(var(--tabbar-h) + var(--safe-b) + 0.5rem);
+  }
+  /* At lg the tab bar is hidden (lg:hidden), so nothing needs clearing. Collapsing the var
+     here — rather than at each call site — lets the sonner Toaster pass ONE value at every
+     width and still land on its normal desktop inset. Keep in step with the bar's lg:hidden. */
+  @media (min-width: 1024px) {
+    :root {
+      --tabbar-clearance: 2rem;
+    }
+  }
   body {
     @apply bg-paper text-ink antialiased;
     font-family: theme("fontFamily.sans");

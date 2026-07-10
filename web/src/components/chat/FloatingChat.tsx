@@ -38,8 +38,15 @@ export function FloatingChat() {
 
 function FloatingChatInner() {
   const { fy } = useActiveFy();
+  const { has } = useFeatures();
   const { open, toggle, closeChat, unread, bumpUnread, clearUnread } = useChatUI();
   const location = useLocation();
+  // The <lg bottom tab bar (mobile_bottom_tabs) occupies the launcher's corner, so on small
+  // screens the bubble must clear it or it covers the right-most tabs (Position / More).
+  // --tabbar-clearance is defined once in index.css. Above lg the bar is hidden ⇒ bottom-4.
+  const tabs = has("mobile_bottom_tabs");
+  const launcherBottom = tabs ? "bottom-[var(--tabbar-clearance)] lg:bottom-4" : "bottom-4";
+  const panelBottom = tabs ? "md:bottom-[var(--tabbar-clearance)] lg:bottom-4" : "md:bottom-4";
   // Send the current route as page context (Phase 2). Read from a ref so send() always sees the live route.
   const pageRef = useRef(location.pathname);
   pageRef.current = location.pathname;
@@ -104,14 +111,15 @@ function FloatingChatInner() {
 
   return createPortal(
     <>
-      {/* Launcher — fixed bottom-right. Transient sonner toasts (bottom-right) may briefly overlap and auto-dismiss. */}
+      {/* Launcher — fixed bottom-right, lifted clear of the bottom tab bar on <lg. Transient
+          sonner toasts (bottom-right) may briefly overlap and auto-dismiss. */}
       {!open && (
         <button
           ref={launcherRef}
           type="button"
           onClick={toggle}
           aria-label="Open chat with Quillo"
-          className="fixed bottom-4 right-4 z-[60] grid h-14 w-14 place-items-center rounded-full bg-ink text-cream shadow-float transition hover:bg-green focus:outline-none focus-visible:ring-2 focus-visible:ring-ink/30"
+          className={`fixed ${launcherBottom} right-4 z-[60] grid h-14 w-14 place-items-center rounded-full bg-ink text-cream shadow-float transition hover:bg-green focus:outline-none focus-visible:ring-2 focus-visible:ring-ink/30`}
         >
           <ChatGlyph />
           {unread > 0 && (
@@ -126,7 +134,7 @@ function FloatingChatInner() {
         <div
           role="dialog"
           aria-label="Ask Quillo"
-          className="fixed inset-0 z-[60] flex flex-col border-line bg-card shadow-float md:inset-auto md:bottom-4 md:right-4 md:h-[560px] md:max-h-[calc(100vh-2rem)] md:w-[380px] md:rounded-2xl md:border"
+          className={`fixed inset-0 z-[60] flex flex-col border-line bg-card shadow-float md:inset-auto ${panelBottom} md:right-4 md:h-[560px] md:max-h-[calc(100vh-2rem)] md:w-[380px] md:rounded-2xl md:border`}
         >
           <Header onClose={closeChat} />
 

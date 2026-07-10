@@ -130,7 +130,20 @@ export function App() {
       <div className="grain" aria-hidden />
       <FirstRunGate />
       <Coachmarks pathname={pathname} />
-      <Toaster position="bottom-right" richColors closeButton toastOptions={{ duration: 6000 }} />
+      {/* Toasts sit bottom-right, which below lg is exactly where the tab bar is. That matters
+          beyond cosmetics: UndoToast's "Undo" lives in a toast, so a covered toast is an
+          unreachable undo. Both offsets are set because sonner swaps to mobileOffset under its
+          own 600px breakpoint — passing only one leaves 600–1023px (bar visible) on sonner's
+          ~2rem default, i.e. still behind the bar. --tabbar-clearance collapses to 2rem at lg,
+          so the same value is correct at every width. */}
+      <Toaster
+        position="bottom-right"
+        richColors
+        closeButton
+        toastOptions={{ duration: 6000 }}
+        offset={has("mobile_bottom_tabs") ? { bottom: "var(--tabbar-clearance)" } : undefined}
+        mobileOffset={has("mobile_bottom_tabs") ? { bottom: "var(--tabbar-clearance)" } : undefined}
+      />
       {/* Floating "Ask Quillo" bubble — self-gates on the `floating_chat` flag (renders nothing when
           off, so this is byte-identical until enabled). Portals to document.body and persists across
           route changes because App is the durable layout that never unmounts. */}
@@ -167,7 +180,7 @@ export function App() {
         {has("mobile_bottom_tabs") && <BottomTabBar needsReview={needsReview} onMore={() => setDrawer(true)} />}
 
         <div className="flex min-h-screen flex-col">
-          <main className={has("mobile_bottom_tabs") ? "flex-1 pb-16 lg:pb-0" : "flex-1"}>
+          <main className={has("mobile_bottom_tabs") ? "flex-1 pb-[calc(var(--tabbar-h)_+_var(--safe-b))] lg:pb-0" : "flex-1"}>
             <div className="mx-auto max-w-5xl px-5 py-8 sm:px-8">
               {/* Clarity spine + per-tab guide — hidden on the full-screen onboarding wizard. */}
               {pathname !== "/onboarding" && (
@@ -357,7 +370,10 @@ const BOTTOM_TABS: { to: string; label: string; icon: IconName; end?: boolean; b
 function BottomTabBar({ needsReview, onMore }: { needsReview: number; onMore: () => void }) {
   const cls = (isActive: boolean) => `relative flex flex-1 flex-col items-center gap-0.5 py-2 text-[11px] font-semibold ${isActive ? "text-forest" : "text-ink/55"}`;
   return (
-    <nav className="fixed inset-x-0 bottom-0 z-30 flex border-t border-line bg-paper/95 backdrop-blur lg:hidden" aria-label="Primary">
+    <nav
+      className="fixed inset-x-0 bottom-0 z-30 flex border-t border-line bg-paper/95 pb-[var(--safe-b)] backdrop-blur lg:hidden"
+      aria-label="Primary"
+    >
       {BOTTOM_TABS.map((t) => (
         <NavLink key={t.to} to={t.to} end={t.end} className={({ isActive }) => cls(isActive)}>
           <Icon name={t.icon} />

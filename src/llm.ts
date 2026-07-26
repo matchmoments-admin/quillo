@@ -31,18 +31,53 @@ export interface LLMContext {
 }
 
 const ANTHROPIC_HAIKU = "claude-haiku-4-5-20251001";
-// Bedrock uses an inference-profile id (region / geographic cross-region profile). For AU data
-// residency use the Australia/Asia-Pacific profile in ap-southeast-2. Confirm the EXACT id in the
-// Bedrock console at activation (an `au.` profile keeps the lifecycle inside Australia; `apac.`
-// spans the wider Asia-Pacific geography). Kept here so it's a one-line change at switch time.
-const BEDROCK_HAIKU = "apac.anthropic.claude-haiku-4-5-20251001-v1:0";
+// Bedrock uses an inference-profile id (region / geographic cross-region profile). This is the
+// `au.` profile, which keeps the whole request lifecycle inside Australia — as opposed to `apac.`,
+// which spans the wider Asia-Pacific geography and therefore does NOT satisfy an AU-residency
+// claim. CDR Privacy Safeguard 8 makes that distinction load-bearing (see assertAuResidency), so
+// this is deliberately the narrow profile even though it has fewer regions to fail over into.
+// Confirm the EXACT id in the Bedrock console at activation.
+const BEDROCK_HAIKU = "au.anthropic.claude-haiku-4-5-20251001-v1:0";
 
 // Every model id getLLM can emit. The check-units golden asserts each has a PRICING entry in
 // usage.ts, so swapping the model here without updating pricing fails CI rather than silently
 // under-counting spend and defeating the budget gate (#80).
 export const LLM_MODEL_IDS = [ANTHROPIC_HAIKU, BEDROCK_HAIKU] as const;
 
-type ProviderProfile = Pick<Profile, "inference_provider" | "inference_region">;
+// Exported so residency checks (and their goldens) can name the exact shape the provider is
+// resolved from, rather than casting.
+export type ProviderProfile = Pick<Profile, "inference_provider" | "inference_region">;
+
+/**
+ * The ONE place the inference provider is resolved: per-tenant override → env default → Anthropic.
+ * Exported so residency checks and getLLM can never drift apart on the precedence rules.
+ */
+export function resolveProvider(env: Env, profile: ProviderProfile | null): string {
+  return profile?.inference_provider ?? env.DEFAULT_INFERENCE_PROVIDER ?? "anthropic";
+}
+
+/**
+ * Hard AU data-residency assert — throws unless this tenant's inference stays in Australia.
+ *
+ * This is NOT the APP-8 cross-border consent gate, and consent is NOT a substitute for it. Data
+ * collected under the Consumer Data Right is governed by CDR Privacy Safeguard 8, which restricts
+ * disclosure to overseas recipients and carries penalty provisions — a consumer cannot consent
+ * their way past it, and the OSP-chain principal is liable for a breach. So any code path carrying
+ * CDR-derived data must call this BEFORE a model call, and must fail closed: no feature flag, no
+ * warn-and-continue, no silent fallback to the US provider.
+ *
+ * Bedrock in ap-southeast-2 on the `au.` inference profile is the only compliant path today.
+ */
+export function assertAuResidency(env: Env, profile: ProviderProfile | null, context: string): void {
+  const provider = resolveProvider(env, profile);
+  if (provider !== "bedrock") {
+    throw new Error(
+      `au_residency_required: ${context} carries CDR data, which must not leave Australia ` +
+        `(CDR Privacy Safeguard 8), but inference_provider resolved to '${provider}'. ` +
+        `Set the tenant's profiles.inference_provider to 'bedrock' — see CONFIG.md (AU residency).`,
+    );
+  }
+}
 
 // Wraps a client + model into a metered LLM. `create` records usage after each call.
 function meter(env: Env, ctx: LLMContext | undefined, client: Anthropic, modelId: string): LLM {
@@ -66,7 +101,7 @@ function meter(env: Env, ctx: LLMContext | undefined, client: Anthropic, modelId
 }
 
 export async function getLLM(env: Env, profile: ProviderProfile | null, ctx?: LLMContext): Promise<LLM> {
-  const provider = profile?.inference_provider ?? env.DEFAULT_INFERENCE_PROVIDER ?? "anthropic";
+  const provider = resolveProvider(env, profile);
 
   if (provider === "anthropic") {
     return meter(env, ctx, new Anthropic({ apiKey: env.ANTHROPIC_API_KEY }), ANTHROPIC_HAIKU);

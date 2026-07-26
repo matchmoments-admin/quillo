@@ -12,7 +12,8 @@ import type { LLM } from "../src/llm";
 import { isValidAbn, normaliseAbn } from "../web/src/lib/abn";
 import { billableCents, billableE4, freeCreditGrantE4 } from "../src/lib/billing";
 import { costCents, isPricedModel, toE4, centsFromE4 } from "../src/lib/usage";
-import { LLM_MODEL_IDS } from "../src/llm";
+import { LLM_MODEL_IDS, resolveProvider, assertAuResidency } from "../src/llm";
+import type { ProviderProfile } from "../src/llm";
 import { computeWorkMethodDeductions, workUseRatesForFy, deriveWfhHours, generateWfhDiary } from "../src/lib/work-use";
 import { runScan } from "../src/lib/scan";
 import { scheduleToXlsx, notClaimedSegment, atoReturnLabel, type AccountantSchedule } from "../src/lib/accountant-schedule";
@@ -1853,6 +1854,14 @@ console.log("costCents (AI spend pricing)");
   // inference past the cap). 1500 in + 200 out = (1500×1 + 200×5)/1e6×100 = 0.25c.
   const chunk = costCents(H, { input_tokens: 1500, output_tokens: 200 });
   check("sub-cent call keeps its value (0.25c, not floored to 0)", chunk === 0.25);
+
+  // The AU-residency profile must stay priced independently of the golden above, so that a future
+  // revert of the llm.ts constant can't land on the un-priced path in either direction.
+  check("the au. Bedrock profile is priced", isPricedModel("au.anthropic.claude-haiku-4-5-20251001-v1:0"));
+  check("the apac. Bedrock profile stays priced (revert safety)", isPricedModel("apac.anthropic.claude-haiku-4-5-20251001-v1:0"));
+  check("getLLM emits the au. profile, not apac. (CDR PS8 residency)",
+    LLM_MODEL_IDS.some((m) => m.startsWith("au.")) && !LLM_MODEL_IDS.some((m) => m.startsWith("apac.")));
+
   check("a tiny call is non-zero (300 in → 0.03c)", costCents(H, { input_tokens: 300 }) === 0.03);
   // Deterministic accumulation: summing N identical sub-cent calls is exact (no float drift blowup),
   // so the running KV total the gate reads stays trustworthy.
@@ -1861,6 +1870,43 @@ console.log("costCents (AI spend pricing)");
   check("1000 × 0.25c sums to exactly 250c (no drift)", total === 250);
   // Quantisation is bounded to 4 decimal places (1e-4 cents) — never a long float tail.
   check("cost is quantised to ≤4 decimal places", Number.isInteger(costCents(H, { input_tokens: 333, output_tokens: 77 }) * 10_000));
+}
+
+// ── AU data residency (CDR Privacy Safeguard 8) ──────────────────────────────
+// assertAuResidency is the hard gate for any path carrying CDR / open-banking data. Unlike the
+// APP-8 cross-border CONSENT gate, this one cannot be consented past — PS8 carries penalty
+// provisions and the OSP-chain principal is liable — so it must fail closed on every input that
+// isn't Bedrock. These goldens exist so a well-meaning "fall back to Anthropic when Bedrock is
+// unavailable" change fails CI instead of shipping.
+console.log("AU residency guard (CDR PS8)");
+{
+  const envAnthropic = { DEFAULT_INFERENCE_PROVIDER: "anthropic" } as unknown as Env;
+  const envBedrock = { DEFAULT_INFERENCE_PROVIDER: "bedrock" } as unknown as Env;
+  const envUnset = {} as unknown as Env;
+  const prof = (p: string | null): ProviderProfile => ({ inference_provider: p, inference_region: null });
+  const throws = (fn: () => void): boolean => {
+    try { fn(); return false; } catch { return true; }
+  };
+  const CTX = "bank_line categorisation";
+
+  // Provider precedence: per-tenant override wins, then the env default, then the literal fallback.
+  check("resolveProvider: tenant override beats the env default", resolveProvider(envAnthropic, prof("bedrock")) === "bedrock");
+  check("resolveProvider: env default applies with no tenant override", resolveProvider(envBedrock, prof(null)) === "bedrock");
+  check("resolveProvider: falls back to anthropic when nothing is set", resolveProvider(envUnset, null) === "anthropic");
+
+  // Fail-closed behaviour — the whole point of the guard.
+  check("residency THROWS on the US/Anthropic provider", throws(() => assertAuResidency(envAnthropic, null, CTX)));
+  check("residency THROWS when a tenant overrides back to anthropic", throws(() => assertAuResidency(envBedrock, prof("anthropic"), CTX)));
+  check("residency THROWS when no provider is configured at all", throws(() => assertAuResidency(envUnset, null, CTX)));
+  check("residency PASSES on Bedrock via the env default", !throws(() => assertAuResidency(envBedrock, null, CTX)));
+  check("residency PASSES on Bedrock via a tenant override", !throws(() => assertAuResidency(envAnthropic, prof("bedrock"), CTX)));
+
+  // The error must be diagnosable: a tag callers can match on, the offending provider, the context.
+  let msg = "";
+  try { assertAuResidency(envAnthropic, null, CTX); } catch (e) { msg = (e as Error).message; }
+  check("residency error is tagged au_residency_required", msg.startsWith("au_residency_required:"));
+  check("residency error names the resolved provider", msg.includes("'anthropic'"));
+  check("residency error names the calling context", msg.includes(CTX));
 }
 
 console.log("money integer scale (0051: cost_e4 / cents_e4)");

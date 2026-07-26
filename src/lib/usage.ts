@@ -25,6 +25,10 @@ interface Rate {
 const HAIKU: Rate = { in: 1.0, out: 5.0, cacheRead: 0.1, cacheWrite: 1.25 };
 const PRICING: Record<string, Rate> = {
   "claude-haiku-4-5-20251001": HAIKU,
+  // Bedrock inference-profile ids. `au.` is the live AU-residency profile (see llm.ts); `apac.` is
+  // kept priced so reverting that one-line constant can never land us on the un-priced path — an
+  // un-priced model silently costs at the Haiku floor and under-reads the budget gate (#80).
+  "au.anthropic.claude-haiku-4-5-20251001-v1:0": HAIKU,
   "apac.anthropic.claude-haiku-4-5-20251001-v1:0": HAIKU,
 };
 

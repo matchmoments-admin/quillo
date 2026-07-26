@@ -66,9 +66,11 @@ until a tenant is flipped to `bedrock` AND the AWS secrets below are set. Claude
 default; flipping a tenant without secrets fails loudly (it won't silently use the US provider).
 
 1. **AWS account** with **Amazon Bedrock** access in **`ap-southeast-2` (Sydney)**;
-   request access to **Claude Haiku 4.5** in the Bedrock console (Model access). Confirm the
-   exact inference-profile id — prefer an **`au.` geographic profile** (keeps the whole inference
-   lifecycle in Australia) over `apac.` (wider Asia-Pacific); set it as `BEDROCK_HAIKU` in `src/llm.ts`.
+   request access to **Claude Haiku 4.5** in the Bedrock console (Model access). `BEDROCK_HAIKU`
+   in `src/llm.ts` is already set to the **`au.` geographic profile** (keeps the whole inference
+   lifecycle in Australia) rather than `apac.` (wider Asia-Pacific) — **confirm the exact id in the
+   console before the first live call**, since a wrong profile id fails at InvokeModel time. If you
+   ever change it, add a matching `PRICING` entry in `src/lib/usage.ts` or `npm test` fails (#80).
 2. **IAM user** with `bedrock:InvokeModel` on that model; create an access key pair:
    ```bash
    npx wrangler secret put AWS_ACCESS_KEY_ID

@@ -5855,7 +5855,13 @@ export class TaxAgent extends Agent<Env> {
   private async auditXborderInference(userId: string, provider: string, feature: string, model: string): Promise<void> {
     if (provider === "anthropic") {
       await this.audit(userId, "xborder_inference", JSON.stringify({ feature, model }));
+      return;
     }
+    // The AU/Bedrock path used to be a silent no-op — no disclosure, nothing to record. That is no
+    // longer sufficient: CDR requires a positive record of every USE of CDR data, not just of
+    // cross-border disclosures, so an in-Australia inference must leave its own breadcrumb in the
+    // hash-chained log. Same shape, never any payload.
+    await this.audit(userId, "au_inference", JSON.stringify({ provider, feature, model }));
   }
 
   // ── ledger push (idempotent, egress-aware) ─────────────────────────────────

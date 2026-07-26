@@ -130,6 +130,12 @@ CLERK_FOUNDER_SUB = "user_3EX9q24hvBuYNz3Hk6Pg6O5FfBq"
 # This var is only the default for tenants with no explicit provider set.
 DEFAULT_INFERENCE_PROVIDER = "anthropic"
 DEFAULT_INFERENCE_REGION = "ap-southeast-2"
+# Basiq environment for CDR bank feeds (flag `bank_feed_cdr`): 'sandbox' | 'production'.
+# UNLIKE QBO above, this is NOT just a base-URL switch — 'production' means real consumers' real
+# bank data under a CDR consent, so the connector REFUSES it until (a) the AU-residency guard is
+# proven live on Bedrock ap-southeast-2 (CDR Privacy Safeguard 8) and (b) the CDR Representative
+# arrangement with Basiq is signed. Leave on sandbox; flipping it is a deliberate, gated decision.
+BASIQ_ENV = "sandbox"
 # QuickBooks base URL: start on sandbox; flip to production when ready.
 QBO_BASE_URL = "https://quickbooks.api.intuit.com"
 # prod: https://quickbooks.api.intuit.com
@@ -142,5 +148,8 @@ QBO_BASE_URL = "https://quickbooks.api.intuit.com"
 # QBO_CLIENT_SECRET        Intuit Developer app — Keys & Credentials
 # AWS_ACCESS_KEY_ID        (only when inference_provider=bedrock)
 # AWS_SECRET_ACCESS_KEY    (only when inference_provider=bedrock)
+# BASIQ_API_KEY            Basiq dashboard → application → Developers → API keys (per application)
+# STRIPE_SECRET_KEY        Stripe → Developers → API keys
+# STRIPE_WEBHOOK_SECRET    Stripe → Developers → Webhooks → signing secret
 # NOTE: QBO refresh/access tokens are NOT secrets — they rotate on every use and are
 #       persisted per-tenant in D1 (qbo_connections), seeded by the OAuth connect flow (Stage 5).

@@ -687,6 +687,7 @@ export interface CgtAssetRow {
   status: string;
   person_id?: string | null; // capital_holding_detail (C0): the owning taxpayer; omitted when the flag is off
   entity_id?: string | null; // capital_entity_scope (C-E): the separate taxpayer (company/trust/SMSF) holding this parcel; NULL = personal. Omitted when the flag is off
+  txn_id?: string | null; // capital_from_txn (C1): seeded from a confirmed 'capital' clarify answer on a brokerage deposit — units/cost base still need confirming. Omitted when the flag is off
 }
 export interface CgtEventRow {
   id: string;
@@ -1078,6 +1079,9 @@ export interface ClarifyAnswer {
   bucket?: string;
   ato_label?: string;
   property_id?: string;
+  /** capital_from_txn (C1), kind 'capital' only: the user explicitly confirmed the second step, "also start
+   *  a holding record for these deposits". Absent ⇒ park-and-label only, exactly as before. */
+  record_holding?: boolean;
 }
 
 // Phase 3 — claim auto-matcher

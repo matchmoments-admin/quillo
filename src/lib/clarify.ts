@@ -67,6 +67,59 @@ export function rulePatternForStem(groupKeyStem: string): string {
   return groupKeyStem.split(" ").reduce((a, b) => (b.length > a.length ? b : a), "");
 }
 
+// ── C1: seed a HOLDING DRAFT from a confirmed capital answer (capital_from_txn) ────────────────
+// A bank line fundamentally cannot tell you units, price or brokerage — it only knows a date, an amount
+// and a merchant. So this NEVER produces a complete holding: it seeds the three fields the line does
+// evidence and leaves `units` null, which readiness then chases. The cost base is the amount DEPOSITED,
+// which is not necessarily the amount PURCHASED (a deposit can fund several buys or sit as cash), so the
+// user must be able to correct it — the caller only writes this after an explicit confirm, and readiness
+// carries a review finding until the figure is confirmed. Pure + golden-tested; no I/O, no guessing.
+
+/** Brokers/registries we can name from a description, longest-first so "vanguard personal" wins over "vanguard". */
+const BROKER_CODES: ReadonlyArray<readonly [RegExp, string]> = [
+  [/\bvanguard\s?personal\b/i, "VANGUARD"],
+  [/\bstake(?:shop)?\b/i, "STAKE"],
+  [/\bcommsec\b/i, "COMMSEC"],
+  [/\bselfwealth\b/i, "SELFWEALTH"],
+  [/\bsuperhero\b/i, "SUPERHERO"],
+  [/\bspaceship\b/i, "SPACESHIP"],
+  [/\bpearler\b/i, "PEARLER"],
+  [/\bsharesight\b/i, "SHARESIGHT"],
+  [/\bvanguard\b/i, "VANGUARD"],
+  [/\braiz\b/i, "RAIZ"],
+];
+
+export interface HoldingDraft {
+  /** Suggested display code — the BROKER, never a ticker. A deposit doesn't say what was bought. */
+  code: string | null;
+  /** The deposit date. The 12-month discount clock actually starts at PURCHASE, so this is a starting point. */
+  acquired_date: string | null;
+  /** The amount deposited, in base-currency cents. NOT necessarily the amount invested — the user confirms. */
+  cost_base_cents: number;
+  /** Always null: a bank line cannot evidence a quantity. Readiness chases it. */
+  units: null;
+}
+
+/**
+ * Seed a holding draft from one capital-tagged bank line. Returns null when the line carries no usable
+ * amount (nothing to seed, so nothing is offered). Base-currency cents only — `amount_aud_cents` is
+ * preferred over the raw `amount_cents` so a foreign deposit is never recorded as base-currency units,
+ * matching how every other reader treats these two columns.
+ */
+export function draftHoldingFromTxn(r: {
+  raw_description?: string | null;
+  merchant?: string | null;
+  amount_cents?: number | null;
+  amount_aud_cents?: number | null;
+  txn_date?: string | null;
+}): HoldingDraft | null {
+  const cents = r.amount_aud_cents ?? r.amount_cents ?? null;
+  if (cents == null || !Number.isFinite(cents) || cents <= 0) return null;
+  const desc = `${r.merchant ?? ""} ${r.raw_description ?? ""}`;
+  const code = BROKER_CODES.find(([re]) => re.test(desc))?.[1] ?? null;
+  return { code, acquired_date: r.txn_date ?? null, cost_base_cents: Math.round(cents), units: null };
+}
+
 export type ClarifyAnswerKind =
   | "income_property" // → recordIncome(income_property, property_id) + exclude the bank credit
   | "income_business" // → recordIncome(income_business)

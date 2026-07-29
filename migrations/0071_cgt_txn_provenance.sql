@@ -1,0 +1,23 @@
+-- 0071_cgt_txn_provenance.sql — capital tranche C1: close the purchase→holding loop.
+-- THE BUG: answering the clarify question "Investment / shares (capital — not deductible)" parks the bank
+-- line (status='ignored') and stamps ato_label='capital:investment' — and creates NOTHING else. That label
+-- has ZERO readers; it was a breadcrumb laid for "a future CGT cost-base feature" (the comment in
+-- src/agent.ts says so) and never picked up. So a user taps ~40 Stake deposits, then hand-types all 40
+-- again as holdings on the Capital & Equity page. That is the whole capital feature failing.
+--
+-- This provenance column is the dedup key, mirroring 0054 (property_id) and 0055 (income_id) exactly:
+-- one cgt_asset per source transaction, rebuilt idempotently, so re-answering or re-scanning can never
+-- duplicate a parcel. A txn-sourced asset (txn_id set) never collides with a property-sourced,
+-- income-sourced, or manually-entered (all NULL) one.
+--
+-- NOTE the deliberate difference from 0054/0055 in the API: those are EXCLUDED from the capital register
+-- because a property/income row is their editor. A transaction is NOT a holding editor — the user must be
+-- able to finish the units and confirm the cost base somewhere — so a txn-sourced holding IS listed in the
+-- register. See src/api.ts.
+--
+-- Apply: npx wrangler d1 execute tax-agent-db --remote --file=migrations/0071_cgt_txn_provenance.sql
+-- Idempotency: additive + apply-once. Nullable, NO backfill (we never infer a cost base from a bank line —
+-- see the anti-goals: a deposit is not a purchase). Position-neutral by construction: a cgt_asset with no
+-- cgt_event contributes nothing to cgtTotals, so the report and the accountant CSV cannot move.
+ALTER TABLE cgt_assets ADD COLUMN txn_id TEXT;
+CREATE INDEX IF NOT EXISTS idx_cgt_assets_txn ON cgt_assets(user_id, txn_id);

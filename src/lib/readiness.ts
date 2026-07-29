@@ -72,6 +72,12 @@ export interface FilingReadinessSignals {
   psiAllAssessed?: boolean; // S2: every business activity has a recorded psi_status → stop prompting them to assess
   mainResidenceDisposalN?: number; // F: disposed properties flagged as a main residence this FY → defer nudge (we never auto-apply the exemption)
   mfCostBaseAdjustmentCents?: number; // B: net AMIT cost-base amount across managed-fund distributions → defer nudge (not assessable; adjusts the units' cost base for a future CGT calc)
+  // C1 (capital_from_txn) — populated ONLY when the flag is on, so OFF ⇒ findings byte-identical. All three
+  // are COUNTS of incomplete holdings, never $ outcomes: a holding with no units or a placeholder cost base
+  // can't be checked against a part-disposal and would distort a future gain, so it is chased, not computed.
+  capitalHoldingsNeedingUnitsN?: number; // seeded from a brokerage deposit and still missing a quantity
+  capitalHoldingsMissingAcquiredN?: number; // no acquisition date ⇒ the 12-month discount clock isn't evidenced
+  capitalHoldingsMissingCostBaseN?: number; // zero/absent cost base ⇒ a disposal would report the whole proceeds as gain
   // integrity_nudges (audit wave 1) — the caller populates these ONLY when the flag is on, so OFF ⇒
   // findings byte-identical. All four are pack REFERENCE values / booleans that drive defer nudges;
   // holding periods, offset limits and cap breaches are NEVER computed as $ outcomes.
@@ -650,6 +656,37 @@ export function assessReadiness(input: {
   if (signals.capitalLossCarryinCents > 0) {
     findings.push(f("capital_loss_carryin", "judgement", "info", `Prior-year capital loss carried forward (${money(signals.capitalLossCarryinCents)})`,
       `You've recorded a carried-forward capital loss. It is NOT applied to the position shown here — a capital loss can only offset a capital gain (never your salary, rental or other income), and is applied on the CGT schedule. Hand this figure to your registered tax agent to apply against any capital gains.${DEFER}`, true, []));
+  }
+
+  // C1 (capital_from_txn): incomplete holdings. A bank deposit into a brokerage app evidences a date, an
+  // amount and a broker — it CANNOT tell us how many units were bought, at what price, or how much of the
+  // deposit was actually invested rather than left as cash. So a seeded holding is deliberately incomplete
+  // and gets chased here rather than silently completed with a guessed figure. None of these compute a $
+  // outcome; they are counts of records that need the taxpayer to finish them.
+  if ((signals.capitalHoldingsNeedingUnitsN ?? 0) > 0) {
+    const n = signals.capitalHoldingsNeedingUnitsN!;
+    findings.push(f("capital_holding_needs_units", "evidence", "review",
+      `${n} investment holding${n === 1 ? "" : "s"} started from a bank deposit — confirm units and cost base`,
+      `We started ${n === 1 ? "a holding record" : "holding records"} from your brokerage deposit${n === 1 ? "" : "s"} so you don't have to type ${n === 1 ? "it" : "them"} again. A bank line can't tell us how many shares or units you bought, or at what price — and a deposit isn't always fully invested (some may have stayed as cash). Open Capital & equity and confirm the units and the cost base against your broker's contract note or annual statement. Cost base and parcel choice change the capital gain on sale.${DEFER}`,
+      true, []));
+  }
+  if ((signals.capitalHoldingsMissingAcquiredN ?? 0) > 0) {
+    const n = signals.capitalHoldingsMissingAcquiredN!;
+    findings.push(f("capital_holding_missing_acquired", "evidence", "review",
+      `${n} investment holding${n === 1 ? "" : "s"} without an acquisition date`,
+      `An acquisition date is what evidences whether an asset was held more than 12 months — generally the condition for the 50% CGT discount for a resident individual. Without it we can't show that, and your agent can't apply it. Add the purchase date from your contract note.${DEFER}`,
+      true, []));
+  }
+  if ((signals.capitalHoldingsMissingCostBaseN ?? 0) > 0) {
+    const n = signals.capitalHoldingsMissingCostBaseN!;
+    // REVIEW, not blocker: an un-disposed holding with no cost base distorts nothing THIS year — a
+    // cgt_asset only reaches the position via a cgt_event. Blockers are reserved for a materially
+    // distorted position, so the blocker case (a zero cost base with a DISPOSAL recorded against it, which
+    // would report the whole proceeds as gain) belongs with the slice that examines disposals.
+    findings.push(f("capital_holding_missing_cost_base", "evidence", "review",
+      `${n} investment holding${n === 1 ? "" : "s"} with no cost base recorded`,
+      `A holding with no cost base would report the ENTIRE sale proceeds as a capital gain if you sold it — materially overstating the position. It doesn't affect this year's figures while you still hold it, but add what you paid (including brokerage and other incidental costs) before any sale. Cost-base elements are fact-specific.${DEFER}`,
+      true, []));
   }
 
   // (Super Notice-of-intent is surfaced via the year-end checklist (generateChecklist), not here, to

@@ -272,6 +272,93 @@ export async function syncIncomeCgtFromComponents(
   }
 }
 
+/**
+ * C1 (capital_from_txn, 0071): materialise a HOLDING from a confirmed 'capital' clarify answer on a
+ * brokerage deposit, so tapping "Investment / shares" actually starts a cost-base record instead of only
+ * parking the line behind a label nothing reads.
+ *
+ * Idempotent atomic REBUILD keyed on cgt_assets.txn_id — the identical shape as syncPropertyDisposalToCgt
+ * (0054) and syncIncomeCgtFromComponents (0055) — so re-answering the question, a re-scan, or a correction
+ * can never duplicate a parcel.
+ *
+ * POSITION-NEUTRAL BY CONSTRUCTION: this writes a cgt_asset and NO cgt_event. cgtTotals and the accountant
+ * schedule's CGT section both read cgt_events, so the indicative position and the CSV cannot move — a
+ * holding only reaches the money when the user later records a disposal. Units are deliberately left NULL
+ * (a bank line cannot evidence a quantity) and readiness chases them.
+ */
+export async function syncTxnCgtHolding(
+  env: Env,
+  userId: string,
+  txnId: string,
+  draft: { code: string | null; acquired_date: string | null; cost_base_cents: number; units?: number | null },
+  personId: string | null,
+): Promise<void> {
+  try {
+    const delEvents = env.DB.prepare(
+      `DELETE FROM cgt_events WHERE user_id = ? AND cgt_asset_id IN (SELECT id FROM cgt_assets WHERE user_id = ? AND txn_id = ?)`,
+    ).bind(userId, userId, txnId);
+    const delAssets = env.DB.prepare(`DELETE FROM cgt_assets WHERE user_id = ? AND txn_id = ?`).bind(userId, txnId);
+    const insAsset = env.DB.prepare(
+      `INSERT INTO cgt_assets (id, user_id, person_id, asset_kind, code, label, units, acquired_date, cost_base_cents, main_residence_exempt, status, txn_id)
+       VALUES (?, ?, ?, 'shares', ?, ?, ?, ?, ?, 0, 'held', ?)`,
+    ).bind(
+      uid(), userId, personId ?? selfPersonId(userId), draft.code,
+      // The label states the provenance in plain English so the evidence pack never implies we knew more
+      // than the bank line said.
+      `${draft.code ?? "Investment"} deposit — confirm units and cost base`,
+      draft.units ?? null, draft.acquired_date, draft.cost_base_cents, txnId,
+    );
+    await env.DB.batch([delEvents, delAssets, insAsset]);
+  } catch (e) {
+    // Pre-0071 (no txn_id column) → skip; the clarify answer still parks + labels the line exactly as
+    // before, and the holding materialises once the migration lands. Degrade, never 500 the answer.
+    if (/no such table|no such column/i.test((e as Error).message)) return;
+    throw e;
+  }
+}
+
+/**
+ * C1: remove a transaction-sourced holding (and any events under it). Called when the source transaction
+ * is deleted — WITHOUT this, deleting the bank line would orphan a parcel that claims to be evidenced by
+ * a transaction that no longer exists. Mirrors clearIncomeCgt. Atomic; safe pre-0071.
+ */
+export async function clearTxnCgt(env: Env, userId: string, txnId: string): Promise<void> {
+  try {
+    const delEvents = env.DB.prepare(
+      `DELETE FROM cgt_events WHERE user_id = ? AND cgt_asset_id IN (SELECT id FROM cgt_assets WHERE user_id = ? AND txn_id = ?)`,
+    ).bind(userId, userId, txnId);
+    const delAssets = env.DB.prepare(`DELETE FROM cgt_assets WHERE user_id = ? AND txn_id = ?`).bind(userId, txnId);
+    await env.DB.batch([delEvents, delAssets]);
+  } catch (e) {
+    if (/no such table|no such column/i.test((e as Error).message)) return;
+    throw e;
+  }
+}
+
+/**
+ * C1: drop every txn-sourced holding whose source transaction no longer exists.
+ *
+ * clearTxnCgt above handles the single-row delete, but transactions are ALSO removed in bulk — a statement
+ * delete, the import-recovery re-import, a document delete — where enumerating the ids is awkward and easy
+ * to get wrong as new bulk paths appear. This is the set-based backstop: idempotent, safe to call after any
+ * bulk delete, and a no-op when there's nothing orphaned. Note the re-import case genuinely loses these
+ * holdings (the re-imported lines get NEW ids, and we can't honestly map old→new), which is why the parcels
+ * are dropped rather than silently re-pointed.
+ */
+export async function clearOrphanedTxnCgt(env: Env, userId: string): Promise<void> {
+  try {
+    const orphans = `SELECT id FROM cgt_assets WHERE user_id = ? AND txn_id IS NOT NULL
+                       AND txn_id NOT IN (SELECT id FROM transactions WHERE user_id = ?)`;
+    await env.DB.batch([
+      env.DB.prepare(`DELETE FROM cgt_events WHERE user_id = ? AND cgt_asset_id IN (${orphans})`).bind(userId, userId, userId),
+      env.DB.prepare(`DELETE FROM cgt_assets WHERE id IN (${orphans}) AND user_id = ?`).bind(userId, userId, userId),
+    ]);
+  } catch (e) {
+    if (/no such table|no such column/i.test((e as Error).message)) return;
+    throw e;
+  }
+}
+
 /** Slice B: remove a managed-fund income row's materialised CGT rows (called when the income row is deleted,
  *  so its capital gain doesn't orphan into the position). Atomic; safe pre-0055. */
 export async function clearIncomeCgt(env: Env, userId: string, incomeId: string): Promise<void> {

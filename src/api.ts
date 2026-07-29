@@ -1005,9 +1005,17 @@ export async function handleApi(
       // the JSON byte-identical. `units` and `status` were always selected — the form just never set them.
       // capital_entity_scope (C-E, 0070): entity_id is ATTRIBUTION, not provenance, so it does NOT join the
       // register's provenance filter above — an entity-held parcel is still user-entered and manageable here.
+      //
+      // capital_from_txn (C1, 0071): txn_id is provenance, but a txn-sourced holding is DELIBERATELY still
+      // listed here — unlike property_id/income_id. Those two have a source FORM that owns them (the
+      // property editor, the income row), so managing them from the register would desync them. A
+      // transaction is not a holding editor: the deposit only seeds a date, an amount and a broker name, and
+      // the user has to finish the units and confirm the cost base SOMEWHERE. The register is that place.
+      // Deleting one here is safe — a re-answer rebuilds it idempotently on the same txn_id.
       const holdingDetail = featureOn(env, "capital_holding_detail");
       const entityScope = featureOn(env, "capital_entity_scope");
-      const assets = (await env.DB.prepare(`SELECT id, asset_kind, code, label, units, acquired_date, cost_base_cents, status${holdingDetail ? ", person_id" : ""}${entityScope ? ", entity_id" : ""} FROM cgt_assets WHERE user_id = ? AND property_id IS NULL AND income_id IS NULL ORDER BY acquired_date DESC, created_at DESC`).bind(uid).all()).results ?? [];
+      const fromTxn = featureOn(env, "capital_from_txn");
+      const assets = (await env.DB.prepare(`SELECT id, asset_kind, code, label, units, acquired_date, cost_base_cents, status${holdingDetail ? ", person_id" : ""}${entityScope ? ", entity_id" : ""}${fromTxn ? ", txn_id" : ""} FROM cgt_assets WHERE user_id = ? AND property_id IS NULL AND income_id IS NULL ORDER BY acquired_date DESC, created_at DESC`).bind(uid).all()).results ?? [];
       return json({ cgt_assets: assets });
     }
     if (m === "POST" && !id) {

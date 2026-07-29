@@ -760,6 +760,7 @@ CREATE TABLE IF NOT EXISTS cgt_assets (
   income_id              TEXT,                       -- 0055 (Slice B): provenance for a managed-fund-distribution-sourced asset (AMMA capital gains); NULL otherwise
   entity_id              TEXT,                       -- 0070 (C-E): the SEPARATE TAXPAYER holding this parcel (company/trust/SMSF). NULL = personal — the same invariant as trading_stock. cgtTotals excludes non-NULL from the individual headline when capital_entity_scope is on.
   txn_id                 TEXT,                       -- 0071 (C1): provenance for a holding seeded from a confirmed 'capital' clarify answer on a brokerage deposit (dedup key — one asset per source txn, rebuilt idempotently); NULL otherwise
+  detail_json            TEXT,                       -- 0073 (C2): the cost-base ELEMENT breakdown under a `cost_base_elements` key (purchase / brokerage / incidental / other). cost_base_cents stays the one canonical figure every engine reads; this is presentation + evidence. Mirrors income.detail_json's AMMA components blob.
   created_at             TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_cgt_assets_user ON cgt_assets(user_id, asset_kind);

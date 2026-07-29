@@ -1020,7 +1020,10 @@ export async function handleApi(
       const holdingDetail = featureOn(env, "capital_holding_detail");
       const entityScope = featureOn(env, "capital_entity_scope");
       const fromTxn = featureOn(env, "capital_from_txn");
-      const assets = (await env.DB.prepare(`SELECT id, asset_kind, code, label, units, acquired_date, cost_base_cents, status${holdingDetail ? ", person_id" : ""}${entityScope ? ", entity_id" : ""}${fromTxn ? ", txn_id" : ""} FROM cgt_assets WHERE user_id = ? AND property_id IS NULL AND income_id IS NULL ORDER BY acquired_date DESC, created_at DESC`).bind(uid).all()).results ?? [];
+      // capital_cost_base_detail (C2, 0073): the element breakdown rides on detail_json. cost_base_cents
+      // stays the canonical figure — this is what the form re-opens for editing and what the UI itemises.
+      const costBaseDetail = featureOn(env, "capital_cost_base_detail");
+      const assets = (await env.DB.prepare(`SELECT id, asset_kind, code, label, units, acquired_date, cost_base_cents, status${holdingDetail ? ", person_id" : ""}${entityScope ? ", entity_id" : ""}${fromTxn ? ", txn_id" : ""}${costBaseDetail ? ", detail_json" : ""} FROM cgt_assets WHERE user_id = ? AND property_id IS NULL AND income_id IS NULL ORDER BY acquired_date DESC, created_at DESC`).bind(uid).all()).results ?? [];
       return json({ cgt_assets: assets });
     }
     if (m === "POST" && !id) {
@@ -1029,6 +1032,7 @@ export async function handleApi(
       // (mirrors the cgt-events `method` guard below). recordCgtAsset assertOwns person+entity either way.
       if (!featureOn(env, "capital_holding_detail")) { delete body.units; delete body.label; delete body.person_id; }
       if (!featureOn(env, "capital_entity_scope")) delete body.entity_id;
+      if (!featureOn(env, "capital_cost_base_detail")) delete body.cost_base_elements;
       return json({ id: await stub.recordCgtAsset(uid, body as Parameters<typeof stub.recordCgtAsset>[1]) });
     }
     if (m === "DELETE" && id) { await deleteRow(env, uid, "cgt_assets", id); return json({ ok: true }); }

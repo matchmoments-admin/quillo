@@ -18,6 +18,7 @@ import { deductibleInterestCents } from "./loan-interest";
 import { classifyAttribution, splitAttribution } from "./attribution";
 import { exclusionReason } from "./readiness";
 import { featureOn } from "./features";
+import { parseCostBaseElements, costBaseBreakdownRows } from "./capital";
 import { generateWfhDiary, WFH_WEEKDAY_NAMES } from "./work-use";
 import { buildXlsx, type XlsxCell, type XlsxSheet } from "./xlsx";
 
@@ -369,6 +370,9 @@ export async function buildAccountantSchedule(
   // cgt_parcel_method: the Method column (parcel-selection basis) joins the CGT section only when the
   // flag is on — the schedule is live in prod, so an unconditional column would change CSV bytes.
   const parcelMethodOn = featureOn(env, "cgt_parcel_method");
+  // capital_cost_base_detail (C2): itemise the cost-base ELEMENTS under each disposal. Presentation only —
+  // the section subtotal stays on the canonical figure, so the tie-back is unaffected by itemising.
+  const costBaseDetailOn = featureOn(env, "capital_cost_base_detail");
   const cgtEventsP = report.capital_gains
     ? safeAll<{
         event_date: string | null;
@@ -380,6 +384,7 @@ export async function buildAccountantSchedule(
         proceeds_cents: number;
         cost_base_used_cents: number;
         method?: string | null;
+        detail_json?: string | null;
       }>(
         env.DB.prepare(
           // capital_entity_scope (C-E): the SAME predicate cgtTotals applies, from the SAME shared
@@ -387,7 +392,7 @@ export async function buildAccountantSchedule(
           // report.gross_capital_gains_cents — so if the report excluded a separate taxpayer's event and
           // this query still listed it, the section would over-state and the tie-back would fail.
           `SELECT ev.event_date, a.code, a.label, a.asset_kind, ev.units_disposed, a.acquired_date,
-                  ev.proceeds_cents, ev.cost_base_used_cents${parcelMethodOn ? ", ev.method" : ""}
+                  ev.proceeds_cents, ev.cost_base_used_cents${parcelMethodOn ? ", ev.method" : ""}${costBaseDetailOn ? ", a.detail_json" : ""}
              FROM cgt_events ev JOIN cgt_assets a ON a.id = ev.cgt_asset_id AND a.user_id = ev.user_id
             WHERE ev.user_id = ? AND ev.fy = ? AND ${cgtPersonalScopeExpr(env)} ORDER BY ev.event_date`,
         )
@@ -791,11 +796,25 @@ export async function buildAccountantSchedule(
     const cg = report.capital_gains;
     const notes: string[] = [];
     const pad: Cell[] = parcelMethodOn ? [null] : [];
-    const rows: Cell[][] = capped(cgtEvents, notes).map((e) => [
-      e.event_date, e.code ?? e.label ?? "—", e.asset_kind, e.units_disposed, e.acquired_date,
-      d(e.proceeds_cents), d(e.cost_base_used_cents), d(e.proceeds_cents - e.cost_base_used_cents),
-      ...(parcelMethodOn ? [e.method === "fifo" ? "FIFO" : "specific identification"] : []),
-    ]);
+    const rows: Cell[][] = capped(cgtEvents, notes).flatMap((e) => {
+      const row: Cell[] = [
+        e.event_date, e.code ?? e.label ?? "—", e.asset_kind, e.units_disposed, e.acquired_date,
+        d(e.proceeds_cents), d(e.cost_base_used_cents), d(e.proceeds_cents - e.cost_base_used_cents),
+        ...(parcelMethodOn ? [e.method === "fifo" ? "FIFO" : "specific identification"] : []),
+      ];
+      // C2: the elements the holding's cost base is MADE OF — so an auditor can see the brokerage that
+      // migration 0037 promised and never captured, instead of one opaque number. Indented sub-rows with no
+      // gain column, so they add nothing to the subtotal and the tie-back keeps reconciling.
+      if (!costBaseDetailOn) return [row];
+      const elements = parseCostBaseElements(e.detail_json ?? null);
+      if (!elements) return [row];
+      const subRows: Cell[][] = costBaseBreakdownRows(elements).map((b) => [
+        "", `    ${b.label}`, null, null, null, null, d(b.cents), null,
+        ...(parcelMethodOn ? [null] : []),
+      ]);
+      if (elements.note) subRows.push(["", `    Evidence: ${elements.note}`, null, null, null, null, null, null, ...(parcelMethodOn ? [null] : [])]);
+      return [row, ...subRows];
+    });
     rows.push(["", "Gross capital gains", null, null, null, null, null, d(cg.gross_capital_gains_cents), ...pad]);
     rows.push(["", "Capital losses applied", null, null, null, null, null, d(cg.capital_losses_cents), ...pad]);
     rows.push(["", "50% discount applied", null, null, null, null, null, d(cg.discount_applied_cents), ...pad]);

@@ -21,6 +21,7 @@ import { fetchAskDigestRows, listAccounts, listIncome } from "../src/lib/queries
 import { deleteRow, archiveRow, DeleteBlockedError, type DeleteBlocker, syncPropertyDisposalToCgt, syncIncomeCgtFromComponents, syncTxnCgtHolding, clearTxnCgt, clearOrphanedTxnCgt } from "../src/lib/situation-write";
 import { ordinaryAssessableCents, type AmmaComponents } from "../src/lib/managed-fund";
 import { draftHoldingFromTxn } from "../src/lib/clarify";
+import { costBaseFromElements, withCostBaseElements } from "../src/lib/capital";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
@@ -937,6 +938,52 @@ async function main() {
       blocked !== null && blocked.some((b) => b.table === "income" && b.count === 1));
     check("PCL: …and the holding survives the blocked delete",
       (db.prepare(`SELECT COUNT(*) AS n FROM cgt_assets WHERE id = 'pclonH'`).get() as { n: number }).n === 1);
+  }
+
+  // ── Capital C2: brokerage + the cost-base breakdown (capital_cost_base_detail, 0073) ──
+  // Migration 0037 documented cost_base_cents as "purchase + incidental costs (brokerage, stamp duty)" and
+  // nothing ever captured them, so a share purchase's cost base was understated by exactly the brokerage
+  // paid. THE constraint this golden guards: itemising the elements must NOT break the accountant
+  // schedule's tie-back, which asserts the section's per-disposal gains sum to the report's gross gains.
+  {
+    const envC2 = { DB: (env as unknown as { DB: unknown }).DB, FEATURES: `${(env as unknown as { FEATURES: string }).FEATURES},capital_cost_base_detail` } as unknown as Env;
+    const u = "pc2";
+    seedTenant(u, "PC2 brokerage in the cost base");
+    // $5,000 purchase + $9.50 buy brokerage = $5,009.50 cost base. Sold for $6,000 inside 12 months
+    // (no discount), so the gain is exactly proceeds − cost base and the brokerage effect is legible.
+    const elements = { purchase_cents: 500000, brokerage_cents: 950, incidental_cents: 0, other_cents: 0, note: "CommSec contract note 1234" };
+    run(`INSERT INTO cgt_assets (id, user_id, person_id, asset_kind, code, units, acquired_date, cost_base_cents, detail_json) VALUES ('pc2A', ?, ?, 'shares', 'CBA', 100, '2025-08-01', ?, ?)`,
+      u, `person_self_${u}`, costBaseFromElements(elements), withCostBaseElements(null, elements));
+    run(`INSERT INTO cgt_events (id, user_id, cgt_asset_id, fy, event_date, proceeds_cents, cost_base_used_cents, units_disposed, discount_eligible) VALUES ('pc2E', ?, 'pc2A', '2025-26', '2026-02-01', 600000, ?, 100, 0)`,
+      u, costBaseFromElements(elements));
+
+    const r = await buildReport(envC2, u, 2025);
+    check("PC2: the gain is net of BROKERAGE ($6,000 − $5,009.50 = $990.50, not $1,000)",
+      r.capital_gains?.gross_capital_gains_cents === 99050 && r.capital_gains?.net_capital_gain_cents === 99050);
+
+    // THE tie-back: the elements are rendered as indented sub-rows with no gain column, so they add nothing
+    // to the subtotal. If they leaked into it, this assertion is what fails.
+    const sched = await buildAccountantSchedule(envC2, u, 2025, { report: r });
+    const sec = sched.sections.find((s) => s.key === "cgt");
+    check("PC2: itemising the cost-base elements does NOT break the schedule tie-back", sec?.tie_back?.ok === true);
+    check("PC2: the subtotal stays the canonical net capital gain", sec?.subtotal_cents === 99050);
+    check("PC2: brokerage is ITEMISED for the auditor (0037's unkept promise, now visible)",
+      sec?.rows.some((row) => String(row[1] ?? "").includes("Brokerage (acquisition)") && row[6] === "9.50") === true);
+    check("PC2: the purchase price is itemised beside it", sec?.rows.some((row) => String(row[1] ?? "").includes("Purchase price") && row[6] === "5000.00") === true);
+    check("PC2: the evidence note reaches the schedule", sec?.rows.some((row) => String(row[1] ?? "").includes("CommSec contract note 1234")) === true);
+    check("PC2: zero elements produce no noise rows (no 'Other capital costs' line)",
+      sec?.rows.some((row) => String(row[1] ?? "").includes("Other capital costs")) === false);
+    // tieBackChecks is the repo-wide invariant guard — every section must reconcile, not just the CGT one.
+    check("PC2: every section of the schedule still ties back", tieBackChecks(sched).every((t) => t.ok));
+
+    // Flag OFF ⇒ the breakdown is never read: same money, no sub-rows, CSV byte-identical to today.
+    const rOff = await buildReport(env, u, 2025);
+    const schedOff = await buildAccountantSchedule(env, u, 2025, { report: rOff });
+    const secOff = schedOff.sections.find((s) => s.key === "cgt");
+    check("PC2: flag OFF ⇒ identical money (cost_base_cents is the canonical figure either way)",
+      rOff.capital_gains?.net_capital_gain_cents === 99050 && rOff.taxable_position_cents === r.taxable_position_cents);
+    check("PC2: flag OFF ⇒ no element sub-rows at all (CSV byte-identical)",
+      secOff?.rows.some((row) => String(row[1] ?? "").includes("Brokerage")) === false && secOff?.rows.length === 5 && secOff?.tie_back?.ok === true);
   }
 
   // ── Persona 16: partnership partner — distribution share (Slice E) ──

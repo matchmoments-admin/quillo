@@ -126,10 +126,20 @@ part-disposal guard *uncomputable* rather than merely unbuilt.
   visible from both ends. **Pure metadata** — the golden pins that the position, the income totals and the
   accountant CSV are identical linked vs unlinked. Deleting a holding with linked income is blocked rather
   than silently unlinked. Golden: personas `pclon`/`pcloff`.
-- Still open (re-planned once real holdings exist in prod): brokerage in the cost base, a derived holdings
-  position with a part-disposal review finding (which is also where a zero cost base *with a disposal*
-  becomes a blocker rather than a review), DRP parcels, the AMIT cost-base adjustment, and broker/registry
-  statement ingest.
+- **C2 (flag `capital_cost_base_detail`, ON, migration 0073)** finally keeps migration 0037's promise.
+  That migration documented `cost_base_cents` as "purchase + incidental costs (brokerage, stamp duty)" and
+  nothing ever captured the incidental costs — no field, no extraction, no breakdown — so a share purchase's
+  cost base was understated by exactly the brokerage paid (real money: ~$3–$10 per trade, both sides).
+  The holding form now captures purchase / brokerage / other costs / evidence; `cost_base_cents` is
+  **computed server-side** from the elements so the one figure every engine reads can never disagree with
+  the itemisation; the breakdown lives in `cgt_assets.detail_json` under `cost_base_elements` (mirroring
+  `income.detail_json`'s AMMA components blob); and the accountant schedule itemises the elements as
+  indented sub-rows **with the subtotal unchanged**, so the tie-back keeps reconciling. Selling costs are
+  deliberately excluded — they reduce capital proceeds, not the cost base, and counting them both ways would
+  understate the gain. Golden: persona `pc2`.
+- Still open (re-planned once real holdings exist in prod): a derived holdings position with a part-disposal
+  review finding (which is also where a zero cost base *with a disposal* becomes a blocker rather than a
+  review), DRP parcels, the AMIT cost-base adjustment, and broker/registry statement ingest.
 
 ## How it's wired (for maintainers)
 

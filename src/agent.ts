@@ -25,6 +25,7 @@ import { getProgress } from "./lib/progress";
 import { buildGuidePrompt, buildAskSystem, summariseReportForAsk, renderTxnDigest } from "./lib/guide";
 import { fyLabel, fyBounds, fyStartYearStr, parseFyStartYear, normaliseFyLabel } from "./lib/ledger-totals";
 import { cgtUnits } from "./lib/cgt";
+import { costBaseFromElements, validateCostBaseElements, withCostBaseElements, type CostBaseElements } from "./lib/capital";
 import { resolveJurisdictionForUser, currentFyStartYearFor, baseCurrencyOf, AU_DESCRIPTOR, type JurisdictionDescriptor } from "./lib/jurisdiction";
 import { assessReadiness, type FilingReadiness, type FilingReadinessSignals } from "./lib/readiness";
 import { rollSchedule, balancingAdjustment, fyStartYearOf, isLowCostAsset, looksLikePersonalTransfer, assetDepreciatesForTaxpayer, depMethodConflict, resolveDiv40Life, type DepAsset } from "./lib/depreciation";
@@ -1705,7 +1706,7 @@ export class TaxAgent extends Agent<Env> {
   // surfaced on the report behind the cgt_engine flag. These just persist the facts (user_id-scoped). ──
   async recordCgtAsset(
     userId: string,
-    a: { person_id?: string | null; entity_id?: string | null; asset_kind: string; code?: string | null; label?: string | null; units?: number | null; acquired_date?: string | null; cost_base_cents: number; reduced_cost_base_cents?: number | null; main_residence_exempt?: number },
+    a: { person_id?: string | null; entity_id?: string | null; asset_kind: string; code?: string | null; label?: string | null; units?: number | null; acquired_date?: string | null; cost_base_cents: number; reduced_cost_base_cents?: number | null; main_residence_exempt?: number; cost_base_elements?: CostBaseElements | null },
   ): Promise<string> {
     // Cross-tenant guard (mirrors recordEssGrant): the API hands this the raw request body, so an
     // explicitly-supplied person/entity must belong to THIS tenant or the row carries a dangling reference
@@ -1719,11 +1720,20 @@ export class TaxAgent extends Agent<Env> {
     // it out of the OFF path means a pre-0070 database still accepts a holding (an unconditional column
     // would make the whole endpoint 500 with "no such column") AND the written row is byte-identical.
     const entityScope = featureOn(this.env, "capital_entity_scope");
+    // capital_cost_base_detail (C2, 0073): when a breakdown is supplied and VALID, the canonical
+    // cost_base_cents is COMPUTED from the elements — so the one figure every engine reads (and that must
+    // reconcile to cgt_events.cost_base_used_cents for the accountant tie-back) can never disagree with the
+    // itemisation shown beside it. An invalid or absent breakdown falls back to the single supplied figure,
+    // which is today's behaviour verbatim.
+    const costBaseDetail = featureOn(this.env, "capital_cost_base_detail");
+    const elements = costBaseDetail && a.cost_base_elements && validateCostBaseElements(a.cost_base_elements).ok ? a.cost_base_elements : null;
+    const costBaseCents = elements ? costBaseFromElements(elements) : a.cost_base_cents ?? 0;
+    const detailJson = elements ? withCostBaseElements(null, elements) : null;
     await this.env.DB.prepare(
-      `INSERT INTO cgt_assets (id, user_id, person_id, asset_kind, code, label, units, acquired_date, cost_base_cents, reduced_cost_base_cents, main_residence_exempt, status${entityScope ? ", entity_id" : ""})
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'held'${entityScope ? ", ?" : ""})`,
+      `INSERT INTO cgt_assets (id, user_id, person_id, asset_kind, code, label, units, acquired_date, cost_base_cents, reduced_cost_base_cents, main_residence_exempt, status${entityScope ? ", entity_id" : ""}${costBaseDetail ? ", detail_json" : ""})
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'held'${entityScope ? ", ?" : ""}${costBaseDetail ? ", ?" : ""})`,
     )
-      .bind(id, userId, a.person_id ?? `person_self_${userId}`, a.asset_kind, a.code ?? null, a.label ?? null, cgtUnits(a.units), a.acquired_date ?? null, a.cost_base_cents ?? 0, a.reduced_cost_base_cents ?? null, a.main_residence_exempt ?? 0, ...(entityScope ? [a.entity_id ?? null] : []))
+      .bind(id, userId, a.person_id ?? `person_self_${userId}`, a.asset_kind, a.code ?? null, a.label ?? null, cgtUnits(a.units), a.acquired_date ?? null, costBaseCents, a.reduced_cost_base_cents ?? null, a.main_residence_exempt ?? 0, ...(entityScope ? [a.entity_id ?? null] : []), ...(costBaseDetail ? [detailJson] : []))
       .run();
     await this.audit(userId, "cgt_asset_recorded", JSON.stringify({ id, kind: a.asset_kind, code: a.code, ...(entityScope && a.entity_id ? { entity_id: a.entity_id } : {}) }));
     return id;

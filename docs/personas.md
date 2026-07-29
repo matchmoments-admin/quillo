@@ -42,7 +42,7 @@ Legend — **engine**: backend computes it (✓ live behind flag); **UI**: a web
 | Multi-income aggregation | ✓ | ✓ | ✓ | (live) | all |
 | Sole-trader `business` income | ✓ | ◑ income only | ✓ | — (additive) | 4,5 |
 | Sole-trader activity + attribution | ✓ | ✓ activity-create form (Settings) + txn attribution | ◑ | `attribution_engine` (ON) | 4,5,8 |
-| CGT (shares/crypto/property) | ✓ | ◑ units/owner capture landed C0; no holdings **position**, no purchase→holding loop | ◑ | `cgt_engine` (ON) + `capital_holding_detail` (ON) | 2,6,8,9,10 |
+| CGT (shares/crypto/property) | ✓ | ✓ units/owner, brokerage + cost-base elements, purchase→holding from a deposit, dividend↔holding link | ◑ no running holdings **position** yet | `cgt_engine` + `capital_holding_detail` + `capital_entity_scope` + `capital_from_txn` + `capital_income_link` + `capital_cost_base_detail` (all ON) | 2,6,8,9,10 |
 | Employee Share Scheme | ✓ | ✓ | ✓ | `ess_engine` (ON) | 2,9 |
 | GST registration flag | ✓ | ✓ | ✓ | — | 4,5,8 |
 | Indicative BAS (from ledger) | ✓ | ✓ GST-registered toggle | ✓ | `gst_bas` (ON) | 4,5,8 |
@@ -95,10 +95,15 @@ part-disposal guard *uncomputable* rather than merely unbuilt.
   **display-only** — the persona golden (`pc0on`/`pc0off`) pins that a units-recorded holding reports
   a byte-identical `capital_gains` block, taxable position and CGT subtotal versus a `units = NULL`
   one, with the schedule tie-back holding either way.
-- **Known gap, tracked:** the executable **Persona 2 (Daniel)** fixture in `check-personas.ts` is a
-  Pty-Ltd + co-owned-rental tenant with no shares, dividends or CGT rows — the shares/ETF/DRP arm the
-  persona table describes does not exist yet and lands with the tranche's later slices. Until then
-  `pc0on`/`pc0off`, `p10` (crypto) and `p14`/`p15` (property / AMMA) are the real CGT goldens.
+- **Persona 2 (Daniel) is now executable.** The gap this tranche opened by finding it: the `p2` fixture is
+  a Pty-Ltd + co-owned-rental tenant with *no shares, dividends or CGT rows*, so the persona the capital
+  brief names as its coverage lens was untestable while the table claimed it was complete. **`p2cap`** is
+  that arm (sibling-tenant precedent: `pfeeon`/`pfeeoff`, `p14`/`p15`) and doubles as the **integration
+  golden** for the whole tranche on one realistic return: $140k PAYG + a franked CBA dividend linked to its
+  parcel + a Stake-deposit-seeded VAS holding + a company-held BHP parcel + a half-parcel CBA sale with
+  brokerage in the cost base + vesting RSUs. 14 assertions, including that the company's $8k gain stays out
+  of his headline, that brokerage makes the gain $9.98 smaller than the un-itemised figure, and that every
+  accountant-schedule section ties back.
 - **C-E (flag `capital_entity_scope`, ON, migration 0070)** fixes a live scoping bug. `cgtTotals` selected
   `cgt_events JOIN cgt_assets` on `user_id` + `fy` only and `cgt_assets` had no entity dimension at all, so
   a company/trust/SMSF parcel was inexpressible — and `addIncome` worked around it by *refusing* to

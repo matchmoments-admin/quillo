@@ -320,6 +320,47 @@ const asset = (id: string, u: string, costCents: number, depCents: number, prope
   run(`INSERT INTO transactions (id, user_id, source, status, kind, merchant, amount_cents, currency, amount_aud_cents, gst_cents, txn_date, bucket, ato_label, deductibility, deductible_amount_cents, direction, confidence, reasoning, ledger_ref) VALUES ('pfeeonT', ?, 'quillo', 'extracted', 'receipt', 'Quillo', 1000, 'AUD', 1000, NULL, ?, 'payg', 'D10', 'confirmed_deductible', 1000, 'debit', 1.0, 'Quillo subscription fee — cost of managing tax affairs (s25-5, label D10)', 'cs_test_persona')`, u, FY_DATE); // $10 fee
 }
 
+// ── Persona 2 (Daniel) — the CAPITAL arm the coverage table always claimed and never had ──────────
+// docs/personas.md describes Persona 2 as "PAYG + shares/ETF dividends + RSUs + CGT" and marked CGT +
+// ESS as complete for him. The executable `p2` fixture is a Pty-Ltd + co-owned-rental tenant with NO
+// shares, dividends or CGT rows at all — so the persona the capital brief names as its coverage lens
+// was not testable. `p2cap` is that arm (sibling-tenant precedent: pfeeon/pfeeoff, p14/p15), and it is
+// the INTEGRATION golden for the whole capital tranche: units, an entity-held parcel, a deposit-seeded
+// holding, a dividend linked to its holding, brokerage in the cost base, and a real disposal.
+{
+  const u = "p2cap";
+  seedTenant(u, "P2 Daniel — PAYG + shares/ETF + RSUs + CGT");
+  const self = `person_self_${u}`;
+  run(`INSERT INTO entities (id, user_id, kind, name, person_id, entity_type) VALUES ('p2capEmp', ?, 'employment', 'BigCo', ?, 'payg_employment')`, u, self);
+  // Investment company he also holds through — a SEPARATE taxpayer (C-E).
+  run(`INSERT INTO entities (id, user_id, kind, name, person_id, entity_type) VALUES ('p2capCo', ?, 'company', 'Daniel Investments Pty Ltd', ?, 'company')`, u, self);
+  inc("p2capSal", u, "salary_payg", 14000000, { withholding_cents: 3600000 }); // $140k salary
+
+  // (1) CBA parcel bought via CommSec: $20,000 + $19.95 brokerage (C2 — the cost base 0037 promised).
+  const cbaElements = { purchase_cents: 2000000, brokerage_cents: 1995, incidental_cents: 0, other_cents: 0, note: "CommSec contract note 88213" };
+  run(`INSERT INTO cgt_assets (id, user_id, person_id, asset_kind, code, label, units, acquired_date, cost_base_cents, detail_json) VALUES ('p2capCba', ?, ?, 'shares', 'CBA', 'Commonwealth Bank', 200, '2023-03-15', ?, ?)`,
+    u, self, costBaseFromElements(cbaElements), withCostBaseElements(null, cbaElements));
+  // Franked dividend on that parcel, LINKED to it (C-L).
+  inc("p2capDiv", u, "dividend", 84000, { franking_credit_cents: 36000, cgt_asset_id: "p2capCba" });
+
+  // (2) VAS ETF parcel seeded from a Stake deposit the user confirmed (C1) — units filled in afterwards.
+  const vasElements = { purchase_cents: 1000000, brokerage_cents: 300, incidental_cents: 0, other_cents: 0, note: "Stake confirmation" };
+  run(`INSERT INTO transactions (id, user_id, source, status, kind, merchant, raw_description, amount_cents, amount_aud_cents, txn_date, ato_label, direction) VALUES ('p2capTxn', ?, 'upload', 'ignored', 'bank_line', 'STAKESHOP PTY LTD', 'STAKESHOP PTY LTD SYDNEY', 1000000, 1000000, '2024-02-10', 'capital:investment', 'debit')`, u);
+  run(`INSERT INTO cgt_assets (id, user_id, person_id, asset_kind, code, label, units, acquired_date, cost_base_cents, detail_json, txn_id) VALUES ('p2capVas', ?, ?, 'shares', 'VAS', 'Vanguard Australian Shares ETF', 105, '2024-02-10', ?, ?, 'p2capTxn')`,
+    u, self, costBaseFromElements(vasElements), withCostBaseElements(null, vasElements));
+
+  // (3) A parcel held through the COMPANY — its gain is the company's, not Daniel's (C-E).
+  run(`INSERT INTO cgt_assets (id, user_id, person_id, entity_id, asset_kind, code, units, acquired_date, cost_base_cents) VALUES ('p2capCoBhp', ?, ?, 'p2capCo', 'shares', 'BHP', 400, '2022-06-01', 1600000)`, u, self);
+  run(`INSERT INTO cgt_events (id, user_id, cgt_asset_id, fy, event_date, proceeds_cents, cost_base_used_cents, units_disposed, discount_eligible) VALUES ('p2capCoEv', ?, 'p2capCoBhp', '2025-26', '2025-11-20', 2400000, 1600000, 400, 1)`, u);
+
+  // (4) Daniel sells HALF the CBA parcel: 100 of 200 units for $13,000, cost base used = half of the
+  // itemised cost base ($10,009.98 — he chose specific parcels). Held >12 months ⇒ discountable.
+  run(`INSERT INTO cgt_events (id, user_id, cgt_asset_id, fy, event_type, event_date, proceeds_cents, cost_base_used_cents, units_disposed, discount_eligible, method) VALUES ('p2capCbaEv', ?, 'p2capCba', '2025-26', 'part_disposal', '2026-01-15', 1300000, 1000998, 100, 1, 'specific_id')`, u);
+
+  // (5) RSUs vesting — a taxed-upfront ESS discount, assessable employment income now (#141).
+  run(`INSERT INTO ess_grants (id, user_id, person_id, employer_entity_id, scheme_type, grant_date, taxing_point_date, shares_or_options, units, discount_cents, ownership_gt_10pct) VALUES ('p2capRsu', ?, ?, 'p2capEmp', 'taxed_upfront', '2024-08-01', '2025-08-01', 'shares', 250, 1200000, 0)`, u, self);
+}
+
 // ── Persona CE: entity-held CGT parcel — separate-taxpayer scoping (capital_entity_scope, 0070) ──
 // cgtTotals selected cgt_events JOIN cgt_assets on user_id + fy ONLY, and cgt_assets had no entity
 // dimension, so a company/trust/SMSF parcel could not be expressed and any gain attributed to one leaked
@@ -984,6 +1025,67 @@ async function main() {
       rOff.capital_gains?.net_capital_gain_cents === 99050 && rOff.taxable_position_cents === r.taxable_position_cents);
     check("PC2: flag OFF ⇒ no element sub-rows at all (CSV byte-identical)",
       secOff?.rows.some((row) => String(row[1] ?? "").includes("Brokerage")) === false && secOff?.rows.length === 5 && secOff?.tie_back?.ok === true);
+  }
+
+  // ── Persona 2 (Daniel): the capital tranche end-to-end, as ONE taxpayer ──
+  // The per-slice goldens above each test one mechanism. This is the coverage lens the brief names: all of
+  // it at once, on a realistic PAYG-plus-investments return. Every capital flag on together.
+  {
+    const envD = { DB: (env as unknown as { DB: unknown }).DB, FEATURES: `${(env as unknown as { FEATURES: string }).FEATURES},capital_holding_detail,capital_entity_scope,capital_from_txn,capital_income_link,capital_cost_base_detail,franking_gross_up,cgt_parcel_method` } as unknown as Env;
+    const r = await buildReport(envD, "p2cap", 2025);
+
+    // Income: $140k salary + $840 dividend = $140,840 in gross_cents. The $360 franking credit is carried
+    // separately and grossed up at the POSITION (s 207-20), not folded into gross_cents.
+    check("P2cap: salary + franked dividend aggregate into gross income ($140,840)",
+      r.income.gross_cents === 14084000 && r.income.franking_credit_cents === 36000);
+    check("P2cap: the $360 franking credit is grossed up as its own position term, not into gross income",
+      r.franking_gross_up_cents === 36000);
+
+    // CGT: ONLY the personal half-parcel sale. $13,000 − $10,009.98 = $2,990.02 gross, 50% discount ⇒
+    // $1,495.01. The company's $8,000 BHP gain must NOT appear — it lodges its own return.
+    check("P2cap: the personal part-disposal is the only gain in his headline ($2,990.02 gross)",
+      r.capital_gains?.gross_capital_gains_cents === 299002);
+    check("P2cap: 50% discount on a 12-month+ hold ⇒ $1,495.01 net capital gain",
+      r.capital_gains?.discount_applied_cents === 149501 && r.capital_gains?.net_capital_gain_cents === 149501);
+    check("P2cap: the company's $8,000 BHP gain stays OUT (separate taxpayer — C-E)",
+      r.capital_gains!.gross_capital_gains_cents < 800000);
+
+    // Brokerage really is in the cost base: without C2 the cost base used would be $10,000.00 flat and the
+    // gain $3,000.00. The $9.98 difference is half the $19.95 buy brokerage on a half-parcel sale.
+    check("P2cap: brokerage reached the cost base — the gain is $9.98 smaller than the un-itemised figure",
+      300000 - r.capital_gains!.gross_capital_gains_cents === 998);
+
+    // RSUs: a taxed-upfront ESS discount is assessable employment income this year.
+    check("P2cap: the RSU (taxed-upfront) discount is assessable now, nothing deferred", r.ess?.assessable_discount_cents === 1200000 && r.ess?.startup_deferred_to_cgt_cents === 0);
+
+    // The whole position: $140,840 gross + $360 franking gross-up + $1,495.01 net CG + $12,000 ESS.
+    check("P2cap: the taxable position sums gross income + franking gross-up + net capital gain + ESS discount",
+      r.taxable_position_cents === 14084000 + 36000 + 149501 + 1200000);
+
+    // The evidence pack: every section reconciles, the brokerage is itemised, and the company's parcel is
+    // absent from his schedule.
+    const sched = await buildAccountantSchedule(envD, "p2cap", 2025, { report: r });
+    check("P2cap: every accountant-schedule section ties back", tieBackChecks(sched).every((t) => t.ok));
+    const cgtSec = sched.sections.find((s) => s.key === "cgt");
+    check("P2cap: his CBA disposal is itemised with its brokerage, and BHP is absent",
+      cgtSec?.rows.some((row) => row[1] === "CBA") === true
+      && cgtSec?.rows.some((row) => String(row[1] ?? "").includes("Brokerage (acquisition)")) === true
+      && cgtSec?.rows.some((row) => row[1] === "BHP") === false);
+    check("P2cap: the parcel-selection basis is recorded for the agent (specific identification)",
+      cgtSec?.rows.some((row) => row.includes("specific identification")) === true);
+
+    // The holdings survive the year with their units intact — the carry-forward property C3 will build on.
+    const held = db.prepare(`SELECT code, units FROM cgt_assets WHERE user_id = 'p2cap' AND entity_id IS NULL AND units IS NOT NULL ORDER BY code`).all() as { code: string; units: number }[];
+    check("P2cap: both personal parcels carry their units (200 CBA, 105 VAS incl. a fractional-friendly ETF holding)",
+      held.length === 2 && held[0].code === "CBA" && held[0].units === 200 && held[1].code === "VAS" && held[1].units === 105);
+    // The deposit-seeded holding kept its provenance AND has been completed by the user.
+    const seeded = db.prepare(`SELECT txn_id, units FROM cgt_assets WHERE user_id = 'p2cap' AND code = 'VAS'`).get() as { txn_id: string | null; units: number | null };
+    check("P2cap: the Stake-deposit holding keeps its transaction provenance and is now complete",
+      seeded.txn_id === "p2capTxn" && seeded.units === 105);
+    // The dividend is attributed to the parcel that produced it — the link DRP/AMIT will build on.
+    const linked = await listIncome(envD, "p2cap", { cgtAssetId: "p2capCba" });
+    check("P2cap: his franked dividend is linked to the CBA parcel that paid it",
+      linked.length === 1 && linked[0].income_type === "dividend");
   }
 
   // ── Persona 16: partnership partner — distribution share (Slice E) ──

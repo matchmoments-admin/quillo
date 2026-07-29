@@ -702,6 +702,40 @@ async function main() {
     check("P15 B: a no-components managed-fund row is byte-identical (full gross, no CGT)", r15b.income.gross_cents === 1800000 && r15b.taxable_position_cents === 1800000 && r15b.capital_gains === undefined);
   }
 
+  // ── Capital C0: units capture is DISPLAY-ONLY and must never move the money ──
+  // cgt_assets.units / cgt_events.units_disposed have existed since 0037 but had NO capture surface, so
+  // every user-entered holding stored NULL — which is why a running position and a part-disposal guard
+  // were uncomputable (docs/capital-cgt-findings.md §0). C0 captures them. The columns feed the
+  // accountant schedule's Units column and, later, the derived position — NEVER the gain. Two tenants
+  // with byte-identical CGT facts, one with units recorded and one without, must report the same money.
+  {
+    const seedCgt = (u: string, name: string, units: number | null, unitsDisposed: number | null) => {
+      seedTenant(u, name);
+      run(`INSERT INTO cgt_assets (id, user_id, person_id, asset_kind, code, units, acquired_date, cost_base_cents) VALUES (?, ?, ?, 'shares', 'CBA', ?, '2023-02-01', 4000000)`, `${u}cCba`, u, `person_self_${u}`, units);
+      run(`INSERT INTO cgt_events (id, user_id, cgt_asset_id, fy, event_date, proceeds_cents, cost_base_used_cents, units_disposed) VALUES (?, ?, ?, '2025-26', '2025-11-01', 6000000, 4000000, ?)`, `${u}eCba`, u, `${u}cCba`, unitsDisposed);
+    };
+    seedCgt("pc0off", "C0 control — units never captured (pre-C0 state)", null, null);
+    seedCgt("pc0on", "C0 — units captured", 400, 400);
+
+    const rOff = await buildReport(env, "pc0off", 2025);
+    const rOn = await buildReport(env, "pc0on", 2025);
+    // $60k − $40k = $20k gain, held >12mo → 50% discount → $10k net, in both tenants.
+    check("C0: units-recorded holding reports the SAME net capital gain as a units-NULL one ($10k)",
+      rOn.capital_gains?.net_capital_gain_cents === 1000000 && rOff.capital_gains?.net_capital_gain_cents === 1000000);
+    check("C0: units are display-only — the whole capital_gains block is identical with and without them",
+      JSON.stringify(rOn.capital_gains) === JSON.stringify(rOff.capital_gains) && rOn.taxable_position_cents === rOff.taxable_position_cents);
+
+    // The accountant schedule prints units_disposed in its Units column and must still tie back to the
+    // engine's gross gains — a populated Units column changes DISPLAY bytes only, never the subtotal.
+    const schedOn = await buildAccountantSchedule(env, "pc0on", 2025, { report: rOn });
+    const schedOff = await buildAccountantSchedule(env, "pc0off", 2025, { report: rOff });
+    const secOn = schedOn.sections.find((s) => s.key === "cgt");
+    const secOff = schedOff.sections.find((s) => s.key === "cgt");
+    check("C0: schedule CGT section ties back with units populated", secOn?.tie_back?.ok === true && secOff?.tie_back?.ok === true);
+    check("C0: units reach the schedule's Units column (blank before C0)", secOn?.rows[0]?.[3] === 400 && secOff?.rows[0]?.[3] === null);
+    check("C0: the CGT subtotal is unaffected by units", secOn?.subtotal_cents === secOff?.subtotal_cents);
+  }
+
   // ── Persona 16: partnership partner — distribution share (Slice E) ──
   // A partner's share of partnership net income (character retained) feeds the personal position exactly
   // like a trust distribution. A trust distribution in the SAME tenant must NOT cross-contaminate.

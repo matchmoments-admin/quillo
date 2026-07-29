@@ -24,6 +24,7 @@ import { occupationGuide } from "./lib/occupations";
 import { getProgress } from "./lib/progress";
 import { buildGuidePrompt, buildAskSystem, summariseReportForAsk, renderTxnDigest } from "./lib/guide";
 import { fyLabel, fyBounds, fyStartYearStr, parseFyStartYear, normaliseFyLabel } from "./lib/ledger-totals";
+import { cgtUnits } from "./lib/cgt";
 import { resolveJurisdictionForUser, currentFyStartYearFor, baseCurrencyOf, AU_DESCRIPTOR, type JurisdictionDescriptor } from "./lib/jurisdiction";
 import { assessReadiness, type FilingReadiness, type FilingReadinessSignals } from "./lib/readiness";
 import { rollSchedule, balancingAdjustment, fyStartYearOf, isLowCostAsset, looksLikePersonalTransfer, assetDepreciatesForTaxpayer, depMethodConflict, resolveDiv40Life, type DepAsset } from "./lib/depreciation";
@@ -1678,12 +1679,16 @@ export class TaxAgent extends Agent<Env> {
     userId: string,
     a: { person_id?: string | null; asset_kind: string; code?: string | null; label?: string | null; units?: number | null; acquired_date?: string | null; cost_base_cents: number; reduced_cost_base_cents?: number | null; main_residence_exempt?: number },
   ): Promise<string> {
+    // Cross-tenant guard (mirrors recordEssGrant): the API hands this the raw request body, so an
+    // explicitly-supplied person must belong to THIS tenant or the row carries a dangling reference
+    // that silently breaks the user_id-scoped joins. The default (self) is always own.
+    await assertOwns(this.env, userId, [{ table: "persons", id: a.person_id, label: "person" }]);
     const id = crypto.randomUUID();
     await this.env.DB.prepare(
       `INSERT INTO cgt_assets (id, user_id, person_id, asset_kind, code, label, units, acquired_date, cost_base_cents, reduced_cost_base_cents, main_residence_exempt, status)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'held')`,
     )
-      .bind(id, userId, a.person_id ?? `person_self_${userId}`, a.asset_kind, a.code ?? null, a.label ?? null, a.units ?? null, a.acquired_date ?? null, a.cost_base_cents ?? 0, a.reduced_cost_base_cents ?? null, a.main_residence_exempt ?? 0)
+      .bind(id, userId, a.person_id ?? `person_self_${userId}`, a.asset_kind, a.code ?? null, a.label ?? null, cgtUnits(a.units), a.acquired_date ?? null, a.cost_base_cents ?? 0, a.reduced_cost_base_cents ?? null, a.main_residence_exempt ?? 0)
       .run();
     await this.audit(userId, "cgt_asset_recorded", JSON.stringify({ id, kind: a.asset_kind, code: a.code }));
     return id;
@@ -1703,7 +1708,7 @@ export class TaxAgent extends Agent<Env> {
       `INSERT INTO cgt_events (id, user_id, cgt_asset_id, fy, event_type, event_date, proceeds_cents, cost_base_used_cents, units_disposed, discount_eligible, method)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-      .bind(id, userId, e.cgt_asset_id, fy, e.event_type ?? "disposal", e.event_date, e.proceeds_cents ?? 0, e.cost_base_used_cents ?? 0, e.units_disposed ?? null, e.discount_eligible == null ? null : e.discount_eligible ? 1 : 0, method)
+      .bind(id, userId, e.cgt_asset_id, fy, e.event_type ?? "disposal", e.event_date, e.proceeds_cents ?? 0, e.cost_base_used_cents ?? 0, cgtUnits(e.units_disposed), e.discount_eligible == null ? null : e.discount_eligible ? 1 : 0, method)
       .run();
     await this.audit(userId, "cgt_event_recorded", JSON.stringify({ id, asset: e.cgt_asset_id, fy }));
     return id;

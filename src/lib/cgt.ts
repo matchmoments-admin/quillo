@@ -22,6 +22,20 @@ export interface CgtResult {
   net_gain_cents: number;           // assessable net capital gain (after the 50% discount)
 }
 
+/**
+ * Normalise a parcel size (shares/coins/units) for persistence. `cgt_assets.units` and
+ * `cgt_events.units_disposed` are REAL columns fed straight from a request body, so a string,
+ * NaN/Infinity, or a negative "quantity" would otherwise land in the evidence pack. Units are
+ * fractional by nature (DRP reinvestments, crypto), so this rounds nothing — it only rejects what
+ * can't be a quantity. Absent/unusable ⇒ null (today's value for every user-entered holding), which
+ * is what keeps the flag-OFF path byte-identical.
+ */
+export function cgtUnits(raw: unknown): number | null {
+  const n = typeof raw === "string" ? Number(raw.trim()) : raw;
+  if (typeof n !== "number" || !Number.isFinite(n) || n <= 0) return null;
+  return n;
+}
+
 /** True when the disposal is strictly after the 12-month anniversary of acquisition (date-based,
  *  so it doesn't wobble with leap years the way a 365-day count does). */
 export function heldMoreThan12Months(acquired: string, disposal: string): boolean {

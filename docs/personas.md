@@ -42,7 +42,7 @@ Legend — **engine**: backend computes it (✓ live behind flag); **UI**: a web
 | Multi-income aggregation | ✓ | ✓ | ✓ | (live) | all |
 | Sole-trader `business` income | ✓ | ◑ income only | ✓ | — (additive) | 4,5 |
 | Sole-trader activity + attribution | ✓ | ✓ activity-create form (Settings) + txn attribution | ◑ | `attribution_engine` (ON) | 4,5,8 |
-| CGT (shares/crypto/property) | ✓ | ✓ | ✓ | `cgt_engine` (ON) | 2,6,8,9,10 |
+| CGT (shares/crypto/property) | ✓ | ◑ units/owner capture landed C0; no holdings **position**, no purchase→holding loop | ◑ | `cgt_engine` (ON) + `capital_holding_detail` (ON) | 2,6,8,9,10 |
 | Employee Share Scheme | ✓ | ✓ | ✓ | `ess_engine` (ON) | 2,9 |
 | GST registration flag | ✓ | ✓ | ✓ | — | 4,5,8 |
 | Indicative BAS (from ledger) | ✓ | ✓ GST-registered toggle | ✓ | `gst_bas` (ON) | 4,5,8 |
@@ -79,6 +79,30 @@ Verify flag state against `wrangler.toml` FEATURES (the source of truth) rather 
   adjustment in the position; a company-scoped stock row is asserted to stay OUT of the personal
   headline (separate taxpayer); flag OFF asserted byte-identical. Engine ✓ (`tradingStockAdjustment`)
   + UI ✓ (Income → Trading stock card) + display ✓ (position, readiness nudge, accountant schedule).
+
+### Capital tranche (2026-07) — coverage correction
+
+Phase 0 of the capital/CGT brief ([`capital-cgt-findings.md`](capital-cgt-findings.md)) found the CGT
+row above was **overstated**: the engine is live and correct, but the input UI could not capture
+`cgt_assets.units`, `cgt_events.units_disposed`, a holding description, or the owning person — the
+columns have existed since migration 0037 and no surface ever set them. Every user-entered holding in
+prod therefore stored `units = NULL`, which makes a running units/cost-base position and a
+part-disposal guard *uncomputable* rather than merely unbuilt.
+
+- **C0 (flag `capital_holding_detail`, ON, no migration)** closes the capture gap: units, description
+  and owner on the holding form; units sold on the disposal form; units + status rendered on the
+  Capital & Equity table and in the accountant schedule's long-blank Units column. Units are
+  **display-only** — the persona golden (`pc0on`/`pc0off`) pins that a units-recorded holding reports
+  a byte-identical `capital_gains` block, taxable position and CGT subtotal versus a `units = NULL`
+  one, with the schedule tie-back holding either way.
+- **Known gap, tracked:** the executable **Persona 2 (Daniel)** fixture in `check-personas.ts` is a
+  Pty-Ltd + co-owned-rental tenant with no shares, dividends or CGT rows — the shares/ETF/DRP arm the
+  persona table describes does not exist yet and lands with the tranche's later slices. Until then
+  `pc0on`/`pc0off`, `p10` (crypto) and `p14`/`p15` (property / AMMA) are the real CGT goldens.
+- Still open (re-planned once real holdings exist in prod): the purchase→holding loop from the capital
+  clarify answer, an income↔holding link, brokerage in the cost base, a derived holdings position with
+  a part-disposal review finding, DRP parcels, the AMIT cost-base adjustment, and broker/registry
+  statement ingest.
 
 ## How it's wired (for maintainers)
 

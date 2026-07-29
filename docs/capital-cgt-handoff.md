@@ -25,6 +25,7 @@ brokerage deposit start the record for them.
 | C1 | `capital_from_txn` | 0071 | A confirmed capital clarify answer seeds a holding per deposit |
 | C-L | `capital_income_link` | 0072 | `income.cgt_asset_id` — the dividend↔holding link |
 | C2 | `capital_cost_base_detail` | 0073 | Brokerage + cost-base elements, itemised on the accountant CSV |
+| C3 | `capital_position` | — | **Derived** holdings position, over-disposal findings, closing-holdings CSV section |
 | — | — | — | Persona 2 (Daniel) made executable; PR #451 fixed two review-found defects |
 
 **Prod data reality:** as at handoff, `cgt_assets` has **zero rows** and all 51 `income` rows are
@@ -67,22 +68,19 @@ Line numbers are accurate at `main@fdef445`; the symbol names are the durable pa
 
 Four slices plus a seam. **Recommended order below; §6 records why.**
 
-### C3 — holdings position + part-disposal guard · `capital_position`
+### ~~C3 — holdings position~~ · SHIPPED (`capital_position`, #453)
 
-The register already **derives** remaining units for display (`derivePosition` in `CapitalEquity.tsx`).
-What's missing is the server-side, queryable version and the findings that depend on it.
+Decided **derived on read**, not stored. `holdingPosition()` in `src/lib/capital.ts` is the single
+definition; it is computed **server-side** and shipped on the holdings payload so the SPA doesn't keep a
+second copy that can drift. `cgt_assets.status` remains **dead but present** — dropping a column is a
+destructive migration needing its own sign-off, so C3 documents it and derives instead.
 
-- Remaining units = `units − Σ units_disposed`. Remaining cost base = `cost_base_cents − Σ cost_base_used_cents`.
-  **Both are arithmetic over what the user entered** — *not* a parcel selection. This matters: it is the
-  only formulation that doesn't collide with the anti-goal *"do not auto-select parcels on a disposal."*
-- A disposal exceeding units held is a **review finding**, not a hard block. Quillo surfaces, the agent decides.
-- This is also where the zero-cost-base finding becomes a **blocker** — but *only* when a disposal exists
-  against it. Today it is `review` (`capital_holding_missing_cost_base`) because an un-disposed holding
-  distorts nothing. Don't promote it unconditionally.
-- **Open decision** — derived-on-read vs stored-and-maintained. See §6.
-- `cgt_assets.status` is dead: written as the literal `'held'` at insert since 0037, never updated by
-  anything. Either maintain it here or delete the column; leaving it half-alive is what caused the PR #451
-  display bug.
+Findings: over-disposal and over-used-cost-base are **review** (a missing earlier parcel is the usual
+cause); missing cost base is promoted to **blocker** only when a disposal exists against it — the one
+materially-distorted case in the capital set. The accountant pack gained *"Investment holdings at year end
+(carried forward)"*, deliberately **without** a `tie_back` since a closing balance contributes to no report
+figure. Read the section's `notes` before changing it: they state that remaining figures are derived and
+explicitly **not** a parcel selection.
 
 ### C4 — DRP as a parcel generator · `capital_drp`
 
@@ -195,20 +193,15 @@ The brief is good and mostly accurate. These specific points are superseded:
 
 ## 6. Open decisions (owner's call — do not guess)
 
-1. **C3: derived-on-read or stored-and-maintained position?** Derived can't desync and needs no migration;
-   stored is queryable from readiness/report without recomputation and survives the FY rollover as data.
-   The register already derives for display. *Recommendation: derived, with `cgt_assets.status` deleted
-   rather than left half-alive.*
-2. **Slice order.** *Recommendation: C3 → C5 → C4 → C6 → C-jur.* C3 makes the position legible and is the
-   prerequisite for the blocker-severity finding; C5 is small now that C-L exists and is pure correctness;
-   C4 needs an input source, which is really C6; C6 is the largest. **C-jur is cheapest right now** —
-   `cgt_assets` has zero prod rows — so there is a case for doing it first while nothing can break.
+1. ~~**C3: derived or stored?**~~ **DECIDED: derived on read** (2026-07-30). Shipped. A follow-up decision
+   remains open: whether to drop the dead `cgt_assets.status` column — that is a destructive migration and
+   needs an explicit go plus a reverse plan.
+2. **Slice order.** C3 is done. *Remaining recommendation: C5 → C4 → C6, with C-jur arguable first* —
+   `cgt_assets` still has zero prod rows, so the seam can never be cheaper than now.
 3. **C6 scope.** Named annual statements (CommSec / Stake / Computershare / Link) vs the ATO prefill shape
    vs a generic column-mapper reusing `extractColumnMap`. Materially different sizes.
-4. **Issue #68's disposition** (`needs-decision`, `priority:p1`). Its v1 manual-entry scope is **done** and
-   its proposed `cgt_parcels` table is **superseded** by 0037's `cgt_assets`/`cgt_events`; only its v1.1
-   CSV/broker import remains, which is C6. Per the working agreement, a `needs-decision` issue is never
-   auto-closed — so it is left open with an evidence comment pending your call.
+4. ~~**Issue #68's disposition.**~~ **DECIDED: closed as completed** (2026-07-30), with #456 named as the
+   successor for its remaining v1.1 CSV/broker import.
 
 ---
 

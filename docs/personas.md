@@ -42,7 +42,7 @@ Legend — **engine**: backend computes it (✓ live behind flag); **UI**: a web
 | Multi-income aggregation | ✓ | ✓ | ✓ | (live) | all |
 | Sole-trader `business` income | ✓ | ◑ income only | ✓ | — (additive) | 4,5 |
 | Sole-trader activity + attribution | ✓ | ✓ activity-create form (Settings) + txn attribution | ◑ | `attribution_engine` (ON) | 4,5,8 |
-| CGT (shares/crypto/property) | ✓ | ✓ units/owner, brokerage + cost-base elements, purchase→holding from a deposit, dividend↔holding link | ◑ remaining units/status derived for display; no stored/queryable **position** or exceeds-units finding yet | `cgt_engine` + `capital_holding_detail` + `capital_entity_scope` + `capital_from_txn` + `capital_income_link` + `capital_cost_base_detail` (all ON) | 2,6,8,9,10 |
+| CGT (shares/crypto/property) | ✓ | ✓ units/owner, brokerage + cost-base elements, purchase→holding from a deposit, dividend↔holding link | ✓ derived position (units + cost base remaining), over-disposal + no-cost-base findings, closing-holdings carried forward on the accountant pack | `cgt_engine` + 6 × `capital_*` (all ON) | 2,6,8,9,10 |
 | Employee Share Scheme | ✓ | ✓ | ✓ | `ess_engine` (ON) | 2,9 |
 | GST registration flag | ✓ | ✓ | ✓ | — | 4,5,8 |
 | Indicative BAS (from ledger) | ✓ | ✓ GST-registered toggle | ✓ | `gst_bas` (ON) | 4,5,8 |
@@ -156,9 +156,20 @@ part-disposal guard *uncomputable* rather than merely unbuilt.
   Also corrected in the reference fixture: a company-held disposal no longer carries `discount_eligible=1`
   (a company gets no 50% discount), and a deposit-seeded cost base no longer exceeds the money that left the
   bank. Two assertions that could not fail were made discriminating.
-- Still open (re-planned once real holdings exist in prod): a **stored/queryable** holdings position with the
-  exceeds-units review finding (which is also where a zero cost base *with a disposal* becomes a blocker
-  rather than a review), DRP parcels, the AMIT cost-base adjustment, and broker/registry statement ingest.
+- **C3 (flag `capital_position`, ON, no migration)** closes the display gap. The position is **derived**, not
+  stored (owner decision): remaining units = acquired − sold, cost base remaining = parcel − the cost base the
+  user said they used. Both are arithmetic over user input — **never a parcel selection**, because parcel
+  choice changes the gain and is the taxpayer's decision. Derived **server-side** and shipped on the holdings
+  payload so the SPA and the server share one definition rather than two that can drift. Three findings:
+  over-disposal and over-used cost base are **review** (a missing earlier parcel is the usual cause — Quillo
+  surfaces, the agent decides), and the missing-cost-base finding is promoted to **blocker** only when a
+  disposal exists against it, which is the one materially-distorted case in the capital set. The accountant
+  pack gains an *"Investment holdings at year end (carried forward)"* section — deliberately no `tie_back`,
+  since a closing balance contributes to no report figure. Money-neutral: it reads the same `cgt_events` that
+  already drive `cgtTotals`. `cgt_assets.status` remains dead-but-present (dropping a column is a destructive
+  migration needing its own sign-off). Goldens: `p2cap` extended + `pc3bad`.
+- Still open: DRP parcels (#455), the AMIT cost-base adjustment (#454), broker/registry statement ingest
+  (#456), and the jurisdiction seam (#457). Epic #452; handoff `docs/capital-cgt-handoff.md`.
 
 ## How it's wired (for maintainers)
 

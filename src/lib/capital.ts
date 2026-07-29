@@ -114,6 +114,81 @@ export function withCostBaseElements(detailJson: string | null | undefined, e: C
   return JSON.stringify({ ...base, cost_base_elements: e });
 }
 
+// ── Holdings position (C3, capital_position) ───────────────────────────────────────────────────
+// `cgt_assets.units` is the ACQUIRED parcel size and is deliberately never rewritten — the acquisition
+// record stays immutable and the remaining quantity is DERIVED. `cgt_assets.status` is written as the
+// literal 'held' at insert (migration 0037) and updated by nothing; it is DEAD and this module supersedes
+// it. (Dropping the column is a destructive migration needing its own sign-off, so it stays present.)
+//
+// Everything here is arithmetic over what the USER entered — never a parcel selection. That distinction is
+// load-bearing: parcel choice changes the gain and is the taxpayer's decision (see the anti-goals), so a
+// remaining cost base may only ever be "the parcel's cost base minus the cost base they said they used",
+// never a figure we picked by choosing parcels on their behalf.
+
+export interface HoldingDisposal {
+  units_disposed?: number | null;
+  cost_base_used_cents?: number | null;
+}
+
+export interface HoldingPosition {
+  /** What the parcel row records as acquired. null ⇒ never captured (every pre-C0 holding). */
+  units_acquired: number | null;
+  units_disposed: number;
+  /** null when the acquired quantity is unknown — we never imply a balance we can't compute. */
+  units_remaining: number | null;
+  cost_base_cents: number;
+  cost_base_used_cents: number;
+  /** 0-floored: a full disposal legitimately leaves nothing. */
+  cost_base_remaining_cents: number;
+  status: "held" | "part_disposed" | "disposed";
+  /** > 0 ⇒ they disposed of MORE than they hold. A REVIEW finding, never a block — Quillo surfaces, the agent decides. */
+  over_disposed_units: number;
+  /** > 0 ⇒ the cost base claimed across disposals exceeds the parcel's. Understates the gain, so it is surfaced too. */
+  over_used_cost_base_cents: number;
+}
+
+/**
+ * Derive a holding's running position from its immutable parcel row and its disposal events. Pure.
+ *
+ * Scope note for callers: run this over USER-MANAGED holdings only (`property_id IS NULL AND income_id IS
+ * NULL`). A property- or AMMA-sourced parcel is materialised complete from its source with `units` NULL and
+ * `status='disposed'` already set, so deriving "part sold" for it would be noise, not information.
+ */
+export function holdingPosition(
+  asset: { units?: number | null; cost_base_cents?: number | null },
+  disposals: ReadonlyArray<HoldingDisposal>,
+): HoldingPosition {
+  const unitsAcquired = typeof asset.units === "number" && Number.isFinite(asset.units) ? asset.units : null;
+  const costBase = asset.cost_base_cents ?? 0;
+  const unitsDisposed = disposals.reduce((t, d) => t + (d.units_disposed ?? 0), 0);
+  const costUsed = disposals.reduce((t, d) => t + (d.cost_base_used_cents ?? 0), 0);
+
+  const unitsRemaining = unitsAcquired == null ? null : unitsAcquired - unitsDisposed;
+  const overDisposed = unitsAcquired == null ? 0 : Math.max(0, unitsDisposed - unitsAcquired);
+
+  // Status, in order of what we can honestly assert:
+  //  - no disposals at all ⇒ still held;
+  //  - disposals but an unknown acquired quantity ⇒ "part sold" (something went, we can't say it all did);
+  //  - nothing left ⇒ sold.
+  let status: HoldingPosition["status"];
+  if (!disposals.length) status = "held";
+  else if (unitsRemaining == null) status = "part_disposed";
+  else if (unitsRemaining <= 0) status = "disposed";
+  else status = "part_disposed";
+
+  return {
+    units_acquired: unitsAcquired,
+    units_disposed: unitsDisposed,
+    units_remaining: unitsRemaining,
+    cost_base_cents: costBase,
+    cost_base_used_cents: costUsed,
+    cost_base_remaining_cents: Math.max(0, costBase - costUsed),
+    status,
+    over_disposed_units: overDisposed,
+    over_used_cost_base_cents: Math.max(0, costUsed - costBase),
+  };
+}
+
 /**
  * The itemised rows for the accountant schedule: label + amount, zero elements dropped. Presentation only —
  * the caller keeps the section subtotal on the canonical total, so the tie-back is unaffected by itemising.

@@ -21,7 +21,7 @@ import { fetchAskDigestRows, listAccounts, listIncome } from "../src/lib/queries
 import { deleteRow, archiveRow, DeleteBlockedError, type DeleteBlocker, syncPropertyDisposalToCgt, syncIncomeCgtFromComponents, syncTxnCgtHolding, clearTxnCgt, clearOrphanedTxnCgt } from "../src/lib/situation-write";
 import { ordinaryAssessableCents, type AmmaComponents } from "../src/lib/managed-fund";
 import { draftHoldingFromTxn } from "../src/lib/clarify";
-import { costBaseFromElements, withCostBaseElements } from "../src/lib/capital";
+import { costBaseFromElements, withCostBaseElements, holdingPosition } from "../src/lib/capital";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
@@ -1143,6 +1143,88 @@ async function main() {
     const linked = await listIncome(envD, "p2cap", { cgtAssetId: "p2capCba" });
     check("P2cap: his franked dividend is linked to the CBA parcel that paid it",
       linked.length === 1 && linked[0].income_type === "dividend");
+  }
+
+  // ── Capital C3: the derived holdings position (capital_position) ──
+  // Extends p2cap — Daniel already has a half-parcel CBA sale, a fully-held VAS parcel and a company parcel,
+  // which is exactly the shape this needs. The position is DERIVED (owner decision): remaining = acquired
+  // less sold, cost base left = parcel less the cost base the user said they used. Never a parcel selection.
+  {
+    // The control differs from envP by capital_position ALONE — anything else (e.g. dropping
+    // capital_entity_scope) would let the company's parcel leak back in and the comparison would be
+    // measuring the wrong variable.
+    const CAPITAL_BASE = `${(env as unknown as { FEATURES: string }).FEATURES},capital_holding_detail,capital_entity_scope,capital_from_txn,capital_income_link,capital_cost_base_detail,franking_gross_up,cgt_parcel_method`;
+    const envNoPos = { DB: (env as unknown as { DB: unknown }).DB, FEATURES: CAPITAL_BASE } as unknown as Env;
+    const envP = { DB: (env as unknown as { DB: unknown }).DB, FEATURES: `${CAPITAL_BASE},capital_position` } as unknown as Env;
+    const rP = await buildReport(envP, "p2cap", 2025);
+
+    // MONEY-NEUTRAL: the position reads cgt_events, which already drive cgtTotals. Nothing new reaches the
+    // gain, so turning C3 on must not move the position by a cent.
+    const rNoPos = await buildReport(envNoPos, "p2cap", 2025);
+    check("PC3: deriving a position does NOT move the money (it reads the same events cgtTotals already does)",
+      rP.capital_gains?.net_capital_gain_cents === rNoPos.capital_gains?.net_capital_gain_cents
+      && rP.taxable_position_cents === rNoPos.taxable_position_cents);
+
+    const sched = await buildAccountantSchedule(envP, "p2cap", 2025, { report: rP });
+    check("PC3: every section still ties back with the closing-holdings section present", tieBackChecks(sched).every((t) => t.ok));
+
+    const closing = sched.sections.find((s) => s.key === "capital_holdings");
+    check("PC3: the accountant pack gains a closing-holdings section", closing !== undefined);
+    // Daniel still holds 100 of 200 CBA (half sold) and all 105 VAS. The company's BHP parcel was fully
+    // disposed AND belongs to a separate taxpayer, so it must not appear as one of his carried-forward holdings.
+    const cbaRow = closing?.rows.find((r) => r[0] === "CBA");
+    const vasRow = closing?.rows.find((r) => r[0] === "VAS");
+    check("PC3: CBA carries forward 100 of 200 units, marked part sold",
+      cbaRow?.[3] === 100 && cbaRow?.[4] === 200 && cbaRow?.[6] === "part sold");
+    check("PC3: its carried-forward cost base is the parcel less the cost base used on the sale ($10,009.97)",
+      cbaRow?.[5] === "10009.97");
+    check("PC3: VAS carries forward untouched, marked held", vasRow?.[3] === 105 && vasRow?.[6] === "held");
+    check("PC3: the fully-disposed company parcel is NOT carried forward", closing?.rows.some((r) => r[0] === "BHP") === false);
+    check("PC3: the section totals the cost base carried forward, and it is not a tax outcome (no tie_back)",
+      closing?.subtotal_cents === 1000997 + 999700 + 300 && closing?.tie_back === undefined);
+
+    // Flag OFF ⇒ no derived fields, no section, byte-identical CSV.
+    const schedOff = await buildAccountantSchedule(envNoPos, "p2cap", 2025, { report: rNoPos });
+    check("PC3: flag OFF ⇒ no closing-holdings section at all (CSV byte-identical)",
+      schedOff.sections.find((s) => s.key === "capital_holdings") === undefined);
+
+    // The signal side of the two REVIEW findings + the promoted BLOCKER: replicate the DO's signal query and
+    // assert holdingPosition classifies real DB rows correctly. (The FINDINGS themselves — severities, defer
+    // framing, flag-OFF absence — are asserted against assessReadiness in check-units.ts, this repo's
+    // established seam for readiness; the DO's filingReadiness isn't reachable from this harness.)
+    {
+      const u = "pc3bad";
+      seedTenant(u, "PC3 inconsistent holdings");
+      inc(`${u}Sal`, u, "salary_payg", 5000000);
+      // (a) sold 150 of 100 units held — a missing earlier parcel, the usual cause.
+      run(`INSERT INTO cgt_assets (id, user_id, person_id, asset_kind, code, units, acquired_date, cost_base_cents) VALUES ('pc3over', ?, ?, 'shares', 'WES', 100, '2023-01-01', 1000000)`, u, `person_self_${u}`);
+      run(`INSERT INTO cgt_events (id, user_id, cgt_asset_id, fy, event_date, proceeds_cents, cost_base_used_cents, units_disposed) VALUES ('pc3overE', ?, 'pc3over', '2025-26', '2026-03-01', 2000000, 1000000, 150)`, u);
+      // (b) a disposal against a holding with NO cost base — the whole proceeds land as gain.
+      run(`INSERT INTO cgt_assets (id, user_id, person_id, asset_kind, code, units, acquired_date, cost_base_cents) VALUES ('pc3nocb', ?, ?, 'shares', 'TLS', 500, '2023-01-01', 0)`, u, `person_self_${u}`);
+      run(`INSERT INTO cgt_events (id, user_id, cgt_asset_id, fy, event_date, proceeds_cents, cost_base_used_cents, units_disposed) VALUES ('pc3nocbE', ?, 'pc3nocb', '2025-26', '2026-04-01', 700000, 0, 500)`, u);
+
+      const rows = db.prepare(
+        `SELECT a.id AS id, a.units AS units, a.cost_base_cents AS cost_base_cents,
+                COALESCE(SUM(ev.units_disposed), 0) AS units_disposed,
+                COALESCE(SUM(ev.cost_base_used_cents), 0) AS cost_base_used_cents,
+                COUNT(ev.id) AS n_events
+           FROM cgt_assets a LEFT JOIN cgt_events ev ON ev.cgt_asset_id = a.id AND ev.user_id = a.user_id
+          WHERE a.user_id = ? AND a.property_id IS NULL AND a.income_id IS NULL GROUP BY a.id`,
+      ).all(u) as { id: string; units: number | null; cost_base_cents: number; units_disposed: number; cost_base_used_cents: number; n_events: number }[];
+      const posFor = (id: string) => {
+        const r = rows.find((x) => x.id === id)!;
+        return holdingPosition({ units: r.units, cost_base_cents: r.cost_base_cents }, [{ units_disposed: r.units_disposed, cost_base_used_cents: r.cost_base_used_cents }]);
+      };
+      check("PC3: selling 150 of 100 units held is surfaced as 50 over-disposed (the review-finding signal)",
+        posFor("pc3over").over_disposed_units === 50);
+      check("PC3: a disposal against a zero-cost-base holding is detectable (the BLOCKER signal)",
+        rows.find((x) => x.id === "pc3nocb")!.n_events === 1 && rows.find((x) => x.id === "pc3nocb")!.cost_base_cents === 0);
+      // And the over-disposed holding's gain is still counted exactly as the user entered it — we surface,
+      // we never silently correct the money.
+      const rBad = await buildReport(envP, u, 2025);
+      check("PC3: the over-disposed sale still counts as entered ($10k gain) — we surface, never auto-correct",
+        rBad.capital_gains?.gross_capital_gains_cents === 1000000 + 700000);
+    }
   }
 
   // ── Persona 16: partnership partner — distribution share (Slice E) ──

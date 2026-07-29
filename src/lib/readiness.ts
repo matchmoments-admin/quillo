@@ -78,6 +78,11 @@ export interface FilingReadinessSignals {
   capitalHoldingsNeedingUnitsN?: number; // seeded from a brokerage deposit and still missing a quantity
   capitalHoldingsMissingAcquiredN?: number; // no acquisition date ⇒ the 12-month discount clock isn't evidenced
   capitalHoldingsMissingCostBaseN?: number; // zero/absent cost base ⇒ a disposal would report the whole proceeds as gain
+  // C3 (capital_position) — populated ONLY when the flag is on. Counts of DERIVED inconsistencies, never $
+  // outcomes: Quillo surfaces, the registered agent decides. A disposal is never blocked.
+  capitalOverDisposedN?: number; // holdings where the units disposed EXCEED the units held
+  capitalOverUsedCostBaseN?: number; // holdings where the cost base claimed across disposals exceeds the parcel's
+  capitalDisposedNoCostBaseN?: number; // holdings with a DISPOSAL and no cost base — the materially-distorting case
   // integrity_nudges (audit wave 1) — the caller populates these ONLY when the flag is on, so OFF ⇒
   // findings byte-identical. All four are pack REFERENCE values / booleans that drive defer nudges;
   // holding periods, offset limits and cap breaches are NEVER computed as $ outcomes.
@@ -681,11 +686,37 @@ export function assessReadiness(input: {
     const n = signals.capitalHoldingsMissingCostBaseN!;
     // REVIEW, not blocker: an un-disposed holding with no cost base distorts nothing THIS year — a
     // cgt_asset only reaches the position via a cgt_event. Blockers are reserved for a materially
-    // distorted position, so the blocker case (a zero cost base with a DISPOSAL recorded against it, which
-    // would report the whole proceeds as gain) belongs with the slice that examines disposals.
+    // distorted position; C3 below promotes exactly the disposed case.
     findings.push(f("capital_holding_missing_cost_base", "evidence", "review",
       `${n} investment holding${n === 1 ? "" : "s"} with no cost base recorded`,
       `A holding with no cost base would report the ENTIRE sale proceeds as a capital gain if you sold it — materially overstating the position. It doesn't affect this year's figures while you still hold it, but add what you paid (including brokerage and other incidental costs) before any sale. Cost-base elements are fact-specific.${DEFER}`,
+      true, []));
+  }
+
+  // C3 (capital_position): the DERIVED position's inconsistencies. All read from cgt_events, which already
+  // drive the computed gain — nothing new reaches the money. A disposal is NEVER blocked: parcel choice and
+  // cost-base composition are the taxpayer's decisions, so Quillo surfaces and the agent decides.
+  if ((signals.capitalDisposedNoCostBaseN ?? 0) > 0) {
+    const n = signals.capitalDisposedNoCostBaseN!;
+    // BLOCKER — and the only one in the capital set. This is the materially-distorted case: a disposal with
+    // no cost base reports the ENTIRE proceeds as a capital gain, in the position, this year.
+    findings.push(f("capital_disposal_no_cost_base", "evidence", "blocker",
+      `${n} investment disposal${n === 1 ? "" : "s"} with no cost base — the whole sale price is being counted as gain`,
+      `You've recorded a sale against a holding that has no cost base, so the entire sale proceeds are showing as a capital gain. That materially overstates your position. Enter what you paid for the parcel — purchase price plus brokerage and other incidental costs — before handing this over. Cost-base elements are fact-specific.${DEFER}`,
+      true, []));
+  }
+  if ((signals.capitalOverDisposedN ?? 0) > 0) {
+    const n = signals.capitalOverDisposedN!;
+    findings.push(f("capital_over_disposed", "evidence", "review",
+      `${n} holding${n === 1 ? "" : "s"} where you've sold more units than the parcel records`,
+      `The units sold add up to more than the units recorded as acquired for this holding. Usually that means a parcel is missing (an earlier purchase or a reinvestment that was never entered), or a quantity was mistyped. We haven't changed anything — the sales you entered are counted as you entered them. Check the holding against your broker's statement.${DEFER}`,
+      true, []));
+  }
+  if ((signals.capitalOverUsedCostBaseN ?? 0) > 0) {
+    const n = signals.capitalOverUsedCostBaseN!;
+    findings.push(f("capital_over_used_cost_base", "evidence", "review",
+      `${n} holding${n === 1 ? "" : "s"} where the cost base claimed on sales exceeds the parcel's cost base`,
+      `Across the sales recorded against this holding, the cost base used adds up to more than the parcel's own cost base. That UNDERSTATES the capital gain, so it's worth checking — usually a missing parcel or a figure entered twice. Parcel choice and cost-base composition are fact-specific.${DEFER}`,
       true, []));
   }
 

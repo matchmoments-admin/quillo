@@ -295,6 +295,7 @@ function AddIncomeForm({ fy, onDone }: { fy: string; onDone: () => void }) {
   const [date, setDate] = useState("");
   const [entityId, setEntityId] = useState("");
   const [propertyId, setPropertyId] = useState("");
+  const [cgtAssetId, setCgtAssetId] = useState("");
   const [mf, setMf] = useState<Record<MfKey, string>>(() => Object.fromEntries(MF_FIELDS.map((f) => [f.key, ""])) as Record<MfKey, string>);
   // Entities you can attribute income to (company / trust / SMSF). Default "" = you (the individual).
   // SMSF/company/trust are separate taxpayers, so attributing fund earnings here keeps them off your
@@ -305,6 +306,12 @@ function AddIncomeForm({ fy, onDone }: { fy: string; onDone: () => void }) {
   // (report filters property_id IS NOT NULL). Required when the tenant has any property.
   const properties = sit?.properties ?? [];
   const needsProperty = type === "rent" || type === "foreign_rent";
+  // capital_income_link (C-L): a dividend or managed-fund distribution comes FROM a holding. Linking them
+  // is what makes it possible to apply the AMIT cost-base amount to the right units, and to mint a DRP
+  // parcel against the right parcel. Optional metadata — nothing about the position depends on it.
+  const incomeLink = has("capital_income_link");
+  const holdingLinkable = incomeLink && (type === "dividend" || type === "managed_fund_distribution");
+  const holdings = useQuery({ queryKey: ["cgt-assets"], queryFn: () => api.cgtAssets(), enabled: holdingLinkable });
 
   // The component form was personal-ONLY because cgtTotals wasn't entity-scoped, so an entity's capital
   // gain would have leaked into the personal headline. That refusal silently DROPPED the gain instead.
@@ -330,12 +337,13 @@ function AddIncomeForm({ fy, onDone }: { fy: string; onDone: () => void }) {
         // C-E: the component branch must carry entity_id too. It never did — safe while the form was
         // personal-only, but now that an entity distribution can capture components, omitting it would
         // record the row (and materialise its capital gain) against the INDIVIDUAL instead.
-        ? api.addIncome({ income_type: type, fy, txn_date: date || null, components, entity_id: entityId || null })
+        ? api.addIncome({ income_type: type, fy, txn_date: date || null, components, entity_id: entityId || null, ...(holdingLinkable ? { cgt_asset_id: cgtAssetId || null } : {}) })
         : api.addIncome({
             income_type: type, fy,
             gross_cents: c(gross), withholding_cents: c(withheld), franking_credit_cents: c(franking),
             txn_date: date || null, entity_id: entityId || null,
             property_id: needsProperty ? propertyId || null : null,
+            ...(holdingLinkable ? { cgt_asset_id: cgtAssetId || null } : {}),
           }),
     onSuccess: onDone,
   });
@@ -364,6 +372,19 @@ function AddIncomeForm({ fy, onDone }: { fy: string; onDone: () => void }) {
             <select className="mt-1 w-full rounded-lg border border-line px-3 py-2 text-sm" value={propertyId} onChange={(e) => setPropertyId(e.target.value)}>
               <option value="">— choose —</option>
               {properties.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
+            </select>
+          </label>
+        )}
+        {/* capital_income_link (C-L): OPTIONAL — a dividend is assessable whether or not we know which
+            parcel produced it. The link is what lets a later slice apply the AMIT cost-base amount to the
+            right units and mint a DRP parcel against the right holding. */}
+        {holdingLinkable && (holdings.data ?? []).length > 0 && (
+          <label className="text-sm">From which holding?
+            <select className="mt-1 w-full rounded-lg border border-line px-3 py-2 text-sm" value={cgtAssetId} onChange={(e) => setCgtAssetId(e.target.value)}>
+              <option value="">— not linked —</option>
+              {(holdings.data ?? []).map((h) => (
+                <option key={h.id} value={h.id}>{[h.code, h.label].filter(Boolean).join(" · ") || h.asset_kind}</option>
+              ))}
             </select>
           </label>
         )}

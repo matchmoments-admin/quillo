@@ -1603,6 +1603,7 @@ export class TaxAgent extends Agent<Env> {
       detail_json?: string | null;
       needs_review?: number;
       components?: AmmaComponents | null; // Slice B: AMMA managed-fund component breakdown (managed_fund_distribution only)
+      cgt_asset_id?: string | null; // C-L (capital_income_link): the HOLDING that produced this dividend/distribution. Metadata only — nothing reads it for money.
     },
   ): Promise<string> {
     const id = crypto.randomUUID();
@@ -1615,7 +1616,11 @@ export class TaxAgent extends Agent<Env> {
     }
     // A property_id reaching the income table from the untrusted POST must belong to this tenant —
     // assertOwns no-ops on null/undefined, so trusted internal callers (clarify/payslip) are unaffected.
-    await assertOwns(this.env, userId, [{ table: "properties", id: inc.property_id ?? undefined, label: "property" }]);
+    // C-L: the same guard for a supplied holding — a cross-tenant cgt_asset_id would be a dangling join.
+    await assertOwns(this.env, userId, [
+      { table: "properties", id: inc.property_id ?? undefined, label: "property" },
+      { table: "cgt_assets", id: inc.cgt_asset_id ?? undefined, label: "holding" },
+    ]);
     const currency = (inc.currency ?? "AUD").trim().toUpperCase();
     const jur = await this.jurisdictionFor(userId);
     const baseCur = baseCurrencyOf(this.env, jur); // tenant's base currency (AU 'AUD' ⇒ byte-identical)
@@ -1666,11 +1671,15 @@ export class TaxAgent extends Agent<Env> {
     const rate = currency === baseCur ? 1 : fx.fx_rate ?? null;
     const toAudCents = (c: number | null | undefined): number | null => (c == null || rate == null ? null : Math.round(c * rate));
     const needsReview = (inc.needs_review ?? 0) || (fxUnconverted ? 1 : 0) || componentNeedsReview;
+    const incomeLink = featureOn(this.env, "capital_income_link");
     await this.env.DB.prepare(
+      // capital_income_link (C-L, 0072): cgt_asset_id joins the column list only when the flag is on, so a
+      // pre-0072 database still accepts income (an unconditional column would 500 every income POST) and
+      // the written row is byte-identical.
       `INSERT INTO income (id, user_id, person_id, entity_id, property_id, income_type, ato_label, fy,
          gross_cents, net_cents, withholding_cents, franking_credit_cents, foreign_tax_paid_cents,
-         currency, amount_aud_cents, fx_rate, source_doc_id, txn_date, detail_json, needs_review)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         currency, amount_aud_cents, fx_rate, source_doc_id, txn_date, detail_json, needs_review${incomeLink ? ", cgt_asset_id" : ""})
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?${incomeLink ? ", ?" : ""})`,
     )
       .bind(
         id, userId, inc.person_id ?? `person_self_${userId}`, inc.entity_id ?? null, inc.property_id ?? null,
@@ -1678,9 +1687,10 @@ export class TaxAgent extends Agent<Env> {
         toAudCents(inc.withholding_cents) ?? 0, frankingCredit, toAudCents(foreignTax) ?? 0,
         currency, fx.amount_aud_cents, fx.fx_rate, inc.source_doc_id ?? null, inc.txn_date ?? null,
         detailJson, needsReview,
+        ...(incomeLink ? [inc.cgt_asset_id ?? null] : []),
       )
       .run();
-    await this.audit(userId, "income_recorded", JSON.stringify({ id, type: inc.income_type, gross: grossCents, fy }));
+    await this.audit(userId, "income_recorded", JSON.stringify({ id, type: inc.income_type, gross: grossCents, fy, ...(incomeLink && inc.cgt_asset_id ? { cgt_asset_id: inc.cgt_asset_id } : {}) }));
     // Slice B: materialise the AMMA capital-gain components into the CGT engine (after the row exists, so
     // income_id provenance is set). Personal + AUD + valid only (guarded above).
     if (comps && materialiseCg) {

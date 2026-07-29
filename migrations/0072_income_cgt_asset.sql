@@ -1,0 +1,22 @@
+-- 0072_income_cgt_asset.sql — capital tranche C-L: link an income row to the HOLDING that produced it.
+-- THE MISSING LINK (docs/capital-cgt-findings.md §5, §7): a dividend or managed-fund distribution has no
+-- connection to the asset it came from. There is no path from `income` to `cgt_assets` at all. Two
+-- consequences, both already visible in the code:
+--
+--  1. The AMIT cost-base net amount is captured on the income row's detail_json, summed portfolio-wide into
+--     a readiness nudge, and then NEVER applied to any holding's cost base. It isn't merely unapplied — it
+--     is UNATTRIBUTABLE. With no link, you cannot know WHICH units to adjust. That is a missing column, not
+--     a missing calculation.
+--  2. A dividend reinvestment plan mints a new parcel at the reinvestment price, with its own 12-month
+--     discount clock. Without knowing which holding a dividend belongs to, there is nothing to mint against.
+--
+-- So this column is the prerequisite for both of those slices, and it is deliberately shipped on its own:
+-- it is PURE METADATA. Nothing reads it for money. The report, the taxable position and the accountant CSV
+-- are byte-identical whether a row is linked or not — which makes it a cheap, safe thing to land before the
+-- money-output slices that need it.
+--
+-- Apply: npx wrangler d1 execute tax-agent-db --remote --file=migrations/0072_income_cgt_asset.sql
+-- Idempotency: additive + apply-once. Nullable, NO backfill — we never guess which holding an existing
+-- dividend came from (a payer name is not a holding). The user links them.
+ALTER TABLE income ADD COLUMN cgt_asset_id TEXT;
+CREATE INDEX IF NOT EXISTS idx_income_cgt_asset ON income(user_id, cgt_asset_id);

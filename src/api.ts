@@ -950,12 +950,17 @@ export async function handleApi(
           fy: url.searchParams.get("fy") ?? undefined,
           personId: url.searchParams.get("person_id") ?? undefined,
           propertyId: url.searchParams.get("property_id") ?? undefined,
+          cgtAssetId: url.searchParams.get("cgt_asset_id") ?? undefined, // C-L: a holding's own income
         }),
       });
     }
     if (m === "POST" && !id) {
       try {
-        return json({ id: await stub.recordIncome(uid, await req.json()) });
+        const body = (await req.json()) as Record<string, unknown>;
+        // C-L: flag OFF ⇒ drop the link so a stale/forged client can't write it behind the flag's back
+        // (same guard shape as the cgt-assets/cgt-events routes). recordIncome assertOwns it either way.
+        if (!featureOn(env, "capital_income_link")) delete body.cgt_asset_id;
+        return json({ id: await stub.recordIncome(uid, body as Parameters<typeof stub.recordIncome>[1]) });
       } catch (e) {
         // Feature-gated income types (non_cash_business) reject as a client error, not a server fault.
         if (/requires the non_cash_income feature/.test((e as Error).message)) return json({ error: (e as Error).message }, 400);

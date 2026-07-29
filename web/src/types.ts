@@ -914,6 +914,7 @@ export interface IncomeRow {
   txn_date: string | null;
   needs_review: number;
   created_at: string;
+  cgt_asset_id?: string | null; // capital_income_link (C-L): the holding this dividend/distribution came from. Omitted when the flag is off
 }
 
 // Slice B: managed-fund (AMMA) distribution components — mirrors src/lib/managed-fund.ts AmmaComponents.

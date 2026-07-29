@@ -1,0 +1,20 @@
+-- 0073_cgt_cost_base_detail.sql — capital tranche C2: brokerage and the cost-base breakdown.
+-- THE GAP: migration 0037 documented cgt_assets.cost_base_cents as "purchase + incidental costs (brokerage,
+-- stamp duty)" — and nothing ever captured the incidental costs. No brokerage field on the holding form, no
+-- extraction from a contract note, no breakdown anywhere. So the schema comment's promise was never kept and
+-- a share purchase's cost base was understated by exactly the brokerage the taxpayer paid.
+--
+-- SHAPE (decided in docs/capital-cgt-findings.md, not in the diff): cost_base_cents stays the ONE canonical
+-- figure any engine reads, and the ELEMENTS live here as a JSON breakdown under a `cost_base_elements` key.
+-- Reasons: (1) the accountant schedule's tie-back asserts its per-disposal gains sum to the report's gross
+-- capital gains, which needs one canonical number that reconciles to cgt_events.cost_base_used_cents —
+-- a breakdown is presentation, the total is the contract; (2) the ATO defines FIVE cost-base elements and
+-- Sharesight/Xero both model them as a breakdown over a total, not as five columns; (3) a JSON breakdown
+-- survives UK Section 104 pooling and Canadian ACB averaging without a migration per element. It also
+-- mirrors income.detail_json's existing AMMA `components` blob exactly.
+--
+-- Apply: npx wrangler d1 execute tax-agent-db --remote --file=migrations/0073_cgt_cost_base_detail.sql
+-- Idempotency: additive + apply-once. Nullable, NO backfill — an existing holding has no breakdown and
+-- parseCostBaseElements returns null for it, so the caller falls back to the single figure and nothing is
+-- itemised. The canonical cost_base_cents column is untouched, so the position cannot move on migrate.
+ALTER TABLE cgt_assets ADD COLUMN detail_json TEXT;

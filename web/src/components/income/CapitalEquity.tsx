@@ -4,6 +4,7 @@ import { api } from "../../api";
 import { Card, Button, Input, money, InfoTip } from "../ui";
 import type { CgtAssetRow } from "../../types";
 import { useFeatures } from "../../lib/features";
+import { parseCostBaseElements } from "../../lib/capital";
 
 const CGT_KINDS = ["shares", "crypto", "property", "managed_fund", "other"] as const;
 const KIND_LABEL: Record<string, string> = { shares: "Shares", crypto: "Crypto", property: "Property", managed_fund: "Managed fund", other: "Other" };
@@ -19,6 +20,7 @@ export function CapitalEquity() {
   const entityScope = has("capital_entity_scope");
   const fromTxn = has("capital_from_txn");
   const incomeLink = has("capital_income_link");
+  const costBaseDetail = has("capital_cost_base_detail");
   const assets = useQuery({ queryKey: ["cgt-assets"], queryFn: () => api.cgtAssets() });
   const events = useQuery({ queryKey: ["cgt-events"], queryFn: () => api.cgtEvents() });
   // capital_entity_scope: resolve entity names so a non-personal holding is visibly attributed — an
@@ -69,7 +71,16 @@ export function CapitalEquity() {
                     captured or showed them, so a part-disposal couldn't be checked against what's held. */}
                 {holdingDetail && <td className="px-2 py-1 text-right tabular-nums text-muted">{unitsLabel(a.units)} units</td>}
                 <td className="px-2 py-1 text-muted tabular-nums">{a.acquired_date ?? "—"}</td>
-                <td className="px-2 py-1 text-right tabular-nums text-muted">cost base {money(a.cost_base_cents)}</td>
+                <td className="px-2 py-1 text-right tabular-nums text-muted">
+                  cost base {money(a.cost_base_cents)}
+                  {/* C2: show WHAT the cost base is made of, so the brokerage 0037 promised is visible
+                      rather than buried in one opaque number. */}
+                  {costBaseDetail && (() => {
+                    const el = parseCostBaseElements(a.detail_json ?? null);
+                    if (!el || el.brokerage_cents + el.incidental_cents === 0) return null;
+                    return <span className="block text-xs">incl. {money(el.brokerage_cents + el.incidental_cents)} costs</span>;
+                  })()}
+                </td>
                 {holdingDetail && <td className="px-2 py-1 text-right text-xs text-muted">{STATUS_LABEL[a.status] ?? a.status}</td>}
                 <td className="px-2 py-1 text-right"><button className="text-xs text-danger hover:underline" onClick={() => api.deleteCgtAsset(a.id).then(invalidate)}>delete</button></td>
               </tr>
@@ -109,6 +120,13 @@ function AddCgtAssetForm({ onDone }: { onDone: () => void }) {
   const { has } = useFeatures();
   const holdingDetail = has("capital_holding_detail");
   const entityScope = has("capital_entity_scope");
+  // capital_cost_base_detail (C2): migration 0037 promised "purchase + incidental costs (brokerage)" and
+  // nothing ever captured them. cost_base_cents is now COMPUTED from these elements server-side, so the one
+  // figure the engine reads can't disagree with the itemisation shown here.
+  const costBaseDetail = has("capital_cost_base_detail");
+  const [brokerage, setBrokerage] = useState("");
+  const [incidental, setIncidental] = useState("");
+  const [cbNote, setCbNote] = useState("");
   const [kind, setKind] = useState<string>("shares");
   const [code, setCode] = useState("");
   const [label, setLabel] = useState("");
@@ -128,6 +146,17 @@ function AddCgtAssetForm({ onDone }: { onDone: () => void }) {
     mutationFn: () => api.addCgtAsset({
       asset_kind: kind, code: code || null, acquired_date: acquired || null,
       cost_base_cents: Math.round(parseFloat(costBase || "0") * 100),
+      // The server recomputes cost_base_cents from the elements when they validate, so the two can never
+      // drift. Selling costs are deliberately absent — they reduce proceeds, not the cost base.
+      ...(costBaseDetail ? {
+        cost_base_elements: {
+          purchase_cents: Math.round(parseFloat(costBase || "0") * 100),
+          brokerage_cents: Math.round(parseFloat(brokerage || "0") * 100),
+          incidental_cents: Math.round(parseFloat(incidental || "0") * 100),
+          other_cents: 0,
+          note: cbNote || null,
+        },
+      } : {}),
       // capital_holding_detail: units/label/owner. Units are parsed as a plain float (fractional by
       // nature — DRP reinvestments, crypto) and left null when blank, which is today's stored value.
       ...(holdingDetail ? { units: units ? parseFloat(units) : null, label: label || null, person_id: personId || null } : {}),
@@ -146,7 +175,10 @@ function AddCgtAssetForm({ onDone }: { onDone: () => void }) {
         <label className="text-sm">Code / name<Input className="mt-1 w-full" value={code} onChange={(e) => setCode(e.target.value)} placeholder="CBA, BTC…" /></label>
         {holdingDetail && <label className="text-sm">Units held<Input className="mt-1 w-full" inputMode="decimal" value={units} onChange={(e) => setUnits(e.target.value)} placeholder="e.g. 120 or 0.5" /></label>}
         <label className="text-sm">Acquired<Input className="mt-1 w-full" type="date" value={acquired} onChange={(e) => setAcquired(e.target.value)} /></label>
-        <label className="text-sm">Cost base ($)<Input className="mt-1 w-full" inputMode="decimal" value={costBase} onChange={(e) => setCostBase(e.target.value)} /></label>
+        <label className="text-sm">{costBaseDetail ? "Purchase price ($)" : "Cost base ($)"}<Input className="mt-1 w-full" inputMode="decimal" value={costBase} onChange={(e) => setCostBase(e.target.value)} /></label>
+        {costBaseDetail && <label className="text-sm">Brokerage ($)<Input className="mt-1 w-full" inputMode="decimal" value={brokerage} onChange={(e) => setBrokerage(e.target.value)} placeholder="e.g. 9.50" /></label>}
+        {costBaseDetail && <label className="text-sm">Other costs ($)<Input className="mt-1 w-full" inputMode="decimal" value={incidental} onChange={(e) => setIncidental(e.target.value)} placeholder="transfer duty, fees" /></label>}
+        {costBaseDetail && <label className="text-sm">Evidence<Input className="mt-1 w-full" value={cbNote} onChange={(e) => setCbNote(e.target.value)} placeholder="CommSec contract note 1234" /></label>}
         {holdingDetail && <label className="text-sm">Description<Input className="mt-1 w-full" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Commonwealth Bank" /></label>}
         {holdingDetail && persons.length > 1 && (
           <label className="text-sm">Owner
@@ -167,6 +199,15 @@ function AddCgtAssetForm({ onDone }: { onDone: () => void }) {
       </div>
       {holdingDetail && (
         <p className="text-xs text-muted">Units let us check a part-sale against what you actually hold. General information only; confirm with a registered tax agent.</p>
+      )}
+      {costBaseDetail && (
+        <p className="text-xs text-muted">
+          Your cost base is the purchase price <strong>plus</strong> brokerage and other incidental costs — {money(
+            Math.round(parseFloat(costBase || "0") * 100) + Math.round(parseFloat(brokerage || "0") * 100) + Math.round(parseFloat(incidental || "0") * 100),
+          )} here. A bigger cost base means a smaller capital gain when you sell. Don't include the brokerage on
+          the <em>sale</em> — that reduces the sale proceeds instead, and counting it twice would understate the gain.
+          Cost-base elements are fact-specific; confirm with a registered tax agent.
+        </p>
       )}
       {entityScope && entities.length > 0 && (
         <p className="text-xs text-muted">A company, trust or SMSF is a separate taxpayer that lodges its own return, so a holding you mark as held by one stays out of your personal position. Confirm the treatment with a registered tax agent.</p>

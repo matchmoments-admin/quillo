@@ -866,6 +866,7 @@ console.log("claimability situational sweep (enumerateSituationClaims / classify
 
 // ── CGT: cost-base, Div43 reduction, 50% discount, main-residence, losses ─────
 import { computeCapitalGain, computeNetCapitalGain, propertyToCgtInputs, cgtUnits, DEFAULT_CGT_RULES } from "../src/lib/cgt";
+import { costBaseFromElements, validateCostBaseElements, parseCostBaseElements, withCostBaseElements, costBaseBreakdownRows, EMPTY_COST_BASE_ELEMENTS, type CostBaseElements } from "../src/lib/capital";
 import { ordinaryAssessableCents, totalDistributionCents, validateComponents, ammaToCgtEvents, parseAmmaComponents, type AmmaComponents } from "../src/lib/managed-fund";
 import { essAssessable } from "../src/lib/ess";
 import { gstFromInclusiveCents, computeBasNet } from "../src/lib/gst";
@@ -901,6 +902,51 @@ console.log("cgt");
   // Foreign resident → no 50% discount.
   const foreign = computeCapitalGain({ cost_base_cents: 50_000_000, proceeds_cents: 70_000_000, acquired_date: "2015-01-01", disposal_date: "2025-01-01", is_resident_individual: false });
   check("foreign resident → no discount", !foreign.discount_applied && foreign.net_gain_cents === 20_000_000);
+}
+
+console.log("cost-base elements (capital C2)");
+{
+  const mk = (p: Partial<CostBaseElements> = {}): CostBaseElements => ({ ...EMPTY_COST_BASE_ELEMENTS, ...p });
+
+  // The gap migration 0037 promised and never filled: brokerage reaching the cost base.
+  const buy = mk({ purchase_cents: 500_000, brokerage_cents: 950, incidental_cents: 0 });
+  check("C2: cost base = purchase + brokerage + incidental + other", costBaseFromElements(buy) === 500_950);
+  check("C2: every element sums in", costBaseFromElements(mk({ purchase_cents: 100, brokerage_cents: 2, incidental_cents: 3, other_cents: 4 })) === 109);
+
+  // A larger cost base means a SMALLER gain — the whole point of capturing brokerage. $6k proceeds on the
+  // buy above: without brokerage the gain is $1,000.00; with it, $990.50.
+  const gainWith = computeNetCapitalGain([{ proceeds_cents: 600_000, cost_base_used_cents: costBaseFromElements(buy), discount_eligible: false }], DEFAULT_CGT_RULES);
+  const gainWithout = computeNetCapitalGain([{ proceeds_cents: 600_000, cost_base_used_cents: buy.purchase_cents, discount_eligible: false }], DEFAULT_CGT_RULES);
+  check("C2: brokerage in the cost base reduces the gain by exactly the brokerage ($9.50)",
+    gainWithout.net_capital_gain_cents - gainWith.net_capital_gain_cents === 950 && gainWith.net_capital_gain_cents === 99_050);
+
+  // Validation: a negative "cost" is never a cost-base reduction (Div 43 and the AMIT amount reduce the
+  // TOTAL via their own engines; smuggling a negative element in here would bypass them).
+  check("C2 validate: rejects a negative element", validateCostBaseElements(mk({ purchase_cents: 100, brokerage_cents: -1 })).ok === false
+    && validateCostBaseElements(mk({ purchase_cents: 100, brokerage_cents: -1 })).reason === "negative");
+  check("C2 validate: rejects all-zero (a no-cost-base holding is chased by readiness, not stored as an itemised zero)",
+    validateCostBaseElements(mk()).ok === false && validateCostBaseElements(mk()).reason === "all_zero");
+  check("C2 validate: accepts brokerage-only (a fully-gifted parcel can still carry acquisition costs)", validateCostBaseElements(mk({ brokerage_cents: 950 })).ok === true);
+  check("C2 validate: rejects a non-finite element", validateCostBaseElements(mk({ purchase_cents: NaN })).ok === false);
+
+  // Round-trip through detail_json, mirroring parseAmmaComponents' contract exactly.
+  const blob = withCostBaseElements(null, mk({ purchase_cents: 500_000, brokerage_cents: 950, note: "  CommSec note 1234  " }));
+  const back = parseCostBaseElements(blob);
+  check("C2 parse: round-trips the elements", back?.purchase_cents === 500_000 && back?.brokerage_cents === 950);
+  check("C2 parse: trims the evidence note", back?.note === "CommSec note 1234");
+  check("C2 parse: a legacy/absent/malformed blob ⇒ null (caller falls back to the single figure)",
+    parseCostBaseElements(JSON.stringify({ something: 1 })) === null && parseCostBaseElements(null) === null
+    && parseCostBaseElements("") === null && parseCostBaseElements("{not json") === null);
+  check("C2 merge: preserves anything already in detail_json",
+    (JSON.parse(withCostBaseElements(JSON.stringify({ keep: "me" }), buy)) as { keep?: string }).keep === "me");
+
+  // The schedule breakdown drops zero elements (no noise rows) and never invents a total.
+  const rowsFull = costBaseBreakdownRows(mk({ purchase_cents: 100, brokerage_cents: 2, incidental_cents: 3, other_cents: 4 }));
+  check("C2 breakdown: one row per non-zero element, in cost-base order",
+    rowsFull.length === 4 && rowsFull[0].label === "Purchase price" && rowsFull[1].cents === 2);
+  check("C2 breakdown: zero elements are dropped", costBaseBreakdownRows(buy).length === 2);
+  check("C2 breakdown: rows sum to the canonical cost base (the tie-back's precondition)",
+    costBaseBreakdownRows(buy).reduce((t, r) => t + r.cents, 0) === costBaseFromElements(buy));
 }
 
 console.log("holding draft from a capital bank line (capital C1)");

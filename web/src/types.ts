@@ -688,6 +688,18 @@ export interface CgtAssetRow {
   person_id?: string | null; // capital_holding_detail (C0): the owning taxpayer; omitted when the flag is off
   entity_id?: string | null; // capital_entity_scope (C-E): the separate taxpayer (company/trust/SMSF) holding this parcel; NULL = personal. Omitted when the flag is off
   txn_id?: string | null; // capital_from_txn (C1): seeded from a confirmed 'capital' clarify answer on a brokerage deposit — units/cost base still need confirming. Omitted when the flag is off
+  detail_json?: string | null; // capital_cost_base_detail (C2): the cost-base element breakdown. Omitted when the flag is off
+}
+
+// capital_cost_base_detail (C2) — mirrors src/lib/capital.ts CostBaseElements. cost_base_cents remains the
+// one canonical figure; this is the breakdown it is made of (element 3, ownership costs, is deliberately
+// absent — generally unavailable for shares/units acquired after 20 Aug 1991).
+export interface CostBaseElements {
+  purchase_cents: number;
+  brokerage_cents: number;
+  incidental_cents: number;
+  other_cents: number;
+  note?: string | null;
 }
 export interface CgtEventRow {
   id: string;

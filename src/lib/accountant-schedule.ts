@@ -805,14 +805,25 @@ export async function buildAccountantSchedule(
       // C2: the elements the holding's cost base is MADE OF — so an auditor can see the brokerage that
       // migration 0037 promised and never captured, instead of one opaque number. Indented sub-rows with no
       // gain column, so they add nothing to the subtotal and the tie-back keeps reconciling.
+      //
+      // The elements describe the WHOLE PARCEL, but the row above shows the cost base attributable to the
+      // units DISPOSED — which on a part-disposal is a different number. Left unlabelled, the block read as
+      // a breakdown of the row above and visibly failed to add up ($20,000.00 + $19.95 under a $10,009.98
+      // cost base). So the block is explicitly headed with the parcel total it DOES sum to, and says whose
+      // number that is. The tie-back can't catch this class of error — it guards the section subtotal, not
+      // the internal consistency of a presentation block — so it is asserted directly in the goldens.
       if (!costBaseDetailOn) return [row];
       const elements = parseCostBaseElements(e.detail_json ?? null);
       if (!elements) return [row];
-      const subRows: Cell[][] = costBaseBreakdownRows(elements).map((b) => [
-        "", `    ${b.label}`, null, null, null, null, d(b.cents), null,
-        ...(parcelMethodOn ? [null] : []),
-      ]);
-      if (elements.note) subRows.push(["", `    Evidence: ${elements.note}`, null, null, null, null, null, null, ...(parcelMethodOn ? [null] : [])]);
+      const breakdown = costBaseBreakdownRows(elements);
+      if (!breakdown.length) return [row];
+      const parcelTotal = breakdown.reduce((t, b) => t + b.cents, 0);
+      const pad2: Cell[] = parcelMethodOn ? [null] : [];
+      const subRows: Cell[][] = [
+        ["", "    Cost base of the whole parcel", null, null, null, null, d(parcelTotal), null, ...pad2],
+        ...breakdown.map((b) => ["", `        ${b.label}`, null, null, null, null, d(b.cents), null, ...pad2] as Cell[]),
+      ];
+      if (elements.note) subRows.push(["", `        Evidence: ${elements.note}`, null, null, null, null, null, null, ...pad2]);
       return [row, ...subRows];
     });
     rows.push(["", "Gross capital gains", null, null, null, null, null, d(cg.gross_capital_gains_cents), ...pad]);

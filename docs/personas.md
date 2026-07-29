@@ -42,7 +42,7 @@ Legend — **engine**: backend computes it (✓ live behind flag); **UI**: a web
 | Multi-income aggregation | ✓ | ✓ | ✓ | (live) | all |
 | Sole-trader `business` income | ✓ | ◑ income only | ✓ | — (additive) | 4,5 |
 | Sole-trader activity + attribution | ✓ | ✓ activity-create form (Settings) + txn attribution | ◑ | `attribution_engine` (ON) | 4,5,8 |
-| CGT (shares/crypto/property) | ✓ | ✓ units/owner, brokerage + cost-base elements, purchase→holding from a deposit, dividend↔holding link | ◑ no running holdings **position** yet | `cgt_engine` + `capital_holding_detail` + `capital_entity_scope` + `capital_from_txn` + `capital_income_link` + `capital_cost_base_detail` (all ON) | 2,6,8,9,10 |
+| CGT (shares/crypto/property) | ✓ | ✓ units/owner, brokerage + cost-base elements, purchase→holding from a deposit, dividend↔holding link | ◑ remaining units/status derived for display; no stored/queryable **position** or exceeds-units finding yet | `cgt_engine` + `capital_holding_detail` + `capital_entity_scope` + `capital_from_txn` + `capital_income_link` + `capital_cost_base_detail` (all ON) | 2,6,8,9,10 |
 | Employee Share Scheme | ✓ | ✓ | ✓ | `ess_engine` (ON) | 2,9 |
 | GST registration flag | ✓ | ✓ | ✓ | — | 4,5,8 |
 | Indicative BAS (from ledger) | ✓ | ✓ GST-registered toggle | ✓ | `gst_bas` (ON) | 4,5,8 |
@@ -142,9 +142,23 @@ part-disposal guard *uncomputable* rather than merely unbuilt.
   indented sub-rows **with the subtotal unchanged**, so the tie-back keeps reconciling. Selling costs are
   deliberately excluded — they reduce capital proceeds, not the cost base, and counting them both ways would
   understate the gain. Golden: persona `pc2`.
-- Still open (re-planned once real holdings exist in prod): a derived holdings position with a part-disposal
-  review finding (which is also where a zero cost base *with a disposal* becomes a blocker rather than a
-  review), DRP parcels, the AMIT cost-base adjustment, and broker/registry statement ingest.
+- **Post-review fixes (`/code-review` on the tranche).** Two real defects the per-slice goldens missed:
+  (1) the accountant CSV's cost-base element block described the **whole parcel** while the row above showed
+  the cost base of the units **sold**, so on a part-disposal an accountant saw a breakdown that didn't add
+  up ($20,000.00 + $19.95 under a $10,009.98 cost base). The block is now headed with the parcel total it
+  actually sums to. The section tie-back cannot catch this class of error — it guards the subtotal, not a
+  presentation block's internal consistency — so it is asserted directly. PC2 only ever exercised a *full*
+  disposal, which is how it shipped; `p2cap` now covers the differing case.
+  (2) `cgt_assets.units`/`status` were rendered raw, so a holding still read "200 units · held" after the
+  taxpayer sold 100. The parcel row staying immutable is the right model (remaining is derived, the
+  acquisition record is never rewritten) — the bug was displaying the acquired figure as the remaining one.
+  Both are now derived in `CapitalEquity.tsx` from the disposal events the component already loads.
+  Also corrected in the reference fixture: a company-held disposal no longer carries `discount_eligible=1`
+  (a company gets no 50% discount), and a deposit-seeded cost base no longer exceeds the money that left the
+  bank. Two assertions that could not fail were made discriminating.
+- Still open (re-planned once real holdings exist in prod): a **stored/queryable** holdings position with the
+  exceeds-units review finding (which is also where a zero cost base *with a disposal* becomes a blocker
+  rather than a review), DRP parcels, the AMIT cost-base adjustment, and broker/registry statement ingest.
 
 ## How it's wired (for maintainers)
 

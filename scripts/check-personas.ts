@@ -344,18 +344,29 @@ const asset = (id: string, u: string, costCents: number, depCents: number, prope
   inc("p2capDiv", u, "dividend", 84000, { franking_credit_cents: 36000, cgt_asset_id: "p2capCba" });
 
   // (2) VAS ETF parcel seeded from a Stake deposit the user confirmed (C1) — units filled in afterwards.
-  const vasElements = { purchase_cents: 1000000, brokerage_cents: 300, incidental_cents: 0, other_cents: 0, note: "Stake confirmation" };
+  // The $10,000 deposit is the whole outlay: $9,997 of stock + $3 brokerage. Splitting it this way keeps the
+  // cost base equal to the money that actually left the bank — adding brokerage on TOP of the gross deposit
+  // would overstate it, which is exactly what C2's form copy warns against.
+  const vasElements = { purchase_cents: 999700, brokerage_cents: 300, incidental_cents: 0, other_cents: 0, note: "Stake confirmation" };
   run(`INSERT INTO transactions (id, user_id, source, status, kind, merchant, raw_description, amount_cents, amount_aud_cents, txn_date, ato_label, direction) VALUES ('p2capTxn', ?, 'upload', 'ignored', 'bank_line', 'STAKESHOP PTY LTD', 'STAKESHOP PTY LTD SYDNEY', 1000000, 1000000, '2024-02-10', 'capital:investment', 'debit')`, u);
   run(`INSERT INTO cgt_assets (id, user_id, person_id, asset_kind, code, label, units, acquired_date, cost_base_cents, detail_json, txn_id) VALUES ('p2capVas', ?, ?, 'shares', 'VAS', 'Vanguard Australian Shares ETF', 105, '2024-02-10', ?, ?, 'p2capTxn')`,
     u, self, costBaseFromElements(vasElements), withCostBaseElements(null, vasElements));
 
   // (3) A parcel held through the COMPANY — its gain is the company's, not Daniel's (C-E).
   run(`INSERT INTO cgt_assets (id, user_id, person_id, entity_id, asset_kind, code, units, acquired_date, cost_base_cents) VALUES ('p2capCoBhp', ?, ?, 'p2capCo', 'shares', 'BHP', 400, '2022-06-01', 1600000)`, u, self);
-  run(`INSERT INTO cgt_events (id, user_id, cgt_asset_id, fy, event_date, proceeds_cents, cost_base_used_cents, units_disposed, discount_eligible) VALUES ('p2capCoEv', ?, 'p2capCoBhp', '2025-26', '2025-11-20', 2400000, 1600000, 400, 1)`, u);
+  // discount_eligible = 0: a COMPANY is not entitled to the 50% CGT discount, however long it held. Inert
+  // today (capital_entity_scope keeps this parcel out of every computed position) but this fixture is the
+  // tranche's reference data, so the first slice that computes an entity-level position must not inherit a
+  // wrong discount flag from it.
+  run(`INSERT INTO cgt_events (id, user_id, cgt_asset_id, fy, event_date, proceeds_cents, cost_base_used_cents, units_disposed, discount_eligible) VALUES ('p2capCoEv', ?, 'p2capCoBhp', '2025-26', '2025-11-20', 2400000, 1600000, 400, 0)`, u);
 
   // (4) Daniel sells HALF the CBA parcel: 100 of 200 units for $13,000, cost base used = half of the
   // itemised cost base ($10,009.98 — he chose specific parcels). Held >12 months ⇒ discountable.
-  run(`INSERT INTO cgt_events (id, user_id, cgt_asset_id, fy, event_type, event_date, proceeds_cents, cost_base_used_cents, units_disposed, discount_eligible, method) VALUES ('p2capCbaEv', ?, 'p2capCba', '2025-26', 'part_disposal', '2026-01-15', 1300000, 1000998, 100, 1, 'specific_id')`, u);
+  // COUPLED to costBaseFromElements, not a hard-coded literal: cgtTotals only reads
+  // cgt_events.cost_base_used_cents, so with a literal here the "brokerage reached the cost base" assertion
+  // below would still pass even if costBaseFromElements stopped adding brokerage_cents.
+  run(`INSERT INTO cgt_events (id, user_id, cgt_asset_id, fy, event_type, event_date, proceeds_cents, cost_base_used_cents, units_disposed, discount_eligible, method) VALUES ('p2capCbaEv', ?, 'p2capCba', '2025-26', 'part_disposal', '2026-01-15', 1300000, ?, 100, 1, 'specific_id')`,
+    u, Math.round(costBaseFromElements(cbaElements) / 2));
 
   // (5) RSUs vesting — a taxed-upfront ESS discount, assessable employment income now (#141).
   run(`INSERT INTO ess_grants (id, user_id, person_id, employer_entity_id, scheme_type, grant_date, taxing_point_date, shares_or_options, units, discount_cents, ownership_gt_10pct) VALUES ('p2capRsu', ?, ?, 'p2capEmp', 'taxed_upfront', '2024-08-01', '2025-08-01', 'shares', 250, 1200000, 0)`, u, self);
@@ -1011,6 +1022,12 @@ async function main() {
     check("PC2: brokerage is ITEMISED for the auditor (0037's unkept promise, now visible)",
       sec?.rows.some((row) => String(row[1] ?? "").includes("Brokerage (acquisition)") && row[6] === "9.50") === true);
     check("PC2: the purchase price is itemised beside it", sec?.rows.some((row) => String(row[1] ?? "").includes("Purchase price") && row[6] === "5000.00") === true);
+    // This is a FULL disposal, so the parcel total and the cost base used are the same number — the block
+    // reconciles both ways. PC2 only ever covered this case, which is how the part-disposal inconsistency
+    // reached prod; p2cap now covers the differing case.
+    check("PC2: the block is headed with the parcel total, which on a full disposal equals the cost base used",
+      sec?.rows.some((row) => String(row[1] ?? "").includes("Cost base of the whole parcel") && row[6] === "5009.50") === true
+      && sec?.rows[0][6] === "5009.50");
     check("PC2: the evidence note reaches the schedule", sec?.rows.some((row) => String(row[1] ?? "").includes("CommSec contract note 1234")) === true);
     check("PC2: zero elements produce no noise rows (no 'Other capital costs' line)",
       sec?.rows.some((row) => String(row[1] ?? "").includes("Other capital costs")) === false);
@@ -1023,8 +1040,10 @@ async function main() {
     const secOff = schedOff.sections.find((s) => s.key === "cgt");
     check("PC2: flag OFF ⇒ identical money (cost_base_cents is the canonical figure either way)",
       rOff.capital_gains?.net_capital_gain_cents === 99050 && rOff.taxable_position_cents === r.taxable_position_cents);
-    check("PC2: flag OFF ⇒ no element sub-rows at all (CSV byte-identical)",
-      secOff?.rows.some((row) => String(row[1] ?? "").includes("Brokerage")) === false && secOff?.rows.length === 5 && secOff?.tie_back?.ok === true);
+    check("PC2: flag OFF ⇒ no element sub-rows and no parcel-total header at all (CSV byte-identical)",
+      secOff?.rows.some((row) => String(row[1] ?? "").includes("Brokerage")) === false
+      && secOff?.rows.some((row) => String(row[1] ?? "").includes("whole parcel")) === false
+      && secOff?.rows.length === 5 && secOff?.tie_back?.ok === true);
   }
 
   // ── Persona 2 (Daniel): the capital tranche end-to-end, as ONE taxpayer ──
@@ -1071,13 +1090,51 @@ async function main() {
       cgtSec?.rows.some((row) => row[1] === "CBA") === true
       && cgtSec?.rows.some((row) => String(row[1] ?? "").includes("Brokerage (acquisition)")) === true
       && cgtSec?.rows.some((row) => row[1] === "BHP") === false);
-    check("P2cap: the parcel-selection basis is recorded for the agent (specific identification)",
-      cgtSec?.rows.some((row) => row.includes("specific identification")) === true);
+    // The element block describes the WHOLE PARCEL while the disposal row shows the cost base of the units
+    // SOLD — different numbers on a part-disposal. Unheaded, the block read as a breakdown of the row above
+    // and visibly failed to add up. So: the block must state the parcel total it sums to, and that total
+    // must actually equal its own elements. The section tie-back cannot catch this (it guards the subtotal,
+    // not a presentation block's internal consistency), which is why it is asserted here.
+    const parcelHeader = cgtSec?.rows.find((row) => String(row[1] ?? "").includes("Cost base of the whole parcel"));
+    const elementRows = (cgtSec?.rows ?? []).filter((row) => /^ {8}(Purchase price|Brokerage|Incidental|Other capital)/.test(String(row[1] ?? "")));
+    const toCents = (v: unknown) => Math.round(parseFloat(String(v)) * 100);
+    check("P2cap: the cost-base block is headed with the parcel total it sums to ($20,019.95)",
+      parcelHeader !== undefined && toCents(parcelHeader![6]) === 2001995);
+    check("P2cap: the block's own elements reconcile to that header — the breakdown ADDS UP",
+      elementRows.length === 2 && elementRows.reduce((t, row) => t + toCents(row[6]), 0) === toCents(parcelHeader![6]));
+    check("P2cap: and it is legibly NOT the disposal figure (a part-disposal used half of it)",
+      toCents(parcelHeader![6]) !== toCents(cgtSec!.rows[0][6]) && toCents(cgtSec!.rows[0][6]) === 1000998);
+    // The schedule renders "specific identification" for ANY non-'fifo' method INCLUDING NULL (0069's
+    // documented semantics), so asserting on that label alone passes even when nothing was recorded.
+    // Assert the stored column, then prove the rendered label is actually discriminating.
+    const storedMethod = db.prepare(`SELECT method FROM cgt_events WHERE id = 'p2capCbaEv'`).get() as { method: string | null };
+    check("P2cap: the parcel-selection basis is RECORDED on the event, not merely defaulted", storedMethod.method === "specific_id");
+    check("P2cap: …and the schedule renders it", cgtSec?.rows.some((row) => row.includes("specific identification")) === true);
+    {
+      // Same disposal, FIFO basis ⇒ the column must read FIFO. Without this the label is unfalsifiable.
+      run(`UPDATE cgt_events SET method = 'fifo' WHERE id = 'p2capCbaEv'`);
+      const schedFifo = await buildAccountantSchedule(envD, "p2cap", 2025, { report: r });
+      const secFifo = schedFifo.sections.find((s) => s.key === "cgt");
+      check("P2cap: the parcel-method column discriminates — a FIFO disposal reads FIFO",
+        secFifo?.rows.some((row) => row.includes("FIFO")) === true && secFifo?.rows.some((row) => row.includes("specific identification")) === false);
+      run(`UPDATE cgt_events SET method = 'specific_id' WHERE id = 'p2capCbaEv'`);
+    }
 
-    // The holdings survive the year with their units intact — the carry-forward property C3 will build on.
-    const held = db.prepare(`SELECT code, units FROM cgt_assets WHERE user_id = 'p2cap' AND entity_id IS NULL AND units IS NOT NULL ORDER BY code`).all() as { code: string; units: number }[];
-    check("P2cap: both personal parcels carry their units (200 CBA, 105 VAS incl. a fractional-friendly ETF holding)",
+    // cgt_assets.units is the ACQUIRED parcel size and is deliberately NEVER rewritten — the acquisition
+    // record stays immutable and the remaining quantity is DERIVED. So 200 here is what he bought, NOT what
+    // he still holds after selling 100. (cgt_assets.status is likewise written 'held' at insert and never
+    // updated by anything; both are derived for display in CapitalEquity.tsx. GAP: a stored/queryable
+    // position, and the review finding for a disposal EXCEEDING units held, are the holdings-position
+    // slice's job — docs/personas.md still marks CGT display ◑ for exactly this reason.)
+    const held = db.prepare(`SELECT code, units, status FROM cgt_assets WHERE user_id = 'p2cap' AND entity_id IS NULL AND units IS NOT NULL ORDER BY code`).all() as { code: string; units: number; status: string }[];
+    check("P2cap: both personal parcels keep their ACQUIRED units immutable (200 CBA bought, 105 VAS)",
       held.length === 2 && held[0].code === "CBA" && held[0].units === 200 && held[1].code === "VAS" && held[1].units === 105);
+    check("P2cap: GAP — the stored status is still the insert-time literal after a part-disposal (derived for display)",
+      held.every((h) => h.status === "held"));
+    // The DERIVED remaining position, which is what the register actually shows: 100 of 200 CBA left.
+    const cbaDisposed = (db.prepare(`SELECT COALESCE(SUM(units_disposed),0) AS u FROM cgt_events WHERE cgt_asset_id = 'p2capCba'`).get() as { u: number }).u;
+    check("P2cap: the DERIVED remaining quantity is 100 of 200 CBA (what the holdings table renders)",
+      cbaDisposed === 100 && held[0].units - cbaDisposed === 100);
     // The deposit-seeded holding kept its provenance AND has been completed by the user.
     const seeded = db.prepare(`SELECT txn_id, units FROM cgt_assets WHERE user_id = 'p2cap' AND code = 'VAS'`).get() as { txn_id: string | null; units: number | null };
     check("P2cap: the Stake-deposit holding keeps its transaction provenance and is now complete",

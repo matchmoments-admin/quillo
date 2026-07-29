@@ -3,7 +3,7 @@
 // categorisation. No worker runtime / D1 / Claude — these are the fast, deterministic
 // regression guards for the rules we keep re-learning. Run: npm run test:units
 import { reconcileStatement, deriveBalances, isTransferLike, isLoanInterestLine, classifyMovement, movementTreatment, signedCents, lineFingerprint, type StatementLine } from "../src/lib/statements";
-import { groupKey, groupForClarify, rulePatternForStem, isClarifyLeftover, isInsuranceLikeStem, suggestionsFor } from "../src/lib/clarify";
+import { groupKey, groupForClarify, rulePatternForStem, isClarifyLeftover, isInsuranceLikeStem, suggestionsFor, draftHoldingFromTxn } from "../src/lib/clarify";
 import { resolveLoanInterest, deductibleInterestCents } from "../src/lib/loan-interest";
 import { scoreClaimMatches } from "../src/lib/claim-match";
 import { batchStatementStatus, isStaleBatch, BATCH_MAX_AGE_MS } from "../src/lib/batch";
@@ -901,6 +901,37 @@ console.log("cgt");
   // Foreign resident → no 50% discount.
   const foreign = computeCapitalGain({ cost_base_cents: 50_000_000, proceeds_cents: 70_000_000, acquired_date: "2015-01-01", disposal_date: "2025-01-01", is_resident_individual: false });
   check("foreign resident → no discount", !foreign.discount_applied && foreign.net_gain_cents === 20_000_000);
+}
+
+console.log("holding draft from a capital bank line (capital C1)");
+{
+  // A bank line evidences a date, an amount and a merchant — nothing else. The draft must seed exactly
+  // those and refuse to invent the rest (see the anti-goals: never write a cost base you guessed, never
+  // infer holdings from bank lines alone).
+  const d = draftHoldingFromTxn({ merchant: "STAKESHOP PTY LTD", raw_description: "STAKESHOP PTY LTD SYDNEY", amount_cents: 200000, txn_date: "2025-09-14" });
+  check("C1 draft: seeds broker code, date and amount from the line", d?.code === "STAKE" && d?.acquired_date === "2025-09-14" && d?.cost_base_cents === 200000);
+  check("C1 draft: units are NEVER inferred — a bank line can't evidence a quantity", d?.units === null);
+
+  // The code is the BROKER, not a ticker: a deposit doesn't say what was bought.
+  check("C1 draft: recognises the other brokers", draftHoldingFromTxn({ merchant: "COMMSEC", amount_cents: 100, txn_date: "2025-01-01" })?.code === "COMMSEC"
+    && draftHoldingFromTxn({ merchant: "Pearler", amount_cents: 100, txn_date: "2025-01-01" })?.code === "PEARLER");
+  check("C1 draft: 'vanguard personal' wins over the bare 'vanguard' (longest-first)",
+    draftHoldingFromTxn({ merchant: "VANGUARD PERSONAL INVESTOR", amount_cents: 100, txn_date: "2025-01-01" })?.code === "VANGUARD");
+  check("C1 draft: an unrecognised payer still drafts, with no invented code",
+    draftHoldingFromTxn({ merchant: "SOME BROKER", amount_cents: 100, txn_date: "2025-01-01" })?.code === null);
+
+  // Base currency only: amount_aud_cents is preferred, matching every other reader of these two columns,
+  // so a foreign deposit is never recorded as base-currency cents.
+  check("C1 draft: prefers the base-currency amount over the raw amount",
+    draftHoldingFromTxn({ merchant: "STAKE", amount_cents: 150000, amount_aud_cents: 230000, txn_date: "2025-03-02" })?.cost_base_cents === 230000);
+
+  // Nothing to seed ⇒ offer nothing, rather than a $0 holding that would read as a real cost base.
+  check("C1 draft: no usable amount ⇒ null (never a $0 cost base)",
+    draftHoldingFromTxn({ merchant: "STAKE", amount_cents: null, txn_date: "2025-01-01" }) === null
+    && draftHoldingFromTxn({ merchant: "STAKE", amount_cents: 0, txn_date: "2025-01-01" }) === null
+    && draftHoldingFromTxn({ merchant: "STAKE", amount_cents: -500, txn_date: "2025-01-01" }) === null);
+  check("C1 draft: a missing date drafts with a null acquired_date (readiness chases it)",
+    draftHoldingFromTxn({ merchant: "STAKE", amount_cents: 100, txn_date: null })?.acquired_date === null);
 }
 
 console.log("cgt units normalisation (capital C0)");

@@ -107,10 +107,21 @@ part-disposal guard *uncomputable* rather than merely unbuilt.
   `separateTaxpayerEntityIds` rule, so an `individual`-kind entity — P2's "Me" — keeps counting), the
   accountant schedule applies the *identical* shared predicate so its tie-back still reconciles, and an
   entity's gain is recorded against its own taxpayer instead of vanishing. Golden: persona `pce`.
-- Still open (re-planned once real holdings exist in prod): the purchase→holding loop from the capital
-  clarify answer, an income↔holding link, brokerage in the cost base, a derived holdings position with
-  a part-disposal review finding, DRP parcels, the AMIT cost-base adjustment, and broker/registry
-  statement ingest.
+- **C1 (flag `capital_from_txn`, ON, migration 0071)** closes the purchase→holding loop. Answering
+  "Investment / shares (capital — not deductible)" parked the bank line and stamped
+  `ato_label='capital:investment'` — a breadcrumb with **zero readers**, laid for "a future CGT cost-base
+  feature" and never picked up — so a user tapped ~40 Stake deposits and then hand-typed all 40 again as
+  holdings. Now the answer offers an explicit second step ("also start a holding record?"), and confirming
+  seeds one `cgt_asset` per parked deposit via a `txn_id`-keyed idempotent rebuild (the 0054/0055 shape).
+  A bank line cannot evidence units or a purchase price, so units stay NULL, the cost base is the amount
+  *deposited* for the user to confirm, and three readiness findings chase what's missing. **Position-neutral
+  by construction** — a `cgt_asset` with no `cgt_event` never reaches `cgtTotals` or the accountant
+  schedule, asserted by the golden. Deleting the source transaction clears the parcel (`clearTxnCgt`), and
+  a set-based `clearOrphanedTxnCgt` backstops the three bulk-delete paths. Golden: persona `pc1`.
+- Still open (re-planned once real holdings exist in prod): an income↔holding link, brokerage in the cost
+  base, a derived holdings position with a part-disposal review finding (which is also where a zero cost
+  base *with a disposal* becomes a blocker rather than a review), DRP parcels, the AMIT cost-base
+  adjustment, and broker/registry statement ingest.
 
 ## How it's wired (for maintainers)
 

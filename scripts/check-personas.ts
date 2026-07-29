@@ -18,8 +18,9 @@ import { COUNTABLE } from "../src/lib/queries";
 import { fyBounds } from "../src/lib/ledger-totals";
 import { buildAccountantSchedule, tieBackChecks } from "../src/lib/accountant-schedule";
 import { fetchAskDigestRows, listAccounts } from "../src/lib/queries";
-import { deleteRow, archiveRow, DeleteBlockedError, syncPropertyDisposalToCgt, syncIncomeCgtFromComponents } from "../src/lib/situation-write";
+import { deleteRow, archiveRow, DeleteBlockedError, syncPropertyDisposalToCgt, syncIncomeCgtFromComponents, syncTxnCgtHolding, clearTxnCgt, clearOrphanedTxnCgt } from "../src/lib/situation-write";
 import { ordinaryAssessableCents, type AmmaComponents } from "../src/lib/managed-fund";
+import { draftHoldingFromTxn } from "../src/lib/clarify";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
@@ -822,6 +823,66 @@ async function main() {
     await syncIncomeCgtFromComponents(env, "pceammaoff", "pceammaoffI", comps, "2025-26", `person_self_pceammaoff`, "Entity ETF", "2025-09-01", "pceammaoffCo");
     const offN = db.prepare(`SELECT COUNT(*) AS n FROM cgt_assets WHERE user_id = ? AND entity_id IS NOT NULL`).get("pceammaoff") as { n: number };
     check("PCE: flag OFF ⇒ the entity is ignored on write (unscoped, i.e. the leak addIncome refused to create)", offN.n === 0);
+  }
+
+  // ── Capital C1: the purchase→holding loop (capital_from_txn, 0071) ──
+  // Answering "Investment / shares (capital — not deductible)" parked the line behind ato_label
+  // 'capital:investment' — a label with ZERO readers — so a user tapped ~40 Stake deposits and then
+  // hand-typed all 40 again as holdings. C1 seeds them, but ONLY on an explicit confirm, and never with a
+  // guessed cost base. answerClarify lives on the DO, so this exercises the same write helpers it calls.
+  {
+    const envC1 = { DB: (env as unknown as { DB: unknown }).DB, FEATURES: `${(env as unknown as { FEATURES: string }).FEATURES},capital_from_txn,capital_holding_detail` } as unknown as Env;
+    const u = "pc1";
+    seedTenant(u, "PC1 brokerage deposits");
+    inc("pc1sal", u, "salary_payg", 9000000); // $90k salary — the position we must not move
+    // Three Stake deposits, parked by the capital answer (status='ignored' + the label), as today.
+    const deposits = [["pc1d1", "2025-08-01", 200000], ["pc1d2", "2025-09-01", 300000], ["pc1d3", "2025-10-01", 150000]] as const;
+    for (const [id, date, cents] of deposits) {
+      run(`INSERT INTO transactions (id, user_id, source, status, kind, merchant, raw_description, amount_cents, amount_aud_cents, txn_date, ato_label, direction) VALUES (?, ?, 'upload', 'ignored', 'bank_line', 'STAKESHOP PTY LTD', 'STAKESHOP PTY LTD SYDNEY', ?, ?, ?, 'capital:investment', 'debit')`, id, u, cents, cents, date);
+    }
+
+    const before = await buildReport(envC1, u, 2025);
+    // The confirm step: one holding per deposit, keyed on txn_id.
+    for (const [id, date, cents] of deposits) {
+      const draft = draftHoldingFromTxn({ merchant: "STAKESHOP PTY LTD", amount_cents: cents, txn_date: date });
+      await syncTxnCgtHolding(envC1, u, id, draft!, `person_self_${u}`);
+    }
+    const n1 = db.prepare(`SELECT COUNT(*) AS n FROM cgt_assets WHERE user_id = ? AND txn_id IS NOT NULL`).get(u) as { n: number };
+    check("PC1: confirming the capital answer seeds ONE holding per parked deposit (3)", n1.n === 3);
+    const seeded = db.prepare(`SELECT code, acquired_date, cost_base_cents, units, status FROM cgt_assets WHERE user_id = ? AND txn_id = 'pc1d2'`).get(u) as { code: string; acquired_date: string; cost_base_cents: number; units: number | null; status: string };
+    check("PC1: the holding carries the line's broker, date and amount — and NO invented units",
+      seeded.code === "STAKE" && seeded.acquired_date === "2025-09-01" && seeded.cost_base_cents === 300000 && seeded.units === null);
+
+    // IDEMPOTENCE: re-answering, a re-scan or a correction must not duplicate a parcel.
+    for (const [id, date, cents] of deposits) {
+      const draft = draftHoldingFromTxn({ merchant: "STAKESHOP PTY LTD", amount_cents: cents, txn_date: date });
+      await syncTxnCgtHolding(envC1, u, id, draft!, `person_self_${u}`);
+    }
+    const n2 = db.prepare(`SELECT COUNT(*) AS n FROM cgt_assets WHERE user_id = ? AND txn_id IS NOT NULL`).get(u) as { n: number };
+    check("PC1: answering twice yields ONE parcel per deposit, not two (txn_id-keyed rebuild)", n2.n === 3);
+
+    // POSITION-NEUTRAL BY CONSTRUCTION: a cgt_asset with no cgt_event never reaches cgtTotals or the
+    // accountant schedule, so seeding holdings cannot move the money in either flag state.
+    const after = await buildReport(envC1, u, 2025);
+    check("PC1: seeding holdings does NOT move the position (assets without disposals are money-neutral)",
+      after.taxable_position_cents === before.taxable_position_cents && after.taxable_position_cents === 9000000);
+    check("PC1: …and no capital_gains block appears (no disposal has been recorded)", after.capital_gains === undefined && before.capital_gains === undefined);
+    const schedC1 = await buildAccountantSchedule(envC1, u, 2025, { report: after });
+    check("PC1: the accountant CSV gains no CGT section from holdings alone", schedC1.sections.find((s) => s.key === "cgt") === undefined);
+
+    // DELETE CASCADE: without this a parcel outlives the transaction that evidenced it.
+    await clearTxnCgt(envC1, u, "pc1d1");
+    const n3 = db.prepare(`SELECT COUNT(*) AS n FROM cgt_assets WHERE user_id = ? AND txn_id IS NOT NULL`).get(u) as { n: number };
+    check("PC1: deleting a source transaction clears its seeded holding (no orphan)", n3.n === 2);
+
+    // The set-based backstop for BULK deletes (statement delete / re-import / document delete), where
+    // enumerating ids is awkward and easy to miss as new bulk paths appear.
+    run(`DELETE FROM transactions WHERE user_id = ? AND id = 'pc1d2'`, u);
+    await clearOrphanedTxnCgt(envC1, u);
+    const n4 = db.prepare(`SELECT COUNT(*) AS n FROM cgt_assets WHERE user_id = ? AND txn_id IS NOT NULL`).get(u) as { n: number };
+    check("PC1: a bulk transaction delete leaves no orphaned parcel behind", n4.n === 1);
+    const survivor = db.prepare(`SELECT txn_id FROM cgt_assets WHERE user_id = ? AND txn_id IS NOT NULL`).get(u) as { txn_id: string };
+    check("PC1: the orphan clear removes ONLY the orphans (the live deposit's holding survives)", survivor.txn_id === "pc1d3");
   }
 
   // ── Persona 16: partnership partner — distribution share (Slice E) ──

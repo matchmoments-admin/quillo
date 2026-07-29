@@ -5,6 +5,7 @@ import { api } from "../api";
 import { Card, money } from "./ui";
 import { PropertyFields, propertyToBody, propertyError, emptyProperty, type PropertyValue } from "./SituationFields";
 import type { ClarifyQuestion, ClarifySuggestion, ClarifyAnswer } from "../types";
+import { useFeatures } from "../lib/features";
 
 /**
  * "Repeat merchants to sort" — the demoted Clarify card (#164). It is a thin DISCOVERY + one-tap
@@ -59,6 +60,8 @@ export function ClarifyRow({
   onDone: () => void;
 }) {
   const qc = useQueryClient();
+  const { has } = useFeatures();
+  const fromTxn = has("capital_from_txn");
   const [propertyId, setPropertyId] = useState<string>(properties[0]?.id ?? "");
   // Inline label entry for the one suggestion that needs a category name (replaces a window.prompt).
   const [labelFor, setLabelFor] = useState<number | null>(null);
@@ -67,6 +70,10 @@ export function ClarifyRow({
   // Holds the suggestion index being applied; null while hidden. The selector is a child of the
   // chosen category, never a header sibling — so it can't imply a property on a salary/transfer.
   const [propertyFor, setPropertyFor] = useState<number | null>(null);
+  // capital_from_txn (C1): the inline "also start a holding record?" step for the capital answer. Same
+  // reveal-then-confirm shape as propertyFor — nothing is written until the user picks one of the two
+  // buttons, so a holding is never created as a side effect of parking the deposit.
+  const [capitalFor, setCapitalFor] = useState<number | null>(null);
   const [adding, setAdding] = useState(false);
   const [draft, setDraft] = useState<PropertyValue>(emptyProperty());
 
@@ -98,12 +105,14 @@ export function ClarifyRow({
   });
   const busy = answer.isPending || dismiss.isPending || addProperty.isPending;
 
-  const apply = (s: ClarifySuggestion, atoLabel?: string) => {
+  const apply = (s: ClarifySuggestion, atoLabel?: string, recordHolding?: boolean) => {
     const a: ClarifyAnswer = { kind: s.kind, bucket: s.bucket, ato_label: atoLabel ?? s.ato_label };
     if (s.needs_property) {
       if (!propertyId) return; // need a property selected first
       a.property_id = propertyId;
     }
+    // Only ever sent as an explicit true — never a default, and never for a non-capital answer.
+    if (recordHolding) a.record_holding = true;
     answer.mutate(a);
   };
 
@@ -111,6 +120,7 @@ export function ClarifyRow({
     // "Work-related deduction (choose category)" carries no label — collect one inline.
     if (s.kind === "bucket" && s.bucket === "payg" && !s.ato_label) {
       setPropertyFor(null);
+      setCapitalFor(null);
       setLabelFor(i);
       return;
     }
@@ -119,15 +129,25 @@ export function ClarifyRow({
     if (s.needs_property) {
       if (!propertyId && properties[0]) setPropertyId(properties[0].id);
       setLabelFor(null);
+      setCapitalFor(null);
       // A tenant with no properties yet can't pick from an empty list — drop them straight into the
       // inline add form (R4) so they're never stuck on a rental category with nothing to choose.
       setAdding(properties.length === 0);
       setPropertyFor(i);
       return;
     }
+    // capital_from_txn: an investment/brokerage deposit gets a second step — parking the line is one
+    // decision, starting a cost-base record is another. Reveal it instead of applying.
+    if (s.kind === "capital" && fromTxn) {
+      setLabelFor(null);
+      setPropertyFor(null);
+      setCapitalFor(i);
+      return;
+    }
     // Any non-property category clears the inline selector; apply() attaches no property_id, so a
     // switch away from rental can't carry a stale association (R3).
     setPropertyFor(null);
+    setCapitalFor(null);
     apply(s);
   };
 
@@ -250,6 +270,44 @@ export function ClarifyRow({
               </div>
             </div>
           )}
+        </div>
+      )}
+      {capitalFor != null && (
+        <div className="mt-2 space-y-2 rounded-lg border border-line bg-surface p-2.5">
+          <p className="text-xs text-muted">
+            These {q.n} line{q.n === 1 ? "" : "s"} are capital — not a deduction and not income. Also start a holding record for
+            {q.n === 1 ? " it" : " each of them"}, so you don't have to type {q.n === 1 ? "it" : "them"} in again?
+          </p>
+          <p className="text-xs text-muted">
+            We'll seed the date, the amount and the broker name. A bank line can't tell us how many units you bought or at what
+            price — and a deposit isn't always fully invested — so you'll confirm the units and the cost base in Capital &amp;
+            equity. General information only; confirm with a registered tax agent.
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={() => {
+                apply(q.suggestions[capitalFor], undefined, true);
+                setCapitalFor(null);
+              }}
+              disabled={busy}
+              className="rounded-lg border border-line bg-card px-2.5 py-1 text-xs font-medium hover:bg-surface disabled:opacity-50"
+            >
+              Yes — start {q.n === 1 ? "a holding" : `${q.n} holdings`}
+            </button>
+            <button
+              onClick={() => {
+                apply(q.suggestions[capitalFor]);
+                setCapitalFor(null);
+              }}
+              disabled={busy}
+              className="rounded-lg border border-line bg-card px-2.5 py-1 text-xs hover:bg-surface disabled:opacity-50"
+            >
+              No — just set {q.n === 1 ? "it" : "them"} aside
+            </button>
+            <button onClick={() => setCapitalFor(null)} className="px-2 py-1 text-xs text-muted hover:text-ink">
+              Cancel
+            </button>
+          </div>
         </div>
       )}
     </li>

@@ -17,6 +17,7 @@ export function CapitalEquity() {
   const { has } = useFeatures();
   const holdingDetail = has("capital_holding_detail");
   const entityScope = has("capital_entity_scope");
+  const fromTxn = has("capital_from_txn");
   const assets = useQuery({ queryKey: ["cgt-assets"], queryFn: () => api.cgtAssets() });
   const events = useQuery({ queryKey: ["cgt-events"], queryFn: () => api.cgtEvents() });
   // capital_entity_scope: resolve entity names so a non-personal holding is visibly attributed — an
@@ -49,6 +50,11 @@ export function CapitalEquity() {
                   {kindLabel(a)}
                   {holdingDetail && a.label ? <span className="text-muted"> · {a.label}</span> : null}
                   {entityScope && a.entity_id ? <span className="text-muted"> · held by {entityName(a.entity_id) ?? "an entity"} (not in your position)</span> : null}
+                  {/* capital_from_txn: seeded from a brokerage deposit. A bank line can't evidence a
+                      quantity, so say so plainly rather than presenting a half-record as complete. */}
+                  {fromTxn && a.txn_id && a.units == null ? (
+                    <span className="text-warn"> · from a deposit — confirm units &amp; cost base</span>
+                  ) : null}
                 </td>
                 {/* capital_holding_detail: units + status were always stored and returned; nothing ever
                     captured or showed them, so a part-disposal couldn't be checked against what's held. */}

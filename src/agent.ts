@@ -1,7 +1,7 @@
 import { Agent } from "agents";
 import type { Env } from "./env";
 import { getProfile, getSituation, renderSituation, type Profile, type Situation, type UserRule } from "./lib/db";
-import { addRule, addAccount, updateAccount, syncIncomeCgtFromComponents, clearIncomeCgt, syncPropertyDisposalToCgt, addPerson, updatePerson, addProperty, updateProperty, addEntity, updateEntity, updateRule, deleteRow, DeleteBlockedError, addPropertyOwner, addEntityRole, addIncomeActivity, addLoanProperty, updateLoanProperty, assertOwns, assertNoBlockingChildren, assertNoBlockingChildrenExcept } from "./lib/situation-write";
+import { addRule, addAccount, updateAccount, syncIncomeCgtFromComponents, clearIncomeCgt, syncTxnCgtHolding, clearTxnCgt, clearOrphanedTxnCgt, syncPropertyDisposalToCgt, addPerson, updatePerson, addProperty, updateProperty, addEntity, updateEntity, updateRule, deleteRow, DeleteBlockedError, addPropertyOwner, addEntityRole, addIncomeActivity, addLoanProperty, updateLoanProperty, assertOwns, assertNoBlockingChildren, assertNoBlockingChildrenExcept } from "./lib/situation-write";
 import type { DeleteBlocker } from "./lib/situation-write";
 import { captureNoaDraft } from "./lib/noa-store";
 import { ordinaryAssessableCents, validateComponents, parseAmmaComponents, type AmmaComponents } from "./lib/managed-fund";
@@ -30,7 +30,7 @@ import { assessReadiness, type FilingReadiness, type FilingReadinessSignals } fr
 import { rollSchedule, balancingAdjustment, fyStartYearOf, isLowCostAsset, looksLikePersonalTransfer, assetDepreciatesForTaxpayer, depMethodConflict, resolveDiv40Life, type DepAsset } from "./lib/depreciation";
 import { matchClaimRules, suggestionText, enumerateSituationClaims, classifyClaim, uncoveredOccupations, ruleKey, type ClaimRule, type ClaimContext, type ClaimSituation } from "./lib/claimability";
 import { parseCsv, applyColumnMap, lineFingerprint, deriveBalances, reconcileStatement, isLiabilityAccount, fuzzyMerchant, isTransferLike, isLoanInterestLine, classifyMovement, movementTreatment, type ColumnMap, type Reconciliation, type StatementLine, type MovementClass } from "./lib/statements";
-import { groupKey, groupForClarify, rulePatternForStem, isClarifyLeftover, CLARIFY_LEFTOVER_WHERE, type ClarifyRow } from "./lib/clarify";
+import { groupKey, groupForClarify, rulePatternForStem, draftHoldingFromTxn, isClarifyLeftover, CLARIFY_LEFTOVER_WHERE, type ClarifyRow } from "./lib/clarify";
 import { scoreClaimMatches, type ScoredTxn } from "./lib/claim-match";
 import { batchStatementStatus, isStaleBatch } from "./lib/batch";
 import { cleanMerchant } from "./lib/bank-parsers";
@@ -91,6 +91,9 @@ export interface ClarifyAnswer {
   bucket?: string;
   ato_label?: string;
   property_id?: string;
+  /** C1 (capital_from_txn), kind 'capital' only: the user EXPLICITLY confirmed "also start a holding
+   *  record for these deposits". Absent/false ⇒ park-and-label only, exactly as before. */
+  record_holding?: boolean;
 }
 
 /** The sign-off pack counts a "Do my books" run hands back. */
@@ -773,6 +776,8 @@ export class TaxAgent extends Agent<Env> {
         .bind(userId, statementId)
         .run();
       linesRemoved = del.meta?.changes ?? 0;
+      // C1: the deleted bank_lines may have seeded capital holdings — drop the now-orphaned parcels.
+      await clearOrphanedTxnCgt(this.env, userId);
     }
     if (stmt.file_key) {
       // Best-effort R2 cleanup: the original upload + the normalised-lines sidecar parse wrote.
@@ -844,6 +849,9 @@ export class TaxAgent extends Agent<Env> {
         )
           .bind(userId, s.id)
           .run();
+        // C1: the re-imported lines get NEW ids, so any holding seeded from an old line is genuinely
+        // orphaned — drop it rather than silently re-point it at a different transaction.
+        await clearOrphanedTxnCgt(this.env, userId);
         const r = await this.confirmImport(userId, s.id, undefined, true, true); // force past the gate, quiet
         recovered += Math.max(0, r.imported - actual);
         recoveredIds.push(s.id);
@@ -2448,6 +2456,7 @@ export class TaxAgent extends Agent<Env> {
     if (!doc) return { deleted: false, income_removed: 0, txns_removed: 0 };
     const inc = await this.env.DB.prepare(`DELETE FROM income WHERE user_id = ? AND source_doc_id = ?`).bind(userId, docId).run();
     const txn = await this.env.DB.prepare(`DELETE FROM transactions WHERE user_id = ? AND document_id = ?`).bind(userId, docId).run();
+    await clearOrphanedTxnCgt(this.env, userId); // C1: no parcel may outlive the transaction that evidenced it
     await this.env.DB.prepare(`DELETE FROM documents WHERE id = ? AND user_id = ?`).bind(docId, userId).run();
     if (doc.r2_key) await this.env.RECEIPTS.delete(doc.r2_key).catch(() => {});
     const income_removed = inc.meta?.changes ?? 0;
@@ -3453,6 +3462,30 @@ export class TaxAgent extends Agent<Env> {
         if (c) mfCostBaseAdjustmentCents += c.amit_cost_base_net_amount_cents;
       }
     }
+    // C1 (capital_from_txn): count INCOMPLETE holdings so readiness can chase them. Not FY-scoped — a
+    // holding is a standing record that spans years, and an incomplete one distorts the gain in whatever
+    // year it is eventually sold. Only counts user-managed rows (property/income-sourced parcels are
+    // materialised complete from their source, so chasing them would be noise). Populated ONLY when the
+    // flag is on ⇒ OFF keeps the findings byte-identical.
+    let capitalHoldingsNeedingUnitsN = 0;
+    let capitalHoldingsMissingAcquiredN = 0;
+    let capitalHoldingsMissingCostBaseN = 0;
+    if (featureOn(this.env, "capital_from_txn")) {
+      try {
+        const h = await this.env.DB.prepare(
+          `SELECT COALESCE(SUM(CASE WHEN txn_id IS NOT NULL AND units IS NULL THEN 1 ELSE 0 END), 0) AS needs_units,
+                  COALESCE(SUM(CASE WHEN acquired_date IS NULL OR acquired_date = '' THEN 1 ELSE 0 END), 0) AS no_acquired,
+                  COALESCE(SUM(CASE WHEN COALESCE(cost_base_cents, 0) <= 0 THEN 1 ELSE 0 END), 0) AS no_cost_base
+             FROM cgt_assets
+            WHERE user_id = ? AND property_id IS NULL AND income_id IS NULL AND status != 'disposed'`,
+        ).bind(userId).first<{ needs_units: number; no_acquired: number; no_cost_base: number }>();
+        capitalHoldingsNeedingUnitsN = h?.needs_units ?? 0;
+        capitalHoldingsMissingAcquiredN = h?.no_acquired ?? 0;
+        capitalHoldingsMissingCostBaseN = h?.no_cost_base ?? 0;
+      } catch (e) {
+        if (!/no such table|no such column/i.test((e as Error).message)) throw e;
+      }
+    }
     // GST registration status for the turnover nudge — registered if the tenant default is set OR any
     // entity is flagged (mirrors gstTotals' registration test in ledger-totals.ts).
     const entGstReg = (await this.env.DB.prepare(`SELECT COUNT(*) AS n FROM entities WHERE user_id = ? AND COALESCE(gst_registered,0) = 1`).bind(userId).first<{ n: number }>())?.n ?? 0;
@@ -3504,6 +3537,9 @@ export class TaxAgent extends Agent<Env> {
       psiAllAssessed,
       mainResidenceDisposalN: mainResDisposal?.n ?? 0,
       mfCostBaseAdjustmentCents,
+      capitalHoldingsNeedingUnitsN,
+      capitalHoldingsMissingAcquiredN,
+      capitalHoldingsMissingCostBaseN,
       ...(featureOn(this.env, "non_cash_income") ? { nonCashIncomeEnabled: true } : {}),
       ...(integrityOn ? {
         frankingHoldingThresholdCents: integrityThresholds?.franking_holding_rule_threshold_cents ?? null,
@@ -4740,7 +4776,27 @@ export class TaxAgent extends Agent<Env> {
         );
       }
       for (let i = 0; i < stmts.length; i += 80) await this.env.DB.batch(stmts.slice(i, i + 80));
-      await this.audit(userId, "clarify_answer", JSON.stringify({ questionId, kind: "capital", applied: debits.length }));
+      // C1 (capital_from_txn): the label above has always been a breadcrumb with NO readers. When the user
+      // EXPLICITLY confirms (answer.record_holding — an opt-in tick on the answer, never a default), seed a
+      // holding per parked deposit so the cost-base record actually starts, instead of making them hand-type
+      // all 40 Stake deposits again on the Capital & Equity page.
+      //
+      // CONFIRM-BEFORE-WRITE: absent/false ⇒ this whole block is skipped and the branch behaves exactly as
+      // before. Rebuild is keyed on txn_id, so answering twice yields one parcel per deposit, not two.
+      // A bank line can't evidence units or a purchase price, so units stay NULL and readiness chases them —
+      // we never write a cost base we guessed (only the amount the line actually shows, for the user to
+      // confirm). Position-neutral: assets without events don't reach cgtTotals or the accountant CSV.
+      let holdings_recorded = 0;
+      if (answer.record_holding && featureOn(this.env, "capital_from_txn")) {
+        for (const r of debits) {
+          const draft = draftHoldingFromTxn(r);
+          if (!draft) continue; // no usable amount ⇒ nothing to seed, so offer nothing
+          await syncTxnCgtHolding(this.env, userId, r.id, draft, null);
+          holdings_recorded++;
+        }
+        if (holdings_recorded) await this.audit(userId, "cgt_asset_recorded", JSON.stringify({ source: "clarify_capital", questionId, n: holdings_recorded }));
+      }
+      await this.audit(userId, "clarify_answer", JSON.stringify({ questionId, kind: "capital", applied: debits.length, ...(holdings_recorded ? { holdings_recorded } : {}) }));
       return { applied: debits.length, income_recorded: 0 };
     }
 
@@ -5100,6 +5156,11 @@ export class TaxAgent extends Agent<Env> {
       .bind(userId, txnId)
       .run();
     await this.env.DB.prepare(`DELETE FROM transaction_attributions WHERE transaction_id = ? AND user_id = ?`).bind(txnId, userId).run();
+    // C1: drop any holding seeded from this line's 'capital' clarify answer. Without this the parcel would
+    // claim to be evidenced by a transaction that no longer exists — and (once a disposal is recorded
+    // against it) would keep feeding the position with nothing left to remove it. Mirrors clearIncomeCgt on
+    // the income DELETE route.
+    await clearTxnCgt(this.env, userId, txnId);
     await this.env.DB.prepare(`DELETE FROM transactions WHERE id = ? AND user_id = ?`).bind(txnId, userId).run();
     await this.audit(
       userId,

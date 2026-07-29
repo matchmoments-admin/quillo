@@ -8,9 +8,14 @@ import { useFeatures } from "../../lib/features";
 const CGT_KINDS = ["shares", "crypto", "property", "managed_fund", "other"] as const;
 const KIND_LABEL: Record<string, string> = { shares: "Shares", crypto: "Crypto", property: "Property", managed_fund: "Managed fund", other: "Other" };
 const kindLabel = (a: CgtAssetRow) => (KIND_LABEL[a.asset_kind] ?? a.asset_kind) + (a.code ? ` · ${a.code}` : "");
+const STATUS_LABEL: Record<string, string> = { held: "held", part_disposed: "part sold", disposed: "sold" };
+// Units are fractional by nature (DRP reinvestments, crypto) — render what was entered, never round.
+const unitsLabel = (u: number | null | undefined) => (u == null ? "—" : String(u));
 
 export function CapitalEquity() {
   const qc = useQueryClient();
+  const { has } = useFeatures();
+  const holdingDetail = has("capital_holding_detail");
   const assets = useQuery({ queryKey: ["cgt-assets"], queryFn: () => api.cgtAssets() });
   const events = useQuery({ queryKey: ["cgt-events"], queryFn: () => api.cgtEvents() });
   const [addingAsset, setAddingAsset] = useState(false);
@@ -34,9 +39,13 @@ export function CapitalEquity() {
           <tbody>
             {assetList.map((a) => (
               <tr key={a.id} className="border-t border-line">
-                <td className="px-2 py-1">{kindLabel(a)}</td>
+                <td className="px-2 py-1">{kindLabel(a)}{holdingDetail && a.label ? <span className="text-muted"> · {a.label}</span> : null}</td>
+                {/* capital_holding_detail: units + status were always stored and returned; nothing ever
+                    captured or showed them, so a part-disposal couldn't be checked against what's held. */}
+                {holdingDetail && <td className="px-2 py-1 text-right tabular-nums text-muted">{unitsLabel(a.units)} units</td>}
                 <td className="px-2 py-1 text-muted tabular-nums">{a.acquired_date ?? "—"}</td>
                 <td className="px-2 py-1 text-right tabular-nums text-muted">cost base {money(a.cost_base_cents)}</td>
+                {holdingDetail && <td className="px-2 py-1 text-right text-xs text-muted">{STATUS_LABEL[a.status] ?? a.status}</td>}
                 <td className="px-2 py-1 text-right"><button className="text-xs text-danger hover:underline" onClick={() => api.deleteCgtAsset(a.id).then(invalidate)}>delete</button></td>
               </tr>
             ))}
@@ -56,6 +65,7 @@ export function CapitalEquity() {
               return (
                 <tr key={e.id} className="border-t border-line">
                   <td className="px-2 py-1">{a ? kindLabel(a) : e.cgt_asset_id}</td>
+                  {holdingDetail && <td className="px-2 py-1 text-right tabular-nums text-muted">{unitsLabel(e.units_disposed)} units</td>}
                   <td className="px-2 py-1 text-muted tabular-nums">{e.event_date}</td>
                   <td className="px-2 py-1 text-right tabular-nums text-muted">proceeds {money(e.proceeds_cents)} − cost {money(e.cost_base_used_cents)}</td>
                   <td className={`px-2 py-1 text-right tabular-nums font-medium ${e.proceeds_cents - e.cost_base_used_cents < 0 ? "text-danger" : ""}`}>{money(e.proceeds_cents - e.cost_base_used_cents)}</td>
@@ -71,12 +81,27 @@ export function CapitalEquity() {
 }
 
 function AddCgtAssetForm({ onDone }: { onDone: () => void }) {
+  const { has } = useFeatures();
+  const holdingDetail = has("capital_holding_detail");
   const [kind, setKind] = useState<string>("shares");
   const [code, setCode] = useState("");
+  const [label, setLabel] = useState("");
+  const [units, setUnits] = useState("");
+  const [personId, setPersonId] = useState("");
   const [acquired, setAcquired] = useState("");
   const [costBase, setCostBase] = useState("");
+  // Owner picker: only worth showing once the tenant has more than the self person. "" = you, and the
+  // server defaults to person_self_<uid> — so the payload stays identical for a single-person tenant.
+  const { data: sit } = useQuery({ queryKey: ["situation"], queryFn: () => api.situation(), enabled: holdingDetail });
+  const persons = sit?.persons ?? [];
   const add = useMutation({
-    mutationFn: () => api.addCgtAsset({ asset_kind: kind, code: code || null, acquired_date: acquired || null, cost_base_cents: Math.round(parseFloat(costBase || "0") * 100) }),
+    mutationFn: () => api.addCgtAsset({
+      asset_kind: kind, code: code || null, acquired_date: acquired || null,
+      cost_base_cents: Math.round(parseFloat(costBase || "0") * 100),
+      // capital_holding_detail: units/label/owner. Units are parsed as a plain float (fractional by
+      // nature — DRP reinvestments, crypto) and left null when blank, which is today's stored value.
+      ...(holdingDetail ? { units: units ? parseFloat(units) : null, label: label || null, person_id: personId || null } : {}),
+    }),
     onSuccess: onDone,
   });
   return (
@@ -88,9 +113,22 @@ function AddCgtAssetForm({ onDone }: { onDone: () => void }) {
           </select>
         </label>
         <label className="text-sm">Code / name<Input className="mt-1 w-full" value={code} onChange={(e) => setCode(e.target.value)} placeholder="CBA, BTC…" /></label>
+        {holdingDetail && <label className="text-sm">Units held<Input className="mt-1 w-full" inputMode="decimal" value={units} onChange={(e) => setUnits(e.target.value)} placeholder="e.g. 120 or 0.5" /></label>}
         <label className="text-sm">Acquired<Input className="mt-1 w-full" type="date" value={acquired} onChange={(e) => setAcquired(e.target.value)} /></label>
         <label className="text-sm">Cost base ($)<Input className="mt-1 w-full" inputMode="decimal" value={costBase} onChange={(e) => setCostBase(e.target.value)} /></label>
+        {holdingDetail && <label className="text-sm">Description<Input className="mt-1 w-full" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Commonwealth Bank" /></label>}
+        {holdingDetail && persons.length > 1 && (
+          <label className="text-sm">Owner
+            <select className="mt-1 w-full rounded-lg border border-line px-3 py-2 text-sm" value={personId} onChange={(e) => setPersonId(e.target.value)}>
+              <option value="">You</option>
+              {persons.filter((p) => p.role !== "self").map((p) => <option key={p.id} value={p.id}>{p.display_name}</option>)}
+            </select>
+          </label>
+        )}
       </div>
+      {holdingDetail && (
+        <p className="text-xs text-muted">Units let us check a part-sale against what you actually hold. General information only; confirm with a registered tax agent.</p>
+      )}
       <Button onClick={() => add.mutate()} disabled={add.isPending || !costBase}>{add.isPending ? "Saving…" : "Save holding"}</Button>
       {add.error && <p className="text-sm text-danger">{(add.error as Error).message}</p>}
     </Card>
@@ -100,13 +138,23 @@ function AddCgtAssetForm({ onDone }: { onDone: () => void }) {
 function AddCgtEventForm({ assets, onDone }: { assets: CgtAssetRow[]; onDone: () => void }) {
   const { has } = useFeatures();
   const parcelMethod = has("cgt_parcel_method");
+  const holdingDetail = has("capital_holding_detail");
   const [assetId, setAssetId] = useState<string>(assets[0]?.id ?? "");
   const [date, setDate] = useState("");
   const [proceeds, setProceeds] = useState("");
   const [costUsed, setCostUsed] = useState("");
+  const [unitsDisposed, setUnitsDisposed] = useState("");
   const [method, setMethod] = useState("specific_id");
   const add = useMutation({
-    mutationFn: () => api.addCgtEvent({ cgt_asset_id: assetId, event_date: date, proceeds_cents: Math.round(parseFloat(proceeds || "0") * 100), cost_base_used_cents: Math.round(parseFloat(costUsed || "0") * 100), ...(parcelMethod ? { method } : {}) }),
+    mutationFn: () => api.addCgtEvent({
+      cgt_asset_id: assetId, event_date: date,
+      proceeds_cents: Math.round(parseFloat(proceeds || "0") * 100),
+      cost_base_used_cents: Math.round(parseFloat(costUsed || "0") * 100),
+      ...(parcelMethod ? { method } : {}),
+      // capital_holding_detail: the schedule has always printed a Units column from this value; nothing
+      // ever set it. Blank ⇒ null ⇒ the column stays blank exactly as today.
+      ...(holdingDetail ? { units_disposed: unitsDisposed ? parseFloat(unitsDisposed) : null } : {}),
+    }),
     onSuccess: onDone,
   });
   return (
@@ -118,6 +166,7 @@ function AddCgtEventForm({ assets, onDone }: { assets: CgtAssetRow[]; onDone: ()
           </select>
         </label>
         <label className="text-sm">Disposal date<Input className="mt-1 w-full" type="date" value={date} onChange={(e) => setDate(e.target.value)} /></label>
+        {holdingDetail && <label className="text-sm">Units sold<Input className="mt-1 w-full" inputMode="decimal" value={unitsDisposed} onChange={(e) => setUnitsDisposed(e.target.value)} placeholder="e.g. 50" /></label>}
         <label className="text-sm">Proceeds ($)<Input className="mt-1 w-full" inputMode="decimal" value={proceeds} onChange={(e) => setProceeds(e.target.value)} /></label>
         <label className="text-sm">Cost base used ($)<Input className="mt-1 w-full" inputMode="decimal" value={costUsed} onChange={(e) => setCostUsed(e.target.value)} /></label>
         {/* cgt_parcel_method: records WHICH parcels the cost base represents. Parcel choice changes the

@@ -865,7 +865,7 @@ console.log("claimability situational sweep (enumerateSituationClaims / classify
 }
 
 // ── CGT: cost-base, Div43 reduction, 50% discount, main-residence, losses ─────
-import { computeCapitalGain, computeNetCapitalGain, propertyToCgtInputs, DEFAULT_CGT_RULES } from "../src/lib/cgt";
+import { computeCapitalGain, computeNetCapitalGain, propertyToCgtInputs, cgtUnits, DEFAULT_CGT_RULES } from "../src/lib/cgt";
 import { ordinaryAssessableCents, totalDistributionCents, validateComponents, ammaToCgtEvents, parseAmmaComponents, type AmmaComponents } from "../src/lib/managed-fund";
 import { essAssessable } from "../src/lib/ess";
 import { gstFromInclusiveCents, computeBasNet } from "../src/lib/gst";
@@ -901,6 +901,19 @@ console.log("cgt");
   // Foreign resident → no 50% discount.
   const foreign = computeCapitalGain({ cost_base_cents: 50_000_000, proceeds_cents: 70_000_000, acquired_date: "2015-01-01", disposal_date: "2025-01-01", is_resident_individual: false });
   check("foreign resident → no discount", !foreign.discount_applied && foreign.net_gain_cents === 20_000_000);
+}
+
+console.log("cgt units normalisation (capital C0)");
+{
+  // cgt_assets.units / cgt_events.units_disposed are REAL columns fed from a request body. They had NO
+  // capture surface at all before C0, so every user-entered holding stored NULL — which is exactly what
+  // the flag-OFF path must keep producing.
+  check("units: a whole quantity passes through", cgtUnits(120) === 120);
+  check("units: fractional quantities are NOT rounded (DRP / crypto)", cgtUnits(0.5) === 0.5 && cgtUnits(13.874219) === 13.874219);
+  check("units: a numeric string is coerced (form payloads)", cgtUnits("120.5") === 120.5 && cgtUnits(" 0.25 ") === 0.25);
+  check("units: absent ⇒ null (today's stored value ⇒ flag-OFF byte-identical)", cgtUnits(null) === null && cgtUnits(undefined) === null && cgtUnits("") === null);
+  check("units: zero and negatives are not quantities ⇒ null", cgtUnits(0) === null && cgtUnits(-5) === null);
+  check("units: NaN / Infinity / junk ⇒ null (never reaches the evidence pack)", cgtUnits(NaN) === null && cgtUnits(Infinity) === null && cgtUnits("abc") === null && cgtUnits({}) === null);
 }
 
 console.log("cgt property synthesis (Slice F)");

@@ -685,6 +685,7 @@ export interface CgtAssetRow {
   acquired_date: string | null;
   cost_base_cents: number;
   status: string;
+  person_id?: string | null; // capital_holding_detail (C0): the owning taxpayer; omitted when the flag is off
 }
 export interface CgtEventRow {
   id: string;

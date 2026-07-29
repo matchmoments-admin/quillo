@@ -926,7 +926,7 @@ export async function buildAccountantSchedule(
       type Group = { segment: NotClaimedSegment; category: string; reason: string; n: number; cents: number };
       const groups = new Map<string, Group>();
       const add = (segment: NotClaimedSegment, category: string, reason: string, c: number) => {
-        const key = `${segment} ${category} ${reason}`;
+        const key = `${segment}\u0000${category}\u0000${reason}`;
         const g = groups.get(key) ?? { segment, category, reason, n: 0, cents: 0 };
         g.n++;
         g.cents += c;

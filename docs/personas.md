@@ -99,6 +99,14 @@ part-disposal guard *uncomputable* rather than merely unbuilt.
   Pty-Ltd + co-owned-rental tenant with no shares, dividends or CGT rows — the shares/ETF/DRP arm the
   persona table describes does not exist yet and lands with the tranche's later slices. Until then
   `pc0on`/`pc0off`, `p10` (crypto) and `p14`/`p15` (property / AMMA) are the real CGT goldens.
+- **C-E (flag `capital_entity_scope`, ON, migration 0070)** fixes a live scoping bug. `cgtTotals` selected
+  `cgt_events JOIN cgt_assets` on `user_id` + `fy` only and `cgt_assets` had no entity dimension at all, so
+  a company/trust/SMSF parcel was inexpressible — and `addIncome` worked around it by *refusing* to
+  materialise an entity distribution's AMMA capital gain, trading a leak for a silent under-count. Now
+  `cgt_assets.entity_id` exists, the individual headline excludes **separate taxpayers only** (the precise
+  `separateTaxpayerEntityIds` rule, so an `individual`-kind entity — P2's "Me" — keeps counting), the
+  accountant schedule applies the *identical* shared predicate so its tie-back still reconciles, and an
+  entity's gain is recorded against its own taxpayer instead of vanishing. Golden: persona `pce`.
 - Still open (re-planned once real holdings exist in prod): the purchase→holding loop from the capital
   clarify answer, an income↔holding link, brokerage in the cost base, a derived holdings position with
   a part-disposal review finding, DRP parcels, the AMIT cost-base adjustment, and broker/registry

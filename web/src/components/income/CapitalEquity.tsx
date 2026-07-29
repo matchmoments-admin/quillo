@@ -16,8 +16,14 @@ export function CapitalEquity() {
   const qc = useQueryClient();
   const { has } = useFeatures();
   const holdingDetail = has("capital_holding_detail");
+  const entityScope = has("capital_entity_scope");
   const assets = useQuery({ queryKey: ["cgt-assets"], queryFn: () => api.cgtAssets() });
   const events = useQuery({ queryKey: ["cgt-events"], queryFn: () => api.cgtEvents() });
+  // capital_entity_scope: resolve entity names so a non-personal holding is visibly attributed — an
+  // entity's gain is excluded from your headline, and that must be legible, not silent.
+  const { data: sit } = useQuery({ queryKey: ["situation"], queryFn: () => api.situation(), enabled: entityScope });
+  const entityName = (entityId: string | null | undefined) =>
+    (entityId ? (sit?.entities ?? []).find((e) => e.id === entityId) : null)?.name ?? null;
   const [addingAsset, setAddingAsset] = useState(false);
   const [addingEvent, setAddingEvent] = useState(false);
   const invalidate = () => {
@@ -39,7 +45,11 @@ export function CapitalEquity() {
           <tbody>
             {assetList.map((a) => (
               <tr key={a.id} className="border-t border-line">
-                <td className="px-2 py-1">{kindLabel(a)}{holdingDetail && a.label ? <span className="text-muted"> · {a.label}</span> : null}</td>
+                <td className="px-2 py-1">
+                  {kindLabel(a)}
+                  {holdingDetail && a.label ? <span className="text-muted"> · {a.label}</span> : null}
+                  {entityScope && a.entity_id ? <span className="text-muted"> · held by {entityName(a.entity_id) ?? "an entity"} (not in your position)</span> : null}
+                </td>
                 {/* capital_holding_detail: units + status were always stored and returned; nothing ever
                     captured or showed them, so a part-disposal couldn't be checked against what's held. */}
                 {holdingDetail && <td className="px-2 py-1 text-right tabular-nums text-muted">{unitsLabel(a.units)} units</td>}
@@ -83,17 +93,22 @@ export function CapitalEquity() {
 function AddCgtAssetForm({ onDone }: { onDone: () => void }) {
   const { has } = useFeatures();
   const holdingDetail = has("capital_holding_detail");
+  const entityScope = has("capital_entity_scope");
   const [kind, setKind] = useState<string>("shares");
   const [code, setCode] = useState("");
   const [label, setLabel] = useState("");
   const [units, setUnits] = useState("");
   const [personId, setPersonId] = useState("");
+  const [entityId, setEntityId] = useState("");
   const [acquired, setAcquired] = useState("");
   const [costBase, setCostBase] = useState("");
   // Owner picker: only worth showing once the tenant has more than the self person. "" = you, and the
   // server defaults to person_self_<uid> — so the payload stays identical for a single-person tenant.
-  const { data: sit } = useQuery({ queryKey: ["situation"], queryFn: () => api.situation(), enabled: holdingDetail });
+  const { data: sit } = useQuery({ queryKey: ["situation"], queryFn: () => api.situation(), enabled: holdingDetail || entityScope });
   const persons = sit?.persons ?? [];
+  // capital_entity_scope: a company/trust/SMSF is a SEPARATE TAXPAYER that lodges its own return, so its
+  // holding must not reach your personal position. Same entity set the Income page offers.
+  const entities = (sit?.entities ?? []).filter((e) => e.kind === "company" || e.kind === "trust" || e.kind === "smsf");
   const add = useMutation({
     mutationFn: () => api.addCgtAsset({
       asset_kind: kind, code: code || null, acquired_date: acquired || null,
@@ -101,6 +116,7 @@ function AddCgtAssetForm({ onDone }: { onDone: () => void }) {
       // capital_holding_detail: units/label/owner. Units are parsed as a plain float (fractional by
       // nature — DRP reinvestments, crypto) and left null when blank, which is today's stored value.
       ...(holdingDetail ? { units: units ? parseFloat(units) : null, label: label || null, person_id: personId || null } : {}),
+      ...(entityScope ? { entity_id: entityId || null } : {}),
     }),
     onSuccess: onDone,
   });
@@ -125,9 +141,20 @@ function AddCgtAssetForm({ onDone }: { onDone: () => void }) {
             </select>
           </label>
         )}
+        {entityScope && entities.length > 0 && (
+          <label className="text-sm">Held by
+            <select className="mt-1 w-full rounded-lg border border-line px-3 py-2 text-sm" value={entityId} onChange={(e) => setEntityId(e.target.value)}>
+              <option value="">You (personally)</option>
+              {entities.map((e) => <option key={e.id} value={e.id}>{e.name ?? e.kind}</option>)}
+            </select>
+          </label>
+        )}
       </div>
       {holdingDetail && (
         <p className="text-xs text-muted">Units let us check a part-sale against what you actually hold. General information only; confirm with a registered tax agent.</p>
+      )}
+      {entityScope && entities.length > 0 && (
+        <p className="text-xs text-muted">A company, trust or SMSF is a separate taxpayer that lodges its own return, so a holding you mark as held by one stays out of your personal position. Confirm the treatment with a registered tax agent.</p>
       )}
       <Button onClick={() => add.mutate()} disabled={add.isPending || !costBase}>{add.isPending ? "Saving…" : "Save holding"}</Button>
       {add.error && <p className="text-sm text-danger">{(add.error as Error).message}</p>}

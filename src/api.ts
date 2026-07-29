@@ -1003,15 +1003,19 @@ export async function handleApi(
       // here can't desync it from its source.
       // capital_holding_detail (C0): person_id joins the payload only when the flag is on, so OFF keeps
       // the JSON byte-identical. `units` and `status` were always selected — the form just never set them.
+      // capital_entity_scope (C-E, 0070): entity_id is ATTRIBUTION, not provenance, so it does NOT join the
+      // register's provenance filter above — an entity-held parcel is still user-entered and manageable here.
       const holdingDetail = featureOn(env, "capital_holding_detail");
-      const assets = (await env.DB.prepare(`SELECT id, asset_kind, code, label, units, acquired_date, cost_base_cents, status${holdingDetail ? ", person_id" : ""} FROM cgt_assets WHERE user_id = ? AND property_id IS NULL AND income_id IS NULL ORDER BY acquired_date DESC, created_at DESC`).bind(uid).all()).results ?? [];
+      const entityScope = featureOn(env, "capital_entity_scope");
+      const assets = (await env.DB.prepare(`SELECT id, asset_kind, code, label, units, acquired_date, cost_base_cents, status${holdingDetail ? ", person_id" : ""}${entityScope ? ", entity_id" : ""} FROM cgt_assets WHERE user_id = ? AND property_id IS NULL AND income_id IS NULL ORDER BY acquired_date DESC, created_at DESC`).bind(uid).all()).results ?? [];
       return json({ cgt_assets: assets });
     }
     if (m === "POST" && !id) {
       const body = (await req.json()) as Record<string, unknown>;
-      // Flag OFF ⇒ drop the C0 fields so a stale/forged client can't write them behind the flag's back
-      // (mirrors the cgt-events `method` guard below). recordCgtAsset assertOwns the person either way.
+      // Flag OFF ⇒ drop the flagged fields so a stale/forged client can't write them behind the flag's back
+      // (mirrors the cgt-events `method` guard below). recordCgtAsset assertOwns person+entity either way.
       if (!featureOn(env, "capital_holding_detail")) { delete body.units; delete body.label; delete body.person_id; }
+      if (!featureOn(env, "capital_entity_scope")) delete body.entity_id;
       return json({ id: await stub.recordCgtAsset(uid, body as Parameters<typeof stub.recordCgtAsset>[1]) });
     }
     if (m === "DELETE" && id) { await deleteRow(env, uid, "cgt_assets", id); return json({ ok: true }); }

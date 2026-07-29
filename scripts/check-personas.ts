@@ -318,6 +318,28 @@ const asset = (id: string, u: string, costCents: number, depCents: number, prope
   run(`INSERT INTO transactions (id, user_id, source, status, kind, merchant, amount_cents, currency, amount_aud_cents, gst_cents, txn_date, bucket, ato_label, deductibility, deductible_amount_cents, direction, confidence, reasoning, ledger_ref) VALUES ('pfeeonT', ?, 'quillo', 'extracted', 'receipt', 'Quillo', 1000, 'AUD', 1000, NULL, ?, 'payg', 'D10', 'confirmed_deductible', 1000, 'debit', 1.0, 'Quillo subscription fee — cost of managing tax affairs (s25-5, label D10)', 'cs_test_persona')`, u, FY_DATE); // $10 fee
 }
 
+// ── Persona CE: entity-held CGT parcel — separate-taxpayer scoping (capital_entity_scope, 0070) ──
+// cgtTotals selected cgt_events JOIN cgt_assets on user_id + fy ONLY, and cgt_assets had no entity
+// dimension, so a company/trust/SMSF parcel could not be expressed and any gain attributed to one leaked
+// into the INDIVIDUAL headline. A company lodges its own return, so its gain is not the member's
+// assessable income (the same invariant P8's company income and PTS's trading stock already hold).
+{
+  const u = "pce";
+  seedTenant(u, "PCE entity-held holdings");
+  run(`INSERT INTO entities (id, user_id, kind, name, person_id, entity_type) VALUES ('pceCo', ?, 'company', 'Holdings Pty Ltd', ?, 'company')`, u, `person_self_${u}`);
+  // Personal parcel: $30k − $20k = $10k gain, held >12mo ⇒ discountable.
+  run(`INSERT INTO cgt_assets (id, user_id, person_id, asset_kind, code, units, acquired_date, cost_base_cents) VALUES ('pceMine', ?, ?, 'shares', 'CBA', 200, '2023-02-01', 2000000)`, u, `person_self_${u}`);
+  run(`INSERT INTO cgt_events (id, user_id, cgt_asset_id, fy, event_date, proceeds_cents, cost_base_used_cents, units_disposed) VALUES ('pceEvMine', ?, 'pceMine', '2025-26', '2025-11-01', 3000000, 2000000, 200)`, u);
+  // Company parcel: $80k − $50k = $30k gain. Separate taxpayer — must NOT reach the personal position.
+  run(`INSERT INTO cgt_assets (id, user_id, person_id, entity_id, asset_kind, code, units, acquired_date, cost_base_cents) VALUES ('pceCoAsset', ?, ?, 'pceCo', 'shares', 'BHP', 500, '2022-05-01', 5000000)`, u, `person_self_${u}`);
+  run(`INSERT INTO cgt_events (id, user_id, cgt_asset_id, fy, event_date, proceeds_cents, cost_base_used_cents, units_disposed) VALUES ('pceEvCo', ?, 'pceCoAsset', '2025-26', '2025-12-01', 8000000, 5000000, 500)`, u);
+  // An `individual`-kind entity (P2 has one, named "Me") IS the taxpayer, NOT a separate one. Its parcel
+  // must keep counting — the blunt `entity_id IS NULL` rule would silently drop the user's own $5k gain.
+  run(`INSERT INTO entities (id, user_id, kind, name, person_id, entity_type) VALUES ('pceMe', ?, 'individual', 'Me', ?, 'individual')`, u, `person_self_${u}`);
+  run(`INSERT INTO cgt_assets (id, user_id, person_id, entity_id, asset_kind, code, units, acquired_date, cost_base_cents) VALUES ('pceMeAsset', ?, ?, 'pceMe', 'shares', 'VAS', 100, '2021-07-01', 1000000)`, u, `person_self_${u}`);
+  run(`INSERT INTO cgt_events (id, user_id, cgt_asset_id, fy, event_date, proceeds_cents, cost_base_used_cents, units_disposed) VALUES ('pceEvMe', ?, 'pceMeAsset', '2025-26', '2025-10-01', 1500000, 1000000, 100)`, u);
+}
+
 // ── Persona 10: Margaret, SMSF retiree + crypto ──
 {
   const u = "p10";
@@ -734,6 +756,72 @@ async function main() {
     check("C0: schedule CGT section ties back with units populated", secOn?.tie_back?.ok === true && secOff?.tie_back?.ok === true);
     check("C0: units reach the schedule's Units column (blank before C0)", secOn?.rows[0]?.[3] === 400 && secOff?.rows[0]?.[3] === null);
     check("C0: the CGT subtotal is unaffected by units", secOn?.subtotal_cents === secOff?.subtotal_cents);
+  }
+
+  // ── Capital C-E: a separate taxpayer's CGT parcel must leave the individual headline ──
+  // Local env override (the PTS/P-car pattern): the base harness never sets capital_entity_scope, so every
+  // other persona proves OFF ⇒ byte-identical by construction.
+  {
+    const envCE = { DB: (env as unknown as { DB: unknown }).DB, FEATURES: `${(env as unknown as { FEATURES: string }).FEATURES},capital_entity_scope,capital_holding_detail` } as unknown as Env;
+
+    // OFF pins TODAY's honest (wrong) behaviour so we'd notice the flag silently moving.
+    // Gains: personal CBA $10k + company BHP $30k + own-"individual"-entity VAS $5k = $45k, all >12mo.
+    const rOff = await buildReport(env, "pce", 2025);
+    check("PCE: flag OFF ⇒ the company's $30k gain LEAKS into the personal headline (gross $45k → $22.5k net)",
+      rOff.capital_gains?.gross_capital_gains_cents === 4500000 && rOff.capital_gains?.net_capital_gain_cents === 2250000);
+
+    const rOn = await buildReport(envCE, "pce", 2025);
+    check("PCE: flag ON ⇒ the company's $30k gain leaves the individual headline (gross $15k → $7.5k net)",
+      rOn.capital_gains?.gross_capital_gains_cents === 1500000 && rOn.capital_gains?.net_capital_gain_cents === 750000);
+    // THE precision test: an `individual`-kind entity is NOT a separate taxpayer, so its $5k gain must
+    // still count. A blunt `entity_id IS NULL` rule would have reported gross $10k / net $5k here and
+    // silently dropped the taxpayer's own gain from their own return.
+    check("PCE: an `individual`-kind entity's parcel STILL counts (it is the taxpayer, not a separate one)",
+      rOn.capital_gains?.gross_capital_gains_cents === 1000000 + 500000);
+    check("PCE: the entity's gain is excluded from the taxable position", rOn.taxable_position_cents === 750000);
+    // Excluded from the POSITION, not deleted from the RECORD — the parcel is still there for the entity's
+    // own return and the evidence pack.
+    const stillThere = db.prepare(`SELECT COUNT(*) AS n FROM cgt_assets WHERE user_id = ? AND entity_id = 'pceCo'`).get("pce") as { n: number };
+    check("PCE: excluded from the position, NOT dropped from the record (the entity parcel still exists)", stillThere.n === 1);
+
+    // THE tie-back corollary: the accountant schedule re-queries cgt_events for its per-disposal rows and
+    // asserts they sum to report.gross_capital_gains_cents. If the report filtered entity events and the
+    // schedule did not, the section would over-state and this would fail — which is why both callers share
+    // cgtPersonalScopeExpr.
+    const schedOn = await buildAccountantSchedule(envCE, "pce", 2025, { report: rOn });
+    const secOn = schedOn.sections.find((s) => s.key === "cgt");
+    check("PCE: schedule CGT section applies the SAME scope predicate ⇒ tie-back holds", secOn?.tie_back?.ok === true);
+    check("PCE: the individual's disposals are itemised (CBA + VAS) and the company's BHP row is excluded",
+      secOn?.rows.some((r) => r[1] === "CBA") === true && secOn?.rows.some((r) => r[1] === "VAS") === true && secOn?.rows.some((r) => r[1] === "BHP") === false);
+    const schedOff = await buildAccountantSchedule(env, "pce", 2025, { report: rOff });
+    const secOff = schedOff.sections.find((s) => s.key === "cgt");
+    check("PCE: flag OFF ⇒ the schedule still lists both disposals and still ties back (byte-identical)",
+      secOff?.tie_back?.ok === true && secOff?.rows.some((r) => r[1] === "BHP") === true);
+
+    // The AMMA refusal is lifted. addIncome's safeToSplit required !inc.entity_id purely because of the
+    // leak above, which meant an entity distribution's capital gain was captured as components and then
+    // SILENTLY DROPPED from every position. With a place to put it, it is recorded against its own taxpayer.
+    const comps: AmmaComponents = {
+      franked_cents: 0, unfranked_cents: 500000, interest_cents: 0, other_income_cents: 0, foreign_income_cents: 0,
+      franking_credit_cents: 0, foreign_tax_paid_cents: 0, capital_gain_discounted_cents: 2000000, capital_gain_other_cents: 0,
+      amit_cost_base_net_amount_cents: 0,
+    };
+    const seedAmma = (u: string, coId: string) => {
+      seedTenant(u, `PCE entity AMMA (${u})`);
+      run(`INSERT INTO entities (id, user_id, kind, name, person_id, entity_type) VALUES (?, ?, 'company', 'Investing Pty Ltd', ?, 'company')`, coId, u, `person_self_${u}`);
+      inc(`${u}I`, u, "managed_fund_distribution", ordinaryAssessableCents(comps), { entity_id: coId, detail_json: JSON.stringify({ components: comps }) });
+    };
+    seedAmma("pceammaon", "pceammaonCo");
+    await syncIncomeCgtFromComponents(envCE, "pceammaon", "pceammaonI", comps, "2025-26", `person_self_pceammaon`, "Entity ETF", "2025-09-01", "pceammaonCo");
+    const onN = db.prepare(`SELECT COUNT(*) AS n FROM cgt_assets WHERE user_id = ? AND entity_id = 'pceammaonCo'`).get("pceammaon") as { n: number };
+    check("PCE: an entity AMMA distribution's $20k capital gain IS materialised, attributed to the entity", onN.n === 1);
+    const rAmma = await buildReport(envCE, "pceammaon", 2025);
+    check("PCE: …and it stays OUT of the individual's net capital gain", rAmma.capital_gains === undefined && rAmma.taxable_position_cents === 0);
+
+    seedAmma("pceammaoff", "pceammaoffCo");
+    await syncIncomeCgtFromComponents(env, "pceammaoff", "pceammaoffI", comps, "2025-26", `person_self_pceammaoff`, "Entity ETF", "2025-09-01", "pceammaoffCo");
+    const offN = db.prepare(`SELECT COUNT(*) AS n FROM cgt_assets WHERE user_id = ? AND entity_id IS NOT NULL`).get("pceammaoff") as { n: number };
+    check("PCE: flag OFF ⇒ the entity is ignored on write (unscoped, i.e. the leak addIncome refused to create)", offN.n === 0);
   }
 
   // ── Persona 16: partnership partner — distribution share (Slice E) ──

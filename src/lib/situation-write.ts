@@ -4,6 +4,7 @@ import { propertyToCgtInputs } from "./cgt";
 import { fyForDate } from "./report";
 import { resolveJurisdictionForUser } from "./jurisdiction";
 import { ammaToCgtEvents, type AmmaComponents } from "./managed-fund";
+import { featureOn } from "./features";
 
 // Situation mutations for the Settings + onboarding-web flows. These rows are not
 // hash-chained (unlike corrections/consent/audit), so they're written directly to D1.
@@ -211,6 +212,12 @@ export async function syncPropertyDisposalToCgt(env: Env, userId: string, proper
  * cgt_assets.income_id (mirrors syncPropertyDisposalToCgt): drop any prior income-sourced asset/events, then —
  * when there's a non-zero CG bucket — insert one cgt_asset (asset_kind='managed_fund', income_id provenance)
  * + one cgt_event per non-zero bucket with an EXPLICIT discount_eligible. No CG ⇒ just clears stale rows.
+ *
+ * C-E: `entityId` attributes the materialised parcel to a SEPARATE TAXPAYER (company/trust/SMSF). It is
+ * only written when capital_entity_scope is on — before that flag, addIncome refused to materialise an
+ * entity distribution's gain at all (it would have leaked into the personal headline), so the gain was
+ * captured as components and then silently dropped from every position. Passing it here is what lets the
+ * gain be recorded AND correctly excluded from the individual's assessable income.
  */
 export async function syncIncomeCgtFromComponents(
   env: Env,
@@ -221,6 +228,7 @@ export async function syncIncomeCgtFromComponents(
   personId: string | null,
   label: string | null,
   eventDate: string | null,
+  entityId: string | null = null,
 ): Promise<void> {
   try {
     // cgt_events.event_date is NOT NULL; use the distribution date, falling back to the FY end ("2025-26" →
@@ -240,10 +248,14 @@ export async function syncIncomeCgtFromComponents(
     }
 
     const assetId = uid();
+    // capital_entity_scope (C-E, 0070): entity_id joins the column list only when the flag is on, so a
+    // pre-0070 database keeps materialising personal gains exactly as before instead of hitting the
+    // no-such-column catch below and silently dropping them.
+    const entityScope = featureOn(env, "capital_entity_scope");
     const insAsset = env.DB.prepare(
-      `INSERT INTO cgt_assets (id, user_id, person_id, asset_kind, label, cost_base_cents, main_residence_exempt, status, income_id)
-       VALUES (?, ?, ?, 'managed_fund', ?, 0, 0, 'disposed', ?)`,
-    ).bind(assetId, userId, personId ?? selfPersonId(userId), `${label ?? "Managed fund"} (AMMA distributed capital gain)`, incomeId);
+      `INSERT INTO cgt_assets (id, user_id, person_id, asset_kind, label, cost_base_cents, main_residence_exempt, status, income_id${entityScope ? ", entity_id" : ""})
+       VALUES (?, ?, ?, 'managed_fund', ?, 0, 0, 'disposed', ?${entityScope ? ", ?" : ""})`,
+    ).bind(assetId, userId, personId ?? selfPersonId(userId), `${label ?? "Managed fund"} (AMMA distributed capital gain)`, incomeId, ...(entityScope ? [entityId ?? null] : []));
     const insEvents = cgEvents.map((ev) =>
       env.DB.prepare(
         `INSERT INTO cgt_events (id, user_id, cgt_asset_id, fy, event_type, event_date, proceeds_cents, cost_base_used_cents, discount_eligible)
@@ -586,6 +598,9 @@ const CHILD_REFS: Record<string, ReadonlyArray<{ table: string; column: string; 
     { table: "smsf_members", column: "smsf_entity_id", label: "SMSF members" },
     { table: "ess_grants", column: "employer_entity_id", label: "ESS grants" },
     { table: "documents", column: "entity_id", label: "documents" },
+    // C-E (0070): without this, deleting an entity would orphan its CGT parcels — they'd keep a dangling
+    // entity_id, stay excluded from the personal headline, and belong to no taxpayer at all.
+    { table: "cgt_assets", column: "entity_id", label: "CGT holdings" },
   ],
   persons: [
     { table: "properties", column: "person_id", label: "properties" },

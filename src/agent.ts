@@ -1632,10 +1632,18 @@ export class TaxAgent extends Agent<Env> {
       try { base = inc.detail_json ? (JSON.parse(inc.detail_json) as Record<string, unknown>) : {}; } catch { base = {}; }
       detailJson = JSON.stringify({ ...base, components: comps });
       // v1 safety: only split into the CGT engine when the income is in the base currency (components
-      // aren't FX-converted) and personal (cgtTotals isn't entity-scoped, so an entity's CG would leak
-      // into the personal headline). Otherwise record the ordinary income + components but flag for
-      // review and DON'T materialise the gain. AU ⇒ base='AUD' ⇒ byte-identical.
-      const safeToSplit = valid && currency === baseCur && !inc.entity_id;
+      // aren't FX-converted). The FX conservatism is permanent — matching the AMMA path's refusal to
+      // fabricate a rate.
+      //
+      // The PERSONAL-ONLY half of that guard was never a safety property, it was a workaround: cgtTotals
+      // wasn't entity-scoped, so an entity's gain would have leaked into the personal headline. Refusing
+      // to materialise traded that leak for a SILENT UNDER-COUNT — the components were captured and the
+      // gain then vanished from every position. capital_entity_scope (C-E, 0070) gives cgt_assets an
+      // entity_id and teaches cgtTotals + the accountant schedule to exclude non-NULL from the individual
+      // headline, so the gain can now be recorded against its own taxpayer. OFF ⇒ the refusal stays
+      // verbatim ⇒ byte-identical.
+      const entityScope = featureOn(this.env, "capital_entity_scope");
+      const safeToSplit = valid && currency === baseCur && (entityScope || !inc.entity_id);
       componentNeedsReview = safeToSplit ? 0 : 1;
       materialiseCg = safeToSplit;
     }
@@ -1668,7 +1676,9 @@ export class TaxAgent extends Agent<Env> {
     // Slice B: materialise the AMMA capital-gain components into the CGT engine (after the row exists, so
     // income_id provenance is set). Personal + AUD + valid only (guarded above).
     if (comps && materialiseCg) {
-      await syncIncomeCgtFromComponents(this.env, userId, id, comps, fy, inc.person_id ?? `person_self_${userId}`, inc.ato_label ?? null, inc.txn_date ?? null);
+      // C-E: carry the income row's entity through so an entity distribution's gain is attributed to that
+      // separate taxpayer rather than landing (unscoped) in the individual headline.
+      await syncIncomeCgtFromComponents(this.env, userId, id, comps, fy, inc.person_id ?? `person_self_${userId}`, inc.ato_label ?? null, inc.txn_date ?? null, inc.entity_id ?? null);
     }
     return id;
   }
@@ -1677,20 +1687,27 @@ export class TaxAgent extends Agent<Env> {
   // surfaced on the report behind the cgt_engine flag. These just persist the facts (user_id-scoped). ──
   async recordCgtAsset(
     userId: string,
-    a: { person_id?: string | null; asset_kind: string; code?: string | null; label?: string | null; units?: number | null; acquired_date?: string | null; cost_base_cents: number; reduced_cost_base_cents?: number | null; main_residence_exempt?: number },
+    a: { person_id?: string | null; entity_id?: string | null; asset_kind: string; code?: string | null; label?: string | null; units?: number | null; acquired_date?: string | null; cost_base_cents: number; reduced_cost_base_cents?: number | null; main_residence_exempt?: number },
   ): Promise<string> {
     // Cross-tenant guard (mirrors recordEssGrant): the API hands this the raw request body, so an
-    // explicitly-supplied person must belong to THIS tenant or the row carries a dangling reference
-    // that silently breaks the user_id-scoped joins. The default (self) is always own.
-    await assertOwns(this.env, userId, [{ table: "persons", id: a.person_id, label: "person" }]);
+    // explicitly-supplied person/entity must belong to THIS tenant or the row carries a dangling reference
+    // that silently breaks the user_id-scoped joins. The default (self, no entity) is always own.
+    await assertOwns(this.env, userId, [
+      { table: "persons", id: a.person_id, label: "person" },
+      { table: "entities", id: a.entity_id, label: "entity" },
+    ]);
     const id = crypto.randomUUID();
+    // capital_entity_scope (C-E, 0070): entity_id joins the column list only when the flag is on. Keeping
+    // it out of the OFF path means a pre-0070 database still accepts a holding (an unconditional column
+    // would make the whole endpoint 500 with "no such column") AND the written row is byte-identical.
+    const entityScope = featureOn(this.env, "capital_entity_scope");
     await this.env.DB.prepare(
-      `INSERT INTO cgt_assets (id, user_id, person_id, asset_kind, code, label, units, acquired_date, cost_base_cents, reduced_cost_base_cents, main_residence_exempt, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'held')`,
+      `INSERT INTO cgt_assets (id, user_id, person_id, asset_kind, code, label, units, acquired_date, cost_base_cents, reduced_cost_base_cents, main_residence_exempt, status${entityScope ? ", entity_id" : ""})
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'held'${entityScope ? ", ?" : ""})`,
     )
-      .bind(id, userId, a.person_id ?? `person_self_${userId}`, a.asset_kind, a.code ?? null, a.label ?? null, cgtUnits(a.units), a.acquired_date ?? null, a.cost_base_cents ?? 0, a.reduced_cost_base_cents ?? null, a.main_residence_exempt ?? 0)
+      .bind(id, userId, a.person_id ?? `person_self_${userId}`, a.asset_kind, a.code ?? null, a.label ?? null, cgtUnits(a.units), a.acquired_date ?? null, a.cost_base_cents ?? 0, a.reduced_cost_base_cents ?? null, a.main_residence_exempt ?? 0, ...(entityScope ? [a.entity_id ?? null] : []))
       .run();
-    await this.audit(userId, "cgt_asset_recorded", JSON.stringify({ id, kind: a.asset_kind, code: a.code }));
+    await this.audit(userId, "cgt_asset_recorded", JSON.stringify({ id, kind: a.asset_kind, code: a.code, ...(entityScope && a.entity_id ? { entity_id: a.entity_id } : {}) }));
     return id;
   }
 

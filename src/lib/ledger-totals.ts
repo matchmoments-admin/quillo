@@ -528,17 +528,55 @@ export async function smsfEntityIds(env: Env, userId: string): Promise<string[]>
  * double-counted into the founder's position (H1). Personal income (entity_id NULL, or an 'individual'
  * entity) is never excluded. [] when none / pre-0032 — so the exclusion is a no-op for personal-only data.
  */
+/**
+ * WHICH entity kinds are their OWN taxpayer, as a SQL predicate over an `entities` row. A company, trust,
+ * SMSF or partnership lodges its own return, so its income/gains are not the individual's assessable
+ * income; an `individual`/`employment` entity IS the individual and must keep counting.
+ *
+ * Exported as one expression so every reader that needs the distinction shares a single definition —
+ * separateTaxpayerEntityIds below and cgtPersonalScopeExpr can't drift apart as entity kinds are added.
+ */
+export const separateTaxpayerPredicate = (alias: string): string =>
+  `(${alias}.entity_type IN ('company','trust','smsf','partnership','property_partnership') OR ${alias}.kind IN ('company','trust'))`;
+
 export async function separateTaxpayerEntityIds(env: Env, userId: string): Promise<string[]> {
   try {
     const rows = (await env.DB.prepare(
-      `SELECT id FROM entities WHERE user_id = ?
-         AND (entity_type IN ('company','trust','smsf','partnership','property_partnership') OR kind IN ('company','trust'))`,
+      `SELECT e.id FROM entities e WHERE e.user_id = ? AND ${separateTaxpayerPredicate("e")}`,
     ).bind(userId).all<{ id: string }>()).results ?? [];
     return rows.map((r) => r.id);
   } catch (e) {
     if (/no such table|no such column/i.test((e as Error).message)) return [];
     throw e;
   }
+}
+
+/**
+ * C-E (capital_entity_scope, 0070): the SQL predicate that keeps a SEPARATE TAXPAYER's CGT parcel out of
+ * the INDIVIDUAL headline. Personal = no entity, OR an entity that is not its own taxpayer.
+ *
+ * Deliberately the PRECISE rule (`separateTaxpayerPredicate`), not the blunt `entity_id IS NULL` that
+ * trading_stock uses. `entities` legitimately holds `individual`/`employment` rows — P2's "Me" is one —
+ * and those ARE the individual. Excluding every non-NULL entity_id would silently drop the taxpayer's own
+ * gain from their own headline. This matches how incomeTotals already draws the line (excludeEntityIds =
+ * separateTaxpayerEntityIds), which is the correct precedent of the two.
+ *
+ * EXPORTED and shared deliberately. The accountant schedule's CGT section re-queries cgt_events for its
+ * per-disposal rows and asserts a tie_back against report.gross_capital_gains_cents. If the report applied
+ * this predicate and the schedule didn't, the section would list events the report excluded and the
+ * tie-back would fail. One expression, two callers, they can never disagree (same reasoning as
+ * movementTreatment being shared by the sweep's read and write paths).
+ *
+ * A correlated subquery rather than bound ids, so the expression stays sync and bind-free and can be
+ * inlined by both callers without changing their `.bind(...)` shape.
+ *
+ * Flag OFF ⇒ the literal "1", i.e. no predicate at all ⇒ every existing result is byte-identical.
+ * Pre-0070 (no such column) is handled by the callers' existing no-such-column catch.
+ */
+export function cgtPersonalScopeExpr(env: Env, alias = "a"): string {
+  if (!featureOn(env, "capital_entity_scope")) return "1";
+  return `(${alias}.entity_id IS NULL OR ${alias}.entity_id NOT IN (
+            SELECT e.id FROM entities e WHERE e.user_id = ${alias}.user_id AND ${separateTaxpayerPredicate("e")}))`;
 }
 
 /**
@@ -755,7 +793,7 @@ export async function cgtTotals(env: Env, userId: string, startYear: number, rul
               ev.discount_eligible AS discount_eligible, ev.event_date AS event_date,
               a.acquired_date AS acquired_date
          FROM cgt_events ev JOIN cgt_assets a ON a.id = ev.cgt_asset_id AND a.user_id = ev.user_id
-        WHERE ev.user_id = ? AND ev.fy = ?`,
+        WHERE ev.user_id = ? AND ev.fy = ? AND ${cgtPersonalScopeExpr(env)}`,
     ).bind(userId, fy).all<{ proceeds_cents: number; cost_base_used_cents: number; discount_eligible: number | null; event_date: string | null; acquired_date: string | null }>()).results ?? [];
     if (!events.length) return zero;
     // Carried-forward capital losses from prior FYs (capital_loss_carryins is capture-only set-up data).

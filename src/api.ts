@@ -80,6 +80,7 @@ import { resolveJurisdictionForUser } from "./lib/jurisdiction";
 import { buildAccountantSchedule, scheduleToCsv, scheduleToXlsx } from "./lib/accountant-schedule";
 import { getProgress } from "./lib/progress";
 import { featureOn } from "./lib/features";
+import { holdingPosition } from "./lib/capital";
 import { groupKey } from "./lib/clarify";
 
 const json = (data: unknown, status = 200) =>
@@ -1024,6 +1025,27 @@ export async function handleApi(
       // stays the canonical figure — this is what the form re-opens for editing and what the UI itemises.
       const costBaseDetail = featureOn(env, "capital_cost_base_detail");
       const assets = (await env.DB.prepare(`SELECT id, asset_kind, code, label, units, acquired_date, cost_base_cents, status${holdingDetail ? ", person_id" : ""}${entityScope ? ", entity_id" : ""}${fromTxn ? ", txn_id" : ""}${costBaseDetail ? ", detail_json" : ""} FROM cgt_assets WHERE user_id = ? AND property_id IS NULL AND income_id IS NULL ORDER BY acquired_date DESC, created_at DESC`).bind(uid).all()).results ?? [];
+      // capital_position (C3): attach the DERIVED position so the SPA and the server share ONE definition
+      // of "remaining" — the register used to derive it client-side, which is a second definition waiting to
+      // drift. cgt_assets.status is dead (insert-time literal, never updated); `position.status` supersedes
+      // it. One extra query for the whole list, grouped in JS — no N+1.
+      if (featureOn(env, "capital_position") && assets.length) {
+        const evs = (await env.DB.prepare(
+          `SELECT cgt_asset_id, units_disposed, cost_base_used_cents FROM cgt_events WHERE user_id = ?`,
+        ).bind(uid).all<{ cgt_asset_id: string; units_disposed: number | null; cost_base_used_cents: number | null }>()).results ?? [];
+        const byAsset = new Map<string, { units_disposed: number | null; cost_base_used_cents: number | null }[]>();
+        for (const e of evs) {
+          const list = byAsset.get(e.cgt_asset_id) ?? [];
+          list.push({ units_disposed: e.units_disposed, cost_base_used_cents: e.cost_base_used_cents });
+          byAsset.set(e.cgt_asset_id, list);
+        }
+        for (const a of assets as Record<string, unknown>[]) {
+          a.position = holdingPosition(
+            { units: a.units as number | null, cost_base_cents: a.cost_base_cents as number },
+            byAsset.get(a.id as string) ?? [],
+          );
+        }
+      }
       return json({ cgt_assets: assets });
     }
     if (m === "POST" && !id) {

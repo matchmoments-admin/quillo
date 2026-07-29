@@ -689,6 +689,21 @@ export interface CgtAssetRow {
   entity_id?: string | null; // capital_entity_scope (C-E): the separate taxpayer (company/trust/SMSF) holding this parcel; NULL = personal. Omitted when the flag is off
   txn_id?: string | null; // capital_from_txn (C1): seeded from a confirmed 'capital' clarify answer on a brokerage deposit — units/cost base still need confirming. Omitted when the flag is off
   detail_json?: string | null; // capital_cost_base_detail (C2): the cost-base element breakdown. Omitted when the flag is off
+  position?: HoldingPosition | null; // capital_position (C3): the SERVER-derived running position. Omitted when the flag is off
+}
+
+// capital_position (C3) — mirrors src/lib/capital.ts HoldingPosition. Derived server-side so the SPA and the
+// server share ONE definition of "remaining"; `status` here supersedes the dead cgt_assets.status column.
+export interface HoldingPosition {
+  units_acquired: number | null;
+  units_disposed: number;
+  units_remaining: number | null;
+  cost_base_cents: number;
+  cost_base_used_cents: number;
+  cost_base_remaining_cents: number;
+  status: "held" | "part_disposed" | "disposed";
+  over_disposed_units: number;
+  over_used_cost_base_cents: number;
 }
 
 // capital_cost_base_detail (C2) — mirrors src/lib/capital.ts CostBaseElements. cost_base_cents remains the

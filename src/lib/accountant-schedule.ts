@@ -18,7 +18,7 @@ import { deductibleInterestCents } from "./loan-interest";
 import { classifyAttribution, splitAttribution } from "./attribution";
 import { exclusionReason } from "./readiness";
 import { featureOn } from "./features";
-import { parseCostBaseElements, costBaseBreakdownRows } from "./capital";
+import { parseCostBaseElements, costBaseBreakdownRows, holdingPosition } from "./capital";
 import { generateWfhDiary, WFH_WEEKDAY_NAMES } from "./work-use";
 import { buildXlsx, type XlsxCell, type XlsxSheet } from "./xlsx";
 
@@ -370,6 +370,9 @@ export async function buildAccountantSchedule(
   // cgt_parcel_method: the Method column (parcel-selection basis) joins the CGT section only when the
   // flag is on — the schedule is live in prod, so an unconditional column would change CSV bytes.
   const parcelMethodOn = featureOn(env, "cgt_parcel_method");
+  // capital_position (C3): the closing-holdings list. Unlike the CGT section this is NOT conditional on
+  // there being a disposal this FY — a taxpayer who held all year still needs their parcels carried forward.
+  const positionOn = featureOn(env, "capital_position");
   // capital_cost_base_detail (C2): itemise the cost-base ELEMENTS under each disposal. Presentation only —
   // the section subtotal stays on the canonical figure, so the tie-back is unaffected by itemising.
   const costBaseDetailOn = featureOn(env, "capital_cost_base_detail");
@@ -448,8 +451,32 @@ export async function buildAccountantSchedule(
     : Promise.resolve([]);
 
   // All ten reads are independent of one another — resolve them concurrently.
-  const [items, incomeRows, depRows, depDenied, attrRows, cgtEvents, essGrants, trustRows, basRows, paygRows] =
-    await Promise.all([itemsP, incomeRowsP, depRowsP, depDeniedP, attrRowsP, cgtEventsP, essGrantsP, trustRowsP, basRowsP, paygRowsP]);
+  // C3: user-managed holdings + their disposals, for the closing-holdings section. Two flat reads joined in
+  // JS (no N+1). Scoped to property_id/income_id NULL — a property- or AMMA-sourced parcel is materialised
+  // complete from its source and already 'disposed', so it is not an open holding.
+  const holdingsP = positionOn
+    ? safeAll<{ id: string; code: string | null; label: string | null; asset_kind: string; acquired_date: string | null; units: number | null; cost_base_cents: number }>(
+        env.DB.prepare(
+          `SELECT id, code, label, asset_kind, acquired_date, units, cost_base_cents FROM cgt_assets
+            WHERE user_id = ? AND property_id IS NULL AND income_id IS NULL
+            ORDER BY COALESCE(code, label, asset_kind), acquired_date`,
+        ).bind(userId).all(),
+      )
+    : Promise.resolve([]);
+  const holdingDisposalsP = positionOn
+    ? safeAll<{ cgt_asset_id: string; units_disposed: number | null; cost_base_used_cents: number | null }>(
+        env.DB.prepare(`SELECT cgt_asset_id, units_disposed, cost_base_used_cents FROM cgt_events WHERE user_id = ?`).bind(userId).all(),
+      )
+    : Promise.resolve([]);
+  const [items, incomeRows, depRows, depDenied, attrRows, cgtEvents, essGrants, trustRows, basRows, paygRows, holdingRows, holdingDisposals] =
+    await Promise.all([itemsP, incomeRowsP, depRowsP, depDeniedP, attrRowsP, cgtEventsP, essGrantsP, trustRowsP, basRowsP, paygRowsP, holdingsP, holdingDisposalsP]);
+  const disposalsByAsset = new Map<string, { units_disposed: number | null; cost_base_used_cents: number | null }[]>();
+  for (const e of holdingDisposals) {
+    const list = disposalsByAsset.get(e.cgt_asset_id) ?? [];
+    list.push({ units_disposed: e.units_disposed, cost_base_used_cents: e.cost_base_used_cents });
+    disposalsByAsset.set(e.cgt_asset_id, list);
+  }
+  const closingHoldings = holdingRows.map((h) => ({ ...h, disposals: disposalsByAsset.get(h.id) ?? [] }));
 
   // Property labels for section titles / loan lines.
   const propLabels = new Map(report.per_property.map((p) => [p.property_id, p.label ?? p.property_id]));
@@ -841,6 +868,48 @@ export async function buildAccountantSchedule(
       tie_back: { label: "gross capital gains", report_cents: cg.gross_capital_gains_cents, actual_cents: grossFromEvents, ok: grossFromEvents === cg.gross_capital_gains_cents },
       notes: [...notes, "CGT is fact-specific (cost-base elements, dates, exemptions) — confirm with a registered tax agent."],
     });
+  }
+
+  // 9b. Holdings still held at year end (capital_position, C3). NOT gated on report.capital_gains: the
+  // whole point is the taxpayer who bought and sold NOTHING this year and still needs their parcels carried
+  // forward with a cost base. A holding is not FY-scoped, so it already survived the rollover — what was
+  // missing was showing it, which is what makes the carry-forward legible year to year.
+  //
+  // DELIBERATELY NO tie_back: this is a closing-balance list, not a contribution to any report figure (a
+  // cgt_asset with no cgt_event reaches nothing). subtotal_cents is the remaining cost base, which is
+  // arithmetic over what the user entered — not a tax outcome, and never a parcel selection.
+  if (positionOn) {
+    const openRows = closingHoldings.filter((h) => {
+      const pos = holdingPosition({ units: h.units, cost_base_cents: h.cost_base_cents }, h.disposals);
+      return pos.status !== "disposed";
+    });
+    if (openRows.length) {
+      const notes2: string[] = [];
+      const rows: Cell[][] = capped(openRows, notes2).map((h) => {
+        const pos = holdingPosition({ units: h.units, cost_base_cents: h.cost_base_cents }, h.disposals);
+        return [
+          h.code ?? h.label ?? "—", h.asset_kind, h.acquired_date,
+          pos.units_remaining == null ? null : pos.units_remaining,
+          pos.units_acquired == null ? null : pos.units_acquired,
+          d(pos.cost_base_remaining_cents),
+          pos.status === "part_disposed" ? "part sold" : "held",
+        ];
+      });
+      const remaining = openRows.reduce((t, h) => t + holdingPosition({ units: h.units, cost_base_cents: h.cost_base_cents }, h.disposals).cost_base_remaining_cents, 0);
+      rows.push(["", "", null, null, null, d(remaining), "TOTAL cost base carried forward"]);
+      sections.push({
+        key: "capital_holdings",
+        title: "Investment holdings at year end (carried forward)",
+        columns: ["Asset", "Kind", "Acquired", "Units remaining", "Units acquired", `Cost base remaining (${cur})`, "Status"],
+        rows,
+        subtotal_cents: remaining,
+        notes: [
+          ...notes2,
+          "Units remaining and cost base remaining are DERIVED — units acquired less units sold, and cost base less the cost base used on those sales. They are not a parcel selection: which parcels a disposal used changes the gain and is the taxpayer's decision.",
+          "Carried forward for future capital gains — nothing here is assessable this year. Confirm cost bases and quantities against your broker or share registry with a registered tax agent.",
+        ],
+      });
+    }
   }
 
   // 10. ESS grants.

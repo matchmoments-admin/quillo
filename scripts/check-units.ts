@@ -866,7 +866,7 @@ console.log("claimability situational sweep (enumerateSituationClaims / classify
 
 // ── CGT: cost-base, Div43 reduction, 50% discount, main-residence, losses ─────
 import { computeCapitalGain, computeNetCapitalGain, propertyToCgtInputs, cgtUnits, DEFAULT_CGT_RULES } from "../src/lib/cgt";
-import { costBaseFromElements, validateCostBaseElements, parseCostBaseElements, withCostBaseElements, costBaseBreakdownRows, EMPTY_COST_BASE_ELEMENTS, type CostBaseElements } from "../src/lib/capital";
+import { costBaseFromElements, validateCostBaseElements, parseCostBaseElements, withCostBaseElements, costBaseBreakdownRows, holdingPosition, EMPTY_COST_BASE_ELEMENTS, type CostBaseElements } from "../src/lib/capital";
 import { ordinaryAssessableCents, totalDistributionCents, validateComponents, ammaToCgtEvents, parseAmmaComponents, type AmmaComponents } from "../src/lib/managed-fund";
 import { essAssessable } from "../src/lib/ess";
 import { gstFromInclusiveCents, computeBasNet } from "../src/lib/gst";
@@ -947,6 +947,55 @@ console.log("cost-base elements (capital C2)");
   check("C2 breakdown: zero elements are dropped", costBaseBreakdownRows(buy).length === 2);
   check("C2 breakdown: rows sum to the canonical cost base (the tie-back's precondition)",
     costBaseBreakdownRows(buy).reduce((t, r) => t + r.cents, 0) === costBaseFromElements(buy));
+}
+
+console.log("holdings position (capital C3)");
+{
+  const held = { units: 200, cost_base_cents: 2001995 };
+
+  // No disposals ⇒ everything still held, and the acquired figure IS the remaining one.
+  const none = holdingPosition(held, []);
+  check("C3: no disposals ⇒ held, remaining = acquired, nothing used",
+    none.status === "held" && none.units_remaining === 200 && none.cost_base_used_cents === 0 && none.cost_base_remaining_cents === 2001995);
+
+  // Part disposal: 100 of 200 units, half the cost base used.
+  const part = holdingPosition(held, [{ units_disposed: 100, cost_base_used_cents: 1000998 }]);
+  check("C3: part disposal ⇒ 100 of 200 remaining, cost base left = parcel − used",
+    part.status === "part_disposed" && part.units_remaining === 100 && part.cost_base_remaining_cents === 2001995 - 1000998);
+  check("C3: the ACQUIRED figure is never rewritten (the parcel row is immutable)", part.units_acquired === 200);
+
+  // Full disposal across TWO events — the running total is what matters, not any single sale.
+  const full = holdingPosition(held, [{ units_disposed: 100, cost_base_used_cents: 1000998 }, { units_disposed: 100, cost_base_used_cents: 1000997 }]);
+  check("C3: disposals accumulate ⇒ sold, nothing remaining",
+    full.status === "disposed" && full.units_remaining === 0 && full.cost_base_remaining_cents === 0 && full.units_disposed === 200);
+
+  // OVER-disposal: sold more than recorded. Surfaced as a quantity, never clamped away and never blocked.
+  const over = holdingPosition(held, [{ units_disposed: 250, cost_base_used_cents: 1000998 }]);
+  check("C3: selling MORE than recorded is surfaced (50 over), not silently clamped",
+    over.over_disposed_units === 50 && over.units_remaining === -50 && over.status === "disposed");
+  check("C3: a normal part disposal reports no over-disposal", part.over_disposed_units === 0);
+
+  // Over-USED cost base understates the gain, so it is surfaced too.
+  const overCb = holdingPosition(held, [{ units_disposed: 100, cost_base_used_cents: 2500000 }]);
+  check("C3: a cost base claimed beyond the parcel's is surfaced (understates the gain)",
+    overCb.over_used_cost_base_cents === 2500000 - 2001995 && overCb.cost_base_remaining_cents === 0);
+  check("C3: cost base remaining is 0-floored, never negative", overCb.cost_base_remaining_cents === 0 && full.cost_base_remaining_cents === 0);
+
+  // Unknown acquired quantity (every pre-C0 holding): never imply a balance we can't compute.
+  const unknown = holdingPosition({ units: null, cost_base_cents: 500000 }, [{ units_disposed: 10, cost_base_used_cents: 100000 }]);
+  check("C3: units unknown + a disposal ⇒ 'part sold' with a NULL remaining (never a fabricated balance)",
+    unknown.units_remaining === null && unknown.status === "part_disposed" && unknown.over_disposed_units === 0);
+  check("C3: units unknown + no disposal ⇒ held, remaining still null",
+    holdingPosition({ units: null, cost_base_cents: 1 }, []).status === "held" && holdingPosition({ units: null, cost_base_cents: 1 }, []).units_remaining === null);
+
+  // Fractional units (DRP / crypto) survive unrounded.
+  const frac = holdingPosition({ units: 13.874219, cost_base_cents: 100000 }, [{ units_disposed: 3.874219, cost_base_used_cents: 20000 }]);
+  check("C3: fractional units are not rounded", frac.units_remaining === 10 && frac.status === "part_disposed");
+
+  // An event with NULL units (the pre-C0 shape) contributes 0 units but still counts as a disposal.
+  const nullUnits = holdingPosition(held, [{ units_disposed: null, cost_base_used_cents: 500000 }]);
+  check("C3: a disposal with no recorded quantity still marks the holding part-sold",
+    nullUnits.status === "part_disposed" && nullUnits.units_disposed === 0 && nullUnits.cost_base_used_cents === 500000);
 }
 
 console.log("holding draft from a capital bank line (capital C1)");
@@ -1218,6 +1267,29 @@ console.log("readiness");
   const clean = run(mkReport({ income: { by_type: [{ income_type: "salary_payg", n: 1, gross_cents: 9_000_000, net_cents: 7_000_000, withholding_cents: 2_000_000, franking_credit_cents: 0, foreign_tax_paid_cents: 0 }], gross_cents: 9_000_000, withholding_cents: 2_000_000, franking_credit_cents: 0, foreign_tax_paid_cents: 0 }, total_income_cents: 9_000_000, taxable_position_cents: 9_000_000 }), noSignals());
   check("clean PAYG → ready, no findings", clean.readiness_score.ready && clean.findings.length === 0);
   check("position mirrors report taxable position", clean.position.indicative_taxable_position_cents === 9_000_000);
+
+  // Capital C3 (capital_position): the caller populates these signals ONLY when the flag is on, so OFF is
+  // byte-identical by construction. What matters here is the SEVERITIES — the whole design rule is that
+  // Quillo surfaces and the registered agent decides, so exactly ONE capital finding may be a blocker: the
+  // materially-distorted case of a disposal with no cost base counting the whole sale price as gain.
+  {
+    const posSig = noSignals({ capitalOverDisposedN: 1, capitalOverUsedCostBaseN: 1, capitalDisposedNoCostBaseN: 1, capitalHoldingsMissingCostBaseN: 2, capitalHoldingsNeedingUnitsN: 3, capitalHoldingsMissingAcquiredN: 1 });
+    const on = run(mkReport(), posSig);
+    const byId = (id: string) => on.findings.find((x) => x.id === id);
+    check("C3 finding: selling more units than recorded is REVIEW, never a blocker", byId("capital_over_disposed")?.severity === "review");
+    check("C3 finding: a cost base claimed beyond the parcel's is REVIEW (it understates the gain)", byId("capital_over_used_cost_base")?.severity === "review");
+    check("C3 finding: a disposal with NO cost base is the one BLOCKER — the whole sale price counts as gain", byId("capital_disposal_no_cost_base")?.severity === "blocker");
+    check("C3 finding: an UN-disposed holding with no cost base stays REVIEW (it distorts nothing this year)", byId("capital_holding_missing_cost_base")?.severity === "review");
+    check("C3 finding: exactly one capital blocker, and every capital finding defers to a registered tax agent",
+      on.findings.filter((x) => x.id.startsWith("capital_") && x.severity === "blocker").length === 1
+      && on.findings.filter((x) => x.id.startsWith("capital_")).every((x) => x.defer_to_agent === true));
+    check("C3 finding: none of them assert a $ outcome — they are counts of records to fix",
+      on.findings.filter((x) => x.id.startsWith("capital_over") || x.id === "capital_disposal_no_cost_base").every((x) => !/\$\d/.test(x.title)));
+    // Signals absent (flag OFF) ⇒ the three C3 findings simply don't exist.
+    const off = run(mkReport(), noSignals());
+    check("C3 finding: flag OFF ⇒ no C3 findings at all (byte-identical)",
+      !off.findings.some((x) => ["capital_over_disposed", "capital_over_used_cost_base", "capital_disposal_no_cost_base"].includes(x.id)));
+  }
 
   // Mission-audit #7/#8 (readiness_audit_v2): extra safety/completeness findings only when the flag is ON.
   {

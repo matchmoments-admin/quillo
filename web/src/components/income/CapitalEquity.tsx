@@ -12,22 +12,20 @@ const kindLabel = (a: CgtAssetRow) => (KIND_LABEL[a.asset_kind] ?? a.asset_kind)
 // Units are fractional by nature (DRP reinvestments, crypto) — render what was entered, never round.
 const unitsLabel = (u: number | null | undefined) => (u == null ? "—" : String(u));
 
-// cgt_assets.units is the ACQUIRED parcel size and cgt_assets.status has been written as the literal
-// 'held' since migration 0037 and never updated by anything — nothing in the codebase decrements units or
-// sets 'part_disposed' on a disposal. Rendering those two raw (as C0 shipped) meant a holding still read
+// cgt_assets.units is the ACQUIRED parcel size and cgt_assets.status has been the literal 'held' since
+// migration 0037, updated by nothing. Rendering those two raw (as C0 shipped) meant a holding still read
 // "200 units · held" after the taxpayer sold 100 of them.
 //
 // The parcel row staying immutable is the RIGHT model — remaining quantity is DERIVED, so the acquisition
-// record is never rewritten. What was wrong was displaying the acquired figure as if it were the remaining
-// one. So derive both here from the disposal events the component already loads. This is display only: the
-// review finding for a disposal that EXCEEDS units held, and the position surface itself, remain the
-// holdings-position slice's job (see docs/personas.md — display is still ◑ for CGT).
-function derivePosition(units: number | null | undefined, disposedUnits: number, hasEvents: boolean) {
-  if (!hasEvents) return { remaining: units ?? null, status: "held", partial: false };
-  if (units == null) return { remaining: null, status: "part sold", partial: true }; // quantity unknown — never imply a balance
+// record is never rewritten. capital_position (C3) now derives it SERVER-side and ships it as `position`, so
+// there is ONE definition of "remaining" rather than a client copy waiting to drift from it. The local
+// fallback below covers flag-OFF only, where no `position` is sent.
+const STATUS_TEXT: Record<string, string> = { held: "held", part_disposed: "part sold", disposed: "sold" };
+function localPosition(units: number | null | undefined, disposedUnits: number, hasEvents: boolean) {
+  if (!hasEvents) return { units_remaining: units ?? null, status: "held" as const };
+  if (units == null) return { units_remaining: null, status: "part_disposed" as const };
   const remaining = units - disposedUnits;
-  if (remaining <= 0) return { remaining: 0, status: "sold", partial: false };
-  return { remaining, status: "part sold", partial: true };
+  return remaining <= 0 ? { units_remaining: 0, status: "disposed" as const } : { units_remaining: remaining, status: "part_disposed" as const };
 }
 
 export function CapitalEquity() {
@@ -38,6 +36,7 @@ export function CapitalEquity() {
   const fromTxn = has("capital_from_txn");
   const incomeLink = has("capital_income_link");
   const costBaseDetail = has("capital_cost_base_detail");
+  const positionOn = has("capital_position");
   const assets = useQuery({ queryKey: ["cgt-assets"], queryFn: () => api.cgtAssets() });
   const events = useQuery({ queryKey: ["cgt-events"], queryFn: () => api.cgtEvents() });
   // capital_entity_scope: resolve entity names so a non-personal holding is visibly attributed — an
@@ -91,18 +90,22 @@ export function CapitalEquity() {
                 {/* capital_holding_detail: units + status were always stored and returned; nothing ever
                     captured or showed them, so a part-disposal couldn't be checked against what's held. */}
                 {holdingDetail && (() => {
-                  const pos = derivePosition(a.units, disposedUnitsFor(a.id), hasEventsFor(a.id));
+                  const pos = a.position ?? localPosition(a.units, disposedUnitsFor(a.id), hasEventsFor(a.id));
                   return (
                     <td className="px-2 py-1 text-right tabular-nums text-muted">
-                      {pos.partial && a.units != null
-                        ? <>{unitsLabel(pos.remaining)} of {unitsLabel(a.units)} units</>
-                        : <>{unitsLabel(pos.remaining)} units</>}
+                      {pos.status === "part_disposed" && a.units != null
+                        ? <>{unitsLabel(pos.units_remaining)} of {unitsLabel(a.units)} units</>
+                        : <>{unitsLabel(pos.units_remaining)} units</>}
                     </td>
                   );
                 })()}
                 <td className="px-2 py-1 text-muted tabular-nums">{a.acquired_date ?? "—"}</td>
                 <td className="px-2 py-1 text-right tabular-nums text-muted">
-                  cost base {money(a.cost_base_cents)}
+                  {/* C3: once something has been sold, the useful figure is what cost base is LEFT to set
+                      against a future sale — not what the parcel originally cost. */}
+                  {positionOn && a.position && a.position.cost_base_used_cents > 0
+                    ? <>cost base left {money(a.position.cost_base_remaining_cents)} <span className="text-xs">of {money(a.cost_base_cents)}</span></>
+                    : <>cost base {money(a.cost_base_cents)}</>}
                   {/* C2: show WHAT the cost base is made of, so the brokerage 0037 promised is visible
                       rather than buried in one opaque number. */}
                   {costBaseDetail && (() => {
@@ -111,11 +114,18 @@ export function CapitalEquity() {
                     return <span className="block text-xs">incl. {money(el.brokerage_cents + el.incidental_cents)} costs</span>;
                   })()}
                 </td>
-                {holdingDetail && (
-                  <td className="px-2 py-1 text-right text-xs text-muted">
-                    {derivePosition(a.units, disposedUnitsFor(a.id), hasEventsFor(a.id)).status}
-                  </td>
-                )}
+                {holdingDetail && (() => {
+                  const pos = a.position ?? localPosition(a.units, disposedUnitsFor(a.id), hasEventsFor(a.id));
+                  const over = a.position && (a.position.over_disposed_units > 0 || a.position.over_used_cost_base_cents > 0);
+                  return (
+                    <td className="px-2 py-1 text-right text-xs text-muted">
+                      {STATUS_TEXT[pos.status] ?? pos.status}
+                      {/* Surfaced, never blocked — a missing earlier parcel is the usual cause, and the
+                          registered agent decides. Readiness carries the full explanation. */}
+                      {over ? <span className="block text-warn">sold more than recorded — check</span> : null}
+                    </td>
+                  );
+                })()}
                 <td className="px-2 py-1 text-right"><button className="text-xs text-danger hover:underline" onClick={() => api.deleteCgtAsset(a.id).then(invalidate)}>delete</button></td>
               </tr>
             ))}

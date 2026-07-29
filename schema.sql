@@ -756,12 +756,14 @@ CREATE TABLE IF NOT EXISTS cgt_assets (
   status                 TEXT NOT NULL DEFAULT 'held',
   property_id            TEXT,                       -- 0054 (Slice F): provenance for a property-sourced asset (dedup key); NULL for a manually-entered asset
   income_id              TEXT,                       -- 0055 (Slice B): provenance for a managed-fund-distribution-sourced asset (AMMA capital gains); NULL otherwise
+  entity_id              TEXT,                       -- 0070 (C-E): the SEPARATE TAXPAYER holding this parcel (company/trust/SMSF). NULL = personal — the same invariant as trading_stock. cgtTotals excludes non-NULL from the individual headline when capital_entity_scope is on.
   created_at             TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_cgt_assets_user ON cgt_assets(user_id, asset_kind);
 CREATE INDEX IF NOT EXISTS idx_cgt_assets_person ON cgt_assets(user_id, person_id);
 CREATE INDEX IF NOT EXISTS idx_cgt_assets_property ON cgt_assets(user_id, property_id);
 CREATE INDEX IF NOT EXISTS idx_cgt_assets_income ON cgt_assets(user_id, income_id);
+CREATE INDEX IF NOT EXISTS idx_cgt_assets_entity ON cgt_assets(user_id, entity_id);
 
 CREATE TABLE IF NOT EXISTS cgt_events (
   id                  TEXT PRIMARY KEY,

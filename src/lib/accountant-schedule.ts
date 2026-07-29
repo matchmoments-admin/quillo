@@ -12,7 +12,7 @@ import {
   propertyRowCounts,
   type Report,
 } from "./report";
-import { fyLabel, fyBounds, separateTaxpayerEntityIds, NON_ASSESSABLE_INCOME_TYPES } from "./ledger-totals";
+import { fyLabel, fyBounds, separateTaxpayerEntityIds, cgtPersonalScopeExpr, NON_ASSESSABLE_INCOME_TYPES } from "./ledger-totals";
 import { resolveJurisdictionForUser } from "./jurisdiction";
 import { deductibleInterestCents } from "./loan-interest";
 import { classifyAttribution, splitAttribution } from "./attribution";
@@ -382,10 +382,14 @@ export async function buildAccountantSchedule(
         method?: string | null;
       }>(
         env.DB.prepare(
+          // capital_entity_scope (C-E): the SAME predicate cgtTotals applies, from the SAME shared
+          // expression. The tie_back below asserts this section's per-disposal gains sum to
+          // report.gross_capital_gains_cents — so if the report excluded a separate taxpayer's event and
+          // this query still listed it, the section would over-state and the tie-back would fail.
           `SELECT ev.event_date, a.code, a.label, a.asset_kind, ev.units_disposed, a.acquired_date,
                   ev.proceeds_cents, ev.cost_base_used_cents${parcelMethodOn ? ", ev.method" : ""}
              FROM cgt_events ev JOIN cgt_assets a ON a.id = ev.cgt_asset_id AND a.user_id = ev.user_id
-            WHERE ev.user_id = ? AND ev.fy = ? ORDER BY ev.event_date`,
+            WHERE ev.user_id = ? AND ev.fy = ? AND ${cgtPersonalScopeExpr(env)} ORDER BY ev.event_date`,
         )
           .bind(userId, fy)
           .all(),

@@ -306,9 +306,11 @@ function AddIncomeForm({ fy, onDone }: { fy: string; onDone: () => void }) {
   const properties = sit?.properties ?? [];
   const needsProperty = type === "rent" || type === "foreign_rent";
 
-  // The component form shows ONLY for a personal managed-fund distribution (cgtTotals isn't entity-scoped,
-  // so an entity's capital gain would leak into the personal headline → component capture is personal-only).
-  const isMf = type === "managed_fund_distribution" && has("mf_components") && !entityId;
+  // The component form was personal-ONLY because cgtTotals wasn't entity-scoped, so an entity's capital
+  // gain would have leaked into the personal headline. That refusal silently DROPPED the gain instead.
+  // capital_entity_scope (C-E, 0070) attributes the materialised parcel to the entity and excludes it from
+  // the individual headline, so an entity distribution can now capture its components too.
+  const isMf = type === "managed_fund_distribution" && has("mf_components") && (has("capital_entity_scope") || !entityId);
   const c = (s: string) => Math.round(parseFloat(s || "0") * 100);
   const components = {
     franked_cents: c(mf.franked), unfranked_cents: c(mf.unfranked), interest_cents: c(mf.interest),
@@ -325,7 +327,10 @@ function AddIncomeForm({ fy, onDone }: { fy: string; onDone: () => void }) {
   const add = useMutation({
     mutationFn: () =>
       isMf
-        ? api.addIncome({ income_type: type, fy, txn_date: date || null, components })
+        // C-E: the component branch must carry entity_id too. It never did — safe while the form was
+        // personal-only, but now that an entity distribution can capture components, omitting it would
+        // record the row (and materialise its capital gain) against the INDIVIDUAL instead.
+        ? api.addIncome({ income_type: type, fy, txn_date: date || null, components, entity_id: entityId || null })
         : api.addIncome({
             income_type: type, fy,
             gross_cents: c(gross), withholding_cents: c(withheld), franking_credit_cents: c(franking),

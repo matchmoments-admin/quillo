@@ -379,7 +379,7 @@ export async function usageSummary(env: Env, userId: string) {
 export async function listIncome(
   env: Env,
   userId: string,
-  opts: { fy?: string; personId?: string; propertyId?: string } = {},
+  opts: { fy?: string; personId?: string; propertyId?: string; cgtAssetId?: string } = {},
 ) {
   const where: string[] = ["user_id = ?"];
   const binds: unknown[] = [userId];
@@ -395,10 +395,19 @@ export async function listIncome(
     where.push("property_id = ?");
     binds.push(opts.propertyId);
   }
+  // C-L (capital_income_link, 0072): filter to the income recorded against ONE holding, so the Capital &
+  // equity surface can show a parcel's dividends without pulling the whole income list client-side.
+  // Gated by the caller — the column is only selected/filterable when the flag is on, so OFF keeps the
+  // payload and the query byte-identical.
+  const incomeLink = featureOn(env, "capital_income_link");
+  if (incomeLink && opts.cgtAssetId) {
+    where.push("cgt_asset_id = ?");
+    binds.push(opts.cgtAssetId);
+  }
   const res = await env.DB.prepare(
     `SELECT id, person_id, entity_id, property_id, income_type, ato_label, fy, gross_cents, net_cents,
             withholding_cents, franking_credit_cents, foreign_tax_paid_cents, currency, amount_aud_cents,
-            txn_date, source_doc_id, needs_review, created_at
+            txn_date, source_doc_id, needs_review, created_at${incomeLink ? ", cgt_asset_id" : ""}
        FROM income WHERE ${where.join(" AND ")} ORDER BY txn_date DESC, created_at DESC LIMIT 500`,
   )
     .bind(...binds)

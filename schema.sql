@@ -662,11 +662,13 @@ CREATE TABLE IF NOT EXISTS income (
   txn_date      TEXT,
   detail_json   TEXT,
   needs_review  INTEGER DEFAULT 0,
+  cgt_asset_id  TEXT,                            -- 0072 (C-L): the HOLDING this income came from (a dividend/distribution's source parcel). Pure metadata — nothing reads it for money; it is the prerequisite for applying the AMIT cost-base amount to the right units and for minting DRP parcels.
   created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_income_user_fy  ON income(user_id, fy);
 CREATE INDEX IF NOT EXISTS idx_income_property ON income(user_id, property_id);
 CREATE INDEX IF NOT EXISTS idx_income_person   ON income(user_id, person_id);
+CREATE INDEX IF NOT EXISTS idx_income_cgt_asset ON income(user_id, cgt_asset_id);
 
 -- ── Documents (0007): canonical R2-object registry / Smart-Inbox sink ──────────
 CREATE TABLE IF NOT EXISTS documents (

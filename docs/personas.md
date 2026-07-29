@@ -118,10 +118,18 @@ part-disposal guard *uncomputable* rather than merely unbuilt.
   by construction** — a `cgt_asset` with no `cgt_event` never reaches `cgtTotals` or the accountant
   schedule, asserted by the golden. Deleting the source transaction clears the parcel (`clearTxnCgt`), and
   a set-based `clearOrphanedTxnCgt` backstops the three bulk-delete paths. Golden: persona `pc1`.
-- Still open (re-planned once real holdings exist in prod): an income↔holding link, brokerage in the cost
-  base, a derived holdings position with a part-disposal review finding (which is also where a zero cost
-  base *with a disposal* becomes a blocker rather than a review), DRP parcels, the AMIT cost-base
-  adjustment, and broker/registry statement ingest.
+- **C-L (flag `capital_income_link`, ON, migration 0072)** adds `income.cgt_asset_id` — the link the brief
+  never created and that two later slices both need. `income` had no path to `cgt_assets`, which is why the
+  AMIT cost-base amount isn't merely unapplied but **unattributable** (with no link you cannot know which
+  units to adjust) and why a DRP dividend has no parcel to mint against. A holding picker appears on the
+  dividend / managed-fund form and a holding lists the income recorded against it, so the association is
+  visible from both ends. **Pure metadata** — the golden pins that the position, the income totals and the
+  accountant CSV are identical linked vs unlinked. Deleting a holding with linked income is blocked rather
+  than silently unlinked. Golden: personas `pclon`/`pcloff`.
+- Still open (re-planned once real holdings exist in prod): brokerage in the cost base, a derived holdings
+  position with a part-disposal review finding (which is also where a zero cost base *with a disposal*
+  becomes a blocker rather than a review), DRP parcels, the AMIT cost-base adjustment, and broker/registry
+  statement ingest.
 
 ## How it's wired (for maintainers)
 

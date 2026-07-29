@@ -715,6 +715,10 @@ const CHILD_REFS: Record<string, ReadonlyArray<{ table: string; column: string; 
   ],
   cgt_assets: [
     { table: "cgt_events", column: "cgt_asset_id", label: "CGT events" },
+    // C-L (0072): a linked dividend/distribution must not be left pointing at a deleted holding — that
+    // would strand the very link the AMIT cost-base and DRP slices depend on. Blocked, not nulled, so the
+    // user makes the call (unlink, or delete the income row) rather than losing the association silently.
+    { table: "income", column: "cgt_asset_id", label: "income recorded against this holding" },
   ],
 };
 

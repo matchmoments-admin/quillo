@@ -18,11 +18,17 @@ export function CapitalEquity() {
   const holdingDetail = has("capital_holding_detail");
   const entityScope = has("capital_entity_scope");
   const fromTxn = has("capital_from_txn");
+  const incomeLink = has("capital_income_link");
   const assets = useQuery({ queryKey: ["cgt-assets"], queryFn: () => api.cgtAssets() });
   const events = useQuery({ queryKey: ["cgt-events"], queryFn: () => api.cgtEvents() });
   // capital_entity_scope: resolve entity names so a non-personal holding is visibly attributed — an
   // entity's gain is excluded from your headline, and that must be legible, not silent.
   const { data: sit } = useQuery({ queryKey: ["situation"], queryFn: () => api.situation(), enabled: entityScope });
+  // capital_income_link (C-L): the reverse of the Income page's picker — a holding lists the dividends and
+  // distributions recorded against it, so the association is visible from both ends (§4 of the brief: "a
+  // holding must be selectable from a dividend row, and vice versa").
+  const linkedIncome = useQuery({ queryKey: ["income", "by-holding"], queryFn: () => api.income(), enabled: incomeLink });
+  const incomeFor = (assetId: string) => (linkedIncome.data ?? []).filter((r) => r.cgt_asset_id === assetId);
   const entityName = (entityId: string | null | undefined) =>
     (entityId ? (sit?.entities ?? []).find((e) => e.id === entityId) : null)?.name ?? null;
   const [addingAsset, setAddingAsset] = useState(false);
@@ -54,6 +60,9 @@ export function CapitalEquity() {
                       quantity, so say so plainly rather than presenting a half-record as complete. */}
                   {fromTxn && a.txn_id && a.units == null ? (
                     <span className="text-warn"> · from a deposit — confirm units &amp; cost base</span>
+                  ) : null}
+                  {incomeLink && incomeFor(a.id).length > 0 ? (
+                    <span className="text-muted"> · {incomeFor(a.id).length} income record{incomeFor(a.id).length === 1 ? "" : "s"} ({money(incomeFor(a.id).reduce((t, r) => t + (r.amount_aud_cents ?? r.gross_cents), 0))})</span>
                   ) : null}
                 </td>
                 {/* capital_holding_detail: units + status were always stored and returned; nothing ever

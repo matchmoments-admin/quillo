@@ -17,8 +17,8 @@ import auV1RulePack from "../src/rulepacks/au-v1.json";
 import { COUNTABLE } from "../src/lib/queries";
 import { fyBounds } from "../src/lib/ledger-totals";
 import { buildAccountantSchedule, tieBackChecks } from "../src/lib/accountant-schedule";
-import { fetchAskDigestRows, listAccounts } from "../src/lib/queries";
-import { deleteRow, archiveRow, DeleteBlockedError, syncPropertyDisposalToCgt, syncIncomeCgtFromComponents, syncTxnCgtHolding, clearTxnCgt, clearOrphanedTxnCgt } from "../src/lib/situation-write";
+import { fetchAskDigestRows, listAccounts, listIncome } from "../src/lib/queries";
+import { deleteRow, archiveRow, DeleteBlockedError, type DeleteBlocker, syncPropertyDisposalToCgt, syncIncomeCgtFromComponents, syncTxnCgtHolding, clearTxnCgt, clearOrphanedTxnCgt } from "../src/lib/situation-write";
 import { ordinaryAssessableCents, type AmmaComponents } from "../src/lib/managed-fund";
 import { draftHoldingFromTxn } from "../src/lib/clarify";
 
@@ -883,6 +883,60 @@ async function main() {
     check("PC1: a bulk transaction delete leaves no orphaned parcel behind", n4.n === 1);
     const survivor = db.prepare(`SELECT txn_id FROM cgt_assets WHERE user_id = ? AND txn_id IS NOT NULL`).get(u) as { txn_id: string };
     check("PC1: the orphan clear removes ONLY the orphans (the live deposit's holding survives)", survivor.txn_id === "pc1d3");
+  }
+
+  // ── Capital C-L: income ↔ holding link (capital_income_link, 0072) ──
+  // `income` had no path to `cgt_assets`, which is why the AMIT cost-base amount is not merely unapplied
+  // but UNATTRIBUTABLE (you can't know which units to adjust) and why a DRP dividend has no parcel to mint
+  // against. The link is PURE METADATA: the whole point of this golden is that adding it moves NOTHING.
+  {
+    const envCL = { DB: (env as unknown as { DB: unknown }).DB, FEATURES: `${(env as unknown as { FEATURES: string }).FEATURES},capital_income_link` } as unknown as Env;
+    const seed = (u: string, name: string) => {
+      seedTenant(u, name);
+      inc(`${u}Sal`, u, "salary_payg", 8000000);
+      run(`INSERT INTO cgt_assets (id, user_id, person_id, asset_kind, code, units, acquired_date, cost_base_cents) VALUES (?, ?, ?, 'shares', 'CBA', 300, '2022-04-01', 3000000)`, `${u}H`, u, `person_self_${u}`);
+    };
+    // Two byte-identical tenants: one dividend linked to its holding, one not linked at all.
+    seed("pclon", "PCL linked dividend");
+    inc("pclonDiv", "pclon", "dividend", 400000, { franking_credit_cents: 171428, cgt_asset_id: "pclonH" });
+    seed("pcloff", "PCL unlinked dividend");
+    inc("pcloffDiv", "pcloff", "dividend", 400000, { franking_credit_cents: 171428 });
+
+    const rLinked = await buildReport(envCL, "pclon", 2025);
+    const rUnlinked = await buildReport(envCL, "pcloff", 2025);
+    check("PCL: linking a dividend to its holding changes NOTHING in the position ($84k both ways)",
+      rLinked.taxable_position_cents === rUnlinked.taxable_position_cents && rLinked.taxable_position_cents === 8400000);
+    check("PCL: the income totals and credits are identical linked vs unlinked",
+      JSON.stringify(rLinked.income) === JSON.stringify(rUnlinked.income));
+    check("PCL: a linked dividend creates NO capital gain (a dividend is income, not a disposal)",
+      rLinked.capital_gains === undefined && rUnlinked.capital_gains === undefined);
+    // The accountant CSV must not move either — the link is not a reportable figure yet.
+    const schedLinked = await buildAccountantSchedule(envCL, "pclon", 2025, { report: rLinked });
+    const schedUnlinked = await buildAccountantSchedule(envCL, "pcloff", 2025, { report: rUnlinked });
+    const strip = (x: unknown) => JSON.stringify(x).replace(/pclon/g, "T").replace(/pcloff/g, "T");
+    check("PCL: the accountant schedule is identical linked vs unlinked (metadata, not a figure)",
+      strip(schedLinked.sections) === strip(schedUnlinked.sections));
+
+    // The link round-trips, and reads back per holding (what the Capital & equity reverse view uses).
+    const back = db.prepare(`SELECT cgt_asset_id FROM income WHERE user_id = 'pclon' AND id = 'pclonDiv'`).get() as { cgt_asset_id: string | null };
+    check("PCL: the link round-trips on the income row", back.cgt_asset_id === "pclonH");
+    const byHolding = await listIncome(envCL, "pclon", { cgtAssetId: "pclonH" });
+    check("PCL: income is filterable by holding (drives the holding→dividends reverse view)",
+      byHolding.length === 1 && byHolding[0].id === "pclonDiv");
+
+    // Deleting a holding with income against it is BLOCKED — otherwise the association the AMIT/DRP slices
+    // depend on would vanish silently.
+    let blocked: DeleteBlocker[] | null = null;
+    try {
+      await deleteRow(envCL, "pclon", "cgt_assets", "pclonH");
+    } catch (e) {
+      if (e instanceof DeleteBlockedError) blocked = e.blockers;
+      else throw e;
+    }
+    check("PCL: deleting a holding that has linked income is blocked, with a readable reason",
+      blocked !== null && blocked.some((b) => b.table === "income" && b.count === 1));
+    check("PCL: …and the holding survives the blocked delete",
+      (db.prepare(`SELECT COUNT(*) AS n FROM cgt_assets WHERE id = 'pclonH'`).get() as { n: number }).n === 1);
   }
 
   // ── Persona 16: partnership partner — distribution share (Slice E) ──

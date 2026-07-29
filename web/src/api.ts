@@ -309,10 +309,11 @@ export const api = {
   addClaimabilityRules: (rules: OccupationRuleCandidate[]) => post<{ inserted: number; ids: string[] }>("/api/claim-review/rules", { rules }),
 
   // v2 — Income + Documents (Smart Inbox)
-  income: (opts: { fy?: string; property_id?: string } = {}) => {
+  income: (opts: { fy?: string; property_id?: string; cgt_asset_id?: string } = {}) => {
     const q = new URLSearchParams();
     if (opts.fy) q.set("fy", opts.fy);
     if (opts.property_id) q.set("property_id", opts.property_id);
+    if (opts.cgt_asset_id) q.set("cgt_asset_id", opts.cgt_asset_id); // C-L: one holding's dividends
     const qs = q.toString();
     return get<{ income: IncomeRow[] }>(`/api/income${qs ? `?${qs}` : ""}`).then((r) => r.income);
   },

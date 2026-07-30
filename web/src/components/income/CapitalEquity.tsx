@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../api";
 import { Card, Button, Input, money, InfoTip } from "../ui";
+import { CapitalImport } from "./CapitalImport";
 import type { CgtAssetRow } from "../../types";
 import { useFeatures } from "../../lib/features";
 import { parseCostBaseElements } from "../../lib/capital";
@@ -37,6 +38,7 @@ export function CapitalEquity() {
   const incomeLink = has("capital_income_link");
   const costBaseDetail = has("capital_cost_base_detail");
   const positionOn = has("capital_position");
+  const statementIngest = has("capital_statement_ingest");
   const assets = useQuery({ queryKey: ["cgt-assets"], queryFn: () => api.cgtAssets() });
   const events = useQuery({ queryKey: ["cgt-events"], queryFn: () => api.cgtEvents() });
   // capital_entity_scope: resolve entity names so a non-personal holding is visibly attributed — an
@@ -50,6 +52,7 @@ export function CapitalEquity() {
   const entityName = (entityId: string | null | undefined) =>
     (entityId ? (sit?.entities ?? []).find((e) => e.id === entityId) : null)?.name ?? null;
   const [addingAsset, setAddingAsset] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [addingEvent, setAddingEvent] = useState(false);
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ["cgt-assets"] });
@@ -65,9 +68,15 @@ export function CapitalEquity() {
     <Card className="space-y-3 p-4">
       <div className="flex items-center justify-between">
         <div className="text-sm font-semibold">Capital &amp; equity (CGT) <InfoTip k="capital_gains" /></div>
-        <Button variant="ghost" onClick={() => setAddingAsset((v) => !v)}>{addingAsset ? "Cancel" : "+ Add a holding"}</Button>
+        <div className="flex items-center gap-2">
+          {/* C6: importing is the FIRST-CLASS path for anyone with more than a couple of parcels — a bank
+              line can't evidence units, price or brokerage, but a broker/exchange export can. */}
+          {statementIngest && <Button variant="ghost" onClick={() => setImporting((v) => !v)}>{importing ? "Cancel import" : "Import CSV"}</Button>}
+          <Button variant="ghost" onClick={() => setAddingAsset((v) => !v)}>{addingAsset ? "Cancel" : "+ Add a holding"}</Button>
+        </div>
       </div>
       <p className="text-xs text-muted">Record what you hold (shares, crypto, property) and what you sold. The net capital gain — after capital losses and the 50% discount on assets held 12+ months — appears on your year-end report. General information only; confirm with a registered tax agent.</p>
+      {statementIngest && importing && <CapitalImport onDone={() => setImporting(false)} />}
       {addingAsset && <AddCgtAssetForm onDone={() => { setAddingAsset(false); invalidate(); }} />}
       {assetList.length > 0 && (
         <table className="w-full text-sm">

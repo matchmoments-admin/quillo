@@ -42,6 +42,7 @@ export interface CapitalReadinessSignals {
   capitalOverDisposedN: number;
   capitalOverUsedCostBaseN: number;
   capitalDisposedNoCostBaseN: number;
+  capitalDisposalNoCostBaseUsedN: number;
 }
 
 export const EMPTY_CAPITAL_SIGNALS: CapitalReadinessSignals = {
@@ -51,6 +52,7 @@ export const EMPTY_CAPITAL_SIGNALS: CapitalReadinessSignals = {
   capitalOverDisposedN: 0,
   capitalOverUsedCostBaseN: 0,
   capitalDisposedNoCostBaseN: 0,
+  capitalDisposalNoCostBaseUsedN: 0,
 };
 
 /** USER-MANAGED holdings only. A property- or AMMA-sourced parcel is materialised complete from its source, so chasing it would be noise. */
@@ -123,6 +125,12 @@ export async function capitalReadinessSignals(env: Env, userId: string): Promise
           // Entity-scoped, and ONLY this one — it is the finding that asserts the individual's position is
           // distorted. `is_personal` is 1 for every row when capital_entity_scope is OFF.
           if (a.is_personal && (a.cost_base_cents ?? 0) <= 0) out.capitalDisposedNoCostBaseN++;
+          // The holding HAS a cost base but the sale claims none of it — so the full proceeds are landing
+          // as gain even though the taxpayer paid for the parcel. This is the shape a CSV-imported disposal
+          // arrives in (C6 deliberately writes 0: an export says what you sold for, never which parcel you
+          // drew on, and parcel choice changes the gain). Entity-scoped for the same reason as the blocker
+          // above — it is a claim about the individual's position.
+          if (a.is_personal && (a.cost_base_cents ?? 0) > 0 && pos.cost_base_used_cents <= 0) out.capitalDisposalNoCostBaseUsedN++;
         }
       }
     } catch (e) {

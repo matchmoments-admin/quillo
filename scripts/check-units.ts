@@ -866,6 +866,7 @@ console.log("claimability situational sweep (enumerateSituationClaims / classify
 
 // ── CGT: cost-base, Div43 reduction, 50% discount, main-residence, losses ─────
 import { computeCapitalGain, computeNetCapitalGain, propertyToCgtInputs, cgtUnits, DEFAULT_CGT_RULES } from "../src/lib/cgt";
+import { applyCapitalColumnMap, parseMoneyCents, parseSide, parseCapitalDate, summariseDrafts } from "../src/lib/capital-import";
 import { costBaseFromElements, validateCostBaseElements, parseCostBaseElements, withCostBaseElements, costBaseBreakdownRows, holdingPosition, EMPTY_COST_BASE_ELEMENTS, type CostBaseElements } from "../src/lib/capital";
 import { ordinaryAssessableCents, totalDistributionCents, validateComponents, ammaToCgtEvents, parseAmmaComponents, type AmmaComponents } from "../src/lib/managed-fund";
 import { essAssessable } from "../src/lib/ess";
@@ -996,6 +997,89 @@ console.log("holdings position (capital C3)");
   const nullUnits = holdingPosition(held, [{ units_disposed: null, cost_base_used_cents: 500000 }]);
   check("C3: a disposal with no recorded quantity still marks the holding part-sold",
     nullUnits.status === "part_disposed" && nullUnits.units_disposed === 0 && nullUnits.cost_base_used_cents === 500000);
+}
+
+console.log("capital CSV import — column map application (capital C6)");
+{
+  // A CommSec-shaped trade export: metadata preamble above the header, DD/MM/YYYY dates, separate
+  // brokerage column, an explicit BUY/SELL side.
+  const commsec = [
+    ["Account", "1234567", "", "", "", "", ""],
+    ["Date", "Code", "Type", "Quantity", "Unit Price", "Brokerage", "Total"],
+    ["14/09/2025", "VAS", "BUY", "105", "95.21", "9.95", "9997.05"],
+    ["02/03/2026", "VAS", "SELL", "50", "101.40", "9.95", "5070.00"],
+    ["", "", "", "", "", "", ""],
+  ];
+  const map = { header_row: 1, date_col: 0, code_col: 1, side_col: 2, units_col: 3, unit_price_col: 4, fee_col: 5, total_col: 6, day_first: true };
+  const p = applyCapitalColumnMap(commsec, map);
+  check("C6: the preamble row above the header is skipped, blank trailing rows are skipped", p.rows.length === 2 && p.skipped === 1);
+  check("C6: one acquisition and one disposal are recognised from the BUY/SELL column",
+    p.acquisitions === 1 && p.disposals === 1 && p.rows[0]?.side === "acquire" && p.rows[1]?.side === "dispose");
+  check("C6: DD/MM/YYYY is read day-first — 14/09 is 14 September, not an invalid month",
+    p.rows[0]?.date === "2025-09-14" && p.rows[1]?.date === "2026-03-02");
+  // Brokerage INCREASES a cost base on the way in and REDUCES proceeds on the way out — never both, or
+  // the same $9.95 would be counted twice in the taxpayer's favour and understate the gain.
+  check("C6: brokerage is ADDED to an acquisition's cost base ($9,997.05 + $9.95)", p.rows[0]?.amount_cents === 1000700);
+  check("C6: brokerage is SUBTRACTED from disposal proceeds ($5,070.00 - $9.95)", p.rows[1]?.amount_cents === 506005);
+  check("C6: the fee stays itemised alongside the total, so the cost base can be broken down",
+    p.rows[0]?.consideration_cents === 999705 && p.rows[0]?.fee_cents === 995);
+  check("C6: the source row number is 1-based against the ORIGINAL file, so a problem row is findable",
+    p.rows[0]?.source_row === 3 && p.rows[1]?.source_row === 4);
+
+  // A holdings-only export: no side column at all ⇒ everything is an acquisition (never a disposal, which
+  // would invent a taxable event the taxpayer never had).
+  const holdingsOnly = [
+    ["Ticker", "Name", "Units", "Cost"],
+    ["BHP", "BHP Group", "40", "1600.00"],
+  ];
+  const h = applyCapitalColumnMap(holdingsOnly, { header_row: 0, code_col: 0, label_col: 1, units_col: 2, total_col: 3 });
+  check("C6: with no side column every row is an ACQUISITION — a disposal is never invented",
+    h.disposals === 0 && h.rows[0]?.side === "acquire");
+  check("C6: a row with no date is kept and flagged, NOT dropped (a silent 40→39 is undetectable)",
+    h.rows[0]?.problem?.includes("date") === true && h.problems === 1);
+  check("C6: and a flagged row is NOT counted as importable — the confirm screen can't offer to commit it",
+    h.acquisitions === 0);
+
+  // Crypto: fractional quantities, no rounding anywhere, and the kind inferred from the file.
+  const crypto = [
+    ["Date", "Asset", "Type", "Amount", "AUD Value"],
+    ["2025-11-02", "BTC", "Buy", "0.01374829", "1450.75"],
+  ];
+  const c = applyCapitalColumnMap(crypto, { header_row: 0, date_col: 0, code_col: 1, side_col: 2, units_col: 3, total_col: 4 }, "crypto");
+  check("C6: fractional crypto units survive unrounded", c.rows[0]?.units === 0.01374829);
+  check("C6: the caller's default kind applies when the file has no kind column", c.rows[0]?.asset_kind === "crypto");
+  check("C6: an ISO date passes through unchanged", c.rows[0]?.date === "2025-11-02");
+
+  // Money parsing: symbols and separators tolerated; genuinely ambiguous input REFUSED rather than guessed.
+  check("C6: currency symbols and thousands separators parse", parseMoneyCents("$1,234.56") === 123456);
+  check("C6: a parenthesised negative parses as negative", parseMoneyCents("(50.00)") === -5000);
+  check("C6: a blank is null, NOT zero — 'missing' and 'a real zero cost base' must stay distinguishable",
+    parseMoneyCents("") === null && parseMoneyCents("0") === 0);
+  check("C6: an ambiguous multi-separator number is refused rather than guessed 100x wrong",
+    parseMoneyCents("1.234.56") === null);
+
+  // Side words, including the ones that matter for crypto exchanges.
+  check("C6: sell/disposal words map to a disposal", parseSide("SELL") === "dispose" && parseSide("Redemption") === "dispose");
+  check("C6: an unrecognised side defaults to acquisition, never a disposal", parseSide("") === "acquire" && parseSide("wat") === "acquire");
+
+  // Month-first jurisdictions: 03/04 is 4 March, not 3 April. Parameterised, never assumed.
+  // The same eight characters mean different days in different countries, and guessing wrong silently
+  // moves a disposal across a FY boundary — and across the 12-month discount threshold.
+  check("C6: day_first=false reads 03/04/2026 month-first, as 4 March (a US export)",
+    parseCapitalDate("03/04/2026", false) === "2026-03-04");
+  check("C6: day_first=true reads the same string as 3 April",
+    parseCapitalDate("03/04/2026", true) === "2026-04-03");
+
+  // The confirm screen groups parcels per asset — 2 VAS buys read as one holding with 2 parcels.
+  const grouped = summariseDrafts(applyCapitalColumnMap([
+    ["Date", "Code", "Type", "Quantity", "Total"],
+    ["01/07/2025", "VAS", "BUY", "50", "4500.00"],
+    ["01/09/2025", "VAS", "BUY", "55", "5000.00"],
+    ["01/10/2025", "BHP", "BUY", "40", "1600.00"],
+  ], { header_row: 0, date_col: 0, code_col: 1, side_col: 2, units_col: 3, total_col: 4, day_first: true }).rows);
+  check("C6: parcels group per asset for the confirm screen, units and cost base summed",
+    grouped.length === 2 && grouped[1]?.code === "VAS" && grouped[1]?.parcels === 2 && grouped[1]?.units === 105 && grouped[1]?.cost_base_cents === 950000);
+  check("C6: a disposal is NOT grouped into the holdings summary", grouped.every((g) => g.parcels > 0));
 }
 
 console.log("holding draft from a capital bank line (capital C1)");
@@ -1270,8 +1354,12 @@ console.log("readiness");
 
   // Capital C3 (capital_position): the caller populates these signals ONLY when the flag is on, so OFF is
   // byte-identical by construction. What matters here is the SEVERITIES — the whole design rule is that
-  // Quillo surfaces and the registered agent decides, so exactly ONE capital finding may be a blocker: the
-  // materially-distorted case of a disposal with no cost base counting the whole sale price as gain.
+  // Quillo surfaces and the registered agent decides, so a capital finding may only be a BLOCKER when the
+  // position is MATERIALLY DISTORTED, i.e. the whole sale price is counting as gain. Exactly two cases
+  // qualify, and they are the same defect reached from opposite sides: the HOLDING has no cost base
+  // (capital_disposal_no_cost_base), or the holding has one but the SALE claims none of it
+  // (capital_disposal_no_cost_base_used — the shape a C6-imported disposal arrives in). Everything else
+  // surfaces as review.
   {
     const posSig = noSignals({ capitalOverDisposedN: 1, capitalOverUsedCostBaseN: 1, capitalDisposedNoCostBaseN: 1, capitalHoldingsMissingCostBaseN: 2, capitalHoldingsNeedingUnitsN: 3, capitalHoldingsMissingAcquiredN: 1 });
     const on = run(mkReport(), posSig);
@@ -1280,9 +1368,21 @@ console.log("readiness");
     check("C3 finding: a cost base claimed beyond the parcel's is REVIEW (it understates the gain)", byId("capital_over_used_cost_base")?.severity === "review");
     check("C3 finding: a disposal with NO cost base is the one BLOCKER — the whole sale price counts as gain", byId("capital_disposal_no_cost_base")?.severity === "blocker");
     check("C3 finding: an UN-disposed holding with no cost base stays REVIEW (it distorts nothing this year)", byId("capital_holding_missing_cost_base")?.severity === "review");
-    check("C3 finding: exactly one capital blocker, and every capital finding defers to a registered tax agent",
+    check("C3 finding: exactly one capital blocker for THIS signal set, and every capital finding defers to a registered tax agent",
       on.findings.filter((x) => x.id.startsWith("capital_") && x.severity === "blocker").length === 1
       && on.findings.filter((x) => x.id.startsWith("capital_")).every((x) => x.defer_to_agent === true));
+    // C6: the other side of the same defect. The parcel's cost IS recorded, but the sale doesn't say how
+    // much of it was used, so the full proceeds land as gain and the taxpayer would be taxed on money they
+    // never made. Blocker, and it must NOT displace the holding-level one — they are distinct causes.
+    const usedSig = noSignals({ capitalDisposalNoCostBaseUsedN: 2 });
+    const usedOn = run(mkReport(), usedSig);
+    const usedFinding = usedOn.findings.find((x) => x.id === "capital_disposal_no_cost_base_used");
+    check("C6 finding: a sale not yet matched to a cost base is a BLOCKER (the gain is OVERSTATED)",
+      usedFinding?.severity === "blocker" && usedFinding?.defer_to_agent === true);
+    check("C6 finding: it names no $ outcome and never predicts a refund",
+      usedFinding !== undefined && !/\$\d/.test(usedFinding.title) && !/refund/i.test(usedFinding.body ?? ""));
+    check("C6 finding: absent when the signal is 0 ⇒ flag OFF is byte-identical",
+      !run(mkReport(), noSignals()).findings.some((x) => x.id === "capital_disposal_no_cost_base_used"));
     check("C3 finding: none of them assert a $ outcome — they are counts of records to fix",
       on.findings.filter((x) => x.id.startsWith("capital_over") || x.id === "capital_disposal_no_cost_base").every((x) => !/\$\d/.test(x.title)));
     // Signals absent (flag OFF) ⇒ the three C3 findings simply don't exist.

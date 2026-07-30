@@ -1283,6 +1283,60 @@ async function main() {
     }
   }
 
+  // ── Capital C6: what a CONFIRMED CSV import leaves behind (capital_statement_ingest) ──
+  // The import itself needs R2 + the DO and isn't reachable from this harness (the pure parsing is golden-
+  // tested in check-units). What IS reachable, and what actually matters for the money, is the END STATE
+  // confirmCapitalImport writes — so assert that.
+  {
+    const u = "pc6";
+    seedTenant(u, "PC6 imported holdings");
+    inc(`${u}Sal`, u, "salary_payg", 6000000);
+    // What confirmCapitalImport writes for a BUY row: cost base = consideration + brokerage, itemised.
+    const el = { purchase_cents: 999705, brokerage_cents: 995, incidental_cents: 0, other_cents: 0, note: "Imported from trades.csv row 3" };
+    run(`INSERT INTO cgt_assets (id, user_id, person_id, asset_kind, code, label, units, acquired_date, cost_base_cents, detail_json) VALUES ('pc6vas', ?, ?, 'shares', 'VAS', 'VAS — imported', 105, '2025-09-14', ?, ?)`,
+      u, `person_self_${u}`, costBaseFromElements(el), withCostBaseElements(null, el));
+    check("PC6: an imported buy lands brokerage IN the cost base ($9,997.05 + $9.95)",
+      (db.prepare(`SELECT cost_base_cents c FROM cgt_assets WHERE id='pc6vas'`).get() as { c: number }).c === 1000700);
+
+    // And what it writes for a SELL row: proceeds net of selling costs, and cost_base_used_cents = 0.
+    // That zero is DELIBERATE and is the crux of the slice: an export says what you sold for, never which
+    // parcel you drew on, and parcel choice changes the gain. Inventing a cost base would look
+    // authoritative and be wrong, so the import leaves it empty and lets C3's blocker chase the taxpayer.
+    run(`INSERT INTO cgt_events (id, user_id, cgt_asset_id, fy, event_date, proceeds_cents, cost_base_used_cents, units_disposed) VALUES ('pc6ev', ?, 'pc6vas', '2025-26', '2026-03-02', 506005, 0, 50)`, u);
+
+    const CAP6 = `${(env as unknown as { FEATURES: string }).FEATURES},capital_holding_detail,capital_entity_scope,capital_from_txn,capital_income_link,capital_cost_base_detail,capital_position,franking_gross_up,cgt_parcel_method`;
+    const envNoIngest = { DB: (env as unknown as { DB: unknown }).DB, FEATURES: CAP6 } as unknown as Env;
+    const envIngest = { DB: (env as unknown as { DB: unknown }).DB, FEATURES: `${CAP6},capital_statement_ingest` } as unknown as Env;
+
+    const sig6 = await capitalReadinessSignals(envIngest, u);
+    // The FIRST cut of this golden asserted the wrong finding and caught a real hole: C3's blocker fires
+    // only when the HOLDING has no cost base, but here the holding has one and the SALE claims none of it.
+    // Nothing covered that, so an imported disposal would have sat silently overstating the gain by the
+    // entire parcel cost. capital_disposal_no_cost_base_used is that missing finding.
+    check("PC6: an imported sale that hasn't been matched to a cost base raises a BLOCKER",
+      sig6.capitalDisposalNoCostBaseUsedN === 1);
+    check("PC6: and NOT the holding-level blocker — the parcel's own cost base is recorded fine",
+      sig6.capitalDisposedNoCostBaseN === 0);
+
+    // The gain is reported exactly as entered: the whole $5,060.05 proceeds, because no cost base was
+    // claimed. We surface that loudly (above) rather than quietly picking a parcel to make it look better.
+    const r6 = await buildReport(envIngest, u, 2025);
+    check("PC6: until the taxpayer sets a cost base the full proceeds show as the gain — surfaced, not hidden",
+      r6.capital_gains?.gross_capital_gains_cents === 506005);
+
+    // The flag gates ROUTES and UI only — no report or schedule code reads it, so a tenant that has already
+    // imported must compute identically with it off. This is the byte-identical acceptance criterion.
+    const r6off = await buildReport(envNoIngest, u, 2025);
+    check("PC6: capital_statement_ingest OFF ⇒ identical report for already-imported data (routes/UI only)",
+      r6off.capital_gains?.net_capital_gain_cents === r6.capital_gains?.net_capital_gain_cents
+      && r6off.taxable_position_cents === r6.taxable_position_cents);
+    const sched6on = await buildAccountantSchedule(envIngest, u, 2025, { report: r6 });
+    const sched6off = await buildAccountantSchedule(envNoIngest, u, 2025, { report: r6off });
+    check("PC6: and an identical accountant pack, section for section",
+      JSON.stringify(sched6on.sections) === JSON.stringify(sched6off.sections));
+    check("PC6: every section still ties back", tieBackChecks(sched6on).every((t) => t.ok));
+  }
+
   // ── Persona 16: partnership partner — distribution share (Slice E) ──
   // A partner's share of partnership net income (character retained) feeds the personal position exactly
   // like a trust distribution. A trust distribution in the SAME tenant must NOT cross-contaminate.

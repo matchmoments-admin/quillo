@@ -122,6 +122,8 @@ export interface TaxAgentRpc {
   parseStatement(userId: string, accountId: string, filename: string, bytes: ArrayBuffer, format: string): Promise<{ statementId: string; columnMap: unknown; preview: unknown[]; rowCount: number; duplicate: boolean; reconciliation?: unknown }>;
   confirmImport(userId: string, statementId: string, columnMapOverride?: unknown, force?: boolean, quiet?: boolean): Promise<{ imported: number; skipped: number }>;
   confirmImportBulk(userId: string, opts?: { statementIds?: string[]; force?: boolean }): Promise<{ statements: number; imported: number; skipped: number; errors: { statementId: string; error: string }[] }>;
+  parseCapitalImport(userId: string, filename: string, bytes: ArrayBuffer): Promise<{ importId: string; columnMap: unknown; preview: unknown; duplicate: boolean }>;
+  confirmCapitalImport(userId: string, importId: string, selectedRows?: number[] | null): Promise<{ holdings: number; disposals: number; unmatched: { source_row: number; code: string | null }[] }>;
   deleteStatement(userId: string, statementId: string, purge?: boolean): Promise<{ deleted: boolean; linesRemoved: number }>;
   repairStatements(userId: string): Promise<{ statements: number; recovered: number; flagsFixed: number }>;
   setAccountSource(userId: string, accountId: string, source: string): Promise<void>;

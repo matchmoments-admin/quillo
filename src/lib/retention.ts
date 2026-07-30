@@ -15,6 +15,7 @@ export const PURGE_TABLES = [
   "transactions",
   "accounts",
   "statements",
+  "capital_imports",       // 0074: staged capital CSV imports (C6) — tenant rows, must purge
   "corrections",
   "ai_edits",                // 0057: AI-driven/manual entity-write undo log
   "traces",

@@ -893,6 +893,55 @@ export async function handleApi(
     }
   }
 
+  // ── Capital holdings/disposals import (CSV) — C6, capital_statement_ingest ──────────────────
+  // Deliberately a SEPARATE resource from `statements`: that one is bound to a bank account and its confirm
+  // path writes `transactions` with a line-fingerprint dedupe. A holdings export has neither an account nor
+  // a monetary line per row. 404 when the flag is off, so behaviour is unchanged.
+  if (resource === "capital-imports") {
+    if (!featureOn(env, "capital_statement_ingest")) return json({ error: "not found" }, 404);
+    // POST /api/capital-imports (multipart: file) → extract + preview. NOTHING is written to
+    // cgt_assets/cgt_events here; that needs the explicit confirm below.
+    if (m === "POST" && !id) {
+      const form = await req.formData();
+      const entry = form.get("file");
+      if (entry == null || typeof entry === "string") return json({ error: "no file" }, 400);
+      const bytes = await (entry as unknown as Blob).arrayBuffer();
+      if (bytes.byteLength === 0) return json({ error: "empty file" }, 400);
+      const filename = (entry as unknown as { name?: string }).name ?? "holdings.csv";
+      try {
+        return json(await stub.parseCapitalImport(uid, filename, bytes));
+      } catch (e) {
+        const msg = (e as Error).message;
+        if (msg === "consent_required") return json({ error: "consent_required" }, 403);
+        if (msg === "ai_budget_reached") return json({ error: "AI is paused for today (daily limit reached) — try again after the reset." }, 429);
+        return json({ error: msg }, 422);
+      }
+    }
+    // POST /api/capital-imports/:id/confirm { rows?: number[] } → commit the selected draft rows.
+    if (m === "POST" && id && sub === "confirm") {
+      const body = (await req.json().catch(() => ({}))) as { rows?: number[] };
+      try {
+        return json(await stub.confirmCapitalImport(uid, id, body.rows ?? null));
+      } catch (e) {
+        return json({ error: (e as Error).message }, 409);
+      }
+    }
+    // GET /api/capital-imports → the history, so a parsed-but-uncommitted upload is findable later.
+    if (m === "GET" && !id) {
+      const rows = (await env.DB.prepare(
+        `SELECT id, filename, status, row_count, imported_count, created_at, imported_at FROM capital_imports
+          WHERE user_id = ? ORDER BY created_at DESC LIMIT 50`,
+      ).bind(uid).all()).results ?? [];
+      return json({ capital_imports: rows });
+    }
+    // DELETE /api/capital-imports/:id → discard a parsed import the user doesn't want to commit.
+    if (m === "DELETE" && id) {
+      await env.DB.prepare(`UPDATE capital_imports SET status = 'discarded' WHERE id = ? AND user_id = ? AND status = 'parsed'`).bind(id, uid).run();
+      return json({ ok: true });
+    }
+    return json({ error: "not found" }, 404);
+  }
+
   // ── Statement import (CSV) ─────────────────────────────────────────────────
   if (resource === "statements") {
     // POST /api/statements (multipart: file + account_id) → parse + preview (no commit yet)

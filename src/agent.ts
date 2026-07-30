@@ -23,9 +23,10 @@ import { runScan, type ScanResult, type ScanTxn, type ScanPatternFacts } from ".
 import { occupationGuide } from "./lib/occupations";
 import { getProgress } from "./lib/progress";
 import { buildGuidePrompt, buildAskSystem, summariseReportForAsk, renderTxnDigest } from "./lib/guide";
-import { fyLabel, fyBounds, fyStartYearStr, parseFyStartYear, normaliseFyLabel, cgtPersonalScopeExpr } from "./lib/ledger-totals";
+import { fyLabel, fyBounds, fyStartYearStr, parseFyStartYear, normaliseFyLabel } from "./lib/ledger-totals";
 import { cgtUnits } from "./lib/cgt";
-import { costBaseFromElements, validateCostBaseElements, withCostBaseElements, holdingPosition, noDisposalExistsExpr, type CostBaseElements } from "./lib/capital";
+import { costBaseFromElements, validateCostBaseElements, withCostBaseElements, type CostBaseElements } from "./lib/capital";
+import { capitalReadinessSignals } from "./lib/capital-signals";
 import { resolveJurisdictionForUser, currentFyStartYearFor, baseCurrencyOf, AU_DESCRIPTOR, type JurisdictionDescriptor } from "./lib/jurisdiction";
 import { assessReadiness, type FilingReadiness, type FilingReadinessSignals } from "./lib/readiness";
 import { rollSchedule, balancingAdjustment, fyStartYearOf, isLowCostAsset, looksLikePersonalTransfer, assetDepreciatesForTaxpayer, depMethodConflict, resolveDiv40Life, type DepAsset } from "./lib/depreciation";
@@ -3482,81 +3483,12 @@ export class TaxAgent extends Agent<Env> {
         if (c) mfCostBaseAdjustmentCents += c.amit_cost_base_net_amount_cents;
       }
     }
-    // C1 (capital_from_txn): count INCOMPLETE holdings so readiness can chase them. Not FY-scoped — a
-    // holding is a standing record that spans years, and an incomplete one distorts the gain in whatever
-    // year it is eventually sold. Only counts user-managed rows (property/income-sourced parcels are
-    // materialised complete from their source, so chasing them would be noise). Populated ONLY when the
-    // flag is on ⇒ OFF keeps the findings byte-identical.
-    let capitalHoldingsNeedingUnitsN = 0;
-    let capitalHoldingsMissingAcquiredN = 0;
-    let capitalHoldingsMissingCostBaseN = 0;
-    if (featureOn(this.env, "capital_from_txn")) {
-      try {
-        // A holding with a DISPOSAL against it is C3's blocker, not this review finding — counting it in
-        // both fires two findings for one holding, and this one's copy ("it doesn't affect this year's
-        // figures while you still hold it") is FALSE for a holding that has been sold. Excluded only when
-        // capital_position is on, i.e. only when the blocker actually exists to cover it; OFF keeps the
-        // old count so no finding is silently lost.
-        //
-        // The old `status != 'disposed'` filter is gone: `status` is the insert-time literal 'held' on both
-        // user-managed write paths (recordCgtAsset, syncTxnCgtHolding) and is updated by nothing, so for
-        // rows already filtered to property_id/income_id NULL it excluded exactly zero rows. Dropping a
-        // dead READER now shortens the list of things the eventual column drop has to clean up.
-        const disposedGuard = featureOn(this.env, "capital_position") ? `AND ${noDisposalExistsExpr("a")}` : "";
-        const h = await this.env.DB.prepare(
-          `SELECT COALESCE(SUM(CASE WHEN a.txn_id IS NOT NULL AND a.units IS NULL THEN 1 ELSE 0 END), 0) AS needs_units,
-                  COALESCE(SUM(CASE WHEN a.acquired_date IS NULL OR a.acquired_date = '' THEN 1 ELSE 0 END), 0) AS no_acquired,
-                  COALESCE(SUM(CASE WHEN COALESCE(a.cost_base_cents, 0) <= 0 ${disposedGuard} THEN 1 ELSE 0 END), 0) AS no_cost_base
-             FROM cgt_assets a
-            WHERE a.user_id = ? AND a.property_id IS NULL AND a.income_id IS NULL`,
-        ).bind(userId).first<{ needs_units: number; no_acquired: number; no_cost_base: number }>();
-        capitalHoldingsNeedingUnitsN = h?.needs_units ?? 0;
-        capitalHoldingsMissingAcquiredN = h?.no_acquired ?? 0;
-        capitalHoldingsMissingCostBaseN = h?.no_cost_base ?? 0;
-      } catch (e) {
-        if (!/no such table|no such column/i.test((e as Error).message)) throw e;
-      }
-    }
-    // C3 (capital_position): derive each user-managed holding's position and count the inconsistencies.
-    // Scoped to property_id IS NULL AND income_id IS NULL — a property- or AMMA-sourced parcel is
-    // materialised complete from its source with units NULL and status already 'disposed', so deriving
-    // "part sold" for it would be noise. Not FY-scoped: a holding is a standing record and an inconsistency
-    // distorts the gain in whatever year it is eventually sold. Populated ONLY when the flag is on.
-    //
-    // ENTITY SCOPE (`cgtPersonalScopeExpr`, shared with cgtTotals and the accountant schedule — trap 4).
-    // All three findings describe THE INDIVIDUAL'S position: the blocker literally says "the entire sale
-    // proceeds are showing as a capital gain", which is true only for a parcel that reaches the individual
-    // headline. C-E keeps a company/trust/SMSF parcel out of that headline, so an unscoped count would
-    // raise a blocker about money that is not in the user's return. Known limitation recorded in the
-    // handoff: an integrity problem on a SEPARATE-TAXPAYER parcel is therefore not surfaced here — that
-    // entity lodges its own return, which Quillo does not produce.
-    let capitalOverDisposedN = 0;
-    let capitalOverUsedCostBaseN = 0;
-    let capitalDisposedNoCostBaseN = 0;
-    if (featureOn(this.env, "capital_position")) {
-      try {
-        const rows = (await this.env.DB.prepare(
-          `SELECT a.id AS id, a.units AS units, a.cost_base_cents AS cost_base_cents,
-                  COALESCE(SUM(ev.units_disposed), 0) AS units_disposed,
-                  COALESCE(SUM(ev.cost_base_used_cents), 0) AS cost_base_used_cents,
-                  COUNT(ev.id) AS n_events
-             FROM cgt_assets a LEFT JOIN cgt_events ev ON ev.cgt_asset_id = a.id AND ev.user_id = a.user_id
-            WHERE a.user_id = ? AND a.property_id IS NULL AND a.income_id IS NULL AND ${cgtPersonalScopeExpr(this.env)}
-            GROUP BY a.id`,
-        ).bind(userId).all<{ units: number | null; cost_base_cents: number; units_disposed: number; cost_base_used_cents: number; n_events: number }>()).results ?? [];
-        for (const r of rows) {
-          if (!r.n_events) continue; // no disposal ⇒ nothing to be inconsistent with
-          const pos = holdingPosition({ units: r.units, cost_base_cents: r.cost_base_cents }, [
-            { units_disposed: r.units_disposed, cost_base_used_cents: r.cost_base_used_cents },
-          ]);
-          if (pos.over_disposed_units > 0) capitalOverDisposedN++;
-          if (pos.over_used_cost_base_cents > 0) capitalOverUsedCostBaseN++;
-          if ((r.cost_base_cents ?? 0) <= 0) capitalDisposedNoCostBaseN++;
-        }
-      } catch (e) {
-        if (!/no such table|no such column/i.test((e as Error).message)) throw e;
-      }
-    }
+    // C1 + C3 capital readiness signals. Both queries and the complementarity invariant between the
+    // "no cost base" review finding and its promoted blocker now live in src/lib/capital-signals.ts —
+    // extracted so the persona goldens exercise THIS code rather than a hand-typed replica of it, which
+    // is what the C3 hardening review found them doing. Populated only when the relevant flag is on, so
+    // OFF keeps the findings byte-identical.
+    const capitalSignals = await capitalReadinessSignals(this.env, userId);
     // GST registration status for the turnover nudge — registered if the tenant default is set OR any
     // entity is flagged (mirrors gstTotals' registration test in ledger-totals.ts).
     const entGstReg = (await this.env.DB.prepare(`SELECT COUNT(*) AS n FROM entities WHERE user_id = ? AND COALESCE(gst_registered,0) = 1`).bind(userId).first<{ n: number }>())?.n ?? 0;
@@ -3608,12 +3540,7 @@ export class TaxAgent extends Agent<Env> {
       psiAllAssessed,
       mainResidenceDisposalN: mainResDisposal?.n ?? 0,
       mfCostBaseAdjustmentCents,
-      capitalHoldingsNeedingUnitsN,
-      capitalHoldingsMissingAcquiredN,
-      capitalHoldingsMissingCostBaseN,
-      capitalOverDisposedN,
-      capitalOverUsedCostBaseN,
-      capitalDisposedNoCostBaseN,
+      ...capitalSignals,
       ...(featureOn(this.env, "non_cash_income") ? { nonCashIncomeEnabled: true } : {}),
       ...(integrityOn ? {
         frankingHoldingThresholdCents: integrityThresholds?.franking_holding_rule_threshold_cents ?? null,

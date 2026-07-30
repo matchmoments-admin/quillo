@@ -127,7 +127,7 @@ export function CapitalEquity() {
                     <td className="px-2 py-1 text-right text-xs text-muted">
                       {STATUS_TEXT[pos.status] ?? pos.status}
                       {overUnits ? <span className="block text-warn">sold more units than recorded — check</span> : null}
-                      {overCost ? <span className="block text-warn">cost base used exceeds the parcel — check</span> : null}
+                      {overCost ? <span className="block text-warn">claimed more cost than this parcel cost — check</span> : null}
                     </td>
                   );
                 })()}

@@ -21,7 +21,8 @@ import { fetchAskDigestRows, listAccounts, listIncome } from "../src/lib/queries
 import { deleteRow, archiveRow, DeleteBlockedError, type DeleteBlocker, syncPropertyDisposalToCgt, syncIncomeCgtFromComponents, syncTxnCgtHolding, clearTxnCgt, clearOrphanedTxnCgt } from "../src/lib/situation-write";
 import { ordinaryAssessableCents, type AmmaComponents } from "../src/lib/managed-fund";
 import { draftHoldingFromTxn } from "../src/lib/clarify";
-import { costBaseFromElements, withCostBaseElements, holdingPosition, noDisposalExistsExpr } from "../src/lib/capital";
+import { costBaseFromElements, withCostBaseElements } from "../src/lib/capital";
+import { capitalReadinessSignals } from "../src/lib/capital-signals";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
@@ -1210,10 +1211,21 @@ async function main() {
     check("PC3: flag OFF ⇒ no closing-holdings section at all (CSV byte-identical)",
       schedOff.sections.find((s) => s.key === "capital_holdings") === undefined);
 
-    // The signal side of the two REVIEW findings + the promoted BLOCKER: replicate the DO's signal query and
-    // assert holdingPosition classifies real DB rows correctly. (The FINDINGS themselves — severities, defer
-    // framing, flag-OFF absence — are asserted against assessReadiness in check-units.ts, this repo's
-    // established seam for readiness; the DO's filingReadiness isn't reachable from this harness.)
+    // AS AT YEAR END, not as at today. Daniel's CBA half-disposal is in FY2025-26, so a FY2024-25 pack must
+    // show the parcel WHOLE — 200 units, full cost base, "held". Unbounded (as C3 first shipped) the earlier
+    // pack showed 100 units and understated the cost base carried into a year that is already closed.
+    {
+      const rPrev = await buildReport(envP, "p2cap", 2024);
+      const schedPrev = await buildAccountantSchedule(envP, "p2cap", 2024, { report: rPrev });
+      const prevCba = schedPrev.sections.find((s) => s.key === "capital_holdings")?.rows.find((r) => r[0] === "CBA");
+      check("PC3: a prior-year pack states the position AS AT that year end — CBA is whole, not part-sold",
+        prevCba?.[3] === 200 && prevCba?.[6] === "held" && prevCba?.[5] === "20019.95");
+    }
+
+    // The signal side of the two REVIEW findings + the promoted BLOCKER, asserted through
+    // capitalReadinessSignals — the SAME function the Durable Object calls, against real D1 rows. (The
+    // FINDINGS themselves — severities, defer framing, flag-OFF absence — are asserted against
+    // assessReadiness in check-units.ts, this repo's established seam for readiness.)
     {
       const u = "pc3bad";
       seedTenant(u, "PC3 inconsistent holdings");
@@ -1228,45 +1240,46 @@ async function main() {
       // finding — it is the control that proves the new disposed-guard is surgical rather than blanket.
       run(`INSERT INTO cgt_assets (id, user_id, person_id, asset_kind, code, units, acquired_date, cost_base_cents) VALUES ('pc3heldnocb', ?, ?, 'shares', 'NAB', 100, '2023-01-01', 0)`, u, `person_self_${u}`);
 
-      const rows = db.prepare(
-        `SELECT a.id AS id, a.units AS units, a.cost_base_cents AS cost_base_cents,
-                COALESCE(SUM(ev.units_disposed), 0) AS units_disposed,
-                COALESCE(SUM(ev.cost_base_used_cents), 0) AS cost_base_used_cents,
-                COUNT(ev.id) AS n_events
-           FROM cgt_assets a LEFT JOIN cgt_events ev ON ev.cgt_asset_id = a.id AND ev.user_id = a.user_id
-          WHERE a.user_id = ? AND a.property_id IS NULL AND a.income_id IS NULL GROUP BY a.id`,
-      ).all(u) as { id: string; units: number | null; cost_base_cents: number; units_disposed: number; cost_base_used_cents: number; n_events: number }[];
-      const posFor = (id: string) => {
-        const r = rows.find((x) => x.id === id)!;
-        return holdingPosition({ units: r.units, cost_base_cents: r.cost_base_cents }, [{ units_disposed: r.units_disposed, cost_base_used_cents: r.cost_base_used_cents }]);
-      };
-      check("PC3: selling 150 of 100 units held is surfaced as 50 over-disposed (the review-finding signal)",
-        posFor("pc3over").over_disposed_units === 50);
-      check("PC3: a disposal against a zero-cost-base holding is detectable (the BLOCKER signal)",
-        rows.find((x) => x.id === "pc3nocb")!.n_events === 1 && rows.find((x) => x.id === "pc3nocb")!.cost_base_cents === 0);
+      // (d) an ENTITY parcel with a disposal and NO cost base. This is the hole the review found: the first
+      // cut suppressed the C1 review finding for anything with a disposal, while the C3 blocker was
+      // entity-scoped — so this row fell out of BOTH and was surfaced nowhere, having raised the review
+      // finding before the change. It must raise exactly one finding, and it must be the review one.
+      run(`INSERT INTO entities (id, user_id, kind, name, person_id, entity_type) VALUES ('pc3Co', ?, 'company', 'PC3 Holdings Pty Ltd', ?, 'company')`, u, `person_self_${u}`);
+      run(`INSERT INTO cgt_assets (id, user_id, person_id, entity_id, asset_kind, code, units, acquired_date, cost_base_cents) VALUES ('pc3ent', ?, ?, 'pc3Co', 'shares', 'RIO', 20, '2023-01-01', 0)`, u, `person_self_${u}`);
+      // Its disposal also claims $3,000 of cost base against a parcel recorded as costing nothing, so the
+      // entity row is genuinely over-used — otherwise the "still counted for overuse" check below would
+      // pass on a zero and assert nothing (the failure mode this whole PR is about).
+      run(`INSERT INTO cgt_events (id, user_id, cgt_asset_id, fy, event_date, proceeds_cents, cost_base_used_cents, units_disposed) VALUES ('pc3entE', ?, 'pc3ent', '2025-26', '2026-05-01', 500000, 300000, 20)`, u);
+
+      // These call the REAL signal function the Durable Object calls — not a replica of its SQL. The first
+      // cut of this golden re-typed both queries here, so it asserted its own copy and stayed green no
+      // matter what agent.ts did (trap 10, committed inside the fix for trap 11). capitalReadinessSignals
+      // exists precisely so this is a real regression test.
+      const sig = await capitalReadinessSignals(envP, u);
+      check("PC3: selling 150 of 100 units held is surfaced as over-disposed", sig.capitalOverDisposedN === 1);
+      check("PC3: exactly ONE capital blocker — the personal zero-cost-base disposal (TLS)",
+        sig.capitalDisposedNoCostBaseN === 1);
+      // ONE HOLDING, ONE FINDING, and no holding left with none. NAB (held, no cost base) and RIO (entity,
+      // disposed, no cost base) are the review finding's; TLS (personal, disposed) is the blocker's alone.
+      check("PC3: the review count keeps the still-held AND the entity holding — 2, not 1 and not 3",
+        sig.capitalHoldingsMissingCostBaseN === 2);
+      // The entity parcel's own integrity findings are NOT entity-scoped: the copy is holding-level
+      // arithmetic, and the register renders its warn badge on entity rows, so scoping them would leave a
+      // badge on screen with no finding behind it.
+      check("PC3: the entity parcel is out of the BLOCKER (not the individual's position) but still counted for cost-base overuse",
+        sig.capitalDisposedNoCostBaseN === 1 && sig.capitalOverUsedCostBaseN === 1);
+
       // And the over-disposed holding's gain is still counted exactly as the user entered it — we surface,
       // we never silently correct the money.
       const rBad = await buildReport(envP, u, 2025);
       check("PC3: the over-disposed sale still counts as entered ($10k gain) — we surface, never auto-correct",
         rBad.capital_gains?.gross_capital_gains_cents === 1000000 + 700000);
 
-      // ONE HOLDING, ONE FINDING. The C1 review count and the C3 blocker count are populated by two separate
-      // queries in the DO, and the first cut of C3 let a zero-cost-base DISPOSAL fall into both — so the user
-      // got the blocker plus a review finding whose copy ("it doesn't affect this year's figures while you
-      // still hold it") is flatly false for a holding they have sold. Replicating both queries here is the
-      // only reachable seam: the DO's filingReadiness isn't callable from this harness, but the SQL is the
-      // part that was wrong. TLS (disposed, no cost base) must be the blocker's alone; NAB (held, no cost
-      // base) must remain the review finding's alone.
-      const c1NoCostBase = (db.prepare(
-        `SELECT COALESCE(SUM(CASE WHEN COALESCE(a.cost_base_cents, 0) <= 0 AND ${noDisposalExistsExpr("a")}
-                THEN 1 ELSE 0 END), 0) AS n
-           FROM cgt_assets a WHERE a.user_id = ? AND a.property_id IS NULL AND a.income_id IS NULL`,
-      ).get(u) as { n: number }).n;
-      const c3DisposedNoCostBase = rows.filter((r) => r.n_events > 0 && (r.cost_base_cents ?? 0) <= 0).length;
-      check("PC3: a zero-cost-base DISPOSAL raises the blocker only — it is no longer double-counted as a review finding",
-        c3DisposedNoCostBase === 1 && c1NoCostBase === 1);
-      check("PC3: and the still-HELD zero-cost-base holding is the one the review finding keeps",
-        (db.prepare(`SELECT id FROM cgt_assets a WHERE a.user_id = ? AND COALESCE(a.cost_base_cents,0) <= 0 AND ${noDisposalExistsExpr("a")}`).get(u) as { id: string }).id === "pc3heldnocb");
+      // Flag OFF ⇒ the C3 counts are absent and the C1 count reverts to counting every zero-cost-base
+      // holding, so no warning is silently lost when the position feature is off.
+      const sigOff = await capitalReadinessSignals(envNoPos, u);
+      check("PC3: flag OFF ⇒ no C3 signals, and the review finding covers all three zero-cost-base holdings",
+        sigOff.capitalDisposedNoCostBaseN === 0 && sigOff.capitalOverDisposedN === 0 && sigOff.capitalHoldingsMissingCostBaseN === 3);
     }
   }
 

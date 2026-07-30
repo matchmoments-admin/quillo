@@ -461,6 +461,12 @@ export async function buildAccountantSchedule(
   // likewise stay out of the individual's carried-forward holdings, or the TOTAL below silently claims
   // somebody else's cost base. The original C3 query had no predicate and only looked correct because the
   // one entity fixture happened to be fully disposed.
+  // BOTH reads are bounded to the report's FY, because this section states a position AS AT year end.
+  // Unbounded, a pack for an earlier year showed the position as it stands TODAY: re-export FY2024-25 after
+  // selling in FY2025-26 and the earlier pack claimed the parcel was already part-sold and understated the
+  // cost base carried into that year — a wrong number on a tax deliverable, for a year that is closed.
+  // `fy` is the 'YYYY-YY' label, whose lexical order matches chronological order, so `<=` is a valid
+  // as-at test; acquisitions after year end are likewise not yet holdings.
   const holdingsP = positionOn
     ? safeAll<{ id: string; code: string | null; label: string | null; asset_kind: string; acquired_date: string | null; units: number | null; cost_base_cents: number }>(
         env.DB.prepare(
@@ -468,13 +474,17 @@ export async function buildAccountantSchedule(
                   a.acquired_date AS acquired_date, a.units AS units, a.cost_base_cents AS cost_base_cents
              FROM cgt_assets a
             WHERE a.user_id = ? AND a.property_id IS NULL AND a.income_id IS NULL AND ${cgtPersonalScopeExpr(env)}
+              AND (a.acquired_date IS NULL OR a.acquired_date <= ?)
             ORDER BY COALESCE(a.code, a.label, a.asset_kind), a.acquired_date`,
-        ).bind(userId).all(),
+        ).bind(userId, end).all(),
       )
     : Promise.resolve([]);
   const holdingDisposalsP = positionOn
     ? safeAll<{ cgt_asset_id: string; units_disposed: number | null; cost_base_used_cents: number | null }>(
-        env.DB.prepare(`SELECT cgt_asset_id, units_disposed, cost_base_used_cents FROM cgt_events WHERE user_id = ?`).bind(userId).all(),
+        env.DB.prepare(
+          `SELECT ev.cgt_asset_id AS cgt_asset_id, ev.units_disposed AS units_disposed, ev.cost_base_used_cents AS cost_base_used_cents
+             FROM cgt_events ev WHERE ev.user_id = ? AND ev.fy <= ?`,
+        ).bind(userId, fy).all(),
       )
     : Promise.resolve([]);
   const [items, incomeRows, depRows, depDenied, attrRows, cgtEvents, essGrants, trustRows, basRows, paygRows, holdingRows, holdingDisposals] =
@@ -910,10 +920,16 @@ export async function buildAccountantSchedule(
       // with the rows above it (trap 1: a subtotal that reconciles upward can still contradict its own
       // rows; a reader who adds up the column must be told why it won't match).
       const remaining = open.reduce((t, x) => t + x.pos.cost_base_remaining_cents, 0);
-      const label = shown.length < open.length
+      const truncated = shown.length < open.length;
+      const label = truncated
         ? `TOTAL cost base carried forward — all ${open.length} holdings, including rows not shown`
         : "TOTAL cost base carried forward";
       rows.push(["", "", null, null, null, d(remaining), label]);
+      // The caveat has to ride in `notes` as well, not only on the in-band row: both renderers ALSO emit
+      // their own Subtotal line from `subtotal_cents`, and that one would otherwise show the same figure
+      // bare, leaving a reader who sums the visible column with no explanation — the exact failure this is
+      // meant to prevent. `notes` is the one channel both the CSV and XLSX paths render.
+      if (truncated) notes2.push(`The total above covers all ${open.length} open holdings, including the rows not shown.`);
       sections.push({
         key: "capital_holdings",
         title: "Investment holdings at year end (carried forward)",

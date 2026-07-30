@@ -125,18 +125,6 @@ export function withCostBaseElements(detailJson: string | null | undefined, e: C
 // remaining cost base may only ever be "the parcel's cost base minus the cost base they said they used",
 // never a figure we picked by choosing parcels on their behalf.
 
-/**
- * "This holding has no disposal recorded against it", as a SQL fragment over a `cgt_assets` alias.
- *
- * Exported for the same reason `cgtPersonalScopeExpr` is (trap 4): the readiness signal query in the DO and
- * the golden that asserts its semantics must share ONE definition. The condition decides which of two
- * findings a zero-cost-base holding raises — the C1 review finding while it is still held, or C3's blocker
- * once it has been sold — so a replica drifting from the original would silently restore the double-fire
- * this exists to prevent.
- */
-export const noDisposalExistsExpr = (alias: string): string =>
-  `NOT EXISTS (SELECT 1 FROM cgt_events ev WHERE ev.cgt_asset_id = ${alias}.id AND ev.user_id = ${alias}.user_id)`;
-
 export interface HoldingDisposal {
   units_disposed?: number | null;
   cost_base_used_cents?: number | null;
@@ -165,6 +153,12 @@ export interface HoldingPosition {
  * Scope note for callers: run this over USER-MANAGED holdings only (`property_id IS NULL AND income_id IS
  * NULL`). A property- or AMMA-sourced parcel is materialised complete from its source with `units` NULL and
  * `status='disposed'` already set, so deriving "part sold" for it would be noise, not information.
+ *
+ * PASS THE REAL DISPOSAL ROWS, not one pre-summed pseudo-row. Every figure here is a reduce-sum and would
+ * survive the shortcut, but `status` reads `disposals.length` as a zero-test, so a synthetic single row can
+ * never yield "held". All four callers now pass real rows; keep it that way, because the first per-event
+ * field this gains (C4 gives each DRP parcel its own 12-month clock; C5 attributes a cost-base adjustment
+ * to specific units) would be silently wrong for any caller still summing first.
  */
 export function holdingPosition(
   asset: { units?: number | null; cost_base_cents?: number | null },

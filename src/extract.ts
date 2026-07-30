@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { LLM } from "./llm";
 import { bytesToBase64 } from "./lib/base64";
 import type { ColumnMap } from "./lib/statements";
+import type { CapitalColumnMap } from "./lib/capital-import";
 import { BUCKETS, ENTITY_KINDS, PROPERTY_STATUSES, DOC_TYPES, ASSET_CLASSES, ATO_LABEL_MAX, CLAIM_TYPES, isBucket, isPropertyBucket, normalizeAtoLabel } from "./lib/taxonomy";
 import { EXTRAS_CATEGORIES } from "./lib/advisory";
 import type { DigestRef } from "./lib/guide";
@@ -326,6 +327,59 @@ export async function extractColumnMap(llm: LLM, rows: string[][]): Promise<Colu
   );
   if (!toolUse) throw new Error("model did not return a column map");
   return toolUse.input as ColumnMap;
+}
+
+// ── Capital holdings/disposals CSV column mapping (C6, capital_statement_ingest) ──────────────
+// Same division of labour as the bank-CSV mapper above: ONE cheap model call infers the file's shape, and
+// every row is then parsed deterministically by applyCapitalColumnMap (src/lib/capital-import.ts). That is
+// what lets a broker or crypto-exchange export we have never seen work on the first upload, instead of
+// maintaining a parser per venue — of which there are hundreds.
+const CAPITAL_COLUMN_MAP_TOOL: Anthropic.Tool = {
+  name: "record_capital_column_map",
+  description: "Map a share/ETF/crypto holdings-or-trades CSV's columns so the rows can be parsed deterministically.",
+  input_schema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["header_row"],
+    properties: {
+      header_row: { type: "integer", description: "0-based index of the header row. Brokers often put account metadata rows ABOVE the header — skip them. Use the first data row's index if there is no header." },
+      code_col: { type: ["integer", "null"], description: "0-based index of the ticker/asset code (e.g. VAS, BHP, BTC), or null." },
+      label_col: { type: ["integer", "null"], description: "0-based index of the asset NAME/description, or null." },
+      date_col: { type: ["integer", "null"], description: "0-based index of the trade or settlement date, or null." },
+      units_col: { type: ["integer", "null"], description: "0-based index of the quantity of units/shares/coins. May be fractional. Null if absent." },
+      unit_price_col: { type: ["integer", "null"], description: "0-based index of the price PER UNIT, or null." },
+      total_col: { type: ["integer", "null"], description: "0-based index of the total consideration/value for the row EXCLUDING fees, or null." },
+      fee_col: { type: ["integer", "null"], description: "0-based index of brokerage/commission/exchange fee, or null." },
+      side_col: { type: ["integer", "null"], description: "0-based index of the column saying BUY vs SELL. Null when the file is a holdings list with no buy/sell distinction." },
+      kind_col: { type: ["integer", "null"], description: "0-based index of a column distinguishing shares vs ETF/fund vs crypto, or null." },
+    },
+  },
+};
+
+export async function extractCapitalColumnMap(llm: LLM, rows: string[][]): Promise<CapitalColumnMap> {
+  const sample = rows.slice(0, 8).map((r, i) => `row ${i}: ${JSON.stringify(r)}`).join("\n");
+  const msg = await llm.create({
+    model: llm.modelId,
+    max_tokens: 512,
+    tools: [CAPITAL_COLUMN_MAP_TOOL],
+    tool_choice: { type: "tool", name: CAPITAL_COLUMN_MAP_TOOL.name },
+    messages: [
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: `Top rows of a share / ETF / crypto holdings or trade-history CSV export (each row is a JSON array of cells). Identify the columns and call record_capital_column_map. Set a column to null when the file genuinely does not contain it — do not guess an index.\n\n${sample}`,
+          },
+        ],
+      },
+    ],
+  }, "capital_columns");
+  const toolUse = msg.content.find(
+    (c): c is Anthropic.ToolUseBlock => c.type === "tool_use" && c.name === CAPITAL_COLUMN_MAP_TOOL.name,
+  );
+  if (!toolUse) throw new Error("model did not return a capital column map");
+  return toolUse.input as CapitalColumnMap;
 }
 
 /** Extract + categorise a receipt image/PDF (Claude vision = OCR). */

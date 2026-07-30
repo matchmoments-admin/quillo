@@ -1179,3 +1179,32 @@ export interface WorkUse {
   wfh_leave_ranges?: { start: string; end: string; label?: string }[] | null;
   wfh_generate_diary?: number | boolean | null;                     // GET returns 0/1; POST accepts boolean
 }
+
+// C6 (capital_statement_ingest): the preview returned by a capital CSV upload. Nothing in the register has
+// changed at this point — these are DRAFT rows awaiting the taxpayer's explicit confirm.
+export interface CapitalDraftRow {
+  source_row: number;
+  side: "acquire" | "dispose";
+  code: string | null;
+  label: string | null;
+  asset_kind: string;
+  date: string | null;
+  units: number | null;
+  consideration_cents: number;
+  fee_cents: number;
+  amount_cents: number;
+  /** Non-null ⇒ the row can't be imported as-is and is shown but not selectable. */
+  problem: string | null;
+}
+
+export interface CapitalImportParse {
+  importId: string;
+  duplicate: boolean;
+  preview: {
+    rows: CapitalDraftRow[];
+    acquisitions: number;
+    disposals: number;
+    problems: number;
+    skipped: number;
+  } | null;
+}

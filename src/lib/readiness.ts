@@ -83,6 +83,7 @@ export interface FilingReadinessSignals {
   capitalOverDisposedN?: number; // holdings where the units disposed EXCEED the units held
   capitalOverUsedCostBaseN?: number; // holdings where the cost base claimed across disposals exceeds the parcel's
   capitalDisposedNoCostBaseN?: number; // holdings with a DISPOSAL and no cost base — the materially-distorting case
+  capitalDisposalNoCostBaseUsedN?: number; // the holding HAS a cost base but the sale claimed none of it (the shape a CSV-imported disposal arrives in)
   // integrity_nudges (audit wave 1) — the caller populates these ONLY when the flag is on, so OFF ⇒
   // findings byte-identical. All four are pack REFERENCE values / booleans that drive defer nudges;
   // holding periods, offset limits and cap breaches are NEVER computed as $ outcomes.
@@ -703,6 +704,17 @@ export function assessReadiness(input: {
     findings.push(f("capital_disposal_no_cost_base", "evidence", "blocker",
       `${n} investment disposal${n === 1 ? "" : "s"} with no cost base — the whole sale price is being counted as gain`,
       `You've recorded a sale against a holding that has no cost base, so the entire sale proceeds are showing as a capital gain. That materially overstates your position. Enter what you paid for the parcel — purchase price plus brokerage and other incidental costs — before handing this over. Cost-base elements are fact-specific.${DEFER}`,
+      true, []));
+  }
+  if ((signals.capitalDisposalNoCostBaseUsedN ?? 0) > 0) {
+    const n = signals.capitalDisposalNoCostBaseUsedN!;
+    // BLOCKER for the same reason as capital_disposal_no_cost_base: the whole sale price is landing as
+    // gain. The difference is WHY — here the parcel's cost is recorded, but the sale doesn't say how much
+    // of it was used. That is exactly how an imported disposal arrives, and it OVERSTATES the gain, so it
+    // must not sit quietly: the taxpayer would pay tax on money they never made.
+    findings.push(f("capital_disposal_no_cost_base_used", "evidence", "blocker",
+      `${n} investment sale${n === 1 ? "" : "s"} not yet matched to what the parcel cost you`,
+      `You've recorded a sale against a holding that does have a cost base, but the sale itself doesn't say how much of that cost base it used — so the entire sale price is currently showing as a capital gain and your position is overstated. This is normal for a sale imported from a broker or exchange file: the export says what you sold for, not which parcel you sold. Open the sale and enter the cost base for the units you sold. Which parcel a sale draws on changes the gain and is a decision for you and your agent.${DEFER}`,
       true, []));
   }
   if ((signals.capitalOverDisposedN ?? 0) > 0) {

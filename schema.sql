@@ -1223,3 +1223,22 @@ CREATE TABLE IF NOT EXISTS trading_stock (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_trading_stock_unique ON trading_stock(user_id, fy, COALESCE(entity_id, ''));
 CREATE INDEX IF NOT EXISTS idx_trading_stock_user_fy ON trading_stock(user_id, fy);
+
+-- 0074 — capital_statement_ingest (C6): staged CSV imports of holdings/disposals. Confirm-before-write:
+-- rows are extracted to R2 beside the raw file and nothing reaches cgt_assets/cgt_events until committed.
+CREATE TABLE IF NOT EXISTS capital_imports (
+  id             TEXT PRIMARY KEY,
+  user_id        TEXT NOT NULL,
+  filename       TEXT,
+  file_hash      TEXT,
+  file_key       TEXT,
+  status         TEXT NOT NULL DEFAULT 'parsed',
+  column_map     TEXT,
+  row_count      INTEGER NOT NULL DEFAULT 0,
+  imported_count INTEGER NOT NULL DEFAULT 0,
+  error          TEXT,
+  created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  imported_at    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_capital_imports_user ON capital_imports(user_id, status);
+CREATE INDEX IF NOT EXISTS idx_capital_imports_hash ON capital_imports(user_id, file_hash);

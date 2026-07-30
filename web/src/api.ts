@@ -1,4 +1,4 @@
-import type { Txn, TxnDetail, Situation, SituationDraft, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse, UsageData, StatementInfo, IncomeRow, DocRow, AssetRow, ScheduleRow, ChecklistItem, ClaimSuggestion, FilingReadiness, ReviewSummary, Progress, AdminTenant, AdminOverview, AdminSpend, AiEdit, ClaimReview, OccupationRulesDraft, OccupationRuleCandidate, NoaCarryover, MovementSweep, BatchResult, ClarifyQuestion, ClarifyAnswer, ClaimMatch, AccountantSummary, SuggestedDeduction, WorkUse, CarUse, CarUseRates, ScanResult, CapitalLoss, OpeningDepreciation, AttributionState, AttributionInput, AttributionRow, IncomeActivity, PropertyOwner, EntityRole, CgtAssetRow, CgtEventRow, EssGrantRow, VehicleLogbookRow, TrustDistributionRow, SmsfMemberRow, SuperContributionRow, BasPeriodRow, PaygInstalmentRow, AskAnswer, SavingsData, PhiOverview, PhiInsurerOption, PhiProvidersResult, PhiScanResult, BillingOverview, PartnerPortal, AmmaComponents, PartnershipDistributionRow, CostBaseElements } from "./types";
+import type { CapitalImportParse, Txn, TxnDetail, Situation, SituationDraft, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse, UsageData, StatementInfo, IncomeRow, DocRow, AssetRow, ScheduleRow, ChecklistItem, ClaimSuggestion, FilingReadiness, ReviewSummary, Progress, AdminTenant, AdminOverview, AdminSpend, AiEdit, ClaimReview, OccupationRulesDraft, OccupationRuleCandidate, NoaCarryover, MovementSweep, BatchResult, ClarifyQuestion, ClarifyAnswer, ClaimMatch, AccountantSummary, SuggestedDeduction, WorkUse, CarUse, CarUseRates, ScanResult, CapitalLoss, OpeningDepreciation, AttributionState, AttributionInput, AttributionRow, IncomeActivity, PropertyOwner, EntityRole, CgtAssetRow, CgtEventRow, EssGrantRow, VehicleLogbookRow, TrustDistributionRow, SmsfMemberRow, SuperContributionRow, BasPeriodRow, PaygInstalmentRow, AskAnswer, SavingsData, PhiOverview, PhiInsurerOption, PhiProvidersResult, PhiScanResult, BillingOverview, PartnerPortal, AmmaComponents, PartnershipDistributionRow, CostBaseElements } from "./types";
 
 // Clerk session token getter, wired from <TokenBridge> inside ClerkProvider (main.tsx).
 // Clerk tokens are short-lived, so we fetch a fresh one per request (getToken caches/refreshes).
@@ -381,6 +381,18 @@ export const api = {
     if (!res.ok) throw await errFrom(res);
     return res.json();
   },
+  // C6 (capital_statement_ingest): upload a broker / registry / crypto-exchange CSV and get back a PREVIEW.
+  // This writes nothing to the register — committing is a separate, explicit call.
+  parseCapitalImport: async (file: File): Promise<CapitalImportParse> => {
+    const fd = new FormData();
+    fd.append("file", file);
+    const res = await fetch("/api/capital-imports", { method: "POST", credentials: "include", headers: await authHeaders(), body: fd });
+    if (!res.ok) throw await errFrom(res);
+    return res.json();
+  },
+  confirmCapitalImport: (id: string, rows: number[]) =>
+    post<{ holdings: number; disposals: number; unmatched: { source_row: number; code: string | null }[] }>(`/api/capital-imports/${id}/confirm`, { rows }),
+  discardCapitalImport: (id: string) => send<{ ok: true }>("DELETE", `/api/capital-imports/${id}`),
   // Fetches the stored document WITH the Clerk Bearer token and hands back a same-origin
   // blob: URL the caller can open in a new tab. A plain <a href> to the download route is a
   // top-level navigation with no Authorization header → 401 "unauthorized" (see src/api.ts

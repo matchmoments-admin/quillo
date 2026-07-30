@@ -16,7 +16,7 @@ import { deriveWfhHours, generateWfhDiary, type WfhLeaveRange } from "./lib/work
 import { applyUserRules, RULE_CREDIT_BUCKETS } from "./lib/rules";
 import { sha256hex, sha256hexBytes } from "./lib/base64";
 import { getLLM, type LLM } from "./llm";
-import { extractReceipt, extractReceipts, extractFromText, extractColumnMap, extractStatement, extractBatch, extractSituationDraft, extractOccupationRules, extractGuide, extractAnswer, classifyDocument, extractPayslip, extractIncomeStatement, extractNoticeOfAssessment, extractAgentStatement, extractDepreciationSchedule, extractDividend, extractHealthClaim, batchParams, parseBatchMessage, mapBatchItems, ALLOWED_NAV_ROUTES, type Extracted, type ExtractedStatement, type SituationDraft, type OccupationRulesDraft, type AnswerResult } from "./extract";
+import { extractReceipt, extractReceipts, extractFromText, extractColumnMap, extractCapitalColumnMap, extractStatement, extractBatch, extractSituationDraft, extractOccupationRules, extractGuide, extractAnswer, classifyDocument, extractPayslip, extractIncomeStatement, extractNoticeOfAssessment, extractAgentStatement, extractDepreciationSchedule, extractDividend, extractHealthClaim, batchParams, parseBatchMessage, mapBatchItems, ALLOWED_NAV_ROUTES, type Extracted, type ExtractedStatement, type SituationDraft, type OccupationRulesDraft, type AnswerResult } from "./extract";
 import { mapIncomeStatementToRows } from "./lib/income-statement";
 import { fyForDate, buildReport, useStatusDeniedExpr, propertyUndeterminedGatedExpr } from "./lib/report";
 import { runScan, type ScanResult, type ScanTxn, type ScanPatternFacts } from "./lib/scan";
@@ -27,6 +27,7 @@ import { fyLabel, fyBounds, fyStartYearStr, parseFyStartYear, normaliseFyLabel }
 import { cgtUnits } from "./lib/cgt";
 import { costBaseFromElements, validateCostBaseElements, withCostBaseElements, type CostBaseElements } from "./lib/capital";
 import { capitalReadinessSignals } from "./lib/capital-signals";
+import { applyCapitalColumnMap, type CapitalColumnMap, type CapitalDraftRow, type CapitalImportPreview } from "./lib/capital-import";
 import { resolveJurisdictionForUser, currentFyStartYearFor, baseCurrencyOf, AU_DESCRIPTOR, type JurisdictionDescriptor } from "./lib/jurisdiction";
 import { assessReadiness, type FilingReadiness, type FilingReadinessSignals } from "./lib/readiness";
 import { rollSchedule, balancingAdjustment, fyStartYearOf, isLowCostAsset, looksLikePersonalTransfer, assetDepreciatesForTaxpayer, depMethodConflict, resolveDiv40Life, type DepAsset } from "./lib/depreciation";
@@ -700,6 +701,149 @@ export class TaxAgent extends Agent<Env> {
    * statement failures: a statement that doesn't reconcile throws and is reported in `errors`, the
    * rest still import (so "import all reconciled" naturally skips the ones that don't balance).
    */
+  // ── C6 (capital_statement_ingest): CSV import of holdings & disposals ──────────────────────────
+  //
+  // Two phases, mirroring parseStatement/confirmImport exactly, because the invariant that matters here is
+  // CONFIRM-BEFORE-WRITE: a broker/exchange export is extracted and shown, and NOTHING reaches
+  // cgt_assets/cgt_events until the taxpayer says so. A wrong cost base does not announce itself — it
+  // silently distorts a capital gain years later, at disposal — so an auto-committed extraction is the one
+  // thing this slice must never do.
+  //
+  // The draft rows live in R2 beside the raw file, so confirm never re-extracts and never re-pays for the
+  // model call. Identical to how the bank path keeps its `.lines` sidecar.
+  async parseCapitalImport(
+    userId: string,
+    filename: string,
+    bytes: ArrayBuffer,
+  ): Promise<{ importId: string; columnMap: CapitalColumnMap | null; preview: CapitalImportPreview | null; duplicate: boolean }> {
+    if (!featureOn(this.env, "capital_statement_ingest")) throw new Error("not_enabled");
+
+    // APP-8 cross-border consent gate, BEFORE storing the file or making any call — the column map is a US
+    // inference call unless the tenant is on Bedrock/AU. Same ordering as parseStatement so a refusal
+    // leaves nothing orphaned in R2.
+    const profile = await this.requireProfile(userId);
+    const provider = profile.inference_provider ?? this.env.DEFAULT_INFERENCE_PROVIDER;
+    if (provider === "anthropic" && profile.consent_xborder !== 1) throw new Error("consent_required");
+    if (!(await this.withinBudget(userId, null))) throw new Error("ai_budget_reached");
+
+    const fileHash = await sha256hexBytes(bytes);
+    const existing = await this.env.DB.prepare(
+      `SELECT id FROM capital_imports WHERE user_id = ? AND file_hash = ? AND status != 'discarded'`,
+    ).bind(userId, fileHash).first<{ id: string }>();
+    if (existing) return { importId: existing.id, columnMap: null, preview: null, duplicate: true };
+
+    const text = new TextDecoder().decode(bytes);
+    const rows = parseCsv(text);
+    if (!rows.length) throw new Error("That file has no rows I could read. Export it as CSV and try again.");
+
+    const importId = crypto.randomUUID();
+    const fileKey = `${userId}/capital-imports/${importId}`;
+    const llm = await getLLM(this.env, profile, { userId });
+    await this.env.RECEIPTS.put(fileKey, bytes, { httpMetadata: { contentType: "text/csv" } });
+    await this.auditXborderInference(userId, provider, "parse_capital_import", llm.modelId);
+
+    const columnMap = await extractCapitalColumnMap(llm, rows);
+    // day_first comes from the TENANT'S JURISDICTION, never from the model and never assumed: 03/04 is
+    // 3 April here and 4 March in the US, and guessing wrong silently moves a disposal across a FY
+    // boundary (and across the 12-month discount threshold).
+    const jur = await resolveJurisdictionForUser(this.env, userId);
+    columnMap.day_first = jur.code !== "US";
+    const preview = applyCapitalColumnMap(rows, columnMap);
+
+    if (!preview.rows.length) {
+      await this.env.RECEIPTS.delete(fileKey);
+      throw new Error("I couldn't find any holdings or trades in that file. Check it's the trade/holdings export rather than a summary.");
+    }
+
+    await this.env.RECEIPTS.put(`${fileKey}.rows`, JSON.stringify(preview.rows));
+    await this.env.DB.prepare(
+      `INSERT INTO capital_imports (id, user_id, filename, file_hash, file_key, status, column_map, row_count)
+       VALUES (?, ?, ?, ?, ?, 'parsed', ?, ?)`,
+    ).bind(importId, userId, filename, fileHash, fileKey, JSON.stringify(columnMap), preview.rows.length).run();
+    await this.audit(userId, "capital_import_parsed", JSON.stringify({ importId, rows: preview.rows.length, problems: preview.problems }));
+    return { importId, columnMap, preview, duplicate: false };
+  }
+
+  /**
+   * Commit a parsed import. Only rows the caller explicitly selects are written, and a row carrying a
+   * `problem` is never written even if selected — the preview marks those, and importing a holding with no
+   * quantity or no cost base would just manufacture the exact incomplete record readiness then has to chase.
+   *
+   * Acquisitions become cgt_assets; disposals are matched to a holding by code+kind. A disposal with no
+   * matching holding is REPORTED BACK, not silently dropped and not auto-creating a phantom parcel: which
+   * parcel a sale came from changes the gain and is the taxpayer's decision, never ours.
+   */
+  async confirmCapitalImport(
+    userId: string,
+    importId: string,
+    selectedRows?: number[] | null,
+  ): Promise<{ holdings: number; disposals: number; unmatched: { source_row: number; code: string | null }[] }> {
+    if (!featureOn(this.env, "capital_statement_ingest")) throw new Error("not_enabled");
+    const imp = await this.env.DB.prepare(
+      `SELECT id, file_key, status FROM capital_imports WHERE id = ? AND user_id = ?`,
+    ).bind(importId, userId).first<{ id: string; file_key: string; status: string }>();
+    if (!imp) throw new Error("import not found");
+    if (imp.status === "imported") throw new Error("That import has already been committed.");
+
+    const obj = await this.env.RECEIPTS.get(`${imp.file_key}.rows`);
+    if (!obj) throw new Error("The extracted rows have expired — re-upload the file.");
+    const all = JSON.parse(await obj.text()) as CapitalDraftRow[];
+    const wanted = selectedRows && selectedRows.length ? new Set(selectedRows) : null;
+    const rows = all.filter((r) => !r.problem && (!wanted || wanted.has(r.source_row)));
+
+    // Acquisitions first, so a disposal in the SAME file can match the parcel the file just created.
+    const acquisitions = rows.filter((r) => r.side === "acquire");
+    const disposals = rows.filter((r) => r.side === "dispose");
+    let holdings = 0;
+    for (const r of acquisitions) {
+      await this.recordCgtAsset(userId, {
+        asset_kind: r.asset_kind,
+        code: r.code,
+        label: r.label ?? `${r.code ?? "Holding"} — imported`,
+        units: r.units,
+        acquired_date: r.date,
+        cost_base_cents: r.amount_cents,
+        // The fee is itemised as brokerage rather than folded into an opaque total, so the accountant pack
+        // can show what migration 0037 promised and never delivered. consideration + fee == amount_cents.
+        cost_base_elements: {
+          purchase_cents: r.consideration_cents,
+          brokerage_cents: r.fee_cents,
+          incidental_cents: 0,
+          other_cents: 0,
+          note: `Imported from ${imp.file_key.split("/").pop()} row ${r.source_row}`,
+        },
+      });
+      holdings++;
+    }
+
+    const unmatched: { source_row: number; code: string | null }[] = [];
+    let disposalCount = 0;
+    for (const r of disposals) {
+      const match = await this.env.DB.prepare(
+        `SELECT id FROM cgt_assets WHERE user_id = ? AND asset_kind = ? AND COALESCE(code,'') = COALESCE(?,'')
+           AND property_id IS NULL AND income_id IS NULL ORDER BY acquired_date LIMIT 1`,
+      ).bind(userId, r.asset_kind, r.code).first<{ id: string }>();
+      if (!match) { unmatched.push({ source_row: r.source_row, code: r.code }); continue; }
+      await this.recordCgtEvent(userId, {
+        cgt_asset_id: match.id,
+        event_date: r.date ?? "",
+        proceeds_cents: r.amount_cents,
+        // NOT a parcel selection: we do not choose which parcel's cost base this sale used, because that
+        // choice changes the gain and is the taxpayer's decision. Left at 0 so the C3 blocker surfaces it
+        // for them to complete, rather than us inventing a figure that would look authoritative.
+        cost_base_used_cents: 0,
+        units_disposed: r.units,
+      });
+      disposalCount++;
+    }
+
+    await this.env.DB.prepare(
+      `UPDATE capital_imports SET status = 'imported', imported_count = ?, imported_at = datetime('now') WHERE id = ? AND user_id = ?`,
+    ).bind(holdings + disposalCount, importId, userId).run();
+    await this.audit(userId, "capital_import_confirmed", JSON.stringify({ importId, holdings, disposals: disposalCount, unmatched: unmatched.length }));
+    return { holdings, disposals: disposalCount, unmatched };
+  }
+
   async confirmImportBulk(
     userId: string,
     opts?: { statementIds?: string[]; force?: boolean },

@@ -1,8 +1,7 @@
 # Capital holdings, shares & CGT — handoff
 
 > **Read this first, then [`capital-cgt-findings.md`](capital-cgt-findings.md)** (the Phase 0 investigation).
-> State as at **2026-07-30**, `main@84099ab` + the C3 hardening PR. Everything described as shipped is **live in prod**
-> except the hardening in §3, which is in flight at the time of writing.
+> State as at **2026-07-30**, `main@91946a5`. Everything described as shipped is **live in prod**.
 >
 > The scoped brief is `CLAUDE.capital.md`. Where it and this file disagree, **this file is the current
 > truth** — the tranche corrected several of its assumptions, and each correction is recorded below with
@@ -17,7 +16,7 @@ untouched. **Capture** was the whole gap, and the foundation tranche closed it: 
 what they hold, who holds it, what it cost including brokerage, where a dividend came from, and have a
 brokerage deposit start the record for them.
 
-**Shipped** (9 PRs, 4 migrations, 6 flags, all ON in prod):
+**Shipped** (11 PRs, 5 migrations, 7 flags, all ON in prod):
 
 | Slice | Flag | Migration | What it does |
 |---|---|---|---|
@@ -27,25 +26,32 @@ brokerage deposit start the record for them.
 | C-L | `capital_income_link` | 0072 | `income.cgt_asset_id` — the dividend↔holding link |
 | C2 | `capital_cost_base_detail` | 0073 | Brokerage + cost-base elements, itemised on the accountant CSV |
 | C3 | `capital_position` | — | **Derived** holdings position, over-disposal findings, closing-holdings CSV section |
+| C6 | `capital_statement_ingest` | 0074 | Broker / registry / crypto CSV import — preview, then confirm-before-write |
 | — | — | — | Persona 2 (Daniel) made executable; PR #451 and the C3 hardening PR each fixed two review-found defects |
 
-**Prod data reality:** as at handoff, `cgt_assets` has **zero rows** and all 51 `income` rows are
-unlinked. Nothing in prod depends on any of this yet, which is why every flag could ship ON. **This is the
-cheapest moment the data model will ever be to change** — see §5.
+**Prod data reality (checked, not assumed):** `cgt_assets` has **zero rows** and all 51 `income` rows are
+unlinked, so nothing in prod depends on any of this yet — which is why every flag could ship ON. But the
+owner **does hold ETFs, shares and crypto**; they simply haven't been entered. So the "the data model is
+free to change" window (§5) is about to close, and the next person should not plan around it lasting.
 
-**Test surface:** 1003 unit goldens (`scripts/check-units.ts`), 286 persona checks
+The wider account is **property-heavy**: 4 properties, 2401 transactions, 50 `rent` income rows in
+FY2024-25 — and only **46 transactions plus 1 income row in FY2025-26**. The owner's blocker on their own
+FY2025-26 return is **data entry, not engine**. See [`fy2025-26-walkthrough.md`](fy2025-26-walkthrough.md).
+
+**Test surface:** 1029 unit goldens (`scripts/check-units.ts`), 293 persona checks
 (`scripts/check-personas.ts`). Capital-specific tenants: `pc0on`/`pc0off` (units are display-only),
 `pce` (entity scoping), `pc1` (deposit→holding), `pclon`/`pcloff` (link is money-neutral), `pc2`
 (brokerage), `pc3bad` (the C3 inconsistencies: over-disposal, disposed-with-no-cost-base, a still-held
 zero-cost-base control, and an ENTITY disposal that must not fall through both findings),
-**`p2cap` (Daniel — the integration golden across all six slices; `p2capCoRio` is the held entity parcel
-that makes the closing-holdings scope test able to fail)**.
+`pc6` (what a CONFIRMED import leaves behind — brokerage in the cost base, an unmatched sale blocking,
+and flag-OFF identity), **`p2cap` (Daniel — the integration golden across the slices; `p2capCoRio` is the
+held entity parcel that makes the closing-holdings scope test able to fail)**.
 
 ---
 
 ## 2. Entry points
 
-Line numbers are accurate at `main@84099ab` + the C3 hardening PR; the symbol names are the durable part.
+Line numbers are accurate at `main@91946a5`; the symbol names are the durable part.
 
 | Concern | Where |
 |---|---|
@@ -65,13 +71,14 @@ Line numbers are accurate at `main@84099ab` + the C3 hardening PR; the symbol na
 | Income↔holding UI | `web/src/pages/Income.tsx` (holding picker on dividend / managed fund) |
 | Clarify second step | `web/src/components/ClarifyCard.tsx` (`capitalFor` reveal) |
 
-**Next free migration: `0074_`.** Keep `schema.sql` in lockstep — `npm run test:schema` is the guard.
+**Next free migration: `0075_`.** Keep `schema.sql` in lockstep — `npm run test:schema` is the guard.
 
 ---
 
 ## 3. What remains
 
-Four slices plus a seam. **Recommended order below; §6 records why.**
+**Two slices — C5 (#454) and C4 (#455) — and both should wait for real data.** C3, C6 and the
+foundation are shipped; C-jur is declined. §6 records why.
 
 ### ~~C3 — holdings position~~ · SHIPPED (`capital_position`, #453)
 
@@ -130,35 +137,53 @@ its own return, which Quillo does not produce. Revisit if entity-level returns e
   Distribute in FY1, dispose in FY2. The brief's stated acceptance criterion does not test the year that matters.
 - Keep the defer nudge, and itemise the adjustment on the accountant schedule.
 
-### C6 — broker/registry statement ingest · `capital_statement_ingest`
+### ~~C6 — broker/registry statement ingest~~ · SHIPPED (`capital_statement_ingest`, #456, PR #463)
 
-Highest leverage remaining: **a bank line fundamentally cannot tell you units, price or brokerage** — an
-annual statement can. Route through the existing document-ingest → classify → **confirm-before-write**
-path; never auto-commit an extraction.
+**Open decision 3 resolved: a GENERIC column-mapper**, not named annual statements and not the ATO prefill
+shape. The owner holds ETFs, shares **and crypto**, and there are hundreds of crypto exchanges — a
+named-format approach would never finish. Named formats can still be layered on later as pre-seeded column
+maps; this doesn't foreclose them.
 
-- Existing issues this closes or advances: **#68** (its v1.1 CSV/broker import) and **#66** (its Phase 2
-  `managed_fund_amma` extractor).
-- Reuse: `classifyDocument`, the `extractColumnMap` column-mapper already used for bank CSVs, and
-  `recordCreditAsIncome`'s `matched_income_id` dedupe — **do not add a second link mechanism**.
-- Dedupe matters here in a way it didn't for DRP: a statement-ingested *cash* dividend **will** collide
-  with the same dividend on the bank feed.
-- **Open decision** — which formats first. See §6.
+- `src/lib/capital-import.ts` is the PURE core (`applyCapitalColumnMap`, `parseMoneyCents`, `parseUnits`,
+  `parseSide`, `parseCapitalDate`, `summariseDrafts`). `extractCapitalColumnMap` (`src/extract.ts`) is the
+  one model call per file — same division of labour as the bank-CSV path: an LLM for the *shape*, pure code
+  for every *row*.
+- **Confirm-before-write.** `parseCapitalImport` stages rows in R2 beside the raw file with a
+  `capital_imports` row (migration 0074); `confirmCapitalImport` writes only the rows the user ticked.
+  Nothing auto-commits. Routes: `POST/GET/DELETE /api/capital-imports`, `POST …/:id/confirm`.
+- Brokerage is **added** to an acquisition's cost base and **subtracted** from disposal proceeds — never
+  both, or the same fee is counted twice in the taxpayer's favour.
+- An imported disposal writes `cost_base_used_cents = 0` **deliberately**: an export says what you sold
+  *for*, never which parcel you drew on, and parcel choice changes the gain.
+- An unmatched disposal is **reported back**, never silently dropped and never auto-creating a phantom
+  parcel. Rows that fail to parse are shown **with their reason**, never dropped.
+- **New blocker `capital_disposal_no_cost_base_used`** — see trap 13. There are now **TWO** capital
+  blockers, both meaning "the position is materially distorted".
 
-### C-jur — the jurisdiction seam (no behaviour change)
+**Not done, and the honest remainder of #66/#68:** the **PDF** path. `managed_fund_amma` is a recognised
+`doc_type` but still falls through to the shelf unimplemented, and `classifyDocument` has no broker or
+crypto doc type at all. Note `receiptBlock` only emits `document` for PDFs and `image` otherwise, so a CSV
+**cannot** go through `/api/documents/upload` — which is exactly why C6 took its own route.
 
-Build the **seam only**, keep AU as the sole implementation, document the interface. Two named strategies
-rather than more fields:
+### ~~C-jur — the jurisdiction seam~~ · DECLINED (#457), replaced by a standing constraint
 
-1. **Gain-relief strategy** — must be able to express AU's 50% discount at 12 months; UK's annual exempt
-   amount then flat rates; Ireland's flat 33% with an exemption; Canada's 50% inclusion; US short-vs-long
-   split at 12 months.
-2. **Parcel strategy** — AU specific-ID/FIFO; Ireland FIFO; **UK Section 104 pooling**; **Canada ACB
-   averaging**; US specific-ID/FIFO plus the wash-sale rule.
+The owner declined the dedicated seam refactor and replaced it with a rule that binds **all new work**:
 
-**Canada and the UK make one-row-per-parcel *wrong*, not merely differently configured.** Name things
-jurisdiction-neutrally (`gain_relief`, not `discount`). Belongs under epic **#239** (Quillo Worldwide).
+> "I should have said AU only but we should build everything so it can be worldwide at some point adding a
+> jurisdiction at a time"
 
----
+So: **no retrofit project**, but every new feature is built jurisdiction-parameterised by construction.
+In practice — never hardcode `AUD` (take it from the descriptor's `baseCurrency`); never hardcode the
+financial year (`fyForDate(date, jur)` / `fyBounds(startYear, descriptor)` — 1 July–30 June is an AU fact,
+not a universal one); never assume a date convention; name for the **concept**, not the AU instrument
+(`gain_relief`, not `discount`); jurisdiction-specific values live in the **rule pack**.
+
+**C6 is the worked example to copy.** Its `day_first` is a parameter resolved from the tenant's descriptor
+rather than assumed: `03/04` is 3 April in AU/UK and 4 March in the US, and guessing wrong silently moves a
+disposal across a FY boundary *and* across the 12-month discount threshold.
+
+**The `cgt_discount_keep_fraction` trap is unchanged and still blocks any future rename** — see trap 6.
+Recorded on epic **#239** (Quillo Worldwide).
 
 ## 4. Traps — each of these has already bitten once
 
@@ -209,6 +234,14 @@ jurisdiction-neutrally (`gain_relief`, not `discount`). Belongs under epic **#23
     as narrow as the promotion. The first fix suppressed the review finding for **any** holding with a
     disposal while the blocker only picked up **personal** ones, so an entity parcel fell through both and
     was surfaced nowhere. Suppress on the promoting condition itself, not on a proxy for it.
+13. **When a slice writes a deliberate blank, check something actually CHASES it.** C6 writes
+    `cost_base_used_cents = 0` on an imported disposal on purpose (an export can't tell you which parcel you
+    sold), and the plan said "C3's blocker will chase it". It would **not**: that blocker fires only when the
+    HOLDING has no cost base. Here the holding has one and the SALE claims none of it, so the full proceeds
+    landed as gain with **nothing flagging it** — the taxpayer taxed on money they never made, silently.
+    `capital_disposal_no_cost_base_used` is the finding that was missing. There are now **two** capital
+    blockers, and the rule is: a capital finding may be a blocker **only** when the position is materially
+    distorted. Caught by C6's own persona golden, which is the argument for writing the golden first.
 12. **A golden that re-types the code's SQL asserts its own copy.** The DO's `filingReadiness` isn't
     reachable from the harness, so the first hardening cut pasted its two queries into
     `scripts/check-personas.ts` — which stays green no matter what `src/agent.ts` does. If the code under
@@ -255,10 +288,13 @@ The brief is good and mostly accurate. These specific points are superseded:
    mirrored into `schema.sql` or `npm run test:schema` fails. Order: strip the six references → ship →
    verify → drop in its own migration. The dead *reader* in the C1 readiness query is already gone
    (removed by the C3 hardening PR), so that one is done.
-2. **Slice order.** C3 is done. *Remaining recommendation: C5 → C4 → C6, with C-jur arguable first* —
-   `cgt_assets` still has zero prod rows, so the seam can never be cheaper than now.
-3. **C6 scope.** Named annual statements (CommSec / Stake / Computershare / Link) vs the ATO prefill shape
-   vs a generic column-mapper reusing `extractColumnMap`. Materially different sizes.
+2. **Slice order.** C3 and C6 are done. **C-jur (#457) was DECLINED** — see the note below. *Remaining:
+   **C5 (#454, AMIT) then C4 (#455, DRP)** — but hold both until the owner's ETF distributions are actually
+   in the system.* C5 only changes the position in a year of **disposal**, so against a non-disposing year
+   it is byte-identical by construction and proves nothing; building it against real data is strictly
+   better than building it against an invented fixture.
+3. ~~**C6 scope.**~~ **DECIDED: a generic column-mapper** (2026-07-30). Shipped — see §3 C6 for the
+   reasoning (ETFs + shares + crypto; hundreds of exchanges; named formats can be layered on later).
 4. ~~**Issue #68's disposition.**~~ **DECIDED: closed as completed** (2026-07-30), with #456 named as the
    successor for its remaining v1.1 CSV/broker import.
 

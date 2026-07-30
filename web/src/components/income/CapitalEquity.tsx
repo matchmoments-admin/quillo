@@ -116,13 +116,18 @@ export function CapitalEquity() {
                 </td>
                 {holdingDetail && (() => {
                   const pos = a.position ?? localPosition(a.units, disposedUnitsFor(a.id), hasEventsFor(a.id));
-                  const over = a.position && (a.position.over_disposed_units > 0 || a.position.over_used_cost_base_cents > 0);
+                  // The two over-conditions are DIFFERENT mistakes and must not share one label: units can
+                  // be right while the cost base claimed across sales is over-stated, and telling that user
+                  // "sold more than recorded" sends them to check the wrong figure. Both are surfaced,
+                  // never blocked — a missing earlier parcel is the usual cause and the registered agent
+                  // decides. Readiness carries the full explanation for each.
+                  const overUnits = (a.position?.over_disposed_units ?? 0) > 0;
+                  const overCost = (a.position?.over_used_cost_base_cents ?? 0) > 0;
                   return (
                     <td className="px-2 py-1 text-right text-xs text-muted">
                       {STATUS_TEXT[pos.status] ?? pos.status}
-                      {/* Surfaced, never blocked — a missing earlier parcel is the usual cause, and the
-                          registered agent decides. Readiness carries the full explanation. */}
-                      {over ? <span className="block text-warn">sold more than recorded — check</span> : null}
+                      {overUnits ? <span className="block text-warn">sold more units than recorded — check</span> : null}
+                      {overCost ? <span className="block text-warn">claimed more cost than this parcel cost — check</span> : null}
                     </td>
                   );
                 })()}

@@ -454,18 +454,37 @@ export async function buildAccountantSchedule(
   // C3: user-managed holdings + their disposals, for the closing-holdings section. Two flat reads joined in
   // JS (no N+1). Scoped to property_id/income_id NULL — a property- or AMMA-sourced parcel is materialised
   // complete from its source and already 'disposed', so it is not an open holding.
+  //
+  // ENTITY SCOPE (`cgtPersonalScopeExpr`, the SAME expression section 9's disposals use — trap 4: add
+  // readers to the shared expression, never a local copy). This pack is the INDIVIDUAL's. A company/trust/
+  // SMSF parcel lodges on its own return, so C-E keeps its gain out of the headline; a HELD one must
+  // likewise stay out of the individual's carried-forward holdings, or the TOTAL below silently claims
+  // somebody else's cost base. The original C3 query had no predicate and only looked correct because the
+  // one entity fixture happened to be fully disposed.
+  // BOTH reads are bounded to the report's FY, because this section states a position AS AT year end.
+  // Unbounded, a pack for an earlier year showed the position as it stands TODAY: re-export FY2024-25 after
+  // selling in FY2025-26 and the earlier pack claimed the parcel was already part-sold and understated the
+  // cost base carried into that year — a wrong number on a tax deliverable, for a year that is closed.
+  // `fy` is the 'YYYY-YY' label, whose lexical order matches chronological order, so `<=` is a valid
+  // as-at test; acquisitions after year end are likewise not yet holdings.
   const holdingsP = positionOn
     ? safeAll<{ id: string; code: string | null; label: string | null; asset_kind: string; acquired_date: string | null; units: number | null; cost_base_cents: number }>(
         env.DB.prepare(
-          `SELECT id, code, label, asset_kind, acquired_date, units, cost_base_cents FROM cgt_assets
-            WHERE user_id = ? AND property_id IS NULL AND income_id IS NULL
-            ORDER BY COALESCE(code, label, asset_kind), acquired_date`,
-        ).bind(userId).all(),
+          `SELECT a.id AS id, a.code AS code, a.label AS label, a.asset_kind AS asset_kind,
+                  a.acquired_date AS acquired_date, a.units AS units, a.cost_base_cents AS cost_base_cents
+             FROM cgt_assets a
+            WHERE a.user_id = ? AND a.property_id IS NULL AND a.income_id IS NULL AND ${cgtPersonalScopeExpr(env)}
+              AND (a.acquired_date IS NULL OR a.acquired_date <= ?)
+            ORDER BY COALESCE(a.code, a.label, a.asset_kind), a.acquired_date`,
+        ).bind(userId, end).all(),
       )
     : Promise.resolve([]);
   const holdingDisposalsP = positionOn
     ? safeAll<{ cgt_asset_id: string; units_disposed: number | null; cost_base_used_cents: number | null }>(
-        env.DB.prepare(`SELECT cgt_asset_id, units_disposed, cost_base_used_cents FROM cgt_events WHERE user_id = ?`).bind(userId).all(),
+        env.DB.prepare(
+          `SELECT ev.cgt_asset_id AS cgt_asset_id, ev.units_disposed AS units_disposed, ev.cost_base_used_cents AS cost_base_used_cents
+             FROM cgt_events ev WHERE ev.user_id = ? AND ev.fy <= ?`,
+        ).bind(userId, fy).all(),
       )
     : Promise.resolve([]);
   const [items, incomeRows, depRows, depDenied, attrRows, cgtEvents, essGrants, trustRows, basRows, paygRows, holdingRows, holdingDisposals] =
@@ -879,24 +898,38 @@ export async function buildAccountantSchedule(
   // cgt_asset with no cgt_event reaches nothing). subtotal_cents is the remaining cost base, which is
   // arithmetic over what the user entered — not a tax outcome, and never a parcel selection.
   if (positionOn) {
-    const openRows = closingHoldings.filter((h) => {
-      const pos = holdingPosition({ units: h.units, cost_base_cents: h.cost_base_cents }, h.disposals);
-      return pos.status !== "disposed";
-    });
-    if (openRows.length) {
+    // Derive each position ONCE and carry it — the first cut called holdingPosition three times per row
+    // (filter, map, reduce), which is three chances for the three call sites to be given different
+    // arguments as this section grows. One derivation, one truth.
+    const open = closingHoldings
+      .map((h) => ({ h, pos: holdingPosition({ units: h.units, cost_base_cents: h.cost_base_cents }, h.disposals) }))
+      .filter((x) => x.pos.status !== "disposed");
+    if (open.length) {
       const notes2: string[] = [];
-      const rows: Cell[][] = capped(openRows, notes2).map((h) => {
-        const pos = holdingPosition({ units: h.units, cost_base_cents: h.cost_base_cents }, h.disposals);
-        return [
-          h.code ?? h.label ?? "—", h.asset_kind, h.acquired_date,
-          pos.units_remaining == null ? null : pos.units_remaining,
-          pos.units_acquired == null ? null : pos.units_acquired,
-          d(pos.cost_base_remaining_cents),
-          pos.status === "part_disposed" ? "part sold" : "held",
-        ];
-      });
-      const remaining = openRows.reduce((t, h) => t + holdingPosition({ units: h.units, cost_base_cents: h.cost_base_cents }, h.disposals).cost_base_remaining_cents, 0);
-      rows.push(["", "", null, null, null, d(remaining), "TOTAL cost base carried forward"]);
+      const shown = capped(open, notes2);
+      const rows: Cell[][] = shown.map(({ h, pos }) => [
+        h.code ?? h.label ?? "—", h.asset_kind, h.acquired_date,
+        pos.units_remaining == null ? null : pos.units_remaining,
+        pos.units_acquired == null ? null : pos.units_acquired,
+        d(pos.cost_base_remaining_cents),
+        pos.status === "part_disposed" ? "part sold" : "held",
+      ]);
+      // The TOTAL is the TRUE carry-forward over every open holding — capping it to the visible rows would
+      // understate what the taxpayer carries into next year, which is the one number this section exists
+      // to state. So when rows are truncated the LABEL says so, rather than the figure quietly disagreeing
+      // with the rows above it (trap 1: a subtotal that reconciles upward can still contradict its own
+      // rows; a reader who adds up the column must be told why it won't match).
+      const remaining = open.reduce((t, x) => t + x.pos.cost_base_remaining_cents, 0);
+      const truncated = shown.length < open.length;
+      const label = truncated
+        ? `TOTAL cost base carried forward — all ${open.length} holdings, including rows not shown`
+        : "TOTAL cost base carried forward";
+      rows.push(["", "", null, null, null, d(remaining), label]);
+      // The caveat has to ride in `notes` as well, not only on the in-band row: both renderers ALSO emit
+      // their own Subtotal line from `subtotal_cents`, and that one would otherwise show the same figure
+      // bare, leaving a reader who sums the visible column with no explanation — the exact failure this is
+      // meant to prevent. `notes` is the one channel both the CSV and XLSX paths render.
+      if (truncated) notes2.push(`The total above covers all ${open.length} open holdings, including the rows not shown.`);
       sections.push({
         key: "capital_holdings",
         title: "Investment holdings at year end (carried forward)",

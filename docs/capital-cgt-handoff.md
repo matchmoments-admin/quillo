@@ -1,7 +1,8 @@
 # Capital holdings, shares & CGT — handoff
 
 > **Read this first, then [`capital-cgt-findings.md`](capital-cgt-findings.md)** (the Phase 0 investigation).
-> State as at **2026-07-30**, `main@fdef445` + PR #451. Everything described as shipped is **live in prod**.
+> State as at **2026-07-30**, `main@84099ab` + the C3 hardening PR. Everything described as shipped is **live in prod**
+> except the hardening in §3, which is in flight at the time of writing.
 >
 > The scoped brief is `CLAUDE.capital.md`. Where it and this file disagree, **this file is the current
 > truth** — the tranche corrected several of its assumptions, and each correction is recorded below with
@@ -16,7 +17,7 @@ untouched. **Capture** was the whole gap, and the foundation tranche closed it: 
 what they hold, who holds it, what it cost including brokerage, where a dividend came from, and have a
 brokerage deposit start the record for them.
 
-**Shipped and live** (6 PRs, 4 migrations, 5 flags, all ON in prod):
+**Shipped** (9 PRs, 4 migrations, 6 flags, all ON in prod):
 
 | Slice | Flag | Migration | What it does |
 |---|---|---|---|
@@ -26,36 +27,40 @@ brokerage deposit start the record for them.
 | C-L | `capital_income_link` | 0072 | `income.cgt_asset_id` — the dividend↔holding link |
 | C2 | `capital_cost_base_detail` | 0073 | Brokerage + cost-base elements, itemised on the accountant CSV |
 | C3 | `capital_position` | — | **Derived** holdings position, over-disposal findings, closing-holdings CSV section |
-| — | — | — | Persona 2 (Daniel) made executable; PR #451 fixed two review-found defects |
+| — | — | — | Persona 2 (Daniel) made executable; PR #451 and the C3 hardening PR each fixed two review-found defects |
 
 **Prod data reality:** as at handoff, `cgt_assets` has **zero rows** and all 51 `income` rows are
 unlinked. Nothing in prod depends on any of this yet, which is why every flag could ship ON. **This is the
 cheapest moment the data model will ever be to change** — see §5.
 
-**Test surface:** 984 unit goldens (`scripts/check-units.ts`), 268 persona checks
+**Test surface:** 1003 unit goldens (`scripts/check-units.ts`), 286 persona checks
 (`scripts/check-personas.ts`). Capital-specific tenants: `pc0on`/`pc0off` (units are display-only),
 `pce` (entity scoping), `pc1` (deposit→holding), `pclon`/`pcloff` (link is money-neutral), `pc2`
-(brokerage), **`p2cap` (Daniel — the integration golden across all five slices)**.
+(brokerage), `pc3bad` (the C3 inconsistencies: over-disposal, disposed-with-no-cost-base, a still-held
+zero-cost-base control, and an ENTITY disposal that must not fall through both findings),
+**`p2cap` (Daniel — the integration golden across all six slices; `p2capCoRio` is the held entity parcel
+that makes the closing-holdings scope test able to fail)**.
 
 ---
 
 ## 2. Entry points
 
-Line numbers are accurate at `main@fdef445`; the symbol names are the durable part.
+Line numbers are accurate at `main@84099ab` + the C3 hardening PR; the symbol names are the durable part.
 
 | Concern | Where |
 |---|---|
 | Pure gain maths (**don't rewrite — extend around it**) | `src/lib/cgt.ts` — `computeNetCapitalGain:168`, `cgtRulesForFy:152`, `cgtUnits:33` |
 | Pure cost-base elements | `src/lib/capital.ts` — `costBaseFromElements:61`, `parseCostBaseElements:88` |
 | The **only** reader that feeds the position | `src/lib/ledger-totals.ts` — `cgtTotals:787` |
+| Capital readiness signals (both queries) | `src/lib/capital-signals.ts` — `capitalReadinessSignals` |
 | Individual-vs-separate-taxpayer predicate (**shared, see §4**) | `src/lib/ledger-totals.ts` — `cgtPersonalScopeExpr:576` |
 | Holding/event writes | `src/agent.ts` — `recordCgtAsset:1707`, `recordCgtEvent:1742` |
 | AMMA → CGT materialisation | `src/lib/situation-write.ts` — `syncIncomeCgtFromComponents:222` |
 | Deposit → holding + its cascades | `src/lib/situation-write.ts` — `syncTxnCgtHolding:289`, `clearTxnCgt:325`, `clearOrphanedTxnCgt:348` |
 | The FX/entity split guard on AMMA | `src/agent.ts` — `safeToSplit:1660` |
 | Draft-from-a-bank-line (pure) | `src/lib/clarify.ts` — `draftHoldingFromTxn:109` |
-| Accountant CSV CGT section | `src/lib/accountant-schedule.ts` — section 9, `:794` |
-| Readiness findings + signals | `src/lib/readiness.ts` — `capital_holding_needs_units:668`, signals `:78` |
+| Accountant CSV CGT section | `src/lib/accountant-schedule.ts` — section 9 `:840`, closing holdings 9b `:900` |
+| Readiness findings + signals | `src/lib/readiness.ts` — `capital_holding_needs_units:673`, signals `:78` |
 | Holdings UI | `web/src/components/income/CapitalEquity.tsx` (register + both forms + derived position) |
 | Income↔holding UI | `web/src/pages/Income.tsx` (holding picker on dividend / managed fund) |
 | Clarify second step | `web/src/components/ClarifyCard.tsx` (`capitalFor` reveal) |
@@ -81,6 +86,27 @@ materially-distorted case in the capital set. The accountant pack gained *"Inves
 (carried forward)"*, deliberately **without** a `tie_back` since a closing balance contributes to no report
 figure. Read the section's `notes` before changing it: they state that remaining figures are derived and
 explicitly **not** a parcel selection.
+
+**Hardened afterwards** (traps 10–12, all live defects that all-green gates missed):
+
+- The **closing-holdings section is entity-scoped** through the shared `cgtPersonalScopeExpr`. A *held*
+  company/trust/SMSF parcel was being carried forward on the individual's pack and summed into its TOTAL.
+- The section is now **bounded to the report's FY** on both reads (`acquired_date <= end`, `ev.fy <= fy`).
+  It states a position *as at year end*; unbounded, re-exporting a closed year showed the position as it
+  stands today — a wrong carry-forward on a prior-year deliverable.
+- **Exactly one finding per holding, with no holding left with none.** Only the *blocker* is entity-scoped
+  (it alone claims the individual's position is distorted); the two `over_*` findings are deliberately
+  **not**, because their copy is holding-level arithmetic and the register shows their badge on entity
+  rows. The review finding a holding is suppressed from is exactly the set the blocker picks up —
+  see the complementarity invariant at the top of `src/lib/capital-signals.ts`.
+- Those two queries **moved out of the DO** into `src/lib/capital-signals.ts` so the goldens exercise the
+  real function instead of a re-typed copy of its SQL. The first hardening cut tested a replica, which is
+  trap 10 committed inside the fix for trap 11.
+
+**Known limitation, deliberate:** a *zero-cost-base disposal* on a separate-taxpayer parcel raises the
+**review** finding rather than the blocker — the blocker's claim ("the entire proceeds are showing as a
+capital gain") is about the individual's headline, and C-E keeps that parcel out of it. That entity lodges
+its own return, which Quillo does not produce. Revisit if entity-level returns ever come in scope.
 
 ### C4 — DRP as a parcel generator · `capital_drp`
 
@@ -167,6 +193,27 @@ jurisdiction-neutrally (`gain_relief`, not `discount`). Belongs under epic **#23
    owns them.
 9. **Deploy-only environment** (macOS 12.6 can't run `workerd`). Verify by typecheck + tests, then deploy
    and smoke-test. Allow ~60s for asset propagation before comparing the live bundle hash to the build.
+10. **A fixture can make an assertion PASS for the wrong reason — check what would have to change for it
+    to fail.** C3's closing-holdings query had no entity predicate at all, and its golden ("the company's
+    parcel is not carried forward") passed only because the sole entity fixture happened to be fully
+    *disposed* and was filtered by its **derived** position (`holdingPosition(...).status`), not ownership.
+    The leak was invisible until a **held** entity parcel existed (`p2capCoRio`). When an assertion says
+    "X is excluded", make sure X is excluded by the rule under test and not by an unrelated property of the
+    fixture. The same rule caught a second one: an over-use check that passed on a zero because the fixture
+    had no over-use in it. **Prove a new golden fails** — revert the fix and watch it go red.
+11. **Two findings about the same row is a bug — and so is none.** C3's blocker and C1's
+    missing-cost-base review finding both counted a zero-cost-base holding *with* a disposal, so the user
+    saw the blocker plus a review finding reading "it doesn't affect this year's figures while you still
+    hold it" — false for something they had sold. When a slice **promotes** a case to a higher severity it
+    must **remove** that case from the finding it was promoted out of — but the removal has to be *exactly*
+    as narrow as the promotion. The first fix suppressed the review finding for **any** holding with a
+    disposal while the blocker only picked up **personal** ones, so an entity parcel fell through both and
+    was surfaced nowhere. Suppress on the promoting condition itself, not on a proxy for it.
+12. **A golden that re-types the code's SQL asserts its own copy.** The DO's `filingReadiness` isn't
+    reachable from the harness, so the first hardening cut pasted its two queries into
+    `scripts/check-personas.ts` — which stays green no matter what `src/agent.ts` does. If the code under
+    test isn't reachable, **move it** until it is: the queries now live in `src/lib/capital-signals.ts` and
+    both the DO and the goldens call the same function. Applies directly to C4/C5, which add signals here.
 
 ---
 
@@ -196,6 +243,18 @@ The brief is good and mostly accurate. These specific points are superseded:
 1. ~~**C3: derived or stored?**~~ **DECIDED: derived on read** (2026-07-30). Shipped. A follow-up decision
    remains open: whether to drop the dead `cgt_assets.status` column — that is a destructive migration and
    needs an explicit go plus a reverse plan.
+
+   **It is NOT a one-line migration**, despite how the first draft of this section read. The column is
+   `TEXT NOT NULL DEFAULT 'held'`, so the default would cover an insert that simply omitted it — but
+   nothing omits it. It is still named explicitly in **six places**: four insert column-lists
+   (`recordCgtAsset` in `src/agent.ts`; the property, AMMA-income and txn-seeded inserts in
+   `src/lib/situation-write.ts`), the capital-register `SELECT` in `src/api.ts`, and a golden `SELECT` at
+   `scripts/check-personas.ts:914` — that last one means the drop would fail inside `npm test`, the very
+   gate §7 prescribes. Naming a dropped column in an insert list or a select throws, so **all six must be
+   cleaned and shipped BEFORE the drop**, not with it. SQLite's `ALTER TABLE … DROP COLUMN` also has to be
+   mirrored into `schema.sql` or `npm run test:schema` fails. Order: strip the six references → ship →
+   verify → drop in its own migration. The dead *reader* in the C1 readiness query is already gone
+   (removed by the C3 hardening PR), so that one is done.
 2. **Slice order.** C3 is done. *Remaining recommendation: C5 → C4 → C6, with C-jur arguable first* —
    `cgt_assets` still has zero prod rows, so the seam can never be cheaper than now.
 3. **C6 scope.** Named annual statements (CommSec / Stake / Computershare / Link) vs the ATO prefill shape

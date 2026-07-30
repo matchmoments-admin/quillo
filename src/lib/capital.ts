@@ -153,6 +153,12 @@ export interface HoldingPosition {
  * Scope note for callers: run this over USER-MANAGED holdings only (`property_id IS NULL AND income_id IS
  * NULL`). A property- or AMMA-sourced parcel is materialised complete from its source with `units` NULL and
  * `status='disposed'` already set, so deriving "part sold" for it would be noise, not information.
+ *
+ * PASS THE REAL DISPOSAL ROWS, not one pre-summed pseudo-row. Every figure here is a reduce-sum and would
+ * survive the shortcut, but `status` reads `disposals.length` as a zero-test, so a synthetic single row can
+ * never yield "held". All four callers now pass real rows; keep it that way, because the first per-event
+ * field this gains (C4 gives each DRP parcel its own 12-month clock; C5 attributes a cost-base adjustment
+ * to specific units) would be silently wrong for any caller still summing first.
  */
 export function holdingPosition(
   asset: { units?: number | null; cost_base_cents?: number | null },

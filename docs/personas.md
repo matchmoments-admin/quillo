@@ -168,6 +168,20 @@ part-disposal guard *uncomputable* rather than merely unbuilt.
   since a closing balance contributes to no report figure. Money-neutral: it reads the same `cgt_events` that
   already drive `cgtTotals`. `cgt_assets.status` remains dead-but-present (dropping a column is a destructive
   migration needing its own sign-off). Goldens: `p2cap` extended + `pc3bad`.
+- **C3 hardening (multi-agent review on the shipped slice).** Two more live defects the green gates missed,
+  both the same shape as #451's — an assertion that could not fail. (1) The closing-holdings section applied
+  **no entity predicate**, so a company/trust/SMSF parcel the taxpayer still *held* was carried forward on
+  the **individual's** pack and summed into its TOTAL. Its golden passed only because the one entity fixture
+  happened to be fully disposed, and was filtered by its derived position rather than by ownership; a *held*
+  entity parcel (`p2capCoRio`) is what makes the check able to fail. (2) A zero-cost-base holding *with* a
+  disposal raised **two** findings — C3's blocker plus C1's review finding, whose copy ("it doesn't affect
+  this year's figures while you still hold it") is false for something sold. Fixing that naively then opened
+  the mirror hole: suppressing the review finding for *any* disposal while the blocker covered only
+  *personal* parcels left an entity disposal surfaced **nowhere**. The suppression is now exactly as narrow
+  as the promotion. Also: the section is now bounded to the report FY (a prior-year pack was showing today's
+  position), and both signal queries moved to `src/lib/capital-signals.ts` so the goldens exercise the
+  function the Durable Object calls instead of a re-typed copy of its SQL. Goldens: `pc3bad` gains an entity
+  disposal and a flag-OFF case; `p2cap` gains a prior-FY pack assertion.
 - Still open: DRP parcels (#455), the AMIT cost-base adjustment (#454), broker/registry statement ingest
   (#456), and the jurisdiction seam (#457). Epic #452; handoff `docs/capital-cgt-handoff.md`.
 

@@ -23,9 +23,9 @@ import { runScan, type ScanResult, type ScanTxn, type ScanPatternFacts } from ".
 import { occupationGuide } from "./lib/occupations";
 import { getProgress } from "./lib/progress";
 import { buildGuidePrompt, buildAskSystem, summariseReportForAsk, renderTxnDigest } from "./lib/guide";
-import { fyLabel, fyBounds, fyStartYearStr, parseFyStartYear, normaliseFyLabel } from "./lib/ledger-totals";
+import { fyLabel, fyBounds, fyStartYearStr, parseFyStartYear, normaliseFyLabel, cgtPersonalScopeExpr } from "./lib/ledger-totals";
 import { cgtUnits } from "./lib/cgt";
-import { costBaseFromElements, validateCostBaseElements, withCostBaseElements, holdingPosition, type CostBaseElements } from "./lib/capital";
+import { costBaseFromElements, validateCostBaseElements, withCostBaseElements, holdingPosition, noDisposalExistsExpr, type CostBaseElements } from "./lib/capital";
 import { resolveJurisdictionForUser, currentFyStartYearFor, baseCurrencyOf, AU_DESCRIPTOR, type JurisdictionDescriptor } from "./lib/jurisdiction";
 import { assessReadiness, type FilingReadiness, type FilingReadinessSignals } from "./lib/readiness";
 import { rollSchedule, balancingAdjustment, fyStartYearOf, isLowCostAsset, looksLikePersonalTransfer, assetDepreciatesForTaxpayer, depMethodConflict, resolveDiv40Life, type DepAsset } from "./lib/depreciation";
@@ -3492,12 +3492,23 @@ export class TaxAgent extends Agent<Env> {
     let capitalHoldingsMissingCostBaseN = 0;
     if (featureOn(this.env, "capital_from_txn")) {
       try {
+        // A holding with a DISPOSAL against it is C3's blocker, not this review finding — counting it in
+        // both fires two findings for one holding, and this one's copy ("it doesn't affect this year's
+        // figures while you still hold it") is FALSE for a holding that has been sold. Excluded only when
+        // capital_position is on, i.e. only when the blocker actually exists to cover it; OFF keeps the
+        // old count so no finding is silently lost.
+        //
+        // The old `status != 'disposed'` filter is gone: `status` is the insert-time literal 'held' on both
+        // user-managed write paths (recordCgtAsset, syncTxnCgtHolding) and is updated by nothing, so for
+        // rows already filtered to property_id/income_id NULL it excluded exactly zero rows. Dropping a
+        // dead READER now shortens the list of things the eventual column drop has to clean up.
+        const disposedGuard = featureOn(this.env, "capital_position") ? `AND ${noDisposalExistsExpr("a")}` : "";
         const h = await this.env.DB.prepare(
-          `SELECT COALESCE(SUM(CASE WHEN txn_id IS NOT NULL AND units IS NULL THEN 1 ELSE 0 END), 0) AS needs_units,
-                  COALESCE(SUM(CASE WHEN acquired_date IS NULL OR acquired_date = '' THEN 1 ELSE 0 END), 0) AS no_acquired,
-                  COALESCE(SUM(CASE WHEN COALESCE(cost_base_cents, 0) <= 0 THEN 1 ELSE 0 END), 0) AS no_cost_base
-             FROM cgt_assets
-            WHERE user_id = ? AND property_id IS NULL AND income_id IS NULL AND status != 'disposed'`,
+          `SELECT COALESCE(SUM(CASE WHEN a.txn_id IS NOT NULL AND a.units IS NULL THEN 1 ELSE 0 END), 0) AS needs_units,
+                  COALESCE(SUM(CASE WHEN a.acquired_date IS NULL OR a.acquired_date = '' THEN 1 ELSE 0 END), 0) AS no_acquired,
+                  COALESCE(SUM(CASE WHEN COALESCE(a.cost_base_cents, 0) <= 0 ${disposedGuard} THEN 1 ELSE 0 END), 0) AS no_cost_base
+             FROM cgt_assets a
+            WHERE a.user_id = ? AND a.property_id IS NULL AND a.income_id IS NULL`,
         ).bind(userId).first<{ needs_units: number; no_acquired: number; no_cost_base: number }>();
         capitalHoldingsNeedingUnitsN = h?.needs_units ?? 0;
         capitalHoldingsMissingAcquiredN = h?.no_acquired ?? 0;
@@ -3511,6 +3522,14 @@ export class TaxAgent extends Agent<Env> {
     // materialised complete from its source with units NULL and status already 'disposed', so deriving
     // "part sold" for it would be noise. Not FY-scoped: a holding is a standing record and an inconsistency
     // distorts the gain in whatever year it is eventually sold. Populated ONLY when the flag is on.
+    //
+    // ENTITY SCOPE (`cgtPersonalScopeExpr`, shared with cgtTotals and the accountant schedule — trap 4).
+    // All three findings describe THE INDIVIDUAL'S position: the blocker literally says "the entire sale
+    // proceeds are showing as a capital gain", which is true only for a parcel that reaches the individual
+    // headline. C-E keeps a company/trust/SMSF parcel out of that headline, so an unscoped count would
+    // raise a blocker about money that is not in the user's return. Known limitation recorded in the
+    // handoff: an integrity problem on a SEPARATE-TAXPAYER parcel is therefore not surfaced here — that
+    // entity lodges its own return, which Quillo does not produce.
     let capitalOverDisposedN = 0;
     let capitalOverUsedCostBaseN = 0;
     let capitalDisposedNoCostBaseN = 0;
@@ -3522,7 +3541,7 @@ export class TaxAgent extends Agent<Env> {
                   COALESCE(SUM(ev.cost_base_used_cents), 0) AS cost_base_used_cents,
                   COUNT(ev.id) AS n_events
              FROM cgt_assets a LEFT JOIN cgt_events ev ON ev.cgt_asset_id = a.id AND ev.user_id = a.user_id
-            WHERE a.user_id = ? AND a.property_id IS NULL AND a.income_id IS NULL
+            WHERE a.user_id = ? AND a.property_id IS NULL AND a.income_id IS NULL AND ${cgtPersonalScopeExpr(this.env)}
             GROUP BY a.id`,
         ).bind(userId).all<{ units: number | null; cost_base_cents: number; units_disposed: number; cost_base_used_cents: number; n_events: number }>()).results ?? [];
         for (const r of rows) {

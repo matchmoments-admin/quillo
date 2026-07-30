@@ -16,7 +16,7 @@ untouched. **Capture** was the whole gap, and the foundation tranche closed it: 
 what they hold, who holds it, what it cost including brokerage, where a dividend came from, and have a
 brokerage deposit start the record for them.
 
-**Shipped and live** (6 PRs, 4 migrations, 5 flags, all ON in prod):
+**Shipped and live** (8 PRs, 4 migrations, 6 flags, all ON in prod):
 
 | Slice | Flag | Migration | What it does |
 |---|---|---|---|
@@ -32,10 +32,11 @@ brokerage deposit start the record for them.
 unlinked. Nothing in prod depends on any of this yet, which is why every flag could ship ON. **This is the
 cheapest moment the data model will ever be to change** — see §5.
 
-**Test surface:** 984 unit goldens (`scripts/check-units.ts`), 268 persona checks
+**Test surface:** 1003 unit goldens (`scripts/check-units.ts`), 284 persona checks
 (`scripts/check-personas.ts`). Capital-specific tenants: `pc0on`/`pc0off` (units are display-only),
 `pce` (entity scoping), `pc1` (deposit→holding), `pclon`/`pcloff` (link is money-neutral), `pc2`
-(brokerage), **`p2cap` (Daniel — the integration golden across all five slices)**.
+(brokerage), `pc3bad` (the three C3 inconsistencies: over-disposal, disposed-with-no-cost-base, and a
+still-held zero-cost-base control), **`p2cap` (Daniel — the integration golden across all six slices)**.
 
 ---
 
@@ -81,6 +82,14 @@ materially-distorted case in the capital set. The accountant pack gained *"Inves
 (carried forward)"*, deliberately **without** a `tie_back` since a closing balance contributes to no report
 figure. Read the section's `notes` before changing it: they state that remaining figures are derived and
 explicitly **not** a parcel selection.
+
+**Hardened afterwards** (traps 10 and 11, both live defects that all-green gates missed):
+the closing-holdings section and the three readiness signals are now **entity-scoped** through the shared
+`cgtPersonalScopeExpr` — a *held* company/trust/SMSF parcel was being carried forward on the individual's
+pack and counted into its TOTAL; and a zero-cost-base disposal no longer double-fires C3's blocker
+alongside C1's review finding. **Known limitation, deliberate:** an integrity problem on a
+separate-taxpayer parcel is therefore not surfaced at all — that entity lodges its own return, which
+Quillo does not produce. Revisit if entity-level returns ever come in scope.
 
 ### C4 — DRP as a parcel generator · `capital_drp`
 
@@ -167,6 +176,19 @@ jurisdiction-neutrally (`gain_relief`, not `discount`). Belongs under epic **#23
    owns them.
 9. **Deploy-only environment** (macOS 12.6 can't run `workerd`). Verify by typecheck + tests, then deploy
    and smoke-test. Allow ~60s for asset propagation before comparing the live bundle hash to the build.
+10. **A fixture can make an assertion PASS for the wrong reason — check what would have to change for it
+    to fail.** C3's closing-holdings query had no entity predicate at all, and its golden ("the company's
+    parcel is not carried forward") passed only because the sole entity fixture happened to be fully
+    *disposed* and was filtered by status, not ownership. The leak was invisible until a **held** entity
+    parcel existed (`p2capCoRio`). When an assertion says "X is excluded", make sure X is excluded by the
+    rule under test and not by an unrelated property of the fixture.
+11. **Two findings about the same row is a bug, and the copy proves it.** C3's blocker and C1's
+    missing-cost-base review finding both counted a zero-cost-base holding *with* a disposal, so the user
+    saw the blocker plus a review finding reading "it doesn't affect this year's figures while you still
+    hold it" — false for something they had sold. When a slice **promotes** a case to a higher severity, it
+    must **remove** that case from the finding it was promoted out of. `noDisposalExistsExpr`
+    (`src/lib/capital.ts`) is the shared fragment that draws the line; reuse it rather than re-typing the
+    condition (same reasoning as trap 4).
 
 ---
 
@@ -196,6 +218,16 @@ The brief is good and mostly accurate. These specific points are superseded:
 1. ~~**C3: derived or stored?**~~ **DECIDED: derived on read** (2026-07-30). Shipped. A follow-up decision
    remains open: whether to drop the dead `cgt_assets.status` column — that is a destructive migration and
    needs an explicit go plus a reverse plan.
+
+   **It is NOT a one-line migration**, despite how the first draft of this section read. The column is
+   `TEXT NOT NULL DEFAULT 'held'`, so the default would cover an insert that simply omitted it — but
+   nothing omits it. It is still named explicitly in **four insert column-lists** (`recordCgtAsset` in
+   `src/agent.ts`; the property, AMMA-income and txn-seeded inserts in `src/lib/situation-write.ts`) and
+   in the capital-register `SELECT` in `src/api.ts`. Naming a dropped column in either an insert list or a
+   select throws, so **all five must be cleaned and shipped BEFORE the drop**, not with it. SQLite's
+   `ALTER TABLE … DROP COLUMN` also has to be mirrored into `schema.sql` or `npm run test:schema` fails.
+   Order: strip the five references → ship → verify → drop in its own migration. The dead *reader* in the
+   C1 readiness query is already gone (removed by the C3 hardening PR), so that one is done.
 2. **Slice order.** C3 is done. *Remaining recommendation: C5 → C4 → C6, with C-jur arguable first* —
    `cgt_assets` still has zero prod rows, so the seam can never be cheaper than now.
 3. **C6 scope.** Named annual statements (CommSec / Stake / Computershare / Link) vs the ATO prefill shape

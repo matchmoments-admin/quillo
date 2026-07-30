@@ -125,6 +125,18 @@ export function withCostBaseElements(detailJson: string | null | undefined, e: C
 // remaining cost base may only ever be "the parcel's cost base minus the cost base they said they used",
 // never a figure we picked by choosing parcels on their behalf.
 
+/**
+ * "This holding has no disposal recorded against it", as a SQL fragment over a `cgt_assets` alias.
+ *
+ * Exported for the same reason `cgtPersonalScopeExpr` is (trap 4): the readiness signal query in the DO and
+ * the golden that asserts its semantics must share ONE definition. The condition decides which of two
+ * findings a zero-cost-base holding raises — the C1 review finding while it is still held, or C3's blocker
+ * once it has been sold — so a replica drifting from the original would silently restore the double-fire
+ * this exists to prevent.
+ */
+export const noDisposalExistsExpr = (alias: string): string =>
+  `NOT EXISTS (SELECT 1 FROM cgt_events ev WHERE ev.cgt_asset_id = ${alias}.id AND ev.user_id = ${alias}.user_id)`;
+
 export interface HoldingDisposal {
   units_disposed?: number | null;
   cost_base_used_cents?: number | null;

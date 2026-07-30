@@ -21,7 +21,7 @@ import { fetchAskDigestRows, listAccounts, listIncome } from "../src/lib/queries
 import { deleteRow, archiveRow, DeleteBlockedError, type DeleteBlocker, syncPropertyDisposalToCgt, syncIncomeCgtFromComponents, syncTxnCgtHolding, clearTxnCgt, clearOrphanedTxnCgt } from "../src/lib/situation-write";
 import { ordinaryAssessableCents, type AmmaComponents } from "../src/lib/managed-fund";
 import { draftHoldingFromTxn } from "../src/lib/clarify";
-import { costBaseFromElements, withCostBaseElements, holdingPosition } from "../src/lib/capital";
+import { costBaseFromElements, withCostBaseElements, holdingPosition, noDisposalExistsExpr } from "../src/lib/capital";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
@@ -359,6 +359,14 @@ const asset = (id: string, u: string, costCents: number, depCents: number, prope
   // tranche's reference data, so the first slice that computes an entity-level position must not inherit a
   // wrong discount flag from it.
   run(`INSERT INTO cgt_events (id, user_id, cgt_asset_id, fy, event_date, proceeds_cents, cost_base_used_cents, units_disposed, discount_eligible) VALUES ('p2capCoEv', ?, 'p2capCoBhp', '2025-26', '2025-11-20', 2400000, 1600000, 400, 0)`, u);
+
+  // (3b) A parcel the company STILL HOLDS — deliberately NO cgt_event, so it reaches no computed figure
+  // (trap 7) and every money assertion in this persona is unaffected by its presence. Its whole job is the
+  // closing-holdings section: a HELD separate-taxpayer parcel must stay off the INDIVIDUAL's accountant
+  // pack, the same way C-E keeps a disposed one out of the headline. C3's first cut applied no entity
+  // predicate to that section and only LOOKED correct because BHP above is fully disposed — with nothing
+  // held by the company, the existing "not carried forward" assertion could never have failed.
+  run(`INSERT INTO cgt_assets (id, user_id, person_id, entity_id, asset_kind, code, units, acquired_date, cost_base_cents) VALUES ('p2capCoRio', ?, ?, 'p2capCo', 'shares', 'RIO', 50, '2023-03-01', 500000)`, u, self);
 
   // (4) Daniel sells HALF the CBA parcel: 100 of 200 units for $13,000, cost base used = half of the
   // itemised cost base ($10,009.98 — he chose specific parcels). Held >12 months ⇒ discountable.
@@ -1180,8 +1188,22 @@ async function main() {
       cbaRow?.[5] === "10009.97");
     check("PC3: VAS carries forward untouched, marked held", vasRow?.[3] === 105 && vasRow?.[6] === "held");
     check("PC3: the fully-disposed company parcel is NOT carried forward", closing?.rows.some((r) => r[0] === "BHP") === false);
+    // The regression that the original C3 could not have caught. RIO is HELD by the company, so it is an
+    // open holding by every test the section applies EXCEPT ownership — only the entity predicate keeps it
+    // out. Without it, somebody else's $5,000 cost base lands in Daniel's carried-forward TOTAL.
+    check("PC3: a HELD separate-taxpayer parcel is NOT carried forward on the individual's pack",
+      closing?.rows.some((r) => r[0] === "RIO") === false);
     check("PC3: the section totals the cost base carried forward, and it is not a tax outcome (no tie_back)",
       closing?.subtotal_cents === 1000997 + 999700 + 300 && closing?.tie_back === undefined);
+    // Trap 1, asserted directly: a subtotal that reconciles upward can still contradict its own rows. The
+    // visible cost-base column must add up to the TOTAL row AND to subtotal_cents — the check C2 lacked.
+    {
+      const body = (closing?.rows ?? []).filter((r) => r[0] !== "");
+      const totalRow = (closing?.rows ?? []).find((r) => r[0] === "" && String(r[6]).startsWith("TOTAL"));
+      const summed = body.reduce((t, r) => t + Math.round(Number(r[5]) * 100), 0);
+      check("PC3: the visible cost-base rows sum to the TOTAL row and to subtotal_cents (internal consistency)",
+        body.length === 2 && summed === Math.round(Number(totalRow?.[5]) * 100) && summed === closing?.subtotal_cents);
+    }
 
     // Flag OFF ⇒ no derived fields, no section, byte-identical CSV.
     const schedOff = await buildAccountantSchedule(envNoPos, "p2cap", 2025, { report: rNoPos });
@@ -1202,6 +1224,9 @@ async function main() {
       // (b) a disposal against a holding with NO cost base — the whole proceeds land as gain.
       run(`INSERT INTO cgt_assets (id, user_id, person_id, asset_kind, code, units, acquired_date, cost_base_cents) VALUES ('pc3nocb', ?, ?, 'shares', 'TLS', 500, '2023-01-01', 0)`, u, `person_self_${u}`);
       run(`INSERT INTO cgt_events (id, user_id, cgt_asset_id, fy, event_date, proceeds_cents, cost_base_used_cents, units_disposed) VALUES ('pc3nocbE', ?, 'pc3nocb', '2025-26', '2026-04-01', 700000, 0, 500)`, u);
+      // (c) a STILL-HELD holding with no cost base. Distorts nothing this year, so it stays the C1 REVIEW
+      // finding — it is the control that proves the new disposed-guard is surgical rather than blanket.
+      run(`INSERT INTO cgt_assets (id, user_id, person_id, asset_kind, code, units, acquired_date, cost_base_cents) VALUES ('pc3heldnocb', ?, ?, 'shares', 'NAB', 100, '2023-01-01', 0)`, u, `person_self_${u}`);
 
       const rows = db.prepare(
         `SELECT a.id AS id, a.units AS units, a.cost_base_cents AS cost_base_cents,
@@ -1224,6 +1249,24 @@ async function main() {
       const rBad = await buildReport(envP, u, 2025);
       check("PC3: the over-disposed sale still counts as entered ($10k gain) — we surface, never auto-correct",
         rBad.capital_gains?.gross_capital_gains_cents === 1000000 + 700000);
+
+      // ONE HOLDING, ONE FINDING. The C1 review count and the C3 blocker count are populated by two separate
+      // queries in the DO, and the first cut of C3 let a zero-cost-base DISPOSAL fall into both — so the user
+      // got the blocker plus a review finding whose copy ("it doesn't affect this year's figures while you
+      // still hold it") is flatly false for a holding they have sold. Replicating both queries here is the
+      // only reachable seam: the DO's filingReadiness isn't callable from this harness, but the SQL is the
+      // part that was wrong. TLS (disposed, no cost base) must be the blocker's alone; NAB (held, no cost
+      // base) must remain the review finding's alone.
+      const c1NoCostBase = (db.prepare(
+        `SELECT COALESCE(SUM(CASE WHEN COALESCE(a.cost_base_cents, 0) <= 0 AND ${noDisposalExistsExpr("a")}
+                THEN 1 ELSE 0 END), 0) AS n
+           FROM cgt_assets a WHERE a.user_id = ? AND a.property_id IS NULL AND a.income_id IS NULL`,
+      ).get(u) as { n: number }).n;
+      const c3DisposedNoCostBase = rows.filter((r) => r.n_events > 0 && (r.cost_base_cents ?? 0) <= 0).length;
+      check("PC3: a zero-cost-base DISPOSAL raises the blocker only — it is no longer double-counted as a review finding",
+        c3DisposedNoCostBase === 1 && c1NoCostBase === 1);
+      check("PC3: and the still-HELD zero-cost-base holding is the one the review finding keeps",
+        (db.prepare(`SELECT id FROM cgt_assets a WHERE a.user_id = ? AND COALESCE(a.cost_base_cents,0) <= 0 AND ${noDisposalExistsExpr("a")}`).get(u) as { id: string }).id === "pc3heldnocb");
     }
   }
 

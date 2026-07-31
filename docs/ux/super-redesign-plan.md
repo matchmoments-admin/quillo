@@ -285,10 +285,14 @@ closed**, and read the frozen value forever after.
   (never show a drifting number as historical truth). This backfill is an **explicit slice**,
   not a footnote.
 
-### The migration (additive, apply-once, next in sequence — last on disk is `0069`)
+### The migration (additive, apply-once, next in sequence)
+
+> **Number corrected 2026-08-01.** This plan was written when `0069` was last on disk. The capital
+> tranche has since taken 0070–0074, so **the next free number is `0075_`** — not `0070_`. Check
+> `ls migrations/ | tail -1` before writing, rather than trusting any number written here.
 
 ```sql
--- migrations/0070_fy_position_snapshots.sql
+-- migrations/00NN_fy_position_snapshots.sql  (allocate at write time; 0075+ as at 2026-08-01)
 -- Additive + apply-once. Freezes each FY's Suggested figures at year-close so the
 -- Suggested-vs-Assessed chart can never silently drift when an old txn is edited.
 -- No money/tax OUTPUT changes: this table is written by a new close-time hook and only

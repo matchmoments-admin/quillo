@@ -103,7 +103,10 @@ CDR consents are also **time-limited (12 months maximum)** and must be trivially
 - **Quillo never sees a bank credential.** Consent and authentication happen on the **data holder's own site** via the ADR's hosted flow. Quillo never receives, stores, or proxies a banking password, and never holds an OAuth token that could re-authenticate to a bank.
 - **Read-only, forever.** No payment initiation, no action initiation.
 
-### 6.2 Schema (migration `0070_bank_connections.sql`, additive)
+### 6.2 Schema (additive)
+
+> **Number corrected 2026-08-01.** This ADR originally reserved `0070_`. The capital tranche has since
+> taken 0070–0074, so allocate at write time — **`0075_` or later**. Referred to below as `00NN_`.
 
 ```sql
 CREATE TABLE IF NOT EXISTS bank_connections (

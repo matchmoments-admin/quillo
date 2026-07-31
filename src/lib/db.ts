@@ -55,6 +55,14 @@ export interface Property {
   use_status: string | null; // 0031: how it's used this year — gates deductibility
   ownership_pct: number;
   person_id: string | null; // primary owner (FK persons.id)
+  // #486: the CGT capture fields. They have existed on the table since 0006 and `updateProperty` has
+  // always accepted them, but they were never SELECTed here — so the SPA could not display them and
+  // therefore could not offer an editor for them. Read-only additions: nothing in the categorisation
+  // path reads a property row wholesale (prompts use `label`/`address`/`id` field-by-field), so
+  // widening this SELECT cannot move a prompt or a figure.
+  acquired_date: string | null;      // gates the 12-month CGT discount + third-element eligibility (#469)
+  cost_base_cents: number | null;    // purchase price + incidental capital costs
+  main_residence_flag: number;       // 1 ⇒ computeCapitalGain DEFERS the disposal (never auto-exempts)
 }
 
 export interface Entity {
@@ -135,7 +143,9 @@ export async function getSituation(env: Env, userId: string, profile: Profile): 
       `SELECT id, user_id, display_name, role, occupation, tax_residency FROM persons WHERE user_id = ? ORDER BY role = 'self' DESC, created_at`,
     ).bind(userId).all<Person>(),
     env.DB.prepare(
-      `SELECT id, user_id, label, address, status, use_status, ownership_pct, person_id FROM properties WHERE user_id = ?`,
+      `SELECT id, user_id, label, address, status, use_status, ownership_pct, person_id,
+              acquired_date, cost_base_cents, COALESCE(main_residence_flag, 0) AS main_residence_flag
+         FROM properties WHERE user_id = ?`,
     ).bind(userId).all<Property>(),
     env.DB.prepare(
       `SELECT id, user_id, kind, name, detail_json FROM entities WHERE user_id = ? AND active = 1`,

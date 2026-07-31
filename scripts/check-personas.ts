@@ -821,6 +821,54 @@ async function main() {
     check("C0: the CGT subtotal is unaffected by units", secOn?.subtotal_cents === secOff?.subtotal_cents);
   }
 
+  // ── #486 (property_capital_detail): capturing a property's CGT fields must not move a number ──
+  // The columns existed since migration 0006 and `updateProperty` always accepted them; nothing ever
+  // SELECTed or set them, so the taxpayer had no way to record what a property cost or when they bought
+  // it. Opening that capture path is the change — and capture must be POSITION-NEUTRAL while the
+  // property is still held, because `computeCapitalGain` only ever runs on a DISPOSAL.
+  //
+  // This is the pc0on/pc0off shape: two tenants identical but for the captured fields.
+  {
+    const seedProp = (u: string, name: string, capital: boolean) => {
+      seedTenant(u, name);
+      if (capital) {
+        run(`INSERT INTO properties (id, user_id, label, status, use_status, ownership_pct, acquired_date, cost_base_cents, main_residence_flag) VALUES (?, ?, 'Rental', 'rented', 'rented', 100, '2019-03-01', 65000000, 0)`, `${u}p`, u);
+      } else {
+        run(`INSERT INTO properties (id, user_id, label, status, use_status, ownership_pct) VALUES (?, ?, 'Rental', 'rented', 'rented', 100)`, `${u}p`, u);
+      }
+      // Same money either way: rent in, one deductible expense out. NOT sold — that's the whole point.
+      run(`INSERT INTO income (id, user_id, income_type, fy, gross_cents, property_id) VALUES (?, ?, 'rent', '2025-26', 3000000, ?)`, `${u}i`, u, `${u}p`);
+      run(`INSERT INTO transactions (id, user_id, source, status, kind, merchant, amount_cents, amount_aud_cents, txn_date, bucket, ato_label, property_id, direction, deductibility) VALUES (?, ?, 'upload', 'categorised', 'bank_line', 'Council rates', 200000, 200000, ?, 'property_rented', 'rental:rates', ?, 'debit', 'confirmed_deductible')`, `${u}t`, u, FY_DATE, `${u}p`);
+    };
+    seedProp("ppcoff", "#486 control — capital fields never captured (pre-486 state)", false);
+    seedProp("ppcon", "#486 — acquired date + cost base captured", true);
+
+    const rOff = await buildReport(env, "ppcoff", 2025);
+    const rOn = await buildReport(env, "ppcon", 2025);
+    check("#486: capturing acquired_date + cost_base leaves the taxable position byte-identical",
+      rOn.taxable_position_cents === rOff.taxable_position_cents);
+    // Compare with `property_id` stripped: the two fixtures are different TENANTS, so their row ids
+    // necessarily differ. Comparing them would fail on an identifier rather than on a figure — the
+    // "assertion measuring the wrong thing" trap this suite has been bitten by before.
+    const propMoney = (r: Report) => JSON.stringify(r.per_property.map(({ property_id: _id, ...rest }) => rest));
+    check("#486: the per-property block is byte-identical with the capital fields captured",
+      propMoney(rOn) === propMoney(rOff));
+    check("#486: a HELD property produces no capital gain either way (computeCapitalGain runs on disposal only)",
+      (rOn.capital_gains?.net_capital_gain_cents ?? 0) === 0 && (rOff.capital_gains?.net_capital_gain_cents ?? 0) === 0);
+
+    // The accountant pack must not gain or lose a figure because the fields are populated.
+    const schedOn = await buildAccountantSchedule(env, "ppcon", 2025, { report: rOn });
+    const schedOff = await buildAccountantSchedule(env, "ppcoff", 2025, { report: rOff });
+    // Same reasoning: a per-property section key embeds the property id (`property:<id>`), so normalise
+    // the id out and compare the SUBTOTALS, which are the figures that would actually move.
+    const subs = (sch: { sections: { key: string; subtotal_cents: number | null }[] }) =>
+      JSON.stringify(sch.sections.map((s) => [s.key.replace(/^property:.*$/, "property:<id>"), s.subtotal_cents]));
+    check("#486: every accountant-schedule subtotal is unchanged by the captured fields",
+      subs(schedOn) === subs(schedOff));
+    check("#486: every tie-back still reconciles with the fields captured",
+      schedOn.sections.every((s) => !s.tie_back || s.tie_back.ok));
+  }
+
   // ── Capital C-E: a separate taxpayer's CGT parcel must leave the individual headline ──
   // Local env override (the PTS/P-car pattern): the base harness never sets capital_entity_scope, so every
   // other persona proves OFF ⇒ byte-identical by construction.

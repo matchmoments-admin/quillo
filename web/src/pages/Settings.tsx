@@ -391,12 +391,35 @@ function Row({ label, onDelete, deleteLabel = "delete" }: { label: string; onDel
   );
 }
 
-function EditableProperty({ property, onDone }: { property: { id: string; label: string; status: string; use_status?: string | null }; onDone: () => void }) {
+function EditableProperty({ property, onDone }: { property: { id: string; label: string; status: string; use_status?: string | null; acquired_date?: string | null; cost_base_cents?: number | null; main_residence_flag?: number | null }; onDone: () => void }) {
+  const { has } = useFeatures();
   const [editing, setEditing] = useState(false);
   const [label, setLabel] = useState(property.label);
   const [status, setStatus] = useState(property.status);
   const [useStatus, setUseStatus] = useState(property.use_status ?? "");
-  const save = useMutation({ mutationFn: () => api.updateProperty(property.id, { label, status, use_status: useStatus || null }), onSuccess: () => { setEditing(false); onDone(); } });
+  // #486 (property_capital_detail): these columns have existed since migration 0006 and the API has
+  // always accepted them, but no surface ever set them — so a taxpayer could not record what their
+  // property cost, when they bought it, or that it is their main residence. Money-relevant: the
+  // acquired date gates the 12-month CGT discount, and the cost base is what a disposal is measured
+  // against. Held as strings so an untouched field stays "" and is sent as null ⇒ COALESCE leaves the
+  // stored value alone.
+  const [acquiredDate, setAcquiredDate] = useState(property.acquired_date ?? "");
+  const [costBase, setCostBase] = useState(property.cost_base_cents != null ? String(property.cost_base_cents / 100) : "");
+  const [mainResidence, setMainResidence] = useState((property.main_residence_flag ?? 0) === 1);
+  const capitalOn = has("property_capital_detail") && !isTenantStatus(status);
+  const save = useMutation({
+    mutationFn: () => api.updateProperty(property.id, {
+      label, status, use_status: useStatus || null,
+      // Flag OFF (or a tenant record) ⇒ these keys are never sent ⇒ the request body is byte-identical
+      // to today's. A blank field sends null so COALESCE preserves whatever is stored.
+      ...(capitalOn ? {
+        acquired_date: acquiredDate || null,
+        cost_base_cents: costBase.trim() === "" ? null : Math.round(Number(costBase) * 100),
+        main_residence_flag: mainResidence ? 1 : 0,
+      } : {}),
+    }),
+    onSuccess: () => { setEditing(false); onDone(); },
+  });
   if (!editing) {
     return (
       <div className="flex items-center justify-between rounded-lg bg-surface px-3 py-2 text-sm">
@@ -424,6 +447,29 @@ function EditableProperty({ property, onDone }: { property: { id: string; label:
           <option value="">used: — same —</option>
           {USE_STATUSES.map((s) => <option key={s} value={s}>{statusLabel(s)}</option>)}
         </select>
+      )}
+      {capitalOn && (
+        <details className="w-full pt-1">
+          <summary className="cursor-pointer text-xs font-medium uppercase tracking-wide text-muted">Capital details (for when you sell)</summary>
+          <div className="flex flex-wrap items-center gap-2 pt-2">
+            <label className="flex items-center gap-1 text-xs text-muted">
+              Bought
+              <input className={input} type="date" value={acquiredDate} onChange={(e) => setAcquiredDate(e.target.value)} title="Contract date you acquired it — sets the 12-month CGT discount clock" />
+            </label>
+            <label className="flex items-center gap-1 text-xs text-muted">
+              Cost base $
+              <input className={`${input} w-36`} type="number" min="0" step="0.01" placeholder="incl. stamp duty, legals" value={costBase} onChange={(e) => setCostBase(e.target.value)} title="Purchase price plus incidental capital costs (stamp duty, legal fees) — not repairs or interest" />
+            </label>
+            <label className="flex items-center gap-1 text-xs text-muted">
+              <input type="checkbox" checked={mainResidence} onChange={(e) => setMainResidence(e.target.checked)} />
+              This is / was my main residence
+            </label>
+          </div>
+          <p className="pt-2 text-xs text-muted">
+            Only used when you sell. Quillo never applies the main-residence exemption for you — ticking this makes it
+            <strong> set the disposal aside for your registered tax agent</strong> rather than putting a number on it. General information only.
+          </p>
+        </details>
       )}
       <button className={btn} disabled={!label || save.isPending} onClick={() => save.mutate()}>Save</button>
       <button className={del} onClick={() => setEditing(false)}>cancel</button>

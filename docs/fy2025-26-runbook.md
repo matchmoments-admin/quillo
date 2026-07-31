@@ -69,11 +69,14 @@ Worth doing because it gates the 12-month CGT discount and third-element eligibi
 for property acquired **before 21 Aug 1991** —
 [#469](https://github.com/matchmoments-admin/quillo/issues/469)).
 
-> **Known gap — [#486](https://github.com/matchmoments-admin/quillo/issues/486), filed today.**
-> `cost_base_cents` and `main_residence_flag` **cannot be set from the app at all** (no form field, no
-> chat tool — API only). It doesn't affect this return: `main_residence_flag` defaults to `0`, which is
-> correct for you since you rent where you live, and there's no disposal so no cost base is read. Just
-> don't expect to find those fields.
+> **[#486](https://github.com/matchmoments-admin/quillo/issues/486) — fixed and live, same day.**
+> The property editor now has a collapsed **"Capital details (for when you sell)"** section carrying
+> **Bought**, **Cost base $** and **This is / was my main residence**. So set the acquired date there
+> rather than via chat, and record the cost base while the contract is in front of you.
+>
+> Leave the main-residence box **unticked** on both — you rent where you live, so neither is your main
+> residence. Note what ticking it actually does: Quillo never applies the exemption, it **sets the
+> disposal aside for your registered tax agent**. It never puts a number on it.
 
 ### Loans
 

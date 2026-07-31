@@ -201,7 +201,16 @@ export interface Report {
   // Present only when super_deduction is on AND there are personal_deductible contributions.
   super_deduction?: SuperDeduction; // FY aggregate incl. its return label (D12; D11 is foreign-pension UPP, never super)
   trading_stock?: TradingStock; // audit wave 4: s 70-35 adjustment for the personal sole-trader business (flag trading_stock)
-  taxable_position_cents: number;      // total_income + net capital gain + ESS discount + trust distributions + franking gross-up − deductions − depreciation − super (indicative)
+  // B2 (#71): prior-year ordinary tax loss from a confirmed NOA, applied against this year's positive
+  // income. SUBTRACTED from the position. Present only when carryforward_position is on AND a loss was
+  // actually applied (omitted when zero ⇒ byte-identical payload).
+  //
+  // #444: this was previously spread in at the end of buildReport WITHOUT being declared here. A spread
+  // expression bypasses TypeScript's excess-property check, so the field existed on the payload at
+  // runtime but was invisible to every consumer's types — which is why `assessReadiness` never rendered
+  // a line for it and the position lines stopped summing to the headline. Declare it, don't smuggle it.
+  tax_losses_applied_cents?: number;
+  taxable_position_cents: number;      // total_income + net capital gain + ESS discount + trust distributions + franking gross-up − deductions − depreciation − super − applied tax losses (indicative)
   taxable_position_confirmed_cents?: number; // #255: CONFIRMED end of the range — as above but discretionary tracked spend swapped for resolved_deductible_cents (method-based deductions stay). ≥ taxable_position_cents. Present only when position_confirmed_range is on ⇒ byte-identical off.
 }
 

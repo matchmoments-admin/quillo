@@ -1691,6 +1691,57 @@ console.log("deductibility (deny-by-default)");
   check("OFF: payg + property all count (legacy basis)", legacyDeduction === 50_000 + 323_035 + 120_000 + 200_000);
   check("OFF: no payg_unresolved finding", !legacy.findings.some((fd) => fd.id === "payg_unresolved"));
 
+  // ── #444: EVERY term that reaches the headline must render as a line ────────────────────────────
+  // The pre-existing reconciliation above only guards WITHIN the deduction group ("deduction lines ==
+  // headline gross"). That is exactly the hole three terms fell through: franking gross-up (added),
+  // super deduction (subtracted) and applied prior-year tax losses (subtracted) each moved the headline
+  // while rendering NO line, so the position lines silently stopped summing to the number above them.
+  //
+  // This asserts the whole invariant end-to-end — income − deduction − depreciation == the headline —
+  // so any FUTURE term added to buildReport's taxable_position without a matching line fails here
+  // rather than shipping. `property` lines are deliberately excluded from the sum: they are a
+  // per-property BREAKDOWN of amounts already counted in income/deduction/depreciation, not extra terms.
+  //
+  // The fixture is the Margaret shape from #444 (persona 10: franked dividends + personal-deductible
+  // super + a prior-year loss), with the issue's own numbers so the check is discriminating:
+  //   $1,000 income + $428 franking − $200 deductions − $50 depreciation − $300 super − $100 loss = $778
+  // Before the fix the lines summed to $750.00 — a $28.00 unexplained gap. This check fails on that.
+  const reconcileLines = (p: { lines: { group: string; amount_cents: number }[] }) =>
+    p.lines.reduce((s, l) => s + (l.group === "income" ? l.amount_cents : l.group === "deduction" || l.group === "depreciation" ? -l.amount_cents : 0), 0);
+
+  const oneDeductible = [{ bucket: "payg", ato_label: "payg:union-fees", deductibility: "likely_deductible", n: 1, total_cents: 20_000, gst_cents: 0 }];
+  const allTermsReport = {
+    ...mkR(oneDeductible),
+    income: { by_type: [{ income_type: "dividend", n: 1, gross_cents: 100_000, net_cents: 100_000, withholding_cents: 0, franking_credit_cents: 42_800, foreign_tax_paid_cents: 0 }], gross_cents: 100_000, withholding_cents: 0, franking_credit_cents: 42_800, foreign_tax_paid_cents: 0 },
+    depreciation_cents: 5_000,
+    franking_gross_up_cents: 42_800,
+    super_deduction: { claimed_cents: 30_000, contributed_cents: 30_000, cap_cents: 3_000_000, over_cap: false, ato_label: "D12" },
+    tax_losses_applied_cents: 10_000,
+    taxable_position_cents: 77_800,
+  } as unknown as Report;
+  const allTerms = assessReadiness({ report: allTermsReport, situation: mkS(), claimMatches: [], signals: mkSig(), generatedAt: "2026-06-03T00:00:00Z", excludeNonDeductible: true });
+  check("#444: ALL position lines sum to the headline (franking + super + tax loss)",
+    reconcileLines(allTerms.position) === allTerms.position.indicative_taxable_position_cents && reconcileLines(allTerms.position) === 77_800);
+  check("#444: franking gross-up renders as an income line",
+    allTerms.position.lines.some((l) => l.group === "income" && l.label === "franking_gross_up" && l.amount_cents === 42_800));
+  check("#444: personal super renders as a deduction line at the CLAIMED amount",
+    allTerms.position.lines.some((l) => l.group === "deduction" && /Personal super/.test(l.label) && l.amount_cents === 30_000));
+  check("#444: applied prior-year tax loss renders as a deduction line",
+    allTerms.position.lines.some((l) => l.group === "deduction" && /Prior-year tax loss/.test(l.label) && l.amount_cents === 10_000));
+  // Absent terms ⇒ no lines ⇒ every pre-#444 payload is byte-identical.
+  const noTerms = assessReadiness({ report: mkR(oneDeductible), situation: mkS(), claimMatches: [], signals: mkSig(), generatedAt: "2026-06-03T00:00:00Z", excludeNonDeductible: true });
+  check("#444: no franking/super/loss on the report ⇒ no new lines (byte-identical)",
+    !noTerms.position.lines.some((l) => /franking_gross_up|Personal super|Prior-year tax loss/.test(l.label)));
+  // An over-cap contribution claims only the capped amount — the line must never show the contributed figure.
+  const overCap = assessReadiness({
+    report: { ...mkR([]), super_deduction: { claimed_cents: 3_000_000, contributed_cents: 4_500_000, cap_cents: 3_000_000, over_cap: true, ato_label: "D12" }, taxable_position_cents: -3_000_000 } as unknown as Report,
+    situation: mkS(), claimMatches: [], signals: mkSig(), generatedAt: "2026-06-03T00:00:00Z", excludeNonDeductible: true,
+  });
+  check("#444: over-cap super claims the CAP, not the contribution",
+    overCap.position.lines.some((l) => /Personal super/.test(l.label) && l.amount_cents === 3_000_000 && /capped at/.test(l.basis)));
+  check("#444: new lines don't trip the tax-advice denylist",
+    !allTerms.position.lines.flatMap((l) => [l.why, l.basis]).some((t) => /refund|tax payable|marginal rate|\b\d{1,2}%\s*(tax|bracket)/i.test(t)));
+
   // ── PHASE B / G2: attribution snapshot math + track routing (payer ≠ claimant) ──
   // splitAttribution: gross × owner-share% × work-use%, rounded to whole cents.
   check("co-owner 50% of a $1,000 bill paid 100% by one owner → $500 (TR 93/32)", splitAttribution({ amount_cents: 100_000, owner_share_pct: 50 }) === 50_000);

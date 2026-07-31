@@ -81,9 +81,15 @@ export function Dashboard() {
           is ever disabled), so there's never two chats at once. */}
       {has("ask_quillo") && !has("floating_chat") && <AskQuillo />}
 
-      {/* Working-from-home + car: the #1 PAYG claims, captured here on the Position surface (the one
-          canonical place — Review no longer carries a second copy). #245: WFH and car are now separate
-          tools (car has nothing to do with WFH). */}
+      {/* Working-from-home + car: the #1 PAYG claims, captured here on the Position surface. #245: WFH
+          and car are now separate tools (car has nothing to do with WFH).
+
+          NOT the only render site, despite what this comment used to claim. `Reports.tsx:142-146`
+          mounts the SAME two components inside a `defaultOpen={false}` CollapsibleSection, deliberately
+          and for a documented reason — an audit found the report gave no WFH/car visibility, so the
+          figures feeding it can be adjusted where the report is read. Same component, so there is no
+          code drift: editing it updates both. Kept intentionally; whether the calculators eventually
+          move to a queue-invoked screen is a question map #432 owns, not a duplicate to quietly delete. */}
       {has("wfh_car_methods") && <WorkMethodsCard fyNum={fy} />}
       {(has("car_methods") || has("car_logbook")) && <CarMethodsCard fyNum={fy} />}
 
@@ -267,6 +273,13 @@ function ClaimsCard() {
   const qc = useQueryClient();
   const { data } = useQuery({ queryKey: ["claims"], queryFn: () => api.claims() });
   const [evidenceFor, setEvidenceFor] = useState<string | null>(null);
+  // Completeness fix: the header advertises the TRUE count (`open.length`) while the list rendered only
+  // the first 6, with no "show all" and no indication the rest existed — so claims 7+ were unreachable
+  // and silently un-actionable (keep / dismiss / find-evidence live ONLY here). Kept collapsed by
+  // default so the card stays compact on a busy Dashboard; the toggle makes the remainder reachable.
+  // NOTE: this hook MUST stay above the `if (!open.length) return null` early return below — a hook
+  // after a conditional return is what caused the React #310 prod crash.
+  const [showAll, setShowAll] = useState(false);
   const setStatus = useMutation({
     mutationFn: ({ id, status }: { id: string; status: string }) => api.setClaimStatus(id, status),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["claims"] }),
@@ -278,7 +291,7 @@ function ClaimsCard() {
     <Panel>
       <PanelHead title="Claim guidance" sub={`${open.length}`} />
       <div className="divide-y divide-line">
-        {open.slice(0, 6).map((c) => (
+        {(showAll ? open : open.slice(0, 6)).map((c) => (
           <div key={c.id} className="py-3 text-sm">
             <div className="flex items-start justify-between gap-3">
               <span>
@@ -298,6 +311,11 @@ function ClaimsCard() {
           </div>
         ))}
       </div>
+      {open.length > 6 && (
+        <button className="pt-3 text-xs text-ink hover:underline" onClick={() => setShowAll((v) => !v)}>
+          {showAll ? "Show fewer" : `Show all ${open.length}`}
+        </button>
+      )}
       <div className="pt-3 text-xs text-muted">General information only — not tax advice.</div>
     </Panel>
   );

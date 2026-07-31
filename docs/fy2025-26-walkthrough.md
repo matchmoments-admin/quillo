@@ -160,7 +160,8 @@ Deploy-only environment, so problems surface in prod first. Useful facts:
 
 - Health: `curl -s https://app.quillo.au/healthz` → `{"ok":true}`.
 - The gates that must stay green: `npm run typecheck`, `cd web && npx tsc --noEmit && npm run lint`,
-  `npm test` (1029 unit goldens + 293 persona checks + statement reconciliation + schema drift).
+  `npm test` (1037 unit goldens + 293 persona checks + 12 e2e + AU snapshot + statement reconciliation
+  + schema drift). Counts move as goldens land — treat the shape as canonical, not the number.
 - Nothing destructive has been run. The one outstanding destructive change is **#461** (dropping the dead
   `cgt_assets.status` column), which needs an explicit go and is *not* the one-line migration it looks like
    — six code references, one of them a golden `SELECT` that would break `npm test`.

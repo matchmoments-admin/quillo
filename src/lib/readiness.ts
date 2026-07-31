@@ -264,6 +264,21 @@ export function assessReadiness(input: {
       basis: report.partnership.franking_credit_cents > 0 ? `incl. ${money(report.partnership.franking_credit_cents)} franking credit` : "your share of partnership net income",
       why: "Your share of a partnership's net income, with its character retained (a franked dividend stays franked, a discounted capital gain stays discounted). It's assessable to you; the partnership lodges its own return. A partnership loss may instead be deductible — confirm the split and the partnership's lodgment with a registered tax agent." });
   }
+  // #444: franking credits are grossed up into assessable income (s 207-20) — buildReport ADDS them to
+  // taxable_position, so they must render as an "income" line to keep lines-sum == headline. Sourced from
+  // income franking + any trust/partnership franking, so the basis itemises when more than one contributes.
+  // Absent unless franking_gross_up is on with credits present, so the legacy reconciliation is intact.
+  if (report.franking_gross_up_cents && report.franking_gross_up_cents > 0) {
+    const trustFc = report.trust?.franking_credit_cents ?? 0;
+    const partFc = report.partnership?.franking_credit_cents ?? 0;
+    const parts = [
+      trustFc > 0 ? `${money(trustFc)} via a trust` : null,
+      partFc > 0 ? `${money(partFc)} via a partnership` : null,
+    ].filter(Boolean);
+    lines.push({ group: "income", label: "franking_gross_up", amount_cents: report.franking_gross_up_cents,
+      basis: parts.length > 0 ? `franking credits on franked dividends (incl. ${parts.join(" and ")})` : "franking credits attached to your franked dividends",
+      why: "Tax the company already paid on the profits behind your franked dividends. It's added to your assessable income here (the 'gross-up'), and the same amount is separately recorded as a credit — Quillo reports a position, never the final calculation, so the credit is listed under credits rather than netted off against this line. Confirm the treatment with a registered tax agent." });
+  }
   // Audit wave 4 (trading_stock): buildReport added the s 70-35 adjustment to taxable_position, so it
   // renders as a line too (lines-sum == headline). An increase is an "income" line; a decrease renders
   // as a deduction line with the deducted amount.
@@ -317,6 +332,19 @@ export function assessReadiness(input: {
       basis: `${Math.min(wm.car_work_km, wm.rates.car_km_cap)} km × ${wm.rates.car_cents_per_km}c/km (max ${wm.rates.car_km_cap} km)`,
       why: "Work-related car expenses claimed using the cents-per-kilometre method, capped at the ATO kilometre limit. This method already covers running costs (fuel, servicing, rego, insurance), so actual car receipts are not also claimed." });
   }
+  // #444: personal-deductible super contributions reduce assessable income (s 290-150), capped at the
+  // concessional cap. buildReport SUBTRACTS the claimed amount from taxable_position, so it renders as a
+  // "deduction" line to keep lines-sum == headline. The line carries the CLAIMED amount (what the position
+  // used), not the contributed amount — an over-cap contribution is flagged in the basis instead, because
+  // the excess isn't deductible and showing it here would overstate the deduction.
+  const sd = report.super_deduction;
+  if (sd && sd.claimed_cents > 0) {
+    lines.push({ group: "deduction", label: "Personal super contributions (D12)", amount_cents: sd.claimed_cents,
+      basis: sd.over_cap
+        ? `${money(sd.claimed_cents)} claimed of ${money(sd.contributed_cents)} contributed — capped at ${money(sd.cap_cents)}`
+        : `${money(sd.contributed_cents)} contributed (concessional cap ${money(sd.cap_cents)})`,
+      why: `Personal super contributions you've claimed as a deduction. Employer SG and salary sacrifice are already pre-tax and are never counted here. Claiming this requires a valid notice of intent lodged with your fund AND the fund's acknowledgement before you lodge — without it the deduction isn't available.${sd.over_cap ? " You've contributed beyond the concessional cap; the excess isn't deductible and may be taxed separately." : ""} Confirm with a registered tax agent.` });
+  }
   // Phase B / G2: attribution deductions (payer≠claimant). buildReport added the individual + rental-
   // property amounts to gross_deductions, so they render as "deduction" lines to keep lines-sum ==
   // headline; the company amount sits in the company track (its own group). Present only when the
@@ -334,6 +362,15 @@ export function assessReadiness(input: {
   }
   if (report.depreciation_cents > 0) {
     lines.push({ group: "depreciation", label: "Decline in value", amount_cents: report.depreciation_cents, basis: "from your depreciation schedule (Div 40 / Div 43)", why: "Capital allowances carried forward from your asset schedule for this year." });
+  }
+  // #444: a prior-year tax loss carried in from a confirmed NOA is SUBTRACTED last in buildReport
+  // (after depreciation and super), so it renders last among the reducing lines to keep lines-sum ==
+  // headline AND to read in the order the arithmetic happens. buildReport already surfaced the field
+  // "so the display layer can show the line" (report.ts) — this is the reader that was never written.
+  if (report.tax_losses_applied_cents && report.tax_losses_applied_cents > 0) {
+    lines.push({ group: "deduction", label: "Prior-year tax loss applied", amount_cents: report.tax_losses_applied_cents,
+      basis: "carried forward from a confirmed Notice of Assessment",
+      why: "A tax loss from an earlier year, applied against this year's income. It can only reduce positive income — never below zero — and any unused remainder stays carried forward to a later year. Whether a loss is available and in what order it must be applied is fact-specific; confirm with a registered tax agent." });
   }
   for (const p of report.per_property) {
     lines.push({ group: "property", label: p.label ?? p.property_id, amount_cents: p.net_cents, basis: `rent ${money(p.income_cents)} − deductions ${money(p.deduction_cents)} − depreciation ${money(p.depreciation_cents)}`, why: "Per-property position. A net loss generally offsets your other income (negative gearing)." });

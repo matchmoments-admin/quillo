@@ -63,6 +63,11 @@ export interface Property {
   status: string;
   use_status?: string | null;
   address?: string | null;
+  // #486 (property_capital_detail): the CGT capture fields. Optional so a flag-OFF payload — which
+  // omits them — still type-checks against this interface.
+  acquired_date?: string | null;
+  cost_base_cents?: number | null;
+  main_residence_flag?: number | null;
 }
 
 export interface Account {

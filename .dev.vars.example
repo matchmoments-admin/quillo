@@ -9,6 +9,15 @@ QBO_CLIENT_SECRET=""        # Intuit Developer app → Keys & Credentials
 # Only when a tenant uses inference_provider = 'bedrock' (AU residency path):
 AWS_ACCESS_KEY_ID=""
 AWS_SECRET_ACCESS_KEY=""
+# Basiq (CDR / open-banking bank feeds, flag `bank_feed_cdr`). Dashboard → your application →
+# Developers → API keys. Keys are PER APPLICATION and applications don't share data, so the
+# sandbox key belongs to `quillo-dev` and must never be pointed at production data.
+# Absent ⇒ the bank-feed routes stay dark (same "ships dark" pattern as Stripe).
+BASIQ_API_KEY=""
+# Stripe (billing + the A$20/FY bank-feed add-on). Dashboard → Developers → API keys / Webhooks.
+# Absent ⇒ top-up returns "not configured" and the webhook 503s. Previously undocumented.
+STRIPE_SECRET_KEY=""
+STRIPE_WEBHOOK_SECRET=""
 
 # ── wrangler CLI auth (control plane — NOT a Worker secret) ───────────────
 # This is wrangler's login to your Cloudflare account, used to create D1/R2/KV and

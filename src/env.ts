@@ -44,6 +44,11 @@ export interface Env {
   CATEGORISE_MODE?: string;             // 'auto' | 'live' | 'batch' — default categorisation path (per-tenant override: profiles.categorise_mode)
   COST_MARKUP_PCT?: string;             // markup % over measured AI cost for the billable figure, e.g. '30' = +30% (display only today)
   APP_FEE_CENTS?: string;               // flat application fee in cents added on top of marked-up AI cost (display only today)
+  // Basiq (CDR bank feeds, flag `bank_feed_cdr`). 'sandbox' | 'production'. Guards the blast radius
+  // of a misconfiguration: 'production' means real consumers' real bank data, which may only flow
+  // once the AU-residency guard is proven live AND the CDR Representative arrangement is signed.
+  // The connector REFUSES 'production' until then — unset/anything-else is treated as sandbox.
+  BASIQ_ENV?: string;
 
   // Secrets
   ANTHROPIC_API_KEY: string;
@@ -55,6 +60,12 @@ export interface Env {
   // Only present when a tenant uses inference_provider=bedrock:
   AWS_ACCESS_KEY_ID?: string;
   AWS_SECRET_ACCESS_KEY?: string;
+  // Optional (flag `bank_feed_cdr`): Basiq API key for CDR / open-banking bank feeds. Server-side
+  // only — never reaches the SPA; the browser only ever sees a short-lived CLIENT_ACCESS token
+  // minted per user for the hosted consent screen. Keys are PER Basiq application, and applications
+  // don't share data, so the sandbox key is scoped to `quillo-dev`. Absent ⇒ the bank-feed routes
+  // stay dark (the same ships-dark pattern as Stripe). Set via `wrangler secret put BASIQ_API_KEY`.
+  BASIQ_API_KEY?: string;
   // Optional (flag phi_provider_directory): Google Places API (New) key for the interim Extras
   // provider finder. Server-side only — never reaches the SPA. Absent ⇒ fetchProviders returns []
   // (the UI falls back to "Open in Maps" + the Healthdirect signpost). Set via

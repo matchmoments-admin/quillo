@@ -38,7 +38,7 @@ The wider account is **property-heavy**: 4 properties, 2401 transactions, 50 `re
 FY2024-25 — and only **46 transactions plus 1 income row in FY2025-26**. The owner's blocker on their own
 FY2025-26 return is **data entry, not engine**. See [`fy2025-26-walkthrough.md`](fy2025-26-walkthrough.md).
 
-**Test surface:** 1029 unit goldens (`scripts/check-units.ts`), 293 persona checks
+**Test surface:** 1037 unit goldens (`scripts/check-units.ts`), 293 persona checks
 (`scripts/check-personas.ts`). Capital-specific tenants: `pc0on`/`pc0off` (units are display-only),
 `pce` (entity scoping), `pc1` (deposit→holding), `pclon`/`pcloff` (link is money-neutral), `pc2`
 (brokerage), `pc3bad` (the C3 inconsistencies: over-disposal, disposed-with-no-cost-base, a still-held

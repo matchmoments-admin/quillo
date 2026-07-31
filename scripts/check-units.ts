@@ -3169,5 +3169,33 @@ console.log("currency de-anchoring (toBaseCurrency / baseCurrencyOf / currencySy
   check("D12 label is constant even with zero contributions", sd.contributed_cents === 0 && sd.claimed_cents === 0 && sd.ato_label === "D12");
 }
 
+// ── Repo hygiene: no LITERAL NUL bytes in tracked source ───────────────────────────────────────
+// A raw 0x00 makes grep, ripgrep and `git diff` classify the WHOLE file as binary and skip it
+// SILENTLY — no warning, no error, just no results. `src/lib/report.ts` (the money/tax-position
+// pipeline, 73KB) carried one for months inside a composite Map key, so every code search across
+// `src/` was blind to it, and `docs/capital-cgt-findings.md` — which documented this very defect —
+// wrote its own recommended fix as a literal NUL and made itself unsearchable too.
+//
+// The runtime string is fine; only the on-disk byte is the problem. Write the six-character escape
+// () instead of the raw byte and the file stays plain text with identical behaviour.
+// A silent search failure is worse than a loud one: it makes a reviewer confident about a file
+// nothing ever looked at.
+{
+  const { readdirSync, readFileSync, statSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const SKIP = new Set(["node_modules", ".git", "dist", ".wrangler", "coverage"]);
+  const offenders: string[] = [];
+  const walk = (dir: string) => {
+    for (const name of readdirSync(dir)) {
+      if (SKIP.has(name)) continue;
+      const p = join(dir, name);
+      if (statSync(p).isDirectory()) walk(p);
+      else if (/\.(ts|tsx|md|json|sql|toml)$/.test(name) && readFileSync(p).includes(0)) offenders.push(p);
+    }
+  };
+  for (const root of ["src", "web/src", "scripts", "docs", "migrations"]) walk(root);
+  check(`no literal NUL bytes in tracked source (found: ${offenders.join(", ") || "none"})`, offenders.length === 0);
+}
+
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);
 process.exit(fail === 0 ? 0 : 1);

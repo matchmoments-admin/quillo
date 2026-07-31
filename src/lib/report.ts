@@ -544,7 +544,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   // CSV/dashboard parity and any existing consumer see the same shape as before.
   const collapsed = new Map<string, ReportRow>();
   for (const b of breakdown) {
-    const key = `${b.bucket} ${b.ato_label ?? ""}`;
+    const key = `${b.bucket}\u0000${b.ato_label ?? ""}`;
     const prev = collapsed.get(key);
     if (prev) {
       prev.n += b.n;

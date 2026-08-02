@@ -710,7 +710,7 @@ export function assessReadiness(input: {
       ra.rfba_cents > 0 ? `reportable fringe benefits of ${money(ra.rfba_cents)}` : null,
       ra.resc_cents > 0 ? `reportable employer super of ${money(ra.resc_cents)}` : null,
     ].filter(Boolean).join(" and ");
-    findings.push(f("reportable_amounts", "income", "info", `Reportable amounts on your income statement (${money(ra.rfba_cents + ra.resc_cents)})`,
+    findings.push(f("reportable_amounts", "income", "info", `Reportable amounts captured (${money(ra.rfba_cents + ra.resc_cents)})`,
       `Your payslip / income statement carries ${parts}. These are NOT income and are NOT in the position shown here, but they count toward government income tests (e.g. Medicare levy surcharge, study-loan repayments, family assistance) — hand the figures to your registered tax agent with your income statement. They are listed in your accountant pack.${DEFER}`, true, []));
   }
 

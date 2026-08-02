@@ -886,27 +886,42 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   if (featureOn(env, "car_logbook")) {
     car_logbook = (await carLogbookPosition(env, userId, startYear, work_method?.car_cents ?? 0)) ?? undefined;
   }
-  // reportable_amounts: sum RFBA/RESC out of income.detail_json for the FY. Both write paths land on the
+  // reportable_amounts: RFBA/RESC out of income.detail_json for the FY. Both write paths land on the
   // same keys (payslip: rfba_cents may be null; income statement: rfb_cents renamed to rfba_cents,
   // 0-defaulted, resc_cents alongside) — treat null and 0 identically. detail_json is free-form
   // (AMMA components, employer meta), so parse defensively and ignore rows that aren't ours.
+  // RFBA/RESC are ANNUAL figures: a per-period payslip prints the same annual/YTD number every time, so
+  // take the MAX per employer and never a sum — 12 monthly payslips are not 12× the RFBA. (Two employers
+  // that both omitted a name merge under the fallback key; under-stating beats N×-overstating for a
+  // defer-to-agent figure.) Separate-taxpayer entity rows are excluded, matching the headline's own
+  // exclusion and the accountant pack's entityClause, so payload and pack can never disagree.
   let reportable_amounts: { rfba_cents: number; resc_cents: number } | undefined;
   if (featureOn(env, "reportable_amounts")) {
+    const raEntityClause = separateIds.length ? ` AND (entity_id IS NULL OR entity_id NOT IN (${separateIds.map(() => "?").join(",")}))` : "";
     const detailRows = await env.DB.prepare(
-      `SELECT detail_json FROM income WHERE user_id = ? AND fy = ? AND detail_json IS NOT NULL`,
+      `SELECT detail_json FROM income WHERE user_id = ? AND fy = ? AND detail_json IS NOT NULL${raEntityClause}`,
     )
-      .bind(userId, `${startYear}-${String((startYear + 1) % 100).padStart(2, "0")}`)
+      .bind(userId, `${startYear}-${String((startYear + 1) % 100).padStart(2, "0")}`, ...separateIds)
       .all<{ detail_json: string }>();
-    let rfba = 0;
-    let resc = 0;
+    const byEmployer = new Map<string, { rfba: number; resc: number }>();
     for (const r of detailRows.results ?? []) {
       try {
-        const d = JSON.parse(r.detail_json) as { rfba_cents?: number | null; resc_cents?: number | null };
-        rfba += Math.max(0, Math.round(d.rfba_cents ?? 0));
-        resc += Math.max(0, Math.round(d.resc_cents ?? 0));
+        const d = JSON.parse(r.detail_json) as { employer?: string | null; rfba_cents?: number | null; resc_cents?: number | null };
+        const rfba = Math.max(0, Math.round(d.rfba_cents ?? 0));
+        const resc = Math.max(0, Math.round(d.resc_cents ?? 0));
+        if (rfba === 0 && resc === 0) continue;
+        const key = d.employer ?? "(employer not stated)";
+        const cur = byEmployer.get(key) ?? { rfba: 0, resc: 0 };
+        byEmployer.set(key, { rfba: Math.max(cur.rfba, rfba), resc: Math.max(cur.resc, resc) });
       } catch {
         /* not JSON — not a payslip/income-statement detail blob */
       }
+    }
+    let rfba = 0;
+    let resc = 0;
+    for (const v of byEmployer.values()) {
+      rfba += v.rfba;
+      resc += v.resc;
     }
     if (rfba > 0 || resc > 0) reportable_amounts = { rfba_cents: rfba, resc_cents: resc };
   }

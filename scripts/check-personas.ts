@@ -1951,12 +1951,15 @@ async function main() {
   {
     seedTenant("pRA", "P-RA reportable amounts");
     inc("pRAInc", "pRA", "salary_payg", 9000000, { detail_json: JSON.stringify({ employer: "Acme Pty Ltd", rfba_cents: 850000, resc_cents: 120000 }) });
+    // A second per-period payslip from the SAME employer repeats the same ANNUAL RFBA figure — it must
+    // dedupe to the employer MAX, never sum (12 monthly payslips are not 12× the RFBA).
+    inc("pRAInc3", "pRA", "salary_payg", 800000, { detail_json: JSON.stringify({ employer: "Acme Pty Ltd", rfba_cents: 850000, resc_cents: 120000 }) });
     // A non-payslip detail blob (AMMA-style) must neither throw nor count toward the sums.
     inc("pRAInc2", "pRA", "dividend", 100000, { detail_json: JSON.stringify({ franked_cents: 100000 }) });
     const envRA = { ...env, FEATURES: `${(env as { FEATURES: string }).FEATURES},reportable_amounts` } as unknown as Env;
     const rRA = await buildReport(envRA, "pRA", 2025);
-    check("RA (flag ON): RFBA + RESC summed onto the report payload", rRA.reportable_amounts?.rfba_cents === 850000 && rRA.reportable_amounts?.resc_cents === 120000);
-    check("RA (flag ON): reportable amounts NEVER touch the position — income only", rRA.taxable_position_cents === 9100000);
+    check("RA (flag ON): RFBA + RESC on the payload at the per-employer MAX (annual figure, not summed across payslips)", rRA.reportable_amounts?.rfba_cents === 850000 && rRA.reportable_amounts?.resc_cents === 120000);
+    check("RA (flag ON): reportable amounts NEVER touch the position — income only", rRA.taxable_position_cents === 9900000);
     const schedRA = await buildAccountantSchedule(envRA, "pRA", 2025, { report: rRA });
     const raSection = schedRA.sections.find((s) => s.key === "reportable_amounts");
     check("RA (flag ON): accountant pack gains the informational section (one row, no tie_back)", !!raSection && raSection.tie_back === undefined && raSection.rows.length === 1);

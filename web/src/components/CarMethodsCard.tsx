@@ -52,7 +52,8 @@ export function CarMethodsCard({ fyNum }: { fyNum: number }) {
         <div className="text-xs text-muted">
           Two ATO methods — you can claim only <span className="font-medium">one</span>. <span className="font-medium">Cents-per-km</span> is
           simple (no receipts, capped at 5,000 work km); a <span className="font-medium">logbook</span> can claim more for heavy or
-          expensive-car use. Your report compares both and recommends the higher. General information only.
+          expensive-car use. Your position uses the <span className="font-medium">cents-per-km</span> figure; the logbook comparison
+          below is informational for your registered tax agent. General information only.
         </div>
       </div>
 
@@ -70,8 +71,11 @@ export function CarMethodsCard({ fyNum }: { fyNum: number }) {
       {cl && (
         <p className="rounded-lg border border-line bg-surface px-3 py-2 text-xs text-muted">
           Logbook ({Math.round(cl.business_use_pct)}% business) = <span className="font-medium text-ink">{money(cl.logbook_deduction_cents)}</span> vs
-          cents-per-km <span className="font-medium text-ink">{money(cl.cents_per_km_cents)}</span> — recommended:{" "}
-          <span className="font-medium text-ink">{cl.recommended_method === "logbook" ? "logbook" : "cents-per-km"}</span> ({money(cl.recommended_cents)}).
+          cents-per-km <span className="font-medium text-ink">{money(cl.cents_per_km_cents)}</span>.
+          {cl.recommended_method === "logbook" && (
+            <> The logbook figure is larger, but your position still uses cents-per-km — switching methods is a
+            decision for your registered tax agent (both figures are in your accountant pack).</>
+          )}
         </p>
       )}
 

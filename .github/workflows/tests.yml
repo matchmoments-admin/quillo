@@ -1,0 +1,39 @@
+name: Server typecheck & money-path tests
+
+# The money path had NO automated gate. `evals.yml` runs the categorisation eval (a signal, not a
+# gate, per CLAUDE.md) and `web-lint.yml` covers the SPA — but `npm test`, which carries the unit
+# goldens, all 10 persona goldens, the statement reconciliation, the AU-snapshot payload check and
+# the schema-drift check, only ever ran on a laptop. The repo is deploy-only (macOS can't run
+# workerd), so these scripts ARE the verification: if they don't run on a PR, nothing does.
+#
+# Not path-filtered. The persona goldens are sensitive to the rule pack, the schema, the report
+# pipeline and the migrations, so guessing which paths matter is exactly the mistake that lets a
+# regression through. `paths-ignore` only skips when EVERY changed file matches, so a docs-only PR
+# stays cheap while a mixed PR still runs the full suite.
+on:
+  pull_request:
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+
+jobs:
+  server:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Node 22, NOT 20: check-personas.ts, check-au-snapshot.ts and e2e-journey.ts import
+      # `node:sqlite`, which does not exist before 22.5. On 20 the whole suite dies at the first
+      # persona with ERR_UNKNOWN_BUILTIN_MODULE. Keep in step with `engines` in package.json.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+
+      - name: Typecheck (tsc)
+        run: npm run typecheck
+
+      # units + mobile shell + 10 personas + e2e journey + AU snapshot + statement
+      # reconciliation + schema drift. Run as one step so a failure names the script that broke.
+      - name: Money-path tests (npm test)
+        run: npm test

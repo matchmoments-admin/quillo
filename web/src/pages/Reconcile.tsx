@@ -2,15 +2,21 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import { Card, Spinner, money, BucketPill } from "../components/ui";
+import { useActiveFy, fyLabel } from "../lib/activeFy";
 import type { Txn } from "../types";
 
-// Manual receipt ↔ bank-line matching. Auto-matching runs server-side; this is the fallback
-// for the misses: pick a receipt on the left, then click "Link" on the matching bank line.
+// Manual receipt ↔ bank-line matching: pick a receipt on the left, then click "Link" on the matching
+// bank line. (There is NO auto-matcher yet — see docs/ux/reconcile-fold-findings.md.)
+// #490: the server now takes fy/limit and returns TRUE totals, with lines pre-ordered by best match
+// score — the limit lives in the query key so "Load more" fetches from the server, never a local slice
+// masquerading as the whole queue.
 export function Reconcile() {
   const qc = useQueryClient();
-  const { data, isLoading, error } = useQuery({ queryKey: ["reconcile"], queryFn: () => api.reconcilePairs() });
+  const { fy: activeFy } = useActiveFy();
+  const [fy, setFy] = useState<number | undefined>(undefined); // undefined = all years (no behaviour change beyond the caps)
+  const [limit, setLimit] = useState(200);
+  const { data, isLoading, error } = useQuery({ queryKey: ["reconcile", fy ?? "all", limit], queryFn: () => api.reconcilePairs({ fy, limit }) });
   const [picked, setPicked] = useState<Txn | null>(null);
-  const [limit, setLimit] = useState(60); // bank-line list is windowed; "show all" reveals the rest
 
   const link = useMutation({
     mutationFn: (line: Txn) => api.matchLink(picked!.id, line.id),
@@ -24,25 +30,40 @@ export function Reconcile() {
 
   if (isLoading) return <Spinner />;
   if (error) return <Card className="p-6 text-sm text-muted">Couldn't load: {(error as Error).message}</Card>;
-  const { receipts, lines } = data!;
+  const { receipts, lines, total_receipts, total_lines } = data!;
 
-  // Surface the likeliest lines first when a receipt is picked (amount within $1, date ±4d).
+  // The server pre-orders by best score across ALL receipts; picking a receipt re-sorts the loaded
+  // page for THAT receipt (same scorer, kept client-side deliberately until the shape-B proposer).
   const candidates = picked
     ? [...lines].sort((a, b) => score(picked, b) - score(picked, a))
     : lines;
+  const countOf = (shown: number, total: number) => (total > shown ? `${shown} of ${total}` : `${total}`);
 
   return (
     <div className="space-y-4">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Reconcile</h1>
-        <p className="mt-1 text-sm text-muted">
-          Attach a receipt to its bank line so it counts once (the line keeps the authoritative amount; the receipt adds GST + the “why”).
-        </p>
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">Reconcile</h1>
+          <p className="mt-1 text-sm text-muted">
+            Attach a receipt to its bank line so it counts once (the line keeps the authoritative amount; the receipt adds GST + the “why”).
+          </p>
+        </div>
+        <label className="text-sm text-muted">
+          Bank lines from{" "}
+          <select
+            className="ml-1 rounded-lg border border-line bg-card px-2 py-1.5 text-sm"
+            value={fy ?? ""}
+            onChange={(e) => { setFy(e.target.value ? Number(e.target.value) : undefined); setLimit(200); }}
+          >
+            <option value="">All years</option>
+            {[activeFy, activeFy - 1, activeFy - 2].map((y) => <option key={y} value={y}>FY {fyLabel(y)}</option>)}
+          </select>
+        </label>
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2">
         <Card className="overflow-hidden">
-          <Th>Unmatched receipts ({receipts.length})</Th>
+          <Th>Unmatched receipts ({countOf(receipts.length, total_receipts)})</Th>
           {receipts.length === 0 ? (
             <Empty>All receipts are matched or standalone.</Empty>
           ) : (
@@ -66,12 +87,12 @@ export function Reconcile() {
         </Card>
 
         <Card className="overflow-hidden">
-          <Th>{picked ? `Link “${picked.merchant ?? "receipt"}” to…` : `Unmatched bank lines (${lines.length})`}</Th>
+          <Th>{picked ? `Link “${picked.merchant ?? "receipt"}” to…` : `Unmatched bank lines (${countOf(lines.length, total_lines)})`}</Th>
           {candidates.length === 0 ? (
-            <Empty>No unmatched bank lines. Import a statement from Accounts.</Empty>
+            <Empty>No unmatched bank lines{fy ? " in this year — try All years" : ""}. Import a statement from Accounts.</Empty>
           ) : (
             <ul className="divide-y divide-line">
-              {candidates.slice(0, limit).map((l) => (
+              {candidates.map((l) => (
                 <li key={l.id} className="flex items-center justify-between px-4 py-2.5 text-sm">
                   <span className="min-w-0">
                     <span className="block truncate">{l.merchant ?? l.raw_description}</span>
@@ -93,12 +114,12 @@ export function Reconcile() {
               ))}
             </ul>
           )}
-          {candidates.length > limit && (
+          {total_lines > lines.length && (
             <button
-              onClick={() => setLimit((n) => n + 100)}
+              onClick={() => setLimit((n) => n + 200)}
               className="w-full border-t border-line px-4 py-2.5 text-center text-sm font-medium text-muted hover:text-ink"
             >
-              Show more ({candidates.length - limit} hidden)
+              Load more ({total_lines - lines.length} more on the server)
             </button>
           )}
         </Card>
@@ -108,6 +129,8 @@ export function Reconcile() {
   );
 }
 
+// Kept in sync with reconcileScore() in src/lib/queries.ts (deliberate duplication until the shape-B
+// proposer owns matching server-side for both orderings).
 function score(receipt: Txn, line: Txn): number {
   const ra = receipt.amount_aud_cents ?? receipt.amount_cents ?? 0;
   const la = line.amount_aud_cents ?? line.amount_cents ?? 0;

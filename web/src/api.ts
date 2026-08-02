@@ -102,7 +102,13 @@ export const api = {
     const qs = q.toString();
     return get<{ transactions: Txn[] }>(`/api/transactions${qs ? `?${qs}` : ""}`).then((r) => r.transactions);
   },
-  reconcilePairs: () => get<{ receipts: Txn[]; lines: Txn[] }>("/api/reconcile"),
+  reconcilePairs: (opts: { fy?: number; limit?: number } = {}) => {
+    const q = new URLSearchParams();
+    if (opts.fy) q.set("fy", String(opts.fy));
+    if (opts.limit) q.set("limit", String(opts.limit));
+    const qs = q.toString();
+    return get<{ receipts: Txn[]; lines: Txn[]; total_receipts: number; total_lines: number }>(`/api/reconcile${qs ? `?${qs}` : ""}`);
+  },
   statements: (accountId?: string) =>
     get<{ statements: StatementInfo[] }>(`/api/statements${accountId ? `?account_id=${accountId}` : ""}`).then((r) => r.statements),
   matchLink: (receiptId: string, lineId: string) => post<{ ok: boolean }>("/api/match/link", { receiptId, lineId }),

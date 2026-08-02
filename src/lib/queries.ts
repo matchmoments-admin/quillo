@@ -262,25 +262,74 @@ export async function listStatements(env: Env, userId: string, accountId?: strin
   return res.results ?? [];
 }
 
-/** Unmatched receipts + unmatched bank lines, for the manual Reconcile page. */
-export async function reconcilePairs(env: Env, userId: string) {
-  const receipts = await env.DB.prepare(
-    `SELECT ${TXN_COLS} FROM transactions
-      WHERE user_id = ? AND kind = 'receipt' AND status NOT IN ('duplicate') AND matched_txn_id IS NULL
-        AND amount_cents IS NOT NULL
-      ORDER BY created_at DESC LIMIT 100`,
-  )
-    .bind(userId)
-    .all<TxnRow>();
-  const lines = await env.DB.prepare(
-    `SELECT ${TXN_COLS} FROM transactions t
-      WHERE user_id = ? AND kind = 'bank_line' AND status NOT IN ('duplicate','ignored') AND direction = 'debit'
-        AND id NOT IN (SELECT matched_txn_id FROM transactions WHERE user_id = ? AND matched_txn_id IS NOT NULL)
-      ORDER BY txn_date DESC LIMIT 200`,
-  )
-    .bind(userId, userId)
-    .all<TxnRow>();
-  return { receipts: receipts.results ?? [], lines: lines.results ?? [] };
+// #490: the old shape was two bare LIMITs (100 receipts / 200 lines) with no params and no counts —
+// the page rendered the caps as if they were the whole queue. Bound the scoring scan like the review
+// queue does (REVIEW_GROUP_SCAN idiom): totals stay TRUE via COUNT even when the scan truncates, and
+// the FY filter is the way into a queue bigger than the scan.
+export const RECONCILE_SCAN = 2000;
+export interface ReconcilePairsResult {
+  receipts: TxnRow[];
+  lines: (TxnRow & { best_score: number; best_receipt_id: string | null })[];
+  total_receipts: number;
+  total_lines: number;
+}
+
+// Mirror of the SPA's score() in Reconcile.tsx — duplicated DELIBERATELY until the shape-B proposer
+// owns matching outright (docs/ux/reconcile-fold-findings.md): amount tolerance max(50¢, 1%) at 0.7,
+// 7-day date window at 0.3. Keep the two copies in sync.
+function reconcileScore(rCents: number, rTime: number | null, lCents: number, lTime: number | null): number {
+  const amt = 1 - Math.min(Math.abs(rCents - lCents) / Math.max(50, rCents * 0.01), 1);
+  let date = 0;
+  if (rTime != null && lTime != null) {
+    const d = Math.abs(rTime - lTime) / 86_400_000;
+    date = 1 - Math.min(d, 7) / 7;
+  }
+  return amt * 0.7 + date * 0.3;
+}
+
+/** Unmatched receipts + unmatched bank lines, for the manual Reconcile page.
+ * `fy` scopes the BANK LINES only (money decides the year — a receipt near the boundary must still be
+ * able to match, so receipts stay unscoped). Lines are ordered by best match score against the
+ * unmatched receipts (recency tiebreak), so the first screen carries the likeliest matches; each
+ * line's `best_receipt_id` is the seed of the future server-side proposer. */
+export async function reconcilePairs(env: Env, userId: string, opts: { fy?: number; limit?: number; offset?: number } = {}): Promise<ReconcilePairsResult> {
+  const receiptWhere = `user_id = ? AND kind = 'receipt' AND status NOT IN ('duplicate') AND matched_txn_id IS NULL AND amount_cents IS NOT NULL`;
+  let lineWhere = `user_id = ? AND kind = 'bank_line' AND status NOT IN ('duplicate','ignored') AND direction = 'debit'
+        AND id NOT IN (SELECT matched_txn_id FROM transactions WHERE user_id = ? AND matched_txn_id IS NOT NULL)`;
+  const lineBinds: unknown[] = [userId, userId];
+  if (opts.fy != null) {
+    const { start, end } = fyBounds(opts.fy, await resolveJurisdictionForUser(env, userId));
+    lineWhere += ` AND txn_date >= ? AND txn_date <= ?`;
+    lineBinds.push(start, end);
+  }
+  const receipts = (await env.DB.prepare(
+    `SELECT ${TXN_COLS} FROM transactions WHERE ${receiptWhere} ORDER BY created_at DESC LIMIT 500`,
+  ).bind(userId).all<TxnRow>()).results ?? [];
+  const scanned = (await env.DB.prepare(
+    `SELECT ${TXN_COLS} FROM transactions WHERE ${lineWhere} ORDER BY txn_date DESC LIMIT ${RECONCILE_SCAN}`,
+  ).bind(...lineBinds).all<TxnRow>()).results ?? [];
+  const totalReceipts = (await env.DB.prepare(`SELECT COUNT(*) AS n FROM transactions WHERE ${receiptWhere}`).bind(userId).first<{ n: number }>())?.n ?? 0;
+  const totalLines = (await env.DB.prepare(`SELECT COUNT(*) AS n FROM transactions WHERE ${lineWhere}`).bind(...lineBinds).first<{ n: number }>())?.n ?? 0;
+  // Score every scanned line against every loaded receipt (bounded ≤ 500 × RECONCILE_SCAN).
+  const rs = receipts.map((r) => ({ id: r.id, cents: r.amount_aud_cents ?? r.amount_cents ?? 0, time: r.txn_date ? Date.parse(r.txn_date) : null }));
+  const scored = scanned.map((l) => {
+    const lCents = l.amount_aud_cents ?? l.amount_cents ?? 0;
+    const lTime = l.txn_date ? Date.parse(l.txn_date) : null;
+    let best_score = 0;
+    let best_receipt_id: string | null = null;
+    for (const r of rs) {
+      const s = reconcileScore(r.cents, r.time, lCents, lTime);
+      if (s > best_score) {
+        best_score = s;
+        best_receipt_id = r.id;
+      }
+    }
+    return { ...l, best_score, best_receipt_id };
+  });
+  scored.sort((a, b) => b.best_score - a.best_score || (b.txn_date ?? "").localeCompare(a.txn_date ?? ""));
+  const limit = Math.min(Math.max(opts.limit ?? 200, 1), RECONCILE_SCAN);
+  const offset = Math.max(opts.offset ?? 0, 0);
+  return { receipts, lines: scored.slice(offset, offset + limit), total_receipts: totalReceipts, total_lines: totalLines };
 }
 
 export async function getTransaction(env: Env, userId: string, id: string) {

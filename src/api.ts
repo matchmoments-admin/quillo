@@ -1342,8 +1342,13 @@ export async function handleApi(
   }
 
   // GET /api/reconcile — unmatched receipts vs unmatched bank lines (for the Reconcile page).
+  // #490: fy/limit/offset + true totals; lines come back ordered by best match score.
   if (resource === "reconcile" && m === "GET") {
-    return json(await reconcilePairs(env, uid));
+    return json(await reconcilePairs(env, uid, {
+      fy: Number(url.searchParams.get("fy")) || undefined,
+      limit: Number(url.searchParams.get("limit")) || undefined,
+      offset: Number(url.searchParams.get("offset")) || undefined,
+    }));
   }
 
   // GET /api/statements?account_id= — statement import status per account.

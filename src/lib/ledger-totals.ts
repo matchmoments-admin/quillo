@@ -8,7 +8,7 @@ import { businessUsePct, logbookDeductionCents, chooseCarMethod } from "./car-lo
 import { summariseTrustDistributions, type TrustTotals } from "./trust";
 import { featureOn } from "./features";
 import { ecpiExemptFraction, computeSmsfPosition, type SmsfPosition } from "./smsf";
-import { fyBoundsFor, AU_DESCRIPTOR, type JurisdictionDescriptor } from "./jurisdiction";
+import { fyBoundsFor, fyStartYearSqlExpr, AU_DESCRIPTOR, type JurisdictionDescriptor } from "./jurisdiction";
 // Rule-pack thresholds are RESOLVED by the caller (buildReport → resolveRulePack, keyed by
 // profiles.rule_pack_ver with a KV override) and threaded in — never statically imported here, so a
 // per-tenant / per-jurisdiction pack is actually honoured by the report engines.
@@ -397,19 +397,16 @@ export async function companyPositions(env: Env, userId: string, startYear: numb
     // on a pre-0035 DB, so OFF stays byte-identical.
     let priorBy: Map<string, number>;
     if (featureOn(env, "company_carryforward")) {
-      // Jurisdiction-neutral FY bucketing: ISO dates make 'MM-DD' >= boundary a correct lexicographic
-      // straddle test for any taxPeriod (a calendar-year period is boundary '01-01' ⇒ always true ⇒
-      // fy_start === calendar year).
-      const tp = descriptor.taxPeriod;
-      const boundary = tp.kind === "straddle" ? `${String(tp.startMonth).padStart(2, "0")}-${String(tp.startDay).padStart(2, "0")}` : "01-01";
-      const fyStartExpr = `CASE WHEN substr(t.txn_date,6,5) >= ? THEN CAST(substr(t.txn_date,1,4) AS INTEGER) ELSE CAST(substr(t.txn_date,1,4) AS INTEGER) - 1 END`;
+      // Jurisdiction-neutral FY bucketing via the sanctioned helper (parameter-free SQL expression —
+      // no boundary string, no bind-order trap; correct for straddle AND calendar periods).
+      const fyStartExpr = fyStartYearSqlExpr(descriptor, "t.txn_date");
       const priorAttr = (await env.DB.prepare(
         `SELECT ta.entity_id AS entity_id, ${fyStartExpr} AS fy_start, COALESCE(SUM(ta.attributed_amount_cents),0) AS ded
            FROM transaction_attributions ta
            JOIN transactions t ON t.id = ta.transaction_id AND t.user_id = ta.user_id
           WHERE ta.user_id = ? AND t.txn_date < ? AND COALESCE(t.reimbursed,0) = 0 AND ${tFilter}
           GROUP BY ta.entity_id, fy_start`,
-      ).bind(boundary, userId, start).all<{ entity_id: string; fy_start: number; ded: number }>()).results ?? [];
+      ).bind(userId, start).all<{ entity_id: string; fy_start: number; ded: number }>()).results ?? [];
       // Raw company-bucket spend in prior FYs — same single-company rule as the current FY (with 2+
       // companies it can't be pinned, so it never enters any company's history either).
       const priorRaw = single
@@ -419,7 +416,7 @@ export async function companyPositions(env: Env, userId: string, startYear: numb
               WHERE t.user_id = ? AND t.bucket = 'company' AND t.txn_date < ? AND COALESCE(t.reimbursed,0) = 0 AND ${tFilter}
                 AND NOT EXISTS (SELECT 1 FROM transaction_attributions ta WHERE ta.transaction_id = t.id)
               GROUP BY fy_start`,
-          ).bind(boundary, userId, start).all<{ fy_start: number; ded: number }>()).results ?? []
+          ).bind(userId, start).all<{ fy_start: number; ded: number }>()).results ?? []
         : [];
       // Income is keyed by fy LABEL — parse to a start year in JS (parseFyStartYear handles every stored
       // form; NaN rows are skipped) rather than lexicographic-comparing labels in SQL.

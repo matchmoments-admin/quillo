@@ -385,8 +385,13 @@ export function assessReadiness(input: {
     // The company group is NOT in the lines-sum == headline invariant (separate taxpayer), so an extra
     // informational line here is safe. COT/SBT are the tests we can't verify — defer them every time.
     if (cp.carried_forward_losses_cents > 0) {
+      // Bridge to the accountant pack's post-utilisation figure: when this year's profit consumes part
+      // of the opening balance, say so here, or the two surfaces appear to disagree.
+      const cpUtilised = Math.min(cp.carried_forward_losses_cents, Math.max(0, cp.assessable_income_cents - cp.deductions_cents));
       lines.push({ group: "company", label: `${cp.name ?? "Company"} — prior-year losses carried forward`, amount_cents: -cp.carried_forward_losses_cents,
-        basis: "derived from the company's earlier years in this ledger (profit years already netted off)",
+        basis: cpUtilised > 0
+          ? `derived from the company's earlier years in this ledger; ${money(cpUtilised)} consumed by this year's profit, ${money(cp.total_carry_forward_cents)} remains`
+          : "derived from the company's earlier years in this ledger (profit years already netted off)",
         why: "Tax losses from earlier years the company may be able to use against its future income. Whether they remain available depends on the continuity-of-ownership test (or the same/similar-business test) — facts this app cannot verify. Confirm with a registered tax agent before relying on them." });
     }
     if (cp.shareholder_loan_balance_cents > 0) {

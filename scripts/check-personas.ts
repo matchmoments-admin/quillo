@@ -1973,8 +1973,12 @@ async function main() {
   {
     seedTenant("pCC", "P-CC company carry-forward");
     run(`INSERT INTO entities (id, user_id, kind, name, person_id, entity_type, base_rate_entity) VALUES ('pCCeCo', ?, 'company', 'Carry Pty Ltd', ?, 'company', 1)`, "pCC", "person_self_pCC");
-    // FY 2023-24: $4,000 raw company spend (single company ⇒ pinned) ⇒ loss $4,000.
+    // FY 2023-24: $4,000 raw company spend (single company ⇒ pinned) + $500 ATTRIBUTED spend (the
+    // founder paid personally; covers the priorAttr SQL path) ⇒ loss $4,500.
     run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, direction, deductibility) VALUES ('pCCt1', ?, 'upload', 'categorised', 'bank_line', 400000, 400000, '2023-09-15', 'company', 'debit', 'undetermined')`, "pCC");
+    run(`INSERT INTO income_activities (id, user_id, entity_id, activity_type, label) VALUES ('pCCia', ?, 'pCCeCo', 'business', 'Carry')`, "pCC");
+    run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, direction, deductibility) VALUES ('pCCt1a', ?, 'upload', 'categorised', 'bank_line', 50000, 50000, '2024-02-10', 'personal', 'debit', 'undetermined')`, "pCC");
+    run(`INSERT INTO transaction_attributions (id, user_id, transaction_id, entity_id, income_activity_id, attributed_amount_cents, deduction_provision, creates_shareholder_loan) VALUES ('pCCa1', ?, 'pCCt1a', 'pCCeCo', 'pCCia', 50000, 's8-1_general', 1)`, "pCC");
     // FY 2024-25: $1,000 spend, $2,500 company income ⇒ profit $1,500 consumes the balance → $2,500 carried.
     run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, direction, deductibility) VALUES ('pCCt2', ?, 'upload', 'categorised', 'bank_line', 100000, 100000, '2024-10-01', 'company', 'debit', 'undetermined')`, "pCC");
     run(`INSERT INTO income (id, user_id, income_type, fy, gross_cents, amount_aud_cents, entity_id) VALUES ('pCCi1', ?, 'business_income', '2024-25', 250000, 250000, 'pCCeCo')`, "pCC");
@@ -1982,7 +1986,7 @@ async function main() {
     run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, direction, deductibility) VALUES ('pCCt3', ?, 'upload', 'categorised', 'bank_line', 50000, 50000, ?, 'company', 'debit', 'undetermined')`, "pCC", FY_DATE);
     const envCC = { ...env, FEATURES: `${(env as { FEATURES: string }).FEATURES},company_carryforward` } as unknown as Env;
     const ccOn = (await buildReport(envCC, "pCC", 2025)).company_positions?.[0];
-    check("CC (flag ON): prior-FY losses derived with profit-year utilisation ($4,000 − $1,500 = $2,500 carried)", ccOn?.carried_forward_losses_cents === 250000 && ccOn?.current_year_loss_cents === 50000 && ccOn?.total_carry_forward_cents === 300000);
+    check("CC (flag ON): prior-FY losses derived with profit-year utilisation ($4,500 − $1,500 = $3,000 carried)", ccOn?.carried_forward_losses_cents === 300000 && ccOn?.current_year_loss_cents === 50000 && ccOn?.total_carry_forward_cents === 350000);
     const ccOff = (await buildReport(env, "pCC", 2025)).company_positions?.[0];
     check("CC (flag OFF): dead-table read ⇒ carried 0, total == current loss (byte-identical legacy shape)", ccOff?.carried_forward_losses_cents === 0 && ccOff?.total_carry_forward_cents === 50000);
     check("CC: the company is a separate taxpayer — the flag never moves the individual position", (await buildReport(envCC, "pCC", 2025)).taxable_position_cents === (await buildReport(env, "pCC", 2025)).taxable_position_cents);

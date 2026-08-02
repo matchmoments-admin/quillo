@@ -2,6 +2,9 @@
   "name": "tax-agent",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=22.5"
+  },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "dev": "wrangler dev",

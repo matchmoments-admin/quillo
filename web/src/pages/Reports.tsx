@@ -248,9 +248,13 @@ export function Reports() {
               <div className="grid grid-cols-2 gap-4 p-4 sm:grid-cols-4">
                 <Stat label="Business use" value={`${Math.round(data!.car_logbook.business_use_pct)}%`} />
                 <Stat label="Logbook method" value={money(data!.car_logbook.logbook_deduction_cents)} />
-                <Stat label="Cents per km" value={money(data!.car_logbook.cents_per_km_cents)} />
-                <Stat label="Recommended" value={`${data!.car_logbook.recommended_method === "logbook" ? "Logbook" : "Cents/km"} · ${money(data!.car_logbook.recommended_cents)}`} />
+                <Stat label="Cents per km — used above" value={money(data!.car_logbook.cents_per_km_cents)} />
+                <Stat label="Larger method" value={`${data!.car_logbook.recommended_method === "logbook" ? "Logbook" : "Cents/km"} · ${money(data!.car_logbook.recommended_cents)}`} />
               </div>
+              <p className="border-t border-line px-4 py-2.5 text-xs text-muted">
+                Your position uses the cents-per-km figure. The logbook comparison is informational — switching
+                methods is a decision for your registered tax agent (both figures appear in your accountant pack).
+              </p>
             </Card>
           )}
 

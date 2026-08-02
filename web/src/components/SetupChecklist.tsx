@@ -62,7 +62,10 @@ export function SetupChecklist({ embedded = false }: { embedded?: boolean } = {}
   const self = (sit?.persons ?? []).find((p) => p.role === "self");
   const entities = sit?.entities ?? [];
   const properties = sit?.properties ?? [];
-  const employed = !!(self?.occupation?.trim()) || entities.some((e) => e.kind === "payg");
+  // "payg" is a transaction BUCKET, not an entity kind — the employment entity kind is "employment"
+  // (mirrors the server predicate at agent.ts hasEmployment; the SPA has no bucket signal, so income
+  // rows stand in for it).
+  const employed = !!(self?.occupation?.trim()) || entities.some((e) => e.kind === "employment") || income.some((i) => i.income_type === "salary_payg");
 
   const mark = (kind: "done" | "skip", id: string) => {
     setMarks((prev) => {
@@ -97,7 +100,9 @@ export function SetupChecklist({ embedded = false }: { embedded?: boolean } = {}
           id: "wfh",
           title: "Add your work-from-home hours",
           why: "Home-office running costs are the most-claimed PAYG deduction — capture the hours so they count.",
-          href: "/",
+          // The WFH hours editor (WorkMethodsCard) lives on / and /reports; the checklist itself mounts
+          // on /, so linking there was a no-op — send the user to the copy they can actually reach.
+          href: "/reports",
           done: (wu?.wfh_hours ?? 0) > 0 || (wu?.wfh_days_per_week ?? 0) > 0,
           manual: false,
         } as Item]

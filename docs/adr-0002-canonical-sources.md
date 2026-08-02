@@ -30,6 +30,11 @@ recomputed inline from `transaction_attributions` in `companyPositions`) were **
 figure is unchanged. `transaction_attributions.shareholder_loan_id` (always-NULL) is kept to avoid a
 table rebuild. `company_tax_positions` / `rd_claims` are **retained** — read-only inputs with no in-app
 writer yet (defer-to-agent / future-UI, issue #126); engines treat empty inputs as zero.
+**Update (company_carryforward, 2026-08):** the `company_tax_positions` prior-FY read is superseded —
+with the flag ON, `companyPositions` DERIVES the carried-forward balance per FY from the ledger itself
+(the C3 derived-not-stored pattern, with profit-year utilisation netted). The table stays in place
+(retention/RESTRICT lists unchanged) but is now dead in both flag states; dropping it would be a
+destructive migration needing its own sign-off.
 
 ## Money + fy representation (deferred backlog, shipped)
 

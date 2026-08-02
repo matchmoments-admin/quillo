@@ -8,7 +8,7 @@ import { businessUsePct, logbookDeductionCents, chooseCarMethod } from "./car-lo
 import { summariseTrustDistributions, type TrustTotals } from "./trust";
 import { featureOn } from "./features";
 import { ecpiExemptFraction, computeSmsfPosition, type SmsfPosition } from "./smsf";
-import { fyBoundsFor, AU_DESCRIPTOR, type JurisdictionDescriptor } from "./jurisdiction";
+import { fyBoundsFor, fyStartYearSqlExpr, AU_DESCRIPTOR, type JurisdictionDescriptor } from "./jurisdiction";
 // Rule-pack thresholds are RESOLVED by the caller (buildReport → resolveRulePack, keyed by
 // profiles.rule_pack_ver with a KV override) and threaded in — never statically imported here, so a
 // per-tenant / per-jurisdiction pack is actually honoured by the report engines.
@@ -337,7 +337,9 @@ export interface CompanyPositionsResult {
  * (the founder's personally-paid costs reach the company via an attribution + shareholder loan). This
  * computes from source: company deductions = attributions routed to the company (+ raw company-bucket
  * spend when there is exactly one company) ; income = the income table scoped to the company; the
- * shareholder-loan balance = the person→company funding amount. R&D eligibility is a defer-to-agent
+ * shareholder-loan balance = the person→company funding amount; prior-year carried-forward losses =
+ * DERIVED per-FY from the same ledger with profit-year utilisation netted (company_carryforward flag;
+ * OFF ⇒ the dead company_tax_positions read ⇒ always 0). R&D eligibility is a defer-to-agent
  * flag (never an auto-claim). Empty (no company / pre-0035) → []. Flag-gated by the caller.
  */
 export async function companyPositions(env: Env, userId: string, startYear: number, rulePack: RulePackThresholds, descriptor: JurisdictionDescriptor = AU_DESCRIPTOR): Promise<CompanyPositionsResult> {
@@ -383,9 +385,76 @@ export async function companyPositions(env: Env, userId: string, startYear: numb
     const rdRows = (await env.DB.prepare(`SELECT entity_id, eligible_expenditure_cents, aggregated_turnover_cents, registered_with_ausindustry FROM rd_claims WHERE user_id = ? AND fy = ?`).bind(userId, fy).all<{ entity_id: string; eligible_expenditure_cents: number; aggregated_turnover_cents: number; registered_with_ausindustry: number }>()).results ?? [];
     const rdBy = new Map(rdRows.map((r) => [r.entity_id, r]));
     const rdCap = (thresholdsForFy(rulePack, fy)?.rd_refundable_turnover_cap_cents) ?? Number.MAX_SAFE_INTEGER;
-    // Prior-year carried-forward losses already persisted (sum, gated by COT). 0 until a sign-off snapshots them.
-    const priorRows = (await env.DB.prepare(`SELECT entity_id, COALESCE(SUM(current_year_loss_cents),0) AS prior FROM company_tax_positions WHERE user_id = ? AND fy < ? AND cot_satisfied = 1 GROUP BY entity_id`).bind(userId, fy).all<{ entity_id: string; prior: number }>()).results ?? [];
-    const priorBy = new Map(priorRows.map((r) => [r.entity_id, r.prior]));
+    // Prior-year carried-forward losses.
+    // company_carryforward ON ⇒ DERIVED from the ledger (the C3 derived-not-stored pattern): the same
+    // three sources with the date predicate widened to before this FY, grouped per FY, then a per-FY
+    // recurrence that also nets profit-year utilisation — unlike the personal B2 path (which must never
+    // sum because the NOA is the authority on the residual), the company's ENTIRE books live in this
+    // ledger, so the running balance is deterministic. COT/SBT are user-asserted facts we don't hold:
+    // the derived balance assumes the losses carry, and readiness defers the tests to the agent.
+    // OFF ⇒ the legacy read of company_tax_positions, kept verbatim: the table has NO writer anywhere
+    // (ADR-0002), so it always yields 0 — but the read also preserves the no-such-table catch semantics
+    // on a pre-0035 DB, so OFF stays byte-identical.
+    let priorBy: Map<string, number>;
+    if (featureOn(env, "company_carryforward")) {
+      // Jurisdiction-neutral FY bucketing via the sanctioned helper (parameter-free SQL expression —
+      // no boundary string, no bind-order trap; correct for straddle AND calendar periods).
+      const fyStartExpr = fyStartYearSqlExpr(descriptor, "t.txn_date");
+      const priorAttr = (await env.DB.prepare(
+        `SELECT ta.entity_id AS entity_id, ${fyStartExpr} AS fy_start, COALESCE(SUM(ta.attributed_amount_cents),0) AS ded
+           FROM transaction_attributions ta
+           JOIN transactions t ON t.id = ta.transaction_id AND t.user_id = ta.user_id
+          WHERE ta.user_id = ? AND t.txn_date < ? AND COALESCE(t.reimbursed,0) = 0 AND ${tFilter}
+          GROUP BY ta.entity_id, fy_start`,
+      ).bind(userId, start).all<{ entity_id: string; fy_start: number; ded: number }>()).results ?? [];
+      // Raw company-bucket spend in prior FYs — same single-company rule as the current FY (with 2+
+      // companies it can't be pinned, so it never enters any company's history either).
+      const priorRaw = single
+        ? (await env.DB.prepare(
+            `SELECT ${fyStartExpr} AS fy_start, COALESCE(SUM(COALESCE(t.amount_aud_cents, t.amount_cents)),0) AS ded
+               FROM transactions t
+              WHERE t.user_id = ? AND t.bucket = 'company' AND t.txn_date < ? AND COALESCE(t.reimbursed,0) = 0 AND ${tFilter}
+                AND NOT EXISTS (SELECT 1 FROM transaction_attributions ta WHERE ta.transaction_id = t.id)
+              GROUP BY fy_start`,
+          ).bind(userId, start).all<{ fy_start: number; ded: number }>()).results ?? []
+        : [];
+      // Income is keyed by fy LABEL — parse to a start year in JS (parseFyStartYear handles every stored
+      // form; NaN rows are skipped) rather than lexicographic-comparing labels in SQL.
+      const priorInc = (await env.DB.prepare(
+        `SELECT entity_id, fy, COALESCE(SUM(COALESCE(amount_aud_cents, gross_cents)),0) AS inc
+           FROM income WHERE user_id = ? AND entity_id IS NOT NULL AND ${FX_CONVERTED}
+          GROUP BY entity_id, fy`,
+      ).bind(userId).all<{ entity_id: string; fy: string; inc: number }>()).results ?? [];
+      const flows = new Map<string, Map<number, { ded: number; inc: number }>>();
+      const flowFor = (entityId: string, year: number) => {
+        const byYear = flows.get(entityId) ?? new Map<number, { ded: number; inc: number }>();
+        flows.set(entityId, byYear);
+        const f = byYear.get(year) ?? { ded: 0, inc: 0 };
+        byYear.set(year, f);
+        return f;
+      };
+      for (const r of priorAttr) flowFor(r.entity_id, r.fy_start).ded += r.ded;
+      const singleCompanyId = single ? companies[0]?.id : undefined; // priorRaw is only fetched when single
+      for (const r of priorRaw) { if (singleCompanyId) flowFor(singleCompanyId, r.fy_start).ded += r.ded; }
+      for (const r of priorInc) {
+        const y = parseFyStartYear(r.fy);
+        if (!Number.isNaN(y) && y < startYear) flowFor(r.entity_id, y).inc += r.inc;
+      }
+      priorBy = new Map(companies.map((c) => {
+        const byYear = flows.get(c.id);
+        if (!byYear) return [c.id, 0] as const;
+        let balance = 0;
+        for (const y of [...byYear.keys()].sort((a, b) => a - b)) {
+          const f = byYear.get(y)!;
+          balance += Math.max(0, f.ded - f.inc);
+          balance -= Math.min(balance, Math.max(0, f.inc - f.ded));
+        }
+        return [c.id, balance] as const;
+      }));
+    } else {
+      const priorRows = (await env.DB.prepare(`SELECT entity_id, COALESCE(SUM(current_year_loss_cents),0) AS prior FROM company_tax_positions WHERE user_id = ? AND fy < ? AND cot_satisfied = 1 GROUP BY entity_id`).bind(userId, fy).all<{ entity_id: string; prior: number }>()).results ?? [];
+      priorBy = new Map(priorRows.map((r) => [r.entity_id, r.prior]));
+    }
 
     const positions = companies.map((c, i) => {
       const a = attrBy.get(c.id);
@@ -393,6 +462,9 @@ export async function companyPositions(env: Env, userId: string, startYear: numb
       const income = incomeBy.get(c.id) ?? 0;
       const loss = Math.max(0, deductions - income);
       const carried = priorBy.get(c.id) ?? 0;
+      // A profit year consumes the carried balance first; only the remainder carries on. With the flag
+      // OFF carried is 0, so utilised is 0 and total === loss — byte-identical to the legacy shape.
+      const utilised = Math.min(carried, Math.max(0, income - deductions));
       const rd = rdBy.get(c.id);
       return {
         entity_id: c.id,
@@ -402,7 +474,7 @@ export async function companyPositions(env: Env, userId: string, startYear: numb
         deductions_cents: deductions,
         current_year_loss_cents: loss,
         carried_forward_losses_cents: carried,
-        total_carry_forward_cents: carried + loss,
+        total_carry_forward_cents: carried - utilised + loss,
         shareholder_loan_balance_cents: loanBy.get(c.id) ?? 0,
         rd_eligible: !!rd && rd.registered_with_ausindustry === 1 && rd.aggregated_turnover_cents < rdCap,
       };

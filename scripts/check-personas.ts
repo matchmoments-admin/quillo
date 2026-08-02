@@ -1967,6 +1967,38 @@ async function main() {
     check("RA (flag OFF): no payload field and no pack section — byte-identical", rRAOff.reportable_amounts === undefined && !(await buildAccountantSchedule(env, "pRA", 2025, { report: rRAOff })).sections.some((s) => s.key === "reportable_amounts"));
   }
 
+  // ── company_carryforward: prior-FY company losses DERIVED from the ledger (the dead
+  //    company_tax_positions read yielded 0 forever). OFF ⇒ carried 0 (byte-identical);
+  //    ON ⇒ multi-FY accrual with profit-year utilisation netted. ──
+  {
+    seedTenant("pCC", "P-CC company carry-forward");
+    run(`INSERT INTO entities (id, user_id, kind, name, person_id, entity_type, base_rate_entity) VALUES ('pCCeCo', ?, 'company', 'Carry Pty Ltd', ?, 'company', 1)`, "pCC", "person_self_pCC");
+    // FY 2023-24: $4,000 raw company spend (single company ⇒ pinned) + $500 ATTRIBUTED spend (the
+    // founder paid personally; covers the priorAttr SQL path) ⇒ loss $4,500.
+    run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, direction, deductibility) VALUES ('pCCt1', ?, 'upload', 'categorised', 'bank_line', 400000, 400000, '2023-09-15', 'company', 'debit', 'undetermined')`, "pCC");
+    run(`INSERT INTO income_activities (id, user_id, entity_id, activity_type, label) VALUES ('pCCia', ?, 'pCCeCo', 'business', 'Carry')`, "pCC");
+    run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, direction, deductibility) VALUES ('pCCt1a', ?, 'upload', 'categorised', 'bank_line', 50000, 50000, '2024-02-10', 'personal', 'debit', 'undetermined')`, "pCC");
+    run(`INSERT INTO transaction_attributions (id, user_id, transaction_id, entity_id, income_activity_id, attributed_amount_cents, deduction_provision, creates_shareholder_loan) VALUES ('pCCa1', ?, 'pCCt1a', 'pCCeCo', 'pCCia', 50000, 's8-1_general', 1)`, "pCC");
+    // FY 2024-25: $1,000 spend, $2,500 company income ⇒ profit $1,500 consumes the balance → $2,500 carried.
+    run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, direction, deductibility) VALUES ('pCCt2', ?, 'upload', 'categorised', 'bank_line', 100000, 100000, '2024-10-01', 'company', 'debit', 'undetermined')`, "pCC");
+    run(`INSERT INTO income (id, user_id, income_type, fy, gross_cents, amount_aud_cents, entity_id) VALUES ('pCCi1', ?, 'business_income', '2024-25', 250000, 250000, 'pCCeCo')`, "pCC");
+    // FY 2025-26 (current): $500 spend, no income ⇒ current loss $500 on top of the carried $2,500.
+    run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, direction, deductibility) VALUES ('pCCt3', ?, 'upload', 'categorised', 'bank_line', 50000, 50000, ?, 'company', 'debit', 'undetermined')`, "pCC", FY_DATE);
+    const envCC = { ...env, FEATURES: `${(env as { FEATURES: string }).FEATURES},company_carryforward` } as unknown as Env;
+    const ccOn = (await buildReport(envCC, "pCC", 2025)).company_positions?.[0];
+    check("CC (flag ON): prior-FY losses derived with profit-year utilisation ($4,500 − $1,500 = $3,000 carried)", ccOn?.carried_forward_losses_cents === 300000 && ccOn?.current_year_loss_cents === 50000 && ccOn?.total_carry_forward_cents === 350000);
+    const ccOff = (await buildReport(env, "pCC", 2025)).company_positions?.[0];
+    check("CC (flag OFF): dead-table read ⇒ carried 0, total == current loss (byte-identical legacy shape)", ccOff?.carried_forward_losses_cents === 0 && ccOff?.total_carry_forward_cents === 50000);
+    check("CC: the company is a separate taxpayer — the flag never moves the individual position", (await buildReport(envCC, "pCC", 2025)).taxable_position_cents === (await buildReport(env, "pCC", 2025)).taxable_position_cents);
+    // Current-year profit consumes the carried balance: carried $3,000, income $2,000 ⇒ total $1,000.
+    seedTenant("pCCu", "P-CC current-year utilisation");
+    run(`INSERT INTO entities (id, user_id, kind, name, person_id, entity_type, base_rate_entity) VALUES ('pCCueCo', ?, 'company', 'Util Pty Ltd', ?, 'company', 1)`, "pCCu", "person_self_pCCu");
+    run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, direction, deductibility) VALUES ('pCCut1', ?, 'upload', 'categorised', 'bank_line', 300000, 300000, '2024-08-20', 'company', 'debit', 'undetermined')`, "pCCu");
+    inc("pCCui1", "pCCu", "business_income", 200000, { entity_id: "pCCueCo" });
+    const ccu = (await buildReport(envCC, "pCCu", 2025)).company_positions?.[0];
+    check("CC (flag ON): a current-year profit consumes the carried balance first ($3,000 − $2,000 = $1,000 remains)", ccu?.carried_forward_losses_cents === 300000 && ccu?.current_year_loss_cents === 0 && ccu?.total_carry_forward_cents === 100000);
+  }
+
   console.log(`\n=== personas: ${pass} passed, ${fail} failed ===`);
   if (fail > 0) process.exit(1);
 }

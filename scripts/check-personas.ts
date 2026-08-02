@@ -1946,6 +1946,27 @@ async function main() {
     check("B2: negative pre-loss year — carried loss applies 0, position unchanged (not deepened)", (await buildReport(envB2, "pB2n", 2025)).taxable_position_cents === (await buildReport(env, "pB2n", 2025)).taxable_position_cents);
   }
 
+  // ── reportable_amounts: RFBA/RESC captured in income.detail_json surface on the report payload and
+  //    as an informational accountant-pack section (never in any total; flag OFF ⇒ byte-identical). ──
+  {
+    seedTenant("pRA", "P-RA reportable amounts");
+    inc("pRAInc", "pRA", "salary_payg", 9000000, { detail_json: JSON.stringify({ employer: "Acme Pty Ltd", rfba_cents: 850000, resc_cents: 120000 }) });
+    // A second per-period payslip from the SAME employer repeats the same ANNUAL RFBA figure — it must
+    // dedupe to the employer MAX, never sum (12 monthly payslips are not 12× the RFBA).
+    inc("pRAInc3", "pRA", "salary_payg", 800000, { detail_json: JSON.stringify({ employer: "Acme Pty Ltd", rfba_cents: 850000, resc_cents: 120000 }) });
+    // A non-payslip detail blob (AMMA-style) must neither throw nor count toward the sums.
+    inc("pRAInc2", "pRA", "dividend", 100000, { detail_json: JSON.stringify({ franked_cents: 100000 }) });
+    const envRA = { ...env, FEATURES: `${(env as { FEATURES: string }).FEATURES},reportable_amounts` } as unknown as Env;
+    const rRA = await buildReport(envRA, "pRA", 2025);
+    check("RA (flag ON): RFBA + RESC on the payload at the per-employer MAX (annual figure, not summed across payslips)", rRA.reportable_amounts?.rfba_cents === 850000 && rRA.reportable_amounts?.resc_cents === 120000);
+    check("RA (flag ON): reportable amounts NEVER touch the position — income only", rRA.taxable_position_cents === 9900000);
+    const schedRA = await buildAccountantSchedule(envRA, "pRA", 2025, { report: rRA });
+    const raSection = schedRA.sections.find((s) => s.key === "reportable_amounts");
+    check("RA (flag ON): accountant pack gains the informational section (one row, no tie_back)", !!raSection && raSection.tie_back === undefined && raSection.rows.length === 1);
+    const rRAOff = await buildReport(env, "pRA", 2025);
+    check("RA (flag OFF): no payload field and no pack section — byte-identical", rRAOff.reportable_amounts === undefined && !(await buildAccountantSchedule(env, "pRA", 2025, { report: rRAOff })).sections.some((s) => s.key === "reportable_amounts"));
+  }
+
   console.log(`\n=== personas: ${pass} passed, ${fail} failed ===`);
   if (fail > 0) process.exit(1);
 }

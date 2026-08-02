@@ -870,6 +870,7 @@ export interface Report {
   gst?: GstPosition;                    // #137 — indicative BAS (separate from income tax)
   payg_instalments_cents?: number;      // #174 — total PAYG instalments recorded for the FY (informational)
   car_logbook?: CarLogbookPosition;     // #142 — logbook vs cents-per-km (informational)
+  reportable_amounts?: { rfba_cents: number; resc_cents: number }; // RFBA/RESC off payslips — reportable, never assessable, never in the position
   trust?: TrustTotals;                  // #139 — assessable distributions added to taxable_position_cents
   smsf_funds?: SmsfFundPosition[];      // #140 — per-fund position (separate taxpayer)
   franking_gross_up_cents?: number;     // 3a — franking credits grossed up INTO assessable income (s207-20)

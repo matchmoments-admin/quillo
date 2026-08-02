@@ -130,6 +130,14 @@ export function Reports() {
                 individual position above (entity positions are computed separately).
               </>
             )}
+            {data!.reportable_amounts && (
+              <>
+                {" "}Your income statement also carries{" "}
+                <span className="font-medium text-ink">{money(data!.reportable_amounts.rfba_cents + data!.reportable_amounts.resc_cents)}</span>{" "}
+                of reportable amounts (fringe benefits / employer super) — not income and not in the position,
+                but used for government income tests; they're in your accountant pack.
+              </>
+            )}
           </p>
 
           {scanOn && <div id="double-check"><ScanFindings fyNum={fy} /></div>}

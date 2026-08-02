@@ -700,6 +700,19 @@ export function assessReadiness(input: {
     findings.push(f("capital_loss_carryin", "judgement", "info", `Prior-year capital loss carried forward (${money(signals.capitalLossCarryinCents)})`,
       `You've recorded a carried-forward capital loss. It is NOT applied to the position shown here — a capital loss can only offset a capital gain (never your salary, rental or other income), and is applied on the CGT schedule. Hand this figure to your registered tax agent to apply against any capital gains.${DEFER}`, true, []));
   }
+  // reportable_amounts (flag-gated at buildReport, so OFF ⇒ findings byte-identical): RFBA/RESC off a
+  // payslip or income statement. Reportable, NOT assessable — never in the position — but they feed
+  // government income tests this app never computes, so the agent needs the figures rather than having
+  // them die in detail_json.
+  if (report.reportable_amounts && (report.reportable_amounts.rfba_cents > 0 || report.reportable_amounts.resc_cents > 0)) {
+    const ra = report.reportable_amounts;
+    const parts = [
+      ra.rfba_cents > 0 ? `reportable fringe benefits of ${money(ra.rfba_cents)}` : null,
+      ra.resc_cents > 0 ? `reportable employer super of ${money(ra.resc_cents)}` : null,
+    ].filter(Boolean).join(" and ");
+    findings.push(f("reportable_amounts", "income", "info", `Reportable amounts captured (${money(ra.rfba_cents + ra.resc_cents)})`,
+      `Your payslip / income statement carries ${parts}. These are NOT income and are NOT in the position shown here, but they count toward government income tests (e.g. Medicare levy surcharge, study-loan repayments, family assistance) — hand the figures to your registered tax agent with your income statement. They are listed in your accountant pack.${DEFER}`, true, []));
+  }
 
   // C1 (capital_from_txn): incomplete holdings. A bank deposit into a brokerage app evidences a date, an
   // amount and a broker — it CANNOT tell us how many units were bought, at what price, or how much of the

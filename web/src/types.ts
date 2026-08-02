@@ -1030,6 +1030,7 @@ export interface AssetRow {
   method: string | null;
   effective_life_years: number | null;
   property_id: string | null;
+  entity_id: string | null;
   is_second_hand: number;
   is_car?: number;
   status: string;

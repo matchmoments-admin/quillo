@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import { useFeatures } from "../lib/features";
 import { Card, Spinner, Button, Input, money, parseMoneyToCents, InfoTip } from "../components/ui";
+import { isTenantStatus } from "../components/SituationFields";
 import type { AssetRow, ScheduleRow } from "../types";
 
 const CLASS_LABEL: Record<string, string> = {
@@ -18,6 +19,8 @@ export function Assets() {
   const { has } = useFeatures();
   const showCar = has("asset_class_defaults");
   const { data, isLoading, error } = useQuery({ queryKey: ["assets"], queryFn: () => api.assets() });
+  const { data: sit } = useQuery({ queryKey: ["situation"], queryFn: () => api.situation() });
+  const propLabel = new Map((sit?.properties ?? []).map((p) => [p.id, p.label]));
   const [adding, setAdding] = useState(false);
 
   return (
@@ -51,7 +54,7 @@ export function Assets() {
               </tr>
             </thead>
             <tbody>
-              {(data ?? []).map((a) => <AssetLine key={a.id} a={a} showCar={showCar} />)}
+              {(data ?? []).map((a) => <AssetLine key={a.id} a={a} showCar={showCar} propLabel={a.property_id ? propLabel.get(a.property_id) : undefined} />)}
               {!(data ?? []).length && (
                 <tr className="border-t border-line"><td colSpan={6} className="px-4 py-6 text-muted">No assets yet.</td></tr>
               )}
@@ -63,7 +66,7 @@ export function Assets() {
   );
 }
 
-function AssetLine({ a, showCar }: { a: AssetRow; showCar: boolean }) {
+function AssetLine({ a, showCar, propLabel }: { a: AssetRow; showCar: boolean; propLabel?: string }) {
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
   const sched = useQuery({ queryKey: ["schedule", a.id], queryFn: () => api.assetSchedule(a.id), enabled: open });
@@ -74,6 +77,7 @@ function AssetLine({ a, showCar }: { a: AssetRow; showCar: boolean }) {
         <td className="px-4 py-2">
           <button className="text-left hover:underline" onClick={() => setOpen((v) => !v)}>{a.label}</button>
           {showCar && a.is_car ? <span className="ml-2 rounded-full bg-surface px-2 py-0.5 text-xs text-muted">Car</span> : null}
+          {propLabel ? <span className="ml-2 rounded-full bg-surface px-2 py-0.5 text-xs text-muted">{propLabel}</span> : null}
           {a.is_second_hand ? <span className="ml-2 rounded-full bg-surface px-2 py-0.5 text-xs text-muted">2nd-hand</span> : null}
           {a.needs_review ? <span className="ml-2 rounded-full bg-warn/10 px-2 py-0.5 text-xs text-warn">review</span> : null}
         </td>
@@ -124,6 +128,15 @@ function AddAssetForm({ onDone }: { onDone: () => void }) {
   const [reimbursed, setReimbursed] = useState(false);
   const [workPct, setWorkPct] = useState("100");
   const [isCar, setIsCar] = useState(false);
+  const [propertyId, setPropertyId] = useState("");
+  const [entityId, setEntityId] = useState("");
+  // Auto-created assets (from a bank line) inherit the transaction's property; this form couldn't send
+  // one, so a hand-typed rental appliance depreciated in the headline but was missing from that
+  // property's per-property line, the accountant pack's Property column, and the rent-free use_status
+  // lockout. Same selector pattern as the income form; both default to "" ⇒ null ⇒ unchanged behaviour.
+  const { data: sit } = useQuery({ queryKey: ["situation"], queryFn: () => api.situation() });
+  const properties = (sit?.properties ?? []).filter((p) => !isTenantStatus(p.status));
+  const entities = (sit?.entities ?? []).filter((e) => e.kind === "company" || e.kind === "trust" || e.kind === "smsf");
   const notMine = ownedBy === "employer" || reimbursed;
   const add = useMutation({
     mutationFn: () =>
@@ -141,6 +154,8 @@ function AddAssetForm({ onDone }: { onDone: () => void }) {
         reimbursed: reimbursed ? 1 : 0,
         is_car: isCar ? 1 : 0,
         business_use_pct: workPct.trim() === "" ? 100 : Math.max(0, Math.min(100, Number(workPct))),
+        property_id: propertyId || null,
+        entity_id: entityId || null,
       } as Partial<AssetRow> & { method: string | null; div43_rate: number | null; owned_by: string; reimbursed: number; is_car: number; business_use_pct: number }),
     onSuccess: onDone,
   });
@@ -203,6 +218,22 @@ function AddAssetForm({ onDone }: { onDone: () => void }) {
             <option value="employer">Employer-owned</option>
           </select>
         </label>
+        {properties.length > 0 && (
+          <label className="text-sm">Property (if it's in a rental)
+            <select className="mt-1 w-full rounded-lg border border-line px-3 py-2 text-sm" value={propertyId} onChange={(e) => setPropertyId(e.target.value)}>
+              <option value="">— none —</option>
+              {properties.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
+            </select>
+          </label>
+        )}
+        {entities.length > 0 && (
+          <label className="text-sm">Attribute to
+            <select className="mt-1 w-full rounded-lg border border-line px-3 py-2 text-sm" value={entityId} onChange={(e) => setEntityId(e.target.value)}>
+              <option value="">Me (individual)</option>
+              {entities.map((e) => <option key={e.id} value={e.id}>{e.name ?? e.kind}</option>)}
+            </select>
+          </label>
+        )}
         <label className="text-sm">% used for work<Input className="mt-1 w-full" inputMode="decimal" value={workPct} onChange={(e) => setWorkPct(e.target.value)} placeholder="100" /></label>
         <label className="flex items-center gap-2 text-sm sm:col-span-3">
           <input type="checkbox" checked={reimbursed} onChange={(e) => setReimbursed(e.target.checked)} />

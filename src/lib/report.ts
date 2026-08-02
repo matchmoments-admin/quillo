@@ -181,6 +181,12 @@ export interface Report {
   // Phase #142: logbook-method car deduction vs cents-per-km (informational — not yet swapped into the
   // position). Present only when the car_logbook flag is on AND a vehicle_logbook exists for the FY.
   car_logbook?: CarLogbookPosition;
+  // reportable_amounts: RFBA + RESC captured off payslips / income statements (income.detail_json keys
+  // rfba_cents / resc_cents). Reportable, NOT assessable — NEVER in taxable_position. They feed income
+  // tests (Medicare levy surcharge, Div 293, study-loan repayment income, family assistance) that this
+  // app never computes, so the figures must reach the agent instead of dying in detail_json. Present
+  // only when the reportable_amounts flag is on AND a non-zero amount exists for the FY.
+  reportable_amounts?: { rfba_cents: number; resc_cents: number };
   // Phase #139: assessable trust distributions to this person (character retained). ADDED to
   // taxable_position_cents. Present only when the trust_distributions flag is on AND there are rows.
   trust?: TrustTotals;
@@ -880,6 +886,30 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   if (featureOn(env, "car_logbook")) {
     car_logbook = (await carLogbookPosition(env, userId, startYear, work_method?.car_cents ?? 0)) ?? undefined;
   }
+  // reportable_amounts: sum RFBA/RESC out of income.detail_json for the FY. Both write paths land on the
+  // same keys (payslip: rfba_cents may be null; income statement: rfb_cents renamed to rfba_cents,
+  // 0-defaulted, resc_cents alongside) — treat null and 0 identically. detail_json is free-form
+  // (AMMA components, employer meta), so parse defensively and ignore rows that aren't ours.
+  let reportable_amounts: { rfba_cents: number; resc_cents: number } | undefined;
+  if (featureOn(env, "reportable_amounts")) {
+    const detailRows = await env.DB.prepare(
+      `SELECT detail_json FROM income WHERE user_id = ? AND fy = ? AND detail_json IS NOT NULL`,
+    )
+      .bind(userId, `${startYear}-${String((startYear + 1) % 100).padStart(2, "0")}`)
+      .all<{ detail_json: string }>();
+    let rfba = 0;
+    let resc = 0;
+    for (const r of detailRows.results ?? []) {
+      try {
+        const d = JSON.parse(r.detail_json) as { rfba_cents?: number | null; resc_cents?: number | null };
+        rfba += Math.max(0, Math.round(d.rfba_cents ?? 0));
+        resc += Math.max(0, Math.round(d.resc_cents ?? 0));
+      } catch {
+        /* not JSON — not a payslip/income-statement detail blob */
+      }
+    }
+    if (rfba > 0 || resc > 0) reportable_amounts = { rfba_cents: rfba, resc_cents: resc };
+  }
   // Phase #140: per-SMSF fund position (separate taxpayer) — NOT added to the personal position. Its
   // income is already excluded from the personal headline above (separateIds). Flag-gated.
   let smsf_funds: SmsfFundPosition[] | undefined;
@@ -988,6 +1018,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
     gst,
     payg_instalments_cents,
     car_logbook,
+    reportable_amounts,
     trust,
     partnership,
     smsf_funds,

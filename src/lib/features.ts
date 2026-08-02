@@ -110,6 +110,7 @@ export const FEATURE_KEYS = [
   // its own: nothing in the money path reads these fields except computeCapitalGain, which only runs on
   // a DISPOSAL and already read them straight from the table).
   "property_capital_detail",
+  "reportable_amounts", // RFBA + RESC were extracted off payslips/income statements into income.detail_json and then read by NOTHING — a dead-end capture, though both feed ATO income tests (MLS, Div 293, study-loan repayment income, family assistance) that this app deliberately never computes. NOT money-output: the figures are reportable, not assessable, and never touch taxable_position_cents. ON ⇒ the report payload carries the FY sums, an info readiness finding defers them to the agent, the accountant pack gains an informational section (no tie_back — contributes to no report figure), and Reports shows one sentence. OFF ⇒ no query, no field, no section ⇒ report + CSV byte-identical.
 ] as const;
 
 export type FeatureKey = (typeof FEATURE_KEYS)[number];

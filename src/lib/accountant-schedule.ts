@@ -266,6 +266,7 @@ export async function buildAccountantSchedule(
     franking_credit_cents: number;
     foreign_tax_paid_cents: number;
     source_doc_id: string | null;
+    detail_json: string | null;
   }>(
     env.DB.prepare(
       `SELECT txn_date, income_type, ato_label, property_id,
@@ -273,7 +274,7 @@ export async function buildAccountantSchedule(
               COALESCE(withholding_cents,0) AS withholding_cents,
               COALESCE(franking_credit_cents,0) AS franking_credit_cents,
               COALESCE(foreign_tax_paid_cents,0) AS foreign_tax_paid_cents,
-              source_doc_id
+              source_doc_id, detail_json
          FROM income WHERE user_id = ? AND fy = ?${entityClause}
         ORDER BY income_type, txn_date, created_at`,
     )
@@ -686,6 +687,36 @@ export async function buildAccountantSchedule(
       subtotal_cents: total,
       notes: ["Shown separately so a salary that also arrived via a payslip is never double-counted."],
     });
+  }
+
+  // 3b (reportable_amounts): RFBA / RESC captured off payslips and income statements. Reportable, NOT
+  // assessable — never in any total, and deliberately NO tie_back (they contribute to no report figure;
+  // the C3 informational precedent). Surfaced because they feed income tests this app never computes.
+  if (featureOn(env, "reportable_amounts")) {
+    const raRows: { employer: string; income_type: string; rfba_cents: number; resc_cents: number }[] = [];
+    for (const r of incomeRows) {
+      if (!r.detail_json) continue;
+      try {
+        const dj = JSON.parse(r.detail_json) as { employer?: string | null; rfba_cents?: number | null; resc_cents?: number | null };
+        const rfba = Math.max(0, Math.round(dj.rfba_cents ?? 0));
+        const resc = Math.max(0, Math.round(dj.resc_cents ?? 0));
+        if (rfba > 0 || resc > 0) raRows.push({ employer: dj.employer ?? "(employer not stated)", income_type: r.income_type, rfba_cents: rfba, resc_cents: resc });
+      } catch {
+        /* not a payslip/income-statement detail blob */
+      }
+    }
+    if (raRows.length) {
+      sections.push({
+        key: "reportable_amounts",
+        title: "Reportable amounts (informational — not income, not in any total)",
+        columns: ["Employer", "Type", `Reportable fringe benefits — RFBA (${cur})`, `Reportable employer super — RESC (${cur})`],
+        rows: raRows.map((r) => [r.employer, r.income_type, d(r.rfba_cents), d(r.resc_cents)]),
+        notes: [
+          "Reportable fringe benefits (e.g. a novated lease) and reportable employer super are NOT assessable income and are NOT in any figure above — but they count toward government income tests (e.g. Medicare levy surcharge, study-loan repayments, family assistance).",
+          "General information only — confirm the treatment with a registered tax agent.",
+        ],
+      });
+    }
   }
 
   // 4. Work-related & other deductions (itemised, non-property, non-company).

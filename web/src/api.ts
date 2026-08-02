@@ -107,7 +107,7 @@ export const api = {
     if (opts.fy) q.set("fy", String(opts.fy));
     if (opts.limit) q.set("limit", String(opts.limit));
     const qs = q.toString();
-    return get<{ receipts: Txn[]; lines: Txn[]; total_receipts: number; total_lines: number }>(`/api/reconcile${qs ? `?${qs}` : ""}`);
+    return get<{ receipts: Txn[]; lines: Txn[]; total_receipts: number; total_lines: number; lines_available: number }>(`/api/reconcile${qs ? `?${qs}` : ""}`);
   },
   statements: (accountId?: string) =>
     get<{ statements: StatementInfo[] }>(`/api/statements${accountId ? `?account_id=${accountId}` : ""}`).then((r) => r.statements),

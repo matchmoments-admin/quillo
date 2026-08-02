@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import { Card, Spinner, money, BucketPill } from "../components/ui";
 import { useActiveFy, fyLabel } from "../lib/activeFy";
@@ -15,7 +15,9 @@ export function Reconcile() {
   const { fy: activeFy } = useActiveFy();
   const [fy, setFy] = useState<number | undefined>(undefined); // undefined = all years (no behaviour change beyond the caps)
   const [limit, setLimit] = useState(200);
-  const { data, isLoading, error } = useQuery({ queryKey: ["reconcile", fy ?? "all", limit], queryFn: () => api.reconcilePairs({ fy, limit }) });
+  // keepPreviousData: Load-more / FY changes swap the key — keep the current list on screen instead of
+  // blanking the page to a spinner while the bigger page arrives.
+  const { data, isLoading, error } = useQuery({ queryKey: ["reconcile", fy ?? "all", limit], queryFn: () => api.reconcilePairs({ fy, limit }), placeholderData: keepPreviousData });
   const [picked, setPicked] = useState<Txn | null>(null);
 
   const link = useMutation({
@@ -30,10 +32,10 @@ export function Reconcile() {
 
   if (isLoading) return <Spinner />;
   if (error) return <Card className="p-6 text-sm text-muted">Couldn't load: {(error as Error).message}</Card>;
-  const { receipts, lines, total_receipts, total_lines } = data!;
+  const { receipts, lines, total_receipts, total_lines, lines_available } = data!;
 
-  // The server pre-orders by best score across ALL receipts; picking a receipt re-sorts the loaded
-  // page for THAT receipt (same scorer, kept client-side deliberately until the shape-B proposer).
+  // The server pre-orders by best score across the loaded receipts; picking a receipt re-sorts the
+  // loaded page for THAT receipt (same scorer, kept client-side deliberately until the shape-B proposer).
   const candidates = picked
     ? [...lines].sort((a, b) => score(picked, b) - score(picked, a))
     : lines;
@@ -114,13 +116,18 @@ export function Reconcile() {
               ))}
             </ul>
           )}
-          {total_lines > lines.length && (
+          {lines.length < lines_available && (
             <button
               onClick={() => setLimit((n) => n + 200)}
               className="w-full border-t border-line px-4 py-2.5 text-center text-sm font-medium text-muted hover:text-ink"
             >
-              Load more ({total_lines - lines.length} more on the server)
+              Load more ({lines_available - lines.length} more on the server)
             </button>
+          )}
+          {lines.length >= lines_available && total_lines > lines_available && (
+            <p className="border-t border-line px-4 py-2.5 text-center text-xs text-muted">
+              Showing the {lines_available.toLocaleString()} most recent of {total_lines.toLocaleString()} — pick a year above to reach the older lines.
+            </p>
           )}
         </Card>
       </div>

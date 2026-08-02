@@ -272,6 +272,10 @@ export interface ReconcilePairsResult {
   lines: (TxnRow & { best_score: number; best_receipt_id: string | null })[];
   total_receipts: number;
   total_lines: number;
+  // How many in-scope lines the scan actually loaded (≤ RECONCILE_SCAN). When < total_lines the scan
+  // truncated: paging can reach THIS many, and the client must say the rest needs a narrower filter —
+  // never render a Load-more that can't load more.
+  lines_available: number;
 }
 
 // Mirror of the SPA's score() in Reconcile.tsx — duplicated DELIBERATELY until the shape-B proposer
@@ -310,7 +314,9 @@ export async function reconcilePairs(env: Env, userId: string, opts: { fy?: numb
   ).bind(...lineBinds).all<TxnRow>()).results ?? [];
   const totalReceipts = (await env.DB.prepare(`SELECT COUNT(*) AS n FROM transactions WHERE ${receiptWhere}`).bind(userId).first<{ n: number }>())?.n ?? 0;
   const totalLines = (await env.DB.prepare(`SELECT COUNT(*) AS n FROM transactions WHERE ${lineWhere}`).bind(...lineBinds).first<{ n: number }>())?.n ?? 0;
-  // Score every scanned line against every loaded receipt (bounded ≤ 500 × RECONCILE_SCAN).
+  // Score every scanned line against every LOADED receipt (bounded ≤ 500 × RECONCILE_SCAN). Beyond 500
+  // unmatched receipts a line's best match may be a receipt we didn't load — best_receipt_id must not
+  // grow a consumer that trusts it until receipts paginate too (shape-B proposer work).
   const rs = receipts.map((r) => ({ id: r.id, cents: r.amount_aud_cents ?? r.amount_cents ?? 0, time: r.txn_date ? Date.parse(r.txn_date) : null }));
   const scored = scanned.map((l) => {
     const lCents = l.amount_aud_cents ?? l.amount_cents ?? 0;
@@ -329,7 +335,7 @@ export async function reconcilePairs(env: Env, userId: string, opts: { fy?: numb
   scored.sort((a, b) => b.best_score - a.best_score || (b.txn_date ?? "").localeCompare(a.txn_date ?? ""));
   const limit = Math.min(Math.max(opts.limit ?? 200, 1), RECONCILE_SCAN);
   const offset = Math.max(opts.offset ?? 0, 0);
-  return { receipts, lines: scored.slice(offset, offset + limit), total_receipts: totalReceipts, total_lines: totalLines };
+  return { receipts, lines: scored.slice(offset, offset + limit), total_receipts: totalReceipts, total_lines: totalLines, lines_available: scanned.length };
 }
 
 export async function getTransaction(env: Env, userId: string, id: string) {

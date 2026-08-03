@@ -12,8 +12,9 @@ import type { LLM } from "../src/llm";
 import { isValidAbn, normaliseAbn } from "../web/src/lib/abn";
 import { billableCents, billableE4, freeCreditGrantE4 } from "../src/lib/billing";
 import { costCents, isPricedModel, toE4, centsFromE4 } from "../src/lib/usage";
-import { LLM_MODEL_IDS, resolveProvider, assertAuResidency } from "../src/llm";
+import { LLM_MODEL_IDS, resolveProvider, assertAuResidency, assertDataResidency, bedrockModelIdFor } from "../src/llm";
 import type { ProviderProfile } from "../src/llm";
+import { AU_DESCRIPTOR, UK_DESCRIPTOR, ALL_JURISDICTIONS } from "../src/lib/jurisdiction";
 import {
   requiresAuResidency, basiqEnvironment, basiqConfigured, toCents, last4Of,
   postDateFilter, feedFingerprint, consentUrl, MAX_PAGE_SIZE,
@@ -2223,9 +2224,57 @@ console.log("AU residency guard (CDR PS8)");
   // The error must be diagnosable: a tag callers can match on, the offending provider, the context.
   let msg = "";
   try { assertAuResidency(envAnthropic, null, CTX); } catch (e) { msg = (e as Error).message; }
-  check("residency error is tagged au_residency_required", msg.startsWith("au_residency_required:"));
+  check("residency error is tagged data_residency_required", msg.startsWith("data_residency_required:"));
   check("residency error names the resolved provider", msg.includes("'anthropic'"));
   check("residency error names the calling context", msg.includes(CTX));
+  check("residency error names the legal basis", msg.includes("CDR Privacy Safeguard 8"));
+}
+
+// Jurisdiction-scoped residency. The guard above only ever checked the PROVIDER, so a tenant on
+// bedrock + us-east-1 passed an assert whose name promised Australian residency. AWS IAM caught it
+// in practice, but that is infrastructure covering for an application bug — and it stops working
+// the moment a second jurisdiction exists, because a multi-jurisdiction credential must be allowed
+// in both regions. These goldens pin all three conditions.
+console.log("data residency is jurisdiction-scoped");
+{
+  const bedrock = (region?: string): Env => ({ DEFAULT_INFERENCE_PROVIDER: "bedrock", ...(region ? { DEFAULT_INFERENCE_REGION: region } : {}) } as unknown as Env);
+  const prof = (p: string | null, r: string | null = null): ProviderProfile => ({ inference_provider: p, inference_region: r });
+  const throws = (fn: () => void): boolean => { try { fn(); return false; } catch { return true; } };
+  const CTX = "bank_line categorisation";
+
+  // ── THE BUG. Every one of these was previously accepted.
+  check("REGRESSION: bedrock in us-east-1 THROWS", throws(() => assertDataResidency(bedrock("us-east-1"), null, AU_DESCRIPTOR, CTX)));
+  check("REGRESSION: a tenant override to us-east-1 THROWS", throws(() => assertDataResidency(bedrock(), prof("bedrock", "us-east-1"), AU_DESCRIPTOR, CTX)));
+  check("REGRESSION: eu-west-2 is not Australia ⇒ THROWS", throws(() => assertDataResidency(bedrock("eu-west-2"), null, AU_DESCRIPTOR, CTX)));
+
+  // ── The AU happy paths — both regions the live profile actually routes between.
+  check("AU: ap-southeast-2 (Sydney) PASSES", !throws(() => assertDataResidency(bedrock("ap-southeast-2"), null, AU_DESCRIPTOR, CTX)));
+  check("AU: ap-southeast-4 (Melbourne) PASSES", !throws(() => assertDataResidency(bedrock("ap-southeast-4"), null, AU_DESCRIPTOR, CTX)));
+  check("AU: region defaults into the jurisdiction when nothing is set", !throws(() => assertDataResidency(bedrock(), null, AU_DESCRIPTOR, CTX)));
+
+  // ── Generality: the mechanism must work for a jurisdiction that is not AU, or it is just the
+  // AU special case wearing a different name.
+  check("UK: eu-west-2 PASSES under the UK descriptor", !throws(() => assertDataResidency(bedrock("eu-west-2"), null, UK_DESCRIPTOR, CTX)));
+  check("UK: an AU region THROWS under the UK descriptor", throws(() => assertDataResidency(bedrock("ap-southeast-2"), null, UK_DESCRIPTOR, CTX)));
+  check("UK error names UK GDPR, not the CDR", (() => {
+    try { assertDataResidency(bedrock("ap-southeast-2"), null, UK_DESCRIPTOR, CTX); return false; }
+    catch (e) { return (e as Error).message.includes("UK GDPR"); }
+  })());
+
+  // ── The AU region list is exhaustive and Australia-only. If AWS widens the `au.` geography to
+  // ANZ, this must fail rather than quietly follow: "ANZ" is not "Australia" for a PS8 claim.
+  check("AU regions are exactly Sydney + Melbourne (verified from the live profile)",
+    JSON.stringify([...AU_DESCRIPTOR.residency.regions].sort()) === JSON.stringify(["ap-southeast-2", "ap-southeast-4"]));
+  check("no AU region is outside Australia", AU_DESCRIPTOR.residency.regions.every((r) => r.startsWith("ap-southeast-")));
+
+  // ── Model ids follow the jurisdiction, and every emitted id must be priced (#80).
+  check("AU model id is on the au. geographic profile", bedrockModelIdFor(AU_DESCRIPTOR) === "au.anthropic.claude-haiku-4-5-20251001-v1:0");
+  check("UK model id is on the eu. profile, not au.", bedrockModelIdFor(UK_DESCRIPTOR).startsWith("eu."));
+  check("every jurisdiction's Bedrock model id is priced", ALL_JURISDICTIONS.every((j) => isPricedModel(bedrockModelIdFor(j))));
+
+  // ── Credentials are per-jurisdiction so one key can never span two.
+  const suffixes = ALL_JURISDICTIONS.map((j) => j.residency.credentialSuffix);
+  check("each jurisdiction has a distinct credential suffix", new Set(suffixes).size === suffixes.length);
 }
 
 // ADR-0003 S1. Both auth paths used to return an AUTHENTICATED founder tenant whenever their

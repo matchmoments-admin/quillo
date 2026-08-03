@@ -63,9 +63,17 @@ export interface Env {
   // Optional: when set, QuickBooks OAuth tokens are AES-GCM envelope-encrypted at rest in D1
   // (see lib/token-crypto.ts). Absent = tokens stay plaintext (graceful, backward-compatible).
   QBO_TOKEN_KEY?: string;
-  // Only present when a tenant uses inference_provider=bedrock:
+  // Only present when a tenant uses inference_provider=bedrock. Credentials are PER JURISDICTION:
+  // each suffixed pair is backed by its own IAM user whose policy denies Bedrock outside that
+  // jurisdiction's regions, so an application bug cannot route one country's data into another's
+  // Bedrock. The unsuffixed pair is the fallback for a single-jurisdiction deployment (today's AU).
+  // Resolved by awsCredentialsFor() in llm.ts from JurisdictionDescriptor.residency.credentialSuffix.
   AWS_ACCESS_KEY_ID?: string;
   AWS_SECRET_ACCESS_KEY?: string;
+  AWS_ACCESS_KEY_ID_AU?: string;
+  AWS_SECRET_ACCESS_KEY_AU?: string;
+  AWS_ACCESS_KEY_ID_UK?: string;      // declared for the seam; no UK tenant exists
+  AWS_SECRET_ACCESS_KEY_UK?: string;
   // Optional (flag `bank_feed_cdr`): Basiq API key for CDR / open-banking bank feeds. Server-side
   // only — never reaches the SPA; the browser only ever sees a short-lived CLIENT_ACCESS token
   // minted per user for the hosted consent screen. Keys are PER Basiq application, and applications

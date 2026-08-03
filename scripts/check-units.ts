@@ -14,6 +14,10 @@ import { billableCents, billableE4, freeCreditGrantE4 } from "../src/lib/billing
 import { costCents, isPricedModel, toE4, centsFromE4 } from "../src/lib/usage";
 import { LLM_MODEL_IDS, resolveProvider, assertAuResidency } from "../src/llm";
 import type { ProviderProfile } from "../src/llm";
+import {
+  requiresAuResidency, basiqEnvironment, basiqConfigured, toCents, last4Of,
+  postDateFilter, feedFingerprint, consentUrl, MAX_PAGE_SIZE,
+} from "../src/lib/basiq";
 import { computeWorkMethodDeductions, workUseRatesForFy, deriveWfhHours, generateWfhDiary } from "../src/lib/work-use";
 import { runScan } from "../src/lib/scan";
 import { scheduleToXlsx, notClaimedSegment, atoReturnLabel, type AccountantSchedule } from "../src/lib/accountant-schedule";
@@ -2220,6 +2224,77 @@ console.log("AU residency guard (CDR PS8)");
   check("residency error is tagged au_residency_required", msg.startsWith("au_residency_required:"));
   check("residency error names the resolved provider", msg.includes("'anthropic'"));
   check("residency error names the calling context", msg.includes(CTX));
+}
+
+// The bank-feed client (0075 / ADR-0003). The residency goldens above prove the guard fails closed;
+// these prove we call it on exactly the right rows, and that provider money/identifiers are
+// normalised before they can reach the ledger.
+console.log("bank feed — Basiq client (ADR-0003)");
+{
+  const sandbox = { BASIQ_ENV: "sandbox" } as unknown as Env;
+  const prod = { BASIQ_ENV: "production" } as unknown as Env;
+  const unset = {} as unknown as Env;
+
+  // ── The PS8 decision. This is the single most consequential branch in the feature: a false
+  // negative sends a consumer's CDR data to a US model (a penalty-provision breach), and a false
+  // positive makes the whole feed untestable before Bedrock is activated.
+  check("PS8: production CDR data REQUIRES AU residency", requiresAuResidency(prod, "cdr") === true);
+  check("PS8: production web-connector data does NOT (not CDR data — APP-8 governs)", requiresAuResidency(prod, "web") === false);
+  check("PS8: sandbox CDR data does NOT (synthetic, no consumer, no safeguard attaches)", requiresAuResidency(sandbox, "cdr") === false);
+  check("PS8: sandbox web-connector data does NOT", requiresAuResidency(sandbox, "web") === false);
+  // An unset BASIQ_ENV must never be read as production — that would be the failure mode where a
+  // missing config var silently turns the guard OFF for real consumer data.
+  check("PS8: unset BASIQ_ENV is treated as sandbox, never production", requiresAuResidency(unset, "cdr") === false);
+  check("basiqEnvironment defaults to sandbox when unset", basiqEnvironment(unset) === "sandbox");
+  check("basiqEnvironment only 'production' flips it", basiqEnvironment({ BASIQ_ENV: "prod" } as unknown as Env) === "sandbox");
+  check("basiqEnvironment is case-insensitive on production", basiqEnvironment({ BASIQ_ENV: "PRODUCTION" } as unknown as Env) === "production");
+
+  // Ships dark without a key, like Stripe.
+  check("basiqConfigured false without an API key", basiqConfigured(sandbox) === false);
+  check("basiqConfigured true with one", basiqConfigured({ BASIQ_API_KEY: "k" } as unknown as Env) === true);
+
+  // ── Money. Basiq returns `amount` as a decimal STRING, negative for outgoing. Every other amount
+  // in this codebase is integer cents, so it is parsed digit-wise rather than via parseFloat.
+  check("toCents: plain decimal", toCents("24.50") === 2450);
+  check("toCents: returns the ABSOLUTE value (direction carries the sign)", toCents("-24.50") === 2450);
+  check("toCents: one cent", toCents("0.01") === 1);
+  check("toCents: whole dollars with no decimal point", toCents("100") === 10000);
+  check("toCents: single decimal place is padded, not truncated", toCents("1234.5") === 123450);
+  check("toCents: large amounts stay exact", toCents("99999999.99") === 9999999999);
+  // Truncating rather than rounding sub-cents: no institution reports them, and rounding would
+  // invent money. Math.round(0.005 * 100) would give 1 cent that the bank never charged.
+  check("toCents: sub-cent precision is truncated, never rounded up", toCents("0.005") === 0);
+  check("toCents: thousands separators are tolerated", toCents("1,234.56") === 123456);
+  check("toCents: empty/absent is zero, not NaN", toCents("") === 0 && toCents(null) === 0 && toCents(undefined) === 0);
+  check("toCents: garbage is zero, not NaN", toCents("n/a") === 0);
+
+  // ── Identifiers. A full account number must never leave this module (ADR-0003 S11).
+  check("last4Of: strips formatting and keeps four digits", last4Of("12-3456 7890123") === "0123");
+  check("last4Of: refuses to return a short number as-is", last4Of("123") === null);
+  check("last4Of: absent is null", last4Of(null) === null && last4Of(undefined) === null);
+  check(
+    "last4Of NEVER returns more than four characters",
+    ["1234567890123", "4111 1111 1111 1111", "062-000 12345678"].every((n) => (last4Of(n) ?? "").length <= 4),
+  );
+
+  // ── Window + paging.
+  check("postDateFilter brackets both ends of the window", postDateFilter("2025-07-01", "2026-06-30") ===
+    "transaction.postDate.gteq('2025-07-01'),transaction.postDate.lteq('2026-06-30')");
+  check("page size is the provider maximum", MAX_PAGE_SIZE === 500);
+
+  // ── Dedup key. Namespaced so a fed line can never collide with a statement line's fingerprint.
+  const fp1 = await feedFingerprint("txn-abc");
+  const fp2 = await feedFingerprint("txn-abd");
+  const fp1again = await feedFingerprint("txn-abc");
+  check("feedFingerprint is stable for the same provider id", fp1 === fp1again);
+  check("feedFingerprint separates different provider ids", fp1 !== fp2);
+  check("feedFingerprint is a sha256 hex digest", /^[0-9a-f]{64}$/.test(fp1));
+  const stmtFp = await lineFingerprint("acct-1", { date: "2025-07-01", amount_cents: 2450, direction: "debit", raw_description: "txn-abc", description: "txn-abc" } as StatementLine);
+  check("feedFingerprint cannot collide with a statement fingerprint", fp1 !== stmtFp);
+
+  // The consent token is a consumer-scoped bearer handed to the browser — it must be URL-encoded.
+  check("consentUrl encodes the token", consentUrl("a b+c/d").includes("a%20b%2Bc%2Fd"));
+  check("consentUrl points at the hosted flow, never at Quillo", consentUrl("t").startsWith("https://consent.basiq.io/home?token="));
 }
 
 console.log("money integer scale (0051: cost_e4 / cents_e4)");

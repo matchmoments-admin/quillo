@@ -1382,6 +1382,44 @@ export async function handleApi(
     }
   }
 
+  // ── Bank feeds via an Open Banking aggregator (ADR-0003, flag `bank_feed_cdr`) ────────────
+  // The consent CALLBACK is NOT here — it is a public route in index.ts, because the consumer
+  // returns from the aggregator as a top-level browser navigation with no Bearer token (the same
+  // constraint the QBO callback has). It is authenticated by a single-use state handle instead.
+  if (resource === "bank") {
+    if (!featureOn(env, "bank_feed_cdr")) return json({ error: "not available" }, 404);
+
+    // GET /api/bank/connect — returns the hosted consent URL as JSON (NOT a redirect), so the SPA
+    // can fetch it with its Bearer token and then navigate. A plain <a href> would be a top-level
+    // navigation with no Authorization header → 401.
+    if (id === "connect" && m === "GET") {
+      const action = url.searchParams.get("action");
+      const allowed = ["connect", "manage", "extend", "update", "reauthorise"] as const;
+      // Never pass an unvalidated query param through to the aggregator URL.
+      const safe = (allowed as readonly string[]).includes(action ?? "") ? (action as (typeof allowed)[number]) : "connect";
+      return json(await stub.bankConnectUrl(uid, safe));
+    }
+
+    // GET /api/bank/connections — connections + accounts, for the picker and consent dashboard.
+    if (id === "connections" && m === "GET") return json(await stub.bankConnections(uid));
+
+    // POST /api/bank/accounts — choose which feed accounts count and map them to Quillo accounts.
+    if (id === "accounts" && m === "POST") {
+      const body = (await req.json().catch(() => ({}))) as { selections?: unknown };
+      if (!Array.isArray(body.selections)) return json({ error: "selections[] required" }, 400);
+      const selections = body.selections
+        .filter((s): s is Record<string, unknown> => !!s && typeof s === "object")
+        .map((s) => ({
+          providerAccountId: String(s.providerAccountId ?? ""),
+          selected: s.selected === true,
+          accountId: s.accountId ? String(s.accountId) : null,
+        }))
+        .filter((s) => s.providerAccountId);
+      if (!selections.length) return json({ error: "no valid selections" }, 400);
+      return json(await stub.bankSelectAccounts(uid, selections));
+    }
+  }
+
   // ── QuickBooks (Phase 4) ──────────────────────────────────────────────────
   if (resource === "qbo") {
     if (id === "status" && m === "GET") return json(await qboStatus(env, uid));

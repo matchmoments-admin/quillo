@@ -154,6 +154,12 @@ export interface TaxAgentRpc {
   setAccountSource(userId: string, accountId: string, source: string): Promise<void>;
   syncQboAccounts(userId: string): Promise<{ synced: number }>;
   disconnectQuickBooks(userId: string): Promise<{ ok: boolean; revoked: boolean }>;
+  // Bank feeds (ADR-0003, flag `bank_feed_cdr`). bankCallback takes an ALREADY-RESOLVED userId:
+  // the single-use state handle is consumed in index.ts so the correct per-tenant DO is chosen.
+  bankConnectUrl(userId: string, action?: "connect" | "manage" | "extend" | "update" | "reauthorise"): Promise<{ url: string }>;
+  bankCallback(userId: string, jobIdsRaw: string | null): Promise<{ ok: boolean; connections: number; accounts: number; error?: string }>;
+  bankConnections(userId: string): Promise<{ connections: unknown[] }>;
+  bankSelectAccounts(userId: string, selections: { providerAccountId: string; selected: boolean; accountId?: string | null }[]): Promise<{ updated: number; conflicts: string[] }>;
   withdrawConsent(userId: string): Promise<{ ok: boolean }>;
   setGstRegistered(userId: string, registered: boolean): Promise<{ ok: true; gst_registered: number }>;
   purgeTenant(userId: string): Promise<{ tables: number; rowsDeleted: number; r2Objects: number; kvKeys: number; qboRevoked: boolean }>;

@@ -40,6 +40,11 @@ import { cleanMerchant } from "./lib/bank-parsers";
 import { pdfPageCount, splitPdf, normalizePdf } from "./lib/pdf";
 import { getLedger, LedgerNotConnectedError, LedgerReauthError, type LedgerExpense } from "./ledger";
 import { redact } from "./lib/redact";
+import {
+  basiqConfigured, clientToken, consentUrl, createBasiqUser, getAccounts, getConsents,
+  type BasiqConsent, type ConsentAction,
+} from "./lib/basiq";
+import { putConnectState, takeConnectState, parseJobIds } from "./lib/bank-connect";
 import { toBaseCurrency } from "./lib/fx";
 import { spentTodayCents, spentTodayGlobalCents, spentThisMonthGlobalCents, noteMeteringError, usageStatements } from "./lib/usage";
 import { billingPolicy, freeCreditGrantE4 } from "./lib/billing";
@@ -1473,6 +1478,246 @@ export class TaxAgent extends Agent<Env> {
     const r = await revokeAndDisconnect(this.env, userId);
     await this.audit(userId, "qbo_disconnect", JSON.stringify({ revoked: r.revoked }));
     return r;
+  }
+
+  // ── Bank feeds via an Open Banking aggregator (ADR-0003, flag `bank_feed_cdr`) ────────────
+  //
+  // The DO is the write-coordinator: `src/lib/basiq.ts` talks to the aggregator and normalises the
+  // response, `src/lib/bank-connect.ts` owns the round-trip state, and every D1 write lands here.
+
+  /**
+   * The aggregator-side consumer id for this tenant, created on first use and then REUSED.
+   *
+   * Reuse is not an optimisation. Basiq bills per user CREATED, for the full month, regardless of
+   * activity — so calling createUser again on a reconnect would mint a second billable consumer for
+   * the same human AND split their connections across two aggregator identities, which would make
+   * the consent dashboard and the PS12 delete path both incomplete.
+   */
+  private async basiqUserFor(userId: string): Promise<string> {
+    const row = await this.env.DB.prepare(
+      `SELECT bank_provider_user_id AS id FROM profiles WHERE user_id = ?`,
+    ).bind(userId).first<{ id: string | null }>();
+    if (row?.id) return row.id;
+
+    // Basiq requires an email or mobile to identify the consumer in its own consent records.
+    // Nothing else about the tenant is sent. Tenants have no stored email on the DO path, so a
+    // deterministic per-tenant address is used — it identifies, it does not receive mail.
+    const email = `tenant-${userId}@users.quillo.au`;
+    const id = await createBasiqUser(this.env, { email });
+    await this.env.DB.prepare(
+      `UPDATE profiles SET bank_provider_user_id = ?, bank_provider = 'basiq' WHERE user_id = ?`,
+    ).bind(id, userId).run();
+    await this.audit(userId, "bank_provider_user_created", JSON.stringify({ provider: "basiq" }));
+    return id;
+  }
+
+  /**
+   * Start a connect: returns the hosted consent URL to send the browser to.
+   *
+   * Rate-limited because this is both expensive (it can mint a billable consumer) and
+   * abuse-attractive (ADR-0003 S6). Reuses the same KV counter shape as chatRateOk, which already
+   * fails closed on a garbled value.
+   */
+  async bankConnectUrl(userId: string, action: ConsentAction = "connect"): Promise<{ url: string }> {
+    if (!basiqConfigured(this.env)) throw new Error("bank feeds are not configured (BASIQ_API_KEY missing)");
+    if (!(await this.bankRateOk(userId, "connect", 10))) throw new Error("too many connect attempts — try again later");
+    const basiqUserId = await this.basiqUserFor(userId);
+    const token = await clientToken(this.env, basiqUserId);
+    const state = await putConnectState(this.env, userId);
+    await this.audit(userId, "bank_connect_started", JSON.stringify({ action }));
+    // The token is a consumer-scoped bearer handed to the browser in a URL — never logged.
+    return { url: consentUrl(token, { action, state }) };
+  }
+
+  /**
+   * Handle the return from the hosted consent UI. Called from the PUBLIC callback route, so it is
+   * given a state handle rather than a user id, and MUST refuse anything it cannot resolve.
+   *
+   * Idempotent: a refreshed callback re-upserts the same rows rather than forking duplicates.
+   */
+  async bankCallback(userId: string, jobIdsRaw: string | null): Promise<{ ok: boolean; connections: number; accounts: number; error?: string }> {
+    const jobIds = parseJobIds(jobIdsRaw);
+    const basiqUserId = await this.basiqUserFor(userId);
+
+    // Consents describe WHAT the consumer agreed to; accounts describe what that unlocked. Both are
+    // needed: the consent dashboard is a CDR obligation, and the account picker needs the list.
+    let consents: BasiqConsent[] = [];
+    try {
+      consents = await getConsents(this.env, basiqUserId);
+    } catch (e) {
+      // A consent-read failure must not lose the connection the consumer just authorised.
+      console.warn(`bank callback: consent read failed (${(e as Error).message})`);
+    }
+    const active = consents.find((c) => c.status === "active") ?? consents[0] ?? null;
+
+    const accounts = await getAccounts(this.env, basiqUserId);
+    // One connection per institution the consumer linked.
+    const byConnection = new Map<string, typeof accounts>();
+    for (const a of accounts) {
+      if (!a.connectionId) continue;
+      const list = byConnection.get(a.connectionId) ?? [];
+      list.push(a);
+      byConnection.set(a.connectionId, list);
+    }
+
+    const stmts: D1PreparedStatement[] = [];
+    for (const [connectionId, accts] of byConnection) {
+      const localId = crypto.randomUUID();
+      stmts.push(
+        this.env.DB.prepare(
+          `INSERT INTO bank_connections
+             (id, user_id, provider, access_type, provider_user_id, provider_connection_id,
+              institution_id, status, consent_id, consent_scope, consent_granted_at, consent_expires_at)
+           VALUES (?, ?, 'basiq', ?, ?, ?, ?, 'active', ?, ?, ?, ?)
+           ON CONFLICT(user_id, provider, provider_connection_id) DO UPDATE SET
+             status = 'active',
+             consent_id = excluded.consent_id,
+             consent_scope = excluded.consent_scope,
+             consent_granted_at = excluded.consent_granted_at,
+             consent_expires_at = excluded.consent_expires_at,
+             last_error = NULL`,
+        ).bind(
+          localId,
+          userId,
+          // Sandbox institutions are synthetic, but the row still records 'cdr' — the STRICT
+          // default. requiresAuResidency() is what distinguishes sandbox from production, not this.
+          "cdr",
+          basiqUserId,
+          connectionId,
+          accts[0]?.institutionId ?? null,
+          active?.id ?? null,
+          active ? JSON.stringify(active.permissions) : null,
+          active?.created ?? null,
+          active?.expiryDate ?? null,
+        ),
+      );
+      for (const a of accts) {
+        stmts.push(
+          this.env.DB.prepare(
+            `INSERT INTO bank_connection_accounts
+               (id, user_id, connection_id, provider_account_id, masked_number, name, type, currency, selected)
+             SELECT ?, ?, bc.id, ?, ?, ?, ?, ?, 0 FROM bank_connections bc
+              WHERE bc.user_id = ? AND bc.provider = 'basiq' AND bc.provider_connection_id = ?
+             ON CONFLICT(user_id, connection_id, provider_account_id) DO UPDATE SET
+               masked_number = excluded.masked_number,
+               name = excluded.name,
+               type = excluded.type,
+               currency = excluded.currency`,
+          ).bind(crypto.randomUUID(), userId, a.id, a.last4, a.name, a.type, a.currency, userId, connectionId),
+        );
+      }
+    }
+    if (stmts.length) await this.env.DB.batch(stmts);
+
+    await this.audit(
+      userId,
+      "bank_consent_granted",
+      // Counts and ids only — never an account number, never a payload (ADR-0003 S10/S11).
+      JSON.stringify({ connections: byConnection.size, accounts: accounts.length, consent_id: active?.id ?? null, jobs: jobIds.length }),
+    );
+    return { ok: true, connections: byConnection.size, accounts: accounts.length };
+  }
+
+  /** Connections + their accounts, for the picker and the consent dashboard. */
+  async bankConnections(userId: string): Promise<{ connections: unknown[] }> {
+    const conns = await this.env.DB.prepare(
+      `SELECT id, provider, access_type, institution, institution_id, status, consent_id,
+              consent_scope, consent_granted_at, consent_expires_at, last_sync_at, last_error, created_at
+         FROM bank_connections WHERE user_id = ? ORDER BY created_at DESC`,
+    ).bind(userId).all<Record<string, unknown>>();
+
+    const accts = await this.env.DB.prepare(
+      `SELECT a.id, a.connection_id, a.provider_account_id, a.account_id, a.masked_number,
+              a.name, a.type, a.currency, a.selected, acc.name AS mapped_account_name, acc.source AS mapped_account_source
+         FROM bank_connection_accounts a
+         LEFT JOIN accounts acc ON acc.id = a.account_id AND acc.user_id = a.user_id
+        WHERE a.user_id = ? ORDER BY a.name`,
+    ).bind(userId).all<Record<string, unknown>>();
+
+    const byConn = new Map<string, Record<string, unknown>[]>();
+    for (const a of accts.results ?? []) {
+      const k = String(a.connection_id);
+      const list = byConn.get(k) ?? [];
+      list.push(a);
+      byConn.set(k, list);
+    }
+    return {
+      connections: (conns.results ?? []).map((c) => ({ ...c, accounts: byConn.get(String(c.id)) ?? [] })),
+    };
+  }
+
+  /**
+   * Choose which feed accounts count, and map each to a Quillo account.
+   *
+   * Two invariants enforced here, both structural rather than advisory:
+   *
+   *  1. DATA MINIMISATION — `selected = 0` accounts are never pulled. Under the CDR that is an
+   *     obligation, not a preference, so the picker defaults to unselected and this is the only
+   *     writer that can flip it.
+   *  2. ONE CANONICAL SOURCE per account (ADR-0002). Mapping a feed onto an account that already
+   *     draws from uploaded statements would double-count every overlapping line into the tax
+   *     position. Refused here rather than deduplicated later, because the two sources fingerprint
+   *     differently and no downstream dedup could catch it.
+   */
+  async bankSelectAccounts(
+    userId: string,
+    selections: { providerAccountId: string; selected: boolean; accountId?: string | null }[],
+  ): Promise<{ updated: number; conflicts: string[] }> {
+    const conflicts: string[] = [];
+    const stmts: D1PreparedStatement[] = [];
+
+    for (const s of selections) {
+      if (s.selected && s.accountId) {
+        const acct = await this.env.DB.prepare(
+          `SELECT id, name, source FROM accounts WHERE id = ? AND user_id = ?`,
+        ).bind(s.accountId, userId).first<{ id: string; name: string; source: string }>();
+        if (!acct) {
+          conflicts.push(`${s.providerAccountId}: target account not found`);
+          continue;
+        }
+        // 'statement' is the DEFAULT source, so only refuse when statements were actually imported
+        // for it — otherwise every fresh account would look like a conflict.
+        if (acct.source !== "cdr_feed") {
+          const used = await this.env.DB.prepare(
+            `SELECT COUNT(*) AS n FROM transactions WHERE user_id = ? AND account_id = ? AND source <> 'cdr_feed'`,
+          ).bind(userId, s.accountId).first<{ n: number }>();
+          if ((used?.n ?? 0) > 0) {
+            conflicts.push(
+              `${acct.name}: already has ${used?.n} imported ${acct.source} line(s). One canonical source per account — remove those first, or map this feed to a different account.`,
+            );
+            continue;
+          }
+        }
+        stmts.push(
+          this.env.DB.prepare(`UPDATE accounts SET source = 'cdr_feed' WHERE id = ? AND user_id = ?`).bind(s.accountId, userId),
+        );
+      }
+      stmts.push(
+        this.env.DB.prepare(
+          `UPDATE bank_connection_accounts SET selected = ?, account_id = ?
+            WHERE user_id = ? AND provider_account_id = ?`,
+        ).bind(s.selected ? 1 : 0, s.selected ? (s.accountId ?? null) : null, userId, s.providerAccountId),
+      );
+    }
+    if (stmts.length) await this.env.DB.batch(stmts);
+    await this.audit(userId, "bank_accounts_selected", JSON.stringify({ selected: selections.filter((s) => s.selected).length, conflicts: conflicts.length }));
+    return { updated: selections.length - conflicts.length, conflicts };
+  }
+
+  /**
+   * Per-tenant rate limit for the bank endpoints (ADR-0003 S6). Same KV counter shape as
+   * chatRateOk: incremented BEFORE the check so a blocked attempt still counts, and a garbled
+   * value resets to 0 so the gate fails CLOSED (toward counting) rather than open.
+   */
+  private async bankRateOk(userId: string, op: string, perHour: number): Promise<boolean> {
+    const hour = new Date().toISOString().slice(0, 13);
+    const key = `bankrate:${op}:${userId}:${hour}`;
+    const prev = Number(await this.env.RULES.get(key));
+    const n = (Number.isFinite(prev) ? prev : 0) + 1;
+    await this.env.RULES.put(key, String(n), { expirationTtl: 60 * 90 });
+    if (n <= perHour) return true;
+    console.warn(`bank rate limit hit (${op}) for tenant ${userId}`);
+    return false;
   }
 
   /** Set an account's canonical money source (qbo_feed | statement | manual). */

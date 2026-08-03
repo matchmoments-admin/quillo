@@ -48,6 +48,10 @@ CREATE TABLE IF NOT EXISTS profiles (
   -- 0062: APP-3 typed consent for health (extras) data. NULL ⇒ not granted ⇒ PHI writes blocked.
   -- Separate from the cross-border consent above — health data is "sensitive information".
   health_extras_consent_at TEXT,
+  -- 0076: aggregator-side consumer id (Basiq bills per user CREATED, so it must be reused,
+  -- never re-minted). An identifier, not a credential. `bank_provider` names which aggregator.
+  bank_provider_user_id TEXT,
+  bank_provider      TEXT,
   retention_years        INTEGER NOT NULL DEFAULT 5,  -- data-retention window for the flag sweep (lib/retention.ts)
   ui_state               TEXT,                        -- per-tenant UI state JSON (e.g. walkthrough seen) — no localStorage
   roles              TEXT NOT NULL DEFAULT '["individual"]', -- 0017: platform roles JSON (admin|accountant|bookkeeper|support|individual)

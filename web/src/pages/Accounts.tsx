@@ -9,6 +9,7 @@ import { Button, Card, Spinner, money, InfoTip, parseMoneyToCents, parseDecimal 
 import type { Account, StatementInfo, StatementParse } from "../types";
 
 const SOURCE_LABEL: Record<string, string> = {
+  cdr_feed: "Bank feed",
   qbo_feed: "QuickBooks feed",
   statement: "Statement upload",
   manual: "Manual",
@@ -94,6 +95,8 @@ export function Accounts() {
         <AddAccount onAdded={() => qc.invalidateQueries({ queryKey: ["accounts"] })} />
       </div>
 
+      {has("bank_feed_cdr") && <BankFeed accounts={accounts} />}
+
       <div className="flex items-center gap-3">
         <Button variant="ghost" onClick={() => sync.mutate()} disabled={sync.isPending}>
           {sync.isPending ? "Syncing…" : "↻ Sync accounts from QuickBooks"}
@@ -120,6 +123,150 @@ export function Accounts() {
         </ul>
       )}
     </div>
+  );
+}
+
+/**
+ * Bank feeds (flag `bank_feed_cdr`). Connect an institution, then choose which of its accounts
+ * count and map each onto a Quillo account.
+ *
+ * Two things this surface has to make true rather than merely say:
+ *  - Nothing is pulled until it is explicitly selected AND mapped. Under the CDR, data
+ *    minimisation is an obligation, so the default is off and the server is the enforcer.
+ *  - One canonical source per account. Mapping a feed onto an account that already has imported
+ *    statement lines would double-count into the tax position, so the server refuses and the
+ *    reason is surfaced here verbatim.
+ */
+function BankFeed({ accounts }: { accounts: Account[] }) {
+  const qc = useQueryClient();
+  const { data: connections, isLoading } = useQuery({
+    queryKey: ["bank-connections"],
+    queryFn: () => api.bankConnections(),
+  });
+
+  // Draft selections, keyed by provider account id, so a whole picker is submitted at once.
+  const [draft, setDraft] = useState<Record<string, { selected: boolean; accountId: string | null }>>({});
+
+  const connect = useMutation({
+    mutationFn: (action: "connect" | "manage") => api.bankConnect(action),
+    // Navigate the browser to the aggregator's hosted consent flow. Authentication happens there
+    // and at the bank — a banking credential never reaches Quillo.
+    onSuccess: (r) => { window.location.href = r.url; },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const save = useMutation({
+    mutationFn: (sel: { providerAccountId: string; selected: boolean; accountId?: string | null }[]) =>
+      api.bankSelectAccounts(sel),
+    onSuccess: (r) => {
+      // Conflicts are per-account and actionable, so show each rather than a generic failure.
+      for (const c of r.conflicts) toast.error(c);
+      if (r.updated > 0 && r.conflicts.length === 0) toast.success("Accounts updated.");
+      setDraft({});
+      qc.invalidateQueries({ queryKey: ["bank-connections"] });
+      qc.invalidateQueries({ queryKey: ["accounts"] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const rows = (connections ?? []).flatMap((c) => c.accounts.map((a) => ({ conn: c, acct: a })));
+  const dirty = Object.keys(draft).length > 0;
+
+  return (
+    <Card className="space-y-4 p-5">
+      <div className="flex flex-wrap items-baseline justify-between gap-3">
+        <div>
+          <h2 className="text-lg font-semibold">Bank feed</h2>
+          <p className="text-sm text-muted">
+            Connect a bank once and transactions flow in automatically — no statement uploads. You sign in at your
+            bank; Quillo never sees your banking password.
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <Button onClick={() => connect.mutate("connect")} disabled={connect.isPending}>
+            {connect.isPending ? "Opening…" : "Connect a bank"}
+          </Button>
+          {(connections?.length ?? 0) > 0 && (
+            <Button variant="ghost" onClick={() => connect.mutate("manage")} disabled={connect.isPending}>
+              Manage consents
+            </Button>
+          )}
+        </div>
+      </div>
+
+      {isLoading ? (
+        <Spinner />
+      ) : rows.length === 0 ? (
+        <p className="text-sm text-muted">No banks connected yet.</p>
+      ) : (
+        <>
+          <ul className="divide-y divide-border">
+            {rows.map(({ conn, acct }) => {
+              const d = draft[acct.provider_account_id] ?? {
+                selected: acct.selected === 1,
+                accountId: acct.account_id,
+              };
+              const set = (patch: Partial<typeof d>) =>
+                setDraft((prev) => ({ ...prev, [acct.provider_account_id]: { ...d, ...patch } }));
+              return (
+                <li key={acct.id} className="flex flex-wrap items-center gap-3 py-3">
+                  <input
+                    type="checkbox"
+                    id={`sel-${acct.id}`}
+                    checked={d.selected}
+                    onChange={(e) => set({ selected: e.target.checked })}
+                    className="h-4 w-4"
+                  />
+                  <label htmlFor={`sel-${acct.id}`} className="min-w-0 flex-1">
+                    <span className="font-medium">{acct.name ?? "Account"}</span>
+                    {acct.masked_number && <span className="ml-2 text-sm text-muted">••••{acct.masked_number}</span>}
+                    <span className="ml-2 text-xs text-muted">
+                      {conn.institution ?? conn.institution_id ?? conn.provider}
+                      {conn.access_type === "cdr" ? " · Open Banking" : " · Web connector"}
+                    </span>
+                  </label>
+                  <select
+                    aria-label={`Map ${acct.name ?? "account"} to a Quillo account`}
+                    className="rounded-md border border-border bg-surface px-2 py-1 text-sm disabled:opacity-50"
+                    value={d.accountId ?? ""}
+                    disabled={!d.selected}
+                    onChange={(e) => set({ accountId: e.target.value || null })}
+                  >
+                    <option value="">Choose an account…</option>
+                    {accounts.map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.name}
+                        {a.source !== "statement" && a.source !== "cdr_feed" ? ` (${SOURCE_LABEL[a.source] ?? a.source})` : ""}
+                      </option>
+                    ))}
+                  </select>
+                </li>
+              );
+            })}
+          </ul>
+          <div className="flex items-center gap-3">
+            <Button
+              onClick={() =>
+                save.mutate(
+                  Object.entries(draft).map(([providerAccountId, v]) => ({
+                    providerAccountId,
+                    selected: v.selected,
+                    accountId: v.accountId,
+                  })),
+                )
+              }
+              disabled={!dirty || save.isPending}
+            >
+              {save.isPending ? "Saving…" : "Save selection"}
+            </Button>
+            <p className="text-xs text-muted">
+              Only selected accounts are ever fetched. An account can have one source — a feed or uploaded statements,
+              never both.
+            </p>
+          </div>
+        </>
+      )}
+    </Card>
   );
 }
 

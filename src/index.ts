@@ -6,6 +6,7 @@ import { requireClerk } from "./auth/clerk";
 import { handleApi } from "./api";
 import { DeleteBlockedError } from "./lib/situation-write";
 import { handleCallback } from "./lib/qbo-oauth";
+import { takeConnectState } from "./lib/bank-connect";
 import { verifyStripeWebhook } from "./lib/stripe";
 import { marketingResponse } from "./marketing/landing";
 import { legalResponse } from "./marketing/legal";
@@ -232,6 +233,30 @@ export default {
       if (!r.ok) console.warn(`qbo callback failed: ${r.error}`);
       const reason = r.ok ? "" : `&reason=${encodeURIComponent(r.error ?? "unknown")}`;
       return Response.redirect(`${url.origin}/quickbooks?connected=${r.ok ? "1" : "0"}${reason}`, 302);
+    }
+
+    // Bank-feed consent callback — PUBLIC by necessity, like the QBO one above: the consumer
+    // returns from the aggregator's hosted consent UI as a top-level browser navigation, which
+    // carries no Authorization header. It is authenticated instead by a single-use, unguessable,
+    // short-lived `state` handle minted at connect time (src/lib/bank-connect.ts). An unknown or
+    // replayed state is REFUSED — it never falls back to a default tenant.
+    if (url.pathname === "/api/bank/callback" && req.method === "GET") {
+      if (!featureOn(env, "bank_feed_cdr")) return new Response("not found", { status: 404 });
+      // Resolve (and consume) the state HERE, not inside the DO: it identifies which tenant this
+      // callback belongs to, and the DO is per-tenant — so the correct stub can only be chosen
+      // once the tenant is known. Doing it inside a guessed stub would let one tenant's DO
+      // coordinate another tenant's writes.
+      const userId = await takeConnectState(env, url.searchParams.get("state"));
+      if (!userId) {
+        console.warn("bank callback rejected: invalid_or_expired_state");
+        return Response.redirect(`${url.origin}/accounts?connected=0&reason=invalid_or_expired_state`, 302);
+      }
+      const r = await stubFor(env, userId).bankCallback(userId, url.searchParams.get("jobIds"));
+      if (!r.ok) console.warn(`bank callback failed: ${r.error}`);
+      const q = r.ok
+        ? `connected=1&accounts=${r.accounts}`
+        : `connected=0&reason=${encodeURIComponent(r.error ?? "unknown")}`;
+      return Response.redirect(`${url.origin}/accounts?${q}`, 302);
     }
 
     // Web UI API — authenticated via Clerk, gated to the founder's user until launch.

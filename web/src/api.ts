@@ -1,4 +1,4 @@
-import type { CapitalImportParse, Txn, TxnDetail, Situation, SituationDraft, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse, UsageData, StatementInfo, IncomeRow, DocRow, AssetRow, ScheduleRow, ChecklistItem, ClaimSuggestion, FilingReadiness, ReviewSummary, Progress, AdminTenant, AdminOverview, AdminSpend, AiEdit, ClaimReview, OccupationRulesDraft, OccupationRuleCandidate, NoaCarryover, MovementSweep, BatchResult, ClarifyQuestion, ClarifyAnswer, ClaimMatch, AccountantSummary, SuggestedDeduction, WorkUse, CarUse, CarUseRates, ScanResult, CapitalLoss, OpeningDepreciation, AttributionState, AttributionInput, AttributionRow, IncomeActivity, PropertyOwner, EntityRole, CgtAssetRow, CgtEventRow, EssGrantRow, VehicleLogbookRow, TrustDistributionRow, SmsfMemberRow, SuperContributionRow, BasPeriodRow, PaygInstalmentRow, AskAnswer, SavingsData, PhiOverview, PhiInsurerOption, PhiProvidersResult, PhiScanResult, BillingOverview, PartnerPortal, AmmaComponents, PartnershipDistributionRow, CostBaseElements } from "./types";
+import type { CapitalImportParse, Txn, TxnDetail, Situation, SituationDraft, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse, UsageData, StatementInfo, IncomeRow, DocRow, AssetRow, ScheduleRow, ChecklistItem, ClaimSuggestion, FilingReadiness, ReviewSummary, Progress, AdminTenant, AdminOverview, AdminSpend, AiEdit, ClaimReview, OccupationRulesDraft, OccupationRuleCandidate, NoaCarryover, MovementSweep, BatchResult, ClarifyQuestion, ClarifyAnswer, ClaimMatch, AccountantSummary, SuggestedDeduction, WorkUse, CarUse, CarUseRates, ScanResult, CapitalLoss, OpeningDepreciation, AttributionState, AttributionInput, AttributionRow, IncomeActivity, PropertyOwner, EntityRole, CgtAssetRow, CgtEventRow, EssGrantRow, VehicleLogbookRow, TrustDistributionRow, SmsfMemberRow, SuperContributionRow, BasPeriodRow, PaygInstalmentRow, AskAnswer, SavingsData, PhiOverview, PhiInsurerOption, PhiProvidersResult, PhiScanResult, BillingOverview, PartnerPortal, AmmaComponents, PartnershipDistributionRow, CostBaseElements, BankConnection } from "./types";
 
 // Clerk session token getter, wired from <TokenBridge> inside ClerkProvider (main.tsx).
 // Clerk tokens are short-lived, so we fetch a fresh one per request (getToken caches/refreshes).
@@ -265,6 +265,15 @@ export const api = {
   // top-level navigation).
   qboConnect: () => get<{ url: string }>("/api/qbo/connect"),
   qboDisconnect: () => post<{ ok: boolean; revoked: boolean }>("/api/qbo/disconnect"),
+
+  // ── Bank feeds (flag `bank_feed_cdr`). Same Bearer-token constraint as QBO above: we fetch the
+  // hosted consent URL as JSON, then navigate. The consumer authenticates at their own bank —
+  // Quillo never sees a banking credential.
+  bankConnect: (action: "connect" | "manage" = "connect") =>
+    get<{ url: string }>(`/api/bank/connect?action=${action}`),
+  bankConnections: () => get<{ connections: BankConnection[] }>("/api/bank/connections").then((r) => r.connections),
+  bankSelectAccounts: (selections: { providerAccountId: string; selected: boolean; accountId?: string | null }[]) =>
+    post<{ updated: number; conflicts: string[] }>("/api/bank/accounts", { selections }),
 
   // Phase 5
   report: (fy?: number) => get<Report>(`/api/report${fy ? `?fy=${fy}` : ""}`),

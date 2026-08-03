@@ -19,6 +19,7 @@ import {
   requiresAuResidency, basiqEnvironment, basiqConfigured, toCents, last4Of,
   postDateFilter, feedFingerprint, consentUrl, MAX_PAGE_SIZE,
 } from "../src/lib/basiq";
+import { parseJobIds } from "../src/lib/bank-connect";
 import { requireClerk } from "../src/auth/clerk";
 import { requireAccess } from "../src/auth/access";
 import { computeWorkMethodDeductions, workUseRatesForFy, deriveWfhHours, generateWfhDiary } from "../src/lib/work-use";
@@ -2385,9 +2386,29 @@ console.log("bank feed — Basiq client (ADR-0003)");
   const stmtFp = await lineFingerprint("acct-1", { date: "2025-07-01", amount_cents: 2450, direction: "debit", raw_description: "txn-abc", description: "txn-abc" } as StatementLine);
   check("feedFingerprint cannot collide with a statement fingerprint", fp1 !== stmtFp);
 
-  // The consent token is a consumer-scoped bearer handed to the browser — it must be URL-encoded.
-  check("consentUrl encodes the token", consentUrl("a b+c/d").includes("a%20b%2Bc%2Fd"));
-  check("consentUrl points at the hosted flow, never at Quillo", consentUrl("t").startsWith("https://consent.basiq.io/home?token="));
+  // ── The consent URL. The token is a consumer-scoped bearer handed to the browser, and `state`
+  // is what authenticates the callback, so neither may be injectable.
+  check("consentUrl points at the hosted flow, never at Quillo", consentUrl("t").startsWith("https://consent.basiq.io/home?"));
+  check("consentUrl names the action explicitly (Basiq's documented best practice)", consentUrl("t").includes("action=connect"));
+  check("consentUrl carries the state handle", consentUrl("t", { state: "abc" }).includes("state=abc"));
+  // A token or state containing '&' must NOT be able to append its own query parameters.
+  {
+    const injected = consentUrl("tok&action=manage&state=evil");
+    check("consentUrl escapes the token so it cannot inject extra params",
+      new URL(injected).searchParams.get("token") === "tok&action=manage&state=evil");
+    check("consentUrl injection does not overwrite the action",
+      new URL(injected).searchParams.get("action") === "connect");
+  }
+  check("consentUrl passes an institution filter when given", consentUrl("t", { institutionId: "AU00000" }).includes("institutionId=AU00000"));
+
+  // ── jobIds come back on the redirect as a comma-separated list. Parsed defensively: the consumer
+  // has already consented at their bank by then, so a malformed value must degrade to "no jobs"
+  // rather than throw inside a redirect handler.
+  check("parseJobIds splits a list", JSON.stringify(parseJobIds("a,b,c")) === JSON.stringify(["a", "b", "c"]));
+  check("parseJobIds trims whitespace", JSON.stringify(parseJobIds(" a , b ")) === JSON.stringify(["a", "b"]));
+  check("parseJobIds on absent/empty ⇒ []", parseJobIds(null).length === 0 && parseJobIds("").length === 0 && parseJobIds(",,,").length === 0);
+  check("parseJobIds caps the list (a caller sending hundreds is not a flow we serve)", parseJobIds(Array(50).fill("j").join(",")).length === 20);
+  check("parseJobIds drops absurdly long entries", parseJobIds(`ok,${"x".repeat(200)}`).length === 1);
 }
 
 console.log("money integer scale (0051: cost_e4 / cents_e4)");

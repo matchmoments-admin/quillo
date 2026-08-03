@@ -169,9 +169,26 @@ export async function clientToken(env: Env, basiqUserId: string): Promise<string
   return tok.access_token;
 }
 
-/** The hosted consent URL the consumer is sent to. Authentication happens there, never in Quillo. */
-export function consentUrl(token: string): string {
-  return `${CONSENT_BASE}?token=${encodeURIComponent(token)}`;
+/** Consent-UI actions. `connect` adds an institution; `manage` is the consumer's own dashboard. */
+export type ConsentAction = "connect" | "manage" | "extend" | "update" | "reauthorise";
+
+/**
+ * The hosted consent URL the consumer is sent to. Authentication happens there and on the data
+ * holder's own site — never in Quillo, which is why no banking credential can reach us.
+ *
+ * `state` is echoed back to our redirect URL untouched. It is the ONLY way to identify the tenant
+ * on the way back: the redirect is a top-level browser navigation, so it carries no Authorization
+ * header (the same constraint that makes the QBO callback a public route). It must therefore be an
+ * unguessable, single-use, short-lived handle — never the user id itself.
+ */
+export function consentUrl(token: string, opts: { action?: ConsentAction; state?: string; institutionId?: string } = {}): string {
+  const u = new URL(CONSENT_BASE);
+  u.searchParams.set("token", token);
+  // Basiq recommends naming the action explicitly rather than relying on the default flow.
+  u.searchParams.set("action", opts.action ?? "connect");
+  if (opts.state) u.searchParams.set("state", opts.state);
+  if (opts.institutionId) u.searchParams.set("institutionId", opts.institutionId);
+  return u.toString();
 }
 
 // ── Authenticated requests ───────────────────────────────────────────────────

@@ -1215,3 +1215,37 @@ export interface CapitalImportParse {
     skipped: number;
   } | null;
 }
+
+// ── Bank feeds via an Open Banking aggregator (flag `bank_feed_cdr`, ADR-0003) ──
+// `access_type` carries the legal difference: 'cdr' data is governed by the CDR Privacy
+// Safeguards for its whole life, 'web' (non-CDR web-connector) data is not.
+export interface BankConnectionAccount {
+  id: string;
+  connection_id: string;
+  provider_account_id: string;
+  account_id: string | null;          // Quillo accounts.id — null until the user maps it
+  masked_number: string | null;       // last4 ONLY; a full account number is never stored
+  name: string | null;
+  type: string | null;
+  currency: string | null;
+  selected: number;                   // 0 = never pulled (CDR data minimisation)
+  mapped_account_name: string | null;
+  mapped_account_source: string | null;
+}
+
+export interface BankConnection {
+  id: string;
+  provider: string;
+  access_type: string;                // 'cdr' | 'web'
+  institution: string | null;
+  institution_id: string | null;
+  status: string;                     // pending|active|expired|revoked|error
+  consent_id: string | null;
+  consent_scope: string | null;       // JSON array of consented data clusters
+  consent_granted_at: string | null;
+  consent_expires_at: string | null;  // CDR caps consent at 12 months
+  last_sync_at: string | null;
+  last_error: string | null;
+  created_at: string;
+  accounts: BankConnectionAccount[];
+}

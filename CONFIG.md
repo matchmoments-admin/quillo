@@ -65,22 +65,42 @@ gives genuine AU residency (Sydney). **The seam is now fully built** (WebCrypto 
 until a tenant is flipped to `bedrock` AND the AWS secrets below are set. Claude (US) remains the
 default; flipping a tenant without secrets fails loudly (it won't silently use the US provider).
 
-1. **AWS account** with **Amazon Bedrock** access in **`ap-southeast-2` (Sydney)**;
-   request access to **Claude Haiku 4.5** in the Bedrock console (Model access). `BEDROCK_HAIKU`
-   in `src/llm.ts` is already set to the **`au.` geographic profile** (keeps the whole inference
-   lifecycle in Australia) rather than `apac.` (wider Asia-Pacific) — **confirm the exact id in the
-   console before the first live call**, since a wrong profile id fails at InvokeModel time. If you
-   ever change it, add a matching `PRICING` entry in `src/lib/usage.ts` or `npm test` fails (#80).
-2. **IAM user** with `bedrock:InvokeModel` on that model; create an access key pair:
+1. **AWS account** with **Amazon Bedrock** access. Request **Claude Haiku 4.5** under Model access
+   in **both `ap-southeast-2` (Sydney) and `ap-southeast-4` (Melbourne)** — the `au.` profile routes
+   across both, so enabling only Sydney produces *intermittent* failures. Anthropic models also
+   require submitting the **use-case details form** before the first call, or InvokeModel returns
+   `ResourceNotFoundException: Model use case details have not been submitted`.
+
+   **Verified against the live account 2026-08-03** (`aws bedrock get-inference-profile`): the id is
+   `au.anthropic.claude-haiku-4-5-20251001-v1:0`, status ACTIVE, and it *"routes requests to Claude
+   Haiku 4.5 in ap-southeast-2, ap-southeast-4"* — Australia only, **no New Zealand**. That region
+   list is mirrored in `AU_DESCRIPTOR.residency.regions` and pinned by a golden. If AWS ever widens
+   the `au.` geography to ANZ, the list must **not** silently follow: "ANZ" is not "Australia" for a
+   Privacy Safeguard 8 claim.
+
+   The model id is derived per jurisdiction (`bedrockModelIdFor`), not hardcoded. Adding a
+   jurisdiction requires a matching `PRICING` entry in `src/lib/usage.ts` or `npm test` fails (#80).
+2. **IAM user PER JURISDICTION.** Credentials are suffixed with the jurisdiction code
+   (`JurisdictionDescriptor.residency.credentialSuffix`), and the unsuffixed pair is the fallback
+   for a single-jurisdiction deployment:
    ```bash
-   npx wrangler secret put AWS_ACCESS_KEY_ID
-   npx wrangler secret put AWS_SECRET_ACCESS_KEY
+   npx wrangler secret put AWS_ACCESS_KEY_ID_AU
+   npx wrangler secret put AWS_SECRET_ACCESS_KEY_AU
    ```
-3. **Enforce residency (operator, not Worker code):** attach an SCP that **denies** any
-   `bedrock:InvokeModel` where the inference profile isn't an `au.*` ARN, and denies `bedrock:*`
-   where `aws:RequestedRegion != ap-southeast-2`. Two independent locks — without them a misconfig
-   could silently route to a `us.`/`global.` profile. Verify via CloudTrail
-   (`additionalEventData.inferenceRegion`).
+   **Why per jurisdiction:** each key's policy denies Bedrock outside its own regions, so an
+   application bug cannot route one country's data into another's Bedrock. A single key allowed in
+   every supported region would make IAM permit both, leaving the guarantee resting entirely on
+   application correctness — which is what IAM exists to backstop.
+3. **Enforce residency in IAM.** The deployed policy is **`QuilloBedrockAuInvoke`** (account
+   `417755753627`): `bedrock:InvokeModel` allowed ONLY on the `au.` inference-profile ARN plus the
+   Sydney and Melbourne foundation-model ARNs, with an **explicit Deny** on `bedrock:*` wherever
+   `aws:RequestedRegion` is outside `ap-southeast-2` / `ap-southeast-4`.
+   > Earlier revisions of this file recommended an **SCP**. SCPs require AWS Organizations; this is
+   > a standalone account, so the identity-based Deny above is the equivalent control. Verified
+   > 2026-08-03: a `us-east-1` invoke was refused with
+   > *"explicit deny in an identity-based policy: QuilloBedrockAuInvoke"*.
+
+   Verify ongoing via CloudTrail (`additionalEventData.inferenceRegion`).
 4. **Flip per tenant** (keeps the default Claude for everyone else):
    ```sql
    UPDATE profiles SET inference_provider='bedrock', inference_region='ap-southeast-2'

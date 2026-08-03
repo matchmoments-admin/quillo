@@ -42,6 +42,30 @@ export interface ConsumptionTax {
   label: string; // 'GST' | 'VAT' — the user-facing name of the tax
 }
 
+/**
+ * Where this jurisdiction's inference is allowed to run.
+ *
+ * The LEGAL BASIS differs per jurisdiction — Australia's is CDR Privacy Safeguard 8, the UK's is
+ * UK GDPR Chapter V — but the MECHANISM generalises: pin inference to the customer's own region
+ * set and refuse anything else. So this is a property of the jurisdiction, not a special case
+ * bolted onto the AU path.
+ *
+ * `regions` is exhaustive and is the ONLY place the allowed regions are named. It must match the
+ * regions the Bedrock geographic inference profile actually routes between — for AU that was
+ * confirmed against the live account (`aws bedrock get-inference-profile` →
+ * "Routes requests to Claude Haiku 4.5 in ap-southeast-2, ap-southeast-4"), not from documentation.
+ */
+export interface DataResidency {
+  /** Bedrock geographic inference-profile prefix that keeps the lifecycle in-jurisdiction. */
+  profilePrefix: string; // 'au.' | 'eu.'
+  /** The ONLY regions inference may run in. Exhaustive. */
+  regions: readonly string[];
+  /** Why, named in the thrown error and the audit record so a breach is diagnosable. */
+  basis: string;
+  /** Suffix for per-jurisdiction AWS credentials, e.g. AWS_ACCESS_KEY_ID_AU. */
+  credentialSuffix: string;
+}
+
 export interface JurisdictionDescriptor {
   code: string; // 'AU' | 'UK'
   taxPeriod: TaxPeriod;
@@ -50,6 +74,7 @@ export interface JurisdictionDescriptor {
                         // jurisdiction change would need a base-conversion migration, not a live re-read).
   rulePackId: string; // 'au-v1' | 'uk-2025' — RESERVED (mirrors profiles.rule_pack_ver, for later stops)
   consumptionTax: ConsumptionTax; // INERT this stop (structural metadata; rate lives in the rule pack)
+  residency: DataResidency; // where inference may run — see assertDataResidency (src/llm.ts)
 }
 
 export const AU_DESCRIPTOR: JurisdictionDescriptor = {
@@ -58,6 +83,17 @@ export const AU_DESCRIPTOR: JurisdictionDescriptor = {
   baseCurrency: "AUD",
   rulePackId: "au-v1",
   consumptionTax: { kind: "input-credit", label: "GST" },
+  // Regions verified live: `aws bedrock get-inference-profile
+  // --inference-profile-identifier au.anthropic.claude-haiku-4-5-20251001-v1:0` returns
+  // "Routes requests to Claude Haiku 4.5 in ap-southeast-2, ap-southeast-4" — Sydney and
+  // Melbourne, no New Zealand. If AWS ever widens the `au.` geography to ANZ, this list must
+  // NOT silently follow: "ANZ" is not "Australia" for a Privacy Safeguard 8 claim.
+  residency: {
+    profilePrefix: "au.",
+    regions: ["ap-southeast-2", "ap-southeast-4"],
+    basis: "CDR Privacy Safeguard 8",
+    credentialSuffix: "AU",
+  },
 };
 
 export const UK_DESCRIPTOR: JurisdictionDescriptor = {
@@ -66,7 +102,24 @@ export const UK_DESCRIPTOR: JurisdictionDescriptor = {
   baseCurrency: "GBP",
   rulePackId: "uk-2025",
   consumptionTax: { kind: "input-credit", label: "VAT" },
+  // DECLARED BUT INERT — no UK tenant exists. Present so the residency mechanism is exercised by
+  // more than one jurisdiction in the goldens (a one-entry map proves nothing about generality).
+  // Confirm the profile id and its exact region list against the live account before a UK launch,
+  // the same way the AU list was confirmed.
+  residency: {
+    profilePrefix: "eu.",
+    regions: ["eu-west-2", "eu-west-1", "eu-central-1"],
+    basis: "UK GDPR Chapter V (international transfers)",
+    credentialSuffix: "UK",
+  },
 };
+
+/**
+ * Every jurisdiction the build knows about. Exported so derived tables (e.g. the set of Bedrock
+ * model ids that must be priced) are generated from this list rather than hand-maintained beside
+ * it — adding a jurisdiction then can't silently forget one.
+ */
+export const ALL_JURISDICTIONS: readonly JurisdictionDescriptor[] = [AU_DESCRIPTOR, UK_DESCRIPTOR];
 
 const BY_CODE: Record<string, JurisdictionDescriptor> = { AU: AU_DESCRIPTOR, UK: UK_DESCRIPTOR };
 

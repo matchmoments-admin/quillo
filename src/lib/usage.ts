@@ -29,6 +29,10 @@ const PRICING: Record<string, Rate> = {
   // kept priced so reverting that one-line constant can never land us on the un-priced path — an
   // un-priced model silently costs at the Haiku floor and under-reads the budget gate (#80).
   "au.anthropic.claude-haiku-4-5-20251001-v1:0": HAIKU,
+  // `eu.` is the UK/EU geographic profile — declared but inert (no UK tenant). Priced anyway
+  // because LLM_MODEL_IDS is derived from the jurisdiction table, so an un-priced jurisdiction
+  // fails the golden at CI rather than at runtime.
+  "eu.anthropic.claude-haiku-4-5-20251001-v1:0": HAIKU,
   "apac.anthropic.claude-haiku-4-5-20251001-v1:0": HAIKU,
 };
 

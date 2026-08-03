@@ -79,3 +79,25 @@ money/tax output or is net-new). Treat triage as part of the loop, not a separat
 - A **due-diligence gate fails** and you can't resolve it cleanly.
 
 In those cases, surface the decision crisply (use AskUserQuestion for real forks) and hold. Otherwise: ship, then tell me what you did.
+
+## Agent skills
+
+### Issue tracker
+GitHub issues via the `gh` CLI — the **Issue hygiene** section above stays authoritative for
+backlog management. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+The canonical roles map onto this repo's existing taxonomy (`ready-for-human` →
+`needs-decision`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+Single-context: `CONTEXT.md` at root (lazily created) + ADRs flat as `docs/adr-NNNN-*.md`.
+See `docs/agents/domain.md`.
+
+## Memory
+
+`memory/MEMORY.md` is curated cross-session memory. Read it at session start — it holds
+gotchas and build facts learned the hard way. When you learn something durable (a command
+quirk, a constraint that caused a mistake, a stated preference), append a one-line entry
+tagged `[src: <session-id>]`. Bulk reorganisation happens only through `/dream`, which opens
+a PR for human review — never merged by the agent that wrote it.

@@ -16,9 +16,9 @@ a tax-position report. **General information only — never tax advice.**
 
 ## Commands
 - `npm run typecheck` — server (tsc). `npm --prefix web exec tsc -- --noEmit` — SPA.
-- `npm test` — unit goldens (`scripts/check-units.ts`) + statement reconciliation. `npm run test:units` for just units.
-- `npm run eval` / `npm run eval:gate` — promptfoo categorisation eval (this is what CI runs: `.github/workflows/evals.yml`).
-- `npm run web:build` — build the SPA. `npm run deploy` (`wrangler deploy`) — deploy the Worker.
+- `npm test` — full suite: unit goldens (`scripts/check-units.ts`), mobile shell, persona goldens, e2e journey, AU snapshot, statement reconciliation, schema drift. `npm run test:units` for just units.
+- `npm run eval` / `npm run eval:gate` — promptfoo categorisation eval (what `.github/workflows/evals.yml` runs).
+- `npm run web:build` — build the SPA. `npm run deploy` (`wrangler deploy && npm run rulepack:push`) — deploy the Worker + push the rule pack.
 - Migrations: `npx wrangler d1 execute tax-agent-db --remote --file=migrations/NNNN_x.sql` (in order).
 - `npm run rulepack:push` — push `src/rulepacks/au-v1.json` to KV `rulepack:au-v1` (**do this whenever the rule pack changes** — KV shadows the bundled default).
 
@@ -49,10 +49,10 @@ babysit branching. Do the due diligence below, then ship.
 6. **Push + open a PR** — `git push -u origin <branch>` then `gh pr create --base main`. PR body: what changed, migrations touched + whether applied, the review verdict, and any deferred items.
 7. **Migrate** — apply new migrations to remote D1 **in order**, then verify (`SELECT name FROM sqlite_master …`, spot-check a backfill). Migrations must be additive/idempotent.
 8. **Merge** — `gh pr merge --squash --delete-branch` (or a fast-forward merge to `main`), then push `main`.
-9. **Deploy** — `npm run web:build && npm run deploy`; push the rule pack to KV if it changed; `curl -s https://app.quillo.au/healthz` and smoke-test the touched surface.
+9. **Deploy** — `npm run web:build && npm run deploy` (the deploy script also pushes the rule pack to KV); `curl -s https://app.quillo.au/healthz` and smoke-test the touched surface.
 10. **Report** — a tight summary: what shipped, what's live (note the single-user Clerk gate + APP-8 consent), migrations applied, review findings fixed/deferred, and any follow-ups.
 
-CI (`evals.yml`) runs the categorisation eval on PRs — it's a signal, not a deploy gate (deploys are manual via wrangler). Don't block a merge on an unrelated pre-existing eval drift; flag it instead.
+CI runs three PR workflows: `tests.yml` (typecheck + full `npm test`; skipped for docs-only PRs), `web-lint.yml` (SPA typecheck + hooks lint on `web/` changes), and `evals.yml` (categorisation eval when the rule pack / prompt / eval files change). The eval is a signal, not a deploy gate (deploys are manual via wrangler) — don't block a merge on an unrelated pre-existing eval drift; flag it instead.
 
 ### Issue hygiene (keep the backlog honest)
 The backlog lives in **GitHub Issues** (`gh` CLI); epics are tracking issues labelled `epic`, with
@@ -64,8 +64,8 @@ money/tax output or is net-new). Treat triage as part of the loop, not a separat
   closed issues, and the code before deciding — don't guess from the title.
 - **Every closure cites evidence** (commit, PR, closed-issue #, or code path) in a one-line closing
   comment. Set the reason: `state_reason=completed` for shipped work, `not_planned` for superseded /
-  won't-do (name the successor). With this older `gh` (no `--reason` flag): `gh issue comment N -b …`
-  then `gh api repos/{owner}/{repo}/issues/N -X PATCH -f state=closed -f state_reason=…`.
+  won't-do (name the successor): `gh issue close N --reason "completed"|"not planned" -c "<evidence>"`
+  (installed `gh` supports `--reason`; the old comment-then-PATCH workaround is no longer needed).
 - **Epics:** when an epic's headline item ships, re-evaluate the umbrella for closure — don't leave
   parking issues open once their core item lands.
 - **`needs-decision` is never auto-closed.** Surface the fork via `AskUserQuestion` and hold — this

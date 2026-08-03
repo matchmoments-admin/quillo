@@ -14,10 +14,16 @@ export interface Env {
   CF_ACCESS_TEAM_DOMAIN?: string;
   CF_ACCESS_AUD?: string;
 
-  // Clerk auth. CLERK_ISSUER = Clerk Frontend API URL (JWKS lives under it). When unset we
-  // are in local dev and the API falls back to the pilot tenant. CLERK_ALLOWED_USERS is a
-  // comma-separated allowlist of Clerk user ids that may use /api/* (single-user lockdown
-  // until launch; empty = deny everyone).
+  // Set to the exact string "1" to allow the unauthenticated local-dev fallback to the pilot
+  // tenant when CLERK_ISSUER / CF_ACCESS_AUD are unset. Belongs in .dev.vars ONLY — never in
+  // wrangler.toml. Without it, a missing auth config fails CLOSED (401) instead of silently
+  // serving the founder's tenant to anyone (ADR-0003 S1).
+  DEV_AUTH_BYPASS?: string;
+
+  // Clerk auth. CLERK_ISSUER = Clerk Frontend API URL (JWKS lives under it). When unset the API
+  // refuses requests unless DEV_AUTH_BYPASS="1". CLERK_ALLOWED_USERS is an OPTIONAL kill-switch
+  // allowlist of Clerk user ids: empty/unset ⇒ OPEN (self-service signup, the current default);
+  // set it to re-lock /api/* to those users only.
   CLERK_ISSUER?: string;
   CLERK_ALLOWED_USERS?: string;
   CLERK_FOUNDER_SUB?: string;           // the founder's Clerk sub → mapped to the pilot tenant "me"; others get their own tenant

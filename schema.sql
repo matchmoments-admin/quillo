@@ -132,8 +132,9 @@ CREATE INDEX IF NOT EXISTS idx_txn_refund_for ON transactions(user_id, refund_fo
 CREATE INDEX IF NOT EXISTS idx_txn_user_date ON transactions(user_id, txn_date); -- per-FY dashboard/progress range scans (migration 0018)
 
 -- ── Bank / card / investment accounts (per tenant) ────────────────────────────
--- Each account has ONE canonical money source: a QBO feed OR statement upload — never both
--- counted. This is the structural guard against feed-vs-statement double counting.
+-- Each account has ONE canonical money source: a bank feed (CDR/web via an aggregator) OR a QBO
+-- feed OR statement upload — never two counted. This is the structural guard against
+-- feed-vs-statement double counting.
 CREATE TABLE IF NOT EXISTS accounts (
   id             TEXT PRIMARY KEY,
   user_id        TEXT NOT NULL,
@@ -141,7 +142,7 @@ CREATE TABLE IF NOT EXISTS accounts (
   name           TEXT NOT NULL,                     -- user label, e.g. "Westpac Everyday"
   last4          TEXT,
   type           TEXT NOT NULL DEFAULT 'transaction', -- transaction|credit_card|loan|investment
-  source         TEXT NOT NULL DEFAULT 'statement',   -- qbo_feed|statement|manual
+  source         TEXT NOT NULL DEFAULT 'statement',   -- cdr_feed|qbo_feed|statement|manual (0075 adds cdr_feed)
   qbo_account_id TEXT,                               -- QBO AccountRef when source='qbo_feed'
   active         INTEGER NOT NULL DEFAULT 1,
   created_at     TEXT NOT NULL DEFAULT (datetime('now')),
@@ -1242,3 +1243,64 @@ CREATE TABLE IF NOT EXISTS capital_imports (
 );
 CREATE INDEX IF NOT EXISTS idx_capital_imports_user ON capital_imports(user_id, status);
 CREATE INDEX IF NOT EXISTS idx_capital_imports_hash ON capital_imports(user_id, file_hash);
+
+-- 0075 — bank feeds via an Open Banking / CDR aggregator (Basiq). `access_type` ('cdr' | 'web') is
+-- load-bearing: CDR data is subject to the Privacy Safeguards for its whole life inside Quillo and
+-- PS8 forces AU-resident inference, while web-connector data is ordinary personal information under
+-- the APP-8 gate. Default 'cdr' is fail-closed. See docs/adr-0003-bank-feed-cdr-access.md §6.2.
+CREATE TABLE IF NOT EXISTS bank_connections (
+  id                     TEXT PRIMARY KEY,
+  user_id                TEXT NOT NULL,
+  provider               TEXT NOT NULL DEFAULT 'basiq',
+  access_type            TEXT NOT NULL DEFAULT 'cdr',   -- 'cdr' | 'web'
+  provider_user_id       TEXT,
+  provider_connection_id TEXT,
+  institution            TEXT,
+  institution_id         TEXT,
+  status                 TEXT NOT NULL DEFAULT 'pending', -- pending|active|expired|revoked|error
+  consent_id             TEXT,
+  consent_scope          TEXT,                          -- JSON array of consented data clusters
+  consent_granted_at     TEXT,
+  consent_expires_at     TEXT,                          -- CDR: <= 12 months
+  last_sync_at           TEXT,
+  last_error             TEXT,
+  created_at             TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_bank_conn_user ON bank_connections(user_id, status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_bank_conn_provider
+  ON bank_connections(user_id, provider, provider_connection_id);
+
+-- `selected` is CDR data minimisation: unselected accounts are never pulled. masked_number is last4 ONLY.
+CREATE TABLE IF NOT EXISTS bank_connection_accounts (
+  id                  TEXT PRIMARY KEY,
+  user_id             TEXT NOT NULL,
+  connection_id       TEXT NOT NULL,
+  provider_account_id TEXT NOT NULL,
+  account_id          TEXT,                             -- accounts.id — NULL until mapped
+  masked_number       TEXT,
+  name                TEXT,
+  type                TEXT,
+  currency            TEXT,
+  selected            INTEGER NOT NULL DEFAULT 0,
+  created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (user_id, connection_id, provider_account_id)
+);
+CREATE INDEX IF NOT EXISTS idx_bank_conn_acct_conn ON bank_connection_accounts(user_id, connection_id);
+CREATE INDEX IF NOT EXISTS idx_bank_conn_acct_mapped ON bank_connection_accounts(user_id, account_id);
+
+-- Records the requested window per run — the evidence that makes a feed COVERAGE check possible
+-- (the gap statements get wrong today, #472).
+CREATE TABLE IF NOT EXISTS bank_sync_runs (
+  id            TEXT PRIMARY KEY,
+  user_id       TEXT NOT NULL,
+  connection_id TEXT NOT NULL,
+  from_date     TEXT,
+  to_date       TEXT,
+  fetched       INTEGER NOT NULL DEFAULT 0,
+  imported      INTEGER NOT NULL DEFAULT 0,
+  skipped       INTEGER NOT NULL DEFAULT 0,
+  status        TEXT NOT NULL DEFAULT 'ok',             -- ok|partial|failed
+  error         TEXT,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_bank_sync_conn ON bank_sync_runs(user_id, connection_id, created_at);

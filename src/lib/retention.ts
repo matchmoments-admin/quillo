@@ -75,6 +75,17 @@ export const PURGE_TABLES = [
   "phi_benefit_usage",      // 0062 — benefit recorded against a limit
   "phi_statement",          // 0062 — PHI annual tax statement (rebate/MLS inputs)
   "credit_ledger",          // 0065 — usage-billing grants + Stripe top-ups
+  // 0075 — bank feeds. For access_type='cdr' rows these are CDR data, so purge is a Privacy
+  // Safeguard 12 obligation with a regulator attached, not just the APP-11.2 house rule.
+  //
+  // NOT YET COMPLETE: deleting these rows does not revoke the consent upstream at the aggregator,
+  // the way revokeAndDisconnect does for QuickBooks. purgeTenant must also call deleteBasiqUser
+  // (src/lib/basiq.ts) — that lands with the consent dashboard, which is the PR that first creates
+  // a row here. Inert until then: the feature is flag-gated and has no writer, so the table is
+  // empty and there is nothing to leave behind.
+  "bank_connections",
+  "bank_connection_accounts",
+  "bank_sync_runs",
 ] as const;
 
 // Columns that must NEVER leave the system in an APP-12 export, even though the row belongs to the

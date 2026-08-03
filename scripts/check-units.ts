@@ -18,6 +18,8 @@ import {
   requiresAuResidency, basiqEnvironment, basiqConfigured, toCents, last4Of,
   postDateFilter, feedFingerprint, consentUrl, MAX_PAGE_SIZE,
 } from "../src/lib/basiq";
+import { requireClerk } from "../src/auth/clerk";
+import { requireAccess } from "../src/auth/access";
 import { computeWorkMethodDeductions, workUseRatesForFy, deriveWfhHours, generateWfhDiary } from "../src/lib/work-use";
 import { runScan } from "../src/lib/scan";
 import { scheduleToXlsx, notClaimedSegment, atoReturnLabel, type AccountantSchedule } from "../src/lib/accountant-schedule";
@@ -2224,6 +2226,48 @@ console.log("AU residency guard (CDR PS8)");
   check("residency error is tagged au_residency_required", msg.startsWith("au_residency_required:"));
   check("residency error names the resolved provider", msg.includes("'anthropic'"));
   check("residency error names the calling context", msg.includes(CTX));
+}
+
+// ADR-0003 S1. Both auth paths used to return an AUTHENTICATED founder tenant whenever their
+// config var was missing, so a config regression or a freshly-provisioned environment silently
+// disabled authentication and served one real person's tax data. These goldens exist so that
+// behaviour cannot come back: the dev fallback now requires a deliberate, separate opt-in.
+console.log("auth fails CLOSED on missing config (ADR-0003 S1)");
+{
+  const req = new Request("https://app.quillo.au/api/report");
+  const clerk = async (e: Record<string, string>) => requireClerk(req, e as unknown as Env);
+  const access = async (e: Record<string, string>) => requireAccess(req, e as unknown as Env);
+
+  // The regression this whole change exists to prevent.
+  check("clerk: no issuer + no bypass ⇒ 401 (NOT the founder tenant)", (await clerk({})).ok === false);
+  check("access: no AUD + no bypass ⇒ null (NOT the founder tenant)", (await access({})) === null);
+
+  // The dev path still works, but only when asked for explicitly.
+  const devClerk = await clerk({ DEV_AUTH_BYPASS: "1" });
+  check("clerk: bypass='1' ⇒ dev tenant (local ergonomics preserved)", devClerk.ok === true && devClerk.user.userId === "me");
+  check("access: bypass='1' ⇒ dev tenant", (await access({ DEV_AUTH_BYPASS: "1", }))?.userId === "me");
+
+  // A truthy-looking typo must fail SAFE. This is the subtle one: `if (env.DEV_AUTH_BYPASS)`
+  // would accept every string below and quietly unlock the API.
+  for (const bad of ["true", "yes", "on", "0", "", " 1", "1 "]) {
+    check(`clerk: bypass='${bad}' is NOT accepted (only the exact string "1")`, (await clerk({ DEV_AUTH_BYPASS: bad })).ok === false);
+  }
+  check("access: bypass='true' is NOT accepted", (await access({ DEV_AUTH_BYPASS: "true" })) === null);
+
+  // A half-configured Access setup must not fall through to the dev tenant either.
+  check("access: AUD set but TEAM_DOMAIN missing ⇒ closed", (await access({ CF_ACCESS_AUD: "aud" })) === null);
+
+  // Production is protected by absence: the bypass lives in .dev.vars, never in wrangler.toml.
+  // Checks for an ASSIGNMENT rather than a mention — the file deliberately documents the var in a
+  // comment warning against setting it, and that comment must not trip this guard.
+  {
+    const { readFileSync } = await import("node:fs");
+    const assigned = readFileSync("wrangler.toml", "utf8")
+      .split("\n")
+      .filter((l) => !l.trimStart().startsWith("#"))
+      .some((l) => /^\s*DEV_AUTH_BYPASS\s*=/.test(l));
+    check("wrangler.toml never ASSIGNS DEV_AUTH_BYPASS (production cannot bypass)", !assigned);
+  }
 }
 
 // The bank-feed client (0075 / ADR-0003). The residency goldens above prove the guard fails closed;

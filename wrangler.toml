@@ -110,8 +110,10 @@ APP_FEE_CENTS = "0"
 FREE_CREDIT_GRANT_CENTS = "500"
 # Clerk auth (replaces Cloudflare Access). CLERK_ISSUER = the Clerk Frontend API URL
 # (derived from the publishable key). The Worker verifies session JWTs against
-# ${CLERK_ISSUER}/.well-known/jwks.json. Leave CLERK_ISSUER UNSET for local dev (the API
-# falls back to the pilot tenant, like the old Access seam).
+# ${CLERK_ISSUER}/.well-known/jwks.json. For local dev, leave CLERK_ISSUER unset AND set
+# DEV_AUTH_BYPASS=1 in .dev.vars — an unset issuer alone now fails CLOSED (401) rather than
+# falling back to the pilot tenant, so a config regression can't silently disable auth
+# (ADR-0003 S1). NEVER add DEV_AUTH_BYPASS here: production must not be able to bypass.
 CLERK_ISSUER = "https://obliging-eel-28.clerk.accounts.dev"
 # OPTIONAL allow-list / kill-switch. Empty (the default) = OPEN self-service signup: any Clerk-
 # verified user gets their own isolated tenant. Set to a comma-separated list of subs to RE-LOCK

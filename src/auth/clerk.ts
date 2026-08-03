@@ -19,7 +19,13 @@ import type { AuthedUser } from "./access";
  * signups or run a closed beta again) — instant via config, no code change.
  *
  * Local dev: when CLERK_ISSUER is unset there is no auth in front, so we fall back to the
- * pilot tenant "me" (unchanged dev ergonomics).
+ * pilot tenant "me" (unchanged dev ergonomics) — but ONLY when DEV_AUTH_BYPASS is explicitly "1".
+ *
+ * That second condition is the whole point. Without it, a missing CLERK_ISSUER — a config
+ * regression, a typo, a fresh environment provisioned without the var — silently disables
+ * authentication and serves the founder's real tax data to anyone who asks. The bypass must be a
+ * deliberate, separate act of configuration, and it is set only in .dev.vars (never wrangler.toml),
+ * so production cannot reach it. Absent both, this fails CLOSED with a 401.
  */
 
 // Cache the JWKS per issuer across requests (module scope survives within an isolate).
@@ -42,7 +48,13 @@ export type ClerkAuthResult =
 
 export async function requireClerk(req: Request, env: Env): Promise<ClerkAuthResult> {
   if (!env.CLERK_ISSUER) {
-    return { ok: true, user: { email: "dev@local", userId: "me" } }; // local dev, no auth in front
+    // Compared against the exact string "1" so a well-meaning "true"/"yes"/"on" fails SAFE
+    // (closed) rather than being coerced truthy and quietly unlocking the API.
+    if (env.DEV_AUTH_BYPASS === "1") {
+      return { ok: true, user: { email: "dev@local", userId: "me" } }; // local dev, no auth in front
+    }
+    console.error("auth: CLERK_ISSUER is unset and DEV_AUTH_BYPASS is not '1' — refusing the request");
+    return { ok: false, status: 401 };
   }
 
   const auth = req.headers.get("Authorization");

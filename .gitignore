@@ -18,3 +18,6 @@ web/.env
 # promptfoo per-run output (gate reads it locally; not source)
 evals/results.json
 diagrams/quillo-test-arch.png
+
+# agent memory scratch space (per-session, never committed)
+memory/.scratch/

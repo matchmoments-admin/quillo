@@ -1418,6 +1418,24 @@ export async function handleApi(
       if (!selections.length) return json({ error: "no valid selections" }, 400);
       return json(await stub.bankSelectAccounts(uid, selections));
     }
+
+    // POST /api/bank/sync — pull POSTED lines for the selected+mapped accounts into the ledger,
+    // then categorise what the deterministic pass couldn't resolve. Two steps rather than one so a
+    // categorisation failure (budget, consent, residency) never loses the imported lines.
+    if (id === "sync" && m === "POST") {
+      const body = (await req.json().catch(() => ({}))) as { fy?: unknown };
+      const fy = typeof body.fy === "string" && /^\d{4}$/.test(body.fy) ? body.fy : undefined;
+      const synced = await stub.bankSync(uid, { fy });
+      let categorised = 0;
+      try {
+        ({ categorised } = await stub.categoriseFeedLines(uid));
+      } catch (e) {
+        // The lines ARE imported and visible in the Inbox — surface why categorisation stopped
+        // rather than failing the whole sync and implying nothing landed.
+        return json({ ...synced, categorised: 0, categorise_error: (e as Error).message });
+      }
+      return json({ ...synced, categorised });
+    }
   }
 
   // ── QuickBooks (Phase 4) ──────────────────────────────────────────────────

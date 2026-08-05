@@ -51,6 +51,38 @@ export async function takeConnectState(env: Env, state: string | null | undefine
 }
 
 /**
+ * The window a sync should actually request: the requested financial year, clamped to what the
+ * regime can serve.
+ *
+ * TWO clamps, both load-bearing:
+ *
+ *  - THE 24-MONTH WALL. Data holders are not obliged to serve CDR transactions older than 24
+ *    months, and asking for more produces silent partial coverage rather than an error. Clamping
+ *    explicitly means `bank_sync_runs` records the window we REQUESTED, which is what makes a
+ *    coverage check possible at all — the completeness gap that statements get wrong today (#472),
+ *    where a missing month is silently absent and nothing anywhere reports it.
+ *  - TODAY. Asking for future dates is meaningless and some providers error on it.
+ *
+ * Returns `null` when the clamps cross (an FY that ended before the wall), because "no window" and
+ * "an inverted window" are different things and only one of them should reach the provider.
+ *
+ * Pure and date-injected so it is testable — the caller passes `today`, nothing here reads a clock.
+ */
+export function syncWindow(
+  fyStart: string,
+  fyEnd: string,
+  today: string,
+  monthsBack = 24,
+): { from: string; to: string } | null {
+  const wallDate = new Date(`${today}T00:00:00Z`);
+  wallDate.setUTCMonth(wallDate.getUTCMonth() - monthsBack);
+  const wall = wallDate.toISOString().slice(0, 10);
+  const from = fyStart > wall ? fyStart : wall;
+  const to = fyEnd < today ? fyEnd : today;
+  return from > to ? null : { from, to };
+}
+
+/**
  * Basiq appends `jobIds` as a comma-separated list. Parsed defensively: a malformed value must
  * degrade to "no jobs" rather than throwing inside a redirect handler, because the consumer has
  * already consented at their bank by this point and the connection exists regardless — we can

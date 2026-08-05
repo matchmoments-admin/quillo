@@ -25,6 +25,65 @@ import { groupKey } from "./clarify";
 // (never summed 1:1 as if it were AUD). Surfaced separately so the excluded money stays visible.
 export const FX_CONVERTED = "NOT (COALESCE(currency,'AUD') <> 'AUD' AND amount_aud_cents IS NULL)";
 
+/** Sources that arrive automatically. An account fed by one must never also receive another. */
+const FEED_SOURCES = new Set(["qbo_feed", "cdr_feed"]);
+const SOURCE_LABEL: Record<string, string> = {
+  qbo_feed: "QuickBooks",
+  cdr_feed: "bank feed",
+  statement: "statement upload",
+  manual: "manual entry",
+};
+
+/**
+ * ADR-0002: an account draws its money from exactly ONE source — `cdr_feed` XOR `statement` XOR
+ * `qbo_feed`. Throws if `incoming` would break that.
+ *
+ * THIS IS THE ONLY PLACE THE RULE LIVES, because the bug that created it was having the rule in two
+ * places and only implementing half of it: `parseStatement` refused a QuickBooks account but not a
+ * bank-feed one, while `bankSelectAccounts` refused a feed onto a statement account. So a feed could
+ * be mapped to an account and its statements uploaded afterwards, and every overlapping line was
+ * counted twice in the tax position — silently, because the two sources fingerprint differently
+ * (statements hash content, feeds hash the provider id) and therefore never collide on
+ * `idx_txn_fingerprint`. No downstream dedup could have caught it.
+ *
+ * Both writers call this. A third writer must too.
+ */
+export async function assertCanonicalSource(
+  env: Env,
+  userId: string,
+  accountId: string,
+  incoming: "cdr_feed" | "statement" | "qbo_feed",
+): Promise<void> {
+  const account = await env.DB.prepare(`SELECT name, source FROM accounts WHERE id = ? AND user_id = ?`)
+    .bind(accountId, userId)
+    .first<{ name: string; source: string }>();
+  if (!account) throw new Error("account not found");
+  if (account.source === incoming) return;
+
+  const label = (s: string) => SOURCE_LABEL[s] ?? s;
+
+  // The account is already declared as an automatic feed — nothing else may write to it.
+  if (FEED_SOURCES.has(account.source)) {
+    throw new Error(
+      `${account.name} is reconciled from the ${label(account.source)} — adding ${label(incoming)} would double-count. Use one source per account.`,
+    );
+  }
+
+  // The account defaults to 'statement'/'manual', which only becomes binding once lines exist: an
+  // untouched account can still be claimed by a feed. Count what is actually there rather than
+  // trusting the column, so a source flipped by hand can't smuggle a double-import through.
+  if (FEED_SOURCES.has(incoming)) {
+    const used = await env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM transactions WHERE user_id = ? AND account_id = ? AND source <> ?`,
+    ).bind(userId, accountId, incoming).first<{ n: number }>();
+    if ((used?.n ?? 0) > 0) {
+      throw new Error(
+        `${account.name} already has ${used?.n} imported ${label(account.source)} line(s). One canonical source per account — remove those first, or use a different account.`,
+      );
+    }
+  }
+}
+
 export const COUNTABLE =
   "status NOT IN ('duplicate','ignored') " +
   "AND (kind = 'bank_line' OR (kind = 'receipt' AND matched_txn_id IS NULL)) " +

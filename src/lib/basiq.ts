@@ -465,7 +465,10 @@ export async function fetchTransactions(
         description: t.description ?? "",
         amountCents: toCents(t.amount),
         direction,
-        currency: t.currency ?? "AUD",
+        // Normalised at the boundary. A provider returning "aud" would otherwise compare unequal to
+        // the base currency, marking every line unconvertible — which excludes the whole account
+        // from the position via FX_CONVERTED and silently zeroes the year.
+        currency: (t.currency ?? "AUD").trim().toUpperCase(),
         providerClass: t.class ?? null,
       });
     }

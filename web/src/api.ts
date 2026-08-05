@@ -274,6 +274,11 @@ export const api = {
   bankConnections: () => get<{ connections: BankConnection[] }>("/api/bank/connections").then((r) => r.connections),
   bankSelectAccounts: (selections: { providerAccountId: string; selected: boolean; accountId?: string | null }[]) =>
     post<{ updated: number; conflicts: string[] }>("/api/bank/accounts", { selections }),
+  bankSync: (fy?: string) =>
+    post<{ imported: number; skipped: number; fetched: number; runs: number; errors: string[]; categorised: number; categorise_error?: string }>(
+      "/api/bank/sync",
+      fy ? { fy } : undefined,
+    ),
 
   // Phase 5
   report: (fy?: number) => get<Report>(`/api/report${fy ? `?fy=${fy}` : ""}`),

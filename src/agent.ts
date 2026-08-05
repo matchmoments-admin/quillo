@@ -15,7 +15,7 @@ import { matchEnergyOffer, getOfferById, buildReferralUrl, opportunityTakesEnerg
 import { deriveWfhHours, generateWfhDiary, type WfhLeaveRange } from "./lib/work-use";
 import { applyUserRules, RULE_CREDIT_BUCKETS } from "./lib/rules";
 import { sha256hex, sha256hexBytes } from "./lib/base64";
-import { getLLM, type LLM } from "./llm";
+import { getLLM, assertDataResidency, type LLM } from "./llm";
 import { extractReceipt, extractReceipts, extractFromText, extractColumnMap, extractCapitalColumnMap, extractStatement, extractBatch, extractSituationDraft, extractOccupationRules, extractGuide, extractAnswer, classifyDocument, extractPayslip, extractIncomeStatement, extractNoticeOfAssessment, extractAgentStatement, extractDepreciationSchedule, extractDividend, extractHealthClaim, batchParams, parseBatchMessage, mapBatchItems, ALLOWED_NAV_ROUTES, type Extracted, type ExtractedStatement, type SituationDraft, type OccupationRulesDraft, type AnswerResult } from "./extract";
 import { mapIncomeStatementToRows } from "./lib/income-statement";
 import { fyForDate, buildReport, useStatusDeniedExpr, propertyUndeterminedGatedExpr } from "./lib/report";
@@ -42,9 +42,10 @@ import { getLedger, LedgerNotConnectedError, LedgerReauthError, type LedgerExpen
 import { redact } from "./lib/redact";
 import {
   basiqConfigured, clientToken, consentUrl, createBasiqUser, getAccounts, getConsents,
+  fetchTransactions, feedFingerprint, requiresAuResidency,
   type BasiqConsent, type ConsentAction,
 } from "./lib/basiq";
-import { putConnectState, takeConnectState, parseJobIds } from "./lib/bank-connect";
+import { putConnectState, takeConnectState, parseJobIds, syncWindow } from "./lib/bank-connect";
 import { toBaseCurrency } from "./lib/fx";
 import { spentTodayCents, spentTodayGlobalCents, spentThisMonthGlobalCents, noteMeteringError, usageStatements } from "./lib/usage";
 import { billingPolicy, freeCreditGrantE4 } from "./lib/billing";
@@ -1702,6 +1703,215 @@ export class TaxAgent extends Agent<Env> {
     if (stmts.length) await this.env.DB.batch(stmts);
     await this.audit(userId, "bank_accounts_selected", JSON.stringify({ selected: selections.filter((s) => s.selected).length, conflicts: conflicts.length }));
     return { updated: selections.length - conflicts.length, conflicts };
+  }
+
+  /**
+   * Pull POSTED transactions for every SELECTED + MAPPED feed account and land them in the ledger.
+   *
+   * Lines land in the EXISTING `kind='bank_line'` shape through the same deterministic-categorise →
+   * Inbox/Sort pipeline that statements use, so no engine or position math changes: a fed line and
+   * an uploaded line are the same row with a different `source`. That is deliberate — the feed is a
+   * new way to ACQUIRE lines, not a new way to treat them.
+   *
+   * Idempotent. `line_fingerprint = feedFingerprint(providerTxnId)` + the existing unique index
+   * means a re-sync is a no-op via ON CONFLICT DO NOTHING, so overlapping windows are safe.
+   */
+  async bankSync(userId: string, opts: { fy?: string } = {}): Promise<{ imported: number; skipped: number; fetched: number; runs: number; errors: string[] }> {
+    if (!basiqConfigured(this.env)) throw new Error("bank feeds are not configured (BASIQ_API_KEY missing)");
+    if (!(await this.bankRateOk(userId, "sync", 30))) throw new Error("too many sync attempts — try again later");
+
+    const profile = await this.requireProfile(userId);
+    const descriptor = await this.jurisdictionFor(userId);
+    const { start: fyStart, end: fyEnd } = this.fyBoundsFor(opts.fy, descriptor);
+    const baseCur = baseCurrencyOf(this.env, descriptor);
+
+    // Clamp to the 24-month CDR wall and to today — see syncWindow for why both matter.
+    const today = new Date().toISOString().slice(0, 10);
+    const window = syncWindow(fyStart, fyEnd, today);
+    if (!window) {
+      // The whole FY predates the wall: nothing the feed can legitimately serve. Recorded rather
+      // than silently returning zero, so "the feed can't reach this year" is visible in the audit
+      // trail instead of looking like an empty bank account.
+      await this.audit(userId, "bank_sync_out_of_range", JSON.stringify({ fyStart, fyEnd, today }));
+      return { imported: 0, skipped: 0, fetched: 0, runs: 0, errors: ["That financial year is older than the 24-month open-banking limit — upload statements for it instead."] };
+    }
+    const { from, to } = window;
+
+    const conns = await this.env.DB.prepare(
+      `SELECT c.id, c.provider_connection_id, c.provider_user_id, c.access_type
+         FROM bank_connections c WHERE c.user_id = ? AND c.status = 'active'`,
+    ).bind(userId).all<{ id: string; provider_connection_id: string; provider_user_id: string; access_type: string }>();
+
+    const errors: string[] = [];
+    let importedTotal = 0, skippedTotal = 0, fetchedTotal = 0, runs = 0;
+
+    for (const conn of conns.results ?? []) {
+      // Only accounts the consumer explicitly SELECTED and mapped are ever fetched. Under the CDR
+      // data minimisation is an obligation, so this filter is the enforcement point.
+      const selected = await this.env.DB.prepare(
+        `SELECT provider_account_id, account_id FROM bank_connection_accounts
+          WHERE user_id = ? AND connection_id = ? AND selected = 1 AND account_id IS NOT NULL`,
+      ).bind(userId, conn.id).all<{ provider_account_id: string; account_id: string }>();
+      const picked = selected.results ?? [];
+      if (!picked.length) continue;
+
+      const targetFor = new Map(picked.map((p) => [p.provider_account_id, p.account_id]));
+      const runId = crypto.randomUUID();
+      let imported = 0, skipped = 0, fetched = 0, status = "ok", error: string | null = null;
+
+      try {
+        const res = await fetchTransactions(this.env, conn.provider_user_id, {
+          from, to, accountIds: picked.map((p) => p.provider_account_id),
+        });
+        fetched = res.transactions.length;
+        // A provider row outside the window we asked for is a signal the vendor filter did not do
+        // what we assumed — recorded as partial rather than swallowed.
+        if (res.skippedOutOfWindow > 0) status = "partial";
+
+        const rulePack = await this.loadRulePack(profile.rule_pack_ver);
+        const situation = await getSituation(this.env, userId, profile);
+
+        const inserts: D1PreparedStatement[] = [];
+        for (const t of res.transactions) {
+          const accountId = targetFor.get(t.accountId);
+          if (!accountId) continue;
+          const fp = await feedFingerprint(t.id);
+          const transfer = isTransferLike(t.description);
+          const cat = transfer
+            ? null
+            : this.deterministicCategorise(cleanMerchant(t.description), situation.rules, rulePack, {
+                skipHints: t.direction === "credit",
+                direction: t.direction,
+              });
+          // A foreign-currency line has no trustworthy base-currency value until the FX layer
+          // converts it, so FX_CONVERTED (queries.ts) excludes it from every money sum. Force it to
+          // needs_review so the excluded money stays VISIBLE — an 'extracted' row that silently
+          // contributes nothing is exactly the shape of a quietly-understated position.
+          const unconverted = t.currency !== baseCur;
+          inserts.push(
+            this.env.DB.prepare(
+              `INSERT INTO transactions
+                 (id, user_id, source, status, kind, account_id, statement_id, line_fingerprint, raw_description,
+                  merchant, amount_cents, currency, amount_aud_cents, txn_date, direction, bucket, ato_label, confidence, property_id)
+               VALUES (?, ?, 'cdr_feed', ?, 'bank_line', ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(user_id, account_id, line_fingerprint) DO NOTHING`,
+            ).bind(
+              crypto.randomUUID(), userId,
+              transfer ? "ignored" : unconverted ? "needs_review" : cat ? "extracted" : "needs_review",
+              accountId, fp, t.description, cleanMerchant(t.description),
+              t.amountCents,
+              t.currency,
+              // NOT silently treated as base currency: NULL here + the FX_CONVERTED guard in
+              // queries.ts keeps an unconverted foreign line out of every money sum, rather than
+              // counting a USD figure as AUD. Converting them is a later slice.
+              unconverted ? null : t.amountCents,
+              t.postDate, t.direction,
+              cat?.bucket ?? null, cat?.ato_label ?? null, cat ? cat.confidence : null, cat?.property_id ?? null,
+            ),
+          );
+        }
+        for (let i = 0; i < inserts.length; i += 50) {
+          const batch = await this.env.DB.batch(inserts.slice(i, i + 50));
+          for (const r of batch) imported += r.meta?.changes ?? 0;
+        }
+        skipped = fetched - imported;
+      } catch (e) {
+        status = "failed";
+        error = (e as Error).message;
+        errors.push(error);
+      }
+
+      await this.env.DB.batch([
+        this.env.DB.prepare(
+          `INSERT INTO bank_sync_runs (id, user_id, connection_id, from_date, to_date, fetched, imported, skipped, status, error)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).bind(runId, userId, conn.id, from, to, fetched, imported, skipped, status, error),
+        this.env.DB.prepare(
+          `UPDATE bank_connections SET last_sync_at = datetime('now'), last_error = ? WHERE id = ? AND user_id = ?`,
+        ).bind(error, conn.id, userId),
+      ]);
+
+      importedTotal += imported; skippedTotal += skipped; fetchedTotal += fetched; runs++;
+    }
+
+    await this.audit(userId, "bank_sync", JSON.stringify({ from, to, fetched: fetchedTotal, imported: importedTotal, runs, errors: errors.length }));
+    return { imported: importedTotal, skipped: skippedTotal, fetched: fetchedTotal, runs, errors };
+  }
+
+  /**
+   * Categorise fed lines the deterministic pass could not resolve.
+   *
+   * Separate from categoriseStatement because fed lines have no `statement_id` to key on. Live path
+   * only, chunked and budget-gated — CDR-derived data must run on Bedrock in production, and
+   * Bedrock has no Batch API.
+   *
+   * TWO guards that do not exist on the statement path, both because this data is different in kind:
+   *
+   *  1. RESIDENCY. When any contributing connection is production CDR data, assertDataResidency runs
+   *     BEFORE the model call and fails closed. Not a flag, no warn-and-continue — Privacy Safeguard
+   *     8 carries penalty provisions and a consumer cannot consent past it.
+   *  2. REDACTION (ADR-0003 S8). Bank descriptions routinely carry BSB fragments, BPAY CRNs and
+   *     PANs, so the merchant string is redacted before it reaches the model.
+   *
+   * Redaction is deliberately NOT applied to statement lines here. `redact()` matches any 6+ digit
+   * run, so applying it to the existing path would change what the model sees, hence categorisation,
+   * hence the tax position — a money-output change that needs its own flag and persona golden.
+   */
+  async categoriseFeedLines(userId: string): Promise<{ categorised: number }> {
+    const rows = await this.env.DB.prepare(
+      `SELECT id, merchant, amount_cents, txn_date, direction FROM transactions
+        WHERE user_id = ? AND source = 'cdr_feed' AND kind = 'bank_line' AND status = 'needs_review'
+        LIMIT ?`,
+    ).bind(userId, LIVE_MAX_LINES).all<{ id: string; merchant: string | null; amount_cents: number | null; txn_date: string | null; direction: string | null }>();
+    const items = rows.results ?? [];
+    if (!items.length) return { categorised: 0 };
+
+    const profile = await this.requireProfile(userId);
+    const provider = profile.inference_provider ?? this.env.DEFAULT_INFERENCE_PROVIDER;
+    if (provider === "anthropic" && profile.consent_xborder !== 1) return { categorised: 0 }; // APP-8 gate
+
+    // PS8: fail closed before any model call if ANY contributing connection is production CDR data.
+    const cdr = await this.env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM bank_connections WHERE user_id = ? AND access_type = 'cdr'`,
+    ).bind(userId).first<{ n: number }>();
+    if ((cdr?.n ?? 0) > 0 && requiresAuResidency(this.env, "cdr")) {
+      assertDataResidency(this.env, profile, await this.jurisdictionFor(userId), "bank feed categorisation");
+    }
+
+    const rulePack = await this.loadRulePack(profile.rule_pack_ver);
+    const situation = await getSituation(this.env, userId, profile);
+    const system = this.buildSystemPrompt(rulePack, profile, situation, null);
+    const llm = await getLLM(this.env, profile, { userId }, await this.jurisdictionFor(userId));
+    await this.auditXborderInference(userId, provider, "categorise_feed", llm.modelId);
+
+    let categorised = 0;
+    for (let i = 0; i < items.length; i += 40) {
+      const chunk = items.slice(i, i + 40);
+      if (!(await this.withinBudget(userId, null))) break;
+      const results = await extractBatch(
+        llm,
+        system,
+        chunk.map((c) => ({
+          merchant: redact(c.merchant ?? ""), // S8 — never send raw bank text to a model
+          amount_cents: c.amount_cents ?? 0,
+          date: c.txn_date,
+          direction: c.direction as "debit" | "credit" | null,
+        })),
+      );
+      const updates: D1PreparedStatement[] = [];
+      for (const { id, item } of mapBatchItems(chunk.map((c) => c.id), results)) {
+        updates.push(
+          this.env.DB.prepare(
+            `UPDATE transactions SET status='extracted', bucket=?, ato_label=?, confidence=?, reasoning=? WHERE id=? AND user_id=? AND status='needs_review'`,
+          ).bind(item.bucket, item.ato_label, item.confidence, item.reasoning, id, userId),
+        );
+        categorised++;
+      }
+      if (updates.length) await this.env.DB.batch(updates);
+    }
+    await this.audit(userId, "bank_feed_categorised", JSON.stringify({ categorised }));
+    await this.stampDeductibility(userId);
+    return { categorised };
   }
 
   /**

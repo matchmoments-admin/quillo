@@ -169,8 +169,25 @@ function BankFeed({ accounts }: { accounts: Account[] }) {
     onError: (e: Error) => toast.error(e.message),
   });
 
+  const sync = useMutation({
+    mutationFn: () => api.bankSync(),
+    onSuccess: (r) => {
+      if (r.errors.length) for (const e of r.errors) toast.error(e);
+      // Imported lines are real even when categorisation stopped — say so, rather than implying
+      // the whole sync failed.
+      if (r.categorise_error) toast.warning(`Imported ${r.imported} line(s), but categorisation stopped: ${r.categorise_error}`);
+      else if (r.runs === 0) toast.info("No accounts selected yet — tick the ones you want and save first.");
+      else toast.success(`Imported ${r.imported} new line(s) · ${r.categorised} categorised · ${r.skipped} already had.`);
+      qc.invalidateQueries({ queryKey: ["bank-connections"] });
+      qc.invalidateQueries({ queryKey: ["transactions"] });
+      qc.invalidateQueries({ queryKey: ["progress"] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
   const rows = (connections ?? []).flatMap((c) => c.accounts.map((a) => ({ conn: c, acct: a })));
   const dirty = Object.keys(draft).length > 0;
+  const anySelected = rows.some(({ acct }) => (draft[acct.provider_account_id]?.selected ?? acct.selected === 1) && (draft[acct.provider_account_id]?.accountId ?? acct.account_id));
 
   return (
     <Card className="space-y-4 p-5">
@@ -259,9 +276,13 @@ function BankFeed({ accounts }: { accounts: Account[] }) {
             >
               {save.isPending ? "Saving…" : "Save selection"}
             </Button>
+            <Button variant="ghost" onClick={() => sync.mutate()} disabled={sync.isPending || dirty || !anySelected}>
+              {sync.isPending ? "Syncing…" : "↻ Sync transactions"}
+            </Button>
             <p className="text-xs text-muted">
-              Only selected accounts are ever fetched. An account can have one source — a feed or uploaded statements,
-              never both.
+              {dirty
+                ? "Save your selection before syncing."
+                : "Only selected accounts are ever fetched. An account can have one source — a feed or uploaded statements, never both."}
             </p>
           </div>
         </>

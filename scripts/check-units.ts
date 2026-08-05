@@ -19,7 +19,7 @@ import {
   requiresAuResidency, basiqEnvironment, basiqConfigured, toCents, last4Of,
   postDateFilter, feedFingerprint, consentUrl, MAX_PAGE_SIZE,
 } from "../src/lib/basiq";
-import { parseJobIds } from "../src/lib/bank-connect";
+import { parseJobIds, syncWindow } from "../src/lib/bank-connect";
 import { requireClerk } from "../src/auth/clerk";
 import { requireAccess } from "../src/auth/access";
 import { computeWorkMethodDeductions, workUseRatesForFy, deriveWfhHours, generateWfhDiary } from "../src/lib/work-use";
@@ -2409,6 +2409,31 @@ console.log("bank feed — Basiq client (ADR-0003)");
   check("parseJobIds on absent/empty ⇒ []", parseJobIds(null).length === 0 && parseJobIds("").length === 0 && parseJobIds(",,,").length === 0);
   check("parseJobIds caps the list (a caller sending hundreds is not a flow we serve)", parseJobIds(Array(50).fill("j").join(",")).length === 20);
   check("parseJobIds drops absurdly long entries", parseJobIds(`ok,${"x".repeat(200)}`).length === 1);
+
+  // ── The sync window. The 24-month CDR wall is a hard limit data holders need not serve past, so
+  // asking beyond it yields SILENT partial coverage — the same class of failure as a statement
+  // month quietly missing (#472). Clamping explicitly is what lets bank_sync_runs record the
+  // window we actually requested, which is the only basis a coverage check could ever have.
+  {
+    const TODAY = "2026-08-05";
+    // FY2025-26 is fully inside the wall and still running ⇒ clamped to today, not the FY end.
+    const cur = syncWindow("2025-07-01", "2026-06-30", TODAY);
+    check("window: a current FY starts at the FY start", cur?.from === "2025-07-01");
+    check("window: a FY ending in the past is not clamped to today", cur?.to === "2026-06-30");
+    // An FY still in progress must not request future dates.
+    const live = syncWindow("2026-07-01", "2027-06-30", TODAY);
+    check("window: an in-progress FY is capped at today", live?.to === TODAY);
+    // The wall bites on an older FY: 24 months back from 2026-08-05 is 2024-08-05.
+    const old = syncWindow("2024-07-01", "2025-06-30", TODAY);
+    check("window: an FY partly behind the 24-month wall starts AT the wall", old?.from === "2024-08-05");
+    check("window: ...and still ends at the FY end", old?.to === "2025-06-30");
+    // Entirely behind the wall ⇒ no window at all, NOT an inverted one.
+    check("window: an FY wholly behind the wall returns null, never a reversed range",
+      syncWindow("2022-07-01", "2023-06-30", TODAY) === null);
+    // A null result must never be confused with a zero-length one.
+    const w = syncWindow("2025-07-01", "2026-06-30", TODAY);
+    check("window: from is never after to", w != null && w.from <= w.to);
+  }
 }
 
 console.log("money integer scale (0051: cost_e4 / cents_e4)");

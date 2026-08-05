@@ -20,6 +20,7 @@ import {
   postDateFilter, feedFingerprint, consentUrl, MAX_PAGE_SIZE,
 } from "../src/lib/basiq";
 import { parseJobIds, syncWindow } from "../src/lib/bank-connect";
+import { assertCanonicalSource } from "../src/lib/queries";
 import { requireClerk } from "../src/auth/clerk";
 import { requireAccess } from "../src/auth/access";
 import { computeWorkMethodDeductions, workUseRatesForFy, deriveWfhHours, generateWfhDiary } from "../src/lib/work-use";
@@ -2318,6 +2319,50 @@ console.log("auth fails CLOSED on missing config (ADR-0003 S1)");
       .some((l) => /^\s*DEV_AUTH_BYPASS\s*=/.test(l));
     check("wrangler.toml never ASSIGNS DEV_AUTH_BYPASS (production cannot bypass)", !assigned);
   }
+}
+
+// ADR-0002 canonical source. The bug these exist for: parseStatement refused 'qbo_feed' but not
+// 'cdr_feed', while bankSelectAccounts refused a feed onto a statement account — half an invariant
+// each way. So a feed could be mapped and its statements uploaded afterwards, and every overlapping
+// line was counted TWICE in the tax position, silently: statements hash content and feeds hash the
+// provider id, so the two never collide on idx_txn_fingerprint and no downstream dedup could catch
+// it. The rule now lives in exactly one function; these goldens pin BOTH directions.
+console.log("canonical money source (ADR-0002)");
+{
+  // Minimal D1 stand-in: `first()` replays queued rows in order (account lookup, then the count).
+  const envWith = (account: { name: string; source: string } | null, otherSourceRows = 0): Env => {
+    const queue: unknown[] = [account, { n: otherSourceRows }];
+    return {
+      DB: { prepare: () => ({ bind: () => ({ first: async () => queue.shift() ?? null }) }) },
+    } as unknown as Env;
+  };
+  const refuses = async (e: Env, incoming: "cdr_feed" | "statement" | "qbo_feed"): Promise<string | null> => {
+    try { await assertCanonicalSource(e, "me", "acct-1", incoming); return null; } catch (err) { return (err as Error).message; }
+  };
+
+  // ── The regression. Each of these was ACCEPTED before the fix.
+  const stmtOntoFeed = await refuses(envWith({ name: "Everyday", source: "cdr_feed" }), "statement");
+  check("REGRESSION: a statement upload onto a BANK-FEED account is refused", stmtOntoFeed !== null);
+  check("...and the refusal names the account and says why", !!stmtOntoFeed?.includes("Everyday") && !!stmtOntoFeed?.includes("double-count"));
+
+  // ── The direction that already worked must keep working.
+  check("a statement upload onto a QuickBooks account is still refused", (await refuses(envWith({ name: "Biz", source: "qbo_feed" }), "statement")) !== null);
+  check("a bank feed onto a QuickBooks account is refused", (await refuses(envWith({ name: "Biz", source: "qbo_feed" }), "cdr_feed")) !== null);
+
+  // ── A feed may claim an UNTOUCHED statement account (that's the normal onboarding path)…
+  check("a feed CAN claim a statement account with no imported lines", (await refuses(envWith({ name: "New", source: "statement" }, 0), "cdr_feed")) === null);
+  // …but not one that already holds lines, and the count is read from the LEDGER, not the column,
+  // so a hand-edited accounts.source can't smuggle a double-import through.
+  const claimUsed = await refuses(envWith({ name: "Old", source: "statement" }, 42), "cdr_feed");
+  check("a feed CANNOT claim a statement account that already has imported lines", claimUsed !== null);
+  check("...and the refusal quotes how many lines are in the way", !!claimUsed?.includes("42"));
+
+  // ── Same source is always fine (re-import, re-select).
+  check("re-uploading a statement to a statement account is fine", (await refuses(envWith({ name: "S", source: "statement" }), "statement")) === null);
+  check("re-selecting an already-fed account is fine", (await refuses(envWith({ name: "F", source: "cdr_feed" }), "cdr_feed")) === null);
+  // A manual account is claimable like a statement one when empty.
+  check("a feed can claim an empty manual account", (await refuses(envWith({ name: "M", source: "manual" }, 0), "cdr_feed")) === null);
+  check("a missing account is refused, not silently allowed", (await refuses(envWith(null), "cdr_feed")) === "account not found");
 }
 
 // The bank-feed client (0075 / ADR-0003). The residency goldens above prove the guard fails closed;

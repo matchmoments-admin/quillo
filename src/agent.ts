@@ -8,7 +8,7 @@ import { ordinaryAssessableCents, validateComponents, parseAmmaComponents, type 
 import { QuickBooksAdapter } from "./ledger/qbo";
 import { revokeAndDisconnect } from "./lib/qbo-oauth";
 import { purgeTenant as purgeTenantData, exportTenant as exportTenantData, flagOldData as flagOldDataSweep, hasPendingNudge, type PurgeResult } from "./lib/retention";
-import { COUNTABLE, fetchAskDigestRows, spendRunRate } from "./lib/queries";
+import { COUNTABLE, FX_CONVERTED, assertCanonicalSource, fetchAskDigestRows, spendRunRate } from "./lib/queries";
 import { billerNormalize, detectRecurrence, classifyBiller, paymentsPerYear, recurringCopy, signpostFor, insurerResetBasis, nextResetDate, weeksUntil, phiResetNudgeCopy, phiDetectedCopy, type RecurringOccurrence, type ResetBasis } from "./lib/advisory";
 import { findPhisProduct } from "./lib/phis-seed";
 import { matchEnergyOffer, getOfferById, buildReferralUrl, opportunityTakesEnergyCta, type PartnerDB } from "./lib/partners";
@@ -310,9 +310,9 @@ export class TaxAgent extends Agent<Env> {
       .bind(accountId, userId)
       .first<{ source: string; type: string }>();
     if (!account) throw new Error("account not found");
-    if (account.source === "qbo_feed") {
-      throw new Error("This account is reconciled from the QuickBooks feed — don't import statements for it (would double-count).");
-    }
+    // ADR-0002, both directions. Previously this refused only 'qbo_feed', so a bank-feed account
+    // could still accept statement uploads and every overlapping line was counted twice.
+    await assertCanonicalSource(this.env, userId, accountId, "statement");
     const isLiability = isLiabilityAccount(account.type); // credit card / loan: debits increase the balance owed
 
     // APP-8 cross-border consent gate — parsing a statement sends the user's financial data to
@@ -602,21 +602,7 @@ export class TaxAgent extends Agent<Env> {
 
     // Batch-categorise the lines that the deterministic pass (rules+hints) didn't cover.
     const cat = await this.categoriseStatement(userId, statementId);
-    // Any line a rule deterministically bucketed 'asset' becomes a depreciating asset now (the
-    // LLM-categorised ones are linked when their batch applies — see categoriseStatement / poll).
-    await this.linkAssetsForUser(userId);
-    // Deny-by-default deductibility on deterministically-bucketed payg lines (LLM/batch-bucketed
-    // lines are stamped when their batch applies — see pollBatchJobs). Covers the no-LLM-items and
-    // consent-gated paths where categoriseStatement returns early before stamping.
-    await this.stampDeductibility(userId);
-    // Attach any existing receipts to the new lines (stops double-counting + donates GST).
-    await this.matchReceiptsForUser(userId);
-    // #165 — if this is a loan account whose statement itemises interest, sum those lines per FY and
-    // record a statement_parsed loan-interest summary so the "Confirm loan interest" card prefills from
-    // evidence (lender_summary still wins). Best-effort: never fail an import on this.
-    await this.recomputeStatementLoanInterest(userId, stmt.account_id, stmt.account_type).catch((e) =>
-      this.audit(userId, "loan_interest_autoparse_failed", JSON.stringify({ accountId: stmt.account_id, error: (e as Error).message })).catch(() => {}),
-    );
+    await this.afterLinesImported(userId, { accountId: stmt.account_id, accountType: stmt.account_type });
 
     if (!quiet) {
       // Direct (single-statement) import: run the pass now so the Sort queues are ready. The bulk path
@@ -1394,6 +1380,36 @@ export class TaxAgent extends Agent<Env> {
   }
 
   /** After a statement import, try to match each unmatched receipt to a new line. */
+  /**
+   * Everything that must happen once new bank lines exist, regardless of HOW they arrived.
+   *
+   * Extracted because the bank-feed importer originally did none of it, and one omission was a
+   * money bug rather than a missing nicety: `COUNTABLE` counts unmatched receipts **plus** bank
+   * lines, so without `matchReceiptsForUser` a photographed $500 receipt and the fed line for the
+   * same purchase both count — $1,000 of spend for a $500 tool. `confirmImport` had always called
+   * it for exactly that reason; the feed path silently didn't.
+   *
+   * `accountId`/`accountType` are optional because the loan-interest re-parse is per-account; the
+   * feed path passes them per connection-account.
+   */
+  private async afterLinesImported(userId: string, opts: { accountId?: string; accountType?: string | null } = {}): Promise<void> {
+    // A line a rule deterministically bucketed 'asset' becomes a depreciating asset now (the
+    // LLM-categorised ones are linked when their batch applies — see categoriseStatement / poll).
+    await this.linkAssetsForUser(userId);
+    // Deny-by-default deductibility on deterministically-bucketed payg lines. Covers the
+    // no-LLM-items and consent-gated paths where categorisation returns early before stamping.
+    await this.stampDeductibility(userId);
+    // Attach existing receipts to the new lines (stops double-counting + donates GST).
+    await this.matchReceiptsForUser(userId);
+    // #165 — a loan account whose statement itemises interest gets a statement_parsed summary so the
+    // "Confirm loan interest" card prefills from evidence. Best-effort: never fail an import on it.
+    if (opts.accountId) {
+      await this.recomputeStatementLoanInterest(userId, opts.accountId, opts.accountType ?? "transaction").catch((e) =>
+        this.audit(userId, "loan_interest_autoparse_failed", JSON.stringify({ accountId: opts.accountId, error: (e as Error).message })).catch(() => {}),
+      );
+    }
+  }
+
   private async matchReceiptsForUser(userId: string): Promise<void> {
     const rows = await this.env.DB.prepare(
       `SELECT id, amount_aud_cents, amount_cents, txn_date, merchant, gst_cents, bucket, ato_label FROM transactions
@@ -1669,25 +1685,12 @@ export class TaxAgent extends Agent<Env> {
 
     for (const s of selections) {
       if (s.selected && s.accountId) {
-        const acct = await this.env.DB.prepare(
-          `SELECT id, name, source FROM accounts WHERE id = ? AND user_id = ?`,
-        ).bind(s.accountId, userId).first<{ id: string; name: string; source: string }>();
-        if (!acct) {
-          conflicts.push(`${s.providerAccountId}: target account not found`);
+        // Same shared invariant parseStatement uses — see assertCanonicalSource (lib/queries.ts).
+        try {
+          await assertCanonicalSource(this.env, userId, s.accountId, "cdr_feed");
+        } catch (e) {
+          conflicts.push((e as Error).message);
           continue;
-        }
-        // 'statement' is the DEFAULT source, so only refuse when statements were actually imported
-        // for it — otherwise every fresh account would look like a conflict.
-        if (acct.source !== "cdr_feed") {
-          const used = await this.env.DB.prepare(
-            `SELECT COUNT(*) AS n FROM transactions WHERE user_id = ? AND account_id = ? AND source <> 'cdr_feed'`,
-          ).bind(userId, s.accountId).first<{ n: number }>();
-          if ((used?.n ?? 0) > 0) {
-            conflicts.push(
-              `${acct.name}: already has ${used?.n} imported ${acct.source} line(s). One canonical source per account — remove those first, or map this feed to a different account.`,
-            );
-            continue;
-          }
         }
         stmts.push(
           this.env.DB.prepare(`UPDATE accounts SET source = 'cdr_feed' WHERE id = ? AND user_id = ?`).bind(s.accountId, userId),
@@ -1834,6 +1837,11 @@ export class TaxAgent extends Agent<Env> {
       importedTotal += imported; skippedTotal += skipped; fetchedTotal += fetched; runs++;
     }
 
+    // The same post-import pipeline the statement path runs. Without matchReceiptsForUser here, a
+    // receipt photographed before the sync and the fed line for the same purchase BOTH count.
+    // Runs once after all connections rather than per connection — every step is tenant-wide.
+    if (importedTotal > 0) await this.afterLinesImported(userId);
+
     await this.audit(userId, "bank_sync", JSON.stringify({ from, to, fetched: fetchedTotal, imported: importedTotal, runs, errors: errors.length }));
     return { imported: importedTotal, skipped: skippedTotal, fetched: fetchedTotal, runs, errors };
   }
@@ -1859,8 +1867,13 @@ export class TaxAgent extends Agent<Env> {
    */
   async categoriseFeedLines(userId: string): Promise<{ categorised: number }> {
     const rows = await this.env.DB.prepare(
+      // FX_CONVERTED matters here: bankSync deliberately parks unconverted foreign lines in
+      // needs_review so the excluded money stays VISIBLE. Without this clause categorisation would
+      // flip them to 'extracted' — a healthy-looking row contributing nothing to the position,
+      // which is the exact silent-understatement shape the parking was meant to prevent.
       `SELECT id, merchant, amount_cents, txn_date, direction FROM transactions
         WHERE user_id = ? AND source = 'cdr_feed' AND kind = 'bank_line' AND status = 'needs_review'
+          AND ${FX_CONVERTED}
         LIMIT ?`,
     ).bind(userId, LIVE_MAX_LINES).all<{ id: string; merchant: string | null; amount_cents: number | null; txn_date: string | null; direction: string | null }>();
     const items = rows.results ?? [];

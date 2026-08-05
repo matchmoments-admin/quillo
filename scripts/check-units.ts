@@ -12,7 +12,7 @@ import type { LLM } from "../src/llm";
 import { isValidAbn, normaliseAbn } from "../web/src/lib/abn";
 import { billableCents, billableE4, freeCreditGrantE4 } from "../src/lib/billing";
 import { costCents, isPricedModel, toE4, centsFromE4 } from "../src/lib/usage";
-import { LLM_MODEL_IDS, resolveProvider, assertAuResidency, assertDataResidency, bedrockModelIdFor } from "../src/llm";
+import { LLM_MODEL_IDS, resolveProvider, assertAuResidency, assertDataResidency, bedrockModelIdFor, getLLM } from "../src/llm";
 import type { ProviderProfile } from "../src/llm";
 import { AU_DESCRIPTOR, UK_DESCRIPTOR, ALL_JURISDICTIONS } from "../src/lib/jurisdiction";
 import {
@@ -2319,6 +2319,45 @@ console.log("auth fails CLOSED on missing config (ADR-0003 S1)");
       .some((l) => /^\s*DEV_AUTH_BYPASS\s*=/.test(l));
     check("wrangler.toml never ASSIGNS DEV_AUTH_BYPASS (production cannot bypass)", !assigned);
   }
+}
+
+// The CDR residency SEAM (migration 0077). The review found CDR-derived transaction text reaching
+// a US model through the Ask/chat FY digest — which reads `merchant` from every countable row and
+// never asserted residency — because the guard was attached to one function instead of to the data.
+// The fix puts the assert inside getLLM, the single seam all 14 call sites pass through. These
+// goldens prove the seam holds where the old per-call-site guard did not.
+console.log("CDR residency seam — getLLM (migration 0077)");
+{
+  const anthropicEnv = { DEFAULT_INFERENCE_PROVIDER: "anthropic", ANTHROPIC_API_KEY: "k" } as unknown as Env;
+  const bedrockEnv = { DEFAULT_INFERENCE_PROVIDER: "bedrock", AWS_ACCESS_KEY_ID: "a", AWS_SECRET_ACCESS_KEY: "s" } as unknown as Env;
+  const prof = (tainted: number, provider: string | null = null, region: string | null = null): ProviderProfile =>
+    ({ inference_provider: provider, inference_region: region, cdr_tainted: tainted });
+  const threw = async (fn: () => Promise<unknown>): Promise<string | null> => {
+    try { await fn(); return null; } catch (e) { return (e as Error).message; }
+  };
+
+  // ── THE REGRESSION. A tainted tenant on the US provider must be refused — and this is checked
+  // for ANY call, not just the bank-feed one, which is the whole point of moving it to the seam.
+  const leak = await threw(() => getLLM(anthropicEnv, prof(1)));
+  check("REGRESSION: a CDR-tainted tenant CANNOT get a US/Anthropic client", leak !== null);
+  check("...and the refusal is the residency one, naming the legal basis",
+    !!leak?.startsWith("data_residency_required:") && !!leak?.includes("CDR Privacy Safeguard 8"));
+
+  // An untainted tenant is completely unaffected — this is what keeps every existing tenant working.
+  check("an untainted tenant still gets the Anthropic client", (await threw(() => getLLM(anthropicEnv, prof(0)))) === null);
+  check("a profile with no cdr_tainted field at all is treated as untainted", (await threw(() => getLLM(anthropicEnv, { inference_provider: null, inference_region: null }))) === null);
+  check("a null profile does not throw (no tenant context ⇒ no CDR data)", (await threw(() => getLLM(anthropicEnv, null))) === null);
+
+  // A tainted tenant on Bedrock in an AU region is fine — that's the compliant path.
+  check("a CDR-tainted tenant on Bedrock/ap-southeast-2 is allowed", (await threw(() => getLLM(bedrockEnv, prof(1, "bedrock", "ap-southeast-2")))) === null);
+  // …but not on Bedrock in a foreign region. Provider alone was never enough.
+  check("a CDR-tainted tenant on Bedrock/us-east-1 is REFUSED", (await threw(() => getLLM(bedrockEnv, prof(1, "bedrock", "us-east-1")))) !== null);
+
+  // The taint is a property of the tenant, so it cannot be relaxed by anything that happens to the
+  // CONNECTION — this is what the previous bank_connections COUNT(*) gate got wrong, and what PR5's
+  // disconnect would otherwise have silently re-opened.
+  check("taint does not depend on BASIQ_ENV (sandbox env still refuses a tainted tenant)",
+    (await threw(() => getLLM({ ...anthropicEnv, BASIQ_ENV: "sandbox" } as unknown as Env, prof(1)))) !== null);
 }
 
 // ADR-0002 canonical source. The bug these exist for: parseStatement refused 'qbo_feed' but not

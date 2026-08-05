@@ -59,7 +59,8 @@ export const LLM_MODEL_IDS = [
 
 // Exported so residency checks (and their goldens) can name the exact shape the provider is
 // resolved from, rather than casting.
-export type ProviderProfile = Pick<Profile, "inference_provider" | "inference_region">;
+export type ProviderProfile = Pick<Profile, "inference_provider" | "inference_region"> &
+  Partial<Pick<Profile, "cdr_tainted">>;
 
 /**
  * The ONE place the inference provider is resolved: per-tenant override → env default → Anthropic.
@@ -187,6 +188,22 @@ export async function getLLM(
   // Optional so all existing call sites are byte-identical: every tenant today is AU.
   descriptor: JurisdictionDescriptor = AU_DESCRIPTOR,
 ): Promise<LLM> {
+  // ── THE RESIDENCY SEAM ──
+  // This function is the single place every Claude call goes through, which is precisely why the
+  // check belongs here rather than at the call sites. A review found CDR-derived transaction text
+  // reaching a US model through the Ask/chat FY digest, which reads `merchant` from every countable
+  // transaction and never asserted residency. There are 14 callers; guarding them individually
+  // means remembering the 15th, and every future feature that reads a transaction description would
+  // silently become a new Privacy Safeguard 8 hole.
+  //
+  // Gating on a property of the TENANT (their ledger holds CDR data) rather than of the CALL (this
+  // particular prompt happens to include a bank line) is deliberate: prompts are assembled from the
+  // ledger by many different builders, and proving that a given one excluded every CDR row is a
+  // per-prompt argument that would have to be re-made on every change. This is one fact, checked once.
+  if (profile?.cdr_tainted === 1) {
+    assertDataResidency(env, profile, descriptor, "inference for a tenant holding CDR data");
+  }
+
   const provider = resolveProvider(env, profile);
 
   if (provider === "anthropic") {

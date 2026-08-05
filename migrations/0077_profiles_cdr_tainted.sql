@@ -1,0 +1,32 @@
+-- 0077 — mark a tenant whose ledger contains Consumer Data Right data.
+--
+-- WHY A FLAG ON THE TENANT, NOT A CHECK AT THE CALL SITE.
+--
+-- The bank-feed sync asserted AU residency inside its own categorisation function. A review found
+-- that CDR-derived transaction text still reached a US model by other routes — the Ask/chat FY
+-- digest reads `merchant` from every countable transaction with no `source` filter, and those paths
+-- never asserted residency. There are 14 `getLLM` call sites; guarding them one at a time means
+-- remembering the 15th, and every new feature that reads a transaction description would be a new
+-- Privacy Safeguard 8 hole nobody notices.
+--
+-- So the fact moves onto the DATA: once a tenant has collected production CDR data, this flag is
+-- set, and `getLLM` — which its own docstring calls "the single seam through which ALL Claude calls
+-- go" — refuses any non-AU-resident inference for that tenant. Every existing call site is covered
+-- without touching one, and every future call site is covered by construction.
+--
+-- ONE-WAY, DELIBERATELY. Nothing clears it. The previous gate counted `bank_connections` rows and
+-- read the live `BASIQ_ENV`, so disconnecting a bank or flipping that var back to sandbox would
+-- have silently re-opened US inference over CDR data that is still sitting in the ledger. CDR data
+-- stays CDR data for its whole life inside the system (ADR-0003 §7); a revoked consent stops future
+-- COLLECTION, it does not retrospectively change what the safeguards apply to.
+--
+-- CONSEQUENCE, ACCEPTED: once set, ALL inference for that tenant needs Bedrock — receipt OCR and
+-- chat included, not just bank lines. That is the correct trade. The alternative (filtering CDR
+-- rows out of prompts) would answer "you spent $X" from a knowingly incomplete ledger, which is a
+-- worse failure than refusing. It only engages when BASIQ_ENV=production, which is already gated.
+--
+-- Additive and apply-once: ALTER TABLE ADD COLUMN. `profiles` is already in PURGE_TABLES.
+-- JURISDICTION-NEUTRAL: names no country. The tenant's own descriptor decides which region the
+-- residency assert then demands.
+
+ALTER TABLE profiles ADD COLUMN cdr_tainted INTEGER NOT NULL DEFAULT 0;

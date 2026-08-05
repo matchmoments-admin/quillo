@@ -43,7 +43,7 @@ import { redact } from "./lib/redact";
 import {
   basiqConfigured, clientToken, consentUrl, createBasiqUser, getAccounts, getConsents,
   fetchTransactions, feedFingerprint, requiresAuResidency,
-  type BasiqConsent, type ConsentAction,
+  type BasiqConsent, type ConsentAction, type AccessType,
 } from "./lib/basiq";
 import { putConnectState, takeConnectState, parseJobIds, syncWindow } from "./lib/bank-connect";
 import { toBaseCurrency } from "./lib/fx";
@@ -1740,15 +1740,32 @@ export class TaxAgent extends Agent<Env> {
     }
     const { from, to } = window;
 
+    // CDR consent is capped at 12 months. `consent_expires_at` was previously written and read by
+    // NOTHING, and no code ever sets status='expired' — so a year on, the row still said 'active'
+    // and the sync kept pulling. Collecting outside a live consent is the failure with a regulator
+    // attached, so the expiry is enforced at the puller rather than waiting on a lifecycle sweep.
     const conns = await this.env.DB.prepare(
-      `SELECT c.id, c.provider_connection_id, c.provider_user_id, c.access_type
+      `SELECT c.id, c.provider_connection_id, c.provider_user_id, c.access_type,
+              (c.consent_expires_at IS NOT NULL AND c.consent_expires_at <= datetime('now')) AS expired
          FROM bank_connections c WHERE c.user_id = ? AND c.status = 'active'`,
-    ).bind(userId).all<{ id: string; provider_connection_id: string; provider_user_id: string; access_type: string }>();
+    ).bind(userId).all<{ id: string; provider_connection_id: string; provider_user_id: string; access_type: string; expired: number }>();
 
     const errors: string[] = [];
     let importedTotal = 0, skippedTotal = 0, fetchedTotal = 0, runs = 0;
 
     for (const conn of conns.results ?? []) {
+      if (conn.expired) {
+        // Recorded as its own run status rather than skipped silently: an expired consent that
+        // imports nothing is otherwise indistinguishable from a genuinely quiet month, which is
+        // exactly the silent-undercount a tax position must never have.
+        await this.env.DB.prepare(
+          `INSERT INTO bank_sync_runs (id, user_id, connection_id, from_date, to_date, status, error)
+           VALUES (?, ?, ?, ?, ?, 'failed', 'consent expired — reconnect this bank to keep importing')`,
+        ).bind(crypto.randomUUID(), userId, conn.id, from, to).run();
+        errors.push("A bank consent has expired — reconnect it to keep importing.");
+        runs++;
+        continue;
+      }
       // Only accounts the consumer explicitly SELECTED and mapped are ever fetched. Under the CDR
       // data minimisation is an obligation, so this filter is the enforcement point.
       const selected = await this.env.DB.prepare(
@@ -1837,6 +1854,15 @@ export class TaxAgent extends Agent<Env> {
       importedTotal += imported; skippedTotal += skipped; fetchedTotal += fetched; runs++;
     }
 
+    // Stamp the tenant as holding CDR data, one-way, as soon as any production CDR line lands.
+    // From here on getLLM refuses non-AU-resident inference for them on EVERY path, not just this
+    // one — disconnecting the bank or flipping BASIQ_ENV back to sandbox cannot clear it, because
+    // the data is still in the ledger (see migration 0077).
+    if (importedTotal > 0 && (conns.results ?? []).some((c) => requiresAuResidency(this.env, c.access_type as AccessType))) {
+      await this.env.DB.prepare(`UPDATE profiles SET cdr_tainted = 1 WHERE user_id = ? AND cdr_tainted = 0`).bind(userId).run();
+      await this.audit(userId, "cdr_taint_set", JSON.stringify({ reason: "production CDR lines imported" }));
+    }
+
     // The same post-import pipeline the statement path runs. Without matchReceiptsForUser here, a
     // receipt photographed before the sync and the fed line for the same purchase BOTH count.
     // Runs once after all connections rather than per connection — every step is tenant-wide.
@@ -1883,14 +1909,11 @@ export class TaxAgent extends Agent<Env> {
     const provider = profile.inference_provider ?? this.env.DEFAULT_INFERENCE_PROVIDER;
     if (provider === "anthropic" && profile.consent_xborder !== 1) return { categorised: 0 }; // APP-8 gate
 
-    // PS8: fail closed before any model call if ANY contributing connection is production CDR data.
-    const cdr = await this.env.DB.prepare(
-      `SELECT COUNT(*) AS n FROM bank_connections WHERE user_id = ? AND access_type = 'cdr'`,
-    ).bind(userId).first<{ n: number }>();
-    if ((cdr?.n ?? 0) > 0 && requiresAuResidency(this.env, "cdr")) {
-      assertDataResidency(this.env, profile, await this.jurisdictionFor(userId), "bank feed categorisation");
-    }
-
+    // NOTE: the PS8 assert that used to live here has moved into getLLM (see migration 0077). It
+    // counted `bank_connections` rows, so PR5's disconnect would have silently re-opened US
+    // inference over CDR lines still in the ledger — and it guarded only this one function while
+    // the Ask/chat digest read the same rows unguarded. The gate is now a property of the tenant,
+    // checked at the single seam every model call passes through.
     const rulePack = await this.loadRulePack(profile.rule_pack_ver);
     const situation = await getSituation(this.env, userId, profile);
     const system = this.buildSystemPrompt(rulePack, profile, situation, null);

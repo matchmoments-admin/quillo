@@ -52,6 +52,10 @@ CREATE TABLE IF NOT EXISTS profiles (
   -- never re-minted). An identifier, not a credential. `bank_provider` names which aggregator.
   bank_provider_user_id TEXT,
   bank_provider      TEXT,
+  -- 0077: this tenant's ledger holds CDR data. ONE-WAY — nothing clears it, because a revoked
+  -- consent stops future collection but does not change what the safeguards cover. Read by getLLM,
+  -- which refuses non-AU-resident inference for the tenant once set.
+  cdr_tainted        INTEGER NOT NULL DEFAULT 0,
   retention_years        INTEGER NOT NULL DEFAULT 5,  -- data-retention window for the flag sweep (lib/retention.ts)
   ui_state               TEXT,                        -- per-tenant UI state JSON (e.g. walkthrough seen) — no localStorage
   roles              TEXT NOT NULL DEFAULT '["individual"]', -- 0017: platform roles JSON (admin|accountant|bookkeeper|support|individual)

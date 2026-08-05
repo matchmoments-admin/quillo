@@ -383,9 +383,25 @@ export function toCents(amount: string | number | null | undefined): number {
   return Number(whole) * 100 + Number(frac);
 }
 
-/** Build the provider-side date filter. See fetchTransactions on why this is not trusted alone. */
-export function postDateFilter(from: string, to: string): string {
-  return `transaction.postDate.gteq('${from}'),transaction.postDate.lteq('${to}')`;
+/**
+ * Build the provider-side filter. See fetchTransactions on why the window is not trusted alone.
+ *
+ * `accountId` is NOT an optimisation. Filtering account-side after the rows arrive means the
+ * unselected accounts' transactions were still collected — and under the CDR, data minimisation is
+ * about collection, so "we fetched them and threw them away" is not compliance. Naming the account
+ * in the query is what makes the promise true.
+ *
+ * ⚠️ UNVERIFIED SYNTAX. Basiq documents `account.id` as filterable but does not publish the operator
+ * grammar, and this could not be checked against the sandbox (the local key was stale at the time).
+ * Two failure modes, neither dangerous: the provider REJECTS it (sync fails loudly on the first
+ * sandbox run — obvious, fix the string) or SILENTLY IGNORES it (we are back to collecting more
+ * than we selected, i.e. no worse than before, but the minimisation claim above would be false).
+ * Confirm against a live sandbox call before this ships to real consumers.
+ */
+export function postDateFilter(from: string, to: string, accountId?: string): string {
+  const parts = [`transaction.postDate.gteq('${from}')`, `transaction.postDate.lteq('${to}')`];
+  if (accountId) parts.push(`account.id.eq('${accountId}')`);
+  return parts.join(",");
 }
 
 /** Namespaced dedup key for a fed line. Distinct from the statement fingerprint's input shape. */
@@ -430,49 +446,59 @@ export async function fetchTransactions(
   const maxPages = opts.maxPages ?? 200;
   const accountFilter = opts.accountIds?.length ? new Set(opts.accountIds) : null;
 
-  const params = new URLSearchParams({
-    limit: String(MAX_PAGE_SIZE),
-    filter: postDateFilter(from, to),
-  });
-  let url: string | undefined = `/users/${encodeURIComponent(basiqUserId)}/transactions?${params}`;
-
   const transactions: BasiqTransaction[] = [];
   let skippedPending = 0;
   let skippedOutOfWindow = 0;
   let pages = 0;
 
-  while (url && pages < maxPages) {
-    const page: TransactionPage = await apiGet<TransactionPage>(env, url, "getTransactions");
-    pages++;
-    for (const t of page.data ?? []) {
-      if ((t.status ?? "").toLowerCase() !== "posted") {
-        skippedPending++;
-        continue;
+  // ONE REQUEST PER SELECTED ACCOUNT. Filtering account-side after the rows arrive would mean the
+  // unselected accounts' transactions were still collected, and under the CDR data minimisation is
+  // about collection — "we fetched them and discarded them" is not compliance. With no selection,
+  // a single unfiltered pass (no caller does this today).
+  const queries: (string | undefined)[] = accountFilter ? [...accountFilter] : [undefined];
+
+  for (const accountId of queries) {
+    const params = new URLSearchParams({
+      limit: String(MAX_PAGE_SIZE),
+      filter: postDateFilter(from, to, accountId),
+    });
+    let url: string | undefined = `/users/${encodeURIComponent(basiqUserId)}/transactions?${params}`;
+
+    while (url && pages < maxPages) {
+      const page: TransactionPage = await apiGet<TransactionPage>(env, url, "getTransactions");
+      pages++;
+      for (const t of page.data ?? []) {
+        if ((t.status ?? "").toLowerCase() !== "posted") {
+          skippedPending++;
+          continue;
+        }
+        // postDate is an ISO 8601 datetime; the date part is what the ledger keys on.
+        const postDate = (t.postDate ?? "").slice(0, 10);
+        if (!postDate || postDate < from || postDate > to) {
+          skippedOutOfWindow++;
+          continue;
+        }
+        // Defence in depth: the provider filter is now the collection limit, but this re-check
+        // means a wrong/ignored filter still cannot land another account's rows in the ledger.
+        if (accountFilter && !(t.account && accountFilter.has(t.account))) continue;
+        if (!t.id || !t.account) continue;
+        const direction = (t.direction ?? "").toLowerCase() === "credit" ? "credit" : "debit";
+        transactions.push({
+          id: t.id,
+          accountId: t.account,
+          postDate,
+          description: t.description ?? "",
+          amountCents: toCents(t.amount),
+          direction,
+          // Normalised at the boundary. A provider returning "aud" would otherwise compare unequal
+          // to the base currency, marking every line unconvertible — which excludes the whole
+          // account from the position via FX_CONVERTED and silently zeroes the year.
+          currency: (t.currency ?? "AUD").trim().toUpperCase(),
+          providerClass: t.class ?? null,
+        });
       }
-      // postDate is an ISO 8601 datetime; the date part is what the ledger keys on.
-      const postDate = (t.postDate ?? "").slice(0, 10);
-      if (!postDate || postDate < from || postDate > to) {
-        skippedOutOfWindow++;
-        continue;
-      }
-      if (accountFilter && !(t.account && accountFilter.has(t.account))) continue;
-      if (!t.id || !t.account) continue;
-      const direction = (t.direction ?? "").toLowerCase() === "credit" ? "credit" : "debit";
-      transactions.push({
-        id: t.id,
-        accountId: t.account,
-        postDate,
-        description: t.description ?? "",
-        amountCents: toCents(t.amount),
-        direction,
-        // Normalised at the boundary. A provider returning "aud" would otherwise compare unequal to
-        // the base currency, marking every line unconvertible — which excludes the whole account
-        // from the position via FX_CONVERTED and silently zeroes the year.
-        currency: (t.currency ?? "AUD").trim().toUpperCase(),
-        providerClass: t.class ?? null,
-      });
+      url = page.links?.next;
     }
-    url = page.links?.next;
   }
 
   return { transactions, skippedPending, skippedOutOfWindow, pages };

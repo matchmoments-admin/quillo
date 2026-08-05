@@ -22,6 +22,9 @@ export interface Profile {
   roles: string;        // 0017: JSON array of platform roles (see lib/roles.ts)
   email: string | null; // 0017: signup email
   health_extras_consent_at: string | null; // 0062: APP-3 typed consent for health data (NULL ⇒ PHI writes blocked)
+  // 0077: this tenant's ledger holds CDR data ⇒ getLLM refuses non-AU-resident inference for them.
+  // One-way; see the migration for why disconnecting a bank must not clear it.
+  cdr_tainted: number;
 }
 
 /** Load a tenant profile; returns null if the tenant has no profile row yet. */
@@ -30,7 +33,7 @@ export async function getProfile(env: Env, userId: string): Promise<Profile | nu
     `SELECT user_id, jurisdiction, rule_pack_ver, gst_registered, private_health, buckets,
             ledger_provider, inference_provider, inference_region, categorise_mode,
             consent_xborder, consent_xborder_at, consent_xborder_method, consent_xborder_text,
-            retention_years, ui_state, roles, email, health_extras_consent_at
+            retention_years, ui_state, roles, email, health_extras_consent_at, cdr_tainted
        FROM profiles WHERE user_id = ?`
   )
     .bind(userId)

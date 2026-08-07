@@ -1,7 +1,13 @@
 # ADR-0003 — Bank feeds via CDR / Open Banking: access model, vendor, build, cost
 
-**Status:** Proposed (owner decision required — `needs-decision`)
-**Date:** 2026-07-26
+**Status:** **Accepted — build in progress, SANDBOX ONLY.** Flag `bank_feed_cdr` is **OFF** and must
+stay off until the consent dashboard lands (§6.4 makes it a shipping requirement, and it is the one
+piece not built). Shipped so far: #502 foundation (migration 0075) · #506 connect + account picker
+(0076) · #507 sync (0077 via #509) · #508/#509 the review remediation. Outstanding: PR5 (consent
+dashboard, disconnect, PS12/audit) and R3 (bounded backfill). D1 below is resolved — the build
+started before FY25/26 filed, deliberately; **D2/D4 (vendor terms, 12-month minimum) remain open**
+on [#475](https://github.com/matchmoments-admin/quillo/issues/475), and no production access exists.
+**Date:** 2026-07-26 (status updated 2026-08-07)
 **Supersedes:** the "Redbark seasonal bank-feed" draft spec (that design is **not viable** — see §2)
 **Related:** [ADR-0002 canonical sources](adr-0002-canonical-sources.md), APP-8 consent gate, `docs/personas.md`
 
@@ -151,7 +157,14 @@ CREATE TABLE IF NOT EXISTS bank_sync_runs (
 ```
 
 - `accounts.source` gains `'cdr_feed'`.
-- **No change to `transactions`.** CDR lines land as the existing `kind='bank_line'` shape. Idempotency reuses the existing unique index by setting `line_fingerprint = sha256("cdr|" + provider_txn_id)` — so a re-pull is a no-op via `INSERT OR IGNORE`. Only `status = POSTED` transactions are ingested (pending ids are unstable).
+- **`bank_connections.access_type`** (`'cdr' | 'web'`, default `'cdr'`) — **as built, and it is the
+  load-bearing column this section originally omitted.** The same aggregator serves the same account
+  shape over CDR and non-CDR web connectors, and only the former attracts the Privacy Safeguards.
+  It drives `requiresAuResidency` (`src/lib/basiq.ts`). Defaulting to `'cdr'` is fail-closed.
+  Also as built and not listed here originally: `provider_connection_id`, `institution_id`,
+  `bank_connection_accounts.currency`, and `profiles.bank_provider_user_id` / `bank_provider` (0076)
+  plus `profiles.cdr_tainted` (0077).
+- **No change to `transactions`.** CDR lines land as the existing `kind='bank_line'` shape. Idempotency reuses the existing unique index by setting **`line_fingerprint = sha256("feed|" + provider_txn_id)`** — so a re-pull is a no-op via `ON CONFLICT … DO NOTHING`. (This ADR originally specified a `cdr|` prefix; the code uses `feed|` because `access_type` may be `'web'`, which is *not* CDR data, so the prefix would be a lie for half the rows. Anyone re-implementing from this section — a second provider, a repair script — must use `feed|` or they will silently re-import every line.) Only `status = POSTED` transactions are ingested (pending ids are unstable — Basiq documents that an id refreshes on the pending→posted transition).
 - **All three tables MUST be added to `PURGE_TABLES` in `src/lib/retention.ts`** in the same PR — this is both an existing invariant and a CDR Privacy Safeguard 12 obligation.
 
 ### 6.3 Flow
@@ -261,7 +274,8 @@ Assessed by reading the auth, tenancy, secrets, retention, and ingest surfaces. 
 | S5 | Medium | **CSP is Report-Only.** Flip to enforcing once prod reports are clean. A page that can be script-injected is a page that can exfiltrate a session token. |
 | S6 | Medium | **No general API rate limiting.** Only chat and the waitlist are limited. Add per-tenant limits on the bank-connect/sync endpoints specifically — they are both expensive and abuse-attractive. |
 | S7 | Medium | **No HSTS header.** Confirm it is set at the Cloudflare edge; if not, add `Strict-Transport-Security` with a preload-eligible max-age. |
-| S8 | Medium | **Redaction does not cover the bank-line path.** `redact()` is applied to free text; CDR transaction descriptions routinely contain BSB/account fragments, BPAY CRNs and PANs and will be sent to the model verbatim. Extend redaction to the categorisation input for `kind='bank_line'`. |
+| S8a | ✅ Done (#507) | **Redaction on the FEED path.** `redact()` is applied to the merchant before categorisation for `source='cdr_feed'` lines. |
+| S8b | Medium — **open** | **Statement-sourced `kind='bank_line'` rows still reach the model verbatim.** Deliberately *not* fixed with S8a: `redact()` matches any 6+ digit run (`"UBER *TRIP 123456"` would be redacted), so extending it changes what the model sees, hence categorisation, hence the tax position. That is a money-output change and needs its own flag + persona golden. |
 | S9 | Medium | New CDR tables must land in `PURGE_TABLES` **and** gain an explicit PS12 "delete or de-identify redundant data" path with a deletion record. This is an obligation with a regulator attached, unlike ordinary retention. |
 | S10 | Low | Audit logging exists (`audit_log`, hash-chained) but must be extended to record every CDR consent grant, sync, disclosure and withdrawal — CDR requires records and periodic ACCC/OAIC reporting. |
 | S11 | Low | Store `last4` only. Never persist a full account number, and never log a raw CDR payload. |

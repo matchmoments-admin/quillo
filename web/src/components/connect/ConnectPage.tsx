@@ -17,6 +17,7 @@ import { api } from "../../api";
 import { useFeatures } from "../../lib/features";
 import { useActiveFy } from "../../lib/activeFy";
 import { Income } from "../../pages/Income";
+import { Accounts } from "../../pages/Accounts";
 import { Badge, ErrorState, FtButton, FtCard, FtLink, GeneralInfoNote, Skeleton, cx } from "../ft";
 import type { Account, StatementInfo } from "../../types";
 import {
@@ -96,6 +97,13 @@ export function ConnectPage() {
       {bankOn && <ConnectedAccounts />}
       <Statements />
       <IncomeWaiting />
+      <details className="rounded-[14px] border border-line bg-paper p-3">
+        <summary className="min-h-[44px] cursor-pointer py-2 text-sm font-semibold text-ink">Advanced: manage accounts and statements</summary>
+        <p className="mt-1 text-sm text-muted">Rename, archive or delete an account, remove a statement uploaded to the wrong account, or add a loan or investment account.</p>
+        <div className="mt-3">
+          <Accounts embedded />
+        </div>
+      </details>
       <GeneralInfoNote />
     </div>
   );
@@ -110,6 +118,10 @@ function ImportProgress({ connected }: { connected: boolean }) {
     queryKey: ["bank-sync-status"],
     queryFn: () => api.bankSyncStatus(),
     refetchInterval: (query) => {
+      // A failing endpoint stops the poll (the card shows Retry), so an outage can't poll forever. The
+      // first-run wait is measured on successful fetches, the same clock the card renders from, so the
+      // last poll always lands past the window and the card moves on from "Starting your import…".
+      if (query.state.status === "error") return false;
       const s = importSummary(query.state.data?.runs ?? []);
       return pollInterval(s, connected && query.state.dataUpdatedAt - landedAt < FIRST_RUN_WAIT_MS);
     },
@@ -362,6 +374,7 @@ function StatementUpload() {
   const anyParsing = useIsMutating({ mutationKey: ["parseStatement"] }) > 0;
   const statementAccounts = (accounts.data ?? []).filter((a) => a.source === "statement" || a.source === "manual");
   const chosen = target || statementAccounts[0]?.id || "new";
+  const hasFeed = (accounts.data ?? []).some((a) => a.source === "cdr_feed");
 
   const upload = useMutation({
     mutationKey: ["parseStatement"],
@@ -407,6 +420,9 @@ function StatementUpload() {
           <span className="mb-1 block font-medium text-ink">Bank and account name</span>
           <input className={INPUT} value={bankName} onChange={(e) => setBankName(e.target.value)} placeholder="e.g. CommBank Everyday" disabled={upload.isPending} />
         </label>
+      )}
+      {hasFeed && (
+        <p className="text-sm text-warn">Already importing this account through your bank connection? Don't upload its statement as well: the same spending would be in two accounts.</p>
       )}
       <input
         ref={fileRef}
@@ -489,11 +505,12 @@ function Statements() {
 // ── Income statement: waiting until Tax ready ────────────────────────────────────────────────────
 
 function IncomeWaiting() {
-  const { fy } = useActiveFy();
+  const { fy, label } = useActiveFy();
   // A legacy /income link lands here as /bring-in#income: open the form it was pointing at.
   const { hash } = useLocation();
   const [adding, setAdding] = useState(hash === "#income");
-  const q = useQuery({ queryKey: ["income-statements", fy], queryFn: () => api.incomeStatements(fy) });
+  // Keyed under ["income", label] so every Income write (which invalidates that prefix) refreshes the card.
+  const q = useQuery({ queryKey: ["income", label, "statement-wait"], queryFn: () => api.incomeStatements(fy) });
 
   if (q.isLoading) return null;
   return (

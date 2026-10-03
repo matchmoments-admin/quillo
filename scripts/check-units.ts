@@ -5104,7 +5104,7 @@ import { latestSyncRuns } from "../src/lib/bank-sync";
   }
   check(`connect: copy passes the tax-advice denylist (offenders: ${connectOffenders.join(" | ") || "none"})`, connectOffenders.length === 0);
   const page = stripComments(fs.readFileSync(path.join(connectDir, "ConnectPage.tsx"), "utf8"));
-  check("connect: no 'We noticed' cards on this step (they live in Review, #587)", !/Noticed/.test(page));
+  check("connect: no 'We noticed' cards on this step (they live in Review, #587)", !/Noticed/.test(page) && /!embedded && has\("wages_payer"\)/.test(fs.readFileSync(path.join(process.cwd(), "web/src/pages/Accounts.tsx"), "utf8")));
 }
 
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);

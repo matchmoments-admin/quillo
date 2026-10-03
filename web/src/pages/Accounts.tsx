@@ -23,7 +23,12 @@ const STATUS_LABEL: Record<string, string> = {
   failed: "failed",
 };
 
-export function Accounts() {
+/**
+ * `embedded` (#586): rendered inside the Connect step's "Advanced: manage accounts" disclosure, where the bank
+ * connection and the "We noticed" cards already have their own homes (Connect's list, the Review queue), so
+ * both are left out. The legacy page (flag OFF) renders it without the prop: unchanged.
+ */
+export function Accounts({ embedded = false }: { embedded?: boolean } = {}) {
   const qc = useQueryClient();
   const { data, isLoading, error } = useQuery({ queryKey: ["accounts"], queryFn: () => api.accounts() });
   // Statement statuses (for async progress + failures). Poll while anything is categorising.
@@ -89,7 +94,7 @@ export function Accounts() {
   return (
     <div className="space-y-6">
       <div className="flex items-baseline justify-between">
-        <h1 className="text-2xl font-semibold tracking-tight">Accounts</h1>
+        {embedded ? <h2 className="text-lg font-semibold">Accounts</h2> : <h1 className="text-2xl font-semibold tracking-tight">Accounts</h1>}
         <p className="hidden text-sm text-muted sm:block">Statement upload for accounts without a working bank feed</p>
       </div>
 
@@ -97,10 +102,10 @@ export function Accounts() {
         <AddAccount onAdded={() => qc.invalidateQueries({ queryKey: ["accounts"] })} />
       </div>
 
-      {has("bank_feed_cdr") && <BankFeed accounts={accounts} />}
+      {!embedded && has("bank_feed_cdr") && <BankFeed accounts={accounts} />}
 
       {/* #577 wages_payer: "We noticed…" cards from the credit triage, right after the import surfaces. */}
-      {has("wages_payer") && <NoticedPanel />}
+      {!embedded && has("wages_payer") && <NoticedPanel />}
 
       <div className="flex items-center gap-3">
         <Button variant="ghost" onClick={() => sync.mutate()} disabled={sync.isPending}>

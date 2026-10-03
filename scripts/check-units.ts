@@ -4500,5 +4500,49 @@ import { lodgingFy, lodgementTiming, selfLodgeDueDate, retentionBackstopDate, re
     /registered tax agent/.test(worthALookText({ ...nurseRule, defer_to_agent: 1 }, null)) && !/registered tax agent/.test(worthALookText({ ...nurseRule, defer_to_agent: 0 }, null)));
 }
 
+import { residencyAssessabilityTable, excludableIncomeTypes, classifyIncomeRow, nonResidentClaimTreatment, hasNonResidentPeriod, type ResidencyAssessabilityContext } from "../src/lib/residency-assessability";
+console.log("residency assessability (A13, #580)");
+{
+  const table = residencyAssessabilityTable();
+  check("pack: foreign + whm exclude every foreign-sourced type; temporary keeps foreign_employment (data-driven carve-out); resident/unsure absent",
+    table.foreign?.size === 4 && table.whm?.size === 4 && !!table.temporary && !table.temporary.has("foreign_employment") && table.temporary.has("foreign_pension") && !table.resident && !table.unsure);
+  check("pack: a KV pack that predates the key falls back to the bundled table (never silently off)", residencyAssessabilityTable({ version: "old" }).foreign?.size === 4);
+  check("pack: a pack can carve differently without code (custom keep list)",
+    residencyAssessabilityTable({ residency_assessability: { foreign_sourced_types: ["a", "b"], rules: { foreign: { exclude: "foreign_sourced", keep: ["b"] } } } }).foreign?.has("a") === true &&
+    residencyAssessabilityTable({ residency_assessability: { foreign_sourced_types: ["a", "b"], rules: { foreign: { exclude: "foreign_sourced", keep: ["b"] } } } }).foreign?.has("b") === false);
+  check("excludableIncomeTypes: the union, sorted", excludableIncomeTypes(table).join() === "foreign_business,foreign_employment,foreign_pension,foreign_rent");
+  const prof = (residency: { type: string; starts_on: string; ends_on: string }[]) =>
+    ({ person_id: "me", fy: "2025-26", fy_start: "2025-07-01", fy_end: "2026-06-30", jobs: [], abn_activities: [], residency, flags: {} }) as unknown as import("../src/lib/situation-profile").SituationProfile;
+  const ctxFor = (residency: { type: string; starts_on: string; ends_on: string }[]): ResidencyAssessabilityContext => ({ table, profiles: new Map([["me", prof(residency)]]), selfPersonId: "me" });
+  const lena = ctxFor([{ type: "foreign", starts_on: "2025-07-01", ends_on: "2025-10-31" }, { type: "whm", starts_on: "2025-11-01", ends_on: "2026-06-30" }]);
+  const row = (income_type: string, txn_date: string | null, person_id: string | null = null) => ({ income_type, txn_date, person_id });
+  check("classify: dated foreign_employment in a foreign period and in a whm period → excluded; person_id NULL ⇒ self",
+    classifyIncomeRow(row("foreign_employment", "2025-09-15"), lena) === "excluded" && classifyIncomeRow(row("foreign_employment", "2026-03-15", "me"), lena) === "excluded");
+  check("classify: AU wages are never touched", classifyIncomeRow(row("salary_payg", "2025-09-15"), lena) === "kept");
+  check("classify: undated row in a FY with two residency values → stays in, flagged undated_part_year (no automatic split)",
+    classifyIncomeRow(row("foreign_pension", null), lena) === "undated_part_year");
+  const temp = ctxFor([{ type: "foreign", starts_on: "2025-07-01", ends_on: "2025-10-31" }, { type: "temporary", starts_on: "2025-11-01", ends_on: "2026-06-30" }]);
+  check("classify: temporary period keeps foreign_employment but excludes a foreign pension; the foreign period still excludes employment",
+    classifyIncomeRow(row("foreign_employment", "2026-03-15"), temp) === "kept" && classifyIncomeRow(row("foreign_pension", "2026-03-15"), temp) === "excluded" && classifyIncomeRow(row("foreign_employment", "2025-09-15"), temp) === "excluded");
+  const arrived = ctxFor([{ type: "foreign", starts_on: "2025-07-01", ends_on: "2026-01-31" }, { type: "resident", starts_on: "2026-02-01", ends_on: "2026-06-30" }]);
+  check("classify: a row dated in the RESIDENT period is kept", classifyIncomeRow(row("foreign_rent", "2026-03-01"), arrived) === "kept" && classifyIncomeRow(row("foreign_rent", "2025-12-01"), arrived) === "excluded");
+  const wholeFy = ctxFor([{ type: "whm", starts_on: "2025-07-01", ends_on: "2026-06-30" }]);
+  const partFy = ctxFor([{ type: "whm", starts_on: "2025-11-01", ends_on: "2026-06-30" }]);
+  check("classify: undated row with ONE excluding value covering the whole FY → excluded (the date can't matter)", classifyIncomeRow(row("foreign_employment", null), wholeFy) === "excluded");
+  check("classify: undated row where the single period leaves a gap (residency unknown Jul–Oct) → undated_part_year", classifyIncomeRow(row("foreign_employment", null), partFy) === "undated_part_year");
+  check("classify: dated row in a gap with no residency answer → kept", classifyIncomeRow(row("foreign_employment", "2025-08-01"), partFy) === "kept");
+  check("classify: another person's row with no profile → kept", classifyIncomeRow(row("foreign_employment", "2025-09-15", "spouse"), lena) === "kept");
+  check("classify: a resident / unsure-only FY never excludes", classifyIncomeRow(row("foreign_employment", "2025-09-15"), ctxFor([{ type: "unsure", starts_on: "2025-07-01", ends_on: "2026-06-30" }])) === "kept");
+  check("hasNonResidentPeriod: true for foreign/whm/temporary, false for resident/unsure",
+    hasNonResidentPeriod(prof([{ type: "temporary", starts_on: "2025-07-01", ends_on: "2026-06-30" }]), table) && !hasNonResidentPeriod(prof([{ type: "unsure", starts_on: "2025-07-01", ends_on: "2026-06-30" }]), table) && !hasNonResidentPeriod(undefined, table));
+  const occ = { scope_type: "occupation", scope_value: "retail" };
+  const all = { scope_type: "occupation", scope_value: "all" };
+  const prop = { scope_type: "property", scope_value: "rented" };
+  check("G11: an AU resident is never deferred by residency", nonResidentClaimTreatment(occ, false, false) === "normal");
+  check("G11: non-resident with NO dated period (or flag OFF) ⇒ every rule deferred, exactly as before", nonResidentClaimTreatment(occ, true, false) === "defer" && nonResidentClaimTreatment(prop, true, false) === "defer");
+  check("G11: with a non-resident period, occupation suggestions carry the caveat; generic + non-occupation rules keep the defer",
+    nonResidentClaimTreatment(occ, true, true) === "caveat" && nonResidentClaimTreatment(all, true, true) === "defer" && nonResidentClaimTreatment(prop, true, true) === "defer");
+}
+
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);
 process.exit(fail === 0 ? 0 : 1);

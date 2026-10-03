@@ -20,7 +20,7 @@ import { sha256hex, sha256hexBytes } from "./lib/base64";
 import { getLLM, assertDataResidency, type LLM } from "./llm";
 import { extractReceipt, extractReceipts, extractFromText, extractColumnMap, extractCapitalColumnMap, extractStatement, extractBatch, extractSituationDraft, extractOccupationRules, extractGuide, extractAnswer, classifyDocument, extractPayslip, extractIncomeStatement, extractNoticeOfAssessment, extractAgentStatement, extractDepreciationSchedule, extractDividend, extractHealthClaim, batchParams, parseBatchMessage, mapBatchItems, ALLOWED_NAV_ROUTES, type Extracted, type ExtractedStatement, type SituationDraft, type OccupationRulesDraft, type AnswerResult } from "./extract";
 import { mapIncomeStatementToRows } from "./lib/income-statement";
-import { fyForDate, buildReport, useStatusDeniedExpr, propertyUndeterminedGatedExpr } from "./lib/report";
+import { fyForDate, buildReport, useStatusDeniedExpr, propertyUndeterminedGatedExpr, resolveRulePack } from "./lib/report";
 import { runScan, type ScanResult, type ScanTxn, type ScanPatternFacts } from "./lib/scan";
 import { occupationGuide } from "./lib/occupations";
 import { getProgress } from "./lib/progress";
@@ -32,6 +32,7 @@ import { capitalReadinessSignals } from "./lib/capital-signals";
 import { firstTimerIncomeSignals, wantsIncomeStatementItem } from "./lib/first-timer-signals";
 import { mytaxWorksheetSignals } from "./lib/mytax-worksheet";
 import { situationProfileSignals } from "./lib/situation-profile";
+import { residencyAssessabilityContext, hasNonResidentPeriod, nonResidentClaimTreatment, AU_WORK_DEDUCTIONS_CAVEAT } from "./lib/residency-assessability";
 import { applyCapitalColumnMap, type CapitalColumnMap, type CapitalDraftRow, type CapitalImportPreview } from "./lib/capital-import";
 import { resolveJurisdictionForUser, currentFyStartYearFor, baseCurrencyOf, AU_DESCRIPTOR, type JurisdictionDescriptor } from "./lib/jurisdiction";
 import { assessReadiness, type FilingReadiness, type FilingReadinessSignals } from "./lib/readiness";
@@ -4163,6 +4164,15 @@ export class TaxAgent extends Agent<Env> {
     // every eligible rule is pushed to 'defer' (confirm with an agent) rather than framed as claimable.
     const selfResidency = situation.persons.find((p) => p.role === "self")?.tax_residency ?? "AU";
     const nonAuResident = selfResidency.toUpperCase() !== "AU";
+    // A13 / G11 (#580, residency_assessability): when the self person has a dated foreign / WHM / temporary
+    // residency PERIOD in this FY, occupation suggestions for Australian work still apply — they classify
+    // normally with a caveat; every other rule keeps the defer. Context is null with the flag OFF ⇒ unchanged.
+    let narrowDefer = false;
+    if (nonAuResident) {
+      const jurisdiction = await resolveJurisdictionForUser(this.env, userId);
+      const resCtx = await residencyAssessabilityContext(this.env, userId, startYear, { descriptor: jurisdiction, rulePack: await resolveRulePack(this.env, userId, jurisdiction) });
+      narrowDefer = !!resCtx && !!resCtx.selfPersonId && hasNonResidentPeriod(resCtx.profiles.get(resCtx.selfPersonId), resCtx.table);
+    }
 
     // Impure signals for classification: which buckets have FY spend, and which rule ids already fired
     // from REAL evidence (a per-transaction 'ingest' suggestion) vs are dismissed. Review-sourced rows
@@ -4206,8 +4216,10 @@ export class TaxAgent extends Agent<Env> {
       const key = ruleKey(rule);
       // Drop dismissed rules before classifying so they never resurface (helper contract).
       if (dismissedRuleIds.has(key)) continue;
-      // Non-AU residents: force defer (the AU rule pack can't sanction a claim for them).
-      const group = nonAuResident ? "defer" : classifyClaim(rule, { bucketsWithSpend, firedRuleIds, dismissedRuleIds });
+      // Non-AU residents: force defer (the AU rule pack can't sanction a claim for them) — except G11's caveated
+      // occupation suggestions (narrowDefer is false with the flag OFF ⇒ treatment is 'defer' exactly as before).
+      const treatment = nonResidentClaimTreatment(rule, nonAuResident, narrowDefer);
+      const group = treatment === "defer" ? "defer" : classifyClaim(rule, { bucketsWithSpend, firedRuleIds, dismissedRuleIds });
       const item: ClaimReviewItem = {
         rule_id: key,
         scope_type: rule.scope_type,
@@ -4215,7 +4227,9 @@ export class TaxAgent extends Agent<Env> {
         ato_label: rule.ato_label ?? null,
         claim_type: rule.claim_type,
         defer_to_agent: nonAuResident ? 1 : (rule.defer_to_agent ?? 0),
-        suggestion: nonAuResident
+        suggestion: treatment === "caveat"
+          ? `${suggestionText(rule)} ${AU_WORK_DEDUCTIONS_CAVEAT}`
+          : nonAuResident
           ? `${rule.general_info_note} Your tax residency isn't set to Australia — confirm with a registered tax agent whether Australian deductions apply to you.`
           : suggestionText(rule),
         why_applies: whyApplies(rule),

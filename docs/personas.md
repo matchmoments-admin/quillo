@@ -215,6 +215,14 @@ amount); groceries / Netflix are irrelevant; `pft9r` (same lines, retail worker)
 nurse employment period is added (re-scan), and loses it again on delete; `pft9o` re-scans on a Settings
 occupation edit; flag OFF writes nothing.
 
+**Residency assessability (#580, flag `residency_assessability`, spec A13):** golden `pft13` (FT4 Lena with
+dated periods: `foreign` Jul–Oct, `whm` from November; AU wages, foreign employment dated in each period, an
+undated foreign pension) asserts both foreign-employment rows are left out with reason `non_resident_foreign`,
+the undated row stays in and raises `foreign_income_undated_part_year`, the readiness lines-sum / accountant
+schedule / myTax worksheet tie-backs all hold, the #550 binary nudge is retired once the periods decide, a
+`temporary` variant (`pft13t`) keeps foreign employment (pack carve-out), binary `tax_residency` alone never
+excludes (`pft4` unchanged), and flag OFF (or `situation_profile` alone) is byte-identical for `pft13` and P1–P10.
+
 | # | Persona | Core tax shape | Golden |
 |---|---------|----------------|--------|
 | FT1 | **Jess**, first-job PAYG | one employer, started mid-year, **a bank feed instead of an income statement**, small work deductions | `pft1` |
@@ -223,6 +231,7 @@ occupation edit; flag OFF writes nothing.
 | FT4 | **Lena**, newcomer (WHM / international student) | residency set to non-AU, Australian wages + foreign employment income | `pft4` |
 | FT2v | **Mia** variant (#571) | part-year resident (arrived 2026-02-01), two casual jobs with different occupations, HELP debt ticked | `pft7` (+ `pft7b` residency unsure + private hospital cover) |
 | FTn | **Nurse grad**, bank-only (#578) | FT PAYG nurse, no receipts — occupation lines only in the bank feed | `pft9` (+ `pft9r` retail worker re-scan, `pft9o` Settings edit) |
+| FT4p | **Lena** with residency periods (#580) | `foreign` then `whm` (variant: `temporary`), foreign employment dated in each period, an undated foreign pension | `pft13` / `pft13t` |
 
 | Capability | Engine | UI in | Display | Flag | Personas |
 |---|:---:|:---:|:---:|---|---|
@@ -231,18 +240,17 @@ occupation edit; flag OFF writes nothing.
 | `foreign_employment` income type (item 20) | ✓ assessable | ✓ Income form | ◑ item-mapped "why"; raw type label on Filing | `first_timer_income` (ON) | FT4 |
 | Tax-free threshold with two or more payers (info note, no amount) | ✓ | — | ✓ | `first_timer_income` (ON) | FT2, 7 |
 | Div 35 business-loss defer nudge (sole-trader expenses > business income beside other income; single-person tenants only until income is person-scoped; never applied to the position) | ✓ | — | ✓ | `first_timer_income` (ON) | FT3, 4, 5 |
-| Foreign income for a non-AU resident (review nudge; income stays in the position — exclusion is held owner decision G10) | ✓ | ✓ residency switch | ✓ | `first_timer_income` (ON) | FT4 (10 only if residency is non-AU) |
+| Foreign income for a non-AU resident (review nudge; income stays in the position — retired once `residency_assessability` decides from dated periods) | ✓ | ✓ residency switch | ✓ | `first_timer_income` (ON) | FT4 (10 only if residency is non-AU) |
 | Wages answer on a credit group (never net-as-gross) | ✗ | ✗ | ✗ | — (owner decision G2) | FT1–4 |
 | Receipt ↔ bank-line match proposals (A8, #574): confidence-gated suggestions (pack `reconcile.*`), credits matchable, near-ties and contested lines left to the picker, "no bank line this year" bucket, dismissals never re-proposed; **never auto-confirmed** — Match is the existing manual Link; readiness `taxable_position_confirmed_cents` | ✓ (`pft11`) | ◑ manual picker only — Check page is #589 | ✗ until #589 | `reconcile_proposals` (OFF) | FT1 (`pft11`), 1–10 (confirmed ≥ tracked) |
 | Situation profile as dated periods per person (`situation_periods`, 0078): residency type with dates, spouse, state, jobs (multi-valued, ref → employer), ABN activities, study / study loan (opt-in), WFH, car, foreign income, private hospital cover. Pack-validated (`situation_facts`); single-valued facts reject overlaps (400). Writes keep the legacy mirrors (`persons.occupation` ← longest job, `tax_residency` ← residency on 30 June, `profiles.private_health`) in the same batch. | ✓ | ◑ API only (`/api/situation-periods`); the About-you editor is A2 (#585) | ◑ payload only (`profile_periods`); rendered by A2 | `situation_profile` (OFF) | FT2v (`pft7`), FT4 |
 | Relevance scan on bank lines (A4, #578): each debit payg / uncategorised line sorted relevant / worth a look / irrelevant from the profile's occupation tokens per FY + the pack (`relevance.floor_cents`); an occupation rule hit overrides the not-deductible default as a **worth a look** card (`claim_suggestions` source `relevance_scan`) — deductibility never changed, the user confirms every claim; re-scan on any job / ABN / WFH / car / foreign-income period write or a Settings occupation edit | ✓ (`pft9`) | ◑ confirm via the existing confirm-deduction action; `GET /api/relevance` + `review-groups?relevance=` for the Claims step A6 (#587) | ✗ until A6 (#587) | `relevance_scan` (OFF) | FTn (`pft9`), FT1–4 |
 | Residency periods / temporary resident (no visa subclass) | ✓ periods + `residencyOn` (#571) | ◑ API only (A2) | ◑ | `situation_profile` (OFF) | FT2v, FT4 |
-| Residency-aware foreign income | ✗ | — | — | — (A13 `residency_assessability`) | FT4 |
+| Residency-aware foreign income (A13, #580): foreign-sourced income dated in a `foreign` / `whm` / `temporary` period is left out of the position (pack `residency_assessability`; temporary residents keep `foreign_employment`), surfaced in `excluded_by_type` with a general-info note; undated rows in a changed-residency FY stay in + `foreign_income_undated_part_year`. G11: Find My Claims keeps occupation suggestions (with an Australian-work caveat) instead of deferring them. | ✓ | ◑ periods via API only (About-you editor is A2 #585) | ✓ readiness excluded line + findings, accountant-schedule note, myTax worksheet "left out" note | `residency_assessability` (OFF; needs `situation_profile`) | FT4 (`pft13`, `pft13t`) |
 | Residency marked "not sure" (review nudge, deferred; never flips the binary `tax_residency` mirror) | ✓ | ◑ API only (A2) | ✓ `residency_unsure` | `situation_profile` (OFF) | FT2v (`pft7b`) |
 | Study-loan flag + repayment-income passthrough (info, never a figure) | ✓ `study_loan` period + `study_loan_passthrough` (#571); ◑ NOA balance | ◑ API only (A2) | ✓ | `situation_profile` (OFF) | FT2v (`pft7`), FT2, FT1 |
 
-Still open from the findings doc: G2 (wages answer), M3 (residency-aware assessability, A13 — the
-residency periods themselves landed with #571), the About-you editor that writes the periods (A2), G11 (narrow the blanket non-resident defer), G7/G8 (sole-trader onboarding,
+Still open from the findings doc: G2 (wages answer), the About-you editor that writes the periods (A2), G7/G8 (sole-trader onboarding,
 platform statements), the held non-lodgment-advice decision, and per-person scoping of the Div 35 and
 residency nudges for multi-person tenants.
 

@@ -2572,6 +2572,100 @@ async function main() {
         dedLine?.amount_cents === 50000 && rep.total_deductions_cents === 50000 && ws.tie_back.ok);
     }
 
+    // ── pft13 — FT4 Lena newcomer (#580, flag residency_assessability; spec A13). `foreign` Jul–Oct 2025, `whm`
+    //    from 1 Nov 2025; AU wages $28k; foreign_employment $6k dated Sep (foreign period) + $2k dated Mar (WHM
+    //    period); one UNDATED foreign pension $1k (the pack has no foreign-dividend type — any foreign-sourced
+    //    type exercises the rule). Periods go in through the real writer. Asserts the exclusion, the undated
+    //    stay-in finding, every report-derived tie-back, the temporary carve-out, and OFF byte-identity. ──
+    {
+      const RES_ENV_ON = { ...env, FEATURES: `${(env as { FEATURES: string }).FEATURES},first_timer_income,situation_profile,mytax_worksheet,residency_assessability` } as unknown as Env;
+      const SP_ONLY = { ...env, FEATURES: `${(env as { FEATURES: string }).FEATURES},first_timer_income,situation_profile,mytax_worksheet` } as unknown as Env;
+      const W = { fy: 2025, now: new Date("2026-10-03T00:00:00Z") };
+      const residencyOf = (u: string) => (db.prepare(`SELECT tax_residency FROM persons WHERE id = ?`).get(`person_self_${u}`) as { tax_residency: string }).tax_residency;
+      const resAssess = async (e: Env, u: string) => {
+        const report = await buildReport(e, u, 2025);
+        const sig = { ...wsSignals(), ...(await firstTimerIncomeSignals(e, u, 2025)), ...(await mytaxWorksheetSignals(e, u, 2025, report)) };
+        const situation = wsSituation(u);
+        situation.persons[0]!.tax_residency = residencyOf(u);
+        return { report, ready: assessReadiness({ report, situation, claimMatches: [], signals: sig, generatedAt: "2026-10-03T00:00:00Z" }) };
+      };
+      const lineSum = (p: { lines: { group: string; amount_cents: number }[] }) =>
+        p.lines.reduce((s, l) => s + (l.group === "income" ? l.amount_cents : l.group === "deduction" || l.group === "depreciation" ? -l.amount_cents : 0), 0);
+      const seedLena = (u: string) => {
+        seedTenant(u, "FT4 Lena newcomer — residency periods");
+        run(`INSERT INTO profiles (user_id) VALUES (?)`, u);
+        inc(`${u}Sal`, u, "salary_payg", 2800000, { txn_date: "2026-01-15", detail_json: JSON.stringify({ employer: "Farm Co" }) });
+        inc(`${u}ForSep`, u, "foreign_employment", 600000, { txn_date: "2025-09-15" });
+        inc(`${u}ForMar`, u, "foreign_employment", 200000, { txn_date: "2026-03-15", person_id: `person_self_${u}` });
+      };
+
+      const u = "pft13";
+      seedLena(u);
+      inc("pft13Pen", u, "foreign_pension", 100000); // undated
+      const before = await buildReport(env, u, 2025);
+      const beforeSp = await buildReport(SP_ONLY, u, 2025);
+      await upsertSituationPeriod(RES_ENV_ON, u, { person_id: `person_self_${u}`, fact: "residency", value: "foreign", starts_on: "2025-07-01", ends_on: "2025-10-31" }, W);
+      await upsertSituationPeriod(RES_ENV_ON, u, { person_id: `person_self_${u}`, fact: "residency", value: "whm", starts_on: "2025-11-01" }, W);
+      const off = await resAssess(env, u);
+      const spOnly = await resAssess(SP_ONLY, u);
+      const on = await resAssess(RES_ENV_ON, u);
+
+      check("pft13 (OFF): taxable_position_cents byte-identical to before any period existed — everything stays in ($37k)",
+        off.report.taxable_position_cents === 3700000 && JSON.stringify(off.report) === JSON.stringify(before));
+      check("pft13 (situation_profile ON, residency_assessability OFF): report byte-identical — the periods alone never move money",
+        JSON.stringify(spOnly.report) === JSON.stringify(beforeSp) && !spOnly.ready.findings.some((x) => x.id.startsWith("foreign_income_non_resident_excluded") || x.id === "foreign_income_undated_part_year"));
+      const exFe = on.report.income.excluded_by_type?.find((x) => x.income_type === "foreign_employment");
+      check("pft13 (ON): both foreign_employment rows excluded ($6k foreign period + $2k WHM period) with reason non_resident_foreign",
+        exFe?.n === 2 && exFe.gross_cents === 800000 && exFe.reason === "non_resident_foreign" && !on.report.income.by_type.some((t) => t.income_type === "foreign_employment"));
+      check("pft13 (ON): wages + the undated pension stay in — position $29k, never driven by the binary residency alone",
+        on.report.income.gross_cents === 2900000 && on.report.taxable_position_cents === 2900000 && on.report.total_income_cents === 2900000);
+      check("pft13 (ON): readiness lines still sum to the headline (excluded line carries the residency note)",
+        lineSum(on.ready.position) === on.ready.position.indicative_taxable_position_cents &&
+        on.ready.position.lines.some((l) => l.group === "excluded" && l.label === "foreign_employment" && l.amount_cents === 800000 && /not an Australian resident/.test(l.why ?? "")));
+      const und = on.ready.findings.find((x) => x.id === "foreign_income_undated_part_year");
+      check("pft13 (ON): the undated pension raises foreign_income_undated_part_year (REVIEW, defers) and stays in",
+        und?.severity === "review" && und.defer_to_agent && und.general_info_note.includes("$1,000.00") && /registered tax agent/.test(und.general_info_note) && on.report.income.residency_undated?.n === 1);
+      const exN = on.ready.findings.find((x) => x.id === "foreign_income_non_resident_excluded");
+      check("pft13 (ON): one INFO note names the $8,000 left out, general-info framing, no tax-advice term",
+        exN?.severity === "info" && exN.general_info_note.includes("$8,000.00") && /general information/i.test(exN.general_info_note) && !/refund|tax payable|marginal rate/i.test(exN.title + exN.general_info_note));
+      check("pft13 (ON): the binary-residency #550 nudge is suppressed (the periods handled the rows); OFF still shows it",
+        !on.ready.findings.some((x) => x.id === "foreign_income_non_resident") && spOnly.ready.findings.some((x) => x.id === "foreign_income_non_resident") && residencyOf(u) === "foreign");
+      const sched = await buildAccountantSchedule(RES_ENV_ON, u, 2025, { report: on.report });
+      const incSec = sched.sections.find((sec) => sec.key === "income");
+      check("pft13 (ON): accountant schedule ties back in every section; income section notes the left-out foreign income",
+        tieBackChecks(sched).every((t) => t.ok) && (incSec?.notes ?? []).some((n) => /dated in a non-resident period/.test(n) && n.includes("8000.00")));
+      const ws = await buildMytaxWorksheet(RES_ENV_ON, u, 2025, { report: on.report });
+      const leftOut = lineOf(ws, "income_type_in", "foreign_left_out");
+      check("pft13 (ON): myTax worksheet ties back; no type-in line for the excluded employment; one 'left out' note line with no amount",
+        ws.tie_back.ok && !lineOf(ws, "income_type_in", "foreign_employment") && leftOut?.kind === "note" && leftOut.amount_cents === null && /\$8,000\.00/.test(leftOut.name));
+
+      // Temporary variant: the WHM period becomes `temporary` ⇒ the March foreign_employment row stays in (ATO).
+      const ut = "pft13t";
+      seedLena(ut);
+      inc("pft13tPen", ut, "foreign_pension", 100000, { txn_date: "2026-04-01" }); // dated in the temporary period
+      await upsertSituationPeriod(RES_ENV_ON, ut, { person_id: `person_self_${ut}`, fact: "residency", value: "foreign", starts_on: "2025-07-01", ends_on: "2025-10-31" }, W);
+      await upsertSituationPeriod(RES_ENV_ON, ut, { person_id: `person_self_${ut}`, fact: "residency", value: "temporary", starts_on: "2025-11-01" }, W);
+      const t = await resAssess(RES_ENV_ON, ut);
+      const tFe = t.report.income.by_type.find((x) => x.income_type === "foreign_employment");
+      const tEx = t.report.income.excluded_by_type ?? [];
+      check("pft13 temporary: the $2k March foreign_employment stays IN (pack carve-out); the Sep row (foreign period) and the temporary-period pension are out",
+        tFe?.gross_cents === 200000 && tFe.n === 1 && tEx.find((x) => x.income_type === "foreign_employment")?.gross_cents === 600000 &&
+        tEx.find((x) => x.income_type === "foreign_pension")?.gross_cents === 100000 && t.report.taxable_position_cents === 3000000);
+      check("pft13 temporary: lines-sum, schedule and worksheet tie-backs all hold",
+        lineSum(t.ready.position) === t.ready.position.indicative_taxable_position_cents &&
+        tieBackChecks(await buildAccountantSchedule(RES_ENV_ON, ut, 2025, { report: t.report })).every((x) => x.ok) &&
+        (await buildMytaxWorksheet(RES_ENV_ON, ut, 2025, { report: t.report })).tie_back.ok);
+
+      // Binary residency alone never excludes: pft4 (tax_residency 'foreign', no periods) is unchanged with the flag ON.
+      const p4 = await buildReport(RES_ENV_ON, "pft4", 2025);
+      check("pft13 guard: pft4 (binary 'foreign', no dated period) keeps foreign_employment in with the flag ON — $25k",
+        p4.taxable_position_cents === 2500000 && JSON.stringify(p4) === JSON.stringify(await buildReport(env, "pft4", 2025)));
+      // All 10 personas: no non-resident period ⇒ byte-identical report with the flag ON.
+      const diffs: string[] = [];
+      for (const pu of ["p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9", "p10"]) if (JSON.stringify(await buildReport(RES_ENV_ON, pu, 2025)) !== JSON.stringify(await buildReport(SP_ONLY, pu, 2025))) diffs.push(pu);
+      check(`pft13: all 10 personas byte-identical with residency_assessability ON${diffs.length ? ` — MOVED ${diffs.join(",")}` : ""}`, diffs.length === 0);
+    }
+
     // Tie-back sweep: the worksheet reconciles to the report for EVERY persona tenant seeded above (rentals,
     // attributions, companies, CGT, refunds…), not just the first-timer fixtures.
     {

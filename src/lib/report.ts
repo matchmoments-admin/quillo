@@ -1,10 +1,11 @@
 import type { Env } from "../env";
 import { COUNTABLE, COUNTABLE_INCOME } from "./queries";
-import { incomeTotals, depreciationTotals, attributionTotals, companyPositions, cgtTotals, carriedTaxLossCents, essTotals, gstTotals, paygInstalmentsTotal, carLogbookPosition, carWorkKmFor, trustTotals, partnershipTotals, smsfFundPositions, separateTaxpayerEntityIds, superConcessionalDeduction, tradingStockAdjustment, fyStartYearStr, type IncomeTotals, type AttributionTotals, type CompanyPosition, type GstPosition, type CarLogbookPosition, type SmsfFundPosition, type RulePackThresholds, type SuperDeduction, type TradingStock } from "./ledger-totals";
+import { incomeTotals, residencyIncomeSplit, depreciationTotals, attributionTotals, companyPositions, cgtTotals, carriedTaxLossCents, essTotals, gstTotals, paygInstalmentsTotal, carLogbookPosition, carWorkKmFor, trustTotals, partnershipTotals, smsfFundPositions, separateTaxpayerEntityIds, superConcessionalDeduction, tradingStockAdjustment, fyStartYearStr, type IncomeTotals, type AttributionTotals, type CompanyPosition, type GstPosition, type CarLogbookPosition, type SmsfFundPosition, type RulePackThresholds, type SuperDeduction, type TradingStock } from "./ledger-totals";
 import type { TrustTotals } from "./trust";
 import type { CgtPortfolioResult } from "./cgt";
 import type { EssAssessable } from "./ess";
 import { featureOn } from "./features";
+import { residencyAssessabilityContext } from "./residency-assessability";
 import { resolveLoanInterest, deductibleInterestCents, type LoanInterestSource } from "./loan-interest";
 import auV1RulePack from "../rulepacks/au-v1.json";
 import { computeWorkMethodDeductions, workUseRatesForFy, type WorkMethodDeductions, type WorkUseInputs, type WorkUseRates } from "./work-use";
@@ -632,7 +633,12 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   // position. Personal income (entity_id NULL / an 'individual' entity) always stays. [] for
   // personal-only data ⇒ no-op (byte-identical). This subsumes the earlier SMSF-only carve-out.
   const separateIds = await separateTaxpayerEntityIds(env, userId);
-  const income = await incomeTotals(env, userId, { startYear, excludeEntityIds: separateIds });
+  // A13 (#580, residency_assessability): foreign-sourced income dated inside a foreign / WHM / temporary-resident
+  // period is left out (row-level, pack-driven). Context is null with the flag OFF or no non-resident period ⇒
+  // no split query, incomeTotals untouched ⇒ byte-identical.
+  const residencyCtx = await residencyAssessabilityContext(env, userId, startYear, { descriptor: jurisdiction, rulePack });
+  const residencySplit = residencyCtx ? await residencyIncomeSplit(env, userId, startYear, residencyCtx, { excludeEntityIds: separateIds }) : null;
+  const income = await incomeTotals(env, userId, { startYear, excludeEntityIds: separateIds, residencySplit });
   const dep = await depreciationTotals(env, userId, startYear);
   // Phase B / G2: deductions that come from explicit attributions (payer≠claimant) rather than the
   // raw transaction. The attributed transactions were excluded from the raw sums above (notAttributed),
@@ -713,6 +719,14 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
     .bind(userId, `${startYear}-${String((startYear + 1) % 100).padStart(2, "0")}`)
     .all<{ property_id: string; gross_cents: number }>();
   for (const r of rentRows.results ?? []) rentByProp.set(r.property_id, r.gross_cents);
+  // A13: foreign rent a non-resident period left out of income is left out of that property's rent too, so the
+  // per-property display never shows income the headline doesn't count. No split ⇒ no-op.
+  for (const x of residencySplit?.excluded ?? []) {
+    if (!x.property_id || (x.income_type !== "rent" && x.income_type !== "foreign_rent") || !rentByProp.has(x.property_id)) continue;
+    const left = (rentByProp.get(x.property_id) ?? 0) - x.gross_cents;
+    if (left === 0) rentByProp.delete(x.property_id);
+    else rentByProp.set(x.property_id, left);
+  }
 
   // Property labels + status for ids that have income/depreciation but no expense transactions this FY.
   const labelRows = await env.DB.prepare(`SELECT id, label, status FROM properties WHERE user_id = ?`).bind(userId).all<{ id: string; label: string | null; status: string | null }>();

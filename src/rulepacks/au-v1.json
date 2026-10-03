@@ -657,5 +657,14 @@
     "car_for_work": { "values": ["yes"], "multi": false },
     "foreign_income": { "values": ["yes"], "multi": false },
     "private_hospital_cover": { "values": ["yes", "no"], "multi": false }
+  },
+  "residency_assessability": {
+    "_note": "First-timer spec A13 (#580, flag residency_assessability; owner rulings #557 + spec residual Q2): which income types are LEFT OUT of the indicative position when the income's date falls inside a person's residency period (situation_periods, fact 'residency'). 'foreign_sourced_types' names the foreign-sourced income types (relative to this jurisdiction); each residency value's rule excludes that group ('exclude': 'foreign_sourced') minus its 'keep' carve-out. Temporary residents KEEP foreign_employment: the ATO says temporary residents declare foreign employment income earned while a temporary resident (owner-confirmed 2026-10-03). A residency value with no rule ('resident', 'unsure') excludes nothing. General information only — never a rate or a figure.",
+    "foreign_sourced_types": ["foreign_pension", "foreign_rent", "foreign_business", "foreign_employment"],
+    "rules": {
+      "foreign": { "exclude": "foreign_sourced" },
+      "whm": { "exclude": "foreign_sourced" },
+      "temporary": { "exclude": "foreign_sourced", "keep": ["foreign_employment"] }
+    }
   }
 }

@@ -11,6 +11,8 @@ import {
 } from "./advisory";
 import { matchEnergyOffer, ctaFromOffer, opportunityTakesEnergyCta, type PartnerDB } from "./partners";
 import { groupKey } from "./clarify";
+import { reconcileScore, proposeMatches, RECONCILE_WINDOW_DAYS, type ReconcileConfig, type MatchProposal } from "./reconcile-proposer";
+import type { JurisdictionDescriptor } from "./jurisdiction";
 
 // Read-side queries for the web API. Reads hit D1 directly from the Worker; audited
 // writes (corrections, consent) go through the Durable Object RPC instead.
@@ -337,18 +339,9 @@ export interface ReconcilePairsResult {
   lines_available: number;
 }
 
-// Mirror of the SPA's score() in Reconcile.tsx — duplicated DELIBERATELY until the shape-B proposer
-// owns matching outright (docs/ux/reconcile-fold-findings.md): amount tolerance max(50¢, 1%) at 0.7,
-// 7-day date window at 0.3. Keep the two copies in sync.
-function reconcileScore(rCents: number, rTime: number | null, lCents: number, lTime: number | null): number {
-  const amt = 1 - Math.min(Math.abs(rCents - lCents) / Math.max(50, rCents * 0.01), 1);
-  let date = 0;
-  if (rTime != null && lTime != null) {
-    const d = Math.abs(rTime - lTime) / 86_400_000;
-    date = 1 - Math.min(d, 7) / 7;
-  }
-  return amt * 0.7 + date * 0.3;
-}
+// The scorer now lives in src/lib/reconcile-proposer.ts (A8, #574) and is shared by this picker ordering
+// and the server-side proposer. The SPA's score() in Reconcile.tsx is still a mirror (it re-sorts the
+// loaded page for a picked receipt) until the Check page's fallback picker reads server ordering.
 
 /** Unmatched receipts + unmatched bank lines, for the manual Reconcile page.
  * `fy` scopes the BANK LINES only (money decides the year — a receipt near the boundary must still be
@@ -395,6 +388,74 @@ export async function reconcilePairs(env: Env, userId: string, opts: { fy?: numb
   const limit = Math.min(Math.max(opts.limit ?? 200, 1), RECONCILE_SCAN);
   const offset = Math.max(opts.offset ?? 0, 0);
   return { receipts, lines: scored.slice(offset, offset + limit), total_receipts: totalReceipts, total_lines: totalLines, lines_available: scanned.length };
+}
+
+// ── A8 (#574) receipt ↔ bank-line match PROPOSALS (reconcile_proposals) ──────────────────────────
+// Read-only. Unlike reconcilePairs' display scan, a proposal is only trustworthy if the proposer saw
+// EVERY candidate line in the FY (a missed runner-up would overstate the margin), so these caps are a
+// fail-safe, not a page size: past them the result is empty with `truncated: true` and every receipt
+// stays in the manual picker. Real FYs sit far below them (~2.4k lines in the owner's busiest year).
+export const PROPOSER_RECEIPT_CAP = 5000;
+export const PROPOSER_LINE_CAP = 20000;
+const PROPOSAL_ROW_COLS = "id, merchant, raw_description, amount_cents, amount_aud_cents, currency, txn_date, direction, bucket";
+export interface ProposalRow {
+  id: string;
+  merchant: string | null;
+  raw_description: string | null;
+  amount_cents: number | null;
+  amount_aud_cents: number | null;
+  currency: string | null;
+  txn_date: string | null;
+  direction: string | null;
+  bucket: string | null;
+}
+export interface ReconcileProposalsResult {
+  fy: number;
+  proposals: (MatchProposal & { receipt: ProposalRow; line: ProposalRow })[];
+  ambiguous: { receipt: ProposalRow; candidates: number }[];
+  no_line: ProposalRow[];
+  truncated: boolean;
+}
+
+/** Proposed receipt ↔ bank-line matches for one FY (by the bank line's date). Never writes. */
+export async function reconcileProposals(env: Env, userId: string, fy: number, cfg: ReconcileConfig, jurisdiction?: JurisdictionDescriptor): Promise<ReconcileProposalsResult> {
+  const bounds = fyBounds(fy, jurisdiction ?? await resolveJurisdictionForUser(env, userId));
+  // Same receipt predicate as reconcilePairs, plus: an IGNORED receipt (the user excluded it) is never
+  // surfaced, and an unconverted foreign-currency row has no AUD figure to compare against a bank line —
+  // both stay out of proposals (the manual picker still lists what it always listed).
+  const receipts = (await env.DB.prepare(
+    `SELECT ${PROPOSAL_ROW_COLS} FROM transactions
+      WHERE user_id = ? AND kind = 'receipt' AND status NOT IN ('duplicate','ignored') AND matched_txn_id IS NULL
+        AND amount_cents IS NOT NULL AND ${FX_CONVERTED}
+      ORDER BY id LIMIT ${PROPOSER_RECEIPT_CAP + 1}`,
+  ).bind(userId).all<ProposalRow>()).results ?? [];
+  // Any direction (a refund receipt can match a refund credit); the proposer pairs like with like.
+  // Loaded RECONCILE_WINDOW_DAYS either side of the FY so a runner-up just across the boundary still
+  // counts against the margin; the proposer only ever PROPOSES a line dated inside the FY.
+  const lines = (await env.DB.prepare(
+    `SELECT ${PROPOSAL_ROW_COLS} FROM transactions
+      WHERE user_id = ? AND kind = 'bank_line' AND status NOT IN ('duplicate','ignored') AND ${FX_CONVERTED}
+        AND txn_date >= date(?, '-${RECONCILE_WINDOW_DAYS} day') AND txn_date <= date(?, '+${RECONCILE_WINDOW_DAYS} day')
+        AND id NOT IN (SELECT matched_txn_id FROM transactions WHERE user_id = ? AND matched_txn_id IS NOT NULL)
+      ORDER BY id LIMIT ${PROPOSER_LINE_CAP + 1}`,
+  ).bind(userId, bounds.start, bounds.end, userId).all<ProposalRow>()).results ?? [];
+  if (receipts.length > PROPOSER_RECEIPT_CAP || lines.length > PROPOSER_LINE_CAP) {
+    return { fy, proposals: [], ambiguous: [], no_line: [], truncated: true };
+  }
+  const dismissals = (await env.DB.prepare(
+    `SELECT receipt_id, line_id FROM reconcile_dismissals WHERE user_id = ?`,
+  ).bind(userId).all<{ receipt_id: string; line_id: string }>()).results ?? [];
+  const toRow = (t: ProposalRow) => ({ id: t.id, cents: Math.abs(t.amount_aud_cents ?? t.amount_cents ?? 0), date: t.txn_date, direction: t.direction });
+  const out = proposeMatches(receipts.map(toRow), lines.map(toRow), dismissals, cfg, bounds);
+  const rById = new Map(receipts.map((r) => [r.id, r]));
+  const lById = new Map(lines.map((l) => [l.id, l]));
+  return {
+    fy,
+    proposals: out.proposals.map((p) => ({ ...p, receipt: rById.get(p.receipt_id)!, line: lById.get(p.line_id)! })),
+    ambiguous: out.ambiguous.map((a) => ({ receipt: rById.get(a.receipt_id)!, candidates: a.candidates })),
+    no_line: out.no_line.map((id) => rById.get(id)!),
+    truncated: false,
+  };
 }
 
 export async function getTransaction(env: Env, userId: string, id: string) {

@@ -108,6 +108,10 @@ export interface FilingReadiness {
   generated_at: string; // stamped by the caller (Date is unavailable in some runtimes/tests)
   position: {
     indicative_taxable_position_cents: number; // NEVER tax payable
+    // A8 (#574, reconcile_proposals): the CONFIRMED end of the estimate range (buildReport's
+    // taxable_position_confirmed_cents — unresolved discretionary spend left out, so it is >= the tracked
+    // figure above). Present only when the flag is ON and the report computed it => OFF byte-identical.
+    taxable_position_confirmed_cents?: number;
     caption: string;
     lines: PositionLine[];
     credits: {
@@ -225,6 +229,7 @@ export function assessReadiness(input: {
   excludeNonDeductible?: boolean; // mirrors the `position_excludes_nondeductible` flag (default off = legacy)
   excludePropertyUndetermined?: boolean; // mirrors the `position_excludes_property_undetermined` flag (#254; default off = legacy)
   auditFindingsV2?: boolean; // mission-audit #7/#8 safety findings (readiness_audit_v2); default off ⇒ byte-identical
+  reconcileProposals?: boolean; // A8 (#574): add position.taxable_position_confirmed_cents; default off ⇒ byte-identical
 }): FilingReadiness {
   const { report, situation, claimMatches, signals, generatedAt } = input;
   const excludeNonDeductible = input.excludeNonDeductible ?? false;
@@ -922,6 +927,9 @@ export function assessReadiness(input: {
     generated_at: generatedAt,
     position: {
       indicative_taxable_position_cents: report.taxable_position_cents,
+      ...(input.reconcileProposals && report.taxable_position_confirmed_cents != null
+        ? { taxable_position_confirmed_cents: report.taxable_position_confirmed_cents }
+        : {}),
       caption: "Indicative taxable position (income − deductions − depreciation). This is NOT your tax payable or refund.",
       lines,
       credits: {

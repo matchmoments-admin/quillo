@@ -1312,3 +1312,15 @@ CREATE TABLE IF NOT EXISTS bank_sync_runs (
   created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_bank_sync_conn ON bank_sync_runs(user_id, connection_id, created_at);
+
+-- 0082 (A8, #574) — receipt ↔ bank-line proposals the user dismissed ("Not this one"). Proposals are
+-- computed on read; only rejections persist, so a dismissed pair is never re-proposed.
+CREATE TABLE IF NOT EXISTS reconcile_dismissals (
+  user_id    TEXT NOT NULL,
+  receipt_id TEXT NOT NULL,
+  line_id    TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (user_id, receipt_id, line_id)
+);
+-- 0082: the proposer's FY scan of bank lines (user_id + kind + txn_date).
+CREATE INDEX IF NOT EXISTS idx_txn_kind_date ON transactions(user_id, kind, txn_date);

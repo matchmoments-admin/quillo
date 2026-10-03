@@ -23,6 +23,9 @@ import { ordinaryAssessableCents, type AmmaComponents } from "../src/lib/managed
 import { draftHoldingFromTxn } from "../src/lib/clarify";
 import { costBaseFromElements, withCostBaseElements } from "../src/lib/capital";
 import { capitalReadinessSignals } from "../src/lib/capital-signals";
+import { firstTimerIncomeSignals } from "../src/lib/first-timer-signals";
+import { assessReadiness, type FilingReadinessSignals } from "../src/lib/readiness";
+import type { Situation } from "../src/lib/db";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
@@ -1995,6 +1998,159 @@ async function main() {
     inc("pCCui1", "pCCu", "business_income", 200000, { entity_id: "pCCueCo" });
     const ccu = (await buildReport(envCC, "pCCu", 2025)).company_positions?.[0];
     check("CC (flag ON): a current-year profit consumes the carried balance first ($3,000 − $2,000 = $1,000 remains)", ccu?.carried_forward_losses_cents === 300000 && ccu?.current_year_loss_cents === 0 && ccu?.total_carry_forward_cents === 100000);
+  }
+
+  // ── First-timer personas FT1–FT4 (#550, flag first_timer_income; map #529, docs/first-timer/personas-coverage.md).
+  //    End-to-end over real D1 rows: buildReport → firstTimerIncomeSignals (the SAME function the DO calls) →
+  //    assessReadiness. Every golden asserts the flag NEVER moves taxable_position_cents and that flag OFF adds
+  //    none of the new findings. ──
+  {
+    const FT_ENV_ON = { ...env, FEATURES: `${(env as { FEATURES: string }).FEATURES},first_timer_income` } as unknown as Env;
+    const ftBaseSignals = (): FilingReadinessSignals => ({
+      unknownBucketCents: 0, unknownBucketN: 0, lowConfidenceN: 0, needsReviewIncomeN: 0, needsReviewAssetsN: 0,
+      hasDividendStatementDoc: true, rentalPropsMissingSummary: [], disposedAssetsN: 0,
+      instantAssetWriteOffCentsThisFy: null, instantAssetWriteOffCentsPrevFy: null, capitalLossCarryinCents: 0,
+    });
+    const ftSituation = (u: string, residency = "AU"): Situation => ({
+      profile: {} as Situation["profile"], properties: [], entities: [], rules: [], loans_properties: [],
+      persons: [{ id: `person_self_${u}`, user_id: u, display_name: "You", role: "self", occupation: "retail", tax_residency: residency } as Situation["persons"][number]],
+    } as Situation);
+    const ftAssess = async (e: Env, u: string, residency = "AU") => {
+      const report = await buildReport(e, u, 2025);
+      const sig = { ...ftBaseSignals(), ...(await firstTimerIncomeSignals(e, u, 2025)) };
+      return { report, ready: assessReadiness({ report, situation: ftSituation(u, residency), claimMatches: [], signals: sig, generatedAt: "2026-10-03T00:00:00Z" }) };
+    };
+    const FT_IDS = ["income_not_recorded", "business_loss_div35", "tax_free_threshold_two_payers", "foreign_income_non_resident"];
+    const noFtFindings = (r: { findings: { id: string }[] }) => !r.findings.some((x) => FT_IDS.includes(x.id));
+    const ftDenylist = /refund|tax payable|marginal rate|\b\d{1,2}%\s*(tax|bracket)/i;
+    const credit = (id: string, u: string, cents: number, bucket = "income_personal") =>
+      run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, direction) VALUES (?, ?, 'upload', 'categorised', 'bank_line', ?, ?, ?, ?, 'credit')`, id, u, cents, cents, FY_DATE, bucket);
+
+    // pft1 — Jess, first-job PAYG with a BANK FEED instead of an income statement (M1).
+    {
+      const u = "pft1";
+      seedTenant(u, "FT1 Jess first-job PAYG");
+      credit("pft1c1", u, 1000000); credit("pft1c2", u, 1000000); credit("pft1c3", u, 1000000); // $30k net pay in
+      exp("pft1e1", u, 50000, "payg", "confirmed_deductible"); // $500 uniform + phone
+      const off = await ftAssess(env, u);
+      const on = await ftAssess(FT_ENV_ON, u);
+      const fd = on.ready.findings.find((x) => x.id === "income_not_recorded");
+      check("pft1 (ON, bank only): income-completeness BLOCKER fires — $0 income against deductions", fd?.severity === "blocker" && !on.ready.readiness_score.ready);
+      check("pft1 (ON): bank credits are NEVER counted — income stays $0, position = −deductions", on.report.income.gross_cents === 0 && on.report.taxable_position_cents === -50000);
+      check("pft1 (ON): copy names the $30k of credits, defers nothing it can't, trips no tax-advice term",
+        !!fd && fd.general_info_note.includes("$30,000.00") && fd.defer_to_agent === false && !ftDenylist.test(fd.title + fd.general_info_note));
+      check("pft1 (OFF): no first-timer finding, same position (byte-identical)", noFtFindings(off.ready) && off.report.taxable_position_cents === on.report.taxable_position_cents);
+      // Jess then uploads her income statement: gross $34k (net pay + withholding). Counted ONCE, finding clears.
+      inc("pft1Sal", u, "salary_payg", 3400000, { withholding_cents: 400000, detail_json: JSON.stringify({ employer: "Big Retail Pty Ltd" }) });
+      const on2 = await ftAssess(FT_ENV_ON, u);
+      check("pft1 (ON, + income statement): gross salary counted ONCE — credits never added on top", on2.report.income.gross_cents === 3400000 && on2.report.taxable_position_cents === 3400000 - 50000);
+      check("pft1 (ON, + income statement): completeness finding clears; one payer ⇒ no two-payer note", noFtFindings(on2.ready));
+    }
+
+    // pft2 — Mia, student: casual wages from TWO employers + Youth Allowance as government_payment (M5, G3).
+    {
+      const u = "pft2";
+      seedTenant(u, "FT2 Mia student");
+      inc("pft2SalA", u, "salary_payg", 600000, { detail_json: JSON.stringify({ employer: "Cafe One" }) });
+      inc("pft2SalA2", u, "salary_payg", 400000, { detail_json: JSON.stringify({ employer: "cafe one " }) }); // same payer, second payslip
+      inc("pft2SalB", u, "salary_payg", 400000, { detail_json: JSON.stringify({ employer: "Book Shop" }) });
+      inc("pft2Gov", u, "government_payment", 600000); // $6k Youth Allowance
+      exp("pft2e1", u, 30000, "payg", "confirmed_deductible");
+      const off = await ftAssess(env, u);
+      const on = await ftAssess(FT_ENV_ON, u);
+      check("pft2: government_payment is ASSESSABLE — $14k wages + $6k Youth Allowance = $20k income", on.report.income.gross_cents === 2000000 && on.report.taxable_position_cents === 2000000 - 30000);
+      const gl = on.ready.position.lines.find((l) => l.group === "income" && l.label === "government_payment");
+      check("pft2: government_payment renders its own labelled line (items 5/6), not 'other'", !!gl && gl.amount_cents === 600000 && /items 5 and 6/.test(gl.why));
+      const tp = on.ready.findings.find((x) => x.id === "tax_free_threshold_two_payers");
+      check("pft2 (ON): two distinct payers (case/space-insensitive employer match) ⇒ tax-free-threshold INFO note, deferred, no amount",
+        tp?.severity === "info" && tp.defer_to_agent && tp.title.includes("2 payers") && !/\$\d/.test(tp.general_info_note) && !ftDenylist.test(tp.title + tp.general_info_note));
+      check("pft2 (ON): no income-completeness / Div 35 / residency finding", !on.ready.findings.some((x) => ["income_not_recorded", "business_loss_div35", "foreign_income_non_resident"].includes(x.id)));
+      check("pft2 (OFF): no first-timer finding, same position", noFtFindings(off.ready) && off.report.taxable_position_cents === on.report.taxable_position_cents);
+      check("pft2: NO repayment / study-loan figure anywhere in the readiness output", !/repayment of \$|HELP repayment \$/i.test(JSON.stringify(on.ready)));
+    }
+
+    // pft3 — Sam, PAYG + a sub-threshold food-delivery ABN running a first-year LOSS (M6).
+    {
+      const u = "pft3";
+      seedTenant(u, "FT3 Sam PAYG + gig");
+      run(`INSERT INTO entities (id, user_id, kind, name, person_id, entity_type) VALUES ('pft3eInd', ?, 'individual', 'Sam (sole trader)', ?, 'individual')`, u, `person_self_${u}`);
+      run(`INSERT INTO income_activities (id, user_id, entity_id, activity_type, label) VALUES ('pft3iaBiz', ?, 'pft3eInd', 'business', 'Food delivery')`, u);
+      inc("pft3Sal", u, "salary_payg", 4000000, { detail_json: JSON.stringify({ employer: "Warehouse Co" }) });
+      inc("pft3Biz", u, "business", 300000); // $3k delivery income
+      run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, direction, deductibility) VALUES ('pft3tBike', ?, 'upload', 'categorised', 'bank_line', 500000, 500000, ?, 'payg', 'debit', 'undetermined')`, u, FY_DATE);
+      run(`INSERT INTO transaction_attributions (id, user_id, transaction_id, entity_id, income_activity_id, attributed_amount_cents, deduction_provision) VALUES ('pft3aBike', ?, 'pft3tBike', 'pft3eInd', 'pft3iaBiz', 500000, 's8-1_general')`, u);
+      const off = await ftAssess(env, u);
+      const on = await ftAssess(FT_ENV_ON, u);
+      check("pft3: the loss offsets salary in the position TODAY — $40k + $3k − $5k = $38k (unchanged by the flag)",
+        on.report.taxable_position_cents === 3800000 && off.report.taxable_position_cents === on.report.taxable_position_cents);
+      const d35 = on.ready.findings.find((x) => x.id === "business_loss_div35");
+      check("pft3 (ON): Div 35 non-commercial-loss REVIEW nudge fires, defers to a registered tax agent",
+        d35?.severity === "review" && d35.defer_to_agent && /registered tax agent/.test(d35.general_info_note) && !ftDenylist.test(d35.title + d35.general_info_note));
+      // Household guard: the same rows with a second person in the situation ⇒ no Div 35 claim about "your other income".
+      const sitTwo = ftSituation(u);
+      sitTwo.persons.push({ id: "pft3spouse", user_id: u, display_name: "Partner", role: "spouse", occupation: null, tax_residency: "AU" } as Situation["persons"][number]);
+      const twoP = assessReadiness({ report: on.report, situation: sitTwo, claimMatches: [], signals: { ...ftBaseSignals(), ...(await firstTimerIncomeSignals(FT_ENV_ON, u, 2025)) }, generatedAt: "2026-10-03T00:00:00Z" });
+      check("pft3 (ON, two-person household): Div 35 nudge withheld (income isn't person-scoped yet)", !twoP.findings.some((x) => x.id === "business_loss_div35"));
+      check("pft3 (OFF): no Div 35 nudge (byte-identical)", noFtFindings(off.ready));
+    }
+
+    // pft4 — Lena, newcomer: residency set to foreign, Australian wages + foreign employment income (M5, G10 review step).
+    {
+      const u = "pft4";
+      seedTenant(u, "FT4 Lena newcomer");
+      // Residency reaches assessReadiness via the Situation (ftSituation below), as getSituation would hand it.
+      inc("pft4Sal", u, "salary_payg", 2000000, { detail_json: JSON.stringify({ employer: "Farm Co" }) });
+      inc("pft4For", u, "foreign_employment", 500000);
+      const off = await ftAssess(env, u, "foreign");
+      const on = await ftAssess(FT_ENV_ON, u, "foreign");
+      check("pft4: foreign_employment is assessable and STAYS in the position (exclusion is held for owner decision G10) — $25k",
+        on.report.income.gross_cents === 2500000 && on.report.taxable_position_cents === 2500000 && off.report.taxable_position_cents === 2500000);
+      const fr = on.ready.findings.find((x) => x.id === "foreign_income_non_resident");
+      check("pft4 (ON): foreign-income-for-a-non-resident REVIEW nudge, deferred to a registered tax agent",
+        fr?.severity === "review" && fr.defer_to_agent && /registered tax agent/.test(fr.general_info_note) && fr.general_info_note.includes("$5,000.00"));
+      check("pft4 (ON): an AU resident with the same rows gets NO residency nudge", !(await ftAssess(FT_ENV_ON, u, "AU")).ready.findings.some((x) => x.id === "foreign_income_non_resident"));
+      check("pft4 (ON): free-text residency spelled 'Australia' is still AU — no nudge from a spelling", !(await ftAssess(FT_ENV_ON, u, "Australia")).ready.findings.some((x) => x.id === "foreign_income_non_resident"));
+      check("pft4 (OFF): no first-timer finding (byte-identical)", noFtFindings(off.ready));
+    }
+
+    // Partial gap: salary recorded but a business credit with no business income → REVIEW, not blocker.
+    {
+      const u = "pft5";
+      seedTenant(u, "FT partial income gap");
+      inc("pft5Sal", u, "salary_payg", 5000000);
+      credit("pft5c1", u, 200000, "income_business");
+      const on = await ftAssess(FT_ENV_ON, u);
+      const fd = on.ready.findings.find((x) => x.id === "income_not_recorded");
+      check("pft5 (ON): some income recorded but a whole kind missing ⇒ REVIEW (not blocker), names business income",
+        fd?.severity === "review" && fd.general_info_note.includes("$2,000.00 of business income"));
+      check("pft5 (OFF): no first-timer finding", noFtFindings((await ftAssess(env, u)).ready));
+    }
+
+    // pft6 — review HIGH: a company records its sales correctly (income row under the company entity). Its bank
+    // credits sit in income_business (the rule pack defines that bucket as Pty Ltd revenue) while the row is
+    // rightly kept out of the individual's by_type. Must NOT be told to record income it already recorded.
+    // Also: a couple with one job each is not "two payers"; credits only ⇒ no "nothing captured" beside it.
+    {
+      const u = "pft6";
+      seedTenant(u, "FT company + household guards");
+      run(`INSERT INTO entities (id, user_id, kind, name, person_id, entity_type, base_rate_entity) VALUES ('pft6eCo', ?, 'company', 'Side Pty Ltd', ?, 'company', 1)`, u, `person_self_${u}`);
+      inc("pft6CoInc", u, "business", 900000, { entity_id: "pft6eCo" });
+      credit("pft6c1", u, 900000, "income_business");
+      inc("pft6Sal", u, "salary_payg", 6000000, { detail_json: JSON.stringify({ employer: "Big Retail Pty. Ltd." }) });
+      inc("pft6Sal2", u, "salary_payg", 500000, { detail_json: JSON.stringify({ employer: "BIG RETAIL PTY LTD" }) }); // same payer, name variant
+      inc("pft6SpSal", u, "salary_payg", 7000000, { person_id: "pft6spouse", detail_json: JSON.stringify({ employer: "Hospital" }) });
+      const on = await ftAssess(FT_ENV_ON, u);
+      check("pft6 (ON): company-recorded sales cover its income_business credits — no income_not_recorded", !on.ready.findings.some((x) => x.id === "income_not_recorded"));
+      check("pft6 (ON): one job each for a couple + an employer-name variant ⇒ no two-payer note", !on.ready.findings.some((x) => x.id === "tax_free_threshold_two_payers"));
+      const u2 = "pft6b";
+      seedTenant(u2, "FT credits only");
+      credit("pft6bc1", u2, 400000);
+      const only = await ftAssess(FT_ENV_ON, u2);
+      const fd = only.ready.findings.find((x) => x.id === "income_not_recorded");
+      check("pft6b (ON, credits only): income_not_recorded owns it — no contradictory 'nothing captured'; no '$0 against deductions' claim without deductions",
+        fd?.severity === "blocker" && !only.ready.findings.some((x) => x.id === "nothing_captured") && !fd.general_info_note.includes("against $0"));
+      check("pft6b (OFF): legacy 'nothing captured' still fires (byte-identical)", (await ftAssess(env, u2)).ready.findings.some((x) => x.id === "nothing_captured"));
+    }
   }
 
   console.log(`\n=== personas: ${pass} passed, ${fail} failed ===`);

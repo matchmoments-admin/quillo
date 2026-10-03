@@ -187,6 +187,40 @@ part-disposal guard *uncomputable* rather than merely unbuilt.
 - Still open: DRP parcels (#455), the AMIT cost-base adjustment (#454), broker/registry statement ingest
   (#456), and the jurisdiction seam (#457). Epic #452; handoff `docs/capital-cgt-handoff.md`.
 
+### First-timer personas (launch cohort, map #529) — income capture (#550, 2026-10)
+
+Source findings: [`first-timer/personas-coverage.md`](first-timer/personas-coverage.md) (mechanisms
+M1–M6). These four are a coverage lens for the self-lodging first-time taxpayer; goldens `pft1`–`pft4`
+(+ `pft5` partial income gap, `pft6` company-income / household / credits-only guards) in `scripts/check-personas.ts` drive real D1 rows through `buildReport`
+→ `firstTimerIncomeSignals` (`src/lib/first-timer-signals.ts`, the same function the Durable Object
+calls) → `assessReadiness`, and assert that flag `first_timer_income` never moves
+`taxable_position_cents` and that flag OFF adds none of the new findings.
+
+| # | Persona | Core tax shape | Golden |
+|---|---------|----------------|--------|
+| FT1 | **Jess**, first-job PAYG | one employer, started mid-year, **a bank feed instead of an income statement**, small work deductions | `pft1` |
+| FT2 | **Mia**, student, part-time | casual wages from two payers, Youth Allowance, HELP debt, self-education for the current role only | `pft2` |
+| FT3 | **Sam**, PAYG + gig side hustle | PAYG + a food-delivery ABN under the GST threshold, **first-year business loss** | `pft3` |
+| FT4 | **Lena**, newcomer (WHM / international student) | residency set to non-AU, Australian wages + foreign employment income | `pft4` |
+
+| Capability | Engine | UI in | Display | Flag | Personas |
+|---|:---:|:---:|:---:|---|---|
+| Income completeness: bank income credits with no matching recorded income (blocker when income is $0, review otherwise; company/trust income recorded under its entity counts as covering business/rent credits) + an "upload your income statement" checklist item. Bank credits are still never counted. | ✓ | ✓ (Income upload / manual) | ✓ readiness finding + checklist (checklist gate pinned in check-units) | `first_timer_income` (ON) | FT1–4, 1, 3, 7 |
+| `government_payment` income type (Youth Allowance / Austudy / JobSeeker, items 5/6) | ✓ assessable | ✓ Income form | ◑ item-mapped "why"; raw type label on Filing | `first_timer_income` (ON) | FT2 |
+| `foreign_employment` income type (item 20) | ✓ assessable | ✓ Income form | ◑ item-mapped "why"; raw type label on Filing | `first_timer_income` (ON) | FT4 |
+| Tax-free threshold with two or more payers (info note, no amount) | ✓ | — | ✓ | `first_timer_income` (ON) | FT2, 7 |
+| Div 35 business-loss defer nudge (sole-trader expenses > business income beside other income; single-person tenants only until income is person-scoped; never applied to the position) | ✓ | — | ✓ | `first_timer_income` (ON) | FT3, 4, 5 |
+| Foreign income for a non-AU resident (review nudge; income stays in the position — exclusion is held owner decision G10) | ✓ | ✓ residency switch | ✓ | `first_timer_income` (ON) | FT4 (10 only if residency is non-AU) |
+| Wages answer on a credit group (never net-as-gross) | ✗ | ✗ | ✗ | — (owner decision G2) | FT1–4 |
+| Residency periods / temporary resident / visa; residency-aware foreign income | ✗ | ◑ AU/foreign switch | ◑ | — (map fog M2/M3) | FT4 |
+| Study-loan flag + repayment-income passthrough | ◑ NOA balance | ✗ | ◑ | — (waits on M2) | FT2, FT1 |
+
+Still open from the findings doc: G2 (wages answer), M2/M3 (residency periods + residency-aware
+assessability, incl. the held G10 decision to exclude foreign income for non-residents), M4/G5
+(study-loan passthrough), G11 (narrow the blanket non-resident defer), G7/G8 (sole-trader onboarding,
+platform statements), the held non-lodgment-advice decision, and per-person scoping of the Div 35 and
+residency nudges for multi-person tenants.
+
 ## How it's wired (for maintainers)
 
 - **Engines** are pure libs: `src/lib/{cgt,ess,gst,trust,smsf,car-logbook,occupations}.ts` + the

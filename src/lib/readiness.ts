@@ -16,6 +16,7 @@ import type { Report } from "./report";
 import { deductionGroupForRow } from "./report";
 import type { Situation } from "./db";
 import { suggestionText, type ClaimRule } from "./claimability";
+import { BUSINESS_INCOME_TYPES, RENT_INCOME_TYPES, FOREIGN_INCOME_TYPES } from "./taxonomy";
 
 export const READINESS_DISCLAIMER =
   "General information only — not tax advice. Quillo is not a registered tax or BAS agent. Confirm everything with a registered tax agent before lodging.";
@@ -93,6 +94,13 @@ export interface FilingReadinessSignals {
   superNonConcessionalCapCents?: number | null; // reference NCC cap for the FY
   nonConcessionalContributedCents?: number; // total type='non_concessional' super contributions this FY
   nonCashIncomeEnabled?: boolean; // non_cash_income flag (audit wave 4) — gates the non_cash_benefit nudge's copy fork so OFF keeps the legacy wording verbatim
+  // first_timer_income (#550) — populated ONLY when the flag is on (src/lib/first-timer-signals.ts), so OFF ⇒
+  // findings byte-identical. Counts / already-computed totals that decide whether a GENERAL-INFO nudge renders;
+  // none of them is ever turned into a tax, rate, offset or deferred-loss figure.
+  firstTimerIncomeEnabled?: boolean; // master gate for all four first_timer_income findings
+  entityIncomeTypes?: string[]; // income types recorded under a separate-taxpayer entity this FY (company/trust/…) → income-completeness coverage
+  salaryPayerCount?: number; // distinct PAYG payers this FY → tax-free-threshold-with-two-payers info note
+  individualBusinessExpenseCents?: number; // sole-trader expenses in the individual position → Div 35 defer note
 }
 
 export interface FilingReadiness {
@@ -131,6 +139,10 @@ function incomeTypeWhy(incomeType: string): string {
     case "interest": return "Interest you recorded (generally item 10).";
     case "managed_fund_distribution": return "Managed-fund distribution components you recorded (generally item 13U/20).";
     case "foreign_pension": return "Foreign pension income you recorded (generally item 20).";
+    // #550 (first_timer_income): both types are creation-gated in recordIncome, so these cases are unreachable unless the flag was ON when the row was created
+    // with the flag off (no such rows can exist) ⇒ byte-identical.
+    case "government_payment": return "Taxable government payments you recorded, such as Youth Allowance, Austudy or JobSeeker (generally items 5 and 6). Check the amounts against your Services Australia payment summary; any tax withheld is shown as a credit.";
+    case "foreign_employment": return "Employment income earned overseas (generally item 20). Any foreign tax paid is shown as a credit. Whether foreign income is declared depends on your residency — confirm with a registered tax agent.";
     case "non_cash_business": return "Non-cash business income (gifted products / barter received in the course of your business) included at market value — keep evidence of how you valued it.";
     default: return "Income you recorded for this year.";
   }
@@ -424,6 +436,9 @@ export function assessReadiness(input: {
     signals.needsReviewIncomeN > 0 ||
     signals.needsReviewAssetsN > 0 ||
     signals.disposedAssetsN > 0 ||
+    // first_timer_income: categorised income credits mean the FY isn't blank — income_not_recorded owns that
+    // case, so "nothing captured" must not fire beside it. Gated ⇒ OFF keeps the legacy test verbatim.
+    (!!signals.firstTimerIncomeEnabled && (report.income_by_bucket ?? []).some((r) => r.total_cents > 0)) ||
     claimMatches.length > 0;
   if (!hasAnyData) {
     findings.push(f("nothing_captured", "completeness", "blocker", `Nothing captured for FY ${report.fy} yet`,
@@ -449,6 +464,53 @@ export function assessReadiness(input: {
     findings.push(f("undated_receipts", "completeness", "blocker", `${report.undated.n} receipt(s) have no usable date`,
       `Without a date these can't be placed in a financial year, so they're left out of this year's totals — the position is incomplete. Add a date so they land in the right year.`, false,
       [{ kind: "transaction", count: report.undated.n }]));
+  }
+  // first_timer_income (#550, M1): income completeness. Bank credits are shown beside the position but are
+  // NEVER counted in it (a deposit is net pay — it can't evidence gross wages or tax withheld — and counting
+  // it would double a salary that also arrives via an income statement). So a bank-only first-timer saw $0
+  // income against their deductions with nothing telling them why. Compare each income BUCKET that has
+  // categorised credits with the income types recorded for the year; a bucket with credits and no matching
+  // income is the gap. BLOCKER when no income at all is recorded (the headline is then materially wrong —
+  // income missing, deductions present), REVIEW when some income is recorded but a whole kind is missing.
+  // Gated on the signal ⇒ OFF adds nothing ⇒ byte-identical. Copy never counts the credits for the user.
+  if (signals.firstTimerIncomeEnabled) {
+    // Coverage uses ASSESSABLE individual income (by_type) — a capture-only row (a gifted product, a super
+    // pension) must not hide missing wages — plus income recorded under a separate-taxpayer entity for the
+    // business/rent buckets, because income_by_bucket is NOT entity-scoped: a company's sales land in
+    // income_business while its income row is (correctly) kept out of the individual's by_type. Without the
+    // entity types the user would be told to record income they already recorded.
+    const individualTypes = new Set(report.income.by_type.map((t) => t.income_type));
+    const entityTypes = new Set(signals.entityIncomeTypes ?? []);
+    const has = (group: ReadonlySet<string>, from: Set<string>) => [...group].some((t) => from.has(t));
+    const bucketCovered: Record<string, boolean> = {
+      // income_business is defined to the categoriser as company revenue (rule pack) — once a separate-taxpayer
+      // entity has ANY income recorded we can't tell whose credit it is, so it counts as covered.
+      income_business: has(BUSINESS_INCOME_TYPES, individualTypes) || entityTypes.size > 0,
+      income_property: has(RENT_INCOME_TYPES, individualTypes) || has(RENT_INCOME_TYPES, entityTypes),
+      // Personal money-in (wages, Centrelink, interest, dividends…) is covered by any assessable individual
+      // income that isn't business or rent — bucket-level, deliberately: the categoriser files salary, interest
+      // and dividends all as income_personal, so a finer match would need a guess about which credit is which.
+      income_personal: [...individualTypes].some((t) => !BUSINESS_INCOME_TYPES.has(t) && !RENT_INCOME_TYPES.has(t)),
+    };
+    const BUCKET_WORDS: Record<string, string> = { income_personal: "personal income (e.g. wages or government payments)", income_business: "business income", income_property: "rent" };
+    const missing = new Map<string, { n: number; cents: number }>();
+    for (const row of report.income_by_bucket ?? []) {
+      if (!(row.bucket in bucketCovered) || bucketCovered[row.bucket] || row.total_cents <= 0) continue;
+      const m = missing.get(row.bucket) ?? { n: 0, cents: 0 };
+      m.n += row.n;
+      m.cents += row.total_cents;
+      missing.set(row.bucket, m);
+    }
+    if (missing.size > 0) {
+      const noIncome = report.income.gross_cents === 0 && individualTypes.size === 0 && entityTypes.size === 0;
+      const totalN = [...missing.values()].reduce((s, m) => s + m.n, 0);
+      const parts = [...missing].map(([b, m]) => `${money(m.cents)} of ${BUCKET_WORDS[b]}`).join(" and ");
+      const againstZero = noIncome && report.total_deductions_cents > 0 ? " — which currently shows your deductions against $0 of income" : "";
+      findings.push(f("income_not_recorded", "completeness", noIncome ? "blocker" : "review",
+        noIncome ? "Your bank shows income, but no income is recorded for this year" : "Your bank shows income that isn't recorded as income yet",
+        `Your bank shows ${parts} coming in this year, but there's no matching income recorded, so it isn't in your indicative position${againstZero}. Bank deposits are listed alongside the position but never counted in it: a deposit is your take-home pay, not your gross pay and the tax withheld. For wages, download your income statement from myGov (ATO online services) once your employer marks it "Tax ready" and upload it on the Income page; for other income, add it there too. General information only.`, false,
+        [{ kind: "transaction", count: totalN }]));
+    }
   }
   if (signals.needsReviewIncomeN > 0) {
     findings.push(f("income_needs_review", "income", "review", `${signals.needsReviewIncomeN} income record(s) flagged for review`,
@@ -634,7 +696,7 @@ export function assessReadiness(input: {
   // deductions (deny-by-default already excludes unconfirmed payg spend) — the value is sharper guidance.
   // non_cash_business rows can only exist when the non_cash_income flag is on (creation-gated), so
   // including them keeps flag-OFF byte-identical while barter-only businesses still get PSI/GST nudges.
-  const BUSINESS_INCOME_TYPES = new Set(["business", "foreign_business", "non_cash_business"]);
+  // BUSINESS_INCOME_TYPES: shared group from taxonomy.ts (same three types as before ⇒ byte-identical).
   const hasBusinessIncome = report.income.by_type.some((it) => BUSINESS_INCOME_TYPES.has(it.income_type));
   if (hasBusinessIncome && signals.psiAppliesDeclared) {
     // Declared "PSI applies" → name the specific Div 86 restrictions so the user/agent can act on them.
@@ -795,9 +857,54 @@ export function assessReadiness(input: {
       true, []));
   }
 
+  // first_timer_income (#550): three GENERAL-INFO nudges, no maths. Each is gated on its signal (populated
+  // only when the flag is on) ⇒ OFF adds none ⇒ byte-identical. None changes the position.
+  if (signals.firstTimerIncomeEnabled) {
+    // (M6) Div 35 non-commercial losses. The attribution engine now gives sole-trader expenses, so "expenses
+    // exceed business income" is a fact we hold. Whether the loss can offset other income this year turns on
+    // the income requirement and four tests we do NOT evaluate (and applying a deferral would change a money
+    // output — an owner decision), so: name the rule, show both recorded figures, defer. Fires only when there
+    // IS other income for the loss to offset — a loss beside nothing else has nothing to be deferred against.
+    // Single-person tenants only: income and attributions aren't person-scoped here, so for a household the
+    // "your other income" claim could pair one person's loss with another's salary (per-person scoping deferred).
+    // AU-only copy: the Div 35 thresholds are AU law, stated in text; they move to the rule pack / jurisdiction
+    // seam with the first non-AU jurisdiction (same note as the residency nudge below).
+    const singlePerson = situation.persons.length <= 1;
+    const bizIncomeCents = report.income.by_type.filter((it) => BUSINESS_INCOME_TYPES.has(it.income_type)).reduce((s, it) => s + it.gross_cents, 0);
+    const bizExpenseCents = signals.individualBusinessExpenseCents ?? 0;
+    const otherIncomeCents = report.income.gross_cents - bizIncomeCents;
+    if (singlePerson && bizExpenseCents > bizIncomeCents && otherIncomeCents > 0) {
+      findings.push(f("business_loss_div35", "judgement", "review", "Your sole-trader business shows a loss — check the non-commercial loss rules",
+        `Your recorded business expenses (${money(bizExpenseCents)}) are more than your recorded business income (${money(bizIncomeCents)}), and your indicative position currently offsets that loss against your other income. Under the non-commercial loss rules (Division 35), an individual can generally only do that in the same year if their income for the test is under $250,000 and the business passes one of four tests: at least $20,000 of assessable business income, a profit in 3 of the last 5 years, at least $500,000 of real property used in the business, or at least $100,000 of other business assets. Otherwise the loss is generally set aside and carried to a later year. Quillo doesn't apply these tests or change the position.${DEFER}`, true, []));
+    }
+    // (G3) Tax-free threshold with two or more payers. A conditional statement — we don't know which payer
+    // it was claimed with, and the ATO works out the year's result at assessment. Never an amount.
+    if ((signals.salaryPayerCount ?? 0) >= 2) {
+      findings.push(f("tax_free_threshold_two_payers", "income", "info", `Salary recorded from ${signals.salaryPayerCount} payers — check where you claimed the tax-free threshold`,
+        `The tax-free threshold is generally claimed with one payer only, usually the one that pays you the most. If you claimed it with more than one payer during the year, each may have withheld too little, and the shortfall is settled when your return is assessed. Nothing in your indicative position changes either way. General information only.${DEFER}`, true,
+        [{ kind: "income", label: "salary" }]));
+    }
+    // (G10, review-only step) Foreign income for a person whose residency is set to something other than AU.
+    // Foreign and temporary residents generally don't declare foreign-sourced income, but residency is a
+    // multi-test judgement we only hold as a self-declared switch, so the income stays IN the position (no
+    // money change — excluding it is an owner decision) and the nudge defers. Jurisdiction note: "AU" is the
+    // only home jurisdiction today; the comparison moves to profiles.jurisdiction with the residency-periods work.
+    const selfPerson = situation.persons.find((p) => p.role === "self");
+    const foreignIncomeCents = report.income.by_type.filter((it) => FOREIGN_INCOME_TYPES.has(it.income_type)).reduce((s, it) => s + it.gross_cents, 0);
+    // tax_residency is free text (chat extraction can write "Australia" / "resident"), so normalise before
+    // treating a value as non-AU — a resident must never get this nudge from a spelling.
+    const residency = (selfPerson?.tax_residency ?? "").trim().toLowerCase();
+    const isAuResident = residency === "" || ["au", "aus", "australia", "australian", "resident", "australian resident", "au resident"].includes(residency);
+    if (selfPerson && !isAuResident && foreignIncomeCents > 0) {
+      findings.push(f("foreign_income_non_resident", "judgement", "review", "Foreign income recorded while your residency is set to non-Australian",
+        `You've recorded ${money(foreignIncomeCents)} of foreign-sourced income, and your tax residency is set to "${selfPerson.tax_residency}". Foreign residents, and temporary residents (for example many working holiday makers and some international students), generally don't declare foreign-sourced income in Australia. It is still counted in your indicative position here, because residency depends on several tests that Quillo doesn't apply. Confirm your residency and whether this income should be declared with a registered tax agent.`, true,
+        [{ kind: "income", label: "foreign income" }]));
+    }
+  }
+
   // (Super Notice-of-intent is surfaced via the year-end checklist (generateChecklist), not here, to
-  // keep a clean PAYG-only return finding-free. PAYG-balance / Div 35 non-commercial-loss prompts are
-  // deferred until sole-trader P&L is modelled — flagging them now would be noise or guesswork.)
+  // keep a clean PAYG-only return finding-free. PAYG-balance prompts are deferred until sole-trader P&L
+  // is modelled; the Div 35 non-commercial-loss note above is first_timer_income-gated.)
 
   // ── (3) judgement passthrough — matched defer-to-agent rules for this situation ──
   for (const r of claimMatches) {

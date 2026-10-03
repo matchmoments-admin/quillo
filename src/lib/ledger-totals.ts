@@ -211,6 +211,11 @@ export async function depreciationTotals(
 
 export interface AttributionTotals {
   individual_deduction_cents: number; // adds to the personal headline deductions
+  // #550 (first_timer_income): the SUBSET of individual_deduction_cents attributed to an individual-owned
+  // 'business' income activity (a sole trader's expenses). Informational only — it is already inside
+  // individual_deduction_cents and nothing adds it again; it drives the Div 35 defer nudge.
+  // Optional so report.ts's flag-off literal stays untouched (byte-identical); always set by attributionTotals.
+  individual_business_deduction_cents?: number;
   company_deduction_cents: number;    // adds to the company track (a separate taxpayer)
   by_property: { property_id: string; deduction_cents: number }[]; // adds to per-property negative gearing
 }
@@ -248,7 +253,7 @@ export async function attributionTotals(
   descriptor: JurisdictionDescriptor = AU_DESCRIPTOR,
 ): Promise<AttributionTotals> {
   const { start, end } = fyBounds(startYear, descriptor);
-  const empty: AttributionTotals = { individual_deduction_cents: 0, company_deduction_cents: 0, by_property: [] };
+  const empty: AttributionTotals = { individual_deduction_cents: 0, individual_business_deduction_cents: 0, company_deduction_cents: 0, by_property: [] };
   // Mirror deductionGroupForRow's flag gate: not-deductible only drops once the headline excludes it.
   const excludeNonDeductible = featureOn(env, "position_excludes_nondeductible");
   try {
@@ -275,6 +280,7 @@ export async function attributionTotals(
       .bind(userId, start, end)
       .all<{ attributed_amount_cents: number | null; attributed_pct: number | null; work_use_pct: number | null; txn_amount: number | null; deductibility: string | null; entity_type: string | null; activity_type: string | null; property_id: string | null; deduction_provision: string | null }>();
     let individual = 0;
+    let individualBusiness = 0;
     let company = 0;
     const byProp = new Map<string, number>();
     for (const r of res.results ?? []) {
@@ -295,10 +301,17 @@ export async function attributionTotals(
       const amt = r.attributed_amount_cents ?? splitAttribution({ amount_cents: r.txn_amount ?? 0, owner_share_pct: r.attributed_pct, work_use_pct: r.work_use_pct });
       if (track === "property" && r.property_id) byProp.set(r.property_id, (byProp.get(r.property_id) ?? 0) + amt);
       else if (track === "company") company += amt;
-      else individual += amt; // 'individual', or a property track with no property_id, lands in the headline
+      else {
+        individual += amt; // 'individual', or a property track with no property_id, lands in the headline
+        // Only a genuine sole trader: an individual (or entity-less) business activity. A trust/partnership/SMSF
+        // business also routes to the individual track today (pre-existing classifyAttribution behaviour), but its
+        // income is a separate taxpayer's, so counting its costs here would fake a Div 35 loss.
+        if (track === "individual" && r.activity_type === "business" && (r.entity_type == null || r.entity_type === "individual")) individualBusiness += amt;
+      }
     }
     return {
       individual_deduction_cents: individual,
+      individual_business_deduction_cents: individualBusiness,
       company_deduction_cents: company,
       by_property: [...byProp].map(([property_id, deduction_cents]) => ({ property_id, deduction_cents })),
     };

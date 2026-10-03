@@ -30,6 +30,19 @@ export const ATO_LINKS = {
     label: "Create a myGov account and link it to the ATO",
     url: "https://www.ato.gov.au/online-services/online-services-for-individuals-and-sole-traders/ato-online-services-and-mygov/create-a-mygov-account-and-link-it-to-the-ato",
   },
+  // #585 Get set up — the "Can you get into myTax?" check (docs/first-timer/ato-lodgement-process.md rows 4, 6).
+  mygovLinkInfo: {
+    label: "Information you need to link myGov to the ATO",
+    url: "https://www.ato.gov.au/online-services/online-services-for-individuals-and-sole-traders/ato-online-services-and-mygov/create-a-mygov-account-and-link-it-to-the-ato/information-you-need-to-link-mygov-to-the-ato",
+  },
+  myid: {
+    label: "Increase your online security with myID (ATO)",
+    url: "https://www.ato.gov.au/online-services/online-services-for-individuals-and-sole-traders/increase-your-online-security-with-myid",
+  },
+  taxHelp: {
+    label: "Tax Help program (ATO)",
+    url: "https://www.ato.gov.au/individuals-and-families/your-tax-return/help-and-support-to-lodge-your-tax-return/tax-help-program",
+  },
   residency: { label: "Your tax residency (ATO)", url: "https://www.ato.gov.au/individuals-and-families/coming-to-australia-or-going-overseas/your-tax-residency" },
   mytax: {
     label: "Lodge online with myTax (ATO)",

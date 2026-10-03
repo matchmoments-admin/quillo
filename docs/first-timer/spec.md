@@ -448,6 +448,32 @@ A1 (data), A11 shell (route + step chrome), A12 components. Wave 3.
 
 **Tickets:** one (About you page, both modes, carry-ins move, routing).
 
+*As built (#585):* `web/src/pages/AboutYou.tsx` (first run + profile), `ft/SituationQuestion.tsx`, `ft/PeriodEditor.tsx`
+(+ `FtInput` / `FtSelect` primitives), pure model `web/src/lib/aboutYou.ts`, copy `web/src/content/aboutYou.ts`.
+`POST /api/situation-periods` takes `fill_only: true` (`fillSituationPeriod`): validates the answer, then skips (no
+row, no mirror, no rescan; returns `{ period, skipped: true }`) when the person already has an overlapping period of
+that fact. First-run answers are written only on confirm; an ABN tick creates its `business` income activity and
+links it only when its period is newly written. Q4 and Q5's "a job" are one state. Residency "not sure" leaves
+`tax_residency` unchanged (#571). People + carry-ins moved to shared `components/ProfileSections.tsx`; Settings
+shows them only while About you isn't live. #591's `NewcomerCard` (under Q1), `StateEducationCard` (after Q3) and
+`useWhyDrawer('about')` are mounted. Deferred: the Grow › Business layer switch on an ABN tick (A11b not landed);
+the e2e first-timer journey (A14) — golden `pft7a` covers the fill-only answer set meanwhile.
+
+*As built (#585, re-scoped by §0):* the page is step 1 **Get set up** at `/setup`. First run opens on an intro
+screen — #584's Before you start content (`content/getSetUp.ts` `SETUP_INTRO`: what Quillo doesn't do, the ATO
+lodge tool, the non-lodgment advice line), the **"Can you get into myTax?"** self-check (`ft/GetSetUp.tsx`
+`MyTaxAccessCheck`: myGov account · ATO linked · myID Standard/Strong, each with its ATO fix link; ticks stored as
+a UI flag in `profiles.ui_state.mytax_check`, never credentials; "Quillo can't see your myGov account") and
+`TaxHelpCard` — then consent and the six questions. Profile mode shows the check at the top and the intro + Tax
+Help at the bottom. First run is per FY (`hasAnswersForFy`), residency fill-gaps is all-or-nothing (`fillPlan`),
+spouse dates must sit inside the FY. Newcomer card adds rows 31–32 (foreign resident + HELP; WHM treaty countries).
+**Shell: 6 → 4 steps** — `JOURNEY_STEPS` (server `src/lib/journey.ts`, SPA `content/stepGuides.ts`) are
+`setup / connect / review / lodge` at `/setup`, `/connect`, `/review`, `/lodge`. Review's status/count folds
+claims + records + reconcile proposals + open we-noticed signals into one queue; findings default to Review.
+The six old step URLs redirect through `OLD_STEP_ROUTES` (`/claims?view=labels` → `/review?view=labels`,
+`/records` → `/review#documents`, `/check` → `/review#check`); `/review` renders the legacy By-label page in
+place when the flag is OFF. Connect/Review/Lodge bodies stay placeholders for #586/#587/#590.
+
 ---
 
 ## A3 Bring in your money and 'we noticed' detections

@@ -10,7 +10,8 @@
 import { ATO_LINKS, type ExtLink } from "./beforeYouStart";
 import type { AnyGlossaryKey } from "./glossary";
 
-export type StepKey = "home" | "about" | "bring_in" | "claims" | "records" | "check" | "ship";
+// FOUR steps since the design review of 2026-10-04 (spec §0, #585).
+export type StepKey = "home" | "setup" | "connect" | "review" | "lodge";
 
 export interface StepGuide {
   /** Step number in the journey (Home is 0). */
@@ -41,22 +42,23 @@ export const STEP_GUIDES: Record<StepKey, StepGuide> = {
     links: [ATO_LINKS.firstReturn],
     terms: ["mytax", "golden_rules"],
   },
-  about: {
+  setup: {
     n: 1,
-    title: "About you",
-    intro: "A few questions about your year: where you lived for tax, how you earned money, and what changed.",
+    title: "Get set up",
+    intro: "Check you can get into myTax, then answer a few questions about your year: where you lived for tax, how you earned money, and what changed.",
     why: [
+      "You lodge in myTax, through myGov. Checking you can sign in early leaves time to sort out the ATO link before you need it.",
       "Your tax residency and your kind of work shape which parts of the return apply to you.",
       "Quillo only fills gaps with your answers; it never overwrites something you've already told it.",
       "Facts can change during the year, like starting a job or moving to Australia, so each answer can carry dates.",
       DEFER_TO_AGENT,
     ],
-    links: [ATO_LINKS.residency, ATO_LINKS.tfn],
-    terms: ["tax_residency", "temporary_resident", "working_holiday_maker", "help_debt", "abn"],
+    links: [ATO_LINKS.mygov, ATO_LINKS.residency, ATO_LINKS.tfn],
+    terms: ["mytax", "tax_residency", "temporary_resident", "working_holiday_maker", "help_debt", "abn"],
   },
-  bring_in: {
+  connect: {
     n: 2,
-    title: "Bring in your money",
+    title: "Connect",
     intro: "Connect a bank or upload a statement, and add your income statement when your employer marks it tax ready.",
     why: [
       "Your bank lines show where to look; they don't decide what counts.",
@@ -66,46 +68,23 @@ export const STEP_GUIDES: Record<StepKey, StepGuide> = {
     links: [ATO_LINKS.firstReturn, ATO_LINKS.mygov],
     terms: ["income_statement", "prefill"],
   },
-  claims: {
+  review: {
     n: 3,
-    title: "What you might claim",
-    intro: "Spending that may relate to your work, sorted so you can look at each item and decide.",
+    title: "Review",
+    intro: "One list to work through: spending that may relate to your work, records to match, and anything missing, doubled up or unmatched.",
     why: [
       "The ATO's three golden rules: you spent the money yourself, it's for earning your income, and you have a record.",
       "An item marked 'worth a look' is a prompt to check, not a claim. You confirm every item.",
-      "Your occupation's ATO guide lists what's commonly claimed and what isn't.",
-      DEFER_TO_AGENT,
-    ],
-    links: [ATO_LINKS.claimingDeductions],
-    terms: ["golden_rules", "deduction"],
-  },
-  records: {
-    n: 4,
-    title: "Records",
-    intro: "Match each item you're claiming to a receipt, invoice or diary, and add work-from-home hours or car trips.",
-    why: [
-      "A record is one of the three golden rules: without one, the ATO can disallow the item.",
-      "Some small claims have a record-keeping exception, but you still need to show how you worked the amount out.",
-      "Records are kept here so you can find them again if the ATO ever asks.",
-    ],
-    links: [ATO_LINKS.records],
-    terms: ["record_keeping_exception", "golden_rules"],
-  },
-  check: {
-    n: 5,
-    title: "Check",
-    intro: "A last look for anything missing, doubled up or unmatched before you lodge.",
-    why: [
+      "A record is one of the golden rules: without one, the ATO can disallow the item. Some small claims have a record-keeping exception, but you still need to show how you worked the amount out.",
       "Catching a missed income source or a duplicate now is easier than fixing it after you lodge.",
-      "Anything Quillo can't settle on its own is listed for you to decide.",
       DEFER_TO_AGENT,
     ],
-    links: [ATO_LINKS.firstReturn],
-    terms: ["prefill"],
+    links: [ATO_LINKS.claimingDeductions, ATO_LINKS.records],
+    terms: ["golden_rules", "deduction", "record_keeping_exception", "prefill"],
   },
-  ship: {
-    n: 6,
-    title: "Ship it",
+  lodge: {
+    n: 4,
+    title: "Lodge in myTax",
     intro: "A worksheet in myTax order with what you've confirmed, ready for you to copy into myTax and lodge.",
     why: [
       "Quillo can't lodge an individual return: only you, in myTax, or a registered tax agent can.",
@@ -117,4 +96,4 @@ export const STEP_GUIDES: Record<StepKey, StepGuide> = {
   },
 };
 
-export const STEP_ORDER: readonly StepKey[] = ["home", "about", "bring_in", "claims", "records", "check", "ship"];
+export const STEP_ORDER: readonly StepKey[] = ["home", "setup", "connect", "review", "lodge"];

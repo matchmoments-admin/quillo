@@ -4,7 +4,7 @@ import { JOURNEY_STEPS, STEP_TOTAL, segmentStates, stepLabel, type JourneyStep }
 import { Skeleton, StatusGate, cx, type StatusProps } from "./primitives";
 
 /**
- * Step header (spec A12 / design-system.md §4): progress segments, "Step n of 6", the step title and
+ * Step header (spec A12 / design-system.md §4): progress segments, "Step n of 4", the step title and
  * its one-line intro. Title and intro come from content/stepGuides.ts so the header and the Why?
  * sheet never disagree; pass `title` / `intro` to override.
  */

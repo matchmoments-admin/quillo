@@ -13,7 +13,7 @@ export type JourneyStep = Exclude<StepKey, "home">;
 /** The numbered steps, in order, derived from the one step list in content/stepGuides.ts. */
 export const JOURNEY_STEPS: readonly JourneyStep[] = STEP_ORDER.filter((k): k is JourneyStep => k !== "home");
 
-/** How many numbered steps the journey has (6). */
+/** How many numbered steps the journey has (4 since spec §0). */
 export const STEP_TOTAL = JOURNEY_STEPS.length;
 
 export type SegmentState = "done" | "current" | "todo";
@@ -29,7 +29,7 @@ export function segmentStates(current: number, total: number = STEP_TOTAL): Segm
   return Array.from({ length: t }, (_, i) => (i + 1 < c ? "done" : i + 1 === c ? "current" : "todo"));
 }
 
-/** "Step n of 6", clamped like segmentStates. */
+/** "Step n of 4", clamped like segmentStates. */
 export function stepLabel(current: number, total: number = STEP_TOTAL): string {
   const segs = segmentStates(current, total);
   const n = segs.indexOf("current") + 1;

@@ -44,7 +44,7 @@ const railLink = (isActive: boolean) =>
     isActive ? "bg-accent-soft text-accent" : "text-muted hover:bg-surface hover:text-ink",
   );
 
-/** The six steps with their status — the rail on desktop, the Steps sheet on a phone. */
+/** The four steps with their status — the rail on desktop, the Steps sheet on a phone. */
 function StepList({ onPick }: { onPick?: () => void }) {
   const journey = useJourney();
   const byKey = new Map<JourneyStepKey, { status: JourneyStepStatus; count: number }>(

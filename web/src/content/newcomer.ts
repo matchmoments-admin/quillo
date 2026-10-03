@@ -20,7 +20,7 @@ export interface NewcomerTopic {
 export const NEWCOMER_TOPICS: Record<NewcomerTopicKey, NewcomerTopic> = {
   whm: {
     title: "Working holiday makers",
-    body: "If you're on a working holiday visa (subclass 417 or 462), the ATO applies its own working holiday maker rates to that income when it processes your return. You don't work them out yourself.",
+    body: "If you're on a working holiday visa (subclass 417 or 462), the ATO applies its own working holiday maker rates to that income when it processes your return. You don't work them out yourself. That generally applies whatever your residency, although people from certain treaty countries may be taxed as residents instead: myTax asks for your home country.",
     link: { label: "Working holiday makers (ATO)", url: "https://www.ato.gov.au/individuals-and-families/coming-to-australia-or-going-overseas/coming-to-australia/working-holiday-makers" },
   },
   temporary_foreign_income: {
@@ -33,7 +33,7 @@ export const NEWCOMER_TOPICS: Record<NewcomerTopicKey, NewcomerTopic> = {
   },
   non_resident: {
     title: "Not a resident for tax",
-    body: "Non-residents generally declare only income from Australian sources. Your residency can differ from your visa, so it's worth checking with the ATO's residency page.",
+    body: "Non-residents generally declare only income from Australian sources. Your residency can differ from your visa, so it's worth checking with the ATO's residency page. If you have a HELP or other study loan, foreign residents have extra reporting: the ATO asks you to declare your worldwide income or lodge a non-lodgment advice.",
     link: { label: "Your tax residency (ATO)", url: "https://www.ato.gov.au/individuals-and-families/coming-to-australia-or-going-overseas/your-tax-residency" },
   },
   medicare: {

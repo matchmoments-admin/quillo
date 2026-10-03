@@ -98,6 +98,9 @@ function LayerBody({ layer, fyStart }: { layer: GrowLayerKey; fyStart: number })
   }
 }
 
+/** Layers whose body is a whole existing page that renders its own <h1>. */
+const OWN_HEADING: ReadonlySet<GrowLayerKey> = new Set<GrowLayerKey>(["assets", "integrations", "extras", "savings"]);
+
 export function GrowRoute() {
   const { layer } = useParams();
   const { has, loaded } = useFeatures();
@@ -111,11 +114,17 @@ export function GrowRoute() {
   const hidden = view?.state === "off" && view.switchable;
   return (
     <div className="space-y-6">
-      <header>
+      {/* Composed legacy pages (Assets, QuickBooks, Extras, Savings) bring their own heading; only the
+          Grow-native bodies get one here, in the existing pages' type style (owner 2026-10-04: legacy look). */}
+      {OWN_HEADING.has(layer) ? (
         <p className="text-xs font-semibold uppercase tracking-wider text-muted">Grow</p>
-        <h1 className="mt-1 text-[26px] font-semibold leading-tight tracking-[-0.02em] text-ink">{GROW_LABEL[layer]}</h1>
-        <p className="mt-1 max-w-[65ch] text-[15px] text-muted">{GROW_BLURB[layer]}</p>
-      </header>
+      ) : (
+        <header>
+          <p className="text-xs font-semibold uppercase tracking-wider text-muted">Grow</p>
+          <h1 className="mt-1 font-display text-4xl text-ink">{GROW_LABEL[layer]}</h1>
+          <p className="mt-1 max-w-[65ch] text-[15px] text-muted">{GROW_BLURB[layer]}</p>
+        </header>
+      )}
       {hidden && (
         <FtCard className="flex flex-wrap items-center gap-3 p-4">
           <p className="min-w-0 flex-1 text-sm text-muted">This isn't in your menu yet.</p>

@@ -67,6 +67,27 @@
   }
 }
 
+/* First-timer component library (components/ft/WhySheet.tsx): sheet entrance, transform + opacity
+   only (design-system.md §3). Used only behind `motion-safe:`, so reduced motion gets no animation. */
+@keyframes ft-sheet-in {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes ft-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
 @layer utilities {
   .tnum {
     font-variant-numeric: tabular-nums;

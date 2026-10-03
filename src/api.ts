@@ -1468,6 +1468,22 @@ export async function handleApi(
     // GET /api/bank/connections — connections + accounts, for the picker and consent dashboard.
     if (id === "connections" && m === "GET") return json(await stub.bankConnections(uid));
 
+    // POST /api/bank/disconnect — withdraw one connection (#576): stop collecting, revoke at the
+    // aggregator, delete its CDR lines (PS12). Idempotent — a repeat call retries a failed upstream
+    // revoke. The connection id is looked up WITHIN the caller's tenant, so it can't reach another's.
+    if (id === "disconnect" && m === "POST") {
+      const body = (await req.json().catch(() => ({}))) as { connectionId?: unknown };
+      const connectionId = typeof body.connectionId === "string" ? body.connectionId : "";
+      if (!connectionId) return json({ error: "connectionId required" }, 400);
+      const r = await stub.bankDisconnect(uid, connectionId);
+      if (!r.ok) return json({ error: r.error ?? "not found" }, 404);
+      return json(r);
+    }
+
+    // GET /api/bank/history — the consumer's CDR record (consents, collections, withdrawals,
+    // deletions): counts and dates only.
+    if (id === "history" && m === "GET") return json(await stub.bankHistory(uid));
+
     // POST /api/bank/accounts — choose which feed accounts count and map them to Quillo accounts.
     if (id === "accounts" && m === "POST") {
       const body = (await req.json().catch(() => ({}))) as { selections?: unknown };

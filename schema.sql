@@ -1272,7 +1272,11 @@ CREATE TABLE IF NOT EXISTS bank_connections (
   consent_expires_at     TEXT,                          -- CDR: <= 12 months
   last_sync_at           TEXT,
   last_error             TEXT,
-  created_at             TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at             TEXT NOT NULL DEFAULT (datetime('now')),
+  revoked_at             TEXT,                          -- 0085: WE stopped collecting (written first on withdraw)
+  upstream_revoked_at    TEXT,                          -- 0085: aggregator confirmed revoke; NULL ⇒ retry pending
+  data_deleted_at        TEXT,                          -- 0085: PS12 delete of this connection's CDR lines ran
+  expiry_reminded_at     TEXT                           -- 0085: one pre-expiry reminder per consent
 );
 CREATE INDEX IF NOT EXISTS idx_bank_conn_user ON bank_connections(user_id, status);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_bank_conn_provider
@@ -1358,3 +1362,23 @@ CREATE TABLE IF NOT EXISTS situation_periods (
   updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_sitper_subject ON situation_periods(user_id, subject_id, fact);
+
+-- 0085 (#576): structured CDR record of every consent grant / collection / expiry / withdrawal /
+-- deletion — counts, ids and windows only, never CDR content. NOT in PURGE_TABLES (like audit_log):
+-- the record of a deletion must outlive the deleted data.
+CREATE TABLE IF NOT EXISTS cdr_audit_log (
+  id            TEXT PRIMARY KEY,
+  user_id       TEXT NOT NULL,
+  connection_id TEXT,
+  provider      TEXT,
+  access_type   TEXT,
+  event         TEXT NOT NULL,
+  account_count INTEGER,
+  row_count     INTEGER,
+  from_date     TEXT,
+  to_date       TEXT,
+  detail        TEXT,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_cdr_audit_user ON cdr_audit_log(user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_cdr_audit_event ON cdr_audit_log(event, created_at);

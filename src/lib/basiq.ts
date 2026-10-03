@@ -243,6 +243,22 @@ export async function deleteBasiqUser(env: Env, basiqUserId: string): Promise<vo
   if (!res.ok && res.status !== 404) throw await toBasiqError(res, "deleteUser");
 }
 
+/**
+ * Delete ONE institution connection for a consumer at Basiq — the upstream half of withdrawing a
+ * single bank while the consumer keeps others. Deleting the connection ends the aggregator's access
+ * to that institution's data. When the last connection goes, callers delete the whole consumer
+ * instead (deleteBasiqUser), which also ends the per-user billing.
+ */
+export async function deleteBasiqConnection(env: Env, basiqUserId: string, connectionId: string): Promise<void> {
+  const token = await serverToken(env);
+  const res = await fetch(
+    `${API_BASE}/users/${encodeURIComponent(basiqUserId)}/connections/${encodeURIComponent(connectionId)}`,
+    { method: "DELETE", headers: { Authorization: `Bearer ${token}` } },
+  );
+  // 404 means it is already gone — the desired end state, so not an error.
+  if (!res.ok && res.status !== 404) throw await toBasiqError(res, "deleteConnection");
+}
+
 // ── Consents ─────────────────────────────────────────────────────────────────
 
 export interface BasiqConsent {

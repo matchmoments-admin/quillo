@@ -1282,5 +1282,28 @@ export interface BankConnection {
   last_sync_at: string | null;
   last_error: string | null;
   created_at: string;
+  revoked_at?: string | null;          // 0085: Quillo stopped collecting (withdrawn)
+  upstream_revoked_at?: string | null; // 0085: provider confirmed the revoke; null after a withdraw ⇒ retry pending
+  data_deleted_at?: string | null;     // 0085: PS12 delete of the imported lines ran
   accounts: BankConnectionAccount[];
+}
+
+/** One row of the consumer's CDR record (#576) — counts and dates only, never bank data. */
+export interface BankHistoryEvent {
+  connection_id: string | null;
+  event: string;
+  account_count: number | null;
+  row_count: number | null;
+  from_date: string | null;
+  to_date: string | null;
+  created_at: string;
+}
+
+export interface BankDisconnectResult {
+  ok: boolean;
+  upstreamRevoked: boolean;
+  upstreamError?: string;
+  consumerDeleted: boolean;
+  accounts: number;
+  linesDeleted: number;
 }

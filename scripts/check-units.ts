@@ -2765,11 +2765,14 @@ console.log("retention PURGE_TABLES completeness");
   while ((m = re.exec(schema))) {
     if (/\buser_id\b/.test(m[2]!)) tenantTables.push(m[1]!);
   }
-  // Every user_id table must be purged EXCEPT audit_log (the deliberate deletion breadcrumb).
-  const shouldPurge = tenantTables.filter((t) => t !== "audit_log").sort();
+  // Every user_id table must be purged EXCEPT the deliberate deletion breadcrumbs: audit_log and
+  // cdr_audit_log (0085 — the CDR record that a consumer's data was deleted must outlive the data).
+  const KEPT = new Set(["audit_log", "cdr_audit_log"]);
+  const shouldPurge = tenantTables.filter((t) => !KEPT.has(t)).sort();
   const purges = [...PURGE_TABLES].sort();
   check("PURGE_TABLES covers every tenant table except audit_log", JSON.stringify(purges) === JSON.stringify(shouldPurge));
   check("PURGE_TABLES never includes audit_log (breadcrumb is kept)", !purges.includes("audit_log"));
+  check("PURGE_TABLES never includes cdr_audit_log (CDR deletion record is kept)", !purges.includes("cdr_audit_log" as never));
   check("PURGE_TABLES has no table missing from schema", purges.every((t) => tenantTables.includes(t)));
   // daily_cost is keyed by `scope` (not a user_id column) so it's outside the list above — assert
   // purgeTenant still erases the tenant's per-day spend rows by scope (regression guard).
@@ -4114,6 +4117,210 @@ console.log("ft component library (#583)");
     sheet.indexOf("useEffect(") > -1 && sheet.indexOf("useEffect(") < sheet.indexOf("if (!open) return null"));
   const wl = src("WorksheetLine.tsx");
   check("ft: WorksheetLine copies copyValue() and reports a blocked clipboard instead of failing silently", /writeText\(value\)/.test(wl) && /Couldn't copy/.test(wl));
+
+// ── #576 bank-feed consent lifecycle: withdraw → upstream revoke → PS12 delete, purge revoke, CDR log ──
+// Runs the REAL src/lib/bank-consent.ts + retention.ts against an in-memory D1 built from every
+// migration (node:sqlite, the personas/e2e shim) with a FAKE aggregator — no live Basiq call, so a
+// stale sandbox key can't make these flaky.
+import { DatabaseSync } from "node:sqlite";
+import { disconnectBankConnection, consentLifecycle, cdrHistory, type BankUpstream } from "../src/lib/bank-consent";
+import { purgeTenant as purgeTenantForBank } from "../src/lib/retention";
+import { deleteBasiqConnection } from "../src/lib/basiq";
+console.log("bank consent lifecycle (#576)");
+{
+  class BStmt {
+    private params: unknown[] = [];
+    constructor(private db: DatabaseSync, private sql: string) {}
+    bind(...args: unknown[]) { this.params = args.map((a) => (a === undefined ? null : a)); return this; }
+    async all<T = unknown>() { return { results: this.db.prepare(this.sql).all(...(this.params as never[])) as T[], success: true, meta: {} }; }
+    async first<T = unknown>() { return (this.db.prepare(this.sql).get(...(this.params as never[])) as T) ?? null; }
+    async run() { const r = this.db.prepare(this.sql).run(...(this.params as never[])); return { success: true, meta: { changes: Number(r.changes ?? 0) } }; }
+    async settle() { return /^\s*(select|with)/i.test(this.sql) ? this.all() : this.run(); }
+  }
+  class BD1 {
+    constructor(private db: DatabaseSync) {}
+    prepare(sql: string) { return new BStmt(this.db, sql); }
+    // Atomic like D1's batch: one failure rolls the whole batch back.
+    async batch(stmts: BStmt[]) {
+      this.db.exec("BEGIN");
+      try { const out = []; for (const s of stmts) out.push(await s.settle()); this.db.exec("COMMIT"); return out; }
+      catch (e) { this.db.exec("ROLLBACK"); throw e; }
+    }
+  }
+  const bdb = new DatabaseSync(":memory:");
+  for (const f of fs.readdirSync(path.join(process.cwd(), "migrations")).filter((f) => f.endsWith(".sql")).sort()) {
+    bdb.exec(fs.readFileSync(path.join(process.cwd(), "migrations", f), "utf8"));
+  }
+  const fakeR2 = { list: async () => ({ objects: [], truncated: false }), delete: async () => {} };
+  const fakeKv = { delete: async () => {}, list: async () => ({ keys: [], list_complete: true }), get: async () => null, put: async () => {} };
+  const benv = { DB: new BD1(bdb), RECEIPTS: fakeR2, RULES: fakeKv } as unknown as Env;
+  const q = <T,>(sql: string, ...p: unknown[]) => bdb.prepare(sql).get(...(p as never[])) as T;
+  const n = (sql: string, ...p: unknown[]) => (q<{ n: number }>(sql, ...p)).n;
+  const ins = (sql: string, ...p: unknown[]) => bdb.prepare(sql).run(...(p as never[]));
+
+  type Call = [string, ...string[]];
+  const fakeUpstream = (opts: { fail?: boolean } = {}) => {
+    const calls: Call[] = [];
+    const up: BankUpstream = {
+      deleteConnection: async (u, c) => { calls.push(["deleteConnection", u, c]); if (opts.fail) throw Object.assign(new Error("basiq deleteConnection failed (503)"), { status: 503 }); },
+      deleteUser: async (u) => { calls.push(["deleteUser", u]); if (opts.fail) throw Object.assign(new Error("basiq deleteUser failed (503)"), { status: 503 }); },
+    };
+    return { up, calls };
+  };
+
+  // Tenant u1: two live connections. C1 feeds A1; C2 feeds nothing mapped. A2 is a statement account
+  // with statement lines. A3 holds an ORPHAN feed line (its picker row was deselected earlier).
+  const U = "bk-u1";
+  ins(`INSERT INTO profiles (user_id, bank_provider_user_id, bank_provider, cdr_tainted) VALUES (?, 'bu1', 'basiq', 1)`, U);
+  for (const [id, src] of [["A1", "cdr_feed"], ["A2", "statement"], ["A3", "cdr_feed"]] as const) {
+    ins(`INSERT INTO accounts (id, user_id, name, source) VALUES (?, ?, ?, ?)`, id, U, `Acct ${id}`, src);
+  }
+  ins(`INSERT INTO bank_connections (id, user_id, provider_user_id, provider_connection_id, institution, status, consent_expires_at) VALUES ('C1', ?, 'bu1', 'pc1', 'Hooli', 'active', '2099-01-01T00:00:00Z')`, U);
+  ins(`INSERT INTO bank_connections (id, user_id, provider_user_id, provider_connection_id, institution, status) VALUES ('C2', ?, 'bu1', 'pc2', 'Other', 'active')`, U);
+  ins(`INSERT INTO bank_connection_accounts (id, user_id, connection_id, provider_account_id, account_id, masked_number, name, selected) VALUES ('BA1', ?, 'C1', 'pa1', 'A1', '1234', 'Everyday', 1)`, U);
+  ins(`INSERT INTO bank_connection_accounts (id, user_id, connection_id, provider_account_id, account_id, name, selected) VALUES ('BA2', ?, 'C2', 'pa2', NULL, 'Savings', 0)`, U);
+  const line = (id: string, acct: string, src: string) =>
+    ins(`INSERT INTO transactions (id, user_id, source, status, kind, account_id, line_fingerprint, merchant, amount_cents, amount_aud_cents, txn_date, direction) VALUES (?, ?, ?, 'extracted', 'bank_line', ?, ?, 'SHOP 123456', 1000, 1000, '2025-09-01', 'debit')`, id, U, src, acct, `fp-${id}`);
+  line("L1", "A1", "cdr_feed"); line("L2", "A1", "cdr_feed"); line("L3", "A1", "cdr_feed");
+  line("S1", "A2", "statement"); line("S2", "A2", "statement");
+  line("O1", "A3", "cdr_feed");
+  ins(`INSERT INTO transactions (id, user_id, source, status, kind, matched_txn_id, amount_cents) VALUES ('R1', ?, 'upload', 'matched', 'receipt', 'L1', 1000)`, U);
+  ins(`INSERT INTO corrections (id, user_id, txn_id, field, old_value, new_value) VALUES ('K1', ?, 'L2', 'merchant', 'SHOP 123456', 'Shop')`, U);
+  ins(`INSERT INTO claim_links (id, user_id, claim_id, txn_id) VALUES ('CL1', ?, 'claim-x', 'L3')`, U);
+  ins(`INSERT INTO corrections (id, user_id, txn_id, field, old_value, new_value) VALUES ('K2', ?, 'S1', 'merchant', 'a', 'b')`, U);
+
+  // Tenant isolation: another tenant cannot withdraw (or even see) u1's connection.
+  const other = await disconnectBankConnection(benv, "bk-intruder", "C1", fakeUpstream().up);
+  check("disconnect: another tenant's connection id is NOT FOUND (no cross-tenant reach)", !other.ok && other.error === "connection not found");
+  check("disconnect: ...and C1 is untouched", q<{ status: string }>(`SELECT status FROM bank_connections WHERE id='C1'`).status === "active");
+
+  // 1. Withdraw C1 while C2 is still live.
+  const f1 = fakeUpstream();
+  const r1 = await disconnectBankConnection(benv, U, "C1", f1.up, "2026-10-03T00:00:00.000Z");
+  check("disconnect C1: ok + upstream revoked", r1.ok && r1.upstreamRevoked);
+  check("disconnect C1: upstream deleteConnection(bu1, pc1) called, consumer NOT deleted (C2 still live)",
+    JSON.stringify(f1.calls) === JSON.stringify([["deleteConnection", "bu1", "pc1"]]) && !r1.consumerDeleted);
+  check("disconnect C1: the 3 CDR lines on A1 are deleted (PS12)", r1.linesDeleted === 3 && n(`SELECT COUNT(*) n FROM transactions WHERE account_id='A1'`) === 0);
+  check("disconnect C1: statement-sourced lines are NOT touched", n(`SELECT COUNT(*) n FROM transactions WHERE source='statement'`) === 2);
+  check("disconnect C1: a correction on a STATEMENT line survives", n(`SELECT COUNT(*) n FROM corrections WHERE id='K2'`) === 1);
+  check("disconnect C1: the orphan feed line on A3 survives while another connection is live", n(`SELECT COUNT(*) n FROM transactions WHERE id='O1'`) === 1);
+  check("disconnect C1: matched receipt survives, un-matched (it's the user's evidence, not CDR data)",
+    q<{ matched_txn_id: string | null }>(`SELECT matched_txn_id FROM transactions WHERE id='R1'`).matched_txn_id === null);
+  check("disconnect C1: derived rows carrying line content deleted (correction, claim link)",
+    n(`SELECT COUNT(*) n FROM corrections WHERE id='K1'`) === 0 && n(`SELECT COUNT(*) n FROM claim_links WHERE id='CL1'`) === 0);
+  check("disconnect C1: A1 handed back to statements (one canonical source, both sides)",
+    q<{ source: string }>(`SELECT source FROM accounts WHERE id='A1'`).source === "statement");
+  check("disconnect C1: assertCanonicalSource now ACCEPTS a statement upload onto A1",
+    await assertCanonicalSource(benv, U, "A1", "statement").then(() => true, () => false));
+  const c1 = q<{ status: string; revoked_at: string; upstream_revoked_at: string; data_deleted_at: string }>(`SELECT * FROM bank_connections WHERE id='C1'`);
+  check("disconnect C1: row kept as the record — revoked, all three timestamps set",
+    c1.status === "revoked" && !!c1.revoked_at && !!c1.upstream_revoked_at && !!c1.data_deleted_at);
+  check("disconnect C1: account list (names/last4 = CDR data) deleted", n(`SELECT COUNT(*) n FROM bank_connection_accounts WHERE connection_id='C1'`) === 0);
+  check("disconnect C1: profiles.cdr_tainted is NOT cleared", q<{ cdr_tainted: number }>(`SELECT cdr_tainted FROM profiles WHERE user_id=?`, U).cdr_tainted === 1);
+  const ev1 = (bdb.prepare(`SELECT event FROM cdr_audit_log WHERE user_id=? AND connection_id='C1' ORDER BY rowid`).all(U) as { event: string }[]).map((e) => e.event);
+  check("disconnect C1: CDR log = withdrawn → upstream_revoked → data_deleted", JSON.stringify(ev1) === JSON.stringify(["consent_withdrawn", "upstream_revoked", "data_deleted"]));
+  check("disconnect C1: CDR log rows carry no bank text", !(bdb.prepare(`SELECT detail FROM cdr_audit_log`).all() as { detail: string | null }[]).some((r) => (r.detail ?? "").includes("SHOP")));
+
+  // 2. Idempotent: a repeat neither re-calls upstream nor re-deletes.
+  const f2 = fakeUpstream();
+  const r2 = await disconnectBankConnection(benv, U, "C1", f2.up);
+  check("disconnect C1 again: idempotent — no upstream call, no delete, no new log rows",
+    r2.ok && r2.upstreamRevoked && f2.calls.length === 0 && r2.linesDeleted === 0 && n(`SELECT COUNT(*) n FROM cdr_audit_log WHERE connection_id='C1'`) === 3);
+
+  // 3. Withdraw C2 (the LAST live one) while the aggregator is DOWN.
+  const f3 = fakeUpstream({ fail: true });
+  const r3 = await disconnectBankConnection(benv, U, "C2", f3.up);
+  check("disconnect C2 (vendor down): still ok — collection stopped + data deleted locally", r3.ok && !r3.upstreamRevoked && !!r3.upstreamError);
+  check("disconnect C2: status revoked even though the vendor failed", q<{ status: string }>(`SELECT status FROM bank_connections WHERE id='C2'`).status === "revoked");
+  check("disconnect C2: last connection ⇒ the orphan feed line on A3 is deleted too", n(`SELECT COUNT(*) n FROM transactions WHERE source='cdr_feed'`) === 0);
+  check("disconnect C2: A3 handed back to statements", q<{ source: string }>(`SELECT source FROM accounts WHERE id='A3'`).source === "statement");
+  check("disconnect C2: statement lines STILL intact", n(`SELECT COUNT(*) n FROM transactions WHERE source='statement'`) === 2);
+  check("disconnect C2: upstream pending — upstream_revoked_at NULL, retry message, consumer id kept",
+    q<{ u: string | null; e: string | null }>(`SELECT upstream_revoked_at u, last_error e FROM bank_connections WHERE id='C2'`).u === null &&
+    !!q<{ e: string | null }>(`SELECT last_error e FROM bank_connections WHERE id='C2'`).e &&
+    q<{ id: string | null }>(`SELECT bank_provider_user_id id FROM profiles WHERE user_id=?`, U).id === "bu1");
+  check("disconnect C2: failure logged as an error CLASS, not a vendor body",
+    q<{ detail: string }>(`SELECT detail FROM cdr_audit_log WHERE connection_id='C2' AND event='upstream_revoke_failed'`).detail === JSON.stringify({ error: "http_503" }));
+
+  // 4. Weekly sweep retries the failed upstream revoke; last connection ⇒ the whole consumer goes.
+  const f4 = fakeUpstream();
+  const lc = await consentLifecycle(benv, U, f4.up, new Date("2026-10-04T00:00:00Z"));
+  check("lifecycle: retries the pending revoke — deleteConnection then deleteUser(bu1)",
+    lc.upstreamRetried === 1 && JSON.stringify(f4.calls) === JSON.stringify([["deleteConnection", "bu1", "pc2"], ["deleteUser", "bu1"]]));
+  check("lifecycle: consumer id forgotten so the next connect mints a fresh one",
+    q<{ id: string | null }>(`SELECT bank_provider_user_id id FROM profiles WHERE user_id=?`, U).id === null);
+  check("lifecycle: cdr_tainted STILL 1 after every connection is gone", q<{ cdr_tainted: number }>(`SELECT cdr_tainted FROM profiles WHERE user_id=?`, U).cdr_tainted === 1);
+  const hist = await cdrHistory(benv, U);
+  check("history: newest first, counts only", hist.length >= 6 && hist.every((h) => !("detail" in h)));
+
+  // 5. Expiry: mark expired + one reminder per consent inside the window.
+  const U2 = "bk-u2";
+  ins(`INSERT INTO profiles (user_id) VALUES (?)`, U2);
+  ins(`INSERT INTO bank_connections (id, user_id, provider_connection_id, institution, status, consent_expires_at) VALUES ('C3', ?, 'pc3', 'Hooli', 'active', '2026-10-14T00:00:00Z')`, U2);
+  ins(`INSERT INTO bank_connections (id, user_id, provider_connection_id, institution, status, consent_expires_at) VALUES ('C4', ?, 'pc4', 'Old', 'active', '2026-10-01T00:00:00Z')`, U2);
+  ins(`INSERT INTO bank_connections (id, user_id, provider_connection_id, institution, status, consent_expires_at) VALUES ('C5', ?, 'pc5', 'Far', 'active', '2027-06-01T00:00:00Z')`, U2);
+  const now5 = new Date("2026-10-04T00:00:00Z");
+  const e1 = await consentLifecycle(benv, U2, fakeUpstream().up, now5);
+  check("lifecycle: past-expiry consent marked expired + logged", e1.expired === 1 &&
+    q<{ status: string }>(`SELECT status FROM bank_connections WHERE id='C4'`).status === "expired" &&
+    n(`SELECT COUNT(*) n FROM cdr_audit_log WHERE connection_id='C4' AND event='consent_expired'`) === 1);
+  check("lifecycle: consent expiring in 10 days gets ONE reminder; one 8 months out gets none",
+    e1.reminded === 1 && n(`SELECT COUNT(*) n FROM notifications WHERE user_id=? AND body LIKE '%Hooli%expires%'`, U2) === 1 &&
+    n(`SELECT COUNT(*) n FROM notifications WHERE user_id=? AND body LIKE '%Far%'`, U2) === 0);
+  const e2 = await consentLifecycle(benv, U2, fakeUpstream().up, now5);
+  check("lifecycle: re-run sends no second reminder", e2.reminded === 0 && e2.expired === 0);
+  check("lifecycle: the reminder makes no tax claim (no refund / advice wording)",
+    !/refund|deduct|tax advice/i.test(q<{ body: string }>(`SELECT body FROM notifications WHERE user_id=?`, U2).body));
+
+  // 6. purgeTenant revokes the upstream consumer BEFORE wiping D1, and aborts if it can't.
+  const U3 = "bk-u3";
+  ins(`INSERT INTO profiles (user_id, bank_provider_user_id, bank_provider, cdr_tainted) VALUES (?, 'bu3', 'basiq', 1)`, U3);
+  ins(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents) VALUES ('P1', ?, 'cdr_feed', 'extracted', 'bank_line', 500)`, U3);
+  const fdown = fakeUpstream({ fail: true });
+  const aborted = await purgeTenantForBank(benv, U3, { bankUpstream: fdown.up }).then(() => null, (e: Error) => e.message);
+  check("purge: a failed upstream revoke ABORTS before anything local is deleted",
+    !!aborted && /nothing was deleted/.test(aborted) && n(`SELECT COUNT(*) n FROM transactions WHERE user_id=?`, U3) === 1 &&
+    q<{ id: string | null }>(`SELECT bank_provider_user_id id FROM profiles WHERE user_id=?`, U3).id === "bu3");
+  const fup = fakeUpstream();
+  const pr = await purgeTenantForBank(benv, U3, { bankUpstream: fup.up });
+  check("purge: deleteUser(bu3) called, bankRevoked=true, tenant rows gone",
+    JSON.stringify(fup.calls) === JSON.stringify([["deleteUser", "bu3"]]) && pr.bankRevoked === true && n(`SELECT COUNT(*) n FROM transactions WHERE user_id=?`, U3) === 0);
+  check("purge: the CDR record of the purge SURVIVES it (kept like audit_log)",
+    n(`SELECT COUNT(*) n FROM cdr_audit_log WHERE user_id=? AND event='tenant_purged'`, U3) === 1);
+  const U4 = "bk-u4";
+  ins(`INSERT INTO profiles (user_id) VALUES (?)`, U4);
+  const fnone = fakeUpstream();
+  const pr4 = await purgeTenantForBank(benv, U4, { bankUpstream: fnone.up });
+  check("purge: a tenant who never connected a bank — no upstream call, no bankRevoked key (byte-identical result)",
+    fnone.calls.length === 0 && !("bankRevoked" in pr4));
+
+  // 7. The resurrection guard lives in DO SQL — pin it by source so a refactor can't drop it.
+  const agentSrc = fs.readFileSync(path.join(process.cwd(), "src/agent.ts"), "utf8");
+  check("bankCallback never resurrects a withdrawn connection (upsert WHERE status <> 'revoked')", /WHERE bank_connections\.status <> 'revoked'/.test(agentSrc));
+  check("bankCallback never re-adds accounts under a withdrawn connection", /bc\.provider_connection_id = \?\s*\n\s*AND bc\.status <> 'revoked'/.test(agentSrc));
+  check("nothing in the withdraw path writes cdr_tainted", !/cdr_tainted/.test(fs.readFileSync(path.join(process.cwd(), "src/lib/bank-consent.ts"), "utf8").replace(/\/\/.*|\/\*[\s\S]*?\*\//g, "").replace(/^\s*\*.*$/gm, "")));
+
+  // 8. Transport: deleteBasiqConnection hits the right URL, treats 404 as done, throws otherwise.
+  const realFetch = globalThis.fetch;
+  const seen: string[] = [];
+  let status = 204;
+  globalThis.fetch = (async (url: string, init?: RequestInit) => {
+    const u = String(url);
+    if (u.endsWith("/token")) return new Response(JSON.stringify({ access_token: "t", expires_in: 3600, token_type: "Bearer" }), { status: 200 });
+    seen.push(`${init?.method} ${u}`);
+    return new Response(status === 204 ? null : JSON.stringify({ data: [{ code: "x" }] }), { status });
+  }) as typeof fetch;
+  try {
+    const kenv = { BASIQ_API_KEY: "k" } as unknown as Env;
+    await deleteBasiqConnection(kenv, "bu 1", "pc/1");
+    check("deleteBasiqConnection: DELETE /users/{id}/connections/{id}, ids URL-encoded", seen[0] === "DELETE https://au-api.basiq.io/users/bu%201/connections/pc%2F1");
+    status = 404;
+    check("deleteBasiqConnection: 404 = already gone, not an error", await deleteBasiqConnection(kenv, "bu1", "pc1").then(() => true, () => false));
+    status = 500;
+    check("deleteBasiqConnection: 500 throws", await deleteBasiqConnection(kenv, "bu1", "pc1").then(() => false, () => true));
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 }
 
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);

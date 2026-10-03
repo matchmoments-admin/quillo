@@ -1,10 +1,12 @@
 # ADR-0003 — Bank feeds via CDR / Open Banking: access model, vendor, build, cost
 
-**Status:** **Accepted — build in progress, SANDBOX ONLY.** Flag `bank_feed_cdr` is **OFF** and must
-stay off until the consent dashboard lands (§6.4 makes it a shipping requirement, and it is the one
-piece not built). Shipped so far: #502 foundation (migration 0075) · #506 connect + account picker
-(0076) · #507 sync (0077 via #509) · #508/#509 the review remediation. Outstanding: PR5 (consent
-dashboard, disconnect, PS12/audit). R3 (bounded backfill) shipped in #511. D1 below is resolved — the build
+**Status:** **Accepted — build in progress, SANDBOX ONLY.** Flag `bank_feed_cdr` is **OFF**. Shipped
+so far: #502 foundation (migration 0075) · #506 connect + account picker (0076) · #507 sync (0077 via
+#509) · #508/#509 the review remediation · #511 R3 bounded backfill (0086) · #576 consent dashboard,
+withdraw (local stop → upstream revoke → PS12 delete), purge-time upstream revoke and the
+`cdr_audit_log` record (0085) — §6.4's shipping requirement. Outstanding before the flag flips: the
+CDR legal review (#524), which also owns whether consent *expiry* (not just withdrawal) must
+auto-delete. D1 below is resolved — the build
 started before FY25/26 filed, deliberately; **D2/D4 (vendor terms, 12-month minimum) remain open**
 on [#475](https://github.com/matchmoments-admin/quillo/issues/475), and no production access exists.
 **Date:** 2026-07-26 (status updated 2026-08-07)

@@ -55,6 +55,7 @@ import {
   FIRST_STEP_PAGES, PAGES_PER_STEP, MAX_PAGES_PER_RUN,
   type SyncRun, type SyncStepDeps,
 } from "./lib/bank-sync";
+import { basiqUpstream, cdrAudit, cdrHistory, consentLifecycle, disconnectBankConnection, type DisconnectResult, type LifecycleResult } from "./lib/bank-consent";
 import { toBaseCurrency } from "./lib/fx";
 import { spentTodayCents, spentTodayGlobalCents, spentThisMonthGlobalCents, noteMeteringError, usageStatements } from "./lib/usage";
 import { billingPolicy, freeCreditGrantE4 } from "./lib/billing";
@@ -1599,6 +1600,9 @@ export class TaxAgent extends Agent<Env> {
     const stmts: D1PreparedStatement[] = [];
     for (const [connectionId, accts] of byConnection) {
       const localId = crypto.randomUUID();
+      // The trailing WHERE: a WITHDRAWN connection is never resurrected by a later callback (#576).
+      // If its upstream revoke failed, the aggregator still lists it, and a connect for a DIFFERENT
+      // bank would otherwise flip it back to 'active' and resume collecting against the consumer's wishes.
       stmts.push(
         this.env.DB.prepare(
           `INSERT INTO bank_connections
@@ -1611,7 +1615,9 @@ export class TaxAgent extends Agent<Env> {
              consent_scope = excluded.consent_scope,
              consent_granted_at = excluded.consent_granted_at,
              consent_expires_at = excluded.consent_expires_at,
-             last_error = NULL`,
+             expiry_reminded_at = NULL,
+             last_error = NULL
+           WHERE bank_connections.status <> 'revoked'`,
         ).bind(
           localId,
           userId,
@@ -1634,6 +1640,7 @@ export class TaxAgent extends Agent<Env> {
                (id, user_id, connection_id, provider_account_id, masked_number, name, type, currency, selected)
              SELECT ?, ?, bc.id, ?, ?, ?, ?, ?, 0 FROM bank_connections bc
               WHERE bc.user_id = ? AND bc.provider = 'basiq' AND bc.provider_connection_id = ?
+                AND bc.status <> 'revoked'
              ON CONFLICT(user_id, connection_id, provider_account_id) DO UPDATE SET
                masked_number = excluded.masked_number,
                name = excluded.name,
@@ -1644,6 +1651,22 @@ export class TaxAgent extends Agent<Env> {
       }
     }
     if (stmts.length) await this.env.DB.batch(stmts);
+
+    // CDR record (0085): one consent_granted row per live connection this callback touched.
+    if (byConnection.size) {
+      const touched = await this.env.DB.prepare(
+        `SELECT id, provider, access_type, provider_connection_id FROM bank_connections
+          WHERE user_id = ? AND status = 'active' AND provider = 'basiq'`,
+      ).bind(userId).all<{ id: string; provider: string; access_type: string; provider_connection_id: string }>();
+      for (const c of touched.results ?? []) {
+        const accts = byConnection.get(c.provider_connection_id);
+        if (!accts) continue;
+        await cdrAudit(this.env, userId, {
+          event: "consent_granted", connectionId: c.id, provider: c.provider, accessType: c.access_type,
+          accountCount: accts.length, detail: { consent_id: active?.id ?? null, expires_at: active?.expiryDate ?? null },
+        });
+      }
+    }
 
     await this.audit(
       userId,
@@ -1658,7 +1681,8 @@ export class TaxAgent extends Agent<Env> {
   async bankConnections(userId: string): Promise<{ connections: unknown[] }> {
     const conns = await this.env.DB.prepare(
       `SELECT id, provider, access_type, institution, institution_id, status, consent_id,
-              consent_scope, consent_granted_at, consent_expires_at, last_sync_at, last_error, created_at
+              consent_scope, consent_granted_at, consent_expires_at, last_sync_at, last_error, created_at,
+              revoked_at, upstream_revoked_at, data_deleted_at
          FROM bank_connections WHERE user_id = ? ORDER BY created_at DESC`,
     ).bind(userId).all<Record<string, unknown>>();
 
@@ -1788,9 +1812,9 @@ export class TaxAgent extends Agent<Env> {
     // and the sync kept pulling. Collecting outside a live consent is the failure with a regulator
     // attached, so the expiry is enforced at the puller rather than waiting on a lifecycle sweep.
     const conns = await this.env.DB.prepare(
-      `SELECT c.id, (c.consent_expires_at IS NOT NULL AND c.consent_expires_at <= datetime('now')) AS expired
+      `SELECT c.id, c.access_type, (c.consent_expires_at IS NOT NULL AND c.consent_expires_at <= datetime('now')) AS expired
          FROM bank_connections c WHERE c.user_id = ? AND c.status = 'active'`,
-    ).bind(userId).all<{ id: string; expired: number }>();
+    ).bind(userId).all<{ id: string; access_type: string; expired: number }>();
 
     // An interrupted run (its alarm chain died) must neither block this sync nor keep reading as
     // live. Lines it already wrote are real and stay; re-pulling them is a deduplicated no-op.
@@ -1809,6 +1833,9 @@ export class TaxAgent extends Agent<Env> {
           `INSERT INTO bank_sync_runs (id, user_id, connection_id, from_date, to_date, status, error, updated_at, finished_at)
            VALUES (?, ?, ?, ?, ?, 'failed', 'consent expired — reconnect this bank to keep importing', datetime('now'), datetime('now'))`,
         ).bind(crypto.randomUUID(), userId, conn.id, from, to).run();
+        await this.env.DB.prepare(`UPDATE bank_connections SET status = 'expired' WHERE id = ? AND user_id = ? AND status = 'active'`)
+          .bind(conn.id, userId).run();
+        await cdrAudit(this.env, userId, { event: "consent_expired", connectionId: conn.id, provider: "basiq", accessType: conn.access_type });
         errors.push("A bank consent has expired — reconnect it to keep importing.");
         runs++;
         continue;
@@ -2129,6 +2156,32 @@ export class TaxAgent extends Agent<Env> {
     await this.audit(userId, "bank_feed_categorised", JSON.stringify({ categorised }));
     await this.stampDeductibility(userId);
     return { categorised };
+  }
+
+  /**
+   * Withdraw a bank connection (#576, ADR-0003 §6.3 step 7 / §6.4). Order is the guarantee: stop
+   * collecting locally FIRST, then revoke at the aggregator, then the PS12 delete of the CDR lines —
+   * so a vendor outage can delay the upstream half but never keep a withdrawn consent collecting or
+   * its data held. Never touches profiles.cdr_tainted (migration 0077: one-way). Logic and its tests
+   * live in src/lib/bank-consent.ts; this method is the audited write-coordinator.
+   */
+  async bankDisconnect(userId: string, connectionId: string): Promise<DisconnectResult> {
+    const r = await disconnectBankConnection(this.env, userId, connectionId, basiqUpstream(this.env));
+    await this.audit(userId, "bank_disconnect", JSON.stringify({
+      connectionId, ok: r.ok, upstreamRevoked: r.upstreamRevoked, consumerDeleted: r.consumerDeleted,
+      accounts: r.accounts, linesDeleted: r.linesDeleted,
+    }));
+    return r;
+  }
+
+  /** Weekly (cron, flag-gated): mark expired consents, send the pre-expiry reminder, retry failed upstream revokes. */
+  async bankConsentLifecycle(userId: string): Promise<LifecycleResult> {
+    return consentLifecycle(this.env, userId, basiqUpstream(this.env));
+  }
+
+  /** The consumer's CDR record for the consent dashboard — counts and dates only. */
+  async bankHistory(userId: string): Promise<{ events: Record<string, unknown>[] }> {
+    return { events: await cdrHistory(this.env, userId) };
   }
 
   /**

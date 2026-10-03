@@ -288,6 +288,13 @@ function BankFeed({ accounts }: { accounts: Account[] }) {
                 : "Only selected accounts are ever fetched. An account can have one source — a feed or uploaded statements, never both."}
             </p>
           </div>
+          <p className="text-xs text-muted">
+            See what you've shared, when each consent expires, or withdraw it in{" "}
+            <a href="/settings#bank-connections" className="underline underline-offset-2">
+              Settings → Bank connections
+            </a>
+            .
+          </p>
         </>
       )}
     </Card>

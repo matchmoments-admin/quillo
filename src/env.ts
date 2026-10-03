@@ -162,9 +162,13 @@ export interface TaxAgentRpc {
   bankSelectAccounts(userId: string, selections: { providerAccountId: string; selected: boolean; accountId?: string | null }[]): Promise<{ updated: number; conflicts: string[] }>;
   bankSync(userId: string, opts?: { fy?: string }): Promise<{ imported: number; skipped: number; fetched: number; runs: number; errors: string[]; in_progress: boolean }>;
   categoriseFeedLines(userId: string): Promise<{ categorised: number }>;
+  // #576 consent dashboard: withdraw (local stop → upstream revoke → PS12 delete), weekly lifecycle, CDR record.
+  bankDisconnect(userId: string, connectionId: string): Promise<{ ok: boolean; error?: string; upstreamRevoked: boolean; upstreamError?: string; consumerDeleted: boolean; accounts: number; linesDeleted: number }>;
+  bankConsentLifecycle(userId: string): Promise<{ expired: number; reminded: number; upstreamRetried: number }>;
+  bankHistory(userId: string): Promise<{ events: Record<string, unknown>[] }>;
   withdrawConsent(userId: string): Promise<{ ok: boolean }>;
   setGstRegistered(userId: string, registered: boolean): Promise<{ ok: true; gst_registered: number }>;
-  purgeTenant(userId: string): Promise<{ tables: number; rowsDeleted: number; r2Objects: number; kvKeys: number; qboRevoked: boolean }>;
+  purgeTenant(userId: string): Promise<{ tables: number; rowsDeleted: number; r2Objects: number; kvKeys: number; qboRevoked: boolean; bankRevoked?: boolean }>;
   exportTenant(userId: string): Promise<Record<string, unknown>>;
   flagOldData(userId: string): Promise<{ flagged: boolean }>;
   setUiState(userId: string, patch: Record<string, unknown>): Promise<Record<string, unknown>>;

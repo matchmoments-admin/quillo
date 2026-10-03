@@ -4667,7 +4667,9 @@ export class TaxAgent extends Agent<Env> {
     }
     // A11b (#592): Grow visibility (data presence is computed here, so existing tenants see their layers on
     // first load) + the open "looks like you have X" suggestions.
-    const grow = await growPayload(this.env, userId, startYear, { isPartner: isPartner(profile), pack: await this.loadRulePack(profile.rule_pack_ver), descriptor: jur });
+    // Navigation extras only: a Grow failure (e.g. 0083 not yet applied) must never take the whole shell down.
+    const grow = await (async () => growPayload(this.env, userId, startYear, { isPartner: isPartner(profile), pack: await resolveRulePack(this.env, userId, jur), descriptor: jur }))()
+      .catch((e): GrowPayload => { console.error("journey: grow payload failed", e instanceof Error ? e.message : String(e)); return { layers: [], suggestions: [] }; });
     // lodging_fy = #572's lodging-year default (the earliest unlodged FY whose year has ended), not the FY asked for.
     return assessJourney({ readiness, signals, grow, lodgingFy: lodgingFy(new Date(), jur.taxPeriod, await journeyLodgedFys(this.env, userId)) });
   }
@@ -4678,7 +4680,7 @@ export class TaxAgent extends Agent<Env> {
     const profile = await getProfile(this.env, userId);
     if (!profile) return { layers: [], suggestions: [] };
     const jur = await this.jurisdictionFor(userId);
-    return growPayload(this.env, userId, startYear, { isPartner: isPartner(profile), pack: await this.loadRulePack(profile.rule_pack_ver), descriptor: jur });
+    return growPayload(this.env, userId, startYear, { isPartner: isPartner(profile), pack: await resolveRulePack(this.env, userId, jur), descriptor: jur });
   }
 
   /**
@@ -4687,9 +4689,10 @@ export class TaxAgent extends Agent<Env> {
    */
   async setGrowLayer(userId: string, body: { layer?: unknown; state?: unknown; source?: unknown; fy?: unknown }): Promise<{ ok: true } | { error: string }> {
     const profile = await getProfile(this.env, userId);
+    if (!profile) return { error: "no profile" };
     const err = await setGrowLayer(this.env, userId, { layer: body.layer, state: body.state, source: body.source, fy: body.fy }, availableLayers(this.env, isPartner(profile)));
     if (err) return { error: err };
-    await this.audit(userId, "grow_layer_set", JSON.stringify({ layer: body.layer, state: body.state, source: body.source, ...(body.fy != null ? { fy: Number(body.fy) } : {}) }));
+    await this.audit(userId, "grow_layer_set", JSON.stringify({ layer: body.layer, state: body.state, source: body.source, ...(body.source === "detected" && body.state === "off" ? { fy: Number(body.fy) } : {}) }));
     return { ok: true };
   }
 

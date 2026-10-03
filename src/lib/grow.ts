@@ -256,6 +256,9 @@ export async function growStored(env: Env, userId: string): Promise<GrowLayerRow
 /**
  * Rule 3: which layers the tenant already has data in. One read of EXISTS probes, all tenant-scoped. These are
  * the user's own entries (or records derived from their own documents), never a guess from bank text.
+ * Deliberately NOT probed (a layer with data is locked on, so a false unlock can't be undone): capital_imports
+ * (parse staging — a committed import writes cgt_assets) and super_contributions (an employee's own personal
+ * concessional contributions land there too; that is not a business).
  * Savings counts only rows the user acted on (a confirmed bill or a referral they started): the weekly
  * detector writes recurring_bills/opportunities for everyone with bank lines, and that must not unlock Savings.
  */
@@ -265,13 +268,13 @@ export async function growDataPresence(env: Env, userId: string, isPartner: bool
     (${ex("properties")} OR ${ex("loans_properties")} OR ${ex("loan_interest_summaries")}
        OR ${ex("income_activities", "activity_type = 'rental_property'")}
        OR ${ex("income", "income_type IN ('rent','foreign_rent')")}) AS property,
-    (${ex("cgt_assets")} OR ${ex("cgt_events")} OR ${ex("ess_grants")} OR ${ex("capital_imports")}
+    (${ex("cgt_assets")} OR ${ex("cgt_events")} OR ${ex("ess_grants")}
        OR ${ex("income_activities", "activity_type = 'investment'")}
        OR ${ex("income", "income_type IN ('dividend','managed_fund_distribution')")}) AS investments,
-    (${ex("entities", "kind NOT IN ('employment','individual','novated_lease')")} OR ${ex("income_activities", "activity_type = 'business'")}
+    (${ex("entities", "active = 1 AND kind NOT IN ('employment','individual','novated_lease')")} OR ${ex("income_activities", "activity_type = 'business'")}
        OR ${ex("income", "income_type IN ('business','foreign_business','non_cash_business')")}
        OR ${ex("bas_periods")} OR ${ex("payg_instalments")} OR ${ex("trust_distributions")} OR ${ex("smsf_members")}
-       OR ${ex("super_contributions")} OR ${ex("trading_stock")} OR ${ex("company_tax_positions")}
+       OR ${ex("trading_stock")} OR ${ex("company_tax_positions")}
        OR ${ex("profiles", "gst_registered = 1")}) AS business,
     (${ex("assets")} OR ${ex("depreciation_opening_balances")}) AS assets,
     ${ex("qbo_connections")} AS integrations,

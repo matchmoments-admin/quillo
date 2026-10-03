@@ -3,7 +3,7 @@ import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import { UserButton } from "@clerk/clerk-react";
 import { Toaster } from "sonner";
 import * as Tooltip from "@radix-ui/react-tooltip";
-import { useFeatures, useAdminAccess } from "../lib/features";
+import { useFeatures, useAdminAccess, usePartnerAccess } from "../lib/features";
 import { FySwitcher } from "../lib/activeFy";
 import { JOURNEY_STEP_KEYS, STATUS_LABEL, STEP_LABEL, STEP_ROUTE, stepForPath, useJourney } from "../lib/journey";
 import { GROW_LABEL, GROW_ROUTE, useSetGrowLayer } from "../lib/grow";
@@ -139,11 +139,17 @@ function GrowSwitcher() {
 function AccountMenu({ onPick }: { onPick?: () => void }) {
   const { has } = useFeatures();
   const { isAdmin } = useAdminAccess();
+  const { isPartner } = usePartnerAccess();
+  const journey = useJourney();
+  // Advisers (the Partner portal) lives in Grow, which reads the journey; keep a fallback link while the
+  // journey is loading or failed so a partner is never left without a way in.
+  const growListsAdvisers = !!journey.data?.grow.layers.some((l) => l.key === "advisers" && l.state === "on");
   const items: { to: string; label: string; show: boolean }[] = [
     { to: "/billing", label: "Billing", show: has("billing") },
     { to: "/notifications", label: "Alerts", show: true },
     { to: "/glossary", label: "Learn & glossary", show: true },
     { to: "/settings", label: "Settings", show: true },
+    { to: "/partner", label: "Partner portal", show: isPartner && !growListsAdvisers },
     { to: "/admin", label: "Admin", show: isAdmin },
   ];
   return (

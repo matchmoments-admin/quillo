@@ -1489,7 +1489,7 @@ with one table, `web/src/lib/legacyRoutes.ts`, used by the redirects and by `fin
 - `GET /api/journey?fy=` (new, `src/api.ts` → DO method `journey(userId, fy)` composing readiness,
   `noticed_signals`, the records block, grow visibility). Gated by `ft_journey`.
 - `GET/PUT /api/grow-layers` (switch on/off).
-- Grow detection added to `noticeSignals` (A3) under `ft_journey`.
+- Grow detection computed on read in `src/lib/grow.ts` under `ft_journey` (as built, #592: no `noticed_signals` rows).
 
 ### SPA
 

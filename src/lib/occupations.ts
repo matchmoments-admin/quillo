@@ -22,6 +22,14 @@ type OccBlock = { label?: string; ato_url?: string; suggest?: string[]; warn?: s
 // the pack now keys 'tradesperson', and legacy stored values resolve through here.
 const SCOPE_ALIASES: Record<string, string> = { tradie: "tradesperson" };
 
+/** The canonical claim-rule scope for a stored occupation token (lower-cased, legacy aliases resolved), or
+ *  null for an empty value. The relevance scan matches claimability rules on this. */
+export function canonicalOccupationScope(token: string | null | undefined): string | null {
+  const t = (token ?? "").trim().toLowerCase();
+  if (!t) return null;
+  return SCOPE_ALIASES[t] ?? t;
+}
+
 /** The occupation guide for a scope (e.g. 'nurse', 'tradesperson'), or null when the scope isn't covered. */
 export function occupationGuide(scope: string | null | undefined): OccupationGuide | null {
   if (!scope) return null;

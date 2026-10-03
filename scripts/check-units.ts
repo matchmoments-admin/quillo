@@ -6,6 +6,7 @@ import { reconcileStatement, deriveBalances, isTransferLike, isLoanInterestLine,
 import { groupKey, groupForClarify, rulePatternForStem, isClarifyLeftover, isInsuranceLikeStem, suggestionsFor, draftHoldingFromTxn } from "../src/lib/clarify";
 import { resolveLoanInterest, deductibleInterestCents } from "../src/lib/loan-interest";
 import { scoreClaimMatches } from "../src/lib/claim-match";
+import { scanLine, scanLines, relevanceFloorCents, isScannedBucket, worthALookText } from "../src/lib/relevance-scan";
 import { batchStatementStatus, isStaleBatch, BATCH_MAX_AGE_MS } from "../src/lib/batch";
 import { extractSituationDraft, parseBatchMessage, mapBatchItems, type BatchItem } from "../src/extract";
 import type { LLM } from "../src/llm";
@@ -4470,6 +4471,33 @@ import { lodgingFy, lodgementTiming, selfLodgeDueDate, retentionBackstopDate, re
     lodgedOnError("2025-06-30", 2025, "2026-10-03", AU_DESCRIPTOR) !== null &&
     lodgedOnError("2026-02-30", 2025, "2026-10-03", AU_DESCRIPTOR) !== null &&
     lodgedOnError("1 Sep", 2025, "2026-10-03", AU_DESCRIPTOR) !== null);
+}
+
+// ── Relevance scan (pure; #578, spec A4): precedence user decision → occupation rule → generic deny → generic
+//    rule / stamp → floor. Never reads or writes deductibility; tokens/rules/floor come from the pack. ──
+{
+  const pack = rulePack as unknown as { claimability: Parameters<typeof scanLines>[2]; payg_deductibility: Parameters<typeof scanLine>[3] };
+  const sec = pack.payg_deductibility;
+  const nurse = { occupations: [{ token: "nurse", person_id: "p1" }] };
+  const line = (merchant: string, extra: Partial<Parameters<typeof scanLine>[0]> = {}) => ({ id: merchant, bucket: "payg", ato_label: null, merchant, amount_cents: 5000, deductibility: null, ...extra });
+  const s = (l: Parameters<typeof scanLine>[0], prof: Parameters<typeof scanLine>[1] = nurse) => scanLine(l, prof, pack.claimability, sec, 2000);
+  check("relevance: an occupation hit on a payg line is worth_a_look with the rule + person", (() => { const r = s(line("AHPRA RENEWAL")); return r.relevance === "worth_a_look" && r.rule_id === "au-occ-nurse" && r.person_id === "p1"; })());
+  check("relevance: the occupation rule beats the generic deny (shoes stamped likely_not)", s(line("NURSING SHOES", { deductibility: "likely_not" })).relevance === "worth_a_look");
+  check("relevance: an uncategorised line hitting a job rule is relevant, not a card (can't be confirmed yet)", s(line("AHPRA RENEWAL", { bucket: null })).relevance === "relevant");
+  check("relevance: the user's 'not deductible' and reimbursed lines are irrelevant even on a job rule",
+    s(line("AHPRA RENEWAL", { deductibility: "confirmed_not" })).relevance === "irrelevant" && s(line("AHPRA RENEWAL", { reimbursed: 1 })).relevance === "irrelevant");
+  check("relevance: no occupation ⇒ a denied line stays irrelevant (generic deny wins)", s(line("NURSING SHOES", { deductibility: "likely_not" }), { occupations: [] }).relevance === "irrelevant");
+  check("relevance: a generic ('all') rule hit is relevant, not worth a look", (() => { const r = s(line("TAFE COURSE FEE"), { occupations: [] }); return r.relevance === "relevant" && !!r.rule_id; })());
+  check("relevance: unmatched lines split on the floor ($20 relevant, $19.99 irrelevant)",
+    s(line("RANDOM SHOP", { amount_cents: 2000 }), { occupations: [] }).relevance === "relevant" && s(line("RANDOM SHOP", { amount_cents: 1999 }), { occupations: [] }).relevance === "irrelevant");
+  check("relevance: floor from the pack (2000), malformed ⇒ 2000", relevanceFloorCents(rulePack) === 2000 && relevanceFloorCents({ relevance: { floor_cents: "x" } }) === 2000 && relevanceFloorCents({ relevance: { floor_cents: 500 } }) === 500);
+  check("relevance: only payg / unknown / uncategorised buckets are scanned", isScannedBucket("payg") && isScannedBucket(null) && isScannedBucket("unknown") && !isScannedBucket("company") && !isScannedBucket("property_rented"));
+  check("relevance: scanLines is order-preserving and deterministic", JSON.stringify(scanLines([line("B"), line("A")], nurse, pack.claimability, sec, 2000).map((r) => r.id)) === '["B","A"]');
+  const nurseRule = pack.claimability.find((r) => r.id === "au-occ-nurse")!;
+  const txt = worthALookText(nurseRule, "Nurse");
+  check("relevance: card text gives the why + the three golden rules, no figure, no 'you can claim'", /because you work as a nurse/.test(txt) && /record/.test(txt) && !/\$\s?\d/.test(txt) && !/you can claim/i.test(txt));
+  check("relevance: a defer_to_agent rule's card says confirm with a registered tax agent",
+    /registered tax agent/.test(worthALookText({ ...nurseRule, defer_to_agent: 1 }, null)) && !/registered tax agent/.test(worthALookText({ ...nurseRule, defer_to_agent: 0 }, null)));
 }
 
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);

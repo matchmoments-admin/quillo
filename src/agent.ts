@@ -65,6 +65,7 @@ import auV1RulePack from "./rulepacks/au-v1.json";
 import { assertBucketKeys, isBucket, isPropertyBucket, normalizeAtoLabel, DEDUCTIBILITY_STATES, WAGE_INCOME_TYPES } from "./lib/taxonomy";
 import { verdictForTxn } from "./lib/deductibility";
 import { featureOn, categoriseMode } from "./lib/features";
+import { runRelevanceScan, confirmWorthALook } from "./lib/relevance-scan-run";
 
 const CONFIDENCE_THRESHOLD = 0.85;
 // Backstop on bank-sync alarm continuations (#511). MAX_PAGES_PER_RUN normally ends a run first;
@@ -563,7 +564,7 @@ export class TaxAgent extends Agent<Env> {
       // the direction so it picks an income_* / refund bucket). Both directions now get a bucket.
       const cat = transfer
         ? null
-        : this.deterministicCategorise(line.description, situation.rules, rulePack, { skipHints: line.direction === "credit", direction: line.direction });
+        : this.deterministicCategorise(line.description, situation.rules, rulePack, { skipHints: line.direction === "credit", direction: line.direction, entityKinds: situation.entities.map((e) => e.kind) });
       const status = transfer ? "ignored" : cat ? "extracted" : "needs_review";
       inserts.push(
         this.env.DB.prepare(
@@ -1121,6 +1122,7 @@ export class TaxAgent extends Agent<Env> {
     // Deny-by-default deductibility on the freshly-categorised payg lines (statement spend is where
     // the founder's private living costs land in bulk). Scans this tenant's still-undetermined payg.
     await this.stampDeductibility(userId);
+    await this.afterIngestStamped(userId);
     return { categorised };
   }
 
@@ -1295,6 +1297,7 @@ export class TaxAgent extends Agent<Env> {
         await this.linkAssetsForUser(userId);
         // Deny-by-default deductibility on the payg lines this batch just bucketed.
         await this.stampDeductibility(userId);
+        await this.afterIngestStamped(userId);
         await this.notify(
           userId,
           applied > 0
@@ -1420,6 +1423,7 @@ export class TaxAgent extends Agent<Env> {
     // Deny-by-default deductibility on deterministically-bucketed payg lines. Covers the
     // no-LLM-items and consent-gated paths where categorisation returns early before stamping.
     await this.stampDeductibility(userId);
+    await this.afterIngestStamped(userId);
     // Attach existing receipts to the new lines (stops double-counting + donates GST).
     await this.matchReceiptsForUser(userId);
     // #165 — a loan account whose statement itemises interest gets a statement_parsed summary so the
@@ -1453,12 +1457,25 @@ export class TaxAgent extends Agent<Env> {
     }));
   }
 
+  /**
+   * The pack's merchant hints for a tenant. #578 (relevance_scan): a hint may name `requires_entity_kind` (the
+   * SaaS / cloud / domain hints → company); for a tenant with no such entity — a PAYG employee or a first-timer —
+   * it is left out, so their subscriptions are not steered into the company bucket (relevance-scan.md D4).
+   * Flag OFF, or no entity kinds supplied ⇒ every hint (byte-identical).
+   */
+  private merchantHintsFor(rulePack: unknown, entityKinds: string[] | null): { match: string; bucket: string; ato_label: string; note?: string; requires_entity_kind?: string }[] | undefined {
+    const all = (rulePack as { merchant_hints?: { match: string; bucket: string; ato_label: string; note?: string; requires_entity_kind?: string }[] }).merchant_hints;
+    if (!Array.isArray(all) || entityKinds == null || !featureOn(this.env, "relevance_scan")) return all;
+    const kinds = new Set(entityKinds);
+    return all.filter((h) => !h.requires_entity_kind || kinds.has(h.requires_entity_kind));
+  }
+
   /** Deterministic categorisation for a statement line: user rule (1.0) then merchant hints (0.8). */
   private deterministicCategorise(
     merchant: string,
     rules: UserRule[],
     rulePack: typeof DEFAULT_RULE_PACK,
-    opts: { skipHints?: boolean; direction?: string | null } = {},
+    opts: { skipHints?: boolean; direction?: string | null; entityKinds?: string[] } = {},
   ): { bucket: string; ato_label: string; confidence: number; property_id?: string | null } | null {
     const rule = applyUserRules(merchant, rules, opts.direction);
     // A property-scoped rule carries its property_id so a learned rental rule re-attaches the property
@@ -1469,7 +1486,7 @@ export class TaxAgent extends Agent<Env> {
     // line or a refund from a SaaS vendor would be mis-bucketed as a company expense. Credits get
     // only user rules deterministically; the LLM (direction-aware) handles the rest.
     if (opts.skipHints) return null;
-    const hints = (rulePack as { merchant_hints?: { match: string; bucket: string; ato_label: string }[] }).merchant_hints;
+    const hints = this.merchantHintsFor(rulePack, opts.entityKinds ?? null);
     if (Array.isArray(hints)) {
       const m = merchant.toLowerCase();
       for (const h of hints) {
@@ -2069,7 +2086,7 @@ export class TaxAgent extends Agent<Env> {
         baseCurrency: baseCur,
         transport: (q) => fetchTransactionPage(this.env, conn.provider_user_id, { from: q.from, to: q.to, accountId: q.providerAccountId, next: q.next }),
         categorise: (merchant, direction) =>
-          this.deterministicCategorise(merchant, situation.rules, rulePack, { skipHints: direction === "credit", direction }),
+          this.deterministicCategorise(merchant, situation.rules, rulePack, { skipHints: direction === "credit", direction, entityKinds: situation.entities.map((e) => e.kind) }),
         // Per page: still selected + mapped the same way, AND the connection still live — so a
         // deselect, a remap, a revoke or a consent expiry stops collection on the next page.
         stillSelected: async (a) =>
@@ -2194,6 +2211,7 @@ export class TaxAgent extends Agent<Env> {
     }
     await this.audit(userId, "bank_feed_categorised", JSON.stringify({ categorised }));
     await this.stampDeductibility(userId);
+    await this.afterIngestStamped(userId);
     return { categorised };
   }
 
@@ -3086,6 +3104,23 @@ export class TaxAgent extends Agent<Env> {
     } catch (e) {
       await this.audit(userId, "deductibility_stamp_error", JSON.stringify({ error: (e as Error).message }));
       return { stamped: 0 };
+    }
+  }
+
+  /**
+   * The bank-line ingest hook: everything that must run once fresh lines have their deny-by-default
+   * deductibility stamp. Called right after stampDeductibility at every statement / feed ingest site
+   * (sync categorise, async batch apply, afterLinesImported, bank feed) — add new post-stamp ingest work
+   * HERE rather than at each site. Each step is flag-gated (OFF ⇒ no-op) and best-effort: a failure must
+   * never fail the import, which has already persisted.
+   *  - relevance scan (#578, `relevance_scan`): sorts debit bank lines into relevant / worth_a_look /
+   *    irrelevant and keeps the 'worth a look' cards in step. Never changes deductibility.
+   */
+  private async afterIngestStamped(userId: string): Promise<void> {
+    try {
+      await runRelevanceScan(this.env, userId, { descriptor: await this.jurisdictionFor(userId) });
+    } catch (e) {
+      await this.audit(userId, "relevance_scan_error", JSON.stringify({ error: (e as Error).message }));
     }
   }
 
@@ -4139,8 +4174,11 @@ export class TaxAgent extends Agent<Env> {
         `SELECT rule_id, status, source FROM claim_suggestions WHERE user_id = ?`,
       ).bind(userId).all<{ rule_id: string | null; status: string | null; source: string | null }>()
     ).results ?? [];
-    const firedRuleIds = new Set(suggestionRows.filter((r) => r.status !== "dismissed" && r.source !== "review" && r.rule_id).map((r) => r.rule_id as string));
-    const dismissedRuleIds = new Set(suggestionRows.filter((r) => r.status === "dismissed" && r.rule_id).map((r) => r.rule_id as string));
+    // #578: per-LINE 'worth a look' cards (source relevance_scan) are not rule-level evidence or rule-level
+    // dismissals — dismissing one line's card must not hide the rule from the sweep. (Those rows only exist with
+    // the relevance_scan flag ON, so OFF is byte-identical.)
+    const firedRuleIds = new Set(suggestionRows.filter((r) => r.status !== "dismissed" && r.source !== "review" && r.source !== "relevance_scan" && r.rule_id).map((r) => r.rule_id as string));
+    const dismissedRuleIds = new Set(suggestionRows.filter((r) => r.status === "dismissed" && r.source !== "relevance_scan" && r.rule_id).map((r) => r.rule_id as string));
     // Existing review-sourced rows keep the upsert idempotent (don't re-insert what's already there).
     const reviewSourced = new Set(suggestionRows.filter((r) => r.source === "review" && r.rule_id).map((r) => r.rule_id as string));
 
@@ -5910,7 +5948,7 @@ export class TaxAgent extends Agent<Env> {
       await setStage("claims");
       await this.reviewClaims(userId, startYear);
       const claimItems = (await this.env.DB.prepare(
-        `SELECT COUNT(*) AS n FROM claim_suggestions WHERE user_id = ? AND status IN ('suggested','capturing')`,
+        `SELECT COUNT(*) AS n FROM claim_suggestions WHERE user_id = ? AND status IN ('suggested','capturing') AND source != 'relevance_scan'`,
       ).bind(userId).first<{ n: number }>())?.n ?? 0;
 
       const summary: AccountantSummary = {
@@ -5933,13 +5971,22 @@ export class TaxAgent extends Agent<Env> {
   }
 
   /** Confirm a SUGGESTED deduction (Stage D) → confirmed_deductible (it now counts). User-driven, audited. */
-  async confirmSuggestedDeduction(userId: string, txnId: string): Promise<{ ok: boolean; denied?: boolean }> {
+  async confirmSuggestedDeduction(userId: string, txnId: string): Promise<{ ok: boolean; denied?: boolean; needs_apportionment?: boolean }> {
     const row = await this.env.DB
       .prepare(`SELECT deductibility, bucket, ato_label, merchant FROM transactions WHERE id = ? AND user_id = ?`)
       .bind(txnId, userId)
       .first<{ deductibility: string | null; bucket: string | null; ato_label: string | null; merchant: string | null }>();
     if (!row) throw new Error("transaction not found");
-    if (row.deductibility !== "suggested_deductible") return { ok: false }; // only a live suggestion can be confirmed
+    if (row.deductibility !== "suggested_deductible") {
+      // #578 (relevance_scan): a 'worth a look' line (an occupation rule matched a payg line the default left
+      // out) is confirmable too — the user's tap is the only thing that ever makes it count. confirmWorthALook
+      // re-checks it against the CURRENT profile + rules and returns null when the flag is OFF or the line is
+      // not worth a look (⇒ the legacy answer below, byte-identical).
+      const w = await confirmWorthALook(this.env, userId, txnId);
+      if (w?.ok) await this.audit(userId, "confirm_deduction", JSON.stringify({ txnId, source: "relevance_scan" }));
+      if (w?.needs_apportionment) return { ok: false, needs_apportionment: true }; // mixed-use: set the work-use share instead
+      return { ok: !!w?.ok }; // only a live suggestion can be confirmed
+    }
     // Re-check the CURRENT rule pack before it counts. A suggestion is a stored stamp written at
     // categorise time; a later rule-pack change (e.g. #403 denying raffles/art-unions/lotteries) does
     // NOT retro-touch it, so a stale suggestion could otherwise be confirmed into the position — an
@@ -5961,6 +6008,10 @@ export class TaxAgent extends Agent<Env> {
       return { ok: false, denied: true };
     }
     await this.env.DB.prepare(`UPDATE transactions SET deductibility = 'confirmed_deductible' WHERE id = ? AND user_id = ?`).bind(txnId, userId).run();
+    // #578: a 'worth a look' card on this line now has its evidence (the line itself) — keep it as history.
+    if (featureOn(this.env, "relevance_scan")) {
+      await this.env.DB.prepare(`UPDATE claim_suggestions SET status = 'capturing' WHERE user_id = ? AND txn_id = ? AND source = 'relevance_scan' AND status = 'suggested'`).bind(userId, txnId).run();
+    }
     await this.audit(userId, "confirm_deduction", JSON.stringify({ txnId }));
     return { ok: true };
   }
@@ -7064,7 +7115,8 @@ export class TaxAgent extends Agent<Env> {
   ): string {
     const hint = bucketHint ? `\nThe user hinted this is bucket="${bucketHint}" — respect it unless the receipt clearly contradicts.` : "";
     // Optional merchant hints (e.g. SaaS/cloud) so well-known vendors categorise consistently.
-    const hints = (rulePack as { merchant_hints?: { match: string; bucket: string; ato_label: string; note?: string }[] }).merchant_hints;
+    // #578: company-only hints are dropped for a tenant with no company (flag relevance_scan; OFF ⇒ all hints).
+    const hints = this.merchantHintsFor(rulePack, situation.entities.map((e) => e.kind));
     const hintLines =
       Array.isArray(hints) && hints.length
         ? [

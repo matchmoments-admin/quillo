@@ -16,7 +16,7 @@ a tax-position report. **General information only — never tax advice.**
 
 ## Commands
 - `npm run typecheck` — server (tsc). `npm --prefix web exec tsc -- --noEmit` — SPA.
-- `npm test` — full suite: unit goldens (`scripts/check-units.ts`), mobile shell, raw-colour guard (`scripts/check-no-raw-colors.ts` — SPA colours only via `design/tokens.mjs` roles), persona goldens, e2e journey, AU snapshot, statement reconciliation, schema drift. `npm run test:units` for just units.
+- `npm test` — full suite: unit goldens (`scripts/check-units.ts`), mobile shell, raw-colour guard (`scripts/check-no-raw-colors.ts` — SPA colours only via `design/tokens.mjs` roles), theme token test (`scripts/check-theme-contrast.ts` — every theme maps every role, legacy pinned for flag-OFF parity, WCAG AA in the Direction A themes), persona goldens, e2e journey, AU snapshot, statement reconciliation, schema drift. `npm run test:units` for just units.
 - `npm run eval` / `npm run eval:gate` — promptfoo categorisation eval (what `.github/workflows/evals.yml` runs).
 - `npm run web:build` — build the SPA. `npm run deploy` (`wrangler deploy && npm run rulepack:push`) — deploy the Worker + push the rule pack.
 - Migrations: `npx wrangler d1 execute tax-agent-db --remote --file=migrations/NNNN_x.sql` (in order).

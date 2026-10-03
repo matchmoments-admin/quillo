@@ -2,6 +2,24 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Geist + Geist Mono (Vercel, SIL Open Font License 1.1 — web/public/fonts/OFL-Geist.txt),
+   self-hosted variable woff2. Only the quiet-* themes (ft_journey ON) name these families, so the
+   browser never downloads them under the legacy theme. */
+@font-face {
+  font-family: "Geist";
+  src: url("/fonts/Geist-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Geist Mono";
+  src: url("/fonts/GeistMono-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
 @layer base {
   :root {
     /* Height of the <lg bottom tab bar (mobile_bottom_tabs), plus the iOS home-indicator
@@ -30,17 +48,18 @@
     font-family: theme("fontFamily.sans");
     line-height: 1.55;
   }
-  /* Anton condensed display headings — one visual language with the green landing.
-     Body and dense data stay on Inter (the sans). Anton ships a single weight (400)
-     and reads best in caps, so headings are uppercased + lightly tracked. */
+  /* Heading typography is per-theme (design/tokens.mjs `themeType`). legacy: Anton condensed
+     display headings — one visual language with the green landing; Anton ships a single weight
+     (400) and reads best in caps, so uppercased + lightly tracked. quiet-*: Geist 600, -0.02em,
+     normal case (design-system.md §3). */
   h1,
   h2,
   h3 {
     font-family: theme("fontFamily.serif");
-    font-weight: 400;
-    letter-spacing: 0.01em;
-    line-height: 1.0;
-    text-transform: uppercase;
+    font-weight: var(--heading-weight);
+    letter-spacing: var(--heading-tracking);
+    line-height: var(--heading-leading);
+    text-transform: var(--heading-transform);
   }
   ::selection {
     background: theme("colors.forest");

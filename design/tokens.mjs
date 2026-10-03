@@ -18,9 +18,15 @@
 //   3. `roles`      — the semantic names the UI consumes (as CSS vars `--surface-page`, …, and via
 //                     the Tailwind aliases in web/tailwind.config.js).
 //
-// `themes.light` currently holds the EXACT pre-tokenisation values (the "Organic-Brutalist" GREEN
-// system: forest + sage + cream canvas, Anton display / Inter body), so tokenisation is
-// visually byte-identical. Direction A ("Quiet ledger") lands later as a theme switch.
+// THEMES (docs/first-timer/spec.md A12):
+//   • `legacy`      — the EXACT pre-tokenisation values (the "Organic-Brutalist" GREEN system: forest
+//                     + sage + cream canvas, Anton display / Inter body). Emitted on bare `:root`, so
+//                     with `ft_journey` OFF the app is visually byte-identical to before #566.
+//   • `quiet-light` — Direction A "Quiet ledger" (design-system.md §3, verbatim), Geist + Geist Mono.
+//   • `quiet-dark`  — the same roles, dark (spec A12 table).
+// The quiet themes apply only when `ft_journey` is ON (web/src/lib/theme.ts sets
+// `<html data-theme>`). scripts/check-theme-contrast.ts asserts every theme maps every role and
+// that the quiet themes meet WCAG AA.
 // ============================================================================
 
 // ── Layer 1: primitives ─────────────────────────────────────────────────────
@@ -48,6 +54,46 @@ export const primitives = {
   amber900: "#78350f",
   red100: "#fee2e2",
   red700: "#b91c1c",
+  white: "#ffffff",
+
+  // Direction A "Quiet ledger" (design-system.md §3 + spec A12 dark table). Warm stone neutrals,
+  // one emerald accent. Light end first, dark end after.
+  stone50: "#f4f3ee",
+  stone100: "#eceae3",
+  stone200: "#e3e1d9",
+  stone300: "#cfcbc1",
+  ink500: "#646b66",
+  ink600: "#555d58",
+  ink900: "#1d2420",
+  emerald100: "#e2eee8",
+  emerald200: "#c9ded3",
+  emerald700: "#1e6b52",
+  emerald800: "#17543f",
+  apricot50: "#fff6ec",
+  apricot200: "#e8c99a",
+  ochre750: "#94630f", // status.warn #9a6712 nudged darker within its hue: 4.37:1 on stone50 failed AA (spec A12)
+  ochre800: "#7a510d",
+  brick50: "#f7e4e0",
+  cobalt700: "#2f5f9e",
+  mist100: "#ecede8",
+  mist400: "#a8afa9",
+  mist500: "#8f9690",
+  slate700: "#3a413c",
+  slate800: "#2a302c",
+  slate900: "#1a1f1c",
+  slate950: "#121614",
+  slate975: "#0d100e",
+  emerald300: "#63b394",
+  emerald400: "#4fa383",
+  emerald850: "#24493b",
+  emerald900: "#1c3a2f",
+  gold300: "#ebc07f",
+  gold400: "#e0a955",
+  umber700: "#5c4520",
+  umber900: "#2b2214",
+  coral400: "#e07a68",
+  brick950: "#3a1d18",
+  sky400: "#7fa6dd",
 };
 
 // ── Layer 3: semantic roles ─────────────────────────────────────────────────
@@ -60,16 +106,23 @@ export const roles = [
   "text.primary", // primary text + dark actions (never pure black)
   "text.secondary", // secondary text (the app's `muted`)
   "text.tertiary", // tertiary / faint labels
+  "text.inverse", // text on accent / dark fills (also the Tailwind `white` alias)
   "border.default", // borders, dividers
+  "border.strong", // inputs, secondary buttons
   "brand.forest", // wordmark, sidebar, dark text
   "brand.green", // mid green — buttons / accents
   "brand.green-hover", // hover
   "brand.olive", // alt soft canvas
   "brand.cream", // lightest paper (text on forest)
-  "accent.default", // signature accent — active nav, accent cards, highlights (sage)
-  "accent.strong", // muted accent / pressed (moss)
+  "accent.default", // THE action accent — primary actions, progress, links (Direction A)
+  "accent.hover", // its hover
+  "accent.soft", // soft accent fill — 'Worth a look' badges, selected chips
+  "accent.highlight", // legacy signature highlight — active nav, accent cards (sage; `yellow`/`sage` aliases)
+  "accent.strong", // muted highlight / pressed (moss)
+  "status.ok",
   "status.safe",
   "status.warn",
+  "status.warn-surface", // the fill status.warn sits on
   "status.danger",
   "status.info",
   "status.caution-surface", // "review separately" callout fill
@@ -84,28 +137,36 @@ export const roles = [
   "chart.series.4",
   "chart.series.5",
   "chart.series.6",
+  "focus.ring", // keyboard focus outline (translucent)
 ];
 
 // ── Layer 2: themes ─────────────────────────────────────────────────────────
 // role → primitive name, or { ref, alpha } for a translucent role.
 export const themes = {
-  light: {
+  legacy: {
     "surface.page": "olive150",
     "surface.sunken": "olive300",
     "surface.raised": "olive50",
     "text.primary": "green900",
     "text.secondary": "sage700",
     "text.tertiary": "sage600",
+    "text.inverse": "white",
     "border.default": { ref: "green900", alpha: 0.13 },
+    "border.strong": { ref: "green900", alpha: 0.25 },
     "brand.forest": "green900",
     "brand.green": "green700",
     "brand.green-hover": "green600",
     "brand.olive": "olive200",
     "brand.cream": "olive100",
-    "accent.default": "sage300",
+    "accent.default": "green700",
+    "accent.hover": "green600",
+    "accent.soft": "sage300",
+    "accent.highlight": "sage300",
     "accent.strong": "sage500",
+    "status.ok": "green700",
     "status.safe": "green700",
     "status.warn": "ochre700",
+    "status.warn-surface": "amber50",
     "status.danger": "brick700",
     "status.info": "blue600",
     "status.caution-surface": "amber50",
@@ -120,8 +181,97 @@ export const themes = {
     "chart.series.4": "sage500",
     "chart.series.5": "blue600",
     "chart.series.6": "ochre700",
+    "focus.ring": { ref: "green700", alpha: 0.4 },
+  },
+  // Direction A light — design-system.md §3 table verbatim for its roles; the legacy-only roles
+  // (brand.*, accent.highlight/strong, caution-*, danger-*, text.tertiary) get the nearest Direction A
+  // value so today's screens stay legible under the flag until the ft/ components replace them.
+  "quiet-light": {
+    "surface.page": "stone50",
+    "surface.sunken": "stone100",
+    "surface.raised": "white",
+    "text.primary": "ink900",
+    "text.secondary": "ink600",
+    "text.tertiary": "ink500",
+    "text.inverse": "white",
+    "border.default": "stone200",
+    "border.strong": "stone300",
+    "brand.forest": "ink900",
+    "brand.green": "emerald700",
+    "brand.green-hover": "emerald800",
+    "brand.olive": "stone100",
+    "brand.cream": "stone50",
+    "accent.default": "emerald700",
+    "accent.hover": "emerald800",
+    "accent.soft": "emerald100",
+    "accent.highlight": "emerald100",
+    "accent.strong": "emerald200",
+    "status.ok": "emerald700",
+    "status.safe": "emerald700",
+    "status.warn": "ochre750",
+    "status.warn-surface": "apricot50",
+    "status.danger": "brick700",
+    "status.info": "cobalt700",
+    "status.caution-surface": "apricot50",
+    "status.caution-border": "apricot200",
+    "status.caution-text": "ochre750",
+    "status.caution-text-strong": "ochre800",
+    "status.danger-surface": "brick50",
+    "status.danger-text": "brick700",
+    "chart.series.1": "emerald800",
+    "chart.series.2": "emerald700",
+    "chart.series.3": "cobalt700",
+    "chart.series.4": "ochre750",
+    "chart.series.5": "brick700",
+    "chart.series.6": "ink600",
+    "focus.ring": { ref: "emerald700", alpha: 0.4 },
+  },
+  // Direction A dark — spec A12 dark table. The legacy "dark ink on light" pairs invert (forest <->
+  // cream, ink buttons become light) so every existing fg/bg pairing keeps its contrast.
+  "quiet-dark": {
+    "surface.page": "slate950",
+    "surface.sunken": "slate975",
+    "surface.raised": "slate900",
+    "text.primary": "mist100",
+    "text.secondary": "mist400",
+    "text.tertiary": "mist500",
+    "text.inverse": "slate975",
+    "border.default": "slate800",
+    "border.strong": "slate700",
+    "brand.forest": "mist100",
+    "brand.green": "emerald400",
+    "brand.green-hover": "emerald300",
+    "brand.olive": "slate900",
+    "brand.cream": "slate975",
+    "accent.default": "emerald400",
+    "accent.hover": "emerald300",
+    "accent.soft": "emerald900",
+    "accent.highlight": "emerald900",
+    "accent.strong": "emerald850",
+    "status.ok": "emerald400",
+    "status.safe": "emerald400",
+    "status.warn": "gold400",
+    "status.warn-surface": "umber900",
+    "status.danger": "coral400",
+    "status.info": "sky400",
+    "status.caution-surface": "umber900",
+    "status.caution-border": "umber700",
+    "status.caution-text": "gold400",
+    "status.caution-text-strong": "gold300",
+    "status.danger-surface": "brick950",
+    "status.danger-text": "coral400",
+    "chart.series.1": "emerald300",
+    "chart.series.2": "emerald400",
+    "chart.series.3": "sky400",
+    "chart.series.4": "gold400",
+    "chart.series.5": "coral400",
+    "chart.series.6": "mist400",
+    "focus.ring": { ref: "emerald400", alpha: 0.5 },
   },
 };
+
+/** Themes whose colour scheme is dark (sets CSS `color-scheme` so form controls/scrollbars follow). */
+export const darkThemes = ["quiet-dark"];
 
 /** CSS custom-property name for a role: `surface.page` → `--surface-page`. */
 export function roleVar(role) {
@@ -148,14 +298,25 @@ function resolveRole(theme, role) {
  * Values are space-separated RGB channel triplets so Tailwind can append an alpha
  * (`rgb(var(--x) / <alpha-value>)`). A translucent role also gets `--x-alpha` (its default alpha).
  */
-export function themeCssVars(theme = "light") {
+export function themeCssVars(theme = "legacy") {
   const out = {};
   for (const role of roles) {
     const { hex, alpha } = resolveRole(theme, role);
     out[roleVar(role)] = hexToChannels(hex).join(" ");
+    // A role translucent in ANY theme gets its -alpha var in EVERY theme (1 when opaque there), so a
+    // `rgb(var(--x) / var(--x-alpha))` consumer resolves under every theme.
     if (alpha !== undefined) out[`${roleVar(role)}-alpha`] = String(alpha);
+    else if (translucentRoles.has(role)) out[`${roleVar(role)}-alpha`] = "1";
   }
   return out;
+}
+
+/** Roles that carry an alpha in at least one theme. */
+const translucentRoles = new Set(roles.filter((r) => Object.values(themes).some((t) => typeof t[r] === "object")));
+
+/** A role's resolved `{ hex, alpha }` in a theme (alpha undefined when opaque). For tests/tools. */
+export function roleValue(role, theme = "legacy") {
+  return resolveRole(theme, role);
 }
 
 function rgbaString(hex, alpha) {
@@ -164,12 +325,12 @@ function rgbaString(hex, alpha) {
 }
 
 /** A role's resolved colour in a theme as a plain CSS colour string (hex, or rgba() if translucent). */
-export function roleColor(role, theme = "light") {
+export function roleColor(role, theme = "legacy") {
   const { hex, alpha } = resolveRole(theme, role);
   return alpha === undefined ? hex : rgbaString(hex, alpha);
 }
 
-// ── Back-compat flat palette (resolved from themes.light) ───────────────────
+// ── Back-compat flat palette (resolved from themes.legacy) ───────────────────
 // The legacy named colours, kept so existing consumers (cssRootVars / the legal pages) and
 // any external reader see the exact same values as before tokenisation.
 export const color = {
@@ -184,13 +345,13 @@ export const color = {
   forest: roleColor("brand.forest"),
   green: roleColor("brand.green"),
   greenD: roleColor("brand.green-hover"),
-  sage: roleColor("accent.default"),
+  sage: roleColor("accent.highlight"),
   olive: roleColor("brand.olive"),
   moss: roleColor("accent.strong"),
   cream: roleColor("brand.cream"),
 
   // The app's long-standing `yellow` accent resolves to sage under the green system.
-  yellow: roleColor("accent.default"),
+  yellow: roleColor("accent.highlight"),
   yellowD: roleColor("accent.strong"),
 
   safe: roleColor("status.safe"),
@@ -205,6 +366,45 @@ export const font = {
   // Inter carries body, labels and dense tabular data.
   sans: '"Inter", system-ui, -apple-system, "Segoe UI", sans-serif',
 };
+
+// Per-theme typography, emitted as CSS vars alongside the colour roles (`--font-sans`, `--heading-weight`,
+// …) so type re-skins with the theme exactly like colour. `legacy` reproduces today's computed values
+// (Anton uppercase headings, Inter body, Tailwind's default mono stack). Geist + Geist Mono are
+// self-hosted (web/public/fonts, SIL OFL 1.1) and only downloaded when a quiet theme uses them.
+const MONO_DEFAULT = 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace';
+const GEIST_SANS = '"Geist", system-ui, -apple-system, "Segoe UI", sans-serif';
+const GEIST_MONO = '"Geist Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+const QUIET_TYPE = {
+  "font.sans": GEIST_SANS,
+  "font.display": GEIST_SANS, // Anton retired in Direction A — one sans family for everything
+  "font.mono": GEIST_MONO, // money figures and labels like D5
+  "heading.weight": "600",
+  "heading.tracking": "-0.02em",
+  "heading.leading": "1.2",
+  "heading.transform": "none",
+};
+export const themeType = {
+  legacy: {
+    "font.sans": font.sans,
+    "font.display": font.serif,
+    "font.mono": MONO_DEFAULT,
+    "heading.weight": "400",
+    "heading.tracking": "0.01em",
+    "heading.leading": "1",
+    "heading.transform": "uppercase",
+  },
+  "quiet-light": QUIET_TYPE,
+  "quiet-dark": QUIET_TYPE,
+};
+
+/** Typography custom properties for one theme: `{ "--font-sans": "…", "--heading-weight": "600", … }`. */
+export function themeTypeVars(theme = "legacy") {
+  const t = themeType[theme];
+  if (!t) throw new Error(`tokens: no typography for theme "${theme}"`);
+  const out = {};
+  for (const [k, v] of Object.entries(t)) out[roleVar(k)] = v;
+  return out;
+}
 
 export const radius = {
   sm: "13px",

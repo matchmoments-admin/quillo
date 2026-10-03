@@ -9,8 +9,13 @@ export const roles: readonly string[];
 export type ThemeEntry = string | { ref: string; alpha: number };
 export const themes: Record<string, Record<string, ThemeEntry>>;
 
+export const darkThemes: readonly string[];
+export const themeType: Record<string, Record<string, string>>;
+
 export function roleVar(role: string): string;
 export function themeCssVars(theme?: string): Record<string, string>;
+export function themeTypeVars(theme?: string): Record<string, string>;
+export function roleValue(role: string, theme?: string): { hex: string; alpha: number | undefined };
 export function roleColor(role: string, theme?: string): string;
 
 export const color: {

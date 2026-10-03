@@ -5,6 +5,13 @@
 > with the instruction: *"ensure our entire system is tokenised or best practice themed so we can
 > adapt this universally easily."* This document is the target the redesign builds to.
 
+> **⚠️ SUPERSEDED 2026-10-04 (owner):** *"UI wise this is the only colours approved in the app … we only
+> want to redesign the journey, not the colours, fonts or icons."* The app keeps the existing brand —
+> forest/sage/cream, Anton headings + Inter body, current icons (the `legacy` theme). Direction A below is
+> **not used**: `resolveTheme` always returns `legacy` and the Appearance switch is removed. What survives
+> from this record is the **three-layer token architecture** (§2) and the raw-colour guard — new journey
+> components consume roles, which resolve to the brand palette.
+
 ## 1. Look and feel
 
 Calm, trustworthy, a little analogue: a novice is handling money and the tax office, so nothing

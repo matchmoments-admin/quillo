@@ -12,7 +12,6 @@ import { JourneySpine } from "./components/JourneySpine";
 import { Coachmarks } from "./components/Coachmarks";
 import { ChatProvider } from "./components/chat/ChatProvider";
 import { FloatingChat } from "./components/chat/FloatingChat";
-import { AppearanceSwitch } from "./components/AppearanceSwitch";
 import { useThemeSync } from "./lib/appearance";
 import { FtShell } from "./components/FtShell";
 
@@ -341,7 +340,6 @@ function Sidebar({ needsReview, open }: { needsReview: number; open: boolean }) 
           <UserButton afterSignOutUrl="/sign-in" />
           <span className="text-[11px] text-cream/55">Account &amp; sign out</span>
         </div>
-        <AppearanceSwitch />
       </div>
     </aside>
   );

@@ -8,7 +8,6 @@ import { FySwitcher } from "../lib/activeFy";
 import { JOURNEY_STEP_KEYS, STATUS_LABEL, STEP_LABEL, STEP_ROUTE, stepForPath, useJourney } from "../lib/journey";
 import type { JourneyStepKey, JourneyStepStatus } from "../types";
 import { ChatProvider } from "./chat/ChatProvider";
-import { AppearanceSwitch } from "./AppearanceSwitch";
 import { WhySheet, cx, FOCUS, TAP } from "./ft";
 
 // The first-timer app shell (spec A11 "Shell", #582; flag ft_journey). App.tsx renders this instead of
@@ -95,7 +94,6 @@ function AccountMenu({ onPick }: { onPick?: () => void }) {
             {it.label}
           </NavLink>
         ))}
-      <AppearanceSwitch tone="plain" />
       <div className="flex items-center gap-3 px-3 py-2">
         <UserButton afterSignOutUrl="/sign-in" />
         <span className="text-xs text-muted">Account &amp; sign out</span>

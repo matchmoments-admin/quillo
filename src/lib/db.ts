@@ -2,6 +2,7 @@ import type { Env } from "../env";
 import { featureOn } from "./features";
 import { resolveJurisdiction, baseCurrencyOf, AU_DESCRIPTOR } from "./jurisdiction";
 import { listSituationPeriods, type SituationPeriod } from "./situation-profile";
+import { lodgingFy } from "./lodging-year";
 
 export interface Profile {
   user_id: string;
@@ -118,6 +119,10 @@ export interface Situation {
   // situation_profile (#571, first-timer A1): every dated situation period for the tenant (all persons).
   // OMITTED when the flag is off (byte-identical). The About-you editor (A2) and the FY seed read it.
   profile_periods?: SituationPeriod[];
+  // situation_profile (#572, A1 ticket b): the FY (start year) to prepare by default — last FY until it's marked
+  // lodged (or NOA-closed), then the current FY. The SPA seeds the active FY from it after a stored
+  // ui_state.active_fy. OMITTED when the flag is off (byte-identical).
+  lodging_fy?: number;
 }
 
 /**
@@ -145,7 +150,7 @@ export function paygExpressEligible(input: {
 
 /** Load everything the categoriser needs to know about who this tenant is. */
 export async function getSituation(env: Env, userId: string, profile: Profile): Promise<Situation> {
-  const [persons, props, ents, rules, loansProps, profile_periods] = await Promise.all([
+  const [persons, props, ents, rules, loansProps, profile_periods, lodgedFys] = await Promise.all([
     env.DB.prepare(
       `SELECT id, user_id, display_name, role, occupation, tax_residency FROM persons WHERE user_id = ? ORDER BY role = 'self' DESC, created_at`,
     ).bind(userId).all<Person>(),
@@ -167,6 +172,12 @@ export async function getSituation(env: Env, userId: string, profile: Profile): 
     ).bind(userId).all<LoanProperty>(),
     // situation_profile: fetched in parallel, and only when the flag is on (field omitted when off).
     featureOn(env, "situation_profile") ? listSituationPeriods(env, userId) : Promise.resolve(undefined),
+    // #572: the lodged years, only when the flag is on (inline, not via situation-write, to keep db.ts out of the
+    // report import cycle). Same predicate as listLodgedFys.
+    featureOn(env, "situation_profile")
+      ? env.DB.prepare(`SELECT fy FROM fy_signoff WHERE user_id = ? AND (lodged_at IS NOT NULL OR status = 'closed_with_noa')`)
+          .bind(userId).all<{ fy: number }>().then((r) => (r.results ?? []).map((x) => Number(x.fy)))
+      : Promise.resolve(undefined),
   ]);
   // Resolve from the already-loaded profile (no re-read); flag OFF ⇒ AU. Calendar periods (reserved) map
   // to Jan 1 — not used this stop, the SPA treats it as a straddle start anchor.
@@ -209,6 +220,7 @@ export async function getSituation(env: Env, userId: string, profile: Profile): 
     ...(base_currency !== "AUD" ? { base_currency } : {}),
     ...(payg_express_eligible !== undefined ? { payg_express_eligible } : {}),
     ...(profile_periods !== undefined ? { profile_periods } : {}),
+    ...(lodgedFys !== undefined ? { lodging_fy: lodgingFy(new Date(), jur.taxPeriod, lodgedFys) } : {}),
   };
 }
 

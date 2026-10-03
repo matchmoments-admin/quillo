@@ -585,7 +585,10 @@
   "_mytax_note": "#575 (flag mytax_worksheet): the myTax self-lodge worksheet's jurisdiction content — section order (myTax Prepare order), the income type → myTax item map (with whether myTax PREFILLS it, which decides 'check this matches' vs 'type this in'), the D-label names and the lodgement timing copy. Read by src/lib/mytax-worksheet.ts with the bundled pack as the fallback when a KV pack predates these keys. Never a figure: no rate, offset, levy or refund lives here.",
   "lodgement": {
     "prefill_ready_hint": "usually late July",
-    "self_lodge_due": "31 October"
+    "self_lodge_due": "31 October",
+    "_due_note": "#572: the machine form of self_lodge_due — the first {month, day} after the FY ends. The retention backstop (src/lib/lodging-year.ts) treats an FY with no lodged mark as lodged retention_backstop_days after it, so bank-data minimisation (A5) can't be held open forever by a user who never taps 'mark as lodged'. Lodging timing only — never a figure.",
+    "self_lodge_due_after_fy_end": { "month": 10, "day": 31 },
+    "retention_backstop_days": 60
   },
   "mytax_sections": [
     { "key": "income_check", "title": "Income: check this matches" },

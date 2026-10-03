@@ -63,6 +63,8 @@ import {
   signOffFy,
   clearSignOffFy,
   getFySignoff,
+  getFyLodged,
+  listLodgedFys,
   ensureTenant,
   deleteRow,
   archiveRow,
@@ -76,6 +78,7 @@ import {
   type SituationPeriodInput,
 } from "./lib/situation-write";
 import { listSituationPeriods, normaliseFyStart } from "./lib/situation-profile";
+import { lodgingFy, lodgedOnError, isoDayOf } from "./lib/lodging-year";
 import { setAttributions, getAttributions, clearAttributions } from "./lib/attribution-write";
 import { listNoaCarryovers, confirmNoaCarryover, deleteNoaCarryover } from "./lib/noa-store";
 import { buildConnectUrl, qboStatus } from "./lib/qbo-oauth";
@@ -881,8 +884,40 @@ export async function handleApi(
       return json({ signoff: await getFySignoff(env, uid, fy) });
     }
     if (m === "DELETE") {
+      // #572: a year marked as lodged can't be re-opened here (the mark lives on this row) — undo the mark first.
+      if ((await getFyLodged(env, uid, fy))?.lodged_at) {
+        return json({ error: "This year is marked as lodged. Undo 'mark as lodged' first, then re-open it." }, 409);
+      }
       await clearSignOffFy(env, uid, fy);
       return json({ ok: true });
+    }
+  }
+  // ── Mark as lodged (flag situation_profile, first-timer A1 ticket b #572) ──────────────────────────────
+  // GET    /api/lodged?fy=                          → { lodged: { fy, lodged_at, status, signed_off_at } | null, lodging_fy }
+  // POST   /api/lodged?fy=   { lodged_on?: ISO day } → { lodged, lodging_fy }   (the user's own mark — Quillo never lodges)
+  // DELETE /api/lodged?fy=                          → { ok, lodging_fy }        (undo; a NOA close on the year is kept)
+  // `fy` is required and explicit (never defaulted: marking the wrong year moves the app's default year). uid is
+  // server-derived. lodging_fy comes back so the SPA can move the active FY straight away. 404 when the flag is off.
+  if (resource === "lodged") {
+    if (!featureOn(env, "situation_profile")) return json({ error: "not available" }, 404);
+    const fyRaw = url.searchParams.get("fy");
+    const fy = fyRaw && /^\d{4}$/.test(fyRaw) ? Number(fyRaw) : NaN;
+    const now = new Date();
+    const current = currentFyStartYear(now, jur);
+    if (!Number.isInteger(fy) || fy < 2000 || fy > current) return json({ error: "fy must be a financial year start (e.g. 2025) no later than the current one" }, 400);
+    const lodgingNow = async () => lodgingFy(now, jur.taxPeriod, await listLodgedFys(env, uid));
+    if (m === "GET") return json({ lodged: await getFyLodged(env, uid, fy), lodging_fy: await lodgingNow() });
+    if (m === "POST") {
+      const body = (await req.json().catch(() => ({}))) as { lodged_on?: unknown } | null;
+      const lodgedOn = typeof body?.lodged_on === "string" && body.lodged_on ? body.lodged_on : isoDayOf(now);
+      const err = lodgedOnError(lodgedOn, fy, now, jur);
+      if (err) return json({ error: err }, 400);
+      const lodged = await stub.markLodged(uid, fy, lodgedOn);
+      return json({ lodged, lodging_fy: await lodgingNow() });
+    }
+    if (m === "DELETE") {
+      await stub.unmarkLodged(uid, fy);
+      return json({ ok: true, lodging_fy: await lodgingNow() });
     }
   }
   // ── NOA carry-overs (B1 noa_capture): confirm-before-write FY close ───────────

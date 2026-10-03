@@ -171,6 +171,13 @@ export async function deleteNoaCarryover(env: Env, userId: string, id: string): 
     await reconcileNoaCapitalLoss(env, userId);
     // Fully re-open the year: the NOA-close upsert overwrote any prior soft-signoff timestamp, so removing
     // the row is the honest reopen (a phantom "signed off" would otherwise linger). The user can re-attest.
+    // #572: a year the user also MARKED as lodged keeps its row — undoing the NOA must never erase the lodged
+    // mark, so the status falls back to 'lodged' (lodged_at is only set with situation_profile ON; OFF no row
+    // matches and the delete below behaves exactly as before).
+    await env.DB.prepare(
+      `UPDATE fy_signoff SET status = 'lodged', noa_document_id = NULL
+        WHERE user_id = ? AND fy = ? AND status = 'closed_with_noa' AND lodged_at IS NOT NULL`,
+    ).bind(userId, row.source_fy).run();
     await env.DB.prepare(`DELETE FROM fy_signoff WHERE user_id = ? AND fy = ? AND status = 'closed_with_noa'`).bind(userId, row.source_fy).run();
   }
 }

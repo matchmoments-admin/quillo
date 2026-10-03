@@ -311,6 +311,18 @@ None. Wave 1.
 **Tickets:** (a) table + library + endpoints + mirrors + findings + `pft7`; (b) `lodgingFy` +
 `/api/lodged` + NOA-unconfirm fix + ActiveFy seed.
 
+*As built (#572):* migration `0087_fy_lodged_at.sql` (`lodged_at` holds the `YYYY-MM-DD` the user says they
+lodged; default today). `/api/lodged` also answers `GET`, needs an explicit `fy` (no later than the current FY),
+rejects a `lodged_on` before the FY started or in the future, writes through the DO (`markLodged` /
+`unmarkLodged`, audited `fy_marked_lodged` / `fy_unmarked_lodged`) and returns `lodging_fy` so the SPA moves the
+active FY at once (`useLodgedMark()` in `web/src/lib/activeFy.tsx`; the button itself is A9, #590). Undo keeps a
+NOA close and otherwise leaves a plain soft sign-off. Re-opening the soft sign-off (`DELETE /api/signoff`) on a
+lodged year is a 409 (undo the mark first) and never deletes the row. **Retention backstop** (owner ruling): an FY
+with no mark is treated as lodged for retention from the self-lodger due date + 60 days (pack keys
+`lodgement.self_lodge_due_after_fy_end` and `lodgement.retention_backstop_days`; AU FY 2025-26 → 30 Dec 2026).
+A5 reads `retentionLodgedOn` / `isFyLodgedForRetention` / `backstopLodgedThroughFy` from `src/lib/lodging-year.ts`.
+The backstop never moves the lodging-year default. Golden `pft7l`.
+
 ---
 
 ## A2 About you onboarding

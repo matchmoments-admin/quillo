@@ -32,7 +32,9 @@ import { firstTimerIncomeSignals } from "../src/lib/first-timer-signals";
 import { buildMytaxWorksheet, mytaxWorksheetSignals, mytaxWorksheetResponse, type MytaxWorksheet } from "../src/lib/mytax-worksheet";
 import { assessReadiness, type FilingReadinessSignals } from "../src/lib/readiness";
 import { getSituation, type Situation, type Profile } from "../src/lib/db";
-import { upsertSituationPeriod, deleteSituationPeriod, SituationPeriodError } from "../src/lib/situation-write";
+import { upsertSituationPeriod, deleteSituationPeriod, SituationPeriodError, markFyLodged, unmarkFyLodged, getFyLodged, listLodgedFys, clearSignOffFy } from "../src/lib/situation-write";
+import { confirmNoaCarryover, deleteNoaCarryover } from "../src/lib/noa-store";
+import { currentFyStartYear } from "../src/lib/report";
 import { profileForFy, residencyOn, residencyPeriodsForFy, situationProfileSignals, listSituationPeriods } from "../src/lib/situation-profile";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -2387,6 +2389,45 @@ async function main() {
         (await rejects(() => upsertSituationPeriod(SP_ENV_ON, u3, { person_id: me3, fact: "employment", value: "retail", detail: { note: "free text" } }, W), 400)) &&
         (await rejects(() => upsertSituationPeriod(SP_ENV_ON, u3, null, W), 400, /person_id is required/)) &&
         (await upsertSituationPeriod(SP_ENV_ON, u3, { person_id: me3, fact: "employment", value: "retail", detail: { wfh: true } }, W)).detail_json === `{"wfh":true}`);
+
+      // pft7l — lodging-year default + mark as lodged (#572, spec A1 ticket b). A brand-new tenant lands on the
+      // year being lodged (last FY); marking it lodged moves the default to the current FY; a NOA undo after the
+      // mark keeps lodged_at; the soft sign-off can't silently erase the mark. Relative to the real clock (getSituation
+      // reads now), so it holds whenever the suite runs.
+      const u4 = "pft7l";
+      seedTenant(u4, "FT lodging year");
+      run(`INSERT INTO profiles (user_id) VALUES (?)`, u4);
+      const cur = currentFyStartYear(new Date());
+      const sig = (row: { lodged_at: string | null; status: string | null } | null) => row ? `${row.lodged_at}|${row.status}` : "none";
+      const lodgedRow = async () => { const r = await getFyLodged(SP_ENV_ON, u4, cur - 1); return r ? { lodged_at: r.lodged_at, status: r.status } : null; };
+      const sitNew = await getSituation(SP_ENV_ON, u4, {} as Profile);
+      check("pft7l: a brand-new tenant's lodging_fy is LAST FY (the year being lodged); OFF omits lodging_fy entirely",
+        sitNew.lodging_fy === cur - 1 && !("lodging_fy" in (await getSituation(env, u4, {} as Profile))));
+      await markFyLodged(SP_ENV_ON, u4, cur - 1, "2026-09-15");
+      check("pft7l: mark as lodged records lodged_at + status 'lodged'; the default moves to the CURRENT FY",
+        sig(await lodgedRow()) === "2026-09-15|lodged" && (await getSituation(SP_ENV_ON, u4, {} as Profile)).lodging_fy === cur &&
+        JSON.stringify(await listLodgedFys(SP_ENV_ON, u4)) === JSON.stringify([cur - 1]));
+      await clearSignOffFy(SP_ENV_ON, u4, cur - 1);
+      check("pft7l: re-opening the soft sign-off never deletes a lodged row", sig(await lodgedRow()) === "2026-09-15|lodged");
+      // A NOA for the same year: confirm closes it (status closed_with_noa, lodged_at kept); undo resets to 'lodged'.
+      run(`INSERT INTO fy_carryovers (id, user_id, source_fy, target_fy, noa_document_id, status, taxable_income_cents, tax_assessed_cents) VALUES ('pft7lNoa', ?, ?, ?, 'pft7lDoc', 'draft', 1000000, 100000)`, u4, cur - 1, cur);
+      await confirmNoaCarryover(SP_ENV_ON, u4, "pft7lNoa");
+      check("pft7l: confirming a NOA after the mark ⇒ closed_with_noa with lodged_at intact", sig(await lodgedRow()) === "2026-09-15|closed_with_noa");
+      await markFyLodged(SP_ENV_ON, u4, cur - 1, "2026-09-16");
+      check("pft7l: re-marking a NOA-closed year keeps status closed_with_noa", sig(await lodgedRow()) === "2026-09-16|closed_with_noa");
+      await deleteNoaCarryover(SP_ENV_ON, u4, "pft7lNoa");
+      check("pft7l: NOA unconfirm after mark-as-lodged leaves lodged_at intact (status back to 'lodged'); default stays current",
+        sig(await lodgedRow()) === "2026-09-16|lodged" && (await getSituation(SP_ENV_ON, u4, {} as Profile)).lodging_fy === cur);
+      await unmarkFyLodged(SP_ENV_ON, u4, cur - 1);
+      check("pft7l: undo the mark ⇒ lodged_at NULL, status back to a plain sign-off; the default returns to last FY",
+        sig(await lodgedRow()) === "null|null" && (await getSituation(SP_ENV_ON, u4, {} as Profile)).lodging_fy === cur - 1);
+      // NOA alone (no mark) still counts as lodged for the default, and its undo still fully re-opens (legacy path).
+      run(`INSERT INTO fy_carryovers (id, user_id, source_fy, target_fy, noa_document_id, status, taxable_income_cents, tax_assessed_cents) VALUES ('pft7lNoa2', ?, ?, ?, 'pft7lDoc2', 'draft', 1000000, 100000)`, u4, cur - 1, cur);
+      await confirmNoaCarryover(SP_ENV_ON, u4, "pft7lNoa2");
+      const noaDefault = (await getSituation(SP_ENV_ON, u4, {} as Profile)).lodging_fy;
+      await deleteNoaCarryover(SP_ENV_ON, u4, "pft7lNoa2");
+      check("pft7l: a NOA-closed year with no mark counts as lodged; its undo (no mark) deletes the row exactly as before",
+        noaDefault === cur && sig(await lodgedRow()) === "none");
     }
   }
 

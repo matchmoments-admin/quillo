@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import { setMoneyCurrency } from "../components/ui";
 
@@ -42,15 +42,17 @@ export function ActiveFyProvider({ children }: { children: ReactNode }) {
   const [fy, setFyState] = useState<number | null>(null);
   // Seed from the persisted value once the profile loads (only if the user hasn't already changed it).
   // The default FY follows the tenant's tax period (server-resolved), so a UK tenant defaults to Apr 6–5.
+  // Seed order: stored ui_state.active_fy → situation.lodging_fy (#572, the year being lodged; present only with
+  // situation_profile ON) → the current FY. Flag OFF ⇒ lodging_fy absent ⇒ the seed is unchanged.
   useEffect(() => {
-    if (fy === null && sit.data) setFyState(parseStored(sit.data.profile?.ui_state) ?? currentFyStart(sit.data.tax_period));
+    if (fy === null && sit.data) setFyState(parseStored(sit.data.profile?.ui_state) ?? sit.data.lodging_fy ?? currentFyStart(sit.data.tax_period));
   }, [sit.data, fy]);
   // Stop 2: set the session's base currency once from the server (drives money()'s symbol + locale). AU
   // tenant ⇒ 'AUD' ⇒ '$'/'en-AU' (byte-identical). Absent (old/cached situation) ⇒ setMoneyCurrency no-ops.
   useEffect(() => {
     if (sit.data?.base_currency) setMoneyCurrency(sit.data.base_currency);
   }, [sit.data?.base_currency]);
-  const effFy = fy ?? currentFyStart(sit.data?.tax_period);
+  const effFy = fy ?? sit.data?.lodging_fy ?? currentFyStart(sit.data?.tax_period);
   const setFy: ActiveFy["setFy"] = (next) => {
     const y = typeof next === "function" ? next(effFy) : next;
     setFyState(y);
@@ -60,6 +62,33 @@ export function ActiveFyProvider({ children }: { children: ReactNode }) {
 }
 
 export const useActiveFy = (): ActiveFy => useContext(ActiveFyCtx);
+
+/**
+ * #572 (situation_profile): mark a year as lodged / undo it, then move the app to the new default year (the
+ * server returns lodging_fy) and persist it, so the move survives a reload. The Ship it UI (A9, #590) calls this.
+ * Throws the server's plain-message error (400 bad date / year) for the caller to show inline.
+ */
+export function useLodgedMark() {
+  const qc = useQueryClient();
+  const { setFy } = useActiveFy();
+  const after = (lodgingFy: number) => {
+    setFy(lodgingFy);
+    qc.invalidateQueries({ queryKey: ["situation"] });
+    qc.invalidateQueries({ queryKey: ["fy-signoff"] });
+    qc.invalidateQueries({ queryKey: ["fy-lodged"] });
+  };
+  return {
+    mark: async (fy: number, lodgedOn?: string) => {
+      const r = await api.markLodged(fy, lodgedOn);
+      after(r.lodging_fy);
+      return r.lodged;
+    },
+    undo: async (fy: number) => {
+      const r = await api.unmarkLodged(fy);
+      after(r.lodging_fy);
+    },
+  };
+}
 
 /** Compact global FY stepper (← FY 2024-25 →) — the app-wide active-year control. */
 export function FySwitcher() {

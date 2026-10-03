@@ -1,7 +1,7 @@
 import { Agent } from "agents";
 import type { Env } from "./env";
 import { getProfile, getSituation, renderSituation, type Profile, type Situation, type UserRule } from "./lib/db";
-import { addRule, addAccount, updateAccount, syncIncomeCgtFromComponents, clearIncomeCgt, syncTxnCgtHolding, clearTxnCgt, clearOrphanedTxnCgt, syncPropertyDisposalToCgt, addPerson, updatePerson, addProperty, updateProperty, addEntity, updateEntity, updateRule, deleteRow, DeleteBlockedError, addPropertyOwner, addEntityRole, addIncomeActivity, addLoanProperty, updateLoanProperty, assertOwns, assertNoBlockingChildren, assertNoBlockingChildrenExcept } from "./lib/situation-write";
+import { addRule, addAccount, updateAccount, syncIncomeCgtFromComponents, clearIncomeCgt, syncTxnCgtHolding, clearTxnCgt, clearOrphanedTxnCgt, syncPropertyDisposalToCgt, addPerson, updatePerson, addProperty, updateProperty, addEntity, updateEntity, updateRule, deleteRow, DeleteBlockedError, addPropertyOwner, addEntityRole, addIncomeActivity, addLoanProperty, updateLoanProperty, assertOwns, assertNoBlockingChildren, assertNoBlockingChildrenExcept, markFyLodged, unmarkFyLodged, type FyLodgedRow } from "./lib/situation-write";
 import type { DeleteBlocker } from "./lib/situation-write";
 import { captureNoaDraft } from "./lib/noa-store";
 import { ordinaryAssessableCents, validateComponents, parseAmmaComponents, type AmmaComponents } from "./lib/managed-fund";
@@ -6699,6 +6699,22 @@ export class TaxAgent extends Agent<Env> {
   }
 
   /** Record explicit, dated APP-8 cross-border consent (fix H7). */
+  /**
+   * #572 (situation_profile): the user's own "I've lodged this FY" mark (Quillo never lodges). Routed through the
+   * DO so the audit_log hash chain stays serialised. `lodgedOn` is a validated 'YYYY-MM-DD' (api.ts).
+   */
+  async markLodged(userId: string, fy: number, lodgedOn: string): Promise<FyLodgedRow> {
+    const row = await markFyLodged(this.env, userId, fy, lodgedOn);
+    await this.audit(userId, "fy_marked_lodged", JSON.stringify({ fy, lodged_on: lodgedOn }));
+    return row;
+  }
+
+  /** #572: undo the lodged mark (a NOA close on the same year is kept). */
+  async unmarkLodged(userId: string, fy: number): Promise<void> {
+    await unmarkFyLodged(this.env, userId, fy);
+    await this.audit(userId, "fy_unmarked_lodged", JSON.stringify({ fy }));
+  }
+
   async recordConsent(userId: string, text: string, method: string): Promise<void> {
     await this.env.DB.prepare(
       `UPDATE profiles SET consent_xborder = 1, consent_xborder_at = datetime('now'),

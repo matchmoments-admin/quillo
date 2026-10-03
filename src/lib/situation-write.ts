@@ -635,7 +635,49 @@ export async function signOffFy(env: Env, userId: string, fy: number): Promise<v
 }
 
 export async function clearSignOffFy(env: Env, userId: string, fy: number): Promise<void> {
-  await env.DB.prepare(`DELETE FROM fy_signoff WHERE user_id = ? AND fy = ?`).bind(userId, fy).run();
+  // #572: a year marked as lodged keeps its row (lodged_at lives on it) — undo the lodged mark first
+  // (DELETE /api/lodged). lodged_at is only ever set with situation_profile ON, so OFF this is the old delete.
+  await env.DB.prepare(`DELETE FROM fy_signoff WHERE user_id = ? AND fy = ? AND lodged_at IS NULL`).bind(userId, fy).run();
+}
+
+// ── Mark as lodged (#572, flag situation_profile; spec A1 ticket b) ─────────────────────────────────────
+// The user's own "I've lodged this year" mark on the fy_signoff row. Quillo never lodges. A NOA close
+// (status 'closed_with_noa') is kept as-is; otherwise status becomes 'lodged'. signed_off_at is left alone on
+// an existing row (the user's attestation timestamp) and set on a new one (lodging implies the attestation).
+export type FyLodgedRow = { fy: number; lodged_at: string | null; status: string | null; signed_off_at: string };
+
+export async function getFyLodged(env: Env, userId: string, fy: number): Promise<FyLodgedRow | null> {
+  return await env.DB.prepare(`SELECT fy, lodged_at, status, signed_off_at FROM fy_signoff WHERE user_id = ? AND fy = ?`)
+    .bind(userId, fy)
+    .first<FyLodgedRow>();
+}
+
+/** Every FY (start year) that counts as lodged: marked by the user, or closed off a confirmed NOA. */
+export async function listLodgedFys(env: Env, userId: string): Promise<number[]> {
+  const res = await env.DB.prepare(
+    `SELECT fy FROM fy_signoff WHERE user_id = ? AND (lodged_at IS NOT NULL OR status = 'closed_with_noa') ORDER BY fy`,
+  ).bind(userId).all<{ fy: number }>();
+  return (res.results ?? []).map((r) => Number(r.fy));
+}
+
+export async function markFyLodged(env: Env, userId: string, fy: number, lodgedOn: string): Promise<FyLodgedRow> {
+  await env.DB.prepare(
+    `INSERT INTO fy_signoff (user_id, fy, signed_off_at, status, lodged_at) VALUES (?, ?, datetime('now'), 'lodged', ?)
+     ON CONFLICT(user_id, fy) DO UPDATE SET lodged_at = excluded.lodged_at,
+       status = CASE WHEN fy_signoff.status = 'closed_with_noa' THEN 'closed_with_noa' ELSE 'lodged' END`,
+  ).bind(userId, fy, lodgedOn).run();
+  return (await getFyLodged(env, userId, fy))!;
+}
+
+/**
+ * Undo the lodged mark. A NOA close stays closed; a 'lodged' status falls back to a plain soft sign-off (the row
+ * is kept: marking lodged implied the user's "ready" attestation, which they can re-open on Filing).
+ */
+export async function unmarkFyLodged(env: Env, userId: string, fy: number): Promise<void> {
+  await env.DB.prepare(
+    `UPDATE fy_signoff SET lodged_at = NULL, status = CASE WHEN status = 'lodged' THEN NULL ELSE status END
+      WHERE user_id = ? AND fy = ?`,
+  ).bind(userId, fy).run();
 }
 
 export async function getFySignoff(env: Env, userId: string, fy: number): Promise<{ signed_off_at: string } | null> {

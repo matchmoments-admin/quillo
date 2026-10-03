@@ -17,7 +17,7 @@ const STAGE_LABEL: Record<string, string> = {
 };
 const STATUS_TONE: Record<string, string> = {
   paid: "bg-forest/10 text-forest", converted: "bg-sage/20 text-forest",
-  clicked: "bg-line text-ink-2", clawed_back: "bg-red-100 text-red-700",
+  clicked: "bg-line text-ink-2", clawed_back: "bg-danger-surface text-danger-text",
 };
 
 export function Partner() {

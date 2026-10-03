@@ -9,10 +9,11 @@ import { WorkMethodsCard } from "../components/WorkMethodsCard";
 import { CarMethodsCard } from "../components/CarMethodsCard";
 import { SetupChecklist } from "../components/SetupChecklist";
 import { useFeatures } from "../lib/features";
+import { CHART_SERIES } from "../lib/theme";
 import type { ChecklistItem } from "../types";
 
-// A green chart-segment palette cycled across breakdown rows (forest → moss → sage → info).
-const SWATCH = ["#0c3f26", "#15643a", "#1c7a48", "#97a86f", "#2f6bd6", "#9a6712"];
+// The chart-segment role series (chart.series.1..6) cycled across breakdown rows.
+const SWATCH = CHART_SERIES;
 
 export function Dashboard() {
   const { fy, label } = useActiveFy();

@@ -4,11 +4,12 @@ import { toast } from "sonner";
 import { api } from "../api";
 import { useActiveFy } from "../lib/activeFy";
 import { useFeatures } from "../lib/features";
+import { CHART_SERIES } from "../lib/theme";
 import { Panel, PanelHead, KpiCard, Pill, Spinner, Button, Input, money } from "../components/ui";
 import type { RecurringBill, Opportunity } from "../types";
 
-// A green chart-segment palette cycled across the top-spender rows (matches Dashboard).
-const SWATCH = ["#0c3f26", "#15643a", "#1c7a48", "#97a86f", "#2f6bd6", "#9a6712"];
+// The chart-segment role series cycled across the top-spender rows (matches Dashboard).
+const SWATCH = CHART_SERIES;
 
 const CADENCE_LABEL: Record<string, string> = {
   weekly: "Weekly", fortnightly: "Fortnightly", monthly: "Monthly",

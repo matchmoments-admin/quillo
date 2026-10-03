@@ -233,10 +233,10 @@ export function positionAmountCents(
   honorApportion: boolean,
 ): number {
   // Honour the apportioned amount ONLY for rows the user has explicitly CONFIRMED deductible — the
-  // state the guided loan-split (and a year-end review) writes. Every other state keeps gross. This is
+  // state a year-end review / inline claim writes (and the retired guided loan-split wrote). Every other state keeps gross. This is
   // critical: the 0021 backfill set deductible_amount_cents=0 on likely_not (private) rows, and those
   // must still DISPLAY their gross in the excluded section (they're filtered out of the headline
-  // anyway by deductionGroupForRow). Scoping to confirmed_deductible also makes enabling the flag a
+  // anyway by deductionGroupForRow). Scoping to confirmed_deductible also made enabling the (now hard-wired) loan_split flag a
   // no-op for all existing data — only freshly-split/confirmed rows ever diverge from gross.
   if (honorApportion && row.deductibility === "confirmed_deductible" && row.deductible_amount_cents != null) {
     return row.deductible_amount_cents;

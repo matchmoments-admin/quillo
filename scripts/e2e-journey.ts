@@ -39,7 +39,7 @@ const db = new DatabaseSync(":memory:");
 for (const f of fs.readdirSync(path.join(root, "migrations")).filter((f) => f.endsWith(".sql")).sort()) {
   db.exec(fs.readFileSync(path.join(root, "migrations", f), "utf8"));
 }
-const env = { DB: new D1(db), FEATURES: "attribution_engine,position_excludes_nondeductible,loan_split,income_dedupe,accountant_schedule,jurisdiction_period,currency_base,position_confirmed_range" } as unknown as Env;
+const env = { DB: new D1(db), FEATURES: "attribution_engine,position_excludes_nondeductible,income_dedupe,accountant_schedule,jurisdiction_period,currency_base,position_confirmed_range" } as unknown as Env;
 const run = (sql: string, ...p: unknown[]) => db.prepare(sql).run(...(p as never[]));
 const FY = "2025-09-01"; // inside FY 2025-26
 let pass = 0, fail = 0;

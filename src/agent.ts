@@ -78,7 +78,7 @@ export interface MovementCandidate {
   amount_aud_cents: number | null;
   direction: string | null;
   txn_date: string | null;
-  account_id: string | null; // the source account — lets the loan-split UI pre-fill from loans_properties
+  account_id: string | null; // the source account — lets loan lines be tied back to loans_properties
   klass: MovementClass;
   reason: string;
 }

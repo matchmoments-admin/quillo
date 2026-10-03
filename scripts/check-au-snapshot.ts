@@ -54,7 +54,7 @@ for (const f of fs.readdirSync(path.join(root, "migrations")).filter((f) => f.en
 }
 
 // Same feature set the persona harness builds under — this is the real shipped AU report shape.
-const env = { DB: new D1(db), FEATURES: "attribution_engine,position_excludes_nondeductible,loan_split,wfh_car_methods,refund_netting,income_dedupe,cgt_engine,ess_engine,gst_bas,car_logbook,trust_distributions,partnership_distributions,smsf_engine,accountant_schedule,jurisdiction_period" } as unknown as Env;
+const env = { DB: new D1(db), FEATURES: "attribution_engine,position_excludes_nondeductible,wfh_car_methods,refund_netting,income_dedupe,cgt_engine,ess_engine,gst_bas,car_logbook,trust_distributions,partnership_distributions,smsf_engine,accountant_schedule,jurisdiction_period" } as unknown as Env;
 
 const run = (sql: string, ...p: unknown[]) => db.prepare(sql).run(...(p as never[]));
 const FY_DATE = "2025-09-01"; // inside FY 2025-26

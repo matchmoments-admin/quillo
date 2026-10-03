@@ -51,7 +51,7 @@ for (const f of fs.readdirSync(path.join(root, "migrations")).filter((f) => f.en
   db.exec(fs.readFileSync(path.join(root, "migrations", f), "utf8"));
 }
 
-const env = { DB: new D1(db), FEATURES: "attribution_engine,position_excludes_nondeductible,loan_split,wfh_car_methods,car_methods,refund_netting,income_dedupe,cgt_engine,ess_engine,gst_bas,car_logbook,trust_distributions,partnership_distributions,smsf_engine,accountant_schedule,jurisdiction_period,currency_base,position_confirmed_range" } as unknown as Env;
+const env = { DB: new D1(db), FEATURES: "attribution_engine,position_excludes_nondeductible,wfh_car_methods,car_methods,refund_netting,income_dedupe,cgt_engine,ess_engine,gst_bas,car_logbook,trust_distributions,partnership_distributions,smsf_engine,accountant_schedule,jurisdiction_period,currency_base,position_confirmed_range" } as unknown as Env;
 
 // tiny seed helper
 const run = (sql: string, ...p: unknown[]) => db.prepare(sql).run(...(p as never[]));
@@ -464,7 +464,7 @@ async function main() {
 
   // ── Flag OFF: the attribution split must NOT apply — attributed txns fall back to their raw amount
   // (the legacy path). Proves the engine is genuinely gated by attribution_engine. ──
-  const envOff = { ...env, FEATURES: "position_excludes_nondeductible,loan_split,wfh_car_methods" } as unknown as Env;
+  const envOff = { ...env, FEATURES: "position_excludes_nondeductible,wfh_car_methods" } as unknown as Env;
   const r2off = await buildReport(envOff, "p2", 2025);
   const rentOff = r2off.per_property.find((p) => p.property_id === "p2pRent");
   check("P2 (flag off): co-owned bill counts at its full raw $1000 (no 50% split)", rentOff?.deduction_cents === 100000);

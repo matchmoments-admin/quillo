@@ -4053,5 +4053,68 @@ console.log("situation profile (dated periods)");
   check("normaliseFyStart: plausible integer years only", normaliseFyStart("2025") === 2025 && normaliseFyStart(2025) === 2025 && normaliseFyStart("0") === null && normaliseFyStart("20255") === null && normaliseFyStart(null) === null && normaliseFyStart("2025.5") === null);
 }
 
+// ── A12 ticket b (#583): first-timer component library (web/src/components/ft/) ──
+// No browser test runner in this repo, so: the pure model is tested directly, and the component
+// sources are held to the library's contract statically (snapshot-light): one button/link primitive
+// carrying the 44px floor + focus ring, motion only behind motion-safe:, every component wired to
+// the shared loading/empty/error states, and the completeness meter structurally money-free.
+import { segmentStates, stepLabel, completeness, copyValue, JOURNEY_STEPS, STEP_TOTAL, CLAIM_BADGE_LABEL, RECORD_STATUS_LABEL } from "../web/src/components/ft/model";
+console.log("ft component library (#583)");
+{
+  check("ft: six journey steps, Home excluded, in stepGuides order", STEP_TOTAL === 6 && JOURNEY_STEPS.join(",") === "about,bring_in,claims,records,check,ship");
+  check("ft: segmentStates(3) = done,done,current,todo,todo,todo", segmentStates(3).join(",") === "done,done,current,todo,todo,todo");
+  check("ft: segmentStates clamps out-of-range / non-finite (never empty, never two currents)",
+    segmentStates(0).join(",") === segmentStates(1).join(",") && segmentStates(99).filter((s) => s === "current").length === 1 && segmentStates(99)[5] === "current" && segmentStates(NaN).length === 6 && segmentStates(2, 0).length === 0);
+  check("ft: stepLabel = 'Step n of 6'", stepLabel(1) === "Step 1 of 6" && stepLabel(6) === "Step 6 of 6" && stepLabel(42) === "Step 6 of 6");
+  const c = completeness(3, 8);
+  check("ft: completeness counts items: 3 of 8 ⇒ 38%, label '3 of 8 ready'", c.pct === 38 && c.label === "3 of 8 ready" && Math.abs(c.frac - 0.375) < 1e-9);
+  check("ft: completeness clamps: 0 items ⇒ 0% (not NaN); done > total ⇒ capped; negative/NaN ⇒ 0",
+    completeness(0, 0).pct === 0 && completeness(9, 4).done === 4 && completeness(9, 4).pct === 100 && completeness(-2, 5).done === 0 && completeness(NaN, NaN).pct === 0 && completeness(2.9, 5).done === 2);
+  check("ft: copyValue = plain dollars.cents, no symbol or separators (myTax field shape)",
+    copyValue(123456) === "1234.56" && copyValue(5) === "0.05" && copyValue(100000000) === "1000000.00" && copyValue(-2550) === "-25.50" && copyValue(0) === "0.00");
+  check("ft: copyValue: no figure ⇒ nothing to copy; fractional cents rounded", copyValue(null) === null && copyValue(undefined) === null && copyValue(NaN) === null && copyValue(1999.6) === "20.00");
+  check("ft: badge/status labels are prompts, not rulings (no 'claimable'/'deductible')",
+    [...Object.values(CLAIM_BADGE_LABEL), ...Object.values(RECORD_STATUS_LABEL)].every((l) => !/claimable|deductible|approved/i.test(l)));
+
+  const ftDir = path.join(process.cwd(), "web/src/components/ft");
+  const files = fs.readdirSync(ftDir).filter((n) => n.endsWith(".tsx"));
+  const src = (f: string) => stripComments(fs.readFileSync(path.join(ftDir, f), "utf8"));
+  const components = ["StepHeader", "StepFooter", "ClaimCard", "RecordRow", "CheckItem", "WorksheetLine", "Chip", "CompletenessMeter", "WhySheet"];
+  check("ft: every spec'd component exists", components.every((c) => files.includes(`${c}.tsx`)));
+  // One interactive primitive: only primitives.tsx may render a raw <button>/<a>/<Link>/<input>; it
+  // carries TAP (≥44px) + FOCUS. Everything else composes FtButton / FtLink.
+  const rawInteractive = files.filter((f) => f !== "primitives.tsx" && /<(?:button|a|Link|input|select|textarea)[\s>]/.test(src(f)));
+  check(`ft: no bare <button>/<a>/<input> outside primitives.tsx (offenders: ${rawInteractive.join(",") || "none"})`, rawInteractive.length === 0);
+  const prim = src("primitives.tsx");
+  check("ft: TAP is the ≥44px floor and FtButton + both FtLink branches apply TAP + FOCUS",
+    /TAP = "min-h-\[44px\] min-w-\[44px\]"/.test(prim) && (prim.match(/cx\(BUTTON_BASE, TAP, FOCUS/g) ?? []).length === 1 && /const cls = cx\(\s*TAP,\s*FOCUS/.test(prim));
+  check("ft: focus ring is visible (focus-visible outline on the focus.ring role)", /focus-visible:outline-2/.test(prim) && /focus-visible:outline-focus/.test(prim));
+  // Reduced motion: every transition / animation / press-scale class sits behind motion-safe:.
+  const motionOffenders: string[] = [];
+  for (const f of files) {
+    for (const m of src(f).matchAll(/(?<![\w:-])(?:[\w-]+:)*(?:transition(?:-[\w[\]]+)?|animate-[\w[\]().,_-]+|scale-\[[^\]]+\]|duration-\d+)(?=[\s"'`])/g)) {
+      if (!m[0].includes("motion-safe:")) motionOffenders.push(`${f}: ${m[0]}`);
+    }
+  }
+  check(`ft: all motion is motion-safe: (offenders: ${motionOffenders.join(" | ") || "none"})`, motionOffenders.length === 0);
+  // Every component has the three states via StatusGate + takes StatusProps.
+  const noStates = components.filter((c) => !/<StatusGate[\s>]/.test(src(`${c}.tsx`)) || !/StatusProps/.test(src(`${c}.tsx`)));
+  check(`ft: every component renders loading/empty/error through StatusGate (missing: ${noStates.join(",") || "none"})`, noStates.length === 0);
+  check("ft: StatusGate has a skeleton (loading, announced), an ErrorState with Retry and an EmptyState",
+    /role="status"/.test(prim) && /status === "error"\) return <ErrorState/.test(prim) && /status === "empty"\) return <EmptyState/.test(prim) && /onRetry && \(/.test(prim));
+  check("ft: Skeleton pulses only under motion-safe", /bg-surface motion-safe:animate-pulse/.test(prim));
+  const meter = src("CompletenessMeter.tsx");
+  check("ft: CompletenessMeter never shows money (no money()/cents/amount prop; counts only)", !/money\(|cents|amount|\$/i.test(meter.replace(/\$\{c\.pct\}/g, "")));
+  check("ft: GeneralInfoNote is general-information framed and defers to a registered tax agent",
+    /General information only, not tax advice\. \{DEFER_TO_AGENT\}/.test(prim));
+  const sheet = src("WhySheet.tsx");
+  check("ft: WhySheet is a labelled modal dialog that closes on Escape and restores focus",
+    /role="dialog"/.test(sheet) && /aria-modal="true"/.test(sheet) && /aria-labelledby=/.test(sheet) && /"Escape"/.test(sheet) && /opener\?\.focus\(\)/.test(sheet));
+  check("ft: WhySheet keeps its hooks above the closed early return (#310 crash class)",
+    sheet.indexOf("useEffect(") > -1 && sheet.indexOf("useEffect(") < sheet.indexOf("if (!open) return null"));
+  const wl = src("WorksheetLine.tsx");
+  check("ft: WorksheetLine copies copyValue() and reports a blocked clipboard instead of failing silently", /writeText\(value\)/.test(wl) && /Couldn't copy/.test(wl));
+}
+
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);
 process.exit(fail === 0 ? 0 : 1);

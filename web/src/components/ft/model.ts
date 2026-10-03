@@ -1,0 +1,92 @@
+// Pure logic behind the first-timer component library (spec A12 ticket b, #583). Kept free of React
+// and the DOM so scripts/check-units.ts can test it directly (the repo has no browser test runner).
+// Copy here is scanned by the tax-advice denylist like every other file under components/ft/.
+
+import { STEP_ORDER, type StepKey } from "../../content/stepGuides";
+
+/** Load state every ft/ component accepts. `ready` renders the content; the rest render the shared states. */
+export type FtStatus = "ready" | "loading" | "empty" | "error";
+
+/** A journey step (Home is not a numbered step). */
+export type JourneyStep = Exclude<StepKey, "home">;
+
+/** The numbered steps, in order, derived from the one step list in content/stepGuides.ts. */
+export const JOURNEY_STEPS: readonly JourneyStep[] = STEP_ORDER.filter((k): k is JourneyStep => k !== "home");
+
+/** How many numbered steps the journey has (6). */
+export const STEP_TOTAL = JOURNEY_STEPS.length;
+
+export type SegmentState = "done" | "current" | "todo";
+
+/**
+ * Progress segments for the step header: everything before `current` is done, `current` is current,
+ * the rest are to do. `current` is 1-based and clamped into range, so a bad value never renders an
+ * empty or overflowing bar.
+ */
+export function segmentStates(current: number, total: number = STEP_TOTAL): SegmentState[] {
+  const t = Math.max(0, Math.floor(Number.isFinite(total) ? total : 0));
+  const c = Math.min(Math.max(1, Math.floor(Number.isFinite(current) ? current : 1)), Math.max(1, t));
+  return Array.from({ length: t }, (_, i) => (i + 1 < c ? "done" : i + 1 === c ? "current" : "todo"));
+}
+
+/** "Step n of 6", clamped like segmentStates. */
+export function stepLabel(current: number, total: number = STEP_TOTAL): string {
+  const segs = segmentStates(current, total);
+  const n = segs.indexOf("current") + 1;
+  return `Step ${n} of ${segs.length}`;
+}
+
+export interface Completeness {
+  done: number;
+  total: number;
+  /** 0..1 */
+  frac: number;
+  /** 0..100, rounded */
+  pct: number;
+  label: string;
+}
+
+/**
+ * The completeness meter's numbers. It measures how many items are ready, never money: the inputs
+ * are counts, the output is a count and a proportion. Negative, fractional or non-finite inputs are
+ * floored and clamped; `done` never exceeds `total`; zero items is 0%, not NaN.
+ */
+export function completeness(done: number, total: number): Completeness {
+  const t = Math.max(0, Math.floor(Number.isFinite(total) ? total : 0));
+  const d = Math.min(t, Math.max(0, Math.floor(Number.isFinite(done) ? done : 0)));
+  const frac = t === 0 ? 0 : d / t;
+  return { done: d, total: t, frac, pct: Math.round(frac * 100), label: `${d} of ${t} ready` };
+}
+
+/**
+ * The text the worksheet line's copy button puts on the clipboard: a plain number in dollars and
+ * cents, no currency symbol and no thousands separators, which is what a myTax amount field accepts.
+ * Negative amounts keep their sign. Null (no figure yet) copies nothing.
+ */
+export function copyValue(cents: number | null | undefined): string | null {
+  if (cents == null || !Number.isFinite(cents)) return null;
+  const c = Math.round(cents);
+  const sign = c < 0 ? "-" : "";
+  const abs = Math.abs(c);
+  return `${sign}${Math.floor(abs / 100)}.${String(abs % 100).padStart(2, "0")}`;
+}
+
+/** Claim card badges. Labels are prompts to look, never a statement that something is claimable. */
+export type ClaimBadge = "worth_a_look" | "confirmed" | "not_work" | "needs_record";
+export const CLAIM_BADGE_LABEL: Record<ClaimBadge, string> = {
+  worth_a_look: "Worth a look",
+  confirmed: "You confirmed",
+  not_work: "Not work-related",
+  needs_record: "Needs a record",
+};
+
+/** Record row statuses. */
+export type RecordStatus = "recorded" | "needs_record" | "exception";
+export const RECORD_STATUS_LABEL: Record<RecordStatus, string> = {
+  recorded: "Recorded",
+  needs_record: "Needs a record",
+  exception: "Record-keeping exception",
+};
+
+/** Check item tones (spec: warn / info). */
+export type CheckTone = "warn" | "info";

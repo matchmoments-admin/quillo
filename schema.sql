@@ -127,7 +127,6 @@ CREATE TABLE IF NOT EXISTS transactions (
   --   what to SHOW, never what is counted (no position query reads these). NULL = not scanned.
   relevance    TEXT,                     -- NULL | relevant | worth_a_look | irrelevant
   relevance_rule_id TEXT,                -- the claimability rule (ruleKey) behind relevant / worth_a_look
-  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
   created_at   TEXT NOT NULL DEFAULT (datetime('now')),
   -- 0079 (wages_payer, A3 #577): on a credit, the employer entity it is pay from. Records nothing to
   --   the position; drives the per-employer income-statement prompt. NULL => not marked.

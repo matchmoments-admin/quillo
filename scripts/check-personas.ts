@@ -37,6 +37,9 @@ import { markFyLodged, unmarkFyLodged, getFyLodged, listLodgedFys } from "../src
 import { confirmNoaCarryover, deleteNoaCarryover } from "../src/lib/noa-store";
 import { currentFyStartYear } from "../src/lib/report";
 import { profileForFy, residencyOn, residencyPeriodsForFy, situationProfileSignals, listSituationPeriods } from "../src/lib/situation-profile";
+import { runRelevanceScan, confirmWorthALook, relevanceView } from "../src/lib/relevance-scan-run";
+import { updatePerson } from "../src/lib/situation-write";
+import { verdictForTxn } from "../src/lib/deductibility";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
@@ -2580,6 +2583,125 @@ async function main() {
       }
       check(`pft12 sweep: worksheet ties back to the report for all ${tenants.length} persona tenants${bad.length ? ` — FAILED ${bad.join(" | ")}` : ""}`, bad.length === 0);
     }
+  }
+
+
+  // ── pft9 — FT nurse grad, bank-only (#578, flag relevance_scan; spec A4 ticket a). Occupation rules run on
+  //    BANK LINES: an occupation match lifts a line out of the not-deductible default as a 'worth a look' card
+  //    (claim_suggestions source relevance_scan) — deductibility is NEVER changed, so the position is untouched
+  //    until the user confirms. Lines are stamped exactly as stampDeductibility would (verdictForTxn over the
+  //    pack's deny list), then sorted by runRelevanceScan — the same function the DO's ingest hook calls. ──
+  {
+    const ftDenylist = /refund|tax payable|marginal rate|\b\d{1,2}%\s*(tax|bracket)/i;
+    const RS_ON = { ...env, FEATURES: `${(env as { FEATURES: string }).FEATURES},relevance_scan` } as unknown as Env;
+    const RS_SP_ON = { ...env, FEATURES: `${(env as { FEATURES: string }).FEATURES},relevance_scan,situation_profile` } as unknown as Env;
+    const section = (auV1RulePack as unknown as { payg_deductibility: Parameters<typeof verdictForTxn>[3] }).payg_deductibility;
+    const LINES: [string, string, number][] = [
+      ["Ahpra", "AHPRA REGISTRATION RENEWAL", 21500],
+      ["Hsu", "HSU HEALTH SERVICES UNION", 4800],
+      ["Shoes", "NURSING SHOES DIRECT", 12900], // the deny list's "shoes" stamps this likely_not ($0 claimable)
+      ["Woolies", "WOOLWORTHS 1234 SYDNEY", 8650],
+      ["Netflix", "NETFLIX.COM", 1899],
+    ];
+    const seedLines = (u: string) => {
+      for (const [k, merchant, cents] of LINES) {
+        const v = verdictForTxn("payg", null, merchant, section).deductibility;
+        run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, direction, deductibility, deductible_amount_cents, merchant) VALUES (?, ?, 'upload', 'categorised', 'bank_line', ?, ?, ?, 'payg', 'debit', ?, ?, ?)`,
+          `${u}${k}`, u, cents, cents, FY_DATE, v, v === "likely_not" ? 0 : null, merchant);
+      }
+    };
+    const rel = (u: string) => Object.fromEntries((db.prepare(`SELECT id, relevance, relevance_rule_id, deductibility, deductible_amount_cents FROM transactions WHERE user_id = ? ORDER BY id`).all(u) as { id: string; relevance: string | null; relevance_rule_id: string | null; deductibility: string | null; deductible_amount_cents: number | null }[]).map((r) => [r.id.slice(u.length), r]));
+    const cards = (u: string) => db.prepare(`SELECT txn_id, rule_id, status, source, suggestion, person_id FROM claim_suggestions WHERE user_id = ? ORDER BY txn_id`).all(u) as { txn_id: string; rule_id: string; status: string; source: string; suggestion: string; person_id: string }[];
+    const snapshot = (u: string) => JSON.stringify(db.prepare(`SELECT * FROM transactions WHERE user_id = ? ORDER BY id`).all(u)) + JSON.stringify(cards(u));
+
+    const u = "pft9";
+    seedTenant(u, "FT nurse grad, bank-only");
+    run(`INSERT INTO profiles (user_id) VALUES (?)`, u);
+    run(`UPDATE persons SET occupation = 'nurse' WHERE id = ?`, `person_self_${u}`);
+    inc("pft9Sal", u, "salary_payg", 6500000);
+    seedLines(u);
+    const stamped = rel(u);
+    check("pft9 seed: the deny list stamps the nursing shoes likely_not ($0) and the groceries likely_not; AHPRA undetermined",
+      stamped.Shoes!.deductibility === "likely_not" && stamped.Shoes!.deductible_amount_cents === 0 && stamped.Woolies!.deductibility === "likely_not" && stamped.Ahpra!.deductibility === "undetermined");
+
+    // Flag OFF: nothing read, nothing written.
+    const offBefore = snapshot(u);
+    const offPos = (await buildReport(env, u, 2025)).taxable_position_cents;
+    check("pft9 (OFF): runRelevanceScan is a no-op (null) and writes nothing — byte-identical", (await runRelevanceScan(env, u)) === null && snapshot(u) === offBefore);
+    check("pft9 (OFF): confirmWorthALook declines (null) so the legacy confirm answer stands", (await confirmWorthALook(env, u, `${u}Ahpra`)) === null);
+
+    const sum1 = await runRelevanceScan(RS_ON, u);
+    const r1 = rel(u);
+    const c1 = cards(u);
+    check("pft9: AHPRA / HSU / nursing shoes → worth_a_look on the nurse rule", ["Ahpra", "Hsu", "Shoes"].every((k) => r1[k]!.relevance === "worth_a_look" && r1[k]!.relevance_rule_id === "au-occ-nurse"));
+    check("pft9: groceries + Netflix (below the $20 floor) → irrelevant", r1.Woolies!.relevance === "irrelevant" && r1.Netflix!.relevance === "irrelevant");
+    check("pft9: one relevance_scan card per worth-a-look line, with a why, general-info, never a figure or 'you can claim'",
+      c1.length === 3 && c1.every((c) => c.source === "relevance_scan" && c.status === "suggested" && c.rule_id === "au-occ-nurse" && c.person_id === `person_self_${u}` &&
+        /Worth a look because you work as a/.test(c.suggestion) && /record/.test(c.suggestion) && !/\$\s?\d/.test(c.suggestion) && !ftDenylist.test(c.suggestion) && !/you can claim/i.test(c.suggestion)));
+    check("pft9: deductibility is NOT changed by the scan (shoes still likely_not $0; AHPRA still undetermined; HSU unchanged)",
+      ["Ahpra", "Hsu", "Shoes", "Woolies", "Netflix"].every((k) => r1[k]!.deductibility === stamped[k]!.deductibility && r1[k]!.deductible_amount_cents === stamped[k]!.deductible_amount_cents));
+    const onPos = (await buildReport(RS_ON, u, 2025)).taxable_position_cents;
+    check("pft9: taxable_position_cents unchanged by the scan (never auto-claims)", onPos === offPos && sum1?.suggested === 3);
+    const again = snapshot(u);
+    const sum2 = await runRelevanceScan(RS_ON, u);
+    check("pft9: a re-scan with nothing changed writes nothing (diffed, idempotent)", snapshot(u) === again && sum2?.changed === 0 && sum2?.suggested === 0 && sum2?.removed === 0);
+
+    const view = await relevanceView(RS_ON, u, 2025);
+    check("pft9 GET /api/relevance view: counts per list + the 3 cards with their suggestion text",
+      view.counts.worth_a_look === 3 && view.counts.irrelevant === 2 && view.counts.unscanned === 0 && view.worth_a_look.length === 3 && view.worth_a_look.every((w) => !!w.suggestion_id && w.status === "suggested"));
+
+    // Confirm: the user's tap is the only thing that makes a line count.
+    const okA = await confirmWorthALook(RS_ON, u, `${u}Ahpra`);
+    const posA = (await buildReport(RS_ON, u, 2025)).taxable_position_cents;
+    check("pft9: confirming AHPRA moves the position by exactly its amount ($215)", okA?.ok === true && offPos - posA === 21500 && rel(u).Ahpra!.deductibility === "confirmed_deductible");
+    const okS = await confirmWorthALook(RS_ON, u, `${u}Shoes`);
+    const posS = (await buildReport(RS_ON, u, 2025)).taxable_position_cents;
+    check("pft9: confirming the denied shoes counts the FULL amount — the stamp's $0 claimable is cleared ($129)", okS?.ok === true && posA - posS === 12900 && rel(u).Shoes!.deductible_amount_cents === null);
+    check("pft9: confirmed cards move to 'capturing' (the line is their evidence); a second confirm is refused",
+      cards(u).filter((c) => c.status === "capturing").length === 2 && (await confirmWorthALook(RS_ON, u, `${u}Ahpra`))?.ok === false);
+    check("pft9: an irrelevant line can't be confirmed through the worth-a-look path", (await confirmWorthALook(RS_ON, u, `${u}Woolies`)) === null);
+    await runRelevanceScan(RS_ON, u);
+    check("pft9: after confirm the re-scan keeps the confirmed lines visible (relevant) and keeps the cards as history",
+      rel(u).Ahpra!.relevance === "relevant" && cards(u).length === 3);
+
+    // Same lines, retail worker: no AHPRA card, no shoes card.
+    const ur = "pft9r";
+    seedTenant(ur, "FT retail worker, same lines");
+    run(`INSERT INTO profiles (user_id) VALUES (?)`, ur);
+    run(`UPDATE persons SET occupation = 'retail_worker' WHERE id = ?`, `person_self_${ur}`);
+    inc("pft9rSal", ur, "salary_payg", 4000000);
+    seedLines(ur);
+    await runRelevanceScan(RS_ON, ur);
+    const rr = rel(ur);
+    check("pft9r: a retail worker gets NO AHPRA card and no shoes card (the nurse rule is out of scope)",
+      rr.Ahpra!.relevance !== "worth_a_look" && rr.Shoes!.relevance !== "worth_a_look" && !cards(ur).some((c) => c.txn_id === `${ur}Ahpra` || c.txn_id === `${ur}Shoes`));
+    check("pft9r: the deny list keeps winning for generic rules (shoes stay irrelevant, not relevant)", rr.Shoes!.relevance === "irrelevant");
+    check("pft9r: a stale card can't be confirmed — AHPRA is not worth a look for a retail worker", (await confirmWorthALook(RS_ON, ur, `${ur}Ahpra`)) === null);
+
+    // Re-scan on a profile change: add a nurse job beside the retail job → AHPRA surfaces.
+    const W = { fy: 2025, now: new Date("2026-10-03T00:00:00Z") };
+    run(`INSERT INTO entities (id, user_id, kind, name, person_id) VALUES ('pft9rShop', ?, 'employment', 'Shop', ?)`, ur, `person_self_${ur}`);
+    run(`INSERT INTO entities (id, user_id, kind, name, person_id) VALUES ('pft9rHosp', ?, 'employment', 'Hospital', ?)`, ur, `person_self_${ur}`);
+    await upsertSituationPeriod(RS_SP_ON, ur, { person_id: `person_self_${ur}`, fact: "employment", value: "retail_worker", ref_id: "pft9rShop", starts_on: "2025-07-01" }, W);
+    check("pft9r: the first (retail) job period leaves AHPRA without a card", !cards(ur).some((c) => c.txn_id === `${ur}Ahpra`));
+    const nurseJob = await upsertSituationPeriod(RS_SP_ON, ur, { person_id: `person_self_${ur}`, fact: "employment", value: "nurse", ref_id: "pft9rHosp", starts_on: "2025-08-01" }, W);
+    check("pft9r: adding a nurse employment period re-scans — AHPRA is now worth a look with a card",
+      rel(ur).Ahpra!.relevance === "worth_a_look" && cards(ur).some((c) => c.txn_id === `${ur}Ahpra` && c.status === "suggested"));
+    await deleteSituationPeriod(RS_SP_ON, ur, nurseJob.id, W);
+    check("pft9r: deleting the nurse job re-scans — the untouched AHPRA card is removed",
+      rel(ur).Ahpra!.relevance !== "worth_a_look" && !cards(ur).some((c) => c.txn_id === `${ur}Ahpra`));
+
+    // Settings occupation edit (the legacy writer) re-scans too.
+    const uo = "pft9o";
+    seedTenant(uo, "FT occupation edit");
+    run(`INSERT INTO profiles (user_id) VALUES (?)`, uo);
+    seedLines(uo);
+    await runRelevanceScan(RS_ON, uo);
+    check("pft9o: no occupation ⇒ no cards", cards(uo).length === 0);
+    await updatePerson(RS_ON, uo, `person_self_${uo}`, { occupation: "nurse" });
+    check("pft9o: setting occupation = nurse in Settings re-scans ⇒ 3 cards", cards(uo).length === 3);
+    await updatePerson(env, uo, `person_self_${uo}`, { occupation: "retail_worker" });
+    check("pft9o (OFF): an occupation edit with the flag OFF does not re-scan (cards unchanged)", cards(uo).length === 3);
   }
 
   console.log(`\n=== personas: ${pass} passed, ${fail} failed ===`);

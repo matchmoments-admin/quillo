@@ -78,6 +78,7 @@ import {
 import { listSituationPeriods, normaliseFyStart } from "./lib/situation-profile";
 import { lodgingFy, lodgedOnError, isoDayOf } from "./lib/lodging-year";
 import { getFyLodged, listLodgedFys } from "./lib/fy-signoff";
+import { relevanceView } from "./lib/relevance-scan-run";
 import { setAttributions, getAttributions, clearAttributions } from "./lib/attribution-write";
 import { listNoaCarryovers, confirmNoaCarryover, deleteNoaCarryover } from "./lib/noa-store";
 import { buildConnectUrl, qboStatus } from "./lib/qbo-oauth";
@@ -85,7 +86,7 @@ import { QuickBooksAdapter } from "./ledger/qbo";
 import { LedgerReauthError } from "./ledger";
 import { buildReport, reportToCsv, currentFyStartYear, workUseRatesForUserFy, resolveRulePack } from "./lib/report";
 import { reconcileConfigFromPack } from "./lib/reconcile-proposer";
-import { resolveJurisdictionForUser } from "./lib/jurisdiction";
+import { resolveJurisdictionForUser, fyBoundsFor } from "./lib/jurisdiction";
 import { buildAccountantSchedule, scheduleToCsv, scheduleToXlsx } from "./lib/accountant-schedule";
 import { mytaxWorksheetResponse } from "./lib/mytax-worksheet";
 import { getProgress } from "./lib/progress";
@@ -205,6 +206,13 @@ export async function handleApi(
   // (grouped_review_v2 wave 3c). MUST precede the :id handler below (else 'review-groups' reads as an id).
   if (resource === "transactions" && id === "review-groups" && m === "GET") {
     if (!featureOn(env, "grouped_review_v2")) return json({ error: "not available" }, 404);
+    // #578: ?relevance=relevant,worth_a_look&fy=2025 narrows to the scan's lists (flag relevance_scan;
+    // OFF ⇒ the params are ignored ⇒ byte-identical).
+    const relParam = url.searchParams.get("relevance");
+    if (relParam && featureOn(env, "relevance_scan")) {
+      const fy = normaliseFyStart(url.searchParams.get("fy")) ?? defaultFy();
+      return json(await listReviewGroups(env, uid, { relevance: relParam.split(","), fy: fyBoundsFor(jur, fy) }));
+    }
     return json(await listReviewGroups(env, uid));
   }
 
@@ -1610,6 +1618,15 @@ export async function handleApi(
 
   // #575: the myTax self-lodge worksheet (spec A9). Flag mytax_worksheet; 404 when off ⇒ byte-identical.
   // Identity is the server-derived uid, like every resource.
+  // GET /api/relevance?fy= → the relevance scan for one FY (#578, flag relevance_scan; spec A4): counts per
+  // list, the 'worth a look' cards (each with its why), and the facts-to-state prompts. Read-only; the Claims
+  // step (A6) and Records (A7) render it. 404 when the flag is OFF.
+  if (resource === "relevance" && m === "GET") {
+    if (!featureOn(env, "relevance_scan")) return json({ error: "not available" }, 404);
+    const fy = normaliseFyStart(url.searchParams.get("fy")) ?? defaultFy();
+    return json(await relevanceView(env, uid, fy));
+  }
+
   if (resource === "mytax-worksheet" && m === "GET") {
     const fy = Number(url.searchParams.get("fy")) || defaultFy();
     return mytaxWorksheetResponse(env, uid, fy);

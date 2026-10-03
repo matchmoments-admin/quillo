@@ -123,6 +123,10 @@ CREATE TABLE IF NOT EXISTS transactions (
   -- 0060 (#258): on a refund credit, the deductible expense it reverses — refund-netting v2 nets a
   --   refund ONLY against this matched expense (unlinked ⇒ position-neutral). NULL => legacy/unlinked.
   refund_for_txn_id TEXT,
+  -- 0080 (relevance_scan, first-timer A4 #578): which of the scan's three lists a debit bank line is in —
+  --   what to SHOW, never what is counted (no position query reads these). NULL = not scanned.
+  relevance    TEXT,                     -- NULL | relevant | worth_a_look | irrelevant
+  relevance_rule_id TEXT,                -- the claimability rule (ruleKey) behind relevant / worth_a_look
   created_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_txn_imghash ON transactions(user_id, image_hash);
@@ -137,6 +141,7 @@ CREATE INDEX IF NOT EXISTS idx_txn_matched  ON transactions(user_id, matched_txn
 CREATE INDEX IF NOT EXISTS idx_txn_acct_date ON transactions(user_id, account_id, txn_date);
 CREATE INDEX IF NOT EXISTS idx_txn_matched_income ON transactions(user_id, matched_income_id);
 CREATE INDEX IF NOT EXISTS idx_txn_refund_for ON transactions(user_id, refund_for_txn_id); -- 0060 (#258)
+CREATE INDEX IF NOT EXISTS idx_txn_relevance ON transactions(user_id, relevance); -- 0080 (relevance_scan)
 CREATE INDEX IF NOT EXISTS idx_txn_user_date ON transactions(user_id, txn_date); -- per-FY dashboard/progress range scans (migration 0018)
 
 -- ── Bank / card / investment accounts (per tenant) ────────────────────────────
@@ -963,6 +968,8 @@ CREATE TABLE IF NOT EXISTS claim_suggestions (
   created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_claimsug_user ON claim_suggestions(user_id, status);
+-- 0080: the relevance scan's 'worth a look' rows are idempotent per (txn, rule); partial so legacy rows never block it.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_claimsug_relevance_unique ON claim_suggestions(user_id, txn_id, rule_id) WHERE source = 'relevance_scan';
 
 -- ── Public marketing waitlist (no tenant; pre-signup) ─────────────────────────
 -- Populated by the public POST /waitlist endpoint on the apex (quillo.au). This is

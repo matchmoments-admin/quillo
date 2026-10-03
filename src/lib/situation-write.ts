@@ -5,6 +5,7 @@ import { fyForDate } from "./report";
 import { resolveJurisdictionForUser } from "./jurisdiction";
 import { ammaToCgtEvents, type AmmaComponents } from "./managed-fund";
 import { featureOn } from "./features";
+import { rescanAfterSituationChange } from "./relevance-scan-run";
 import { fyBounds } from "./ledger-totals";
 import { AU_DESCRIPTOR, currentFyStartYearFor, type JurisdictionDescriptor } from "./jurisdiction";
 import {
@@ -77,6 +78,8 @@ export async function updatePerson(
   )
     .bind(p.display_name ?? null, p.role ?? null, p.occupation ?? null, p.tax_residency ?? null, p.tfn_last4 ?? null, id, userId)
     .run();
+  // #578: an occupation edit moves which lines are worth a look (flag relevance_scan; OFF ⇒ no-op).
+  if (p.occupation != null) await rescanAfterSituationChange(env, userId);
 }
 
 export async function addProperty(
@@ -1089,6 +1092,8 @@ export async function upsertSituationPeriod(
   const mfy = mirrorFyForFact(postWrite, person.id, next.fact, currentFy, descriptor);
   const mirrors = computeMirrors(person.id, postWrite, mfy, fyBounds(mfy, descriptor), [next.fact], facts);
   await env.DB.batch([stmt, ...mirrorStatements(env, userId, person, mirrors)]);
+  // #578: a job / ABN / WFH / car / foreign-income change re-runs the relevance scan (flag OFF ⇒ no-op).
+  await rescanAfterSituationChange(env, userId, next.fact);
   return getPeriod(env, userId, next.id);
 }
 
@@ -1119,4 +1124,5 @@ export async function deleteSituationPeriod(
       })()
     : revertMirrorsOnLastDelete(prior, person);
   await env.DB.batch([del, ...mirrorStatements(env, userId, person, mirrors)]);
+  await rescanAfterSituationChange(env, userId, prior.fact);
 }

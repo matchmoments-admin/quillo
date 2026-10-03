@@ -330,6 +330,8 @@ export const api = {
   // undated tick spans it. The server keeps the legacy mirrors in step. 400 = a plain message to show inline.
   situationPeriods: (personId?: string) => get<{ periods: SituationPeriod[] }>(`/api/situation-periods${personId ? `?person_id=${encodeURIComponent(personId)}` : ""}`).then((r) => r.periods),
   addSituationPeriod: (b: SituationPeriodWrite, fy: number) => post<{ period: SituationPeriod }>(`/api/situation-periods?fy=${fy}`, b).then((r) => r.period),
+  // #585 About you first run: create only when no same-fact period overlaps; `skipped` ⇒ nothing written.
+  fillSituationPeriod: (b: SituationPeriodWrite, fy: number) => post<{ period: SituationPeriod; skipped: boolean }>(`/api/situation-periods?fy=${fy}`, { ...b, fill_only: true }),
   updateSituationPeriod: (id: string, b: SituationPeriodWrite) => send<{ period: SituationPeriod }>("PATCH", `/api/situation-periods/${encodeURIComponent(id)}`, b).then((r) => r.period),
   deleteSituationPeriod: (id: string) => send<{ ok: boolean }>("DELETE", `/api/situation-periods/${encodeURIComponent(id)}`),
 

@@ -1,14 +1,19 @@
 // The first-timer journey state (spec docs/first-timer/spec.md A11, ticket #582; flag ft_journey).
 //
-// `GET /api/journey?fy=` is ONE composite fetch for the new app shell + Home: the six steps with a status
+// `GET /api/journey?fy=` is ONE composite fetch for the new app shell + Home: the four steps with a status
 // and a count, the readiness hero, the "What's left" list, and the slots later tickets fill (`records` from
 // A7, `grow` from A11b). The step rules live here as a PURE function (assessJourney) so they are unit-tested
 // offline; journeySignals() does the D1 counting for the DO's journey() (the goldens cover the pure rules).
 //
-// Signals other tickets own are NOT guessed at here: until they land, Bring in's open payroll/platform
-// signals are 0 (A3 noticed_signals wires its own count) and `records` is null (A7). Claims reads A4's
+// Signals other tickets own are NOT guessed at here: until they land, the open payroll/platform
+// signals (a Review card since spec §0) are 0 (A3 noticed_signals wires its own count) and `records` is null (A7). Claims reads A4's
 // relevance lists when relevance_scan is ON, else the legacy review queue. Lodged = #572's fy_signoff rule
-// (lodged_at OR a NOA close — fy-signoff.ts), so Ship it agrees with the Filing page and /api/lodged.
+// (lodged_at OR a NOA close — fy-signoff.ts), so Lodge in myTax agrees with the Filing page and /api/lodged.
+//
+// FOUR steps since the design review of 2026-10-04 (spec §0, #585): setup (Get set up) → connect (Connect) →
+// review (Review) → lodge (Lodge in myTax). The signal groups below keep their original names (about,
+// bring_in, claims, records, check, ship) — they are the INPUTS, not steps: Review folds claims + records +
+// check + the "we noticed" signals into one queue, so its status/count is computed from all of them.
 //
 // GENERAL-INFO only: nothing here computes tax, a refund or a rate. The estimate on Home is the readiness
 // engine's own indicative taxable position (labelled "estimate only"), shown only when there are 0 blockers.
@@ -23,7 +28,7 @@ import { fyBounds, fyLabel } from "./ledger-totals";
 import { listSituationPeriods, situationFacts } from "./situation-profile";
 import { AU_DESCRIPTOR, type JurisdictionDescriptor } from "./jurisdiction";
 
-export const JOURNEY_STEPS = ["about", "bring_in", "claims", "records", "check", "ship"] as const;
+export const JOURNEY_STEPS = ["setup", "connect", "review", "lodge"] as const;
 export type JourneyStepKey = (typeof JOURNEY_STEPS)[number];
 export type JourneyStepStatus = "not_started" | "in_progress" | "needs_attention" | "done";
 
@@ -88,78 +93,64 @@ export interface JourneySignals {
 // Which step a readiness finding "points into" (spec A11: needs attention = a blocker points into that
 // step). Explicit ids first, then the finding's category; anything else is a Check-step item.
 const FINDING_STEP: Record<string, JourneyStepKey> = {
-  occupation_missing: "about",
-  residency_unsure: "about",
-  study_loan_passthrough: "about",
-  nothing_captured: "bring_in",
-  income_not_recorded: "bring_in",
-  income_needs_review: "bring_in",
-  payg_unresolved: "bring_in",
-  fx_unconverted: "bring_in",
-  franking_no_doc: "bring_in",
-  reportable_amounts: "bring_in",
-  unknown_bucket: "claims",
-  low_confidence_txns: "claims",
-  worksheet_unlabelled: "claims",
-  company_unattributed: "claims",
-  property_unattributed: "claims",
-  undated_receipts: "records",
-  refunds_unmatched: "check",
+  occupation_missing: "setup",
+  residency_unsure: "setup",
+  study_loan_passthrough: "setup",
+  nothing_captured: "connect",
+  income_not_recorded: "connect",
+  income_needs_review: "connect",
+  payg_unresolved: "connect",
+  fx_unconverted: "connect",
+  franking_no_doc: "connect",
+  reportable_amounts: "connect",
 };
 const CATEGORY_STEP: Partial<Record<FindingCategory, JourneyStepKey>> = {
-  completeness: "bring_in",
-  income: "bring_in",
-  classification: "claims",
-  evidence: "records",
+  completeness: "connect",
+  income: "connect",
 };
 
+/** Setup / Connect findings by id or category; everything else (classification, evidence, checks) is a Review card. */
 export function stepForFinding(f: Pick<ReadinessFinding, "id" | "category">): JourneyStepKey {
-  return FINDING_STEP[f.id] ?? CATEGORY_STEP[f.category] ?? "check";
+  return FINDING_STEP[f.id] ?? CATEGORY_STEP[f.category] ?? "review";
 }
 
-/** The six step statuses + counts. Pure. */
+/** The four step statuses + counts. Pure. */
 export function journeySteps(s: JourneySignals, findings: ReadinessFinding[]): JourneyStep[] {
   const blockersIn = new Map<JourneyStepKey, number>();
-  let blockers = 0;
   for (const f of findings) {
     if (f.severity !== "blocker") continue;
-    blockers++;
     const k = stepForFinding(f);
     blockersIn.set(k, (blockersIn.get(k) ?? 0) + 1);
   }
   const base: Record<JourneyStepKey, { status: Exclude<JourneyStepStatus, "needs_attention">; count: number }> = {
-    about: (() => {
+    setup: (() => {
       const facts = [s.about.residency_answered, s.about.occupation_set, ...(s.about.ticks_saved === null ? [] : [s.about.ticks_saved])];
       const missing = facts.filter((x) => !x).length;
       return { status: missing === 0 ? "done" : missing === facts.length ? "not_started" : "in_progress", count: missing };
     })(),
-    bring_in: {
-      status: s.bring_in.accounts_with_lines >= 1 && s.bring_in.open_signals === 0 ? "done" : s.bring_in.any_data ? "in_progress" : "not_started",
-      count: s.bring_in.open_signals,
+    connect: {
+      status: s.bring_in.accounts_with_lines >= 1 ? "done" : s.bring_in.any_data ? "in_progress" : "not_started",
+      count: 0,
     },
-    claims: {
-      status: !s.claims.any_lines ? "not_started" : s.claims.undecided === 0 ? "done" : "in_progress",
-      count: s.claims.undecided,
-    },
-    records: (() => {
+    review: (() => {
+      // ONE queue (spec §0): undecided claim lines + records still needed + receipt-match proposals + open
+      // "we noticed" signals. Records waits for A7: a null block is never a false "done" once lines exist.
       const r = s.records;
-      if (!r) return { status: s.claims.any_lines ? "in_progress" : "not_started", count: 0 };
-      const factsLeft = r.facts_needed.filter((x) => !r.facts_done.includes(x)).length;
-      const claimsLeft = Math.max(0, r.claims_total - r.claims_with_record - r.claims_exception);
-      const done = claimsLeft === 0 && factsLeft === 0;
-      return { status: done ? "done" : r.claims_total + r.facts_needed.length === 0 ? "not_started" : "in_progress", count: claimsLeft + factsLeft };
+      const recordsLeft = r
+        ? Math.max(0, r.claims_total - r.claims_with_record - r.claims_exception) + r.facts_needed.filter((x) => !r.facts_done.includes(x)).length
+        : 0;
+      const recordsPending = !r && s.claims.any_lines;
+      const count = s.claims.undecided + recordsLeft + s.check.proposals + s.bring_in.open_signals;
+      if (!s.bring_in.any_data && !s.claims.any_lines && count === 0) return { status: "not_started", count };
+      return { status: count === 0 && !recordsPending ? "done" : "in_progress", count };
     })(),
-    check: {
-      status: !s.bring_in.any_data ? "not_started" : blockers === 0 && s.check.proposals === 0 ? "done" : "in_progress",
-      count: blockers + s.check.proposals,
-    },
-    ship: { status: s.ship.lodged ? "done" : s.ship.signed_off ? "in_progress" : "not_started", count: 0 },
+    lodge: { status: s.ship.lodged ? "done" : s.ship.signed_off ? "in_progress" : "not_started", count: 0 },
   };
   return JOURNEY_STEPS.map((key) => {
     const b = base[key];
     // A blocker pointing into a step outranks every other state — including "done" (a fact the user
-    // already entered can still be flagged), except Ship it once the year is lodged.
-    const attention = (blockersIn.get(key) ?? 0) > 0 && !(key === "ship" && s.ship.lodged);
+    // already entered can still be flagged), except Lodge once the year is lodged.
+    const attention = (blockersIn.get(key) ?? 0) > 0 && !(key === "lodge" && s.ship.lodged);
     return { key, status: attention ? "needs_attention" : b.status, count: b.count };
   });
 }
@@ -207,7 +198,7 @@ export function coldJourney(startYear: number, lodgingFyDefault: number): Journe
   };
 }
 
-/** FYs that count as lodged, for #572's lodging-year default. Same flag split as journeySignals' Ship it read. */
+/** FYs that count as lodged, for #572's lodging-year default. Same flag split as journeySignals' Lodge read. */
 export async function journeyLodgedFys(env: Env, userId: string): Promise<number[]> {
   if (featureOn(env, "situation_profile")) return listLodgedFys(env, userId);
   const res = await env.DB.prepare(`SELECT fy FROM fy_signoff WHERE user_id = ? AND status = 'closed_with_noa' ORDER BY fy`).bind(userId).all<{ fy: number }>();
@@ -263,7 +254,7 @@ export async function journeySignals(
                   AND COALESCE(deductibility,'undetermined') NOT IN ('confirmed_deductible','confirmed_not')
                   AND txn_date >= ? AND txn_date <= ?`, userId, start, end)
     : await n(`SELECT COUNT(*) AS n FROM transactions WHERE user_id = ? AND txn_date >= ? AND txn_date <= ? AND ${NEEDS_REVIEW}`, userId, start, end);
-  // Ship it: a sign-off row means the user reached the hand-off; #572's lodged rule means the year is lodged.
+  // Lodge in myTax: a sign-off row means the user reached the hand-off; #572's lodged rule means the year is lodged.
   // lodged_at (0087) is only read with situation_profile ON (fy-signoff.ts: gating is the caller's job);
   // OFF, only a NOA close counts — the same rule minus the user's own mark, which OFF can't record.
   const signoff = featureOn(env, "situation_profile")

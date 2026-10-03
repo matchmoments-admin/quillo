@@ -105,8 +105,11 @@ export interface TaxAgentRpc {
   // #571 / #577: per-tenant serialised situation-period writes + "We noticed…" confirm/dismiss (errors as values).
   situationPeriodWrite(
     userId: string,
-    op: { kind: "upsert"; body: import("./lib/situation-write").SituationPeriodInput | null; id?: string; fy?: number | null } | { kind: "delete"; id: string },
-  ): Promise<{ ok: true; period?: unknown } | { ok: false; error: string; status: number }>;
+    op:
+      | { kind: "upsert"; body: import("./lib/situation-write").SituationPeriodInput | null; id?: string; fy?: number | null }
+      | { kind: "fill"; body: import("./lib/situation-write").SituationPeriodInput | null; fy?: number | null }
+      | { kind: "delete"; id: string },
+  ): Promise<{ ok: true; period?: unknown; skipped?: boolean } | { ok: false; error: string; status: number }>;
   confirmNoticedSignal(userId: string, id: string, body: import("./lib/noticed-signals").ConfirmBody | null): Promise<{ ok: true; result: import("./lib/noticed-signals").ConfirmResult } | { ok: false; error: string; status: number }>;
   dismissNoticedSignal(userId: string, id: string): Promise<{ ok: true; status: string } | { ok: false; error: string; status: number }>;
   ingest(userId: string, source: string, bytes: ArrayBuffer, mime: string, bucketHint?: string | null): Promise<string>;
@@ -159,7 +162,6 @@ export interface TaxAgentRpc {
   confirmCapitalImport(userId: string, importId: string, selectedRows?: number[] | null): Promise<{ holdings: number; disposals: number; unmatched: { source_row: number; code: string | null }[] }>;
   deleteStatement(userId: string, statementId: string, purge?: boolean): Promise<{ deleted: boolean; linesRemoved: number }>;
   repairStatements(userId: string): Promise<{ statements: number; recovered: number; flagsFixed: number }>;
-  minimiseBankLines(userId: string, now?: string): Promise<import("./lib/minimise").MinimiseResult | null>;
   setAccountSource(userId: string, accountId: string, source: string): Promise<void>;
   syncQboAccounts(userId: string): Promise<{ synced: number }>;
   disconnectQuickBooks(userId: string): Promise<{ ok: boolean; revoked: boolean }>;

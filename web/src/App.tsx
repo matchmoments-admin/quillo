@@ -126,10 +126,10 @@ export function App() {
   // Close the mobile drawer on navigation.
   useEffect(() => setDrawer(false), [pathname]);
 
-  // ft_journey (#582): the first-timer shell (Home + six steps + account menu) replaces the sidebar,
+  // ft_journey (#582): the first-timer shell (Home + four steps + account menu) replaces the sidebar,
   // JourneySpine and bottom tabs. Below every hook, so the hook order never changes when the flag set
   // loads. OFF (and while loading) ⇒ the legacy layout below, unchanged.
-  if (has("ft_journey")) return <FtShell gate={<FirstRunGate to="/about" />} />;
+  if (has("ft_journey")) return <FtShell gate={<FirstRunGate to="/setup" />} />;
 
   return (
     <Tooltip.Provider delayDuration={200} skipDelayDuration={400}>

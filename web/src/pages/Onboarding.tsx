@@ -22,7 +22,7 @@ import {
 } from "../components/SituationFields";
 import type { DraftRule, SituationDraft } from "../types";
 
-const CONSENT_TEXT =
+export const CONSENT_TEXT =
   "I consent to my receipt and transaction data being processed by Anthropic (USA) for OCR and " +
   "categorisation (Australian Privacy Principle 8 cross-border disclosure). I understand I can switch " +
   "to AU-resident processing (Bedrock Sydney) instead.";

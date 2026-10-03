@@ -94,12 +94,10 @@ export async function getEducation(env: Env, userId: string): Promise<EducationP
  */
 export const ASK_STEP_PURPOSE: Record<string, { n: number; title: string; purpose: string }> = {
   home: { n: 0, title: "Home", purpose: "shows what's left to do for the year being lodged" },
-  about: { n: 1, title: "About you", purpose: "asks about their year: tax residency, spouse, state, occupation and what applied to them" },
-  bring_in: { n: 2, title: "Bring in your money", purpose: "connects a bank or statement and adds their income statement" },
-  claims: { n: 3, title: "What you might claim", purpose: "lists spending that may relate to their work, for them to look at and decide item by item" },
-  records: { n: 4, title: "Records", purpose: "matches each item they're claiming to a receipt, invoice or diary, plus work-from-home hours and car trips" },
-  check: { n: 5, title: "Check", purpose: "a last look for anything missing, doubled up or unmatched before they lodge" },
-  ship: { n: 6, title: "Ship it", purpose: "a worksheet in myTax order for them to copy into myTax and lodge themselves" },
+  setup: { n: 1, title: "Get set up", purpose: "checks they can get into myTax through myGov, then asks about their year: tax residency, spouse, state, occupation and what applied to them" },
+  connect: { n: 2, title: "Connect", purpose: "connects a bank or statement and imports their transactions; their income statement waits until their employer marks it tax ready" },
+  review: { n: 3, title: "Review", purpose: "one list of things to look at: spending that may relate to their work, records to match, and anything missing, doubled up or unmatched" },
+  lodge: { n: 4, title: "Lodge in myTax", purpose: "a worksheet in myTax order for them to copy into myTax and lodge themselves" },
 };
 
 /** Numbered steps (Home is 0, not counted). */

@@ -22,14 +22,30 @@ export interface LegacyRoute {
 
 export const LEGACY_ROUTES: readonly LegacyRoute[] = [
   { from: "/dashboard", to: "/" },
-  { from: "/onboarding", to: "/about" },
-  { from: "/accounts", to: "/bring-in" },
-  { from: "/income", to: "/bring-in#income" },
-  { from: "/documents", to: "/records#documents" },
-  { from: "/transactions", to: "/claims", when: { param: "view", value: "review" } },
-  { from: "/review", to: "/claims?view=labels" },
-  { from: "/reconcile", to: "/check" },
-  { from: "/filing", to: "/ship" },
+  { from: "/onboarding", to: "/setup" },
+  { from: "/accounts", to: "/connect" },
+  { from: "/income", to: "/connect#income" },
+  { from: "/documents", to: "/review#documents" },
+  { from: "/transactions", to: "/review", when: { param: "view", value: "review" } },
+  { from: "/reconcile", to: "/review#check" },
+  { from: "/filing", to: "/lodge" },
+  // Legacy /review (the "By label" roll-up) is NOT here: since the 4-step design review (#585) its path IS
+  // the Review step, which renders the legacy page itself when the flag is OFF (pages/Steps.tsx ReviewStep).
+];
+
+/**
+ * The 6-step journey's step URLs (#582) → the 4-step journey (spec §0, #585). These redirect whatever the
+ * flag says (the new step route then sends a flag-OFF visitor on to the legacy page), so a bookmark or a
+ * link from a page agent still on the old keys always lands. `/claims?view=labels` keeps its `view`.
+ */
+export const OLD_STEP_ROUTES: readonly LegacyRoute[] = [
+  { from: "/about", to: "/setup" },
+  { from: "/bring-in", to: "/connect" },
+  { from: "/claims", to: "/review" },
+  { from: "/records", to: "/review#documents" },
+  { from: "/check", to: "/review#check" },
+  { from: "/check/match", to: "/review#check" },
+  { from: "/ship", to: "/lodge" },
 ];
 
 /** The journey route for a legacy pathname + search, or null when the URL stays where it is. */
@@ -39,9 +55,15 @@ export function journeyRouteFor(pathname: string, search = ""): string | null {
   return hit ? hit.to : null;
 }
 
+/** The 4-step route for an old 6-step URL's pathname, or null. */
+export function oldStepRouteFor(pathname: string): string | null {
+  return OLD_STEP_ROUTES.find((r) => r.from === pathname)?.to ?? null;
+}
+
 /**
  * Map any in-app href (path + optional ?query/#hash) to its journey equivalent; unknown hrefs pass
- * through unchanged. `/inbox` is the oldest alias of the review queue and maps to Claims too.
+ * through unchanged. `/inbox` is the oldest alias of the review queue and maps to Review too; the old
+ * 6-step URLs map to their 4-step home.
  */
 export function toJourneyHref(href: string): string {
   if (!href.startsWith("/")) return href;
@@ -50,8 +72,17 @@ export function toJourneyHref(href: string): string {
   const m = /^([^?#]*)(\?[^#]*)?(#.*)?$/.exec(href);
   const path = m?.[1] ?? href;
   const search = m?.[2] ?? "";
-  if (path === "/inbox") return "/claims";
+  if (path === "/inbox") return "/review";
+  const old = oldStepRouteFor(path);
+  if (old) return withQuery(old, search);
   return journeyRouteFor(path, search) ?? href;
+}
+
+/** Append a ?query to a target that may already carry a #hash (query goes before the hash). */
+function withQuery(to: string, search: string): string {
+  if (!search || search === "?") return to;
+  const i = to.indexOf("#");
+  return i < 0 ? `${to}${search}` : `${to.slice(0, i)}${search}${to.slice(i)}`;
 }
 
 /**
@@ -59,10 +90,9 @@ export function toJourneyHref(href: string): string {
  * rollback, a shared link): the legacy page that step replaces, so nothing 404s either way.
  */
 export const STEP_LEGACY_ROUTE: Record<JourneyStepKey, string> = {
-  about: "/onboarding",
-  bring_in: "/accounts",
-  claims: "/transactions?view=review",
-  records: "/documents",
-  check: "/reconcile",
-  ship: "/filing",
+  setup: "/onboarding",
+  connect: "/accounts",
+  // Review's own path is the legacy /review page; ReviewStep renders it in place when OFF (no redirect).
+  review: "/review",
+  lodge: "/filing",
 };

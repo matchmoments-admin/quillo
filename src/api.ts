@@ -760,7 +760,7 @@ export async function handleApi(
   }
   // ── Situation periods (flag situation_profile, first-timer A1 #571) ─────────────
   // GET    /api/situation-periods?person_id=   → { periods }   (all persons when person_id is omitted)
-  // POST   /api/situation-periods?fy=          { person_id, fact, value, ref_id?, starts_on?, ends_on?, source?, detail? } → { period }
+  // POST   /api/situation-periods?fy=          { person_id, fact, value, ref_id?, starts_on?, ends_on?, source?, detail?, fill_only? } → { period } (fill_only ⇒ { period, skipped })
   // PATCH  /api/situation-periods/:id          { value?, ref_id?, starts_on?, ends_on?, detail? } → { period }   (end a period = PATCH ends_on)
   // DELETE /api/situation-periods/:id          → { ok }
   // `fy` (start year) is the SPA's active FY: an undated tick spans it. uid is server-derived like every
@@ -775,7 +775,12 @@ export async function handleApi(
       return json({ periods: await listSituationPeriods(env, uid, personId || undefined) });
     }
     if (m === "POST" && !id) {
-      const body = (await req.json().catch(() => ({}))) as SituationPeriodInput;
+      const body = (await req.json().catch(() => ({}))) as SituationPeriodInput & { fill_only?: unknown };
+      // #585 Get set up first run: fill_only creates only when no same-fact period overlaps (never overwrites).
+      if (body && typeof body === "object" && body.fill_only === true) {
+        const f = await stub.situationPeriodWrite(uid, { kind: "fill", body, fy });
+        return f.ok ? json({ period: f.period, skipped: !!f.skipped }) : json({ error: f.error }, f.status);
+      }
       const r = await stub.situationPeriodWrite(uid, { kind: "upsert", body, fy });
       return r.ok ? json({ period: r.period }) : json({ error: r.error }, r.status);
     }
@@ -1735,7 +1740,7 @@ export async function handleApi(
   }
 
   // ── First-timer journey (A11, #582, flag ft_journey) — 404 when off ────────
-  // GET /api/journey?fy= → one composite read for the new shell + Home: six step statuses/counts, the
+  // GET /api/journey?fy= → one composite read for the new shell + Home: four step statuses/counts, the
   // readiness hero, What's left, and the records/grow slots later tickets fill. Read-only.
   if (resource === "journey" && m === "GET" && !id) {
     if (!featureOn(env, "ft_journey")) return json({ error: "not found" }, 404);

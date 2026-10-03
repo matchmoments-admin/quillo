@@ -73,7 +73,7 @@ function Confirmed({ result }: { result: NoticedConfirmResult }) {
     return (
       <div className="space-y-2 text-sm">
         <p className="text-ink">{result.prompt}</p>
-        {result.needs_occupation && <p className="text-muted">Add what this job is in About you so Quillo can suggest what to look for.</p>}
+        {result.needs_occupation && <p className="text-muted">Add what this job is in Get set up so Quillo can suggest what to look for.</p>}
         {!!result.previously_recorded && (
           <p className="text-warn">
             {result.previously_recorded} of these deposits were recorded earlier as personal income. Once your income statement is in, remove those

@@ -16,7 +16,6 @@ import { Reports } from "./pages/Reports";
 import { Savings } from "./pages/Savings";
 import { Extras } from "./pages/Extras";
 import { Billing } from "./pages/Billing";
-import { Review } from "./pages/Review";
 import { Filing } from "./pages/Filing";
 import { Admin } from "./pages/Admin";
 import { Partner } from "./pages/Partner";
@@ -27,7 +26,7 @@ import { Documents } from "./pages/Documents";
 import { Assets } from "./pages/Assets";
 import { Glossary } from "./pages/Glossary";
 import { BeforeYouStart, beforeYouStartLoader } from "./pages/BeforeYouStart";
-import { FtRedirect, HomeIndex, AboutStep, BringInStep, ClaimsStep, RecordsStep, CheckStep, ShipStep } from "./pages/Steps";
+import { FtRedirect, HomeIndex, OldStepRedirect, SetupStep, ConnectStep, ReviewStep, LodgeStep } from "./pages/Steps";
 import { setTokenGetter } from "./api";
 import { ActiveFyProvider } from "./lib/activeFy";
 
@@ -138,18 +137,23 @@ const router = createBrowserRouter([
       { path: "savings", element: <Savings /> },
       { path: "extras", element: <Extras /> },
       { path: "billing", element: <Billing /> },
-      { path: "review", element: <FtRedirect><Review /></FtRedirect> },
       { path: "filing", element: <FtRedirect><Filing /></FtRedirect> },
       { path: "admin", element: <Admin /> },
       { path: "partner", element: <Partner /> },
-      // Journey steps (ft_journey; OFF ⇒ each redirects to the legacy page it replaces).
-      { path: "about", element: <AboutStep /> },
-      { path: "bring-in", element: <BringInStep /> },
-      { path: "claims", element: <ClaimsStep /> },
-      { path: "records", element: <RecordsStep /> },
-      { path: "check", element: <CheckStep /> },
-      { path: "check/match", element: <CheckStep /> },
-      { path: "ship", element: <ShipStep /> },
+      // Journey steps — four since the design review (spec §0, #585). OFF ⇒ each redirects to the legacy
+      // page it replaces, except /review, which IS the legacy "By label" page when OFF (rendered in place).
+      { path: "setup", element: <SetupStep /> },
+      { path: "connect", element: <ConnectStep /> },
+      { path: "review", element: <ReviewStep /> },
+      { path: "lodge", element: <LodgeStep /> },
+      // The 6-step journey's URLs (#582) → their 4-step route (lib/legacyRoutes.ts OLD_STEP_ROUTES).
+      { path: "about", element: <OldStepRedirect /> },
+      { path: "bring-in", element: <OldStepRedirect /> },
+      { path: "claims", element: <OldStepRedirect /> },
+      { path: "records", element: <OldStepRedirect /> },
+      { path: "check", element: <OldStepRedirect /> },
+      { path: "check/match", element: <OldStepRedirect /> },
+      { path: "ship", element: <OldStepRedirect /> },
       { path: "glossary", element: <Glossary /> },
     ],
   },

@@ -13,6 +13,7 @@ import {
   listSituationPeriods,
   mirrorFyForFact,
   normaliseFyStart,
+  rangesOverlap,
   revertMirrorsOnLastDelete,
   situationFacts,
   validatePeriod,
@@ -1028,6 +1029,31 @@ export async function upsertSituationPeriod(
   rawInput: SituationPeriodInput | null | undefined,
   opts: { id?: string; fy?: number | null; descriptor?: JurisdictionDescriptor; now?: Date } = {},
 ): Promise<SituationPeriod> {
+  return (await writeSituationPeriod(env, userId, rawInput, { ...opts, fillOnly: false })).period;
+}
+
+/**
+ * About you first-run (#585, spec A2; #438 fill-gaps semantics carried over from PR #543's work-use
+ * `fill_only`): CREATE a period only when the subject has no period of the same fact overlapping its dates.
+ * When one exists, nothing is written (no row, no mirror, no rescan) and the existing period comes back with
+ * `skipped: true`, so re-entering first run with the same answers writes zero rows and never overwrites an
+ * answer the user edited in profile mode. Input is still validated (a bad fact/value is a 400, not a skip).
+ */
+export async function fillSituationPeriod(
+  env: Env,
+  userId: string,
+  rawInput: SituationPeriodInput | null | undefined,
+  opts: { fy?: number | null; descriptor?: JurisdictionDescriptor; now?: Date } = {},
+): Promise<{ period: SituationPeriod; skipped: boolean }> {
+  return writeSituationPeriod(env, userId, rawInput, { ...opts, id: undefined, fillOnly: true });
+}
+
+async function writeSituationPeriod(
+  env: Env,
+  userId: string,
+  rawInput: SituationPeriodInput | null | undefined,
+  opts: { id?: string; fy?: number | null; descriptor?: JurisdictionDescriptor; now?: Date; fillOnly: boolean },
+): Promise<{ period: SituationPeriod; skipped: boolean }> {
   const input: SituationPeriodInput = rawInput && typeof rawInput === "object" && !Array.isArray(rawInput) ? rawInput : {};
   const descriptor = opts.descriptor ?? AU_DESCRIPTOR;
   const currentFy = currentFyStartYearFor(descriptor, opts.now ?? new Date());
@@ -1075,6 +1101,13 @@ export async function upsertSituationPeriod(
   // One read of the subject's periods serves both the overlap check and the post-write mirror state.
   const subjectPeriods = await listSituationPeriods(env, userId, next.subject_id);
   const siblings = subjectPeriods.filter((p) => p.subject_kind === next.subject_kind && p.fact === next.fact);
+  if (opts.fillOnly && !prior) {
+    // Validate the answer itself (ignoring overlaps), then skip when any same-fact period overlaps it.
+    const shapeErr = validatePeriod(next, [], facts);
+    if (shapeErr) throw new SituationPeriodError(shapeErr);
+    const clash = siblings.find((p) => rangesOverlap(next.starts_on, next.ends_on, p.starts_on, p.ends_on));
+    if (clash) return { period: clash, skipped: true };
+  }
   const err = validatePeriod({ ...next, id: prior?.id }, siblings, facts);
   if (err) throw new SituationPeriodError(err);
   const person = await personRow(env, userId, next.subject_id);
@@ -1094,7 +1127,7 @@ export async function upsertSituationPeriod(
   await env.DB.batch([stmt, ...mirrorStatements(env, userId, person, mirrors)]);
   // #578: a job / ABN / WFH / car / foreign-income change re-runs the relevance scan (flag OFF ⇒ no-op).
   await rescanAfterSituationChange(env, userId, next.fact);
-  return getPeriod(env, userId, next.id);
+  return { period: await getPeriod(env, userId, next.id), skipped: false };
 }
 
 /**

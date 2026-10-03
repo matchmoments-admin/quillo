@@ -6,20 +6,18 @@ import { STEP_GUIDES, type StepKey } from "../content/stepGuides";
 import { JOURNEY_STEPS } from "../components/ft/model";
 import type { JourneyStepKey, JourneyStepStatus } from "../types";
 
-// The first-timer journey (spec A11, #582; flag ft_journey): routes for the six steps and the one shared
+// The first-timer journey (spec A11, #582; flag ft_journey): routes for the four steps (spec §0, #585) and the one shared
 // /api/journey query the shell (status dots) and Home read. The key is ["journey", fy]; main.tsx's
 // mutation cache invalidates it after every write, like ["progress"].
 
-/** The six steps in order — the one list in content/stepGuides.ts (via components/ft/model.ts). */
+/** The four steps in order — the one list in content/stepGuides.ts (via components/ft/model.ts). */
 export const JOURNEY_STEP_KEYS: readonly JourneyStepKey[] = JOURNEY_STEPS;
 
 export const STEP_ROUTE: Record<JourneyStepKey, string> = {
-  about: "/about",
-  bring_in: "/bring-in",
-  claims: "/claims",
-  records: "/records",
-  check: "/check",
-  ship: "/ship",
+  setup: "/setup",
+  connect: "/connect",
+  review: "/review",
+  lodge: "/lodge",
 };
 
 /** Rail/sheet labels = the step guides' titles, so the rail, header and Why? sheet never disagree. */

@@ -10,7 +10,7 @@
 //   • loading / empty / error render through StatusGate, so every component has all three states.
 // Copy is scanned by the tax-advice denylist (scripts/check-units.ts).
 
-import { forwardRef, type AnchorHTMLAttributes, type ButtonHTMLAttributes, type ReactNode, type TextareaHTMLAttributes } from "react";
+import { forwardRef, type AnchorHTMLAttributes, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes, type TextareaHTMLAttributes } from "react";
 import { Link } from "react-router-dom";
 import { DEFER_TO_AGENT } from "../../content/stepGuides";
 import type { FtStatus } from "./model";
@@ -99,6 +99,35 @@ export const FtTextArea = forwardRef<HTMLTextAreaElement, TextareaHTMLAttributes
       className={cx(TAP, FOCUS, "w-full resize-none rounded-lg border border-line-strong bg-card px-3 py-2 text-[15px] text-ink placeholder:text-muted", className)}
       {...props}
     />
+  );
+});
+
+const FIELD = "rounded-lg border border-line-strong bg-card px-3 py-2 text-[15px] text-ink placeholder:text-muted";
+
+/** The one single-line field (#585 About you: dates, occupation): 44px floor + the focus ring. */
+export const FtInput = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputElement>>(function FtInput({ className, ...props }, ref) {
+  return <input ref={ref} className={cx(TAP, FOCUS, FIELD, className)} {...props} />;
+});
+
+/**
+ * The one tick box (#585 Get set up: the myTax self-check). The whole label row is the 44px hit area; the box
+ * itself carries the focus ring. `children` is the visible label.
+ */
+export function FtCheckbox({ checked, onChange, children, className }: { checked: boolean; onChange: (checked: boolean) => void; children: ReactNode; className?: string }) {
+  return (
+    <label className={cx(TAP, "flex cursor-pointer items-center gap-3 text-sm font-medium text-ink", className)}>
+      <input type="checkbox" className={cx(FOCUS, "h-5 w-5 shrink-0 accent-accent")} checked={checked} onChange={(e) => onChange(e.target.checked)} />
+      <span>{children}</span>
+    </label>
+  );
+}
+
+/** The one dropdown (#585 About you: a period's answer): 44px floor + the focus ring. */
+export const FtSelect = forwardRef<HTMLSelectElement, SelectHTMLAttributes<HTMLSelectElement>>(function FtSelect({ className, children, ...props }, ref) {
+  return (
+    <select ref={ref} className={cx(TAP, FOCUS, FIELD, className)} {...props}>
+      {children}
+    </select>
   );
 });
 

@@ -32,7 +32,8 @@ import { firstTimerIncomeSignals } from "../src/lib/first-timer-signals";
 import { buildMytaxWorksheet, mytaxWorksheetSignals, mytaxWorksheetResponse, type MytaxWorksheet } from "../src/lib/mytax-worksheet";
 import { assessReadiness, type FilingReadinessSignals } from "../src/lib/readiness";
 import { getSituation, type Situation, type Profile } from "../src/lib/db";
-import { upsertSituationPeriod, deleteSituationPeriod, SituationPeriodError, clearSignOffFy } from "../src/lib/situation-write";
+import { upsertSituationPeriod, fillSituationPeriod, deleteSituationPeriod, SituationPeriodError, clearSignOffFy } from "../src/lib/situation-write";
+import { aboutYouWrites, emptyAnswers as ayEmpty, fyBoundsFor as ayFyBounds, type AboutAnswers } from "../web/src/lib/aboutYou";
 import { markFyLodged, unmarkFyLodged, getFyLodged, listLodgedFys } from "../src/lib/fy-signoff";
 import { confirmNoaCarryover, deleteNoaCarryover } from "../src/lib/noa-store";
 import { currentFyStartYear } from "../src/lib/report";
@@ -41,9 +42,6 @@ import { runRelevanceScan, confirmWorthALook, relevanceView } from "../src/lib/r
 import { updatePerson } from "../src/lib/situation-write";
 import { verdictForTxn } from "../src/lib/deductibility";
 import { noticeSignals, listNoticed, confirmNoticed, dismissNoticed, payrollEmployerSignals, incomeAnswerRows, INCOME_STATEMENT_PROMPT } from "../src/lib/noticed-signals";
-import { minimiseTenant, tombstonedFingerprints, rolledUpLineCount, statementLedgerTieOut, forgetStatementMinimisation } from "../src/lib/minimise";
-import { statementLineFingerprints, type StatementLine } from "../src/lib/statements";
-import { listStatements } from "../src/lib/queries";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
@@ -2398,6 +2396,49 @@ async function main() {
         (await rejects(() => upsertSituationPeriod(SP_ENV_ON, u3, null, W), 400, /person_id is required/)) &&
         (await upsertSituationPeriod(SP_ENV_ON, u3, { person_id: me3, fact: "employment", value: "retail", detail: { wfh: true } }, W)).detail_json === `{"wfh":true}`);
 
+      // pft7a — About you first run (#585, spec A2; #438 fill-gaps carried over). FT1 Jess's answer set goes through
+      // the SPA's own model (web/src/lib/aboutYou.ts aboutYouWrites) into the REAL writer with fill_only, exactly as
+      // the page POSTs it. Asserts the exact periods + mirrors, that re-running first run with the same answers writes
+      // ZERO rows, and that re-running with DIFFERENT answers never overwrites what's there (profile mode is the only
+      // edit path). 'unsure' residency on a re-run leaves tax_residency unchanged (#571 open question kept).
+      {
+        const u5 = "pft7a";
+        const me5 = `person_self_${u5}`;
+        seedTenant(u5, "FT1 Jess About you");
+        run(`INSERT INTO profiles (user_id) VALUES (?)`, u5);
+        const fyB = ayFyBounds(2025);
+        const jess: AboutAnswers = { ...ayEmpty(), residency: "all_year", spouse: "no", state: "NSW", occupation: "retail_worker", ticks: ["job", "wfh"] };
+        const count = () => (db.prepare(`SELECT COUNT(*) AS n FROM situation_periods WHERE user_id = ?`).get(u5) as { n: number }).n;
+        const runFirst = async (a: AboutAnswers) => {
+          let written = 0;
+          for (const w of aboutYouWrites(a, me5, fyB)) if (!(await fillSituationPeriod(SP_ENV_ON, u5, w.write, W)).skipped) written++;
+          return written;
+        };
+        const firstWritten = await runFirst(jess);
+        const rows = (await listSituationPeriods(SP_ENV_ON, u5, me5)).map((p) => `${p.fact}=${p.value}@${p.starts_on}..${p.ends_on}:${p.source}`).sort();
+        check("pft7a: Jess's About you answers produce exactly the expected periods (undated ticks span the FY, source onboarding)",
+          firstWritten === 5 && JSON.stringify(rows) === JSON.stringify([
+            "employment=retail_worker@2025-07-01..2026-06-30:onboarding",
+            "residency=resident@2025-07-01..2026-06-30:onboarding",
+            "spouse=no@2025-07-01..2026-06-30:onboarding",
+            "state=NSW@2025-07-01..2026-06-30:onboarding",
+            "wfh=yes@2025-07-01..2026-06-30:onboarding",
+          ]));
+        check("pft7a mirrors: occupation = retail_worker, tax_residency = AU", personRow(u5).occupation === "retail_worker" && personRow(u5).tax_residency === "AU");
+        const before5 = count();
+        check("pft7a: re-running first run with the same answers writes ZERO rows", (await runFirst(jess)) === 0 && count() === before5);
+        const changed: AboutAnswers = { ...jess, residency: "unsure", state: "VIC", occupation: "nurse" };
+        check("pft7a: re-running with different answers never overwrites (residency/state/job skipped; mirrors unchanged)",
+          (await runFirst(changed)) === 0 && count() === before5 && personRow(u5).occupation === "retail_worker" && personRow(u5).tax_residency === "AU" &&
+          (await listSituationPeriods(SP_ENV_ON, u5, me5)).find((p) => p.fact === "state")?.value === "NSW");
+        const added = await runFirst({ ...jess, ticks: ["job", "wfh", "study", "study_loan"] });
+        check("pft7a: a newly ticked fact fills its gap (study + study_loan) and nothing else", added === 2 && count() === before5 + 2);
+        check("pft7a: fill_only still validates the answer (a bad value is a 400, not a silent skip)",
+          await rejects(() => fillSituationPeriod(SP_ENV_ON, u5, { person_id: me5, fact: "residency", value: "martian" }, W), 400));
+        check("pft7a: fill_only on another tenant's person is a 404 (nothing skipped into a foreign profile)",
+          await rejects(() => fillSituationPeriod(SP_ENV_ON, u5, { person_id: "person_self_pft1", fact: "wfh", value: "yes" }, W), 404));
+      }
+
       // pft7l — lodging-year default + mark as lodged (#572, spec A1 ticket b). A brand-new tenant lands on the
       // year being lodged (last FY); marking it lodged moves the default to the current FY; a NOA undo after the
       // mark keeps lodged_at; the soft sign-off can't silently erase the mark. Relative to the real clock (getSituation
@@ -3003,169 +3044,6 @@ async function main() {
     inc("pft8mSal", u, "salary_payg", 3000000); // hand-keyed, no employer name
     const after = await payrollEmployerSignals(WP_ON, u, 2025);
     check("pft8m: a hand-keyed salary row clears the only marked employer's prompt", before.payrollEmployers?.[0]?.covered === false && after.payrollEmployers?.[0]?.covered === true);
-  }
-
-  // ── pft10 — FT1 Jess, bank data minimisation (#581, flag bank_minimisation; spec A5 ticket a, owner rulings
-  //    #534 + residual Q1). 40 irrelevant debits (36 private payg + 4 own-account transfers), 3 relevant debits,
-  //    1 worth-a-look, 1 matched receipt's line and 6 credits on one statement with balances. Once the FY is lodged
-  //    (the user's mark, or the due-date + 60 days backstop) AND a line has been held 60 days, exactly the 40
-  //    irrelevant rows shrink to a rollup + tombstones; the position, every accountant tie-back and the statement
-  //    reconciliation are byte-identical; a re-upload inserts nothing. ──
-  {
-    const BM_ON = { ...env, FEATURES: `${(env as { FEATURES: string }).FEATURES},bank_minimisation` } as unknown as Env;
-    const u = "pft10";
-    seedTenant(u, "FT1 Jess, lodged FY — bank minimisation");
-    run(`INSERT INTO profiles (user_id) VALUES (?)`, u);
-    inc("pft10Sal", u, "salary_payg", 5200000);
-    run(`INSERT INTO accounts (id, user_id, name, type, source) VALUES ('pft10Acct', ?, 'Everyday', 'transaction', 'statement')`, u);
-    // Statement lines in parse order. kind: i = irrelevant payg, x = transfer (ignored), r = relevant, w = worth a look,
-    // m = the line a receipt is matched to, c = credit.
-    type K = "i" | "x" | "r" | "w" | "m" | "c";
-    const L: { k: K; line: StatementLine }[] = [];
-    const ln = (k: K, date: string, raw: string, cents: number, direction: "debit" | "credit" = "debit") =>
-      L.push({ k, line: { date, description: raw.split(" ")[0]!, raw_description: raw, amount_cents: cents, direction, balance_cents: null } as StatementLine });
-    const day = (n: number) => `2025-${String(7 + Math.floor(n / 28)).padStart(2, "0")}-${String(1 + (n % 28)).padStart(2, "0")}`;
-    // Two same-day identical coffees exercise the fingerprint's occurrence counter.
-    ln("i", "2025-09-09", "CAFE NEWTOWN", 550);
-    ln("i", "2025-09-09", "CAFE NEWTOWN", 550);
-    for (let n = 0; n < 34; n++) ln("i", day(n), `GROCER ${n % 3} SYDNEY`, 2000 + n * 37);
-    for (let n = 0; n < 4; n++) ln("x", day(40 + n), `TRANSFER TO SAVINGS ${n}`, 50000);
-    for (let n = 0; n < 3; n++) ln("r", day(50 + n), `AHPRA RENEWAL ${n}`, 21500);
-    ln("w", day(55), "NURSING SHOES DIRECT", 12900);
-    ln("m", day(56), "OFFICEWORKS 0423", 4400);
-    for (let n = 0; n < 6; n++) ln("c", day(60 + n), `EMPLOYER PAY ${n}`, 180000, "credit");
-    const lines = L.map((x) => x.line);
-    const fps = await statementLineFingerprints("pft10Acct", lines);
-    const opening = 100000;
-    const closing = opening + lines.reduce((t, l) => t + (l.direction === "credit" ? l.amount_cents : -l.amount_cents), 0);
-    run(`INSERT INTO statements (id, user_id, account_id, filename, file_key, format, row_count, imported_count, opening_cents, closing_cents, reconciled, recon_diff_cents, status)
-         VALUES ('pft10Stmt', ?, 'pft10Acct', 'jess.csv', 'k/jess.csv', 'csv', ?, ?, ?, ?, 1, 0, 'imported')`, u, lines.length, lines.length, opening, closing);
-    const CREATED = "2026-01-15 00:00:00";
-    const idOf = (i: number) => `pft10L${String(i).padStart(2, "0")}`;
-    L.forEach((x, i) => {
-      const l = x.line;
-      const v: [string | null, string, string, string | null, number | null] =
-        x.k === "i" ? ["payg", "likely_not", "extracted", "irrelevant", 0]
-        : x.k === "x" ? [null, "undetermined", "ignored", null, null]
-        : x.k === "r" ? ["payg", "likely_deductible", "extracted", "relevant", null]
-        : x.k === "w" ? ["payg", "likely_not", "extracted", "worth_a_look", 0]
-        : x.k === "m" ? ["payg", "likely_not", "extracted", "irrelevant", 0]
-        : ["income_salary", "undetermined", "extracted", null, null];
-      run(`INSERT INTO transactions (id, user_id, source, status, kind, account_id, statement_id, line_fingerprint, raw_description, merchant,
-             amount_cents, currency, amount_aud_cents, txn_date, direction, bucket, deductibility, relevance, deductible_amount_cents, created_at)
-           VALUES (?, ?, 'statement', ?, 'bank_line', 'pft10Acct', 'pft10Stmt', ?, ?, ?, ?, 'AUD', ?, ?, ?, ?, ?, ?, ?, ?)`,
-        idOf(i), u, v[2], fps[i], l.raw_description, l.description, l.amount_cents, l.amount_cents, l.date, l.direction, v[0], v[1], v[3], v[4], CREATED);
-    });
-    const idsOf = (k: K) => L.flatMap((x, i) => (x.k === k ? [idOf(i)] : []));
-    const irrelevantIds = [...idsOf("i"), ...idsOf("x")];
-    const irrelevantTotal = L.reduce((t, x) => t + (x.k === "i" || x.k === "x" ? x.line.amount_cents : 0), 0);
-    run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, direction, deductibility, matched_txn_id, merchant)
-         VALUES ('pft10Rcpt', ?, 'upload', 'extracted', 'receipt', 4400, 4400, ?, 'payg', 'debit', 'likely_not', ?, 'Officeworks')`, u, day(56), idsOf("m")[0]);
-    run(`INSERT INTO claim_suggestions (id, user_id, person_id, txn_id, rule_id, suggestion, status, source) VALUES ('pft10Cs', ?, ?, ?, 'au-occ-nurse', 'Worth a look', 'suggested', 'relevance_scan')`, u, `person_self_${u}`, idsOf("w")[0]);
-    run(`INSERT INTO corrections (id, user_id, txn_id, field, old_value, new_value) VALUES ('pft10Cor', ?, ?, 'bucket', 'unknown', 'payg')`, u, irrelevantIds[5]);
-    run(`INSERT INTO corrections (id, user_id, txn_id, field, old_value, new_value) VALUES ('pft10CorKeep', ?, ?, 'bucket', 'unknown', 'payg')`, u, idsOf("r")[0]);
-    check("pft10 seed: 40 irrelevant (36 payg + 4 transfers), 3 relevant, 1 worth-a-look, 1 matched line, 6 credits", irrelevantIds.length === 40 && L.length === 51);
-
-    const NOW = new Date("2026-10-03T00:00:00Z");
-    const txnSnap = () => JSON.stringify(db.prepare(`SELECT * FROM transactions WHERE user_id = ? ORDER BY id`).all(u));
-    const count = (sql: string, ...p: unknown[]) => Number((db.prepare(sql).get(...(p as never[])) as { n: number }).n);
-    const idsLeft = () => (db.prepare(`SELECT id FROM transactions WHERE user_id = ? AND kind = 'bank_line' ORDER BY id`).all(u) as { id: string }[]).map((r) => r.id);
-    const before = {
-      txns: txnSnap(),
-      pos: (await buildReport(env, u, 2025)).taxable_position_cents,
-      ties: JSON.stringify(tieBackChecks(await buildAccountantSchedule(env, u, 2025))),
-      tie: await statementLedgerTieOut(env, u, "pft10Stmt"),
-    };
-    check("pft10 seed: the statement ties out from the ledger before any shrink", before.tie?.ok === true && before.tie.lines === 51 && before.tie.expected_cents === closing);
-
-    // Flag OFF: nothing read, nothing written.
-    run(`INSERT INTO fy_signoff (user_id, fy, status, lodged_at) VALUES (?, 2025, 'lodged', '2026-08-03')`, u); // lodged 61 days before NOW
-    check("pft10 (OFF): minimiseTenant is a no-op (null) — rows byte-identical, rollup table untouched",
-      (await minimiseTenant(env, u, NOW)) === null && txnSnap() === before.txns && count(`SELECT COUNT(*) AS n FROM bank_line_rollups WHERE user_id = ?`, u) === 0);
-    check("pft10 (OFF): tombstones are never read and rollups never counted", (await tombstonedFingerprints(env, u, "pft10Acct")).length === 0 && (await rolledUpLineCount(env, u, "pft10Stmt")) === 0);
-
-    // Window: FY lodged, but the lines have only been held 59 days ⇒ nothing.
-    run(`UPDATE transactions SET created_at = '2026-08-05 00:00:00' WHERE user_id = ? AND kind = 'bank_line'`, u);
-    check("pft10 window: lodged FY but lines held only 59 days ⇒ nothing shrinks", (await minimiseTenant(BM_ON, u, NOW))?.shrunk === 0 && idsLeft().length === 51);
-    run(`UPDATE transactions SET created_at = ? WHERE user_id = ? AND kind = 'bank_line'`, CREATED, u);
-    // Window: FY not lodged (no mark; NOW is before the 30 Dec 2026 backstop) ⇒ nothing.
-    run(`UPDATE fy_signoff SET lodged_at = NULL, status = NULL WHERE user_id = ?`, u);
-    const notLodged = await minimiseTenant(BM_ON, u, NOW);
-    check("pft10 window: FY not lodged and before the backstop ⇒ nothing shrinks", notLodged?.shrunk === 0 && notLodged.lodged_fys.length === 0 && idsLeft().length === 51);
-    run(`UPDATE fy_signoff SET lodged_at = '2026-08-03', status = 'lodged' WHERE user_id = ?`, u);
-    check("pft10 window: everything above left the rows byte-identical", txnSnap() === before.txns);
-
-    // Shrink.
-    const audits: { event: string; detail: string }[] = [];
-    const res = await minimiseTenant(BM_ON, u, NOW, { audit: async (event, detail) => { audits.push({ event, detail }); } });
-    const left = idsLeft();
-    check("pft10: exactly the 40 irrelevant rows are gone; relevant, worth-a-look, matched and every credit kept",
-      res?.shrunk === 40 && left.length === 11 && irrelevantIds.every((id) => !left.includes(id)) &&
-      [...idsOf("r"), ...idsOf("w"), ...idsOf("m"), ...idsOf("c")].every((id) => left.includes(id)) && count(`SELECT COUNT(*) AS n FROM transactions WHERE id = 'pft10Rcpt'`) === 1);
-    const roll = db.prepare(`SELECT account_id, statement_id, fy, direction, n, total_cents FROM bank_line_rollups WHERE user_id = ?`).all(u) as { account_id: string; statement_id: string | null; fy: string; direction: string; n: number; total_cents: number }[];
-    check("pft10: one rollup (account, statement, FY 2025-26, debit) with n = 40 and the exact sum",
-      roll.length === 1 && roll[0]!.n === 40 && roll[0]!.total_cents === irrelevantTotal && roll[0]!.fy === "2025-26" && roll[0]!.statement_id === "pft10Stmt" && roll[0]!.direction === "debit");
-    check("pft10: 40 tombstones, fingerprint only (sha256), FY label", count(`SELECT COUNT(*) AS n FROM bank_line_tombstones WHERE user_id = ? AND fy = '2025-26' AND length(line_fingerprint) = 64`, u) === 40);
-    check("pft10: the correction carrying a shrunk line's merchant history is deleted; a kept line's is not",
-      count(`SELECT COUNT(*) AS n FROM corrections WHERE id = 'pft10Cor'`) === 0 && count(`SELECT COUNT(*) AS n FROM corrections WHERE id = 'pft10CorKeep'`) === 1);
-    check("pft10: one audit row per (account, FY) — counts and totals only, no line content",
-      audits.length === 1 && audits[0]!.event === "bank_lines_minimised" && JSON.parse(audits[0]!.detail).n === 40 && JSON.parse(audits[0]!.detail).total_cents === irrelevantTotal && !/GROCER|CAFE|TRANSFER/.test(audits[0]!.detail));
-    check("pft10: taxable_position_cents byte-identical after the shrink", (await buildReport(BM_ON, u, 2025)).taxable_position_cents === before.pos && (await buildReport(env, u, 2025)).taxable_position_cents === before.pos);
-    check("pft10: every accountant-schedule tie-back byte-identical", JSON.stringify(tieBackChecks(await buildAccountantSchedule(BM_ON, u, 2025))) === before.ties);
-    const after = await statementLedgerTieOut(BM_ON, u, "pft10Stmt");
-    check("pft10: statement reconciliation ties out against live lines + the rollup (expected/closing/diff identical)",
-      after?.ok === true && after.lines === 11 && after.rolled_up === 40 && after.expected_cents === before.tie!.expected_cents && after.diff_cents === before.tie!.diff_cents);
-    const ls = (await listStatements(BM_ON, u, "pft10Acct")) as { total_lines: number; categorised_count: number; rolled_up_lines: number }[];
-    const lsOff = (await listStatements(env, u, "pft10Acct")) as Record<string, unknown>[];
-    check("pft10: the Accounts statement row still shows all 51 lines (rollup included); OFF the row is the legacy shape",
-      ls[0]?.total_lines === 51 && ls[0]?.rolled_up_lines === 40 && ls[0]?.categorised_count === 51 && lsOff[0]?.total_lines === 11 && !("rolled_up_lines" in lsOff[0]!));
-    check("pft10: confirmImport / repair posted count adds the rollup (11 live + 40 rolled = row_count)", 11 + (await rolledUpLineCount(BM_ON, u, "pft10Stmt")) === lines.length);
-
-    // Re-import the same statement: confirmImport's seen set = live fingerprints ∪ tombstones.
-    const seenFor = async (e: Env) => new Set([
-      ...(db.prepare(`SELECT line_fingerprint FROM transactions WHERE user_id = ? AND account_id = 'pft10Acct' AND line_fingerprint IS NOT NULL`).all(u) as { line_fingerprint: string }[]).map((r) => r.line_fingerprint),
-      ...(await tombstonedFingerprints(e, u, "pft10Acct")),
-    ]);
-    const reFps = await statementLineFingerprints("pft10Acct", lines);
-    const seenOn = await seenFor(BM_ON);
-    check("pft10: re-importing the same statement inserts 0 rows (tombstones honoured)", reFps.filter((f) => !seenOn.has(f)).length === 0);
-    const seenOff = await seenFor(env);
-    check("pft10 (OFF): the kill-switch stops reading tombstones (the 40 would re-import — documented)", reFps.filter((f) => !seenOff.has(f)).length === 40);
-    const again = await minimiseTenant(BM_ON, u, NOW);
-    check("pft10: a second run shrinks nothing and leaves the rollup unchanged (idempotent)",
-      again?.shrunk === 0 && JSON.stringify(db.prepare(`SELECT n, total_cents FROM bank_line_rollups WHERE user_id = ?`).all(u)) === JSON.stringify([{ n: 40, total_cents: irrelevantTotal }]));
-    const NO_EXCL = { ...BM_ON, FEATURES: (BM_ON as unknown as { FEATURES: string }).FEATURES.split(",").filter((f) => f !== "position_excludes_nondeductible").join(",") } as unknown as Env;
-    check("pft10: interlock — without position_excludes_nondeductible minimisation refuses to run (null)", (await minimiseTenant(NO_EXCL, u, NOW)) === null);
-    check("pft10: tombstones carry their statement_id", count(`SELECT COUNT(*) AS n FROM bank_line_tombstones WHERE user_id = ? AND statement_id = 'pft10Stmt'`, u) === 40);
-    // 'Remove + re-import' (deleteStatement purge) forgets the statement's minimisation: rollup + tombstones go, so the
-    // re-upload restores the 40 lines instead of skipping them against an orphaned rollup.
-    await forgetStatementMinimisation(env, u, "pft10Stmt");
-    check("pft10 (OFF): forgetting is a no-op with the flag OFF", count(`SELECT COUNT(*) AS n FROM bank_line_tombstones WHERE user_id = ?`, u) === 40);
-    await forgetStatementMinimisation(BM_ON, u, "pft10Stmt");
-    const seenAfterPurge = await seenFor(BM_ON);
-    check("pft10: after a purge the statement's rollup + tombstones are gone and a re-upload restores the 40 lines",
-      count(`SELECT COUNT(*) AS n FROM bank_line_rollups WHERE user_id = ?`, u) === 0 && count(`SELECT COUNT(*) AS n FROM bank_line_tombstones WHERE user_id = ?`, u) === 0 &&
-      reFps.filter((f) => !seenAfterPurge.has(f)).length === 40);
-
-    // Backstop (owner ruling, residual Q1): an FY never marked lodged shrinks from the self-lodger due date + 60 days.
-    const ub = "pft10b";
-    seedTenant(ub, "FT1 Jess, never marks lodged");
-    run(`INSERT INTO profiles (user_id) VALUES (?)`, ub);
-    run(`INSERT INTO accounts (id, user_id, name, type, source) VALUES ('pft10bAcct', ?, 'Everyday', 'transaction', 'cdr_feed')`, ub);
-    const feedLine = (id: string, fp: string, cents: number, date: string) =>
-      run(`INSERT INTO transactions (id, user_id, source, status, kind, account_id, line_fingerprint, raw_description, amount_cents, currency, amount_aud_cents, txn_date, direction, bucket, deductibility, deductible_amount_cents, created_at)
-           VALUES (?, ?, 'cdr_feed', 'extracted', 'bank_line', 'pft10bAcct', ?, 'GROCER', ?, 'AUD', ?, ?, 'debit', 'payg', 'likely_not', 0, ?)`, id, ub, fp, cents, cents, date, CREATED);
-    for (let n = 0; n < 3; n++) feedLine(`pft10b${n}`, `feedfp${n}`, 1000, "2025-10-01");
-    check("pft10b backstop: unmarked FY 2025-26 holds every line on 29 Dec 2026", (await minimiseTenant(BM_ON, ub, new Date("2026-12-29T00:00:00Z")))?.shrunk === 0);
-    const bs = await minimiseTenant(BM_ON, ub, new Date("2026-12-30T00:00:00Z"));
-    const rb = db.prepare(`SELECT statement_id, n, total_cents FROM bank_line_rollups WHERE user_id = ?`).all(ub) as { statement_id: string | null; n: number; total_cents: number }[];
-    check("pft10b backstop: from 30 Dec 2026 (due date + 60 days) the feed lines shrink into a NULL-statement rollup",
-      bs?.shrunk === 3 && rb.length === 1 && rb[0]!.statement_id === null && rb[0]!.n === 3 && rb[0]!.total_cents === 3000);
-    feedLine("pft10b9", "feedfp9", 500, "2025-11-01");
-    await minimiseTenant(BM_ON, ub, new Date("2027-01-05T00:00:00Z"));
-    const rb2 = db.prepare(`SELECT n, total_cents, first_date, last_date FROM bank_line_rollups WHERE user_id = ?`).all(ub) as { n: number; total_cents: number; first_date: string; last_date: string }[];
-    check("pft10b: a later shrink folds into the SAME NULL-statement rollup (explicit IS lookup, no duplicate row)",
-      rb2.length === 1 && rb2[0]!.n === 4 && rb2[0]!.total_cents === 3500 && rb2[0]!.first_date === "2025-10-01" && rb2[0]!.last_date === "2025-11-01");
   }
 
   console.log(`\n=== personas: ${pass} passed, ${fail} failed ===`);

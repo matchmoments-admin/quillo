@@ -1328,7 +1328,7 @@ export interface BankDisconnectResult {
 }
 
 // ── #582 first-timer journey (GET /api/journey?fy=, flag ft_journey; server src/lib/journey.ts) ──
-export type JourneyStepKey = "about" | "bring_in" | "claims" | "records" | "check" | "ship";
+export type JourneyStepKey = "setup" | "connect" | "review" | "lodge";
 export type JourneyStepStatus = "not_started" | "in_progress" | "needs_attention" | "done";
 export interface Journey {
   fy: string;

@@ -31,10 +31,10 @@ function Hero({ j, label }: { j: Journey; label: string }) {
     return (
       <FtCard className="p-6">
         <h1 className="text-[26px] font-semibold leading-tight tracking-[-0.02em] text-ink">Nothing in for FY {label} yet</h1>
-        <p className="mt-1 max-w-[65ch] text-[15px] text-muted">Start with a few questions about your year. Each step builds on the one before.</p>
+        <p className="mt-1 max-w-[65ch] text-[15px] text-muted">Start by checking you can get into myTax and answering a few questions about your year. Each step builds on the one before.</p>
         <div className="mt-4">
-          <FtLink to={STEP_ROUTE.about} variant="primary">
-            Start with About you
+          <FtLink to={STEP_ROUTE.setup} variant="primary">
+            Get set up
           </FtLink>
         </div>
       </FtCard>

@@ -8,9 +8,7 @@ import * as Tooltip from "@radix-ui/react-tooltip";
 import { api } from "./api";
 import { useFeatures, useAdminAccess, usePartnerAccess } from "./lib/features";
 import { FySwitcher, useActiveFy } from "./lib/activeFy";
-import { NextActionBar } from "./components/NextAction";
 import { JourneySpine } from "./components/JourneySpine";
-import { TabGuide } from "./components/TabGuide";
 import { Coachmarks } from "./components/Coachmarks";
 import { ChatProvider } from "./components/chat/ChatProvider";
 import { FloatingChat } from "./components/chat/FloatingChat";
@@ -23,7 +21,7 @@ type NavGroup = { label: string; items: NavItem[] };
 // in the order you actually do the job. The numbered labels are ORIENTATION, not locks:
 // every route stays freely clickable and tax work is iterative (import more, re-run books,
 // re-reconcile). "Bring in" lives on the Accounts page (add an account + upload its
-// statement together), surfaced as the active CTA by NextActionBar rather than a duplicate
+// statement together), surfaced as the active CTA by the JourneySpine rather than a duplicate
 // route. See memory: simplification-plan (six-stop happy path, 2026-06-07).
 const GROUPS: NavGroup[] = [
   // Dashboard is the home/landing tab (the default route "/"), sitting at the very top under the logo.
@@ -144,8 +142,8 @@ export function App() {
         offset={has("mobile_bottom_tabs") ? { bottom: "var(--tabbar-clearance)" } : undefined}
         mobileOffset={has("mobile_bottom_tabs") ? { bottom: "var(--tabbar-clearance)" } : undefined}
       />
-      {/* Floating "Ask Quillo" bubble — self-gates on the `floating_chat` flag (renders nothing when
-          off, so this is byte-identical until enabled). Portals to document.body and persists across
+      {/* Floating "Ask Quillo" bubble — self-gates on the `ask_quillo` flag (renders nothing when
+          off). Portals to document.body and persists across
           route changes because App is the durable layout that never unmounts. */}
       <FloatingChat />
 
@@ -184,33 +182,12 @@ export function App() {
             <div className="mx-auto max-w-5xl px-5 py-8 sm:px-8">
               {/* Clarity spine + per-tab guide — hidden on the full-screen onboarding wizard. */}
               {pathname !== "/onboarding" && (
-                has("guidance_v2") ? (
-                  /* Slice 7: one guidance surface — the enhanced spine carries the CTA + summary + guide;
-                     the FySwitcher is re-homed above it so the controls aren't orphaned. */
-                  <div className="mb-5 space-y-2">
-                    <div className="flex justify-end"><FySwitcher /></div>
-                    <JourneySpine pathname={pathname} enhanced />
-                  </div>
-                ) : (
-                <>
-                  {/* Stacks on mobile (NextActionBar full-width above the controls) → side-by-side from sm. */}
-                  <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
-                    <div className="w-full min-w-0 sm:w-auto sm:flex-1">
-                      <NextActionBar />
-                    </div>
-                    <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:flex-none sm:gap-3">
-                      <FySwitcher />
-                      <TabGuide pathname={pathname} />
-                    </div>
-                  </div>
-                  {/* #247/#244: persistent journey breadcrumb (where am I in Set up→…→File). */}
-                  {has("journey_spine") && (
-                    <div className="mb-5 -mt-2">
-                      <JourneySpine pathname={pathname} />
-                    </div>
-                  )}
-                </>
-                )
+                /* Slice 7: one guidance surface — the spine carries the CTA + summary + guide;
+                   the FySwitcher is re-homed above it so the controls aren't orphaned. */
+                <div className="mb-5 space-y-2">
+                  <div className="flex justify-end"><FySwitcher /></div>
+                  <JourneySpine pathname={pathname} />
+                </div>
               )}
               <Outlet />
             </div>

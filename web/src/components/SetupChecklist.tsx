@@ -3,13 +3,13 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api } from "../api";
 import { useActiveFy } from "../lib/activeFy";
-import { Panel, PanelHead, QueryError } from "./ui";
+import { QueryError } from "./ui";
 
 // #246 (Wave 3): the onboarding-completeness checklist. Tells the user WHICH evidence to bring in and
 // WHY, so nothing is discovered missing at hand-off (the founder-E2E gap). It DERIVES status from data
 // the app already has (situation + accounts + income + work-use) — no new table — and persists per-item
 // "done"/"skip" for the items we can't reliably auto-detect (rental docs) in localStorage. WHY-first +
-// deep links, per the #248 research. Flag-gated by `onboarding_checklist`; auto-hides once everything is
+// deep links, per the #248 research. Auto-hides once everything is
 // done or skipped, so it never nags a set-up user. General information only — not tax advice.
 
 const LS_KEY = "quillo:setup-checklist";
@@ -25,7 +25,7 @@ function readMarks(): Marks {
 
 type Item = { id: string; title: string; why: string; href: string; done: boolean; manual: boolean };
 
-export function SetupChecklist({ embedded = false }: { embedded?: boolean } = {}) {
+export function SetupChecklist() {
   const { fy } = useActiveFy();
   const [marks, setMarks] = useState<Marks>(readMarks);
 
@@ -152,25 +152,13 @@ export function SetupChecklist({ embedded = false }: { embedded?: boolean } = {}
     </div>
   );
 
-  // Slice 8 (checklist_v2): rendered INSIDE ChecklistCard's Panel as a "Bring these in" sub-section
-  // (no own Panel), so the two checklists read as one. Same items/marks/GENERAL-INFO — just unwrapped.
-  if (embedded) {
-    return (
-      <div>
-        <div className="mb-1 text-sm font-semibold text-ink">Bring these in <span className="font-normal text-muted">· {doneCount} of {visible.length} done</span></div>
-        <p className="mb-3 text-xs text-ink-2">A few evidence sources so nothing's missing when you hand off your year. General information only — not tax advice.</p>
-        {itemsList}
-      </div>
-    );
-  }
-
+  // Slice 8: rendered INSIDE the Dashboard ChecklistCard's Panel as a "Bring these in" sub-section
+  // (no own Panel), so the two checklists read as one.
   return (
-    <Panel>
-      <PanelHead title="Bring these in" sub={`${doneCount} of ${visible.length} done`} />
-      <p className="-mt-1 mb-3 text-sm text-ink-2">
-        A few evidence sources so nothing's missing when you hand off your year. General information only — not tax advice.
-      </p>
+    <div>
+      <div className="mb-1 text-sm font-semibold text-ink">Bring these in <span className="font-normal text-muted">· {doneCount} of {visible.length} done</span></div>
+      <p className="mb-3 text-xs text-ink-2">A few evidence sources so nothing's missing when you hand off your year. General information only — not tax advice.</p>
       {itemsList}
-    </Panel>
+    </div>
   );
 }

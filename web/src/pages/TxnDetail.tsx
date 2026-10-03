@@ -25,7 +25,6 @@ export function TxnDetail() {
   const [date, setDate] = useState<string>("");
   const [seededId, setSeededId] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
-  const [showDetail, setShowDetail] = useState(false); // #253: "Add detail" disclosure (categorise_v2)
   // "Edit one → update its look-alikes": after a categorisation save, hold on the page to offer
   // fanning the same edit out to the still-to-review siblings (+ learn a rule). Null = navigate away.
   const [applyTo, setApplyTo] = useState<{ n: number; total_cents: number; edit: { bucket?: string; ato_label?: string; property_id?: string } } | null>(null);
@@ -177,18 +176,10 @@ export function TxnDetail() {
   const props = sitQ.data?.properties ?? [];
   const looksRent = /\brent\b|rental payment|real estate|property manager|tenancy/.test(desc) && (txn.bucket === "payg" || txn.bucket === "unknown" || txn.bucket == null);
   const wfhActive = (wfhQ.data?.wfh_hours ?? 0) > 0;
-  // #253: collapse the secondary fields behind "Add detail" when categorise_v2 is on, so the screen is
-  // one decision (Category) + one button. Never hide a field that already carries content — an existing
-  // ATO label, a property/refund that needs choosing, or an undated row — so the disclosure auto-opens
-  // for those. Flag OFF ⇒ detailOpen is always true ⇒ every field inline as before (byte-identical).
-  const v2cat = has("categorise_v2");
-  const detailOpen = !v2cat || showDetail || detailRelevant;
-
-  // Slice 6 (txn_drawer): the secondary fields as named pieces. Primary column = Category + property
+  // Slice 6: the secondary fields as named pieces. Primary column = Category + property
   // (+ record-income) + Save; everything else folds into ONE "More options" drawer that auto-opens on
   // the FULL detailRelevant condition (so a dated supplier refund's link picker is never buried — a
-  // silent money bug). OFF ⇒ these consts render in exactly today's positions ⇒ byte-identical.
-  const drawer = has("txn_drawer");
+  // silent money bug).
   const atoLabelField = (
     <label className="block">
       <span className="text-xs font-medium uppercase tracking-wide text-muted">ATO label <InfoTip k="ato_label" /></span>
@@ -401,31 +392,9 @@ export function TxnDetail() {
               </select>
             </label>
 
-            {drawer ? (
-              /* Slice 6: primary column keeps just the property selector + record-income; ATO label,
-                 date and refund-link live in the "More options" drawer below (auto-opens when relevant). */
-              propertyField
-            ) : (
-              <>
-                {v2cat && !detailRelevant && (
-                  <button
-                    type="button"
-                    onClick={() => setShowDetail((s) => !s)}
-                    className="text-xs font-semibold text-ink-3 underline underline-offset-2 hover:text-ink"
-                  >
-                    {showDetail ? "Hide detail" : "Add detail (ATO label, date…)"}
-                  </button>
-                )}
-                {detailOpen && (
-                  <>
-                    {atoLabelField}
-                    {propertyField}
-                    {refundField}
-                    {dateField}
-                  </>
-                )}
-              </>
-            )}
+            {/* Slice 6: primary column keeps just the property selector + record-income; ATO label,
+                date and refund-link live in the "More options" drawer below (auto-opens when relevant). */}
+            {propertyField}
 
             <button
               onClick={() => save.mutate()}
@@ -480,55 +449,21 @@ export function TxnDetail() {
             </Card>
           )}
 
-          {drawer ? (
-            /* Slice 6: ONE "More options" drawer replacing today's two disclosures. Auto-opens on the FULL
-               detailRelevant condition so a dated supplier refund's link picker is never buried (money bug). */
-            <details className="rounded-2xl border border-line bg-card" open={moreOpen} onToggle={(e) => setMoreOpen(e.currentTarget.open)}>
-              <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-ink-2">More options — ATO label · date · refund link · reimbursement · who claims · QuickBooks · delete</summary>
-              <div className="space-y-3 px-4 pb-4">
-                {atoLabelField}
-                {dateField}
-                {refundField}
-                {reimbursedCard}
-                {attributionCard}
-                {qboSection}
-                {deleteBtn}
-                {historySection}
-              </div>
-            </details>
-          ) : (
-            <>
-              {/* Reimbursement (G2) + who-paid-vs-who-claims attribution (Phase B). With apply_to_siblings on,
-                  the default detail view is category → property → apply-to-siblings, and these power-user
-                  controls tuck into a collapsed "Advanced" section (#166). Flag-off ⇒ rendered inline, exactly
-                  as before (byte-identical). */}
-              {(() => {
-                if (!reimbursedCard && !attributionCard) return null;
-                if (has("apply_to_siblings")) {
-                  return (
-                    <details className="rounded-2xl border border-line bg-card">
-                      <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-ink-2">Advanced — reimbursement &amp; who claims</summary>
-                      <div className="space-y-3 px-4 pb-4">
-                        {reimbursedCard}
-                        {attributionCard}
-                      </div>
-                    </details>
-                  );
-                }
-                return (
-                  <>
-                    {reimbursedCard}
-                    {attributionCard}
-                  </>
-                );
-              })()}
-              {/* QuickBooks: reconcile-vs-push. Fed accounts reconcile (don't push); use this
-                  only for a NON-FEED company expense (cash / a card not connected to QBO). */}
+          {/* Slice 6: ONE "More options" drawer replacing today's two disclosures. Auto-opens on the FULL
+             detailRelevant condition so a dated supplier refund's link picker is never buried (money bug). */}
+          <details className="rounded-2xl border border-line bg-card" open={moreOpen} onToggle={(e) => setMoreOpen(e.currentTarget.open)}>
+            <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-ink-2">More options — ATO label · date · refund link · reimbursement · who claims · QuickBooks · delete</summary>
+            <div className="space-y-3 px-4 pb-4">
+              {atoLabelField}
+              {dateField}
+              {refundField}
+              {reimbursedCard}
+              {attributionCard}
               {qboSection}
               {deleteBtn}
               {historySection}
-            </>
-          )}
+            </div>
+          </details>
         </div>
       </div>
     </div>

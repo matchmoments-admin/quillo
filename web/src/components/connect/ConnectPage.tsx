@@ -506,7 +506,7 @@ function Statements() {
 
 function IncomeWaiting() {
   const { fy, label } = useActiveFy();
-  // A legacy /income link lands here as /bring-in#income: open the form it was pointing at.
+  // A legacy /income link lands here as /connect#income: open the form it was pointing at.
   const { hash } = useLocation();
   const [adding, setAdding] = useState(hash === "#income");
   // Keyed under ["income", label] so every Income write (which invalidates that prefix) refreshes the card.

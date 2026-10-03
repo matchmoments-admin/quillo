@@ -19,11 +19,17 @@
 //    NOT auto-deny it. The "genuinely available for rent" judgement is surfaced as a defer finding.
 
 import type { DeductibilityState } from "./taxonomy";
+import { anyPatternHits } from "./token-match";
 
 /** One match list in the rule pack's payg_deductibility section. */
 export interface DeductibilityList {
-  /** comma-separated substrings matched (case-insensitive) against `${ato_label} ${merchant}`. */
+  /** comma-separated patterns matched case-insensitively ON WORD BOUNDARIES (token-match.ts; a
+   *  trailing '*' marks a deliberate prefix/stem) against `${ato_label} ${merchant}`. */
   match: string;
+  /** optional comma-separated EXCEPTION patterns: when any hits, this list does not fire. Keeps a broad
+   *  private-spend token from swallowing a work item that shares its word ('health' vs AHPRA / the
+   *  Health Services Union; 'footwear' vs safety footwear). Absent ⇒ no exceptions. */
+  unless?: string;
   /** GENERAL-INFO note explaining the verdict (shown in the "excluded" breakdown / review copy). */
   note: string;
 }
@@ -50,13 +56,9 @@ export interface DeductibilityVerdict {
   note: string | null;
 }
 
-/** True when any comma-separated token in `list.match` is a substring of `haystack`. */
+/** True when any pattern in `list.match` hits `haystack` on word boundaries and no `unless` pattern does (#551). */
 function listHits(list: DeductibilityList, haystack: string): boolean {
-  return list.match
-    .split(",")
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean)
-    .some((tok) => haystack.includes(tok));
+  return anyPatternHits(list.match, haystack) && !anyPatternHits(list.unless, haystack);
 }
 
 /**

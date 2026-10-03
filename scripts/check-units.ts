@@ -726,7 +726,7 @@ console.log("depMethodConflict (Div 40 method lock)");
 }
 
 // ── Claimability matcher: rules-first, defer gating ───────────────────────────
-import { matchClaimRules, suggestionText, enumerateSituationClaims, classifyClaim, uncoveredOccupations, ruleKey, type ClaimRule, type ClaimSituation } from "../src/lib/claimability";
+import { matchClaimRules, merchantMatches, suggestionText, enumerateSituationClaims, classifyClaim, uncoveredOccupations, ruleKey, type ClaimRule, type ClaimSituation } from "../src/lib/claimability";
 import rulePack from "../src/rulepacks/au-v1.json" assert { type: "json" };
 
 console.log("claimability");
@@ -1581,7 +1581,8 @@ console.log("readiness");
 }
 
 // ── DEDUCTIBILITY: deny-by-default matcher + the headline/display reconciliation ──
-import { verdictForTxn } from "../src/lib/deductibility";
+import { verdictForTxn, denyNoteFor } from "../src/lib/deductibility";
+import { anyPatternHits } from "../src/lib/token-match";
 import { deductionGroupForRow, positionAmountCents } from "../src/lib/report";
 import { splitAttribution, classifyAttribution } from "../src/lib/attribution";
 import { prepareAttributions } from "../src/lib/attribution-write";
@@ -1624,6 +1625,47 @@ console.log("deductibility (deny-by-default)");
   check("unclassified payg → undetermined (deny-by-default excludes it)", verdictForTxn("payg", "payg:other", "Mystery Shop", section).deductibility === "undetermined");
   check("non-payg bucket → undetermined (handled by bucket)", verdictForTxn("company", "company:software", "Anthropic", section).deductibility === "undetermined");
   check("asset → undetermined (handled by bucket)", verdictForTxn("asset", "asset:furniture", "Officeworks", section).deductibility === "undetermined");
+
+  // ── #551 word-boundary matching (relevance-scan D1/D2) ──
+  // Matcher primitives: whole words, phrases + punctuation, tolerated plural, explicit '*' stem.
+  check("#551 token: 'ama' does NOT hit AMAZON", !anyPatternHits("ama", "AMAZON AU MARKETPLACE"));
+  check("#551 token: 'tal' does NOT hit Total Tools / hospital / digital", ["TOTAL TOOLS MOOREBANK", "Royal Hospital parking", "Digital Ocean"].every((m) => !anyPatternHits("tal", m)));
+  check("#551 token: 'asu' does NOT hit 'casual'", !anyPatternHits("asu", "casual staff uniform"));
+  check("#551 token: 'pub' / 'bar' do NOT hit Public Transport / Barbeques", !anyPatternHits("pub", "Public Transport Victoria") && !anyPatternHits("bar", "Barbeques Galore"));
+  check("#551 token: whole word still hits (TAL / AMA / pub / bar)", anyPatternHits("tal", "TAL Life Limited") && anyPatternHits("ama", "AMA Victoria subs") && anyPatternHits("pub", "The Local Pub") && anyPatternHits("bar", "HOTEL BAR & GRILL"));
+  check("#551 token: digits + punctuation are boundaries (WOOLWORTHS1234, SQ *CAFE, DOORDASH*X)", anyPatternHits("woolworths", "WOOLWORTHS1234 BONDI") && anyPatternHits("cafe", "SQ *CAFE") && anyPatternHits("doordash", "DOORDASH*BURGER"));
+  check("#551 token: multi-word + punctuated phrases (mitre 10, h&r block, health:allied, double spaces)", anyPatternHits("mitre 10", "MITRE  10 PENRITH") && anyPatternHits("h&r block", "H&R Block tax") && anyPatternHits("health:allied", "health:allied Smile") && anyPatternHits("income-protection", "insurance:income-protection"));
+  check("#551 token: simple plural tolerated (restaurant→RESTAURANTS, taxi→TAXIS)", anyPatternHits("restaurant", "Restaurants AU") && anyPatternHits("taxi", "Silver Taxis"));
+  check("#551 token: '*' marks an explicit stem (physiotherap* → PHYSIOTHERAPY); bare stem does not", anyPatternHits("physiotherap*", "Physiotherapy Clinic") && !anyPatternHits("physiotherap", "Physiotherapy Clinic"));
+  check("#551 token: empty / null inputs never hit", !anyPatternHits("", "anything") && !anyPatternHits(null, "x") && !anyPatternHits("x", null) && !anyPatternHits(" , ", "x"));
+  // Claim hints (merchantMatches / matchClaimRules — D2).
+  {
+    const rules = rulePack.claimability as ClaimRule[];
+    const ids = (merchant: string, occupations: string[] = []) => matchClaimRules(rules, { merchant, occupations }).map((r) => r.id);
+    check("#551 D2: AMAZON does not fire the union-fee hint (ama)", !ids("AMAZON AU MARKETPLACE").includes("au-gen-union-fees"));
+    check("#551 D2: Total Tools / hospital / digital do not fire income-protection (tal)", ["TOTAL TOOLS MOOREBANK", "St Vincent's Hospital", "Digital Ocean"].every((m) => !ids(m).includes("au-gen-income-protection")));
+    check("#551 D2: casual does not fire union fees (asu)", !ids("Casual Corner").includes("au-gen-union-fees"));
+    check("#551 D2 regression: TAL insurer still fires income-protection", ids("TAL Life Limited premium").includes("au-gen-income-protection"));
+    check("#551 D2 regression: AMA / ASU still fire union fees", ids("AMA Victoria").includes("au-gen-union-fees") && ids("ASU NSW").includes("au-gen-union-fees"));
+    check("#551 D2 regression: Total Tools still fires the apprentice tools hint (phrase)", ids("TOTAL TOOLS MOOREBANK", ["apprentice"]).includes("au-occ-apprentice"));
+    check("#551 D2 regression: AHPRA still fires the healthcare hint", ids("AHPRA renewal", ["healthcare_worker"]).includes("au-occ-healthcare"));
+    check("#551 merchantMatches: no hint = no constraint", merchantMatches(null, "anything") && merchantMatches("", "anything"));
+  }
+  // Not-deductible default list (listHits / verdictForTxn / denyNoteFor — D1 part a).
+  const v = (m: string, label: string | null = null) => verdictForTxn("payg", label, m, section).deductibility;
+  check("#551 D1: AHPRA (Australian Health Practitioner…) is NOT denied", v("AHPRA Australian Health Practitioner Regulation Agency") !== "likely_not");
+  check("#551 D1: Health Services Union is NOT denied — union suggestion wins", v("Health Services Union") === "suggested_deductible");
+  check("#551 D1: safety footwear / non-slip work shoes are NOT denied", v("Steel cap safety footwear") !== "likely_not" && v("Non-slip work shoes") !== "likely_not");
+  check("#551 D1: Barbeques Galore is NOT denied (bar)", v("Barbeques Galore") !== "likely_not");
+  check("#551 D1: Public Transport Victoria / PTV is NOT denied (pub)", v("Public Transport Victoria") !== "likely_not" && v("PTV myki top up") !== "likely_not");
+  check("#551 D1: denyNoteFor agrees (Barbeques Galore not flagged in a property bucket)", denyNoteFor(null, "Barbeques Galore", section) === null);
+  check("#551 D1 regression: groceries / supermarkets still denied (incl. glued digits)", ["COLES 0456 SYDNEY", "WOOLWORTHS1234 BONDI", "ALDI STORES", "IGA X-PRESS", "Grocery Run", "Supermarkets Online"].every((m) => v(m) === "likely_not"));
+  check("#551 D1 regression: pubs / bars / liquor / cafes / takeaway still denied", ["THE LOCAL PUB", "HOTEL BAR & GRILL", "LIQUORLAND 3312", "STARBUCKS COFFEE", "UBER EATS", "DOORDASH*BURGER", "Restaurants AU"].every((m) => v(m) === "likely_not"));
+  check("#551 D1 regression: gyms / general health still denied", ["Anytime Fitness", "City Gym", "NIB HEALTH FUNDS", "BUPA AUSTRALIA"].every((m) => v(m) === "likely_not") && v("Bodyfit", "health-fitness") === "likely_not");
+  check("#551 D1 regression: everyday clothing / shoes still denied", ["Myer clothing", "Platypus Shoes", "Foot Locker footwear"].every((m) => v(m) === "likely_not"));
+  check("#551 D1 regression: allied-health stems still denied (physiotherapy, optometrists, podiatry, chiropractic)", ["Physiotherapy Clinic", "Sydney Physio", "Specsavers optometrists", "Podiatry Plus", "Chiropractic centre", "Smile Dental"].every((m) => v(m) === "likely_not"));
+  check("#551 apportion regression: phone / iPhone / energy / fuel / tolls / taxis", ["Telstra mobile", "Apple iPhone 15", "Origin Energy", "Shell fuel", "Linkt toll", "13CABS taxi"].every((m) => v(m) === "needs_apportionment"));
+  check("#551 apportion: 'car' no longer hits cartridges / card", v("Officeworks - printer paper, toner cartridges") === "undetermined" && v("card 4111 ref") === "undetermined");
 
   // deductionGroupForRow: flag OFF = legacy (payg/property count; asset/unknown excluded; company apart).
   check("OFF: payg undetermined counts", deductionGroupForRow("payg", "undetermined", false) === "deduction");

@@ -4,6 +4,8 @@
 // deduction the rules don't sanction. Pipeline order: extract → user_rules (bucket) →
 // claimability (claim_type / deductibility / defer). GENERAL-INFO only.
 
+import { anyPatternHits } from "./token-match";
+
 export interface ClaimRule {
   scope_type: string;   // bucket|property_status|entity_kind|occupation
   scope_value: string;
@@ -25,14 +27,11 @@ export interface ClaimContext {
   entity_kinds?: string[];
 }
 
+/** Word-boundary match of a rule's comma-separated merchant_hint (see token-match.ts, #551) —
+ *  'ama' must not hit AMAZON nor 'tal' TOTAL TOOLS. No hint = no merchant constraint. */
 export function merchantMatches(hint: string | null | undefined, merchant: string): boolean {
   if (!hint) return true; // no merchant constraint on this rule
-  const m = merchant.toLowerCase();
-  return hint
-    .split(",")
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean)
-    .some((t) => m.includes(t));
+  return anyPatternHits(hint, merchant);
 }
 
 // Optional AND-gate: a rule may additionally require the tenant to have a given entity kind (e.g. a

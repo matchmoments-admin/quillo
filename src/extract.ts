@@ -1318,7 +1318,7 @@ const OCCUPATION_RULES_TOOL: Anthropic.Tool = {
           properties: {
             scope_type: { type: "string", enum: ["occupation"], description: "Always 'occupation'." },
             scope_value: { type: "string", description: "The occupation key these rules apply to (echo the one given)." },
-            merchant_hint: { type: ["string", "null"], description: "Optional comma-separated merchant substrings, or null." },
+            merchant_hint: { type: ["string", "null"], description: "Optional comma-separated merchant words or phrases (matched on whole-word boundaries; end one with * to match a word prefix, e.g. 'physiotherap*'), or null." },
             ato_label: { type: ["string", "null"], description: "ATO deduction label (e.g. 'D5 Other work-related expenses'), or null." },
             claim_type: { type: "string", enum: [...CLAIM_TYPES], description: "How the claim is treated; use 'immediate' for ordinary work expenses." },
             general_info_note: { type: "string", description: "One GENERAL-INFO sentence describing the category. No dollar figures. No guarantee of deductibility." },

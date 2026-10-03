@@ -26,11 +26,13 @@ const subscribeScheme = (fn: () => void) => {
 };
 const getPrefersDark = () => typeof window !== "undefined" && !!window.matchMedia && window.matchMedia(DARK_QUERY).matches;
 
-/** The current Appearance (session choice → stored ui_state.theme → "system") and a setter that persists it. */
+/** The current Appearance (session choice → stored ui_state.theme → "light") and a setter that persists it.
+ *  Default is LIGHT, not System: Quiet ledger light is the brand look the owner approved; dark is an
+ *  explicit opt-in (owner feedback 2026-10-04 — a dark-mode OS silently switched the whole app dark). */
 export function useAppearance(): { appearance: Appearance; setAppearance: (next: Appearance) => void } {
   const session = useSyncExternalStore(subscribeChosen, getChosen);
   const sit = useQuery({ queryKey: ["situation"], queryFn: () => api.situation() });
-  const appearance = session ?? parseAppearance(sit.data?.profile?.ui_state) ?? "system";
+  const appearance = session ?? parseAppearance(sit.data?.profile?.ui_state) ?? "light";
   const setAppearance = (next: Appearance) => {
     chosen = next;
     listeners.forEach((fn) => fn());

@@ -8,7 +8,7 @@ import { ordinaryAssessableCents, validateComponents, parseAmmaComponents, type 
 import { QuickBooksAdapter } from "./ledger/qbo";
 import { revokeAndDisconnect } from "./lib/qbo-oauth";
 import { purgeTenant as purgeTenantData, exportTenant as exportTenantData, flagOldData as flagOldDataSweep, hasPendingNudge, type PurgeResult } from "./lib/retention";
-import { COUNTABLE, FX_CONVERTED, assertCanonicalSource, fetchAskDigestRows, spendRunRate } from "./lib/queries";
+import { COUNTABLE, COUNTABLE_INCOME, FX_CONVERTED, assertCanonicalSource, fetchAskDigestRows, spendRunRate } from "./lib/queries";
 import { billerNormalize, detectRecurrence, classifyBiller, paymentsPerYear, recurringCopy, signpostFor, insurerResetBasis, nextResetDate, weeksUntil, phiResetNudgeCopy, phiDetectedCopy, type RecurringOccurrence, type ResetBasis } from "./lib/advisory";
 import { findPhisProduct } from "./lib/phis-seed";
 import { matchEnergyOffer, getOfferById, buildReferralUrl, opportunityTakesEnergyCta, type PartnerDB } from "./lib/partners";
@@ -27,6 +27,7 @@ import { fyLabel, fyBounds, fyStartYearStr, parseFyStartYear, normaliseFyLabel }
 import { cgtUnits } from "./lib/cgt";
 import { costBaseFromElements, validateCostBaseElements, withCostBaseElements, type CostBaseElements } from "./lib/capital";
 import { capitalReadinessSignals } from "./lib/capital-signals";
+import { firstTimerIncomeSignals, wantsIncomeStatementItem } from "./lib/first-timer-signals";
 import { applyCapitalColumnMap, type CapitalColumnMap, type CapitalDraftRow, type CapitalImportPreview } from "./lib/capital-import";
 import { resolveJurisdictionForUser, currentFyStartYearFor, baseCurrencyOf, AU_DESCRIPTOR, type JurisdictionDescriptor } from "./lib/jurisdiction";
 import { assessReadiness, type FilingReadiness, type FilingReadinessSignals } from "./lib/readiness";
@@ -51,7 +52,7 @@ import { spentTodayCents, spentTodayGlobalCents, spentThisMonthGlobalCents, note
 import { billingPolicy, freeCreditGrantE4 } from "./lib/billing";
 import { parseTransactionAlert } from "./lib/bank-parsers";
 import auV1RulePack from "./rulepacks/au-v1.json";
-import { assertBucketKeys, isBucket, isPropertyBucket, normalizeAtoLabel, DEDUCTIBILITY_STATES } from "./lib/taxonomy";
+import { assertBucketKeys, isBucket, isPropertyBucket, normalizeAtoLabel, DEDUCTIBILITY_STATES, WAGE_INCOME_TYPES } from "./lib/taxonomy";
 import { verdictForTxn } from "./lib/deductibility";
 import { featureOn, categoriseMode } from "./lib/features";
 
@@ -2251,6 +2252,11 @@ export class TaxAgent extends Agent<Env> {
     if (inc.income_type === "non_cash_business" && !featureOn(this.env, "non_cash_income")) {
       throw new Error("non_cash_business income requires the non_cash_income feature");
     }
+    // first_timer_income (#550): the two first-timer types are assessable by construction too, so their
+    // creation is gated the same way — OFF ⇒ no such rows ⇒ readiness labels/copy byte-identical.
+    if ((inc.income_type === "government_payment" || inc.income_type === "foreign_employment") && !featureOn(this.env, "first_timer_income")) {
+      throw new Error(`${inc.income_type} income requires the first_timer_income feature`);
+    }
     // A property_id reaching the income table from the untrusted POST must belong to this tenant —
     // assertOwns no-ops on null/undefined, so trusted internal callers (clarify/payslip) are unaffected.
     // C-L: the same guard for a supplied holding — a cross-tenant cgt_asset_id would be a dangling join.
@@ -4124,6 +4130,9 @@ export class TaxAgent extends Agent<Env> {
     // is what the C3 hardening review found them doing. Populated only when the relevant flag is on, so
     // OFF keeps the findings byte-identical.
     const capitalSignals = await capitalReadinessSignals(this.env, userId);
+    // #550 first_timer_income: payer count + sole-trader expense total (src/lib/first-timer-signals.ts — the
+    // same function the persona goldens call). Flag OFF ⇒ {} ⇒ findings byte-identical.
+    const firstTimerSignals = await firstTimerIncomeSignals(this.env, userId, startYear, await this.jurisdictionFor(userId));
     // GST registration status for the turnover nudge — registered if the tenant default is set OR any
     // entity is flagged (mirrors gstTotals' registration test in ledger-totals.ts).
     const entGstReg = (await this.env.DB.prepare(`SELECT COUNT(*) AS n FROM entities WHERE user_id = ? AND COALESCE(gst_registered,0) = 1`).bind(userId).first<{ n: number }>())?.n ?? 0;
@@ -4176,6 +4185,7 @@ export class TaxAgent extends Agent<Env> {
       mainResidenceDisposalN: mainResDisposal?.n ?? 0,
       mfCostBaseAdjustmentCents,
       ...capitalSignals,
+      ...firstTimerSignals,
       ...(featureOn(this.env, "non_cash_income") ? { nonCashIncomeEnabled: true } : {}),
       ...(integrityOn ? {
         frankingHoldingThresholdCents: integrityThresholds?.franking_holding_rule_threshold_cents ?? null,
@@ -4343,6 +4353,25 @@ export class TaxAgent extends Agent<Env> {
       items.push({ item_key: "payg_self_education", title: "Work-related courses, subscriptions or self-education?", rationale: "Self-education and work subscriptions are deductible where they maintain or improve the skills of your CURRENT job (not to get a new one or for a separate venture). Apportion out any private use.", trigger_bucket: "payg", due_hint: "Before lodging" });
       items.push({ item_key: "payg_donations", title: "Donations of $2+ to a registered charity (DGR)?", rationale: "Gifts of $2 or more to a deductible gift recipient are generally deductible — keep the receipts. Buying raffle tickets or event tickets is not a deductible gift.", trigger_bucket: "payg", due_hint: "Before lodging" });
       items.push({ item_key: "payg_tax_agent_fee", title: "Add last year's tax-agent / accountant fee", rationale: "The cost of managing your tax affairs — registered tax agent and accountant fees — is generally deductible in the year you pay it.", trigger_bucket: "payg", due_hint: "Before lodging" });
+    }
+    // #550 first_timer_income (M1): the income side of the checklist. generateChecklist listed only PAYG
+    // DEDUCTION reminders, so a first-timer who connected a bank and stopped was never told their wages are
+    // missing. Added for an employee (or anyone whose bank shows personal-income credits this FY) while no
+    // wage-type income is recorded for the FY. Flag OFF ⇒ the queries don't run and nothing is added.
+    if (featureOn(this.env, "first_timer_income")) {
+      const startYear = parseFyStartYear(targetFy);
+      const { start, end } = fyBounds(startYear, await this.jurisdictionFor(userId));
+      const wageTypes = [...WAGE_INCOME_TYPES];
+      // Same credit population as report.income_by_bucket (incl. the income_dedupe exclusion).
+      const dedupe = featureOn(this.env, "income_dedupe") ? " AND matched_income_id IS NULL" : "";
+      const [wageRows, anyIncome, personalCredits] = await Promise.all([
+        this.env.DB.prepare(`SELECT COUNT(*) AS n FROM income WHERE user_id = ? AND fy = ? AND income_type IN (${wageTypes.map(() => "?").join(",")})`).bind(userId, targetFy, ...wageTypes).first<{ n: number }>(),
+        this.env.DB.prepare(`SELECT COUNT(*) AS n FROM income WHERE user_id = ? AND fy = ?`).bind(userId, targetFy).first<{ n: number }>(),
+        this.env.DB.prepare(`SELECT COUNT(*) AS n FROM transactions WHERE user_id = ? AND txn_date >= ? AND txn_date <= ? AND bucket = 'income_personal' AND ${COUNTABLE_INCOME}${dedupe}`).bind(userId, start, end).first<{ n: number }>(),
+      ]);
+      if (wantsIncomeStatementItem({ hasEmployment, wageRows: wageRows?.n ?? 0, anyIncomeRows: anyIncome?.n ?? 0, personalCredits: personalCredits?.n ?? 0 })) {
+        items.push({ item_key: "income_statement", title: "Upload your income statement (from myGov) — your bank shows take-home pay, not your gross pay and tax withheld", rationale: "Your return needs your gross pay and the tax your employer withheld, which are on your income statement in ATO online services (via myGov) once your employer marks it \"Tax ready\" — usually by mid-July. Bank deposits are net pay, so Quillo never counts them as income. Upload the statement on the Income page; add any Centrelink payments (e.g. Youth Allowance) there too. General information only.", trigger_bucket: "income_personal", due_hint: "After 14 July" });
+      }
     }
     items.push({ item_key: "super_notice_of_intent", title: "Lodge your Notice of intent to claim a personal super deduction (and get the fund's acknowledgment)", rationale: "A personal super contribution is only deductible with a valid Notice of intent acknowledged by the fund — lodge before you lodge your return or by 30 June of the following year.", trigger_bucket: "payg", due_hint: "Before lodging" });
 

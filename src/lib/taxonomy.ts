@@ -47,6 +47,11 @@ export function isPropertyBucket(bucket: string | null | undefined): boolean {
 /** First-class income kinds (income is modelled, never inferred from bank credits). */
 export const INCOME_TYPES = [
   "salary_payg",
+  "government_payment",  // #550 (flag first_timer_income): taxable Centrelink payments — Youth Allowance, Austudy,
+                         // JobSeeker (myTax items 5/6). Assessable by construction; creation-gated in recordIncome.
+  "foreign_employment",  // #550 (flag first_timer_income): employment income earned overseas (item 20). Assessable
+                         // by construction (residency-aware exclusion is a held owner decision — G10); a readiness
+                         // nudge fires when the person's residency is non-AU. Creation-gated in recordIncome.
   "business",            // #136: net income of an unincorporated sole trader / ABN individual (ATO item 15).
                          // Assessable to the INDIVIDUAL — sums into income.gross like any other type; its
                          // s8-1 expenses reach the personal headline via an individual-owned 'business'
@@ -81,6 +86,15 @@ export const INCOME_TYPES = [
   "other",
 ] as const;
 export type IncomeType = (typeof INCOME_TYPES)[number];
+
+/** Income-type GROUPS — one definition each, shared by readiness (PSI/GST/Div 35/income-completeness
+ * nudges), the first-timer signals and the checklist, so a new type is added in one place. */
+export const BUSINESS_INCOME_TYPES: ReadonlySet<string> = new Set(["business", "foreign_business", "non_cash_business"]);
+export const RENT_INCOME_TYPES: ReadonlySet<string> = new Set(["rent", "foreign_rent"]);
+/** Foreign-SOURCED income (relative to the home jurisdiction) — named explicitly, never by prefix match. */
+export const FOREIGN_INCOME_TYPES: ReadonlySet<string> = new Set(["foreign_pension", "foreign_rent", "foreign_business", "foreign_employment"]);
+/** #550: income an income statement / Centrelink summary evidences — "are the wages recorded?" */
+export const WAGE_INCOME_TYPES: ReadonlySet<string> = new Set(["salary_payg", "government_payment", "foreign_employment"]);
 
 /** Depreciating/capital asset classes (Div 40 / Div 43 / business / pool / immediate). */
 export const ASSET_CLASSES = [

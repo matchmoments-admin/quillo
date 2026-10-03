@@ -4,6 +4,11 @@
 > taxpayers*). Researched 2026-10-03 against the code on `main` (`e441af4`) and primary ATO sources.
 > General information only, not tax advice. The goldens and `docs/personas.md` are **not** edited
 > here; the proposed additions are a draft at the end.
+>
+> **Status (2026-10-03, #550):** G1 (income completeness finding + checklist item), G3 (two-payer note),
+> G4/G12 (`government_payment`, `foreign_employment`), G6 (Div 35 nudge) and the G10 review nudge are
+> built behind flag `first_timer_income`, with goldens `pft1`–`pft6`. The tables below are the
+> pre-build snapshot; [`docs/personas.md`](../personas.md) is the live coverage tracker.
 
 ## Verdict
 

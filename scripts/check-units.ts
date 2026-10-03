@@ -3537,5 +3537,18 @@ console.log("currency de-anchoring (toBaseCurrency / baseCurrencyOf / currencySy
   check(`no literal NUL bytes in tracked source (found: ${offenders.join(", ") || "none"})`, offenders.length === 0);
 }
 
+// ── #550 first_timer_income: the checklist gate + payer-name normalisation (generateChecklist lives in the DO) ──
+import { wantsIncomeStatementItem, payerKey } from "../src/lib/first-timer-signals";
+console.log("first-timer income");
+{
+  check("income_statement item: employee with no wage rows ⇒ shown", wantsIncomeStatementItem({ hasEmployment: true, wageRows: 0, anyIncomeRows: 0, personalCredits: 0 }));
+  check("income_statement item: any wage-type row recorded ⇒ never shown", !wantsIncomeStatementItem({ hasEmployment: true, wageRows: 1, anyIncomeRows: 1, personalCredits: 5 }));
+  check("income_statement item: non-employee with personal credits and NO income at all ⇒ shown", wantsIncomeStatementItem({ hasEmployment: false, wageRows: 0, anyIncomeRows: 0, personalCredits: 3 }));
+  check("income_statement item: retiree with dividends recorded + credits ⇒ NOT told to chase an employer statement", !wantsIncomeStatementItem({ hasEmployment: false, wageRows: 0, anyIncomeRows: 2, personalCredits: 3 }));
+  check("income_statement item: non-employee, no credits ⇒ not shown", !wantsIncomeStatementItem({ hasEmployment: false, wageRows: 0, anyIncomeRows: 0, personalCredits: 0 }));
+  check("payerKey: punctuation / case / Pty Ltd variants are one payer", payerKey("Big Retail Pty. Ltd.") === payerKey("BIG RETAIL PTY LTD") && payerKey("Big Retail Pty. Ltd.") === "big retail");
+  check("payerKey: non-string ⇒ unnamed", payerKey(undefined) === "" && payerKey(42) === "");
+}
+
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);
 process.exit(fail === 0 ? 0 : 1);

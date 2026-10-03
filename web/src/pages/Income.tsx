@@ -54,6 +54,8 @@ const TYPE_LABEL: Record<string, string> = {
   foreign_business: "Foreign business income",
   non_cash_benefit: "Non-cash benefit (captured, not in position)",
   non_cash_business: "Non-cash business income (market value)",
+  government_payment: "Government payment (Youth Allowance, Austudy, JobSeeker)",
+  foreign_employment: "Foreign employment income",
   super_pension: "Super pension (captured, not in position)",
   other: "Other",
 };
@@ -379,6 +381,10 @@ function AddIncomeForm({ fy, onDone }: { fy: string; onDone: () => void }) {
                 products received in a business, at market value). Only offered when the flag is on —
                 the server also rejects the type when off. */}
             {has("non_cash_income") && <option value="non_cash_business">Non-cash business income (market value)</option>}
+            {/* first_timer_income (#550): taxable Centrelink payments + overseas employment income, so they
+                stop landing in "Other". Server rejects both types when the flag is off. */}
+            {has("first_timer_income") && <option value="government_payment">{TYPE_LABEL.government_payment}</option>}
+            {has("first_timer_income") && <option value="foreign_employment">{TYPE_LABEL.foreign_employment}</option>}
           </select>
         </label>
         {entities.length > 0 && (

@@ -4118,6 +4118,8 @@ console.log("ft component library (#583)");
   const wl = src("WorksheetLine.tsx");
   check("ft: WorksheetLine copies copyValue() and reports a blocked clipboard instead of failing silently", /writeText\(value\)/.test(wl) && /Couldn't copy/.test(wl));
 
+}
+
 // ── #576 bank-feed consent lifecycle: withdraw → upstream revoke → PS12 delete, purge revoke, CDR log ──
 // Runs the REAL src/lib/bank-consent.ts + retention.ts against an in-memory D1 built from every
 // migration (node:sqlite, the personas/e2e shim) with a FAKE aggregator — no live Basiq call, so a

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api";
+import { useActiveFy } from "../lib/activeFy";
 import { Card, Spinner, Button, BUCKET_LABEL, InfoTip, Term } from "../components/ui";
 import {
   EntityFields,
@@ -38,6 +39,7 @@ type StepKey = "welcome" | "consent" | "intake" | "people" | "entities" | "prope
 
 export function Onboarding() {
   const qc = useQueryClient();
+  const { fy: activeFy } = useActiveFy();
   const navigate = useNavigate();
   const sit = useQuery({ queryKey: ["situation"], queryFn: () => api.situation() });
 
@@ -90,17 +92,25 @@ export function Onboarding() {
       // existing self row if there is one; otherwise create it.
       if (selfId) await api.updatePerson(selfId, personToBody(self));
       else await api.addPerson(personToBody({ ...self, role: "self" }));
-      for (const p of extraPersons) if (p.display_name.trim()) await api.addPerson(personToBody(p));
-      for (const e of entities) if (e.name.trim()) await api.addEntity(entityToBody(e));
+      // #438 fill-gaps-only: the wizard is re-enterable from the footer, so it only ADDS what isn't there
+      // yet — never a second copy of a person/entity/property/rule that already exists (matched on name).
+      const existing = sit.data;
+      const key = (v: string | null | undefined) => (v ?? "").trim().toLowerCase();
+      const havePersons = new Set((existing?.persons ?? []).map((p) => key(p.display_name)));
+      const haveEntities = new Set((existing?.entities ?? []).map((e) => `${e.kind}|${key(e.name)}`));
+      const haveProperties = new Set((existing?.properties ?? []).map((p) => key(p.label)));
+      const haveRules = new Set((existing?.rules ?? []).map((r) => key(r.pattern)));
+      for (const p of extraPersons) if (p.display_name.trim() && !havePersons.has(key(p.display_name))) await api.addPerson(personToBody(p));
+      for (const e of entities) if (e.name.trim() && !haveEntities.has(`${e.kind}|${key(e.name)}`)) await api.addEntity(entityToBody(e));
       // Skip a property that isn't ready (e.g. a let property missing its address) rather than POST a
       // row that can't carry its expenses — the user can complete it later in Settings → Properties.
-      for (const p of properties) if (p.label.trim() && !propertyError(p)) await api.addProperty(propertyToBody(p));
-      for (const r of rules) if (r.accept) await api.addRule({ pattern: r.pattern, bucket: r.bucket, ato_label: r.ato_label });
-      // WFH days/week → derive hours for the current FY (server derives; she refines on the Dashboard).
+      for (const p of properties) if (p.label.trim() && !propertyError(p) && !haveProperties.has(key(p.label))) await api.addProperty(propertyToBody(p));
+      for (const r of rules) if (r.accept && !haveRules.has(key(r.pattern))) await api.addRule({ pattern: r.pattern, bucket: r.bucket, ato_label: r.ato_label });
+      // WFH days/week → derived hours for the FY being prepared (the app-wide active FY, the same one every
+      // other page writes to). fill_only: the server leaves an existing row for that FY untouched, so a
+      // re-run can't reset the diary, leave ranges, flags, hours or car km set on the work-methods card.
       if (wfhDays.trim() !== "") {
-        const now = new Date();
-        const fyStart = now.getUTCMonth() >= 6 ? now.getUTCFullYear() : now.getUTCFullYear() - 1;
-        await api.setWorkUse(fyStart, { wfh_hours: null, car_work_km: null, wfh_days_per_week: Math.max(0, Number(wfhDays)), wfh_weeks: null });
+        await api.setWorkUse(activeFy, { wfh_hours: null, car_work_km: null, wfh_days_per_week: Math.max(0, Number(wfhDays)), wfh_weeks: null, fill_only: true });
       }
     },
     onSuccess: async () => {

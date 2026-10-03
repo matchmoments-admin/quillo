@@ -19,6 +19,14 @@ function fyBounds(startYear: number): { from: string; to: string } {
   return { from: `${startYear}-07-01`, to: `${startYear + 1}-06-30` };
 }
 
+// Document types the server's classifyAndRoute turns into an income row when it routes them
+// (src/agent.ts: payslip → salary, dividend_statement → dividend + franking, agent_rental_summary → rent).
+const INCOME_DOC_LABEL: Record<string, string> = {
+  payslip: "Income statement",
+  dividend_statement: "Dividend statement",
+  agent_rental_summary: "Rental agent statement",
+};
+
 const INCOME_TYPES = [
   "salary_payg",
   "business",
@@ -65,18 +73,28 @@ export function Income() {
     mutationFn: (file: File) => api.uploadDocument(file),
     onMutate: () => setNote("Reading your income statement with Claude…"),
     onSuccess: (r) => {
-      if (r.routed && r.doc_type === "payslip") {
-        setNote("Income statement read — check the row below (switch to the statement's FY; confirm anything flagged for review).");
+      // Mirror the server's classifyAndRoute (src/agent.ts): payslip, dividend_statement and
+      // agent_rental_summary all write an income row when routed. Treating only "payslip" as success
+      // told dividend uploaders the statement wasn't read and to "add it manually" — which
+      // double-counted the dividend AND its franking credit (#552 D1). Documents.tsx handles the
+      // same response the same way.
+      qc.invalidateQueries({ queryKey: ["documents"] });
+      const recordedAs = INCOME_DOC_LABEL[r.doc_type];
+      if (r.routed && recordedAs) {
+        setNote(`${recordedAs} read and recorded — check the row below (switch to the statement's FY; confirm anything flagged for review). Don't add it manually too, or it will be counted twice.`);
         qc.invalidateQueries({ queryKey: ["income"] }); // any FY — the statement may land in a different year
         qc.invalidateQueries({ queryKey: ["dashboard"] });
         qc.invalidateQueries({ queryKey: ["transactions"] });
-      } else if (!r.routed && r.doc_type === "payslip") {
-        // The exact-duplicate guard short-circuits a re-upload of the same file — it's not a read failure.
-        setNote("You've already uploaded this exact file — it's in Documents. To re-read it, delete it there first, then upload again.");
+      } else if (!r.routed && recordedAs) {
+        // Not routed = an exact-duplicate re-upload (already counted), or held for review (low
+        // confidence / daily AI budget). Either way, re-entering it by hand risks a double count.
+        setNote(`Filed to Documents as ${recordedAs.toLowerCase()} but not read into Income just now — either you've already uploaded this exact file (it's already counted), or it's held for review. Check Documents before adding anything manually so it isn't counted twice.`);
       } else if (r.doc_type === "unknown") {
         setNote("Couldn't process it — this usually means AI consent (onboarding/Settings) or budget. Check Documents.");
+      } else if (r.routed) {
+        setNote(`Filed to Documents as "${r.doc_type.replace(/_/g, " ")}" — its figures aren't read into your return. Add any income from it manually below if it belongs in this year.`);
       } else {
-        setNote(`Filed to Documents as "${r.doc_type}" — that didn't read as an income statement. Add it manually below if needed.`);
+        setNote(`Filed to Documents as "${r.doc_type.replace(/_/g, " ")}" and held for review — check Documents.`);
       }
     },
     onError: (e) => {
@@ -255,7 +273,11 @@ function IncomeDedupe({ fyStart }: { fyStart: number }) {
 
 function IncomeLine({ row, fy }: { row: IncomeRow; fy: string }) {
   const qc = useQueryClient();
-  const del = useMutation({ mutationFn: () => api.deleteIncome(row.id), onSuccess: () => qc.invalidateQueries({ queryKey: ["income", fy] }) });
+  const del = useMutation({
+    mutationFn: () => api.deleteIncome(row.id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["income", fy] }),
+    onError: (e) => toast.error("Couldn't delete income row", { description: (e as Error).message }),
+  });
   return (
     <tr className="border-t border-line">
       <td className="px-4 py-2">
@@ -266,7 +288,7 @@ function IncomeLine({ row, fy }: { row: IncomeRow; fy: string }) {
       <td className="px-4 py-2 text-right tabular-nums">{money(row.amount_aud_cents ?? row.gross_cents)}</td>
       <td className="px-4 py-2 text-right tabular-nums text-muted">{row.withholding_cents ? money(row.withholding_cents) : "—"}</td>
       <td className="px-4 py-2 text-right tabular-nums text-muted">{row.franking_credit_cents ? money(row.franking_credit_cents) : "—"}</td>
-      <td className="px-4 py-2 text-right"><button className="text-xs text-danger hover:underline" onClick={() => del.mutate()}>delete</button></td>
+      <td className="px-4 py-2 text-right"><button className="text-xs text-danger hover:underline" onClick={() => del.mutate()} disabled={del.isPending}>delete</button></td>
     </tr>
   );
 }

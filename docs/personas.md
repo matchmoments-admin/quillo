@@ -66,7 +66,9 @@ super contributions, activity-create). So end-to-end in the app today:
   EXPLICITLY-NOT-CLAIMED section with reasons — every section tied back to `buildReport` exactly
   (asserted per persona).
 - **Nearly:** P8 (company + trust ✓; Div 7A depth thin), P9 (ESS ✓; R&D / s40-880 blackhole costs are
-  capture-only — no auto-claim, form tracked in #126).
+  engine-only — no auto-claim, and `rd_claims` has no writer, so there is no capture form. #126 was
+  closed not-planned; a capture form is an open product decision for the grow path, see
+  [`first-timer/persona-2-9-trace.md`](first-timer/persona-2-9-trace.md) D5).
 - **Remaining (tracked):** xlsx skin (#180), occupation scope on activities (#156), advisory phases
   (#182–#184).
 

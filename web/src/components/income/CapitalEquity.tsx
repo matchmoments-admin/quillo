@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { api } from "../../api";
 import { Card, Button, Input, money, InfoTip } from "../ui";
 import { CapitalImport } from "./CapitalImport";
@@ -140,7 +141,7 @@ export function CapitalEquity() {
                     </td>
                   );
                 })()}
-                <td className="px-2 py-1 text-right"><button className="text-xs text-danger hover:underline" onClick={() => api.deleteCgtAsset(a.id).then(invalidate)}>delete</button></td>
+                <td className="px-2 py-1 text-right"><button className="text-xs text-danger hover:underline" onClick={() => api.deleteCgtAsset(a.id).then(invalidate).catch((e: Error) => toast.error("Couldn't delete holding", { description: e.message }))}>delete</button></td>
               </tr>
             ))}
           </tbody>
@@ -163,7 +164,7 @@ export function CapitalEquity() {
                   <td className="px-2 py-1 text-muted tabular-nums">{e.event_date}</td>
                   <td className="px-2 py-1 text-right tabular-nums text-muted">proceeds {money(e.proceeds_cents)} − cost {money(e.cost_base_used_cents)}</td>
                   <td className={`px-2 py-1 text-right tabular-nums font-medium ${e.proceeds_cents - e.cost_base_used_cents < 0 ? "text-danger" : ""}`}>{money(e.proceeds_cents - e.cost_base_used_cents)}</td>
-                  <td className="px-2 py-1 text-right"><button className="text-xs text-danger hover:underline" onClick={() => api.deleteCgtEvent(e.id).then(invalidate)}>delete</button></td>
+                  <td className="px-2 py-1 text-right"><button className="text-xs text-danger hover:underline" onClick={() => api.deleteCgtEvent(e.id).then(invalidate).catch((err: Error) => toast.error("Couldn't delete disposal", { description: err.message }))}>delete</button></td>
                 </tr>
               );
             })}

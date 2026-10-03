@@ -27,7 +27,8 @@ function findingFixLink(f: ReadinessFinding): { to: string; label: string } {
   switch (kind) {
     case "asset": return { to: "/assets", label: "Review assets" };
     case "income": return { to: "/income", label: "Review income" };
-    case "property": return { to: "/income", label: "Review property records" };
+    // Property records live in Settings → Properties (Income has none — #552 D3).
+    case "property": return { to: "/settings", label: "Review property records" };
     case "document": return { to: "/inbox", label: "Add evidence" };
     case "transaction":
     default: return { to: "/inbox", label: "Sort it out" };
@@ -362,7 +363,7 @@ const GROUP_META: { key: "capturing" | "check" | "defer"; title: string; sub: st
 // status → rental income/property; everything else → the Inbox (receipts).
 function evidenceLink(item: ClaimReviewItem): { to: string; label: string } {
   if (item.claim_type === "div40") return { to: "/assets", label: "Add an asset" };
-  if (item.claim_type === "div43" || item.scope_type === "property_status") return { to: "/income", label: "Add property records" };
+  if (item.claim_type === "div43" || item.scope_type === "property_status") return { to: "/settings", label: "Add property records" };
   return { to: "/inbox", label: "Add a receipt" };
 }
 

@@ -4649,7 +4649,7 @@ console.log("residency assessability (A13, #580)");
 // ── #577 wages_payer: deterministic credit triage → "We noticed…" signals (src/lib/credit-triage.ts) ──
 import { triageCredits, detectCadence, withinBand, payerStem, payerLabel, creditSignalLists } from "../src/lib/credit-triage";
 import { employerMatches } from "../src/lib/noticed-signals";
-import { noticedCopy } from "../web/src/components/ft/NoticedCard";
+import { noticedCopy } from "../web/src/components/ft/model";
 console.log("credit triage (#577)");
 {
   const L = creditSignalLists();

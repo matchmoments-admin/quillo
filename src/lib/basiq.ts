@@ -414,16 +414,25 @@ interface TransactionPage {
   links?: { next?: string };
 }
 
-export interface FetchTransactionsResult {
+/** One page of POSTED, in-window transactions for one account, plus the cursor to the next page. */
+export interface TransactionPageResult {
   transactions: BasiqTransaction[];
   /** Rows the provider returned that we discarded, and why. Recorded on the sync run. */
   skippedPending: number;
   skippedOutOfWindow: number;
-  pages: number;
+  /** Absolute `links.next` URL, or null when this account's pagination is exhausted. */
+  next: string | null;
 }
 
 /**
- * Fetch POSTED transactions for a consumer within [from, to] (inclusive, YYYY-MM-DD).
+ * Fetch ONE page of POSTED transactions for ONE selected account within [from, to] (inclusive,
+ * YYYY-MM-DD). Pass `next` (a previous page's cursor) to continue; omit it to start.
+ *
+ * One page per call is the point (#511). The old loop walked up to 200 pages x 500 rows and held
+ * every row in memory inside a single Durable Object request, which blows the Workers subrequest
+ * cap around ~45k rows. A page-at-a-time transport lets the caller (src/lib/bank-sync.ts) flush each
+ * page to D1, checkpoint a resume cursor on the run row, and stop at a budget — continuing in a
+ * later invocation.
  *
  * Two deliberate defences:
  *
@@ -435,71 +444,59 @@ export interface FetchTransactionsResult {
  *  2. POSTED ONLY. Pending ids are unstable — Basiq documents that a transaction's id refreshes on
  *     the pending → posted transition, so fingerprinting a pending row would double-count it later.
  *
- * `maxPages` is a runaway guard: a broken links.next chain must not loop forever inside a Worker.
+ * ONE QUERY PER SELECTED ACCOUNT. Filtering account-side after the rows arrive would mean the
+ * unselected accounts' transactions were still collected, and under the CDR data minimisation is
+ * about collection — "we fetched them and discarded them" is not compliance.
  */
-export async function fetchTransactions(
+export async function fetchTransactionPage(
   env: Env,
   basiqUserId: string,
-  opts: { from: string; to: string; accountIds?: string[]; maxPages?: number },
-): Promise<FetchTransactionsResult> {
-  const { from, to } = opts;
-  const maxPages = opts.maxPages ?? 200;
-  const accountFilter = opts.accountIds?.length ? new Set(opts.accountIds) : null;
-
-  const transactions: BasiqTransaction[] = [];
-  let skippedPending = 0;
-  let skippedOutOfWindow = 0;
-  let pages = 0;
-
-  // ONE REQUEST PER SELECTED ACCOUNT. Filtering account-side after the rows arrive would mean the
-  // unselected accounts' transactions were still collected, and under the CDR data minimisation is
-  // about collection — "we fetched them and discarded them" is not compliance. With no selection,
-  // a single unfiltered pass (no caller does this today).
-  const queries: (string | undefined)[] = accountFilter ? [...accountFilter] : [undefined];
-
-  for (const accountId of queries) {
+  opts: { from: string; to: string; accountId: string; next?: string | null },
+): Promise<TransactionPageResult> {
+  const { from, to, accountId } = opts;
+  let url: string;
+  if (opts.next) {
+    url = opts.next;
+  } else {
     const params = new URLSearchParams({
       limit: String(MAX_PAGE_SIZE),
       filter: postDateFilter(from, to, accountId),
     });
-    let url: string | undefined = `/users/${encodeURIComponent(basiqUserId)}/transactions?${params}`;
-
-    while (url && pages < maxPages) {
-      const page: TransactionPage = await apiGet<TransactionPage>(env, url, "getTransactions");
-      pages++;
-      for (const t of page.data ?? []) {
-        if ((t.status ?? "").toLowerCase() !== "posted") {
-          skippedPending++;
-          continue;
-        }
-        // postDate is an ISO 8601 datetime; the date part is what the ledger keys on.
-        const postDate = (t.postDate ?? "").slice(0, 10);
-        if (!postDate || postDate < from || postDate > to) {
-          skippedOutOfWindow++;
-          continue;
-        }
-        // Defence in depth: the provider filter is now the collection limit, but this re-check
-        // means a wrong/ignored filter still cannot land another account's rows in the ledger.
-        if (accountFilter && !(t.account && accountFilter.has(t.account))) continue;
-        if (!t.id || !t.account) continue;
-        const direction = (t.direction ?? "").toLowerCase() === "credit" ? "credit" : "debit";
-        transactions.push({
-          id: t.id,
-          accountId: t.account,
-          postDate,
-          description: t.description ?? "",
-          amountCents: toCents(t.amount),
-          direction,
-          // Normalised at the boundary. A provider returning "aud" would otherwise compare unequal
-          // to the base currency, marking every line unconvertible — which excludes the whole
-          // account from the position via FX_CONVERTED and silently zeroes the year.
-          currency: (t.currency ?? "AUD").trim().toUpperCase(),
-          providerClass: t.class ?? null,
-        });
-      }
-      url = page.links?.next;
-    }
+    url = `/users/${encodeURIComponent(basiqUserId)}/transactions?${params}`;
   }
 
-  return { transactions, skippedPending, skippedOutOfWindow, pages };
+  const page: TransactionPage = await apiGet<TransactionPage>(env, url, "getTransactions");
+  const transactions: BasiqTransaction[] = [];
+  let skippedPending = 0;
+  let skippedOutOfWindow = 0;
+  for (const t of page.data ?? []) {
+    if ((t.status ?? "").toLowerCase() !== "posted") {
+      skippedPending++;
+      continue;
+    }
+    // postDate is an ISO 8601 datetime; the date part is what the ledger keys on.
+    const postDate = (t.postDate ?? "").slice(0, 10);
+    if (!postDate || postDate < from || postDate > to) {
+      skippedOutOfWindow++;
+      continue;
+    }
+    // Defence in depth: the provider filter is the collection limit, but this re-check means a
+    // wrong/ignored filter still cannot land another account's rows in the ledger.
+    if (!t.id || t.account !== accountId) continue;
+    const direction = (t.direction ?? "").toLowerCase() === "credit" ? "credit" : "debit";
+    transactions.push({
+      id: t.id,
+      accountId: t.account,
+      postDate,
+      description: t.description ?? "",
+      amountCents: toCents(t.amount),
+      direction,
+      // Normalised at the boundary. A provider returning "aud" would otherwise compare unequal
+      // to the base currency, marking every line unconvertible — which excludes the whole
+      // account from the position via FX_CONVERTED and silently zeroes the year.
+      currency: (t.currency ?? "AUD").trim().toUpperCase(),
+      providerClass: t.class ?? null,
+    });
+  }
+  return { transactions, skippedPending, skippedOutOfWindow, next: page.links?.next || null };
 }

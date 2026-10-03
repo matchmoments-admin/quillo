@@ -16,7 +16,7 @@
 ## 1. One-line summary
 
 **The connector is built and the compliance guards are real; what's missing is a consent dashboard,
-a bounded backfill, and — entirely outside the code — a commercial arrangement with Basiq.**
+and — entirely outside the code — a commercial arrangement with Basiq.**
 
 ## 2. Shipped this session
 
@@ -91,10 +91,10 @@ Verified against account `417755753627`:
 | | Why it matters |
 |---|---|
 | **PR5 — consent dashboard, disconnect, PS12 delete, CDR audit log** | ADR-0003 §6.4: *"the feature is not shippable without it."* **This is the gate on flipping the flag.** `purgeTenant` also does not yet revoke upstream (`deleteBasiqUser` exists, unwired) |
-| **R3 — bounded backfill** | `bankSync` does up to 200 pages × 500 rows in ONE DO request with statements accumulated in memory; blows the 1000-subrequest cap around ~45k rows. Also: the `bank_sync_runs` row is written *after* the work, so the failures that most need evidence leave none. Needed before real data, not before the flag |
+| ~~**R3 — bounded backfill**~~ | **Done (#511, migration `0086`).** The run row is written first (`running`, also the concurrency guard), each page is flushed + checkpointed with a resume cursor, and a backfill continues on a DO alarm in 20-page slices (`src/lib/bank-sync.ts`). Fed lines dedup per tenant, so a remapped account no longer re-imports a year; `bankSelectAccounts` also refuses a remap once lines landed. Pages/pending/out-of-window/duplicates/correlation id are recorded; failed runs no longer stamp `last_sync_at` |
 | **The `account.id` provider filter is UNVERIFIED** | Basiq documents the field as filterable but not the operator grammar; the local key was stale so it couldn't be tested. Flagged in `basiq.ts`. If it is silently ignored, the data-minimisation claim is false |
 | **S8b — redaction on statement lines** | Deliberately declined: `redact()` eats any 6+ digit run, so extending it changes categorisation and therefore the position. Needs its own flag + persona golden |
-| **No persona golden for the feed** | Judged out of scope (flag OFF ⇒ byte-identical, so no golden could distinguish the states), but the three money-visible status decisions in `bankSync` — transfer⇒`ignored`, unconverted FX⇒`needs_review`, else⇒`extracted` — have no unit coverage |
+| **No persona golden for the feed** | Judged out of scope (flag OFF ⇒ byte-identical, so no golden could distinguish the states), but the three money-visible status decisions in `bankSync` — transfer⇒`ignored`, unconverted FX⇒`needs_review`, else⇒`extracted` — now have unit coverage via a fake transport (#511) |
 
 Six further MEDIUM/LOW review findings are in the plan file, not yet ticketed.
 

@@ -74,9 +74,15 @@ export function syncWindow(
   today: string,
   monthsBack = 24,
 ): { from: string; to: string } | null {
-  const wallDate = new Date(`${today}T00:00:00Z`);
-  wallDate.setUTCMonth(wallDate.getUTCMonth() - monthsBack);
-  const wall = wallDate.toISOString().slice(0, 10);
+  // Month arithmetic with the day CLAMPED to the target month's length. `setUTCMonth` overflows
+  // instead: 29 Feb minus 24 months is "29 Feb" of a non-leap year, which rolls to 1 Mar and moves
+  // the wall a day later than the regime allows (#511).
+  const [y = 0, m = 1, d = 1] = today.split("-").map(Number);
+  const total = y * 12 + (m - 1) - monthsBack;
+  const wy = Math.floor(total / 12);
+  const wm = total - wy * 12; // 0-based
+  const lastDay = new Date(Date.UTC(wy, wm + 1, 0)).getUTCDate();
+  const wall = `${String(wy).padStart(4, "0")}-${String(wm + 1).padStart(2, "0")}-${String(Math.min(d, lastDay)).padStart(2, "0")}`;
   const from = fyStart > wall ? fyStart : wall;
   const to = fyEnd < today ? fyEnd : today;
   return from > to ? null : { from, to };

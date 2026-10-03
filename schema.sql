@@ -1306,10 +1306,19 @@ CREATE TABLE IF NOT EXISTS bank_sync_runs (
   to_date       TEXT,
   fetched       INTEGER NOT NULL DEFAULT 0,
   imported      INTEGER NOT NULL DEFAULT 0,
-  skipped       INTEGER NOT NULL DEFAULT 0,
-  status        TEXT NOT NULL DEFAULT 'ok',             -- ok|partial|failed
+  skipped       INTEGER NOT NULL DEFAULT 0,             -- 0086: SUM of the counted reasons below
+  status        TEXT NOT NULL DEFAULT 'ok',             -- running|ok|partial|failed
   error         TEXT,
-  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  -- 0086 (#511): resumable, bounded backfill. Row written FIRST ('running'), checkpointed per page.
+  updated_at    TEXT,                                   -- last checkpoint; stale 'running' = interrupted
+  finished_at   TEXT,
+  cursor        TEXT,                                   -- JSON {i, next} resume point; NULL once terminal
+  pages         INTEGER NOT NULL DEFAULT 0,
+  duplicates    INTEGER NOT NULL DEFAULT 0,
+  skipped_pending       INTEGER NOT NULL DEFAULT 0,
+  skipped_out_of_window INTEGER NOT NULL DEFAULT 0,
+  correlation_id TEXT                                   -- aggregator error correlation id
 );
 CREATE INDEX IF NOT EXISTS idx_bank_sync_conn ON bank_sync_runs(user_id, connection_id, created_at);
 
@@ -1324,3 +1333,6 @@ CREATE TABLE IF NOT EXISTS reconcile_dismissals (
 );
 -- 0082: the proposer's FY scan of bank lines (user_id + kind + txn_date).
 CREATE INDEX IF NOT EXISTS idx_txn_kind_date ON transactions(user_id, kind, txn_date);
+CREATE INDEX IF NOT EXISTS idx_bank_sync_status ON bank_sync_runs(user_id, status);
+-- 0086: cross-account feed dedup (a remapped feed account must not re-import a year).
+CREATE INDEX IF NOT EXISTS idx_txn_user_fingerprint ON transactions(user_id, line_fingerprint);

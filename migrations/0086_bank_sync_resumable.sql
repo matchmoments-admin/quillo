@@ -10,14 +10,21 @@
 -- checkpoints a resume cursor on the row after every page, and continues across invocations (a DO
 -- alarm) when it hits its per-invocation page budget. These columns are what that needs.
 --
---   updated_at            last checkpoint. A 'running' row with a fresh updated_at is the
---                         concurrency guard (a second tab does not start a second full pagination);
---                         a stale one is an interrupted run, closed as 'failed' — never left
---                         looking healthy.
+--   updated_at            heartbeat: bumped on every page checkpoint, and on every hop while a run
+--                         is queued behind a sibling. The 'running' status is the concurrency guard
+--                         (a second tab does not start a second full pagination); a 'running' row
+--                         with a stale heartbeat is an interrupted run, closed as 'failed' — never
+--                         left looking healthy.
 --   finished_at           when the run reached a terminal status (ok | partial | failed).
---   cursor                JSON resume point: which selected account, and the provider's `links.next`
---                         URL within it. NULL once the run is terminal. Holds no transaction data
---                         and no credential — the URL is a query over the aggregator's user id.
+--   cursor                JSON resume point {accounts:[{p,a}], i, next}: a snapshot of the selected
+--                         provider-account → Quillo-account mapping, the index into it, and the
+--                         provider's `links.next` URL. NULL once terminal. No transaction data and no
+--                         credential — the URL is a query over the aggregator's user id, and is
+--                         validated (origin + this consumer's path) before it is ever followed.
+--   post_import_at        when this run's lines went through the post-import pipeline (receipt
+--                         matching, deductibility, asset linking). NULL + imported > 0 on a terminal
+--                         run ⇒ still owed, and the next sync runs it — so a failed hop can never
+--                         leave a receipt and its fed line both counting.
 --   pages                 provider pages consumed. Previously discarded.
 --   duplicates            fetched rows the ledger already held (re-sync / overlapping window).
 --   skipped_pending       rows dropped because they were still pending (unstable ids). Previously
@@ -48,6 +55,7 @@ ALTER TABLE bank_sync_runs ADD COLUMN duplicates INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE bank_sync_runs ADD COLUMN skipped_pending INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE bank_sync_runs ADD COLUMN skipped_out_of_window INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE bank_sync_runs ADD COLUMN correlation_id TEXT;
+ALTER TABLE bank_sync_runs ADD COLUMN post_import_at TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_bank_sync_status ON bank_sync_runs(user_id, status);
 CREATE INDEX IF NOT EXISTS idx_txn_user_fingerprint ON transactions(user_id, line_fingerprint);

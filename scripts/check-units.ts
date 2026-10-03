@@ -3746,10 +3746,10 @@ import { DatabaseSync } from "node:sqlite";
 import nodeFs from "node:fs";
 import nodePath from "node:path";
 import {
-  feedLineStatus, runOutcome, openRun, loadRun, closeStaleRuns, syncRunStep, finishRun, skippedOf,
+  feedLineStatus, runOutcome, openRun, loadRun, touchRun, closeStaleRuns, syncRunStep, finishRun, skippedOf,
   MAX_PAGES_PER_RUN, type FeedTransport, type SyncStepDeps, type RunAccount,
 } from "../src/lib/bank-sync";
-import { BasiqError, type BasiqTransaction, type TransactionPageResult } from "../src/lib/basiq";
+import { BasiqError, safeNextUrl, type BasiqTransaction, type TransactionPageResult } from "../src/lib/basiq";
 console.log("bank feed — bounded resumable sync (#511)");
 {
   // The three money-visible status decisions, as a pure table.
@@ -3829,7 +3829,7 @@ console.log("bank feed — bounded resumable sync (#511)");
   const p3 = page([txn("t-ow2", "OFFICEWORKS 0423 MELBOURNE", 1100)], null, { skippedOutOfWindow: 1 });
   const calls: string[] = [];
   const transport = fakeTransport({ start: p1, p2, p3 }, calls);
-  const s1 = await syncRunStep(deps(transport, { beforeFirstWrite: async () => { tainted++; } }), run1!, 2);
+  const s1 = await syncRunStep(deps(transport, { beforeFirstWrite: async () => { tainted++; if (q<{ n: number }>(`SELECT COUNT(*) AS n FROM transactions WHERE source = 'cdr_feed'`)[0]?.n !== 0) tainted = -99; } }), run1!, 2);
   const st = (id: string) => q<{ status: string; amount_aud_cents: number | null; bucket: string | null; source: string }>(
     `SELECT t.status, t.amount_aud_cents, t.bucket, t.source FROM transactions t WHERE t.user_id = ? AND t.raw_description = ? LIMIT 1`, U, id)[0];
   check("bankSync status: transfer ⇒ ignored", st("Internal transfer to savings")?.status === "ignored");
@@ -3915,6 +3915,55 @@ console.log("bank feed — bounded resumable sync (#511)");
     const b0 = batches;
     const s8 = await syncRunStep(deps(fakeTransport({ start: page(big, null) })), run8!, 20);
     check("a 500-row page costs 10 D1 batches (bounded, not one per row)", batches - b0 === 10 && s8.importedThisStep === 500);
+    await finishRun(db, U, run8!, { status: "ok", error: null, correlationId: null });
+  }
+
+  // ── Review fixes.
+  // Rows committed by earlier chunks of a page that later fails are still COUNTED as imported, so
+  // the run stays owed the post-import pipeline (receipt matching).
+  {
+    const r9 = (await openRun(db, { userId: U, connectionId: "c1", from: "2025-07-01", to: "2026-06-30", accounts: ACCTS }))!;
+    let n = 0;
+    const flaky = { prepare: db.prepare.bind(db), batch: async (s: D1PreparedStatement[]) => { if (++n === 2) throw new Error("d1 blip"); return db.batch(s); } } as unknown as D1Database;
+    const rows = Array.from({ length: 80 }, (_, i) => txn(`flaky-${i}`, `FLAKY ${i}`, 100 + i));
+    const s9 = await syncRunStep({ ...deps(fakeTransport({ start: page(rows, null) })), db: flaky }, r9, 20);
+    check("a page failing on its 2nd chunk still counts the 50 rows the 1st chunk committed", !!s9.error && s9.importedThisStep === 50 && r9.counters.imported === 50);
+    await finishRun(db, U, r9, { status: "failed", error: s9.error, correlationId: null });
+    check("…and the failed run records imported=50 (eligible for post-import)", q<{ imported: number; post_import_at: string | null }>(`SELECT imported, post_import_at FROM bank_sync_runs WHERE id = ?`, r9.id)[0]?.imported === 50);
+  }
+  // A run closed under a step (stale sweep / purge) stops collecting at the next checkpoint, and the
+  // zombie step's finishRun cannot overwrite the sweep's 'failed' with 'ok'.
+  {
+    const r10 = (await openRun(db, { userId: U, connectionId: "c1", from: "2025-07-01", to: "2026-06-30", accounts: ACCTS }))!;
+    const c10: string[] = [];
+    const closer: FeedTransport = async (qq) => {
+      c10.push(qq.next ?? "start");
+      sqlite.prepare(`UPDATE bank_sync_runs SET status = 'failed', cursor = NULL WHERE id = ?`).run(r10.id);
+      return page([txn(`z-${c10.length}`, "ZOMBIE", 1)], "more");
+    };
+    const s10 = await syncRunStep(deps(closer), r10, 20);
+    check("a run closed mid-step stops after the in-flight page (no further fetches)", c10.length === 1 && !!s10.error);
+    await finishRun(db, U, r10, { status: "ok", error: null, correlationId: null });
+    check("finishRun never overwrites a run already closed by the sweep", q<{ status: string }>(`SELECT status FROM bank_sync_runs WHERE id = ?`, r10.id)[0]?.status === "failed");
+  }
+  // A queued run's heartbeat is bumped, so the stale sweep does not kill a live waiting run.
+  {
+    const r11 = (await openRun(db, { userId: U, connectionId: "c1", from: "2025-07-01", to: "2026-06-30", accounts: ACCTS }))!;
+    sqlite.prepare(`UPDATE bank_sync_runs SET updated_at = datetime('now', '-30 minutes') WHERE id = ?`).run(r11.id);
+    await touchRun(db, U, r11.id);
+    check("touchRun keeps a queued run out of the stale sweep", (await closeStaleRuns(db, U)) === 0);
+    await finishRun(db, U, r11, { status: "ok", error: null, correlationId: null });
+  }
+  // The persisted cursor is followed with the APP-WIDE token, so it must stay on Basiq and on this
+  // consumer's own transactions path.
+  {
+    const ok = "https://au-api.basiq.io/users/u-1/transactions?next=abc";
+    check("safeNextUrl accepts this consumer's own next page", safeNextUrl(ok, "u-1") === ok);
+    const refuses = (u: string) => { try { safeNextUrl(u, "u-1"); return false; } catch (e) { return e instanceof BasiqError; } };
+    check("safeNextUrl refuses an off-host cursor (token exfiltration)", refuses("https://evil.example/users/u-1/transactions?x=1"));
+    check("safeNextUrl refuses another consumer's transactions", refuses("https://au-api.basiq.io/users/u-2/transactions?x=1"));
+    check("safeNextUrl refuses a look-alike path", refuses("https://au-api.basiq.io/users/u-1/transactionsX"));
+    check("safeNextUrl refuses garbage", refuses("http://[::1"));
   }
 }
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);

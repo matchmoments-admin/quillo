@@ -1313,12 +1313,13 @@ CREATE TABLE IF NOT EXISTS bank_sync_runs (
   -- 0086 (#511): resumable, bounded backfill. Row written FIRST ('running'), checkpointed per page.
   updated_at    TEXT,                                   -- last checkpoint; stale 'running' = interrupted
   finished_at   TEXT,
-  cursor        TEXT,                                   -- JSON {i, next} resume point; NULL once terminal
+  cursor        TEXT,                                   -- JSON {accounts:[{p,a}], i, next}; NULL once terminal
   pages         INTEGER NOT NULL DEFAULT 0,
   duplicates    INTEGER NOT NULL DEFAULT 0,
   skipped_pending       INTEGER NOT NULL DEFAULT 0,
   skipped_out_of_window INTEGER NOT NULL DEFAULT 0,
-  correlation_id TEXT                                   -- aggregator error correlation id
+  correlation_id TEXT,                                  -- aggregator error correlation id
+  post_import_at TEXT                                   -- post-import pipeline done; NULL+imported>0 = owed
 );
 CREATE INDEX IF NOT EXISTS idx_bank_sync_conn ON bank_sync_runs(user_id, connection_id, created_at);
 

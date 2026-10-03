@@ -384,7 +384,7 @@ export function toCents(amount: string | number | null | undefined): number {
 }
 
 /**
- * Build the provider-side filter. See fetchTransactions on why the window is not trusted alone.
+ * Build the provider-side filter. See fetchTransactionPage on why the window is not trusted alone.
  *
  * `accountId` is NOT an optimisation. Filtering account-side after the rows arrive means the
  * unselected accounts' transactions were still collected — and under the CDR, data minimisation is
@@ -412,6 +412,29 @@ export function feedFingerprint(providerTxnId: string): Promise<string> {
 interface TransactionPage {
   data?: RawTransaction[];
   links?: { next?: string };
+}
+
+/**
+ * Validate a resume cursor before it is fetched WITH THE APP-WIDE SERVER TOKEN attached.
+ *
+ * Since #511 `links.next` is persisted on `bank_sync_runs.cursor` and replayed by a later alarm, so
+ * it is no longer only a value the vendor handed us a moment ago. That token reads every tenant's
+ * data, so a cursor is followed only if it is on the Basiq API origin AND under this tenant's own
+ * `/users/{id}/transactions` path — never off-host, never another consumer's resource.
+ */
+export function safeNextUrl(next: string, basiqUserId: string): string {
+  let u: URL;
+  try {
+    u = new URL(next, API_BASE);
+  } catch {
+    throw new BasiqError(0, "invalid-cursor", "basiq getTransactions failed: unreadable pagination cursor");
+  }
+  const base = new URL(API_BASE);
+  const prefix = `/users/${encodeURIComponent(basiqUserId)}/transactions`;
+  if (u.origin !== base.origin || (u.pathname !== prefix && !u.pathname.startsWith(`${prefix}/`))) {
+    throw new BasiqError(0, "invalid-cursor", "basiq getTransactions failed: pagination cursor points outside this consumer's transactions");
+  }
+  return u.toString();
 }
 
 /** One page of POSTED, in-window transactions for one account, plus the cursor to the next page. */
@@ -456,7 +479,7 @@ export async function fetchTransactionPage(
   const { from, to, accountId } = opts;
   let url: string;
   if (opts.next) {
-    url = opts.next;
+    url = safeNextUrl(opts.next, basiqUserId);
   } else {
     const params = new URLSearchParams({
       limit: String(MAX_PAGE_SIZE),

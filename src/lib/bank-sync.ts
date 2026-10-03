@@ -21,13 +21,19 @@ import { cleanMerchant } from "./bank-parsers";
  * page TRANSPORT), so the money-visible decisions are unit-testable with a fake transport.
  *
  * SUBREQUEST BUDGET per step: each page is 1 provider fetch + ⌈rows/50⌉ D1 batches + 1 selection
- * re-check + 1 checkpoint ≈ 13 at 500 rows/page. PAGES_PER_STEP = 20 ⇒ ≈ 260, plus the token fetch
- * and a handful of setup reads — comfortably under 1000, leaving room for the post-import pipeline.
+ * re-check + 1 checkpoint ≈ 13 at 500 rows/page. An alarm step (PAGES_PER_STEP = 8) is ≈ 105 plus
+ * the token fetch and a handful of setup reads; the inline HTTP step (10 pages) ≈ 130. The
+ * tenant-wide post-import pipeline is NOT stacked on a multi-hop backfill's slices — it runs once,
+ * in its own invocation, when the chain ends (agent.ts bankSyncFinalise / runFeedPostImport).
  */
 
-/** Pages one alarm-driven step may consume. See the budget arithmetic above. */
-export const PAGES_PER_STEP = 20;
-/** Pages the synchronous HTTP step may consume — smaller, so the inline post-import pipeline fits. */
+/**
+ * Pages one alarm-driven step may consume. Kept small because the Agents SDK can run due callbacks
+ * inside `blockConcurrencyWhile` (30 s) when the DO cold-starts, and 8 provider round trips plus
+ * ~100 D1 calls fits comfortably.
+ */
+export const PAGES_PER_STEP = 8;
+/** Pages the synchronous HTTP step may consume before handing off to the alarm. */
 export const FIRST_STEP_PAGES = 10;
 /**
  * Runaway guard across a whole run: 400 pages x 500 = 200k rows, far past any real 24-month
@@ -221,6 +227,14 @@ export async function loadRun(db: D1Database, userId: string, runId: string): Pr
   };
 }
 
+/** Bump a queued run's heartbeat so the stale sweep does not mistake "waiting" for "dead". */
+export async function touchRun(db: D1Database, userId: string, runId: string): Promise<void> {
+  await db
+    .prepare(`UPDATE bank_sync_runs SET updated_at = datetime('now') WHERE id = ? AND user_id = ? AND status = 'running'`)
+    .bind(runId, userId)
+    .run();
+}
+
 function checkpointStmt(db: D1Database, userId: string, run: SyncRun): D1PreparedStatement {
   const c = run.counters;
   return db
@@ -235,9 +249,9 @@ function checkpointStmt(db: D1Database, userId: string, run: SyncRun): D1Prepare
 
 /**
  * Advance a run by at most `pageBudget` provider pages. Each page is written to D1 before the next
- * is fetched, and the run row's cursor + counters are checkpointed in the same batch as the page's
- * last insert chunk — so a request that dies between pages loses at most the page in flight, and
- * the run row always says how far it got.
+ * is fetched, and the run row's cursor + counters are checkpointed (a separate write) after the
+ * page's insert batches — so a request that dies between pages loses at most the page in flight,
+ * and the run row always says how far it got.
  *
  * Never throws for a provider/D1 failure: it returns `error` (+ the aggregator correlation id) so the
  * caller can record a 'failed' run rather than leave a 'running' one behind.
@@ -309,7 +323,7 @@ export async function syncRunStep(deps: SyncStepDeps, run: SyncRun, pageBudget: 
         );
       });
 
-      // Advance the cursor BEFORE the writes so the checkpoint that rides with them records it.
+      // Advance the in-memory cursor now; it is persisted by the checkpoint after the writes.
       if (page.next) cur.next = page.next;
       else {
         cur.i++;
@@ -324,14 +338,21 @@ export async function syncRunStep(deps: SyncStepDeps, run: SyncRun, pageBudget: 
       let imported = 0;
       for (let i = 0; i < inserts.length; i += INSERT_CHUNK) {
         const res = await db.batch(inserts.slice(i, i + INSERT_CHUNK));
-        for (const r of res) imported += Number(r.meta?.changes ?? 0);
+        let n = 0;
+        for (const r of res) n += Number(r.meta?.changes ?? 0);
+        // Counted per batch, as each lands: if a later chunk throws, the rows already committed are
+        // still recorded as imported — so the run stays eligible for the post-import pipeline.
+        imported += n;
+        c.imported += n;
+        importedThisStep += n;
       }
-      c.imported += imported;
       // Counted, not inferred: every fetched row either inserted or was already held.
       c.duplicates += page.transactions.length - imported;
-      importedThisStep += imported;
-      // Checkpoint AFTER the page's writes, so the persisted cursor never points past unwritten rows.
-      await checkpointStmt(db, userId, run).run();
+      // Checkpoint as a separate write AFTER the page's batches, so the persisted cursor never points
+      // past unwritten rows (a death in between re-fetches the page; dedup makes that safe).
+      const ck = await checkpointStmt(db, userId, run).run();
+      // Zero rows matched ⇒ the run was closed under us (a stale sweep, a purge). Stop collecting.
+      if (Number(ck.meta?.changes ?? 0) === 0) throw new Error("sync run was closed while in progress");
     }
   } catch (e) {
     return {
@@ -365,9 +386,15 @@ export async function finishRun(
                 pages = ?, fetched = ?, imported = ?, duplicates = ?, skipped_pending = ?,
                 skipped_out_of_window = ?, skipped = ?,
                 finished_at = datetime('now'), updated_at = datetime('now')
-          WHERE id = ? AND user_id = ?`,
+          WHERE id = ? AND user_id = ? AND status = 'running'`,
       )
       .bind(o.status, o.error, o.correlationId, c.pages, c.fetched, c.imported, c.duplicates, c.skippedPending, c.skippedOutOfWindow, skippedOf(c), run.id, userId),
+    // A run already closed under us (stale sweep) keeps ITS terminal status — a zombie step must not
+    // overwrite 'failed' with 'ok' — but must not under-report lines it really wrote, or it would
+    // drop out of the post-import pipeline (which keys on imported > 0).
+    db
+      .prepare(`UPDATE bank_sync_runs SET imported = MAX(imported, ?) WHERE id = ? AND user_id = ?`)
+      .bind(c.imported, run.id, userId),
     db
       .prepare(
         `UPDATE bank_connections

@@ -180,7 +180,7 @@ function BankFeed({ accounts }: { accounts: Account[] }) {
       // reporting the first slice's count as if it were the whole import.
       else if (r.in_progress) toast.info(`Imported ${r.imported} line(s) so far — the rest is still importing in the background. Check back in a few minutes.`);
       else if (r.runs === 0) toast.info("No accounts selected yet — tick the ones you want and save first.");
-      else toast.success(`Imported ${r.imported} new line(s) · ${r.categorised} categorised · ${r.skipped} already had.`);
+      else toast.success(`Imported ${r.imported} new line(s) · ${r.categorised} categorised · ${r.skipped} skipped (already imported, or still pending at the bank).`);
       qc.invalidateQueries({ queryKey: ["bank-connections"] });
       qc.invalidateQueries({ queryKey: ["transactions"] });
       qc.invalidateQueries({ queryKey: ["progress"] });

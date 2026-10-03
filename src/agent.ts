@@ -49,7 +49,7 @@ import {
 } from "./lib/basiq";
 import { putConnectState, takeConnectState, parseJobIds, syncWindow } from "./lib/bank-connect";
 import {
-  closeStaleRuns, openRun, loadRun, syncRunStep, finishRun, runOutcome, skippedOf,
+  closeStaleRuns, openRun, loadRun, touchRun, syncRunStep, finishRun, runOutcome, skippedOf,
   FIRST_STEP_PAGES, PAGES_PER_STEP, MAX_PAGES_PER_RUN,
   type SyncRun, type SyncStepDeps,
 } from "./lib/bank-sync";
@@ -1837,22 +1837,61 @@ export class TaxAgent extends Agent<Env> {
       runs++;
     }
 
-    const res = await this.bankSyncAdvance(userId, opened, FIRST_STEP_PAGES);
+    let res: Awaited<ReturnType<TaxAgent["bankSyncAdvance"]>>;
+    try {
+      res = await this.bankSyncAdvance(userId, opened, FIRST_STEP_PAGES);
+    } catch (e) {
+      // Setup (profile, rule pack, situation) threw after the run rows were opened. Close them now
+      // rather than leaving them 'running' — which would report "in progress" for STALE_RUN_MINUTES.
+      const error = (e as Error).message || "sync failed";
+      for (const run of opened) await finishRun(this.env.DB, userId, run, { status: "failed", error, correlationId: null }).catch(() => {});
+      throw e;
+    }
     errors.push(...res.errors);
 
-    if (res.pending.length) {
-      await this.schedule(1, "bankSyncContinue", { userId, runIds: res.pending.map((r) => r.id), hop: 1, imported: 0 });
-    }
-
-    // The same post-import pipeline the statement path runs. Without matchReceiptsForUser here, a
-    // receipt photographed before the sync and the fed line for the same purchase BOTH count. Runs
-    // for this slice's lines now (the continuation runs it again for later slices), and after a
-    // stale-run sweep, whose lines may never have been through it.
-    if (res.imported > 0 || closedStale > 0) await this.afterLinesImported(userId);
-
     const inProgress = res.pending.length > 0 || busy > 0;
-    await this.audit(userId, "bank_sync", JSON.stringify({ from, to, fetched: res.fetched, imported: res.imported, runs, errors: errors.length, in_progress: inProgress }));
+    // The same post-import pipeline the statement path runs. Without matchReceiptsForUser, a receipt
+    // photographed before the sync and the fed line for the same purchase BOTH count. Only when no
+    // continuation is pending — a multi-hop backfill runs it ONCE, in its own alarm invocation, at
+    // the end (bankSyncFinalise), so it never stacks on a page slice or races itself. It also heals:
+    // any terminal run whose lines never went through it (a failed hop, a stale sweep) is picked up.
+    if (!res.pending.length) await this.runFeedPostImport(userId);
+
+    await this.audit(userId, "bank_sync", JSON.stringify({ from, to, fetched: res.fetched, imported: res.imported, runs, errors: errors.length, in_progress: inProgress, closed_stale: closedStale }));
+    // Scheduled LAST, so the continuation can never interleave with this request's own writes.
+    if (res.pending.length) {
+      await this.schedule(1, "bankSyncContinue", { userId, runIds: res.pending.map((r) => r.id), hop: 1 });
+    }
     return { imported: res.imported, skipped: res.skipped, fetched: res.fetched, runs, errors, in_progress: inProgress };
+  }
+
+  /** Serialises the feed post-import pipeline within this DO instance (HTTP vs alarm). */
+  private feedPostImportRunning = false;
+
+  /**
+   * Run `afterLinesImported` for every TERMINAL sync run whose lines have not been through it yet
+   * (`post_import_at IS NULL AND imported > 0`), then stamp those runs. Durable, so a pipeline that
+   * failed or never ran (a hop that died, a stale sweep, a partially-written page) is retried by the
+   * next sync instead of leaving a receipt and its fed line both counting forever.
+   */
+  private async runFeedPostImport(userId: string): Promise<void> {
+    if (this.feedPostImportRunning) return;
+    this.feedPostImportRunning = true;
+    try {
+      const due = await this.env.DB.prepare(
+        `SELECT id FROM bank_sync_runs
+          WHERE user_id = ? AND status != 'running' AND imported > 0 AND post_import_at IS NULL`,
+      ).bind(userId).all<{ id: string }>();
+      const ids = (due.results ?? []).map((r) => r.id);
+      if (!ids.length) return;
+      await this.afterLinesImported(userId);
+      const ph = ids.map(() => "?").join(",");
+      await this.env.DB.prepare(
+        `UPDATE bank_sync_runs SET post_import_at = datetime('now') WHERE user_id = ? AND id IN (${ph})`,
+      ).bind(userId, ...ids).run();
+    } finally {
+      this.feedPostImportRunning = false;
+    }
   }
 
   /**
@@ -1863,37 +1902,33 @@ export class TaxAgent extends Agent<Env> {
    * Never throws: the Agents scheduler swallows callback errors, so a failure here is recorded on
    * the run rows itself — a run must never be left 'running' behind a silent alarm error.
    */
-  async bankSyncContinue(payload: { userId: string; runIds: string[]; hop: number; imported?: number }): Promise<void> {
+  async bankSyncContinue(payload: { userId: string; runIds: string[]; hop: number }): Promise<void> {
     const userId = payload?.userId;
     const runIds = Array.isArray(payload?.runIds) ? payload.runIds.filter((id) => typeof id === "string").slice(0, 50) : [];
     if (!userId || !runIds.length) return;
     try {
+      // The flag is the kill switch: turning it off mid-backfill must stop collection, not just
+      // new syncs. Same for a removed API key.
+      if (!featureOn(this.env, "bank_feed_cdr") || !basiqConfigured(this.env)) {
+        throw new Error("bank feeds are disabled — sync stopped");
+      }
       const loaded = await Promise.all(runIds.map((id) => loadRun(this.env.DB, userId, id)));
       const runs = loaded.filter((r): r is SyncRun => r !== null);
       if (!runs.length) return; // closed elsewhere (stale sweep, purge) — nothing to continue
 
       const res = await this.bankSyncAdvance(userId, runs, PAGES_PER_STEP);
-      const imported = (payload.imported ?? 0) + res.imported;
       if (res.pending.length && payload.hop < BANK_SYNC_MAX_HOPS) {
-        await this.schedule(1, "bankSyncContinue", { userId, runIds: res.pending.map((r) => r.id), hop: payload.hop + 1, imported });
+        await this.schedule(1, "bankSyncContinue", { userId, runIds: res.pending.map((r) => r.id), hop: payload.hop + 1 });
         return;
       }
       // Backstop only — MAX_PAGES_PER_RUN normally ends a run long before the hop cap.
       for (const run of res.pending) {
         await finishRun(this.env.DB, userId, run, { status: "partial", error: "stopped before completion — sync again to continue", correlationId: null });
       }
-
-      if (imported > 0) {
-        await this.afterLinesImported(userId);
-        // The inline path categorises in the HTTP route; lines that arrived on later hops get the
-        // same treatment here. categoriseFeedLines carries its own APP-8 + residency gates.
-        try {
-          await this.categoriseFeedLines(userId);
-        } catch (e) {
-          await this.audit(userId, "bank_feed_categorise_failed", JSON.stringify({ error: (e as Error).message }));
-        }
-      }
-      await this.audit(userId, "bank_sync_continued", JSON.stringify({ hops: payload.hop, imported, errors: res.errors.length }));
+      await this.audit(userId, "bank_sync_continued", JSON.stringify({ hops: payload.hop, errors: res.errors.length }));
+      // The post-import pipeline gets its OWN invocation (fresh subrequest budget, and short enough
+      // for the SDK running due callbacks inside blockConcurrencyWhile on a cold start).
+      await this.schedule(1, "bankSyncFinalise", { userId });
     } catch (e) {
       const msg = (e as Error).message || "sync continuation failed";
       for (const id of runIds) {
@@ -1903,6 +1938,25 @@ export class TaxAgent extends Agent<Env> {
         ).bind(msg, id, userId).run().catch(() => {});
       }
       await this.audit(userId, "bank_sync_continue_failed", JSON.stringify({ error: msg })).catch(() => {});
+      // Lines earlier hops wrote still need the post-import pipeline; failed runs stay eligible
+      // (post_import_at IS NULL), so this — or the next sync — picks them up.
+      await this.schedule(1, "bankSyncFinalise", { userId }).catch(() => {});
+    }
+  }
+
+  /**
+   * Alarm hop that runs the feed post-import pipeline once a backfill chain has finished.
+   * Categorisation is deliberately NOT run here: it is an LLM pass the user's next sync runs in the
+   * request path (where its errors are surfaced), so the alarm never spends model budget unseen or
+   * races the route's own categorisation.
+   */
+  async bankSyncFinalise(payload: { userId: string }): Promise<void> {
+    const userId = payload?.userId;
+    if (!userId) return;
+    try {
+      await this.runFeedPostImport(userId);
+    } catch (e) {
+      await this.audit(userId, "bank_sync_post_import_failed", JSON.stringify({ error: (e as Error).message })).catch(() => {});
     }
   }
 
@@ -1941,6 +1995,9 @@ export class TaxAgent extends Agent<Env> {
         continue;
       }
       if (left <= 0) {
+        // Queued behind a sibling's slice: touch it, so a long sibling backfill cannot make a live
+        // queued run look interrupted to the stale sweep.
+        await touchRun(db, userId, run.id);
         out.pending.push(run);
         continue;
       }
@@ -1952,10 +2009,14 @@ export class TaxAgent extends Agent<Env> {
         transport: (q) => fetchTransactionPage(this.env, conn.provider_user_id, { from: q.from, to: q.to, accountId: q.providerAccountId, next: q.next }),
         categorise: (merchant, direction) =>
           this.deterministicCategorise(merchant, situation.rules, rulePack, { skipHints: direction === "credit", direction }),
+        // Per page: still selected + mapped the same way, AND the connection still live — so a
+        // deselect, a remap, a revoke or a consent expiry stops collection on the next page.
         stillSelected: async (a) =>
           !!(await db.prepare(
-            `SELECT 1 AS ok FROM bank_connection_accounts
-              WHERE user_id = ? AND connection_id = ? AND provider_account_id = ? AND account_id = ? AND selected = 1`,
+            `SELECT 1 AS ok FROM bank_connection_accounts a
+               JOIN bank_connections c ON c.id = a.connection_id AND c.user_id = a.user_id
+              WHERE a.user_id = ? AND a.connection_id = ? AND a.provider_account_id = ? AND a.account_id = ? AND a.selected = 1
+                AND c.status = 'active' AND (c.consent_expires_at IS NULL OR c.consent_expires_at > datetime('now'))`,
           ).bind(userId, run.connectionId, a.p, a.a).first()),
         // Stamp the tenant as holding CDR data, one-way, BEFORE the first production CDR line is
         // written — not after the whole sync, which on a resumable backfill could be many minutes

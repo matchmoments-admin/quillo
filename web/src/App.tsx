@@ -14,6 +14,7 @@ import { ChatProvider } from "./components/chat/ChatProvider";
 import { FloatingChat } from "./components/chat/FloatingChat";
 import { AppearanceSwitch } from "./components/AppearanceSwitch";
 import { useThemeSync } from "./lib/appearance";
+import { FtShell } from "./components/FtShell";
 
 type NavItem = { to: string; label: string; icon: IconName; end?: boolean; badge?: boolean; flag?: string; admin?: boolean; partner?: boolean; expressHidden?: boolean };
 type NavGroup = { label: string; items: NavItem[] };
@@ -91,18 +92,19 @@ const GROUPS: NavGroup[] = [
 
 // First-run gate: a brand-new tenant (no consent AND no entities) is sent to the onboarding
 // wizard once. We don't redirect once either is satisfied, so users can always navigate away.
-// Reuses the shared ["situation"] query (no extra fetch).
-function FirstRunGate() {
+// Reuses the shared ["situation"] query (no extra fetch). `to` is the first-run page: /onboarding,
+// or About you (/about) in the ft_journey shell.
+function FirstRunGate({ to = "/onboarding" }: { to?: string }) {
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const sit = useQuery({ queryKey: ["situation"], queryFn: () => api.situation() });
   useEffect(() => {
-    if (sit.isLoading || !sit.data || pathname === "/onboarding") return;
+    if (sit.isLoading || !sit.data || pathname === to) return;
     const p = sit.data;
     const hasConsent = (p.profile?.consent_xborder ?? 0) === 1 || p.profile?.inference_provider === "bedrock";
     const hasEntities = (p.entities?.length ?? 0) > 0;
-    if (!hasConsent && !hasEntities) navigate("/onboarding", { replace: true });
-  }, [sit.isLoading, sit.data, pathname, navigate]);
+    if (!hasConsent && !hasEntities) navigate(to, { replace: true });
+  }, [sit.isLoading, sit.data, pathname, navigate, to]);
   return null;
 }
 
@@ -124,6 +126,11 @@ export function App() {
 
   // Close the mobile drawer on navigation.
   useEffect(() => setDrawer(false), [pathname]);
+
+  // ft_journey (#582): the first-timer shell (Home + six steps + account menu) replaces the sidebar,
+  // JourneySpine and bottom tabs. Below every hook, so the hook order never changes when the flag set
+  // loads. OFF (and while loading) ⇒ the legacy layout below, unchanged.
+  if (has("ft_journey")) return <FtShell gate={<FirstRunGate to="/about" />} />;
 
   return (
     <Tooltip.Provider delayDuration={200} skipDelayDuration={400}>

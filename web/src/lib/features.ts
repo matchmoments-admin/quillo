@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { api } from "../api";
 import { useActiveFy } from "./activeFy";
 
@@ -11,7 +11,11 @@ import { useActiveFy } from "./activeFy";
  */
 export function useFeatures(): { has: (key: string) => boolean; loaded: boolean } {
   const { fy } = useActiveFy();
-  const q = useQuery({ queryKey: ["dashboard", fy], queryFn: () => api.dashboard(fy), staleTime: 60_000 });
+  // Flags are per tenant, not per FY: keep the previous FY's set while a newly selected FY's dashboard
+  // loads, so switching year never blinks flag-gated UI off (with ft_journey that would unmount the whole
+  // first-timer shell and drop the theme back to legacy mid-switch). Per-observer: other readers of this
+  // key still see the new FY's own loading state.
+  const q = useQuery({ queryKey: ["dashboard", fy], queryFn: () => api.dashboard(fy), staleTime: 60_000, placeholderData: keepPreviousData });
   const features = q.data?.features ?? [];
   return { has: (key: string) => features.includes(key), loaded: !q.isLoading && !!q.data };
 }

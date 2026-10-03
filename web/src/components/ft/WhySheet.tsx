@@ -1,7 +1,6 @@
 import { useEffect, useId, useRef, type ReactNode } from "react";
-import { STEP_GUIDES } from "../../content/stepGuides";
+import { STEP_GUIDES, type StepKey } from "../../content/stepGuides";
 import { role } from "../../lib/theme";
-import type { JourneyStep } from "./model";
 import { FtButton, FtLink, GeneralInfoNote, Skeleton, StatusGate, type StatusProps } from "./primitives";
 
 /**
@@ -21,7 +20,7 @@ export function WhySheet({
 }: {
   open: boolean;
   onClose: () => void;
-  step?: JourneyStep;
+  step?: StepKey;
   title?: ReactNode;
   children?: ReactNode;
 } & StatusProps) {

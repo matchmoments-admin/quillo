@@ -1313,3 +1313,23 @@ export interface BankDisconnectResult {
   accounts: number;
   linesDeleted: number;
 }
+
+// ── #582 first-timer journey (GET /api/journey?fy=, flag ft_journey; server src/lib/journey.ts) ──
+export type JourneyStepKey = "about" | "bring_in" | "claims" | "records" | "check" | "ship";
+export type JourneyStepStatus = "not_started" | "in_progress" | "needs_attention" | "done";
+export interface Journey {
+  fy: string;
+  lodging_fy: number;
+  lodged: boolean;
+  steps: { key: JourneyStepKey; status: JourneyStepStatus; count: number }[];
+  records: { claims_total: number; claims_with_record: number; claims_exception: number; facts_needed: string[]; facts_done: string[] } | null;
+  grow: { layers: { key: string; state: string; reason: string }[]; suggestions: unknown[] };
+  readiness: {
+    blockers: number;
+    review: number;
+    ready: boolean;
+    estimate: { tracked_cents: number; confirmed_cents: number | null; caption: string } | null;
+    disclaimer: string;
+  };
+  whats_left: { id: string; kind: "finding"; severity: "blocker" | "review"; title: string; step: JourneyStepKey }[];
+}

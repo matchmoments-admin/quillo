@@ -1700,6 +1700,16 @@ export async function handleApi(
     return json(await stub.assessFilingReadiness(uid, fy));
   }
 
+  // ── First-timer journey (A11, #582, flag ft_journey) — 404 when off ────────
+  // GET /api/journey?fy= → one composite read for the new shell + Home: six step statuses/counts, the
+  // readiness hero, What's left, and the records/grow slots later tickets fill. Read-only.
+  if (resource === "journey" && m === "GET" && !id) {
+    if (!featureOn(env, "ft_journey")) return json({ error: "not found" }, 404);
+    const fy = Number(url.searchParams.get("fy")) || defaultFy();
+    if (!Number.isInteger(fy) || fy < 1900 || fy > 2200) return json({ error: "bad fy" }, 400);
+    return json(await stub.journey(uid, fy));
+  }
+
   // ── Find My Claims (flag claim_review) — 404 when off ─────────────────────
   // GET  /api/claim-review?fy=         → read-only situational sweep (3 groups + uncovered occupations)
   // POST /api/claim-review/draft       → AI gap-fill candidate rules for an uncovered occupation

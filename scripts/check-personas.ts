@@ -41,7 +41,7 @@ import { runRelevanceScan, confirmWorthALook, relevanceView } from "../src/lib/r
 import { updatePerson } from "../src/lib/situation-write";
 import { verdictForTxn } from "../src/lib/deductibility";
 import { noticeSignals, listNoticed, confirmNoticed, dismissNoticed, payrollEmployerSignals, incomeAnswerRows, INCOME_STATEMENT_PROMPT } from "../src/lib/noticed-signals";
-import { minimiseTenant, tombstonedFingerprints, rolledUpLineCount, statementLedgerTieOut } from "../src/lib/minimise";
+import { minimiseTenant, tombstonedFingerprints, rolledUpLineCount, statementLedgerTieOut, forgetStatementMinimisation } from "../src/lib/minimise";
 import { statementLineFingerprints, type StatementLine } from "../src/lib/statements";
 import { listStatements } from "../src/lib/queries";
 
@@ -3134,6 +3134,18 @@ async function main() {
     const again = await minimiseTenant(BM_ON, u, NOW);
     check("pft10: a second run shrinks nothing and leaves the rollup unchanged (idempotent)",
       again?.shrunk === 0 && JSON.stringify(db.prepare(`SELECT n, total_cents FROM bank_line_rollups WHERE user_id = ?`).all(u)) === JSON.stringify([{ n: 40, total_cents: irrelevantTotal }]));
+    const NO_EXCL = { ...BM_ON, FEATURES: (BM_ON as unknown as { FEATURES: string }).FEATURES.split(",").filter((f) => f !== "position_excludes_nondeductible").join(",") } as unknown as Env;
+    check("pft10: interlock — without position_excludes_nondeductible minimisation refuses to run (null)", (await minimiseTenant(NO_EXCL, u, NOW)) === null);
+    check("pft10: tombstones carry their statement_id", count(`SELECT COUNT(*) AS n FROM bank_line_tombstones WHERE user_id = ? AND statement_id = 'pft10Stmt'`, u) === 40);
+    // 'Remove + re-import' (deleteStatement purge) forgets the statement's minimisation: rollup + tombstones go, so the
+    // re-upload restores the 40 lines instead of skipping them against an orphaned rollup.
+    await forgetStatementMinimisation(env, u, "pft10Stmt");
+    check("pft10 (OFF): forgetting is a no-op with the flag OFF", count(`SELECT COUNT(*) AS n FROM bank_line_tombstones WHERE user_id = ?`, u) === 40);
+    await forgetStatementMinimisation(BM_ON, u, "pft10Stmt");
+    const seenAfterPurge = await seenFor(BM_ON);
+    check("pft10: after a purge the statement's rollup + tombstones are gone and a re-upload restores the 40 lines",
+      count(`SELECT COUNT(*) AS n FROM bank_line_rollups WHERE user_id = ?`, u) === 0 && count(`SELECT COUNT(*) AS n FROM bank_line_tombstones WHERE user_id = ?`, u) === 0 &&
+      reFps.filter((f) => !seenAfterPurge.has(f)).length === 40);
 
     // Backstop (owner ruling, residual Q1): an FY never marked lodged shrinks from the self-lodger due date + 60 days.
     const ub = "pft10b";

@@ -41,6 +41,8 @@ CREATE TABLE IF NOT EXISTS bank_line_tombstones (
   account_id       TEXT NOT NULL,
   line_fingerprint TEXT NOT NULL,          -- sha256, no description text
   fy               TEXT NOT NULL,
+  statement_id     TEXT,                   -- the statement the line came from (NULL = cdr_feed); a purge forgets it
   PRIMARY KEY (user_id, account_id, line_fingerprint)
 );
 CREATE INDEX IF NOT EXISTS idx_bank_tomb_fp ON bank_line_tombstones(user_id, line_fingerprint);
+CREATE INDEX IF NOT EXISTS idx_bank_tomb_stmt ON bank_line_tombstones(user_id, statement_id);

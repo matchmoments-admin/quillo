@@ -13,8 +13,11 @@
 // never marks the year) — in lodging-year.ts, with timing from the tenant's RESOLVED rule pack. This module only
 // composes it with the per-line 60-day hold.
 //
-// Shrunk rows were never countable: COUNTABLE drops status 'ignored', and position_excludes_nondeductible drops
-// likely_not / confirmed_not payg. So the position and every accountant tie-back are unchanged (golden pft10).
+// Shrunk rows never reach the POSITION: COUNTABLE drops status 'ignored', and position_excludes_nondeductible drops
+// likely_not / confirmed_not payg — so minimiseTenant refuses to run unless that flag is ON. The position and every
+// accountant tie-back are unchanged (golden pft10). By design, a LODGED FY's descriptive "not claimed" detail
+// (report by_bucket payg n/total, the accountant schedule's explicitly-not-claimed lines, progress counts) loses
+// the shrunk lines — that detail is exactly the data being minimised.
 //
 // Flag `bank_minimisation` (kill-switch, lands OFF): OFF ⇒ every export here is a no-op that touches neither
 // 0081 table. The weekly cron, the user notice and the PS12 disconnect extension are #594.
@@ -55,11 +58,13 @@ export const SHRINKABLE_WHERE = `(
   AND t.amount_aud_cents IS NOT NULL
   AND (
     (t.bucket = 'payg' AND t.deductibility IN ('likely_not', 'confirmed_not') AND t.status NOT IN ('needs_review', 'needs_extraction', 'duplicate'))
-    OR (t.status = 'ignored' AND (t.bucket IS NULL OR t.bucket = 'payg'))
+    OR (t.status = 'ignored' AND (t.bucket IS NULL OR t.bucket = 'payg')
+        AND (t.deductibility IS NULL OR t.deductibility IN ('undetermined', 'likely_not', 'confirmed_not')))
   )
   AND (t.relevance IS NULL OR t.relevance = 'irrelevant')
   AND COALESCE(t.reimbursed, 0) = 0
   AND COALESCE(t.deductible_amount_cents, 0) = 0
+  AND COALESCE(t.gst_cents, 0) = 0
   AND t.asset_id IS NULL
   AND t.property_id IS NULL
   AND t.matched_txn_id IS NULL
@@ -123,6 +128,9 @@ export async function minimiseTenant(
   opts: { audit?: MinimiseAudit; descriptor?: JurisdictionDescriptor } = {},
 ): Promise<MinimiseResult | null> {
   if (!featureOn(env, "bank_minimisation")) return null;
+  // Safety interlock: without position_excludes_nondeductible a likely_not / confirmed_not payg row still counts in
+  // the position, so shrinking it would move money. Never minimise in that configuration.
+  if (!featureOn(env, "position_excludes_nondeductible")) return null;
   const descriptor = opts.descriptor ?? (await resolveJurisdictionForUser(env, userId));
   const timing = lodgementTiming(await resolveRulePack(env, userId, descriptor));
   const today = isoDay(now);
@@ -232,12 +240,12 @@ async function shrinkChunk(
   }
   stmts.push(
     db.prepare(
-      `INSERT OR IGNORE INTO bank_line_tombstones (user_id, account_id, line_fingerprint, fy)
-       SELECT x.user_id, x.account_id, x.line_fingerprint, ? FROM transactions x WHERE x.user_id = ? AND x.id IN (${pick(allIds)})`,
+      `INSERT OR IGNORE INTO bank_line_tombstones (user_id, account_id, line_fingerprint, fy, statement_id)
+       SELECT x.user_id, x.account_id, x.line_fingerprint, ?, x.statement_id FROM transactions x WHERE x.user_id = ? AND x.id IN (${pick(allIds)})`,
     ).bind(w.label, userId, ...pickBinds(allIds)),
   );
-  // The merchant text being minimised also lives in the per-txn correction log, the AI undo log and model traces.
-  for (const [table, col] of [["corrections", "txn_id"], ["ai_edits", "entity_id"], ["traces", "txn_id"]] as const) {
+  // The merchant text being minimised also lives in the per-txn correction log, model traces and notifications.
+  for (const [table, col] of [["corrections", "txn_id"], ["traces", "txn_id"], ["notifications", "txn_id"]] as const) {
     stmts.push(db.prepare(`DELETE FROM ${table} WHERE user_id = ? AND ${col} IN (${pick(allIds)})`).bind(userId, ...pickBinds(allIds)));
   }
   stmts.push(db.prepare(`DELETE FROM transactions WHERE user_id = ? AND id IN (${pick(allIds)})`).bind(userId, ...pickBinds(allIds)));
@@ -270,6 +278,20 @@ export async function tombstonedFingerprints(env: Env, userId: string, accountId
     .bind(userId, accountId)
     .all<{ line_fingerprint: string }>();
   return (r.results ?? []).map((x) => x.line_fingerprint);
+}
+
+/**
+ * "Remove + re-import" (deleteStatement with purge) forgets a statement's minimisation too: its rollups and the
+ * tombstones of its lines go with it, so the re-upload re-imports those lines as fresh rows (which re-shrink on a
+ * later run) instead of being silently skipped and leaving the new statement short of its row count with the
+ * rollup orphaned on the deleted id. No-op when OFF (neither table is touched).
+ */
+export async function forgetStatementMinimisation(env: Env, userId: string, statementId: string): Promise<void> {
+  if (!featureOn(env, "bank_minimisation")) return;
+  await env.DB.batch([
+    env.DB.prepare(`DELETE FROM bank_line_rollups WHERE user_id = ? AND statement_id = ?`).bind(userId, statementId),
+    env.DB.prepare(`DELETE FROM bank_line_tombstones WHERE user_id = ? AND statement_id = ?`).bind(userId, statementId),
+  ]);
 }
 
 /**

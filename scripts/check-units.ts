@@ -4814,6 +4814,9 @@ console.log("bank minimisation — SHRINKABLE_WHERE + feed tombstones (#581)");
   const matches = (id: string) => !!sq.prepare(`SELECT 1 FROM transactions t WHERE t.id = ? AND ${SHRINKABLE_WHERE}`).get(id);
   check("SHRINKABLE: baseline irrelevant payg likely_not debit matches", matches(line()));
   check("SHRINKABLE: confirmed_not payg matches; unscanned (relevance NULL) matches", matches(line({ deductibility: "confirmed_not" })) && matches(line({ relevance: null })));
+  check("SHRINKABLE: an ignored line the user stamped deductible is KEPT (likely/confirmed deductible, needs apportionment); one carrying GST is KEPT",
+    !matches(line({ status: "ignored", bucket: null, deductibility: "likely_deductible" })) && !matches(line({ status: "ignored", bucket: "payg", deductibility: "confirmed_deductible" })) &&
+    !matches(line({ status: "ignored", bucket: null, deductibility: "needs_apportionment" })) && !matches(line({ gst_cents: 120 })));
   check("SHRINKABLE: an ignored transfer (no bucket) matches; a cdr_feed line matches", matches(line({ status: "ignored", bucket: null, deductibility: "undetermined", deductible_amount_cents: null })) && matches(line({ source: "cdr_feed" })));
   const never: [string, Record<string, unknown>][] = [
     ["a credit", { direction: "credit" }],

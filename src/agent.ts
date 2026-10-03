@@ -45,7 +45,7 @@ import { resolveJurisdictionForUser, currentFyStartYearFor, baseCurrencyOf, AU_D
 import { assessReadiness, type FilingReadiness, type FilingReadinessSignals } from "./lib/readiness";
 import { rollSchedule, balancingAdjustment, fyStartYearOf, isLowCostAsset, looksLikePersonalTransfer, assetDepreciatesForTaxpayer, depMethodConflict, resolveDiv40Life, type DepAsset } from "./lib/depreciation";
 import { matchClaimRules, suggestionText, enumerateSituationClaims, classifyClaim, uncoveredOccupations, ruleKey, type ClaimRule, type ClaimContext, type ClaimSituation } from "./lib/claimability";
-import { minimiseTenant, tombstonedFingerprints, rolledUpLineCount, type MinimiseResult } from "./lib/minimise";
+import { minimiseTenant, tombstonedFingerprints, rolledUpLineCount, forgetStatementMinimisation, type MinimiseResult } from "./lib/minimise";
 import { parseCsv, applyColumnMap, statementLineFingerprints, deriveBalances, reconcileStatement, isLiabilityAccount, fuzzyMerchant, isTransferLike, isLoanInterestLine, classifyMovement, movementTreatment, type ColumnMap, type Reconciliation, type StatementLine, type MovementClass } from "./lib/statements";
 import { groupKey, groupForClarify, rulePatternForStem, draftHoldingFromTxn, isClarifyLeftover, CLARIFY_LEFTOVER_WHERE, type ClarifyRow } from "./lib/clarify";
 import { scoreClaimMatches, type ScoredTxn } from "./lib/claim-match";
@@ -954,6 +954,9 @@ export class TaxAgent extends Agent<Env> {
         .bind(userId, statementId)
         .run();
       linesRemoved = del.meta?.changes ?? 0;
+      // bank_minimisation (#581): the statement's rollups + tombstones go with it, so a re-upload restores those
+      // lines instead of skipping them against an orphaned rollup. OFF ⇒ no-op.
+      await forgetStatementMinimisation(this.env, userId, statementId);
       // C1: the deleted bank_lines may have seeded capital holdings — drop the now-orphaned parcels.
       await clearOrphanedTxnCgt(this.env, userId);
     }

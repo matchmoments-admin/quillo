@@ -33,7 +33,7 @@ work.
 | # | Route | Who is the lodging party | What Quillo would need | Lead time / cost | TPB position |
 |---|---|---|---|---|---|
 | 1 | **myTax self-lodge**, with the user retyping Quillo's worksheet | The taxpayer, via myGov | Nothing from the ATO. A worksheet keyed to myTax labels (`accountant-schedule.ts` already maps deductions to D-labels) | Build effort only | Fine *if* the worksheet stays non-customised and every figure is the user's own confirmed assertion (GS 14/2011 Ex 5) |
-| 2 | **Partner registered agent** lodges through PLS/SBR | The agent | A partner agreement. Agent–client relationship linked in ATO systems (client update relationship service). The taxpayer's signed declaration to the agent (e-sign). A structured hand-off pack. A fee flow | Weeks (find the partner, agree terms, wire the hand-off). The agent fee is the user's cost (AusTax AI benchmark: A$129 one-off) | The agent provides the tax agent service. Quillo stays the tool. A referral commission must be disclosed by the agent under Code item 5 |
+| 2 | **Partner registered agent** lodges through PLS/SBR | The agent | A partner agreement. Agent–client relationship linked in ATO systems (client update relationship service). The taxpayer's signed declaration to the agent (e-sign). A structured hand-off pack. A fee flow | Weeks (find the partner, agree terms, wire the hand-off). The agent fee is the user's cost (current benchmarks: Etax from $87.49, H&R Block assisted $109 / students $89 — see `standard-journeys.md`) | The agent provides the tax agent service. Quillo stays the tool. A referral commission must be disclosed by the agent under Code item 5 |
 | 3 | **Quillo lodges directly via SBR IITR** (as a "self-lodger" DSP) | N/A, because **it doesn't exist** | — | — | The IITR initiating-party table lists *Tax agent: Y; BAS agent, Business, Business Intermediary: N* for every interaction, including `IITR.get` (prefill), `IITR.validate` and `IITR.submit` |
 | 4 | **Quillo registers as a company tax agent** and lodges via SBR | Quillo | TPB company registration: a "sufficient number" of registered individual tax agents to supervise (a question of fact, no fixed minimum, an ongoing requirement). PI insurance. The Code of Professional Conduct. ATO DSP Operational Security Framework for the software. A signed declaration per lodgment | Months, plus qualified staff on payroll | Removes the boundary, but every customised output then carries agent liability. Turns a software company into a tax practice |
 | 5 | **Via Xero / MYOB / QuickBooks APIs** | The agent using that software | — | — | Same as route 2: their lodgment features only work for a registered agent's PLS/SBR credentials. Using them would just be route 2 with extra steps |
@@ -56,7 +56,8 @@ work.
   before lodging with the ATO, usually within one business day".
   [etax.com.au/about-etax](https://www.etax.com.au/about-etax/)
 - **The AusTax AI model** (closest analogue to Quillo). "AusTax AI is the technology platform; the
-  assigned Tax Agent holds the TPB registration". Complete Tax Service A$129.
+  assigned Tax Agent holds the TPB registration". *(Correction 2026-10-03: the A$129 agent service
+  page now redirects to a directory — the offer appears withdrawn; see `standard-journeys.md`.)*
   [austaxai.com.au/tax-agent-service](https://austaxai.com.au/tax-agent-service)
 - **Hnry** is itself a registered agent; its accountants review and lodge.
   [ATO — lodge with a registered tax agent](https://www.ato.gov.au/individuals-and-families/your-tax-return/how-to-lodge-your-tax-return/lodge-your-tax-return-with-a-registered-tax-agent)
@@ -89,6 +90,13 @@ prefilled lines it should show a short **"check this matches myTax"** list (e.g.
 statement from ACME should show ~$X gross"). That catches a missing employer or an un-finalised
 income statement, which is the commonest first-timer error. Quillo cannot read the prefill
 itself (route 3). It can only infer the expected figures from the bank feed and onboarding.
+
+## Owner decision after this research (2026-10-03)
+
+**Scope narrowed:** the first-timer build delivers the **guided myTax self-lodge path end to end
+first**. The partner-agent hand-off (and any automation) comes after, as a later effort. If and when
+it lands, **the user pays the agent directly** — Quillo takes no fee tied to the tax agent service
+(cleanest TASA position). Partner selection is deferred.
 
 ## Consequences for the rest of map #529
 

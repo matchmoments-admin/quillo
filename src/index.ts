@@ -13,6 +13,7 @@ import { legalResponse } from "./marketing/legal";
 import { handleWaitlist } from "./marketing/waitlist";
 import { spentTodayGlobalCents } from "./lib/usage";
 import { featureOn } from "./lib/features";
+import { handleBeforeYouStart } from "./lib/before-you-start";
 
 // The DO class must be exported from the Worker's main module for the binding.
 export { TaxAgent } from "./agent";
@@ -257,6 +258,13 @@ export default {
         ? `connected=1&accounts=${r.accounts}`
         : `connected=0&reason=${encodeURIComponent(r.error ?? "unknown")}`;
       return Response.redirect(`${url.origin}/accounts?${q}`, 302);
+    }
+
+    // Public "Before you start" probe (#584, flag ft_journey): static rule-pack content for the
+    // signed-out /start screen, so it must sit before the Clerk gate. Flag OFF ⇒ not intercepted at
+    // all: the path falls through to the Clerk gate exactly as today (byte-identical OFF).
+    if (url.pathname === "/api/public/before-you-start" && featureOn(env, "ft_journey")) {
+      return handleBeforeYouStart(req, env);
     }
 
     // Web UI API — authenticated via Clerk, gated to the founder's user until launch.

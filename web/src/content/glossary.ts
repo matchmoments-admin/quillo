@@ -255,3 +255,73 @@ export type GlossaryKey = keyof typeof GLOSSARY;
 export function tipFor(key: GlossaryKey): string {
   return GLOSSARY[key].short;
 }
+
+// ── First-timer terms (spec docs/first-timer/spec.md A10, #584; flag ft_journey) ─────────────
+// Kept in a SEPARATE map so the /glossary page lists them only when ft_journey is ON (flag OFF ⇒
+// the page renders exactly the entries above, byte-identical). <Term>/<InfoTip> resolve keys from
+// ANY_GLOSSARY, so an existing key's tip is unchanged. Keys must not collide with GLOSSARY (a unit
+// test asserts it). Scanned by the tax-advice denylist in scripts/check-units.ts: no money figures,
+// no rates, no outcome estimates, no lodge verdicts.
+export const FT_GLOSSARY = {
+  prefill: {
+    term: "Prefill",
+    short:
+      "When you lodge in myTax, the ATO fills in some details it already holds, like income from your employer and bank interest. Check each pre-filled item matches your own records before you lodge.",
+  },
+  income_statement: {
+    term: "Income statement",
+    short:
+      "Your employer's year-end summary of what they paid you and the tax they withheld, reported to the ATO through payroll. You'll find it in ATO online services through myGov once it's marked tax ready.",
+  },
+  notice_of_assessment: {
+    term: "Notice of assessment",
+    short:
+      "The ATO's letter after it processes your return, setting out how it assessed your tax for the year. Keep it: it's the starting point if anything needs correcting later.",
+  },
+  tax_residency: {
+    term: "Tax residency",
+    short:
+      "Whether you're an Australian resident for tax purposes. It isn't the same as your visa or citizenship, and it changes which income counts and how it's taxed. The ATO has a tool to help you work it out.",
+  },
+  temporary_resident: {
+    term: "Temporary resident",
+    short:
+      "Someone on a temporary visa who is generally treated as a temporary resident for tax. Some foreign income may not need to be declared in Australia. If you're unsure, confirm with a registered tax agent.",
+  },
+  working_holiday_maker: {
+    term: "Working holiday maker",
+    short:
+      "Someone in Australia on a working holiday visa (subclass 417 or 462). The ATO applies its own working holiday maker rates to this income, so you don't work them out yourself.",
+  },
+  help_debt: {
+    term: "HELP debt",
+    short:
+      "A study loan from the Higher Education Loan Program. Once your income passes the ATO's repayment threshold, a compulsory repayment is worked out through your return.",
+  },
+  golden_rules: {
+    term: "The three golden rules",
+    short:
+      "The ATO's test for a work-related deduction: you spent the money yourself and weren't paid back, it's directly related to earning your income, and you have a record to prove it. Each claim needs all three.",
+  },
+  mytax: {
+    term: "myTax",
+    short:
+      "The ATO's free online tool for lodging your own return, reached through myGov. Quillo prepares a worksheet in myTax order; you lodge in myTax yourself.",
+  },
+  registered_tax_agent: {
+    term: "Registered tax agent",
+    short:
+      "A professional registered with the Tax Practitioners Board who can give you tax advice and lodge for you. Quillo is not one: it gives general information only.",
+  },
+  record_keeping_exception: {
+    term: "Record-keeping exception",
+    short:
+      "For a small total of work-related expenses, the ATO doesn't require written receipts, but you still need to show you spent the money and how you worked out the amount. The ATO sets the limit; check its records page.",
+  },
+} as const satisfies Record<string, GlossaryEntry>;
+
+export type FtGlossaryKey = keyof typeof FT_GLOSSARY;
+
+/** Every term <Term>/<InfoTip> can resolve. The /glossary page lists FT_GLOSSARY only when ft_journey is ON. */
+export const ANY_GLOSSARY: Record<GlossaryKey | FtGlossaryKey, GlossaryEntry> = { ...GLOSSARY, ...FT_GLOSSARY };
+export type AnyGlossaryKey = GlossaryKey | FtGlossaryKey;

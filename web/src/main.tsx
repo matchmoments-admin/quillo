@@ -26,6 +26,7 @@ import { Documents } from "./pages/Documents";
 import { Assets } from "./pages/Assets";
 import { Glossary } from "./pages/Glossary";
 import { BeforeYouStart, beforeYouStartLoader } from "./pages/BeforeYouStart";
+import { GrowRoute } from "./pages/Grow";
 import { FtRedirect, HomeIndex, OldStepRedirect, SetupStep, ConnectStep, ReviewStep, LodgeStep, LodgePrintStep } from "./pages/Steps";
 import { setTokenGetter } from "./api";
 import { ActiveFyProvider } from "./lib/activeFy";
@@ -125,17 +126,17 @@ const router = createBrowserRouter([
       { path: "txn/:id", element: <TxnDetail /> },
       { path: "dashboard", element: <FtRedirect><Dashboard /></FtRedirect> },
       { path: "income", element: <FtRedirect><Income /></FtRedirect> },
-      { path: "assets", element: <Assets /> },
+      { path: "assets", element: <FtRedirect><Assets /></FtRedirect> },
       { path: "documents", element: <FtRedirect><Documents /></FtRedirect> },
       { path: "accounts", element: <FtRedirect><Accounts /></FtRedirect> },
       { path: "reconcile", element: <FtRedirect><Reconcile /></FtRedirect> },
       { path: "notifications", element: <Notifications /> },
       { path: "settings", element: <Settings /> },
       { path: "onboarding", element: <FtRedirect><Onboarding /></FtRedirect> },
-      { path: "quickbooks", element: <QuickBooks /> },
+      { path: "quickbooks", element: <FtRedirect><QuickBooks /></FtRedirect> },
       { path: "reports", element: <Reports /> },
-      { path: "savings", element: <Savings /> },
-      { path: "extras", element: <Extras /> },
+      { path: "savings", element: <FtRedirect><Savings /></FtRedirect> },
+      { path: "extras", element: <FtRedirect><Extras /></FtRedirect> },
       { path: "billing", element: <Billing /> },
       { path: "filing", element: <FtRedirect><Filing /></FtRedirect> },
       { path: "admin", element: <Admin /> },
@@ -155,6 +156,8 @@ const router = createBrowserRouter([
       { path: "check", element: <OldStepRedirect /> },
       { path: "check/match", element: <OldStepRedirect /> },
       { path: "ship", element: <OldStepRedirect /> },
+      // Grow layer pages (ft_journey, #592; OFF ⇒ each redirects to the legacy page it composes).
+      { path: "grow/:layer", element: <GrowRoute /> },
       { path: "glossary", element: <Glossary /> },
     ],
   },

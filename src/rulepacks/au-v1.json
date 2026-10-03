@@ -82,6 +82,12 @@
     "_note": "Relevance scan on bank lines (src/lib/relevance-scan.ts, first-timer spec A4 #578). floor_cents: a debit line that matched no rule and nothing denied is 'relevant' (worth sorting) at or above this amount, 'irrelevant' below it. Shapes what is SHOWN, never what is counted.",
     "floor_cents": 2000
   },
+  "grow_detection": {
+    "_note": "Grow layer detection (src/lib/grow.ts, first-timer spec A11 ticket b #592, flag ft_journey). Bank-line text that SUGGESTS a hidden Grow layer ('Looks like you have rental income: add it?'). A suggestion never switches a layer on by itself (owner ruling #535); the user says Yes or No. Each layer: the line direction to scan, whole-word stems matched case-insensitively against merchant + description, and the minimum number of matching lines in the FY. Property also uses the rent/lease stems of isRentLikeStem and investments the broker names of clarify.ts BROKER_CODES plus lines answered as capital:investment. Shapes what is SUGGESTED, never what is counted.",
+    "property": { "direction": "credit", "stems": ["rent", "rental", "lease", "tenancy", "landlord", "real estate", "property management"], "min_lines": 2 },
+    "investments": { "direction": "credit", "stems": ["dividend", "div", "dist", "distribution", "computershare", "link market", "linkmarket", "boardroom", "automic", "mufg corporate"], "min_lines": 1 },
+    "business": { "direction": "credit", "stems": ["uber", "didi", "doordash", "menulog", "airtasker", "airbnb", "madpaw", "hipages"], "min_lines": 2 }
+  },
   "thresholds_by_fy": {
     "_note": "All dollar thresholds in CENTS. These change yearly and are policy-dependent — the depreciation engine + claimability brain read them per FY, never inline. Confirm against ATO before relying on them.",
     "_reference_only_keys": {

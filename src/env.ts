@@ -147,6 +147,8 @@ export interface TaxAgentRpc {
   scanTransactions(userId: string, startYear: number): Promise<import("./lib/scan").ScanResult>; // #256
   assessFilingReadiness(userId: string, startYear: number): Promise<import("./lib/readiness").FilingReadiness>;
   journey(userId: string, startYear: number): Promise<import("./lib/journey").Journey>; // #582 (ft_journey)
+  growLayers(userId: string, startYear: number): Promise<import("./lib/grow").GrowPayload>; // #592 (ft_journey)
+  setGrowLayer(userId: string, body: { layer?: unknown; state?: unknown; source?: unknown; fy?: unknown }): Promise<{ ok: true } | { error: string }>; // #592
   setChecklistStatus(userId: string, id: string, status: string): Promise<void>;
   setClaimStatus(userId: string, id: string, status: string): Promise<void>;
   computeCgt(userId: string, propertyId: string): Promise<import("./lib/cgt").CgtResult & { property_id: string }>;

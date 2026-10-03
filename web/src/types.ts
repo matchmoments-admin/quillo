@@ -1356,6 +1356,29 @@ export interface BankDisconnectResult {
 
 // ── #582 first-timer journey (GET /api/journey?fy=, flag ft_journey; server src/lib/journey.ts) ──
 export type JourneyStepKey = "setup" | "connect" | "review" | "lodge";
+// #592 (ft_journey): the Grow layer (mirrors src/lib/grow.ts).
+export type GrowLayerKey = "property" | "investments" | "business" | "assets" | "integrations" | "extras" | "savings" | "advisers";
+export type GrowDetectableLayer = "property" | "investments" | "business";
+export interface GrowLayerView {
+  key: GrowLayerKey;
+  state: "on" | "off";
+  /** Why it's visible ('data' = the tenant already has entries in it), or 'none' when hidden. */
+  reason: "data" | "switched" | "detected" | "none";
+  has_data: boolean;
+  switchable: boolean;
+}
+export interface GrowSuggestion {
+  layer: GrowDetectableLayer;
+  kind: string;
+  title: string;
+  body: string;
+  lines: number;
+  sample: string | null;
+}
+export interface GrowPayload {
+  layers: GrowLayerView[];
+  suggestions: GrowSuggestion[];
+}
 export type JourneyStepStatus = "not_started" | "in_progress" | "needs_attention" | "done";
 export interface Journey {
   fy: string;
@@ -1363,7 +1386,7 @@ export interface Journey {
   lodged: boolean;
   steps: { key: JourneyStepKey; status: JourneyStepStatus; count: number }[];
   records: { claims_total: number; claims_with_record: number; claims_exception: number; facts_needed: string[]; facts_done: string[] } | null;
-  grow: { layers: { key: string; state: string; reason: string }[]; suggestions: unknown[] };
+  grow: GrowPayload;
   readiness: {
     blockers: number;
     review: number;

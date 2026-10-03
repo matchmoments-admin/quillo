@@ -159,8 +159,10 @@ export function Savings() {
         <RecurringPanel title="Bills" sub="Usage-based, recurring" items={bills} onDismiss={(id) => dismissBill.mutate(id)} onConfirm={(id) => confirmBill.mutate(id)} />
       </div>
 
-      {/* Savings calculator — factual "set aside $X/year" arithmetic (no product, no investing). */}
-      <SavingsCalculator defaultAnnualCents={rr.top_spenders[0]?.annualised_cents ?? 0} />
+      {/* Savings calculator — factual "set aside $X/year" arithmetic (no product, no investing).
+          #592 / owner ruling #535: the compound-interest calculator is deleted in the redesign (Grow › Savings).
+          Hidden with ft_journey ON; OFF keeps today's page byte-identical. Remove the component with the flag. */}
+      {!has("ft_journey") && <SavingsCalculator defaultAnnualCents={rr.top_spenders[0]?.annualised_cents ?? 0} />}
 
       <p className="text-xs text-ink-3">{d.disclaimer}</p>
     </div>

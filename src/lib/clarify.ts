@@ -89,6 +89,12 @@ const BROKER_CODES: ReadonlyArray<readonly [RegExp, string]> = [
   [/\braiz\b/i, "RAIZ"],
 ];
 
+/** The broker/registry a description names (BROKER_CODES), or null. Shared with Grow detection (grow.ts). */
+export function brokerCodeFor(desc: string | null | undefined): string | null {
+  const d = desc ?? "";
+  return BROKER_CODES.find(([re]) => re.test(d))?.[1] ?? null;
+}
+
 export interface HoldingDraft {
   /** Suggested display code — the BROKER, never a ticker. A deposit doesn't say what was bought. */
   code: string | null;
@@ -116,7 +122,7 @@ export function draftHoldingFromTxn(r: {
   const cents = r.amount_aud_cents ?? r.amount_cents ?? null;
   if (cents == null || !Number.isFinite(cents) || cents <= 0) return null;
   const desc = `${r.merchant ?? ""} ${r.raw_description ?? ""}`;
-  const code = BROKER_CODES.find(([re]) => re.test(desc))?.[1] ?? null;
+  const code = brokerCodeFor(desc);
   return { code, acquired_date: r.txn_date ?? null, cost_base_cents: Math.round(cents), units: null };
 }
 

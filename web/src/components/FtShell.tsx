@@ -6,6 +6,7 @@ import * as Tooltip from "@radix-ui/react-tooltip";
 import { useFeatures, useAdminAccess, usePartnerAccess } from "../lib/features";
 import { FySwitcher } from "../lib/activeFy";
 import { JOURNEY_STEP_KEYS, STATUS_LABEL, STEP_LABEL, STEP_ROUTE, stepForPath, useJourney } from "../lib/journey";
+import { GROW_LABEL, GROW_ROUTE, useSetGrowLayer } from "../lib/grow";
 import type { JourneyStepKey, JourneyStepStatus } from "../types";
 import { ChatProvider } from "./chat/ChatProvider";
 import { WhySheet, cx, FOCUS, TAP } from "./ft";
@@ -14,7 +15,9 @@ import { WhySheet, cx, FOCUS, TAP } from "./ft";
 // the legacy sidebar + JourneySpine when the flag is ON, so OFF never reaches this file.
 //   • md and up: a left rail — Home, the six numbered steps with a status dot, then the account menu
 //     (year switcher, Billing, Alerts, Learn & glossary, Settings, Appearance, sign out; Partner/Admin
-//     keep their role gating). Grow layers join the rail with A11 ticket b.
+//     keep their role gating). Then the Grow group (A11 ticket b, #592): only the layers that are visible
+//     (switched on, a detection the user said Yes to, or data already there). The account menu carries the
+//     Grow switcher. Advisers (the Partner portal) is a Grow layer, so it moved out of the account menu.
 //   • below md: a bottom bar of four — Home, Steps (sheet of the six with status), Ask (the Why?
 //     sheet for the current step), Account (sheet with the account menu). The step header with its
 //     progress segments sits at the top of each step page (StepPage), not in the shell.
@@ -69,17 +72,84 @@ function StepList({ onPick }: { onPick?: () => void }) {
   );
 }
 
+/** The visible Grow layers (A11b, #592) — under the steps in the rail and the Steps sheet. Nothing when none. */
+function GrowList({ onPick }: { onPick?: () => void }) {
+  const journey = useJourney();
+  const visible = (journey.data?.grow.layers ?? []).filter((l) => l.state === "on");
+  if (visible.length === 0) return null;
+  return (
+    <div className="mt-4">
+      <div className="px-3 pb-1 text-[10px] font-bold uppercase tracking-[0.2em] text-muted">Grow</div>
+      <ul className="space-y-0.5">
+        {visible.map((l) => (
+          <li key={l.key}>
+            <NavLink to={GROW_ROUTE[l.key]} onClick={onPick} className={({ isActive }) => railLink(isActive)}>
+              {GROW_LABEL[l.key]}
+            </NavLink>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/**
+ * The Grow switcher (account menu): turn a layer on or off. A layer that already holds the user's entries is
+ * locked on (nobody loses sight of their own records); Advisers is role-gated and never listed here.
+ */
+function GrowSwitcher() {
+  const journey = useJourney();
+  const set = useSetGrowLayer();
+  const [open, setOpen] = useState(false);
+  const layers = (journey.data?.grow.layers ?? []).filter((l) => l.switchable);
+  if (layers.length === 0) return null;
+  return (
+    <div>
+      <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open} className={cx(railLink(false), "w-full justify-between")}>
+        <span>Grow layers</span>
+        <span aria-hidden className="text-xs">{open ? "−" : "+"}</span>
+      </button>
+      {open && (
+        <ul className="space-y-0.5 pb-1 pl-3">
+          {layers.map((l) => {
+            const on = l.state === "on";
+            return (
+              <li key={l.key}>
+                <label className={cx("flex cursor-pointer items-center gap-3 rounded-lg px-3 text-sm text-ink", TAP, l.has_data && "cursor-default")}>
+                  <input
+                    type="checkbox"
+                    className={cx("h-4 w-4 accent-accent", FOCUS)}
+                    checked={on}
+                    disabled={l.has_data || set.isPending}
+                    onChange={() => set.mutate({ layer: l.key, state: on ? "off" : "on", source: "switched" })}
+                  />
+                  <span className="flex-1">{GROW_LABEL[l.key]}</span>
+                  {l.has_data && <span className="text-[11px] text-muted">has your entries</span>}
+                </label>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 /** Account menu items (spec A11: Billing, Alerts, Learn & glossary, year switcher, Settings, sign out). */
 function AccountMenu({ onPick }: { onPick?: () => void }) {
   const { has } = useFeatures();
   const { isAdmin } = useAdminAccess();
   const { isPartner } = usePartnerAccess();
+  const journey = useJourney();
+  // Advisers (the Partner portal) lives in Grow, which reads the journey; keep a fallback link while the
+  // journey is loading or failed so a partner is never left without a way in.
+  const growListsAdvisers = !!journey.data?.grow.layers.some((l) => l.key === "advisers" && l.state === "on");
   const items: { to: string; label: string; show: boolean }[] = [
     { to: "/billing", label: "Billing", show: has("billing") },
     { to: "/notifications", label: "Alerts", show: true },
     { to: "/glossary", label: "Learn & glossary", show: true },
     { to: "/settings", label: "Settings", show: true },
-    { to: "/partner", label: "Partner portal", show: isPartner },
+    { to: "/partner", label: "Partner portal", show: isPartner && !growListsAdvisers },
     { to: "/admin", label: "Admin", show: isAdmin },
   ];
   return (
@@ -94,6 +164,7 @@ function AccountMenu({ onPick }: { onPick?: () => void }) {
             {it.label}
           </NavLink>
         ))}
+      <GrowSwitcher />
       <div className="flex items-center gap-3 px-3 py-2">
         <UserButton afterSignOutUrl="/sign-in" />
         <span className="text-xs text-muted">Account &amp; sign out</span>
@@ -171,6 +242,7 @@ export function FtShell({ gate }: { gate?: ReactNode }) {
                 </NavLink>
                 <div className="mt-4 px-3 pb-1 text-[10px] font-bold uppercase tracking-[0.2em] text-muted">Your return</div>
                 <StepList />
+                <GrowList />
               </nav>
               <div className="mt-4 border-t border-line pt-3">
                 <AccountMenu />
@@ -217,6 +289,7 @@ export function FtShell({ gate }: { gate?: ReactNode }) {
 
           <WhySheet open={sheet === "steps"} onClose={close} title="Steps">
             <StepList onPick={close} />
+            <GrowList onPick={close} />
           </WhySheet>
           {/* Ask = the Why? explainer for wherever you are (Home has a guide too). */}
           <WhySheet open={sheet === "ask"} onClose={close} step={here} />

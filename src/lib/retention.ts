@@ -95,6 +95,7 @@ export const PURGE_TABLES = [
   "situation_periods",
   // 0079 (wages_payer, first-timer A3 #577): "We noticed…" credit-triage signals and the user's decision.
   "noticed_signals",
+  "grow_layers",             // 0083 (ft_journey, A11b #592) — the user's Grow layer on/off choices
 ] as const;
 
 // Columns that must NEVER leave the system in an APP-12 export, even though the row belongs to the

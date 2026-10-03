@@ -1,8 +1,8 @@
 // The first-timer journey state (spec docs/first-timer/spec.md A11, ticket #582; flag ft_journey).
 //
 // `GET /api/journey?fy=` is ONE composite fetch for the new app shell + Home: the four steps with a status
-// and a count, the readiness hero, the "What's left" list, and the slots later tickets fill (`records` from
-// A7, `grow` from A11b). The step rules live here as a PURE function (assessJourney) so they are unit-tested
+// and a count, the readiness hero, the "What's left" list, `grow` (src/lib/grow.ts, A11b #592) and the
+// slot A7 fills (`records`). The step rules live here as a PURE function (assessJourney) so they are unit-tested
 // offline; journeySignals() does the D1 counting for the DO's journey() (the goldens cover the pure rules).
 //
 // Signals other tickets own are NOT guessed at here: until they land, the open payroll/platform
@@ -27,6 +27,7 @@ import { getFyLodged, isFyMarkedLodged, listLodgedFys } from "./fy-signoff";
 import { fyBounds, fyLabel } from "./ledger-totals";
 import { listSituationPeriods, situationFacts } from "./situation-profile";
 import { AU_DESCRIPTOR, type JurisdictionDescriptor } from "./jurisdiction";
+import type { GrowPayload } from "./grow";
 
 export const JOURNEY_STEPS = ["setup", "connect", "review", "lodge"] as const;
 export type JourneyStepKey = (typeof JOURNEY_STEPS)[number];
@@ -62,8 +63,8 @@ export interface Journey {
   lodged: boolean;
   steps: JourneyStep[];
   records: JourneyRecords | null;
-  /** Grow layer (A11 ticket b fills this; empty until then, so a first-timer sees no Grow items). */
-  grow: { layers: { key: string; state: string; reason: string }[]; suggestions: unknown[] };
+  /** Grow layer (A11 ticket b, src/lib/grow.ts): every available layer + its visibility, and open suggestions. */
+  grow: GrowPayload;
   readiness: {
     blockers: number;
     review: number;
@@ -156,7 +157,7 @@ export function journeySteps(s: JourneySignals, findings: ReadinessFinding[]): J
 }
 
 /** Compose the journey payload from readiness + the step signals. Pure. */
-export function assessJourney(input: { readiness: FilingReadiness; signals: JourneySignals; lodgingFy: number }): Journey {
+export function assessJourney(input: { readiness: FilingReadiness; signals: JourneySignals; lodgingFy: number; grow?: GrowPayload }): Journey {
   const { readiness, signals } = input;
   const score = readiness.readiness_score;
   const nothing = readiness.findings.some((f) => f.id === "nothing_captured");
@@ -167,7 +168,7 @@ export function assessJourney(input: { readiness: FilingReadiness; signals: Jour
     lodged: signals.ship.lodged,
     steps: journeySteps(signals, readiness.findings),
     records: signals.records,
-    grow: { layers: [], suggestions: [] },
+    grow: input.grow ?? { layers: [], suggestions: [] },
     readiness: {
       blockers: score.blockers,
       review: score.review,

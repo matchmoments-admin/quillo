@@ -13,6 +13,8 @@ import { purgeTenant as purgeTenantData, exportTenant as exportTenantData, flagO
 import { COUNTABLE, COUNTABLE_INCOME, FX_CONVERTED, assertCanonicalSource, fetchAskDigestRows, spendRunRate, reconcileProposals } from "./lib/queries";
 import { reconcileConfigFromPack } from "./lib/reconcile-proposer";
 import { assessJourney, coldJourney, journeyLodgedFys, journeySignals, type Journey } from "./lib/journey";
+import { availableLayers, growPayload, setGrowLayer, type GrowPayload } from "./lib/grow";
+import { isPartner } from "./lib/roles";
 import { applyReceiptLink, receiptLinkTargets } from "./lib/receipt-link";
 import { billerNormalize, detectRecurrence, classifyBiller, paymentsPerYear, recurringCopy, signpostFor, insurerResetBasis, nextResetDate, weeksUntil, phiResetNudgeCopy, phiDetectedCopy, type RecurringOccurrence, type ResetBasis } from "./lib/advisory";
 import { findPhisProduct } from "./lib/phis-seed";
@@ -4663,8 +4665,35 @@ export class TaxAgent extends Agent<Env> {
       const cfg = reconcileConfigFromPack(await resolveRulePack(this.env, userId, jur));
       signals.check.proposals = (await reconcileProposals(this.env, userId, startYear, cfg, jur)).proposals.length;
     }
+    // A11b (#592): Grow visibility (data presence is computed here, so existing tenants see their layers on
+    // first load) + the open "looks like you have X" suggestions.
+    // Navigation extras only: a Grow failure (e.g. 0083 not yet applied) must never take the whole shell down.
+    const grow = await (async () => growPayload(this.env, userId, startYear, { isPartner: isPartner(profile), pack: await resolveRulePack(this.env, userId, jur), descriptor: jur }))()
+      .catch((e): GrowPayload => { console.error("journey: grow payload failed", e instanceof Error ? e.message : String(e)); return { layers: [], suggestions: [] }; });
     // lodging_fy = #572's lodging-year default (the earliest unlodged FY whose year has ended), not the FY asked for.
-    return assessJourney({ readiness, signals, lodgingFy: lodgingFy(new Date(), jur.taxPeriod, await journeyLodgedFys(this.env, userId)) });
+    return assessJourney({ readiness, signals, grow, lodgingFy: lodgingFy(new Date(), jur.taxPeriod, await journeyLodgedFys(this.env, userId)) });
+  }
+
+  // ── GROW LAYER (A11 ticket b, #592, flag ft_journey) ──
+  /** Every available Grow layer with its visibility + reason, and the open detection suggestions. Read-only. */
+  async growLayers(userId: string, startYear: number): Promise<GrowPayload> {
+    const profile = await getProfile(this.env, userId);
+    if (!profile) return { layers: [], suggestions: [] };
+    const jur = await this.jurisdictionFor(userId);
+    return growPayload(this.env, userId, startYear, { isPartner: isPartner(profile), pack: await resolveRulePack(this.env, userId, jur), descriptor: jur });
+  }
+
+  /**
+   * Record a Grow choice: the switcher (source 'switched', on/off) or a suggestion answer (source 'detected':
+   * on = Yes; off = No for FY `fy`). Never called by detection itself: nothing switches a layer on silently.
+   */
+  async setGrowLayer(userId: string, body: { layer?: unknown; state?: unknown; source?: unknown; fy?: unknown }): Promise<{ ok: true } | { error: string }> {
+    const profile = await getProfile(this.env, userId);
+    if (!profile) return { error: "no profile" };
+    const err = await setGrowLayer(this.env, userId, { layer: body.layer, state: body.state, source: body.source, fy: body.fy }, availableLayers(this.env, isPartner(profile)));
+    if (err) return { error: err };
+    await this.audit(userId, "grow_layer_set", JSON.stringify({ layer: body.layer, state: body.state, source: body.source, ...(body.source === "detected" && body.state === "off" ? { fy: Number(body.fy) } : {}) }));
+    return { ok: true };
   }
 
   /** Update a claim suggestion's status (suggested|accepted|dismissed). */

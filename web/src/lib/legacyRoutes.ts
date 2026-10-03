@@ -7,7 +7,7 @@
 //
 // Routes the spec keeps ("route kept": /transactions plain list, /txn/:id, /reports, /settings,
 // /notifications, /billing, /glossary, /partner, /admin) are absent on purpose. The Grow pages
-// (/assets, /extras, /savings, /quickbooks → /grow/:layer) join this table with the Grow ticket (A11b).
+// (/assets, /extras, /savings, /quickbooks → /grow/:layer) joined with the Grow ticket (A11b, #592).
 
 import type { JourneyStepKey } from "../types";
 
@@ -29,6 +29,10 @@ export const LEGACY_ROUTES: readonly LegacyRoute[] = [
   { from: "/transactions", to: "/review", when: { param: "view", value: "review" } },
   { from: "/reconcile", to: "/review#check" },
   { from: "/filing", to: "/lodge" },
+  { from: "/assets", to: "/grow/assets" },
+  { from: "/extras", to: "/grow/extras" },
+  { from: "/savings", to: "/grow/savings" },
+  { from: "/quickbooks", to: "/grow/integrations" },
   // Legacy /review (the "By label" roll-up) is NOT here: since the 4-step design review (#585) its path IS
   // the Review step, which renders the legacy page itself when the flag is OFF (pages/Steps.tsx ReviewStep).
 ];

@@ -90,3 +90,57 @@ export const RECORD_STATUS_LABEL: Record<RecordStatus, string> = {
 
 /** Check item tones (spec: warn / info). */
 export type CheckTone = "warn" | "info";
+
+/**
+ * The ATO's three golden rules for a work-related deduction (spec A10 ticket b, #591; owner ruling
+ * #537: the inline "why" on every claim card and step intro). Order and wording are fixed here, once.
+ */
+export type GoldenRuleKey = "spent" | "earning" | "record";
+export const GOLDEN_RULES: readonly { key: GoldenRuleKey; label: string; hint: string }[] = [
+  { key: "spent", label: "You spent it", hint: "You paid for it yourself and weren't paid back." },
+  { key: "earning", label: "It's for earning your income", hint: "It's directly related to the work you're paid for." },
+  { key: "record", label: "You have a record", hint: "A receipt, invoice or diary backs it up." },
+];
+
+/**
+ * What a card knows about each rule. `hasBankLine` (and not `reimbursed`): spent; `workUseConfirmed`:
+ * the user confirmed work use; `recordStatus`: the A7 record status. Unknown ⇒ not yet.
+ */
+export interface GoldenRuleInput {
+  hasBankLine?: boolean | null;
+  reimbursed?: boolean | null;
+  workUseConfirmed?: boolean | null;
+  recordStatus?: RecordStatus | null;
+}
+
+export interface GoldenRuleState {
+  key: GoldenRuleKey;
+  label: string;
+  hint: string;
+  /** true ⇒ ticks green; false ⇒ grey ("not yet"), never red: it's a prompt, not a ruling. */
+  met: boolean;
+}
+
+/**
+ * Pure: the three rule states for one card. A reimbursed spend doesn't meet "you spent it"; a
+ * record-keeping exception counts as a record (the ATO's own exception), a missing record doesn't.
+ */
+export function goldenRuleStates(input: GoldenRuleInput = {}): GoldenRuleState[] {
+  const met: Record<GoldenRuleKey, boolean> = {
+    spent: input.hasBankLine === true && input.reimbursed !== true,
+    earning: input.workUseConfirmed === true,
+    record: input.recordStatus === "recorded" || input.recordStatus === "exception",
+  };
+  return GOLDEN_RULES.map((r) => ({ ...r, met: met[r.key] }));
+}
+
+/** "2 of 3": how many rules a card meets (a count, never money). */
+export function goldenRulesMet(states: readonly GoldenRuleState[]): string {
+  return `${states.filter((s) => s.met).length} of ${states.length}`;
+}
+
+/** Starter questions the Why? drawer offers (one tap asks Ask Quillo). Item questions lead when there's an item. */
+export function whyStarterQuestions(step: StepKey, hasItem: boolean): string[] {
+  if (hasItem) return ["Why is this item here?", "Which of the three golden rules does it still need?", "What record would back this up?"];
+  return [step === "home" ? "What's left to do, and why?" : "Why does this step matter for my return?", "What do the three golden rules mean for me?"];
+}

@@ -864,6 +864,19 @@ export interface EntityAction {
   fields: Record<string, unknown>;
 }
 
+/** The Why? drawer's context on POST /api/ask (#591, ft_journey): the step key + optional transaction id. */
+export interface AskContext {
+  step: string;
+  item_id?: string;
+}
+
+/** GET /api/education (#591, ft_journey). */
+export interface EducationData {
+  /** Keyed by the stored occupation value (persons.occupation), so a card can find its person's guide. */
+  occupation_guides: { occupation: string; scope: string; label: string; ato_url: string | null }[];
+  state_education: { label: string; intro: string; states: { code: string; name: string; office: string; url: string }[] } | null;
+}
+
 export interface AskAnswer {
   answer: string;
   caveats: string[];

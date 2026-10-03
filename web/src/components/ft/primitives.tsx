@@ -10,7 +10,7 @@
 //   • loading / empty / error render through StatusGate, so every component has all three states.
 // Copy is scanned by the tax-advice denylist (scripts/check-units.ts).
 
-import { forwardRef, type AnchorHTMLAttributes, type ButtonHTMLAttributes, type ReactNode } from "react";
+import { forwardRef, type AnchorHTMLAttributes, type ButtonHTMLAttributes, type ReactNode, type TextareaHTMLAttributes } from "react";
 import { Link } from "react-router-dom";
 import { DEFER_TO_AGENT } from "../../content/stepGuides";
 import type { FtStatus } from "./model";
@@ -89,6 +89,18 @@ export function FtLink({
     </a>
   );
 }
+
+/** The one multi-line text field (#591, the Why? drawer's question box): 44px floor + the focus ring. */
+export const FtTextArea = forwardRef<HTMLTextAreaElement, TextareaHTMLAttributes<HTMLTextAreaElement>>(function FtTextArea({ className, rows = 2, ...props }, ref) {
+  return (
+    <textarea
+      ref={ref}
+      rows={rows}
+      className={cx(TAP, FOCUS, "w-full resize-none rounded-lg border border-line-strong bg-card px-3 py-2 text-[15px] text-ink placeholder:text-muted", className)}
+      {...props}
+    />
+  );
+});
 
 /** A pill badge. Tones map to status roles. */
 export function Badge({ tone = "neutral", children }: { tone?: "accent" | "ok" | "warn" | "info" | "danger" | "neutral"; children: ReactNode }) {

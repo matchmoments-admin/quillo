@@ -29,6 +29,7 @@ import {
   referralFunnelAdmin,
 } from "./lib/queries";
 import { phisProductList } from "./lib/phis-seed";
+import { getEducation, normaliseAskContext } from "./lib/education";
 import { providerSearchTerm, HEALTHDIRECT_FINDER_URL } from "./lib/advisory";
 import { fetchProviders, withinProviderSearchCap, withinPhiScanCap, PROVIDER_ATTRIBUTION, parseAuLatLng } from "./lib/phi-providers";
 import { postcodeCentroid } from "./lib/au-postcodes";
@@ -375,17 +376,22 @@ export async function handleApi(
     }
   }
 
-  // POST /api/ask { question, fy? } — grounded single-turn tax-Q&A from the user's own ledger.
+  // POST /api/ask { question, fy?, context? } — grounded single-turn tax-Q&A from the user's own ledger.
+  // `context: { step, item_id }` (#591, the Why? drawer) is honoured only with ft_journey ON and only
+  // for an allowlisted step; OFF / absent / unknown ⇒ no context arg ⇒ the exact pre-#591 call.
   if (resource === "ask" && m === "POST") {
     if (!featureOn(env, "ask_quillo")) return json({ error: "not available" }, 404);
-    const { question, fy } = (await req.json().catch(() => ({}))) as { question?: string; fy?: number };
+    const { question, fy, context } = (await req.json().catch(() => ({}))) as { question?: string; fy?: number; context?: unknown };
     if (!question || !question.trim()) return json({ error: "missing question" }, 400);
+    const askFy = Math.trunc(Number(fy)) || defaultFy();
+    const askCtx = featureOn(env, "ft_journey") ? normaliseAskContext(context) : null;
     try {
-      return json(await stub.askQuestion(uid, question, Math.trunc(Number(fy)) || defaultFy()));
+      return json(askCtx ? await stub.askQuestion(uid, question, askFy, askCtx) : await stub.askQuestion(uid, question, askFy));
     } catch (e) {
       const msg = (e as Error).message;
       if (msg === "consent_required") return json({ error: "consent_required" }, 403);
       if (msg === "ai_budget_reached") return json({ error: "AI is paused for today (daily limit reached) — try again after the reset." }, 429);
+      if (msg === "chat_rate_limited") return json({ error: "You're asking questions too quickly — give it a moment and try again." }, 429);
       throw e;
     }
   }
@@ -1623,6 +1629,14 @@ export async function handleApi(
     if (!featureOn(env, "relevance_scan")) return json({ error: "not available" }, 404);
     const fy = normaliseFyStart(url.searchParams.get("fy")) ?? defaultFy();
     return json(await relevanceView(env, uid, fy));
+  }
+
+  // GET /api/education (#591, flag ft_journey) — pack-driven education for the step pages: the ATO
+  // occupation-guide link for each occupation on this tenant's people + the state revenue office links
+  // (education only; the return is federal). Read-only, no model call. OFF ⇒ 404.
+  if (resource === "education" && m === "GET") {
+    if (!featureOn(env, "ft_journey")) return json({ error: "not available" }, 404);
+    return json(await getEducation(env, uid));
   }
 
   // #575: the myTax self-lodge worksheet (spec A9). Flag mytax_worksheet; 404 when off ⇒ byte-identical.

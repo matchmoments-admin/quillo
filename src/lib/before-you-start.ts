@@ -28,8 +28,8 @@ export function beforeYouStartPayload(pack: PackShape | null | undefined): Befor
   return { price_line: price };
 }
 
-/** Rule pack the public screen reads: the KV override (pushed by `npm run rulepack:push`) shadows the bundled default, as everywhere else. */
-async function loadPack(env: Env): Promise<PackShape> {
+/** Rule pack the public screen (and #591 /api/education) reads: the KV override (pushed by `npm run rulepack:push`) shadows the bundled default, as everywhere else. */
+export async function loadPack(env: Env): Promise<PackShape> {
   try {
     const override = await env.RULES.get("rulepack:au-v1", "json");
     if (override && typeof override === "object") return override as PackShape;

@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { money } from "../ui";
-import { CLAIM_BADGE_LABEL, type ClaimBadge } from "./model";
+import { GoldenRules } from "./GoldenRules";
+import { CLAIM_BADGE_LABEL, type ClaimBadge, type GoldenRuleInput } from "./model";
 import { Badge, FtButton, FtCard, Skeleton, StatusGate, type StatusProps } from "./primitives";
 
 const BADGE_TONE: Record<ClaimBadge, "accent" | "ok" | "neutral" | "warn"> = {
@@ -13,7 +14,9 @@ const BADGE_TONE: Record<ClaimBadge, "accent" | "ok" | "neutral" | "warn"> = {
 /**
  * Claim card (design-system.md §4): title, figure, badge, why, evidence, and the two decisions:
  * Claim it / Not work-related. The figure is what was spent, never an estimate of tax back. The
- * user decides every item; the card only explains why it was surfaced.
+ * user decides every item; the card only explains why it was surfaced. Every card shows the ATO's
+ * three golden rules (#591), ticked from `rules`, with the occupation guide link when given; `onWhy`
+ * adds a Why? that opens the Why? drawer about this item.
  */
 export function ClaimCard({
   title,
@@ -25,6 +28,9 @@ export function ClaimCard({
   onClaim,
   onNotWork,
   busy,
+  rules,
+  guide,
+  onWhy,
   ...status
 }: {
   title: ReactNode;
@@ -41,6 +47,12 @@ export function ClaimCard({
   onNotWork?: () => void;
   /** Which decision is in flight. */
   busy?: "claim" | "not_work";
+  /** What this item meets of the three golden rules (unknown ⇒ grey). */
+  rules?: GoldenRuleInput;
+  /** The ATO occupation guide to link under the rules. */
+  guide?: { label: string; ato_url: string | null } | null;
+  /** Opens the Why? drawer for this item. */
+  onWhy?: () => void;
 } & StatusProps) {
   return (
     <StatusGate
@@ -73,7 +85,8 @@ export function ClaimCard({
           </div>
           {why && <p className="max-w-[65ch] text-sm leading-relaxed text-muted">{why}</p>}
           {evidence && <div className="text-[13px] text-ink">{evidence}</div>}
-          {(onClaim || onNotWork) && (
+          <GoldenRules compact rules={rules ?? {}} guide={guide} />
+          {(onClaim || onNotWork || onWhy) && (
             <div className="flex flex-wrap gap-2 pt-1">
               {onClaim && (
                 <FtButton variant="primary" onClick={onClaim} busy={busy === "claim"} disabled={busy !== undefined}>
@@ -83,6 +96,11 @@ export function ClaimCard({
               {onNotWork && (
                 <FtButton variant="secondary" onClick={onNotWork} busy={busy === "not_work"} disabled={busy !== undefined}>
                   Not work-related
+                </FtButton>
+              )}
+              {onWhy && (
+                <FtButton variant="ghost" onClick={onWhy} aria-haspopup="dialog">
+                  Why?
                 </FtButton>
               )}
             </div>

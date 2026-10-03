@@ -48,7 +48,7 @@ export const OLD_STEP_ROUTES: readonly LegacyRoute[] = [
   { from: "/claims", to: "/review" },
   { from: "/records", to: "/review#documents" },
   { from: "/check", to: "/review#check" },
-  { from: "/check/match", to: "/review#check" },
+  { from: "/check/match", to: "/review/match" },
   { from: "/ship", to: "/lodge" },
 ];
 

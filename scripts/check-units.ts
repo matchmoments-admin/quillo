@@ -6,7 +6,7 @@ import { reconcileStatement, deriveBalances, isTransferLike, isLoanInterestLine,
 import { groupKey, groupForClarify, rulePatternForStem, isClarifyLeftover, isInsuranceLikeStem, suggestionsFor, draftHoldingFromTxn } from "../src/lib/clarify";
 import { resolveLoanInterest, deductibleInterestCents } from "../src/lib/loan-interest";
 import { scoreClaimMatches } from "../src/lib/claim-match";
-import { scanLine, scanLines, relevanceFloorCents, isScannedBucket, worthALookText } from "../src/lib/relevance-scan";
+import { scanLine, scanLines, relevanceFloorCents, isScannedBucket, worthALookText, resolveConfirmLabel, ruleLabelOptions, confirmNeedsAsset, confirmNeedsShare } from "../src/lib/relevance-scan";
 import { batchStatementStatus, isStaleBatch, BATCH_MAX_AGE_MS } from "../src/lib/batch";
 import { extractSituationDraft, parseBatchMessage, mapBatchItems, type BatchItem } from "../src/extract";
 import type { LLM } from "../src/llm";
@@ -3641,6 +3641,10 @@ console.log("first-timer copy denylist (#584)");
     }
   }
   scanText("pages/BeforeYouStart.tsx", stripComments(fs.readFileSync(path.join(process.cwd(), "web/src/pages/BeforeYouStart.tsx"), "utf8")));
+  // #587: the Review step's copy (step 3: queue + its claim / record cards) is first-timer copy too.
+  for (const f of ["pages/ReviewQueue.tsx", "components/review/WorthALookCard.tsx", "components/review/RecordCards.tsx", "lib/reviewQueue.ts"])
+    scanText(f, stripComments(fs.readFileSync(path.join(process.cwd(), "web/src", f), "utf8")));
+  scanText("lib/claims.ts", stripComments(fs.readFileSync(path.join(process.cwd(), "web/src/lib/claims.ts"), "utf8")));
   for (const [k, v] of Object.entries(FT_GLOSSARY)) scanText(`FT_GLOSSARY.${k}`, `${v.term}\n${v.short}`);
   const packBys = (rulePack as unknown as { before_you_start?: Record<string, unknown> }).before_you_start;
   check("rule pack carries a before_you_start block", !!packBys);
@@ -4640,6 +4644,18 @@ import { lodgingFy, lodgementTiming, selfLodgeDueDate, retentionBackstopDate, re
   check("relevance: card text gives the why + the three golden rules, no figure, no 'you can claim'", /because you work as a nurse/.test(txt) && /record/.test(txt) && !/\$\s?\d/.test(txt) && !/you can claim/i.test(txt));
   check("relevance: a defer_to_agent rule's card says confirm with a registered tax agent",
     /registered tax agent/.test(worthALookText({ ...nurseRule, defer_to_agent: 1 }, null)) && !/registered tax agent/.test(worthALookText({ ...nurseRule, defer_to_agent: 0 }, null)));
+  // #587: the confirm writes ONE return label; a rule naming alternatives needs the user's pick.
+  check("relevance confirm label: a single-label rule applies its label; no label ⇒ nothing to write",
+    resolveConfirmLabel("D5", null).label === "D5" && !resolveConfirmLabel("D5", "D3").needs_label && resolveConfirmLabel(null, "D5").label === null && !resolveConfirmLabel("", null).needs_label);
+  check("relevance confirm label: 'D3/D5' needs a pick, accepts only one of its own options",
+    resolveConfirmLabel("D3/D5", null).needs_label && JSON.stringify(resolveConfirmLabel("D3/D5", null).options) === '["D3","D5"]' &&
+      resolveConfirmLabel("D3/D5", "D3").label === "D3" && resolveConfirmLabel("D3/D5", "D1").needs_label && JSON.stringify(ruleLabelOptions(" D1 / D5 /D1")) === '["D1","D5"]');
+  check("relevance confirm asset: only a depreciating rule above the threshold is routed to Assets",
+    confirmNeedsAsset({ claim_type: "apportioned", default_method: "diminishing_value" }, 150000, 30000) && !confirmNeedsAsset({ claim_type: "apportioned", default_method: "diminishing_value" }, 30000, 30000) &&
+      !confirmNeedsAsset({ claim_type: "immediate", default_method: null }, 150000, 30000) && confirmNeedsAsset({ claim_type: "div40", default_method: null }, -40000, 30000) &&
+      !confirmNeedsAsset({ claim_type: "div40" }, 150000, null));
+  check("relevance confirm share: a mixed-use stamp or a non-immediate rule needs the work-use share",
+    confirmNeedsShare({ claim_type: "apportioned" }, "undetermined") && confirmNeedsShare({ claim_type: "immediate" }, "needs_apportionment") && !confirmNeedsShare({ claim_type: "immediate" }, "likely_not"));
 }
 
 import { residencyAssessabilityTable, excludableIncomeTypes, classifyIncomeRow, nonResidentClaimTreatment, hasNonResidentPeriod, type ResidencyAssessabilityContext } from "../src/lib/residency-assessability";
@@ -4797,6 +4813,9 @@ import type { FilingReadiness as JFilingReadiness, ReadinessFinding as JFinding 
   const j0 = assessJourney({ readiness: rd([fnd("unknown_bucket", "blocker", "classification"), fnd("div293_income", "review", "threshold"), fnd("psi", "info")], 1), signals: sig(), lodgingFy: 2025 });
   check("journey payload: blockers > 0 ⇒ no estimate; What's left = blockers then reviews (info excluded), each with its step",
     j0.readiness.estimate === null && j0.whats_left.length === 2 && j0.whats_left[0]!.severity === "blocker" && j0.whats_left[0]!.step === "review" && j0.whats_left[1]!.step === "review");
+  const jn = assessJourney({ readiness: rd([{ ...fnd("income_not_recorded", "blocker", "income"), general_info_note: "Add your income.", evidence_refs: [{ kind: "income", id: "i1" }] }], 1), signals: sig(), lodgingFy: 2025 });
+  check("journey payload (#589): each What's-left item carries its general-info note + first evidence kind (Check's fix link, no second readiness read)",
+    jn.whats_left[0]!.note === "Add your income." && jn.whats_left[0]!.evidence_kind === "income" && j0.whats_left[0]!.evidence_kind === null);
   const j1 = assessJourney({ readiness: rd([], 0, 5_200_000), signals: sig(), lodgingFy: 2025 });
   check("journey payload: 0 blockers ⇒ estimate range tracked→confirmed (never a refund field); grow empty when no grow payload is passed",
     j1.readiness.estimate?.tracked_cents === 5_000_000 && j1.readiness.estimate?.confirmed_cents === 5_200_000 &&
@@ -4830,9 +4849,9 @@ import { GROW_ROUTE, GROW_LEGACY_ROUTE } from "../web/src/lib/growRoutes";
   check("legacyRoutes: the four step routes are registered (setup, connect, review, lodge)",
     Object.values(FT_STEP_ROUTE).join() === "/setup,/connect,/review,/lodge" && Object.values(FT_STEP_ROUTE).every((r) => routed.has(r)));
   check("legacyRoutes: every old 6-step URL is registered with <OldStepRedirect> and lands on a 4-step route",
-    OLD_STEP_ROUTES.length === 7 && OLD_STEP_ROUTES.every((r) => new RegExp(`path: "${r.from.slice(1)}", element: <OldStepRedirect />`).test(mainSrc) && Object.values(FT_STEP_ROUTE).includes(r.to.split(/[?#]/)[0]!)) &&
+    OLD_STEP_ROUTES.length === 7 && OLD_STEP_ROUTES.every((r) => new RegExp(`path: "${r.from.slice(1)}", element: <OldStepRedirect />`).test(mainSrc) && Object.values(FT_STEP_ROUTE).includes(r.to.split(/[?#]/)[0]!.replace(/\/match$/, ""))) &&
     oldStepRouteFor("/about") === "/setup" && oldStepRouteFor("/bring-in") === "/connect" && oldStepRouteFor("/claims") === "/review" &&
-    oldStepRouteFor("/records") === "/review#documents" && oldStepRouteFor("/check/match") === "/review#check" && oldStepRouteFor("/ship") === "/lodge");
+    oldStepRouteFor("/records") === "/review#documents" && oldStepRouteFor("/check/match") === "/review/match" && oldStepRouteFor("/ship") === "/lodge");
   check("legacyRoutes: /review is the Review step itself — not a legacy redirect (OFF it renders the legacy page in place)",
     !LEGACY_ROUTES.some((r) => r.from === "/review") && /path: "review", element: <ReviewStep \/>/.test(mainSrc) && STEP_LEGACY_ROUTE.review === "/review");
   check("legacyRoutes: /transactions moves only with ?view=review; the plain list route stays",
@@ -5234,6 +5253,170 @@ import {
     p1.layers.find((l) => l.key === "property")!.reason === "detected" && (sqlite.prepare(`SELECT COUNT(*) AS n FROM grow_layers WHERE user_id = ?`).get(NEW) as { n: number }).n === 1);
   check("grow write: tenant-scoped — the owner's payload is untouched by the new user's choices",
     (await growPayload(genv(), OWNER, 2025, { isPartner: false, pack: undefined })).layers.filter((l) => l.reason !== "none").every((l) => l.reason === "data"));
+}
+
+// ── #587 Claims step: grouping + the asks before a confirm (web/src/lib/claims.ts) ──
+import { groupWorthALook, isPendingCard, merchantGroupKey, parseWorkUsePct, confirmedByLabel, summariseConfirm } from "../web/src/lib/claims";
+import type { RelevanceCard } from "../web/src/types";
+console.log("claims step (#587)");
+{
+  const card = (id: string, o: Partial<RelevanceCard> = {}): RelevanceCard => ({
+    txn_id: id, merchant: "AHPRA RENEWAL 123", txn_date: "2025-09-01", amount_cents: 21500, rule_id: "au-occ-nurse", suggestion_id: `s${id}`,
+    suggestion: "Worth a look because you work as a nurse.", status: "suggested", deductibility: "undetermined", ato_label: null, deductible_amount_cents: null,
+    reimbursed: 0, has_record: 0, label_options: ["D3", "D5"], needs_work_use_pct: false, needs_asset: false, occupation: "nurse",
+    occupation_label: "Nurse / midwife", ato_url: "https://www.ato.gov.au/x", defer_to_agent: false, ...o,
+  });
+  check("claims: only undecided, not-paid-back, not-dismissed lines are pending",
+    isPendingCard(card("a")) && !isPendingCard(card("b", { deductibility: "confirmed_deductible" })) && !isPendingCard(card("c", { deductibility: "confirmed_not" })) &&
+      !isPendingCard(card("d", { reimbursed: 1 })) && !isPendingCard(card("e", { status: "dismissed" })));
+  check("claims: merchant grouping ignores case, digits and punctuation", merchantGroupKey("AHPRA RENEWAL 123") === merchantGroupKey("Ahpra renewal #456") && merchantGroupKey(null) === "(no description)");
+  const gs = groupWorthALook([
+    card("a"), card("b", { merchant: "Ahpra Renewal 999", amount_cents: 1000 }), card("c", { merchant: "HSU UNION", amount_cents: 99999 }),
+    card("d", { deductibility: "confirmed_deductible" }), card("f", { merchant: "JB LAPTOP", rule_id: "au-occ-it", label_options: ["D5"], needs_asset: true, amount_cents: 150000 }),
+    card("g", { merchant: "JB LAPTOP", rule_id: "au-occ-it", label_options: ["D5"], needs_work_use_pct: true, amount_cents: 5000, has_record: 1 }),
+  ]);
+  check("claims: one card per (rule, merchant), biggest first; decided lines drop out",
+    gs.length === 3 && gs[0]!.title === "JB LAPTOP" && gs[1]!.title === "HSU UNION" && gs[2]!.lines.length === 2 && gs[2]!.total_cents === 22500);
+  check("claims: a D3/D5 group needs a label pick; asset lines are split from claimable ones; a mixed-use claimable line asks the share",
+    gs[2]!.needs_label && !gs[0]!.needs_label && gs[0]!.asset_lines.length === 1 && gs[0]!.claimable_lines.length === 1 && gs[0]!.needs_work_use_pct && !gs[0]!.all_have_record);
+  check("claims: work-use share is a whole number 1–100, else null (never guessed)",
+    parseWorkUsePct("40") === 40 && parseWorkUsePct(" 100% ") === 100 && parseWorkUsePct("0") === null && parseWorkUsePct("101") === null && parseWorkUsePct("12.5") === null && parseWorkUsePct("") === null);
+  check("claims: Your claims sums CONFIRMED payg rows per label (claimable part), nothing else",
+    JSON.stringify(confirmedByLabel([
+      { bucket: "payg", ato_label: "D5", deductibility: "confirmed_deductible", n: 2, total_cents: 30000, resolved_cents: 26300 },
+      { bucket: "payg", ato_label: "D5", deductibility: "undetermined", n: 9, total_cents: 90000, resolved_cents: 90000 },
+      { bucket: "company", ato_label: "D5", deductibility: "confirmed_deductible", n: 1, total_cents: 5000, resolved_cents: 5000 },
+      { bucket: "payg", ato_label: "D3", deductibility: "confirmed_deductible", n: 1, total_cents: 12900, resolved_cents: 12900 },
+    ])) === JSON.stringify([{ label: "D5", n: 2, cents: 26300 }, { label: "D3", n: 1, cents: 12900 }]));
+  const s = summariseConfirm([{ ok: true }, { ok: false, needs_label: true, label_options: ["D3", "D5"] }, { ok: false, needs_apportionment: true }, { ok: false, needs_asset: true }, { ok: false }]);
+  check("claims: a confirm batch reports what is still needed (label / share / asset), never a silent failure",
+    s.confirmed === 1 && JSON.stringify(s.needs_label) === '["D3","D5"]' && s.needs_share && s.needs_asset === 1 && s.failed === 1);
+}
+
+// ── #588 (A7) Records step: the `records` block + record-keeping exceptions (src/lib/records.ts) ──
+import { assessRecords, recordKeepingFromPack, exceptionWriteError, formatLimit, returnLabelOf, type RecordLine, type RecordFacts } from "../src/lib/records";
+console.log("records step (#588)");
+{
+  const cfg = recordKeepingFromPack(rulePack);
+  const line = (id: string, over: Partial<RecordLine> = {}): RecordLine => ({
+    id, kind: "bank_line", txn_date: "2026-03-01", description: id, ato_label: "D5", bucket: "payg", claim_cents: 5000,
+    receipt_key: null, matched_receipt_id: null, document_id: null, links: 0, record_exception: null, ...over,
+  });
+  const facts = (over: Partial<RecordFacts> = {}): RecordFacts => ({ wfh: false, car: false, platform: false, wfh_done: false, car_done: false, platform_done: false, wfh_claim_cents: 0, ...over });
+
+  // Spec golden: 3 confirmed claims (receipt, document, bare) + wfh ticked with hours missing.
+  const golden = assessRecords([line("withReceipt", { matched_receipt_id: "r1" }), line("withDoc", { document_id: "d1" }), line("bare")], facts({ wfh: true }), cfg);
+  check("records golden: { claims_total: 3, claims_with_record: 2, facts_needed: ['wfh_hours'], facts_done: [] }",
+    golden.block.claims_total === 3 && golden.block.claims_with_record === 2 && golden.block.claims_exception === 0 &&
+    JSON.stringify(golden.block.facts_needed) === '["wfh_hours"]' && golden.block.facts_done.length === 0);
+  check("records golden: the block carries counts only — no money field, no refund", !/cents|refund/i.test(JSON.stringify(golden.block)));
+  check("records: every confirmed claim appears exactly once with a status", golden.rows.length === 3 && new Set(golden.rows.map((r) => r.id)).size === 3 &&
+    golden.rows.find((r) => r.id === "bare")!.status === "needs_record" && golden.rows.find((r) => r.id === "withDoc")!.record?.kind === "document");
+  check("records: a photographed receipt line is its own record; a claim_links row counts too",
+    assessRecords([line("rcpt", { kind: "receipt", receipt_key: "k" }), line("linked", { links: 1 }), line("receiptNoFile", { kind: "receipt" })], facts(), cfg).rows.map((r) => r.status).join() === "recorded,recorded,needs_record");
+
+  // Facts: car is needed for a platform activity too; an entered fact counts even without the tick.
+  const f2 = assessRecords([], facts({ platform: true, car_done: true, wfh_done: true }), cfg).block;
+  check("records facts: a platform activity needs car km + platform fees; already-entered WFH hours count as needed + done",
+    JSON.stringify(f2.facts_needed) === '["wfh_hours","car_km","platform_fees"]' && JSON.stringify(f2.facts_done) === '["wfh_hours","car_km"]');
+
+  // Exceptions (pack limits: laundry 15000 on D3 + laundry words; total 30000 on D2–D5 + WFH).
+  check("records pack: laundry_150 + total_300 load from au-v1 with their limits; {limit} renders from the pack",
+    cfg.exceptions.find((e) => e.key === "laundry_150")?.limit_cents === 15000 && cfg.exceptions.find((e) => e.key === "total_300")?.limit_cents === 30000 && formatLimit(15000) === "$150" && formatLimit(12345) === "$123.45");
+  check("records pack: an older KV pack without record_keeping falls back to the bundled block", recordKeepingFromPack({ version: "old" }).exceptions.length === cfg.exceptions.length);
+  const rkExceptions = Object.values((rulePack as unknown as { record_keeping: { exceptions: Record<string, { title: string; wording: string }> } }).record_keeping.exceptions);
+  check("records pack: exception copy is templated (no hard-coded money figure in the pack text) and defers to an agent",
+    rkExceptions.length === 2 && rkExceptions.every((e) => !/\$\s?\d/.test(e.title + e.wording) && /registered tax agent/.test(e.wording)));
+  check("records: returnLabelOf reads the leading return label", returnLabelOf("D3/D5") === "D3" && returnLabelOf("D10") === "D10" && returnLabelOf("payg:groceries") === null);
+
+  const small = [line("union", { ato_label: "D5", claim_cents: 12000 }), line("laundry", { ato_label: "D3", description: "SPEEDY LAUNDROMAT", claim_cents: 4000 })];
+  const s1 = assessRecords(small, facts({ wfh_claim_cents: 0 }), cfg);
+  check("records exception: total $160 ≤ $300 ⇒ total_300 open on both lines; laundry_150 only on the laundry line",
+    JSON.stringify(s1.rows.find((r) => r.id === "union")!.exception.eligible) === '["total_300"]' &&
+    JSON.stringify(s1.rows.find((r) => r.id === "laundry")!.exception.eligible.sort()) === '["laundry_150","total_300"]');
+  const withWfh = assessRecords(small, facts({ wfh_claim_cents: 20000 }), cfg);
+  check("records exception: the WFH fixed-rate claim counts toward the $300 total (160 + 200 > 300 ⇒ closed); laundry still open",
+    withWfh.exceptions.find((e) => e.key === "total_300")!.open === false && JSON.stringify(withWfh.rows.find((r) => r.id === "laundry")!.exception.eligible) === '["laundry_150"]');
+  check("records exception: hours unknown (diary-driven) ⇒ the $300 total can't be shown to fit ⇒ not offered",
+    assessRecords(small, facts({ wfh_claim_cents: null }), cfg).exceptions.find((e) => e.key === "total_300")!.open === false);
+  const attested = assessRecords([line("union", { claim_cents: 12000, record_exception: "total_300" })], facts(), cfg);
+  check("records exception: an attested, still-eligible line counts as exception, not as a record",
+    attested.block.claims_exception === 1 && attested.block.claims_with_record === 0 && attested.rows[0]!.status === "exception");
+  const lapsed = assessRecords([line("union", { claim_cents: 12000, record_exception: "total_300" }), line("big", { claim_cents: 25000 })], facts(), cfg);
+  check("records exception: once claims pass the limit the attestation lapses ⇒ needs a record again",
+    lapsed.block.claims_exception === 0 && lapsed.rows.find((r) => r.id === "union")!.status === "needs_record" && lapsed.rows.find((r) => r.id === "union")!.exception.set === "total_300");
+  check("records exception: a recorded line is never offered the exception; an unknown attested key is ignored",
+    assessRecords([line("r", { matched_receipt_id: "x", claim_cents: 100 })], facts(), cfg).rows[0]!.exception.eligible.length === 0 &&
+    assessRecords([line("u", { claim_cents: 100, record_exception: "made_up" })], facts(), cfg).rows[0]!.exception.set === null);
+  check("records write guard: refuses a non-claim, a recorded line and a kind that doesn't cover the line; clearing is allowed",
+    exceptionWriteError(s1, "nope", "total_300") !== null && exceptionWriteError(s1, "union", "laundry_150") !== null &&
+    exceptionWriteError(assessRecords([line("r", { matched_receipt_id: "x", claim_cents: 100 })], facts(), cfg), "r", "total_300") !== null &&
+    exceptionWriteError(s1, "union", "total_300") === null && exceptionWriteError(lapsed, "union", null) === null);
+  const recSrc = stripComments(fs.readFileSync(path.join(process.cwd(), "web/src/components/review/RecordCards.tsx"), "utf8"));
+  check("record cards copy passes the tax-advice denylist (no refund, no money figure, no promise)", recSrc.split("\n").every((l) => denylistHits(l).length === 0));
+}
+
+// ── #589 Check step: shared finding fix links (web/src/lib/findingLinks.ts) + Check page copy ──
+import { findingFixLink, findingFixLinkForKind } from "../web/src/lib/findingLinks";
+console.log("#589 Check step");
+{
+  // OFF (Filing page): exactly the mapping Filing.tsx always rendered.
+  const legacy = ["asset", "income", "property", "document", "transaction", undefined].map((k) => findingFixLinkForKind(k).to);
+  check("findingLinks OFF: byte-identical legacy targets (assets, income, settings, inbox, inbox, inbox)",
+    JSON.stringify(legacy) === JSON.stringify(["/assets", "/income", "/settings", "/inbox", "/inbox", "/inbox"]) &&
+    findingFixLink({ evidence_refs: [] }).label === "Sort it out" && findingFixLink({ evidence_refs: [{ kind: "income" }] }).label === "Review income");
+  // ON (journey): repointed through the ONE legacy → journey table; missing evidence goes to Records.
+  check("findingLinks ON: income → Connect, transactions → Review, document → Review's documents, kept routes stay",
+    findingFixLinkForKind("income", { journey: true }).to === "/connect#income" && findingFixLinkForKind("transaction", { journey: true }).to === "/review" &&
+    findingFixLinkForKind("document", { journey: true }).to === "/review#documents" && findingFixLinkForKind("property", { journey: true }).to === "/settings");
+  check("legacyRoutes (#587): the fallback picker /review/match is routed to the Review step", /path: "review\/match", element: <ReviewStep \/>/.test(fs.readFileSync(path.join(process.cwd(), "web/src/main.tsx"), "utf8")));
+  // The Check page and its match row: tax-advice denylist (no refund wording, no figures in copy), and the
+  // page never renders a refund / tax-payable field.
+  // #587: the Check step folded into the Review queue (spec §0) — the same contract now holds on ReviewQueue.tsx.
+  const checkSrc = stripComments(fs.readFileSync(path.join(process.cwd(), "web/src/pages/ReviewQueue.tsx"), "utf8"));
+  const hits = checkSrc.split("\n").filter((l) => denylistHits(l).length > 0);
+  check(`ReviewQueue.tsx copy passes the tax-advice denylist (offenders: ${hits.map((h) => h.trim().slice(0, 60)).join(" | ") || "none"})`, hits.length === 0);
+  check("ReviewQueue.tsx labels the estimate 'estimate only, general information' and shows the readiness disclaimer + general-info note",
+    checkSrc.includes("estimate only, general information") && checkSrc.includes("readiness.disclaimer") && checkSrc.includes("<GeneralInfoNote"));
+  // Two matchLink callers, both a user's tap: Match on a proposal, and Snap a receipt (upload → link to the claim line).
+  check("ReviewQueue.tsx: match writes are only the user's Match tap and Snap a receipt; nothing auto-confirms",
+    (checkSrc.match(/api\.matchLink\(/g) ?? []).length === 2 && /onClick: \(\) => match\.mutate\(x\)/.test(checkSrc) && /api\.matchLink\(up\.txnId, lineId\)/.test(checkSrc));
+  const recSrc = stripComments(fs.readFileSync(path.join(process.cwd(), "web/src/pages/Reconcile.tsx"), "utf8"));
+  check("Reconcile.tsx: with reconcile_proposals the server orders lines for a picked receipt (for_receipt); OFF keeps today's local re-sort",
+    /const serverOrder = has\("reconcile_proposals"\)/.test(recSrc) && /forReceipt: forReceipt \?\? undefined/.test(recSrc) && /picked && !serverOrder \?/.test(recSrc));
+}
+
+// ── #587 Review queue (spec §0 step 3): counts, filters, records meter (web/src/lib/reviewQueue.ts) ──
+import { queueCounts, queueSummary, activeKinds, effectiveFilter, showKind, recordsProgress, openRecordRows, doneRecordRows, openFacts } from "../web/src/lib/reviewQueue";
+import { coveredByWfhFixedRate, wfhFixedRateCovers } from "../src/lib/relevance-scan";
+console.log("review queue (#587)");
+{
+  const covers = wfhFixedRateCovers(rulePack);
+  check("wfh covers: from the pack; whole-word match (internet / NBN covered; powerball, a laptop or a desk are not)",
+    covers.includes("internet") && coveredByWfhFixedRate("TELSTRA INTERNET 0423", covers) && coveredByWfhFixedRate("Aussie NBN", covers) &&
+    !coveredByWfhFixedRate("POWERBALL TICKET", covers) && !coveredByWfhFixedRate("JB HI-FI LAPTOP", covers) && !coveredByWfhFixedRate("IKEA DESK", covers) &&
+    wfhFixedRateCovers(null).length === 0 && !coveredByWfhFixedRate(null, covers));
+  const c = queueCounts({ blockers: 1, review: 2, noticed: 1, claimGroups: 3, proposals: 2, ambiguous: 1, recordRows: 2, factsOpen: 1 });
+  check("queue: counts per kind (records = rows + open facts, matches = proposals + ambiguous) and a total",
+    c.fix === 1 && c.check === 2 && c.noticed === 1 && c.claims === 3 && c.records === 3 && c.matches === 3 && c.total === 13);
+  const z = queueCounts({ blockers: -1, review: NaN, noticed: 0, claimGroups: 0, proposals: 0, ambiguous: 0, recordRows: 0, factsOpen: Infinity });
+  check("queue: negative / non-finite inputs count as 0", z.total === 0 && queueSummary(z) === "Nothing left to review");
+  check("queue: summary is a count, never an amount", queueSummary(c) === "13 things to review" && queueSummary({ ...z, fix: 1, total: 1 }) === "1 thing to review" && !/\$|refund/i.test(queueSummary(c)));
+  check("queue: chips in queue order, only kinds with cards", JSON.stringify(activeKinds({ ...z, records: 2, fix: 1, total: 3 })) === '["fix","records"]');
+  check("queue: a filter whose kind ran out falls back to all; all shows every kind",
+    effectiveFilter("claims", { ...z, records: 1, total: 1 }) === "all" && effectiveFilter("records", { ...z, records: 1, total: 1 }) === "records" &&
+    showKind("all", "matches") && showKind("matches", "matches") && !showKind("claims", "matches"));
+  const block = { claims_total: 3, claims_with_record: 1, claims_exception: 1, facts_needed: ["wfh_hours", "car_km"], facts_done: ["car_km", "platform_fees"] };
+  const pr = recordsProgress(block);
+  check("queue: records meter = claims with a record or exception + facts stated (counts only; a done fact not needed doesn't count)",
+    !!pr && pr.claimsDone === 2 && pr.claimsTotal === 3 && pr.factsDone === 1 && pr.factsTotal === 2 && pr.done === 3 && pr.total === 5 && !Object.keys(pr).some((k) => /cents|amount/.test(k)));
+  check("queue: nothing to count ⇒ no meter", recordsProgress({ claims_total: 0, claims_with_record: 0, claims_exception: 0, facts_needed: [], facts_done: [] }) === null && recordsProgress(null) === null);
+  const view = {
+    rows: [{ id: "a", status: "needs_record" }, { id: "b", status: "recorded" }, { id: "c", status: "exception" }],
+    facts: [{ key: "wfh_hours", needed: true, done: false }, { key: "car_km", needed: true, done: true }, { key: "platform_fees", needed: false, done: false }],
+  } as unknown as Parameters<typeof openRecordRows>[0];
+  check("queue: record cards = needs_record rows only; recorded + exception go under Done; open facts = needed and not stated",
+    openRecordRows(view).map((r) => r.id).join() === "a" && doneRecordRows(view).map((r) => r.id).join() === "b,c" && openFacts(view).map((x) => x.key).join() === "wfh_hours");
 }
 
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);

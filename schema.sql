@@ -127,6 +127,12 @@ CREATE TABLE IF NOT EXISTS transactions (
   --   what to SHOW, never what is counted (no position query reads these). NULL = not scanned.
   relevance    TEXT,                     -- NULL | relevant | worth_a_look | irrelevant
   relevance_rule_id TEXT,                -- the claimability rule (ruleKey) behind relevant / worth_a_look
+  -- 0084 (ft_journey, first-timer A7 #588): the user's record-keeping-exception attestation on a confirmed
+  --   claim line (pack record_keeping.exceptions key). An attestation, never evidence; position-neutral.
+  record_exception TEXT,                 -- NULL | laundry_150 | total_300
+  -- 0084 (reconcile_proposals, #587): JSON snapshot of what this receipt's link changed (line_id, auto, filled
+  --   fields, prior statuses) — drives the Review queue's auto-link list + Undo. Cleared on unlink.
+  link_snapshot TEXT,
   created_at   TEXT NOT NULL DEFAULT (datetime('now')),
   -- 0079 (wages_payer, A3 #577): on a credit, the employer entity it is pay from. Records nothing to
   --   the position; drives the per-employer income-statement prompt. NULL => not marked.

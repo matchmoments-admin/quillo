@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { api } from "../api";
 import { money } from "./ui";
 import { useFeatures } from "../lib/features";
@@ -59,7 +60,13 @@ export function SuggestedDeductions({ fy }: { fy: number }) {
   // confirmed in) — rather than a bulk endpoint that would bypass that guard.
   const confirm = useMutation({
     mutationFn: (ids: string[]) => Promise.all(ids.map((id) => api.confirmDeduction(id))),
-    onSuccess: invalidate,
+    onSuccess: (results) => {
+      invalidate();
+      // #587: a worth-a-look line (relevance_scan) can answer that it still needs a label, a work-use share
+      // or Assets — say so instead of the tap silently doing nothing.
+      const needs = results.filter((r) => !r.ok && (r.needs_apportionment || r.needs_label || r.needs_asset || r.covered_by_wfh_rate)).length;
+      if (needs > 0) toast.message(`${needs === 1 ? "This item needs" : `${needs} items need`} a little more detail before it counts. Open the review list to finish ${needs === 1 ? "it" : "them"}.`);
+    },
   });
   const rows = data ?? [];
   if (rows.length === 0) return null;

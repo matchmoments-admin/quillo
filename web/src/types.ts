@@ -1000,6 +1000,7 @@ export interface IncomeRow {
   needs_review: number;
   created_at: string;
   cgt_asset_id?: string | null; // capital_income_link (C-L): the holding this dividend/distribution came from. Omitted when the flag is off
+  detail_json?: string | null; // write-only here: e.g. the Records platform-fees prompt (#588) stores { platform, platform_fees_cents }
 }
 
 // Slice B: managed-fund (AMMA) distribution components — mirrors src/lib/managed-fund.ts AmmaComponents.
@@ -1394,7 +1395,32 @@ export interface Journey {
     estimate: { tracked_cents: number; confirmed_cents: number | null; caption: string } | null;
     disclaimer: string;
   };
-  whats_left: { id: string; kind: "finding"; severity: "blocker" | "review"; title: string; step: JourneyStepKey }[];
+  whats_left: { id: string; kind: "finding"; severity: "blocker" | "review"; title: string; step: JourneyStepKey; note: string; evidence_kind: string | null }[];
+}
+
+// A8 / #589 (reconcile_proposals): receipt ↔ bank-line proposals and linked pairs for the Check step.
+export interface ReconcileRow {
+  id: string;
+  merchant: string | null;
+  raw_description: string | null;
+  amount_cents: number | null;
+  amount_aud_cents: number | null;
+  currency: string | null;
+  txn_date: string | null;
+  direction: string | null;
+  bucket: string | null;
+}
+export interface ReconcileProposals {
+  fy: number;
+  proposals: { receipt_id: string; line_id: string; score: number; runner_up_score: number; receipt: ReconcileRow; line: ReconcileRow }[];
+  ambiguous: { receipt: ReconcileRow; candidates: number }[];
+  no_line: ReconcileRow[];
+  truncated: boolean;
+}
+export interface ReconcileLinked {
+  fy: number;
+  pairs: { receipt: ReconcileRow; line: ReconcileRow; auto: boolean }[];
+  truncated: boolean;
 }
 
 // "We noticed…" signals (flag wages_payer, #577). evidence = counts / dates / a total only (never raw descriptions).
@@ -1474,5 +1500,75 @@ export interface MytaxWorksheet {
   sections: MytaxWorksheetSection[];
   unlabelled: { n: number; cents: number };
   tie_back: { ok: boolean; income_ok: boolean; deductions_ok: boolean; depreciation_ok: boolean } & Record<string, number | boolean>;
+  disclaimer: string;
+}
+// GET /api/relevance?fy= (#578; flag relevance_scan) — mirror of RelevanceView in src/lib/relevance-scan-run.ts.
+export interface RelevanceCard {
+  txn_id: string;
+  merchant: string | null;
+  txn_date: string | null;
+  amount_cents: number;
+  rule_id: string | null;
+  suggestion_id: string | null;
+  /** Why it surfaced: the rule's general-info note + the three golden rules (server copy). */
+  suggestion: string | null;
+  status: string | null;
+  deductibility: string | null;
+  ato_label: string | null;
+  deductible_amount_cents: number | null;
+  reimbursed: number;
+  has_record: number;
+  /** #587: the single return labels the rule allows; more than one ⇒ the user picks. */
+  label_options: string[];
+  /** #587: a work-use share is needed before it can be claimed. */
+  needs_work_use_pct: boolean;
+  /** #587: over the immediate threshold on a depreciating rule ⇒ belongs in Assets. */
+  needs_asset: boolean;
+  occupation: string | null;
+  occupation_label: string | null;
+  ato_url: string | null;
+  defer_to_agent: boolean;
+}
+export interface RelevanceView {
+  fy: string;
+  counts: { relevant: number; worth_a_look: number; irrelevant: number; unscanned: number };
+  worth_a_look: RelevanceCard[];
+  /** The pack's names for the labels in label_options (D5 → "Other work-related expenses"). */
+  label_names: Record<string, string>;
+  prompts: { kind: "wfh_hours" | "work_km" | "residency_dates"; person_id: string }[];
+}
+/** POST /api/relevance/confirm answer: ok, or what is still needed (never a silent failure). */
+export interface RelevanceConfirmResult {
+  ok: boolean;
+  needs_apportionment?: boolean;
+  needs_label?: boolean;
+  label_options?: string[];
+  needs_asset?: boolean;
+  /** #587: WFH hours are stated and the fixed rate per hour already covers this item. */
+  covered_by_wfh_rate?: boolean;
+}
+// ── #588 Records step (GET /api/records?fy=, flag ft_journey; server src/lib/records.ts) ──
+export type RecordFactKey = "wfh_hours" | "car_km" | "platform_fees";
+export interface RecordsRow {
+  id: string;
+  txn_date: string | null;
+  description: string | null;
+  ato_label: string | null;
+  group: string | null;
+  claim_cents: number;
+  status: "recorded" | "needs_record" | "exception";
+  record: { kind: "receipt" | "document" | "claim_link"; id: string | null } | null;
+  exception: { set: string | null; eligible: string[] };
+}
+export interface RecordsView {
+  fy: string;
+  block: NonNullable<Journey["records"]>;
+  rows: RecordsRow[];
+  exceptions: { key: string; title: string; wording: string; limit_cents: number; total_cents: number | null; open: boolean }[];
+  facts: { key: RecordFactKey; label: string; needed: boolean; done: boolean }[];
+  /** payouts_recorded: platform payouts already recorded as business income from bank credits (#577) — the
+   *  annual summary's gross is then not added on top (it would count the money twice). */
+  platform: { activities: string[]; entries: { id: string; label: string | null; gross_cents: number; fees_cents: number; txn_date: string | null }[]; payouts_recorded: number };
+  group_labels: Record<string, string>;
   disclaimer: string;
 }

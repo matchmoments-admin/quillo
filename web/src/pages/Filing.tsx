@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { api, saveBlob } from "../api";
 import { useActiveFy, useLodgedMark } from "../lib/activeFy";
 import { useFeatures } from "../lib/features";
+import { findingFixLink } from "../lib/findingLinks";
 import { Card, Spinner, money } from "../components/ui";
 import type { PositionLine, ReadinessFinding, ClaimReview, ClaimReviewItem, OccupationRuleCandidate } from "../types";
 
@@ -19,21 +20,8 @@ const SEVERITY_CLASS: Record<ReadinessFinding["severity"], string> = {
 };
 const GROUP_LABEL: Record<PositionLine["group"], string> = { income: "Income", deduction: "Deductions", depreciation: "Depreciation", property: "Per-property position", company: "Company (separate return — not in your position)", excluded: "Excluded as private / non-deductible" };
 
-// Where to go to fix a flagged finding — derived from the kind of evidence it points at, mirroring
-// FindMyClaims' evidenceLink convention below. A blocker without evidence_refs falls back to the
-// Inbox (where uncategorised transactions are sorted), the most common thing to fix.
-function findingFixLink(f: ReadinessFinding): { to: string; label: string } {
-  const kind = f.evidence_refs[0]?.kind;
-  switch (kind) {
-    case "asset": return { to: "/assets", label: "Review assets" };
-    case "income": return { to: "/income", label: "Review income" };
-    // Property records live in Settings → Properties (Income has none — #552 D3).
-    case "property": return { to: "/settings", label: "Review property records" };
-    case "document": return { to: "/inbox", label: "Add evidence" };
-    case "transaction":
-    default: return { to: "/inbox", label: "Sort it out" };
-  }
-}
+// Where to go to fix a flagged finding — derived from the kind of evidence it points at (shared with the
+// Check step since #589: lib/findingLinks.ts). A blocker without evidence_refs falls back to the Inbox.
 
 // Soft, per-FY sign-off: the user's own attestation that this position is ready to hand to their
 // agent. Re-openable (not a lock); a later import doesn't auto-clear it, so the timestamp stays

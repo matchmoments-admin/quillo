@@ -26,7 +26,11 @@ const defaultWeekdays = (daysPerWeek: string | number | null | undefined): numbe
 };
 type LeaveRange = { start: string; end: string; label?: string };
 
-export function WorkMethodsCard({ fyNum }: { fyNum: number }) {
+/**
+ * `diaryCollapsed` (Records step, #588 / ft_journey): put the optional diary behind a disclosure so the card
+ * reads hours-first. Omitted ⇒ the legacy markup, unchanged.
+ */
+export function WorkMethodsCard({ fyNum, diaryCollapsed = false }: { fyNum: number; diaryCollapsed?: boolean }) {
   const qc = useQueryClient();
   const { has } = useFeatures();
   const diaryEnabled = has("wfh_generate_diary");
@@ -97,6 +101,9 @@ export function WorkMethodsCard({ fyNum }: { fyNum: number }) {
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["work-use", fyNum] });
+      // Records step (#588): its facts-stated count reads these inputs. No-op when those queries don't exist (flag OFF).
+      qc.invalidateQueries({ queryKey: ["records", fyNum] });
+      qc.invalidateQueries({ queryKey: ["journey", fyNum] });
       qc.invalidateQueries({ queryKey: ["filing-readiness"] });
       qc.invalidateQueries({ queryKey: ["report"] });
       qc.invalidateQueries({ queryKey: ["dashboard"] });
@@ -171,7 +178,11 @@ export function WorkMethodsCard({ fyNum }: { fyNum: number }) {
         )}
       </div>
 
-      {diaryEnabled && (
+      {diaryEnabled &&
+        (diaryCollapsed ? (
+          <details className="border-t border-line pt-3">
+            <summary className="cursor-pointer text-sm font-medium text-muted">Work-from-home diary (optional)</summary>
+            <div className="mt-2">
         <div className="space-y-3 border-t border-line pt-3">
           <div>
             <div className="text-sm font-semibold">Work-from-home diary <span className="font-normal text-muted">(optional — for your ATO record)</span></div>
@@ -232,7 +243,70 @@ export function WorkMethodsCard({ fyNum }: { fyNum: number }) {
             </>
           )}
         </div>
-      )}
+            </div>
+          </details>
+        ) : (
+        <div className="space-y-3 border-t border-line pt-3">
+          <div>
+            <div className="text-sm font-semibold">Work-from-home diary <span className="font-normal text-muted">(optional — for your ATO record)</span></div>
+            <div className="text-xs text-muted">
+              Tell us which days you work from home and any leave you took, and we'll generate a day-by-day diary in your
+              accountant hand-off. The ATO wants a record of your actual hours — review and adjust it. General information only.
+            </div>
+          </div>
+
+          {hasRecord ? (
+            <p className="text-xs text-muted">You've ticked that you keep your own record of actual hours, so Quillo won't generate a diary (a generated one would duplicate yours). Untick that above to generate one here.</p>
+          ) : (
+            <>
+              <div>
+                <span className="text-xs font-medium uppercase tracking-wide text-muted">Days I work from home</span>
+                <div className="mt-1 flex flex-wrap gap-1.5">
+                  {WEEKDAYS.map((d) => {
+                    const on = weekdays.includes(d.v);
+                    return (
+                      <button
+                        key={d.v}
+                        type="button"
+                        onClick={() => toggleWeekday(d.v)}
+                        aria-pressed={on}
+                        className={`min-w-[44px] rounded-lg border px-2.5 py-2 text-sm font-medium transition ${on ? "border-forest bg-forest/10 text-forest" : "border-line text-muted hover:bg-surface"}`}
+                      >
+                        {d.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                <span className="mt-1 block text-xs text-muted">≈ {weekdays.length} day(s)/week selected{days.trim() !== "" && Math.round(Number(days)) !== weekdays.length ? ` (your days/week says ${days})` : ""}</span>
+              </div>
+
+              <div>
+                <span className="text-xs font-medium uppercase tracking-wide text-muted">Leave / holidays (days not worked from home)</span>
+                <div className="mt-1 space-y-2">
+                  {leave.map((r, i) => (
+                    <div key={i} className="flex flex-wrap items-center gap-2">
+                      <Input type="date" value={r.start} onChange={(e) => updateLeave(i, { start: e.target.value })} className="min-w-[9rem] flex-1" aria-label="Leave start date" />
+                      <span className="text-xs text-muted">to</span>
+                      <Input type="date" value={r.end} onChange={(e) => updateLeave(i, { end: e.target.value })} className="min-w-[9rem] flex-1" aria-label="Leave end date" />
+                      <Input type="text" value={r.label ?? ""} onChange={(e) => updateLeave(i, { label: e.target.value })} placeholder="label (optional)" className="min-w-[8rem] flex-1" aria-label="Leave label" />
+                      <button type="button" onClick={() => removeLeave(i)} className="rounded-lg border border-line px-2.5 py-2 text-sm text-muted transition hover:bg-surface" aria-label="Remove leave period">✕</button>
+                    </div>
+                  ))}
+                  <Button variant="ghost" onClick={addLeave} className="text-sm">+ Add leave period</Button>
+                </div>
+              </div>
+
+              <label className="flex items-start gap-2 text-sm">
+                <input type="checkbox" checked={genDiary} onChange={(e) => setGenDiary(e.target.checked)} className="mt-0.5 h-4 w-4 flex-none accent-forest" />
+                <span>Generate a work-from-home <span className="font-medium">diary</span> for my records (added to my accountant CSV)</span>
+              </label>
+              {diaryActive && hoursTouched && (
+                <p className="text-xs text-warn">You've edited the hours figure, so your typed hours ({hours}) are claimed — not the diary total. Clear the hours field to let the diary drive them.</p>
+              )}
+            </>
+          )}
+        </div>
+        ))}
 
       <div className="flex flex-wrap items-center gap-3">
         <Button onClick={() => save.mutate()} disabled={save.isPending}>{save.isPending ? "Saving…" : "Save"}</Button>

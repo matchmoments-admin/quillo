@@ -55,6 +55,10 @@ export interface JourneyWhatsLeft {
   severity: "blocker" | "review";
   title: string;
   step: JourneyStepKey;
+  /** #589: the finding's general-information note and the kind of its first evidence ref, so the Check step
+   *  can show each item with its fix link without a second (audited) readiness read. */
+  note: string;
+  evidence_kind: string | null;
 }
 
 export interface Journey {
@@ -181,7 +185,7 @@ export function assessJourney(input: { readiness: FilingReadiness; signals: Jour
     whats_left: readiness.findings
       .filter((f): f is ReadinessFinding & { severity: "blocker" | "review" } => f.severity === "blocker" || f.severity === "review")
       .sort((a, b) => (a.severity === b.severity ? 0 : a.severity === "blocker" ? -1 : 1))
-      .map((f) => ({ id: f.id, kind: "finding" as const, severity: f.severity, title: f.title, step: stepForFinding(f) })),
+      .map((f) => ({ id: f.id, kind: "finding" as const, severity: f.severity, title: f.title, step: stepForFinding(f), note: f.general_info_note, evidence_kind: f.evidence_refs[0]?.kind ?? null })),
   };
 }
 

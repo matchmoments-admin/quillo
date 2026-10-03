@@ -23,12 +23,29 @@ import { buildProfile, listSituationPeriods, type SituationPeriod, type Situatio
 import { ruleKey, type ClaimRule } from "./claimability";
 import type { DeductibilitySection } from "./deductibility";
 import { canonicalOccupationScope, occupationGuide } from "./occupations";
-import { isScannedBucket, relevanceFloorCents, scanLines, worthALookText, type Relevance, type ScanLine, type ScanProfile, type ScanResult } from "./relevance-scan";
+import {
+  confirmNeedsAsset,
+  coveredByWfhFixedRate,
+  wfhFixedRateCovers,
+  confirmNeedsShare,
+  isScannedBucket,
+  relevanceFloorCents,
+  resolveConfirmLabel,
+  ruleLabelOptions,
+  scanLines,
+  worthALookText,
+  type Relevance,
+  type ScanLine,
+  type ScanProfile,
+  type ScanResult,
+} from "./relevance-scan";
 
 /** Situation facts whose change can move the scan (spec A4 "Re-scan"). */
 export const RESCAN_FACTS = ["employment", "abn_activity", "wfh", "car_for_work", "foreign_income"] as const;
 
 const SOURCE = "relevance_scan";
+/** "2025-26" for a 2025 start year — the key of the pack's thresholds_by_fy and the API's fy label. */
+const fyLabelOf = (startYear: number): string => `${startYear}-${String((startYear + 1) % 100).padStart(2, "0")}`;
 /** Upper bound on statements written by one scan run (see runRelevanceScan). */
 export const MAX_WRITES_PER_RUN = 2000;
 
@@ -53,11 +70,19 @@ interface ScanContext {
   rules: ClaimRule[];
   section: DeductibilitySection | null;
   floor: number;
+  /** The pack's per-FY thresholds ("2025-26" → …), for the confirm's immediate-deduction ceiling (#587). */
+  thresholds: Record<string, { immediate_non_business_cents?: number } | undefined>;
+  /** The resolved (KV-first) pack, for occupation-guide lookups on the read side. */
+  pack: unknown;
 }
 
 async function loadContext(env: Env, userId: string, descriptor?: JurisdictionDescriptor): Promise<ScanContext> {
   const d = descriptor ?? (await resolveJurisdictionForUser(env, userId));
-  const pack = (await resolveRulePack(env, userId, d)) as unknown as { claimability?: ClaimRule[]; payg_deductibility?: DeductibilitySection };
+  const pack = (await resolveRulePack(env, userId, d)) as unknown as {
+    claimability?: ClaimRule[];
+    payg_deductibility?: DeductibilitySection;
+    thresholds_by_fy?: ScanContext["thresholds"];
+  };
   const ver = (await env.DB.prepare(`SELECT rule_pack_ver FROM profiles WHERE user_id = ?`).bind(userId).first<{ rule_pack_ver: string | null }>())?.rule_pack_ver ?? d.rulePackId ?? "au-v1";
   // Same tenant scope as the DO's loadClaimRules: global overrides (user_id IS NULL) + this tenant's own rows.
   const d1 = (
@@ -66,7 +91,7 @@ async function loadContext(env: Env, userId: string, descriptor?: JurisdictionDe
          FROM claimability_rules WHERE rule_pack_ver = ? AND (user_id IS NULL OR user_id = ?)`,
     ).bind(ver, userId).all<ClaimRule>()
   ).results ?? [];
-  return { descriptor: d, rules: [...(pack.claimability ?? []), ...d1], section: pack.payg_deductibility ?? null, floor: relevanceFloorCents(pack) };
+  return { descriptor: d, rules: [...(pack.claimability ?? []), ...d1], section: pack.payg_deductibility ?? null, floor: relevanceFloorCents(pack), thresholds: pack.thresholds_by_fy ?? {}, pack };
 }
 
 /**
@@ -229,17 +254,47 @@ export async function rescanAfterSituationChange(env: Env, userId: string, fact?
   }
 }
 
+/** What the user told the Claims step alongside the tap (#587). */
+export interface WorthALookConfirmInput {
+  /** The return label they picked, when the rule names alternatives ("D3/D5"). Must be one of them. */
+  atoLabel?: string | null;
+  /** Their work-use share (1–100) for a mixed-use line. Applied to THIS line's amount. */
+  workUsePct?: number | null;
+}
+
+export interface WorthALookConfirmResult {
+  ok: boolean;
+  /** Mixed-use line: send the work-use share (workUsePct) to confirm it. */
+  needs_apportionment?: boolean;
+  /** The rule names several return labels: send one of `label_options` as atoLabel. */
+  needs_label?: boolean;
+  label_options?: string[];
+  /** Above the FY's immediate-deduction threshold on a depreciating rule: it belongs in Assets, not a confirm. */
+  needs_asset?: boolean;
+  /** #587: WFH hours are stated and the fixed rate per hour already covers this item (no separate claim). */
+  covered_by_wfh_rate?: boolean;
+}
+
 /**
  * Confirm a 'worth a look' line into the position (the user's tap — never the scan). Called by the DO's
- * confirmSuggestedDeduction when the line is not a plain suggested_deductible stamp. Re-checks against the
- * CURRENT profile + rules first: the line must still be worth a look (the job still covers it and the rule
- * still matches), so a stale card can't count after the user removed the job. A mixed-use line (stamped
- * needs_apportionment, or a non-'immediate' rule) is refused with needs_apportionment — it goes through the
- * apportion action instead. Otherwise confirmed_deductible, clearing ONLY a denied stamp's $0 claimable to NULL
- * (else the position would read $0), and the card moves to 'capturing' (the line is its evidence).
+ * confirmSuggestedDeduction. Re-checks against the CURRENT profile + rules first: the line must still be
+ * worth a look (the job still covers it and the rule still matches), so a stale card can't count after the
+ * user removed the job.
+ *
+ *  - Label (#587, the #578 deferral): the line takes the RULE's single return label (a nurse's AHPRA renewal
+ *    goes to the rule's work-expense label, not the categoriser's "Health"), so the worksheet puts it on the
+ *    right line. A rule naming alternatives ("D3/D5") needs the user's pick — refused with needs_label + the
+ *    options until given.
+ *  - Mixed use: a line stamped needs_apportionment, or on a non-'immediate' rule, needs the work-use share.
+ *    Without `workUsePct` it is refused with needs_apportionment; with it, the claimable amount is this
+ *    line's amount × pct (per row, like setDeductibility), so a tap never counts a private-use bill whole.
+ *  - Depreciating rule above the FY's immediate threshold ⇒ needs_asset (Assets, never an immediate claim).
+ *  - Otherwise confirmed_deductible, clearing ONLY a denied stamp's $0 claimable to NULL (else the position
+ *    would read $0); any other stored amount stays. The card moves to 'capturing' (the line is its evidence).
+ *
  * Returns null when the flag is OFF or the line is not a worth-a-look line (caller keeps its legacy answer).
  */
-export async function confirmWorthALook(env: Env, userId: string, txnId: string): Promise<{ ok: boolean; needs_apportionment?: boolean } | null> {
+export async function confirmWorthALook(env: Env, userId: string, txnId: string, input: WorthALookConfirmInput = {}): Promise<WorthALookConfirmResult | null> {
   if (!featureOn(env, "relevance_scan")) return null;
   const row = await env.DB.prepare(
     `SELECT id, bucket, ato_label, merchant, raw_description, COALESCE(amount_aud_cents, amount_cents) AS amount_cents,
@@ -248,6 +303,8 @@ export async function confirmWorthALook(env: Env, userId: string, txnId: string)
   ).bind(txnId, userId).first<LineRow>();
   if (!row || row.relevance !== "worth_a_look") return null;
   if (row.deductibility === "confirmed_deductible" || row.deductibility === "confirmed_not") return { ok: false };
+  const pct = input.workUsePct ?? null;
+  if (pct != null && (typeof pct !== "number" || !Number.isFinite(pct) || pct < 1 || pct > 100)) return { ok: false, needs_apportionment: true };
   const ctx = await loadContext(env, userId);
   const fy = fyStartYearForDate(ctx.descriptor, row.txn_date);
   if (!inScope(row) || Number.isNaN(fy)) return { ok: false };
@@ -257,33 +314,49 @@ export async function confirmWorthALook(env: Env, userId: string, txnId: string)
     featureOn(env, "situation_profile") ? listSituationPeriods(env, userId) : Promise.resolve([] as SituationPeriod[]),
   ]);
   const profile = profileBuilder(env, personRes.results ?? [], periods, (entityRes.results ?? []).map((e) => e.kind), ctx.descriptor)(fy);
+  const amount = Math.abs(row.amount_cents ?? 0);
   const [res] = scanLines(
-    [{ id: row.id, bucket: row.bucket, ato_label: row.ato_label, merchant: row.merchant ?? row.raw_description, amount_cents: Math.abs(row.amount_cents ?? 0), deductibility: row.deductibility, reimbursed: row.reimbursed }],
+    [{ id: row.id, bucket: row.bucket, ato_label: row.ato_label, merchant: row.merchant ?? row.raw_description, amount_cents: amount, deductibility: row.deductibility, reimbursed: row.reimbursed }],
     profile,
     ctx.rules,
     ctx.section,
     ctx.floor,
   );
   if (res?.relevance !== "worth_a_look" || !res.rule) return { ok: false };
-  // A one-tap confirm counts the WHOLE line, so it is only for an 'immediate' rule on a line nobody has said is
-  // mixed-use. A line stamped needs_apportionment (internet, phone, fuel…) or an apportioned / depreciating rule
-  // (a rider's fuel, a work computer) needs the work-use share first — the existing apportion action — so a tap
-  // can never put a whole private-use bill into the position. (review finding, #578)
-  if (row.deductibility === "needs_apportionment" || res.rule.claim_type !== "immediate") return { ok: false, needs_apportionment: true };
-  // Only the deny stamp's explicit $0 claimable is cleared (to NULL ⇒ the full amount, like any confirmed row);
-  // any other stored amount is left exactly as it was. The guard re-checks the stamp so a concurrent
-  // confirmed_not / confirm is never overwritten.
+  const rule = res.rule;
+  const threshold = ctx.thresholds[fyLabelOf(fy)]?.immediate_non_business_cents ?? null;
+  if (confirmNeedsAsset(rule, amount, threshold)) return { ok: false, needs_asset: true };
+  // #587: with WFH hours stated, the fixed rate per hour already includes energy / internet / phone /
+  // stationery (the report counts it under work_method), so a line for one of those is not claimed again.
+  if (featureOn(env, "wfh_car_methods") && coveredByWfhFixedRate(row.merchant ?? row.raw_description, wfhFixedRateCovers(ctx.pack))) {
+    const wu = await env.DB.prepare(`SELECT wfh_hours FROM work_use_inputs WHERE user_id = ? AND fy = ?`).bind(userId, fy).first<{ wfh_hours: number | null }>();
+    if (Number(wu?.wfh_hours) > 0) return { ok: false, covered_by_wfh_rate: true };
+  }
+  // A confirm without a share counts the WHOLE line, so it is only for an 'immediate' rule on a line nobody has
+  // said is mixed-use (review finding, #578). With the user's share it counts amount × pct.
+  if (confirmNeedsShare(rule, row.deductibility) && pct == null) return { ok: false, needs_apportionment: true };
+  const label = resolveConfirmLabel(rule.ato_label, input.atoLabel);
+  if (label.needs_label) return { ok: false, needs_label: true, label_options: label.options };
+  // The guard re-checks the stamp so a concurrent confirmed_not / confirm is never overwritten. The label is
+  // written only when the rule names one (COALESCE keeps the line's own label otherwise).
   const res2 = await env.DB.batch([
-    env.DB.prepare(
-      `UPDATE transactions SET deductibility = 'confirmed_deductible',
-              deductible_amount_cents = CASE WHEN deductibility = 'likely_not' THEN NULL ELSE deductible_amount_cents END
-        WHERE id = ? AND user_id = ? AND relevance = 'worth_a_look' AND COALESCE(deductibility, 'undetermined') = ?`,
-    ).bind(txnId, userId, row.deductibility ?? "undetermined"),
+    pct != null
+      ? env.DB.prepare(
+          `UPDATE transactions SET deductibility = 'confirmed_deductible', ato_label = COALESCE(?, ato_label),
+                  deductible_amount_cents = CAST(ROUND(COALESCE(amount_aud_cents, amount_cents) * ? / 100.0) AS INTEGER)
+            WHERE id = ? AND user_id = ? AND relevance = 'worth_a_look' AND COALESCE(deductibility, 'undetermined') = ?`,
+        ).bind(label.label, pct, txnId, userId, row.deductibility ?? "undetermined")
+      : env.DB.prepare(
+          `UPDATE transactions SET deductibility = 'confirmed_deductible', ato_label = COALESCE(?, ato_label),
+                  deductible_amount_cents = CASE WHEN deductibility = 'likely_not' THEN NULL ELSE deductible_amount_cents END
+            WHERE id = ? AND user_id = ? AND relevance = 'worth_a_look' AND COALESCE(deductibility, 'undetermined') = ?`,
+        ).bind(label.label, txnId, userId, row.deductibility ?? "undetermined"),
   ]);
   if (!(res2[0]?.meta as { changes?: number } | undefined)?.changes) return { ok: false };
   await env.DB.prepare(`UPDATE claim_suggestions SET status = 'capturing' WHERE user_id = ? AND txn_id = ? AND source = ? AND status = 'suggested'`).bind(userId, txnId, SOURCE).run();
   return { ok: true };
 }
+
 
 // ── Read side (for the Claims step, A6, and Records prompts, A7) ──────────────
 
@@ -303,10 +376,45 @@ export function scanPrompts(profiles: SituationProfile[]): ScanPrompt[] {
   return out;
 }
 
+interface CardRow {
+  txn_id: string;
+  merchant: string | null;
+  txn_date: string | null;
+  amount_cents: number;
+  rule_id: string | null;
+  suggestion_id: string | null;
+  suggestion: string | null;
+  status: string | null;
+  deductibility: string | null;
+  /** The line's current return label (the rule's once confirmed, #587). */
+  ato_label: string | null;
+  deductible_amount_cents: number | null;
+  reimbursed: number;
+  /** A receipt is matched to the line (golden rule 3 evidence). */
+  has_record: number;
+}
+
+/**
+ * One worth-a-look line as the Claims step (#587) renders it. Everything the card needs to ask the right
+ * question BEFORE the tap: which return labels the rule allows, whether a work-use share is needed, whether
+ * it belongs in Assets, and the occupation guide behind the "why". No figure here is an estimate of tax.
+ */
+export interface RelevanceCard extends CardRow {
+  label_options: string[];
+  needs_work_use_pct: boolean;
+  needs_asset: boolean;
+  occupation: string | null;
+  occupation_label: string | null;
+  ato_url: string | null;
+  defer_to_agent: boolean;
+}
+
 export interface RelevanceView {
   fy: string;
   counts: Record<Relevance | "unscanned", number>;
-  worth_a_look: { txn_id: string; merchant: string | null; txn_date: string | null; amount_cents: number; rule_id: string | null; suggestion_id: string | null; suggestion: string | null; status: string | null; deductibility: string | null }[];
+  worth_a_look: RelevanceCard[];
+  /** The pack's names for every label in the cards' label_options (#587). */
+  label_names: Record<string, string>;
   prompts: ScanPrompt[];
 }
 
@@ -314,7 +422,7 @@ export interface RelevanceView {
 export async function relevanceView(env: Env, userId: string, startYear: number): Promise<RelevanceView> {
   const descriptor = await resolveJurisdictionForUser(env, userId);
   const { start, end } = fyBoundsFor(descriptor, startYear);
-  const [countRes, cardRes, profiles] = await Promise.all([
+  const [countRes, cardRes, profiles, ctx] = await Promise.all([
     env.DB.prepare(
       `SELECT COALESCE(relevance, 'unscanned') AS r, COUNT(*) AS n FROM transactions
         WHERE user_id = ? AND kind = 'bank_line' AND COALESCE(direction,'debit') = 'debit' AND status NOT IN ('duplicate','ignored')
@@ -322,12 +430,14 @@ export async function relevanceView(env: Env, userId: string, startYear: number)
     ).bind(userId, start, end).all<{ r: string; n: number }>(),
     env.DB.prepare(
       `SELECT t.id AS txn_id, t.merchant, t.txn_date, ABS(COALESCE(t.amount_aud_cents, t.amount_cents, 0)) AS amount_cents, t.relevance_rule_id AS rule_id,
-              cs.id AS suggestion_id, cs.suggestion, cs.status, t.deductibility
+              cs.id AS suggestion_id, cs.suggestion, cs.status, t.deductibility, t.ato_label, t.deductible_amount_cents,
+              COALESCE(t.reimbursed, 0) AS reimbursed,
+              CASE WHEN t.receipt_key IS NOT NULL OR EXISTS (SELECT 1 FROM transactions r WHERE r.user_id = t.user_id AND r.matched_txn_id = t.id) THEN 1 ELSE 0 END AS has_record
          FROM transactions t
          LEFT JOIN claim_suggestions cs ON cs.user_id = t.user_id AND cs.txn_id = t.id AND cs.rule_id = t.relevance_rule_id AND cs.source = '${SOURCE}'
         WHERE t.user_id = ? AND t.relevance = 'worth_a_look' AND t.txn_date >= ? AND t.txn_date <= ?
         ORDER BY t.txn_date DESC, t.id LIMIT 500`,
-    ).bind(userId, start, end).all<RelevanceView["worth_a_look"][number]>(),
+    ).bind(userId, start, end).all<CardRow>(),
     featureOn(env, "situation_profile")
       ? (async () => {
           const periods = await listSituationPeriods(env, userId);
@@ -335,9 +445,31 @@ export async function relevanceView(env: Env, userId: string, startYear: number)
           return persons.map((p) => buildProfile(p.id, periods, startYear, { start, end }));
         })()
       : Promise.resolve([] as SituationProfile[]),
+    loadContext(env, userId, descriptor),
   ]);
+  const ruleById = new Map(ctx.rules.map((r) => [ruleKey(r), r] as const));
+  const threshold = ctx.thresholds[fyLabelOf(startYear)]?.immediate_non_business_cents ?? null;
+  const cards: RelevanceCard[] = (cardRes.results ?? []).map((c) => {
+    const rule = c.rule_id ? ruleById.get(c.rule_id) : undefined;
+    const guide = rule ? occupationGuide(rule.scope_value, ctx.pack) : null;
+    return {
+      ...c,
+      label_options: ruleLabelOptions(rule?.ato_label),
+      needs_work_use_pct: rule ? confirmNeedsShare(rule, c.deductibility) : false,
+      needs_asset: rule ? confirmNeedsAsset(rule, c.amount_cents, threshold) : false,
+      occupation: rule?.scope_value ?? null,
+      occupation_label: guide?.label ?? null,
+      ato_url: guide?.ato_url && /^https:\/\//.test(guide.ato_url) ? guide.ato_url : null,
+      defer_to_agent: !!rule?.defer_to_agent,
+    };
+  });
   const counts: RelevanceView["counts"] = { relevant: 0, worth_a_look: 0, irrelevant: 0, unscanned: 0 };
   for (const c of countRes.results ?? []) if (c.r in counts) counts[c.r as keyof typeof counts] = c.n;
-  return { fy: `${startYear}-${String((startYear + 1) % 100).padStart(2, "0")}`, counts, worth_a_look: cardRes.results ?? [], prompts: scanPrompts(profiles) };
+  // The pack's own names for the labels the cards can be confirmed to (D5 → "Other work-related expenses"),
+  // so the label pick reads in words without the SPA hard-coding any jurisdiction's return labels.
+  const packNames = (ctx.pack as { mytax_deduction_labels?: Record<string, unknown> } | null)?.mytax_deduction_labels ?? {};
+  const label_names: Record<string, string> = {};
+  for (const c of cards) for (const l of c.label_options) if (typeof packNames[l] === "string") label_names[l] = packNames[l] as string;
+  return { fy: fyLabelOf(startYear), counts, worth_a_look: cards, label_names, prompts: scanPrompts(profiles) };
 }
 

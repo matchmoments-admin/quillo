@@ -20,13 +20,13 @@ export const APPEARANCES: readonly Appearance[] = ["system", "light", "dark"];
 export type ThemeName = "legacy" | "quiet-light" | "quiet-dark";
 
 /**
- * The theme to render. `ft_journey` OFF ⇒ always `legacy` (today's look, whatever was stored).
- * ON ⇒ Direction A: Light/Dark as chosen, System follows `prefers-color-scheme`.
+ * The theme to render: ALWAYS `legacy`. Owner decision 2026-10-04: the first-timer redesign changes the
+ * JOURNEY only, not colours, fonts or icons — the forest/sage/cream brand with Anton + Inter is the only
+ * approved look. The `quiet-*` themes stay defined in design/tokens.mjs (dormant) so the three-layer
+ * token system keeps working, but nothing renders them. Signature kept so callers don't change.
  */
-export function resolveTheme(ftJourney: boolean, appearance: Appearance, prefersDark: boolean): ThemeName {
-  if (!ftJourney) return "legacy";
-  const dark = appearance === "dark" || (appearance === "system" && prefersDark);
-  return dark ? "quiet-dark" : "quiet-light";
+export function resolveTheme(_ftJourney: boolean, _appearance: Appearance, _prefersDark: boolean): ThemeName {
+  return "legacy";
 }
 
 /** The stored Appearance from a profile's ui_state JSON, or null when unset / malformed. */

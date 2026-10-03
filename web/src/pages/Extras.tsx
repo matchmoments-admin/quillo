@@ -3,6 +3,7 @@ import { type ChangeEvent, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { api } from "../api";
 import { useFeatures } from "../lib/features";
+import { role } from "../lib/theme";
 import { Panel, PanelHead, Pill, Spinner, Button, Input, Meter, InfoTip, Term, money } from "../components/ui";
 import { computeSuggestions, haversineKm, formatKm, type Suggestion } from "../lib/phi-suggestions";
 import type { PhiOverview, PhiPolicyView, PhiCategoryLine, PhiProvider } from "../types";
@@ -22,10 +23,10 @@ function mapsDirectionsUrl(query: string): string {
 // Private Health Extras Tracker — FACTUAL engagement surface. Track per-category extras limits vs
 // spend-to-date against the reset date ("use it before you lose it"). Never a tax output; never advice.
 
-// Cover-ring palette (token hexes; the ring is drawn with inline conic-gradient — no component exists).
-const RING_USED = "#0c3f26"; // forest
-const RING_TRACK = "rgba(12,63,38,0.10)";
-const RING_HOLE = "#eef0d2"; // paper — the page background the ring sits on
+// Cover-ring palette (semantic roles; the ring is drawn with inline conic-gradient — no component exists).
+const RING_USED = role("brand-forest");
+const RING_TRACK = role("text-primary", 0.1); // forest ink @ 10%
+const RING_HOLE = role("surface-page"); // the page background the ring sits on
 
 const SELECT_CLS = "mt-1 w-full rounded-lg border border-line bg-card px-3 py-2 text-sm outline-none transition focus:border-ink/40 focus:ring-2 focus:ring-ink/10";
 const COVER_TYPES = [

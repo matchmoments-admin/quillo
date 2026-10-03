@@ -91,19 +91,19 @@ export function MovementSweepCard() {
       )}
 
       {review.length > 0 && (
-        <div className="rounded-lg border border-amber-300 bg-amber-50 p-3">
-          <p className="text-xs font-medium text-amber-900">
+        <div className="rounded-lg border border-caution-border bg-caution-surface p-3">
+          <p className="text-xs font-medium text-caution-text-strong">
             Review separately — {review.length} loan {review.length === 1 ? "line" : "lines"} may include deductible
             investment-loan interest
           </p>
-          <p className="mb-2 text-xs text-amber-800">
+          <p className="mb-2 text-xs text-caution-text">
             We won't auto-exclude these: if any part is interest on a loan used to earn income (a rental,
             share or investment loan), it may be deductible. Open each to categorise.
           </p>
           <ul className="space-y-1">
             {review.map((c) => (
               <li key={c.id} className="text-xs">
-                <Link to={`/txn/${c.id}`} className="text-amber-900 underline">
+                <Link to={`/txn/${c.id}`} className="text-caution-text-strong underline">
                   {c.merchant || c.raw_description || "(no description)"} · {money(c.amount_aud_cents ?? c.amount_cents ?? 0)}
                 </Link>
               </li>

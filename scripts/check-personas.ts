@@ -482,18 +482,16 @@ async function main() {
   check("#254 (flag ON): the undetermined-status property yields $0 (deny until determined)", !p254undet || p254undet.deduction_cents === 0);
 
   // ── #258 (Wave 1): matched refund-netting ──
-  const env258 = { ...env, FEATURES: `${(env as { FEATURES: string }).FEATURES},refund_netting_v2` } as unknown as Env;
-  const r258on = await buildReport(env258, "p258", 2025);
-  const r258off = await buildReport(env, "p258", 2025); // default env: refund_netting ON, v2 OFF ⇒ v1 global netting
-  // v1: nets ALL $550 of refunds vs the $500 deductible expense → floored at $0 (the under-claim bug).
-  check("#258 (v2 OFF): v1 nets all refunds globally — $500 deduction − $550 refunds → $0", r258off.total_deductions_cents === 0);
+  // refund_netting_v2 was folded into refund_netting (flag-collapse batch 4): the default env (refund_netting
+  // ON) now nets per matched expense, so the v1 global-netting assertion is gone.
+  const r258on = await buildReport(env, "p258", 2025);
   // v2: only the $200 refund matched to the deductible expense nets → $500 − $200 = $300.
-  check("#258 (v2 ON): only the matched-deductible refund nets ($500 − $200 = $300)", r258on.total_deductions_cents === 30000);
-  check("#258 (v2 ON): refunds_cents reflects only the matched refund ($200)", r258on.refunds_cents === 20000);
-  check("#258 (v2 ON): unlinked + non-deductible-matched refunds are flagged, not netted ($350, 2)", r258on.refunds_unmatched_cents === 35000 && r258on.refunds_unmatched_n === 2);
+  check("#258: only the matched-deductible refund nets ($500 − $200 = $300)", r258on.total_deductions_cents === 30000);
+  check("#258: refunds_cents reflects only the matched refund ($200)", r258on.refunds_cents === 20000);
+  check("#258: unlinked + non-deductible-matched refunds are flagged, not netted ($350, 2)", r258on.refunds_unmatched_cents === 35000 && r258on.refunds_unmatched_n === 2);
   // cumulative cap: $400 + $300 refunds on ONE $500 expense net $500 total (not $700) → deductions $0.
-  const r258b = await buildReport(env258, "p258b", 2025);
-  check("#258 (v2 ON): refunds on the same expense are capped at it ($500, not $700)", r258b.refunds_cents === 50000 && r258b.total_deductions_cents === 0);
+  const r258b = await buildReport(env, "p258b", 2025);
+  check("#258: refunds on the same expense are capped at it ($500, not $700)", r258b.refunds_cents === 50000 && r258b.total_deductions_cents === 0);
 
   // ── Persona 3: tradie ──
   const r3 = await buildReport(env, "p3", 2025);

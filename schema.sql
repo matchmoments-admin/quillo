@@ -1413,3 +1413,16 @@ CREATE TABLE IF NOT EXISTS noticed_signals (
   UNIQUE (user_id, fy, kind, signal_key)
 );
 CREATE INDEX IF NOT EXISTS idx_noticed_user_fy ON noticed_signals(user_id, fy, status);
+
+-- 0083 (ft_journey, first-timer A11b #592): the Grow layer's explicit on/off choices. Visibility from
+-- existing data is computed on read (src/lib/grow.ts), never stored; only switched / detected choices
+-- persist. state 'off' + source 'detected' = a suggestion declined for FY dismissed_fy.
+CREATE TABLE IF NOT EXISTS grow_layers (
+  user_id      TEXT NOT NULL,
+  layer        TEXT NOT NULL,              -- property | investments | business | assets | integrations | extras | savings | advisers
+  state        TEXT NOT NULL,              -- on | off
+  source       TEXT NOT NULL,              -- switched | detected
+  dismissed_fy INTEGER,                    -- state 'off' + source 'detected': the FY (start year) the suggestion was declined for
+  updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (user_id, layer)
+);

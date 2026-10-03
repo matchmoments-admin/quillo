@@ -4798,7 +4798,7 @@ import type { FilingReadiness as JFilingReadiness, ReadinessFinding as JFinding 
   check("journey payload: blockers > 0 ⇒ no estimate; What's left = blockers then reviews (info excluded), each with its step",
     j0.readiness.estimate === null && j0.whats_left.length === 2 && j0.whats_left[0]!.severity === "blocker" && j0.whats_left[0]!.step === "review" && j0.whats_left[1]!.step === "review");
   const j1 = assessJourney({ readiness: rd([], 0, 5_200_000), signals: sig(), lodgingFy: 2025 });
-  check("journey payload: 0 blockers ⇒ estimate range tracked→confirmed (never a refund field); grow empty until A11b",
+  check("journey payload: 0 blockers ⇒ estimate range tracked→confirmed (never a refund field); grow empty when no grow payload is passed",
     j1.readiness.estimate?.tracked_cents === 5_000_000 && j1.readiness.estimate?.confirmed_cents === 5_200_000 &&
     j1.grow.layers.length === 0 && !JSON.stringify(j1).toLowerCase().includes("refund"));
   check("journey payload: nothing captured ⇒ no estimate even at 0 blockers",
@@ -4808,14 +4808,21 @@ import type { FilingReadiness as JFilingReadiness, ReadinessFinding as JFinding 
 // ── #582/#585 ft_journey: the ONE legacy → journey route table + the old 6-step URLs (web/src/lib/legacyRoutes.ts) ──
 import { LEGACY_ROUTES, OLD_STEP_ROUTES, STEP_LEGACY_ROUTE, journeyRouteFor, oldStepRouteFor, toJourneyHref } from "../web/src/lib/legacyRoutes";
 // (web/src/lib/journey.ts imports react-query, which the server CI job doesn't install — read its route table as text.)
+import { GROW_ROUTE, GROW_LEGACY_ROUTE } from "../web/src/lib/growRoutes";
 {
   const mainSrc = fs.readFileSync(path.join(process.cwd(), "web/src/main.tsx"), "utf8");
   const journeySrc = fs.readFileSync(path.join(process.cwd(), "web/src/lib/journey.ts"), "utf8");
   const stepRouteBlock = /export const STEP_ROUTE[^{]*\{([^}]*)\}/.exec(journeySrc)?.[1] ?? "";
   const FT_STEP_ROUTE = Object.fromEntries([...stepRouteBlock.matchAll(/(\w+): "([^"]+)"/g)].map((m) => [m[1]!, m[2]!]));
   const routed = new Set([...mainSrc.matchAll(/\{ path: "([^"]+)", element:/g)].map((m) => `/${m[1]}`).concat("/"));
+  // A param route ("/grow/:layer") registers every path with that shape (#592's Grow pages).
+  const paramRoutes = [...routed].filter((r) => r.includes("/:")).map((r) => new RegExp(`^${r.replace(/:[^/]+/g, "[^/]+")}$`));
+  const isRouted = (p: string) => routed.has(p) || paramRoutes.some((re) => re.test(p));
   check("legacyRoutes: every legacy source and every journey target is a registered route (nothing 404s with the flag ON)",
-    LEGACY_ROUTES.every((r) => routed.has(r.from) && routed.has(r.to.split(/[?#]/)[0]!)));
+    LEGACY_ROUTES.every((r) => isRouted(r.from) && isRouted(r.to.split(/[?#]/)[0]!)));
+  check("legacyRoutes: the Grow pages (#592) — /assets, /extras, /savings, /quickbooks move under /grow; every Grow route + OFF fallback is registered",
+    toJourneyHref("/assets") === "/grow/assets" && toJourneyHref("/quickbooks?connected=1") === "/grow/integrations" &&
+    Object.values(GROW_ROUTE).every(isRouted) && Object.values(GROW_LEGACY_ROUTE).every(isRouted));
   check("legacyRoutes: every legacy page that redirects is wrapped in <FtRedirect> (OFF renders it unchanged)",
     LEGACY_ROUTES.every((r) => new RegExp(`path: "${r.from.slice(1)}", element: <FtRedirect>`).test(mainSrc)));
   check("legacyRoutes: OFF, every step URL maps back to a registered legacy page",
@@ -5105,6 +5112,126 @@ import { latestSyncRuns } from "../src/lib/bank-sync";
   check(`connect: copy passes the tax-advice denylist (offenders: ${connectOffenders.join(" | ") || "none"})`, connectOffenders.length === 0);
   const page = stripComments(fs.readFileSync(path.join(connectDir, "ConnectPage.tsx"), "utf8"));
   check("connect: no 'We noticed' cards on this step (they live in Review, #587)", !/Noticed/.test(page) && /!embedded && has\("wages_payer"\)/.test(fs.readFileSync(path.join(process.cwd(), "web/src/pages/Accounts.tsx"), "utf8")));
+// ── #592 ft_journey: the Grow layer — visibility rules, detection, data presence, the switch ──
+import {
+  growView, detectionCandidates, detectFromLines, growDetectionConfig, availableLayers, growDataPresence, growPayload,
+  setGrowLayer, stemMatcher, GROW_LAYERS, type GrowLayerRow, type DetectLine,
+} from "../src/lib/grow";
+{
+  console.log("grow layer (#592)");
+  const ALL = [...GROW_LAYERS];
+  const none = {} as Record<string, boolean>;
+  const vis = (p: ReturnType<typeof growView>) => p.layers.filter((l) => l.state === "on").map((l) => l.key).sort().join(",");
+
+  // Rule 3: a first-timer with nothing sees nothing; the owner's property-heavy shape sees his layers unswitched.
+  const cold = growView({ available: ALL, stored: [], data: none, detections: [], startYear: 2025 });
+  check("grow: first-timer with no data, no switch, no detection ⇒ no Grow items, no suggestions", vis(cold) === "" && cold.suggestions.length === 0);
+  const owner = growView({ available: ALL, stored: [], data: { property: true, assets: true, integrations: true, business: true }, detections: [], startYear: 2025 });
+  check("grow: owner shape (3 properties, assets, QBO, company) ⇒ Property, Assets, Integrations, Business visible with no switch (reason data)",
+    vis(owner) === "assets,business,integrations,property" && owner.layers.filter((l) => l.state === "on").every((l) => l.reason === "data" && l.has_data));
+  const offButData = growView({ available: ALL, stored: [{ layer: "property", state: "off", source: "switched", dismissed_fy: null }], data: { property: true }, detections: [], startYear: 2025 });
+  check("grow: a layer holding the user's data can't be hidden by switching it off", vis(offButData) === "property");
+
+  // Detection only ever suggests.
+  const det = [{ layer: "property" as const, lines: 3, sample: "RENT J SMITH" }];
+  const suggested = growView({ available: ALL, stored: [], data: none, detections: det, startYear: 2025 });
+  check("grow: a detection produces a suggestion and NEVER switches the layer on", vis(suggested) === "" && suggested.suggestions.length === 1 &&
+    suggested.suggestions[0]!.kind === "grow_property" && /add/i.test(suggested.suggestions[0]!.title) && /General information only/.test(suggested.suggestions[0]!.body));
+  const yes = growView({ available: ALL, stored: [{ layer: "property", state: "on", source: "detected", dismissed_fy: null }], data: none, detections: det, startYear: 2025 });
+  check("grow: Yes ⇒ visible (reason detected), suggestion gone", vis(yes) === "property" && yes.layers.find((l) => l.key === "property")!.reason === "detected" && yes.suggestions.length === 0);
+  const no: GrowLayerRow[] = [{ layer: "property", state: "off", source: "detected", dismissed_fy: 2025 }];
+  check("grow: No ⇒ hidden and no suggestion for that FY; the suggestion may return next FY",
+    growView({ available: ALL, stored: no, data: none, detections: det, startYear: 2025 }).suggestions.length === 0 &&
+    vis(growView({ available: ALL, stored: no, data: none, detections: det, startYear: 2025 })) === "" &&
+    growView({ available: ALL, stored: no, data: none, detections: det, startYear: 2026 }).suggestions.length === 1);
+  check("grow: switched off ⇒ no nagging suggestions", growView({ available: ALL, stored: [{ layer: "property", state: "off", source: "switched", dismissed_fy: null }], data: none, detections: det, startYear: 2025 }).suggestions.length === 0);
+  check("grow: switched on ⇒ visible (reason switched)", growView({ available: ALL, stored: [{ layer: "savings", state: "on", source: "switched", dismissed_fy: null }], data: none, detections: [], startYear: 2025 }).layers.find((l) => l.key === "savings")!.reason === "switched");
+  check("grow: no detection scan for a layer already visible from data", detectionCandidates({ available: ALL, stored: [], data: { property: true }, startYear: 2025 }).join() === "investments,business");
+
+  // Availability: flag-gated pages and the role-gated Advisers.
+  check("grow: Extras / Savings exist only with their page flags; Advisers only for the partner role",
+    availableLayers({ FEATURES: "" } as never, false).join() === "property,investments,business,assets,integrations" &&
+    availableLayers({ FEATURES: "phi_extras_tracker,advisory_layer" } as never, true).join() === ALL.join());
+  check("grow: Advisers is never switchable", growView({ available: ALL, stored: [], data: { advisers: true }, detections: [], startYear: 2025 }).layers.find((l) => l.key === "advisers")!.switchable === false);
+
+  // Detection from bank lines (pack grow_detection + isRentLikeStem + BROKER_CODES).
+  const cfg = growDetectionConfig();
+  const L = (text: string, direction = "credit", ato_label: string | null = null): DetectLine => ({ text, direction, ato_label });
+  const cands = ["property", "investments", "business"] as const;
+  const d1 = detectFromLines([L("RENT FROM J SMITH"), L("Ray White Real Estate rental")], cands, cfg, false);
+  check("grow detect: two rent-like credits ⇒ property (pack min_lines 2)", d1.length === 1 && d1[0]!.layer === "property" && d1[0]!.lines === 2 && d1[0]!.sample === "RENT FROM J SMITH");
+  check("grow detect: one rent credit is not enough; rent DEBITS (paying rent) never suggest Property",
+    detectFromLines([L("RENT FROM J SMITH")], cands, cfg, false).length === 0 &&
+    detectFromLines([L("RENT PAYMENT", "debit"), L("RENT PAYMENT", "debit"), L("RENT PAYMENT", "debit")], cands, cfg, false).length === 0);
+  check("grow detect: 'current'/'parent' don't match the rent stem (whole words only)",
+    detectFromLines([L("CURRENT ACCOUNT INTEREST"), L("PARENT TRANSFER")], cands, cfg, false).length === 0 && !stemMatcher(["rent"])("parental"));
+  check("grow detect: a dividend credit (CBA DIV / registry) ⇒ investments",
+    detectFromLines([L("CBA DIV 001234567")], cands, cfg, false)[0]?.layer === "investments" && detectFromLines([L("COMPUTERSHARE LTD")], cands, cfg, false)[0]?.layer === "investments");
+  check("grow detect: broker activity either direction, or a line answered capital:investment ⇒ investments",
+    detectFromLines([L("COMMSEC SECURITIES", "debit")], cands, cfg, false)[0]?.layer === "investments" &&
+    detectFromLines([L("TRANSFER 123", "debit", "capital:investment")], cands, cfg, false)[0]?.layer === "investments");
+  check("grow detect: platform payouts ⇒ business; an ABN tick alone ⇒ business (0 lines)",
+    detectFromLines([L("DOORDASH PAYOUT"), L("DOORDASH PAYOUT")], cands, cfg, false)[0]?.layer === "business" &&
+    detectFromLines([], cands, cfg, true)[0]?.abn_tick === true);
+  check("grow detect: only candidate layers are scanned", detectFromLines([L("RENT A"), L("RENT B")], ["business"], cfg, false).length === 0);
+  check("grow detect: a pack without grow_detection falls back to the bundled block", growDetectionConfig({}).property.min_lines === cfg.property.min_lines);
+
+  // D1: data presence (rule 3) + the write path, against the real migrations.
+  const sqlite = new DatabaseSync(":memory:");
+  const migDir = nodePath.join(process.cwd(), "migrations");
+  for (const f of nodeFs.readdirSync(migDir).filter((f) => f.endsWith(".sql")).sort()) sqlite.exec(nodeFs.readFileSync(nodePath.join(migDir, f), "utf8"));
+  class GStmt {
+    private params: unknown[] = [];
+    constructor(private sql: string) {}
+    bind(...a: unknown[]) { this.params = a.map((x) => (x === undefined ? null : x)); return this; }
+    async all<T>() { return { results: sqlite.prepare(this.sql).all(...(this.params as never[])) as T[], success: true, meta: {} }; }
+    async first<T>() { return (sqlite.prepare(this.sql).get(...(this.params as never[])) as T) ?? null; }
+    async run() { const r = sqlite.prepare(this.sql).run(...(this.params as never[])); return { success: true, meta: { changes: Number(r.changes ?? 0) } }; }
+  }
+  const genv = (features = "ft_journey") => ({ DB: { prepare: (sql: string) => new GStmt(sql) }, FEATURES: features }) as never;
+  const OWNER = "u_owner", NEW = "u_new";
+  for (const [i, label] of ["Rental A", "Rental B", "Dad's place"].entries()) sqlite.prepare(`INSERT INTO properties (id, user_id, label) VALUES (?, ?, ?)`).run(`p${i}`, OWNER, label);
+  sqlite.prepare(`INSERT INTO assets (id, user_id, label, asset_class, cost_cents, acquired_date) VALUES ('a1', ?, 'Oven', 'div40_plant', 100000, '2024-08-01')`).run(OWNER);
+  sqlite.prepare(`INSERT INTO qbo_connections (user_id, realm_id, refresh_token) VALUES (?, 'r1', 'x')`).run(OWNER);
+  sqlite.prepare(`INSERT INTO entities (id, user_id, kind, name) VALUES ('e1', ?, 'company', 'Owner Pty Ltd')`).run(OWNER);
+  // The new user: an employment entity + the weekly savings detector's auto rows — neither unlocks a layer.
+  sqlite.prepare(`INSERT INTO entities (id, user_id, kind, name) VALUES ('e2', ?, 'employment', 'Cafe')`).run(NEW);
+  sqlite.prepare(`INSERT INTO entities (id, user_id, kind, name) VALUES ('e3', ?, 'novated_lease', 'Car lease')`).run(NEW);
+  sqlite.prepare(`INSERT INTO recurring_bills (id, user_id, biller_key, status) VALUES ('rb1', ?, 'netflix', 'detected')`).run(NEW);
+  sqlite.prepare(`INSERT INTO opportunities (id, user_id, opportunity_type, subject_key) VALUES ('op1', ?, 'run_rate', 'x')`).run(NEW);
+  const pres = await growDataPresence(genv(), OWNER, false);
+  check("grow D1: owner's existing rows unlock Property, Assets, Integrations, Business on first load (no grow_layers row, no backfill)",
+    pres.property && pres.assets && pres.integrations && pres.business && !pres.investments && !pres.extras && !pres.savings && !pres.advisers);
+  const presNew = await growDataPresence(genv(), NEW, false);
+  check("grow D1: an employment entity, a novated lease and auto-detected savings rows unlock nothing (first-timer sees no Grow items)", Object.values(presNew).every((v) => !v));
+  sqlite.prepare(`UPDATE recurring_bills SET pinned = 1 WHERE id = 'rb1'`).run();
+  check("grow D1: a bill the user confirmed counts as Savings data", (await growDataPresence(genv(), NEW, false)).savings === true);
+  sqlite.prepare(`UPDATE recurring_bills SET pinned = 0 WHERE id = 'rb1'`).run();
+
+  // End to end: rent credits in the FY ⇒ a suggestion, never a visible layer, until the user says Yes.
+  for (const [i, d] of ["2025-08-01", "2025-09-01"].entries())
+    sqlite.prepare(`INSERT INTO transactions (id, user_id, source, kind, direction, raw_description, amount_cents, txn_date, status) VALUES (?, ?, 'statement', 'bank_line', 'credit', 'RENT FROM TENANT', 50000, ?, 'categorised')`).run(`t${i}`, NEW, d);
+  const p0 = await growPayload(genv(), NEW, 2025, { isPartner: false, pack: undefined });
+  check("grow D1: rent credits ⇒ a Property suggestion; Property stays hidden", p0.suggestions.map((s) => s.layer).join() === "property" && p0.layers.find((l) => l.key === "property")!.state === "off");
+  check("grow D1: detection wrote nothing (never silently auto-on)", (sqlite.prepare(`SELECT COUNT(*) AS n FROM grow_layers`).get() as { n: number }).n === 0);
+  const avail = availableLayers(genv(), false);
+  check("grow write: invalid requests are refused (unknown layer, unavailable layer, Advisers, bad state, No without fy)",
+    (await setGrowLayer(genv(), NEW, { layer: "crypto", state: "on", source: "switched" }, avail)) !== null &&
+    (await setGrowLayer(genv(), NEW, { layer: "savings", state: "on", source: "switched" }, avail)) !== null &&
+    (await setGrowLayer(genv(), NEW, { layer: "advisers", state: "on", source: "switched" }, ALL)) !== null &&
+    (await setGrowLayer(genv(), NEW, { layer: "property", state: "maybe", source: "switched" }, avail)) !== null &&
+    (await setGrowLayer(genv(), NEW, { layer: "property", state: "off", source: "detected" }, avail)) !== null &&
+    (await setGrowLayer(genv(), NEW, { layer: "assets", state: "on", source: "detected" }, avail)) !== null);
+  check("grow write: No for FY 2025 ⇒ suggestion gone that FY, back in FY 2026's scan of its own lines",
+    (await setGrowLayer(genv(), NEW, { layer: "property", state: "off", source: "detected", fy: 2025 }, avail)) === null &&
+    (await growPayload(genv(), NEW, 2025, { isPartner: false, pack: undefined })).suggestions.length === 0 &&
+    detectionCandidates({ available: avail, stored: [{ layer: "property", state: "off", source: "detected", dismissed_fy: 2025 }], data: {}, startYear: 2026 }).includes("property"));
+  await setGrowLayer(genv(), NEW, { layer: "property", state: "on", source: "detected" }, avail);
+  const p1 = await growPayload(genv(), NEW, 2025, { isPartner: false, pack: undefined });
+  check("grow write: Yes ⇒ Property visible (reason detected), one row, upserted in place",
+    p1.layers.find((l) => l.key === "property")!.reason === "detected" && (sqlite.prepare(`SELECT COUNT(*) AS n FROM grow_layers WHERE user_id = ?`).get(NEW) as { n: number }).n === 1);
+  check("grow write: tenant-scoped — the owner's payload is untouched by the new user's choices",
+    (await growPayload(genv(), OWNER, 2025, { isPartner: false, pack: undefined })).layers.filter((l) => l.reason !== "none").every((l) => l.reason === "data"));
 }
 
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);

@@ -1409,8 +1409,11 @@ A layer is visible when **any** of:
    assets, a QBO connection, PHI rows, advisory rows, partner membership). Existing users never
    lose sight of their own data; this is the user's own prior entry, not a silent auto-on.
 
-**Detection** (writes `noticed_signals` kinds `grow_property` / `grow_investments` /
-`grow_business`, `ft_journey` ON): rent-like credits (`isRentLikeStem`), dividend credits
+**Detection** (as built in #592: computed on read in `src/lib/grow.ts`, kinds `grow_property` /
+`grow_investments` / `grow_business`, NOT persisted to `noticed_signals`: a suggestion is a pure
+function of the FY's bank lines plus the user's `grow_layers` choice, so there is nothing to go stale
+and the read path never writes; stems and minimum line counts live in the rule pack's
+`grow_detection` block; `ft_journey` ON): rent-like credits (`isRentLikeStem`), dividend credits
 (registry stems / `CBA DIV`), broker deposits (the C1 capital-from-txn stems), platform payouts or
 an ABN tick. Shown on Home's What's left as a suggestion card. *No* dismisses it for the FY.
 
@@ -1422,12 +1425,19 @@ CREATE TABLE IF NOT EXISTS grow_layers (
   layer      TEXT NOT NULL,              -- property | investments | business | assets | integrations | extras | savings | advisers
   state      TEXT NOT NULL,              -- on | off
   source     TEXT NOT NULL,              -- switched | detected
+  dismissed_fy INTEGER,                  -- as built (#592): the FY a suggestion was declined for ("No ... for the FY")
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (user_id, layer)
 );
 ```
 
-→ `PURGE_TABLES` + export. Data-presence visibility (rule 3) is computed, not stored.
+→ `PURGE_TABLES` + export. Data-presence visibility (rule 3) is computed, not stored. As built (#592):
+Savings counts only rows the user acted on (a confirmed bill, a referral), because the weekly detector
+writes `recurring_bills` / `opportunities` for every tenant with bank lines. The payload is
+`grow: { layers: [{ key, state, reason, has_data, switchable }], suggestions: [{ layer, kind, title,
+body, lines, sample }] }`; Advisers (the Partner portal) moved from the account menu into Grow. The
+Savings calculator is hidden while `ft_journey` is ON and is deleted when the flag is retired (flag OFF
+stays byte-identical).
 
 **Grow pages** at `/grow/:layer`, each composed from the existing components (no rewrites):
 

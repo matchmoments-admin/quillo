@@ -1773,6 +1773,24 @@ export async function handleApi(
     return json(await incomeStatementWait(env, uid, fy, jur, await resolveRulePack(env, uid, jur)));
   }
 
+  // ── Grow layer (A11 ticket b, #592, flag ft_journey) — 404 when off ────────
+  // GET /api/grow-layers?fy= → every available layer + visibility/reason, and the open suggestions.
+  // PUT /api/grow-layers { layer, state: on|off, source: switched|detected, fy? } → the switcher, or a Yes / No
+  //     ("No" needs fy: it declines the suggestion for that FY only). Identity is the verified uid, never the body.
+  if (resource === "grow-layers" && !id) {
+    if (!featureOn(env, "ft_journey")) return json({ error: "not found" }, 404);
+    if (m === "GET") {
+      const fy = Number(url.searchParams.get("fy")) || defaultFy();
+      if (!Number.isInteger(fy) || fy < 1900 || fy > 2200) return json({ error: "bad fy" }, 400);
+      return json(await stub.growLayers(uid, fy));
+    }
+    if (m === "PUT") {
+      const b = (await req.json().catch(() => ({}))) as { layer?: unknown; state?: unknown; source?: unknown; fy?: unknown };
+      const r = await stub.setGrowLayer(uid, { layer: b.layer, state: b.state, source: b.source, fy: b.fy });
+      return "error" in r ? json(r, 400) : json(r);
+    }
+  }
+
   // ── Find My Claims (flag claim_review) — 404 when off ─────────────────────
   // GET  /api/claim-review?fy=         → read-only situational sweep (3 groups + uncovered occupations)
   // POST /api/claim-review/draft       → AI gap-fill candidate rules for an uncovered occupation

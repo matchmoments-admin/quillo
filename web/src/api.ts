@@ -1,5 +1,5 @@
 import type { CapitalImportParse, Txn, TxnDetail, Situation, SituationDraft, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse, UsageData, StatementInfo, IncomeRow, DocRow, AssetRow, ScheduleRow, ChecklistItem, ClaimSuggestion, FilingReadiness, ReviewSummary, Progress, AdminTenant, AdminOverview, AdminSpend, AiEdit, ClaimReview, OccupationRulesDraft, OccupationRuleCandidate, NoaCarryover, MovementSweep, BatchResult, ClarifyQuestion, ClarifyAnswer, ClaimMatch, AccountantSummary, SuggestedDeduction, WorkUse, CarUse, CarUseRates, ScanResult, CapitalLoss, OpeningDepreciation, AttributionState, AttributionInput, AttributionRow, IncomeActivity, PropertyOwner, EntityRole, CgtAssetRow, CgtEventRow, EssGrantRow, VehicleLogbookRow, TrustDistributionRow, SmsfMemberRow, SuperContributionRow, BasPeriodRow, PaygInstalmentRow, AskAnswer, SavingsData, PhiOverview, PhiInsurerOption, PhiProvidersResult, PhiScanResult, BillingOverview, PartnerPortal, AmmaComponents, PartnershipDistributionRow, CostBaseElements, BankConnection, BankSyncRun, IncomeStatementWait, SituationPeriod, SituationPeriodWrite, BankHistoryEvent, BankDisconnectResult, FyLodged, NoticedSignal, NoticedConfirmResult } from "./types";
-import type { Journey, MytaxWorksheet } from "./types";
+import type { GrowLayerKey, Journey, MytaxWorksheet } from "./types";
 import type { AskContext, EducationData } from "./types";
 
 // Clerk session token getter, wired from <TokenBridge> inside ClerkProvider (main.tsx).
@@ -320,6 +320,9 @@ export const api = {
   mytaxWorksheet: (fy: number) => get<MytaxWorksheet>(`/api/mytax-worksheet?fy=${fy}`),
   // #586 (flag ft_journey): the Connect step's "waiting on your income statement" items.
   incomeStatements: (fy: number) => get<IncomeStatementWait>(`/api/income-statements?fy=${fy}`),
+  // #592 (ft_journey): Grow layer switcher + suggestion answers. 404 when the flag is OFF.
+  setGrowLayer: (b: { layer: GrowLayerKey; state: "on" | "off"; source: "switched" | "detected"; fy?: number }) =>
+    send<{ ok: true }>("PUT", "/api/grow-layers", b),
   // Soft per-FY sign-off (attestation only — Quillo never lodges)
   fySignoff: (fy?: number) => get<{ signoff: { signed_off_at: string } | null }>(`/api/signoff${fy ? `?fy=${fy}` : ""}`).then((r) => r.signoff),
   signOff: (fy?: number) => post<{ signoff: { signed_off_at: string } | null }>(`/api/signoff${fy ? `?fy=${fy}` : ""}`).then((r) => r.signoff),

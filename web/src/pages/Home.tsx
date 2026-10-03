@@ -1,7 +1,8 @@
 import { useActiveFy } from "../lib/activeFy";
 import { JOURNEY_STEP_KEYS, STATUS_LABEL, STEP_LABEL, STEP_ROUTE, useJourney } from "../lib/journey";
 import { money } from "../components/ui";
-import { Badge, EmptyState, FtCard, FtLink, GeneralInfoNote, Skeleton, StatusGate } from "../components/ft";
+import { Badge, EmptyState, FtCard, FtLink, GeneralInfoNote, GrowSuggestionCard, Skeleton, StatusGate } from "../components/ft";
+import { useSetGrowLayer } from "../lib/grow";
 import type { Journey, JourneyStepStatus } from "../types";
 
 // Home (spec A11 "Home", #582; flag ft_journey — only routed when ON). Three blocks, same order in
@@ -64,14 +65,38 @@ function Hero({ j, label }: { j: Journey; label: string }) {
   );
 }
 
+/** Grow suggestions (A11b, #592): "Looks like you have X: add it?". Yes switches the layer on; No declines it for the FY. */
+function GrowSuggestions({ j }: { j: Journey }) {
+  const set = useSetGrowLayer();
+  const pending = set.isPending ? set.variables?.layer : undefined;
+  if (j.grow.suggestions.length === 0) return null;
+  return (
+    <div className="space-y-2">
+      {j.grow.suggestions.map((s) => (
+        <GrowSuggestionCard
+          key={s.layer}
+          title={s.title}
+          body={s.body}
+          busy={pending === s.layer}
+          onYes={() => set.mutate({ layer: s.layer, state: "on", source: "detected" })}
+          onNo={() => set.mutate({ layer: s.layer, state: "off", source: "detected" })}
+        />
+      ))}
+    </div>
+  );
+}
+
 function WhatsLeft({ j }: { j: Journey }) {
   return (
-    <section aria-labelledby="whats-left">
+    <section aria-labelledby="whats-left" className="space-y-2">
       <h2 id="whats-left" className="mb-2 text-[17px] font-semibold tracking-[-0.02em] text-ink">
         What's left
       </h2>
+      <GrowSuggestions j={j} />
       {j.whats_left.length === 0 ? (
+        j.grow.suggestions.length > 0 ? null : (
         <EmptyState title="Nothing on the list" body="When something needs your attention, it shows up here with a link to the step it belongs to." />
+        )
       ) : (
         <FtCard>
           <ul className="divide-y divide-line">

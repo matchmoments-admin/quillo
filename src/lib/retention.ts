@@ -93,6 +93,8 @@ export const PURGE_TABLES = [
   // 0078 (situation_profile, first-timer A1): dated situation periods per person (residency, jobs,
   // study loan, private hospital cover…) — personal data, so purged and exported with the tenant.
   "situation_periods",
+  // 0079 (wages_payer, first-timer A3 #577): "We noticed…" credit-triage signals and the user's decision.
+  "noticed_signals",
 ] as const;
 
 // Columns that must NEVER leave the system in an APP-12 export, even though the row belongs to the

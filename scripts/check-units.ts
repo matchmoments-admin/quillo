@@ -4646,6 +4646,57 @@ console.log("residency assessability (A13, #580)");
     nonResidentClaimTreatment(occ, true, true) === "caveat" && nonResidentClaimTreatment(all, true, true) === "defer" && nonResidentClaimTreatment(prop, true, true) === "defer");
 }
 
+// ── #577 wages_payer: deterministic credit triage → "We noticed…" signals (src/lib/credit-triage.ts) ──
+import { triageCredits, detectCadence, withinBand, payerStem, payerLabel, creditSignalLists } from "../src/lib/credit-triage";
+import { employerMatches } from "../src/lib/noticed-signals";
+import { noticedCopy } from "../web/src/components/ft/model";
+console.log("credit triage (#577)");
+{
+  const L = creditSignalLists();
+  const cr = (id: string, desc: string, cents: number, date: string) => ({ id, raw_description: desc, merchant: null, amount_cents: cents, amount_aud_cents: cents, txn_date: date });
+  check("triage: cadence 14±3 detected; irregular gaps aren't", detectCadence(["2025-08-01", "2025-08-15", "2025-08-28"], [7, 14, 28], 3) === 14 && detectCadence(["2025-08-01", "2025-08-05", "2025-09-20"], [7, 14, 28], 3) === null);
+  check("triage: one date has no cadence", detectCadence(["2025-08-01"], [14], 3) === null);
+  check("triage: amount band ±35% of the median", withinBand([100000, 110000, 95000], 0.35) && !withinBand([100000, 100000, 300000], 0.35) && !withinBand([], 0.35));
+  check("triage: payer stem ignores payroll words ('BIG RETAIL SALARY' ≡ 'BIG RETAIL PAY')", payerStem("BIG RETAIL PTY LTD SALARY 0412", L) === payerStem("BIG RETAIL PTY LTD PAY", L) && !!payerStem("BIG RETAIL PTY LTD PAY", L));
+  check("triage: payer label is letters only, noise removed", payerLabel("BIG RETAIL PTY LTD SALARY 0412", L) === "Big Retail");
+  const rows = [
+    cr("w1", "BIG RETAIL PTY LTD SALARY", 120000, "2025-08-07"), cr("w2", "BIG RETAIL PTY LTD SALARY", 118000, "2025-08-21"), cr("w3", "BIG RETAIL PTY LTD SALARY", 125000, "2025-09-04"),
+    cr("d1", "DOORDASH PAYOUT 1234", 30000, "2025-08-10"), cr("d2", "DOORDASH PAYOUT 5678", 32000, "2025-08-17"),
+    cr("g1", "SERVICES AUSTRALIA YOUTH ALLOW", 50000, "2025-08-12"),
+    cr("i1", "INTEREST CREDIT ING SAVINGS", 1200, "2025-08-31"),
+    cr("f1", "WISE TRANSFER FROM J SMITH", 200000, "2025-09-02"),
+    cr("x1", "MUM BIRTHDAY", 5000, "2025-08-09"), // one-off, no cadence, no payroll word ⇒ nothing
+  ];
+  const sig = triageCredits(rows, L);
+  const kinds = sig.map((s) => s.kind).join(",");
+  check(`triage: one signal per kind, payroll first (got ${kinds})`, kinds === "payroll,platform,government,interest,foreign");
+  const pay = sig.find((s) => s.kind === "payroll")!;
+  check("triage: payroll = the 3 Big Retail credits, fortnightly, labelled, no second-payer flag", pay.txn_ids.join() === "w1,w2,w3" && pay.evidence.cadence_days === 14 && pay.evidence.label === "Big Retail" && !pay.evidence.second_payer);
+  check("triage: a weekly DoorDash payout is a PLATFORM signal, never payroll", sig.find((s) => s.kind === "platform")?.txn_ids.join() === "d1,d2" && sig.find((s) => s.kind === "platform")?.evidence.activity === "delivery");
+  check("triage: evidence is counts/dates/total/label only — no raw description anywhere", sig.every((s) => !/SALARY|PAYOUT|YOUTH|SAVINGS|SMITH/.test(JSON.stringify(s.evidence))) && pay.evidence.total_cents === 363000 && pay.evidence.first_date === "2025-08-07" && pay.evidence.last_date === "2025-09-04");
+  check("triage: a known employer makes a NEW payroll payer a second payer", triageCredits(rows, L, new Set(["someone else"])).find((s) => s.kind === "payroll")?.evidence.second_payer === true);
+  check("triage: a one-off bonus outside the band stops the payroll proposal", !triageCredits([...rows.slice(0, 3), cr("w4", "BIG RETAIL PTY LTD SALARY", 900000, "2025-09-18")], L).some((s) => s.kind === "payroll"));
+  check("triage: fortnightly own-account transfers are skipped (the movement step owns them)", triageCredits([cr("t1", "TRANSFER FROM SAVINGS ACCOUNT", 100000, "2025-08-01"), cr("t2", "TRANSFER FROM SAVINGS ACCOUNT", 100000, "2025-08-15")], L).length === 0);
+  const norm = (xs: ReturnType<typeof triageCredits>) => JSON.stringify(xs.map((s) => ({ ...s, txn_ids: [...s.txn_ids].sort() })));
+  check("triage: deterministic — input order doesn't change the signals", norm(triageCredits(rows, L)) === norm(triageCredits([...rows].reverse(), L)));
+  check("triage: a partial KV pack can't disable triage (falls back per key)", creditSignalLists({ credit_signals: { platform: [] } }).platform.length === 0 && creditSignalLists({ credit_signals: { platform: [] } }).payroll.min_count === 2 && creditSignalLists(null).government.length > 0);
+  check("employerMatches: 'Big Retail Pty Ltd' ≡ 'BIG RETAIL' ≡ 'Big Retail Group'; different payers don't match", employerMatches("Big Retail Pty Ltd", "BIG RETAIL") && employerMatches("Big Retail", "Big Retail Group") && !employerMatches("Big Retail", "Cafe Co") && !employerMatches("", "Cafe Co"));
+  check("employerMatches: no one-word or out-of-order subset merge ('Coles' ≠ 'Coles Express', 'Big Retail' ≠ 'Big W Retail')", !employerMatches("Coles", "Coles Express") && !employerMatches("Big Retail", "Big W Retail"));
+  check("triage: weekly person-to-person transfers are never payroll (PayID / 'transfer from' + a name)",
+    triageCredits([cr("p1", "Transfer from JOHN SMITH rent", 20000, "2025-08-01"), cr("p2", "Transfer from JOHN SMITH rent", 20000, "2025-08-08"), cr("p3", "Transfer from JOHN SMITH rent", 20000, "2025-08-15"),
+      cr("q1", "PAYID JANE DOE allowance", 5000, "2025-08-03"), cr("q2", "PAYID JANE DOE allowance", 5000, "2025-08-17")], L).length === 0);
+  check("triage: …but Osko pay from a company still is (business marker wins)",
+    triageCredits([cr("o1", "OSKO PAYMENT BIG RETAIL PTY LTD", 120000, "2025-08-07"), cr("o2", "OSKO PAYMENT BIG RETAIL PTY LTD", 120000, "2025-08-21")], L)[0]?.kind === "payroll");
+  check("triage: one credit with a payroll word is not a job (min_count applies to the word path too)", triageCredits([cr("b1", "PAY BACK FOR DINNER", 4000, "2025-08-01")], L).length === 0);
+  check("triage: refunds / rebates are never a signal (an Uber refund isn't a platform payout)", triageCredits([cr("r1", "UBER REFUND", 2500, "2025-08-01"), cr("r2", "MEDICARE REBATE", 4000, "2025-08-02")], L).length === 0);
+  check("clarify: 'My wages' offered on credit groups ONLY with wages_payer ON (OFF ⇒ byte-identical)",
+    suggestionsFor("credit", { wagesPayer: true })[0]?.kind === "wages_payer" && !suggestionsFor("credit", {}).some((x) => x.kind === "wages_payer") && !suggestionsFor("debit", { wagesPayer: true }).some((x) => x.kind === "wages_payer") &&
+      JSON.stringify(suggestionsFor("credit", { wagesPayer: true }).slice(1)) === JSON.stringify(suggestionsFor("credit", {})));
+  const allCopy = ["payroll", "platform", "government", "interest", "foreign"].map((k) => noticedCopy({ kind: k, evidence: { n: 2, first_date: null, last_date: null, total_cents: 1, label: "X", second_payer: k === "payroll" } }));
+  check("NoticedCard copy: proposes, never predicts a refund / tax figure; wages copy says deposits are never counted",
+    allCopy.every((c) => !/refund|tax payable|marginal rate|deductible/i.test(c.title + c.why)) && /never counts them as income/.test(allCopy[0]!.why) && /second employer/i.test(allCopy[0]!.title));
+}
+
 // ── #582 ft_journey: step-status rules, finding → step mapping, the journey payload ──
 import { journeySteps, assessJourney, stepForFinding, JOURNEY_STEPS, type JourneySignals } from "../src/lib/journey";
 import type { FilingReadiness as JFilingReadiness, ReadinessFinding as JFinding } from "../src/lib/readiness";

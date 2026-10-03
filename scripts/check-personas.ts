@@ -40,6 +40,7 @@ import { profileForFy, residencyOn, residencyPeriodsForFy, situationProfileSigna
 import { runRelevanceScan, confirmWorthALook, relevanceView } from "../src/lib/relevance-scan-run";
 import { updatePerson } from "../src/lib/situation-write";
 import { verdictForTxn } from "../src/lib/deductibility";
+import { noticeSignals, listNoticed, confirmNoticed, dismissNoticed, payrollEmployerSignals, incomeAnswerRows, INCOME_STATEMENT_PROMPT } from "../src/lib/noticed-signals";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
@@ -2844,6 +2845,161 @@ async function main() {
     check("pft9o: setting occupation = nurse in Settings re-scans ⇒ 3 cards", cards(uo).length === 3);
     await updatePerson(env, uo, `person_self_${uo}`, { occupation: "retail_worker" });
     check("pft9o (OFF): an occupation edit with the flag OFF does not re-scan (cards unchanged)", cards(uo).length === 3);
+  }
+
+  // ── pft8 — FT1 Jess, bank-only (#577, flag wages_payer; spec A3, owner ruling #554). 3 fortnightly credits from
+  //    "BIG RETAIL PTY LTD" + 2 DoorDash payouts. Runs the REAL triage + confirm handlers (src/lib/noticed-signals.ts,
+  //    the functions the DO calls) over D1 rows. Wages: marks the employer and records NOTHING; the income statement
+  //    counts gross once and clears the per-employer finding. Platform: payouts recorded once as business income.
+  //    Dismissals stick across re-imports; flag OFF ⇒ no signal, no finding, no worksheet line, same position. ──
+  {
+    const WP_FLAGS = "first_timer_income,situation_profile,mytax_worksheet";
+    const WP_ON = { ...env, FEATURES: `${(env as { FEATURES: string }).FEATURES},${WP_FLAGS},wages_payer` } as unknown as Env;
+    const WP_OFF = { ...env, FEATURES: `${(env as { FEATURES: string }).FEATURES},${WP_FLAGS}` } as unknown as Env;
+    const u = "pft8";
+    const me = `person_self_${u}`;
+    seedTenant(u, "FT1 Jess bank-only — we noticed");
+    run(`INSERT INTO profiles (user_id) VALUES (?)`, u);
+    const credit = (id: string, desc: string, cents: number, date: string, bucket: string | null = null) =>
+      run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, currency, txn_date, bucket, direction, raw_description, merchant) VALUES (?, ?, 'upload', 'categorised', 'bank_line', ?, ?, 'AUD', ?, ?, 'credit', ?, ?)`,
+        id, u, cents, cents, date, bucket, desc, desc);
+    credit("pft8w1", "BIG RETAIL PTY LTD SALARY", 120000, "2025-08-07", "income_personal");
+    credit("pft8w2", "BIG RETAIL PTY LTD SALARY", 118000, "2025-08-21", "income_personal");
+    credit("pft8w3", "BIG RETAIL PTY LTD SALARY", 125000, "2025-09-04", "income_personal");
+    credit("pft8d1", "DOORDASH PAYOUT 1001", 30000, "2025-08-10");
+    credit("pft8d2", "DOORDASH PAYOUT 1002", 32000, "2025-08-17");
+    exp("pft8e1", u, 50000, "payg", "confirmed_deductible");
+    // The DO's recordCreditAsIncome, minus FX: one income row per credit + link it (matched_income_id, ignored).
+    const deps = {
+      now: new Date("2026-10-03T00:00:00Z"),
+      recordCreditAsIncome: async (r: { id: string; direction: string | null; matched_income_id: string | null; amount_cents: number | null; txn_date: string | null }, o: { incomeType: string; fy: string }) => {
+        if (r.direction !== "credit" || r.matched_income_id) return null;
+        const id = `pft8inc_${r.id}`;
+        run(`INSERT INTO income (id, user_id, income_type, fy, gross_cents, amount_aud_cents, currency, txn_date) VALUES (?, ?, ?, ?, ?, ?, 'AUD', ?)`, id, u, o.incomeType, o.fy, r.amount_cents, r.amount_cents, r.txn_date);
+        run(`UPDATE transactions SET matched_income_id = ?, status = 'ignored' WHERE id = ? AND user_id = ?`, id, r.id, u);
+        return id;
+      },
+    };
+    const sitU = (): Situation => ({
+      profile: {} as Situation["profile"], properties: [], entities: [], rules: [], loans_properties: [],
+      persons: [{ id: me, user_id: u, display_name: "You", role: "self", occupation: "retail", tax_residency: "AU" } as Situation["persons"][number]],
+    } as Situation);
+    const baseSig = (): FilingReadinessSignals => ({
+      unknownBucketCents: 0, unknownBucketN: 0, lowConfidenceN: 0, needsReviewIncomeN: 0, needsReviewAssetsN: 0,
+      hasDividendStatementDoc: true, rentalPropsMissingSummary: [], disposedAssetsN: 0,
+      instantAssetWriteOffCentsThisFy: null, instantAssetWriteOffCentsPrevFy: null, capitalLossCarryinCents: 0,
+    });
+    const assessWp = async (e: Env) => {
+      const report = await buildReport(e, u, 2025);
+      const sig = { ...baseSig(), ...(await firstTimerIncomeSignals(e, u, 2025)), ...(await payrollEmployerSignals(e, u, 2025)) };
+      return { report, ready: assessReadiness({ report, situation: sitU(), claimMatches: [], signals: sig, generatedAt: "2026-10-03T00:00:00Z" }) };
+    };
+    const count = (sql: string, ...p: unknown[]) => (db.prepare(sql).get(...(p as never[])) as { n: number }).n;
+    const incomeRows = () => count(`SELECT COUNT(*) AS n FROM income WHERE user_id = ?`, u);
+
+    const off0 = await assessWp(WP_OFF);
+    check("pft8 (OFF): the scan is a no-op — no signal row written", (await noticeSignals(WP_OFF, u)).upserted === 0 && count(`SELECT COUNT(*) AS n FROM noticed_signals WHERE user_id = ?`, u) === 0);
+    await noticeSignals(WP_ON, u);
+    const open1 = await listNoticed(WP_ON, u, 2025);
+    const payroll = open1.find((x) => x.kind === "payroll");
+    const platform = open1.find((x) => x.kind === "platform");
+    check("pft8: triage emits exactly one payroll (Big Retail) + one platform (DoorDash) signal",
+      open1.length === 2 && payroll?.evidence.label === "Big Retail" && payroll.evidence.n === 3 && platform?.signal_key === "doordash" && platform.evidence.n === 2);
+    check("pft8: signal evidence holds counts/dates/total only — never a raw description",
+      !count(`SELECT COUNT(*) AS n FROM noticed_signals WHERE user_id = ? AND (evidence_json LIKE '%SALARY%' OR evidence_json LIKE '%PAYOUT%' OR evidence_json LIKE '%PTY%')`, u) && payroll?.evidence.total_cents === 363000);
+    const before = incomeRows();
+    const pc = await confirmNoticed(WP_ON, u, payroll!.id, { occupation: "retail" }, deps);
+    const stampedIds = (db.prepare(`SELECT id FROM transactions WHERE user_id = ? AND payer_entity_id = ? ORDER BY id`).all(u, pc.entity_id ?? "") as { id: string }[]).map((r) => r.id);
+    check("pft8: 'This is my wages' writes ZERO income rows and returns the income-statement prompt",
+      pc.income_recorded === 0 && incomeRows() === before && pc.prompt === INCOME_STATEMENT_PROMPT && pc.kind === "payroll");
+    check("pft8: payer_entity_id set on exactly the 3 Big Retail credits", stampedIds.join() === "pft8w1,pft8w2,pft8w3" && pc.stamped === 3);
+    check("pft8: an employment entity (Big Retail) + an employment period linked to it (situation_profile ON)",
+      count(`SELECT COUNT(*) AS n FROM entities WHERE id = ? AND user_id = ? AND kind = 'employment' AND name = 'Big Retail'`, pc.entity_id, u) === 1 &&
+        (await listSituationPeriods(WP_ON, u, me)).some((p) => p.fact === "employment" && p.ref_id === pc.entity_id && p.value === "retail" && p.source === "noticed"));
+    const again = await confirmNoticed(WP_ON, u, payroll!.id, {}, deps);
+    check("pft8: a double tap is a no-op (already confirmed, nothing re-applied)", again.already === true && incomeRows() === before);
+    const on1 = await assessWp(WP_ON);
+    const inr = on1.ready.findings.filter((x) => x.id.startsWith("income_not_recorded"));
+    check("pft8 (ON): income stays $0 — bank wages are never counted", on1.report.income.gross_cents === 0 && on1.report.taxable_position_cents === -50000);
+    check("pft8 (ON): the completeness finding is PER EMPLOYER and names Big Retail (the generic one doesn't double-ask)",
+      inr.length === 1 && inr[0]!.id === `income_not_recorded:${pc.entity_id}` && /Big Retail/.test(inr[0]!.title) && inr[0]!.severity === "blocker" && !/refund|tax payable|marginal rate/i.test(inr[0]!.title + inr[0]!.general_info_note));
+    check("pft8: the income_personal answer on a payer-stamped credit is REFUSED",
+      incomeAnswerRows((db.prepare(`SELECT direction, matched_income_id, payer_entity_id FROM transactions WHERE user_id = ? AND id LIKE 'pft8w%'`).all(u) as { direction: string; matched_income_id: string | null; payer_entity_id: string | null }[])).refused);
+    check("pft8: …while an unstamped credit stays recordable (the guard is per credit)",
+      !incomeAnswerRows([{ direction: "credit", matched_income_id: null, payer_entity_id: null }]).refused);
+
+    // Platform: payouts recorded as business income, once each.
+    const plc = await confirmNoticed(WP_ON, u, platform!.id, {}, deps);
+    const linked = count(`SELECT COUNT(*) AS n FROM transactions WHERE user_id = ? AND id LIKE 'pft8d%' AND matched_income_id IS NOT NULL AND status = 'ignored'`, u);
+    check("pft8: platform confirm records the 2 DoorDash payouts as business income ($620), each credit linked once",
+      plc.income_recorded === 2 && linked === 2 && count(`SELECT COUNT(*) AS n FROM income WHERE user_id = ? AND income_type = 'business'`, u) === 2 && !!plc.activity_id &&
+        count(`SELECT COUNT(*) AS n FROM income_activities WHERE id = ? AND activity_type = 'business' AND label = 'DoorDash'`, plc.activity_id) === 1);
+    check("pft8: re-confirming platform records nothing more", (await confirmNoticed(WP_ON, u, platform!.id, {}, deps)).income_recorded === 0 && count(`SELECT COUNT(*) AS n FROM income WHERE user_id = ? AND income_type = 'business'`, u) === 2);
+
+    // Dismissal sticks across a re-import.
+    credit("pft8f1", "WISE TRANSFER FROM J SMITH", 200000, "2025-09-02");
+    await noticeSignals(WP_ON, u);
+    const fx = (await listNoticed(WP_ON, u, 2025)).find((x) => x.kind === "foreign");
+    await dismissNoticed(WP_ON, u, fx!.id);
+    credit("pft8f2", "WISE TRANSFER FROM J SMITH", 150000, "2025-10-02"); // re-import brings more of the same
+    await noticeSignals(WP_ON, u);
+    check("pft8: a dismissed signal never reappears for the same FY + payer key, even after re-import",
+      !(await listNoticed(WP_ON, u, 2025)).some((x) => x.kind === "foreign") && count(`SELECT COUNT(*) AS n FROM noticed_signals WHERE user_id = ? AND kind = 'foreign' AND status = 'dismissed'`, u) === 1);
+    // A new pay deposit after the confirm is stamped by the next scan (still records nothing).
+    credit("pft8w4", "BIG RETAIL PTY LTD SALARY", 121000, "2025-09-18", "income_personal");
+    await noticeSignals(WP_ON, u);
+    check("pft8: the next fortnight's pay is stamped to the same employer on the next scan, no income written",
+      count(`SELECT COUNT(*) AS n FROM transactions WHERE id = 'pft8w4' AND payer_entity_id = ?`, pc.entity_id) === 1 && count(`SELECT COUNT(*) AS n FROM income WHERE user_id = ? AND income_type <> 'business'`, u) === 0);
+
+    // A one-off bonus breaks the amount band, so the triage stops emitting the payroll signal — the next pay must
+    // STILL be stamped (else it would be recordable as personal income and double-count).
+    credit("pft8w5", "BIG RETAIL PTY LTD SALARY", 900000, "2025-10-02", "income_personal");
+    credit("pft8w6", "BIG RETAIL PTY LTD SALARY", 119000, "2025-10-16", "income_personal");
+    await noticeSignals(WP_ON, u);
+    check("pft8: after an out-of-band bonus, the bonus and the next pay are still stamped to Big Retail",
+      count(`SELECT COUNT(*) AS n FROM transactions WHERE id IN ('pft8w5','pft8w6') AND payer_entity_id = ?`, pc.entity_id) === 2);
+    // A friend's weekly PayID is not a job: no card.
+    credit("pft8p1", "PAYID JANE DOE rent share", 20000, "2025-08-05");
+    credit("pft8p2", "PAYID JANE DOE rent share", 20000, "2025-08-12");
+    credit("pft8p3", "PAYID JANE DOE rent share", 20000, "2025-08-19");
+    await noticeSignals(WP_ON, u);
+    check("pft8: a weekly person-to-person PayID raises no payroll card", (await listNoticed(WP_ON, u, 2025)).filter((x) => x.kind === "payroll").length === 0 && count(`SELECT COUNT(*) AS n FROM noticed_signals WHERE user_id = ? AND kind = 'payroll'`, u) === 1);
+
+    // Government payment confirm ⇒ a worksheet "check this matches" line, nothing recorded.
+    credit("pft8g1", "SERVICES AUSTRALIA YOUTH ALLOWANCE", 50000, "2025-08-12");
+    await noticeSignals(WP_ON, u);
+    const gov = (await listNoticed(WP_ON, u, 2025)).find((x) => x.kind === "government");
+    const gc = await confirmNoticed(WP_ON, u, gov!.id, {}, deps);
+    const wsOn = await buildMytaxWorksheet(WP_ON, u, 2025);
+    const wsOff = await buildMytaxWorksheet(WP_OFF, u, 2025);
+    const govLine = wsOn.sections.find((x) => x.key === "income_check")?.lines.find((l) => l.key === "noticed:government:services australia");
+    check("pft8: government confirm records nothing, offers manual entry, adds a 'check this matches' worksheet line (no figure)",
+      gc.income_recorded === 0 && gc.offer_manual_income?.[0] === "government_payment" && govLine?.amount_cents === null && govLine.kind === "check" && wsOn.tie_back.ok);
+    check("pft8 (OFF): no noticed worksheet line (byte-identical worksheet)", !JSON.stringify(wsOff).includes("noticed:"));
+
+    // Jess uploads her income statement: gross counted ONCE, finding clears.
+    inc("pft8Sal", u, "salary_payg", 3400000, { withholding_cents: 400000, detail_json: JSON.stringify({ employer: "Big Retail Pty Ltd" }) });
+    const on2 = await assessWp(WP_ON);
+    check("pft8 (ON, + income statement): gross counted ONCE ($34k + $620 payouts) — credits never added on top",
+      on2.report.income.gross_cents === 3400000 + 62000 && on2.report.taxable_position_cents === 3400000 + 62000 - 50000);
+    check("pft8 (ON, + income statement): the Big Retail finding clears", !on2.ready.findings.some((x) => x.id.startsWith("income_not_recorded")));
+    const off2 = await assessWp(WP_OFF);
+    check("pft8 (OFF): payroll signals are {} and the position is identical ON vs OFF",
+      JSON.stringify(await payrollEmployerSignals(WP_OFF, u, 2025)) === "{}" && off2.report.taxable_position_cents === on2.report.taxable_position_cents && off0.report.income.gross_cents === 0);
+  }
+
+  // pft8m — the per-employer finding clears when the salary is entered BY HAND (the manual form has no employer
+  // field): with one marked employer, an unnamed salary row is that employer's (the worksheet's rule).
+  {
+    const WP_ON = { ...env, FEATURES: `${(env as { FEATURES: string }).FEATURES},first_timer_income,wages_payer` } as unknown as Env;
+    const u = "pft8m";
+    seedTenant(u, "FT1 Jess — manual salary");
+    run(`INSERT INTO entities (id, user_id, kind, name, person_id) VALUES ('pft8mE', ?, 'employment', 'Big Retail', ?)`, u, `person_self_${u}`);
+    run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, direction, payer_entity_id) VALUES ('pft8mW', ?, 'upload', 'categorised', 'bank_line', 120000, 120000, ?, 'income_personal', 'credit', 'pft8mE')`, u, FY_DATE);
+    const before = await payrollEmployerSignals(WP_ON, u, 2025);
+    inc("pft8mSal", u, "salary_payg", 3000000); // hand-keyed, no employer name
+    const after = await payrollEmployerSignals(WP_ON, u, 2025);
+    check("pft8m: a hand-keyed salary row clears the only marked employer's prompt", before.payrollEmployers?.[0]?.covered === false && after.payrollEmployers?.[0]?.covered === true);
   }
 
   console.log(`\n=== personas: ${pass} passed, ${fail} failed ===`);

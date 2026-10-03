@@ -123,7 +123,8 @@ export function draftHoldingFromTxn(r: {
 export type ClarifyAnswerKind =
   | "income_property" // → recordIncome(income_property, property_id) + exclude the bank credit
   | "income_business" // → recordIncome(income_business)
-  | "income_personal" // → recordIncome(income_personal)
+  | "income_personal" // → recordIncome(income_personal) — non-wage personal income only (#554)
+  | "wages_payer" // (flag wages_payer, #577) → mark the payer as an EMPLOYER, record NOTHING; ask for the income statement
   | "ignore" // → status='ignored' (own-account transfer, loan repayment, personal/gift — not spend, not income)
   | "capital" // → status='ignored' + ato_label='capital:investment' (a share/brokerage deposit — not deductible, not income, but CGT-relevant)
   | "bucket"; // → re-bucket the group (payg/property_*/asset…) with an optional ato_label
@@ -166,6 +167,7 @@ export interface SuggestionContext {
   hasTenantHome?: boolean;    // the tenant has a renting_residence (own-home rental) property
   isInsuranceLike?: boolean;  // the group's stem looks like a life / income-protection insurer
   directionGuard?: boolean;   // #341 flag ON: offer income answers for a MIXED (credit+debit) group
+  wagesPayer?: boolean;       // #577 flag wages_payer ON: offer "My wages" on a credit group (marks the employer, records nothing)
 }
 
 /** True when a group's stem/description reads like rent or a lease payment. */
@@ -192,6 +194,9 @@ export function suggestionsFor(direction: "debit" | "credit" | "mixed", ctx: Sug
   ];
   if (direction === "credit") {
     return [
+      // #554: a wages deposit is take-home pay — never income. This answer marks the payer as an employer and
+      // asks for the income statement (gross + withheld). Flag OFF ⇒ not offered ⇒ byte-identical.
+      ...(ctx.wagesPayer ? [{ label: "My wages (pay from an employer)", kind: "wages_payer" as const }] : []),
       ...incomeAnswers,
       { label: "Transfer between my own accounts (ignore)", kind: "ignore" },
       { label: "Personal / gift (not income)", kind: "ignore" },

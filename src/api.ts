@@ -71,15 +71,13 @@ import {
   mintKey,
   revokeKey,
   clearIncomeCgt,
-  upsertSituationPeriod,
-  deleteSituationPeriod,
-  SituationPeriodError,
   type SituationPeriodInput,
 } from "./lib/situation-write";
 import { listSituationPeriods, normaliseFyStart } from "./lib/situation-profile";
 import { lodgingFy, lodgedOnError, isoDayOf } from "./lib/lodging-year";
 import { getFyLodged, listLodgedFys } from "./lib/fy-signoff";
 import { relevanceView } from "./lib/relevance-scan-run";
+import { listNoticed, type ConfirmBody } from "./lib/noticed-signals";
 import { setAttributions, getAttributions, clearAttributions } from "./lib/attribution-write";
 import { listNoaCarryovers, confirmNoaCarryover, deleteNoaCarryover } from "./lib/noa-store";
 import { buildConnectUrl, qboStatus } from "./lib/qbo-oauth";
@@ -769,28 +767,50 @@ export async function handleApi(
   // resource. 400 = a plain message (bad fact/value/dates, overlap); 404 when the flag is off.
   if (resource === "situation-periods") {
     if (!featureOn(env, "situation_profile")) return json({ error: "not available" }, 404);
-    const opts = { fy: normaliseFyStart(url.searchParams.get("fy")), descriptor: jur };
-    try {
-      if (m === "GET" && !id) {
-        const personId = url.searchParams.get("person_id");
-        return json({ periods: await listSituationPeriods(env, uid, personId || undefined) });
-      }
-      if (m === "POST" && !id) {
-        const body = (await req.json().catch(() => ({}))) as SituationPeriodInput;
-        return json({ period: await upsertSituationPeriod(env, uid, body, opts) });
-      }
-      if ((m === "PATCH" || m === "PUT") && id) {
-        const body = (await req.json().catch(() => ({}))) as SituationPeriodInput;
-        return json({ period: await upsertSituationPeriod(env, uid, body, { ...opts, id }) });
-      }
-      if (m === "DELETE" && id) {
-        await deleteSituationPeriod(env, uid, id, opts);
-        return json({ ok: true });
-      }
-    } catch (e) {
-      if (e instanceof SituationPeriodError) return json({ error: e.message }, e.status);
-      throw e;
+    const fy = normaliseFyStart(url.searchParams.get("fy"));
+    // Writes go through the tenant's Durable Object (#577), serialised with the "We noticed" confirm handlers so
+    // two concurrent writes can't both pass the overlap check (#571's deferred note). Reads stay in the Worker.
+    if (m === "GET" && !id) {
+      const personId = url.searchParams.get("person_id");
+      return json({ periods: await listSituationPeriods(env, uid, personId || undefined) });
     }
+    if (m === "POST" && !id) {
+      const body = (await req.json().catch(() => ({}))) as SituationPeriodInput;
+      const r = await stub.situationPeriodWrite(uid, { kind: "upsert", body, fy });
+      return r.ok ? json({ period: r.period }) : json({ error: r.error }, r.status);
+    }
+    if ((m === "PATCH" || m === "PUT") && id) {
+      const body = (await req.json().catch(() => ({}))) as SituationPeriodInput;
+      const r = await stub.situationPeriodWrite(uid, { kind: "upsert", body, id, fy });
+      return r.ok ? json({ period: r.period }) : json({ error: r.error }, r.status);
+    }
+    if (m === "DELETE" && id) {
+      const r = await stub.situationPeriodWrite(uid, { kind: "delete", id });
+      return r.ok ? json({ ok: true }) : json({ error: r.error }, r.status);
+    }
+  }
+  // ── "We noticed…" signals (flag wages_payer, first-timer A3 #577) ─────────────
+  // GET  /api/noticed?fy=YYYY          → { signals }   open signals for the FY (payroll first, biggest total)
+  // POST /api/noticed/:id/confirm      { occupation?, employer_name?, person_id? } → { result }
+  // POST /api/noticed/:id/dismiss      → { ok, status }
+  // Payroll confirm marks the payer as an employer and records NOTHING (#554); it returns the income-statement
+  // prompt. Writes run in the DO (serialised with situation-period writes). 404 when the flag is off.
+  if (resource === "noticed") {
+    if (!featureOn(env, "wages_payer")) return json({ error: "not available" }, 404);
+    if (m === "GET" && !id) {
+      const fy = Math.trunc(Number(url.searchParams.get("fy"))) || defaultFy();
+      return json({ signals: await listNoticed(env, uid, fy) });
+    }
+    if (m === "POST" && id && sub === "confirm") {
+      const body = (await req.json().catch(() => ({}))) as ConfirmBody;
+      const r = await stub.confirmNoticedSignal(uid, id, body);
+      return r.ok ? json({ result: r.result }) : json({ error: r.error }, r.status);
+    }
+    if (m === "POST" && id && sub === "dismiss") {
+      const r = await stub.dismissNoticedSignal(uid, id);
+      return r.ok ? json(r) : json({ error: r.error }, r.status);
+    }
+    return json({ error: "not found" }, 404);
   }
   if (resource === "properties") {
     if (m === "POST") { const body = (await req.json()) as Record<string, unknown>; return routedEntityWrite(env, stub, uid, "property", "create", null, body, () => addProperty(env, uid, body as { label: string })); }

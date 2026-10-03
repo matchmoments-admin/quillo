@@ -7,6 +7,7 @@ import { useFeatures } from "../lib/features";
 import { useActiveFy } from "../lib/activeFy";
 import { Button, Card, Spinner, money, InfoTip, parseMoneyToCents, parseDecimal } from "../components/ui";
 import type { Account, StatementInfo, StatementParse } from "../types";
+import { NoticedPanel } from "../components/NoticedPanel";
 
 const SOURCE_LABEL: Record<string, string> = {
   cdr_feed: "Bank feed",
@@ -65,6 +66,7 @@ export function Accounts() {
       qc.invalidateQueries({ queryKey: ["statements"] });
       qc.invalidateQueries({ queryKey: ["accounts"] });
       qc.invalidateQueries({ queryKey: ["dashboard"] });
+      qc.invalidateQueries({ queryKey: ["noticed"] }); // #577
       const errs = r.errors.length ? ` ${r.errors.length} couldn't import (e.g. didn't reconcile).` : "";
       // Steer to the Dashboard hub (WFH card + your likely-claims) rather than dead-ending here —
       // a statements-only PAYG user's biggest claims aren't statement lines (G7).
@@ -96,6 +98,9 @@ export function Accounts() {
       </div>
 
       {has("bank_feed_cdr") && <BankFeed accounts={accounts} />}
+
+      {/* #577 wages_payer: "We noticed…" cards from the credit triage, right after the import surfaces. */}
+      {has("wages_payer") && <NoticedPanel />}
 
       <div className="flex items-center gap-3">
         <Button variant="ghost" onClick={() => sync.mutate()} disabled={sync.isPending}>
@@ -183,6 +188,7 @@ function BankFeed({ accounts }: { accounts: Account[] }) {
       else toast.success(`Imported ${r.imported} new line(s) · ${r.categorised} categorised · ${r.skipped} skipped (already imported, or still pending at the bank).`);
       qc.invalidateQueries({ queryKey: ["bank-connections"] });
       qc.invalidateQueries({ queryKey: ["transactions"] });
+      qc.invalidateQueries({ queryKey: ["noticed"] }); // #577 We-noticed cards refresh after an import
       qc.invalidateQueries({ queryKey: ["progress"] });
     },
     onError: (e: Error) => toast.error(e.message),
@@ -459,6 +465,7 @@ function AccountRow({ account, statements }: { account: Account; statements: Sta
       setParse(null);
       invalidate();
       qc.invalidateQueries({ queryKey: ["transactions"] });
+      qc.invalidateQueries({ queryKey: ["noticed"] }); // #577 We-noticed cards refresh after an import
       qc.invalidateQueries({ queryKey: ["dashboard"] });
       toast.success(`Imported ${r.imported} transaction(s)`, {
         description: "Categorising in the background — you can keep working or upload another statement.",
@@ -698,6 +705,7 @@ function StatementChip({ statement: s, onChange }: { statement: StatementInfo; o
       toast.success(`Imported ${r.imported} transaction(s)`, { description: r.skipped ? `${r.skipped} already on file.` : "Categorising in the background." });
       onChange();
       qc.invalidateQueries({ queryKey: ["transactions"] });
+      qc.invalidateQueries({ queryKey: ["noticed"] }); // #577 We-noticed cards refresh after an import
       qc.invalidateQueries({ queryKey: ["dashboard"] });
     },
     onError: (e) => setErr((e as Error).message),
@@ -709,6 +717,7 @@ function StatementChip({ statement: s, onChange }: { statement: StatementInfo; o
       onChange();
       if (r.linesRemoved) {
         qc.invalidateQueries({ queryKey: ["transactions"] });
+        qc.invalidateQueries({ queryKey: ["noticed"] }); // #577 We-noticed cards refresh after an import
         qc.invalidateQueries({ queryKey: ["dashboard"] });
       }
     },

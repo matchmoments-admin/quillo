@@ -681,5 +681,38 @@
       "whm": { "exclude": "foreign_sourced" },
       "temporary": { "exclude": "foreign_sourced", "keep": ["foreign_employment"] }
     }
+  },
+  "credit_signals": {
+    "_note": "First-timer spec A3 (#577, flag wages_payer): the deterministic credit triage behind the 'We noticed…' cards. 'match' is a comma-separated word-boundary pattern list (token-match.ts). A signal PROPOSES a profile change the user confirms; it never records income on its own (wages never: a deposit is take-home pay — #554). payroll = same payer stem with >= min_count credits at a cadence_days cadence (± cadence_tolerance_days) OR a payroll word, every amount within ± amount_band of the median. A person-to-person credit (a p2p_marker with no business_marker, e.g. 'PAYID JANE DOE') is never payroll — the spec gives it no card. Credits matching skip_words (refunds, rebates) are never a signal. Platform 'activity' is the abn_activity situation value a confirm writes. Jurisdiction-neutral: another pack lists its own payers.",
+    "payroll": {
+      "words": "salary,salaries,wages,wage,pay,payroll",
+      "cadence_days": [7, 14, 28],
+      "cadence_tolerance_days": 3,
+      "amount_band": 0.35,
+      "min_count": 2,
+      "p2p_markers": "payid,pay id,osko,transfer from,tfr from,trf from,fast transfer,pay anyone,from mum,from dad",
+      "business_markers": "pty,ltd,limited,inc,group,corp,corporation,company,services,council,university,hospital,department,payroll,salary,salaries,wages"
+    },
+    "skip_words": "refund,reversal,chargeback,cashback,rebate,reimbursement",
+    "platform": [
+      { "key": "uber", "match": "uber", "label": "Uber", "activity": "rideshare" },
+      { "key": "didi", "match": "didi", "label": "DiDi", "activity": "rideshare" },
+      { "key": "doordash", "match": "doordash,door dash", "label": "DoorDash", "activity": "delivery" },
+      { "key": "menulog", "match": "menulog", "label": "Menulog", "activity": "delivery" },
+      { "key": "airtasker", "match": "airtasker", "label": "Airtasker", "activity": "freelance" },
+      { "key": "airbnb", "match": "airbnb", "label": "Airbnb", "activity": "other" },
+      { "key": "madpaw", "match": "madpaw,mad paws", "label": "Mad Paws", "activity": "freelance" },
+      { "key": "hipages", "match": "hipages", "label": "hipages", "activity": "freelance" }
+    ],
+    "government": [
+      { "key": "services_australia", "match": "services australia,centrelink,dss", "label": "Services Australia", "income_type": "government_payment" }
+    ],
+    "interest": { "match": "interest", "label": "Interest", "income_type": "interest" },
+    "foreign": [
+      { "key": "wise", "match": "wise", "label": "Wise" },
+      { "key": "remitly", "match": "remitly", "label": "Remitly" },
+      { "key": "western_union", "match": "western union", "label": "Western Union" },
+      { "key": "fx", "match": "fx credit,foreign currency,international transfer,intl transfer,swift", "label": "an overseas transfer" }
+    ]
   }
 }

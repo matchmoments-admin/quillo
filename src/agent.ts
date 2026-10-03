@@ -37,6 +37,9 @@ import { firstTimerIncomeSignals, wantsIncomeStatementItem } from "./lib/first-t
 import { mytaxWorksheetSignals } from "./lib/mytax-worksheet";
 import { situationProfileSignals } from "./lib/situation-profile";
 import { residencyAssessabilityContext, residencyAssessabilityOn, hasNonResidentPeriod, nonResidentClaimTreatment, AU_WORK_DEDUCTIONS_CAVEAT } from "./lib/residency-assessability";
+import { noticeSignals, confirmNoticed, dismissNoticed, ensurePayrollSignal, payrollEmployerSignals, incomeAnswerRows, STAMPED_INCOME_REFUSAL, NoticedError, type ConfirmBody, type ConfirmResult } from "./lib/noticed-signals";
+import { creditSignalLists, payerStem, payerLabel } from "./lib/credit-triage";
+import { upsertSituationPeriod, deleteSituationPeriod, SituationPeriodError, type SituationPeriodInput } from "./lib/situation-write";
 import { applyCapitalColumnMap, type CapitalColumnMap, type CapitalDraftRow, type CapitalImportPreview } from "./lib/capital-import";
 import { resolveJurisdictionForUser, currentFyStartYearFor, baseCurrencyOf, AU_DESCRIPTOR, type JurisdictionDescriptor } from "./lib/jurisdiction";
 import { assessReadiness, type FilingReadiness, type FilingReadinessSignals } from "./lib/readiness";
@@ -226,6 +229,18 @@ function thresholdForFy(fy: string): FyThreshold | undefined {
 // applyUserRules + the direction guard live in ./lib/rules (pure → unit-tested).
 
 export class TaxAgent extends Agent<Env> {
+  // ── Per-tenant write lock (#577, closes #571's deferred concurrency note) ──────────────────────────────
+  // One DO per tenant, but D1 awaits interleave concurrent RPCs: two simultaneous situation-period writes could
+  // both pass the overlap check, and a "We noticed" confirm racing a period edit could do the same. Every
+  // situation-period write (the /api/situation-periods editor AND the noticed confirm handlers) runs through
+  // this promise chain, so within the tenant's DO they apply one at a time.
+  private periodWriteChain: Promise<unknown> = Promise.resolve();
+  private serialisedPeriodWrite<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.periodWriteChain.then(fn, fn);
+    this.periodWriteChain = run.catch(() => undefined);
+    return run;
+  }
+
   // ── 1. INGEST: receipt image/PDF arrives as bytes ──────────────────────────
   async ingest(
     userId: string,
@@ -3127,6 +3142,16 @@ export class TaxAgent extends Agent<Env> {
     } catch (e) {
       await this.audit(userId, "relevance_scan_error", JSON.stringify({ error: (e as Error).message }));
     }
+    // #577 wages_payer: deterministic credit triage → "We noticed…" signals (payroll / platform / government /
+    // interest / foreign). Proposals only — nothing is recorded. Best-effort: never fail an import on it.
+    // Flag OFF ⇒ not called (no read at all).
+    if (featureOn(this.env, "wages_payer")) {
+      try {
+        await noticeSignals(this.env, userId, await this.jurisdictionFor(userId));
+      } catch (e) {
+        await this.audit(userId, "noticed_signals_failed", JSON.stringify({ error: (e as Error).message })).catch(() => {});
+      }
+    }
   }
 
   /**
@@ -4489,6 +4514,9 @@ export class TaxAgent extends Agent<Env> {
     // #571 situation_profile: per-person dated situation periods for this FY (src/lib/situation-profile.ts —
     // the same function the persona goldens call). Flag OFF ⇒ {} ⇒ findings byte-identical.
     const situationSignals = await situationProfileSignals(this.env, userId, startYear, readinessJur);
+    // #577 wages_payer: per-employer "income statement not recorded" (src/lib/noticed-signals.ts — the same
+    // function the persona goldens call). Flag OFF ⇒ {} ⇒ findings byte-identical.
+    const payrollSignals = await payrollEmployerSignals(this.env, userId, startYear, readinessJur);
     // GST registration status for the turnover nudge — registered if the tenant default is set OR any
     // entity is flagged (mirrors gstTotals' registration test in ledger-totals.ts).
     const entGstReg = (await this.env.DB.prepare(`SELECT COUNT(*) AS n FROM entities WHERE user_id = ? AND COALESCE(gst_registered,0) = 1`).bind(userId).first<{ n: number }>())?.n ?? 0;
@@ -4544,6 +4572,7 @@ export class TaxAgent extends Agent<Env> {
       ...firstTimerSignals,
       ...worksheetSignals,
       ...situationSignals,
+      ...payrollSignals,
       ...(featureOn(this.env, "non_cash_income") ? { nonCashIncomeEnabled: true } : {}),
       ...(integrityOn ? {
         frankingHoldingThresholdCents: integrityThresholds?.franking_holding_rule_threshold_cents ?? null,
@@ -5484,7 +5513,7 @@ export class TaxAgent extends Agent<Env> {
       `SELECT id, raw_description, merchant, amount_cents, amount_aud_cents, direction
          FROM transactions
         WHERE user_id = ? AND kind = 'bank_line'
-          AND ${CLARIFY_LEFTOVER_WHERE}
+          AND ${CLARIFY_LEFTOVER_WHERE}${featureOn(this.env, "wages_payer") ? " AND payer_entity_id IS NULL" : ""}
           AND txn_date >= ? AND txn_date <= ?`,
     )
       .bind(userId, start, end)
@@ -5497,7 +5526,7 @@ export class TaxAgent extends Agent<Env> {
     const leftovers = (rows.results ?? []).filter(isClarifyLeftover);
     // Tenant paying rent on their own home → clarify offers a "rent I pay (private)" answer.
     const hasTenantHome = situation.properties.some((p) => p.status === "renting_residence");
-    const groups = groupForClarify(leftovers, undefined, { hasTenantHome, directionGuard: featureOn(this.env, "clarify_direction_guard") });
+    const groups = groupForClarify(leftovers, undefined, { hasTenantHome, directionGuard: featureOn(this.env, "clarify_direction_guard"), ...(featureOn(this.env, "wages_payer") ? { wagesPayer: true } : {}) });
     let questions = 0;
     for (const g of groups) {
       // Skip a stem a DIRECTION-PURE group's user_rule already covers — those lines auto-apply on
@@ -5595,13 +5624,16 @@ export class TaxAgent extends Agent<Env> {
    * (`record_credit_income`) at the route. The per-txn equivalent of the Clarify group income answer.
    */
   async recordTxnAsIncome(userId: string, txnId: string): Promise<{ income_id: string | null }> {
+    const wagesPayerOn = featureOn(this.env, "wages_payer");
     const r = await this.env.DB.prepare(
-      `SELECT id, direction, matched_income_id, amount_cents, amount_aud_cents, currency, txn_date, bucket, property_id
+      `SELECT id, direction, matched_income_id, amount_cents, amount_aud_cents, currency, txn_date, bucket, property_id${wagesPayerOn ? ", payer_entity_id" : ""}
          FROM transactions WHERE id = ? AND user_id = ?`,
     )
       .bind(txnId, userId)
-      .first<{ id: string; direction: string | null; matched_income_id: string | null; amount_cents: number | null; amount_aud_cents: number | null; currency: string | null; txn_date: string | null; bucket: string | null; property_id: string | null }>();
+      .first<{ id: string; direction: string | null; matched_income_id: string | null; amount_cents: number | null; amount_aud_cents: number | null; currency: string | null; txn_date: string | null; bucket: string | null; property_id: string | null; payer_entity_id?: string | null }>();
     if (!r) throw new Error("transaction not found");
+    // #577: pay from a marked employer is take-home pay — never income (the income statement carries gross).
+    if (r.payer_entity_id) throw new Error("this is pay from an employer you've marked — add its income statement on the Income page instead");
     if (r.direction !== "credit") throw new Error("only a money-in (credit) line can be recorded as income");
     if (r.matched_income_id) throw new Error("this line is already recorded as income");
     // Only an income-bucketed credit can be recorded as income — guard against a mis-bucketed (payg /
@@ -5615,6 +5647,65 @@ export class TaxAgent extends Agent<Env> {
     return { income_id: incomeId };
   }
 
+  // ── Situation periods + "We noticed…" signals: DO-side writers (#571 / #577) ──────────────────────────
+  // Errors come back as values, not throws: a typed error class doesn't survive the DO RPC boundary, and the
+  // route needs its status (400 plain message / 404 / 409).
+  /** Every /api/situation-periods write, serialised per tenant (see serialisedPeriodWrite). */
+  async situationPeriodWrite(
+    userId: string,
+    op: { kind: "upsert"; body: SituationPeriodInput | null; id?: string; fy?: number | null } | { kind: "delete"; id: string },
+  ): Promise<{ ok: true; period?: unknown } | { ok: false; error: string; status: number }> {
+    try {
+      const descriptor = await this.jurisdictionFor(userId);
+      return await this.serialisedPeriodWrite(async () => {
+        if (op.kind === "delete") {
+          await deleteSituationPeriod(this.env, userId, op.id, { descriptor });
+          return { ok: true as const };
+        }
+        return { ok: true as const, period: await upsertSituationPeriod(this.env, userId, op.body, { descriptor, fy: op.fy ?? null, ...(op.id ? { id: op.id } : {}) }) };
+      });
+    } catch (e) {
+      if (e instanceof SituationPeriodError) return { ok: false, error: e.message, status: e.status };
+      throw e;
+    }
+  }
+
+  /**
+   * "Yes" on a We-noticed card (src/lib/noticed-signals.ts). Serialised with the period editor because a confirm
+   * writes employment / abn_activity / foreign_income periods. Payroll records NOTHING (#554); platform records
+   * the payouts through the direction-safe recordCreditAsIncome (single count via matched_income_id).
+   */
+  async confirmNoticedSignal(userId: string, id: string, body: ConfirmBody | null): Promise<{ ok: true; result: ConfirmResult } | { ok: false; error: string; status: number }> {
+    if (!featureOn(this.env, "wages_payer")) return { ok: false, error: "not available", status: 404 };
+    try {
+      const descriptor = await this.jurisdictionFor(userId);
+      const result = await this.serialisedPeriodWrite(() =>
+        confirmNoticed(this.env, userId, id, body, {
+          descriptor,
+          recordCreditAsIncome: (row, o) => this.recordCreditAsIncome(userId, row, { incomeType: o.incomeType, fy: o.fy }),
+        }),
+      );
+      await this.audit(userId, "noticed_confirm", JSON.stringify({ id, kind: result.kind, already: !!result.already, income_recorded: result.income_recorded, stamped: result.stamped ?? 0 }));
+      return { ok: true, result };
+    } catch (e) {
+      if (e instanceof NoticedError || e instanceof SituationPeriodError) return { ok: false, error: e.message, status: e.status };
+      throw e;
+    }
+  }
+
+  /** "No" on a We-noticed card — terminal for that FY + kind + payer key (a re-import never re-opens it). */
+  async dismissNoticedSignal(userId: string, id: string): Promise<{ ok: true; status: string } | { ok: false; error: string; status: number }> {
+    if (!featureOn(this.env, "wages_payer")) return { ok: false, error: "not available", status: 404 };
+    try {
+      const r = await this.serialisedPeriodWrite(() => dismissNoticed(this.env, userId, id));
+      await this.audit(userId, "noticed_dismiss", JSON.stringify({ id }));
+      return r;
+    } catch (e) {
+      if (e instanceof NoticedError) return { ok: false, error: e.message, status: e.status };
+      throw e;
+    }
+  }
+
   async answerClarify(userId: string, questionId: string, answer: ClarifyAnswer): Promise<{ applied: number; income_recorded: number }> {
     const q = await this.env.DB.prepare(
       `SELECT id, fy, group_key, status FROM clarify_questions WHERE id = ? AND user_id = ?`,
@@ -5625,6 +5716,9 @@ export class TaxAgent extends Agent<Env> {
     if (q.status !== "open") return { applied: 0, income_recorded: 0 }; // idempotent: already answered/dismissed
     // VALIDATE BEFORE claiming the question, so a bad answer never consumes it (no dead-ended answer).
     if (answer.kind === "income_property" && !answer.property_id) throw new Error("property_id required for rental income");
+    // #577: "My wages" exists only with wages_payer ON (a stored suggestion can outlive a flag flip).
+    const wagesPayerOn = featureOn(this.env, "wages_payer");
+    if (answer.kind === "wages_payer" && !wagesPayerOn) throw new Error("that answer isn't available");
     if (answer.kind === "bucket") {
       if (!answer.bucket) throw new Error("bucket required");
       // Income/refund are money-IN buckets — they MUST go through the income_* kinds (recordIncome +
@@ -5644,14 +5738,14 @@ export class TaxAgent extends Agent<Env> {
     // row a prior correction already finalised, and never overshooting the count shown).
     const { start, end } = fyBounds(parseFyStartYear(q.fy), await this.jurisdictionFor(userId));
     const rowsRes = await this.env.DB.prepare(
-      `SELECT id, raw_description, merchant, direction, amount_cents, amount_aud_cents, currency, matched_income_id, txn_date
+      `SELECT id, raw_description, merchant, direction, amount_cents, amount_aud_cents, currency, matched_income_id, txn_date${wagesPayerOn ? ", payer_entity_id" : ""}
          FROM transactions
         WHERE user_id = ? AND kind = 'bank_line'
           AND ${CLARIFY_LEFTOVER_WHERE}
           AND txn_date >= ? AND txn_date <= ?`,
     )
       .bind(userId, start, end)
-      .all<{ id: string; raw_description: string | null; merchant: string | null; direction: string | null; amount_cents: number | null; amount_aud_cents: number | null; currency: string | null; matched_income_id: string | null; txn_date: string | null }>();
+      .all<{ id: string; raw_description: string | null; merchant: string | null; direction: string | null; amount_cents: number | null; amount_aud_cents: number | null; currency: string | null; matched_income_id: string | null; txn_date: string | null; payer_entity_id?: string | null }>();
     // Same movement-exclusion predicate as runClarifyScan (centralised in isClarifyLeftover so the scan
     // filter and this answer filter can't drift) so the answer acts on exactly the rows the user saw —
     // never a transfer/card/loan line that a dedicated step owns.
@@ -5661,11 +5755,57 @@ export class TaxAgent extends Agent<Env> {
     // #341 (flag): when ON, ignore/bucket act on the money-OUT side only so a mixed merchant group's
     // income credits aren't silently dropped/converted. OFF ⇒ whole group (today's behaviour).
     const directionGuard = featureOn(this.env, "clarify_direction_guard");
+    // Put the question back to 'open' when an answer is refused after the claim, so it isn't dead-ended.
+    const unclaim = () =>
+      this.env.DB.prepare(`UPDATE clarify_questions SET status = 'open', answer_json = NULL WHERE id = ? AND user_id = ? AND status = 'answered'`).bind(questionId, userId).run();
+
+    if (answer.kind === "wages_payer") {
+      // #554 / #577: mark the payer as an EMPLOYER and record NOTHING — through the SAME payroll confirm as the
+      // "We noticed" card (entity + employment period + payer_entity_id stamp), never income_personal.
+      try {
+        const jur = await this.jurisdictionFor(userId);
+        const lists = creditSignalLists(await resolveRulePack(this.env, userId, jur));
+        const byStem = new Map<string, typeof group>();
+        for (const r of group) {
+          if (r.direction !== "credit") continue;
+          const k = payerStem(r.raw_description ?? r.merchant, lists);
+          if (k) byStem.set(k, [...(byStem.get(k) ?? []), r]);
+        }
+        if (byStem.size === 0) throw new Error("There's no money-in from a payer here to mark as wages.");
+        let stamped = 0;
+        for (const [stem, rs] of byStem) {
+          const dates = rs.map((r) => r.txn_date).filter((d): d is string => !!d).sort();
+          const evidence = {
+            n: rs.length,
+            first_date: dates[0] ?? null,
+            last_date: dates[dates.length - 1] ?? null,
+            total_cents: rs.reduce((t, r) => t + Math.abs(r.amount_aud_cents ?? r.amount_cents ?? 0), 0),
+            label: payerLabel(rs[0]!.raw_description ?? rs[0]!.merchant, lists) || stem,
+          };
+          const signalId = await ensurePayrollSignal(this.env, userId, parseFyStartYear(q.fy), stem, evidence);
+          const res = await this.confirmNoticedSignal(userId, signalId, null);
+          if (!res.ok) throw new Error(res.error);
+          stamped += res.result.stamped ?? 0;
+        }
+        await this.audit(userId, "clarify_answer", JSON.stringify({ questionId, kind: "wages_payer", stamped }));
+        return { applied: stamped, income_recorded: 0 };
+      } catch (e) {
+        await unclaim();
+        throw e;
+      }
+    }
 
     if (answer.kind === "income_property" || answer.kind === "income_business" || answer.kind === "income_personal") {
       const incomeType = answer.kind === "income_property" ? "rent" : answer.kind === "income_business" ? "business" : "personal";
+      // #577: a credit stamped as pay from an employer is take-home pay — it can NEVER be recorded as income
+      // (that would double-count once the income statement arrives). Column only read with wages_payer ON.
+      const allowed = incomeAnswerRows(group);
+      if (allowed.refused) {
+        await unclaim();
+        throw new Error(STAMPED_INCOME_REFUSAL);
+      }
       let income_recorded = 0;
-      for (const r of group) {
+      for (const r of allowed.rows) {
         const incomeId = await this.recordCreditAsIncome(userId, r, { incomeType, propertyId: answer.property_id ?? null, fy: fyLabel(parseFyStartYear(q.fy)) });
         if (incomeId) income_recorded++;
       }

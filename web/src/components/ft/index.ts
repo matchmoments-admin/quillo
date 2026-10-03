@@ -16,3 +16,4 @@ export { WhySheet } from "./WhySheet";
 export { GoldenRules } from "./GoldenRules";
 export { WhyDrawer, useWhyDrawer, type WhyItem } from "./WhyDrawer";
 export { StateEducationCard, NewcomerCard } from "./EducationCards";
+export { NoticedCard } from "./NoticedCard";

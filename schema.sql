@@ -196,6 +196,7 @@ CREATE TABLE IF NOT EXISTS fy_signoff (
   signed_off_at TEXT NOT NULL DEFAULT (datetime('now')),
   noa_document_id TEXT,
   status        TEXT,
+  lodged_at     TEXT,  -- 0087 (situation_profile, #572): 'mark as lodged' (YYYY-MM-DD); NULL = not lodged
   PRIMARY KEY (user_id, fy)
 );
 

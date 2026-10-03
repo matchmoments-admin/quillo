@@ -161,7 +161,13 @@ export interface Situation {
   // situation_profile (#571, first-timer A1): every dated situation period for the tenant. Present only when
   // the flag is on; absent ⇒ no profile UI.
   profile_periods?: SituationPeriod[];
+  // situation_profile (#572): the FY to prepare by default (last FY until it's marked lodged, then the current
+  // FY). Present only when the flag is on; the ActiveFy seed uses it after a stored ui_state.active_fy.
+  lodging_fy?: number;
 }
+
+// situation_profile (#572): the fy_signoff row's lodged state. lodged_at = the day the user says they lodged.
+export type FyLodged = { fy: number; lodged_at: string | null; status: string | null; signed_off_at: string };
 
 // situation_profile (#571): one dated fact about a person (residency, job, ABN activity, study loan…).
 // Facts/values come from the rule pack's situation_facts. Dates ISO inclusive; null = open-ended.

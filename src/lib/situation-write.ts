@@ -635,6 +635,13 @@ export async function signOffFy(env: Env, userId: string, fy: number): Promise<v
 }
 
 export async function clearSignOffFy(env: Env, userId: string, fy: number): Promise<void> {
+  // #572: with situation_profile ON a year marked as lodged keeps its row (lodged_at lives on it) — undo the
+  // lodged mark first (DELETE /api/lodged). OFF this is the old delete and never references lodged_at, so the
+  // flag-OFF path is safe before 0087 is applied. The lodged readers/writers live in fy-signoff.ts.
+  if (featureOn(env, "situation_profile")) {
+    await env.DB.prepare(`DELETE FROM fy_signoff WHERE user_id = ? AND fy = ? AND lodged_at IS NULL`).bind(userId, fy).run();
+    return;
+  }
   await env.DB.prepare(`DELETE FROM fy_signoff WHERE user_id = ? AND fy = ?`).bind(userId, fy).run();
 }
 

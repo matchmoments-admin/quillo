@@ -4421,5 +4421,56 @@ console.log("bank consent lifecycle (#576)");
   }
 }
 
+// ── #572 lodging-year default + retention backstop (src/lib/lodging-year.ts; spec A1 ticket b) ──
+import { lodgingFy, lodgementTiming, selfLodgeDueDate, retentionBackstopDate, retentionLodgedOn, isFyLodgedForRetention, backstopLodgedThroughFy, isFyMarkedLodged, lodgedOnError } from "../src/lib/lodging-year";
+{
+  const AU = AU_DESCRIPTOR.taxPeriod;
+  check("lodgingFy: 30 Jun 2026 (FY 2025) with nothing lodged ⇒ 2024 (the year being lodged)", lodgingFy("2026-06-30", AU, []) === 2024);
+  check("lodgingFy: 30 Jun 2026 with FY 2024 lodged ⇒ 2025", lodgingFy("2026-06-30", AU, [2024]) === 2025);
+  check("lodgingFy: 1 Jul 2026 (FY 2026) with nothing lodged ⇒ 2025", lodgingFy("2026-07-01", AU, []) === 2025);
+  check("lodgingFy: 1 Jul 2026 with FY 2025 lodged ⇒ 2026", lodgingFy("2026-07-01", AU, [2025]) === 2026);
+  check("lodgingFy: 15 Oct 2026, nothing lodged ⇒ 2025 (a brand-new tenant lands on FY 2025-26)", lodgingFy(new Date("2026-10-15T00:00:00Z"), AU, []) === 2025);
+  check("lodgingFy: 15 Oct 2026, FY 2025 lodged ⇒ 2026", lodgingFy("2026-10-15", AU, [2025]) === 2026);
+  check("lodgingFy: only N − 1 matters (an older lodged year, or the current one, doesn't move the default)",
+    lodgingFy("2026-10-15", AU, [2023, 2024]) === 2025 && lodgingFy("2026-10-15", AU, [2026]) === 2025);
+  check("lodgingFy: UK period (6 Apr) — 5 Apr 2027 is FY 2026 ⇒ 2025; 6 Apr 2027 ⇒ 2026",
+    lodgingFy("2027-04-05", UK_DESCRIPTOR.taxPeriod, []) === 2025 && lodgingFy("2027-04-06", UK_DESCRIPTOR.taxPeriod, []) === 2026);
+  const t = lodgementTiming(rulePack); // the resolved pack (here: the bundled one) — timing is a REQUIRED input
+  check("lodgementTiming: pack due = 31 Oct, backstop = 60 days; a KV pack without the keys falls back to the bundled pack",
+    t.due.month === 10 && t.due.day === 31 && t.backstopDays === 60 &&
+    JSON.stringify(lodgementTiming({ lodgement: { self_lodge_due: "31 October" } })) === JSON.stringify(t) &&
+    lodgementTiming({ lodgement: { self_lodge_due_after_fy_end: { month: 11, day: 15 }, retention_backstop_days: 30 } }).due.month === 11);
+  check("selfLodgeDueDate: AU FY 2025 ⇒ 2026-10-31; backstop ⇒ 2026-12-30",
+    selfLodgeDueDate(2025, AU_DESCRIPTOR, t) === "2026-10-31" && retentionBackstopDate(2025, AU_DESCRIPTOR, t) === "2026-12-30");
+  check("retention helpers honour the RESOLVED pack's timing (a KV pack moving the due date moves the backstop)",
+    retentionBackstopDate(2025, AU_DESCRIPTOR, lodgementTiming({ lodgement: { self_lodge_due_after_fy_end: { month: 11, day: 15 }, retention_backstop_days: 30 } })) === "2026-12-15");
+  check("selfLodgeDueDate: a due month/day earlier than the FY end rolls to the next year (UK FY 2025 ends 2026-04-05 ⇒ 2026-10-31; Jan 31 ⇒ 2027-01-31)",
+    selfLodgeDueDate(2025, UK_DESCRIPTOR, t) === "2026-10-31" && selfLodgeDueDate(2025, UK_DESCRIPTOR, { due: { month: 1, day: 31 }, backstopDays: 0 }) === "2027-01-31");
+  check("retentionLodgedOn: the user's mark wins (its day); NOA close counts from its signed_off_at day (fixed, not today); otherwise null until the backstop, then the backstop date",
+    retentionLodgedOn(2025, { lodged_at: "2026-09-01", status: "lodged", signed_off_at: "2026-08-01 10:00:00" }, "2026-09-02", AU_DESCRIPTOR, t) === "2026-09-01" &&
+    retentionLodgedOn(2025, { lodged_at: null, status: "closed_with_noa", signed_off_at: "2026-08-20 23:10:00" }, "2026-09-02", AU_DESCRIPTOR, t) === "2026-08-20" &&
+    retentionLodgedOn(2025, { lodged_at: null, status: "closed_with_noa", signed_off_at: "2026-08-20 23:10:00" }, "2027-03-01", AU_DESCRIPTOR, t) === "2026-08-20" &&
+    retentionLodgedOn(2025, null, "2026-12-29", AU_DESCRIPTOR, t) === null &&
+    retentionLodgedOn(2025, { lodged_at: null, status: null, signed_off_at: "2026-08-01 10:00:00" }, "2026-12-30", AU_DESCRIPTOR, t) === "2026-12-30");
+  check("isFyLodgedForRetention: unmarked FY 2025 is not lodged on 29 Dec 2026, is on 30 Dec 2026",
+    !isFyLodgedForRetention(2025, null, "2026-12-29", AU_DESCRIPTOR, t) && isFyLodgedForRetention(2025, null, "2026-12-30", AU_DESCRIPTOR, t));
+  check("backstopLodgedThroughFy: 3 Oct 2026 ⇒ 2024 (FY 2024's backstop was 2025-12-30); 30 Dec 2026 ⇒ 2025",
+    backstopLodgedThroughFy("2026-10-03", AU_DESCRIPTOR, t) === 2024 && backstopLodgedThroughFy("2026-12-30", AU_DESCRIPTOR, t) === 2025);
+  check("isFyMarkedLodged: lodged_at or closed_with_noa; a plain soft sign-off is not lodged",
+    isFyMarkedLodged({ lodged_at: "2026-09-01", status: "lodged" }) && isFyMarkedLodged({ lodged_at: null, status: "closed_with_noa" }) &&
+    !isFyMarkedLodged({ lodged_at: null, status: null }) && !isFyMarkedLodged(null));
+  const lodgedRuleOffenders = fs.readdirSync(path.join(process.cwd(), "src/lib")).concat(["../api.ts", "../agent.ts"])
+    .filter((f) => f.endsWith(".ts") && f !== "fy-signoff.ts")
+    .filter((f) => /lodged_at IS NOT NULL OR status = 'closed_with_noa'/.test(fs.readFileSync(path.join(process.cwd(), "src/lib", f), "utf8")));
+  check(`the lodged rule's SQL lives only in fy-signoff.ts (offenders: ${lodgedRuleOffenders.join(",") || "none"})`, lodgedRuleOffenders.length === 0);
+  check("lodgedOnError: real day, not before the FY started, not in the future (1 day TZ slack)",
+    lodgedOnError("2026-09-01", 2025, "2026-10-03", AU_DESCRIPTOR) === null &&
+    lodgedOnError("2026-10-04", 2025, "2026-10-03", AU_DESCRIPTOR) === null &&
+    lodgedOnError("2026-10-05", 2025, "2026-10-03", AU_DESCRIPTOR) !== null &&
+    lodgedOnError("2025-06-30", 2025, "2026-10-03", AU_DESCRIPTOR) !== null &&
+    lodgedOnError("2026-02-30", 2025, "2026-10-03", AU_DESCRIPTOR) !== null &&
+    lodgedOnError("1 Sep", 2025, "2026-10-03", AU_DESCRIPTOR) !== null);
+}
+
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);
 process.exit(fail === 0 ? 0 : 1);

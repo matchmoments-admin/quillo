@@ -7,7 +7,7 @@ import { computeBasNet, type BasNet } from "./gst";
 import { businessUsePct, logbookDeductionCents, chooseCarMethod } from "./car-logbook";
 import { summariseTrustDistributions, type TrustTotals } from "./trust";
 import { featureOn } from "./features";
-import { classifyIncomeRow, excludableIncomeTypes, NON_RESIDENT_FOREIGN, type ResidencyAssessabilityContext } from "./residency-assessability";
+import { classifyIncomeRow, excludableIncomeTypes, hasNonResidentPeriod, NON_RESIDENT_FOREIGN, type ResidencyAssessabilityContext } from "./residency-assessability";
 import { ecpiExemptFraction, computeSmsfPosition, type SmsfPosition } from "./smsf";
 import { fyBoundsFor, fyStartYearSqlExpr, AU_DESCRIPTOR, type JurisdictionDescriptor } from "./jurisdiction";
 // Rule-pack thresholds are RESOLVED by the caller (buildReport → resolveRulePack, keyed by
@@ -85,7 +85,7 @@ export interface ExcludedIncomeRow {
   // A13 (#580, residency_assessability): why a normally-assessable type is left out. Absent on the S4/D
   // capture-only types (so their JSON is byte-identical); 'non_resident_foreign' = foreign-sourced income dated
   // inside a foreign / WHM / temporary-resident period.
-  reason?: string;
+  reason?: typeof NON_RESIDENT_FOREIGN;
 }
 
 export interface IncomeTotals {
@@ -102,8 +102,8 @@ export interface IncomeTotals {
   // A13 (#580): undated foreign-sourced rows that STAYED IN because the person's residency changed during the FY
   // (readiness asks when they were earned — foreign_income_undated_part_year). Present only when n > 0.
   residency_undated?: { n: number; gross_cents: number };
-  // A13 (#580): true when the dated residency periods decided which foreign-sourced rows count (flag ON and a
-  // foreign / WHM / temporary period in the FY). Readiness then retires the binary-residency #550 nudge — the
+  // A13 (#580): true when the SELF person's dated residency periods decided which of their foreign-sourced rows
+  // count (flag ON and a foreign / WHM / temporary period for the self person in the FY). Readiness then retires the binary-residency #550 nudge — the
   // periods (plus foreign_income_undated_part_year) now speak for those rows. Absent otherwise ⇒ byte-identical.
   residency_assessed?: true;
 }
@@ -126,6 +126,9 @@ export interface ResidencyIncomeRow {
 export interface ResidencyIncomeSplit {
   excluded: ResidencyIncomeRow[];
   undated: ResidencyIncomeRow[];
+  // True when the SELF person has a non-resident period, i.e. their foreign rows were decided by periods (the
+  // #550 binary nudge is about the self person, so a spouse-only period must not retire it).
+  self_assessed: boolean;
 }
 
 /**
@@ -141,7 +144,8 @@ export async function residencyIncomeSplit(
   opts: { excludeEntityIds?: string[] } = {},
 ): Promise<ResidencyIncomeSplit> {
   const types = excludableIncomeTypes(ctx.table);
-  if (!types.length) return { excluded: [], undated: [] };
+  const self_assessed = !!ctx.selfPersonId && hasNonResidentPeriod(ctx.profiles.get(ctx.selfPersonId), ctx.table);
+  if (!types.length) return { excluded: [], undated: [], self_assessed };
   const where: string[] = ["user_id = ?", "fy = ?", FX_CONVERTED, `income_type IN (${types.map(() => "?").join(",")})`];
   const binds: unknown[] = [userId, fyLabel(startYear), ...types];
   if (opts.excludeEntityIds && opts.excludeEntityIds.length) {
@@ -160,7 +164,7 @@ export async function residencyIncomeSplit(
   )
     .bind(...binds)
     .all<ResidencyIncomeRow>()).results ?? [];
-  const out: ResidencyIncomeSplit = { excluded: [], undated: [] };
+  const out: ResidencyIncomeSplit = { excluded: [], undated: [], self_assessed };
   for (const r of rows) {
     const v = classifyIncomeRow(r, ctx);
     if (v === "excluded") out.excluded.push(r);
@@ -256,7 +260,7 @@ export async function incomeTotals(
     excluded_by_type,
     // Back-compat convenience: the non-cash benefit total only (existing consumers/tests read this).
     non_cash_cents: excluded_by_type.filter((r) => r.income_type === "non_cash_benefit").reduce((s, r) => s + r.gross_cents, 0),
-    ...(opts.residencySplit ? { residency_assessed: true as const } : {}),
+    ...(opts.residencySplit?.self_assessed ? { residency_assessed: true as const } : {}),
     ...(resUndated.length ? { residency_undated: { n: resUndated.length, gross_cents: resUndated.reduce((s, r) => s + r.gross_cents, 0) } } : {}),
   };
 }

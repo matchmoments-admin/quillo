@@ -1571,11 +1571,16 @@ period is captured but **excluded from the position**, with a note.
 - Date: `income.txn_date`. If NULL and the FY has more than one residency value for that person,
   the row **stays in** the position and a review finding `foreign_income_undated_part_year` asks
   "When did you earn this? Your residency changed during the year." (No automatic split.)
+- Undated row, built (#580): excluded only when the person's FY holds ONE excluding residency value whose
+  periods cover the whole FY (the date can't matter); stays in + the finding whenever any gap or second
+  value means the date could matter.
 - Excluded rows surface in `excluded_by_type` with reason `non_resident_foreign` and the note:
-  "Foreign income earned while you were not an Australian resident for tax purposes is generally
-  not taxed in Australia, so Quillo has left it out of your estimate. This is general information;
-  confirm with a registered tax agent."
-- The #550 nudge `foreign_income_non_resident` is suppressed for rows the exclusion handled.
+  "Foreign income earned while you were a foreign resident or a temporary resident for tax purposes
+  is generally not taxed in Australia, so Quillo has left it out of your estimate. This is general
+  information; confirm with a registered tax agent." (Built wording — a temporary resident IS an
+  Australian resident for tax, so "not an Australian resident" would misstate their case.)
+- The #550 nudge `foreign_income_non_resident` is retired once the SELF person's dated periods decide
+  their foreign rows (a spouse-only period leaves it in place).
 - **G11:** the blanket non-resident defer in `suggestClaims`/Find My Claims (`agent.ts` ~`:3843`,
   `:3887`) narrows: occupation suggestions for Australian employment still appear for a
   foreign/WHM/temporary period, with the caveat "Deductions against your Australian work income
@@ -1605,9 +1610,9 @@ captures the periods. No new page.
 
 ### Goldens
 
-- **`pft13`** (new, flips `pft4` when ON): Lena, `whm` from 2025-11-01 to 2026-06-30, `foreign`
+- **`pft13`** (new; `pft4` stays unchanged when ON — binary residency alone never excludes): Lena, `whm` from 2025-11-01 to 2026-06-30, `foreign`
   before; AU wages $28k; `foreign_employment` $6k dated 2025-09 (foreign period) and $2k dated
-  2026-03 (WHM period); one undated foreign dividend. Asserts with the flag ON: both foreign
+  2026-03 (WHM period); one undated foreign pension (the pack has no foreign-dividend type). Asserts with the flag ON: both foreign
   employment rows excluded (`whm` and `foreign` both exclude), the undated dividend stays in with
   `foreign_income_undated_part_year`; a `temporary` variant keeps the 2026-03 `foreign_employment`
   row in; occupation suggestions appear with the residency caveat (G11); flag OFF:

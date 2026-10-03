@@ -50,8 +50,8 @@ export const INCOME_TYPES = [
   "government_payment",  // #550 (flag first_timer_income): taxable Centrelink payments — Youth Allowance, Austudy,
                          // JobSeeker (myTax items 5/6). Assessable by construction; creation-gated in recordIncome.
   "foreign_employment",  // #550 (flag first_timer_income): employment income earned overseas (item 20). Assessable
-                         // by construction (residency-aware exclusion is a held owner decision — G10); a readiness
-                         // nudge fires when the person's residency is non-AU. Creation-gated in recordIncome.
+                         // by construction; A13 (#580, residency_assessability) leaves it out for a dated foreign / WHM
+                         // period (temporary residents keep it — pack residency_assessability). Creation-gated in recordIncome.
   "business",            // #136: net income of an unincorporated sole trader / ABN individual (ATO item 15).
                          // Assessable to the INDIVIDUAL — sums into income.gross like any other type; its
                          // s8-1 expenses reach the personal headline via an individual-owned 'business'

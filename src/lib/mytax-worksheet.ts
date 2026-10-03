@@ -275,9 +275,15 @@ function assembleWorksheet(report: Report, detail: ScheduleDetail, pack: MytaxPa
   }
   // A13 (#580, residency_assessability): foreign income left out for a non-resident period is NOT a type-in line —
   // one information note says how much and why. amount_cents stays null so the income tie-back is untouched.
-  const leftOut = (report.income.excluded_by_type ?? []).filter((x) => x.reason === NON_RESIDENT_FOREIGN && x.gross_cents > 0).reduce((s, x) => s + x.gross_cents, 0);
-  if (leftOut > 0) {
-    typeIn.push({ key: "foreign_left_out", label: itemFor("foreign_employment").item, name: `Foreign income — left out: ${money(leftOut)} while you were not a resident (see note)`, amount_cents: null, kind: "note", record_href: "/income",
+  // One note per myTax item the left-out types belong to (pack labels: item 20 vs P8 for foreign business).
+  const leftOutByItem = new Map<string, number>();
+  for (const x of report.income.excluded_by_type ?? []) {
+    if (x.reason !== NON_RESIDENT_FOREIGN || x.gross_cents <= 0) continue;
+    const item = itemFor(x.income_type).item;
+    leftOutByItem.set(item, (leftOutByItem.get(item) ?? 0) + x.gross_cents);
+  }
+  for (const [item, cents] of leftOutByItem) {
+    typeIn.push({ key: leftOutByItem.size === 1 ? "foreign_left_out" : `foreign_left_out:${item}`, label: item, name: `Foreign income — left out: ${money(cents)} while you were a foreign or temporary resident (see note)`, amount_cents: null, kind: "note", record_href: "/income",
       note: NON_RESIDENT_FOREIGN_NOTE });
   }
 

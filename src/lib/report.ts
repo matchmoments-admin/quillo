@@ -6,6 +6,7 @@ import type { CgtPortfolioResult } from "./cgt";
 import type { EssAssessable } from "./ess";
 import { featureOn } from "./features";
 import { residencyAssessabilityContext } from "./residency-assessability";
+import { RENT_INCOME_TYPES } from "./taxonomy";
 import { resolveLoanInterest, deductibleInterestCents, type LoanInterestSource } from "./loan-interest";
 import auV1RulePack from "../rulepacks/au-v1.json";
 import { computeWorkMethodDeductions, workUseRatesForFy, type WorkMethodDeductions, type WorkUseInputs, type WorkUseRates } from "./work-use";
@@ -722,7 +723,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   // A13: foreign rent a non-resident period left out of income is left out of that property's rent too, so the
   // per-property display never shows income the headline doesn't count. No split ⇒ no-op.
   for (const x of residencySplit?.excluded ?? []) {
-    if (!x.property_id || (x.income_type !== "rent" && x.income_type !== "foreign_rent") || !rentByProp.has(x.property_id)) continue;
+    if (!x.property_id || !RENT_INCOME_TYPES.has(x.income_type) || !rentByProp.has(x.property_id)) continue;
     const left = (rentByProp.get(x.property_id) ?? 0) - x.gross_cents;
     if (left === 0) rentByProp.delete(x.property_id);
     else rentByProp.set(x.property_id, left);

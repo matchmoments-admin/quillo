@@ -29,7 +29,7 @@ export const NON_RESIDENT_FOREIGN = "non_resident_foreign";
 
 /** The general-information note every excluded row carries (spec A13). */
 export const NON_RESIDENT_FOREIGN_NOTE =
-  "Foreign income earned while you were not an Australian resident for tax purposes is generally not taxed in Australia, so Quillo has left it out of your estimate. This is general information; confirm with a registered tax agent.";
+  "Foreign income earned while you were a foreign resident or a temporary resident for tax purposes is generally not taxed in Australia, so Quillo has left it out of your estimate. This is general information; confirm with a registered tax agent.";
 
 /** G11 caveat on occupation suggestions for a person with a non-resident period. */
 export const AU_WORK_DEDUCTIONS_CAVEAT = "Deductions against your Australian work income generally still apply; confirm with a registered tax agent.";
@@ -165,10 +165,19 @@ export async function residencyAssessabilityContext(
   if (!residencyAssessabilityOn(env)) return null;
   const table = residencyAssessabilityTable(opts.rulePack);
   if (!Object.keys(table).length) return null;
-  const [profiles, self] = await Promise.all([
-    profileForFy(env, userId, startYear, opts.descriptor ?? AU_DESCRIPTOR),
-    env.DB.prepare(`SELECT id FROM persons WHERE user_id = ? AND role = 'self' ORDER BY created_at LIMIT 1`).bind(userId).first<{ id: string }>(),
-  ]);
+  let profiles: SituationProfile[];
+  let self: { id: string } | null;
+  try {
+    [profiles, self] = await Promise.all([
+      profileForFy(env, userId, startYear, opts.descriptor ?? AU_DESCRIPTOR),
+      env.DB.prepare(`SELECT id FROM persons WHERE user_id = ? AND role = 'self' ORDER BY created_at LIMIT 1`).bind(userId).first<{ id: string }>(),
+    ]);
+  } catch (e) {
+    // e.g. migration 0078 not applied while the flag is ON: fall back to the legacy path (all income kept) rather
+    // than failing every report. Logged so the misconfiguration is visible.
+    console.warn(`[residency_assessability] context load failed — income kept in: ${(e as Error).message}`);
+    return null;
+  }
   if (!profiles.some((p) => hasNonResidentPeriod(p, table))) return null;
   return { table, profiles: new Map(profiles.map((p) => [p.person_id, p])), selfPersonId: self?.id ?? null };
 }

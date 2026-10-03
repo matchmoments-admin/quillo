@@ -32,7 +32,7 @@ import { capitalReadinessSignals } from "./lib/capital-signals";
 import { firstTimerIncomeSignals, wantsIncomeStatementItem } from "./lib/first-timer-signals";
 import { mytaxWorksheetSignals } from "./lib/mytax-worksheet";
 import { situationProfileSignals } from "./lib/situation-profile";
-import { residencyAssessabilityContext, hasNonResidentPeriod, nonResidentClaimTreatment, AU_WORK_DEDUCTIONS_CAVEAT } from "./lib/residency-assessability";
+import { residencyAssessabilityContext, residencyAssessabilityOn, hasNonResidentPeriod, nonResidentClaimTreatment, AU_WORK_DEDUCTIONS_CAVEAT } from "./lib/residency-assessability";
 import { applyCapitalColumnMap, type CapitalColumnMap, type CapitalDraftRow, type CapitalImportPreview } from "./lib/capital-import";
 import { resolveJurisdictionForUser, currentFyStartYearFor, baseCurrencyOf, AU_DESCRIPTOR, type JurisdictionDescriptor } from "./lib/jurisdiction";
 import { assessReadiness, type FilingReadiness, type FilingReadinessSignals } from "./lib/readiness";
@@ -4168,7 +4168,7 @@ export class TaxAgent extends Agent<Env> {
     // residency PERIOD in this FY, occupation suggestions for Australian work still apply — they classify
     // normally with a caveat; every other rule keeps the defer. Context is null with the flag OFF ⇒ unchanged.
     let narrowDefer = false;
-    if (nonAuResident) {
+    if (nonAuResident && residencyAssessabilityOn(this.env)) {
       const jurisdiction = await resolveJurisdictionForUser(this.env, userId);
       const resCtx = await residencyAssessabilityContext(this.env, userId, startYear, { descriptor: jurisdiction, rulePack: await resolveRulePack(this.env, userId, jurisdiction) });
       narrowDefer = !!resCtx && !!resCtx.selfPersonId && hasNonResidentPeriod(resCtx.profiles.get(resCtx.selfPersonId), resCtx.table);

@@ -391,6 +391,7 @@ export async function handleApi(
       const msg = (e as Error).message;
       if (msg === "consent_required") return json({ error: "consent_required" }, 403);
       if (msg === "ai_budget_reached") return json({ error: "AI is paused for today (daily limit reached) — try again after the reset." }, 429);
+      if (msg === "chat_rate_limited") return json({ error: "You're asking questions too quickly — give it a moment and try again." }, 429);
       throw e;
     }
   }
@@ -1630,8 +1631,6 @@ export async function handleApi(
     return json(await relevanceView(env, uid, fy));
   }
 
-  // #575: the myTax self-lodge worksheet (spec A9). Flag mytax_worksheet; 404 when off ⇒ byte-identical.
-  // Identity is the server-derived uid, like every resource.
   // GET /api/education (#591, flag ft_journey) — pack-driven education for the step pages: the ATO
   // occupation-guide link for each occupation on this tenant's people + the state revenue office links
   // (education only; the return is federal). Read-only, no model call. OFF ⇒ 404.
@@ -1640,6 +1639,8 @@ export async function handleApi(
     return json(await getEducation(env, uid));
   }
 
+  // #575: the myTax self-lodge worksheet (spec A9). Flag mytax_worksheet; 404 when off ⇒ byte-identical.
+  // Identity is the server-derived uid, like every resource.
   if (resource === "mytax-worksheet" && m === "GET") {
     const fy = Number(url.searchParams.get("fy")) || defaultFy();
     return mytaxWorksheetResponse(env, uid, fy);

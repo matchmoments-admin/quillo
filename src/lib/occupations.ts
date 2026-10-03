@@ -31,12 +31,16 @@ export function canonicalOccupationScope(token: string | null | undefined): stri
 }
 
 /** The occupation guide for a scope (e.g. 'nurse', 'tradesperson'), or null when the scope isn't covered. */
-export function occupationGuide(scope: string | null | undefined): OccupationGuide | null {
+// `pack` defaults to the bundled pack (every existing caller); #591's /api/education passes the KV-loaded
+// pack so its whole payload comes from one source. Own-property lookups only, so a stored occupation like
+// "constructor" can't resolve to an Object.prototype member.
+export function occupationGuide(scope: string | null | undefined, pack: unknown = auV1RulePack): OccupationGuide | null {
   if (!scope) return null;
-  const key = SCOPE_ALIASES[scope] ?? scope;
-  const occupations = (auV1RulePack as unknown as { occupations?: Record<string, OccBlock> }).occupations;
-  const block = occupations?.[key];
-  if (!block) return null;
+  const key = Object.prototype.hasOwnProperty.call(SCOPE_ALIASES, scope) ? SCOPE_ALIASES[scope]! : scope;
+  const occupations = (pack as { occupations?: Record<string, OccBlock> } | null)?.occupations;
+  if (!occupations || key.startsWith("_") || !Object.prototype.hasOwnProperty.call(occupations, key)) return null;
+  const block = occupations[key];
+  if (!block || typeof block !== "object") return null;
   return { scope: key, label: block.label ?? key, ato_url: block.ato_url ?? null, suggest: block.suggest ?? [], warn: block.warn ?? [] };
 }
 

@@ -14,12 +14,13 @@ export function useEducation() {
 }
 
 /**
- * One occupation guide to link beside the golden rules, or null. Only when exactly one occupation is
- * on the return: with several, a single link could name the wrong job, so callers use useEducation()
- * and pick by the card's person instead.
+ * The occupation guide to link beside the golden rules, or null. Pass the card's person's stored
+ * occupation to pick theirs. Without one, a guide is returned only when exactly one occupation is on
+ * the return: with several, a single link could name the wrong job.
  */
-export function useOccupationGuide(): { label: string; ato_url: string | null } | null {
+export function useOccupationGuide(occupation?: string | null): { label: string; ato_url: string | null } | null {
   const q = useEducation();
   const guides = q.data?.occupation_guides ?? [];
+  if (occupation) return guides.find((g) => g.occupation === occupation) ?? null;
   return guides.length === 1 ? guides[0]! : null;
 }

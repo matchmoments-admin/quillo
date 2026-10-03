@@ -7018,6 +7018,9 @@ export class TaxAgent extends Agent<Env> {
     const provider = profile.inference_provider ?? this.env.DEFAULT_INFERENCE_PROVIDER;
     if (provider === "anthropic" && profile.consent_xborder !== 1) throw new Error("consent_required");
     if (!(await this.withinBudget(userId, null))) throw new Error("ai_budget_reached");
+    // #591: the Why? drawer makes /api/ask a one-tap call, so a Why? question shares the chat's
+    // per-tenant burst/day limiter. Plain /api/ask (no context) keeps its pre-#591 behaviour.
+    if (context && !(await this.chatRateOk(userId))) throw new Error("chat_rate_limited");
     const llm = await getLLM(this.env, profile, { userId });
     await this.auditXborderInference(userId, provider, "ask", llm.modelId);
     // C3 (flag ask_actions): also fetch the FY transaction digest so the model can PROPOSE one-click

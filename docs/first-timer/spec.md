@@ -1220,9 +1220,13 @@ fits before they sign up.
   earning your income · You have a record"), each rule ticking green/grey for that card (spent:
   a bank line exists; earning: the user confirmed work use; record: A7 status). Plus the ATO
   occupation-guide link (`ato_url`, A4) and `<Term>` glossary terms.
-- **Why? drawer**: the step footer's *Why?* opens the Ask Quillo drawer (`ChatProvider` /
-  `FloatingChat`) seeded with the step and item context. When `ask_quillo` is OFF, *Why?* shows a
-  static explainer from `web/src/content/stepGuides.ts` instead.
+- **Why? drawer**: the step footer's *Why?* (and a claim card's *Why?*) opens `ft/WhyDrawer`: the
+  `WhySheet` static explainer from `web/src/content/stepGuides.ts`, plus, when `ask_quillo` is ON, an
+  in-context Ask Quillo box that posts single-turn `POST /api/ask` with `context: { step, item_id }`
+  and renders only the answer and caveats (it explains, never drives). When `ask_quillo` is OFF the
+  static explainer alone shows. *As built (#591):* not the floating chat: `ChatProvider` has no way to
+  seed a context, and the spec's server change is on `ask`. Seeding the multi-turn chat is a possible
+  follow-up.
 - **State education**: one card in About you after Q3 linking the state revenue office's general
   pages (pack `state_education`), labelled "for your information; your return is federal".
 - **Newcomer education** inline in About you Q1: WHM rates are applied by the ATO, temporary
@@ -1247,7 +1251,12 @@ fits before they sign up.
   `mytax_sections`, `mytax_income_items`, `credit_signals`, `situation_facts`. One rule-pack PR per
   owning area; push at deploy.
 - `src/api.ts` `ask`: accept an optional `context: { step, item_id }` (ignored when absent, so the
-  existing behaviour is byte-identical).
+  existing behaviour is byte-identical). *As built (#591):* honoured only with `ft_journey` ON and an
+  allowlisted step (`src/lib/education.ts`); the item is a tenant-scoped transaction read after the
+  consent/budget gates; the context block is appended to the existing system prompt; a Why? question
+  shares the chat's per-tenant rate limiter.
+- `GET /api/education` (#591, `ft_journey`, 404 OFF): occupation-guide links (`ato_url`) for the
+  tenant's people, keyed by stored occupation, plus the pack's `state_education`.
 
 ### SPA
 
@@ -1255,7 +1264,9 @@ fits before they sign up.
   `web/src/main.tsx` (beside `/sign-in/*`). The marketing landing page is not changed (outward
   marketing changes are an owner gate).
 - New `web/src/components/ft/GoldenRules.tsx`, `ft/WhySheet.tsx`,
-  `web/src/content/stepGuides.ts`.
+  `web/src/content/stepGuides.ts`. *As built (#591):* also `ft/WhyDrawer.tsx` (`useWhyDrawer`),
+  `ft/EducationCards.tsx` (`StateEducationCard`, `NewcomerCard`), `web/src/content/newcomer.ts`,
+  `web/src/lib/education.ts`; mounted by the step pages (A2 About you, A6 Claims, A11 shell).
 
 ### Flag
 
@@ -1794,7 +1805,7 @@ runtime job behind a kill-switch, not a migration.
 | `reconcile_proposals` | A8 | server | no proposals, no confirmed-position field |
 | `mytax_worksheet` | A9 | server | endpoint 404, no `worksheet_unlabelled` |
 | `residency_assessability` | A13 | server, **money**, kill-switch | income reader unchanged |
-| `ft_journey` | A2, A3b, A6–A12 | SPA + `/api/journey` + Grow | legacy shell, legacy theme, legacy routes |
+| `ft_journey` | A2, A3b, A6–A12 | SPA + `/api/journey` + Grow + `/api/education` + `/api/ask` context | legacy shell, legacy theme, legacy routes; `/api/education` 404; `/api/ask` ignores `context` |
 
 Kept from earlier work and reused: `first_timer_income` (ON), `ask_quillo` (Why? drawer
 kill-switch), `grouped_review_v2`, `noa_capture`, `bank_feed_cdr` (OFF until the CDR legal review

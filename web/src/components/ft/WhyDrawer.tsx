@@ -6,7 +6,7 @@ import { useActiveFy } from "../../lib/activeFy";
 import { useFeatures } from "../../lib/features";
 import type { AskAnswer } from "../../types";
 import { whyStarterQuestions } from "./model";
-import { FtButton, FtCard, FtTextArea, Skeleton, StatusGate, type StatusProps } from "./primitives";
+import { FtButton, FtCard, FtTextArea, Skeleton, type StatusProps } from "./primitives";
 import { WhySheet } from "./WhySheet";
 
 /** The claim/record a Why? is about. `id` is the transaction id (the server reads it tenant-scoped). */
@@ -43,27 +43,28 @@ export function WhyDrawer({
 }
 
 /** One in-context question to Ask Quillo. Remounted per step/item, so a new Why? starts clean. */
-function AskInContext({ step, item, ...status }: { step: StepKey; item: WhyItem | null } & StatusProps) {
+// The surrounding WhySheet owns the loading/empty/error states; this box only has its own ask states.
+function AskInContext({ step, item }: { step: StepKey; item: WhyItem | null }) {
   const { fy } = useActiveFy();
   const [input, setInput] = useState("");
   const ask = useMutation<AskAnswer, Error, string>({
     mutationFn: (q: string) => api.ask(q, fy, item ? { step, item_id: item.id } : { step }),
   });
-  const send = (q: string) => {
+  // `fromBox`: only a question typed in the box clears the box (a starter tap keeps a half-typed one).
+  const send = (q: string, fromBox: boolean) => {
     const text = q.trim();
     if (!text || ask.isPending) return;
-    setInput("");
+    if (fromBox) setInput("");
     ask.mutate(text);
   };
   const starters = whyStarterQuestions(step, !!item);
 
   return (
-    <StatusGate what="Ask Quillo" {...status} skeleton={<Skeleton lines={2} />}>
       <section aria-label="Ask Quillo about this" className="space-y-3 border-t border-line pt-4">
         <p className="text-xs font-semibold uppercase tracking-wider text-muted">Ask Quillo about this</p>
         <div className="flex flex-wrap gap-2">
           {starters.map((q) => (
-            <FtButton key={q} variant="secondary" className="text-sm font-medium" onClick={() => send(q)} disabled={ask.isPending}>
+            <FtButton key={q} variant="secondary" className="text-sm font-medium" onClick={() => send(q, false)} disabled={ask.isPending}>
               {q}
             </FtButton>
           ))}
@@ -72,16 +73,16 @@ function AskInContext({ step, item, ...status }: { step: StepKey; item: WhyItem 
           className="space-y-2"
           onSubmit={(e) => {
             e.preventDefault();
-            send(input);
+            send(input, true);
           }}
         >
           <FtTextArea
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
+              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                 e.preventDefault();
-                send(input);
+                send(input, true);
               }
             }}
             maxLength={600}
@@ -101,7 +102,6 @@ function AskInContext({ step, item, ...status }: { step: StepKey; item: WhyItem 
         {ask.isError && <AskNotice error={ask.error} />}
         {ask.data && <Answer data={ask.data} />}
       </section>
-    </StatusGate>
   );
 }
 
@@ -126,7 +126,7 @@ function Answer({ data }: { data: AskAnswer }) {
 function AskNotice({ error }: { error: Error }) {
   const status = error instanceof ApiError ? error.status : 0;
   let text: ReactNode;
-  if (status === 403 || /consent/i.test(error.message)) {
+  if (/consent/i.test(error.message)) {
     text = "Ask Quillo needs your OK to use AI first. Turn it on in Settings, under Privacy & AI. The points above still apply.";
   } else if (status === 404) {
     text = "Ask Quillo isn't available right now. The points above still apply.";

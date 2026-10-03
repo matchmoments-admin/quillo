@@ -21,7 +21,7 @@ export const NEWCOMER_TOPICS: Record<NewcomerTopicKey, NewcomerTopic> = {
   whm: {
     title: "Working holiday makers",
     body: "If you're on a working holiday visa (subclass 417 or 462), the ATO applies its own working holiday maker rates to that income when it processes your return. You don't work them out yourself.",
-    link: { label: "Foreign and temporary residents (ATO)", url: "https://www.ato.gov.au/individuals-and-families/coming-to-australia-or-going-overseas/your-tax-residency/foreign-and-temporary-residents" },
+    link: { label: "Working holiday makers (ATO)", url: "https://www.ato.gov.au/individuals-and-families/coming-to-australia-or-going-overseas/coming-to-australia/working-holiday-makers" },
   },
   temporary_foreign_income: {
     title: "Income from overseas",
@@ -44,7 +44,7 @@ export const NEWCOMER_TOPICS: Record<NewcomerTopicKey, NewcomerTopic> = {
   dasp: {
     title: "Leaving Australia",
     body: "When you leave Australia for good on a temporary visa, you can apply for the super your employers paid, called a departing Australia superannuation payment (DASP). It's a separate application, not part of your tax return.",
-    link: { label: "Returning to your home country (ATO)", url: "https://www.ato.gov.au/individuals-and-families/coming-to-australia-or-going-overseas/coming-to-australia/returning-to-your-home-country" },
+    link: { label: "Departing Australia superannuation payment (ATO)", url: "https://www.ato.gov.au/individuals-and-families/super-for-individuals-and-families/super/temporary-residents-and-superannuation/departing-australia-superannuation-payment-dasp" },
   },
   unsure: {
     title: "Not sure about residency?",
@@ -67,7 +67,8 @@ export function newcomerTopics(residencyValues: readonly (string | null | undefi
   if (vals.has("whm")) add("whm");
   if (vals.has("whm") || vals.has("temporary")) add("temporary_foreign_income");
   if (vals.has("foreign")) add("non_resident");
-  if (vals.has("whm") || vals.has("temporary") || vals.has("foreign")) add("medicare");
+  // A full-year non-resident doesn't pay the Medicare levy, so the statement only matters alongside a resident/temporary period.
+  if (vals.has("whm") || vals.has("temporary") || (vals.has("foreign") && vals.has("resident"))) add("medicare");
   if (vals.has("whm") || vals.has("temporary")) add("dasp");
   if (vals.has("unsure")) add("unsure");
   return out;

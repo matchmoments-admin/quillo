@@ -872,7 +872,8 @@ export interface AskContext {
 
 /** GET /api/education (#591, ft_journey). */
 export interface EducationData {
-  occupation_guides: { scope: string; label: string; ato_url: string | null }[];
+  /** Keyed by the stored occupation value (persons.occupation), so a card can find its person's guide. */
+  occupation_guides: { occupation: string; scope: string; label: string; ato_url: string | null }[];
   state_education: { label: string; intro: string; states: { code: string; name: string; office: string; url: string }[] } | null;
 }
 

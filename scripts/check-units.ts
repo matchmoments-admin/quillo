@@ -4786,5 +4786,105 @@ import { LEGACY_ROUTES, STEP_LEGACY_ROUTE, journeyRouteFor, toJourneyHref } from
     toJourneyHref("/inbox") === "/claims" && toJourneyHref("/reports?fy=2025") === "/reports?fy=2025" && toJourneyHref("https://ato.gov.au/filing") === "https://ato.gov.au/filing");
 }
 
+
+// ── #581 bank_minimisation: SHRINKABLE_WHERE never matches a credit, a linked line, a relevant / worth-a-look /
+//    unsorted line, a loan account or a non-payg bucket; a feed re-sync honours tombstones only with the flag ON.
+import { SHRINKABLE_WHERE } from "../src/lib/minimise";
+console.log("bank minimisation — SHRINKABLE_WHERE + feed tombstones (#581)");
+{
+  const sq = new DatabaseSync(":memory:");
+  const md = nodePath.join(process.cwd(), "migrations");
+  for (const f of nodeFs.readdirSync(md).filter((f) => f.endsWith(".sql")).sort()) sq.exec(nodeFs.readFileSync(nodePath.join(md, f), "utf8"));
+  const U = "u581";
+  sq.prepare(`INSERT INTO accounts (id, user_id, name, type) VALUES ('a', ?, 'Everyday', 'transaction')`).run(U);
+  sq.prepare(`INSERT INTO accounts (id, user_id, name, type) VALUES ('loan', ?, 'Home loan', 'loan')`).run(U);
+  let seq = 0;
+  // A baseline shrinkable line; each case overrides one column (or adds one link) and must stop matching.
+  const line = (over: Record<string, unknown> = {}) => {
+    const id = `t${++seq}`;
+    const row: Record<string, unknown> = {
+      id, user_id: U, source: "statement", status: "extracted", kind: "bank_line", account_id: "a", line_fingerprint: `fp${seq}`,
+      amount_cents: 1000, amount_aud_cents: 1000, txn_date: "2025-09-01", direction: "debit", bucket: "payg",
+      deductibility: "likely_not", deductible_amount_cents: 0, relevance: "irrelevant", ...over,
+    };
+    const cols = Object.keys(row);
+    sq.prepare(`INSERT INTO transactions (${cols.join(",")}) VALUES (${cols.map(() => "?").join(",")})`).run(...(Object.values(row) as never[]));
+    return id;
+  };
+  const matches = (id: string) => !!sq.prepare(`SELECT 1 FROM transactions t WHERE t.id = ? AND ${SHRINKABLE_WHERE}`).get(id);
+  check("SHRINKABLE: baseline irrelevant payg likely_not debit matches", matches(line()));
+  check("SHRINKABLE: confirmed_not payg matches; unscanned (relevance NULL) matches", matches(line({ deductibility: "confirmed_not" })) && matches(line({ relevance: null })));
+  check("SHRINKABLE: an ignored transfer (no bucket) matches; a cdr_feed line matches", matches(line({ status: "ignored", bucket: null, deductibility: "undetermined", deductible_amount_cents: null })) && matches(line({ source: "cdr_feed" })));
+  const never: [string, Record<string, unknown>][] = [
+    ["a credit", { direction: "credit" }],
+    ["a credit even when ignored", { direction: "credit", status: "ignored", bucket: null }],
+    ["a NULL direction (legacy)", { direction: null }],
+    ["a receipt", { kind: "receipt" }],
+    ["relevant", { relevance: "relevant" }],
+    ["worth a look", { relevance: "worth_a_look" }],
+    ["unsorted (undetermined)", { deductibility: "undetermined" }],
+    ["unsorted (needs_apportionment)", { deductibility: "needs_apportionment" }],
+    ["likely deductible", { deductibility: "likely_deductible" }],
+    ["confirmed deductible", { deductibility: "confirmed_deductible" }],
+    ["still needs review", { status: "needs_review" }],
+    ["a non-payg bucket", { bucket: "property_rented" }],
+    ["an ignored line in a non-payg bucket", { status: "ignored", bucket: "company" }],
+    ["a company bucket", { bucket: "company" }],
+    ["reimbursed", { reimbursed: 1 }],
+    ["a positive claimable amount", { deductible_amount_cents: 500 }],
+    ["an asset link", { asset_id: "as1" }],
+    ["a property link", { property_id: "p1" }],
+    ["a document link", { document_id: "d1" }],
+    ["a receipt image", { receipt_key: "r2/k" }],
+    ["a payer link", { payer_person_id: "pp" }],
+    ["a duplicate flag", { duplicate_of: "t1" }],
+    ["unconverted FX (no AUD amount)", { amount_aud_cents: null }],
+    ["undated", { txn_date: null }],
+    ["no fingerprint (can't be tombstoned)", { line_fingerprint: null }],
+    ["no account", { account_id: null }],
+    ["a loan account (interest lines feed loan_interest_summaries)", { account_id: "loan" }],
+    ["a qbo_feed / manual source", { source: "qbo_feed" }],
+  ];
+  for (const [why, over] of never) check(`SHRINKABLE never matches ${why}`, !matches(line(over)));
+  const linked: [string, (id: string) => void][] = [
+    ["a matched receipt", (id) => sq.prepare(`INSERT INTO transactions (id, user_id, source, status, kind, matched_txn_id) VALUES (?, ?, 'upload', 'extracted', 'receipt', ?)`).run(`r${id}`, U, id)],
+    ["a refund credit pointing at it", (id) => sq.prepare(`INSERT INTO transactions (id, user_id, source, status, kind, direction, refund_for_txn_id) VALUES (?, ?, 'statement', 'extracted', 'bank_line', 'credit', ?)`).run(`rf${id}`, U, id)],
+    ["a claim link", (id) => sq.prepare(`INSERT INTO claim_links (id, user_id, claim_id, txn_id) VALUES (?, ?, 'c', ?)`).run(`cl${id}`, U, id)],
+    ["an attribution", (id) => sq.prepare(`INSERT INTO transaction_attributions (id, user_id, transaction_id, entity_id) VALUES (?, ?, ?, 'e')`).run(`ta${id}`, U, id)],
+    ["a claim suggestion", (id) => sq.prepare(`INSERT INTO claim_suggestions (id, user_id, txn_id, suggestion) VALUES (?, ?, ?, 's')`).run(`cs${id}`, U, id)],
+    ["a capital holding", (id) => sq.prepare(`INSERT INTO cgt_assets (id, user_id, asset_kind, cost_base_cents, txn_id) VALUES (?, ?, 'shares', 100, ?)`).run(`ca${id}`, U, id)],
+    ["a PHI benefit", (id) => sq.prepare(`INSERT INTO phi_benefit_usage (id, user_id, policy_id, category, txn_id) VALUES (?, ?, 'pol', 'dental', ?)`).run(`pb${id}`, U, id)],
+  ];
+  for (const [why, link] of linked) { const id = line(); link(id); check(`SHRINKABLE never matches a line with ${why}`, !matches(id)); }
+
+  // Feed re-sync: a tombstoned provider transaction is skipped only with honourTombstones (flag ON).
+  class Stmt2 {
+    private params: unknown[] = [];
+    constructor(private sql: string) {}
+    bind(...a: unknown[]) { this.params = a.map((x) => (x === undefined ? null : x)); return this; }
+    async all<T>() { return { results: sq.prepare(this.sql).all(...(this.params as never[])) as T[], success: true, meta: {} }; }
+    async first<T>() { return (sq.prepare(this.sql).get(...(this.params as never[])) as T) ?? null; }
+    async run() { const r = sq.prepare(this.sql).run(...(this.params as never[])); return { success: true, meta: { changes: Number(r.changes ?? 0) } }; }
+    async settle() { return /^\s*(select|with)/i.test(this.sql) ? this.all() : this.run(); }
+  }
+  const fdb = { prepare: (s: string) => new Stmt2(s), batch: async (s: Stmt2[]) => { const o = []; for (const x of s) o.push(await x.settle()); return o; } } as unknown as D1Database;
+  sq.prepare(`INSERT INTO bank_connections (id, user_id, provider_connection_id, status) VALUES ('c', ?, 'pc', 'active')`).run(U);
+  const tFp = await feedFingerprint("shrunk-1");
+  sq.prepare(`INSERT INTO bank_line_tombstones (user_id, account_id, line_fingerprint, fy) VALUES (?, 'a', ?, '2025-26')`).run(U, tFp);
+  const tx = (id: string): BasiqTransaction => ({ id, accountId: "pa", postDate: "2025-09-01", description: "GROCER", amountCents: 1000, direction: "debit", currency: "AUD", providerClass: null });
+  const transport: FeedTransport = async () => ({ transactions: [tx("shrunk-1"), tx("fresh-1")], skippedPending: 0, skippedOutOfWindow: 0, next: null });
+  const fdeps = (honour: boolean): SyncStepDeps => ({ db: fdb, userId: U, baseCurrency: "AUD", transport, categorise: () => null, stillSelected: async () => true, honourTombstones: honour });
+  const fr1 = await openRun(fdb, { userId: U, connectionId: "c", from: "2025-07-01", to: "2026-06-30", accounts: [{ p: "pa", a: "a" }] });
+  await syncRunStep(fdeps(true), fr1!, 5);
+  await finishRun(fdb, U, fr1!, { status: "ok", error: null, correlationId: null });
+  const fedFps = () => (sq.prepare(`SELECT line_fingerprint FROM transactions WHERE user_id = ? AND source = 'cdr_feed' AND raw_description = 'GROCER'`).all(U) as { line_fingerprint: string }[]).map((r) => r.line_fingerprint);
+  check("feed re-sync (bank_minimisation ON): a tombstoned line is NOT revived; a fresh line still lands; counted as a duplicate",
+    fedFps().length === 1 && !fedFps().includes(tFp) && fr1!.counters.imported === 1 && fr1!.counters.duplicates === 1);
+  const fr2 = await openRun(fdb, { userId: U, connectionId: "c", from: "2025-07-01", to: "2026-06-30", accounts: [{ p: "pa", a: "a" }] });
+  await syncRunStep(fdeps(false), fr2!, 5);
+  await finishRun(fdb, U, fr2!, { status: "ok", error: null, correlationId: null });
+  check("feed re-sync (OFF): the insert SQL never reads the tombstone table (legacy behaviour — the line lands)", fedFps().includes(tFp));
+}
+
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);
 process.exit(fail === 0 ? 0 : 1);

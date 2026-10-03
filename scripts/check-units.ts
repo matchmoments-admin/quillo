@@ -4988,5 +4988,124 @@ console.log("ship it: worksheet ticks + routes (#590)");
   check(`ship: Ship it copy passes the tax-advice denylist (offenders: ${offenders.join(" | ") || "none"})`, offenders.length === 0);
 }
 
+// ── #586 Connect step (flag ft_journey): import progress, account toggles, income statement waiting ──
+import * as connectModel from "../web/src/components/connect/model";
+import { firstDayAfterFy, foldEmployers, incomeStatementTiming, incomeStatementWait } from "../src/lib/income-statement-wait";
+import { latestSyncRuns } from "../src/lib/bank-sync";
+{
+  console.log("connect step (#586)");
+  const run = (o: Partial<import("../web/src/types").BankSyncRun>): import("../web/src/types").BankSyncRun => ({
+    connection_id: "c1", institution: "Hooli", status: "ok", stale: false, fetched: 0, imported: 0, duplicates: 0,
+    from_date: null, to_date: null, error: null, created_at: "2026-10-04 01:00:00", finished_at: null, ...o,
+  });
+  const { importSummary, importHeading, pollInterval, BACKGROUND_AFTER_MS } = connectModel;
+  check("connect: no runs ⇒ phase none, no polling unless the first run is still expected",
+    importSummary([]).phase === "none" && pollInterval(importSummary([]), false) === false && pollInterval(importSummary([]), true) !== false);
+  const live = importSummary([run({ status: "running", imported: 120 }), run({ connection_id: "c2", status: "failed", error: "boom" })]);
+  check("connect: a live run wins over a failed one (still importing), counts lines so far, polls",
+    live.phase === "running" && live.imported === 120 && live.problems.length === 1 && pollInterval(live, false) !== false);
+  check("connect: heading flips to 'Still importing in the background' after the threshold",
+    importHeading(live, 1000) === "Importing your transactions…" && importHeading(live, BACKGROUND_AFTER_MS) === "Still importing in the background");
+  const stale = importSummary([run({ status: "running", stale: true })]);
+  check("connect: a stale running row is interrupted (retry), never 'still importing', and stops polling",
+    stale.phase === "attention" && stale.problems[0]!.kind === "interrupted" && pollInterval(stale, false) === false);
+  check("connect: partial ⇒ attention/partial; consent-expired failure ⇒ 'expired' (connect again); raw error never shown",
+    importSummary([run({ status: "partial" })]).problems[0]!.kind === "partial" &&
+    importSummary([run({ status: "failed", error: "consent expired — reconnect" })]).problems[0]!.kind === "expired" &&
+    !importSummary([run({ status: "failed", error: "SECRET-UPSTREAM-DETAIL" })]).problems[0]!.message.includes("SECRET"));
+  const done = importSummary([run({ imported: 156 }), run({ connection_id: "c2", imported: 0 })]);
+  check("connect: all ok ⇒ done with the summed new-line count", done.phase === "done" && importHeading(done, 0) === "Imported 156 transactions");
+  check("connect: callback failure copy never echoes the raw reason",
+    !connectModel.connectFailedCopy("<script>x</script>").includes("script") && /timed out/.test(connectModel.connectFailedCopy("invalid_or_expired_state")));
+
+  const conns = [
+    { id: "k1", provider: "basiq", access_type: "cdr", institution: "Hooli", institution_id: "AU001", status: "active", consent_id: null, consent_scope: null, consent_granted_at: null, consent_expires_at: null, last_sync_at: null, last_error: null,
+      accounts: [{ id: "a1", connection_id: "k1", provider_account_id: "p1", account_id: "q1", masked_number: "1234", name: "Everyday", type: "transaction", currency: "AUD", selected: 1, mapped_account_name: "Everyday", mapped_account_source: "cdr_feed" },
+                 { id: "a2", connection_id: "k1", provider_account_id: "p2", account_id: null, masked_number: null, name: null, type: null, currency: null, selected: 0, mapped_account_name: null, mapped_account_source: null }] },
+    { id: "k2", provider: "basiq", access_type: "cdr", institution: "Gone", institution_id: null, status: "revoked", consent_id: null, consent_scope: null, consent_granted_at: null, consent_expires_at: null, last_sync_at: null, last_error: null,
+      accounts: [{ id: "a3", connection_id: "k2", provider_account_id: "p3", account_id: "q3", masked_number: null, name: "Old", type: null, currency: null, selected: 1, mapped_account_name: null, mapped_account_source: null }] },
+  ] as unknown as import("../web/src/types").BankConnection[];
+  const rows = connectModel.connectedAccounts(conns);
+  check("connect: account list = live connections only, one row per bank account, on = selected",
+    rows.length === 2 && rows[0]!.on && !rows[1]!.on && rows[1]!.name === "Bank account" && rows.every((r) => r.institution === "Hooli"));
+  const on = connectModel.toggleSelection(rows[1]!, true), keep = connectModel.toggleSelection(rows[0]!, true), off = connectModel.toggleSelection(rows[0]!, false);
+  check("connect: ON creates the matching account ('new') or keeps the mapping; OFF sends selected=false (server keeps the mapping)",
+    on.selected && on.accountId === "new" && keep.accountId === "q1" && !off.selected && off.accountId === null);
+
+  check("income statement: chase date = first pack day after the FY ends (AU FY2025 → 2026-07-31)",
+    firstDayAfterFy("2026-06-30", { month: 7, day: 31 }) === "2026-07-31" && firstDayAfterFy("2026-06-30", { month: 3, day: 1 }) === "2027-03-01");
+  const t = incomeStatementTiming({});
+  check("income statement: timing comes from the pack (bundled fills a KV pack without the #586 keys)",
+    t.finalise_by === "14 July" && t.chase_after === "31 July" && t.chase_after_fy_end.month === 7 &&
+    incomeStatementTiming({ lodgement: { employer_finalise_by: "1 May", tax_ready_chase_after: "9 May", tax_ready_chase_after_fy_end: { month: 5, day: 9 } } }).chase_after_fy_end.day === 9);
+  const f = foldEmployers(["Big Retail Pty Ltd", "big retail", "Café Co"], [{ x: 1 }].map(() => "Big Retail"));
+  check("income statement: employers dedupe by payer key; a salary row naming one covers only it",
+    f.length === 2 && f[0]!.covered && !f[1]!.covered);
+  check("income statement: one uncovered employer + an unnamed salary row ⇒ covered (same rule as worksheet/readiness)",
+    foldEmployers(["Big Retail"], [undefined]).every((e) => e.covered) && foldEmployers(["A Co", "B Co"], [undefined]).every((e) => !e.covered));
+  const W = (o: Partial<import("../web/src/types").IncomeStatementWait>): import("../web/src/types").IncomeStatementWait =>
+    ({ fy: "2025-26", employers: [], wage_rows: 0, finalise_by: "14 July", chase_after: "31 July", chase_from: "2026-07-31", chase_now: false, ...o });
+  const g = connectModel.incomeWaitItems(W({}));
+  check("income statement: nothing known ⇒ one generic WAITING item, no chase before the date",
+    g.length === 1 && g[0]!.state === "waiting" && g[0]!.chase === null && g[0]!.body.includes("14 July") && g[0]!.body.includes("Tax ready"));
+  const w = connectModel.incomeWaitItems(W({ employers: [{ name: "Big Retail", covered: false }, { name: "Café Co", covered: true }], chase_now: true }));
+  check("income statement: per employer — waiting (with 'ask your employer' after the chase date) vs added",
+    w[0]!.state === "waiting" && !!w[0]!.chase?.includes("Ask Big Retail") && w[1]!.state === "added" && w[1]!.chase === null);
+  check("income statement: wage rows but no named employer ⇒ 'added'", connectModel.incomeWaitItems(W({ wage_rows: 1 }))[0]!.state === "added");
+
+  // Server reads against the real migrations (in-memory SQLite): latest run per LIVE connection, stale flag,
+  // tenant scope; and the income-statement waiting list.
+  {
+    const sq = new DatabaseSync(":memory:");
+    const mig = nodePath.join(process.cwd(), "migrations");
+    for (const fn of nodeFs.readdirSync(mig).filter((x) => x.endsWith(".sql")).sort()) sq.exec(nodeFs.readFileSync(nodePath.join(mig, fn), "utf8"));
+    const mk = (sql: string) => {
+      let ps: unknown[] = [];
+      const st = {
+        bind: (...a: unknown[]) => { ps = a.map((x) => (x === undefined ? null : x)); return st; },
+        all: async () => ({ results: sq.prepare(sql).all(...(ps as never[])), success: true, meta: {} }),
+        first: async () => sq.prepare(sql).get(...(ps as never[])) ?? null,
+        run: async () => ({ success: true, meta: { changes: Number(sq.prepare(sql).run(...(ps as never[])).changes ?? 0) } }),
+      };
+      return st;
+    };
+    const cdb = { prepare: mk } as unknown as D1Database;
+    const ins = (sql: string, ...a: unknown[]) => sq.prepare(sql).run(...(a as never[]));
+    ins(`INSERT INTO bank_connections (id, user_id, provider_connection_id, status, institution) VALUES ('k1','u586','p1','active','Hooli'), ('k2','u586','p2','revoked','Gone'), ('k3','other','p3','active','Theirs'), ('k4','u586','p4','active','Slow')`);
+    ins(`INSERT INTO bank_sync_runs (id, user_id, connection_id, status, imported, created_at) VALUES ('r1','u586','k1','failed',0,'2026-10-01 00:00:00'), ('r2','u586','k1','ok',156,'2026-10-02 00:00:00'), ('r3','u586','k2','ok',9,'2026-10-02 00:00:00'), ('r4','other','k3','running',1,datetime('now'))`);
+    ins(`INSERT INTO bank_sync_runs (id, user_id, connection_id, status, imported, created_at, updated_at) VALUES ('r5','u586','k4','running',40,'2026-01-01 00:00:00','2026-01-01 00:00:00')`);
+    const runs = await latestSyncRuns(cdb, "u586");
+    check("sync-status: latest run per live connection only (revoked + other tenant excluded), newest first by run",
+      runs.length === 2 && runs.find((r) => r.connection_id === "k1")?.status === "ok" && runs.find((r) => r.connection_id === "k1")?.imported === 156 && !runs.some((r) => r.connection_id === "k2" || r.connection_id === "k3"));
+    check("sync-status: a 'running' row with no recent checkpoint is flagged stale (interrupted)",
+      runs.find((r) => r.connection_id === "k4")?.stale === true && runs.find((r) => r.connection_id === "k4")?.institution === "Slow");
+    ins(`UPDATE bank_sync_runs SET updated_at = datetime('now') WHERE id = 'r5'`);
+    check("sync-status: a freshly checkpointed running row is live, not stale", (await latestSyncRuns(cdb, "u586")).find((r) => r.connection_id === "k4")?.stale === false);
+
+    ins(`INSERT INTO entities (id, user_id, kind, name) VALUES ('e1','u586','employment','Big Retail Pty Ltd'), ('e2','u586','employment','Café Co'), ('e3','other','employment','Not Mine')`);
+    ins(`INSERT INTO income (id, user_id, income_type, fy, gross_cents, detail_json) VALUES ('i1','u586','salary_payg','2025-26',100,'{"employer":"BIG RETAIL"}'), ('i2','u586','salary_payg','2024-25',100,'{"employer":"Café Co"}')`);
+    const envStub = { DB: cdb, FEATURES: "" } as unknown as import("../src/env").Env;
+    const before = await incomeStatementWait(envStub, "u586", 2025, AU_DESCRIPTOR, {}, "2026-07-30");
+    const after = await incomeStatementWait(envStub, "u586", 2025, AU_DESCRIPTOR, {}, "2026-07-31");
+    check("income-statements: employers from About you, tenant-scoped; covered only by THIS FY's salary row naming them",
+      before.employers.length === 2 && before.employers[0]!.covered && !before.employers[1]!.covered && before.wage_rows === 1 && !before.employers.some((e) => e.name === "Not Mine"));
+    check("income-statements: chase applies from the pack day after FY end (31 July), not before",
+      before.chase_from === "2026-07-31" && !before.chase_now && after.chase_now && before.finalise_by === "14 July");
+  }
+
+  // Copy: the Connect step's strings pass the tax-advice denylist, and never mention a refund.
+  const connectDir = path.join(process.cwd(), "web/src/components/connect");
+  const connectOffenders: string[] = [];
+  for (const fname of fs.readdirSync(connectDir).filter((n) => /\.tsx?$/.test(n))) {
+    stripComments(fs.readFileSync(path.join(connectDir, fname), "utf8")).split("\n").forEach((line, i) => {
+      const h = denylistHits(line);
+      if (h.length || /refund/i.test(line)) connectOffenders.push(`${fname}:${i + 1} ${line.trim().slice(0, 80)}`);
+    });
+  }
+  check(`connect: copy passes the tax-advice denylist (offenders: ${connectOffenders.join(" | ") || "none"})`, connectOffenders.length === 0);
+  const page = stripComments(fs.readFileSync(path.join(connectDir, "ConnectPage.tsx"), "utf8"));
+  check("connect: no 'We noticed' cards on this step (they live in Review, #587)", !/Noticed/.test(page) && /!embedded && has\("wages_payer"\)/.test(fs.readFileSync(path.join(process.cwd(), "web/src/pages/Accounts.tsx"), "utf8")));
+}
+
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);
 process.exit(fail === 0 ? 0 : 1);

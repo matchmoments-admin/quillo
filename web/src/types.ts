@@ -1307,6 +1307,33 @@ export interface BankConnection {
   accounts: BankConnectionAccount[];
 }
 
+/** #586: the latest sync run per live connection (GET /api/bank/sync-status, flag ft_journey). Counts and dates only. */
+export interface BankSyncRun {
+  connection_id: string;
+  institution: string | null;
+  status: "running" | "ok" | "partial" | "failed";
+  stale: boolean; // a 'running' row nobody has checkpointed lately: interrupted, not live
+  fetched: number;
+  imported: number;
+  duplicates: number;
+  from_date: string | null;
+  to_date: string | null;
+  error: string | null;
+  created_at: string;
+  finished_at: string | null;
+}
+
+/** #586: GET /api/income-statements?fy= (flag ft_journey) — the Connect step's waiting items. Names and dates only. */
+export interface IncomeStatementWait {
+  fy: string;
+  employers: { name: string; covered: boolean }[];
+  wage_rows: number;
+  finalise_by: string; // pack copy, e.g. "14 July"
+  chase_after: string; // pack copy, e.g. "31 July"
+  chase_from: string; // ISO day
+  chase_now: boolean;
+}
+
 /** One row of the consumer's CDR record (#576) — counts and dates only, never bank data. */
 export interface BankHistoryEvent {
   connection_id: string | null;

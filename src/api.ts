@@ -90,6 +90,8 @@ import { buildAccountantSchedule, scheduleToCsv, scheduleToXlsx } from "./lib/ac
 import { mytaxWorksheetResponse } from "./lib/mytax-worksheet";
 import { getProgress } from "./lib/progress";
 import { featureOn } from "./lib/features";
+import { latestSyncRuns } from "./lib/bank-sync";
+import { incomeStatementWait } from "./lib/income-statement-wait";
 import { holdingPosition } from "./lib/capital";
 import { groupKey } from "./lib/clarify";
 
@@ -1543,6 +1545,16 @@ export async function handleApi(
     // GET /api/bank/connections — connections + accounts, for the picker and consent dashboard.
     if (id === "connections" && m === "GET") return json(await stub.bankConnections(uid));
 
+    // GET /api/bank/sync-status — the latest sync run per live connection (#586, Connect step, flag
+    // ft_journey): running / ok / partial / failed + counts and dates, so "still importing in the
+    // background" and a failed run's retry are visible (#511). Read-only straight from D1 (tenant-scoped);
+    // it never writes, so polling it can't race the importer. 404 with ft_journey OFF (byte-identical).
+    if (id === "sync-status" && m === "GET") {
+      if (!featureOn(env, "ft_journey")) return json({ error: "not available" }, 404);
+      const runs = await latestSyncRuns(env.DB, uid);
+      return json({ runs, in_progress: runs.some((r) => r.status === "running" && !r.stale) });
+    }
+
     // POST /api/bank/disconnect — withdraw one connection (#576): stop collecting, revoke at the
     // aggregator, delete its CDR lines (PS12). Idempotent — a repeat call retries a failed upstream
     // revoke. The connection id is looked up WITHIN the caller's tenant, so it can't reach another's.
@@ -1748,6 +1760,17 @@ export async function handleApi(
     const fy = Number(url.searchParams.get("fy")) || defaultFy();
     if (!Number.isInteger(fy) || fy < 1900 || fy > 2200) return json({ error: "bad fy" }, 400);
     return json(await stub.journey(uid, fy));
+  }
+
+  // GET /api/income-statements?fy= (#586, Connect step, flag ft_journey) — each known employer's income
+  // statement as WAITING until a salary row naming it is recorded, plus the pack's "Tax ready" timing and
+  // whether it's time to ask the employer. Read-only; Quillo never claims a statement IS tax ready. OFF ⇒ 404.
+  if (resource === "income-statements" && m === "GET" && !id) {
+    if (!featureOn(env, "ft_journey")) return json({ error: "not found" }, 404);
+    const fy = Number(url.searchParams.get("fy")) || defaultFy();
+    if (!Number.isInteger(fy) || fy < 1900 || fy > 2200) return json({ error: "bad fy" }, 400);
+    const jur = await resolveJurisdictionForUser(env, uid);
+    return json(await incomeStatementWait(env, uid, fy, jur, await resolveRulePack(env, uid, jur)));
   }
 
   // ── Find My Claims (flag claim_review) — 404 when off ─────────────────────

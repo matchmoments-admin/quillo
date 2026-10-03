@@ -38,6 +38,26 @@
 
 ---
 
+## 0. Design review 2026-10-04: the journey is 4 steps (supersedes the 6-step page structure)
+
+Owner-approved after a live bank-feed test and the ATO process research
+([`ato-lodgement-process.md`](ato-lodgement-process.md)). Canvas board: *Design review: 7 screens → 4 steps*
+on the [journey canvas](https://claude.ai/artifact/65dYStvQ2Cudrcq8XYQmKA). **Every engine area (A1, A3a,
+A4, A5, A8a, A9a, A10, A11, A12, A13) stands unchanged. Only the page structure changes:**
+
+| New step | Replaces | Ticket(s) | Adds |
+|---|---|---|---|
+| **1 Get set up** | Before you start + About you (A10a page, A2) | #585 (absorbs #584's screen as its intro) | **"Can you get into myTax?"** check: myGov account · ATO linked to myGov · myID Standard/Strong, each with a fix link; non-lodgment advice line; Tax Help named as the free ATO option |
+| **2 Connect** | Bring in your money (A3b) | #586 | Connect → done → imported (PR #612); no picker by default; live import progress; income statement shown as a **waiting** item until *Tax ready*; "we noticed" cards move into Review |
+| **3 Review** | What you might claim + Records + Check + the Sort queue (A6, A7, A8b) | #587 (absorbs #588 and #589) | ONE card queue: we-noticed, worth-a-look claims, records/WFH hours, receipt-match proposals and readiness blockers, each card self-completing (claim → record → done). Header shows counts + records completeness, never a refund figure. Everyday spending never shown |
+| **4 Lodge in myTax** | Ship it (A9b) | #590 | Gate on **Tax ready** (not "late July"); sections in myTax order starting **Contact & bank details → Personalise (what to tick)** → Income → Deductions → Medicare & PHI → Spouse; lead with myTax banner names; after-31-Oct copy; mark lodged → receipt, ~12 business days, NOA in myGov Inbox → **Amend** path → next year |
+
+Also from the ATO research: the rule pack marks managed-fund distributions as prefilled (#590), and
+record retention counts 5 years from the **lodge date**, not 30 June (#594). Shell step list: 6 → 4
+(one table, done in #585). Home = one "next thing" card plus "waiting on" items.
+
+---
+
 ## 1. Destination recap
 
 A person doing their **first Australian return** signs up, connects a bank or uploads a statement,

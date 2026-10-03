@@ -2331,6 +2331,15 @@ async function main() {
       const ws2 = await buildMytaxWorksheet(WS_ENV_ON, u, 2025);
       check("pft12: labelling the row clears the finding and lands it on D5", ws2.unlabelled.n === 0 && lineOf(ws2, "deductions", "D5")?.amount_cents === 40000 + wfh + 12000 && ws2.tie_back.ok
         && !(await wsReady(WS_ENV_ON, u)).findings.some((x) => x.id === "worksheet_unlabelled"));
+      // A $100 refund matched to the phone (refund_netting ON): netted ON the D5 line itself, so the visible
+      // lines alone equal the report's deductions — no netting term hiding a gap.
+      run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, direction, refund_for_txn_id) VALUES ('pft12Ref', ?, 'upload', 'categorised', 'bank_line', 10000, 10000, ?, 'refund', 'credit', 'pft12Phone')`, u, FY_DATE);
+      const rep3 = await buildReport(WS_ENV_ON, u, 2025);
+      const ws3 = await buildMytaxWorksheet(WS_ENV_ON, u, 2025, { report: rep3 });
+      const lines3 = ws3.sections.find((s) => s.key === "deductions")?.lines ?? [];
+      check("pft12: a matched refund is netted on its own D-line; visible lines == report deductions",
+        rep3.refunds_cents === 10000 && lineOf(ws3, "deductions", "D5")?.amount_cents === 40000 - 10000 + wfh + 12000
+          && lines3.reduce((s, l) => s + (l.amount_cents ?? 0), 0) === rep3.total_deductions_cents && ws3.tie_back.netted_credits_unplaced_cents === 0 && ws3.tie_back.ok);
     }
 
     // FT3 Sam (pft3 fixture): an ABN tenant gets the business items section with per-activity totals.
@@ -2342,6 +2351,46 @@ async function main() {
       check("pft12/Sam: business income is typed in once (item P8) and the worksheet ties back", lineOf(ws, "income_type_in", "business")?.amount_cents === 300000 && ws.tie_back.ok);
     }
 
+    // A business run through a TRUST (individual track, not a sole trader): still counted in the position, but
+    // flagged "may belong on that entity's return", never presented as the user's own P8 sole-trader costs.
+    {
+      const u = "pft12t";
+      seedTenant(u, "Trust business attribution");
+      run(`INSERT INTO entities (id, user_id, kind, name, person_id, entity_type) VALUES ('pft12tTr', ?, 'trust', 'Family Trust', ?, 'trust')`, u, `person_self_${u}`);
+      run(`INSERT INTO income_activities (id, user_id, entity_id, activity_type, label) VALUES ('pft12tIa', ?, 'pft12tTr', 'business', 'Trust trading')`, u);
+      run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, direction, deductibility) VALUES ('pft12tT', ?, 'upload', 'categorised', 'bank_line', 70000, 70000, ?, 'payg', 'debit', 'undetermined')`, u, FY_DATE);
+      run(`INSERT INTO transaction_attributions (id, user_id, transaction_id, entity_id, income_activity_id, attributed_amount_cents, deduction_provision) VALUES ('pft12tA', ?, 'pft12tT', 'pft12tTr', 'pft12tIa', 70000, 's8-1_general')`, u);
+      const ws = await buildMytaxWorksheet(WS_ENV_ON, u, 2025);
+      const l = lineOf(ws, "business", "expenses:pft12tIa");
+      check("pft12/trust: a trust-held business's costs carry the 'confirm with a registered tax agent' entity note and tie back",
+        l?.amount_cents === 70000 && /trust, partnership/.test(l.note ?? "") && /registered tax agent/.test(l.note ?? "") && ws.tie_back.ok);
+    }
+
+    // Rentals: an 'asset' purchase and an unresolved payg row tagged to a let property count toward the
+    // per-property figure but NOT the headline ⇒ off the line. A trust's rent and unconverted foreign rent on
+    // the same property are not the user's assessable rent ⇒ off the gross-rent line, no negative line.
+    {
+      const u = "pft12r";
+      seedTenant(u, "Rental worksheet edge cases");
+      run(`INSERT INTO properties (id, user_id, label, status, use_status) VALUES ('pft12rP', ?, 'Flat', 'rented', 'rented')`, u);
+      run(`INSERT INTO entities (id, user_id, kind, name, person_id, entity_type) VALUES ('pft12rTr', ?, 'trust', 'Family Trust', ?, 'trust')`, u, `person_self_${u}`);
+      inc("pft12rSal", u, "salary_payg", 5000000, { detail_json: JSON.stringify({ employer: "Office Co" }) });
+      inc("pft12rRent", u, "rent", 1000000, { property_id: "pft12rP" });
+      inc("pft12rTrRent", u, "rent", 600000, { property_id: "pft12rP", entity_id: "pft12rTr" });
+      run(`INSERT INTO income (id, user_id, income_type, fy, gross_cents, currency, property_id) VALUES ('pft12rFx', ?, 'rent', '2025-26', 300000, 'NZD', 'pft12rP')`, u);
+      exp("pft12rRep", u, 50000, "property_rented", "likely_deductible", "pft12rP"); // $500 repair — counts
+      exp("pft12rAsset", u, 300000, "asset", "likely_deductible", "pft12rP"); // $3,000 appliance — capital, not a deduction
+      exp("pft12rPayg", u, 10000, "payg", "undetermined", "pft12rP"); // unresolved payg row on the property
+      const rep = await buildReport(WS_ENV_ON, u, 2025);
+      const ws = await buildMytaxWorksheet(WS_ENV_ON, u, 2025, { report: rep });
+      const rentLine = lineOf(ws, "rental", "rent:pft12rP");
+      const dedLine = lineOf(ws, "rental", "rental_deductions:pft12rP");
+      check("pft12/rental: gross rent is the user's own AUD rent only ($10k) — no trust or unconverted-foreign rent, no negative line",
+        rentLine?.amount_cents === 1000000 && !ws.sections.some((s) => s.lines.some((l) => (l.amount_cents ?? 0) < 0)) && ws.tie_back.income_ok);
+      check("pft12/rental: rental deductions are only what the headline counts ($500 repair; the asset + unresolved row stay off)",
+        dedLine?.amount_cents === 50000 && rep.total_deductions_cents === 50000 && ws.tie_back.ok);
+    }
+
     // Tie-back sweep: the worksheet reconciles to the report for EVERY persona tenant seeded above (rentals,
     // attributions, companies, CGT, refunds…), not just the first-timer fixtures.
     {
@@ -2349,7 +2398,7 @@ async function main() {
       const bad: string[] = [];
       for (const t of tenants) {
         const ws = await buildMytaxWorksheet(WS_ENV_ON, t, 2025);
-        if (!ws.tie_back.ok || !noRefundField(ws)) bad.push(`${t}:${JSON.stringify(ws.tie_back)}`);
+        if (!ws.tie_back.ok || ws.tie_back.netted_credits_unplaced_cents !== 0 || !noRefundField(ws)) bad.push(`${t}:${JSON.stringify(ws.tie_back)}`);
       }
       check(`pft12 sweep: worksheet ties back to the report for all ${tenants.length} persona tenants${bad.length ? ` — FAILED ${bad.join(" | ")}` : ""}`, bad.length === 0);
     }

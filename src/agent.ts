@@ -4314,7 +4314,11 @@ export class TaxAgent extends Agent<Env> {
     const firstTimerSignals = await firstTimerIncomeSignals(this.env, userId, startYear, await this.jurisdictionFor(userId));
     // #575 mytax_worksheet: unlabelled work-related rows (src/lib/mytax-worksheet.ts — the same function the
     // persona goldens call). Reuses the report already built. Flag OFF ⇒ {} ⇒ findings byte-identical.
-    const worksheetSignals = await mytaxWorksheetSignals(this.env, userId, startYear, report);
+    // Isolated: a presentation-only REVIEW nudge must never take down the readiness page (the endpoint itself still fails loudly).
+    const worksheetSignals = await mytaxWorksheetSignals(this.env, userId, startYear, report).catch((e) => {
+      console.error("mytax_worksheet signal failed", (e as Error).message);
+      return {};
+    });
     // GST registration status for the turnover nudge — registered if the tenant default is set OR any
     // entity is flagged (mirrors gstTotals' registration test in ledger-totals.ts).
     const entGstReg = (await this.env.DB.prepare(`SELECT COUNT(*) AS n FROM entities WHERE user_id = ? AND COALESCE(gst_registered,0) = 1`).bind(userId).first<{ n: number }>())?.n ?? 0;

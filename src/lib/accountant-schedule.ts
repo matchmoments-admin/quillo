@@ -1,5 +1,5 @@
 import type { Env } from "../env";
-import { COUNTABLE } from "./queries";
+import { COUNTABLE, FX_CONVERTED } from "./queries";
 import {
   buildReport,
   claimExpr,
@@ -221,10 +221,15 @@ export async function buildAccountantSchedule(
  */
 export interface ScheduleDetail {
   // Section 4's rows (classifier "deduction", non-property, non-company): the work-related itemised claims.
-  work_related: { bucket: string; ato_label: string | null; counted_cents: number }[];
+  work_related: { id: string; bucket: string; ato_label: string | null; counted_cents: number }[];
+  // The per-property itemised rows that count toward each property's deduction (section 6's rows).
+  // `headline` = the row also counts in the report's total deductions (deductionGroupForRow). A row can count
+  // toward a property's per-property figure but not the headline (e.g. an 'asset' purchase tagged to it).
+  property_items: { id: string; property_id: string; counted_cents: number; headline: boolean }[];
   // Every attribution row the schedule read (pre-classification), with the txn's label + deductibility so a
   // consumer can apply attributionCountsInPosition (the position's veto) and group by label / activity.
   attributions: {
+    transaction_id: string;
     ato_label: string | null;
     deductibility: string;
     entity_type: string | null;
@@ -236,7 +241,8 @@ export interface ScheduleDetail {
     amount_cents: number;
   }[];
   // Section 2's assessable income rows (separate-taxpayer entity income already excluded).
-  income: { income_type: string; gross_cents: number; detail_json: string | null }[];
+  // fx_unconverted: a foreign-currency row with no AUD value — the report's incomeTotals excludes it.
+  income: { income_type: string; gross_cents: number; detail_json: string | null; property_id: string | null; fx_unconverted: boolean }[];
 }
 
 export async function buildAccountantScheduleDetailed(
@@ -301,6 +307,7 @@ export async function buildAccountantScheduleDetailed(
     foreign_tax_paid_cents: number;
     source_doc_id: string | null;
     detail_json: string | null;
+    fx_unconverted: number;
   }>(
     env.DB.prepare(
       `SELECT txn_date, income_type, ato_label, property_id,
@@ -308,7 +315,8 @@ export async function buildAccountantScheduleDetailed(
               COALESCE(withholding_cents,0) AS withholding_cents,
               COALESCE(franking_credit_cents,0) AS franking_credit_cents,
               COALESCE(foreign_tax_paid_cents,0) AS foreign_tax_paid_cents,
-              source_doc_id, detail_json
+              source_doc_id, detail_json,
+              (CASE WHEN ${FX_CONVERTED} THEN 0 ELSE 1 END) AS fx_unconverted
          FROM income WHERE user_id = ? AND fy = ?${entityClause}
         ORDER BY income_type, txn_date, created_at`,
     )
@@ -376,6 +384,7 @@ export async function buildAccountantScheduleDetailed(
     property_id: string | null;
     deduction_provision: string | null;
     // #575: carried for the myTax worksheet's re-grouping only (ScheduleDetail) — no section renders them.
+    transaction_id: string;
     ato_label: string | null;
     deductibility: string;
     income_activity_id: string | null;
@@ -392,7 +401,8 @@ export async function buildAccountantScheduleDetailed(
                   ia.activity_type AS activity_type, ia.property_id AS property_id,
                   ta.deduction_provision AS deduction_provision,
                   t.ato_label AS ato_label, COALESCE(t.deductibility,'undetermined') AS deductibility,
-                  ta.income_activity_id AS income_activity_id, ia.label AS activity_label
+                  ta.income_activity_id AS income_activity_id, ta.transaction_id AS transaction_id,
+                  CASE WHEN ia.user_id = ta.user_id THEN ia.label END AS activity_label
              FROM transaction_attributions ta
              JOIN transactions t ON t.id = ta.transaction_id AND t.user_id = ta.user_id
              LEFT JOIN entities e ON e.id = ta.entity_id
@@ -1326,8 +1336,13 @@ export async function buildAccountantScheduleDetailed(
 
   const schedule: AccountantSchedule = { fy: report.fy, start: report.start, end: report.end, abn: report.abn, disclaimer: SCHEDULE_DISCLAIMER, sections };
   const detail: ScheduleDetail = {
-    work_related: workRelated.map((r) => ({ bucket: r.bucket, ato_label: r.ato_label, counted_cents: r.counted_cents })),
+    work_related: workRelated.map((r) => ({ id: r.id, bucket: r.bucket, ato_label: r.ato_label, counted_cents: r.counted_cents })),
+    property_items: [...byPropertyItems.entries()].flatMap(([property_id, rows]) => rows.map((r) => ({
+      id: r.id, property_id, counted_cents: r.counted_cents,
+      headline: deductionGroupForRow(r.bucket, r.deductibility, excludeNonDeductible, r.reimbursed, r.use_status_denied, r.property_undetermined) === "deduction",
+    }))),
     attributions: attrRows.map((r) => ({
+      transaction_id: r.transaction_id,
       ato_label: r.ato_label,
       deductibility: r.deductibility,
       entity_type: r.entity_type,
@@ -1338,7 +1353,7 @@ export async function buildAccountantScheduleDetailed(
       deduction_provision: r.deduction_provision,
       amount_cents: attrItem(r),
     })),
-    income: assessableIncomeRows.map((r) => ({ income_type: r.income_type, gross_cents: r.gross_cents, detail_json: r.detail_json })),
+    income: assessableIncomeRows.map((r) => ({ income_type: r.income_type, gross_cents: r.gross_cents, detail_json: r.detail_json, property_id: r.property_id, fx_unconverted: !!r.fx_unconverted })),
   };
   return { schedule, detail };
 }

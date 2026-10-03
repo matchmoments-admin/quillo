@@ -591,7 +591,7 @@
     { "key": "income_check", "title": "Income: check this matches" },
     { "key": "income_type_in", "title": "Income: type these in" },
     { "key": "rental", "title": "Rental properties (item 21)" },
-    { "key": "deductions", "title": "Deductions D1–D10" },
+    { "key": "deductions", "title": "Deductions" },
     { "key": "business", "title": "Business and professional items" },
     { "key": "medicare", "title": "Medicare and private health" }
   ],
@@ -620,6 +620,21 @@
     "D7": "Interest deductions",
     "D8": "Dividend deductions",
     "D9": "Gifts or donations",
-    "D10": "Cost of managing tax affairs"
-  }
+    "D10": "Cost of managing tax affairs",
+    "D11": "Deductible amount of undeducted purchase price of a foreign pension or annuity",
+    "D12": "Personal superannuation contributions",
+    "D13": "Deduction for project pool",
+    "D14": "Forestry managed investment scheme deduction",
+    "D15": "Other deductions"
+  },
+  "mytax_work_method_labels": { "wfh": "D5", "car": "D1" },
+  "mytax_decline_in_value_label": "D5",
+  "mytax_medicare_lines": [
+    {
+      "key": "private_hospital_cover",
+      "label": "M2",
+      "name": "Private hospital cover — myTax asks whether you held an appropriate level all year",
+      "note": "Have your private health insurance statement handy (myTax usually prefills it). Quillo doesn't work out any levy."
+    }
+  ]
 }

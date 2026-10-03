@@ -1,6 +1,7 @@
 // Lodging-year default + the retention "treated as lodged" backstop (#572, first-timer spec A1 ticket b).
 //
-// PURE — no DB, no env. The DB reads/writes live in situation-write.ts (fy_signoff), the route in api.ts.
+// PURE — no DB, no env. The "is this FY lodged?" rule and the fy_signoff reads/writes live in fy-signoff.ts, the
+// route in api.ts.
 //
 // The rule (#536): a first-timer prepares the year being LODGED, not the calendar's current FY. In FY N the
 // default is N − 1, unless FY N − 1 is already lodged (fy_signoff.lodged_at set, or the year was closed off a
@@ -16,18 +17,12 @@
 
 import auV1RulePack from "../rulepacks/au-v1.json";
 import { fyBoundsFor, fyStartYearForDate, type JurisdictionDescriptor, type TaxPeriod } from "./jurisdiction";
+import { isFyMarkedLodged, type FyLodgedRow } from "./fy-signoff";
 
-/** The slice of an fy_signoff row these rules read. */
-export interface FySignoffState {
-  fy: number;
-  lodged_at: string | null;
-  status: string | null;
-}
+export { isFyMarkedLodged };
 
-/** A year counts as lodged when the user marked it, or a confirmed NOA closed it (the ATO assessed it). */
-export function isFyMarkedLodged(row: Pick<FySignoffState, "lodged_at" | "status"> | null | undefined): boolean {
-  return !!row && (!!row.lodged_at || row.status === "closed_with_noa");
-}
+/** The slice of an fy_signoff row the retention rules read. */
+export type FySignoffState = Pick<FyLodgedRow, "lodged_at" | "status" | "signed_off_at">;
 
 function isoDay(d: Date | string): string {
   if (typeof d === "string") return d.slice(0, 10);
@@ -57,8 +52,14 @@ export interface LodgementTiming {
   backstopDays: number;
 }
 
-/** The pack's lodgement timing; the bundled pack fills keys a KV pack pushed before #572 doesn't carry. */
-export function lodgementTiming(pack: unknown = auV1RulePack): LodgementTiming {
+/**
+ * The tenant's lodgement timing. `pack` is REQUIRED and must be the tenant's resolved rule pack —
+ * `lodgementTiming(await resolveRulePack(env, userId, descriptor))` (report.ts) — so a KV-pushed pack (or a
+ * non-AU jurisdiction's pack) is honoured. The bundled pack only fills keys a KV pack pushed before #572 doesn't
+ * carry. Every retention helper below takes the result as a required `timing`: none of them may silently fall
+ * back to the bundled AU dates.
+ */
+export function lodgementTiming(pack: unknown): LodgementTiming {
   const read = (p: unknown) => (p as { lodgement?: { self_lodge_due_after_fy_end?: { month?: unknown; day?: unknown }; retention_backstop_days?: unknown } })?.lodgement;
   const p = read(pack);
   const b = read(auV1RulePack)!;
@@ -76,7 +77,7 @@ function addDays(iso: string, days: number): string {
 }
 
 /** The self-lodger due date for FY `fy` (ISO): the first pack {month, day} strictly after the FY's last day. */
-export function selfLodgeDueDate(fy: number, descriptor: JurisdictionDescriptor, timing: LodgementTiming = lodgementTiming()): string {
+export function selfLodgeDueDate(fy: number, descriptor: JurisdictionDescriptor, timing: LodgementTiming): string {
   const end = fyBoundsFor(descriptor, fy).end;
   const endYear = Number(end.slice(0, 4));
   const p = (n: number) => String(n).padStart(2, "0");
@@ -85,27 +86,29 @@ export function selfLodgeDueDate(fy: number, descriptor: JurisdictionDescriptor,
 }
 
 /** The date an UNMARKED FY is treated as lodged for retention: due date + backstop days (AU FY 2025 → 2026-12-30). */
-export function retentionBackstopDate(fy: number, descriptor: JurisdictionDescriptor, timing: LodgementTiming = lodgementTiming()): string {
+export function retentionBackstopDate(fy: number, descriptor: JurisdictionDescriptor, timing: LodgementTiming): string {
   return addDays(selfLodgeDueDate(fy, descriptor, timing), timing.backstopDays);
 }
 
 /**
  * The date FY `fy` counts as lodged for RETENTION (A5), or null if it isn't yet:
  * - the user's mark (lodged_at, a 'YYYY-MM-DD' day) when set;
- * - a NOA-closed year with no mark: treated as lodged from today's view — the ATO has assessed it (returns `today`);
+ * - a NOA-closed year with no mark: lodged from the day the NOA close was confirmed (its signed_off_at day);
  * - otherwise the backstop date, once `today` has reached it.
  * A5 composes this with its own per-line 60-day hold ("lodged or ~60 days, whichever is later").
  */
 export function retentionLodgedOn(
   fy: number,
-  row: Pick<FySignoffState, "lodged_at" | "status"> | null | undefined,
+  row: FySignoffState | null | undefined,
   today: Date | string,
   descriptor: JurisdictionDescriptor,
-  timing: LodgementTiming = lodgementTiming(),
+  timing: LodgementTiming,
 ): string | null {
   const t = isoDay(today);
   if (row?.lodged_at) return row.lodged_at.slice(0, 10);
-  if (row?.status === "closed_with_noa") return t;
+  // A NOA close stamps signed_off_at when it's confirmed — a FIXED day, so A5's "lodged + 60 days" hold can
+  // actually elapse (returning today would move the date forward on every run and never release a line).
+  if (row?.status === "closed_with_noa") return row.signed_off_at.slice(0, 10);
   const backstop = retentionBackstopDate(fy, descriptor, timing);
   return t >= backstop ? backstop : null;
 }
@@ -113,10 +116,10 @@ export function retentionLodgedOn(
 /** Convenience predicate for A5: is FY `fy` lodged (marked, NOA-closed, or past the backstop) as of `today`? */
 export function isFyLodgedForRetention(
   fy: number,
-  row: Pick<FySignoffState, "lodged_at" | "status"> | null | undefined,
+  row: FySignoffState | null | undefined,
   today: Date | string,
   descriptor: JurisdictionDescriptor,
-  timing: LodgementTiming = lodgementTiming(),
+  timing: LodgementTiming,
 ): boolean {
   return retentionLodgedOn(fy, row, today, descriptor, timing) !== null;
 }
@@ -125,7 +128,7 @@ export function isFyLodgedForRetention(
  * The latest FY that the backstop alone treats as lodged on `today` (every FY ≤ this is lodged for retention
  * whatever its signoff row says). Lets A5 write one SQL bound (`fy <= ?`) instead of enumerating years.
  */
-export function backstopLodgedThroughFy(today: Date | string, descriptor: JurisdictionDescriptor, timing: LodgementTiming = lodgementTiming()): number {
+export function backstopLodgedThroughFy(today: Date | string, descriptor: JurisdictionDescriptor, timing: LodgementTiming): number {
   const t = isoDay(today);
   let fy = fyStartYearForDate(descriptor, t);
   while (retentionBackstopDate(fy, descriptor, timing) > t) fy--;

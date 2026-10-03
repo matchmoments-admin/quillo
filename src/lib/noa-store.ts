@@ -6,6 +6,7 @@
 import type { Env } from "../env";
 import { addCapitalLoss, addDepreciationOpening } from "./situation-write";
 import { planNoaCarryovers, type NoaFacts } from "./noa";
+import { featureOn } from "./features";
 
 export interface CarryoverRow {
   id: string;
@@ -172,12 +173,15 @@ export async function deleteNoaCarryover(env: Env, userId: string, id: string): 
     // Fully re-open the year: the NOA-close upsert overwrote any prior soft-signoff timestamp, so removing
     // the row is the honest reopen (a phantom "signed off" would otherwise linger). The user can re-attest.
     // #572: a year the user also MARKED as lodged keeps its row — undoing the NOA must never erase the lodged
-    // mark, so the status falls back to 'lodged' (lodged_at is only set with situation_profile ON; OFF no row
-    // matches and the delete below behaves exactly as before).
-    await env.DB.prepare(
-      `UPDATE fy_signoff SET status = 'lodged', noa_document_id = NULL
-        WHERE user_id = ? AND fy = ? AND status = 'closed_with_noa' AND lodged_at IS NOT NULL`,
-    ).bind(userId, row.source_fy).run();
+    // mark, so the status falls back to 'lodged'. Gated on situation_profile: lodged_at only exists once 0087 is
+    // applied and is only ever written with the flag ON, so OFF this never runs and the delete below behaves
+    // exactly as before.
+    if (featureOn(env, "situation_profile")) {
+      await env.DB.prepare(
+        `UPDATE fy_signoff SET status = 'lodged', noa_document_id = NULL
+          WHERE user_id = ? AND fy = ? AND status = 'closed_with_noa' AND lodged_at IS NOT NULL`,
+      ).bind(userId, row.source_fy).run();
+    }
     await env.DB.prepare(`DELETE FROM fy_signoff WHERE user_id = ? AND fy = ? AND status = 'closed_with_noa'`).bind(userId, row.source_fy).run();
   }
 }

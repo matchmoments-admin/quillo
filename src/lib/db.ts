@@ -3,6 +3,7 @@ import { featureOn } from "./features";
 import { resolveJurisdiction, baseCurrencyOf, AU_DESCRIPTOR } from "./jurisdiction";
 import { listSituationPeriods, type SituationPeriod } from "./situation-profile";
 import { lodgingFy } from "./lodging-year";
+import { listLodgedFys } from "./fy-signoff";
 
 export interface Profile {
   user_id: string;
@@ -172,12 +173,9 @@ export async function getSituation(env: Env, userId: string, profile: Profile): 
     ).bind(userId).all<LoanProperty>(),
     // situation_profile: fetched in parallel, and only when the flag is on (field omitted when off).
     featureOn(env, "situation_profile") ? listSituationPeriods(env, userId) : Promise.resolve(undefined),
-    // #572: the lodged years, only when the flag is on (inline, not via situation-write, to keep db.ts out of the
-    // report import cycle). Same predicate as listLodgedFys.
-    featureOn(env, "situation_profile")
-      ? env.DB.prepare(`SELECT fy FROM fy_signoff WHERE user_id = ? AND (lodged_at IS NOT NULL OR status = 'closed_with_noa')`)
-          .bind(userId).all<{ fy: number }>().then((r) => (r.results ?? []).map((x) => Number(x.fy)))
-      : Promise.resolve(undefined),
+    // #572: the lodged years, only when the flag is on (fy-signoff.ts imports only Env, so db.ts stays out of
+    // the report import cycle).
+    featureOn(env, "situation_profile") ? listLodgedFys(env, userId) : Promise.resolve(undefined),
   ]);
   // Resolve from the already-loaded profile (no re-read); flag OFF ⇒ AU. Calendar periods (reserved) map
   // to Jan 1 — not used this stop, the SPA treats it as a straddle start anchor.

@@ -63,8 +63,6 @@ import {
   signOffFy,
   clearSignOffFy,
   getFySignoff,
-  getFyLodged,
-  listLodgedFys,
   ensureTenant,
   deleteRow,
   archiveRow,
@@ -79,6 +77,7 @@ import {
 } from "./lib/situation-write";
 import { listSituationPeriods, normaliseFyStart } from "./lib/situation-profile";
 import { lodgingFy, lodgedOnError, isoDayOf } from "./lib/lodging-year";
+import { getFyLodged, listLodgedFys } from "./lib/fy-signoff";
 import { setAttributions, getAttributions, clearAttributions } from "./lib/attribution-write";
 import { listNoaCarryovers, confirmNoaCarryover, deleteNoaCarryover } from "./lib/noa-store";
 import { buildConnectUrl, qboStatus } from "./lib/qbo-oauth";
@@ -885,7 +884,8 @@ export async function handleApi(
     }
     if (m === "DELETE") {
       // #572: a year marked as lodged can't be re-opened here (the mark lives on this row) — undo the mark first.
-      if ((await getFyLodged(env, uid, fy))?.lodged_at) {
+      // Gated on situation_profile: OFF never reads lodged_at (safe before 0087 is applied).
+      if (featureOn(env, "situation_profile") && (await getFyLodged(env, uid, fy))?.lodged_at) {
         return json({ error: "This year is marked as lodged. Undo 'mark as lodged' first, then re-open it." }, 409);
       }
       await clearSignOffFy(env, uid, fy);

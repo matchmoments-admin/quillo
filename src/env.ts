@@ -202,7 +202,7 @@ export interface TaxAgentRpc {
   createReferral(userId: string, opportunityId: string, offerId?: string): Promise<{ token: string; url: string; partner_name: string }>;
   recordConsent(userId: string, text: string, method: string): Promise<void>;
   // #572 (situation_profile): the user's own "mark as lodged" — audited in the DO.
-  markLodged(userId: string, fy: number, lodgedOn: string): Promise<{ fy: number; lodged_at: string | null; status: string | null; signed_off_at: string }>;
+  markLodged(userId: string, fy: number, lodgedOn: string): Promise<import("./lib/fy-signoff").FyLodgedRow>;
   unmarkLodged(userId: string, fy: number): Promise<void>;
   draftSituation(userId: string, message: string): Promise<import("./extract").SituationDraft>;
   guideMe(userId: string, tab: string): Promise<{ headline: string; steps: string[] }>;

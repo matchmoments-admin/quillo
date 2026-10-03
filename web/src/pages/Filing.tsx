@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api, saveBlob } from "../api";
-import { useActiveFy } from "../lib/activeFy";
+import { useActiveFy, useLodgedMark } from "../lib/activeFy";
 import { useFeatures } from "../lib/features";
 import { Card, Spinner, money } from "../components/ui";
 import type { PositionLine, ReadinessFinding, ClaimReview, ClaimReviewItem, OccupationRuleCandidate } from "../types";
@@ -43,19 +43,50 @@ function SignOff({ fy, ready }: { fy: number; ready: boolean }) {
   const { data: signoff } = useQuery({ queryKey: ["fy-signoff", fy], queryFn: () => api.fySignoff(fy) });
   const invalidate = () => qc.invalidateQueries({ queryKey: ["fy-signoff", fy] });
   const sign = useMutation({ mutationFn: () => api.signOff(fy), onSuccess: invalidate });
-  const unsign = useMutation({ mutationFn: () => api.clearSignOff(fy), onSuccess: invalidate });
+  // Re-open fails with a 409 on a year marked as lodged (#572) — never silently: show the server's message.
+  const unsign = useMutation({
+    mutationFn: () => api.clearSignOff(fy),
+    onSuccess: invalidate,
+    onError: (e) => toast.error("Couldn't re-open", { description: (e as Error).message }),
+  });
+  // #572 (situation_profile): a lodged year swaps Re-open for "Undo lodged mark" (the mark lives on this row).
+  // Hooks stay above the early return (#310 crash class); the query only runs with the flag on.
+  const lodgedOn = useFeatures().has("situation_profile");
+  const { data: lodged } = useQuery({ queryKey: ["fy-lodged", fy], queryFn: () => api.fyLodged(fy).then((r) => r.lodged), enabled: lodgedOn });
+  const lodgedMark = useLodgedMark();
+  const unlodge = useMutation({
+    mutationFn: () => lodgedMark.undo(fy),
+    onSuccess: invalidate,
+    onError: (e) => toast.error("Couldn't undo the lodged mark", { description: (e as Error).message }),
+  });
+  const lodgedAt = lodgedOn ? lodged?.lodged_at ?? null : null;
 
   if (signoff) {
     const when = new Date(signoff.signed_off_at.replace(" ", "T") + "Z");
     return (
       <Card className="flex flex-wrap items-center justify-between gap-2 border-safe/40 p-4 print:hidden">
         <div className="text-sm">
-          <span className="font-semibold text-safe">Signed off</span> — you marked this position ready to hand off on{" "}
-          {isNaN(when.getTime()) ? signoff.signed_off_at : when.toLocaleDateString()}. Your own attestation; Quillo doesn't lodge.
+          {lodgedAt ? (
+            <>
+              <span className="font-semibold text-safe">Marked as lodged</span> — you told us you lodged this year on{" "}
+              {new Date(`${lodgedAt}T00:00:00`).toLocaleDateString()}. Your own record; Quillo doesn't lodge.
+            </>
+          ) : (
+            <>
+              <span className="font-semibold text-safe">Signed off</span> — you marked this position ready to hand off on{" "}
+              {isNaN(when.getTime()) ? signoff.signed_off_at : when.toLocaleDateString()}. Your own attestation; Quillo doesn't lodge.
+            </>
+          )}
         </div>
-        <button onClick={() => unsign.mutate()} disabled={unsign.isPending} className="rounded-lg border border-line px-3 py-1.5 text-sm hover:bg-surface">
-          {unsign.isPending ? "…" : "Re-open"}
-        </button>
+        {lodgedAt ? (
+          <button onClick={() => unlodge.mutate()} disabled={unlodge.isPending} className="rounded-lg border border-line px-3 py-1.5 text-sm hover:bg-surface">
+            {unlodge.isPending ? "…" : "Undo lodged mark"}
+          </button>
+        ) : (
+          <button onClick={() => unsign.mutate()} disabled={unsign.isPending} className="rounded-lg border border-line px-3 py-1.5 text-sm hover:bg-surface">
+            {unsign.isPending ? "…" : "Re-open"}
+          </button>
+        )}
       </Card>
     );
   }

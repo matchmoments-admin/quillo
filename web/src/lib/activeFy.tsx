@@ -68,6 +68,12 @@ export const useActiveFy = (): ActiveFy => useContext(ActiveFyCtx);
  * server returns lodging_fy) and persist it, so the move survives a reload. The Ship it UI (A9, #590) calls this.
  * Throws the server's plain-message error (400 bad date / year) for the caller to show inline.
  */
+/** Today as a 'YYYY-MM-DD' day in the USER's timezone (an AU evening is still "today" there, not UTC's tomorrow/yesterday). */
+export function localIsoDay(d: Date = new Date()): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
 export function useLodgedMark() {
   const qc = useQueryClient();
   const { setFy } = useActiveFy();
@@ -79,7 +85,9 @@ export function useLodgedMark() {
   };
   return {
     mark: async (fy: number, lodgedOn?: string) => {
-      const r = await api.markLodged(fy, lodgedOn);
+      // Always send a LOCAL day: left to the server it would default to the UTC day, which is yesterday for an
+      // AU user marking it before 10–11am.
+      const r = await api.markLodged(fy, lodgedOn ?? localIsoDay());
       after(r.lodging_fy);
       return r.lodged;
     },

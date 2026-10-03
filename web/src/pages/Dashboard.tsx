@@ -8,7 +8,6 @@ import { FindAndAttachSheet } from "../components/FindAndAttachSheet";
 import { WorkMethodsCard } from "../components/WorkMethodsCard";
 import { CarMethodsCard } from "../components/CarMethodsCard";
 import { SetupChecklist } from "../components/SetupChecklist";
-import { AskQuillo } from "../components/AskQuillo";
 import { useFeatures } from "../lib/features";
 import type { ChecklistItem } from "../types";
 
@@ -18,7 +17,6 @@ const SWATCH = ["#0c3f26", "#15643a", "#1c7a48", "#97a86f", "#2f6bd6", "#9a6712"
 export function Dashboard() {
   const { fy, label } = useActiveFy();
   const { has } = useFeatures();
-  const adaptive = has("adaptive_dashboard"); // slice 14: hide empty breakdown panels
   const { data, isLoading, error } = useQuery({ queryKey: ["dashboard", fy], queryFn: () => api.dashboard(fy) });
   if (isLoading) return <Spinner />;
   if (error) return <Panel className="text-sm text-muted">Couldn't load: {(error as Error).message}</Panel>;
@@ -45,8 +43,8 @@ export function Dashboard() {
         </Link>
       </div>
 
-      {/* The all-time "still to sort" backlog is surfaced canonically by the NextActionBar (the active CTA)
-          and the JourneySpine "Sort" badge directly above — a third copy here was redundant (#256 follow-up:
+      {/* The all-time "still to sort" backlog is surfaced canonically by the JourneySpine's next-action CTA
+          and its "Sort" badge directly above — a third copy here was redundant (#256 follow-up:
           de-duplicate the dashboard chrome), so it's removed. */}
 
       {/* KPI row — every figure here is scoped to the active FY. */}
@@ -69,17 +67,8 @@ export function Dashboard() {
         </Link>
       )}
 
-      {/* #246: onboarding-completeness — "bring these in" evidence checklist, derived from the user's
-          situation. Near the top so a half-set-up user sees what's missing before working the numbers. */}
-      {has("onboarding_checklist") && !has("checklist_v2") && <SetupChecklist />}
-
       {/* Savings run-rate — the "yearly wake-up figure" (factual annualisation), links into the Save tab. */}
       {has("advisory_layer") && <RunRateStrip fy={fy} />}
-
-      {/* Ask Quillo — grounded tax Q&A from the user's own ledger. Superseded by the floating bubble:
-          show the embedded card ONLY when the bubble is off (a fallback so chat survives if floating_chat
-          is ever disabled), so there's never two chats at once. */}
-      {has("ask_quillo") && !has("floating_chat") && <AskQuillo />}
 
       {/* Working-from-home + car: the #1 PAYG claims, captured here on the Position surface. #245: WFH
           and car are now separate tools (car has nothing to do with WFH).
@@ -96,53 +85,44 @@ export function Dashboard() {
       <ChecklistCard />
       <ClaimsCard />
 
-      {/* Breakdowns. Slice 14 (adaptive_dashboard): hide a breakdown entirely when it has no rows (a
-          salary-only user shouldn't see an empty "By property" table). OFF ⇒ both panels always render
-          (with their Empty state) ⇒ byte-identical. */}
-      {(!adaptive || d.by_bucket.length > 0 || d.by_property.length > 0) && (
+      {/* Breakdowns. Slice 14: hide a breakdown entirely when it has no rows (a salary-only user
+          shouldn't see an empty "By property" table). */}
+      {(d.by_bucket.length > 0 || d.by_property.length > 0) && (
       <div className="grid gap-5 lg:grid-cols-2">
-        {(!adaptive || d.by_bucket.length > 0) && (
+        {d.by_bucket.length > 0 && (
         <Panel>
-          <PanelHead title={<>By category <InfoTip k="bucket" /></>} sub={d.by_bucket.length ? `${d.by_bucket.length} categories` : undefined} />
-          {d.by_bucket.length ? (
-            <div className="divide-y divide-line">
-              {d.by_bucket.map((b, i) => (
-                <BreakdownRow
-                  key={b.bucket}
-                  swatch={SWATCH[i % SWATCH.length]}
-                  name={BUCKET_LABEL[b.bucket] ?? b.bucket}
-                  n={b.n}
-                  value={money(b.total_cents)}
-                  frac={total ? b.total_cents / total : 0}
-                  to={`/transactions?bucket=${encodeURIComponent(b.bucket)}`}
-                />
-              ))}
-            </div>
-          ) : (
-            <Empty />
-          )}
+          <PanelHead title={<>By category <InfoTip k="bucket" /></>} sub={`${d.by_bucket.length} categories`} />
+          <div className="divide-y divide-line">
+            {d.by_bucket.map((b, i) => (
+              <BreakdownRow
+                key={b.bucket}
+                swatch={SWATCH[i % SWATCH.length]}
+                name={BUCKET_LABEL[b.bucket] ?? b.bucket}
+                n={b.n}
+                value={money(b.total_cents)}
+                frac={total ? b.total_cents / total : 0}
+                to={`/transactions?bucket=${encodeURIComponent(b.bucket)}`}
+              />
+            ))}
+          </div>
         </Panel>
         )}
 
-        {(!adaptive || d.by_property.length > 0) && (
+        {d.by_property.length > 0 && (
         <Panel>
           <PanelHead title={<>By property <InfoTip tip="Costs attributed to each investment property, so each one's position is clear at tax time. Whether a cost is claimable is confirmed in your year-end review." /></>} />
-          {d.by_property.length ? (
-            <div className="divide-y divide-line">
-              {d.by_property.map((p, i) => (
-                <BreakdownRow
-                  key={p.property_id}
-                  swatch={SWATCH[i % SWATCH.length]}
-                  name={p.label ?? p.property_id}
-                  n={p.n}
-                  value={money(p.total_cents)}
-                  to={`/transactions?property=${encodeURIComponent(p.property_id)}`}
-                />
-              ))}
-            </div>
-          ) : (
-            <Empty />
-          )}
+          <div className="divide-y divide-line">
+            {d.by_property.map((p, i) => (
+              <BreakdownRow
+                key={p.property_id}
+                swatch={SWATCH[i % SWATCH.length]}
+                name={p.label ?? p.property_id}
+                n={p.n}
+                value={money(p.total_cents)}
+                to={`/transactions?property=${encodeURIComponent(p.property_id)}`}
+              />
+            ))}
+          </div>
         </Panel>
         )}
       </div>
@@ -176,10 +156,7 @@ export function Dashboard() {
 
 function ChecklistCard() {
   const qc = useQueryClient();
-  const { has } = useFeatures();
   const { label } = useActiveFy();
-  // Slice 8: when checklist_v2 is on, the SetupChecklist evidence items fold in here as one checklist.
-  const showEvidence = has("checklist_v2") && has("onboarding_checklist");
   const invalidate = () => qc.invalidateQueries({ queryKey: ["checklist", label] });
   const { data, isLoading } = useQuery({ queryKey: ["checklist", label], queryFn: () => api.checklist(label) });
   const gen = useMutation({ mutationFn: () => api.generateChecklist(label), onSuccess: invalidate });
@@ -202,27 +179,6 @@ function ChecklistCard() {
     gen.mutate();
   }, [isLoading, items.length, label, gen]);
 
-  // Empty → the situation-driven checklist auto-generates on first visit (the effect above), so this is
-  // just a quiet placeholder; no manual "Generate" button (the loaded-state "Refresh" covers re-runs).
-  // With checklist_v2, keep rendering the Panel so the folded-in "Bring these in" evidence still shows.
-  if (!isLoading && !items.length && !showEvidence) {
-    return (
-      <div className="flex flex-wrap items-center gap-4 rounded-2xl border border-sage bg-sage px-6 py-5">
-        <span className="grid h-11 w-11 flex-none place-items-center rounded-xl bg-forest text-cream">
-          <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8">
-            <path d="M4 6l1.5 1.5L8 5M4 11l1.5 1.5L8 10M4 16l1.5 1.5L8 15M11 6h5M11 11h5M11 16h5" />
-          </svg>
-        </span>
-        <div className="min-w-0">
-          <div className="font-display text-lg text-forest">FY {label} checklist</div>
-          <div className="text-[13px] text-forest/70">
-            {gen.isPending ? "Building a to-do list tailored to your situation…" : "Nothing to do here yet — it'll fill in as you add your situation."}
-          </div>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <Panel>
       <PanelHead
@@ -234,7 +190,8 @@ function ChecklistCard() {
           </Button>
         }
       />
-      {showEvidence && <div className="mb-4 border-b border-line pb-4"><SetupChecklist embedded /></div>}
+      {/* Slice 8: the SetupChecklist "Bring these in" evidence items fold in here, so the two read as one checklist. */}
+      <div className="mb-4 border-b border-line pb-4"><SetupChecklist /></div>
       {isLoading ? (
         <div className="py-4"><Spinner /></div>
       ) : !items.length ? (
@@ -357,10 +314,6 @@ function BreakdownRow({
     );
   }
   return <div className="py-3">{inner}</div>;
-}
-
-function Empty() {
-  return <div className="py-4 text-sm text-muted">No data yet.</div>;
 }
 
 // Compact run-rate strip (flag advisory_layer): the factual "at this rate, ~$X/year" wake-up figure,

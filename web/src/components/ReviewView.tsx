@@ -36,7 +36,6 @@ export function ReviewView() {
   const [flash, setFlash] = useState<BulkDone | null>(null);
   const { has } = useFeatures();
   const hasAccountantPass = has("accountant_pass");
-  const grouped = has("grouped_review"); // #342: merchant-grouped review + kind filter
   const groupedV2 = has("grouped_review_v2"); // wave 3: cluster by the server's normalised group_key
   const unified = has("unified_review_groups") && groupedV2 && hasAccountantPass; // wave 4: clarify answers inline in the groups
   const [kind, setKind] = useState<"" | "receipt" | "bank_line">(""); // restored receipt/bank-line filter
@@ -149,9 +148,8 @@ export function ReviewView() {
       />
       {note && <p className="text-sm text-muted">{note}</p>}
 
-      {/* #342: receipt/bank-line filter — restored from the old Inbox (ReviewView had dropped it). Only
-          when grouped_review is ON, so flag-OFF stays byte-identical. */}
-      {grouped && txns.length > 0 && (
+      {/* #342: receipt/bank-line filter — restored from the old Inbox (ReviewView had dropped it). */}
+      {txns.length > 0 && (
         <div className="inline-flex rounded-lg border border-line p-0.5 text-xs" role="tablist" aria-label="Filter by kind">
           {([["", "All"], ["receipt", "Receipts"], ["bank_line", "Bank lines"]] as const).map(([v, label]) => (
             <button
@@ -169,7 +167,7 @@ export function ReviewView() {
 
       {txns.length === 0 ? (
         <Card className="p-8 text-center text-sm text-muted">Nothing needs review — you're all caught up.</Card>
-      ) : grouped ? (
+      ) : (
         (() => {
           const visible = kind ? txns.filter((t) => (t.kind ?? "") === kind) : txns;
           return (
@@ -218,30 +216,6 @@ export function ReviewView() {
             </>
           );
         })()
-      ) : (
-        <>
-          <label className="flex items-center gap-2 px-1 text-xs text-muted">
-            <input
-              type="checkbox"
-              className="h-4 w-4"
-              checked={txns.length > 0 && txns.every((t) => selected.has(t.id))}
-              onChange={(e) => setSelected(e.target.checked ? new Set(txns.map((t) => t.id)) : new Set())}
-            />
-            Select all on this page
-          </label>
-          <ul className="space-y-3">
-            {txns.map((t) => (
-              <li key={t.id}>
-                <Row txn={t} selected={selected.has(t.id)} onToggle={() => toggleSel(t.id)} onDone={setFlash} />
-              </li>
-            ))}
-          </ul>
-          {txns.length >= limit && (
-            <button onClick={() => setLimit((l) => l + 50)} className="w-full rounded-lg border border-line py-2 text-sm text-muted hover:text-ink">
-              Load more
-            </button>
-          )}
-        </>
       )}
 
       {/* "Finish these" — group-action wrap-up (sort repeat merchants, confirm loan interest, exclude

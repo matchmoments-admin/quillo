@@ -5,13 +5,13 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../../api";
 import { useActiveFy } from "../../lib/activeFy";
 import { useFeatures } from "../../lib/features";
-import { ProposedActionCard } from "../AskQuillo";
+import { ProposedActionCard } from "../ProposedActionCard";
 import { BUCKET_LABEL } from "../ui";
 import { useChatUI } from "./ChatProvider";
 import type { AskAnswer, EntityAction } from "../../types";
 
 /**
- * Floating "Ask Quillo" widget (flag `floating_chat`). The agent stays 100% server-side: this is a
+ * Floating "Ask Quillo" widget (gated on `ask_quillo`, the same key the server uses for /api/chat). The agent stays 100% server-side: this is a
  * plain-React client shell that POSTs to the existing /api/chat and renders the structured response
  * (answer + caveats + proposed_actions + entity_actions + navigate) with our own ui.tsx/tokens.
  *
@@ -31,8 +31,9 @@ const uid = (): string =>
 
 export function FloatingChat() {
   const { has, loaded } = useFeatures();
-  // Flag OFF (or still loading) ⇒ render nothing → byte-identical to today.
-  if (!loaded || !has("floating_chat")) return null;
+  // Gated on the server's chat kill-switch so the bubble can never point at a 404ing endpoint.
+  // Still loading ⇒ render nothing.
+  if (!loaded || !has("ask_quillo")) return null;
   return <FloatingChatInner />;
 }
 

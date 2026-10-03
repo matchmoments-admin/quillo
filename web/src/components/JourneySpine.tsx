@@ -5,8 +5,8 @@ import { QueryError } from "./ui";
 import { TabGuide } from "./TabGuide";
 import { useFeatures } from "../lib/features";
 
-// #247/#244 (Wave 3): the persistent journey breadcrumb. The app already has the "what's next" action
-// (NextActionBar) and per-tab "what do I do here" (TabGuide); the missing piece the research flagged is
+// #247/#244 (Wave 3): the persistent journey breadcrumb. The app already had the "what's next" action
+// and per-tab "what do I do here" (TabGuide); the missing piece the research flagged is
 // a constant sense of WHERE you are in the overall flow. This renders the six happy-path stops, marks
 // the current one, badges the stops with outstanding work (from the shared ["progress"] query — no new
 // endpoint), and lets the user jump to any stop. Flag-gated; hidden on the onboarding wizard.
@@ -26,31 +26,29 @@ const STOPS: Stop[] = [
   { key: "file", label: "File", href: "/filing", match: ["/filing"] },
 ];
 
-// `enhanced` (Slice 7, guidance_v2): the spine also carries the next-action CTA + summary + per-tab guide,
-// becoming the single guidance surface. OFF/un-enhanced ⇒ the breadcrumb-only spine, byte-identical.
-export function JourneySpine({ pathname, enhanced = false }: { pathname: string; enhanced?: boolean }) {
+// Slice 7: the spine also carries the next-action CTA + summary + per-tab guide, making it the single
+// guidance surface (the old NextActionBar + breadcrumb-only spine generation was retired with guidance_v2).
+export function JourneySpine({ pathname }: { pathname: string }) {
   const navigate = useNavigate();
   const { has } = useFeatures();
-  // Nav dedupe (enhanced only): when the bottom tab bar is the mobile primary nav, the spine's 6 pills
+  // Nav dedupe: when the bottom tab bar is the mobile primary nav, the spine's 6 pills
   // duplicate it — so render the pills DESKTOP-ONLY and let the spine be a pure progress+CTA strip on
   // mobile. Also drops the duplicated "N to review" from the summary (the CTA + tab badge carry it).
-  const progressStrip = enhanced && has("nav_progress_strip") && has("mobile_bottom_tabs");
+  const progressStrip = has("nav_progress_strip") && has("mobile_bottom_tabs");
   const { data, isError, error, refetch } = useQuery({ queryKey: ["progress"], queryFn: () => api.progress(), staleTime: 15_000 });
 
   if (pathname === "/onboarding") return null;
-  // As the single guidance surface, port NextActionBar's guard so the "what's next" CTA can't silently
-  // vanish on a failed load. Only in enhanced mode (the un-enhanced spine never showed a CTA).
-  if (enhanced && isError) return <QueryError what="what's next" error={error} onRetry={() => refetch()} />;
+  // As the single guidance surface, guard the "what's next" CTA so it can't silently vanish on a failed load.
+  if (isError) return <QueryError what="what's next" error={error} onRetry={() => refetch()} />;
   const currentIdx = STOPS.findIndex((s) => s.match.includes(pathname));
 
-  // Data-aware badge for the stop that has outstanding work (mirrors NextActionBar's signals, as a spine).
-  // The undated badge on Position is enhanced-only, so the un-enhanced (journey_spine) render is unchanged.
+  // Data-aware badge for the stop that has outstanding work.
   const badgeFor = (key: string): string | null => {
     if (!data) return null;
     if (key === "bring") return data.imported.transactions === 0 ? "start" : null;
     if (key === "sort") return data.needs_review > 0 ? String(data.needs_review) : null;
     if (key === "check") return data.unreconciled_receipts > 0 ? String(data.unreconciled_receipts) : null;
-    if (key === "position") return enhanced && data.undated > 0 ? String(data.undated) : null;
+    if (key === "position") return data.undated > 0 ? String(data.undated) : null;
     if (key === "file") return data.done ? "ready" : null;
     return null;
   };
@@ -83,9 +81,7 @@ export function JourneySpine({ pathname, enhanced = false }: { pathname: string;
     </nav>
   );
 
-  if (!enhanced) return spineNav;
-
-  // Enhanced: the merged next-action summary + CTA (ported from NextActionBar) and the per-tab guide
+  // The merged next-action summary + CTA and the per-tab guide
   // (TabGuide, reused as-is — placed outside the overflow-x-auto nav so its popover isn't clipped).
   const parts: string[] = [];
   if (data) {

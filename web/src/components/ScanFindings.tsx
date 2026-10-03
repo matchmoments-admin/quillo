@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api } from "../api";
 import { Card, Spinner, money } from "./ui";
-import { ProposedActionCard } from "./AskQuillo";
+import { ProposedActionCard } from "./ProposedActionCard";
 import type { ScanFinding } from "../types";
 
 // #256 — the pre-handoff "double-check my transactions" findings list. Deterministic, read-only: every

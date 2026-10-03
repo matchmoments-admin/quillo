@@ -29,7 +29,6 @@ export const FEATURE_KEYS = [
   "wfh_car_methods",
   "car_methods", // #245 (Wave 3): source car cents-per-km km from the dedicated car_inputs table (split out of work_use_inputs) so WFH and car are separate typed units. OFF ⇒ car km read from the legacy work_use_inputs.car_work_km column ⇒ byte-identical. The 0061 backfill seeds car_inputs from the legacy column so flag-ON is identical for existing data.
   "wfh_generate_diary",  // 0059 (Part 1): emit a generated WFH diary section in the accountant CSV. OFF by default — flag-OFF + own-record paths keep the legacy CSV byte-identical.
-  "loan_split",
   "attribution_engine", // 0032-0034: sum transaction_attributions for the position (payer≠claimant, ownership split). OFF in prod until validated.
   "cgt_engine",         // 0037 (#138): add net capital gain (shares/crypto/property disposals; 50% discount; loss offset) to the position. OFF in prod until validated.
   "ess_engine",         // 0038 (#141): add assessable ESS discount (taxed-upfront / deferral) to the position; startup concession defers to CGT. OFF in prod until validated.

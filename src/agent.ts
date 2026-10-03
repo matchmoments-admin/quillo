@@ -5061,111 +5061,6 @@ export class TaxAgent extends Agent<Env> {
     return { ignored, skipped };
   }
 
-  /**
-   * Guided mortgage interest/principal split (Phase 5). For ONE loan/mortgage line tied to an
-   * investment property, record the deductible INTEREST portion: the row keeps its gross amount_cents
-   * (so statement reconciliation is untouched — one canonical money source), and deductible_amount_cents
-   * is set to the interest, which the position counts ONLY when the `loan_split` flag is on (see
-   * report.ts positionAmountCents). The principal is implicitly excluded. Confirm-each-pattern: the UI
-   * pre-fills the % from the loan→property link but the user confirms each line. Own-home rent is
-   * refused — only an income-producing property's loan interest is deductible (s8-1). General info only.
-   */
-  async applyLoanSplit(
-    userId: string,
-    txnId: string,
-    opts: { property_id: string; interest_cents?: number; interest_pct?: number },
-  ): Promise<{ ok: true; interest_cents: number }> {
-    const row = await this.env.DB.prepare(
-      `SELECT raw_description, merchant, direction, amount_cents, amount_aud_cents, account_id, status
-         FROM transactions WHERE id = ? AND user_id = ? AND kind = 'bank_line'`,
-    )
-      .bind(txnId, userId)
-      .first<{ raw_description: string | null; merchant: string | null; direction: string | null; amount_cents: number | null; amount_aud_cents: number | null; account_id: string | null; status: string }>();
-    if (!row) throw new Error("transaction not found");
-    // Defence in depth: re-verify server-side that this really is a loan-review line (a client can't
-    // split arbitrary spend), mirroring the applyMovementSweep guard.
-    const v = classifyMovement(row.raw_description ?? row.merchant ?? "");
-    if (movementTreatment(v.klass, row.direction) !== "review") throw new Error("not a loan line to split");
-    // The property must belong to this tenant AND be income-producing. Loan interest is only
-    // deductible on a property held to earn assessable income — a rented one, or one genuinely
-    // available for rent (vacant). An owner-occupied home, a property you rent as a tenant
-    // (renting_*), or a sold one are all refused (their loan interest is private/capital).
-    const prop = await this.env.DB.prepare(`SELECT status FROM properties WHERE id = ? AND user_id = ?`)
-      .bind(opts.property_id, userId)
-      .first<{ status: string | null }>();
-    if (!prop) throw new Error("property not found");
-    if (!["rented", "vacant"].includes(prop.status ?? ""))
-      throw new Error("loan interest is only deductible on an income-producing property (rented, or genuinely available for rent) — not your own home, a property you rent, or a sold one");
-    const gross = row.amount_aud_cents ?? row.amount_cents ?? 0;
-    const raw = opts.interest_cents ?? Math.round((gross * (opts.interest_pct ?? 0)) / 100);
-    const interest = Math.max(0, Math.min(gross, Math.round(raw))); // interest can't exceed the payment
-    await this.env.DB.prepare(
-      `UPDATE transactions
-          SET bucket = 'property_rented', property_id = ?, deductible_amount_cents = ?,
-              deductibility = 'confirmed_deductible', ato_label = 'rental:interest', status = 'corrected'
-        WHERE id = ? AND user_id = ?`,
-    )
-      .bind(opts.property_id, interest, txnId, userId)
-      .run();
-    await this.env.DB.prepare(
-      `INSERT INTO corrections (id, user_id, txn_id, field, old_value, new_value) VALUES (?, ?, ?, 'loan_split', ?, ?)`,
-    )
-      .bind(crypto.randomUUID(), userId, txnId, String(gross), String(interest))
-      .run();
-    // Persist the implied % back onto the loan→property link (if one exists) so the next statement's
-    // matching line pre-fills with this %. This does NOT auto-apply — each line is still confirmed.
-    if (row.account_id && gross > 0) {
-      await this.env.DB.prepare(
-        `UPDATE loans_properties SET deductible_interest_pct = ? WHERE user_id = ? AND loan_account_id = ? AND property_id = ?`,
-      )
-        .bind((interest / gross) * 100, userId, row.account_id, opts.property_id)
-        .run();
-    }
-    await this.audit(userId, "loan_split", JSON.stringify({ txnId, property_id: opts.property_id, gross, interest }));
-    return { ok: true, interest_cents: interest };
-  }
-
-  /**
-   * Grouped loan-interest split — apply the SAME investment property + deductible-interest % to EVERY
-   * loan line in a group at once (e.g. all 12 monthly "LN REPAY" lines), instead of one row at a time.
-   * Loops the per-line applyLoanSplit, which re-verifies each line is a loan-review line on an
-   * income-producing property, keeps the gross amount unchanged (reconciliation untouched), records
-   * only the interest, and writes the % back to loans_properties. Passes the % (NOT a fixed cents
-   * figure) so each line computes its interest from its OWN gross — correct even when repayments vary.
-   * Already-split ('corrected') lines are skipped so a re-run is idempotent; a per-line failure (e.g. a
-   * line that isn't really a loan line) is counted and skipped, never fatal to the rest of the group.
-   */
-  async applyLoanSplitGroup(
-    userId: string,
-    txnIds: string[],
-    opts: { property_id: string; interest_pct: number },
-  ): Promise<{ applied: number; skipped: number; interest_cents: number }> {
-    if (!Array.isArray(txnIds) || txnIds.length === 0) return { applied: 0, skipped: 0, interest_cents: 0 };
-    const ids = txnIds.slice(0, 1000);
-    let applied = 0;
-    let skipped = 0;
-    let interest_cents = 0;
-    for (const id of ids) {
-      // Skip a line already split (status='corrected') so a double-tap / re-run can't re-split it.
-      const cur = await this.env.DB.prepare(`SELECT status FROM transactions WHERE id = ? AND user_id = ? AND kind = 'bank_line'`)
-        .bind(id, userId)
-        .first<{ status: string }>();
-      if (!cur || cur.status === "corrected") {
-        skipped++;
-        continue;
-      }
-      try {
-        const r = await this.applyLoanSplit(userId, id, { property_id: opts.property_id, interest_pct: opts.interest_pct });
-        applied++;
-        interest_cents += r.interest_cents;
-      } catch {
-        skipped++; // not a loan-review line / fails the income-producing-property check — skip, don't abort
-      }
-    }
-    await this.audit(userId, "loan_split_group", JSON.stringify({ n: ids.length, applied, skipped, property_id: opts.property_id, interest_pct: opts.interest_pct }));
-    return { applied, skipped, interest_cents };
-  }
-
   // ── STAGE B: clarify-by-pattern (group leftovers → one question per pattern) ──
   /**
    * Scan the FY's leftover bank lines (uncategorised / unknown / low-confidence, not already
@@ -5572,7 +5467,7 @@ export class TaxAgent extends Agent<Env> {
    * figure (lender annual summary or parsed statement) that the evidence-first model prefers over a
    * rate estimate. One row per (tenant, loan account, FY). Capture-only in this slice: report.ts does
    * NOT read it yet (S5 wires the per-property contribution + the mutual-exclusion guard vs the legacy
-   * loan_split), so recording a figure does NOT change the indicative position.
+   * per-line loan split), so recording a figure does NOT change the indicative position.
    */
   async setLoanInterest(
     userId: string,

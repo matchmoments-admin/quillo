@@ -183,7 +183,7 @@ interface ItemRow {
   use_status_denied: number;
   property_undetermined: number; // #254: 1 when this property-bucket row can't yet land in an income-producing property (flag-gated; 0 when off)
   gross_cents: number;
-  counted_cents: number; // the amount the engine's SUM expressions count (claimExpr when loan_split on)
+  counted_cents: number; // the amount the engine's SUM expressions count (claimExpr)
   deductible_amount_cents: number | null;
   gst_cents: number | null;
   property_id: string | null;
@@ -220,7 +220,6 @@ export async function buildAccountantSchedule(
 
   // The SAME flag context buildReport ran under — the shared clause builders guarantee the itemised
   // rows are the engine's own rows, never a re-implementation.
-  const honorApportion = featureOn(env, "loan_split");
   const excludeNonDeductible = featureOn(env, "position_excludes_nondeductible");
   const useAttributions = featureOn(env, "attribution_engine");
   // These two gate the itemised queries' WHERE clauses, so they resolve first; everything after is
@@ -230,7 +229,8 @@ export async function buildAccountantSchedule(
     separateTaxpayerEntityIds(env, userId),
   ]);
 
-  const amtExpr = honorApportion ? claimExpr("") : "COALESCE(amount_aud_cents, amount_cents)";
+  // Apportionment is always honoured (loan_split hard-wired ON) — mirrors buildReport's amtExpr exactly.
+  const amtExpr = claimExpr("");
 
   // (1) Itemised spend — byBucket (report.ts) ungrouped, identical WHERE + amount expression.
   const itemsP = safeAll<ItemRow>(

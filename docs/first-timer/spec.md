@@ -1134,6 +1134,14 @@ A11 shell, A12. Server part is Wave 1; page Wave 3.
 
 ## A9 Ship it
 
+> **Superseded in part by §0 (#590, 2026-10-04):** the step is *Lodge in myTax*. The header leads with the ATO's
+> "wait for Tax ready" rule (late July is the usual timing), and the worksheet follows myTax's order — Contact and
+> bank details → Personalise (what to tick, from the situation profile) → Income (prefilled, typed-in, rent,
+> sole trader/business) → Deductions → Losses/offsets/adjustments → Medicare and PHI → Spouse and income tests —
+> with banner names first and paper item numbers second. Managed fund distributions are prefilled. Mark as lodged
+> leads to receipt → ~12 business days → NOA in the myGov Inbox → *Found something you missed?* (Amend) → next
+> year. Figures use the brand theme (owner decision #618), not Geist. The body below is the original A9 design.
+
 **Decisions:** #538 (checklist in myTax section order, prefill 'check this matches', type-these-in
 with copy buttons and record links, tick-off, PDF, mark as lodged → NOA → next year, lodge after
 prefill, 31 Oct), #530 (self-lodge worksheet, non-customised, every figure the user's confirmed

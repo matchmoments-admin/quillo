@@ -1386,3 +1386,43 @@ export interface NoticedConfirmResult {
   residency_unanswered?: boolean;
   previously_recorded?: number;
 }
+
+// ── #575/#590 myTax self-lodge worksheet (GET /api/mytax-worksheet?fy=, flag mytax_worksheet; server
+//    src/lib/mytax-worksheet.ts). Every amount is the user's own recorded figure, re-grouped — never a refund,
+//    tax payable, offset or levy. tie_back.ok false ⇒ the page warns instead of presenting it as reconciled.
+export type MytaxWorksheetLineKind = "check" | "type_in" | "answer" | "note";
+export interface MytaxWorksheetLine {
+  key: string;
+  label: string;
+  name: string;
+  amount_cents: number | null;
+  kind: MytaxWorksheetLineKind;
+  record_href: string | null;
+  note?: string;
+}
+export interface MytaxWorksheetSection {
+  key: string;
+  title: string;
+  lines: MytaxWorksheetLine[];
+}
+export interface MytaxWorksheetHeader {
+  prefill_ready_hint: string;
+  self_lodge_due: string;
+  intro: string;
+  /** ISO self-lodger due date for the FY; the page compares it with the user's LOCAL day. */
+  self_lodge_due_on: string;
+  after_due_note: string;
+  agent_note: string;
+  early_lodge_note: string | null;
+  processing_hint: string;
+  amend_window: string;
+  records_keep: string;
+}
+export interface MytaxWorksheet {
+  fy: string;
+  header: MytaxWorksheetHeader;
+  sections: MytaxWorksheetSection[];
+  unlabelled: { n: number; cents: number };
+  tie_back: { ok: boolean; income_ok: boolean; deductions_ok: boolean; depreciation_ok: boolean } & Record<string, number | boolean>;
+  disclaimer: string;
+}

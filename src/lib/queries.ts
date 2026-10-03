@@ -163,10 +163,16 @@ const TXN_COLS =
 export async function listTransactions(
   env: Env,
   userId: string,
-  opts: { status?: string; bucket?: string; property_id?: string; kind?: string; review?: boolean; fy?: number; countable?: boolean; limit?: number; offset?: number } = {},
+  opts: { status?: string; bucket?: string; property_id?: string; kind?: string; review?: boolean; fy?: number; countable?: boolean; limit?: number; offset?: number; activity?: string } = {},
 ): Promise<TxnRow[]> {
   const where: string[] = ["user_id = ?"];
   const binds: unknown[] = [userId];
+  // #590: the myTax worksheet's business-expense "See records" link (?activity=<income_activity_id>) — lines
+  // attributed to that activity. Tenant-scoped on both sides; absent ⇒ the query is unchanged.
+  if (opts.activity) {
+    where.push("id IN (SELECT transaction_id FROM transaction_attributions WHERE user_id = ? AND income_activity_id = ?)");
+    binds.push(userId, opts.activity);
+  }
   if (opts.status) {
     where.push("status = ?");
     binds.push(opts.status);

@@ -280,7 +280,7 @@ export function Filing() {
 // carry-overs (net capital losses flow through the CGT offset; opening depreciation is captured) and
 // mark the year closed. Confirm-before-write: nothing hits your position until you press Confirm.
 // General information only — never a computed refund/liability.
-function NoaCloseOff() {
+export function NoaCloseOff() {
   const qc = useQueryClient();
   const fileRef = useRef<HTMLInputElement>(null);
   const [note, setNote] = useState<string | null>(null);

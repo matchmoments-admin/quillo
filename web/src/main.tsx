@@ -26,7 +26,7 @@ import { Documents } from "./pages/Documents";
 import { Assets } from "./pages/Assets";
 import { Glossary } from "./pages/Glossary";
 import { BeforeYouStart, beforeYouStartLoader } from "./pages/BeforeYouStart";
-import { FtRedirect, HomeIndex, OldStepRedirect, SetupStep, ConnectStep, ReviewStep, LodgeStep } from "./pages/Steps";
+import { FtRedirect, HomeIndex, OldStepRedirect, SetupStep, ConnectStep, ReviewStep, LodgeStep, LodgePrintStep } from "./pages/Steps";
 import { setTokenGetter } from "./api";
 import { ActiveFyProvider } from "./lib/activeFy";
 
@@ -146,6 +146,7 @@ const router = createBrowserRouter([
       { path: "connect", element: <ConnectStep /> },
       { path: "review", element: <ReviewStep /> },
       { path: "lodge", element: <LodgeStep /> },
+      { path: "lodge/print", element: <LodgePrintStep /> },
       // The 6-step journey's URLs (#582) → their 4-step route (lib/legacyRoutes.ts OLD_STEP_ROUTES).
       { path: "about", element: <OldStepRedirect /> },
       { path: "bring-in", element: <OldStepRedirect /> },

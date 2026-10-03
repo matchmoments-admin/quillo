@@ -3986,9 +3986,47 @@ console.log("mytax worksheet");
   check("sole-trader business: individual/entity-less claimant only", isSoleTraderBusinessAttribution("individual", { activity_type: "business", entity_type: null }) && !isSoleTraderBusinessAttribution("individual", { activity_type: "business", entity_type: "trust" }));
   const fromOldKv = mytaxPackContent({ version: "au-v1", buckets: {} }); // a KV pack pushed before #575
   check("pack fallback: a KV pack without the mytax keys falls back to the bundled content",
-    fromOldKv.mytax_sections[0]?.key === "income_check" && fromOldKv.mytax_income_items.salary_payg?.prefilled === true && fromOldKv.lodgement.self_lodge_due === "31 October");
-  const custom = mytaxPackContent({ mytax_sections: [{ key: "deductions", title: "D" }], lodgement: { prefill_ready_hint: "x", self_lodge_due: "y" } });
-  check("pack: a KV pack's own keys win", custom.mytax_sections.length === 1 && custom.lodgement.self_lodge_due === "y" && custom.mytax_deduction_labels.D5 === "Other work-related expenses");
+    fromOldKv.mytax_sections[0]?.key === "contact_bank" && fromOldKv.mytax_income_items.salary_payg?.prefilled === true && fromOldKv.lodgement.self_lodge_due === "31 October");
+  const custom = mytaxPackContent({ mytax_sections: [{ key: "personalise", title: "P" }, { key: "deductions", title: "D" }], lodgement: { prefill_ready_hint: "x", self_lodge_due: "y" } });
+  check("pack: a (#590-aware) KV pack's own keys win", custom.mytax_sections.length === 2 && custom.lodgement.self_lodge_due === "y" && custom.mytax_deduction_labels.D5 === "Other work-related expenses");
+  // #590: a KV pack pushed before #590 has the timing keys but not the after-lodging ones — filled key by key.
+  check("pack (#590): a pre-#590 KV lodgement block keeps its own timing and gains the bundled after-lodging keys",
+    custom.lodgement.prefill_ready_hint === "x" && custom.lodgement.processing_hint === "about 12 business days" && custom.lodgement.employer_finalise_by === "14 July" && custom.mytax_personalise_items.length > 0);
+  const oldKv = mytaxPackContent({ mytax_sections: [{ key: "income_check", title: "I" }, { key: "deductions", title: "D" }], mytax_income_items: { managed_fund_distribution: { item: "13", name: "MF", prefilled: false } } });
+  check("pack (#590): a pre-#590 KV pack (no personalise section) falls back to the bundled order + item map until rulepack:push",
+    oldKv.mytax_sections[0]?.key === "contact_bank" && oldKv.mytax_income_items.managed_fund_distribution?.prefilled === true);
+}
+
+// ── #590 Lodge in myTax: pack order, managed funds prefilled, header, occupation label ──
+import { worksheetHeader, occupationDisplay } from "../src/lib/mytax-worksheet";
+console.log("mytax worksheet: myTax order + header (#590)");
+{
+  const pk = mytaxPackContent(rulePack);
+  check("pack: sections in myTax order — contact/bank → personalise → income (incl. rent + business) → deductions → adjustments → Medicare → spouse",
+    JSON.stringify(pk.mytax_sections.map((x) => x.key)) === JSON.stringify(["contact_bank", "personalise", "income_check", "income_type_in", "rental", "business", "deductions", "adjustments", "medicare", "spouse_income_tests"]));
+  const itemKeys = Object.keys(pk.mytax_income_items);
+  check("pack: managed fund distributions are prefilled (ATO prefill list) and income items run in myTax banner order (rent < managed funds < business < foreign < other)",
+    pk.mytax_income_items.managed_fund_distribution?.prefilled === true && itemKeys.indexOf("rent") < itemKeys.indexOf("managed_fund_distribution")
+      && itemKeys.indexOf("managed_fund_distribution") < itemKeys.indexOf("business") && itemKeys.indexOf("business") < itemKeys.indexOf("foreign_employment") && itemKeys.indexOf("foreign_employment") < itemKeys.indexOf("other"));
+  const prof = (residency: { type: string; starts_on: string; ends_on: string }[]) => ({
+    person_id: "p", fy: "2025-26", fy_start: "2025-07-01", fy_end: "2026-06-30", jobs: [], abn_activities: [], state: null,
+    residency: residency.map((r, i) => ({ period_id: `r${i}`, ...r })),
+    flags: { spouse: null, study: false, study_loan: false, wfh: false, car_for_work: false, foreign_income: false, private_hospital_cover: null },
+  });
+  const h = worksheetHeader(pk, { occupation: null, profile: null, dueOn: "2026-10-31" });
+  check("header: Tax ready leads, late July is secondary, dates come from the pack, and it says you lodge in myTax",
+    /^Wait until your income statement says "Tax ready"/.test(h.intro) && h.intro.includes("14 July") && h.intro.includes("usually late July") && h.intro.includes("31 July") && h.intro.includes("31 October")
+      && /You lodge in myTax/.test(h.intro) && h.self_lodge_due_on === "2026-10-31" && h.early_lodge_note === null);
+  check("header: the agent line says to contact them before the due date; nothing predicts an outcome",
+    /before 31 October/.test(h.agent_note) && [h.intro, h.agent_note, h.after_due_note].every((t) => denylistHits(t).length === 0));
+  const leaving = worksheetHeader(pk, { occupation: null, profile: prof([{ type: "resident", starts_on: "2025-07-01", ends_on: "2026-02-28" }, { type: "foreign", starts_on: "2026-03-01", ends_on: "2026-06-30" }]) as never, dueOn: "" });
+  const stayed = worksheetHeader(pk, { occupation: null, profile: prof([{ type: "resident", starts_on: "2025-07-01", ends_on: "2026-06-30" }]) as never, dueOn: "" });
+  const arrived = worksheetHeader(pk, { occupation: null, profile: prof([{ type: "whm", starts_on: "2025-07-01", ends_on: "2025-12-31" }, { type: "resident", starts_on: "2026-01-01", ends_on: "2026-06-30" }]) as never, dueOn: "" });
+  check("header: a resident period ending before 30 June (leaving) ⇒ the early-lodgment note; a full year or an arrival ⇒ none",
+    /lodge early/.test(leaving.early_lodge_note ?? "") && stayed.early_lodge_note === null && arrived.early_lodge_note === null);
+  check("occupation: the pack guide label wins; else the token in words; else the profile's longest job; else null",
+    occupationDisplay("nurse", null) === "Nurse / midwife" && occupationDisplay("barista_lead", null) === "barista lead" && occupationDisplay(null, null) === null
+      && occupationDisplay(null, { ...prof([]), jobs: [{ period_id: "a", starts_on: "2025-07-01", ends_on: "2025-08-01", occupation_token: "retail", ref_id: null, wfh: false, uses_own_car: false }, { period_id: "b", starts_on: "2025-08-02", ends_on: "2026-06-30", occupation_token: "nurse", ref_id: null, wfh: false, uses_own_car: false }] } as never) === "Nurse / midwife");
 }
 
 // ── #571 situation_profile: period validation (pack + overlap), FY clipping, mirrors ──
@@ -4896,6 +4934,58 @@ console.log("about you (#585)");
     !parseMyTaxCheck("{oops").mygov && !parseMyTaxCheck(null).myid && !parseMyTaxCheck(JSON.stringify({ mytax_check: [true] })).mygov);
   check("setup: the page mounts the intro, the myTax check, Tax Help, #591's cards and the Why? drawer on 'setup'",
     /<SetupIntro \/>/.test(aySrc) && /<MyTaxCheckCard/.test(aySrc) && /<TaxHelpCard \/>/.test(aySrc) && /<NewcomerCard/.test(aySrc) && /<StateEducationCard/.test(aySrc) && /useWhyDrawer\("setup"\)/.test(aySrc));
+}
+
+// ── #590 Ship it: worksheet ticks (web/src/lib/worksheetTicks.ts), routes, copy denylist ──
+import { parseTicks, tickState, withTick, tickProgress, tickId, isTickable, MAX_TICK_FYS } from "../web/src/lib/worksheetTicks";
+console.log("ship it: worksheet ticks + routes (#590)");
+{
+  check("ticks: malformed / missing ui_state reads as no ticks (never throws)",
+    JSON.stringify(parseTicks(null)) === "{}" && JSON.stringify(parseTicks("not json")) === "{}" && JSON.stringify(parseTicks('{"worksheet_ticks":[1]}')) === "{}" &&
+    JSON.stringify(parseTicks('{"worksheet_ticks":{"2025":{"a":"x","b":12,"c":null},"bad":{"d":1}}}')) === '{"2025":{"b":12,"c":null}}');
+  const id = tickId("deductions", "D5");
+  const t1 = withTick({}, 2025, id, { amountCents: 40000 });
+  check("ticks: a tick records the figure seen; same figure ⇒ ticked, changed figure ⇒ stale, other year ⇒ none",
+    tickState(t1, 2025, id, 40000) === "ticked" && tickState(t1, 2025, id, 41000) === "stale" && tickState(t1, 2024, id, 40000) === "none");
+  check("ticks: a question line (no figure) ticks with null and stays ticked", tickState(withTick({}, 2025, "medicare:m1", { amountCents: null }), 2025, "medicare:m1", null) === "ticked");
+  const t2 = withTick(t1, 2025, id, null);
+  check("ticks: untick removes the line (and an emptied year), never mutates the input", !("2025" in t2) && tickState(t1, 2025, id, 40000) === "ticked");
+  let many = {};
+  for (const y of [2020, 2021, 2022, 2023, 2024]) many = withTick(many, y, id, { amountCents: 1 });
+  check(`ticks: only the latest ${MAX_TICK_FYS} years are kept (ui_state is capped)`, JSON.stringify(Object.keys(many)) === JSON.stringify(["2022", "2023", "2024"]));
+  const older = withTick(many, 2019, id, { amountCents: 1 });
+  check("ticks: ticking an older year sticks (the year being ticked is always kept; the oldest other year goes)",
+    JSON.stringify(Object.keys(older)) === JSON.stringify(["2019", "2023", "2024"]) && tickState(older, 2019, id, 1) === "ticked");
+  const sections = [
+    { key: "income_check", title: "", lines: [
+      { key: "salary:a", label: "1", name: "", amount_cents: 100, kind: "check" as const, record_href: null },
+      { key: "salary:b", label: "1", name: "", amount_cents: null, kind: "check" as const, record_href: null },
+    ] },
+    { key: "income_type_in", title: "", lines: [{ key: "foreign_left_out", label: "20", name: "", amount_cents: null, kind: "note" as const, record_href: null }] },
+    { key: "deductions", title: "", lines: [{ key: "D5", label: "D5", name: "", amount_cents: 40000, kind: "type_in" as const, record_href: null }] },
+  ];
+  check("ticks: notes and a 'not entered' prefilled line aren't tickable",
+    !isTickable(sections[0]!.lines[1]!) && !isTickable(sections[1]!.lines[0]!) && isTickable(sections[0]!.lines[0]!));
+  const p = tickProgress(sections, withTick(withTick({}, 2025, tickId("income_check", "salary:a"), { amountCents: 100 }), 2025, id, { amountCents: 39000 }), 2025);
+  check("ticks: progress counts only tickable lines whose tick still matches (a stale tick isn't done)", p.total === 2 && p.done === 1);
+
+  const mainSrc = fs.readFileSync(path.join(process.cwd(), "web/src/main.tsx"), "utf8");
+  check("lodge: /lodge/print is a registered route", /\{ path: "lodge\/print", element: <LodgePrintStep \/> \}/.test(mainSrc));
+  const stepsSrc = fs.readFileSync(path.join(process.cwd(), "web/src/pages/Steps.tsx"), "utf8");
+  check("lodge: the Lodge in myTax step (key lodge) renders ShipIt (Filing folded in) and the print route is ft_journey + mytax_worksheet gated",
+    /<StepRoute step="lodge">\s*<ShipIt \/>/.test(stepsSrc) && /has\("ft_journey"\)\) return <Navigate to=\{STEP_LEGACY_ROUTE\.lodge\}/.test(stepsSrc) && /has\("mytax_worksheet"\)\) return <Navigate to="\/lodge"/.test(stepsSrc));
+  const shipSrc = fs.readFileSync(path.join(process.cwd(), "web/src/pages/ShipIt.tsx"), "utf8");
+  check("ship: the worksheet query only runs with mytax_worksheet ON and lodged reads only with situation_profile ON",
+    /mytaxWorksheet\(fy\), enabled: worksheetOn/.test(shipSrc) && /api\.fyLodged\(fy\)\.then\(\(r\) => r\.lodged\), enabled: lodgedOn/.test(shipSrc));
+  check("ship: tie_back.ok false ⇒ a warning, not a reconciled worksheet", /!ws\.tie_back\.ok &&/.test(shipSrc));
+  const offenders: string[] = [];
+  for (const f of ["web/src/pages/ShipIt.tsx", "web/src/pages/ShipItPrint.tsx", "web/src/lib/worksheetTicks.ts"]) {
+    stripComments(fs.readFileSync(path.join(process.cwd(), f), "utf8")).split("\n").forEach((line, i) => {
+      const h = denylistHits(line);
+      if (h.length) offenders.push(`${f}:${i + 1} [${h.join(",")}]`);
+    });
+  }
+  check(`ship: Ship it copy passes the tax-advice denylist (offenders: ${offenders.join(" | ") || "none"})`, offenders.length === 0);
 }
 
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);

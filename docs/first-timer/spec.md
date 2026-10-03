@@ -1780,5 +1780,5 @@ runtime job behind a kill-switch, not a migration.
 | `ft_journey` | A2, A3b, A6–A12 | SPA + `/api/journey` + Grow | legacy shell, legacy theme, legacy routes |
 
 Kept from earlier work and reused: `first_timer_income` (ON), `ask_quillo` (Why? drawer
-kill-switch), `grouped_review_v2`, `noa_capture`, `bank_feed_cdr` (OFF until R3 and the CDR legal
-review #524 clear — the consent dashboard shipped in #576; Bring in falls back to statement upload).
+kill-switch), `grouped_review_v2`, `noa_capture`, `bank_feed_cdr` (OFF until the CDR legal review
+#524 clears — the consent dashboard (#576) and bounded backfill (#511) shipped; Bring in falls back to statement upload).

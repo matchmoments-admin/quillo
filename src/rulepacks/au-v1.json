@@ -66,7 +66,17 @@
     {"id": "au-occ-retail", "scope_type": "occupation", "scope_value": "retail_worker", "merchant_hint": "uniform,logo,laundry,name badge,union,sda", "ato_label": "D3/D5", "claim_type": "immediate", "general_info_note": "Retail workers can generally claim a compulsory logo'd uniform and its laundry, and union fees (e.g. SDA). Plain clothing in the store's colours - or items from the store's own range you were told to wear - is conventional clothing and NOT deductible.", "defer_to_agent": 0},
     {"id": "au-occ-real-estate", "scope_type": "occupation", "scope_value": "real_estate_agent", "merchant_hint": "real estate institute,reiv,reiq,rein,licence renewal,marketing,advertising,signboard,property photography,staging", "ato_label": "D5", "claim_type": "apportioned", "general_info_note": "Real estate employees can generally claim their licence/registration RENEWAL (not the first licence to enter the industry), professional-institute fees, and marketing costs they genuinely bear themselves - agency cost-sharing splits are fact-specific. Suits and business attire are conventional clothing and not deductible.", "defer_to_agent": 1},
     {"id": "au-occ-security", "scope_type": "occupation", "scope_value": "security_guard", "merchant_hint": "security licence,licence renewal,crowd control,uniform,torch,boots,first aid,union", "ato_label": "D3/D5", "claim_type": "immediate", "general_info_note": "Security guards can generally claim their licence RENEWAL (the FIRST licence to get the job is not deductible), distinctive uniform and laundry, protective equipment they bought, first-aid renewals and union fees. Plain dark clothing without logos is conventional clothing and not deductible.", "defer_to_agent": 0},
-    {"id": "au-occ-apprentice", "scope_type": "occupation", "scope_value": "apprentice", "merchant_hint": "tools,toolbox,tafe,trade school,apprentice,ppe,boots,hi-vis,total tools,sydney tools", "ato_label": "D5", "claim_type": "apportioned", "general_info_note": "Apprentices and trainees can generally claim tools they paid for (immediate at or under $300, depreciated above), protective clothing/PPE and union fees. Course/TAFE fees are only deductible where connected to the CURRENT apprenticeship and actually borne by you (government subsidies and employer reimbursements are not) - fee treatment is fact-specific.", "defer_to_agent": 1}
+    {"id": "au-occ-apprentice", "scope_type": "occupation", "scope_value": "apprentice", "merchant_hint": "tools,toolbox,tafe,trade school,apprentice,ppe,boots,hi-vis,total tools,sydney tools", "ato_label": "D5", "claim_type": "apportioned", "general_info_note": "Apprentices and trainees can generally claim tools they paid for (immediate at or under $300, depreciated above), protective clothing/PPE and union fees. Course/TAFE fees are only deductible where connected to the CURRENT apprenticeship and actually borne by you (government subsidies and employer reimbursements are not) - fee treatment is fact-specific.", "defer_to_agent": 1},
+    {"id": "au-occ-student-study", "scope_type": "occupation", "scope_value": "student", "merchant_hint": "textbook,student services,student amenities,ssaf,course materials,course fee,lab coat", "ato_label": "D4", "claim_type": "apportioned", "general_info_note": "Study costs are generally deductible only where the course has a sufficient connection to the paid work you do NOW: it maintains or improves the skills that job needs, or is likely to increase your income from it. Study for a future career, fees covered by a HELP loan, and study while your only income is a government payment such as Youth Allowance are generally not deductible.", "defer_to_agent": 1},
+    {"id": "au-occ-childcare-checks", "scope_type": "occupation", "scope_value": "childcare_worker", "merchant_hint": "working with children,wwcc,blue card,first aid,cpr", "ato_label": "D5", "claim_type": "immediate", "general_info_note": "A working with children check you renew to keep your current childcare job is generally deductible, as is first-aid or CPR training where you're required to hold it as part of your current role. The check or qualification you needed to get the job in the first place is generally a pre-employment cost and not deductible.", "defer_to_agent": 1},
+    {"id": "au-occ-childcare-uniform", "scope_type": "occupation", "scope_value": "childcare_worker", "merchant_hint": "uniform,logo,laundry,sunscreen,sun hat,united workers union,ieu,craft supplies", "ato_label": "D3/D5", "claim_type": "immediate", "general_info_note": "Childcare workers can generally claim a compulsory logo'd uniform and its laundry, sun protection for supervising children outdoors, union fees, and resources for the room they buy themselves and aren't reimbursed for. Plain clothing, even in the centre's colours, is conventional clothing and not deductible.", "defer_to_agent": 0},
+    {"id": "au-occ-warehouse-ppe", "scope_type": "occupation", "scope_value": "warehouse_logistics", "merchant_hint": "steel cap,safety boot,work boot,hi-vis,hi vis,high vis,safety glasses,earplugs,ear plugs,gloves,workwear,rsea,ppe,uniform", "ato_label": "D3", "claim_type": "immediate", "general_info_note": "Warehouse and factory workers can generally claim protective clothing and footwear (steel-capped boots, hi-vis, gloves, safety glasses, hearing protection) and a compulsory logo'd uniform with its laundry. Jeans, plain work pants and ordinary sneakers are conventional clothing and not deductible, even if worn only at work.", "defer_to_agent": 0},
+    {"id": "au-occ-warehouse-licence", "scope_type": "occupation", "scope_value": "warehouse_logistics", "merchant_hint": "forklift,high risk work licence,high risk licence,hrwl", "ato_label": "D5", "claim_type": "immediate", "general_info_note": "Renewing a forklift or high-risk work licence you need to keep your current job is generally deductible. The first licence you obtain to get the job is a pre-employment cost and generally not deductible.", "defer_to_agent": 1},
+    {"id": "au-occ-call-centre", "scope_type": "occupation", "scope_value": "call_centre", "merchant_hint": "headset,headphones,noise cancelling,jabra,plantronics", "ato_label": "D5", "claim_type": "apportioned", "general_info_note": "A headset you buy yourself for call-centre work is generally deductible (a headset your employer supplies is not). Apportion out any private use; an item over $300 is depreciated rather than claimed immediately.", "defer_to_agent": 0},
+    {"id": "au-occ-fitness-registration", "scope_type": "occupation", "scope_value": "fitness_instructor", "merchant_hint": "ausactive,fitness australia,physical activity australia,first aid,cpr,registration renewal", "ato_label": "D5", "claim_type": "immediate", "general_info_note": "Renewing your fitness registration or professional association membership, and first-aid or CPR training you must keep current for your role, are generally deductible. The registration or qualification you needed before you could be employed is generally a pre-employment cost and not deductible.", "defer_to_agent": 1},
+    {"id": "au-occ-fitness-equipment", "scope_type": "occupation", "scope_value": "fitness_instructor", "merchant_hint": "kettlebell,dumbbell,resistance band,yoga mat,boxing pads,fitness equipment,sunscreen,sun hat", "ato_label": "D5", "claim_type": "immediate", "general_info_note": "Fitness instructors can generally claim equipment they buy to run classes or sessions (immediately at or under $300, depreciated above) and sun protection where they train clients outdoors for long periods. Activewear, sports shoes, your own gym membership and keeping yourself fit are private and not deductible.", "defer_to_agent": 0},
+    {"id": "au-occ-delivery-vehicle", "scope_type": "occupation", "scope_value": "delivery_rider", "merchant_hint": "bicycle,bike,e-bike,ebike,scooter,motorbike,motorcycle,tyre,inner tube,helmet,bike light,fuel", "ato_label": "D15", "claim_type": "apportioned", "general_info_note": "Delivery riders can generally claim the delivery-use portion of running their bike, e-bike, scooter or car (repairs, servicing, tyres, fuel) and the decline in value of the vehicle itself. Keep a record of delivery versus private use. How you're engaged by the platform (contractor or employee) changes where this is reported.", "defer_to_agent": 1},
+    {"id": "au-occ-delivery-gear", "scope_type": "occupation", "scope_value": "delivery_rider", "merchant_hint": "delivery bag,insulated bag,thermal bag,phone mount,phone holder,hi-vis,hi vis", "ato_label": "D15", "claim_type": "apportioned", "general_info_note": "Gear bought for deliveries, such as an insulated delivery bag, a phone mount and hi-vis, is generally deductible, less any private use. Platform service fees and commissions are generally deductible too, and are often netted from your payout, so check your platform statement rather than your bank.", "defer_to_agent": 0}
   ],
   "thresholds_by_fy": {
     "_note": "All dollar thresholds in CENTS. These change yearly and are policy-dependent — the depreciation engine + claimability brain read them per FY, never inline. Confirm against ATO before relying on them.",
@@ -172,6 +182,7 @@
     "_note": "#143: occupation deduction content keyed by income_activities.occupation_scope. 'suggest' items become claim_suggestions (suggested_deductible — never auto-counted; deny-by-default holds). 'warn' items pre-empt the ATO's top occupation errors. GENERAL INFO ONLY.",
     "nurse": {
       "label": "Nurse / midwife",
+      "ato_url": "https://www.ato.gov.au/individuals-and-families/income-deductions-offsets-and-records/guides-for-occupations-and-industries/l-q/nurses-and-midwives-income-and-work-related-deductions",
       "suggest": [
         "AHPRA registration renewal (required to practise) is generally deductible.",
         "Nursing/professional association and union fees related to your work are generally deductible.",
@@ -189,6 +200,7 @@
     },
     "tradesperson": {
       "label": "Tradesperson",
+      "ato_url": "https://www.ato.gov.au/individuals-and-families/income-deductions-offsets-and-records/guides-for-occupations-and-industries/r-z/tradesperson-income-and-work-related-deductions",
       "suggest": [
         "Tools and equipment: immediate write-off ≤$300; depreciate >$300 (a tool SET >$300 is depreciated even if each piece is <$300).",
         "Protective clothing/PPE: steel-cap boots, hi-vis, hard hats, safety glasses, sun protection for outdoor work.",
@@ -205,6 +217,7 @@
     },
     "teacher": {
       "label": "Teacher",
+      "ato_url": "https://www.ato.gov.au/individuals-and-families/income-deductions-offsets-and-records/guides-for-occupations-and-industries/r-z/teachers-and-education-professionals-income-and-work-related-deductions",
       "suggest": [
         "Teaching registration and professional association/union fees.",
         "Self-education connected to your current teaching role.",
@@ -220,6 +233,7 @@
     },
     "it_professional": {
       "label": "IT professional",
+      "ato_url": "https://www.ato.gov.au/individuals-and-families/income-deductions-offsets-and-records/guides-for-occupations-and-industries/e-k/it-professionals-income-and-work-related-deductions",
       "suggest": [
         "Work-related portion of home-office running costs (the ATO fixed rate per hour).",
         "Self-education and certifications relevant to your current role.",
@@ -236,6 +250,7 @@
     },
     "healthcare_worker": {
       "label": "Healthcare worker",
+      "ato_url": "https://www.ato.gov.au/individuals-and-families/income-deductions-offsets-and-records/guides-for-occupations-and-industries/a-d/doctor-specialist-and-other-medical-professionals-income-and-work-related-deductions",
       "suggest": [
         "Professional registration renewals (e.g. AHPRA) required for your current role.",
         "Occupation-specific clothing (scrubs, logo'd polos) and its laundry; non-slip work shoes.",
@@ -253,6 +268,7 @@
     },
     "office_professional": {
       "label": "Office professional",
+      "ato_url": "https://www.ato.gov.au/individuals-and-families/income-deductions-offsets-and-records/guides-for-occupations-and-industries/l-q/office-workers-income-and-work-related-deductions",
       "suggest": [
         "Work-related portion of home-office running costs (the ATO fixed rate per hour, with a record of hours).",
         "Professional memberships, subscriptions and union fees tied to your work.",
@@ -269,6 +285,7 @@
     },
     "driver": {
       "label": "Driver (rideshare / delivery / truck)",
+      "ato_url": "https://www.ato.gov.au/businesses-and-organisations/income-deductions-and-concessions/sharing-economy-and-tax/ride-sourcing/income-and-deductions-for-ride-sourcing",
       "suggest": [
         "Car expenses via a 12-week logbook (typical for rideshare) or cents-per-km — one method per car.",
         "Platform commissions and fees charged against your fares/deliveries.",
@@ -285,6 +302,7 @@
     },
     "hospitality_worker": {
       "label": "Hospitality worker",
+      "ato_url": "https://www.ato.gov.au/individuals-and-families/income-deductions-offsets-and-records/guides-for-occupations-and-industries/e-k/hospitality-industry-workers-income-and-work-related-deductions",
       "suggest": [
         "Chef's whites, logo'd aprons and other compulsory/distinctive uniform items, plus laundry.",
         "Tools of trade you paid for (e.g. a chef's knife set — depreciated if the set cost over $300).",
@@ -300,6 +318,7 @@
     },
     "sales_professional": {
       "label": "Sales professional",
+      "ato_url": "https://www.ato.gov.au/individuals-and-families/income-deductions-offsets-and-records/guides-for-occupations-and-industries/r-z/sales-and-marketing-managers-income-and-work-related-deductions",
       "suggest": [
         "Car expenses for client visits and between-site travel (cents-per-km or logbook) — not home-to-work.",
         "Work-use portion of phone and internet.",
@@ -316,6 +335,7 @@
     },
     "adf_member": {
       "label": "ADF member",
+      "ato_url": "https://www.ato.gov.au/defence",
       "suggest": [
         "Distinctive service uniform items you paid for (camouflage, mess dress, service shirts) and their laundry.",
         "Work-specific equipment you bought and weren't reimbursed for.",
@@ -331,6 +351,7 @@
     },
     "police_officer": {
       "label": "Police officer",
+      "ato_url": "https://www.ato.gov.au/individuals-and-families/income-deductions-offsets-and-records/guides-for-occupations-and-industries/l-q/police-income-and-work-related-deductions",
       "suggest": [
         "Police association / union fees.",
         "Distinctive uniform items and their laundry/dry-cleaning.",
@@ -347,6 +368,7 @@
     },
     "aged_care_worker": {
       "label": "Aged & disability care worker",
+      "ato_url": "https://www.ato.gov.au/individuals-and-families/income-deductions-offsets-and-records/guides-for-occupations-and-industries/a-d/community-workers-and-direct-carers-income-and-work-related-deductions",
       "suggest": [
         "Logo'd or occupation-specific uniform and its laundry; non-slip shoes.",
         "PPE you paid for: gloves, masks, aprons, hand sanitiser for client work.",
@@ -363,6 +385,7 @@
     },
     "cleaner": {
       "label": "Cleaner",
+      "ato_url": "https://www.ato.gov.au/individuals-and-families/income-deductions-offsets-and-records/guides-for-occupations-and-industries/a-d/cleaners-income-and-work-related-deductions",
       "suggest": [
         "Cleaning supplies and equipment you paid for (immediate write-off at or under $300; depreciated above).",
         "PPE: gloves, masks, non-slip shoes.",
@@ -379,6 +402,7 @@
     },
     "retail_worker": {
       "label": "Retail worker",
+      "ato_url": "https://www.ato.gov.au/individuals-and-families/income-deductions-offsets-and-records/guides-for-occupations-and-industries/r-z/retail-industry-workers-income-and-work-related-deductions",
       "suggest": [
         "A compulsory, logo'd/distinctive uniform and its laundry.",
         "Union fees (e.g. SDA).",
@@ -394,6 +418,7 @@
     },
     "real_estate_agent": {
       "label": "Real estate agent",
+      "ato_url": "https://www.ato.gov.au/individuals-and-families/income-deductions-offsets-and-records/guides-for-occupations-and-industries/r-z/real-estate-employees-income-and-work-related-deductions",
       "suggest": [
         "Licence/registration RENEWAL and professional-institute fees (REIV/REIQ etc.).",
         "Car expenses for inspections and client visits via a logbook (usually the better method for high work km).",
@@ -411,6 +436,7 @@
     },
     "security_guard": {
       "label": "Security guard",
+      "ato_url": "https://www.ato.gov.au/individuals-and-families/income-deductions-offsets-and-records/guides-for-occupations-and-industries/e-k/guards-and-security-workers-income-and-work-related-deductions",
       "suggest": [
         "Security licence RENEWAL (required to keep working).",
         "Distinctive/logo'd uniform and its laundry.",
@@ -427,6 +453,7 @@
     },
     "apprentice": {
       "label": "Apprentice / trainee",
+      "ato_url": "https://www.ato.gov.au/individuals-and-families/income-deductions-offsets-and-records/guides-for-occupations-and-industries/a-d/apprentices-and-trainees-income-and-work-related-deductions",
       "suggest": [
         "Tools you paid for: immediate write-off at or under $300, depreciated above (a tool SET over $300 is depreciated even if each piece is under).",
         "Protective clothing/PPE: steel-caps, hi-vis, safety glasses.",
@@ -438,6 +465,111 @@
         "Home-to-work travel is private (unless you're carrying bulky tools with no secure storage at work — keep evidence).",
         "Study to qualify for a DIFFERENT job is not deductible.",
         "Government incentives and allowances aren't deductions — and they may be assessable income."
+      ]
+    },
+    "student": {
+      "label": "Student",
+      "ato_url": "https://www.ato.gov.au/individuals-and-families/income-deductions-offsets-and-records/deductions-you-can-claim/work-related-deductions/education-training-and-seminars/self-education-expenses",
+      "suggest": [
+        "Study costs you pay yourself (course fees, textbooks, the student services and amenities fee, stationery), but ONLY where the course is connected to the paid job you have NOW: it maintains or improves skills that job needs, or is likely to increase your income from it.",
+        "If you also work (e.g. a casual retail or hospitality job), your deductions come from that work: add the job's occupation too, so its own guide applies.",
+        "The work-use portion of a phone or laptop you use for that paid work."
+      ],
+      "warn": [
+        "Study for a FUTURE career (e.g. a nursing degree while you work in retail) is generally not deductible: the course must connect to your current job.",
+        "HECS-HELP / FEE-HELP repayments are never deductible, and fees covered by a HELP loan aren't an amount you paid yourself.",
+        "You can't claim self-education if your only income is a government payment such as Youth Allowance or Austudy.",
+        "Everyday clothing is conventional clothing, and not deductible.",
+        "Home-to-work travel is private."
+      ]
+    },
+    "childcare_worker": {
+      "label": "Childcare / early childhood educator",
+      "ato_url": "https://www.ato.gov.au/individuals-and-families/income-deductions-offsets-and-records/guides-for-occupations-and-industries/r-z/teachers-and-education-professionals-income-and-work-related-deductions",
+      "suggest": [
+        "Working with children check RENEWAL you need to keep your current job.",
+        "First-aid / CPR training you're required to keep current as part of your role.",
+        "A compulsory logo'd uniform and its laundry.",
+        "Sun protection (sunscreen, sun hat) for supervising children outdoors.",
+        "Union fees (e.g. United Workers Union, IEU).",
+        "Resources for the room you buy yourself and aren't reimbursed for.",
+        "Self-education connected to your CURRENT role (whether an upgrade such as a Diploma qualifies is fact-specific: confirm with a registered tax agent)."
+      ],
+      "warn": [
+        "Plain clothing and enclosed shoes, even in the centre's colours, are conventional clothing and NOT deductible.",
+        "Your OWN children's childcare fees are private and never deductible.",
+        "The FIRST working with children check to get a job is generally not deductible unless you were already employed in a child-related role.",
+        "Home-to-work travel is private."
+      ]
+    },
+    "warehouse_logistics": {
+      "label": "Warehouse / logistics / factory worker",
+      "ato_url": "https://www.ato.gov.au/individuals-and-families/income-deductions-offsets-and-records/guides-for-occupations-and-industries/e-k/factory-workers-income-and-work-related-deductions",
+      "suggest": [
+        "Protective clothing and footwear: steel-capped boots, hi-vis, gloves, safety glasses, hearing protection.",
+        "A compulsory logo'd uniform and its laundry.",
+        "Forklift / high-risk work licence RENEWAL you need to keep your current job.",
+        "Car expenses when driving between two workplaces for the same employer on the same day (e.g. warehouse to another site).",
+        "Union fees (e.g. United Workers Union, TWU).",
+        "The work-use portion of your own phone where you use it for work."
+      ],
+      "warn": [
+        "Jeans, plain work pants and ordinary sneakers are conventional clothing and NOT deductible, even if worn only at work.",
+        "Home-to-work travel is private, including to an early or night shift.",
+        "Food and drink during your shift are private, even on long shifts.",
+        "The FIRST forklift / high-risk licence to get the job is a pre-employment cost and generally not deductible."
+      ]
+    },
+    "call_centre": {
+      "label": "Call centre / customer service operator",
+      "ato_url": "https://www.ato.gov.au/individuals-and-families/income-deductions-offsets-and-records/guides-for-occupations-and-industries/a-d/call-centre-operators-income-and-work-related-deductions",
+      "suggest": [
+        "A headset you buy yourself for work (not one your employer supplies).",
+        "The work-use portion of your own phone, data and internet.",
+        "Working-from-home running costs for the hours you genuinely work from home (fixed-rate or actual-cost method, with a record of your hours).",
+        "Union fees (e.g. ASU, CPSU).",
+        "Self-education connected to your CURRENT role."
+      ],
+      "warn": [
+        "Business attire is conventional clothing and NOT deductible, even if your employer requires it.",
+        "If you use the fixed-rate working-from-home method, you can't also claim phone and internet separately for those hours.",
+        "Equipment your employer supplies or reimburses can't be claimed.",
+        "Home-to-work travel is private."
+      ]
+    },
+    "fitness_instructor": {
+      "label": "Fitness instructor / personal trainer",
+      "ato_url": "https://www.ato.gov.au/individuals-and-families/income-deductions-offsets-and-records/guides-for-occupations-and-industries/e-k/fitness-and-sporting-industry-employees-income-and-work-related-deductions",
+      "suggest": [
+        "Fitness registration / professional association RENEWAL (e.g. AUSactive) you need for your current role.",
+        "First-aid / CPR training you must keep current for your role.",
+        "Equipment you buy to run classes or sessions (mats, bands, kettlebells): immediate at or under $300, depreciated above.",
+        "Sun protection (sunscreen, sun hat, sunglasses) where you train clients outdoors for long periods.",
+        "A compulsory logo'd uniform and its laundry.",
+        "Union fees and the work-use portion of your phone."
+      ],
+      "warn": [
+        "Activewear, tracksuits, sports shoes and socks are conventional clothing and NOT deductible in any circumstances.",
+        "Your own gym membership, supplements and keeping yourself fit are private (the narrow exception is for roles needing an extremely high level of fitness, such as professional athletes).",
+        "Music streaming subscriptions are private.",
+        "Home-to-work travel (to your regular gym or studio) is private."
+      ]
+    },
+    "delivery_rider": {
+      "label": "Delivery rider / courier",
+      "ato_url": "https://www.ato.gov.au/businesses-and-organisations/income-deductions-and-concessions/sharing-economy-and-tax/providing-services/income-and-deductions-for-providing-services",
+      "suggest": [
+        "Platform service fees and commission (often netted from your payout: your platform statement shows them).",
+        "The delivery-use portion of running your bike, e-bike, scooter or car: repairs, servicing, tyres, fuel, and the decline in value of the vehicle.",
+        "Gear bought for deliveries: insulated delivery bag, phone mount, hi-vis.",
+        "The work-use portion of your phone and data."
+      ],
+      "warn": [
+        "How you're engaged matters: most platform riders are contractors (their earnings are business income, usually with an ABN) but some are employees. Confirm which applies with a registered tax agent.",
+        "Declare your GROSS earnings, not the net payout: platform fees are a deduction, not a reduction of income.",
+        "Unlike ride-sourcing (rideshare), food and parcel delivery doesn't need GST registration from the first dollar; the usual GST turnover threshold applies.",
+        "Commuting trips and private riding aren't deductible: keep a record of delivery versus private use.",
+        "Everyday clothing and sports gear for riding are conventional clothing and not deductible."
       ]
     }
   }

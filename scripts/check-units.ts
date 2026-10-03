@@ -1281,7 +1281,7 @@ console.log("occupations (#143 + audit wave 3 Tier-1 packs)");
 
   // Coverage contract: every picklist token has an authored guide (this is exactly the gap that let
   // the tradie/tradesperson mismatch ship — the guide key and the picklist token drifted apart).
-  const PICKLIST_TOKENS = ["nurse", "healthcare_worker", "aged_care_worker", "it_professional", "office_professional", "teacher", "tradesperson", "apprentice", "driver", "hospitality_worker", "retail_worker", "sales_professional", "real_estate_agent", "adf_member", "police_officer", "security_guard", "cleaner"]; // mirror web/src/content/occupations.ts
+  const PICKLIST_TOKENS = ["nurse", "healthcare_worker", "aged_care_worker", "it_professional", "office_professional", "teacher", "tradesperson", "apprentice", "driver", "hospitality_worker", "retail_worker", "sales_professional", "real_estate_agent", "adf_member", "police_officer", "security_guard", "cleaner", "student", "childcare_worker", "warehouse_logistics", "call_centre", "fitness_instructor", "delivery_rider"]; // mirror web/src/content/occupations.ts
   check("every picklist occupation token has a guide", PICKLIST_TOKENS.every((t) => occupationGuide(t) !== null));
   check("no picklist token missing from occupationScopes", PICKLIST_TOKENS.every((t) => occupationScopes().includes(t)));
 
@@ -1305,6 +1305,42 @@ console.log("occupations (#143 + audit wave 3 Tier-1 packs)");
   const occDenylist = /refund|tax payable|marginal rate|\b\d{1,2}%\s*(tax|bracket)/i;
   const allGuideText = occupationScopes().flatMap((t) => { const g = occupationGuide(t)!; return [...g.suggest, ...g.warn, g.label]; });
   check("occupation guide copy passes the tax-advice denylist", !allGuideText.some((t) => occDenylist.test(t)));
+
+  // ── #579 first-timer occupation content (spec A4 ticket b) ──
+  // Every guide (old 17 + new 6) cites its ATO source page (A10 renders it as the "ATO's own guide" link).
+  check("#579 every occupation guide carries an ato.gov.au ato_url", occupationScopes().every((t) => /^https:\/\/www\.ato\.gov\.au\//.test(occupationGuide(t)?.ato_url ?? "")));
+  check("#579 the six first-timer tokens have guides", ["student", "childcare_worker", "warehouse_logistics", "call_centre", "fitness_instructor", "delivery_rider"].every((t) => occupationGuide(t) !== null));
+  check("#579 student: future-career study + HELP repayments + government-payment-only warned", ((g) => /future career/i.test(g) && /HELP/.test(g) && /Youth Allowance|Austudy/.test(g))(occupationGuide("student")!.warn.join(" ")));
+  check("#579 childcare: own-children childcare fees are private", /own children's childcare/i.test(occupationGuide("childcare_worker")!.warn.join(" ")));
+  check("#579 fitness: activewear + own gym membership blocked", ((g) => /activewear/i.test(g) && /gym membership/i.test(g))(occupationGuide("fitness_instructor")!.warn.join(" ")));
+  check("#579 delivery rider: engagement deferred to an agent + gross-not-net + no first-dollar GST", ((g) => /registered tax agent/i.test(g) && /GROSS/.test(g) && /first dollar/i.test(g))(occupationGuide("delivery_rider")!.warn.join(" ")));
+  check("#579 call centre: fixed-rate WFH no double-dip on phone/internet", /fixed-rate/i.test(occupationGuide("call_centre")!.warn.join(" ")));
+  {
+    const rules = rulePack.claimability as ClaimRule[];
+    const ids = (merchant: string, occupations: string[]) => matchClaimRules(rules, { merchant, occupations }).map((r) => r.id);
+    const NEW = rules.filter((r) => ["student", "childcare_worker", "warehouse_logistics", "call_centre", "fitness_instructor", "delivery_rider"].includes(r.scope_value));
+    check("#579 each new token has at least one claim rule", ["student", "childcare_worker", "warehouse_logistics", "call_centre", "fitness_instructor", "delivery_rider"].every((t) => NEW.some((r) => r.scope_value === t)));
+    check("#579 new rules: occupation-scoped, never not_deductible, general-info note, ids unique", NEW.every((r) => r.scope_type === "occupation" && r.claim_type !== "not_deductible" && /generally/i.test(r.general_info_note)) && new Set(rules.map((r) => r.id)).size === rules.length);
+    check("#579 judgement rules defer (study nexus, first-vs-renewal checks/licences, rider engagement)", ["au-occ-student-study", "au-occ-childcare-checks", "au-occ-warehouse-licence", "au-occ-fitness-registration", "au-occ-delivery-vehicle"].every((id) => rules.find((r) => r.id === id)?.defer_to_agent === 1));
+    check("#579 new rule copy passes the tax-advice denylist", !NEW.some((r) => occDenylist.test(r.general_info_note)));
+    // Positive hits (bank-line shaped merchants).
+    check("#579 student: SSAF / textbooks / course fees hit", ids("UNSW SSAF 2026", ["student"]).includes("au-occ-student-study") && ids("Co-op Bookshop textbooks", ["student"]).includes("au-occ-student-study") && ids("TAFE NSW course fees", ["student"]).includes("au-occ-student-study"));
+    check("#579 childcare: WWCC / blue card / first aid hit the checks rule", ["SERVICE NSW WWCC", "BLUE CARD SERVICES QLD", "St John First Aid course"].every((m) => ids(m, ["childcare_worker"]).includes("au-occ-childcare-checks")));
+    check("#579 childcare: uniform / sunscreen / UWU hit the uniform rule", ["Centre uniform shop", "Cancer Council sunscreen", "United Workers Union dues"].every((m) => ids(m, ["childcare_worker"]).includes("au-occ-childcare-uniform")));
+    check("#579 warehouse: RSEA / steel caps / hi-vis / safety boots hit PPE", ["RSEA SAFETY 1234", "Steel cap boots", "HI-VIS VEST", "Safety boots online"].every((m) => ids(m, ["warehouse_logistics"]).includes("au-occ-warehouse-ppe")));
+    check("#579 warehouse: forklift licence renewal hits the licence rule", ids("FORKLIFT LICENCE RENEWAL", ["warehouse_logistics"]).includes("au-occ-warehouse-licence"));
+    check("#579 call centre: Jabra / headset hit", ids("JABRA EVOLVE2 HEADSET", ["call_centre"]).includes("au-occ-call-centre") && ids("Officeworks headsets", ["call_centre"]).includes("au-occ-call-centre"));
+    check("#579 fitness: AUSactive renewal / CPR / kettlebells hit", ids("AUSACTIVE REGISTRATION", ["fitness_instructor"]).includes("au-occ-fitness-registration") && ids("CPR refresher", ["fitness_instructor"]).includes("au-occ-fitness-registration") && ids("Rebel kettlebells", ["fitness_instructor"]).includes("au-occ-fitness-equipment"));
+    check("#579 delivery: 99 Bikes / e-bike / tyres / insulated bag / phone mount hit", ids("99 BIKES NEWTOWN", ["delivery_rider"]).includes("au-occ-delivery-vehicle") && ids("Ebike service", ["delivery_rider"]).includes("au-occ-delivery-vehicle") && ids("Bike tyres", ["delivery_rider"]).includes("au-occ-delivery-vehicle") && ids("Insulated bag", ["delivery_rider"]).includes("au-occ-delivery-gear") && ids("Phone mount", ["delivery_rider"]).includes("au-occ-delivery-gear"));
+    // Must-not-match (word boundaries, #551 semantics).
+    check("#579 not: Bikram Yoga / Motorbike shop do not hit 'bike' as a substring (bike rule hits motorbike via its own pattern only)", !ids("Bikram Yoga Bondi", ["delivery_rider"]).includes("au-occ-delivery-vehicle"));
+    check("#579 not: UBER EATS / DOORDASH food orders do not fire delivery rules", ["UBER EATS SYDNEY", "DOORDASH*BURGER"].every((m) => !ids(m, ["delivery_rider"]).some((id) => id.startsWith("au-occ-delivery"))));
+    check("#579 not: Anytime Fitness / City Gym do not fire fitness rules", ["Anytime Fitness", "City Gym membership"].every((m) => !ids(m, ["fitness_instructor"]).some((id) => id.startsWith("au-occ-fitness"))));
+    check("#579 not: 'cpr' does not hit CPRINT (plural CPRS is tolerated by design); 'ieu' does not hit LIEUTENANT; 'ssaf' does not hit SSAFE", !ids("CPRINT PTY LTD", ["childcare_worker"]).includes("au-occ-childcare-checks") && !ids("LIEUTENANT CAFE", ["childcare_worker"]).includes("au-occ-childcare-uniform") && !ids("SSAFE STORAGE", ["student"]).includes("au-occ-student-study"));
+    check("#579 not: 'headset' does not hit HEADSETTER; 'gloves' does not hit GLOVESTONE", !ids("HEADSETTER CO", ["call_centre"]).includes("au-occ-call-centre") && !ids("GLOVESTONE PTY", ["warehouse_logistics"]).includes("au-occ-warehouse-ppe"));
+    check("#579 not: new rules are occupation-scoped (a retail worker buying a headset / bike gets none)", !ids("JABRA HEADSET", ["retail_worker"]).includes("au-occ-call-centre") && !ids("99 BIKES", ["retail_worker"]).includes("au-occ-delivery-vehicle") && !ids("UNSW SSAF", []).includes("au-occ-student-study"));
+    check("#579 not: groceries / Netflix hit no new rule for any new token", ["WOOLWORTHS 1234", "NETFLIX.COM"].every((m) => !ids(m, ["student", "childcare_worker", "warehouse_logistics", "call_centre", "fitness_instructor", "delivery_rider"]).some((id) => NEW.some((r) => r.id === id))));
+  }
 }
 
 console.log("trust distributions (#139)");

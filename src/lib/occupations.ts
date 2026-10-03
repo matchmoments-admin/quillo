@@ -8,11 +8,14 @@ import auV1RulePack from "../rulepacks/au-v1.json";
 export interface OccupationGuide {
   scope: string;
   label: string;
+  /** The ATO occupation & industry guide this content follows (A4 ticket b, #579) — the "read the
+   *  ATO's own guide" link A10 renders. null when the pack carries none. */
+  ato_url: string | null;
   suggest: string[];
   warn: string[];
 }
 
-type OccBlock = { label?: string; suggest?: string[]; warn?: string[] };
+type OccBlock = { label?: string; ato_url?: string; suggest?: string[]; warn?: string[] };
 
 // Stored → canonical scope aliases. The pack's guide key was historically 'tradie' while the picklist
 // token is 'tradesperson' (the guide silently never fired for a picklist tradesperson — audit wave 1);
@@ -26,7 +29,7 @@ export function occupationGuide(scope: string | null | undefined): OccupationGui
   const occupations = (auV1RulePack as unknown as { occupations?: Record<string, OccBlock> }).occupations;
   const block = occupations?.[key];
   if (!block) return null;
-  return { scope: key, label: block.label ?? key, suggest: block.suggest ?? [], warn: block.warn ?? [] };
+  return { scope: key, label: block.label ?? key, ato_url: block.ato_url ?? null, suggest: block.suggest ?? [], warn: block.warn ?? [] };
 }
 
 /** Every occupation scope the rule pack covers (excludes the leading '_note' metadata key). */

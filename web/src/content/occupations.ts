@@ -22,6 +22,13 @@ export const OCCUPATIONS: { token: string; label: string }[] = [
   { token: "police_officer", label: "Police officer" },
   { token: "security_guard", label: "Security guard" },
   { token: "cleaner", label: "Cleaner" },
+  // First-timer cohort (#579, relevance-scan.md §3): the jobs a first-time taxpayer most often has.
+  { token: "student", label: "Student" },
+  { token: "childcare_worker", label: "Childcare / early childhood educator" },
+  { token: "warehouse_logistics", label: "Warehouse / logistics worker" },
+  { token: "call_centre", label: "Call centre / customer service" },
+  { token: "fitness_instructor", label: "Fitness instructor / personal trainer" },
+  { token: "delivery_rider", label: "Delivery rider / courier" },
 ];
 
 // Lookup by either the human label or the token (both lower-cased) → canonical token.
@@ -38,6 +45,21 @@ BY_KEY.set("carer", "aged_care_worker");
 BY_KEY.set("police", "police_officer");
 BY_KEY.set("defence", "adf_member");
 BY_KEY.set("army", "adf_member");
+BY_KEY.set("uni student", "student");
+BY_KEY.set("university student", "student");
+BY_KEY.set("childcare worker", "childcare_worker");
+BY_KEY.set("child care worker", "childcare_worker");
+BY_KEY.set("early childhood educator", "childcare_worker");
+BY_KEY.set("warehouse worker", "warehouse_logistics");
+BY_KEY.set("factory worker", "warehouse_logistics");
+BY_KEY.set("call centre operator", "call_centre");
+BY_KEY.set("call center", "call_centre");
+BY_KEY.set("customer service", "call_centre");
+BY_KEY.set("personal trainer", "fitness_instructor");
+BY_KEY.set("fitness instructor", "fitness_instructor");
+BY_KEY.set("delivery rider", "delivery_rider");
+BY_KEY.set("delivery driver", "delivery_rider");
+BY_KEY.set("courier", "delivery_rider");
 
 /**
  * Map a typed/selected occupation to its canonical token. A known label or token resolves to

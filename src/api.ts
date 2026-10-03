@@ -1240,9 +1240,9 @@ export async function handleApi(
       return json({ work_use });
     }
     if (m === "POST") {
-      const body = (await req.json().catch(() => ({}))) as { wfh_hours?: number | null; car_work_km?: number | null; wfh_days_per_week?: number | null; wfh_weeks?: number | null; has_dedicated_home_office?: boolean; wfh_has_record?: boolean; wfh_weekdays?: number[] | null; wfh_leave_ranges?: { start: string; end: string; label?: string }[] | null; wfh_generate_diary?: boolean };
+      const body = (await req.json().catch(() => ({}))) as { wfh_hours?: number | null; car_work_km?: number | null; wfh_days_per_week?: number | null; wfh_weeks?: number | null; has_dedicated_home_office?: boolean; wfh_has_record?: boolean; wfh_weekdays?: number[] | null; wfh_leave_ranges?: { start: string; end: string; label?: string }[] | null; wfh_generate_diary?: boolean; fill_only?: boolean };
       const num = (v: unknown): number | null => (v === null || v === undefined || v === "" || !Number.isFinite(Number(v)) ? null : Math.max(0, Number(v)));
-      return json(await stub.setWorkUseInputs(uid, { fy, wfh_hours: num(body.wfh_hours), car_work_km: num(body.car_work_km), wfh_days_per_week: num(body.wfh_days_per_week), wfh_weeks: num(body.wfh_weeks), has_dedicated_home_office: !!body.has_dedicated_home_office, wfh_has_record: !!body.wfh_has_record, wfh_weekdays: Array.isArray(body.wfh_weekdays) ? body.wfh_weekdays : [], wfh_leave_ranges: Array.isArray(body.wfh_leave_ranges) ? body.wfh_leave_ranges : [], wfh_generate_diary: !!body.wfh_generate_diary }));
+      return json(await stub.setWorkUseInputs(uid, { fy, wfh_hours: num(body.wfh_hours), car_work_km: num(body.car_work_km), wfh_days_per_week: num(body.wfh_days_per_week), wfh_weeks: num(body.wfh_weeks), has_dedicated_home_office: !!body.has_dedicated_home_office, wfh_has_record: !!body.wfh_has_record, wfh_weekdays: Array.isArray(body.wfh_weekdays) ? body.wfh_weekdays : [], wfh_leave_ranges: Array.isArray(body.wfh_leave_ranges) ? body.wfh_leave_ranges : [], wfh_generate_diary: !!body.wfh_generate_diary, fill_only: body.fill_only === true }));
     }
   }
 

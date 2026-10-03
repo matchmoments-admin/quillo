@@ -1185,6 +1185,8 @@ export interface WorkUse {
   wfh_weekdays?: number[] | null;                                   // 0=Mon..6=Sun
   wfh_leave_ranges?: { start: string; end: string; label?: string }[] | null;
   wfh_generate_diary?: number | boolean | null;                     // GET returns 0/1; POST accepts boolean
+  // #438: POST-only. true ⇒ write only when no row exists for this FY (the onboarding wizard's fill-gaps semantics).
+  fill_only?: boolean;
 }
 
 // C6 (capital_statement_ingest): the preview returned by a capital CSV upload. Nothing in the register has

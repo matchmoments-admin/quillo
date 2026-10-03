@@ -4208,7 +4208,7 @@ export class TaxAgent extends Agent<Env> {
    * cents-per-km deductions (#67). One row per (user, fy). Inert until the wfh_car_methods flag is on
    * (buildReport reads it then). Stores the raw inputs only — the $ figure is computed in report.ts.
    */
-  async setWorkUseInputs(userId: string, input: { fy: number; wfh_hours: number | null; car_work_km: number | null; wfh_days_per_week?: number | null; wfh_weeks?: number | null; has_dedicated_home_office?: boolean; wfh_has_record?: boolean; wfh_weekdays?: number[] | null; wfh_leave_ranges?: WfhLeaveRange[] | null; wfh_generate_diary?: boolean }): Promise<{ ok: true }> {
+  async setWorkUseInputs(userId: string, input: { fy: number; wfh_hours: number | null; car_work_km: number | null; wfh_days_per_week?: number | null; wfh_weeks?: number | null; has_dedicated_home_office?: boolean; wfh_has_record?: boolean; wfh_weekdays?: number[] | null; wfh_leave_ranges?: WfhLeaveRange[] | null; wfh_generate_diary?: boolean; fill_only?: boolean }): Promise<{ ok: true }> {
     await this.requireProfile(userId);
     const days = input.wfh_days_per_week ?? null;
     const weeks = input.wfh_weeks ?? null;
@@ -4231,10 +4231,13 @@ export class TaxAgent extends Agent<Env> {
     if (hours == null) hours = deriveWfhHours(days, weeks);
     await this.env.DB.prepare(
       `INSERT INTO work_use_inputs (user_id, fy, wfh_hours, car_work_km, wfh_days_per_week, wfh_weeks, has_dedicated_home_office, wfh_has_record, wfh_weekdays, wfh_leave_ranges, wfh_generate_diary, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-       ON CONFLICT(user_id, fy) DO UPDATE SET wfh_hours = excluded.wfh_hours, car_work_km = excluded.car_work_km, wfh_days_per_week = excluded.wfh_days_per_week, wfh_weeks = excluded.wfh_weeks, has_dedicated_home_office = excluded.has_dedicated_home_office, wfh_has_record = excluded.wfh_has_record, wfh_weekdays = excluded.wfh_weekdays, wfh_leave_ranges = excluded.wfh_leave_ranges, wfh_generate_diary = excluded.wfh_generate_diary, updated_at = datetime('now')`,
+       ON CONFLICT(user_id, fy) DO ${input.fill_only ? "NOTHING" : `UPDATE SET wfh_hours = excluded.wfh_hours, car_work_km = excluded.car_work_km, wfh_days_per_week = excluded.wfh_days_per_week, wfh_weeks = excluded.wfh_weeks, has_dedicated_home_office = excluded.has_dedicated_home_office, wfh_has_record = excluded.wfh_has_record, wfh_weekdays = excluded.wfh_weekdays, wfh_leave_ranges = excluded.wfh_leave_ranges, wfh_generate_diary = excluded.wfh_generate_diary, updated_at = datetime('now')`}`,
     )
       .bind(userId, input.fy, hours, input.car_work_km, days, weeks, office, record, JSON.stringify(weekdays), JSON.stringify(leaveRanges), generateDiary)
       .run();
+    // #438 fill_only (the onboarding wizard): a row that already exists for this FY is left untouched —
+    // re-running the wizard must never reset the diary, leave ranges, flags, hours or car km.
+    if (input.fill_only) return { ok: true };
     // #245: keep the dedicated car_inputs table in sync while the legacy WFH panel still carries car km
     // (the car_methods reader prefers car_inputs). Dual-write is removed once the WFH UI is WFH-only.
     if (input.car_work_km != null) await this.setCarInputs(userId, { fy: input.fy, work_km: input.car_work_km });

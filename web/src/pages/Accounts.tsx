@@ -160,20 +160,6 @@ function BankFeed({ accounts }: { accounts: Account[] }) {
     onError: (e: Error) => toast.error(e.message),
   });
 
-  const save = useMutation({
-    mutationFn: (sel: { providerAccountId: string; selected: boolean; accountId?: string | null }[]) =>
-      api.bankSelectAccounts(sel),
-    onSuccess: (r) => {
-      // Conflicts are per-account and actionable, so show each rather than a generic failure.
-      for (const c of r.conflicts) toast.error(c);
-      if (r.updated > 0 && r.conflicts.length === 0) toast.success("Accounts updated.");
-      setDraft({});
-      qc.invalidateQueries({ queryKey: ["bank-connections"] });
-      qc.invalidateQueries({ queryKey: ["accounts"] });
-    },
-    onError: (e: Error) => toast.error(e.message),
-  });
-
   const sync = useMutation({
     mutationFn: () => api.bankSync(),
     onSuccess: (r) => {
@@ -194,9 +180,34 @@ function BankFeed({ accounts }: { accounts: Account[] }) {
     onError: (e: Error) => toast.error(e.message),
   });
 
+  const save = useMutation({
+    mutationFn: (sel: { providerAccountId: string; selected: boolean; accountId?: string | null }[]) =>
+      api.bankSelectAccounts(sel),
+    onSuccess: (r) => {
+      // Conflicts are per-account and actionable, so show each rather than a generic failure.
+      for (const c of r.conflicts) toast.error(c);
+      setDraft({});
+      qc.invalidateQueries({ queryKey: ["bank-connections"] });
+      qc.invalidateQueries({ queryKey: ["accounts"] });
+      // One click from picker to imported lines: a clean save goes straight on to the sync.
+      if (r.updated > 0 && r.conflicts.length === 0) sync.mutate();
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
   const rows = (connections ?? []).flatMap((c) => c.accounts.map((a) => ({ conn: c, acct: a })));
-  const dirty = Object.keys(draft).length > 0;
-  const anySelected = rows.some(({ acct }) => (draft[acct.provider_account_id]?.selected ?? acct.selected === 1) && (draft[acct.provider_account_id]?.accountId ?? acct.account_id));
+  // A ticked account with no Quillo account yet defaults to "create a new one" (value "new"), so a
+  // first-timer with no accounts can save in one click instead of hunting through an empty dropdown.
+  const effective = (acct: (typeof rows)[number]["acct"]) => {
+    const d = draft[acct.provider_account_id] ?? { selected: acct.selected === 1, accountId: acct.account_id };
+    return { selected: d.selected, accountId: d.accountId ?? (d.selected ? "new" : null) };
+  };
+  const pending = rows.filter(({ acct }) => {
+    const e = effective(acct);
+    return draft[acct.provider_account_id] !== undefined || (e.selected && !acct.account_id) || e.selected !== (acct.selected === 1);
+  });
+  const dirty = pending.length > 0;
+  const anySelected = rows.some(({ acct }) => { const e = effective(acct); return e.selected && !!e.accountId; });
 
   return (
     <Card className="space-y-4 p-5">
@@ -228,10 +239,7 @@ function BankFeed({ accounts }: { accounts: Account[] }) {
         <>
           <ul className="divide-y divide-border">
             {rows.map(({ conn, acct }) => {
-              const d = draft[acct.provider_account_id] ?? {
-                selected: acct.selected === 1,
-                accountId: acct.account_id,
-              };
+              const d = effective(acct);
               const set = (patch: Partial<typeof d>) =>
                 setDraft((prev) => ({ ...prev, [acct.provider_account_id]: { ...d, ...patch } }));
               return (
@@ -256,9 +264,14 @@ function BankFeed({ accounts }: { accounts: Account[] }) {
                     className="rounded-md border border-border bg-surface px-2 py-1 text-sm disabled:opacity-50"
                     value={d.accountId ?? ""}
                     disabled={!d.selected}
-                    onChange={(e) => set({ accountId: e.target.value || null })}
+                    onChange={(e) => set({ accountId: e.target.value })}
                   >
-                    <option value="">Choose an account…</option>
+                    {!acct.account_id && (
+                      <option value="new">
+                        Create new account: {acct.name ?? "Bank account"}
+                        {acct.masked_number ? ` ••••${acct.masked_number}` : ""}
+                      </option>
+                    )}
                     {accounts.map((a) => (
                       <option key={a.id} value={a.id}>
                         {a.name}
@@ -274,23 +287,22 @@ function BankFeed({ accounts }: { accounts: Account[] }) {
             <Button
               onClick={() =>
                 save.mutate(
-                  Object.entries(draft).map(([providerAccountId, v]) => ({
-                    providerAccountId,
-                    selected: v.selected,
-                    accountId: v.accountId,
-                  })),
+                  pending.map(({ acct }) => {
+                    const e = effective(acct);
+                    return { providerAccountId: acct.provider_account_id, selected: e.selected, accountId: e.selected ? e.accountId : null };
+                  }),
                 )
               }
-              disabled={!dirty || save.isPending}
+              disabled={!dirty || save.isPending || sync.isPending}
             >
-              {save.isPending ? "Saving…" : "Save selection"}
+              {save.isPending ? "Saving…" : sync.isPending ? "Importing…" : "Save & import"}
             </Button>
             <Button variant="ghost" onClick={() => sync.mutate()} disabled={sync.isPending || dirty || !anySelected}>
               {sync.isPending ? "Syncing…" : "↻ Sync transactions"}
             </Button>
             <p className="text-xs text-muted">
               {dirty
-                ? "Save your selection before syncing."
+                ? "Tick the accounts you want. Each gets its own Quillo account unless you pick an existing one."
                 : "Only selected accounts are ever fetched. An account can have one source — a feed or uploaded statements, never both."}
             </p>
           </div>

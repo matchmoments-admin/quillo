@@ -31,7 +31,9 @@ import { capitalReadinessSignals } from "../src/lib/capital-signals";
 import { firstTimerIncomeSignals } from "../src/lib/first-timer-signals";
 import { buildMytaxWorksheet, mytaxWorksheetSignals, mytaxWorksheetResponse, type MytaxWorksheet } from "../src/lib/mytax-worksheet";
 import { assessReadiness, type FilingReadinessSignals } from "../src/lib/readiness";
-import type { Situation } from "../src/lib/db";
+import { getSituation, type Situation, type Profile } from "../src/lib/db";
+import { upsertSituationPeriod, deleteSituationPeriod, SituationPeriodError } from "../src/lib/situation-write";
+import { profileForFy, residencyOn, residencyPeriodsForFy, situationProfileSignals, listSituationPeriods } from "../src/lib/situation-profile";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
@@ -2251,6 +2253,140 @@ async function main() {
         const c = on.position.taxable_position_confirmed_cents;
         check(`${u} (reconcile_proposals ON): confirmed position present and ≥ tracked`, c != null && c >= on.position.indicative_taxable_position_cents);
       }
+    }
+
+    // ── pft7 — FT2 Mia variant (#571, flag situation_profile; spec A1): a part-year resident who arrived
+    //    2026-02-01, two casual jobs with different occupation tokens, and a study-loan tick. Periods go in
+    //    through the REAL writer (upsertSituationPeriod — validation + mirrors in one batch) and come out through
+    //    profileForFy / situationProfileSignals, the same functions the API and the DO call. Asserts the profile,
+    //    the legacy mirrors, study_loan_passthrough (no figure), overlap rejection, and that the flag never moves
+    //    taxable_position_cents. ──
+    {
+      const SP_ENV_ON = { ...env, FEATURES: `${(env as { FEATURES: string }).FEATURES},first_timer_income,situation_profile` } as unknown as Env;
+      const NOW = new Date("2026-10-03T00:00:00Z");
+      const W = { fy: 2025, now: NOW };
+      const SP_IDS = ["residency_unsure", "study_loan_passthrough"];
+      const assessSp = async (e: Env, u: string) => {
+        const report = await buildReport(e, u, 2025);
+        const sig = { ...ftBaseSignals(), ...(await firstTimerIncomeSignals(e, u, 2025)), ...(await situationProfileSignals(e, u, 2025)) };
+        return { report, ready: assessReadiness({ report, situation: ftSituation(u), claimMatches: [], signals: sig, generatedAt: "2026-10-03T00:00:00Z" }) };
+      };
+      const rejects = async (fn: () => Promise<unknown>, status: number, re?: RegExp) => {
+        try { await fn(); return false; } catch (e) { return e instanceof SituationPeriodError && e.status === status && (!re || re.test(e.message)); }
+      };
+      const personRow = (u: string) => db.prepare(`SELECT occupation, tax_residency FROM persons WHERE id = ?`).get(`person_self_${u}`) as { occupation: string | null; tax_residency: string };
+
+      const u = "pft7";
+      const me = `person_self_${u}`;
+      seedTenant(u, "FT2 Mia part-year, two jobs, HELP");
+      run(`INSERT INTO profiles (user_id) VALUES (?)`, u);
+      run(`INSERT INTO entities (id, user_id, kind, name, person_id) VALUES ('pft7eCafe', ?, 'employment', 'Cafe One', ?)`, u, me);
+      run(`INSERT INTO entities (id, user_id, kind, name, person_id) VALUES ('pft7eBook', ?, 'employment', 'Book Shop', ?)`, u, me);
+      inc("pft7SalA", u, "salary_payg", 900000, { detail_json: JSON.stringify({ employer: "Cafe One" }) });
+      inc("pft7SalB", u, "salary_payg", 400000, { detail_json: JSON.stringify({ employer: "Book Shop" }) });
+      exp("pft7e1", u, 20000, "payg", "confirmed_deductible");
+      const before = await assessSp(env, u);
+
+      await upsertSituationPeriod(SP_ENV_ON, u, { person_id: me, fact: "residency", value: "foreign", starts_on: "2025-07-01", ends_on: "2026-01-31" }, W);
+      await upsertSituationPeriod(SP_ENV_ON, u, { person_id: me, fact: "residency", value: "resident", starts_on: "2026-02-01" }, W); // open-ended
+      const jobA = await upsertSituationPeriod(SP_ENV_ON, u, { person_id: me, fact: "employment", value: "retail", ref_id: "pft7eCafe", starts_on: "2026-02-03" }, W);
+      await upsertSituationPeriod(SP_ENV_ON, u, { person_id: me, fact: "employment", value: "hospitality", ref_id: "pft7eBook", starts_on: "2026-04-01", ends_on: "2026-06-30" }, W);
+      const loan = await upsertSituationPeriod(SP_ENV_ON, u, { person_id: me, fact: "study_loan", value: "yes", source: "onboarding" }, W); // a tick, no dates
+
+      check("pft7: an undated tick is stored spanning the active FY (2025-07-01..2026-06-30) so next year asks again",
+        loan.starts_on === "2025-07-01" && loan.ends_on === "2026-06-30" && loan.source === "onboarding");
+      check("pft7: overlapping single-valued residency is rejected with a 400 and a plain message",
+        await rejects(() => upsertSituationPeriod(SP_ENV_ON, u, { person_id: me, fact: "residency", value: "resident", starts_on: "2026-01-15", ends_on: "2026-03-01" }, W), 400, /already have a residency answer/));
+      check("pft7: overlapping jobs are fine (employment is multi-valued) — both stored",
+        (await listSituationPeriods(SP_ENV_ON, u, me)).filter((p) => p.fact === "employment").length === 2);
+      check("pft7: unknown fact / invalid value / end-before-start / property subject → 400",
+        (await rejects(() => upsertSituationPeriod(SP_ENV_ON, u, { person_id: me, fact: "hair_colour", value: "red" }, W), 400)) &&
+        (await rejects(() => upsertSituationPeriod(SP_ENV_ON, u, { person_id: me, fact: "residency", value: "martian" }, W), 400)) &&
+        (await rejects(() => upsertSituationPeriod(SP_ENV_ON, u, { person_id: me, fact: "wfh", value: "yes", starts_on: "2026-03-01", ends_on: "2026-02-01" }, W), 400)) &&
+        (await rejects(() => upsertSituationPeriod(SP_ENV_ON, u, { subject_kind: "property", subject_id: "x", fact: "wfh", value: "yes" }, W), 400)));
+      check("pft7: another tenant's person or employer can't be referenced (404, nothing written)",
+        (await rejects(() => upsertSituationPeriod(SP_ENV_ON, u, { person_id: "person_self_pft1", fact: "wfh", value: "yes" }, W), 404)) &&
+        (await rejects(() => upsertSituationPeriod(SP_ENV_ON, "pft1", { person_id: "person_self_pft1", fact: "employment", value: "retail", ref_id: "pft7eCafe" }, W), 404)) &&
+        (db.prepare(`SELECT COUNT(*) AS n FROM situation_periods WHERE user_id = 'pft1'`).get() as { n: number }).n === 0);
+
+      const [prof] = await profileForFy(SP_ENV_ON, u, 2025);
+      check("pft7 profileForFy: residency pair clipped to the FY (foreign Jul–Jan, resident Feb–Jun)",
+        !!prof && prof.residency.length === 2 && prof.residency[0]!.type === "foreign" && prof.residency[0]!.starts_on === "2025-07-01" && prof.residency[0]!.ends_on === "2026-01-31" &&
+        prof.residency[1]!.type === "resident" && prof.residency[1]!.starts_on === "2026-02-01" && prof.residency[1]!.ends_on === "2026-06-30");
+      check("pft7 profileForFy: residencyOn answers per date (Dec = foreign, Mar = resident); A13 reads residencyPeriodsForFy",
+        !!prof && residencyOn(prof, "2025-12-01") === "foreign" && residencyOn(prof, "2026-03-15") === "resident" && residencyPeriodsForFy(prof).length === 2);
+      check("pft7 profileForFy: two jobs (retail ↔ Cafe One, hospitality ↔ Book Shop), the open-ended one clipped to 30 June",
+        !!prof && prof.jobs.length === 2 && prof.jobs[0]!.occupation_token === "retail" && prof.jobs[0]!.ref_id === "pft7eCafe" && prof.jobs[0]!.ends_on === "2026-06-30" &&
+        prof.jobs[1]!.occupation_token === "hospitality" && prof.jobs[1]!.ref_id === "pft7eBook");
+      check("pft7 profileForFy: study_loan flag set; nothing else ticked", !!prof && prof.flags.study_loan && !prof.flags.wfh && !prof.flags.study && prof.flags.spouse === null && prof.state === null);
+      const p7 = personRow(u);
+      check("pft7 mirrors: persons.occupation = the LONGER job (retail), tax_residency = 'AU' (resident on 30 June)", p7.occupation === "retail" && p7.tax_residency === "AU");
+
+      const off = await assessSp(env, u);
+      const on = await assessSp(SP_ENV_ON, u);
+      const sl = on.ready.findings.find((x) => x.id === "study_loan_passthrough");
+      check("pft7 (ON): study_loan_passthrough INFO fires — ATO works it out, NO money figure, no tax-advice term",
+        sl?.severity === "info" && !/\$\s?\d/.test(sl.title + sl.general_info_note) && !ftDenylist.test(sl.title + sl.general_info_note) && /Quillo doesn't calculate it/.test(sl.general_info_note));
+      check("pft7 (ON): residency is known, so no residency_unsure", !on.ready.findings.some((x) => x.id === "residency_unsure"));
+      check("pft7: taxable_position_cents byte-identical ON vs OFF (and vs before any period existed) — $13k − $200",
+        on.report.taxable_position_cents === off.report.taxable_position_cents && off.report.taxable_position_cents === before.report.taxable_position_cents && on.report.taxable_position_cents === 1300000 - 20000);
+      check("pft7 (OFF): situation signals are {} and no situation finding renders (byte-identical)",
+        Object.keys(await situationProfileSignals(env, u, 2025)).length === 0 && !off.ready.findings.some((x) => SP_IDS.includes(x.id)) &&
+        JSON.stringify(off.ready.findings) === JSON.stringify(before.ready.findings));
+      const sitOn = await getSituation(SP_ENV_ON, u, {} as Profile);
+      const sitOff = await getSituation(env, u, {} as Profile);
+      check("pft7 getSituation: ON attaches profile_periods (5 rows); OFF omits the key entirely", (sitOn.profile_periods ?? []).length === 5 && !("profile_periods" in sitOff));
+
+      // Edit → end → delete round-trip; the occupation mirror follows the longest remaining job.
+      const edited = await upsertSituationPeriod(SP_ENV_ON, u, { ends_on: "2026-03-31" }, { ...W, id: jobA.id }); // end the retail job early (57 days)
+      check("pft7 edit: PATCH ends_on ends a period; the mirror flips to the now-longer hospitality job (91 days)",
+        edited.ends_on === "2026-03-31" && edited.fact === "employment" && personRow(u).occupation === "hospitality");
+      await deleteSituationPeriod(SP_ENV_ON, u, jobA.id, W);
+      check("pft7 delete: row gone, occupation stays on the remaining job", (await listSituationPeriods(SP_ENV_ON, u, me)).filter((p) => p.fact === "employment").length === 1 && personRow(u).occupation === "hospitality");
+      check("pft7 delete: an unknown or foreign-tenant id is a 404", await rejects(() => deleteSituationPeriod(SP_ENV_ON, "pft1", loan.id, W), 404));
+
+      // pft7b — residency 'unsure' + private hospital cover: the finding defers, and 'unsure' never flips the
+      // binary tax_residency mirror (CGT discount / non-resident defer readers keep the legacy value).
+      const u2 = "pft7b";
+      seedTenant(u2, "FT residency unsure");
+      run(`INSERT INTO profiles (user_id) VALUES (?)`, u2);
+      inc("pft7bSal", u2, "salary_payg", 1000000);
+      await upsertSituationPeriod(SP_ENV_ON, u2, { person_id: `person_self_${u2}`, fact: "residency", value: "unsure" }, W);
+      await upsertSituationPeriod(SP_ENV_ON, u2, { person_id: `person_self_${u2}`, fact: "private_hospital_cover", value: "yes" }, W);
+      const on2 = await assessSp(SP_ENV_ON, u2);
+      const ru = on2.ready.findings.find((x) => x.id === "residency_unsure");
+      check("pft7b (ON): residency_unsure REVIEW, deferred to a registered tax agent, points at the ATO residency page",
+        ru?.severity === "review" && ru.defer_to_agent && /registered tax agent/.test(ru.general_info_note) && /ato\.gov\.au/.test(ru.general_info_note) && !ftDenylist.test(ru.title + ru.general_info_note));
+      check("pft7b: 'unsure' leaves persons.tax_residency at its legacy 'AU'; no study_loan note without the tick",
+        personRow(u2).tax_residency === "AU" && !on2.ready.findings.some((x) => x.id === "study_loan_passthrough"));
+      check("pft7b mirror: private_hospital_cover yes ⇒ profiles.private_health = 1 (closes the orphaned writer, #439)",
+        (db.prepare(`SELECT private_health FROM profiles WHERE user_id = ?`).get(u2) as { private_health: number }).private_health === 1);
+      check("pft7b (OFF): no residency_unsure (byte-identical)", !(await assessSp(env, u2)).ready.findings.some((x) => SP_IDS.includes(x.id)));
+
+      // pft7c — review fixes: a mistaken 'foreign' that is deleted reverts the mirror (the CGT reader must not stay
+      // on 'foreign'); a deleted person's periods are hidden, not destroyed, so an undo restores them; detail
+      // carries only the pack's boolean flags; a null body is a 400, not a 500.
+      const u3 = "pft7c";
+      const me3 = `person_self_${u3}`;
+      seedTenant(u3, "FT review guards");
+      const oops = await upsertSituationPeriod(SP_ENV_ON, u3, { person_id: me3, fact: "residency", value: "foreign" }, W);
+      check("pft7c: residency 'foreign' mirrors tax_residency = 'foreign'", personRow(u3).tax_residency === "foreign");
+      await deleteSituationPeriod(SP_ENV_ON, u3, oops.id, W);
+      check("pft7c: deleting that LAST residency period reverts tax_residency to 'AU' (create→delete round-trips)", personRow(u3).tax_residency === "AU");
+      run(`INSERT INTO persons (id, user_id, display_name, role) VALUES ('pft7cSp', ?, 'Partner', 'spouse')`, u3);
+      await upsertSituationPeriod(SP_ENV_ON, u3, { person_id: "pft7cSp", fact: "study_loan", value: "yes" }, W);
+      const spRow = db.prepare(`SELECT * FROM persons WHERE id = 'pft7cSp'`).get() as Record<string, unknown>;
+      const onSp = await assessSp(SP_ENV_ON, u3);
+      check("pft7c: a partner's study-loan tick names the partner, not 'your'",
+        /for Partner is worked out by the ATO/.test(onSp.ready.findings.find((x) => x.id === "study_loan_passthrough")?.general_info_note ?? ""));
+      await deleteRow(SP_ENV_ON, u3, "persons", "pft7cSp");
+      check("pft7c: a deleted person's periods disappear from every reader", (await listSituationPeriods(SP_ENV_ON, u3)).length === 0 && (await profileForFy(SP_ENV_ON, u3, 2025)).length === 1);
+      run(`INSERT INTO persons (id, user_id, display_name, role) VALUES (?, ?, ?, ?)`, spRow.id, spRow.user_id, spRow.display_name, spRow.role); // = an ai_edit undo
+      check("pft7c: undoing the person delete brings their periods back intact", (await listSituationPeriods(SP_ENV_ON, u3, "pft7cSp")).length === 1);
+      check("pft7c: detail carries only the fact's boolean flags; a null body is a 400",
+        (await rejects(() => upsertSituationPeriod(SP_ENV_ON, u3, { person_id: me3, fact: "employment", value: "retail", detail: { note: "free text" } }, W), 400)) &&
+        (await rejects(() => upsertSituationPeriod(SP_ENV_ON, u3, null, W), 400, /person_id is required/)) &&
+        (await upsertSituationPeriod(SP_ENV_ON, u3, { person_id: me3, fact: "employment", value: "retail", detail: { wfh: true } }, W)).detail_json === `{"wfh":true}`);
     }
   }
 

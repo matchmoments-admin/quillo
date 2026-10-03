@@ -30,6 +30,7 @@ import { costBaseFromElements, validateCostBaseElements, withCostBaseElements, t
 import { capitalReadinessSignals } from "./lib/capital-signals";
 import { firstTimerIncomeSignals, wantsIncomeStatementItem } from "./lib/first-timer-signals";
 import { mytaxWorksheetSignals } from "./lib/mytax-worksheet";
+import { situationProfileSignals } from "./lib/situation-profile";
 import { applyCapitalColumnMap, type CapitalColumnMap, type CapitalDraftRow, type CapitalImportPreview } from "./lib/capital-import";
 import { resolveJurisdictionForUser, currentFyStartYearFor, baseCurrencyOf, AU_DESCRIPTOR, type JurisdictionDescriptor } from "./lib/jurisdiction";
 import { assessReadiness, type FilingReadiness, type FilingReadinessSignals } from "./lib/readiness";
@@ -4241,7 +4242,8 @@ export class TaxAgent extends Agent<Env> {
   async assessFilingReadiness(userId: string, startYear: number): Promise<FilingReadiness> {
     const profile = await this.requireProfile(userId);
     const fy = fyLabel(startYear);
-    const { start, end } = fyBounds(startYear, await this.jurisdictionFor(userId));
+    const readinessJur = await this.jurisdictionFor(userId);
+    const { start, end } = fyBounds(startYear, readinessJur);
     const [report, situation] = await Promise.all([buildReport(this.env, userId, startYear), getSituation(this.env, userId, profile)]);
 
     // Matched situation-level claim rules (defer-to-agent ones become "judgement" findings). Iterate
@@ -4311,7 +4313,7 @@ export class TaxAgent extends Agent<Env> {
     const capitalSignals = await capitalReadinessSignals(this.env, userId);
     // #550 first_timer_income: payer count + sole-trader expense total (src/lib/first-timer-signals.ts — the
     // same function the persona goldens call). Flag OFF ⇒ {} ⇒ findings byte-identical.
-    const firstTimerSignals = await firstTimerIncomeSignals(this.env, userId, startYear, await this.jurisdictionFor(userId));
+    const firstTimerSignals = await firstTimerIncomeSignals(this.env, userId, startYear, readinessJur);
     // #575 mytax_worksheet: unlabelled work-related rows (src/lib/mytax-worksheet.ts — the same function the
     // persona goldens call). Reuses the report already built. Flag OFF ⇒ {} ⇒ findings byte-identical.
     // Isolated: a presentation-only REVIEW nudge must never take down the readiness page (the endpoint itself still fails loudly).
@@ -4319,6 +4321,9 @@ export class TaxAgent extends Agent<Env> {
       console.error("mytax_worksheet signal failed", (e as Error).message);
       return {};
     });
+    // #571 situation_profile: per-person dated situation periods for this FY (src/lib/situation-profile.ts —
+    // the same function the persona goldens call). Flag OFF ⇒ {} ⇒ findings byte-identical.
+    const situationSignals = await situationProfileSignals(this.env, userId, startYear, readinessJur);
     // GST registration status for the turnover nudge — registered if the tenant default is set OR any
     // entity is flagged (mirrors gstTotals' registration test in ledger-totals.ts).
     const entGstReg = (await this.env.DB.prepare(`SELECT COUNT(*) AS n FROM entities WHERE user_id = ? AND COALESCE(gst_registered,0) = 1`).bind(userId).first<{ n: number }>())?.n ?? 0;
@@ -4373,6 +4378,7 @@ export class TaxAgent extends Agent<Env> {
       ...capitalSignals,
       ...firstTimerSignals,
       ...worksheetSignals,
+      ...situationSignals,
       ...(featureOn(this.env, "non_cash_income") ? { nonCashIncomeEnabled: true } : {}),
       ...(integrityOn ? {
         frankingHoldingThresholdCents: integrityThresholds?.franking_holding_rule_threshold_cents ?? null,

@@ -232,6 +232,13 @@ A tick with no dates is stored as a period spanning the active FY (`starts_on` =
 
 With the flag OFF none of the endpoints exist, so nothing writes the table or the mirrors.
 
+*As built (#571):* the mirrors follow the **latest FY** (up to the current one) that the fact's periods reach,
+so editing a past year never moves the live scalar; `residency = unsure`, or no period covering the FY's
+last day, leaves `tax_residency` **unchanged** (an "I don't know" must not flip the CGT-discount reader;
+`residency_unsure` defers instead); deleting a fact's last period reverts a mirror that still holds that
+period's value (`'AU'` / `NULL`). `fy_signoff.lodged_at` moved out of `0078` into ticket (b)'s own migration
+(#572), so later numbers in the appendix ledger shift by one when it lands.
+
 ### Server
 
 - New `src/lib/situation-profile.ts`:

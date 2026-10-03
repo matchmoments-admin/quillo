@@ -1,4 +1,4 @@
-import type { CapitalImportParse, Txn, TxnDetail, Situation, SituationDraft, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse, UsageData, StatementInfo, IncomeRow, DocRow, AssetRow, ScheduleRow, ChecklistItem, ClaimSuggestion, FilingReadiness, ReviewSummary, Progress, AdminTenant, AdminOverview, AdminSpend, AiEdit, ClaimReview, OccupationRulesDraft, OccupationRuleCandidate, NoaCarryover, MovementSweep, BatchResult, ClarifyQuestion, ClarifyAnswer, ClaimMatch, AccountantSummary, SuggestedDeduction, WorkUse, CarUse, CarUseRates, ScanResult, CapitalLoss, OpeningDepreciation, AttributionState, AttributionInput, AttributionRow, IncomeActivity, PropertyOwner, EntityRole, CgtAssetRow, CgtEventRow, EssGrantRow, VehicleLogbookRow, TrustDistributionRow, SmsfMemberRow, SuperContributionRow, BasPeriodRow, PaygInstalmentRow, AskAnswer, SavingsData, PhiOverview, PhiInsurerOption, PhiProvidersResult, PhiScanResult, BillingOverview, PartnerPortal, AmmaComponents, PartnershipDistributionRow, CostBaseElements, BankConnection } from "./types";
+import type { CapitalImportParse, Txn, TxnDetail, Situation, SituationDraft, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse, UsageData, StatementInfo, IncomeRow, DocRow, AssetRow, ScheduleRow, ChecklistItem, ClaimSuggestion, FilingReadiness, ReviewSummary, Progress, AdminTenant, AdminOverview, AdminSpend, AiEdit, ClaimReview, OccupationRulesDraft, OccupationRuleCandidate, NoaCarryover, MovementSweep, BatchResult, ClarifyQuestion, ClarifyAnswer, ClaimMatch, AccountantSummary, SuggestedDeduction, WorkUse, CarUse, CarUseRates, ScanResult, CapitalLoss, OpeningDepreciation, AttributionState, AttributionInput, AttributionRow, IncomeActivity, PropertyOwner, EntityRole, CgtAssetRow, CgtEventRow, EssGrantRow, VehicleLogbookRow, TrustDistributionRow, SmsfMemberRow, SuperContributionRow, BasPeriodRow, PaygInstalmentRow, AskAnswer, SavingsData, PhiOverview, PhiInsurerOption, PhiProvidersResult, PhiScanResult, BillingOverview, PartnerPortal, AmmaComponents, PartnershipDistributionRow, CostBaseElements, BankConnection, SituationPeriod, SituationPeriodWrite } from "./types";
 
 // Clerk session token getter, wired from <TokenBridge> inside ClerkProvider (main.tsx).
 // Clerk tokens are short-lived, so we fetch a fresh one per request (getToken caches/refreshes).
@@ -315,6 +315,13 @@ export const api = {
   openingDepreciation: () => get<{ opening_depreciation: OpeningDepreciation[] }>("/api/opening-depreciation").then((r) => r.opening_depreciation),
   addOpeningDepreciation: (b: { fy: number; opening_adjustable_value_cents: number; notes?: string }) => post<{ id: string }>("/api/opening-depreciation", b),
   deleteOpeningDepreciation: (id: string) => send<{ ok: boolean }>("DELETE", `/api/opening-depreciation/${id}`),
+
+  // Situation periods (flag situation_profile, #571). `fy` (required on add) = the active FY start year: an
+  // undated tick spans it. The server keeps the legacy mirrors in step. 400 = a plain message to show inline.
+  situationPeriods: (personId?: string) => get<{ periods: SituationPeriod[] }>(`/api/situation-periods${personId ? `?person_id=${encodeURIComponent(personId)}` : ""}`).then((r) => r.periods),
+  addSituationPeriod: (b: SituationPeriodWrite, fy: number) => post<{ period: SituationPeriod }>(`/api/situation-periods?fy=${fy}`, b).then((r) => r.period),
+  updateSituationPeriod: (id: string, b: SituationPeriodWrite) => send<{ period: SituationPeriod }>("PATCH", `/api/situation-periods/${encodeURIComponent(id)}`, b).then((r) => r.period),
+  deleteSituationPeriod: (id: string) => send<{ ok: boolean }>("DELETE", `/api/situation-periods/${encodeURIComponent(id)}`),
 
   // NOA carry-overs (B1 noa_capture): confirm-before-write FY close
   noaCarryovers: (fy?: number) => get<{ carryovers: NoaCarryover[] }>(`/api/noa${fy != null ? `?fy=${fy}` : ""}`).then((r) => r.carryovers),

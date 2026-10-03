@@ -194,7 +194,10 @@ M1–M6). These four are a coverage lens for the self-lodging first-time taxpaye
 (+ `pft5` partial income gap, `pft6` company-income / household / credits-only guards) in `scripts/check-personas.ts` drive real D1 rows through `buildReport`
 → `firstTimerIncomeSignals` (`src/lib/first-timer-signals.ts`, the same function the Durable Object
 calls) → `assessReadiness`, and assert that flag `first_timer_income` never moves
-`taxable_position_cents` and that flag OFF adds none of the new findings.
+`taxable_position_cents` and that flag OFF adds none of the new findings. `pft7` / `pft7b` / `pft7c`
+(#571, flag `situation_profile`) write dated situation periods through the real writer
+(`upsertSituationPeriod`) and read them back through `profileForFy` / `situationProfileSignals`
+(`src/lib/situation-profile.ts`), asserting the profile, the legacy mirrors and the same no-money-change rule.
 
 **myTax worksheet (#575, flag `mytax_worksheet`):** golden `pft12` (FT1 Jess complete: income statement,
 D3 uniform, D5 phone at 40%, WFH hours, one unlabelled work row) asserts the worksheet's sections follow
@@ -209,6 +212,7 @@ totals, and a sweep asserts the worksheet's `tie_back` reconciles for every pers
 | FT2 | **Mia**, student, part-time | casual wages from two payers, Youth Allowance, HELP debt, self-education for the current role only | `pft2` |
 | FT3 | **Sam**, PAYG + gig side hustle | PAYG + a food-delivery ABN under the GST threshold, **first-year business loss** | `pft3` |
 | FT4 | **Lena**, newcomer (WHM / international student) | residency set to non-AU, Australian wages + foreign employment income | `pft4` |
+| FT2v | **Mia** variant (#571) | part-year resident (arrived 2026-02-01), two casual jobs with different occupations, HELP debt ticked | `pft7` (+ `pft7b` residency unsure + private hospital cover) |
 
 | Capability | Engine | UI in | Display | Flag | Personas |
 |---|:---:|:---:|:---:|---|---|
@@ -219,13 +223,15 @@ totals, and a sweep asserts the worksheet's `tie_back` reconciles for every pers
 | Div 35 business-loss defer nudge (sole-trader expenses > business income beside other income; single-person tenants only until income is person-scoped; never applied to the position) | ✓ | — | ✓ | `first_timer_income` (ON) | FT3, 4, 5 |
 | Foreign income for a non-AU resident (review nudge; income stays in the position — exclusion is held owner decision G10) | ✓ | ✓ residency switch | ✓ | `first_timer_income` (ON) | FT4 (10 only if residency is non-AU) |
 | Wages answer on a credit group (never net-as-gross) | ✗ | ✗ | ✗ | — (owner decision G2) | FT1–4 |
-| Residency periods / temporary resident / visa; residency-aware foreign income | ✗ | ◑ AU/foreign switch | ◑ | — (map fog M2/M3) | FT4 |
 | Receipt ↔ bank-line match proposals (A8, #574): confidence-gated suggestions (pack `reconcile.*`), credits matchable, near-ties and contested lines left to the picker, "no bank line this year" bucket, dismissals never re-proposed; **never auto-confirmed** — Match is the existing manual Link; readiness `taxable_position_confirmed_cents` | ✓ (`pft11`) | ◑ manual picker only — Check page is #589 | ✗ until #589 | `reconcile_proposals` (OFF) | FT1 (`pft11`), 1–10 (confirmed ≥ tracked) |
-| Study-loan flag + repayment-income passthrough | ◑ NOA balance | ✗ | ◑ | — (waits on M2) | FT2, FT1 |
+| Situation profile as dated periods per person (`situation_periods`, 0078): residency type with dates, spouse, state, jobs (multi-valued, ref → employer), ABN activities, study / study loan (opt-in), WFH, car, foreign income, private hospital cover. Pack-validated (`situation_facts`); single-valued facts reject overlaps (400). Writes keep the legacy mirrors (`persons.occupation` ← longest job, `tax_residency` ← residency on 30 June, `profiles.private_health`) in the same batch. | ✓ | ◑ API only (`/api/situation-periods`); the About-you editor is A2 (#585) | ◑ payload only (`profile_periods`); rendered by A2 | `situation_profile` (OFF) | FT2v (`pft7`), FT4 |
+| Residency periods / temporary resident (no visa subclass) | ✓ periods + `residencyOn` (#571) | ◑ API only (A2) | ◑ | `situation_profile` (OFF) | FT2v, FT4 |
+| Residency-aware foreign income | ✗ | — | — | — (A13 `residency_assessability`) | FT4 |
+| Residency marked "not sure" (review nudge, deferred; never flips the binary `tax_residency` mirror) | ✓ | ◑ API only (A2) | ✓ `residency_unsure` | `situation_profile` (OFF) | FT2v (`pft7b`) |
+| Study-loan flag + repayment-income passthrough (info, never a figure) | ✓ `study_loan` period + `study_loan_passthrough` (#571); ◑ NOA balance | ◑ API only (A2) | ✓ | `situation_profile` (OFF) | FT2v (`pft7`), FT2, FT1 |
 
-Still open from the findings doc: G2 (wages answer), M2/M3 (residency periods + residency-aware
-assessability, incl. the held G10 decision to exclude foreign income for non-residents), M4/G5
-(study-loan passthrough), G11 (narrow the blanket non-resident defer), G7/G8 (sole-trader onboarding,
+Still open from the findings doc: G2 (wages answer), M3 (residency-aware assessability, A13 — the
+residency periods themselves landed with #571), the About-you editor that writes the periods (A2), G11 (narrow the blanket non-resident defer), G7/G8 (sole-trader onboarding,
 platform statements), the held non-lodgment-advice decision, and per-person scoping of the Div 35 and
 residency nudges for multi-person tenants.
 

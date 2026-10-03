@@ -17,6 +17,7 @@ import { deductionGroupForRow } from "./report";
 import type { Situation } from "./db";
 import { suggestionText, type ClaimRule } from "./claimability";
 import { BUSINESS_INCOME_TYPES, RENT_INCOME_TYPES, FOREIGN_INCOME_TYPES } from "./taxonomy";
+import type { SituationProfile } from "./situation-profile";
 
 export const READINESS_DISCLAIMER =
   "General information only — not tax advice. Quillo is not a registered tax or BAS agent. Confirm everything with a registered tax agent before lodging.";
@@ -104,6 +105,12 @@ export interface FilingReadinessSignals {
   // mytax_worksheet (#575) — populated ONLY when the flag is on (mytaxWorksheetSignals), so OFF ⇒ byte-identical.
   // Counted work-related rows with no D-label: they can't become a myTax worksheet line until confirmed to one.
   worksheetUnlabelled?: { n: number; cents: number };
+  // situation_profile (#571) — populated ONLY when the flag is on (situationProfileSignals in
+  // src/lib/situation-profile.ts), so OFF ⇒ findings byte-identical.
+  situationProfileEnabled?: boolean; // master gate for residency_unsure + study_loan_passthrough
+  situationProfiles?: SituationProfile[]; // one per person for this FY
+  situationPersonNames?: Record<string, string>; // person id → display name ('' for the self person)
+  situationResidencyUnsureValue?: string | null; // the pack's "not sure" residency value
 }
 
 export interface FilingReadiness {
@@ -919,6 +926,35 @@ export function assessReadiness(input: {
       `${n} work-related expense${n === 1 ? "" : "s"} need${n === 1 ? "s" : ""} a myTax label before you lodge`,
       `${money(cents)} of work-related expenses counted in your indicative position don't have a deduction label (D1–D10) yet, so they aren't on your myTax worksheet. Open each one and choose the label it belongs to — for example D3 for a compulsory uniform or D5 for a phone used for work. If you're not sure which label fits, confirm with a registered tax agent.`,
       true, [{ kind: "transaction", label: "work-related, no label", count: n }]));
+  }
+
+  // situation_profile (#571, first-timer A1): two findings read from the dated situation periods. Gated on
+  // the signal (populated only when the flag is on) ⇒ OFF adds none ⇒ byte-identical. Neither moves the
+  // position, and neither carries a figure.
+  if (signals.situationProfileEnabled) {
+    const profiles = signals.situationProfiles ?? [];
+    const names = signals.situationPersonNames ?? {};
+    const who = (ps: SituationProfile[]) => ps.map((p) => names[p.person_id] || "you");
+    // Residency marked "not sure" for any part of the FY. Residency decides which income is declared, and
+    // the tests are a judgement Quillo doesn't make, so: say so, point at the ATO page, defer.
+    const onlyYou = (people: string[]) => people.length === 1 && people[0] === "you";
+    const unsureValue = signals.situationResidencyUnsureValue; // from the pack, carried in the signal
+    const unsure = unsureValue ? profiles.filter((p) => p.residency.some((r) => r.type === unsureValue)) : [];
+    if (unsure.length) {
+      const people = who(unsure);
+      const lead = onlyYou(people) ? "You said you're not sure of your residency" : `You said you're not sure of the residency for ${people.join(", ")}`;
+      findings.push(f("residency_unsure", "judgement", "review", "Residency is marked as not sure",
+        `${lead} for part or all of this year. The ATO's residency tests decide it, and it affects which income is declared — see "Work out your residency status for tax purposes" on ato.gov.au. General information only.${DEFER}`, true, []));
+    }
+    // Study loan ticked (opt-in fact). The compulsory repayment is the ATO's calculation, not ours — say so
+    // and give NO figure (personas-coverage M4/G5).
+    const loans = profiles.filter((p) => p.flags.study_loan);
+    if (loans.length) {
+      const people = who(loans);
+      const whose = onlyYou(people) ? "Your compulsory study-loan repayment is" : `The compulsory study-loan repayment for ${people.join(", ")} is`;
+      findings.push(f("study_loan_passthrough", "income", "info", "Study loan: the ATO works out any compulsory repayment",
+        `${whose} worked out by the ATO from repayment income (taxable income plus any reportable amounts). Quillo doesn't calculate it, and nothing in the indicative position changes. General information only.`, false, []));
+    }
   }
 
   // (Super Notice-of-intent is surfaced via the year-end checklist (generateChecklist), not here, to

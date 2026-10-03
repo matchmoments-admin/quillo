@@ -3985,5 +3985,73 @@ console.log("mytax worksheet");
   check("pack: a KV pack's own keys win", custom.mytax_sections.length === 1 && custom.lodgement.self_lodge_due === "y" && custom.mytax_deduction_labels.D5 === "Other work-related expenses");
 }
 
+// ── #571 situation_profile: period validation (pack + overlap), FY clipping, mirrors ──
+import { validatePeriod, situationFacts, buildProfile, computeMirrors, mirrorFyForFact, revertMirrorsOnLastDelete, normaliseFyStart, MAX_PERIODS_PER_FACT, isIsoDate, rangesOverlap, type SituationPeriod } from "../src/lib/situation-profile";
+console.log("situation profile (dated periods)");
+{
+  const facts = situationFacts();
+  const base = { subject_kind: "person", subject_id: "p", ref_id: null } as const;
+  const res = (id: string, value: string, s: string | null, e: string | null) => ({ id, starts_on: s, ends_on: e, value });
+  check("pack: situation_facts lists the 11 spec facts (jurisdiction-neutral source of truth)",
+    ["residency", "spouse", "state", "employment", "abn_activity", "study", "study_loan", "wfh", "car_for_work", "foreign_income", "private_hospital_cover"].every((k) => k in facts) && Object.keys(facts).length === 11);
+  const existing = [res("r1", "foreign", "2025-07-01", "2026-01-31")];
+  check("validatePeriod: overlapping single-valued residency rejected", validatePeriod({ ...base, fact: "residency", value: "resident", starts_on: "2026-01-31", ends_on: null }, existing, facts) !== null);
+  check("validatePeriod: abutting (next day) residency accepted", validatePeriod({ ...base, fact: "residency", value: "resident", starts_on: "2026-02-01", ends_on: null }, existing, facts) === null);
+  check("validatePeriod: an open-start period overlaps everything before its end", validatePeriod({ ...base, fact: "residency", value: "resident", starts_on: null, ends_on: "2025-08-01" }, existing, facts) !== null);
+  check("validatePeriod: editing a period never clashes with itself", validatePeriod({ ...base, id: "r1", fact: "residency", value: "foreign", starts_on: "2025-07-01", ends_on: "2025-12-31" }, existing, facts) === null);
+  check("validatePeriod: multi-valued employment may overlap", validatePeriod({ ...base, fact: "employment", value: "retail", starts_on: "2025-07-01", ends_on: null }, [res("j1", "nurse", "2025-07-01", null)], facts) === null);
+  check("validatePeriod: unknown fact / bad value / bad token / bad date / start>end / ref on a non-ref fact / property subject all rejected",
+    validatePeriod({ ...base, fact: "nope", value: "x", starts_on: null, ends_on: null }, [], facts) !== null &&
+    validatePeriod({ ...base, fact: "residency", value: "martian", starts_on: null, ends_on: null }, [], facts) !== null &&
+    validatePeriod({ ...base, fact: "employment", value: "Head Chef!", starts_on: null, ends_on: null }, [], facts) !== null &&
+    validatePeriod({ ...base, fact: "wfh", value: "yes", starts_on: "2026-02-30", ends_on: null }, [], facts) !== null &&
+    validatePeriod({ ...base, fact: "wfh", value: "yes", starts_on: "2026-03-01", ends_on: "2026-02-01" }, [], facts) !== null &&
+    validatePeriod({ ...base, fact: "wfh", value: "yes", ref_id: "e1", starts_on: null, ends_on: null }, [], facts) !== null &&
+    validatePeriod({ ...base, subject_kind: "property", fact: "wfh", value: "yes", starts_on: null, ends_on: null }, [], facts) !== null);
+  check("validatePeriod: study_loan is opt-in only — a 'no' is never stored", validatePeriod({ ...base, fact: "study_loan", value: "no", starts_on: null, ends_on: null }, [], facts) !== null);
+  check("validatePeriod: employment 'none' (not working yet) is accepted", validatePeriod({ ...base, fact: "employment", value: "none", starts_on: null, ends_on: null }, [], facts) === null);
+  check("isIsoDate / rangesOverlap edge cases", isIsoDate("2024-02-29") && !isIsoDate("2025-02-29") && !isIsoDate("2025-7-1") && rangesOverlap(null, null, "2025-01-01", "2025-01-01") && !rangesOverlap("2025-01-02", null, null, "2025-01-01"));
+
+  const row = (id: string, fact: string, value: string, s: string | null, e: string | null, detail = "{}"): SituationPeriod =>
+    ({ id, user_id: "u", subject_kind: "person", subject_id: "p", fact, value, ref_id: null, starts_on: s, ends_on: e, source: "user", detail_json: detail });
+  const fy25 = { start: "2025-07-01", end: "2026-06-30" };
+  const periods = [
+    row("a", "employment", "retail", "2024-01-01", null), // open both sides of the FY → clipped to the whole FY
+    row("b", "employment", "nurse", "2026-03-01", "2026-06-30", JSON.stringify({ wfh: true })),
+    row("c", "residency", "foreign", null, "2025-12-31"),
+    row("d", "residency", "resident", "2026-01-01", null),
+    row("e", "wfh", "yes", "2025-07-01", "2025-07-31"),
+    row("f", "employment", "chef", "2026-07-01", null), // next FY — not in this profile
+  ];
+  const prof = buildProfile("p", periods, 2025, fy25);
+  check("buildProfile: jobs clipped to the FY, next-FY job excluded, per-job detail overrides the person flag",
+    prof.jobs.length === 2 && prof.jobs[0]!.starts_on === "2025-07-01" && prof.jobs[0]!.ends_on === "2026-06-30" && prof.jobs[0]!.wfh === true && prof.jobs[1]!.wfh === true && prof.fy === "2025-26");
+  check("buildProfile: open-start residency clipped to the FY start", prof.residency[0]!.starts_on === "2025-07-01" && prof.residency[0]!.type === "foreign" && prof.residency[1]!.ends_on === "2026-06-30");
+  const m = computeMirrors("p", periods, 2025, fy25, ["employment", "residency", "private_hospital_cover"], facts);
+  check("computeMirrors: occupation = longest job in the FY; residency on 30 June = resident ⇒ AU; no PHI answer ⇒ unchanged",
+    m.occupation === "retail" && m.tax_residency === "AU" && m.private_health === undefined);
+  check("computeMirrors: only touched facts mirror (a WFH tick never rewrites occupation)", Object.keys(computeMirrors("p", periods, 2025, fy25, ["wfh"], facts)).length === 0);
+  check("computeMirrors: whm / temporary on 30 June ⇒ 'foreign'; unsure ⇒ unchanged; every job 'none' ⇒ occupation NULL",
+    computeMirrors("p", [row("x", "residency", "whm", null, null)], 2025, fy25, ["residency"], facts).tax_residency === "foreign" &&
+    computeMirrors("p", [row("x", "residency", "temporary", null, null)], 2025, fy25, ["residency"], facts).tax_residency === "foreign" &&
+    computeMirrors("p", [row("x", "residency", "unsure", null, null)], 2025, fy25, ["residency"], facts).tax_residency === undefined &&
+    computeMirrors("p", [row("x", "employment", "none", null, null)], 2025, fy25, ["employment"], facts).occupation === null);
+  check("mirrorFyForFact: the most recent FY (capped at current) any of the fact's periods reaches — history edits never move the live scalar",
+    mirrorFyForFact([row("x", "residency", "foreign", "2023-07-01", "2024-06-30"), row("y", "residency", "resident", "2024-07-01", null)], "p", "residency", 2026) === 2026 &&
+    mirrorFyForFact([row("x", "residency", "foreign", "2023-07-01", "2024-06-30")], "p", "residency", 2026) === 2023 &&
+    mirrorFyForFact([row("x", "employment", "retail", "2026-06-30", "2026-07-01")], "p", "employment", 2026) === 2026 &&
+    mirrorFyForFact([row("x", "employment", "retail", "2027-07-01", null)], "p", "employment", 2026) === 2026 && // future-only ⇒ current
+    mirrorFyForFact([], "p", "employment", 2026) === 2026);
+  check("revertMirrorsOnLastDelete: a deleted 'foreign' still in the column ⇒ back to AU; Settings-set values are left alone",
+    revertMirrorsOnLastDelete(row("x", "residency", "foreign", null, null), { occupation: null, tax_residency: "foreign" }, facts).tax_residency === "AU" &&
+    revertMirrorsOnLastDelete(row("x", "residency", "foreign", null, null), { occupation: null, tax_residency: "UK" }, facts).tax_residency === undefined &&
+    revertMirrorsOnLastDelete(row("x", "residency", "unsure", null, null), { occupation: null, tax_residency: "foreign" }, facts).tax_residency === undefined &&
+    revertMirrorsOnLastDelete(row("x", "employment", "retail", null, null), { occupation: "retail", tax_residency: "AU" }, facts).occupation === null &&
+    revertMirrorsOnLastDelete(row("x", "employment", "retail", null, null), { occupation: "nurse", tax_residency: "AU" }, facts).occupation === undefined);
+  check("validatePeriod: per-subject-per-fact cap (MAX_PERIODS_PER_FACT) on multi-valued facts",
+    validatePeriod({ ...base, fact: "employment", value: "retail", starts_on: null, ends_on: null }, Array.from({ length: MAX_PERIODS_PER_FACT }, (_, i) => res(`j${i}`, "retail", null, null)), facts) !== null);
+  check("normaliseFyStart: plausible integer years only", normaliseFyStart("2025") === 2025 && normaliseFyStart(2025) === 2025 && normaliseFyStart("0") === null && normaliseFyStart("20255") === null && normaliseFyStart(null) === null && normaliseFyStart("2025.5") === null);
+}
+
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);
 process.exit(fail === 0 ? 0 : 1);

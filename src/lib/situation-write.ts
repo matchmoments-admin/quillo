@@ -5,6 +5,20 @@ import { fyForDate } from "./report";
 import { resolveJurisdictionForUser } from "./jurisdiction";
 import { ammaToCgtEvents, type AmmaComponents } from "./managed-fund";
 import { featureOn } from "./features";
+import { fyBounds } from "./ledger-totals";
+import { AU_DESCRIPTOR, currentFyStartYearFor, type JurisdictionDescriptor } from "./jurisdiction";
+import {
+  computeMirrors,
+  listSituationPeriods,
+  mirrorFyForFact,
+  normaliseFyStart,
+  revertMirrorsOnLastDelete,
+  situationFacts,
+  validatePeriod,
+  type SituationFactSpec,
+  type SituationMirrors,
+  type SituationPeriod,
+} from "./situation-profile";
 
 // Situation mutations for the Settings + onboarding-web flows. These rows are not
 // hash-chained (unlike corrections/consent/audit), so they're written directly to D1.
@@ -906,4 +920,196 @@ export async function revokeKey(env: Env, userId: string, keyId: string): Promis
   await env.DB.prepare(`UPDATE tenant_keys SET revoked_at = datetime('now') WHERE key_id = ? AND user_id = ?`)
     .bind(keyId, userId)
     .run();
+}
+
+// ── Situation periods (first-timer spec A1, #571, flag situation_profile) ─────────
+// The dated-period writer for situation_periods (0078). Every write validates against the rule pack and
+// the subject's other periods (validatePeriod), then writes the row AND the legacy mirrors
+// (persons.occupation / persons.tax_residency / profiles.private_health — computeMirrors) in ONE D1 batch,
+// so a legacy reader never sees a period without its mirror. Callers are flag-gated in api.ts.
+//
+// Known limit (accepted): writes run in the Worker, not through the DO, so two CONCURRENT overlapping writes
+// of a single-valued fact could both pass the overlap check. The single-user editor makes that a double-submit
+// edge; when A3's DO-side writer (#577) lands, both paths should go through the DO.
+
+/** A period write the caller should answer with `status` (400 bad input, 404 unknown id/subject). */
+export class SituationPeriodError extends Error {
+  constructor(message: string, readonly status: 400 | 404 = 400) {
+    super(message);
+  }
+}
+
+export interface SituationPeriodInput {
+  subject_kind?: unknown;
+  subject_id?: unknown;
+  person_id?: unknown; // alias for subject_id when subject_kind = person
+  fact?: unknown;
+  value?: unknown;
+  ref_id?: unknown;
+  starts_on?: unknown;
+  ends_on?: unknown;
+  source?: unknown;
+  detail?: unknown;
+}
+
+const PERIOD_SOURCES = new Set(["user", "onboarding", "noticed"]);
+// Trimmed non-empty string, capped (ids are uuids / person_self_<uid>; values are short tokens; dates 10 chars).
+const optStr = (v: unknown): string | null => (typeof v === "string" && v.trim() !== "" ? v.trim().slice(0, 200) : null);
+
+async function personRow(env: Env, userId: string, personId: string): Promise<{ id: string; role: string; occupation: string | null; tax_residency: string | null }> {
+  const p = await env.DB.prepare(`SELECT id, role, occupation, tax_residency FROM persons WHERE id = ? AND user_id = ?`)
+    .bind(personId, userId)
+    .first<{ id: string; role: string; occupation: string | null; tax_residency: string | null }>();
+  if (!p) throw new SituationPeriodError("person not found", 404);
+  return p;
+}
+
+async function assertPeriodRef(env: Env, userId: string, ref: SituationFactSpec["ref"] | undefined, refId: string | null): Promise<void> {
+  if (refId == null || !ref) return;
+  const q =
+    ref === "employment_entity"
+      ? env.DB.prepare(`SELECT COUNT(*) AS n FROM entities WHERE id = ? AND user_id = ? AND kind = 'employment'`)
+      : env.DB.prepare(`SELECT COUNT(*) AS n FROM income_activities WHERE id = ? AND user_id = ? AND activity_type = 'business'`);
+  const n = (await q.bind(refId, userId).first<{ n: number }>())?.n ?? 0;
+  if (n === 0) throw new SituationPeriodError(ref === "employment_entity" ? "That employer isn't one of your jobs." : "That business activity isn't one of yours.", 404);
+}
+
+function mirrorStatements(env: Env, userId: string, person: { id: string; role: string }, m: SituationMirrors) {
+  const out = [];
+  if (m.occupation !== undefined) out.push(env.DB.prepare(`UPDATE persons SET occupation = ? WHERE id = ? AND user_id = ?`).bind(m.occupation, person.id, userId));
+  if (m.tax_residency !== undefined) out.push(env.DB.prepare(`UPDATE persons SET tax_residency = ? WHERE id = ? AND user_id = ?`).bind(m.tax_residency, person.id, userId));
+  // profiles.private_health is tenant-level: only the primary taxpayer's answer mirrors into it.
+  if (m.private_health !== undefined && person.role === "self") out.push(env.DB.prepare(`UPDATE profiles SET private_health = ? WHERE user_id = ?`).bind(m.private_health, userId));
+  return out;
+}
+
+async function getPeriod(env: Env, userId: string, id: string): Promise<SituationPeriod> {
+  const row = await env.DB.prepare(
+    `SELECT id, user_id, subject_kind, subject_id, fact, value, ref_id, starts_on, ends_on, source, detail_json, created_at, updated_at
+       FROM situation_periods WHERE id = ? AND user_id = ?`,
+  ).bind(id, userId).first<SituationPeriod>();
+  if (!row) throw new SituationPeriodError("situation period not found", 404);
+  return row;
+}
+
+// detail carries only the fact's declared boolean flags (pack `detail_flags`) — no free-text personal data.
+function detailJson(d: unknown, spec: SituationFactSpec | undefined): string {
+  if (d == null) return "{}";
+  if (typeof d !== "object" || Array.isArray(d)) throw new SituationPeriodError("detail must be an object");
+  const allowed = new Set(spec?.detail_flags ?? []);
+  const out: Record<string, boolean> = {};
+  for (const [k, v] of Object.entries(d as Record<string, unknown>)) {
+    if (!allowed.has(k) || typeof v !== "boolean") throw new SituationPeriodError(`detail.${k.slice(0, 40)} isn't something this answer can carry.`);
+    out[k] = v;
+  }
+  return JSON.stringify(out);
+}
+
+/**
+ * Create (no `id`) or edit (`id`) one situation period, plus its mirrors, in one batch. `fy` is the caller's
+ * active FY start-year: a create with NO dates spans that FY (so next year asks again instead of silently
+ * carrying a tick forward). Mirrors follow the latest FY the fact's periods reach (mirrorFyForFact). On edit, a
+ * key present in the body replaces the stored value (null clears a date to open-ended); fact and subject never
+ * change.
+ */
+export async function upsertSituationPeriod(
+  env: Env,
+  userId: string,
+  rawInput: SituationPeriodInput | null | undefined,
+  opts: { id?: string; fy?: number | null; descriptor?: JurisdictionDescriptor; now?: Date } = {},
+): Promise<SituationPeriod> {
+  const input: SituationPeriodInput = rawInput && typeof rawInput === "object" && !Array.isArray(rawInput) ? rawInput : {};
+  const descriptor = opts.descriptor ?? AU_DESCRIPTOR;
+  const currentFy = currentFyStartYearFor(descriptor, opts.now ?? new Date());
+  const explicitFy = normaliseFyStart(opts.fy);
+  const facts = situationFacts();
+  const prior = opts.id ? await getPeriod(env, userId, opts.id) : null;
+  const has = (k: keyof SituationPeriodInput) => Object.prototype.hasOwnProperty.call(input, k);
+
+  let next: SituationPeriod;
+  if (prior) {
+    next = { ...prior };
+    if (has("value")) next.value = optStr(input.value);
+    if (has("ref_id")) next.ref_id = optStr(input.ref_id);
+    if (has("starts_on")) next.starts_on = optStr(input.starts_on);
+    if (has("ends_on")) next.ends_on = optStr(input.ends_on);
+    if (has("detail")) next.detail_json = detailJson(input.detail, facts[next.fact]);
+  } else {
+    const subjectId = optStr(input.subject_id) ?? optStr(input.person_id);
+    if (!subjectId) throw new SituationPeriodError("person_id is required");
+    let startsOn = optStr(input.starts_on);
+    let endsOn = optStr(input.ends_on);
+    if (startsOn == null && endsOn == null) {
+      const b = fyBounds(explicitFy ?? currentFy, descriptor);
+      startsOn = b.start;
+      endsOn = b.end;
+    }
+    const source = optStr(input.source);
+    const fact = optStr(input.fact) ?? "";
+    next = {
+      id: uid(),
+      user_id: userId,
+      subject_kind: optStr(input.subject_kind) ?? "person",
+      subject_id: subjectId,
+      fact,
+      value: optStr(input.value),
+      ref_id: optStr(input.ref_id),
+      starts_on: startsOn,
+      ends_on: endsOn,
+      source: source && PERIOD_SOURCES.has(source) ? source : "user",
+      detail_json: "{}",
+    };
+    next.detail_json = detailJson(input.detail, facts[fact]);
+  }
+
+  // One read of the subject's periods serves both the overlap check and the post-write mirror state.
+  const subjectPeriods = await listSituationPeriods(env, userId, next.subject_id);
+  const siblings = subjectPeriods.filter((p) => p.subject_kind === next.subject_kind && p.fact === next.fact);
+  const err = validatePeriod({ ...next, id: prior?.id }, siblings, facts);
+  if (err) throw new SituationPeriodError(err);
+  const person = await personRow(env, userId, next.subject_id);
+  // Re-check a ref only when this write sets it, so ending a job whose employer was later deleted still works.
+  if (!prior || has("ref_id")) await assertPeriodRef(env, userId, facts[next.fact]?.ref, next.ref_id);
+
+  const stmt = prior
+    ? env.DB.prepare(`UPDATE situation_periods SET value = ?, ref_id = ?, starts_on = ?, ends_on = ?, detail_json = ?, updated_at = datetime('now') WHERE id = ? AND user_id = ?`)
+        .bind(next.value, next.ref_id, next.starts_on, next.ends_on, next.detail_json, next.id, userId)
+    : env.DB.prepare(`INSERT INTO situation_periods (id, user_id, subject_kind, subject_id, fact, value, ref_id, starts_on, ends_on, source, detail_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .bind(next.id, userId, next.subject_kind, next.subject_id, next.fact, next.value, next.ref_id, next.starts_on, next.ends_on, next.source, next.detail_json);
+
+  // Mirrors from the POST-write state of this person's periods (computed in memory so the batch is atomic).
+  const postWrite = subjectPeriods.filter((p) => p.id !== next.id).concat(next);
+  const mfy = mirrorFyForFact(postWrite, person.id, next.fact, currentFy, descriptor);
+  const mirrors = computeMirrors(person.id, postWrite, mfy, fyBounds(mfy, descriptor), [next.fact], facts);
+  await env.DB.batch([stmt, ...mirrorStatements(env, userId, person, mirrors)]);
+  return getPeriod(env, userId, next.id);
+}
+
+/**
+ * Delete one period and recompute its fact's mirror from what remains. When it was the fact's LAST period, a
+ * mirror still holding what this period produced reverts to the legacy default (revertMirrorsOnLastDelete).
+ */
+export async function deleteSituationPeriod(
+  env: Env,
+  userId: string,
+  id: string,
+  opts: { descriptor?: JurisdictionDescriptor; now?: Date } = {},
+): Promise<void> {
+  const descriptor = opts.descriptor ?? AU_DESCRIPTOR;
+  const prior = await getPeriod(env, userId, id);
+  const del = env.DB.prepare(`DELETE FROM situation_periods WHERE id = ? AND user_id = ?`).bind(id, userId);
+  let person: Awaited<ReturnType<typeof personRow>> | null = null;
+  if (prior.subject_kind === "person") person = await personRow(env, userId, prior.subject_id).catch(() => null);
+  if (!person) {
+    await del.run();
+    return;
+  }
+  const remaining = (await listSituationPeriods(env, userId, person.id)).filter((p) => p.id !== id);
+  const mirrors = remaining.some((p) => p.fact === prior.fact)
+    ? (() => {
+        const mfy = mirrorFyForFact(remaining, person.id, prior.fact, currentFyStartYearFor(descriptor, opts.now ?? new Date()), descriptor);
+        return computeMirrors(person.id, remaining, mfy, fyBounds(mfy, descriptor), [prior.fact]);
+      })()
+    : revertMirrorsOnLastDelete(prior, person);
+  await env.DB.batch([del, ...mirrorStatements(env, userId, person, mirrors)]);
 }

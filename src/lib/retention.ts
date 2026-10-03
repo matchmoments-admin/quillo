@@ -87,6 +87,9 @@ export const PURGE_TABLES = [
   "bank_connection_accounts",
   "bank_sync_runs",
   "reconcile_dismissals",    // 0082 (A8, #574) — receipt ↔ bank-line proposals the user rejected
+  // 0078 (situation_profile, first-timer A1): dated situation periods per person (residency, jobs,
+  // study loan, private hospital cover…) — personal data, so purged and exported with the tenant.
+  "situation_periods",
 ] as const;
 
 // Columns that must NEVER leave the system in an APP-12 export, even though the row belongs to the

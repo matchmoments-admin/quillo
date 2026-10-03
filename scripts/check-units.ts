@@ -3966,5 +3966,24 @@ console.log("bank feed — bounded resumable sync (#511)");
     check("safeNextUrl refuses garbage", refuses("http://[::1"));
   }
 }
+
+// ── #575 mytax_worksheet: label order, the shared attribution veto, pack fallback ──
+import { compareDeductionLabels, mytaxPackContent } from "../src/lib/mytax-worksheet";
+import { attributionCountsInPosition, isSoleTraderBusinessAttribution } from "../src/lib/attribution";
+console.log("mytax worksheet");
+{
+  check("D-labels sort numerically (D10 after D9), combos by first label, non-D last",
+    JSON.stringify(["D10", "X", "D5", "D3/D5", "D1", "D9"].sort(compareDeductionLabels)) === JSON.stringify(["D1", "D3/D5", "D5", "D9", "D10", "X"]));
+  check("attribution veto: a suggestion never counts on the personal tracks", !attributionCountsInPosition("individual", "suggested_deductible", false) && !attributionCountsInPosition("property", "suggested_deductible", true));
+  check("attribution veto: not-deductible drops only once the headline excludes non-deductibles", attributionCountsInPosition("individual", "likely_not", false) && !attributionCountsInPosition("individual", "likely_not", true));
+  check("attribution veto: company track never vetoed; excluded track never counts", attributionCountsInPosition("company", "suggested_deductible", true) && !attributionCountsInPosition("excluded", "confirmed_deductible", false));
+  check("sole-trader business: individual/entity-less claimant only", isSoleTraderBusinessAttribution("individual", { activity_type: "business", entity_type: null }) && !isSoleTraderBusinessAttribution("individual", { activity_type: "business", entity_type: "trust" }));
+  const fromOldKv = mytaxPackContent({ version: "au-v1", buckets: {} }); // a KV pack pushed before #575
+  check("pack fallback: a KV pack without the mytax keys falls back to the bundled content",
+    fromOldKv.mytax_sections[0]?.key === "income_check" && fromOldKv.mytax_income_items.salary_payg?.prefilled === true && fromOldKv.lodgement.self_lodge_due === "31 October");
+  const custom = mytaxPackContent({ mytax_sections: [{ key: "deductions", title: "D" }], lodgement: { prefill_ready_hint: "x", self_lodge_due: "y" } });
+  check("pack: a KV pack's own keys win", custom.mytax_sections.length === 1 && custom.lodgement.self_lodge_due === "y" && custom.mytax_deduction_labels.D5 === "Other work-related expenses");
+}
+
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);
 process.exit(fail === 0 ? 0 : 1);

@@ -581,5 +581,45 @@
     "_note": "Receipt ↔ bank-line match PROPOSER (A8, #574). A proposal is a suggestion the user confirms one row at a time — never auto-applied. Scores come from the shared scorer (amount within max(50c, 1%) weighted 0.7 + date within 7 days weighted 0.3). Propose only when the best line scores >= propose_min_score AND beats the runner-up by >= propose_margin; otherwise the receipt stays in the manual picker.",
     "propose_min_score": 0.85,
     "propose_margin": 0.15
+  },
+  "_mytax_note": "#575 (flag mytax_worksheet): the myTax self-lodge worksheet's jurisdiction content — section order (myTax Prepare order), the income type → myTax item map (with whether myTax PREFILLS it, which decides 'check this matches' vs 'type this in'), the D-label names and the lodgement timing copy. Read by src/lib/mytax-worksheet.ts with the bundled pack as the fallback when a KV pack predates these keys. Never a figure: no rate, offset, levy or refund lives here.",
+  "lodgement": {
+    "prefill_ready_hint": "usually late July",
+    "self_lodge_due": "31 October"
+  },
+  "mytax_sections": [
+    { "key": "income_check", "title": "Income: check this matches" },
+    { "key": "income_type_in", "title": "Income: type these in" },
+    { "key": "rental", "title": "Rental properties (item 21)" },
+    { "key": "deductions", "title": "Deductions D1–D10" },
+    { "key": "business", "title": "Business and professional items" },
+    { "key": "medicare", "title": "Medicare and private health" }
+  ],
+  "mytax_income_items": {
+    "salary_payg": { "item": "1", "name": "Salary or wages", "prefilled": true },
+    "government_payment": { "item": "5/6", "name": "Australian Government allowances and payments", "prefilled": true },
+    "interest": { "item": "10", "name": "Gross interest", "prefilled": true },
+    "dividend": { "item": "11", "name": "Dividends", "prefilled": true },
+    "managed_fund_distribution": { "item": "13", "name": "Partnerships and trusts (managed fund distributions)", "prefilled": false },
+    "business": { "item": "P8", "name": "Business income (sole trader)", "prefilled": false },
+    "non_cash_business": { "item": "P8", "name": "Business income — non-cash (sole trader)", "prefilled": false },
+    "foreign_business": { "item": "P8", "name": "Business income — foreign sources", "prefilled": false },
+    "foreign_employment": { "item": "20", "name": "Foreign source income — employment", "prefilled": false },
+    "foreign_pension": { "item": "20", "name": "Foreign source income — pensions", "prefilled": false },
+    "foreign_rent": { "item": "20", "name": "Foreign source income — rent", "prefilled": false },
+    "rent": { "item": "21", "name": "Rent", "prefilled": false },
+    "other": { "item": "24", "name": "Other income", "prefilled": false }
+  },
+  "mytax_deduction_labels": {
+    "D1": "Work-related car expenses",
+    "D2": "Work-related travel expenses",
+    "D3": "Work-related clothing, laundry and dry-cleaning expenses",
+    "D4": "Work-related self-education expenses",
+    "D5": "Other work-related expenses",
+    "D6": "Low-value pool deduction",
+    "D7": "Interest deductions",
+    "D8": "Dividend deductions",
+    "D9": "Gifts or donations",
+    "D10": "Cost of managing tax affairs"
   }
 }

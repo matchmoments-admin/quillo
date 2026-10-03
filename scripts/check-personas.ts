@@ -29,6 +29,7 @@ import { draftHoldingFromTxn } from "../src/lib/clarify";
 import { costBaseFromElements, withCostBaseElements } from "../src/lib/capital";
 import { capitalReadinessSignals } from "../src/lib/capital-signals";
 import { firstTimerIncomeSignals } from "../src/lib/first-timer-signals";
+import { buildMytaxWorksheet, mytaxWorksheetSignals, mytaxWorksheetResponse, type MytaxWorksheet } from "../src/lib/mytax-worksheet";
 import { assessReadiness, type FilingReadinessSignals } from "../src/lib/readiness";
 import type { Situation } from "../src/lib/db";
 
@@ -2250,6 +2251,107 @@ async function main() {
         const c = on.position.taxable_position_confirmed_cents;
         check(`${u} (reconcile_proposals ON): confirmed position present and ≥ tracked`, c != null && c >= on.position.indicative_taxable_position_cents);
       }
+    }
+  }
+
+  // ── pft12 — the myTax worksheet (#575, flag mytax_worksheet; spec A9 ticket a). FT1 Jess, complete: income
+  //    statement, D3 uniform, D5 phone at 40%, WFH hours, one work row with no D-label. Every worksheet figure
+  //    must tie back to buildReport / the accountant schedule; flag OFF ⇒ 404 + no finding. ──
+  {
+    const WS_ENV_ON = { ...env, FEATURES: `${(env as { FEATURES: string }).FEATURES},mytax_worksheet` } as unknown as Env;
+    const wsSignals = (): FilingReadinessSignals => ({
+      unknownBucketCents: 0, unknownBucketN: 0, lowConfidenceN: 0, needsReviewIncomeN: 0, needsReviewAssetsN: 0,
+      hasDividendStatementDoc: true, rentalPropsMissingSummary: [], disposedAssetsN: 0,
+      instantAssetWriteOffCentsThisFy: null, instantAssetWriteOffCentsPrevFy: null, capitalLossCarryinCents: 0,
+    });
+    const wsSituation = (u: string): Situation => ({
+      profile: {} as Situation["profile"], properties: [], entities: [], rules: [], loans_properties: [],
+      persons: [{ id: `person_self_${u}`, user_id: u, display_name: "You", role: "self", occupation: "retail", tax_residency: "AU" } as Situation["persons"][number]],
+    } as Situation);
+    const wsReady = async (e: Env, u: string) => {
+      const report = await buildReport(e, u, 2025);
+      return assessReadiness({ report, situation: wsSituation(u), claimMatches: [], signals: { ...wsSignals(), ...(await mytaxWorksheetSignals(e, u, 2025, report)) }, generatedAt: "2026-10-03T00:00:00Z" });
+    };
+    const centsOf = (s: unknown) => Math.round(Number(s) * 100);
+    const lineOf = (ws: MytaxWorksheet, section: string, key: string) => ws.sections.find((s) => s.key === section)?.lines.find((l) => l.key === key);
+    const noRefundField = (o: unknown): boolean => !/"[^"]*(refund|tax_payable)[^"]*"\s*:/i.test(JSON.stringify(o));
+    const labelled = (u: string, id: string, cents: number, label: string | null, extra: { deductible_amount_cents?: number } = {}) =>
+      run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, ato_label, direction, deductibility, deductible_amount_cents) VALUES (?, ?, 'upload', 'categorised', 'bank_line', ?, ?, ?, 'payg', ?, 'debit', 'confirmed_deductible', ?)`,
+        id, u, cents, cents, FY_DATE, label, extra.deductible_amount_cents ?? null);
+
+    {
+      const u = "pft12";
+      seedTenant(u, "FT1 Jess complete — myTax worksheet");
+      inc("pft12Sal", u, "salary_payg", 4500000, { withholding_cents: 520000, detail_json: JSON.stringify({ employer: "Big Retail Pty Ltd" }) });
+      run(`INSERT INTO entities (id, user_id, kind, name, entity_type) VALUES ('pft12eEmp', ?, 'employment', 'Big Retail', 'payg_employment')`, u); // matches the income statement
+      run(`INSERT INTO entities (id, user_id, kind, name, entity_type) VALUES ('pft12eEmp2', ?, 'employment', 'Cafe Two', 'payg_employment')`, u); // told us about, no statement yet
+      labelled(u, "pft12Uni", 25000, "D3"); // $250 compulsory uniform
+      labelled(u, "pft12Phone", 100000, "D5", { deductible_amount_cents: 40000 }); // $1,000 phone at 40% work use
+      labelled(u, "pft12Odd", 12000, null); // $120 work row with no D-label
+      run(`INSERT INTO work_use_inputs (user_id, fy, wfh_hours) VALUES (?, 2025, 300)`, u);
+      const rep = await buildReport(WS_ENV_ON, u, 2025);
+      const ws = await buildMytaxWorksheet(WS_ENV_ON, u, 2025, { report: rep });
+      const packOrder = (auV1RulePack as unknown as { mytax_sections: { key: string }[] }).mytax_sections.map((s) => s.key);
+      const keys = ws.sections.map((s) => s.key);
+      check("pft12: sections follow the pack's myTax order (income check → deductions → medicare)",
+        JSON.stringify(keys) === JSON.stringify(["income_check", "deductions", "medicare"]) && keys.every((k, i) => i === 0 || packOrder.indexOf(k) > packOrder.indexOf(keys[i - 1])));
+      // D-label totals == the accountant schedule's per-label subtotals (its deductions_by_label section).
+      const sched = await buildAccountantSchedule(WS_ENV_ON, u, 2025, { report: rep });
+      const byLabel = new Map<string, number>();
+      for (const row of sched.sections.find((s) => s.key === "deductions_by_label")?.rows ?? []) byLabel.set(String(row[0]), (byLabel.get(String(row[0])) ?? 0) + centsOf(row[3]));
+      const dLines = ws.sections.find((s) => s.key === "deductions")?.lines ?? [];
+      const wfh = rep.work_method?.wfh_cents ?? 0;
+      check("pft12: WFH hours produce a fixed-rate amount (fixture sanity)", wfh > 0);
+      check("pft12: D3 and D5 lines equal the schedule's per-label subtotals (D5 = phone 40% + WFH)",
+        dLines.length === 2 && dLines.every((l) => l.amount_cents === byLabel.get(l.label)) && lineOf(ws, "deductions", "D3")?.amount_cents === 25000 && lineOf(ws, "deductions", "D5")?.amount_cents === 40000 + wfh);
+      check("pft12: deduction lines + the unlabelled amount == report deductions; tie_back ok",
+        dLines.reduce((s, l) => s + (l.amount_cents ?? 0), 0) + ws.unlabelled.cents === rep.total_deductions_cents && ws.unlabelled.cents === 12000 && ws.unlabelled.n === 1 && ws.tie_back.ok);
+      check("pft12: the unlabelled row is NOT a worksheet line", !dLines.some((l) => /confirm label/i.test(l.label)));
+      check("pft12: prefilled salary is a CHECK line per employer; an employer with no statement shows 'not entered'",
+        lineOf(ws, "income_check", "salary:big retail")?.amount_cents === 4500000 && lineOf(ws, "income_check", "salary:big retail")?.kind === "check"
+          && lineOf(ws, "income_check", "salary:cafe two")?.amount_cents === null && ws.tie_back.income_check_total_cents === rep.total_income_cents);
+      check("pft12: Medicare section asks about private hospital cover with NO figure", lineOf(ws, "medicare", "private_hospital_cover")?.kind === "answer" && lineOf(ws, "medicare", "private_hospital_cover")?.amount_cents === null);
+      check("pft12: no field named or containing refund / tax_payable; no tax-advice term in any copy",
+        noRefundField(ws) && !/refund|tax payable|marginal rate/i.test(JSON.stringify(ws.sections) + ws.header.intro));
+      check("pft12: header carries the pack's lodgement timing + the general-information disclaimer",
+        ws.header.intro.includes("usually late July") && ws.header.intro.includes("31 October") && /General information only/.test(ws.disclaimer));
+      const on = await wsReady(WS_ENV_ON, u);
+      const fu = on.findings.find((x) => x.id === "worksheet_unlabelled");
+      check("pft12 (ON): the unlabelled row raises worksheet_unlabelled (REVIEW, defers to a registered tax agent)",
+        fu?.severity === "review" && fu.defer_to_agent && fu.general_info_note.includes("$120.00") && /registered tax agent/.test(fu.general_info_note) && !/refund|tax payable/i.test(fu.title + fu.general_info_note));
+      const off = await wsReady(env, u);
+      const offResp = await mytaxWorksheetResponse(env, u, 2025);
+      const onResp = await mytaxWorksheetResponse(WS_ENV_ON, u, 2025);
+      check("pft12 (OFF): endpoint 404, no signal, no finding (byte-identical)",
+        offResp.status === 404 && JSON.stringify(await mytaxWorksheetSignals(env, u, 2025)) === "{}" && !off.findings.some((x) => x.id === "worksheet_unlabelled"));
+      check("pft12 (ON): endpoint 200 with the same worksheet", onResp.status === 200 && JSON.stringify(await onResp.json()) === JSON.stringify(ws));
+      check("pft12: the flag never moves the position", off.position.indicative_taxable_position_cents === on.position.indicative_taxable_position_cents);
+      // Once labelled, the finding clears and the amount moves onto its D-line.
+      run(`UPDATE transactions SET ato_label = 'D5' WHERE id = 'pft12Odd'`);
+      const ws2 = await buildMytaxWorksheet(WS_ENV_ON, u, 2025);
+      check("pft12: labelling the row clears the finding and lands it on D5", ws2.unlabelled.n === 0 && lineOf(ws2, "deductions", "D5")?.amount_cents === 40000 + wfh + 12000 && ws2.tie_back.ok
+        && !(await wsReady(WS_ENV_ON, u)).findings.some((x) => x.id === "worksheet_unlabelled"));
+    }
+
+    // FT3 Sam (pft3 fixture): an ABN tenant gets the business items section with per-activity totals.
+    {
+      const ws = await buildMytaxWorksheet(WS_ENV_ON, "pft3", 2025);
+      const biz = ws.sections.find((s) => s.key === "business");
+      check("pft12/Sam: business items section present — Food delivery income $3k + expenses $5k (attributed)",
+        !!biz && biz.lines.find((l) => l.key.startsWith("income:"))?.amount_cents === 300000 && biz.lines.find((l) => l.key === "expenses:pft3iaBiz")?.amount_cents === 500000 && /Food delivery/.test(biz.lines.map((l) => l.name).join()));
+      check("pft12/Sam: business income is typed in once (item P8) and the worksheet ties back", lineOf(ws, "income_type_in", "business")?.amount_cents === 300000 && ws.tie_back.ok);
+    }
+
+    // Tie-back sweep: the worksheet reconciles to the report for EVERY persona tenant seeded above (rentals,
+    // attributions, companies, CGT, refunds…), not just the first-timer fixtures.
+    {
+      const tenants = (db.prepare(`SELECT user_id FROM tenants ORDER BY user_id`).all() as { user_id: string }[]).map((r) => r.user_id);
+      const bad: string[] = [];
+      for (const t of tenants) {
+        const ws = await buildMytaxWorksheet(WS_ENV_ON, t, 2025);
+        if (!ws.tie_back.ok || !noRefundField(ws)) bad.push(`${t}:${JSON.stringify(ws.tie_back)}`);
+      }
+      check(`pft12 sweep: worksheet ties back to the report for all ${tenants.length} persona tenants${bad.length ? ` — FAILED ${bad.join(" | ")}` : ""}`, bad.length === 0);
     }
   }
 

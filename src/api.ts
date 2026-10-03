@@ -80,6 +80,7 @@ import { buildReport, reportToCsv, currentFyStartYear, workUseRatesForUserFy, re
 import { reconcileConfigFromPack } from "./lib/reconcile-proposer";
 import { resolveJurisdictionForUser } from "./lib/jurisdiction";
 import { buildAccountantSchedule, scheduleToCsv, scheduleToXlsx } from "./lib/accountant-schedule";
+import { mytaxWorksheetResponse } from "./lib/mytax-worksheet";
 import { getProgress } from "./lib/progress";
 import { featureOn } from "./lib/features";
 import { holdingPosition } from "./lib/capital";
@@ -1515,6 +1516,13 @@ export async function handleApi(
     if (!featureOn(env, "txn_scan")) return json({ error: "not_found" }, 404);
     const fy = Number(url.searchParams.get("fy")) || defaultFy();
     return json(await stub.scanTransactions(uid, fy));
+  }
+
+  // #575: the myTax self-lodge worksheet (spec A9). Flag mytax_worksheet; 404 when off ⇒ byte-identical.
+  // Identity is the server-derived uid, like every resource.
+  if (resource === "mytax-worksheet" && m === "GET") {
+    const fy = Number(url.searchParams.get("fy")) || defaultFy();
+    return mytaxWorksheetResponse(env, uid, fy);
   }
 
   if (resource === "report" && m === "GET") {

@@ -2,8 +2,8 @@ import { Agent } from "agents";
 import type { Env } from "./env";
 import { getProfile, getSituation, renderSituation, type Profile, type Situation, type UserRule } from "./lib/db";
 import { addRule, addAccount, updateAccount, syncIncomeCgtFromComponents, clearIncomeCgt, syncTxnCgtHolding, clearTxnCgt, clearOrphanedTxnCgt, syncPropertyDisposalToCgt, addPerson, updatePerson, addProperty, updateProperty, addEntity, updateEntity, updateRule, deleteRow, DeleteBlockedError, addPropertyOwner, addEntityRole, addIncomeActivity, addLoanProperty, updateLoanProperty, assertOwns, assertNoBlockingChildren, assertNoBlockingChildrenExcept } from "./lib/situation-write";
-import { markFyLodged, unmarkFyLodged, type FyLodgedRow } from "./lib/fy-signoff";
 import { lodgingFy } from "./lib/lodging-year";
+import { markFyLodged, unmarkFyLodged, listLodgedFys, type FyLodgedRow } from "./lib/fy-signoff";
 import type { DeleteBlocker } from "./lib/situation-write";
 import { captureNoaDraft } from "./lib/noa-store";
 import { ordinaryAssessableCents, validateComponents, parseAmmaComponents, type AmmaComponents } from "./lib/managed-fund";
@@ -1725,6 +1725,25 @@ export class TaxAgent extends Agent<Env> {
       // Counts and ids only — never an account number, never a payload (ADR-0003 S10/S11).
       JSON.stringify({ connections: byConnection.size, accounts: accounts.length, consent_id: active?.id ?? null, jobs: jobIds.length }),
     );
+
+    // Connect → done → imported. The consumer already chose which accounts to share on the bank's
+    // consent screen, so asking again in Quillo was a second, redundant picker. Every consented
+    // account that isn't mapped yet is selected onto a new matching Quillo account (the same "new"
+    // path the picker uses, so the canonical-source and remap guards still apply), then the first
+    // bounded sync starts. Best-effort: the connection is already recorded, so a failure here must
+    // not turn a successful consent into an error page — the picker remains as the fallback.
+    try {
+      const unmapped = await this.env.DB.prepare(
+        `SELECT a.provider_account_id FROM bank_connection_accounts a
+           JOIN bank_connections c ON c.id = a.connection_id AND c.user_id = a.user_id
+          WHERE a.user_id = ? AND a.account_id IS NULL AND c.status = 'active'`,
+      ).bind(userId).all<{ provider_account_id: string }>();
+      const sel = (unmapped.results ?? []).map((r) => ({ providerAccountId: r.provider_account_id, selected: true, accountId: "new" as string | null }));
+      if (sel.length) await this.bankSelectAccounts(userId, sel);
+      if (sel.length) await this.bankSync(userId);
+    } catch (e) {
+      console.warn(`[bank] auto-import after consent failed: ${(e as Error).message}`);
+    }
     return { ok: true, connections: byConnection.size, accounts: accounts.length };
   }
 
@@ -1778,6 +1797,38 @@ export class TaxAgent extends Agent<Env> {
     const stmts: D1PreparedStatement[] = [];
 
     for (const s of selections) {
+      // accountId "new": create the matching Quillo account in the same save, so a first-timer with no
+      // accounts isn't stuck at a dropdown with nothing to choose. A brand-new account has no prior
+      // lines, no other feed and no statements, so the remap / shared / canonical guards below can't
+      // trip for it — it is created with source 'cdr_feed' directly.
+      if (s.selected && s.accountId === "new") {
+        const src = await this.env.DB.prepare(
+          `SELECT a.name, a.masked_number, a.type, a.account_id, c.institution, c.institution_id
+             FROM bank_connection_accounts a JOIN bank_connections c ON c.id = a.connection_id AND c.user_id = a.user_id
+            WHERE a.user_id = ? AND a.provider_account_id = ? AND c.status <> 'revoked' LIMIT 1`,
+        ).bind(userId, s.providerAccountId).first<{ name: string | null; masked_number: string | null; type: string | null; account_id: string | null; institution: string | null; institution_id: string | null }>();
+        if (!src) { conflicts.push("That bank account is no longer connected."); continue; }
+        if (src.account_id) {
+          // Already mapped: keep the existing mapping rather than creating a duplicate account.
+          s.accountId = src.account_id;
+        } else {
+          const id = crypto.randomUUID();
+          const type = src.type === "credit-card" ? "credit_card" : src.type === "loan" || src.type === "mortgage" ? "loan" : "transaction";
+          stmts.push(
+            this.env.DB.prepare(
+              `INSERT INTO accounts (id, user_id, institution, name, last4, type, source) VALUES (?, ?, ?, ?, ?, ?, 'cdr_feed')`,
+            ).bind(id, userId, src.institution ?? src.institution_id, (src.name ?? "Bank account").slice(0, 80), src.masked_number, type),
+          );
+          stmts.push(
+            this.env.DB.prepare(
+              `UPDATE bank_connection_accounts SET selected = 1, account_id = ?
+                WHERE user_id = ? AND provider_account_id = ?
+                  AND connection_id IN (SELECT id FROM bank_connections WHERE user_id = ? AND status <> 'revoked')`,
+            ).bind(id, userId, s.providerAccountId, userId),
+          );
+          continue;
+        }
+      }
       if (s.selected && s.accountId) {
         // REMAP GUARD (#511). Re-pointing a feed account whose lines already landed in one Quillo
         // account at a DIFFERENT one used to re-import the whole year into the new account and leave
@@ -1862,7 +1913,15 @@ export class TaxAgent extends Agent<Env> {
     if (!(await this.bankRateOk(userId, "sync", 30))) throw new Error("too many sync attempts — try again later");
 
     const descriptor = await this.jurisdictionFor(userId);
-    const { start: fyStart, end: fyEnd } = this.fyBoundsFor(opts.fy, descriptor);
+    // No FY named (the connect flow, the picker's Sync button): cover the year being LODGED through
+    // the current year. A first-timer in October is preparing last FY; syncing only the calendar FY
+    // imported the wrong year. The 24-month CDR wall below still clamps the start.
+    let { start: fyStart, end: fyEnd } = this.fyBoundsFor(opts.fy, descriptor);
+    if (!opts.fy) {
+      const lodging = lodgingFy(new Date(), descriptor.taxPeriod, await listLodgedFys(this.env, userId));
+      const lodgingStart = fyBounds(lodging, descriptor).start;
+      if (lodgingStart < fyStart) fyStart = lodgingStart;
+    }
 
     // Clamp to the 24-month CDR wall and to today — see syncWindow for why both matter.
     const today = new Date().toISOString().slice(0, 10);

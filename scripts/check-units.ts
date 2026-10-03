@@ -4769,9 +4769,12 @@ import type { FilingReadiness as JFilingReadiness, ReadinessFinding as JFinding 
 
 // ── #582/#585 ft_journey: the ONE legacy → journey route table + the old 6-step URLs (web/src/lib/legacyRoutes.ts) ──
 import { LEGACY_ROUTES, OLD_STEP_ROUTES, STEP_LEGACY_ROUTE, journeyRouteFor, oldStepRouteFor, toJourneyHref } from "../web/src/lib/legacyRoutes";
-import { STEP_ROUTE as FT_STEP_ROUTE } from "../web/src/lib/journey";
+// (web/src/lib/journey.ts imports react-query, which the server CI job doesn't install — read its route table as text.)
 {
   const mainSrc = fs.readFileSync(path.join(process.cwd(), "web/src/main.tsx"), "utf8");
+  const journeySrc = fs.readFileSync(path.join(process.cwd(), "web/src/lib/journey.ts"), "utf8");
+  const stepRouteBlock = /export const STEP_ROUTE[^{]*\{([^}]*)\}/.exec(journeySrc)?.[1] ?? "";
+  const FT_STEP_ROUTE = Object.fromEntries([...stepRouteBlock.matchAll(/(\w+): "([^"]+)"/g)].map((m) => [m[1]!, m[2]!]));
   const routed = new Set([...mainSrc.matchAll(/\{ path: "([^"]+)", element:/g)].map((m) => `/${m[1]}`).concat("/"));
   check("legacyRoutes: every legacy source and every journey target is a registered route (nothing 404s with the flag ON)",
     LEGACY_ROUTES.every((r) => routed.has(r.from) && routed.has(r.to.split(/[?#]/)[0]!)));

@@ -152,18 +152,18 @@ export function TxnDetail() {
   const fyStart = txn?.txn_date && /^\d{4}-\d{2}-\d{2}$/.test(txn.txn_date) ? (Number(txn.txn_date.slice(5, 7)) >= 7 ? Number(txn.txn_date.slice(0, 4)) : Number(txn.txn_date.slice(0, 4)) - 1) : null;
   const wfhQ = useQuery({ queryKey: ["work-use", fyStart], queryFn: () => api.workUse(fyStart as number), enabled: looksPhoneInternet && fyStart != null });
   // #258: candidate expenses to link a refund to (countable debits in the same FY). Only fetched for a
-  // refund credit when refund_netting_v2 is on — the picker is hidden otherwise, so no wasted call.
+  // refund credit when refund_netting is on — the picker is hidden otherwise, so no wasted call.
   const isRefund = txn?.bucket === "refund" && txn?.direction === "credit";
   const refundCandQ = useQuery({
     queryKey: ["txn-expenses", fyStart],
     queryFn: () => api.transactions({ fy: fyStart as number, countable: true, limit: 500 }),
-    enabled: has("refund_netting_v2") && isRefund && fyStart != null,
+    enabled: has("refund_netting") && isRefund && fyStart != null,
   });
 
   // Detail is "relevant" (worth showing up front) when the row already carries an ATO label, is undated,
   // is a property bucket, or is a refund whose link picker must be seen (hiding it silently under-nets a
   // deduction). Computed before the early returns so the drawer-open effect below can be a real hook.
-  const detailRelevant = !!label || !date || isPropertyBucket(bucket) || (has("refund_netting_v2") && isRefund);
+  const detailRelevant = !!label || !date || isPropertyBucket(bucket) || (has("refund_netting") && isRefund);
   // Slice 6: the "More options" drawer auto-opens when relevance APPEARS (a one-way effect), but never
   // fights a manual collapse — once the user closes it, it stays closed unless relevance re-appears.
   const [moreOpen, setMoreOpen] = useState(false);
@@ -223,7 +223,7 @@ export function TxnDetail() {
       )}
     </label>
   ) : null;
-  const refundField = has("refund_netting_v2") && isRefund ? (
+  const refundField = has("refund_netting") && isRefund ? (
     <label className="block">
       <span className="text-xs font-medium uppercase tracking-wide text-muted">This refunds which expense? <InfoTip tip="Link this refund to the work/rental expense it reverses, so the deduction is reduced by the refund. Leave it unlinked for a personal reimbursement or a return on a personal purchase — those don't affect your deductions. General info only." /></span>
       <select

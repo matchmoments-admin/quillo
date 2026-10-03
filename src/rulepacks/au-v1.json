@@ -182,6 +182,21 @@
       { "match": "income-protection,income protection,salary continuance,income-insurance", "note": "Income-protection insurance premiums (outside super) are generally deductible because the benefit would be assessable income (s8-1). Confirm it's not a life/TPD/trauma policy, then mark it as a deduction." }
     ]
   },
+  "state_education": {
+    "_note": "A10 (#591, flag ft_journey): the About you state card (after the state question). EDUCATION ONLY: links to each state or territory revenue office's general pages, labelled as information because the income tax return is federal. No state figures, rates or thresholds here. Keyed by the situation_facts.state values. Copy here is scanned by the tax-advice denylist in check-units.",
+    "label": "For your information; your return is federal.",
+    "intro": "States and territories run their own taxes and schemes, such as stamp duty, land tax and first home buyer help. They're separate from the income tax return you lodge with the ATO.",
+    "states": {
+      "NSW": { "name": "New South Wales", "office": "Revenue NSW", "url": "https://www.revenue.nsw.gov.au/" },
+      "VIC": { "name": "Victoria", "office": "State Revenue Office Victoria", "url": "https://www.sro.vic.gov.au/" },
+      "QLD": { "name": "Queensland", "office": "Queensland Revenue Office", "url": "https://qro.qld.gov.au/" },
+      "WA": { "name": "Western Australia", "office": "RevenueWA", "url": "https://www.wa.gov.au/organisation/department-of-finance/revenuewa" },
+      "SA": { "name": "South Australia", "office": "RevenueSA", "url": "https://www.revenuesa.sa.gov.au/" },
+      "TAS": { "name": "Tasmania", "office": "State Revenue Office Tasmania", "url": "https://www.sro.tas.gov.au/" },
+      "ACT": { "name": "Australian Capital Territory", "office": "ACT Revenue Office", "url": "https://www.revenue.act.gov.au/" },
+      "NT": { "name": "Northern Territory", "office": "Territory Revenue Office", "url": "https://treasury.nt.gov.au/dtf/territory-revenue-office" }
+    }
+  },
   "before_you_start": {
     "_note": "A10 (#584): the public no-account Before you start screen (/start, flag ft_journey). price_line is the price/fit copy slot owned by launch-map pricing ticket #523: null renders nothing. Copy here is scanned by the tax-advice denylist in check-units.",
     "price_line": null

@@ -1,5 +1,6 @@
 import type { CapitalImportParse, Txn, TxnDetail, Situation, SituationDraft, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse, UsageData, StatementInfo, IncomeRow, DocRow, AssetRow, ScheduleRow, ChecklistItem, ClaimSuggestion, FilingReadiness, ReviewSummary, Progress, AdminTenant, AdminOverview, AdminSpend, AiEdit, ClaimReview, OccupationRulesDraft, OccupationRuleCandidate, NoaCarryover, MovementSweep, BatchResult, ClarifyQuestion, ClarifyAnswer, ClaimMatch, AccountantSummary, SuggestedDeduction, WorkUse, CarUse, CarUseRates, ScanResult, CapitalLoss, OpeningDepreciation, AttributionState, AttributionInput, AttributionRow, IncomeActivity, PropertyOwner, EntityRole, CgtAssetRow, CgtEventRow, EssGrantRow, VehicleLogbookRow, TrustDistributionRow, SmsfMemberRow, SuperContributionRow, BasPeriodRow, PaygInstalmentRow, AskAnswer, SavingsData, PhiOverview, PhiInsurerOption, PhiProvidersResult, PhiScanResult, BillingOverview, PartnerPortal, AmmaComponents, PartnershipDistributionRow, CostBaseElements, BankConnection, SituationPeriod, SituationPeriodWrite, BankHistoryEvent, BankDisconnectResult, FyLodged } from "./types";
 import type { Journey } from "./types";
+import type { AskContext, EducationData } from "./types";
 
 // Clerk session token getter, wired from <TokenBridge> inside ClerkProvider (main.tsx).
 // Clerk tokens are short-lived, so we fetch a fresh one per request (getToken caches/refreshes).
@@ -136,7 +137,10 @@ export const api = {
   dashboard: (fy?: number) => get<DashboardData>(`/api/dashboard${fy ? `?fy=${fy}` : ""}`),
   progress: () => get<Progress>("/api/progress"),
   guideMe: (tab: string) => post<{ headline: string; steps: string[] }>("/api/guide", { tab }),
-  ask: (question: string, fy?: number) => post<AskAnswer>("/api/ask", { question, fy }),
+  // `context` (#591, the Why? drawer, ft_journey) is only put on the body when given, so every
+  // existing caller sends exactly the pre-#591 body.
+  ask: (question: string, fy?: number, context?: AskContext) => post<AskAnswer>("/api/ask", context ? { question, fy, context } : { question, fy }),
+  education: () => get<EducationData>("/api/education"),
   chat: (message: string, session_id?: string, fy?: number, page?: string) => post<AskAnswer & { session_id: string }>("/api/chat", { message, session_id, fy, page }),
   chatHistory: (sessionId: string) => get<{ messages: { role: string; content: string }[] }>(`/api/chat/${sessionId}`).then((r) => r.messages),
   usage: () => get<UsageData>("/api/usage"),

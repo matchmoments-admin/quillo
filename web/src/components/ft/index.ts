@@ -1,7 +1,7 @@
 // First-timer journey component library (spec A12 ticket b, #583). Built once on the semantic
 // tokens; consumed by the step pages (#585–#591) under ft_journey.
 export * from "./model";
-export { TAP, FOCUS, MOTION, cx, FtButton, FtLink, FtCard, Badge, Skeleton, EmptyState, ErrorState, StatusGate, GeneralInfoNote } from "./primitives";
+export { TAP, FOCUS, MOTION, cx, FtButton, FtLink, FtTextArea, FtCard, Badge, Skeleton, EmptyState, ErrorState, StatusGate, GeneralInfoNote } from "./primitives";
 export type { FtButtonVariant, StatusProps } from "./primitives";
 export { StepHeader } from "./StepHeader";
 export { StepFooter, type FooterAction } from "./StepFooter";
@@ -12,3 +12,7 @@ export { WorksheetLine } from "./WorksheetLine";
 export { Chip, ChipGroup } from "./Chip";
 export { CompletenessMeter } from "./CompletenessMeter";
 export { WhySheet } from "./WhySheet";
+// #591 (A10 ticket b): golden-rules strip, Why? drawer (Ask Quillo in context), state + newcomer cards.
+export { GoldenRules } from "./GoldenRules";
+export { WhyDrawer, useWhyDrawer, type WhyItem } from "./WhyDrawer";
+export { StateEducationCard, NewcomerCard } from "./EducationCards";

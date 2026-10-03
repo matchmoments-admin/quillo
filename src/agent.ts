@@ -26,6 +26,7 @@ import { mapIncomeStatementToRows } from "./lib/income-statement";
 import { fyForDate, buildReport, useStatusDeniedExpr, propertyUndeterminedGatedExpr, resolveRulePack } from "./lib/report";
 import { runScan, type ScanResult, type ScanTxn, type ScanPatternFacts } from "./lib/scan";
 import { occupationGuide } from "./lib/occupations";
+import { fetchAskItem, renderAskContext, type AskContext } from "./lib/education";
 import { getProgress } from "./lib/progress";
 import { buildGuidePrompt, buildAskSystem, summariseReportForAsk, renderTxnDigest } from "./lib/guide";
 import { fyLabel, fyBounds, fyStartYearStr, parseFyStartYear, normaliseFyLabel } from "./lib/ledger-totals";
@@ -7010,7 +7011,7 @@ export class TaxAgent extends Agent<Env> {
    * (buildReport JSON, redacted + length-capped). Single-turn, no history, no rule-writing (that's the
    * C2 chat epic). GENERAL-INFO only — the prompt forbids advice / refund / rates.
    */
-  async askQuestion(userId: string, question: string, fy: number): Promise<AnswerResult> {
+  async askQuestion(userId: string, question: string, fy: number, context?: AskContext): Promise<AnswerResult> {
     const q = (question ?? "").trim();
     if (!q) throw new Error("empty question");
     const profile = await this.requireProfile(userId);
@@ -7024,19 +7025,23 @@ export class TaxAgent extends Agent<Env> {
     // already sends to the model, so the existing consent gate above covers it. Flag off ⇒ undefined ⇒
     // buildAskSystem/extractAnswer take their pre-C3 paths byte-identically.
     const wantActions = featureOn(this.env, "ask_actions");
-    const [situation, report, digestRows] = await Promise.all([
+    // #591 Why? drawer: `context` arrives only when api.ts validated it under ft_journey. The item is a
+    // tenant-scoped read (user_id bound) AFTER the consent + budget gates; absent ⇒ no read, no block.
+    const [situation, report, digestRows, askItem] = await Promise.all([
       getSituation(this.env, userId, profile),
       buildReport(this.env, userId, fy),
       wantActions ? fetchAskDigestRows(this.env, userId, fy) : Promise.resolve(undefined),
+      context?.item_id ? fetchAskItem(this.env, userId, context.item_id) : Promise.resolve(null),
     ]);
     const digest = digestRows ? renderTxnDigest(digestRows.rows, digestRows.total) : undefined;
     // The question is free text → redact (TFN/card/BSB) BEFORE it reaches the model (APP-8), THEN cap —
     // redact-then-slice so a truncated token can't defeat the regex. The position is a curated summary
     // of aggregates (no PII digit strings), so it is NOT redacted (redact would mangle the *_cents the
     // answer must cite). The situation text can carry names, so it stays redacted.
-    const system = buildAskSystem(redact(renderSituation(situation)), summariseReportForAsk(report), digest?.text);
+    const baseSystem = buildAskSystem(redact(renderSituation(situation)), summariseReportForAsk(report), digest?.text);
+    const system = context ? baseSystem + renderAskContext(context, askItem) : baseSystem;
     const result = await extractAnswer(llm, system, [{ role: "user", content: redact(q).slice(0, 600) }], digest && { aliasToId: digest.aliasToId, propertyIds: new Set(situation.properties.map((p) => p.id)) });
-    await this.audit(userId, "ask", JSON.stringify({ q_len: q.length, fy, proposals: result.proposed_actions?.length ?? 0 }));
+    await this.audit(userId, "ask", JSON.stringify(context ? { q_len: q.length, fy, proposals: result.proposed_actions?.length ?? 0, why_step: context.step, why_item: !!askItem } : { q_len: q.length, fy, proposals: result.proposed_actions?.length ?? 0 }));
     return result;
   }
 

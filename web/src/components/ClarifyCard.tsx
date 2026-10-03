@@ -79,7 +79,14 @@ export function ClarifyRow({
 
   const answer = useMutation({
     mutationFn: (a: ClarifyAnswer) => api.answerClarify(q.id, a),
-    onSuccess: () => {
+    onSuccess: (_r, a) => {
+      // #577 "My wages": the employer is marked and NOTHING is recorded (#554) — say so, and ask for the statement.
+      if (a.kind === "wages_payer") {
+        toast.success("Marked as your employer", {
+          description: "Your income statement in myTax shows your gross pay and tax withheld. Check it's there and enter it on the Income page, and Quillo will use it.",
+        });
+        for (const k of ["noticed", "readiness", "situation"]) qc.invalidateQueries({ queryKey: [k] });
+      }
       // Income answers write to the income table → refresh income + report surfaces too. review-groups:
       // unified_review_groups drives inline group rendering off the whole-queue counts, so refresh them
       // after an answer removes rows from a group (else a stale hiddenCount lingers for one refetch cycle).

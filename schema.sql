@@ -128,7 +128,12 @@ CREATE TABLE IF NOT EXISTS transactions (
   relevance    TEXT,                     -- NULL | relevant | worth_a_look | irrelevant
   relevance_rule_id TEXT,                -- the claimability rule (ruleKey) behind relevant / worth_a_look
   created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  -- 0079 (wages_payer, A3 #577): on a credit, the employer entity it is pay from. Records nothing to
+  --   the position; drives the per-employer income-statement prompt. NULL => not marked.
+  payer_entity_id TEXT
 );
+CREATE INDEX IF NOT EXISTS idx_txn_payer_entity ON transactions(user_id, payer_entity_id); -- 0079
 CREATE INDEX IF NOT EXISTS idx_txn_imghash ON transactions(user_id, image_hash);
 CREATE INDEX IF NOT EXISTS idx_transactions_biller ON transactions(user_id, biller_key); -- 0047
 -- Statement re-upload de-dup: a bank line is unique per (account, fingerprint). NOT partial
@@ -1390,3 +1395,22 @@ CREATE TABLE IF NOT EXISTS cdr_audit_log (
 );
 CREATE INDEX IF NOT EXISTS idx_cdr_audit_user ON cdr_audit_log(user_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_cdr_audit_event ON cdr_audit_log(event, created_at);
+
+-- 0079 (wages_payer, first-timer A3 #577): "We noticed…" signals from the deterministic credit triage
+-- (payroll / platform / government / interest / foreign). One row per FY + kind + payer stem; the user
+-- confirms or dismisses it and a dismissal sticks across re-imports. evidence_json = counts, dates and a
+-- total only (never raw descriptions).
+CREATE TABLE IF NOT EXISTS noticed_signals (
+  id            TEXT PRIMARY KEY,
+  user_id       TEXT NOT NULL,
+  fy            TEXT NOT NULL,                 -- '2025-26'
+  kind          TEXT NOT NULL,                 -- payroll | platform | government | interest | foreign | grow_* (A11)
+  signal_key    TEXT NOT NULL,                 -- groupKey stem of the payer
+  status        TEXT NOT NULL DEFAULT 'open',  -- open | confirmed | dismissed
+  evidence_json TEXT NOT NULL DEFAULT '{}',
+  ref_id        TEXT,                          -- the entity / activity created on confirm
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  decided_at    TEXT,
+  UNIQUE (user_id, fy, kind, signal_key)
+);
+CREATE INDEX IF NOT EXISTS idx_noticed_user_fy ON noticed_signals(user_id, fy, status);

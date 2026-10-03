@@ -1142,7 +1142,7 @@ export interface BatchResult {
 }
 
 // Stage B — clarify-by-pattern
-export type ClarifyAnswerKind = "income_property" | "income_business" | "income_personal" | "ignore" | "capital" | "bucket";
+export type ClarifyAnswerKind = "income_property" | "income_business" | "income_personal" | "wages_payer" | "ignore" | "capital" | "bucket";
 export interface ClarifySuggestion {
   label: string;
   kind: ClarifyAnswerKind;
@@ -1345,4 +1345,43 @@ export interface Journey {
     disclaimer: string;
   };
   whats_left: { id: string; kind: "finding"; severity: "blocker" | "review"; title: string; step: JourneyStepKey }[];
+}
+
+// "We noticed…" signals (flag wages_payer, #577). evidence = counts / dates / a total only (never raw descriptions).
+export type NoticedKind = "payroll" | "platform" | "government" | "interest" | "foreign";
+export interface NoticedSignal {
+  id: string;
+  fy: string;
+  kind: NoticedKind | string;
+  signal_key: string;
+  status: string;
+  evidence: {
+    n: number;
+    first_date: string | null;
+    last_date: string | null;
+    total_cents: number;
+    label: string;
+    cadence_days?: number;
+    second_payer?: boolean;
+    activity?: string;
+    income_type?: string;
+  };
+  ref_id: string | null;
+  created_at: string;
+  decided_at: string | null;
+}
+export interface NoticedConfirmResult {
+  kind: string;
+  status: "confirmed";
+  already?: boolean;
+  income_recorded: number;
+  entity_id?: string;
+  employer_name?: string;
+  stamped?: number;
+  period_id?: string | null;
+  needs_occupation?: boolean;
+  activity_id?: string;
+  prompt?: string;
+  offer_manual_income?: string[];
+  residency_unanswered?: boolean;
 }

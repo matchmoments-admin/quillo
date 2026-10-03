@@ -223,9 +223,17 @@ schedule / myTax worksheet tie-backs all hold, the #550 binary nudge is retired 
 `temporary` variant (`pft13t`) keeps foreign employment (pack carve-out), a spouse-only period (`pft13s`) excludes the spouse's foreign rows incl. foreign rent on a property (per-property rent + worksheet rental line follow) while the self person keeps the #550 nudge, binary `tax_residency` alone never
 excludes (`pft4` unchanged), and flag OFF (or `situation_profile` alone) is byte-identical for `pft13` and P1–P10.
 
+**We noticed / wages payer (#577, flag `wages_payer`; owner ruling #554):** golden `pft8` (FT1 Jess bank-only:
+3 fortnightly "BIG RETAIL PTY LTD" credits + 2 DoorDash payouts) runs the real credit triage and confirm
+handlers (`src/lib/credit-triage.ts`, `src/lib/noticed-signals.ts`) over D1 rows: one payroll + one platform
+signal; "this is my wages" writes zero income rows, stamps `payer_entity_id` on exactly the 3 credits and
+raises a per-employer `income_not_recorded` naming Big Retail; the income statement counts gross once and
+clears it; platform confirm records the payouts once as business income; `income_personal` on a stamped
+credit is refused; a dismissal survives re-import; flag OFF ⇒ no signal, no finding, no worksheet line.
+
 | # | Persona | Core tax shape | Golden |
 |---|---------|----------------|--------|
-| FT1 | **Jess**, first-job PAYG | one employer, started mid-year, **a bank feed instead of an income statement**, small work deductions | `pft1` |
+| FT1 | **Jess**, first-job PAYG | one employer, started mid-year, **a bank feed instead of an income statement**, small work deductions | `pft1` (+ `pft8` bank-only, we-noticed payroll + platform) |
 | FT2 | **Mia**, student, part-time | casual wages from two payers, Youth Allowance, HELP debt, self-education for the current role only | `pft2` |
 | FT3 | **Sam**, PAYG + gig side hustle | PAYG + a food-delivery ABN under the GST threshold, **first-year business loss** | `pft3` |
 | FT4 | **Lena**, newcomer (WHM / international student) | residency set to non-AU, Australian wages + foreign employment income | `pft4` |
@@ -241,7 +249,8 @@ excludes (`pft4` unchanged), and flag OFF (or `situation_profile` alone) is byte
 | Tax-free threshold with two or more payers (info note, no amount) | ✓ | — | ✓ | `first_timer_income` (ON) | FT2, 7 |
 | Div 35 business-loss defer nudge (sole-trader expenses > business income beside other income; single-person tenants only until income is person-scoped; never applied to the position) | ✓ | — | ✓ | `first_timer_income` (ON) | FT3, 4, 5 |
 | Foreign income for a non-AU resident (review nudge; income stays in the position — retired once `residency_assessability` decides from dated periods) | ✓ | ✓ residency switch | ✓ | `first_timer_income` (ON) | FT4 (10 only if residency is non-AU) |
-| Wages answer on a credit group (never net-as-gross) | ✗ | ✗ | ✗ | — (owner decision G2) | FT1–4 |
+| Wages answer on a credit group (never net-as-gross): Clarify "My wages" + the payroll "We noticed" card mark the payer as an employer (entity + `employment` period + `transactions.payer_entity_id`) and record **nothing**; per-employer "income statement not recorded" finding; a stamped credit can never be recorded as income (#554) | ✓ (`pft8`) | ✓ Clarify answer + "We noticed" cards on Accounts (Bring in page is A3 ticket b) | ✓ readiness finding + worksheet "not entered" employer line | `wages_payer` (OFF) | FT1 (`pft8`), FT2 |
+| Credit triage "We noticed…" (0079 `noticed_signals`): payroll / platform payouts / government / interest / foreign, lists in the pack (`credit_signals`), one signal per FY + kind + payer key, dismissals stick across re-imports, evidence = counts/dates/total only. Platform confirm records payouts once as business income + an ABN activity; government/interest add a worksheet "check this matches" line; foreign sets `foreign_income` | ✓ (`pft8`) | ✓ cards on Accounts | ✓ | `wages_payer` (OFF) | FT1, FT2, FT3, FT4 |
 | Receipt ↔ bank-line match proposals (A8, #574): confidence-gated suggestions (pack `reconcile.*`), credits matchable, near-ties and contested lines left to the picker, "no bank line this year" bucket, dismissals never re-proposed; **never auto-confirmed** — Match is the existing manual Link; readiness `taxable_position_confirmed_cents` | ✓ (`pft11`) | ◑ manual picker only — Check page is #589 | ✗ until #589 | `reconcile_proposals` (OFF) | FT1 (`pft11`), 1–10 (confirmed ≥ tracked) |
 | Situation profile as dated periods per person (`situation_periods`, 0078): residency type with dates, spouse, state, jobs (multi-valued, ref → employer), ABN activities, study / study loan (opt-in), WFH, car, foreign income, private hospital cover. Pack-validated (`situation_facts`); single-valued facts reject overlaps (400). Writes keep the legacy mirrors (`persons.occupation` ← longest job, `tax_residency` ← residency on 30 June, `profiles.private_health`) in the same batch. | ✓ | ◑ API only (`/api/situation-periods`); the About-you editor is A2 (#585) | ◑ payload only (`profile_periods`); rendered by A2 | `situation_profile` (OFF) | FT2v (`pft7`), FT4 |
 | Relevance scan on bank lines (A4, #578): each debit payg / uncategorised line sorted relevant / worth a look / irrelevant from the profile's occupation tokens per FY + the pack (`relevance.floor_cents`); an occupation rule hit overrides the not-deductible default as a **worth a look** card (`claim_suggestions` source `relevance_scan`) — deductibility never changed, the user confirms every claim; re-scan on any job / ABN / WFH / car / foreign-income period write or a Settings occupation edit | ✓ (`pft9`) | ◑ confirm via the existing confirm-deduction action; `GET /api/relevance` + `review-groups?relevance=` for the Claims step A6 (#587) | ✗ until A6 (#587) | `relevance_scan` (OFF) | FTn (`pft9`), FT1–4 |
@@ -250,7 +259,7 @@ excludes (`pft4` unchanged), and flag OFF (or `situation_profile` alone) is byte
 | Residency marked "not sure" (review nudge, deferred; never flips the binary `tax_residency` mirror) | ✓ | ◑ API only (A2) | ✓ `residency_unsure` | `situation_profile` (OFF) | FT2v (`pft7b`) |
 | Study-loan flag + repayment-income passthrough (info, never a figure) | ✓ `study_loan` period + `study_loan_passthrough` (#571); ◑ NOA balance | ◑ API only (A2) | ✓ | `situation_profile` (OFF) | FT2v (`pft7`), FT2, FT1 |
 
-Still open from the findings doc: G2 (wages answer), the About-you editor that writes the periods (A2), G7/G8 (sole-trader onboarding,
+Still open from the findings doc: the About-you editor that writes the periods (A2), G7/G8 (sole-trader onboarding,
 platform statements), the held non-lodgment-advice decision, and per-person scoping of the Div 35 and
 residency nudges for multi-person tenants.
 

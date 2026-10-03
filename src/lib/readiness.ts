@@ -112,6 +112,13 @@ export interface FilingReadinessSignals {
   situationProfiles?: SituationProfile[]; // one per person for this FY
   situationPersonNames?: Record<string, string>; // person id → display name ('' for the self person)
   situationResidencyUnsureValue?: string | null; // the pack's "not sure" residency value
+  // wages_payer (#577) — populated ONLY when the flag is on (payrollEmployerSignals in src/lib/noticed-signals.ts),
+  // so OFF ⇒ findings byte-identical. Employers the user marked from bank pay ("this is my wages"), whether an
+  // income statement naming each is recorded, and the stamped personal-income credits (so the generic
+  // income_not_recorded doesn't ask about the same wages twice).
+  payrollEmployers?: { entity_id: string; name: string; n: number; covered: boolean }[];
+  stampedPersonalN?: number;
+  stampedPersonalCents?: number;
 }
 
 export interface FilingReadiness {
@@ -517,9 +524,12 @@ export function assessReadiness(input: {
     const missing = new Map<string, { n: number; cents: number }>();
     for (const row of report.income_by_bucket ?? []) {
       if (!(row.bucket in bucketCovered) || bucketCovered[row.bucket] || row.total_cents <= 0) continue;
+      // wages_payer: credits stamped as pay from a marked employer are asked about per employer below.
+      const stamped = row.bucket === "income_personal" && signals.payrollEmployers ? { n: signals.stampedPersonalN ?? 0, cents: signals.stampedPersonalCents ?? 0 } : { n: 0, cents: 0 };
+      if (row.total_cents - stamped.cents <= 0) continue;
       const m = missing.get(row.bucket) ?? { n: 0, cents: 0 };
-      m.n += row.n;
-      m.cents += row.total_cents;
+      m.n += row.n - stamped.n;
+      m.cents += row.total_cents - stamped.cents;
       missing.set(row.bucket, m);
     }
     if (missing.size > 0) {
@@ -532,6 +542,19 @@ export function assessReadiness(input: {
         `Your bank shows ${parts} coming in this year, but there's no matching income recorded, so it isn't in your indicative position${againstZero}. Bank deposits are listed alongside the position but never counted in it: a deposit is your take-home pay, not your gross pay and the tax withheld. For wages, download your income statement from myGov (ATO online services) once your employer marks it "Tax ready" and upload it on the Income page; for other income, add it there too. General information only.`, false,
         [{ kind: "transaction", count: totalN }]));
     }
+  }
+  // wages_payer (#577, owner ruling #554): per-employer income completeness. The user said "this is my wages" for
+  // a payer, so its deposits are take-home pay that is never counted; the gross pay and tax withheld come from the
+  // employer's income statement. One finding per marked employer with no salary row naming it; it clears when
+  // one is recorded. BLOCKER when no income at all is recorded (the position is then materially incomplete).
+  // Gated on the signal ⇒ OFF adds nothing. Copy never counts the deposits for the user, nor predicts a figure.
+  for (const e of signals.payrollEmployers ?? []) {
+    if (e.covered || e.n <= 0) continue;
+    const noIncome = report.income.gross_cents === 0 && report.income.by_type.length === 0;
+    findings.push(f("income_not_recorded", "completeness", noIncome ? "blocker" : "review",
+      `Pay from ${e.name} is in your bank, but its income statement isn't recorded yet`,
+      `You told us the deposits from ${e.name} are your wages. Those deposits are your take-home pay, so Quillo never counts them as income: your return needs your gross pay and the tax withheld, which are on your income statement in myTax (ATO online services, via myGov) once your employer marks it "Tax ready". Check it's there, then upload it or enter it on the Income page. General information only.`, false,
+      [{ kind: "transaction", count: e.n }]));
   }
   if (signals.needsReviewIncomeN > 0) {
     findings.push(f("income_needs_review", "income", "review", `${signals.needsReviewIncomeN} income record(s) flagged for review`,

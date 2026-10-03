@@ -102,6 +102,13 @@ export interface Env {
  * without an `as any` cast (review finding: avoid unnecessary `as any`).
  */
 export interface TaxAgentRpc {
+  // #571 / #577: per-tenant serialised situation-period writes + "We noticed…" confirm/dismiss (errors as values).
+  situationPeriodWrite(
+    userId: string,
+    op: { kind: "upsert"; body: import("./lib/situation-write").SituationPeriodInput | null; id?: string; fy?: number | null } | { kind: "delete"; id: string },
+  ): Promise<{ ok: true; period?: unknown } | { ok: false; error: string; status: number }>;
+  confirmNoticedSignal(userId: string, id: string, body: import("./lib/noticed-signals").ConfirmBody | null): Promise<{ ok: true; result: import("./lib/noticed-signals").ConfirmResult } | { ok: false; error: string; status: number }>;
+  dismissNoticedSignal(userId: string, id: string): Promise<{ ok: true; status: string } | { ok: false; error: string; status: number }>;
   ingest(userId: string, source: string, bytes: ArrayBuffer, mime: string, bucketHint?: string | null): Promise<string>;
   ingestImages(userId: string, source: string, images: { bytes: ArrayBuffer; mime: string }[], bucketHint?: string | null): Promise<string>;
   ingestText(userId: string, source: string, text: string): Promise<string>;

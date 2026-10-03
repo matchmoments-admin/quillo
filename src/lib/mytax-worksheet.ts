@@ -24,6 +24,7 @@ import { buildAccountantScheduleDetailed, atoReturnLabel, type ScheduleDetail } 
 import { classifyAttribution, attributionCountsInPosition, isSoleTraderBusinessAttribution } from "./attribution";
 import { resolveJurisdictionForUser } from "./jurisdiction";
 import { payerKey } from "./first-timer-signals";
+import { confirmedPrefillSignals } from "./noticed-signals";
 import { READINESS_DISCLAIMER } from "./readiness";
 import { BUSINESS_INCOME_TYPES, RENT_INCOME_TYPES, isPropertyBucket } from "./taxonomy";
 import { NON_RESIDENT_FOREIGN, NON_RESIDENT_FOREIGN_NOTE } from "./residency-assessability";
@@ -148,16 +149,19 @@ export async function buildMytaxWorksheet(env: Env, userId: string, startYear: n
   const report = opts?.report ?? (await buildReport(env, userId, startYear));
   // Independent reads — resolve concurrently (the schedule build dominates).
   const excludeNonDeductible = featureOn(env, "position_excludes_nondeductible");
-  const [{ detail }, rawPack, employerEntities, refunds] = await Promise.all([
+  const [{ detail }, rawPack, employerEntities, refunds, noticed] = await Promise.all([
     buildAccountantScheduleDetailed(env, userId, startYear, { report }),
     resolveJurisdictionForUser(env, userId).then((j) => resolveRulePack(env, userId, j)),
     employmentEntityNames(env, userId),
     // The SAME per-expense netting buildReport ran (report.start/end are its bounds), so each refund can be
     // netted on the line its expense lands on.
     featureOn(env, "refund_netting") ? refundNetting(env, userId, report.start, report.end, excludeNonDeductible).then((r) => r.netted) : Promise.resolve(new Map<string, number>()),
+    // #577 wages_payer: confirmed government / interest "We noticed" signals ⇒ a "check this matches" line.
+    // Flag OFF ⇒ [] (no read) ⇒ worksheet byte-identical.
+    confirmedPrefillSignals(env, userId, startYear),
   ]);
   const pack = mytaxPackContent(rawPack);
-  return assembleWorksheet(report, detail, pack, employerEntities, excludeNonDeductible, new Map(refunds));
+  return assembleWorksheet(report, detail, pack, employerEntities, excludeNonDeductible, new Map(refunds), noticed);
 }
 
 /** Employer entities from About you / situation (kind 'employment'), so an employer with no income row yet still gets a line. */
@@ -173,7 +177,7 @@ async function employmentEntityNames(env: Env, userId: string): Promise<string[]
   }
 }
 
-function assembleWorksheet(report: Report, detail: ScheduleDetail, pack: MytaxPack, employerEntities: string[], excludeNonDeductible: boolean, netted: Map<string, number>): MytaxWorksheet {
+function assembleWorksheet(report: Report, detail: ScheduleDetail, pack: MytaxPack, employerEntities: string[], excludeNonDeductible: boolean, netted: Map<string, number>, noticed: { kind: string; label: string; income_type: string }[] = []): MytaxWorksheet {
   const items = pack.mytax_income_items;
   const itemFor = (t: string): IncomeItem => items[t] ?? { item: items.other?.item ?? "24", name: t.replace(/_/g, " "), prefilled: false };
   const byType = new Map(report.income.by_type.map((r) => [r.income_type, r]));
@@ -238,6 +242,17 @@ function assembleWorksheet(report: Report, detail: ScheduleDetail, pack: MytaxPa
       : r.withholding_cents > 0 ? ` Tax withheld you recorded: ${money(r.withholding_cents)}.` : "";
     check.push({ key: t, label: it.item, name: it.name, amount_cents: r.gross_cents, kind: "check", record_href: `/income?type=${t}`,
       note: `myTax usually prefills this. Tick it when myTax shows the same amount; if it doesn't, check which statement is missing.${credit}` });
+  }
+  // #577: a payer the user confirmed from bank credits ("Payments from Services Australia", "Interest from ING")
+  // with no income of that type recorded: a "not entered" check line, never a figure from the bank credits.
+  for (const n of noticed) {
+    const r = byType.get(n.income_type);
+    if (r && r.gross_cents !== 0) continue; // already recorded ⇒ the line above covers it
+    const it = itemFor(n.income_type);
+    const key = `noticed:${n.kind}:${payerKey(n.label) || n.kind}`;
+    if (check.some((l) => l.key === key)) continue;
+    check.push({ key, label: it.item, name: `${it.name} — ${n.label}`, amount_cents: null, kind: "check", record_href: `/income?type=${n.income_type}`,
+      note: `Your bank shows payments from ${n.label}. myTax usually prefills these: check this matches what myTax shows, or add it on the Income page. Quillo doesn't count the bank deposits themselves.` });
   }
 
   // ── 2. Income: type these in (not prefilled) ──────────────────────────────────────────────────────

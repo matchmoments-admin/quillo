@@ -331,7 +331,27 @@ export async function listStatements(env: Env, userId: string, accountId?: strin
   )
     .bind(...binds)
     .all();
-  return res.results ?? [];
+  const rows = res.results ?? [];
+  // bank_minimisation (#581): lines shrunk into rollups still belong to their statement. Add them back so the
+  // "X / N categorised" progress and the line total still tie out (a shrunk line was 'extracted'/'ignored' —
+  // done), and expose rolled_up_lines so the page can say why. OFF ⇒ the rollup table is never read and the
+  // rows are returned exactly as before.
+  if (!featureOn(env, "bank_minimisation") || !rows.length) return rows;
+  const ids = rows.map((r) => (r as { id: string }).id);
+  const rolled = new Map<string, number>();
+  for (let i = 0; i < ids.length; i += 90) {
+    const chunk = ids.slice(i, i + 90);
+    const r = await env.DB.prepare(
+      `SELECT statement_id, SUM(n) AS n FROM bank_line_rollups
+        WHERE user_id = ? AND statement_id IN (${chunk.map(() => "?").join(",")}) GROUP BY statement_id`,
+    ).bind(userId, ...chunk).all<{ statement_id: string; n: number }>();
+    for (const x of r.results ?? []) rolled.set(x.statement_id, Number(x.n ?? 0));
+  }
+  return rows.map((r) => {
+    const row = r as Record<string, unknown> & { id: string; total_lines: number; categorised_count: number };
+    const n = rolled.get(row.id) ?? 0;
+    return { ...row, total_lines: Number(row.total_lines) + n, categorised_count: Number(row.categorised_count) + n, rolled_up_lines: n };
+  });
 }
 
 // #490: the old shape was two bare LIMITs (100 receipts / 200 lines) with no params and no counts —

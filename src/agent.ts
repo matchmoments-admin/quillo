@@ -45,7 +45,8 @@ import { resolveJurisdictionForUser, currentFyStartYearFor, baseCurrencyOf, AU_D
 import { assessReadiness, type FilingReadiness, type FilingReadinessSignals } from "./lib/readiness";
 import { rollSchedule, balancingAdjustment, fyStartYearOf, isLowCostAsset, looksLikePersonalTransfer, assetDepreciatesForTaxpayer, depMethodConflict, resolveDiv40Life, type DepAsset } from "./lib/depreciation";
 import { matchClaimRules, suggestionText, enumerateSituationClaims, classifyClaim, uncoveredOccupations, ruleKey, type ClaimRule, type ClaimContext, type ClaimSituation } from "./lib/claimability";
-import { parseCsv, applyColumnMap, lineFingerprint, deriveBalances, reconcileStatement, isLiabilityAccount, fuzzyMerchant, isTransferLike, isLoanInterestLine, classifyMovement, movementTreatment, type ColumnMap, type Reconciliation, type StatementLine, type MovementClass } from "./lib/statements";
+import { minimiseTenant, tombstonedFingerprints, rolledUpLineCount, forgetStatementMinimisation, type MinimiseResult } from "./lib/minimise";
+import { parseCsv, applyColumnMap, statementLineFingerprints, deriveBalances, reconcileStatement, isLiabilityAccount, fuzzyMerchant, isTransferLike, isLoanInterestLine, classifyMovement, movementTreatment, type ColumnMap, type Reconciliation, type StatementLine, type MovementClass } from "./lib/statements";
 import { groupKey, groupForClarify, rulePatternForStem, draftHoldingFromTxn, isClarifyLeftover, CLARIFY_LEFTOVER_WHERE, type ClarifyRow } from "./lib/clarify";
 import { scoreClaimMatches, type ScoredTxn } from "./lib/claim-match";
 import { batchStatementStatus, isStaleBatch } from "./lib/batch";
@@ -560,18 +561,20 @@ export class TaxAgent extends Agent<Env> {
       .bind(userId, stmt.account_id)
       .all<{ line_fingerprint: string }>();
     for (const r of prior.results ?? []) seen.add(r.line_fingerprint);
+    // bank_minimisation (#581): a line shrunk into a rollup left a tombstone — treat it as already on file so a
+    // re-upload (or an overlapping statement) can never resurrect it. OFF ⇒ [] (the table is never read).
+    for (const fp of await tombstonedFingerprints(this.env, userId, stmt.account_id)) seen.add(fp);
 
     const inserts: D1PreparedStatement[] = [];
     let skipped = 0;
     // Occurrence counter per (date, amount, direction, merchant): genuine same-day repeat lines on a
     // balance-less statement (credit cards) must each get a distinct fingerprint, or the unique-key
-    // guard silently drops all but the first. Counted in parse order so a re-upload reproduces them.
-    const occ = new Map<string, number>();
-    for (const line of lines) {
-      const base = `${line.date}|${line.amount_cents}|${line.direction ?? "debit"}|${cleanMerchant(line.raw_description).toLowerCase()}`;
-      const occurrence = occ.get(base) ?? 0;
-      occ.set(base, occurrence + 1);
-      const fp = await lineFingerprint(stmt.account_id, line, occurrence);
+    // guard silently drops all but the first. Counted in parse order so a re-upload reproduces them
+    // (statementLineFingerprints owns the counter).
+    const fps = await statementLineFingerprints(stmt.account_id, lines);
+    for (let li = 0; li < lines.length; li++) {
+      const line = lines[li]!;
+      const fp = fps[li]!;
       if (seen.has(fp)) {
         skipped++;
         continue;
@@ -627,9 +630,11 @@ export class TaxAgent extends Agent<Env> {
     // re-confirming a statement dedup-skips every line (delta 0) and previously zeroed a correct
     // count. Also persist the reconcile result computed above so the flag reflects this import, not
     // a stale parse-time value.
-    const posted = (await this.env.DB.prepare(
+    // Lines minimised into rollups (bank_minimisation, #581) still belong to the statement — counted so a shrunk
+    // statement keeps its true posted count (OFF ⇒ + 0).
+    const posted = ((await this.env.DB.prepare(
       `SELECT COUNT(*) AS n FROM transactions WHERE user_id = ? AND statement_id = ? AND kind = 'bank_line'`,
-    ).bind(userId, statementId).first<{ n: number }>())?.n ?? imported;
+    ).bind(userId, statementId).first<{ n: number }>())?.n ?? imported) + (await rolledUpLineCount(this.env, userId, statementId));
     await this.env.DB.prepare(`UPDATE statements SET status='imported', imported_count=?, reconciled=?, recon_diff_cents=? WHERE id=?`)
       .bind(posted, recon.available ? (recon.ok ? 1 : 0) : null, recon.available ? recon.diff_cents : null, statementId)
       .run();
@@ -949,6 +954,9 @@ export class TaxAgent extends Agent<Env> {
         .bind(userId, statementId)
         .run();
       linesRemoved = del.meta?.changes ?? 0;
+      // bank_minimisation (#581): the statement's rollups + tombstones go with it, so a re-upload restores those
+      // lines instead of skipping them against an orphaned rollup. OFF ⇒ no-op.
+      await forgetStatementMinimisation(this.env, userId, statementId);
       // C1: the deleted bank_lines may have seeded capital holdings — drop the now-orphaned parcels.
       await clearOrphanedTxnCgt(this.env, userId);
     }
@@ -960,6 +968,19 @@ export class TaxAgent extends Agent<Env> {
     await this.env.DB.prepare(`DELETE FROM statements WHERE id = ? AND user_id = ?`).bind(statementId, userId).run();
     await this.audit(userId, "statement_deleted", JSON.stringify({ statementId, status: stmt.status, purge, linesRemoved }));
     return { deleted: true, linesRemoved };
+  }
+
+  /**
+   * Bank-data minimisation for this tenant (first-timer A5, #581; flag bank_minimisation, OFF ⇒ null, nothing
+   * read or written). Irrelevant debits in a lodged FY held ≥ 60 days shrink to per-account rollups + tombstones
+   * (src/lib/minimise.ts). Runs on the DO so the per-(account, FY) audit rows join this tenant's hash chain.
+   * The weekly cron + user notice that call it are #594.
+   */
+  async minimiseBankLines(userId: string, now?: string): Promise<MinimiseResult | null> {
+    return await minimiseTenant(this.env, userId, now ? new Date(now) : new Date(), {
+      descriptor: await this.jurisdictionFor(userId),
+      audit: (event, detail) => this.audit(userId, event, detail),
+    });
   }
 
   /**
@@ -987,9 +1008,11 @@ export class TaxAgent extends Agent<Env> {
     let flagsFixed = 0;
     const recoveredIds: string[] = [];
     for (const s of stmts.results ?? []) {
-      const actual = (await this.env.DB.prepare(
+      // + lines minimised into rollups (#581): a shrunk statement is NOT missing lines — without this the repair
+      // would purge and re-import it (losing every correction) on each run. OFF ⇒ + 0.
+      const actual = ((await this.env.DB.prepare(
         `SELECT COUNT(*) AS n FROM transactions WHERE user_id = ? AND statement_id = ? AND kind = 'bank_line'`,
-      ).bind(userId, s.id).first<{ n: number }>())?.n ?? 0;
+      ).bind(userId, s.id).first<{ n: number }>())?.n ?? 0) + (await rolledUpLineCount(this.env, userId, s.id));
 
       // Read + validate the sidecar ONCE, up front. Purging before confirming the sidecar is
       // readable/parseable would risk an empty statement if the re-read later failed — so the gap
@@ -2180,6 +2203,8 @@ export class TaxAgent extends Agent<Env> {
         // (and alarm hops) later. From here getLLM refuses non-AU-resident inference for them on
         // EVERY path; disconnecting or flipping BASIQ_ENV back cannot clear it (migration 0077).
         beforeFirstWrite: residency ? () => this.markCdrTainted(userId) : undefined,
+        // bank_minimisation (#581): a re-sync must not revive a line already shrunk into a rollup.
+        honourTombstones: featureOn(this.env, "bank_minimisation"),
       };
       const fetchedBefore = run.counters.fetched;
       const skippedBefore = skippedOf(run.counters);

@@ -106,8 +106,8 @@ export function retentionLodgedOn(
 ): string | null {
   const t = isoDay(today);
   if (row?.lodged_at) return row.lodged_at.slice(0, 10);
-  // A NOA close stamps signed_off_at when it's confirmed — a FIXED day, so A5's "lodged + 60 days" hold can
-  // actually elapse (returning today would move the date forward on every run and never release a line).
+  // A NOA close stamps signed_off_at when it's confirmed — a FIXED day, so the retention date is stable across
+  // runs (A5's 60-day hold itself counts from the line's created_at, minimise.ts MIN_HOLD_DAYS) (returning today would move the date forward on every run and never release a line).
   if (row?.status === "closed_with_noa") return row.signed_off_at.slice(0, 10);
   const backstop = retentionBackstopDate(fy, descriptor, timing);
   return t >= backstop ? backstop : null;

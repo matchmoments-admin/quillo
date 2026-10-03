@@ -636,5 +636,19 @@
       "name": "Private hospital cover — myTax asks whether you held an appropriate level all year",
       "note": "Have your private health insurance statement handy (myTax usually prefills it). Quillo doesn't work out any levy."
     }
-  ]
+  ],
+  "situation_facts": {
+    "_note": "First-timer spec A1 (#571, flag situation_profile): the facts a person's situation profile is made of, stored as dated periods in situation_periods. 'values' is the allowed list, or \"token\" for a free lowercase token (occupation) plus any 'extra' values. 'multi' = periods may overlap (two jobs at once); single-valued facts reject overlapping periods. 'ref' names what ref_id may point at. 'detail_flags' are the only (boolean) keys a period's detail may carry. 'residency.home' / 'non_home_tax_residency' map residency values onto the legacy persons.tax_residency code (the binary mirror; 'unsure_value' leaves it unchanged). Jurisdiction-neutral: another pack lists its own facts and values.",
+    "residency": { "values": ["resident", "temporary", "foreign", "whm", "unsure"], "multi": false, "home": { "value": "resident", "tax_residency": "AU" }, "non_home_tax_residency": "foreign", "unsure_value": "unsure" },
+    "spouse": { "values": ["yes", "no"], "multi": false },
+    "state": { "values": ["NSW", "VIC", "QLD", "WA", "SA", "TAS", "ACT", "NT"], "multi": false },
+    "employment": { "values": "token", "extra": ["none"], "multi": true, "ref": "employment_entity", "detail_flags": ["wfh", "uses_own_car"] },
+    "abn_activity": { "values": ["rideshare", "delivery", "freelance", "other"], "multi": true, "ref": "business_activity" },
+    "study": { "values": ["yes"], "multi": false },
+    "study_loan": { "values": ["yes"], "multi": false },
+    "wfh": { "values": ["yes"], "multi": false },
+    "car_for_work": { "values": ["yes"], "multi": false },
+    "foreign_income": { "values": ["yes"], "multi": false },
+    "private_hospital_cover": { "values": ["yes", "no"], "multi": false }
+  }
 }

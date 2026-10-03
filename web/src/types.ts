@@ -158,6 +158,39 @@ export interface Situation {
   // + locale from this once on load; absent (old/cached payload) ⇒ money() keeps '$'/'en-AU'.
   base_currency?: string;  // payg_express (audit wave 2): present only when the flag is on; true ⇒ hide Assets/CGT surfaces.
   payg_express_eligible?: boolean;
+  // situation_profile (#571, first-timer A1): every dated situation period for the tenant. Present only when
+  // the flag is on; absent ⇒ no profile UI.
+  profile_periods?: SituationPeriod[];
+}
+
+// situation_profile (#571): one dated fact about a person (residency, job, ABN activity, study loan…).
+// Facts/values come from the rule pack's situation_facts. Dates ISO inclusive; null = open-ended.
+export type SituationFact =
+  | "residency" | "spouse" | "state" | "employment" | "abn_activity" | "study" | "study_loan"
+  | "wfh" | "car_for_work" | "foreign_income" | "private_hospital_cover";
+export interface SituationPeriod {
+  id: string;
+  subject_kind: "person" | "property";
+  subject_id: string;
+  fact: SituationFact | string;
+  value: string | null;
+  ref_id: string | null; // employment → entities.id; abn_activity → income_activities.id
+  starts_on: string | null;
+  ends_on: string | null;
+  source: "user" | "onboarding" | "noticed" | string;
+  detail_json: string;
+  created_at?: string;
+  updated_at?: string;
+}
+export interface SituationPeriodWrite {
+  person_id?: string; // required on create
+  fact?: SituationFact | string; // required on create (pack-validated); never changes on edit
+  value?: string | null;
+  ref_id?: string | null;
+  starts_on?: string | null; // create with neither date ⇒ spans the active FY
+  ends_on?: string | null; // PATCH ends_on to end a period
+  source?: "user" | "onboarding" | "noticed";
+  detail?: Record<string, unknown>;
 }
 
 export interface LoanProperty {

@@ -70,7 +70,12 @@ import {
   mintKey,
   revokeKey,
   clearIncomeCgt,
+  upsertSituationPeriod,
+  deleteSituationPeriod,
+  SituationPeriodError,
+  type SituationPeriodInput,
 } from "./lib/situation-write";
+import { listSituationPeriods, normaliseFyStart } from "./lib/situation-profile";
 import { setAttributions, getAttributions, clearAttributions } from "./lib/attribution-write";
 import { listNoaCarryovers, confirmNoaCarryover, deleteNoaCarryover } from "./lib/noa-store";
 import { buildConnectUrl, qboStatus } from "./lib/qbo-oauth";
@@ -734,7 +739,41 @@ export async function handleApi(
       // even via a direct API call (the UI already hides the button).
       const p = await env.DB.prepare(`SELECT role FROM persons WHERE id = ? AND user_id = ?`).bind(id, uid).first<{ role: string }>();
       if (p?.role === "self") return json({ error: "the primary taxpayer can't be deleted" }, 409);
+      // A deleted person's situation periods are deliberately KEPT (hidden by listSituationPeriods) so an
+      // ai_edit_feed undo of this delete restores them; the tenant purge removes them.
       return routedEntityDelete(env, stub, uid, "person", id, () => deleteRow(env, uid, "persons", id));
+    }
+  }
+  // ── Situation periods (flag situation_profile, first-timer A1 #571) ─────────────
+  // GET    /api/situation-periods?person_id=   → { periods }   (all persons when person_id is omitted)
+  // POST   /api/situation-periods?fy=          { person_id, fact, value, ref_id?, starts_on?, ends_on?, source?, detail? } → { period }
+  // PATCH  /api/situation-periods/:id          { value?, ref_id?, starts_on?, ends_on?, detail? } → { period }   (end a period = PATCH ends_on)
+  // DELETE /api/situation-periods/:id          → { ok }
+  // `fy` (start year) is the SPA's active FY: an undated tick spans it. uid is server-derived like every
+  // resource. 400 = a plain message (bad fact/value/dates, overlap); 404 when the flag is off.
+  if (resource === "situation-periods") {
+    if (!featureOn(env, "situation_profile")) return json({ error: "not available" }, 404);
+    const opts = { fy: normaliseFyStart(url.searchParams.get("fy")), descriptor: jur };
+    try {
+      if (m === "GET" && !id) {
+        const personId = url.searchParams.get("person_id");
+        return json({ periods: await listSituationPeriods(env, uid, personId || undefined) });
+      }
+      if (m === "POST" && !id) {
+        const body = (await req.json().catch(() => ({}))) as SituationPeriodInput;
+        return json({ period: await upsertSituationPeriod(env, uid, body, opts) });
+      }
+      if ((m === "PATCH" || m === "PUT") && id) {
+        const body = (await req.json().catch(() => ({}))) as SituationPeriodInput;
+        return json({ period: await upsertSituationPeriod(env, uid, body, { ...opts, id }) });
+      }
+      if (m === "DELETE" && id) {
+        await deleteSituationPeriod(env, uid, id, opts);
+        return json({ ok: true });
+      }
+    } catch (e) {
+      if (e instanceof SituationPeriodError) return json({ error: e.message }, e.status);
+      throw e;
     }
   }
   if (resource === "properties") {

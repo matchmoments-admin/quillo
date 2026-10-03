@@ -1337,3 +1337,24 @@ CREATE INDEX IF NOT EXISTS idx_txn_kind_date ON transactions(user_id, kind, txn_
 CREATE INDEX IF NOT EXISTS idx_bank_sync_status ON bank_sync_runs(user_id, status);
 -- 0086: cross-account feed dedup (a remapped feed account must not re-import a year).
 CREATE INDEX IF NOT EXISTS idx_txn_user_fingerprint ON transactions(user_id, line_fingerprint);
+
+-- 0078 (situation_profile, first-timer A1): a person's situation as DATED PERIODS — residency, spouse,
+-- state, jobs (employment), ABN activities, study / study loan, WFH, car for work, foreign income,
+-- private hospital cover. One generic table keyed by subject (person today, property reserved). Facts and
+-- values are validated against the rule pack's `situation_facts`. Dates ISO inclusive; NULL = open.
+CREATE TABLE IF NOT EXISTS situation_periods (
+  id           TEXT PRIMARY KEY,
+  user_id      TEXT NOT NULL,
+  subject_kind TEXT NOT NULL DEFAULT 'person',   -- person | property (property reserved, no writer yet)
+  subject_id   TEXT NOT NULL,                    -- persons.id (or properties.id)
+  fact         TEXT NOT NULL,
+  value        TEXT,
+  ref_id       TEXT,                             -- employment → entities.id; abn_activity → income_activities.id
+  starts_on    TEXT,                             -- ISO date, NULL = open start
+  ends_on      TEXT,                             -- ISO date inclusive, NULL = open end
+  source       TEXT NOT NULL DEFAULT 'user',     -- user | onboarding | noticed
+  detail_json  TEXT NOT NULL DEFAULT '{}',
+  created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_sitper_subject ON situation_periods(user_id, subject_id, fact);

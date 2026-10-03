@@ -1,6 +1,7 @@
 import type { Env } from "../env";
 import { featureOn } from "./features";
 import { resolveJurisdiction, baseCurrencyOf, AU_DESCRIPTOR } from "./jurisdiction";
+import { listSituationPeriods, type SituationPeriod } from "./situation-profile";
 
 export interface Profile {
   user_id: string;
@@ -114,6 +115,9 @@ export interface Situation {
   // SPA can hide the Assets/CGT surfaces they don't need. OMITTED when the flag is off (byte-identical).
   // Eligibility self-heals — adding a property/business/CGT asset flips it off on the next fetch.
   payg_express_eligible?: boolean;
+  // situation_profile (#571, first-timer A1): every dated situation period for the tenant (all persons).
+  // OMITTED when the flag is off (byte-identical). The About-you editor (A2) and the FY seed read it.
+  profile_periods?: SituationPeriod[];
 }
 
 /**
@@ -141,7 +145,7 @@ export function paygExpressEligible(input: {
 
 /** Load everything the categoriser needs to know about who this tenant is. */
 export async function getSituation(env: Env, userId: string, profile: Profile): Promise<Situation> {
-  const [persons, props, ents, rules, loansProps] = await Promise.all([
+  const [persons, props, ents, rules, loansProps, profile_periods] = await Promise.all([
     env.DB.prepare(
       `SELECT id, user_id, display_name, role, occupation, tax_residency FROM persons WHERE user_id = ? ORDER BY role = 'self' DESC, created_at`,
     ).bind(userId).all<Person>(),
@@ -161,6 +165,8 @@ export async function getSituation(env: Env, userId: string, profile: Profile): 
       `SELECT id, user_id, loan_account_id, property_id, deductible_interest_pct
          FROM loans_properties WHERE user_id = ? ORDER BY created_at`,
     ).bind(userId).all<LoanProperty>(),
+    // situation_profile: fetched in parallel, and only when the flag is on (field omitted when off).
+    featureOn(env, "situation_profile") ? listSituationPeriods(env, userId) : Promise.resolve(undefined),
   ]);
   // Resolve from the already-loaded profile (no re-read); flag OFF ⇒ AU. Calendar periods (reserved) map
   // to Jan 1 — not used this stop, the SPA treats it as a straddle start anchor.
@@ -202,6 +208,7 @@ export async function getSituation(env: Env, userId: string, profile: Profile): 
     tax_period,
     ...(base_currency !== "AUD" ? { base_currency } : {}),
     ...(payg_express_eligible !== undefined ? { payg_express_eligible } : {}),
+    ...(profile_periods !== undefined ? { profile_periods } : {}),
   };
 }
 

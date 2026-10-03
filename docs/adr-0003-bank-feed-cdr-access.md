@@ -9,7 +9,7 @@ CDR legal review (#524), which also owns whether consent *expiry* (not just with
 auto-delete. D1 below is resolved — the build
 started before FY25/26 filed, deliberately; **D2/D4 (vendor terms, 12-month minimum) remain open**
 on [#475](https://github.com/matchmoments-admin/quillo/issues/475), and no production access exists.
-**Date:** 2026-07-26 (status updated 2026-08-07)
+**Date:** 2026-07-26 (status updated 2026-10-03)
 **Supersedes:** the "Redbark seasonal bank-feed" draft spec (that design is **not viable** — see §2)
 **Related:** [ADR-0002 canonical sources](adr-0002-canonical-sources.md), APP-8 consent gate, `docs/personas.md`
 
@@ -190,6 +190,17 @@ CREATE TABLE IF NOT EXISTS bank_sync_runs (
 ### 6.4 Consent dashboard (mandatory, not optional)
 
 CDR requires the consumer to be able to see and withdraw consents. Build a `/settings/connections` surface showing: which institution, which accounts, what data clusters, granted-at, expires-at, last sync, and a one-click **Withdraw** that actually revokes upstream. Plus an expiry reminder notification. **This is a hard requirement — the feature is not shippable without it.**
+
+> **As built (#576, migration 0085):** a "Bank connections" section of Settings (`/settings#bank-connections`,
+> `web/src/components/BankConsents.tsx`) rather than a separate route. Withdraw = local stop first
+> (`status='revoked'`; every sync insert re-checks `status='active'`), then upstream revoke (connection,
+> and the whole Basiq consumer when it was the last live one; retried weekly on failure), then the PS12
+> delete of `cdr_feed` lines only, handing the account back to `statement`. `profiles.cdr_tainted` is
+> never cleared. `purgeTenant` deletes the consumer before the D1 wipe and aborts on a vendor failure
+> (proceeds and records the id only when no aggregator key is configured). Every grant / collection /
+> expiry / withdrawal / deletion lands in `cdr_audit_log`, which is retained through a purge like
+> `audit_log`. Residual derived data not keyed to a line (clarify samples, auto-learned rules, recurring
+> bills, auto-linked assets) is listed in `bank-consent.ts` and routed to #524.
 
 ### 6.5 Engine ✓ + UI ✓ + display ✓
 

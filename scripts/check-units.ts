@@ -4168,22 +4168,26 @@ console.log("bank consent lifecycle (#576)");
     return { up, calls };
   };
 
-  // Tenant u1: two live connections. C1 feeds A1; C2 feeds nothing mapped. A2 is a statement account
-  // with statement lines. A3 holds an ORPHAN feed line (its picker row was deselected earlier).
+  // Tenant u1: two live connections. C1 feeds A1 and was mapped to A3 before the user DESELECTED it
+  // (deselect keeps the mapping). C2 feeds nothing mapped. A2 is a statement account with statement
+  // lines. A4 holds a feed line with no mapping at all (legacy orphan) — only the last-connection sweep finds it.
   const U = "bk-u1";
   ins(`INSERT INTO profiles (user_id, bank_provider_user_id, bank_provider, cdr_tainted) VALUES (?, 'bu1', 'basiq', 1)`, U);
-  for (const [id, src] of [["A1", "cdr_feed"], ["A2", "statement"], ["A3", "cdr_feed"]] as const) {
+  for (const [id, src] of [["A1", "cdr_feed"], ["A2", "statement"], ["A3", "cdr_feed"], ["A4", "cdr_feed"], ["A5", "cdr_feed"]] as const) {
     ins(`INSERT INTO accounts (id, user_id, name, source) VALUES (?, ?, ?, ?)`, id, U, `Acct ${id}`, src);
   }
   ins(`INSERT INTO bank_connections (id, user_id, provider_user_id, provider_connection_id, institution, status, consent_expires_at) VALUES ('C1', ?, 'bu1', 'pc1', 'Hooli', 'active', '2099-01-01T00:00:00Z')`, U);
   ins(`INSERT INTO bank_connections (id, user_id, provider_user_id, provider_connection_id, institution, status) VALUES ('C2', ?, 'bu1', 'pc2', 'Other', 'active')`, U);
   ins(`INSERT INTO bank_connection_accounts (id, user_id, connection_id, provider_account_id, account_id, masked_number, name, selected) VALUES ('BA1', ?, 'C1', 'pa1', 'A1', '1234', 'Everyday', 1)`, U);
   ins(`INSERT INTO bank_connection_accounts (id, user_id, connection_id, provider_account_id, account_id, name, selected) VALUES ('BA2', ?, 'C2', 'pa2', NULL, 'Savings', 0)`, U);
+  ins(`INSERT INTO bank_connection_accounts (id, user_id, connection_id, provider_account_id, account_id, name, selected) VALUES ('BA3', ?, 'C1', 'pa3', 'A3', 'Old card', 0)`, U);
   const line = (id: string, acct: string, src: string) =>
     ins(`INSERT INTO transactions (id, user_id, source, status, kind, account_id, line_fingerprint, merchant, amount_cents, amount_aud_cents, txn_date, direction) VALUES (?, ?, ?, 'extracted', 'bank_line', ?, ?, 'SHOP 123456', 1000, 1000, '2025-09-01', 'debit')`, id, U, src, acct, `fp-${id}`);
   line("L1", "A1", "cdr_feed"); line("L2", "A1", "cdr_feed"); line("L3", "A1", "cdr_feed");
   line("S1", "A2", "statement"); line("S2", "A2", "statement");
   line("O1", "A3", "cdr_feed");
+  line("O2", "A4", "cdr_feed");
+  // A5: claimed by the feed then released before any sync — no lines, no live mapping.
   ins(`INSERT INTO transactions (id, user_id, source, status, kind, matched_txn_id, amount_cents) VALUES ('R1', ?, 'upload', 'matched', 'receipt', 'L1', 1000)`, U);
   ins(`INSERT INTO corrections (id, user_id, txn_id, field, old_value, new_value) VALUES ('K1', ?, 'L2', 'merchant', 'SHOP 123456', 'Shop')`, U);
   ins(`INSERT INTO claim_links (id, user_id, claim_id, txn_id) VALUES ('CL1', ?, 'claim-x', 'L3')`, U);
@@ -4200,10 +4204,11 @@ console.log("bank consent lifecycle (#576)");
   check("disconnect C1: ok + upstream revoked", r1.ok && r1.upstreamRevoked);
   check("disconnect C1: upstream deleteConnection(bu1, pc1) called, consumer NOT deleted (C2 still live)",
     JSON.stringify(f1.calls) === JSON.stringify([["deleteConnection", "bu1", "pc1"]]) && !r1.consumerDeleted);
-  check("disconnect C1: the 3 CDR lines on A1 are deleted (PS12)", r1.linesDeleted === 3 && n(`SELECT COUNT(*) n FROM transactions WHERE account_id='A1'`) === 0);
+  check("disconnect C1: the CDR lines on A1 (3) + A3 (1) are deleted (PS12)", r1.linesDeleted === 4 && n(`SELECT COUNT(*) n FROM transactions WHERE account_id='A1'`) === 0);
   check("disconnect C1: statement-sourced lines are NOT touched", n(`SELECT COUNT(*) n FROM transactions WHERE source='statement'`) === 2);
   check("disconnect C1: a correction on a STATEMENT line survives", n(`SELECT COUNT(*) n FROM corrections WHERE id='K2'`) === 1);
-  check("disconnect C1: the orphan feed line on A3 survives while another connection is live", n(`SELECT COUNT(*) n FROM transactions WHERE id='O1'`) === 1);
+  check("disconnect C1: a line on an account C1 DESELECTED is still deleted (mapping kept on deselect)", n(`SELECT COUNT(*) n FROM transactions WHERE id='O1'`) === 0);
+  check("disconnect C1: an unmapped legacy orphan survives while another connection is live", n(`SELECT COUNT(*) n FROM transactions WHERE id='O2'`) === 1);
   check("disconnect C1: matched receipt survives, un-matched (it's the user's evidence, not CDR data)",
     q<{ matched_txn_id: string | null }>(`SELECT matched_txn_id FROM transactions WHERE id='R1'`).matched_txn_id === null);
   check("disconnect C1: derived rows carrying line content deleted (correction, claim link)",
@@ -4232,8 +4237,10 @@ console.log("bank consent lifecycle (#576)");
   const r3 = await disconnectBankConnection(benv, U, "C2", f3.up);
   check("disconnect C2 (vendor down): still ok — collection stopped + data deleted locally", r3.ok && !r3.upstreamRevoked && !!r3.upstreamError);
   check("disconnect C2: status revoked even though the vendor failed", q<{ status: string }>(`SELECT status FROM bank_connections WHERE id='C2'`).status === "revoked");
-  check("disconnect C2: last connection ⇒ the orphan feed line on A3 is deleted too", n(`SELECT COUNT(*) n FROM transactions WHERE source='cdr_feed'`) === 0);
-  check("disconnect C2: A3 handed back to statements", q<{ source: string }>(`SELECT source FROM accounts WHERE id='A3'`).source === "statement");
+  check("disconnect C2: last connection ⇒ the unmapped orphan on A4 is deleted too", n(`SELECT COUNT(*) n FROM transactions WHERE source='cdr_feed'`) === 0);
+  check("disconnect C2: A4 handed back to statements", q<{ source: string }>(`SELECT source FROM accounts WHERE id='A4'`).source === "statement");
+  check("disconnect C2: last connection ⇒ an empty, released cdr_feed account (A5) is unlocked too", q<{ source: string }>(`SELECT source FROM accounts WHERE id='A5'`).source === "statement");
+  check("disconnect C2: the client gets an error CLASS, not the vendor message", r3.upstreamError === "http_503");
   check("disconnect C2: statement lines STILL intact", n(`SELECT COUNT(*) n FROM transactions WHERE source='statement'`) === 2);
   check("disconnect C2: upstream pending — upstream_revoked_at NULL, retry message, consumer id kept",
     q<{ u: string | null; e: string | null }>(`SELECT upstream_revoked_at u, last_error e FROM bank_connections WHERE id='C2'`).u === null &&
@@ -4293,6 +4300,95 @@ console.log("bank consent lifecycle (#576)");
   const pr4 = await purgeTenantForBank(benv, U4, { bankUpstream: fnone.up });
   check("purge: a tenant who never connected a bank — no upstream call, no bankRevoked key (byte-identical result)",
     fnone.calls.length === 0 && !("bankRevoked" in pr4));
+
+  // 6b. Partial upstream: deleteConnection OK, deleteUser fails ⇒ still pending; the retry calls both.
+  const U5 = "bk-u5";
+  ins(`INSERT INTO profiles (user_id, bank_provider_user_id, bank_provider) VALUES (?, 'bu5', 'basiq')`, U5);
+  ins(`INSERT INTO bank_connections (id, user_id, provider_user_id, provider_connection_id, status) VALUES ('C6', ?, 'bu5', 'pc6', 'active')`, U5);
+  const calls6: string[] = [];
+  const half: BankUpstream = {
+    deleteConnection: async () => { calls6.push("conn"); },
+    deleteUser: async () => { calls6.push("user"); throw Object.assign(new Error("boom"), { status: 502 }); },
+  };
+  const r6 = await disconnectBankConnection(benv, U5, "C6", half);
+  check("partial upstream: deleteUser failing leaves the revoke PENDING (upstream_revoked_at NULL)",
+    !r6.upstreamRevoked && q<{ u: string | null }>(`SELECT upstream_revoked_at u FROM bank_connections WHERE id='C6'`).u === null);
+  const f6 = fakeUpstream();
+  await consentLifecycle(benv, U5, f6.up, new Date("2026-10-04T00:00:00Z"));
+  check("partial upstream: the retry calls deleteConnection (404-tolerant) AND deleteUser",
+    JSON.stringify(f6.calls) === JSON.stringify([["deleteConnection", "bu5", "pc6"], ["deleteUser", "bu5"]]));
+
+  // 6c. A withdrawal that died before its PS12 delete is finished by the weekly sweep.
+  const U6 = "bk-u6";
+  ins(`INSERT INTO profiles (user_id) VALUES (?)`, U6);
+  ins(`INSERT INTO accounts (id, user_id, name, source) VALUES ('A6', ?, 'Fed', 'cdr_feed')`, U6);
+  ins(`INSERT INTO bank_connections (id, user_id, provider_connection_id, status, revoked_at, upstream_revoked_at) VALUES ('C7', ?, 'pc7', 'revoked', '2026-10-01', '2026-10-01')`, U6);
+  ins(`INSERT INTO bank_connection_accounts (id, user_id, connection_id, provider_account_id, account_id, selected) VALUES ('BA7', ?, 'C7', 'pa7', 'A6', 1)`, U6);
+  ins(`INSERT INTO transactions (id, user_id, source, status, kind, account_id, line_fingerprint, amount_cents) VALUES ('Z1', ?, 'cdr_feed', 'extracted', 'bank_line', 'A6', 'fz1', 100)`, U6);
+  const lc6 = await consentLifecycle(benv, U6, fakeUpstream().up, new Date("2026-10-04T00:00:00Z"));
+  check("lifecycle: an unfinished PS12 delete is completed (lines gone, data_deleted_at set)",
+    lc6.deletesCompleted === 1 && n(`SELECT COUNT(*) n FROM transactions WHERE user_id=?`, U6) === 0 &&
+    !!q<{ d: string | null }>(`SELECT data_deleted_at d FROM bank_connections WHERE id='C7'`).d);
+
+  // 6d. purge in an environment with NO aggregator key: erasure proceeds, consumer id kept for manual follow-up.
+  const U7 = "bk-u7";
+  ins(`INSERT INTO profiles (user_id, bank_provider_user_id, bank_provider) VALUES (?, 'bu7', 'basiq')`, U7);
+  ins(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents) VALUES ('P7', ?, 'cdr_feed', 'extracted', 'bank_line', 1)`, U7);
+  const pr7 = await purgeTenantForBank(benv, U7);
+  check("purge (no BASIQ_API_KEY): local erasure proceeds, bankRevoked=false",
+    pr7.bankRevoked === false && n(`SELECT COUNT(*) n FROM transactions WHERE user_id=?`, U7) === 0);
+  check("purge (no BASIQ_API_KEY): the consumer id survives in the retained CDR record for manual deletion",
+    /"provider_user_id":"bu7"/.test(q<{ detail: string }>(`SELECT detail FROM cdr_audit_log WHERE user_id=? AND event='upstream_revoke_failed'`, U7).detail));
+
+  // 6e. The callback upsert, EXECUTED: a revoked row is never resurrected; an expired one reactivates;
+  // the reminder survives a re-list with an unchanged expiry and resets when the expiry moves.
+  const upsertSql = /`INSERT INTO bank_connections\s*\n\s*\(id, user_id, provider, access_type[\s\S]*?WHERE bank_connections\.status <> 'revoked'`/.exec(fs.readFileSync(path.join(process.cwd(), "src/agent.ts"), "utf8"))?.[0].slice(1, -1);
+  check("callback upsert SQL found in agent.ts", !!upsertSql);
+  if (upsertSql) {
+    const U8 = "bk-u8";
+    ins(`INSERT INTO bank_connections (id, user_id, provider_connection_id, status, consent_expires_at, expiry_reminded_at) VALUES ('R1c', ?, 'pr1', 'revoked', '2027-01-01', NULL)`, U8);
+    ins(`INSERT INTO bank_connections (id, user_id, provider_connection_id, status, consent_expires_at, expiry_reminded_at) VALUES ('E1c', ?, 'pe1', 'expired', '2027-01-01', '2026-12-01')`, U8);
+    const up = (pc: string, exp: string) => bdb.prepare(upsertSql).run(crypto.randomUUID(), U8, "cdr", "bu8", pc, null, "cons", "[]", "2026-01-01", exp);
+    up("pr1", "2028-01-01");
+    check("callback (executed): a WITHDRAWN connection is not resurrected", q<{ status: string }>(`SELECT status FROM bank_connections WHERE id='R1c'`).status === "revoked");
+    up("pe1", "2027-01-01");
+    const e = q<{ status: string; r: string | null }>(`SELECT status, expiry_reminded_at r FROM bank_connections WHERE id='E1c'`);
+    check("callback (executed): an expired connection reactivates; unchanged expiry keeps its reminder", e.status === "active" && e.r === "2026-12-01");
+    up("pe1", "2028-01-01");
+    check("callback (executed): a moved expiry resets the reminder", q<{ r: string | null }>(`SELECT expiry_reminded_at r FROM bank_connections WHERE id='E1c'`).r === null);
+  }
+
+  // 6f. EXECUTED race: a withdrawal completes WHILE the provider fetch is in flight. The step's insert
+  // re-checks the consent inside the statement, so nothing lands after the PS12 delete.
+  const agentSrc6 = fs.readFileSync(path.join(process.cwd(), "src/agent.ts"), "utf8");
+  {
+    const { openRun: openRun576, syncRunStep: step576 } = await import("../src/lib/bank-sync");
+    const U9 = "bk-u9";
+    ins(`INSERT INTO profiles (user_id) VALUES (?)`, U9);
+    ins(`INSERT INTO accounts (id, user_id, name, source) VALUES ('A9', ?, 'Fed', 'cdr_feed')`, U9);
+    ins(`INSERT INTO bank_connections (id, user_id, provider_user_id, provider_connection_id, status) VALUES ('C9', ?, 'bu9', 'pc9', 'active')`, U9);
+    ins(`INSERT INTO bank_connection_accounts (id, user_id, connection_id, provider_account_id, account_id, selected) VALUES ('BA9', ?, 'C9', 'pa9', 'A9', 1)`, U9);
+    const run9 = await openRun576(benv.DB, { userId: U9, connectionId: "C9", from: "2025-07-01", to: "2026-06-30", accounts: [{ p: "pa9", a: "A9" }] });
+    check("race: run opened", !!run9);
+    if (run9) {
+      const st = await step576({
+        db: benv.DB, userId: U9, baseCurrency: "AUD",
+        transport: async () => {
+          // The consumer withdraws while this page is in flight.
+          await disconnectBankConnection(benv, U9, "C9", fakeUpstream().up);
+          return { transactions: [{ id: "t1", accountId: "pa9", postDate: "2025-09-01", description: "SHOP", amountCents: 100, direction: "debit", currency: "AUD", providerClass: null }], skippedPending: 0, skippedOutOfWindow: 0, next: null };
+        },
+        categorise: () => null,
+        stillSelected: async () => true,
+      }, run9, 5);
+      check("race: a line fetched across a withdrawal is NOT written", n(`SELECT COUNT(*) n FROM transactions WHERE user_id=?`, U9) === 0 && st.importedThisStep === 0);
+      check("race: the withdrawal closed the in-flight run (step stops, run not left 'running')",
+        q<{ status: string }>(`SELECT status FROM bank_sync_runs WHERE id=?`, run9.id).status === "failed" && !!st.error);
+      check("race: the account stays handed back to statements", q<{ source: string }>(`SELECT source FROM accounts WHERE id='A9'`).source === "statement");
+    }
+  }
+  check("bankSelectAccounts refuses one Quillo account fed by two bank accounts", /already fed by another bank account/.test(agentSrc6));
+  check("bankSelectAccounts keeps the mapping on deselect", /account_id = CASE WHEN \? = 1 THEN \? ELSE account_id END/.test(agentSrc6));
 
   // 7. The resurrection guard lives in DO SQL — pin it by source so a refactor can't drop it.
   const agentSrc = fs.readFileSync(path.join(process.cwd(), "src/agent.ts"), "utf8");

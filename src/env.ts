@@ -164,7 +164,7 @@ export interface TaxAgentRpc {
   categoriseFeedLines(userId: string): Promise<{ categorised: number }>;
   // #576 consent dashboard: withdraw (local stop → upstream revoke → PS12 delete), weekly lifecycle, CDR record.
   bankDisconnect(userId: string, connectionId: string): Promise<{ ok: boolean; error?: string; upstreamRevoked: boolean; upstreamError?: string; consumerDeleted: boolean; accounts: number; linesDeleted: number }>;
-  bankConsentLifecycle(userId: string): Promise<{ expired: number; reminded: number; upstreamRetried: number }>;
+  bankConsentLifecycle(userId: string): Promise<{ expired: number; reminded: number; upstreamRetried: number; deletesCompleted: number }>;
   bankHistory(userId: string): Promise<{ events: Record<string, unknown>[] }>;
   withdrawConsent(userId: string): Promise<{ ok: boolean }>;
   setGstRegistered(userId: string, registered: boolean): Promise<{ ok: true; gst_registered: number }>;

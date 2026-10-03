@@ -15,8 +15,9 @@
 
 ## 1. One-line summary
 
-**The connector is built and the compliance guards are real; what's missing is a consent dashboard,
-and — entirely outside the code — a commercial arrangement with Basiq.**
+**The connector is built and the compliance guards are real; the consent dashboard landed in #576
+and the bounded backfill in #511. What's missing is the CDR legal review (#524) and — entirely
+outside the code — a commercial arrangement with Basiq.**
 
 ## 2. Shipped this session
 

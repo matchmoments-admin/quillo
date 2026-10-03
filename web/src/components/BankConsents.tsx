@@ -183,6 +183,8 @@ function ConsentRow({
   const left = daysUntil(conn.consent_expires_at);
   const withdrawn = conn.status === "revoked";
   const upstreamPending = withdrawn && !conn.upstream_revoked_at;
+  // A withdrawal that died before its delete finished is retried by the same call (idempotent).
+  const deletePending = withdrawn && !conn.data_deleted_at;
   const name = conn.institution ?? conn.institution_id ?? "Bank";
 
   return (
@@ -289,13 +291,13 @@ function ConsentRow({
             </div>
           </div>
         )}
-        {upstreamPending && (
+        {(upstreamPending || deletePending) && (
           <button
             onClick={onWithdraw}
             disabled={busy}
             className="rounded-lg border border-ink/25 px-3 py-1.5 text-xs font-medium text-ink transition hover:bg-ink/5 disabled:opacity-50"
           >
-            {busy ? "Retrying…" : "Retry bank-side revoke"}
+            {busy ? "Retrying…" : upstreamPending ? "Retry bank-side revoke" : "Finish deleting imported data"}
           </button>
         )}
       </div>

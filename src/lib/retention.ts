@@ -2,6 +2,7 @@ import type { Env } from "../env";
 import { getProfile, getSituation } from "./db";
 import { revokeAndDisconnect } from "./qbo-oauth";
 import { basiqUpstream, cdrAudit, type BankUpstream } from "./bank-consent";
+import { basiqConfigured } from "./basiq";
 
 // APP 11.2 / APP 12 / APP 13 support: export a tenant's data, purge it across every store, and a
 // weekly FLAG sweep for records past the retention window (never auto-deletes — surfaces a nudge).
@@ -137,6 +138,45 @@ export async function purgeTenant(env: Env, userId: string, deps: { bankUpstream
   // and the delete is simply retried (every step is idempotent), and the caller never records a
   // false "complete". The D1 wipe is last so nothing references bytes that are already gone.
 
+  // 0. Bank feed (ADR-0003, PS12): delete the aggregator-side consumer, which revokes every consent
+  // and connection under it. FIRST, before even the QuickBooks revoke, so an abort here really means
+  // "nothing was touched". UNLIKE the QBO revoke a vendor failure is NOT best-effort: the consumer id
+  // exists only in profiles.bank_provider_user_id, so wiping D1 after a failed call would make the CDR
+  // data at the aggregator unreachable forever. A transient failure therefore aborts the purge, which
+  // is retried (the delete is 404-tolerant, so idempotent).
+  //
+  // The one exception is an environment with NO aggregator key at all: there the call can never
+  // succeed, and refusing would block APP-13 erasure permanently. The local erasure proceeds and the
+  // consumer id is written to the retained CDR record (an identifier, not CDR content) with a loud log,
+  // so the upstream delete can be completed by hand.
+  // A tenant who never connected a bank has no id => no call, no row, no new result field.
+  let bankRevoked: boolean | undefined;
+  let bankProvider = "basiq";
+  const bankUser = await env.DB.prepare(`SELECT bank_provider_user_id AS id, bank_provider AS provider FROM profiles WHERE user_id = ?`)
+    .bind(userId)
+    .first<{ id: string | null; provider: string | null }>();
+  if (bankUser?.id) {
+    bankProvider = bankUser.provider ?? "basiq";
+    const upstream = deps.bankUpstream ?? (basiqConfigured(env) ? basiqUpstream(env) : null);
+    if (!upstream) {
+      bankRevoked = false;
+      console.error(`[cdr] purge for ${userId}: aggregator not configured — consumer ${bankUser.id} NOT deleted upstream; complete manually`);
+      await cdrAudit(env, userId, {
+        event: "upstream_revoke_failed", provider: bankProvider,
+        detail: { error: "not_configured", provider_user_id: bankUser.id, during: "tenant_purge" },
+      }).catch((err) => console.warn(`cdr audit (purge revoke pending) failed: ${(err as Error).message}`));
+    } else {
+      try {
+        await upstream.deleteUser(bankUser.id);
+      } catch (e) {
+        console.error(`[cdr] purge for ${userId}: upstream consumer delete failed: ${(e as Error).message}`);
+        const st = (e as { status?: number }).status;
+        throw new Error(`Couldn't revoke your bank connection with the bank-data provider${st ? ` (${st})` : ""}, so nothing was deleted — please try again shortly.`);
+      }
+      bankRevoked = true;
+    }
+  }
+
   // 1. Revoke + delete the QuickBooks connection (also clears its KV account cache). Best-effort: a
   // remote revoke failure must not block the local erasure, and the token ROW is wiped by the D1 step.
   let qboRevoked = false;
@@ -145,30 +185,6 @@ export async function purgeTenant(env: Env, userId: string, deps: { bankUpstream
     qboRevoked = r.revoked;
   } catch {
     /* best-effort — never block the erasure on a remote revoke */
-  }
-
-  // 1b. Bank feed (ADR-0003, PS12): delete the aggregator-side consumer, which revokes every consent
-  // and connection under it. UNLIKE the QBO revoke this is NOT best-effort: the consumer id exists
-  // only in profiles.bank_provider_user_id, so if D1 were wiped after a failed call the CDR data at
-  // the aggregator would be unreachable forever. A failure therefore aborts here, before anything
-  // local is deleted, and the purge is retried (the delete is 404-tolerant, so idempotent).
-  // A tenant who never connected a bank has no id => no call, no row, no new result field.
-  let bankRevoked: boolean | undefined;
-  const bankUser = await env.DB.prepare(`SELECT bank_provider_user_id AS id, bank_provider AS provider FROM profiles WHERE user_id = ?`)
-    .bind(userId)
-    .first<{ id: string | null; provider: string | null }>();
-  if (bankUser?.id) {
-    const upstream = deps.bankUpstream ?? basiqUpstream(env);
-    try {
-      await upstream.deleteUser(bankUser.id);
-    } catch (e) {
-      throw new Error(`bank-feed revoke failed, nothing was deleted — try again (${(e as Error).message})`);
-    }
-    bankRevoked = true;
-    // Best-effort record: the revoke has happened and the erasure must proceed; the DO's hash-chained
-    // audit_log also records the purge result (which carries bankRevoked).
-    await cdrAudit(env, userId, { event: "tenant_purged", provider: bankUser.provider ?? "basiq", detail: { consumer_deleted: true } })
-      .catch((err) => console.warn(`cdr audit (tenant_purged) failed: ${(err as Error).message}`));
   }
 
   // 2. R2: every object is keyed `${userId}/…` — list + bulk-delete in pages. Throws on failure so we
@@ -218,6 +234,13 @@ export async function purgeTenant(env: Env, userId: string, deps: { bankUpstream
   ]);
   // Count only the DELETE results (exclude the trailing reseat INSERT) so rowsDeleted stays truthful.
   const rowsDeleted = results.slice(0, deletes.length).reduce((n, r) => n + (r.meta?.changes ?? 0), 0);
+
+  // CDR record of the erasure, written only once it has actually happened (a purge that fails at R2/KV/D1
+  // and is retried must not leave "purged" rows behind). Survives the purge — cdr_audit_log is retained.
+  if (bankRevoked) {
+    await cdrAudit(env, userId, { event: "tenant_purged", provider: bankProvider, detail: { consumer_deleted: true } })
+      .catch((err) => console.warn(`cdr audit (tenant_purged) failed: ${(err as Error).message}`));
+  }
 
   return { tables: PURGE_TABLES.length, rowsDeleted, r2Objects, kvKeys, qboRevoked, ...(bankRevoked !== undefined ? { bankRevoked } : {}) };
 }

@@ -303,11 +303,17 @@ export async function syncRunStep(deps: SyncStepDeps, run: SyncRun, pageBudget: 
               // feed account used to re-import the whole year and leave both copies counting. A feed
               // fingerprint is the provider's transaction id, unique per tenant, so NOT EXISTS over
               // (user_id, line_fingerprint) is the guard (index idx_txn_user_fingerprint, 0086).
+              //
+              // LIVE-CONSENT GATE (#576). stillSelected runs BEFORE the provider fetch, and the fetch
+              // yields the DO — a withdrawal can complete in that gap (status='revoked', PS12 delete,
+              // account handed back to statements). Re-checking the consent INSIDE the insert means a
+              // resumed step can never land lines after the delete ran.
               `INSERT INTO transactions
                  (id, user_id, source, status, kind, account_id, statement_id, line_fingerprint, raw_description,
                   merchant, amount_cents, currency, amount_aud_cents, txn_date, direction, bucket, ato_label, confidence, property_id)
                SELECT ?, ?, 'cdr_feed', ?, 'bank_line', ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                 WHERE NOT EXISTS (SELECT 1 FROM transactions WHERE user_id = ? AND line_fingerprint = ?)
+                  AND EXISTS (SELECT 1 FROM bank_connections WHERE id = ? AND user_id = ? AND status = 'active')
                ON CONFLICT(user_id, account_id, line_fingerprint) DO NOTHING`,
             )
             .bind(
@@ -319,6 +325,7 @@ export async function syncRunStep(deps: SyncStepDeps, run: SyncRun, pageBudget: 
               t.postDate, t.direction,
               cat?.bucket ?? null, cat?.ato_label ?? null, cat ? cat.confidence : null, cat?.property_id ?? null,
               userId, fps[k],
+              run.connectionId, userId,
             ),
         );
       });
@@ -400,8 +407,10 @@ export async function finishRun(
         `UPDATE bank_connections
             SET last_sync_at = CASE WHEN ? = 'failed' THEN last_sync_at ELSE datetime('now') END,
                 last_error = ?
-          WHERE id = ? AND user_id = ?`,
+          WHERE id = ? AND user_id = ? AND status <> 'revoked'`,
       )
+      // A withdrawn connection's row is the consumer's record of the withdrawal (#576) — a zombie
+      // step must not stamp a fresh sync time or overwrite its revoke status message.
       .bind(o.status, o.error, run.connectionId, userId),
   ]);
 }

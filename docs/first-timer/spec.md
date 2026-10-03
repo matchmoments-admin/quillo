@@ -748,7 +748,7 @@ case.)
 | Data minimisation principle (collect only what's reasonably needed; use only for the consented purpose) | Account picker: unselected accounts are never pulled. Backfill window is the FY being prepared, capped at 24 months. Provider `class` is never used as a tax signal. Use is limited to preparing the user's own return | ADR-0003 §6.3, `src/lib/basiq.ts` |
 | Privacy Safeguard 12: destroy or de-identify redundant data | Irrelevant debits become redundant once the FY is lodged and 60 days have passed; they are **deleted** (Quillo never de-identifies, so there is no de-identified CDR data to govern). Aggregates are kept because statement reconciliation still needs them | `src/lib/minimise.ts`, this area |
 | Deletion record | `audit_log` row per (account, FY): counts and totals, no line content | `minimiseTenant` |
-| Consent withdrawal / expiry | The existing PS12 path on disconnect (ADR-0003 §6.3 step 7) also deletes `bank_line_rollups` and `bank_line_tombstones` for the disconnected accounts | `src/lib/retention.ts`, disconnect handler |
+| Consent withdrawal / expiry | Withdrawal runs the PS12 delete of the connection's `cdr_feed` lines (#576, `src/lib/bank-consent.ts`); extending it to `bank_line_rollups` / `bank_line_tombstones` for the disconnected accounts is #594. Expiry stops collection only — whether it must also delete is the #524 ruling. Deletions are recorded in `cdr_audit_log` (0085) | `src/lib/bank-consent.ts`, disconnect handler |
 | Tenant erasure (APP 11.2 / PS12) | `purgeTenant` covers both new tables via `PURGE_TABLES` | `src/lib/retention.ts` |
 | Statement uploads (not CDR) | Same rule applied for consistency (APP 11.2) | — |
 
@@ -1780,5 +1780,5 @@ runtime job behind a kill-switch, not a migration.
 | `ft_journey` | A2, A3b, A6–A12 | SPA + `/api/journey` + Grow | legacy shell, legacy theme, legacy routes |
 
 Kept from earlier work and reused: `first_timer_income` (ON), `ask_quillo` (Why? drawer
-kill-switch), `grouped_review_v2`, `noa_capture`, `bank_feed_cdr` (OFF until the consent dashboard
-ships; Bring in falls back to statement upload).
+kill-switch), `grouped_review_v2`, `noa_capture`, `bank_feed_cdr` (OFF until R3 and the CDR legal
+review #524 clear — the consent dashboard shipped in #576; Bring in falls back to statement upload).

@@ -1,4 +1,6 @@
 -- 0085 — bank-feed consent lifecycle + CDR audit log (#576, ADR-0003 §6.3 step 7 + §6.4, S9/S10).
+-- Numbered 0085 because 0078–0084 are reserved by docs/first-timer/spec.md for the first-timer areas;
+-- all are additive and independent, so apply order between them does not matter.
 --
 -- The consent dashboard is the gate ADR-0003 names before `bank_feed_cdr` can flip: a consumer must
 -- be able to SEE each consent and WITHDRAW it, and a withdrawal must (a) revoke upstream at the

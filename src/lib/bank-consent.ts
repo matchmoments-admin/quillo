@@ -71,7 +71,12 @@ export interface CdrAuditEntry {
 }
 
 export async function cdrAudit(env: Env, userId: string, e: CdrAuditEntry): Promise<void> {
-  await env.DB.prepare(
+  await cdrAuditStmt(env, userId, e).run();
+}
+
+/** The same insert as a prepared statement, so a caller can put it in the batch of the change it records. */
+export function cdrAuditStmt(env: Env, userId: string, e: CdrAuditEntry): D1PreparedStatement {
+  return env.DB.prepare(
     `INSERT INTO cdr_audit_log
        (id, user_id, connection_id, provider, access_type, event, account_count, row_count, from_date, to_date, detail)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -79,7 +84,7 @@ export async function cdrAudit(env: Env, userId: string, e: CdrAuditEntry): Prom
     crypto.randomUUID(), userId, e.connectionId ?? null, e.provider ?? null, e.accessType ?? null, e.event,
     e.accountCount ?? null, e.rowCount ?? null, e.fromDate ?? null, e.toDate ?? null,
     e.detail ? JSON.stringify(e.detail) : null,
-  ).run();
+  );
 }
 
 /** A vendor error reduced to something safe to persist: status/code class, never a body. */
@@ -151,6 +156,9 @@ async function revokeUpstream(
     }
   } catch (e) {
     const cls = errorClass(e);
+    // Server-side only: the vendor message stays in Workers logs; the row, the CDR record and the
+    // client get the error class.
+    console.error(`[cdr] upstream revoke failed for connection ${conn.id}: ${(e as Error).message}`);
     await env.DB.prepare(
       `UPDATE bank_connections SET last_error = ? WHERE id = ? AND user_id = ?`,
     ).bind("The bank-side revoke didn't go through — use Retry, or we'll retry automatically.", conn.id, userId).run();
@@ -158,7 +166,7 @@ async function revokeUpstream(
       event: "upstream_revoke_failed", connectionId: conn.id, provider: conn.provider, accessType: conn.access_type,
       detail: { error: cls },
     });
-    return { revoked: false, consumerDeleted: false, error: (e as Error).message };
+    return { revoked: false, consumerDeleted: false, error: cls };
   }
 
   const stmts: D1PreparedStatement[] = [
@@ -190,11 +198,16 @@ async function revokeUpstream(
 }
 
 /**
- * Privacy Safeguard 12: delete the CDR lines collected for `accountId`, plus everything derived from
- * them that carries their content (corrections, traces, AI edit snapshots, claim links/suggestions,
- * attributions, per-line notifications). Receipts matched to a deleted line are un-matched, not
- * deleted — they are the consumer's own evidence, not CDR data — exactly as deleteStatement(purge)
- * does. ONE D1 batch per account, so it is atomic.
+ * Privacy Safeguard 12: delete the CDR lines collected for `accountId`, plus the per-line derived rows
+ * that are keyed to them (corrections, traces, claim links/suggestions, attributions, per-line
+ * notifications). Receipts matched to a deleted line are un-matched, not deleted — they are the
+ * consumer's own evidence, not CDR data — exactly as deleteStatement(purge) does. ONE D1 batch per
+ * account, so it is atomic.
+ *
+ * KNOWN RESIDUALS (not keyed to a txn id, so not reachable from here — routed to the CDR legal review
+ * #524, which decides delete vs keep, because several feed the position): clarify_questions
+ * (sample_desc), user_rules auto-learned from a feed merchant, recurring_bills/opportunities,
+ * eval_cases, assets auto-linked from a feed line, chat history, and merchant names in audit_log.
  *
  * Returns the number of bank lines deleted.
  */
@@ -211,7 +224,6 @@ async function deleteCdrLinesForAccount(env: Env, userId: string, accountId: str
     p(`DELETE FROM claim_suggestions WHERE user_id = ? AND txn_id IN (${sub})`),
     p(`DELETE FROM notifications WHERE user_id = ? AND txn_id IN (${sub})`),
     p(`DELETE FROM transaction_attributions WHERE user_id = ? AND transaction_id IN (${sub})`),
-    p(`DELETE FROM ai_edits WHERE user_id = ? AND entity_id IN (${sub})`),
     p(`UPDATE phi_benefit_usage SET txn_id = NULL WHERE user_id = ? AND txn_id IN (${sub})`),
   ];
   const delIdx = stmts.length;
@@ -237,10 +249,77 @@ async function deleteCdrLinesForAccount(env: Env, userId: string, accountId: str
 }
 
 /**
+ * The PS12 delete for one withdrawn connection. Runs at most once per connection (data_deleted_at),
+ * and is re-run by the weekly sweep if a withdrawal died before stamping it.
+ *
+ * Which accounts: every account this connection was EVER mapped to — deselecting keeps the mapping
+ * (bankSelectAccounts clears only `selected`), so lines collected before a deselect are still found.
+ * When this is the tenant's LAST live connection, every CDR line the tenant holds is redundant, so the
+ * sweep widens to all cdr_feed lines, and any cdr_feed account left with no lines is handed back to
+ * statements (an account claimed and released before its first sync would otherwise stay locked).
+ */
+async function runPs12Delete(env: Env, userId: string, conn: ConnRow, nowIso: string): Promise<{ accounts: number; linesDeleted: number }> {
+  const last = (await liveOtherConnections(env, userId, conn.id)) === 0;
+  const mapped = await env.DB.prepare(
+    `SELECT DISTINCT account_id FROM bank_connection_accounts WHERE user_id = ? AND connection_id = ? AND account_id IS NOT NULL`,
+  ).bind(userId, conn.id).all<{ account_id: string }>();
+  const ids = new Set((mapped.results ?? []).map((r) => r.account_id));
+  if (last) {
+    const orphan = await env.DB.prepare(
+      `SELECT DISTINCT account_id FROM transactions
+        WHERE user_id = ? AND source = 'cdr_feed' AND kind = 'bank_line' AND account_id IS NOT NULL`,
+    ).bind(userId).all<{ account_id: string }>();
+    for (const r of orphan.results ?? []) ids.add(r.account_id);
+  }
+  // An account another LIVE connection still feeds keeps source='cdr_feed'. (bankSelectAccounts now
+  // refuses mapping one account to two live connections, so this is a belt-and-braces guard.)
+  const stillFed = await env.DB.prepare(
+    `SELECT DISTINCT a.account_id FROM bank_connection_accounts a
+       JOIN bank_connections c ON c.id = a.connection_id AND c.user_id = a.user_id
+      WHERE a.user_id = ? AND a.connection_id <> ? AND c.status <> 'revoked'
+        AND a.selected = 1 AND a.account_id IS NOT NULL`,
+  ).bind(userId, conn.id).all<{ account_id: string }>();
+  const fed = new Set((stillFed.results ?? []).map((r) => r.account_id));
+
+  let accounts = 0;
+  let linesDeleted = 0;
+  for (const accountId of ids) {
+    linesDeleted += await deleteCdrLinesForAccount(env, userId, accountId, !fed.has(accountId));
+    accounts++;
+  }
+  // A deleted line may have seeded a capital holding (C1) — drop the now-orphaned parcels.
+  if (linesDeleted > 0) await clearOrphanedTxnCgt(env, userId);
+
+  const tail: D1PreparedStatement[] = [
+    // The account list itself (names, last4) is CDR data too. The connection row stays as the
+    // consumer-visible record of the withdrawal: institution, dates, scope — no account detail.
+    env.DB.prepare(`DELETE FROM bank_connection_accounts WHERE user_id = ? AND connection_id = ?`).bind(userId, conn.id),
+    env.DB.prepare(`UPDATE bank_connections SET data_deleted_at = ? WHERE id = ? AND user_id = ?`).bind(nowIso, conn.id, userId),
+  ];
+  if (last) {
+    tail.push(
+      env.DB.prepare(
+        `UPDATE accounts SET source = 'statement'
+          WHERE user_id = ? AND source = 'cdr_feed'
+            AND NOT EXISTS (SELECT 1 FROM transactions t
+                             WHERE t.user_id = accounts.user_id AND t.account_id = accounts.id
+                               AND t.source = 'cdr_feed' AND t.kind = 'bank_line')`,
+      ).bind(userId),
+    );
+  }
+  await env.DB.batch(tail);
+  await cdrAudit(env, userId, {
+    event: "data_deleted", connectionId: conn.id, provider: conn.provider, accessType: conn.access_type,
+    accountCount: accounts, rowCount: linesDeleted, detail: { reason: "consent_withdrawn", tenant_wide: last },
+  });
+  return { accounts, linesDeleted };
+}
+
+/**
  * Withdraw one bank connection: stop collecting, revoke upstream, delete its CDR data (PS12), and
  * record each step. Idempotent — calling it again retries a failed upstream revoke and never
- * re-runs the delete (which, on the last connection, is tenant-wide and must not later sweep up a
- * NEW connection's lines).
+ * re-runs a completed delete (which, on the last connection, is tenant-wide and must not later
+ * sweep up a NEW connection's lines).
  */
 export async function disconnectBankConnection(
   env: Env,
@@ -254,17 +333,23 @@ export async function disconnectBankConnection(
     .first<ConnRow>();
   if (!conn) return { ok: false, error: "connection not found", upstreamRevoked: false, consumerDeleted: false, accounts: 0, linesDeleted: 0 };
 
-  // 1. Stop collecting — first, unconditionally.
+  // 1. Stop collecting — first, unconditionally. The status flip and its CDR record share a batch so
+  // a crash can't leave a withdrawal with no record. bankSync re-checks status='active' inside every
+  // insert, so a sync already in flight cannot land lines after this point.
   if (conn.status !== "revoked") {
-    await env.DB.prepare(
-      `UPDATE bank_connections SET status = 'revoked', revoked_at = COALESCE(revoked_at, ?) WHERE id = ? AND user_id = ?`,
-    ).bind(nowIso, conn.id, userId).run();
-    await cdrAudit(env, userId, { event: "consent_withdrawn", connectionId: conn.id, provider: conn.provider, accessType: conn.access_type });
+    await env.DB.batch([
+      env.DB.prepare(
+        `UPDATE bank_connections SET status = 'revoked', revoked_at = COALESCE(revoked_at, ?) WHERE id = ? AND user_id = ?`,
+      ).bind(nowIso, conn.id, userId),
+      cdrAuditStmt(env, userId, { event: "consent_withdrawn", connectionId: conn.id, provider: conn.provider, accessType: conn.access_type }),
+      // Close any backfill in flight for this connection: its next checkpoint then matches zero rows
+      // and the step stops (bank-sync.ts), instead of fetching pages that can no longer be written.
+      env.DB.prepare(
+        `UPDATE bank_sync_runs SET status = 'failed', error = 'consent withdrawn', finished_at = datetime('now'), updated_at = datetime('now')
+          WHERE user_id = ? AND connection_id = ? AND status = 'running'`,
+      ).bind(userId, conn.id),
+    ]);
   }
-
-  // Decided BEFORE the upstream call: "is this the last live connection" must not depend on whether
-  // the vendor answered.
-  const last = (await liveOtherConnections(env, userId, conn.id)) === 0;
 
   // 2. Upstream.
   const up = await revokeUpstream(env, userId, conn, upstream, nowIso);
@@ -272,49 +357,7 @@ export async function disconnectBankConnection(
   // 3. PS12 delete — once.
   let accounts = 0;
   let linesDeleted = 0;
-  if (!conn.data_deleted_at) {
-    const mapped = await env.DB.prepare(
-      `SELECT DISTINCT account_id FROM bank_connection_accounts WHERE user_id = ? AND connection_id = ? AND account_id IS NOT NULL`,
-    ).bind(userId, conn.id).all<{ account_id: string }>();
-    const ids = new Set((mapped.results ?? []).map((r) => r.account_id));
-    if (last) {
-      // Last live connection ⇒ every CDR line the tenant holds is now redundant, including lines on
-      // an account the consumer DESELECTED earlier (deselecting nulls the mapping, so it could not
-      // be found through bank_connection_accounts).
-      const orphan = await env.DB.prepare(
-        `SELECT DISTINCT account_id FROM transactions
-          WHERE user_id = ? AND source = 'cdr_feed' AND kind = 'bank_line' AND account_id IS NOT NULL`,
-      ).bind(userId).all<{ account_id: string }>();
-      for (const r of orphan.results ?? []) ids.add(r.account_id);
-    }
-    // An account another LIVE connection still feeds keeps source='cdr_feed'; its lines are still
-    // deleted (they can't be told apart by origin) and that connection's next sync re-collects its own.
-    const stillFed = await env.DB.prepare(
-      `SELECT DISTINCT a.account_id FROM bank_connection_accounts a
-         JOIN bank_connections c ON c.id = a.connection_id AND c.user_id = a.user_id
-        WHERE a.user_id = ? AND a.connection_id <> ? AND c.status <> 'revoked'
-          AND a.selected = 1 AND a.account_id IS NOT NULL`,
-    ).bind(userId, conn.id).all<{ account_id: string }>();
-    const fed = new Set((stillFed.results ?? []).map((r) => r.account_id));
-
-    for (const accountId of ids) {
-      linesDeleted += await deleteCdrLinesForAccount(env, userId, accountId, !fed.has(accountId));
-      accounts++;
-    }
-    // A deleted line may have seeded a capital holding (C1) — drop the now-orphaned parcels.
-    if (linesDeleted > 0) await clearOrphanedTxnCgt(env, userId);
-
-    // The account list itself (names, last4) is CDR data too. The connection row stays as the
-    // consumer-visible record of the withdrawal: institution, dates, scope — no account detail.
-    await env.DB.batch([
-      env.DB.prepare(`DELETE FROM bank_connection_accounts WHERE user_id = ? AND connection_id = ?`).bind(userId, conn.id),
-      env.DB.prepare(`UPDATE bank_connections SET data_deleted_at = ? WHERE id = ? AND user_id = ?`).bind(nowIso, conn.id, userId),
-    ]);
-    await cdrAudit(env, userId, {
-      event: "data_deleted", connectionId: conn.id, provider: conn.provider, accessType: conn.access_type,
-      accountCount: accounts, rowCount: linesDeleted, detail: { reason: "consent_withdrawn", tenant_wide: last },
-    });
-  }
+  if (!conn.data_deleted_at) ({ accounts, linesDeleted } = await runPs12Delete(env, userId, conn, nowIso));
 
   return {
     ok: true,
@@ -335,6 +378,8 @@ export interface LifecycleResult {
   expired: number;
   reminded: number;
   upstreamRetried: number;
+  /** Withdrawals whose PS12 delete had not completed, finished by this sweep. */
+  deletesCompleted: number;
 }
 
 /**
@@ -355,7 +400,7 @@ export async function consentLifecycle(
   now: Date = new Date(),
 ): Promise<LifecycleResult> {
   const nowIso = now.toISOString();
-  const out: LifecycleResult = { expired: 0, reminded: 0, upstreamRetried: 0 };
+  const out: LifecycleResult = { expired: 0, reminded: 0, upstreamRetried: 0, deletesCompleted: 0 };
 
   const active = await env.DB.prepare(
     `SELECT id, provider, access_type, institution, institution_id, consent_expires_at, expiry_reminded_at
@@ -369,9 +414,10 @@ export async function consentLifecycle(
     const exp = Date.parse(c.consent_expires_at);
     if (!Number.isFinite(exp)) continue;
     if (exp <= now.getTime()) {
-      await env.DB.prepare(`UPDATE bank_connections SET status = 'expired' WHERE id = ? AND user_id = ? AND status = 'active'`)
-        .bind(c.id, userId).run();
-      await cdrAudit(env, userId, { event: "consent_expired", connectionId: c.id, provider: c.provider, accessType: c.access_type });
+      await env.DB.batch([
+        env.DB.prepare(`UPDATE bank_connections SET status = 'expired' WHERE id = ? AND user_id = ? AND status = 'active'`).bind(c.id, userId),
+        cdrAuditStmt(env, userId, { event: "consent_expired", connectionId: c.id, provider: c.provider, accessType: c.access_type }),
+      ]);
       out.expired++;
       continue;
     }
@@ -401,6 +447,16 @@ export async function consentLifecycle(
     if (!fresh || fresh.upstream_revoked_at) continue;
     const r = await revokeUpstream(env, userId, fresh, upstream, nowIso);
     if (r.revoked) out.upstreamRetried++;
+  }
+
+  // A withdrawal that died between the status flip and the PS12 delete (DO eviction, D1 error) would
+  // otherwise hold the data forever — nothing else re-selects it. Finish it here.
+  const undeleted = await env.DB.prepare(
+    `SELECT ${CONN_COLS} FROM bank_connections WHERE user_id = ? AND status = 'revoked' AND data_deleted_at IS NULL`,
+  ).bind(userId).all<ConnRow>();
+  for (const c of undeleted.results ?? []) {
+    await runPs12Delete(env, userId, c, nowIso);
+    out.deletesCompleted++;
   }
   return out;
 }

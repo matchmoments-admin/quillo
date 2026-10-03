@@ -5112,6 +5112,8 @@ import { latestSyncRuns } from "../src/lib/bank-sync";
   check(`connect: copy passes the tax-advice denylist (offenders: ${connectOffenders.join(" | ") || "none"})`, connectOffenders.length === 0);
   const page = stripComments(fs.readFileSync(path.join(connectDir, "ConnectPage.tsx"), "utf8"));
   check("connect: no 'We noticed' cards on this step (they live in Review, #587)", !/Noticed/.test(page) && /!embedded && has\("wages_payer"\)/.test(fs.readFileSync(path.join(process.cwd(), "web/src/pages/Accounts.tsx"), "utf8")));
+}
+
 // ── #592 ft_journey: the Grow layer — visibility rules, detection, data presence, the switch ──
 import {
   growView, detectionCandidates, detectFromLines, growDetectionConfig, availableLayers, growDataPresence, growPayload,

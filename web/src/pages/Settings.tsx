@@ -6,6 +6,7 @@ import { useFeatures } from "../lib/features";
 import { BUCKETS } from "../types";
 import { Card, Spinner, BUCKET_LABEL, InfoTip, money, parseMoneyToCents } from "../components/ui";
 import { AiChangesFeed } from "../components/AiChangesFeed";
+import { BankConsents } from "../components/BankConsents";
 
 // Run a delete; on a blocked-delete (409, dependent records still reference the row) surface the
 // reason and offer Archive when the parent supports it — instead of silently swallowing the error.
@@ -73,6 +74,9 @@ export function Settings() {
           qc.invalidateQueries({ queryKey: ["progress"] });
         }}
       />
+
+      {/* Bank connections — the CDR consent dashboard (#576, ADR-0003 §6.4). Flag-gated. */}
+      {has("bank_feed_cdr") && <BankConsents />}
 
       {/* People (taxpayers) — occupation/residency drive deduction hints */}
       <Section title={<>People (taxpayers) <InfoTip k="persons" /></>}>

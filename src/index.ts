@@ -365,6 +365,9 @@ export default {
           // PHI Extras Tracker: deterministic (no-LLM) setup nudge + reset reminder. Writes only to
           // opportunities + notifications. Flag-gated ⇒ OFF means no read/write path, byte-identical.
           if (featureOn(env, "phi_extras_tracker")) await stub.detectBenefitsReset(u.user_id);
+          // Bank-feed consents (#576, ADR-0003 §6.4): mark expired, remind before expiry, retry failed
+          // upstream revokes. Flag-gated ⇒ OFF means no read/write path, byte-identical.
+          if (featureOn(env, "bank_feed_cdr")) await stub.bankConsentLifecycle(u.user_id);
         } catch (e) {
           console.error(`weekly cron failed for ${u.user_id}: ${(e as Error).message}`);
         }

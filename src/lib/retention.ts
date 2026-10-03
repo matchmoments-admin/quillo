@@ -1,6 +1,8 @@
 import type { Env } from "../env";
 import { getProfile, getSituation } from "./db";
 import { revokeAndDisconnect } from "./qbo-oauth";
+import { basiqUpstream, cdrAudit, type BankUpstream } from "./bank-consent";
+import { basiqConfigured } from "./basiq";
 
 // APP 11.2 / APP 12 / APP 13 support: export a tenant's data, purge it across every store, and a
 // weekly FLAG sweep for records past the retention window (never auto-deletes — surfaces a nudge).
@@ -78,11 +80,12 @@ export const PURGE_TABLES = [
   // 0075 — bank feeds. For access_type='cdr' rows these are CDR data, so purge is a Privacy
   // Safeguard 12 obligation with a regulator attached, not just the APP-11.2 house rule.
   //
-  // NOT YET COMPLETE: deleting these rows does not revoke the consent upstream at the aggregator,
-  // the way revokeAndDisconnect does for QuickBooks. purgeTenant must also call deleteBasiqUser
-  // (src/lib/basiq.ts) — that lands with the consent dashboard, which is the PR that first creates
-  // a row here. Inert until then: the feature is flag-gated and has no writer, so the table is
-  // empty and there is nothing to leave behind.
+  // Deleting these rows does not by itself revoke anything at the aggregator, so purgeTenant first
+  // deletes the upstream consumer (deleteBasiqUser, #576) and ABORTS the purge if that fails — the
+  // consumer id lives only in `profiles`, so wiping D1 first would orphan CDR data at Basiq forever.
+  //
+  // cdr_audit_log (0085) is deliberately NOT here, like audit_log: the record that a consumer's CDR
+  // data was deleted must outlive the data, and it carries no CDR content itself.
   "bank_connections",
   "bank_connection_accounts",
   "bank_sync_runs",
@@ -117,6 +120,8 @@ export interface PurgeResult {
   r2Objects: number;
   kvKeys: number;
   qboRevoked: boolean;
+  /** Present only when the tenant had an aggregator consumer — absent ⇒ byte-identical to before. */
+  bankRevoked?: boolean;
 }
 
 /**
@@ -125,13 +130,52 @@ export interface PurgeResult {
  * of its own, so there's no DO state to clear beyond these stores. Leaves only an audit_log breadcrumb
  * (written by the caller). Scoped to user_id throughout — never a cross-tenant delete.
  */
-export async function purgeTenant(env: Env, userId: string): Promise<PurgeResult> {
+export async function purgeTenant(env: Env, userId: string, deps: { bankUpstream?: BankUpstream } = {}): Promise<PurgeResult> {
   // Ordering matters (APP-13 integrity): erase the EXTERNAL stores (R2 bytes, KV caches) BEFORE the
   // D1 wipe, and let their failures PROPAGATE. Previously D1 was wiped first and R2/KV were best-
   // effort, so a mid-stream store error left receipt bytes orphaned while the caller still audited the
   // purge as "complete". Now a store failure aborts before D1 is touched — the tenant's data is intact
   // and the delete is simply retried (every step is idempotent), and the caller never records a
   // false "complete". The D1 wipe is last so nothing references bytes that are already gone.
+
+  // 0. Bank feed (ADR-0003, PS12): delete the aggregator-side consumer, which revokes every consent
+  // and connection under it. FIRST, before even the QuickBooks revoke, so an abort here really means
+  // "nothing was touched". UNLIKE the QBO revoke a vendor failure is NOT best-effort: the consumer id
+  // exists only in profiles.bank_provider_user_id, so wiping D1 after a failed call would make the CDR
+  // data at the aggregator unreachable forever. A transient failure therefore aborts the purge, which
+  // is retried (the delete is 404-tolerant, so idempotent).
+  //
+  // The one exception is an environment with NO aggregator key at all: there the call can never
+  // succeed, and refusing would block APP-13 erasure permanently. The local erasure proceeds and the
+  // consumer id is written to the retained CDR record (an identifier, not CDR content) with a loud log,
+  // so the upstream delete can be completed by hand.
+  // A tenant who never connected a bank has no id => no call, no row, no new result field.
+  let bankRevoked: boolean | undefined;
+  let bankProvider = "basiq";
+  const bankUser = await env.DB.prepare(`SELECT bank_provider_user_id AS id, bank_provider AS provider FROM profiles WHERE user_id = ?`)
+    .bind(userId)
+    .first<{ id: string | null; provider: string | null }>();
+  if (bankUser?.id) {
+    bankProvider = bankUser.provider ?? "basiq";
+    const upstream = deps.bankUpstream ?? (basiqConfigured(env) ? basiqUpstream(env) : null);
+    if (!upstream) {
+      bankRevoked = false;
+      console.error(`[cdr] purge for ${userId}: aggregator not configured — consumer ${bankUser.id} NOT deleted upstream; complete manually`);
+      await cdrAudit(env, userId, {
+        event: "upstream_revoke_failed", provider: bankProvider,
+        detail: { error: "not_configured", provider_user_id: bankUser.id, during: "tenant_purge" },
+      }).catch((err) => console.warn(`cdr audit (purge revoke pending) failed: ${(err as Error).message}`));
+    } else {
+      try {
+        await upstream.deleteUser(bankUser.id);
+      } catch (e) {
+        console.error(`[cdr] purge for ${userId}: upstream consumer delete failed: ${(e as Error).message}`);
+        const st = (e as { status?: number }).status;
+        throw new Error(`Couldn't revoke your bank connection with the bank-data provider${st ? ` (${st})` : ""}, so nothing was deleted — please try again shortly.`);
+      }
+      bankRevoked = true;
+    }
+  }
 
   // 1. Revoke + delete the QuickBooks connection (also clears its KV account cache). Best-effort: a
   // remote revoke failure must not block the local erasure, and the token ROW is wiped by the D1 step.
@@ -191,7 +235,14 @@ export async function purgeTenant(env: Env, userId: string): Promise<PurgeResult
   // Count only the DELETE results (exclude the trailing reseat INSERT) so rowsDeleted stays truthful.
   const rowsDeleted = results.slice(0, deletes.length).reduce((n, r) => n + (r.meta?.changes ?? 0), 0);
 
-  return { tables: PURGE_TABLES.length, rowsDeleted, r2Objects, kvKeys, qboRevoked };
+  // CDR record of the erasure, written only once it has actually happened (a purge that fails at R2/KV/D1
+  // and is retried must not leave "purged" rows behind). Survives the purge — cdr_audit_log is retained.
+  if (bankRevoked) {
+    await cdrAudit(env, userId, { event: "tenant_purged", provider: bankProvider, detail: { consumer_deleted: true } })
+      .catch((err) => console.warn(`cdr audit (tenant_purged) failed: ${(err as Error).message}`));
+  }
+
+  return { tables: PURGE_TABLES.length, rowsDeleted, r2Objects, kvKeys, qboRevoked, ...(bankRevoked !== undefined ? { bankRevoked } : {}) };
 }
 
 /**
@@ -218,6 +269,15 @@ export async function exportTenant(env: Env, userId: string): Promise<Record<str
   // record. Both are part of a complete access request.
   tables.daily_cost = ((await env.DB.prepare(`SELECT * FROM daily_cost WHERE scope = ?`).bind(userId).all()).results ?? []);
   tables.audit_log = ((await env.DB.prepare(`SELECT * FROM audit_log WHERE user_id = ?`).bind(userId).all()).results ?? []);
+  // 0085: the CDR consent/collection/deletion record — kept through a purge like audit_log, and part of
+  // the consumer's access request. Included only when non-empty (a tenant who never connected a bank
+  // gets a byte-identical export), and read defensively so an export never fails on it.
+  try {
+    const cdr = (await env.DB.prepare(`SELECT * FROM cdr_audit_log WHERE user_id = ?`).bind(userId).all()).results ?? [];
+    if (cdr.length) tables.cdr_audit_log = cdr;
+  } catch {
+    /* table absent (migration not yet applied) — omit rather than fail the export */
+  }
 
   return {
     exported_at: new Date().toISOString(),

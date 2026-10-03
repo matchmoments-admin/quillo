@@ -4,7 +4,7 @@
 > (ticket [#540](https://github.com/matchmoments-admin/quillo/issues/540)). Written 2026-10-03 against
 > `main` at `a571a1c`. **Decision-complete:** every choice here traces to a closed ticket's resolution
 > comment (indexed below) or is an implementation detail chosen to fit those decisions. Nothing in
-> this document re-opens a decision. The few genuinely open points are in §19, *Residual questions*.
+> this document re-opens a decision. Nothing is open: §19, *Residual questions*, records the last two owner rulings.
 >
 > Each build area (§3–§16) is sized for `/to-tickets`: one to three PR-sized tickets. Areas name
 > their files, migrations, flag, goldens, acceptance criteria and dependencies. §17 orders them into
@@ -1545,7 +1545,7 @@ period is captured but **excluded from the position**, with a note.
 |---|---|
 | `foreign` | every foreign-sourced type (`foreign_*`, `foreign_employment`) |
 | `whm` | same as `foreign` (WHMs are generally foreign residents for tax) |
-| `temporary` | foreign-sourced types **except** `foreign_employment` (the ATO says temporary residents declare foreign employment income earned while a temporary resident; see Residual question 2) |
+| `temporary` | foreign-sourced types **except** `foreign_employment` (the ATO says temporary residents declare foreign employment income earned while a temporary resident; owner-confirmed 2026-10-03) |
 | `resident`, `unsure` | none (`unsure` keeps everything in and the `residency_unsure` finding asks) |
 
 - Person: `income.person_id`, defaulting to the self person.
@@ -1730,17 +1730,14 @@ A12 2, A13 1, A14 1), plus the in-flight #566.
 
 ## Residual questions
 
-Kept to what this spec could not settle from a recorded decision. None blocks Wave 1.
+**None. Both were settled by the owner on 2026-10-03:**
 
-1. **Minimisation backstop when a FY is never marked lodged.** #534 keys the window on "lodged or
-   ~60 days, whichever is later". If a user never marks the FY lodged, irrelevant debits are never
-   shrunk. Proposed default for the owner to confirm: treat a FY as lodged for minimisation purposes
-   on the self-lodger due date + 60 days (i.e. 30 December after the FY ends) when no `lodged_at`
-   exists. Blocks only A5's flip, not its build.
-2. **Temporary residents' foreign employment income.** #557 says exclude foreign income in a
-   foreign- or temporary-resident period. The ATO's temporary-resident guidance says foreign
-   *employment* income earned while a temporary resident is still declared. A13 follows the ATO and
-   carves it out (data-driven in the pack, one line to change). Owner to confirm the carve-out.
+1. **Minimisation backstop when a FY is never marked lodged:** confirmed. Treat the FY as lodged
+   for minimisation purposes at the self-lodger due date + 60 days (30 December after the FY ends)
+   when no `lodged_at` exists. A5 builds this as the default.
+2. **Temporary residents' foreign employment income:** confirmed. Follow the ATO: other foreign
+   income is excluded for foreign- and temporary-resident periods, but `foreign_employment` stays in
+   for temporary residents (A13's data-driven carve-out).
 
 ---
 

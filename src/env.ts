@@ -160,7 +160,7 @@ export interface TaxAgentRpc {
   bankCallback(userId: string, jobIdsRaw: string | null): Promise<{ ok: boolean; connections: number; accounts: number; error?: string }>;
   bankConnections(userId: string): Promise<{ connections: unknown[] }>;
   bankSelectAccounts(userId: string, selections: { providerAccountId: string; selected: boolean; accountId?: string | null }[]): Promise<{ updated: number; conflicts: string[] }>;
-  bankSync(userId: string, opts?: { fy?: string }): Promise<{ imported: number; skipped: number; fetched: number; runs: number; errors: string[] }>;
+  bankSync(userId: string, opts?: { fy?: string }): Promise<{ imported: number; skipped: number; fetched: number; runs: number; errors: string[]; in_progress: boolean }>;
   categoriseFeedLines(userId: string): Promise<{ categorised: number }>;
   withdrawConsent(userId: string): Promise<{ ok: boolean }>;
   setGstRegistered(userId: string, registered: boolean): Promise<{ ok: true; gst_registered: number }>;

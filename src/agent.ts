@@ -44,10 +44,15 @@ import { getLedger, LedgerNotConnectedError, LedgerReauthError, type LedgerExpen
 import { redact } from "./lib/redact";
 import {
   basiqConfigured, clientToken, consentUrl, createBasiqUser, getAccounts, getConsents,
-  fetchTransactions, feedFingerprint, requiresAuResidency,
+  fetchTransactionPage, requiresAuResidency,
   type BasiqConsent, type ConsentAction, type AccessType,
 } from "./lib/basiq";
 import { putConnectState, takeConnectState, parseJobIds, syncWindow } from "./lib/bank-connect";
+import {
+  closeStaleRuns, openRun, loadRun, touchRun, syncRunStep, finishRun, runOutcome, skippedOf,
+  FIRST_STEP_PAGES, PAGES_PER_STEP, MAX_PAGES_PER_RUN,
+  type SyncRun, type SyncStepDeps,
+} from "./lib/bank-sync";
 import { toBaseCurrency } from "./lib/fx";
 import { spentTodayCents, spentTodayGlobalCents, spentThisMonthGlobalCents, noteMeteringError, usageStatements } from "./lib/usage";
 import { billingPolicy, freeCreditGrantE4 } from "./lib/billing";
@@ -58,6 +63,9 @@ import { verdictForTxn } from "./lib/deductibility";
 import { featureOn, categoriseMode } from "./lib/features";
 
 const CONFIDENCE_THRESHOLD = 0.85;
+// Backstop on bank-sync alarm continuations (#511). MAX_PAGES_PER_RUN normally ends a run first;
+// this only stops a pathological chain from rescheduling forever.
+const BANK_SYNC_MAX_HOPS = 200;
 // Above this many to-categorise lines, route to the async Message Batches API (~50% cheaper);
 // at or below, categorise synchronously so normal imports stay instant. Used in `auto` mode.
 const BATCH_THRESHOLD = 60;
@@ -1694,6 +1702,25 @@ export class TaxAgent extends Agent<Env> {
 
     for (const s of selections) {
       if (s.selected && s.accountId) {
+        // REMAP GUARD (#511). Re-pointing a feed account whose lines already landed in one Quillo
+        // account at a DIFFERENT one used to re-import the whole year into the new account and leave
+        // both copies counting (the unique index includes account_id). The importer now dedups
+        // across accounts, so a remap can no longer double-count — but it would still split the
+        // account's history across two ledgers, so it is refused while the old one holds fed lines.
+        const prior = await this.env.DB.prepare(
+          `SELECT acc.name FROM bank_connection_accounts a
+             LEFT JOIN accounts acc ON acc.id = a.account_id AND acc.user_id = a.user_id
+            WHERE a.user_id = ? AND a.provider_account_id = ? AND a.account_id IS NOT NULL AND a.account_id != ?
+              AND EXISTS (SELECT 1 FROM transactions t
+                           WHERE t.user_id = a.user_id AND t.account_id = a.account_id AND t.source = 'cdr_feed')
+            LIMIT 1`,
+        ).bind(userId, s.providerAccountId, s.accountId).first<{ name: string | null }>();
+        if (prior) {
+          conflicts.push(
+            `Lines from this bank account were already imported into "${prior.name ?? "another account"}", so it can't be re-pointed at a different account (its history would split). Keep the current mapping.`,
+          );
+          continue;
+        }
         // Same shared invariant parseStatement uses — see assertCanonicalSource (lib/queries.ts).
         try {
           await assertCanonicalSource(this.env, userId, s.accountId, "cdr_feed");
@@ -1725,17 +1752,22 @@ export class TaxAgent extends Agent<Env> {
    * an uploaded line are the same row with a different `source`. That is deliberate — the feed is a
    * new way to ACQUIRE lines, not a new way to treat them.
    *
-   * Idempotent. `line_fingerprint = feedFingerprint(providerTxnId)` + the existing unique index
-   * means a re-sync is a no-op via ON CONFLICT DO NOTHING, so overlapping windows are safe.
+   * BOUNDED AND RESUMABLE (#511). One `bank_sync_runs` row per connection is written FIRST
+   * ('running' — also the concurrency guard), the first FIRST_STEP_PAGES pages run inline here, and
+   * any remainder continues on a DO alarm (`bankSyncContinue`) in PAGES_PER_STEP slices, each well
+   * under the Workers subrequest cap. Every page is flushed to D1 and checkpointed on the run row as
+   * it lands, so a run that dies mid-pull leaves an honest record of how far it got. The page loop
+   * itself lives in src/lib/bank-sync.ts.
+   *
+   * Idempotent. `line_fingerprint = feedFingerprint(providerTxnId)`, deduplicated per TENANT (not
+   * per account), so a re-sync, an overlapping window or a remapped feed account is a no-op.
    */
-  async bankSync(userId: string, opts: { fy?: string } = {}): Promise<{ imported: number; skipped: number; fetched: number; runs: number; errors: string[] }> {
+  async bankSync(userId: string, opts: { fy?: string } = {}): Promise<{ imported: number; skipped: number; fetched: number; runs: number; errors: string[]; in_progress: boolean }> {
     if (!basiqConfigured(this.env)) throw new Error("bank feeds are not configured (BASIQ_API_KEY missing)");
     if (!(await this.bankRateOk(userId, "sync", 30))) throw new Error("too many sync attempts — try again later");
 
-    const profile = await this.requireProfile(userId);
     const descriptor = await this.jurisdictionFor(userId);
     const { start: fyStart, end: fyEnd } = this.fyBoundsFor(opts.fy, descriptor);
-    const baseCur = baseCurrencyOf(this.env, descriptor);
 
     // Clamp to the 24-month CDR wall and to today — see syncWindow for why both matter.
     const today = new Date().toISOString().slice(0, 10);
@@ -1745,7 +1777,7 @@ export class TaxAgent extends Agent<Env> {
       // than silently returning zero, so "the feed can't reach this year" is visible in the audit
       // trail instead of looking like an empty bank account.
       await this.audit(userId, "bank_sync_out_of_range", JSON.stringify({ fyStart, fyEnd, today }));
-      return { imported: 0, skipped: 0, fetched: 0, runs: 0, errors: ["That financial year is older than the 24-month open-banking limit — upload statements for it instead."] };
+      return { imported: 0, skipped: 0, fetched: 0, runs: 0, errors: ["That financial year is older than the 24-month open-banking limit — upload statements for it instead."], in_progress: false };
     }
     const { from, to } = window;
 
@@ -1754,13 +1786,17 @@ export class TaxAgent extends Agent<Env> {
     // and the sync kept pulling. Collecting outside a live consent is the failure with a regulator
     // attached, so the expiry is enforced at the puller rather than waiting on a lifecycle sweep.
     const conns = await this.env.DB.prepare(
-      `SELECT c.id, c.provider_connection_id, c.provider_user_id, c.access_type,
-              (c.consent_expires_at IS NOT NULL AND c.consent_expires_at <= datetime('now')) AS expired
+      `SELECT c.id, (c.consent_expires_at IS NOT NULL AND c.consent_expires_at <= datetime('now')) AS expired
          FROM bank_connections c WHERE c.user_id = ? AND c.status = 'active'`,
-    ).bind(userId).all<{ id: string; provider_connection_id: string; provider_user_id: string; access_type: string; expired: number }>();
+    ).bind(userId).all<{ id: string; expired: number }>();
+
+    // An interrupted run (its alarm chain died) must neither block this sync nor keep reading as
+    // live. Lines it already wrote are real and stay; re-pulling them is a deduplicated no-op.
+    const closedStale = await closeStaleRuns(this.env.DB, userId);
 
     const errors: string[] = [];
-    let importedTotal = 0, skippedTotal = 0, fetchedTotal = 0, runs = 0;
+    const opened: SyncRun[] = [];
+    let runs = 0, busy = 0;
 
     for (const conn of conns.results ?? []) {
       if (conn.expired) {
@@ -1768,117 +1804,251 @@ export class TaxAgent extends Agent<Env> {
         // imports nothing is otherwise indistinguishable from a genuinely quiet month, which is
         // exactly the silent-undercount a tax position must never have.
         await this.env.DB.prepare(
-          `INSERT INTO bank_sync_runs (id, user_id, connection_id, from_date, to_date, status, error)
-           VALUES (?, ?, ?, ?, ?, 'failed', 'consent expired — reconnect this bank to keep importing')`,
+          `INSERT INTO bank_sync_runs (id, user_id, connection_id, from_date, to_date, status, error, updated_at, finished_at)
+           VALUES (?, ?, ?, ?, ?, 'failed', 'consent expired — reconnect this bank to keep importing', datetime('now'), datetime('now'))`,
         ).bind(crypto.randomUUID(), userId, conn.id, from, to).run();
         errors.push("A bank consent has expired — reconnect it to keep importing.");
         runs++;
         continue;
       }
       // Only accounts the consumer explicitly SELECTED and mapped are ever fetched. Under the CDR
-      // data minimisation is an obligation, so this filter is the enforcement point.
+      // data minimisation is an obligation, so this filter is the enforcement point (re-checked per
+      // page by the step, so a mid-run deselect stops collection too). Ordered so the snapshot the
+      // run resumes from is deterministic.
       const selected = await this.env.DB.prepare(
         `SELECT provider_account_id, account_id FROM bank_connection_accounts
-          WHERE user_id = ? AND connection_id = ? AND selected = 1 AND account_id IS NOT NULL`,
+          WHERE user_id = ? AND connection_id = ? AND selected = 1 AND account_id IS NOT NULL
+          ORDER BY provider_account_id`,
       ).bind(userId, conn.id).all<{ provider_account_id: string; account_id: string }>();
       const picked = selected.results ?? [];
       if (!picked.length) continue;
 
-      const targetFor = new Map(picked.map((p) => [p.provider_account_id, p.account_id]));
-      const runId = crypto.randomUUID();
-      let imported = 0, skipped = 0, fetched = 0, status = "ok", error: string | null = null;
-
-      try {
-        const res = await fetchTransactions(this.env, conn.provider_user_id, {
-          from, to, accountIds: picked.map((p) => p.provider_account_id),
-        });
-        fetched = res.transactions.length;
-        // A provider row outside the window we asked for is a signal the vendor filter did not do
-        // what we assumed — recorded as partial rather than swallowed.
-        if (res.skippedOutOfWindow > 0) status = "partial";
-
-        const rulePack = await this.loadRulePack(profile.rule_pack_ver);
-        const situation = await getSituation(this.env, userId, profile);
-
-        const inserts: D1PreparedStatement[] = [];
-        for (const t of res.transactions) {
-          const accountId = targetFor.get(t.accountId);
-          if (!accountId) continue;
-          const fp = await feedFingerprint(t.id);
-          const transfer = isTransferLike(t.description);
-          const cat = transfer
-            ? null
-            : this.deterministicCategorise(cleanMerchant(t.description), situation.rules, rulePack, {
-                skipHints: t.direction === "credit",
-                direction: t.direction,
-              });
-          // A foreign-currency line has no trustworthy base-currency value until the FX layer
-          // converts it, so FX_CONVERTED (queries.ts) excludes it from every money sum. Force it to
-          // needs_review so the excluded money stays VISIBLE — an 'extracted' row that silently
-          // contributes nothing is exactly the shape of a quietly-understated position.
-          const unconverted = t.currency !== baseCur;
-          inserts.push(
-            this.env.DB.prepare(
-              `INSERT INTO transactions
-                 (id, user_id, source, status, kind, account_id, statement_id, line_fingerprint, raw_description,
-                  merchant, amount_cents, currency, amount_aud_cents, txn_date, direction, bucket, ato_label, confidence, property_id)
-               VALUES (?, ?, 'cdr_feed', ?, 'bank_line', ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(user_id, account_id, line_fingerprint) DO NOTHING`,
-            ).bind(
-              crypto.randomUUID(), userId,
-              transfer ? "ignored" : unconverted ? "needs_review" : cat ? "extracted" : "needs_review",
-              accountId, fp, t.description, cleanMerchant(t.description),
-              t.amountCents,
-              t.currency,
-              // NOT silently treated as base currency: NULL here + the FX_CONVERTED guard in
-              // queries.ts keeps an unconverted foreign line out of every money sum, rather than
-              // counting a USD figure as AUD. Converting them is a later slice.
-              unconverted ? null : t.amountCents,
-              t.postDate, t.direction,
-              cat?.bucket ?? null, cat?.ato_label ?? null, cat ? cat.confidence : null, cat?.property_id ?? null,
-            ),
-          );
-        }
-        for (let i = 0; i < inserts.length; i += 50) {
-          const batch = await this.env.DB.batch(inserts.slice(i, i + 50));
-          for (const r of batch) imported += r.meta?.changes ?? 0;
-        }
-        skipped = fetched - imported;
-      } catch (e) {
-        status = "failed";
-        error = (e as Error).message;
-        errors.push(error);
+      // The run row is written BEFORE any work. Null ⇒ this connection already has a live run
+      // (another tab, or a continuation in flight) — do not start a second full pagination.
+      const run = await openRun(this.env.DB, {
+        userId, connectionId: conn.id, from, to,
+        accounts: picked.map((p) => ({ p: p.provider_account_id, a: p.account_id })),
+      });
+      if (!run) {
+        busy++;
+        continue;
       }
-
-      await this.env.DB.batch([
-        this.env.DB.prepare(
-          `INSERT INTO bank_sync_runs (id, user_id, connection_id, from_date, to_date, fetched, imported, skipped, status, error)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        ).bind(runId, userId, conn.id, from, to, fetched, imported, skipped, status, error),
-        this.env.DB.prepare(
-          `UPDATE bank_connections SET last_sync_at = datetime('now'), last_error = ? WHERE id = ? AND user_id = ?`,
-        ).bind(error, conn.id, userId),
-      ]);
-
-      importedTotal += imported; skippedTotal += skipped; fetchedTotal += fetched; runs++;
+      opened.push(run);
+      runs++;
     }
 
-    // Stamp the tenant as holding CDR data, one-way, as soon as any production CDR line lands.
-    // From here on getLLM refuses non-AU-resident inference for them on EVERY path, not just this
-    // one — disconnecting the bank or flipping BASIQ_ENV back to sandbox cannot clear it, because
-    // the data is still in the ledger (see migration 0077).
-    if (importedTotal > 0 && (conns.results ?? []).some((c) => requiresAuResidency(this.env, c.access_type as AccessType))) {
-      await this.env.DB.prepare(`UPDATE profiles SET cdr_tainted = 1 WHERE user_id = ? AND cdr_tainted = 0`).bind(userId).run();
+    let res: Awaited<ReturnType<TaxAgent["bankSyncAdvance"]>>;
+    try {
+      res = await this.bankSyncAdvance(userId, opened, FIRST_STEP_PAGES);
+    } catch (e) {
+      // Setup (profile, rule pack, situation) threw after the run rows were opened. Close them now
+      // rather than leaving them 'running' — which would report "in progress" for STALE_RUN_MINUTES.
+      const error = (e as Error).message || "sync failed";
+      for (const run of opened) await finishRun(this.env.DB, userId, run, { status: "failed", error, correlationId: null }).catch(() => {});
+      throw e;
+    }
+    errors.push(...res.errors);
+
+    const inProgress = res.pending.length > 0 || busy > 0;
+    // The same post-import pipeline the statement path runs. Without matchReceiptsForUser, a receipt
+    // photographed before the sync and the fed line for the same purchase BOTH count. Only when no
+    // continuation is pending — a multi-hop backfill runs it ONCE, in its own alarm invocation, at
+    // the end (bankSyncFinalise), so it never stacks on a page slice or races itself. It also heals:
+    // any terminal run whose lines never went through it (a failed hop, a stale sweep) is picked up.
+    if (!res.pending.length) await this.runFeedPostImport(userId);
+
+    await this.audit(userId, "bank_sync", JSON.stringify({ from, to, fetched: res.fetched, imported: res.imported, runs, errors: errors.length, in_progress: inProgress, closed_stale: closedStale }));
+    // Scheduled LAST, so the continuation can never interleave with this request's own writes.
+    if (res.pending.length) {
+      await this.schedule(1, "bankSyncContinue", { userId, runIds: res.pending.map((r) => r.id), hop: 1 });
+    }
+    return { imported: res.imported, skipped: res.skipped, fetched: res.fetched, runs, errors, in_progress: inProgress };
+  }
+
+  /** Serialises the feed post-import pipeline within this DO instance (HTTP vs alarm). */
+  private feedPostImportRunning = false;
+
+  /**
+   * Run `afterLinesImported` for every TERMINAL sync run whose lines have not been through it yet
+   * (`post_import_at IS NULL AND imported > 0`), then stamp those runs. Durable, so a pipeline that
+   * failed or never ran (a hop that died, a stale sweep, a partially-written page) is retried by the
+   * next sync instead of leaving a receipt and its fed line both counting forever.
+   */
+  private async runFeedPostImport(userId: string): Promise<void> {
+    if (this.feedPostImportRunning) return;
+    this.feedPostImportRunning = true;
+    try {
+      const due = await this.env.DB.prepare(
+        `SELECT id FROM bank_sync_runs
+          WHERE user_id = ? AND status != 'running' AND imported > 0 AND post_import_at IS NULL`,
+      ).bind(userId).all<{ id: string }>();
+      const ids = (due.results ?? []).map((r) => r.id);
+      if (!ids.length) return;
+      await this.afterLinesImported(userId);
+      const ph = ids.map(() => "?").join(",");
+      await this.env.DB.prepare(
+        `UPDATE bank_sync_runs SET post_import_at = datetime('now') WHERE user_id = ? AND id IN (${ph})`,
+      ).bind(userId, ...ids).run();
+    } finally {
+      this.feedPostImportRunning = false;
+    }
+  }
+
+  /**
+   * DO-alarm continuation of a bounded bank sync, scheduled by bankSync (and by itself). Each hop
+   * advances the still-running runs by PAGES_PER_STEP pages in a fresh invocation, so no single
+   * invocation approaches the subrequest cap however large the backfill.
+   *
+   * Never throws: the Agents scheduler swallows callback errors, so a failure here is recorded on
+   * the run rows itself — a run must never be left 'running' behind a silent alarm error.
+   */
+  async bankSyncContinue(payload: { userId: string; runIds: string[]; hop: number }): Promise<void> {
+    const userId = payload?.userId;
+    const runIds = Array.isArray(payload?.runIds) ? payload.runIds.filter((id) => typeof id === "string").slice(0, 50) : [];
+    if (!userId || !runIds.length) return;
+    try {
+      // The flag is the kill switch: turning it off mid-backfill must stop collection, not just
+      // new syncs. Same for a removed API key.
+      if (!featureOn(this.env, "bank_feed_cdr") || !basiqConfigured(this.env)) {
+        throw new Error("bank feeds are disabled — sync stopped");
+      }
+      const loaded = await Promise.all(runIds.map((id) => loadRun(this.env.DB, userId, id)));
+      const runs = loaded.filter((r): r is SyncRun => r !== null);
+      if (!runs.length) return; // closed elsewhere (stale sweep, purge) — nothing to continue
+
+      const res = await this.bankSyncAdvance(userId, runs, PAGES_PER_STEP);
+      if (res.pending.length && payload.hop < BANK_SYNC_MAX_HOPS) {
+        await this.schedule(1, "bankSyncContinue", { userId, runIds: res.pending.map((r) => r.id), hop: payload.hop + 1 });
+        return;
+      }
+      // Backstop only — MAX_PAGES_PER_RUN normally ends a run long before the hop cap.
+      for (const run of res.pending) {
+        await finishRun(this.env.DB, userId, run, { status: "partial", error: "stopped before completion — sync again to continue", correlationId: null });
+      }
+      await this.audit(userId, "bank_sync_continued", JSON.stringify({ hops: payload.hop, errors: res.errors.length }));
+      // The post-import pipeline gets its OWN invocation (fresh subrequest budget, and short enough
+      // for the SDK running due callbacks inside blockConcurrencyWhile on a cold start).
+      await this.schedule(1, "bankSyncFinalise", { userId });
+    } catch (e) {
+      const msg = (e as Error).message || "sync continuation failed";
+      for (const id of runIds) {
+        await this.env.DB.prepare(
+          `UPDATE bank_sync_runs SET status = 'failed', error = ?, cursor = NULL, finished_at = datetime('now'), updated_at = datetime('now')
+            WHERE id = ? AND user_id = ? AND status = 'running'`,
+        ).bind(msg, id, userId).run().catch(() => {});
+      }
+      await this.audit(userId, "bank_sync_continue_failed", JSON.stringify({ error: msg })).catch(() => {});
+      // Lines earlier hops wrote still need the post-import pipeline; failed runs stay eligible
+      // (post_import_at IS NULL), so this — or the next sync — picks them up.
+      await this.schedule(1, "bankSyncFinalise", { userId }).catch(() => {});
+    }
+  }
+
+  /**
+   * Alarm hop that runs the feed post-import pipeline once a backfill chain has finished.
+   * Categorisation is deliberately NOT run here: it is an LLM pass the user's next sync runs in the
+   * request path (where its errors are surfaced), so the alarm never spends model budget unseen or
+   * races the route's own categorisation.
+   */
+  async bankSyncFinalise(payload: { userId: string }): Promise<void> {
+    const userId = payload?.userId;
+    if (!userId) return;
+    try {
+      await this.runFeedPostImport(userId);
+    } catch (e) {
+      await this.audit(userId, "bank_sync_post_import_failed", JSON.stringify({ error: (e as Error).message })).catch(() => {});
+    }
+  }
+
+  /**
+   * Advance a set of open runs by a SHARED page budget, closing each that finishes. Returns the runs
+   * still pending plus this invocation's totals.
+   */
+  private async bankSyncAdvance(
+    userId: string,
+    runs: SyncRun[],
+    budget: number,
+  ): Promise<{ pending: SyncRun[]; imported: number; fetched: number; skipped: number; errors: string[] }> {
+    const out = { pending: [] as SyncRun[], imported: 0, fetched: 0, skipped: 0, errors: [] as string[] };
+    if (!runs.length) return out;
+
+    const db = this.env.DB;
+    const profile = await this.requireProfile(userId);
+    const baseCur = baseCurrencyOf(this.env, await this.jurisdictionFor(userId));
+    const rulePack = await this.loadRulePack(profile.rule_pack_ver);
+    const situation = await getSituation(this.env, userId, profile);
+    const connRows = await db.prepare(
+      `SELECT id, provider_user_id, access_type, status,
+              (consent_expires_at IS NOT NULL AND consent_expires_at <= datetime('now')) AS expired
+         FROM bank_connections WHERE user_id = ?`,
+    ).bind(userId).all<{ id: string; provider_user_id: string; access_type: string; status: string; expired: number }>();
+    const connById = new Map((connRows.results ?? []).map((c) => [c.id, c]));
+
+    let left = budget;
+    for (const run of runs) {
+      const conn = connById.get(run.connectionId);
+      // Re-checked every hop: a consent revoked or expired mid-backfill stops collection at once.
+      if (!conn || conn.status !== "active" || conn.expired) {
+        const error = "this bank connection is no longer active — reconnect it to finish importing";
+        await finishRun(db, userId, run, { status: "failed", error, correlationId: null });
+        out.errors.push(error);
+        continue;
+      }
+      if (left <= 0) {
+        // Queued behind a sibling's slice: touch it, so a long sibling backfill cannot make a live
+        // queued run look interrupted to the stale sweep.
+        await touchRun(db, userId, run.id);
+        out.pending.push(run);
+        continue;
+      }
+      const residency = requiresAuResidency(this.env, conn.access_type as AccessType);
+      const deps: SyncStepDeps = {
+        db,
+        userId,
+        baseCurrency: baseCur,
+        transport: (q) => fetchTransactionPage(this.env, conn.provider_user_id, { from: q.from, to: q.to, accountId: q.providerAccountId, next: q.next }),
+        categorise: (merchant, direction) =>
+          this.deterministicCategorise(merchant, situation.rules, rulePack, { skipHints: direction === "credit", direction }),
+        // Per page: still selected + mapped the same way, AND the connection still live — so a
+        // deselect, a remap, a revoke or a consent expiry stops collection on the next page.
+        stillSelected: async (a) =>
+          !!(await db.prepare(
+            `SELECT 1 AS ok FROM bank_connection_accounts a
+               JOIN bank_connections c ON c.id = a.connection_id AND c.user_id = a.user_id
+              WHERE a.user_id = ? AND a.connection_id = ? AND a.provider_account_id = ? AND a.account_id = ? AND a.selected = 1
+                AND c.status = 'active' AND (c.consent_expires_at IS NULL OR c.consent_expires_at > datetime('now'))`,
+          ).bind(userId, run.connectionId, a.p, a.a).first()),
+        // Stamp the tenant as holding CDR data, one-way, BEFORE the first production CDR line is
+        // written — not after the whole sync, which on a resumable backfill could be many minutes
+        // (and alarm hops) later. From here getLLM refuses non-AU-resident inference for them on
+        // EVERY path; disconnecting or flipping BASIQ_ENV back cannot clear it (migration 0077).
+        beforeFirstWrite: residency ? () => this.markCdrTainted(userId) : undefined,
+      };
+      const fetchedBefore = run.counters.fetched;
+      const skippedBefore = skippedOf(run.counters);
+      const step = await syncRunStep(deps, run, left);
+      left -= step.pagesUsed;
+      out.imported += step.importedThisStep;
+      out.fetched += run.counters.fetched - fetchedBefore;
+      out.skipped += skippedOf(run.counters) - skippedBefore;
+      if (step.error) out.errors.push(step.error);
+      if (!step.done) {
+        out.pending.push(run);
+        continue;
+      }
+      const status = runOutcome({ error: step.error, truncated: step.truncated, skippedOutOfWindow: run.counters.skippedOutOfWindow });
+      const error = step.error ?? (step.truncated ? `stopped after ${MAX_PAGES_PER_RUN} pages — some lines may be missing` : null);
+      await finishRun(db, userId, run, { status, error, correlationId: step.correlationId });
+    }
+    return out;
+  }
+
+  /** One-way CDR taint (migration 0077). Audited only on the transition, not on every sync. */
+  private async markCdrTainted(userId: string): Promise<void> {
+    const r = await this.env.DB.prepare(`UPDATE profiles SET cdr_tainted = 1 WHERE user_id = ? AND cdr_tainted = 0`).bind(userId).run();
+    if (Number(r.meta?.changes ?? 0) > 0) {
       await this.audit(userId, "cdr_taint_set", JSON.stringify({ reason: "production CDR lines imported" }));
     }
-
-    // The same post-import pipeline the statement path runs. Without matchReceiptsForUser here, a
-    // receipt photographed before the sync and the fed line for the same purchase BOTH count.
-    // Runs once after all connections rather than per connection — every step is tenant-wide.
-    if (importedTotal > 0) await this.afterLinesImported(userId);
-
-    await this.audit(userId, "bank_sync", JSON.stringify({ from, to, fetched: fetchedTotal, imported: importedTotal, runs, errors: errors.length }));
-    return { imported: importedTotal, skipped: skippedTotal, fetched: fetchedTotal, runs, errors };
   }
 
   /**

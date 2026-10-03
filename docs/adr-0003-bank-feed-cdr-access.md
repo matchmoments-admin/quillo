@@ -4,7 +4,7 @@
 stay off until the consent dashboard lands (§6.4 makes it a shipping requirement, and it is the one
 piece not built). Shipped so far: #502 foundation (migration 0075) · #506 connect + account picker
 (0076) · #507 sync (0077 via #509) · #508/#509 the review remediation. Outstanding: PR5 (consent
-dashboard, disconnect, PS12/audit) and R3 (bounded backfill). D1 below is resolved — the build
+dashboard, disconnect, PS12/audit). R3 (bounded backfill) shipped in #511. D1 below is resolved — the build
 started before FY25/26 filed, deliberately; **D2/D4 (vendor terms, 12-month minimum) remain open**
 on [#475](https://github.com/matchmoments-admin/quillo/issues/475), and no production access exists.
 **Date:** 2026-07-26 (status updated 2026-08-07)
@@ -150,7 +150,7 @@ CREATE TABLE IF NOT EXISTS bank_sync_runs (
   connection_id TEXT NOT NULL,
   from_date     TEXT, to_date TEXT,
   fetched       INTEGER, imported INTEGER, skipped INTEGER,
-  status        TEXT NOT NULL,                    -- ok|partial|failed
+  status        TEXT NOT NULL,                    -- running|ok|partial|failed (0086 adds resume columns, see below)
   error         TEXT,
   created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -163,8 +163,14 @@ CREATE TABLE IF NOT EXISTS bank_sync_runs (
   It drives `requiresAuResidency` (`src/lib/basiq.ts`). Defaulting to `'cdr'` is fail-closed.
   Also as built and not listed here originally: `provider_connection_id`, `institution_id`,
   `bank_connection_accounts.currency`, and `profiles.bank_provider_user_id` / `bank_provider` (0076)
-  plus `profiles.cdr_tainted` (0077).
-- **No change to `transactions`.** CDR lines land as the existing `kind='bank_line'` shape. Idempotency reuses the existing unique index by setting **`line_fingerprint = sha256("feed|" + provider_txn_id)`** — so a re-pull is a no-op via `ON CONFLICT … DO NOTHING`. (This ADR originally specified a `cdr|` prefix; the code uses `feed|` because `access_type` may be `'web'`, which is *not* CDR data, so the prefix would be a lie for half the rows. Anyone re-implementing from this section — a second provider, a repair script — must use `feed|` or they will silently re-import every line.) Only `status = POSTED` transactions are ingested (pending ids are unstable — Basiq documents that an id refreshes on the pending→posted transition).
+  plus `profiles.cdr_tainted` (0077). **0086 (#511)** makes a run resumable: status gains
+  `'running'` (the row is written FIRST and is the per-connection concurrency guard), plus
+  `updated_at` (heartbeat), `finished_at`, `cursor` (`{accounts:[{p,a}], i, next}`), `pages`,
+  `duplicates`, `skipped_pending`, `skipped_out_of_window`, `correlation_id` and `post_import_at`
+  (the post-import pipeline is owed while it is NULL and `imported > 0`). The page loop lives in
+  `src/lib/bank-sync.ts`; a backfill runs 10 pages inline and continues on a DO alarm (Agents SDK
+  `schedule`, 8 pages per hop), then runs the post-import pipeline once in its own hop.
+- **No new `transactions` columns.** CDR lines land as the existing `kind='bank_line'` shape with **`line_fingerprint = sha256("feed|" + provider_txn_id)`**. Idempotency is **per tenant, not per account** (0086): the insert is guarded by `NOT EXISTS (user_id, line_fingerprint)` over the new index `idx_txn_user_fingerprint`, as well as `ON CONFLICT … DO NOTHING` on the existing `(user_id, account_id, line_fingerprint)` unique index. The unique index alone is NOT enough — it includes `account_id`, so re-pointing a feed account at a different Quillo account re-imported the whole year and left both copies counting. (This ADR originally specified a `cdr|` prefix; the code uses `feed|` because `access_type` may be `'web'`, which is *not* CDR data, so the prefix would be a lie for half the rows. Anyone re-implementing from this section — a second provider, a repair script — must use `feed|` or they will silently re-import every line.) Only `status = POSTED` transactions are ingested (pending ids are unstable — Basiq documents that an id refreshes on the pending→posted transition).
 - **All three tables MUST be added to `PURGE_TABLES` in `src/lib/retention.ts`** in the same PR — this is both an existing invariant and a CDR Privacy Safeguard 12 obligation.
 
 ### 6.3 Flow

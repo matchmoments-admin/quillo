@@ -30,6 +30,16 @@ every read and write goes to the **single shared D1** binding `this.env.DB` (`ta
    is a Durable Object migration on a live class and is **not** a free no-op, so it needs an explicit
    owner go + a verified deploy — tracked, not done implicitly here.
 
+   **Amendment (#511, bank feed R3):** the per-DO SQLite now holds **alarm triggers only** — the
+   Agents SDK `this.schedule` writes rows to its `cf_agents_schedules` table, used to continue a
+   bounded bank-feed backfill across invocations (`bankSyncContinue` / `bankSyncFinalise`). It holds
+   **no tenant data**: each trigger points at `bank_sync_runs` ids, and the cursor, counters and
+   status live in D1. Consequences: (a) dropping `new_sqlite_classes` would now silently lose
+   in-flight continuations — another reason it is not a free no-op; (b) the SDK swallows callback
+   errors and deletes the trigger after the callback, so every callback must record its own failure
+   on the run row; (c) the SDK can run due callbacks inside `blockConcurrencyWhile` (30 s) on a cold
+   start, so a callback must stay short (8 provider pages per hop).
+
 ## Consequences / future path
 
 - If D1 write throughput ever bites, the existing DO boundary makes a **shard-by-tenant** migration

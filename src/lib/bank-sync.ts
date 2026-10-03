@@ -170,6 +170,64 @@ export async function closeStaleRuns(db: D1Database, userId: string): Promise<nu
   return Number(r.meta?.changes ?? 0);
 }
 
+/** One connection's latest sync run, for the Connect step's import progress (#586). Counts and dates only. */
+export interface SyncRunStatus {
+  connection_id: string;
+  institution: string | null;
+  status: "running" | "ok" | "partial" | "failed";
+  /** A 'running' row nobody has checkpointed for STALE_RUN_MINUTES: interrupted, not live. */
+  stale: boolean;
+  fetched: number;
+  imported: number;
+  duplicates: number;
+  from_date: string | null;
+  to_date: string | null;
+  error: string | null;
+  created_at: string;
+  finished_at: string | null;
+}
+
+/**
+ * READ-ONLY: the most recent sync run per live connection (active or expired, never a withdrawn one,
+ * whose lines are gone). Surfaces #511's run status in the UI: "still importing in the background",
+ * "done", or a failed / partial run the user can retry. Writes nothing, so a status poll can never
+ * race the importer; `stale` is computed here and recorded by the next sync's closeStaleRuns.
+ */
+export async function latestSyncRuns(db: D1Database, userId: string): Promise<SyncRunStatus[]> {
+  const rows = await db
+    .prepare(
+      `SELECT r.connection_id, c.institution, c.institution_id, r.status, r.fetched, r.imported, r.duplicates,
+              r.from_date, r.to_date, r.error, r.created_at, r.finished_at,
+              (r.status = 'running' AND COALESCE(r.updated_at, r.created_at) < datetime('now', ?)) AS stale
+         FROM bank_sync_runs r
+         JOIN bank_connections c ON c.id = r.connection_id AND c.user_id = r.user_id
+        WHERE r.user_id = ? AND c.status IN ('active', 'expired')
+          AND r.id = (SELECT r2.id FROM bank_sync_runs r2
+                       WHERE r2.user_id = r.user_id AND r2.connection_id = r.connection_id
+                       ORDER BY r2.created_at DESC, r2.rowid DESC LIMIT 1)
+        ORDER BY r.created_at DESC`,
+    )
+    .bind(`-${STALE_RUN_MINUTES} minutes`, userId)
+    .all<{
+      connection_id: string; institution: string | null; institution_id: string | null; status: string; fetched: number; imported: number;
+      duplicates: number; from_date: string | null; to_date: string | null; error: string | null; created_at: string; finished_at: string | null; stale: number;
+    }>();
+  return (rows.results ?? []).map((r) => ({
+    connection_id: r.connection_id,
+    institution: r.institution ?? r.institution_id,
+    status: (["running", "ok", "partial", "failed"].includes(r.status) ? r.status : "failed") as SyncRunStatus["status"],
+    stale: Number(r.stale) === 1,
+    fetched: Number(r.fetched ?? 0),
+    imported: Number(r.imported ?? 0),
+    duplicates: Number(r.duplicates ?? 0),
+    from_date: r.from_date,
+    to_date: r.to_date,
+    error: r.error,
+    created_at: r.created_at,
+    finished_at: r.finished_at,
+  }));
+}
+
 /**
  * Write the run row FIRST, as 'running'. Returns null when this connection already has a running
  * run — the concurrency guard (two tabs no longer both run a full pagination). Atomic: the

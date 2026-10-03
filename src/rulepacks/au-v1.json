@@ -615,7 +615,9 @@
     "after_due_note": "The self-lodger date has passed. You can still lodge in myTax. The ATO generally doesn't apply a late-lodgment penalty when a return results in money back to you or nothing owing, and it warns before applying one.",
     "processing_hint": "about 12 business days",
     "amend_window": "generally within 2 years of the day after your notice of assessment",
-    "records_keep": "5 years from the date you lodge"
+    "records_keep": "5 years from the date you lodge",
+    "_income_statement_note": "#586 (Connect step, ATO process row 8): employers finalise income statements by employer_finalise_by; if one still isn't 'Tax ready' in myGov after tax_ready_chase_after, the user asks their employer. tax_ready_chase_after_fy_end is its machine form — the first {month, day} after the FY ends. Timing copy only — never a figure.",
+    "tax_ready_chase_after_fy_end": { "month": 7, "day": 31 }
   },
   "mytax_sections": [
     { "key": "contact_bank", "title": "Contact and bank details" },

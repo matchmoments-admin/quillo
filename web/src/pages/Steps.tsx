@@ -9,8 +9,7 @@ import { Dashboard } from "./Dashboard";
 import { Home } from "./Home";
 import { Onboarding } from "./Onboarding";
 import { AboutYou } from "./AboutYou";
-import { Accounts } from "./Accounts";
-import { Income } from "./Income";
+import { ConnectPage } from "../components/connect/ConnectPage";
 import { Transactions } from "./Transactions";
 import { Review } from "./Review";
 import { Documents } from "./Documents";
@@ -24,8 +23,8 @@ import { ShipItPrint } from "./ShipItPrint";
 //   renders that element untouched — the same markup as today. ON, it redirects to the journey
 //   route from the ONE table in lib/legacyRoutes.ts.
 // • <StepRoute> is a journey step URL. ON it renders the step: StepHeader + the step body + Back /
-//   Why? / Next. The bodies are PLACEHOLDERS that compose today's pages until the step tickets
-//   (#586, #587, #590) replace them. OFF it redirects to the legacy page the step replaces, so a step
+//   Why? / Next. Connect is its own page (#586); the other bodies are PLACEHOLDERS that compose today's
+//   pages until the step tickets (#587, #590) replace them. OFF it redirects to the legacy page the step replaces, so a step
 //   URL never 404s after a rollback.
 // • FOUR steps since the design review (spec §0, #585): /setup, /connect, /review, /lodge. The six old
 //   step URLs go through <OldStepRedirect> (lib/legacyRoutes.ts OLD_STEP_ROUTES). /review is special:
@@ -133,13 +132,10 @@ export function SetupStep() {
   );
 }
 
-/** Connect (placeholder until #586): today's accounts page + income. */
+/** Connect (#586): its own page. /accounts and /income still redirect here (/income → #income). */
 export const ConnectStep = () => (
   <StepRoute step="connect">
-    <Accounts />
-    <section id="income" className="mt-10 scroll-mt-20">
-      <Income />
-    </section>
+    <ConnectPage />
   </StepRoute>
 );
 

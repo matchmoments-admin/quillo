@@ -1,4 +1,4 @@
-import type { CapitalImportParse, Txn, TxnDetail, Situation, SituationDraft, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse, UsageData, StatementInfo, IncomeRow, DocRow, AssetRow, ScheduleRow, ChecklistItem, ClaimSuggestion, FilingReadiness, ReviewSummary, Progress, AdminTenant, AdminOverview, AdminSpend, AiEdit, ClaimReview, OccupationRulesDraft, OccupationRuleCandidate, NoaCarryover, MovementSweep, BatchResult, ClarifyQuestion, ClarifyAnswer, ClaimMatch, AccountantSummary, SuggestedDeduction, WorkUse, CarUse, CarUseRates, ScanResult, CapitalLoss, OpeningDepreciation, AttributionState, AttributionInput, AttributionRow, IncomeActivity, PropertyOwner, EntityRole, CgtAssetRow, CgtEventRow, EssGrantRow, VehicleLogbookRow, TrustDistributionRow, SmsfMemberRow, SuperContributionRow, BasPeriodRow, PaygInstalmentRow, AskAnswer, SavingsData, PhiOverview, PhiInsurerOption, PhiProvidersResult, PhiScanResult, BillingOverview, PartnerPortal, AmmaComponents, PartnershipDistributionRow, CostBaseElements, BankConnection, SituationPeriod, SituationPeriodWrite, BankHistoryEvent, BankDisconnectResult, FyLodged, NoticedSignal, NoticedConfirmResult } from "./types";
+import type { CapitalImportParse, Txn, TxnDetail, Situation, SituationDraft, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse, UsageData, StatementInfo, IncomeRow, DocRow, AssetRow, ScheduleRow, ChecklistItem, ClaimSuggestion, FilingReadiness, ReviewSummary, Progress, AdminTenant, AdminOverview, AdminSpend, AiEdit, ClaimReview, OccupationRulesDraft, OccupationRuleCandidate, NoaCarryover, MovementSweep, BatchResult, ClarifyQuestion, ClarifyAnswer, ClaimMatch, AccountantSummary, SuggestedDeduction, WorkUse, CarUse, CarUseRates, ScanResult, CapitalLoss, OpeningDepreciation, AttributionState, AttributionInput, AttributionRow, IncomeActivity, PropertyOwner, EntityRole, CgtAssetRow, CgtEventRow, EssGrantRow, VehicleLogbookRow, TrustDistributionRow, SmsfMemberRow, SuperContributionRow, BasPeriodRow, PaygInstalmentRow, AskAnswer, SavingsData, PhiOverview, PhiInsurerOption, PhiProvidersResult, PhiScanResult, BillingOverview, PartnerPortal, AmmaComponents, PartnershipDistributionRow, CostBaseElements, BankConnection, BankSyncRun, IncomeStatementWait, SituationPeriod, SituationPeriodWrite, BankHistoryEvent, BankDisconnectResult, FyLodged, NoticedSignal, NoticedConfirmResult } from "./types";
 import type { Journey, MytaxWorksheet } from "./types";
 import type { AskContext, EducationData } from "./types";
 
@@ -283,6 +283,8 @@ export const api = {
   // #576 consent dashboard: withdraw = stop collecting + revoke at the provider + delete imported lines.
   bankDisconnect: (connectionId: string) => post<BankDisconnectResult>("/api/bank/disconnect", { connectionId }),
   bankHistory: () => get<{ events: BankHistoryEvent[] }>("/api/bank/history").then((r) => r.events),
+  // #586 (flag ft_journey): latest sync run per live connection, for the Connect step's import progress.
+  bankSyncStatus: () => get<{ runs: BankSyncRun[]; in_progress: boolean }>("/api/bank/sync-status"),
   bankSync: (fy?: string) =>
     post<{ imported: number; skipped: number; fetched: number; runs: number; errors: string[]; in_progress?: boolean; categorised: number; categorise_error?: string }>(
       "/api/bank/sync",
@@ -316,6 +318,8 @@ export const api = {
   journey: (fy: number) => get<Journey>(`/api/journey?fy=${fy}`),
   // #575/#590 (mytax_worksheet): the myTax self-lodge worksheet the Ship it step renders. 404 when the flag is OFF.
   mytaxWorksheet: (fy: number) => get<MytaxWorksheet>(`/api/mytax-worksheet?fy=${fy}`),
+  // #586 (flag ft_journey): the Connect step's "waiting on your income statement" items.
+  incomeStatements: (fy: number) => get<IncomeStatementWait>(`/api/income-statements?fy=${fy}`),
   // Soft per-FY sign-off (attestation only — Quillo never lodges)
   fySignoff: (fy?: number) => get<{ signoff: { signed_off_at: string } | null }>(`/api/signoff${fy ? `?fy=${fy}` : ""}`).then((r) => r.signoff),
   signOff: (fy?: number) => post<{ signoff: { signed_off_at: string } | null }>(`/api/signoff${fy ? `?fy=${fy}` : ""}`).then((r) => r.signoff),

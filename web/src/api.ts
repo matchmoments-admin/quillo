@@ -1,4 +1,5 @@
 import type { CapitalImportParse, Txn, TxnDetail, Situation, SituationDraft, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse, UsageData, StatementInfo, IncomeRow, DocRow, AssetRow, ScheduleRow, ChecklistItem, ClaimSuggestion, FilingReadiness, ReviewSummary, Progress, AdminTenant, AdminOverview, AdminSpend, AiEdit, ClaimReview, OccupationRulesDraft, OccupationRuleCandidate, NoaCarryover, MovementSweep, BatchResult, ClarifyQuestion, ClarifyAnswer, ClaimMatch, AccountantSummary, SuggestedDeduction, WorkUse, CarUse, CarUseRates, ScanResult, CapitalLoss, OpeningDepreciation, AttributionState, AttributionInput, AttributionRow, IncomeActivity, PropertyOwner, EntityRole, CgtAssetRow, CgtEventRow, EssGrantRow, VehicleLogbookRow, TrustDistributionRow, SmsfMemberRow, SuperContributionRow, BasPeriodRow, PaygInstalmentRow, AskAnswer, SavingsData, PhiOverview, PhiInsurerOption, PhiProvidersResult, PhiScanResult, BillingOverview, PartnerPortal, AmmaComponents, PartnershipDistributionRow, CostBaseElements, BankConnection, SituationPeriod, SituationPeriodWrite, BankHistoryEvent, BankDisconnectResult, FyLodged } from "./types";
+import type { Journey } from "./types";
 
 // Clerk session token getter, wired from <TokenBridge> inside ClerkProvider (main.tsx).
 // Clerk tokens are short-lived, so we fetch a fresh one per request (getToken caches/refreshes).
@@ -306,6 +307,8 @@ export const api = {
     return { blob: await res.blob(), filename };
   },
   filingReadiness: (fy?: number) => get<FilingReadiness>(`/api/filing-readiness${fy ? `?fy=${fy}` : ""}`),
+  // #582 (ft_journey): one composite read for the new shell + Home. 404 when the flag is OFF.
+  journey: (fy: number) => get<Journey>(`/api/journey?fy=${fy}`),
   // Soft per-FY sign-off (attestation only — Quillo never lodges)
   fySignoff: (fy?: number) => get<{ signoff: { signed_off_at: string } | null }>(`/api/signoff${fy ? `?fy=${fy}` : ""}`).then((r) => r.signoff),
   signOff: (fy?: number) => post<{ signoff: { signed_off_at: string } | null }>(`/api/signoff${fy ? `?fy=${fy}` : ""}`).then((r) => r.signoff),

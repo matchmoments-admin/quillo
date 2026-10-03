@@ -3,13 +3,16 @@ import type { Env } from "./env";
 import { getProfile, getSituation, renderSituation, type Profile, type Situation, type UserRule } from "./lib/db";
 import { addRule, addAccount, updateAccount, syncIncomeCgtFromComponents, clearIncomeCgt, syncTxnCgtHolding, clearTxnCgt, clearOrphanedTxnCgt, syncPropertyDisposalToCgt, addPerson, updatePerson, addProperty, updateProperty, addEntity, updateEntity, updateRule, deleteRow, DeleteBlockedError, addPropertyOwner, addEntityRole, addIncomeActivity, addLoanProperty, updateLoanProperty, assertOwns, assertNoBlockingChildren, assertNoBlockingChildrenExcept } from "./lib/situation-write";
 import { markFyLodged, unmarkFyLodged, type FyLodgedRow } from "./lib/fy-signoff";
+import { lodgingFy } from "./lib/lodging-year";
 import type { DeleteBlocker } from "./lib/situation-write";
 import { captureNoaDraft } from "./lib/noa-store";
 import { ordinaryAssessableCents, validateComponents, parseAmmaComponents, type AmmaComponents } from "./lib/managed-fund";
 import { QuickBooksAdapter } from "./ledger/qbo";
 import { revokeAndDisconnect } from "./lib/qbo-oauth";
 import { purgeTenant as purgeTenantData, exportTenant as exportTenantData, flagOldData as flagOldDataSweep, hasPendingNudge, type PurgeResult } from "./lib/retention";
-import { COUNTABLE, COUNTABLE_INCOME, FX_CONVERTED, assertCanonicalSource, fetchAskDigestRows, spendRunRate } from "./lib/queries";
+import { COUNTABLE, COUNTABLE_INCOME, FX_CONVERTED, assertCanonicalSource, fetchAskDigestRows, spendRunRate, reconcileProposals } from "./lib/queries";
+import { reconcileConfigFromPack } from "./lib/reconcile-proposer";
+import { assessJourney, coldJourney, journeyLodgedFys, journeySignals, type Journey } from "./lib/journey";
 import { applyReceiptLink, receiptLinkTargets } from "./lib/receipt-link";
 import { billerNormalize, detectRecurrence, classifyBiller, paymentsPerYear, recurringCopy, signpostFor, insurerResetBasis, nextResetDate, weeksUntil, phiResetNudgeCopy, phiDetectedCopy, type RecurringOccurrence, type ResetBasis } from "./lib/advisory";
 import { findPhisProduct } from "./lib/phis-seed";
@@ -4390,6 +4393,17 @@ export class TaxAgent extends Agent<Env> {
    * the page must never change the ledger. Writes one audit row.
    */
   async assessFilingReadiness(userId: string, startYear: number): Promise<FilingReadiness> {
+    const readiness = await this.computeFilingReadiness(userId, startYear);
+    await this.audit(userId, "readiness_assessed", JSON.stringify({ fy: readiness.fy, blockers: readiness.readiness_score.blockers, review: readiness.readiness_score.review, findings: readiness.findings.length }));
+    return readiness;
+  }
+
+  /**
+   * The readiness computation itself, without the audit row. assessFilingReadiness (the Filing page —
+   * an explicit "assess my year") audits; journey() reads it on every shell load and must not flood the
+   * audit log with one readiness_assessed row per navigation.
+   */
+  private async computeFilingReadiness(userId: string, startYear: number): Promise<FilingReadiness> {
     const profile = await this.requireProfile(userId);
     const fy = fyLabel(startYear);
     const readinessJur = await this.jurisdictionFor(userId);
@@ -4539,9 +4553,29 @@ export class TaxAgent extends Agent<Env> {
       } : {}),
     };
 
-    const readiness = assessReadiness({ report, situation, claimMatches: [...matchedById.values()], signals, generatedAt: new Date().toISOString(), excludeNonDeductible: featureOn(this.env, "position_excludes_nondeductible"), excludePropertyUndetermined: featureOn(this.env, "position_excludes_property_undetermined"), auditFindingsV2: featureOn(this.env, "readiness_audit_v2"), reconcileProposals: featureOn(this.env, "reconcile_proposals") });
-    await this.audit(userId, "readiness_assessed", JSON.stringify({ fy, blockers: readiness.readiness_score.blockers, review: readiness.readiness_score.review, findings: readiness.findings.length }));
-    return readiness;
+    return assessReadiness({ report, situation, claimMatches: [...matchedById.values()], signals, generatedAt: new Date().toISOString(), excludeNonDeductible: featureOn(this.env, "position_excludes_nondeductible"), excludePropertyUndetermined: featureOn(this.env, "position_excludes_property_undetermined"), auditFindingsV2: featureOn(this.env, "readiness_audit_v2"), reconcileProposals: featureOn(this.env, "reconcile_proposals") });
+  }
+
+  // ── FIRST-TIMER JOURNEY (A11, #582, flag ft_journey) ──
+  /**
+   * One composite read for the new app shell + Home: readiness (unaudited — see computeFilingReadiness),
+   * the per-step signals (src/lib/journey.ts — the same function the unit goldens call) and, with
+   * reconcile_proposals ON, the confident receipt-to-line proposals still waiting for a tap. Read-only.
+   */
+  async journey(userId: string, startYear: number): Promise<Journey> {
+    // A brand-new signup has no profile until onboarding writes one, but the shell mounts this read
+    // straight away: answer "nothing started" instead of a 500 (+ client retries) on every first load.
+    const profile = await getProfile(this.env, userId);
+    if (!profile) return coldJourney(startYear, lodgingFy(new Date(), (await this.jurisdictionFor(userId)).taxPeriod, []));
+    const jur = await this.jurisdictionFor(userId);
+    const [readiness, situation] = await Promise.all([this.computeFilingReadiness(userId, startYear), getSituation(this.env, userId, profile)]);
+    const signals = await journeySignals(this.env, userId, startYear, situation, jur);
+    if (featureOn(this.env, "reconcile_proposals")) {
+      const cfg = reconcileConfigFromPack(await resolveRulePack(this.env, userId, jur));
+      signals.check.proposals = (await reconcileProposals(this.env, userId, startYear, cfg, jur)).proposals.length;
+    }
+    // lodging_fy = #572's lodging-year default (the earliest unlodged FY whose year has ended), not the FY asked for.
+    return assessJourney({ readiness, signals, lodgingFy: lodgingFy(new Date(), jur.taxPeriod, await journeyLodgedFys(this.env, userId)) });
   }
 
   /** Update a claim suggestion's status (suggested|accepted|dismissed). */

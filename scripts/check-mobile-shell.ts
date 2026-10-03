@@ -25,6 +25,7 @@ const html = read("web/index.html");
 const css = read("web/src/index.css");
 const app = read("web/src/App.tsx");
 const chat = read("web/src/components/chat/FloatingChat.tsx");
+const ft = read("web/src/components/FtShell.tsx");
 
 type Check = { name: string; pass: boolean; why: string };
 const checks: Check[] = [];
@@ -100,6 +101,39 @@ assert(
   "FloatingChat gates in a wrapper, so no hook sits after an early return",
   /export function FloatingChat\(\)[\s\S]{0,400}return <FloatingChatInner \/>;/.test(chat),
   "hooks after a conditional return crash prod with React #310",
+);
+
+// ── The first-timer shell (ft_journey, #582) — the SAME invariants, plus the flag split ──
+assert(
+  "App renders FtShell only behind ft_journey, below every hook",
+  /useEffect\(\(\) => setDrawer\(false\), \[pathname\]\);[\s\S]{0,600}if \(has\("ft_journey"\)\) return <FtShell/.test(app),
+  "the branch must sit after the last hook (React #310) and OFF must fall through to the legacy layout",
+);
+assert(
+  "JourneySpine + the legacy sidebar render only on the flag-OFF path",
+  app.indexOf('if (has("ft_journey")) return <FtShell') < app.indexOf("<JourneySpine") &&
+    app.indexOf('if (has("ft_journey")) return <FtShell') < app.indexOf("<Sidebar "),
+  "spec A11: JourneySpine and the old GROUPS nav render only when ft_journey is OFF",
+);
+assert(
+  "ft bottom bar pads for the home indicator",
+  /<nav[\s\S]{0,240}pb-\[var\(--safe-b\)\][\s\S]{0,240}aria-label="Primary"/.test(ft),
+  "otherwise the bar's labels sit under the iOS home indicator",
+);
+assert(
+  "ft main clears the bottom bar until the rail takes over",
+  /pb-\[calc\(var\(--tabbar-h\)_\+_var\(--safe-b\)\)\]\s+md:pb-0/.test(ft) && /md:hidden"\s*\n?\s*aria-label="Primary"/.test(ft),
+  "the ft bar is md:hidden, so main's clearance must drop at md too",
+);
+assert(
+  "ft Toaster offsets both use --tabbar-clearance",
+  /offset=\{\{ bottom: "var\(--tabbar-clearance\)" \}\}[\s\S]{0,80}mobileOffset=\{\{ bottom: "var\(--tabbar-clearance\)" \}\}/.test(ft),
+  "a covered toast is an unreachable Undo",
+);
+assert(
+  "ft shell does not mount the floating chat bubble over its bottom bar",
+  !/<FloatingChat/.test(ft),
+  "Ask is the bar's Why? sheet; the bubble would sit on the Account tab",
 );
 
 const failed = checks.filter((c) => !c.pass);

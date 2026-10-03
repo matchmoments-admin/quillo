@@ -4544,5 +4544,94 @@ console.log("residency assessability (A13, #580)");
     nonResidentClaimTreatment(occ, true, true) === "caveat" && nonResidentClaimTreatment(all, true, true) === "defer" && nonResidentClaimTreatment(prop, true, true) === "defer");
 }
 
+// ── #582 ft_journey: step-status rules, finding → step mapping, the journey payload ──
+import { journeySteps, assessJourney, stepForFinding, JOURNEY_STEPS, type JourneySignals } from "../src/lib/journey";
+import type { FilingReadiness as JFilingReadiness, ReadinessFinding as JFinding } from "../src/lib/readiness";
+{
+  const sig = (o: Partial<{ [K in keyof JourneySignals]: Partial<JourneySignals[K]> }> = {}): JourneySignals => ({
+    about: { residency_answered: true, occupation_set: true, ticks_saved: null, ...o.about },
+    bring_in: { accounts_with_lines: 1, any_data: true, open_signals: 0, ...o.bring_in },
+    claims: { any_lines: true, undecided: 0, ...o.claims },
+    records: o.records === undefined ? null : (o.records as JourneySignals["records"]),
+    check: { proposals: 0, ...o.check },
+    ship: { signed_off: false, lodged: false, ...o.ship },
+  });
+  const fnd = (id: string, severity: JFinding["severity"], category: JFinding["category"] = "judgement"): JFinding =>
+    ({ id, severity, category, title: id, general_info_note: "", defer_to_agent: false, evidence_refs: [] });
+  const status = (steps: ReturnType<typeof journeySteps>, k: string) => steps.find((s) => s.key === k)!.status;
+  const cold = sig({ about: { residency_answered: false, occupation_set: false }, bring_in: { accounts_with_lines: 0, any_data: false }, claims: { any_lines: false } });
+  const coldSteps = journeySteps(cold, [fnd("nothing_captured", "blocker", "completeness")]);
+  check("journey: six steps in spine order", coldSteps.map((s) => s.key).join() === JOURNEY_STEPS.join() && JOURNEY_STEPS.length === 6);
+  check("journey: cold tenant ⇒ About you not started; nothing_captured blocker ⇒ Bring in needs attention; the rest not started",
+    status(coldSteps, "about") === "not_started" && status(coldSteps, "bring_in") === "needs_attention" &&
+    ["claims", "records", "check", "ship"].every((k) => status(coldSteps, k) === "not_started"));
+  check("journey: About you done needs residency + occupation; one missing ⇒ in progress with count 1",
+    status(journeySteps(sig(), []), "about") === "done" &&
+    journeySteps(sig({ about: { occupation_set: false } }), []).find((s) => s.key === "about")!.count === 1 &&
+    status(journeySteps(sig({ about: { occupation_set: false } }), []), "about") === "in_progress");
+  check("journey: A2's ticks are required once tracked (ticks_saved false ⇒ not done; null ⇒ not required)",
+    status(journeySteps(sig({ about: { ticks_saved: false } }), []), "about") === "in_progress" && status(journeySteps(sig({ about: { ticks_saved: true } }), []), "about") === "done");
+  check("journey: Bring in done = ≥1 account with lines AND no open payroll/platform signals",
+    status(journeySteps(sig(), []), "bring_in") === "done" &&
+    status(journeySteps(sig({ bring_in: { open_signals: 2 } }), []), "bring_in") === "in_progress" &&
+    status(journeySteps(sig({ bring_in: { accounts_with_lines: 0 } }), []), "bring_in") === "in_progress");
+  check("journey: Claims done when nothing is left undecided; count = undecided",
+    status(journeySteps(sig(), []), "claims") === "done" && journeySteps(sig({ claims: { undecided: 4 } }), []).find((s) => s.key === "claims")!.count === 4);
+  check("journey: Records waits for A7 (null block ⇒ in progress, never a false 'done'); with the block, done = every claim recorded/excepted + facts done",
+    status(journeySteps(sig(), []), "records") === "in_progress" &&
+    status(journeySteps(sig({ records: { claims_total: 3, claims_with_record: 2, claims_exception: 1, facts_needed: ["wfh_hours"], facts_done: ["wfh_hours"] } }), []), "records") === "done" &&
+    journeySteps(sig({ records: { claims_total: 3, claims_with_record: 1, claims_exception: 0, facts_needed: ["wfh_hours"], facts_done: [] } }), []).find((s) => s.key === "records")!.count === 3);
+  check("journey: Check done = 0 blockers AND 0 proposals",
+    status(journeySteps(sig(), [fnd("x", "review")]), "check") === "done" &&
+    status(journeySteps(sig({ check: { proposals: 1 } }), []), "check") === "in_progress" &&
+    status(journeySteps(sig(), [fnd("unknown_bucket", "blocker", "classification")]), "check") === "in_progress");
+  check("journey: a blocker marks ITS step needs attention (unknown_bucket ⇒ Claims, even if otherwise done); review findings never do",
+    status(journeySteps(sig(), [fnd("unknown_bucket", "blocker", "classification")]), "claims") === "needs_attention" &&
+    status(journeySteps(sig(), [fnd("unknown_bucket", "review", "classification")]), "claims") === "done");
+  check("journey: Ship it done only when lodged; a sign-off alone is in progress",
+    status(journeySteps(sig({ ship: { lodged: true } }), []), "ship") === "done" && status(journeySteps(sig({ ship: { signed_off: true } }), []), "ship") === "in_progress");
+  check("journey: finding → step by id, then category, else Check",
+    stepForFinding({ id: "occupation_missing", category: "completeness" }) === "about" &&
+    stepForFinding({ id: "rule:x", category: "evidence" }) === "records" &&
+    stepForFinding({ id: "rule:y", category: "income" }) === "bring_in" &&
+    stepForFinding({ id: "div293_income", category: "threshold" }) === "check");
+  const rd = (findings: JFinding[], blockers: number, confirmed?: number): JFilingReadiness => ({
+    fy: "2025-26", generated_at: "t",
+    position: { indicative_taxable_position_cents: 5_000_000, ...(confirmed != null ? { taxable_position_confirmed_cents: confirmed } : {}), caption: "Indicative", lines: [], credits: { withholding_cents: 0, franking_credit_cents: 0, foreign_tax_paid_cents: 0, gst_credits_cents: 0 }, per_property: [] },
+    findings, handoff: { abn: null, situation_summary: "" },
+    readiness_score: { blockers, review: findings.filter((f) => f.severity === "review").length, info: 0, ready: blockers === 0 },
+    narrative: null, disclaimer: "General information only",
+  });
+  const j0 = assessJourney({ readiness: rd([fnd("unknown_bucket", "blocker", "classification"), fnd("div293_income", "review", "threshold"), fnd("psi", "info")], 1), signals: sig(), lodgingFy: 2025 });
+  check("journey payload: blockers > 0 ⇒ no estimate; What's left = blockers then reviews (info excluded), each with its step",
+    j0.readiness.estimate === null && j0.whats_left.length === 2 && j0.whats_left[0]!.severity === "blocker" && j0.whats_left[0]!.step === "claims" && j0.whats_left[1]!.step === "check");
+  const j1 = assessJourney({ readiness: rd([], 0, 5_200_000), signals: sig(), lodgingFy: 2025 });
+  check("journey payload: 0 blockers ⇒ estimate range tracked→confirmed (never a refund field); grow empty until A11b",
+    j1.readiness.estimate?.tracked_cents === 5_000_000 && j1.readiness.estimate?.confirmed_cents === 5_200_000 &&
+    j1.grow.layers.length === 0 && !JSON.stringify(j1).toLowerCase().includes("refund"));
+  check("journey payload: nothing captured ⇒ no estimate even at 0 blockers",
+    assessJourney({ readiness: rd([fnd("nothing_captured", "review", "completeness")], 0), signals: sig(), lodgingFy: 2025 }).readiness.estimate === null);
+}
+
+// ── #582 ft_journey: the ONE legacy → journey route table (web/src/lib/legacyRoutes.ts) ──
+import { LEGACY_ROUTES, STEP_LEGACY_ROUTE, journeyRouteFor, toJourneyHref } from "../web/src/lib/legacyRoutes";
+{
+  const mainSrc = fs.readFileSync(path.join(process.cwd(), "web/src/main.tsx"), "utf8");
+  const routed = new Set([...mainSrc.matchAll(/\{ path: "([^"]+)", element:/g)].map((m) => `/${m[1]}`).concat("/"));
+  check("legacyRoutes: every legacy source and every journey target is a registered route (nothing 404s with the flag ON)",
+    LEGACY_ROUTES.every((r) => routed.has(r.from) && routed.has(r.to.split(/[?#]/)[0]!)));
+  check("legacyRoutes: every legacy page that redirects is wrapped in <FtRedirect> (OFF renders it unchanged)",
+    LEGACY_ROUTES.every((r) => new RegExp(`path: "${r.from.slice(1)}", element: <FtRedirect>`).test(mainSrc)));
+  check("legacyRoutes: OFF, every step URL maps back to a registered legacy page",
+    Object.values(STEP_LEGACY_ROUTE).every((to) => routed.has(to.split(/[?#]/)[0]!)));
+  check("legacyRoutes: /transactions moves only with ?view=review; the plain list route stays",
+    journeyRouteFor("/transactions", "?view=review") === "/claims" && journeyRouteFor("/transactions", "") === null && journeyRouteFor("/transactions", "?view=all") === null);
+  check("legacyRoutes: kept routes stay put (settings, reports, txn detail, glossary, admin)",
+    ["/settings", "/reports", "/txn/abc", "/glossary", "/admin", "/notifications", "/billing", "/partner"].every((p) => journeyRouteFor(p) === null));
+  check("legacyRoutes: toJourneyHref maps server hrefs (query/hash aware), /inbox → Claims, unknown + external pass through",
+    toJourneyHref("/filing") === "/ship" && toJourneyHref("/income#x") === "/bring-in#income" && toJourneyHref("/review?fy=2025") === "/claims?view=labels" &&
+    toJourneyHref("/inbox") === "/claims" && toJourneyHref("/reports?fy=2025") === "/reports?fy=2025" && toJourneyHref("https://ato.gov.au/filing") === "https://ato.gov.au/filing");
+}
+
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);
 process.exit(fail === 0 ? 0 : 1);

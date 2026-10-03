@@ -27,6 +27,7 @@ import { Documents } from "./pages/Documents";
 import { Assets } from "./pages/Assets";
 import { Glossary } from "./pages/Glossary";
 import { BeforeYouStart, beforeYouStartLoader } from "./pages/BeforeYouStart";
+import { FtRedirect, HomeIndex, AboutStep, BringInStep, ClaimsStep, RecordsStep, CheckStep, ShipStep } from "./pages/Steps";
 import { setTokenGetter } from "./api";
 import { ActiveFyProvider } from "./lib/activeFy";
 
@@ -46,6 +47,9 @@ const queryClient: QueryClient = new QueryClient({
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["progress"] });
       queryClient.invalidateQueries({ queryKey: ["filing-readiness"] });
+      // #582 (ft_journey): the shell's step dots + Home read ["journey", fy]. With the flag OFF the
+      // query never exists, so this is a no-op (no request).
+      queryClient.invalidateQueries({ queryKey: ["journey"] });
     },
   }),
   // refetchOnWindowFocus was causing visible flashing: every time the tab regained focus
@@ -112,30 +116,40 @@ const router = createBrowserRouter([
     path: "/",
     element: <Protected />,
     children: [
-      { index: true, element: <Dashboard /> },
+      // ft_journey (#582): "/" is Home when ON; legacy pages wrapped in <FtRedirect> move to their
+      // journey step when ON and render exactly as today when OFF (pages/Steps.tsx, lib/legacyRoutes.ts).
+      { index: true, element: <HomeIndex /> },
       // The Inbox review queue is now the "Needs review" tab of Transactions; /inbox (and every
       // navigate("/inbox") / server next-action href that still points here) redirects in.
       { path: "inbox", element: <Navigate to="/transactions?view=review" replace /> },
-      { path: "transactions", element: <Transactions /> },
+      { path: "transactions", element: <FtRedirect><Transactions /></FtRedirect> },
       { path: "txn/:id", element: <TxnDetail /> },
-      { path: "dashboard", element: <Dashboard /> },
-      { path: "income", element: <Income /> },
+      { path: "dashboard", element: <FtRedirect><Dashboard /></FtRedirect> },
+      { path: "income", element: <FtRedirect><Income /></FtRedirect> },
       { path: "assets", element: <Assets /> },
-      { path: "documents", element: <Documents /> },
-      { path: "accounts", element: <Accounts /> },
-      { path: "reconcile", element: <Reconcile /> },
+      { path: "documents", element: <FtRedirect><Documents /></FtRedirect> },
+      { path: "accounts", element: <FtRedirect><Accounts /></FtRedirect> },
+      { path: "reconcile", element: <FtRedirect><Reconcile /></FtRedirect> },
       { path: "notifications", element: <Notifications /> },
       { path: "settings", element: <Settings /> },
-      { path: "onboarding", element: <Onboarding /> },
+      { path: "onboarding", element: <FtRedirect><Onboarding /></FtRedirect> },
       { path: "quickbooks", element: <QuickBooks /> },
       { path: "reports", element: <Reports /> },
       { path: "savings", element: <Savings /> },
       { path: "extras", element: <Extras /> },
       { path: "billing", element: <Billing /> },
-      { path: "review", element: <Review /> },
-      { path: "filing", element: <Filing /> },
+      { path: "review", element: <FtRedirect><Review /></FtRedirect> },
+      { path: "filing", element: <FtRedirect><Filing /></FtRedirect> },
       { path: "admin", element: <Admin /> },
       { path: "partner", element: <Partner /> },
+      // Journey steps (ft_journey; OFF ⇒ each redirects to the legacy page it replaces).
+      { path: "about", element: <AboutStep /> },
+      { path: "bring-in", element: <BringInStep /> },
+      { path: "claims", element: <ClaimsStep /> },
+      { path: "records", element: <RecordsStep /> },
+      { path: "check", element: <CheckStep /> },
+      { path: "check/match", element: <CheckStep /> },
+      { path: "ship", element: <ShipStep /> },
       { path: "glossary", element: <Glossary /> },
     ],
   },

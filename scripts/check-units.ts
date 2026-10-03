@@ -4644,6 +4644,8 @@ console.log("residency assessability (A13, #580)");
   check("G11: non-resident with NO dated period (or flag OFF) ⇒ every rule deferred, exactly as before", nonResidentClaimTreatment(occ, true, false) === "defer" && nonResidentClaimTreatment(prop, true, false) === "defer");
   check("G11: with a non-resident period, occupation suggestions carry the caveat; generic + non-occupation rules keep the defer",
     nonResidentClaimTreatment(occ, true, true) === "caveat" && nonResidentClaimTreatment(all, true, true) === "defer" && nonResidentClaimTreatment(prop, true, true) === "defer");
+}
+
 // ── #577 wages_payer: deterministic credit triage → "We noticed…" signals (src/lib/credit-triage.ts) ──
 import { triageCredits, detectCadence, withinBand, payerStem, payerLabel, creditSignalLists } from "../src/lib/credit-triage";
 import { employerMatches } from "../src/lib/noticed-signals";
@@ -4678,7 +4680,15 @@ console.log("credit triage (#577)");
   const norm = (xs: ReturnType<typeof triageCredits>) => JSON.stringify(xs.map((s) => ({ ...s, txn_ids: [...s.txn_ids].sort() })));
   check("triage: deterministic — input order doesn't change the signals", norm(triageCredits(rows, L)) === norm(triageCredits([...rows].reverse(), L)));
   check("triage: a partial KV pack can't disable triage (falls back per key)", creditSignalLists({ credit_signals: { platform: [] } }).platform.length === 0 && creditSignalLists({ credit_signals: { platform: [] } }).payroll.min_count === 2 && creditSignalLists(null).government.length > 0);
-  check("employerMatches: 'Big Retail Pty Ltd' ≡ 'BIG RETAIL'; different payers don't match", employerMatches("Big Retail Pty Ltd", "BIG RETAIL") && !employerMatches("Big Retail", "Cafe Co") && !employerMatches("", "Cafe Co"));
+  check("employerMatches: 'Big Retail Pty Ltd' ≡ 'BIG RETAIL' ≡ 'Big Retail Group'; different payers don't match", employerMatches("Big Retail Pty Ltd", "BIG RETAIL") && employerMatches("Big Retail", "Big Retail Group") && !employerMatches("Big Retail", "Cafe Co") && !employerMatches("", "Cafe Co"));
+  check("employerMatches: no one-word or out-of-order subset merge ('Coles' ≠ 'Coles Express', 'Big Retail' ≠ 'Big W Retail')", !employerMatches("Coles", "Coles Express") && !employerMatches("Big Retail", "Big W Retail"));
+  check("triage: weekly person-to-person transfers are never payroll (PayID / 'transfer from' + a name)",
+    triageCredits([cr("p1", "Transfer from JOHN SMITH rent", 20000, "2025-08-01"), cr("p2", "Transfer from JOHN SMITH rent", 20000, "2025-08-08"), cr("p3", "Transfer from JOHN SMITH rent", 20000, "2025-08-15"),
+      cr("q1", "PAYID JANE DOE allowance", 5000, "2025-08-03"), cr("q2", "PAYID JANE DOE allowance", 5000, "2025-08-17")], L).length === 0);
+  check("triage: …but Osko pay from a company still is (business marker wins)",
+    triageCredits([cr("o1", "OSKO PAYMENT BIG RETAIL PTY LTD", 120000, "2025-08-07"), cr("o2", "OSKO PAYMENT BIG RETAIL PTY LTD", 120000, "2025-08-21")], L)[0]?.kind === "payroll");
+  check("triage: one credit with a payroll word is not a job (min_count applies to the word path too)", triageCredits([cr("b1", "PAY BACK FOR DINNER", 4000, "2025-08-01")], L).length === 0);
+  check("triage: refunds / rebates are never a signal (an Uber refund isn't a platform payout)", triageCredits([cr("r1", "UBER REFUND", 2500, "2025-08-01"), cr("r2", "MEDICARE REBATE", 4000, "2025-08-02")], L).length === 0);
   check("clarify: 'My wages' offered on credit groups ONLY with wages_payer ON (OFF ⇒ byte-identical)",
     suggestionsFor("credit", { wagesPayer: true })[0]?.kind === "wages_payer" && !suggestionsFor("credit", {}).some((x) => x.kind === "wages_payer") && !suggestionsFor("debit", { wagesPayer: true }).some((x) => x.kind === "wages_payer") &&
       JSON.stringify(suggestionsFor("credit", { wagesPayer: true }).slice(1)) === JSON.stringify(suggestionsFor("credit", {})));

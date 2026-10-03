@@ -86,15 +86,18 @@ export function incomeAnswerRows<T extends { direction: string | null; matched_i
 export const STAMPED_INCOME_REFUSAL =
   "These are pay from an employer you've marked, so they can't be recorded as income. Add the employer's income statement on the Income page instead.";
 
-/** Two employer names are the same payer: equal payerKeys, or every word of the shorter is in the longer. */
+/**
+ * Two employer names are the same payer: equal payerKeys, or the shorter (at least TWO words) is a leading run of
+ * the longer's words ("Big Retail" ≡ "Big Retail Group"). A one-word name never subset-matches ("Coles" is not
+ * "Coles Express"), and words out of order don't ("Big Retail" is not "Big W Retail").
+ */
 export function employerMatches(a: unknown, b: unknown): boolean {
   const ka = payerKey(a);
   const kb = payerKey(b);
   if (!ka || !kb) return false;
   if (ka === kb) return true;
-  const [short, long] = ka.length <= kb.length ? [ka, kb] : [kb, ka];
-  const words = new Set(long.split(" "));
-  return short.split(" ").every((w) => words.has(w));
+  const [short, long] = ka.length <= kb.length ? [ka.split(" "), kb.split(" ")] : [kb.split(" "), ka.split(" ")];
+  return short.length >= 2 && short.every((w, i) => long[i] === w);
 }
 
 // The credits the triage reads: live bank credits not already recorded as income, linked to a refund, or
@@ -130,46 +133,79 @@ export async function noticeSignals(env: Env, userId: string, descriptor: Jurisd
   if (!featureOn(env, "wages_payer")) return { upserted: 0 };
   const lists = await listsFor(env, userId, descriptor);
   const rows = await creditsBetween(env, userId, null, null);
-  const employerKeys = new Set(rows.filter((r) => r.payer_entity_id).map((r) => payerStem(r.raw_description ?? r.merchant, lists)).filter((k): k is string => !!k));
+  const stemOf = new Map(rows.map((r) => [r.id, payerStem(r.raw_description ?? r.merchant, lists)]));
+  const employerKeys = new Set([...rows].filter((r) => r.payer_entity_id).map((r) => stemOf.get(r.id)).filter((k): k is string => !!k));
   const byFy = new Map<string, CreditRow[]>();
   for (const r of rows) {
     const fy = fyForDate(r.txn_date, descriptor);
-    if (fy) byFy.set(fy, [...(byFy.get(fy) ?? []), r]);
+    if (!fy) continue;
+    const g = byFy.get(fy);
+    if (g) g.push(r);
+    else byFy.set(fy, [r]);
   }
-  // Payroll payers already confirmed (per FY + key → employer entity): a NEW deposit from the same payer is stamped
-  // with the employer too, so the per-employer prompt and the "never income" guard cover it. Stamping records
-  // nothing to the position.
-  const confirmedPayroll = new Map(
-    ((await env.DB.prepare(`SELECT fy, signal_key, ref_id FROM noticed_signals WHERE user_id = ? AND kind = 'payroll' AND status = 'confirmed' AND ref_id IS NOT NULL`)
-      .bind(userId)
-      .all<{ fy: string; signal_key: string; ref_id: string }>()).results ?? []).map((r) => [`${r.fy}|${r.signal_key}`, r.ref_id]),
-  );
   const stmts: D1PreparedStatement[] = [];
+  // Payroll payers already confirmed (per FY + key → employer entity): every NEW deposit from the same payer stem
+  // is stamped with the employer too — whether or not the triage still emits the signal (a bonus outside the
+  // amount band must not leave next month's pay unstamped and recordable as income). Records nothing.
+  const confirmed = (await env.DB.prepare(`SELECT fy, signal_key, ref_id FROM noticed_signals WHERE user_id = ? AND kind = 'payroll' AND status = 'confirmed' AND ref_id IS NOT NULL`)
+    .bind(userId)
+    .all<{ fy: string; signal_key: string; ref_id: string }>()).results ?? [];
+  for (const c of confirmed) {
+    const ids = (byFy.get(c.fy) ?? []).filter((r) => !r.payer_entity_id && stemOf.get(r.id) === c.signal_key).map((r) => r.id);
+    stmts.push(...stampStatements(env, userId, c.ref_id, ids));
+  }
+  let upserted = 0;
   for (const [fy, rs] of byFy) {
     for (const s of triageCredits(rs, lists, employerKeys)) {
-      const employer = s.kind === "payroll" ? confirmedPayroll.get(`${fy}|${s.signal_key}`) : undefined;
-      if (employer) {
-        const unstamped = rs.filter((r) => !r.payer_entity_id && s.txn_ids.includes(r.id)).map((r) => r.id);
-        for (let i = 0; i < unstamped.length; i += 80) {
-          const chunk = unstamped.slice(i, i + 80);
-          stmts.push(
-            env.DB.prepare(
-              `UPDATE transactions SET payer_entity_id = ? WHERE user_id = ? AND direction = 'credit' AND payer_entity_id IS NULL AND id IN (${chunk.map(() => "?").join(",")})`,
-            ).bind(employer, userId, ...chunk),
-          );
-        }
-      }
+      upserted++;
+      // A decided row is never touched; an open row only when its evidence actually changed.
       stmts.push(
         env.DB.prepare(
           `INSERT INTO noticed_signals (id, user_id, fy, kind, signal_key, status, evidence_json) VALUES (?, ?, ?, ?, ?, 'open', ?)
            ON CONFLICT(user_id, fy, kind, signal_key) DO UPDATE SET evidence_json = excluded.evidence_json
-           WHERE noticed_signals.status = 'open'`,
+           WHERE noticed_signals.status = 'open' AND noticed_signals.evidence_json <> excluded.evidence_json`,
         ).bind(crypto.randomUUID(), userId, fy, s.kind, s.signal_key, JSON.stringify(s.evidence)),
       );
     }
   }
   for (let i = 0; i < stmts.length; i += 50) await env.DB.batch(stmts.slice(i, i + 50));
-  return { upserted: stmts.length };
+  return { upserted };
+}
+
+/** UPDATEs stamping credits with their employer (≤ 80 ids per statement — D1's 100-bind limit). Never re-stamps. */
+function stampStatements(env: Env, userId: string, entityId: string, ids: string[]): D1PreparedStatement[] {
+  const out: D1PreparedStatement[] = [];
+  for (let i = 0; i < ids.length; i += 80) {
+    const chunk = ids.slice(i, i + 80);
+    out.push(
+      env.DB.prepare(
+        `UPDATE transactions SET payer_entity_id = ? WHERE user_id = ? AND direction = 'credit' AND payer_entity_id IS NULL AND id IN (${chunk.map(() => "?").join(",")})`,
+      ).bind(entityId, userId, ...chunk),
+    );
+  }
+  return out;
+}
+
+/**
+ * Stamp every FY credit from this payer stem with the employer. Returns how many were stamped now, plus how many
+ * of the payer's credits were ALREADY recorded as income (the pre-#554 Clarify "personal income" path) — those
+ * would double-count once the income statement arrives, so the caller surfaces them for the user to undo.
+ */
+async function stampPayer(env: Env, userId: string, fy: string, stem: string, entityId: string, lists: CreditSignalLists, descriptor: JurisdictionDescriptor): Promise<{ stamped: number; previously_recorded: number }> {
+  const { start, end } = fyBounds(parseFyStartYear(fy), descriptor);
+  const rows = (await env.DB.prepare(
+    `SELECT t.id, t.raw_description, t.merchant, t.payer_entity_id, i.income_type AS recorded_type FROM transactions t
+       LEFT JOIN income i ON i.id = t.matched_income_id AND i.user_id = t.user_id
+      WHERE t.user_id = ? AND t.kind = 'bank_line' AND t.direction = 'credit' AND t.status <> 'duplicate' AND t.txn_date >= ? AND t.txn_date <= ?`,
+  ).bind(userId, start, end).all<{ id: string; raw_description: string | null; merchant: string | null; payer_entity_id: string | null; recorded_type: string | null }>()).results ?? [];
+  const mine = rows.filter((r) => payerStem(r.raw_description ?? r.merchant, lists) === stem);
+  // Only live, unlinked credits are stamped (the same set the triage reads).
+  const live = new Set((await creditsBetween(env, userId, start, end)).map((r) => r.id));
+  const ids = mine.filter((r) => !r.payer_entity_id && live.has(r.id)).map((r) => r.id);
+  let stamped = 0;
+  for (const st of stampStatements(env, userId, entityId, ids)) stamped += (await st.run()).meta?.changes ?? 0;
+  // A credit linked to a salary row is a match, not a double count; one recorded AS 'personal' income is.
+  return { stamped, previously_recorded: mine.filter((r) => r.recorded_type === "personal").length };
 }
 
 /** Open signals for one FY (start year), payroll first then biggest total. */
@@ -228,6 +264,8 @@ export interface ConfirmResult {
   prompt?: string;
   offer_manual_income?: string[];
   residency_unanswered?: boolean;
+  /** payroll: this payer's credits ALREADY recorded as personal income before #554 — undo them, or gross counts twice. */
+  previously_recorded?: number;
 }
 
 const optStr = (v: unknown, max = 80): string | null => (typeof v === "string" && v.trim() ? v.trim().slice(0, max) : null);
@@ -252,7 +290,7 @@ export async function confirmNoticed(env: Env, userId: string, id: string, rawBo
   const body: ConfirmBody = rawBody && typeof rawBody === "object" && !Array.isArray(rawBody) ? rawBody : {};
   const descriptor = deps.descriptor ?? AU_DESCRIPTOR;
   const s = await getSignal(env, userId, id);
-  if (s.status === "confirmed") return { kind: s.kind, status: "confirmed", already: true, income_recorded: 0, ...(s.ref_id ? { entity_id: s.ref_id } : {}) };
+  if (s.status === "confirmed") return confirmedAgain(env, userId, s, descriptor);
   const personId = optStr(body.person_id, 200) ?? selfPersonId(userId);
   const person = await env.DB.prepare(`SELECT id, occupation FROM persons WHERE id = ? AND user_id = ?`).bind(personId, userId).first<{ id: string; occupation: string | null }>();
   if (!person) throw new NoticedError("person not found", 404);
@@ -260,7 +298,7 @@ export async function confirmNoticed(env: Env, userId: string, id: string, rawBo
   const claim = await env.DB.prepare(
     `UPDATE noticed_signals SET status = 'confirmed', decided_at = datetime('now') WHERE id = ? AND user_id = ? AND status IN ('open','dismissed')`,
   ).bind(id, userId).run();
-  if (!(claim.meta?.changes ?? 0)) return { kind: s.kind, status: "confirmed", already: true, income_recorded: 0 };
+  if (!(claim.meta?.changes ?? 0)) return confirmedAgain(env, userId, await getSignal(env, userId, id), descriptor);
   try {
     const result = await applyConfirm(env, userId, s, body, person, deps, descriptor);
     if (result.ref) await env.DB.prepare(`UPDATE noticed_signals SET ref_id = ? WHERE id = ? AND user_id = ?`).bind(result.ref, id, userId).run();
@@ -269,6 +307,17 @@ export async function confirmNoticed(env: Env, userId: string, id: string, rawBo
     await env.DB.prepare(`UPDATE noticed_signals SET status = ?, decided_at = ? WHERE id = ? AND user_id = ?`).bind(s.status, s.decided_at, id, userId).run();
     throw e;
   }
+}
+
+/**
+ * "Yes" on a signal that is already confirmed: nothing is re-applied, but a payroll payer's newer credits are
+ * stamped with its employer (the Clarify "My wages" answer lands here when the card was confirmed first).
+ */
+async function confirmedAgain(env: Env, userId: string, s: NoticedSignal, descriptor: JurisdictionDescriptor): Promise<ConfirmResult> {
+  const base: ConfirmResult = { kind: s.kind, status: "confirmed", already: true, income_recorded: 0, ...(s.ref_id ? { entity_id: s.ref_id } : {}) };
+  if (s.kind !== "payroll" || !s.ref_id) return base;
+  const r = await stampPayer(env, userId, s.fy, s.signal_key, s.ref_id, await listsFor(env, userId, descriptor), descriptor);
+  return { ...base, stamped: r.stamped, prompt: INCOME_STATEMENT_PROMPT, ...(r.previously_recorded ? { previously_recorded: r.previously_recorded } : {}) };
 }
 
 async function applyConfirm(
@@ -290,7 +339,8 @@ async function applyConfirm(
   if (s.kind === "payroll") {
     const name = optStr(body.employer_name) ?? (optStr(s.evidence.label) || s.signal_key);
     // Fill-gaps match on kind + name, so a second confirm (or next year's) reuses the same employer.
-    const jobs = (await env.DB.prepare(`SELECT id, name FROM entities WHERE user_id = ? AND kind = 'employment'`).bind(userId).all<{ id: string; name: string | null }>()).results ?? [];
+    // Scoped to this person (a spouse's employer is not this person's job).
+    const jobs = (await env.DB.prepare(`SELECT id, name FROM entities WHERE user_id = ? AND kind = 'employment' AND (person_id IS NULL OR person_id = ?)`).bind(userId, person.id).all<{ id: string; name: string | null }>()).results ?? [];
     const entityId = jobs.find((j) => employerMatches(j.name, name))?.id ?? (await addEntity(env, userId, { kind: "employment", name, person_id: person.id }));
 
     let periodId: string | null = null;
@@ -307,20 +357,15 @@ async function applyConfirm(
       } else needsOccupation = true; // no job known yet — the employer is still marked; the card asks which job
     }
 
-    const credits = await signalCredits(env, userId, s, lists, descriptor);
-    const ids = credits.map((c) => c.id);
-    let stamped = 0;
-    for (let i = 0; i < ids.length; i += 80) {
-      const chunk = ids.slice(i, i + 80);
-      const r = await env.DB.prepare(
-        `UPDATE transactions SET payer_entity_id = ? WHERE user_id = ? AND direction = 'credit' AND (payer_entity_id IS NULL OR payer_entity_id = ?)
-            AND id IN (${chunk.map(() => "?").join(",")})`,
-      ).bind(entityId, userId, entityId, ...chunk).run();
-      stamped += r.meta?.changes ?? 0;
-    }
+    const { stamped, previously_recorded } = await stampPayer(env, userId, s.fy, s.signal_key, entityId, lists, descriptor);
     return {
       ref: entityId,
-      out: { kind: "payroll", status: "confirmed", income_recorded: 0, entity_id: entityId, employer_name: name, stamped, period_id: periodId, ...(needsOccupation ? { needs_occupation: true } : {}), prompt: INCOME_STATEMENT_PROMPT },
+      out: {
+        kind: "payroll", status: "confirmed", income_recorded: 0, entity_id: entityId, employer_name: name, stamped, period_id: periodId,
+        ...(needsOccupation ? { needs_occupation: true } : {}),
+        ...(previously_recorded ? { previously_recorded } : {}),
+        prompt: INCOME_STATEMENT_PROMPT,
+      },
     };
   }
 
@@ -338,6 +383,7 @@ async function applyConfirm(
     // Business income is assessable as received: each payout is recorded once and its credit linked (single count).
     let recorded = 0;
     for (const c of await signalCredits(env, userId, s, lists, descriptor)) {
+      if (c.payer_entity_id) continue; // pay from a marked employer is never business income
       if (await deps.recordCreditAsIncome(c, { incomeType: "business", fy: s.fy })) recorded++;
     }
     return { ref: activityId, out: { kind: "platform", status: "confirmed", income_recorded: recorded, activity_id: activityId, period_id: periodId } };
@@ -431,13 +477,20 @@ export async function payrollEmployerSignals(
   const employers = (sal.results ?? []).map((r) => {
     try { return (JSON.parse(r.detail_json ?? "{}") as { employer?: unknown }).employer; } catch { return undefined; }
   });
+  const named = employers.filter((x) => payerKey(x));
+  const unnamedSalary = employers.length - named.length; // hand-keyed salary rows (the manual form has no employer field)
+  const list = (emp.results ?? []).map((e) => ({
+    entity_id: e.entity_id,
+    name: e.name ?? "your employer",
+    n: e.n,
+    covered: named.some((x) => employerMatches(x, e.name)),
+  }));
+  // Same rule as the worksheet: with exactly ONE marked employer still uncovered, an unnamed salary row is that
+  // employer's — entering the salary by hand (as the finding asks) must clear it.
+  const uncovered = list.filter((e) => !e.covered);
+  if (uncovered.length === 1 && unnamedSalary > 0) uncovered[0]!.covered = true;
   return {
-    payrollEmployers: (emp.results ?? []).map((e) => ({
-      entity_id: e.entity_id,
-      name: e.name ?? "your employer",
-      n: e.n,
-      covered: employers.some((x) => employerMatches(x, e.name)),
-    })),
+    payrollEmployers: list,
     stampedPersonalN: stamped?.n ?? 0,
     stampedPersonalCents: stamped?.cents ?? 0,
   };

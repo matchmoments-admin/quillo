@@ -5513,7 +5513,7 @@ export class TaxAgent extends Agent<Env> {
       `SELECT id, raw_description, merchant, amount_cents, amount_aud_cents, direction
          FROM transactions
         WHERE user_id = ? AND kind = 'bank_line'
-          AND ${CLARIFY_LEFTOVER_WHERE}
+          AND ${CLARIFY_LEFTOVER_WHERE}${featureOn(this.env, "wages_payer") ? " AND payer_entity_id IS NULL" : ""}
           AND txn_date >= ? AND txn_date <= ?`,
     )
       .bind(userId, start, end)
@@ -5771,6 +5771,7 @@ export class TaxAgent extends Agent<Env> {
           const k = payerStem(r.raw_description ?? r.merchant, lists);
           if (k) byStem.set(k, [...(byStem.get(k) ?? []), r]);
         }
+        if (byStem.size === 0) throw new Error("There's no money-in from a payer here to mark as wages.");
         let stamped = 0;
         for (const [stem, rs] of byStem) {
           const dates = rs.map((r) => r.txn_date).filter((d): d is string => !!d).sort();

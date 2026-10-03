@@ -524,13 +524,18 @@ export function assessReadiness(input: {
     const missing = new Map<string, { n: number; cents: number }>();
     for (const row of report.income_by_bucket ?? []) {
       if (!(row.bucket in bucketCovered) || bucketCovered[row.bucket] || row.total_cents <= 0) continue;
-      // wages_payer: credits stamped as pay from a marked employer are asked about per employer below.
-      const stamped = row.bucket === "income_personal" && signals.payrollEmployers ? { n: signals.stampedPersonalN ?? 0, cents: signals.stampedPersonalCents ?? 0 } : { n: 0, cents: 0 };
-      if (row.total_cents - stamped.cents <= 0) continue;
       const m = missing.get(row.bucket) ?? { n: 0, cents: 0 };
-      m.n += row.n - stamped.n;
-      m.cents += row.total_cents - stamped.cents;
+      m.n += row.n;
+      m.cents += row.total_cents;
       missing.set(row.bucket, m);
+    }
+    // wages_payer: credits stamped as pay from a marked employer are asked about per employer below — take them out
+    // of the generic personal-income gap ONCE (income_by_bucket has a row per bucket + label). Gated ⇒ OFF unchanged.
+    const personal = missing.get("income_personal");
+    if (personal && signals.payrollEmployers) {
+      personal.n -= signals.stampedPersonalN ?? 0;
+      personal.cents -= signals.stampedPersonalCents ?? 0;
+      if (personal.cents <= 0 || personal.n <= 0) missing.delete("income_personal");
     }
     if (missing.size > 0) {
       const noIncome = report.income.gross_cents === 0 && individualTypes.size === 0 && entityTypes.size === 0;
@@ -551,7 +556,7 @@ export function assessReadiness(input: {
   for (const e of signals.payrollEmployers ?? []) {
     if (e.covered || e.n <= 0) continue;
     const noIncome = report.income.gross_cents === 0 && report.income.by_type.length === 0;
-    findings.push(f("income_not_recorded", "completeness", noIncome ? "blocker" : "review",
+    findings.push(f(`income_not_recorded:${e.entity_id}`, "completeness", noIncome ? "blocker" : "review",
       `Pay from ${e.name} is in your bank, but its income statement isn't recorded yet`,
       `You told us the deposits from ${e.name} are your wages. Those deposits are your take-home pay, so Quillo never counts them as income: your return needs your gross pay and the tax withheld, which are on your income statement in myTax (ATO online services, via myGov) once your employer marks it "Tax ready". Check it's there, then upload it or enter it on the Income page. General information only.`, false,
       [{ kind: "transaction", count: e.n }]));

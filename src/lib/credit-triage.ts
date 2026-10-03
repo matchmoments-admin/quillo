@@ -25,7 +25,18 @@ export interface GovernmentEntry { key: string; match: string; label: string; in
 export interface ForeignEntry { key: string; match: string; label: string }
 
 export interface CreditSignalLists {
-  payroll: { words: string; cadence_days: number[]; cadence_tolerance_days: number; amount_band: number; min_count: number };
+  payroll: {
+    words: string;
+    cadence_days: number[];
+    cadence_tolerance_days: number;
+    amount_band: number;
+    min_count: number;
+    /** A credit with one of these and NO business_marker is person-to-person (PayID from a friend) — never payroll. */
+    p2p_markers?: string;
+    business_markers?: string;
+  };
+  /** Refunds / rebates / reversals: never a signal of any kind. */
+  skip_words?: string;
   platform: PlatformEntry[];
   government: GovernmentEntry[];
   interest: { match: string; label: string; income_type: string };
@@ -37,7 +48,9 @@ export function creditSignalLists(pack: unknown = auV1RulePack): CreditSignalLis
   const base = (auV1RulePack as unknown as { credit_signals: CreditSignalLists }).credit_signals;
   const p = ((pack as { credit_signals?: Partial<CreditSignalLists> } | null)?.credit_signals ?? {}) as Partial<CreditSignalLists>;
   return {
-    payroll: p.payroll ?? base.payroll,
+    // Merged per field so a stale KV pack missing a newer key keeps the bundled default.
+    payroll: { ...base.payroll, ...(p.payroll ?? {}) },
+    skip_words: typeof p.skip_words === "string" ? p.skip_words : base.skip_words,
     platform: Array.isArray(p.platform) ? p.platform : base.platform,
     government: Array.isArray(p.government) ? p.government : base.government,
     interest: p.interest ?? base.interest,
@@ -117,6 +130,13 @@ export function payerLabel(desc: string | null | undefined, lists: CreditSignalL
   return words.map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(" ");
 }
 
+/** Person-to-person: a P2P channel marker and no business marker ("PAYID JANE DOE" yes; "OSKO BIG RETAIL PTY LTD" no). */
+export function isPersonToPerson(desc: string, lists: CreditSignalLists = creditSignalLists()): boolean {
+  const P = lists.payroll;
+  if (!P.p2p_markers || !anyPatternHits(P.p2p_markers, desc)) return false;
+  return !(P.business_markers && anyPatternHits(P.business_markers, desc));
+}
+
 /** A credit a dedicated step owns (own-account transfer / card payment) — never a signal. */
 function ownedByMovementStep(desc: string): boolean {
   return movementTreatment(classifyMovement(desc).klass, "credit") !== "skip";
@@ -174,6 +194,7 @@ export function triageCredits(
   for (const r of rows) {
     const desc = descOf(r);
     if (!desc.trim() || ownedByMovementStep(desc)) continue;
+    if (lists.skip_words && anyPatternHits(lists.skip_words, desc)) continue; // a refund / rebate is not money earned
     const plat = lists.platform.find((p) => anyPatternHits(p.match, desc));
     if (plat) { add("platform", plat.key, plat.label, { activity: plat.activity }, r); continue; }
     const gov = lists.government.find((g) => anyPatternHits(g.match, desc));
@@ -200,13 +221,18 @@ export function triageCredits(
   const P = lists.payroll;
   const byStem = new Map<string, TriageCredit[]>();
   for (const r of rest) {
+    if (isPersonToPerson(descOf(r), lists)) continue; // spec A3: person-to-person gets no card
     const k = payerStem(descOf(r), lists);
     if (!k) continue;
-    byStem.set(k, [...(byStem.get(k) ?? []), r]);
+    const g = byStem.get(k);
+    if (g) g.push(r);
+    else byStem.set(k, [r]);
   }
   const payroll: TriageSignal[] = [];
   for (const [key, rs] of byStem) {
-    const cadence = rs.length >= P.min_count ? detectCadence(rs.map((r) => r.txn_date).filter((d): d is string => !!d), P.cadence_days, P.cadence_tolerance_days) : null;
+    // min_count applies to BOTH paths: one credit with a payroll word ("PAY BACK") is not a job.
+    if (rs.length < P.min_count) continue;
+    const cadence = detectCadence(rs.map((r) => r.txn_date).filter((d): d is string => !!d), P.cadence_days, P.cadence_tolerance_days);
     const words = rs.some((r) => anyPatternHits(P.words, descOf(r)));
     if (cadence == null && !words) continue;
     if (!withinBand(rs.map(centsOf), P.amount_band)) continue;

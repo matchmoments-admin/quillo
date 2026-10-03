@@ -1384,4 +1384,5 @@ export interface NoticedConfirmResult {
   prompt?: string;
   offer_manual_income?: string[];
   residency_unanswered?: boolean;
+  previously_recorded?: number;
 }

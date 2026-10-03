@@ -4,9 +4,11 @@ import { api } from "../api";
 import { Card, Spinner, money, BucketPill } from "../components/ui";
 import { useActiveFy, fyLabel } from "../lib/activeFy";
 import type { Txn } from "../types";
+import { toast } from "sonner";
 
 // Manual receipt ↔ bank-line matching: pick a receipt on the left, then click "Link" on the matching
-// bank line. (There is NO auto-matcher yet — see docs/ux/reconcile-fold-findings.md.)
+// bank line. (Statement / feed import also auto-links confident pairs — TaxAgent.matchReceipt; the A8
+// proposer, GET /api/reconcile/proposals, suggests the rest for one-tap confirm — never auto-applied.)
 // #490: the server now takes fy/limit and returns TRUE totals, with lines pre-ordered by best match
 // score — the limit lives in the query key so "Load more" fetches from the server, never a local slice
 // masquerading as the whole queue.
@@ -27,6 +29,12 @@ export function Reconcile() {
       qc.invalidateQueries({ queryKey: ["reconcile"] });
       qc.invalidateQueries({ queryKey: ["transactions"] });
       qc.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+    // The server now refuses a link to a line that's gone (ignored / duplicated elsewhere) — say so and
+    // refresh the lists instead of silently doing nothing.
+    onError: () => {
+      toast.error("Couldn't link that pair — the line may have changed. The lists have been refreshed.");
+      qc.invalidateQueries({ queryKey: ["reconcile"] });
     },
   });
 
@@ -136,8 +144,8 @@ export function Reconcile() {
   );
 }
 
-// Kept in sync with reconcileScore() in src/lib/queries.ts (deliberate duplication until the shape-B
-// proposer owns matching server-side for both orderings).
+// Kept in sync with reconcileScore() in src/lib/reconcile-proposer.ts (deliberate duplication until the
+// Check page's fallback picker reads server ordering per receipt — #589).
 function score(receipt: Txn, line: Txn): number {
   const ra = receipt.amount_aud_cents ?? receipt.amount_cents ?? 0;
   const la = line.amount_aud_cents ?? line.amount_cents ?? 0;

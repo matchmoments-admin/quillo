@@ -3680,5 +3680,64 @@ console.log("first-timer copy denylist (#584)");
   check("BYS endpoint: non-GET ⇒ 404", postRes.status === 404);
 }
 
+// ── A8 (#574) reconcile_proposals: the pure receipt ↔ bank-line proposer ──
+import { proposeMatches, reconcileScore, reconcileConfigFromPack, DEFAULT_RECONCILE_CONFIG } from "../src/lib/reconcile-proposer";
+console.log("reconcile proposer");
+{
+  const FY = { start: "2025-07-01", end: "2026-06-30" };
+  const cfg = DEFAULT_RECONCILE_CONFIG;
+  const R = (id: string, cents: number, date: string | null, direction: string | null = "debit") => ({ id, cents, date, direction });
+  check("scorer: exact amount + same day = 1", reconcileScore(8900, Date.parse("2026-03-03"), 8900, Date.parse("2026-03-03")) === 1);
+  check("scorer: amount outside max(50c,1%) scores 0 on amount", Math.abs(reconcileScore(8900, null, 9000, null)) < 1e-9);
+  // exact match one day apart, one other far-off line ⇒ proposed
+  const one = proposeMatches([R("r1", 8900, "2026-03-03")], [R("l1", 8900, "2026-03-04"), R("l2", 50000, "2026-03-04")], [], cfg, FY);
+  check("proposes a clear exact match (score ≥ 0.85, margin ≥ 0.15)", one.proposals.length === 1 && one.proposals[0]!.line_id === "l1" && one.proposals[0]!.score >= 0.85);
+  // near-tie: two same-amount lines a day either side ⇒ not proposed, goes to the picker
+  const tie = proposeMatches([R("r1", 4500, "2026-03-10")], [R("l1", 4500, "2026-03-09"), R("l2", 4500, "2026-03-11")], [], cfg, FY);
+  check("near-tie between two lines ⇒ NO proposal, receipt is ambiguous (manual picker)", tie.proposals.length === 0 && tie.ambiguous.length === 1 && tie.ambiguous[0]!.candidates === 2);
+  // a dismissed pair is never re-proposed, and doesn't act as a phantom runner-up for the other line
+  const dis = proposeMatches([R("r1", 4500, "2026-03-10")], [R("l1", 4500, "2026-03-09"), R("l2", 4500, "2026-03-11")], [{ receipt_id: "r1", line_id: "l1" }], cfg, FY);
+  check("dismissing one of a tie removes that pair entirely — the other line becomes the proposal", dis.proposals.length === 1 && dis.proposals[0]!.line_id === "l2");
+  const dis2 = proposeMatches([R("r1", 8900, "2026-03-03")], [R("l1", 8900, "2026-03-04")], [{ receipt_id: "r1", line_id: "l1" }], cfg, FY);
+  check("a dismissed only-candidate ⇒ no proposal; receipt lands in the no-line bucket", dis2.proposals.length === 0 && dis2.no_line[0] === "r1");
+  // direction: a purchase receipt never matches a refund credit; a refund receipt matches the credit
+  const dirs = proposeMatches([R("buy", 12000, "2026-04-01"), R("ref", 3000, "2026-04-20", "credit")], [R("lc", 12000, "2026-04-01", "credit"), R("lr", 3000, "2026-04-21", "credit")], [], cfg, FY);
+  check("credits are matchable: refund receipt ↔ refund credit proposed", dirs.proposals.some((p) => p.receipt_id === "ref" && p.line_id === "lr"));
+  check("a debit receipt is never paired with a same-amount CREDIT line", !dirs.proposals.some((p) => p.receipt_id === "buy"));
+  // two identical receipts both wanting one line ⇒ proposed to neither
+  const dup = proposeMatches([R("ra", 2000, "2026-05-01"), R("rb", 2000, "2026-05-01")], [R("l1", 2000, "2026-05-01")], [], cfg, FY);
+  check("a line two receipts both want is proposed to NEITHER", dup.proposals.length === 0 && dup.ambiguous.length === 2);
+  // no-line bucket is FY-scoped by the receipt's date; undated receipts never land in it
+  const nl = proposeMatches([R("in", 7700, "2026-01-05"), R("out", 7700, "2024-01-05"), R("nodate", 7700, null)], [], [], cfg, FY);
+  check("no-line bucket: only receipts dated in the FY (not other years, not undated)", nl.no_line.length === 1 && nl.no_line[0] === "in");
+  // undated receipt with an exact-amount line is never PROPOSED (date can't be checked)
+  const nd = proposeMatches([R("nodate", 7700, null)], [R("l1", 7700, "2026-01-05")], [], cfg, FY);
+  check("undated receipt is never proposed", nd.proposals.length === 0);
+  // a same-amount line 3 weeks away is not plausible; within tolerance but outside the date window
+  const far = proposeMatches([R("r1", 7700, "2026-01-05")], [R("l1", 7700, "2026-01-28")], [], cfg, FY);
+  check("same amount but outside the 7-day window ⇒ not proposed, not ambiguous ⇒ no-line", far.proposals.length === 0 && far.ambiguous.length === 0 && far.no_line[0] === "r1");
+  // FY boundary: lines either side of 30 June are in the pool; only an IN-FY line can be proposed
+  const bnd = [R("A", 10000, "2025-06-30"), R("B", 10000, "2025-07-01")];
+  const b25 = proposeMatches([R("r", 10000, "2025-06-30")], bnd, [], cfg, { start: "2024-07-01", end: "2025-06-30" });
+  const b26 = proposeMatches([R("r", 10000, "2025-06-30")], bnd, [], cfg, FY);
+  check("boundary: a runner-up across 30 June blocks the proposal in BOTH FYs", b25.proposals.length === 0 && b26.proposals.length === 0);
+  const onlyNext = proposeMatches([R("r", 10000, "2025-06-30")], [R("B", 10000, "2025-07-01")], [], cfg, { start: "2024-07-01", end: "2025-06-30" });
+  check("boundary: best line in the NEXT FY ⇒ not proposed here, and not 'no line' either", onlyNext.proposals.length === 0 && onlyNext.no_line.length === 0 && onlyNext.ambiguous.length === 0);
+  const onlyNextHere = proposeMatches([R("r", 10000, "2025-06-30")], [R("B", 10000, "2025-07-01")], [], cfg, FY);
+  check("boundary: ...and IS proposed from the FY the line belongs to", onlyNextHere.proposals[0]?.line_id === "B");
+  // tolerance edge: 999 vs 1000 cents is inside max(50c,1%) on amount
+  check("tolerance: a line 1c inside the 50c floor still scores on amount", reconcileScore(1000, null, 951, null) > 0 && reconcileScore(1000, null, 950, null) === 0);
+  // saturation: 100 identical-amount lines ⇒ ambiguous without scoring them all
+  const many = Array.from({ length: 100 }, (_, i) => R(`l${i}`, 5000, "2026-02-01"));
+  const sat = proposeMatches([R("r", 5000, "2026-02-01")], many, [], cfg, FY);
+  check("saturation: 100 same-amount lines ⇒ no proposal, receipt to the picker", sat.proposals.length === 0 && sat.ambiguous.length === 1);
+  // config: pack values honoured; malformed ⇒ defaults
+  check("config: pack values read", reconcileConfigFromPack({ reconcile: { propose_min_score: 0.9, propose_margin: 0.2 } }).proposeMinScore === 0.9);
+  check("config: malformed / out-of-range ⇒ defaults", JSON.stringify(reconcileConfigFromPack({ reconcile: { propose_min_score: "x", propose_margin: 7 } })) === JSON.stringify(DEFAULT_RECONCILE_CONFIG) && reconcileConfigFromPack(null).proposeMargin === 0.15);
+  // bundled pack carries the decided starting values
+  const packCfg = reconcileConfigFromPack(rulePack);
+  check("au-v1 pack: reconcile.propose_min_score 0.85, propose_margin 0.15", packCfg.proposeMinScore === 0.85 && packCfg.proposeMargin === 0.15);
+}
+
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);
 process.exit(fail === 0 ? 0 : 1);

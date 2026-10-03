@@ -13,6 +13,7 @@ import {
   usageSummary,
   listStatements,
   reconcilePairs,
+  reconcileProposals,
   listIncome,
   listDocuments,
   listAssets,
@@ -75,7 +76,8 @@ import { listNoaCarryovers, confirmNoaCarryover, deleteNoaCarryover } from "./li
 import { buildConnectUrl, qboStatus } from "./lib/qbo-oauth";
 import { QuickBooksAdapter } from "./ledger/qbo";
 import { LedgerReauthError } from "./ledger";
-import { buildReport, reportToCsv, currentFyStartYear, workUseRatesForUserFy } from "./lib/report";
+import { buildReport, reportToCsv, currentFyStartYear, workUseRatesForUserFy, resolveRulePack } from "./lib/report";
+import { reconcileConfigFromPack } from "./lib/reconcile-proposer";
 import { resolveJurisdictionForUser } from "./lib/jurisdiction";
 import { buildAccountantSchedule, scheduleToCsv, scheduleToXlsx } from "./lib/accountant-schedule";
 import { getProgress } from "./lib/progress";
@@ -1341,6 +1343,27 @@ export async function handleApi(
     }
   }
 
+  // ── A8 (#574) receipt ↔ bank-line match proposals (flag reconcile_proposals) ──
+  // GET  /api/reconcile/proposals?fy=YYYY            → confident suggestions + ambiguous + no-line bucket
+  // POST /api/reconcile/proposals/dismiss {receipt_id, line_id} → "Not this one" (never re-proposed)
+  // Proposals are read-only: confirming one is the existing POST /api/match/link, one tap per row.
+  if (resource === "reconcile" && id === "proposals") {
+    if (!featureOn(env, "reconcile_proposals")) return json({ error: "not available" }, 404);
+    if (m === "GET" && !sub) {
+      const fy = Number(url.searchParams.get("fy")) || defaultFy();
+      if (!Number.isInteger(fy) || fy < 1900 || fy > 2200) return json({ error: "bad fy" }, 400);
+      // Thresholds from the tenant's rule pack, resolved exactly as buildReport resolves it (KV shadows bundled).
+      const cfg = reconcileConfigFromPack(await resolveRulePack(env, uid, jur));
+      return json(await reconcileProposals(env, uid, fy, cfg, jur));
+    }
+    if (m === "POST" && sub === "dismiss") {
+      const b = (await req.json().catch(() => ({}))) as { receipt_id?: unknown; line_id?: unknown };
+      if (typeof b.receipt_id !== "string" || typeof b.line_id !== "string") return json({ error: "receipt_id and line_id required" }, 400);
+      return (await stub.dismissReconcileProposal(uid, b.receipt_id, b.line_id)) ? json({ ok: true }) : json({ error: "not found" }, 404);
+    }
+    return json({ error: "not found" }, 404);
+  }
+
   // GET /api/reconcile — unmatched receipts vs unmatched bank lines (for the Reconcile page).
   // #490: fy/limit/offset + true totals; lines come back ordered by best match score.
   if (resource === "reconcile" && m === "GET") {
@@ -1359,8 +1382,10 @@ export async function handleApi(
   // ── Manual receipt ↔ bank-line matching ───────────────────────────────────
   if (resource === "match" && m === "POST") {
     if (id === "link") {
-      const { receiptId, lineId } = (await req.json()) as { receiptId: string; lineId: string };
-      await stub.linkReceipt(uid, receiptId, lineId);
+      const { receiptId, lineId } = (await req.json().catch(() => ({}))) as { receiptId?: unknown; lineId?: unknown };
+      if (typeof receiptId !== "string" || typeof lineId !== "string") return json({ error: "receiptId and lineId required" }, 400);
+      // Writes nothing unless both ids are this tenant's receipt + live bank line (A8 hardening).
+      if (!(await stub.linkReceipt(uid, receiptId, lineId))) return json({ error: "not found" }, 404);
       return json({ ok: true });
     }
     if (id === "unlink") {

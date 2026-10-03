@@ -362,7 +362,7 @@ export async function loanInterestV2Context(env: Env, userId: string, startYear:
 // AU profile loads the same `rulepack:au-v1` (or the bundled fallback) as before. (A UK descriptor points at
 // `uk-2025`, which falls back to bundled au-v1 until that pack ships — the seam is wired, the content defers.)
 // Guarded for the test harness (no env.RULES binding) → bundled au-v1.
-async function resolveRulePack(env: Env, userId: string, descriptor: JurisdictionDescriptor): Promise<RulePackThresholds> {
+export async function resolveRulePack(env: Env, userId: string, descriptor: JurisdictionDescriptor): Promise<RulePackThresholds> {
   // The JURISDICTION default is the base pack id; an explicit per-tenant `rule_pack_ver` pin overrides it.
   // The generic 'au-v1' is the legacy NOT-NULL column default and is treated as "unset" (⇒ use the
   // jurisdiction's pack), so a UK tenant whose column was never updated still gets uk-2025, not au-v1.

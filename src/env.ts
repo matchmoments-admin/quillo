@@ -171,7 +171,8 @@ export interface TaxAgentRpc {
   categoriseStatement(userId: string, statementId: string): Promise<{ categorised: number }>;
   pollBatchJobs(userId: string): Promise<{ applied: number }>;
   recategorise(userId: string): Promise<{ requeued: number; statements: number }>;
-  linkReceipt(userId: string, receiptId: string, lineId: string): Promise<void>;
+  linkReceipt(userId: string, receiptId: string, lineId: string): Promise<boolean>;
+  dismissReconcileProposal(userId: string, receiptId: string, lineId: string): Promise<boolean>;
   unlinkReceipt(userId: string, receiptId: string): Promise<void>;
   runProactiveScan(userId: string): Promise<void>;
   detectAdvisory(userId: string): Promise<{ recurring: number; opportunities: number }>;

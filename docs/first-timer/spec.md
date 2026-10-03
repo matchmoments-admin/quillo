@@ -991,7 +991,7 @@ only**.
 
 - Candidates: receipts with `matched_txn_id IS NULL` and bank lines in the **same FY by the bank
   line's date**, any direction (credits included, so a refund receipt can match a refund credit).
-- Score: the existing `reconcileScore` (`src/lib/queries.ts:343`, amount tolerance max(50¢, 1%) at
+- Score: the existing `reconcileScore` (now `src/lib/reconcile-proposer.ts`, amount tolerance max(50¢, 1%) at
   0.7 + date within 7 days at 0.3).
 - **Propose** when best score ≥ `reconcile.propose_min_score` (pack, starting 0.85) **and** the
   best beats the runner-up by ≥ 0.15. Otherwise no proposal; the receipt stays in the two-pane
@@ -1048,8 +1048,8 @@ same `buildReport` with confirmed-only deductibility; the dossier §7 "one addit
   produces (the proposer adds no new money behaviour; under `COUNTABLE` a matched receipt stops
   counting separately and the bank line counts); a dismissed pair isn't re-proposed; flag OFF
   byte-identical (no `taxable_position_confirmed_cents` field).
-- All personas: `taxable_position_confirmed_cents` ≤ `taxable_position_cents` where
-  deductions are positive (asserted per persona, flag ON).
+- All personas: `taxable_position_confirmed_cents` ≥ `taxable_position_cents` (fewer deductions ⇒ a
+  higher taxable position; #255's invariant — asserted per persona, flag ON).
 
 ### Acceptance
 

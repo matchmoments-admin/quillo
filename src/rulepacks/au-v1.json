@@ -576,5 +576,10 @@
         "Everyday clothing and sports gear for riding are conventional clothing and not deductible."
       ]
     }
+  },
+  "reconcile": {
+    "_note": "Receipt ↔ bank-line match PROPOSER (A8, #574). A proposal is a suggestion the user confirms one row at a time — never auto-applied. Scores come from the shared scorer (amount within max(50c, 1%) weighted 0.7 + date within 7 days weighted 0.3). Propose only when the best line scores >= propose_min_score AND beats the runner-up by >= propose_margin; otherwise the receipt stays in the manual picker.",
+    "propose_min_score": 0.85,
+    "propose_margin": 0.15
   }
 }

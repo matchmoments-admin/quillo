@@ -18,6 +18,11 @@ import { COUNTABLE } from "../src/lib/queries";
 import { fyBounds } from "../src/lib/ledger-totals";
 import { buildAccountantSchedule, tieBackChecks } from "../src/lib/accountant-schedule";
 import { fetchAskDigestRows, listAccounts, listIncome } from "../src/lib/queries";
+import { reconcileProposals } from "../src/lib/queries";
+import { reconcileConfigFromPack } from "../src/lib/reconcile-proposer";
+import { resolveRulePack } from "../src/lib/report";
+import { AU_DESCRIPTOR } from "../src/lib/jurisdiction";
+import { receiptLinkTargets, applyReceiptLink } from "../src/lib/receipt-link";
 import { deleteRow, archiveRow, DeleteBlockedError, type DeleteBlocker, syncPropertyDisposalToCgt, syncIncomeCgtFromComponents, syncTxnCgtHolding, clearTxnCgt, clearOrphanedTxnCgt } from "../src/lib/situation-write";
 import { ordinaryAssessableCents, type AmmaComponents } from "../src/lib/managed-fund";
 import { draftHoldingFromTxn } from "../src/lib/clarify";
@@ -2150,6 +2155,101 @@ async function main() {
       check("pft6b (ON, credits only): income_not_recorded owns it — no contradictory 'nothing captured'; no '$0 against deductions' claim without deductions",
         fd?.severity === "blocker" && !only.ready.findings.some((x) => x.id === "nothing_captured") && !fd.general_info_note.includes("against $0"));
       check("pft6b (OFF): legacy 'nothing captured' still fires (byte-identical)", (await ftAssess(env, u2)).ready.findings.some((x) => x.id === "nothing_captured"));
+    }
+
+    // pft11 — FT1 Jess with receipts (A8, #574, flag reconcile_proposals). Over real D1 rows through the SAME
+    // functions the API runs (reconcileProposals + resolveRulePack → reconcileConfigFromPack) and the SAME link writer the Match
+    // tap runs (receiptLinkTargets + applyReceiptLink, which TaxAgent.linkReceipt calls). Asserts the proposer
+    // only ever SUGGESTS: nothing is matched until a confirm, and a confirm moves the position exactly as
+    // today's manual Link of the same pair does (no new money behaviour).
+    {
+      const RP_ENV = { ...env, FEATURES: `${(env as { FEATURES: string }).FEATURES},reconcile_proposals` } as unknown as Env;
+      const seedPft11 = (u: string) => {
+        seedTenant(u, "FT1 Jess with receipts");
+        inc(`${u}Sal`, u, "salary_payg", 3400000, { withholding_cents: 400000 });
+        const t = (id: string, kind: string, cents: number, date: string, direction = "debit") =>
+          run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, direction, deductibility) VALUES (?, ?, 'upload', 'extracted', ?, ?, ?, ?, 'payg', ?, 'confirmed_deductible')`,
+            `${u}${id}`, u, kind, cents, cents, date, direction);
+        t("rExact", "receipt", 8900, "2025-09-03"); t("lExact", "bank_line", 8900, "2025-09-04");           // Officeworks $89: exact
+        t("rTie", "receipt", 4500, "2025-10-10"); t("lTieA", "bank_line", 4500, "2025-10-09"); t("lTieB", "bank_line", 4500, "2025-10-11"); // near-tie
+        t("rCash", "receipt", 3000, "2025-11-01");                                                            // paid cash, no line
+        t("rRef", "receipt", 2500, "2025-12-01", "credit"); t("lRef", "bank_line", 2500, "2025-12-02", "credit"); // refund receipt ↔ refund credit
+      };
+      const matchedN = (u: string) => (db.prepare(`SELECT COUNT(*) AS n FROM transactions WHERE user_id = ? AND matched_txn_id IS NOT NULL`).get(u) as { n: number }).n;
+      const link = async (u: string, r: string, l: string) => {
+        const tg = await receiptLinkTargets(RP_ENV, u, r, l);
+        if (tg) await applyReceiptLink(RP_ENV, u, r, l, tg.donor);
+        return !!tg;
+      };
+      const u = "pft11";
+      seedPft11(u);
+      const cfg = reconcileConfigFromPack(await resolveRulePack(RP_ENV, u, AU_DESCRIPTOR));
+      check("pft11: thresholds resolve from the rule pack (0.85 / 0.15)", cfg.proposeMinScore === 0.85 && cfg.proposeMargin === 0.15);
+      const p1 = await reconcileProposals(RP_ENV, u, 2025, cfg);
+      const pairs = p1.proposals.map((p) => `${p.receipt.id}>${p.line.id}`).sort();
+      check("pft11: exactly the exact match and the refund pair are proposed (credits matchable)", JSON.stringify(pairs) === JSON.stringify([`${u}rExact>${u}lExact`, `${u}rRef>${u}lRef`]));
+      check("pft11: the near-tie is NOT proposed — it stays in the manual picker", p1.ambiguous.some((a) => a.receipt.id === `${u}rTie`) && !pairs.some((p) => p.startsWith(`${u}rTie`)));
+      check("pft11: the cash receipt is in the 'no bank line this year' bucket", p1.no_line.length === 1 && p1.no_line[0]!.id === `${u}rCash` && !p1.truncated);
+      check("pft11: proposing writes NOTHING — no receipt is matched without a confirm", matchedN(u) === 0);
+
+      // "Not this one" on the refund pair (the same INSERT TaxAgent.dismissReconcileProposal runs).
+      run(`INSERT OR IGNORE INTO reconcile_dismissals (user_id, receipt_id, line_id) VALUES (?, ?, ?)`, u, `${u}rRef`, `${u}lRef`);
+      const p2 = await reconcileProposals(RP_ENV, u, 2025, cfg);
+      check("pft11: a dismissed pair is never re-proposed", !p2.proposals.some((p) => p.receipt.id === `${u}rRef`) && p2.proposals.length === 1);
+      check("pft11: dismissing writes no match either", matchedN(u) === 0);
+
+      // Confirm the remaining proposal with one tap.
+      const before = await buildReport(RP_ENV, u, 2025);
+      const prop = p2.proposals[0]!;
+      check("pft11: the confirm write accepts the proposal's pair", await link(u, prop.receipt.id, prop.line.id));
+      const after = await buildReport(RP_ENV, u, 2025);
+      const m = db.prepare(`SELECT matched_txn_id FROM transactions WHERE id = ?`).get(`${u}rExact`) as { matched_txn_id: string | null };
+      check("pft11: confirming sets matched_txn_id on the receipt", m.matched_txn_id === `${u}lExact`);
+      check("pft11: under COUNTABLE the matched receipt stops counting separately — the $89 is counted once (position +$89)", after.taxable_position_cents - before.taxable_position_cents === 8900);
+      const p3 = await reconcileProposals(RP_ENV, u, 2025, cfg);
+      check("pft11: a confirmed pair leaves the proposals", p3.proposals.length === 0);
+
+      // Manual Link of the same pair on an identical tenant ⇒ the identical position.
+      const um = "pft11m";
+      seedPft11(um);
+      await link(um, `${um}rExact`, `${um}lExact`);
+      const manual = await buildReport(RP_ENV, um, 2025);
+      check("pft11: confirmed proposal ⇒ exactly the position a manual Link of the same pair produces", manual.taxable_position_cents === after.taxable_position_cents && manual.total_deductions_cents === after.total_deductions_cents);
+
+      // The link writer refuses another tenant's line / a non-line (A8 hardening).
+      check("pft11: link refuses a line that belongs to another tenant", !(await link(u, `${u}rTie`, `${um}lTieA`)));
+      check("pft11: link refuses a receipt as the 'line'", !(await link(u, `${u}rTie`, `${u}rCash`)));
+
+      // FY boundary: a runner-up dated just across 30 June still counts against the margin (review fix).
+      const ub = "pft11b";
+      seedTenant(ub, "FT1 boundary");
+      const tb = (id: string, kind: string, cents: number, date: string) =>
+        run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, direction, deductibility) VALUES (?, ?, 'upload', 'extracted', ?, ?, ?, ?, 'payg', 'debit', 'confirmed_deductible')`, id, ub, kind, cents, cents, date);
+      tb("pft11bR", "receipt", 10000, "2026-06-30"); tb("pft11bA", "bank_line", 10000, "2026-06-30"); tb("pft11bB", "bank_line", 10000, "2026-07-01");
+      const fy25 = await reconcileProposals(RP_ENV, ub, 2025, cfg);
+      const fy26 = await reconcileProposals(RP_ENV, ub, 2026, cfg);
+      check("pft11b: same receipt is NOT confidently proposed from either FY when the runner-up sits across the boundary",
+        fy25.proposals.length === 0 && fy26.proposals.length === 0 && fy25.ambiguous.some((a) => a.receipt.id === "pft11bR"));
+
+      // Readiness field: present + ≥ tracked when ON; absent when OFF; OFF payload byte-identical otherwise.
+      const sig = ftBaseSignals();
+      const offR = assessReadiness({ report: after, situation: ftSituation(u), claimMatches: [], signals: sig, generatedAt: "2026-10-03T00:00:00Z" });
+      const onR = assessReadiness({ report: after, situation: ftSituation(u), claimMatches: [], signals: sig, generatedAt: "2026-10-03T00:00:00Z", reconcileProposals: true });
+      check("pft11 (OFF): no taxable_position_confirmed_cents field", !("taxable_position_confirmed_cents" in offR.position));
+      check("pft11 (ON): field = the report's confirmed position", onR.position.taxable_position_confirmed_cents === after.taxable_position_confirmed_cents && after.taxable_position_confirmed_cents != null);
+      const { taxable_position_confirmed_cents: _drop, ...onPos } = onR.position;
+      check("pft11: flag ON adds ONLY that field (rest byte-identical)", JSON.stringify({ ...onR, position: onPos }) === JSON.stringify(offR));
+    }
+
+    // All personas, flag ON: the confirmed end of the range never sits BELOW the tracked figure (fewer
+    // deductions ⇒ a higher taxable position; #255's invariant, carried into the readiness block).
+    {
+      for (const u of ["p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9", "p10"]) {
+        const report = await buildReport(env, u, 2025);
+        const on = assessReadiness({ report, situation: ftSituation(u), claimMatches: [], signals: ftBaseSignals(), generatedAt: "2026-10-03T00:00:00Z", reconcileProposals: true });
+        const c = on.position.taxable_position_confirmed_cents;
+        check(`${u} (reconcile_proposals ON): confirmed position present and ≥ tracked`, c != null && c >= on.position.indicative_taxable_position_cents);
+      }
     }
   }
 

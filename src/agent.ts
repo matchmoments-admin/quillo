@@ -9,6 +9,7 @@ import { QuickBooksAdapter } from "./ledger/qbo";
 import { revokeAndDisconnect } from "./lib/qbo-oauth";
 import { purgeTenant as purgeTenantData, exportTenant as exportTenantData, flagOldData as flagOldDataSweep, hasPendingNudge, type PurgeResult } from "./lib/retention";
 import { COUNTABLE, COUNTABLE_INCOME, FX_CONVERTED, assertCanonicalSource, fetchAskDigestRows, spendRunRate } from "./lib/queries";
+import { applyReceiptLink, receiptLinkTargets } from "./lib/receipt-link";
 import { billerNormalize, detectRecurrence, classifyBiller, paymentsPerYear, recurringCopy, signpostFor, insurerResetBasis, nextResetDate, weeksUntil, phiResetNudgeCopy, phiDetectedCopy, type RecurringOccurrence, type ResetBasis } from "./lib/advisory";
 import { findPhisProduct } from "./lib/phis-seed";
 import { matchEnergyOffer, getOfferById, buildReferralUrl, opportunityTakesEnergyCta, type PartnerDB } from "./lib/partners";
@@ -1308,14 +1309,20 @@ export class TaxAgent extends Agent<Env> {
     const amt = receipt.amount_aud_cents ?? receipt.amount_cents;
     if (amt == null || !receipt.txn_date) return false;
     const tol = Math.max(50, Math.round(amt * 0.01));
+    // A8 (#574): with reconcile_proposals ON, a pair the user rejected ("Not this one") is never
+    // auto-linked on a later import either. OFF ⇒ the predicate is absent ⇒ byte-identical SQL.
+    const skipDismissed = featureOn(this.env, "reconcile_proposals");
     const cands = await this.env.DB.prepare(
       `SELECT id, amount_aud_cents, amount_cents, txn_date, raw_description, merchant FROM transactions
         WHERE user_id = ? AND kind = 'bank_line' AND status NOT IN ('duplicate','ignored') AND matched_txn_id IS NULL
           AND direction = 'debit'
           AND ABS(COALESCE(amount_aud_cents, amount_cents) - ?) <= ?
-          AND txn_date BETWEEN date(?, '-4 day') AND date(?, '+4 day')`,
+          AND txn_date BETWEEN date(?, '-4 day') AND date(?, '+4 day')${skipDismissed
+            ? `
+          AND NOT EXISTS (SELECT 1 FROM reconcile_dismissals d WHERE d.user_id = ? AND d.receipt_id = ? AND d.line_id = transactions.id)`
+            : ""}`,
     )
-      .bind(userId, amt, tol, receipt.txn_date, receipt.txn_date)
+      .bind(userId, amt, tol, receipt.txn_date, receipt.txn_date, ...(skipDismissed ? [userId, receipt.id] : []))
       .all<{ id: string; amount_aud_cents: number | null; amount_cents: number | null; txn_date: string | null; raw_description: string | null; merchant: string | null }>();
 
     let best: { id: string } | null = null;
@@ -1347,29 +1354,30 @@ export class TaxAgent extends Agent<Env> {
     lineId: string,
     receipt?: { gst_cents: number | null; bucket: string | null; ato_label: string | null },
   ): Promise<void> {
-    await this.env.DB.prepare(`UPDATE transactions SET matched_txn_id = ?, status = 'matched_receipt' WHERE id = ? AND user_id = ? AND kind = 'receipt'`)
-      .bind(lineId, receiptId, userId)
-      .run();
-    // The line is authoritative AUD; take the receipt's GST/bucket where the line lacked them.
-    if (receipt) {
-      await this.env.DB.prepare(
-        `UPDATE transactions SET gst_cents = COALESCE(gst_cents, ?), bucket = COALESCE(bucket, ?),
-                ato_label = COALESCE(ato_label, ?), status = CASE WHEN bucket IS NULL THEN 'extracted' ELSE status END
-          WHERE id = ? AND user_id = ?`,
-      )
-        .bind(receipt.gst_cents, receipt.bucket, receipt.ato_label, lineId, userId)
-        .run();
-    }
+    await applyReceiptLink(this.env, userId, receiptId, lineId, receipt);
     await this.audit(userId, "match", JSON.stringify({ receiptId, lineId }));
     await this.notify(userId, `Matched a receipt to a statement line — counted once now.`, lineId);
   }
 
-  /** Manual link (user clicks): attach a receipt to a bank line as evidence. */
-  async linkReceipt(userId: string, receiptId: string, lineId: string): Promise<void> {
-    const r = await this.env.DB.prepare(`SELECT gst_cents, bucket, ato_label FROM transactions WHERE id = ? AND user_id = ?`)
-      .bind(receiptId, userId)
-      .first<{ gst_cents: number | null; bucket: string | null; ato_label: string | null }>();
-    await this.linkReceiptToLine(userId, receiptId, lineId, r ?? undefined);
+  /** Manual link (user clicks — the Reconcile picker's Link or a Check proposal's Match): attach a
+   *  receipt to a bank line as evidence. Returns false (and writes nothing) unless both ids are this
+   *  tenant's receipt and live bank line — see receiptLinkTargets. */
+  async linkReceipt(userId: string, receiptId: string, lineId: string): Promise<boolean> {
+    const t = await receiptLinkTargets(this.env, userId, receiptId, lineId);
+    if (!t) return false;
+    await this.linkReceiptToLine(userId, receiptId, lineId, t.donor);
+    return true;
+  }
+
+  /** A8 (#574): the user said "Not this one" to a proposed receipt ↔ line pair — never propose it again.
+   *  Only the tenant's own receipt + bank line can be dismissed; idempotent. Changes suggestions only. */
+  async dismissReconcileProposal(userId: string, receiptId: string, lineId: string): Promise<boolean> {
+    if (!(await receiptLinkTargets(this.env, userId, receiptId, lineId))) return false;
+    await this.env.DB.prepare(`INSERT OR IGNORE INTO reconcile_dismissals (user_id, receipt_id, line_id) VALUES (?, ?, ?)`)
+      .bind(userId, receiptId, lineId)
+      .run();
+    await this.audit(userId, "reconcile_dismiss", JSON.stringify({ receiptId, lineId }));
+    return true;
   }
 
   /** Manual unlink: detach a receipt so it counts standalone again. */
@@ -4196,7 +4204,7 @@ export class TaxAgent extends Agent<Env> {
       } : {}),
     };
 
-    const readiness = assessReadiness({ report, situation, claimMatches: [...matchedById.values()], signals, generatedAt: new Date().toISOString(), excludeNonDeductible: featureOn(this.env, "position_excludes_nondeductible"), excludePropertyUndetermined: featureOn(this.env, "position_excludes_property_undetermined"), auditFindingsV2: featureOn(this.env, "readiness_audit_v2") });
+    const readiness = assessReadiness({ report, situation, claimMatches: [...matchedById.values()], signals, generatedAt: new Date().toISOString(), excludeNonDeductible: featureOn(this.env, "position_excludes_nondeductible"), excludePropertyUndetermined: featureOn(this.env, "position_excludes_property_undetermined"), auditFindingsV2: featureOn(this.env, "readiness_audit_v2"), reconcileProposals: featureOn(this.env, "reconcile_proposals") });
     await this.audit(userId, "readiness_assessed", JSON.stringify({ fy, blockers: readiness.readiness_score.blockers, review: readiness.readiness_score.review, findings: readiness.findings.length }));
     return readiness;
   }

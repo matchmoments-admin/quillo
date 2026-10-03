@@ -213,6 +213,7 @@ calls) → `assessReadiness`, and assert that flag `first_timer_income` never mo
 | Foreign income for a non-AU resident (review nudge; income stays in the position — exclusion is held owner decision G10) | ✓ | ✓ residency switch | ✓ | `first_timer_income` (ON) | FT4 (10 only if residency is non-AU) |
 | Wages answer on a credit group (never net-as-gross) | ✗ | ✗ | ✗ | — (owner decision G2) | FT1–4 |
 | Residency periods / temporary resident / visa; residency-aware foreign income | ✗ | ◑ AU/foreign switch | ◑ | — (map fog M2/M3) | FT4 |
+| Receipt ↔ bank-line match proposals (A8, #574): confidence-gated suggestions (pack `reconcile.*`), credits matchable, near-ties and contested lines left to the picker, "no bank line this year" bucket, dismissals never re-proposed; **never auto-confirmed** — Match is the existing manual Link; readiness `taxable_position_confirmed_cents` | ✓ (`pft11`) | ◑ manual picker only — Check page is #589 | ✗ until #589 | `reconcile_proposals` (OFF) | FT1 (`pft11`), 1–10 (confirmed ≥ tracked) |
 | Study-loan flag + repayment-income passthrough | ◑ NOA balance | ✗ | ◑ | — (waits on M2) | FT2, FT1 |
 
 Still open from the findings doc: G2 (wages answer), M2/M3 (residency periods + residency-aware

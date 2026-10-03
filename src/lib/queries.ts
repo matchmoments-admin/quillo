@@ -11,6 +11,7 @@ import {
 } from "./advisory";
 import { matchEnergyOffer, ctaFromOffer, opportunityTakesEnergyCta, type PartnerDB } from "./partners";
 import { groupKey } from "./clarify";
+import { parseLinkSnapshot } from "./receipt-link";
 import { reconcileScore, proposeMatches, RECONCILE_WINDOW_DAYS, type ReconcileConfig, type MatchProposal } from "./reconcile-proposer";
 import type { JurisdictionDescriptor } from "./jurisdiction";
 
@@ -356,18 +357,30 @@ export interface ReconcilePairsResult {
   lines_available: number;
 }
 
-// The scorer now lives in src/lib/reconcile-proposer.ts (A8, #574) and is shared by this picker ordering
-// and the server-side proposer. The SPA's score() in Reconcile.tsx is still a mirror (it re-sorts the
-// loaded page for a picked receipt) until the Check page's fallback picker reads server ordering.
+// The scorer lives in src/lib/reconcile-proposer.ts (A8, #574) and is shared by this picker ordering and
+// the server-side proposer. The SPA has no copy (#589): a picked receipt re-fetches with `forReceipt` and
+// the server orders the whole scanned set for it.
 
 /** Unmatched receipts + unmatched bank lines, for the manual Reconcile page.
  * `fy` scopes the BANK LINES only (money decides the year — a receipt near the boundary must still be
  * able to match, so receipts stay unscoped). Lines are ordered by best match score against the
  * unmatched receipts (recency tiebreak), so the first screen carries the likeliest matches; each
  * line's `best_receipt_id` is the seed of the future server-side proposer. */
-export async function reconcilePairs(env: Env, userId: string, opts: { fy?: number; limit?: number; offset?: number } = {}): Promise<ReconcilePairsResult> {
+export async function reconcilePairs(
+  env: Env,
+  userId: string,
+  opts: {
+    fy?: number;
+    limit?: number;
+    offset?: number;
+    /** #589 (reconcile_proposals ON): list credit lines too, so a refund receipt has a manual path. OFF ⇒ debit-only SQL, unchanged. */
+    includeCredits?: boolean;
+    /** #589: order the scanned lines for THIS receipt (the picker's per-receipt sort; replaces the SPA's scorer mirror). */
+    forReceipt?: string;
+  } = {},
+): Promise<ReconcilePairsResult> {
   const receiptWhere = `user_id = ? AND kind = 'receipt' AND status NOT IN ('duplicate') AND matched_txn_id IS NULL AND amount_cents IS NOT NULL`;
-  let lineWhere = `user_id = ? AND kind = 'bank_line' AND status NOT IN ('duplicate','ignored') AND direction = 'debit'
+  let lineWhere = `user_id = ? AND kind = 'bank_line' AND status NOT IN ('duplicate','ignored') AND ${opts.includeCredits ? "direction IN ('debit','credit')" : "direction = 'debit'"}
         AND id NOT IN (SELECT matched_txn_id FROM transactions WHERE user_id = ? AND matched_txn_id IS NOT NULL)`;
   const lineBinds: unknown[] = [userId, userId];
   if (opts.fy != null) {
@@ -386,13 +399,24 @@ export async function reconcilePairs(env: Env, userId: string, opts: { fy?: numb
   // Score every scanned line against every LOADED receipt (bounded ≤ 500 × RECONCILE_SCAN). Beyond 500
   // unmatched receipts a line's best match may be a receipt we didn't load — best_receipt_id must not
   // grow a consumer that trusts it until receipts paginate too (shape-B proposer work).
-  const rs = receipts.map((r) => ({ id: r.id, cents: r.amount_aud_cents ?? r.amount_cents ?? 0, time: r.txn_date ? Date.parse(r.txn_date) : null }));
+  // With credits listed, a line only scores against receipts of its own direction (a refund receipt ↔ a
+  // refund credit; NULL direction = the column default, debit), the proposer's like-with-like rule.
+  const dirOf = (d: string | null | undefined) => (d === "credit" ? "credit" : "debit");
+  const rs = receipts.map((r) => ({ id: r.id, cents: r.amount_aud_cents ?? r.amount_cents ?? 0, time: r.txn_date ? Date.parse(r.txn_date) : null, dir: dirOf(r.direction) }));
+  // The picked receipt (a tenant-scoped read, so another tenant's id simply orders nothing). It may sit
+  // outside the 500 loaded receipts, so it is read on its own.
+  const picked = opts.forReceipt
+    ? await env.DB.prepare(`SELECT amount_cents, amount_aud_cents, txn_date, direction FROM transactions WHERE id = ? AND user_id = ? AND kind = 'receipt'`)
+        .bind(opts.forReceipt, userId)
+        .first<{ amount_cents: number | null; amount_aud_cents: number | null; txn_date: string | null; direction: string | null }>()
+    : null;
   const scored = scanned.map((l) => {
     const lCents = l.amount_aud_cents ?? l.amount_cents ?? 0;
     const lTime = l.txn_date ? Date.parse(l.txn_date) : null;
     let best_score = 0;
     let best_receipt_id: string | null = null;
     for (const r of rs) {
+      if (opts.includeCredits && r.dir !== dirOf(l.direction)) continue;
       const s = reconcileScore(r.cents, r.time, lCents, lTime);
       if (s > best_score) {
         best_score = s;
@@ -401,7 +425,17 @@ export async function reconcilePairs(env: Env, userId: string, opts: { fy?: numb
     }
     return { ...l, best_score, best_receipt_id };
   });
-  scored.sort((a, b) => b.best_score - a.best_score || (b.txn_date ?? "").localeCompare(a.txn_date ?? ""));
+  if (picked) {
+    // Per-receipt order: score against the picked receipt; an opposite-direction line sorts after every
+    // same-direction one (still listed — the user decides). Recency breaks ties, as below.
+    const pCents = picked.amount_aud_cents ?? picked.amount_cents ?? 0;
+    const pTime = picked.txn_date ? Date.parse(picked.txn_date) : null;
+    const pDir = dirOf(picked.direction);
+    const key = new Map(scored.map((l) => [l.id, (dirOf(l.direction) === pDir ? 1 : 0) + reconcileScore(pCents, pTime, l.amount_aud_cents ?? l.amount_cents ?? 0, l.txn_date ? Date.parse(l.txn_date) : null)]));
+    scored.sort((a, b) => key.get(b.id)! - key.get(a.id)! || (b.txn_date ?? "").localeCompare(a.txn_date ?? ""));
+  } else {
+    scored.sort((a, b) => b.best_score - a.best_score || (b.txn_date ?? "").localeCompare(a.txn_date ?? ""));
+  }
   const limit = Math.min(Math.max(opts.limit ?? 200, 1), RECONCILE_SCAN);
   const offset = Math.max(opts.offset ?? 0, 0);
   return { receipts, lines: scored.slice(offset, offset + limit), total_receipts: totalReceipts, total_lines: totalLines, lines_available: scanned.length };
@@ -472,6 +506,44 @@ export async function reconcileProposals(env: Env, userId: string, fy: number, c
     ambiguous: out.ambiguous.map((a) => ({ receipt: rById.get(a.receipt_id)!, candidates: a.candidates })),
     no_line: out.no_line.map((id) => rById.get(id)!),
     truncated: false,
+  };
+}
+
+// ── #589 linked pairs for the Check step (reconcile_proposals) ───────────────────────────────────────
+// Receipts already linked to a bank line dated in the FY, newest line first, each with `auto` = the
+// import-time auto-matcher made the link (its audit row carries auto:true — written only with the flag
+// ON, so older auto-links read as plain links) and no later manual link replaced it. Read-only; the
+// Check step lists them with an Undo (owner direction pending on the auto-matcher: it stays on, but its
+// pairs are visible and reversible).
+export const LINKED_PAIRS_CAP = 500;
+export interface LinkedPair {
+  receipt: ProposalRow;
+  line: ProposalRow;
+  auto: boolean;
+}
+export async function reconcileLinkedPairs(env: Env, userId: string, fy: number, jurisdiction?: JurisdictionDescriptor): Promise<{ fy: number; pairs: LinkedPair[]; truncated: boolean }> {
+  const bounds = fyBounds(fy, jurisdiction ?? await resolveJurisdictionForUser(env, userId));
+  const cols = PROPOSAL_ROW_COLS.split(", ");
+  const sel = (alias: string, p: string) => cols.map((c) => `${alias}.${c} AS ${p}${c}`).join(", ");
+  const rows = (await env.DB.prepare(
+    `SELECT ${sel("r", "r_")}, ${sel("l", "l_")}, r.link_snapshot AS r_link_snapshot FROM transactions r
+       JOIN transactions l ON l.id = r.matched_txn_id AND l.user_id = r.user_id AND l.kind = 'bank_line'
+      WHERE r.user_id = ? AND r.kind = 'receipt' AND r.matched_txn_id IS NOT NULL
+        AND l.txn_date >= ? AND l.txn_date <= ?
+      ORDER BY l.txn_date DESC, r.id LIMIT ${LINKED_PAIRS_CAP + 1}`,
+  ).bind(userId, bounds.start, bounds.end).all<Record<string, unknown>>()).results ?? [];
+  const pick = (row: Record<string, unknown>, p: string) => Object.fromEntries(cols.map((c) => [c, row[`${p}${c}`] ?? null])) as unknown as ProposalRow;
+  const truncated = rows.length > LINKED_PAIRS_CAP;
+  // Provenance comes from the receipt's stored link snapshot (0084): auto only when it is for THIS line, so a
+  // manual re-link (which rewrites the snapshot) reads as manual. No snapshot (a legacy link) ⇒ manual.
+  return {
+    fy,
+    pairs: rows.slice(0, LINKED_PAIRS_CAP).map((row) => {
+      const receipt = pick(row, "r_");
+      const line = pick(row, "l_");
+      return { receipt, line, auto: parseLinkSnapshot(row.r_link_snapshot as string | null, line.id)?.auto === true };
+    }),
+    truncated,
   };
 }
 

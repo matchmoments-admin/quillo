@@ -15,7 +15,8 @@ import { reconcileConfigFromPack } from "./lib/reconcile-proposer";
 import { assessJourney, coldJourney, journeyLodgedFys, journeySignals, type Journey } from "./lib/journey";
 import { availableLayers, growPayload, setGrowLayer, type GrowPayload } from "./lib/grow";
 import { isPartner } from "./lib/roles";
-import { applyReceiptLink, receiptLinkTargets } from "./lib/receipt-link";
+import { applyRecordException, recordsView, type RecordsView } from "./lib/records";
+import { applyReceiptLink, receiptLinkTargets, undoReceiptLink } from "./lib/receipt-link";
 import { billerNormalize, detectRecurrence, classifyBiller, paymentsPerYear, recurringCopy, signpostFor, insurerResetBasis, nextResetDate, weeksUntil, phiResetNudgeCopy, phiDetectedCopy, type RecurringOccurrence, type ResetBasis } from "./lib/advisory";
 import { findPhisProduct } from "./lib/phis-seed";
 import { matchEnergyOffer, getOfferById, buildReferralUrl, opportunityTakesEnergyCta, type PartnerDB } from "./lib/partners";
@@ -75,7 +76,7 @@ import auV1RulePack from "./rulepacks/au-v1.json";
 import { assertBucketKeys, isBucket, isPropertyBucket, normalizeAtoLabel, DEDUCTIBILITY_STATES, WAGE_INCOME_TYPES } from "./lib/taxonomy";
 import { verdictForTxn } from "./lib/deductibility";
 import { featureOn, categoriseMode } from "./lib/features";
-import { runRelevanceScan, confirmWorthALook } from "./lib/relevance-scan-run";
+import { runRelevanceScan, confirmWorthALook, type WorthALookConfirmInput } from "./lib/relevance-scan-run";
 
 const CONFIDENCE_THRESHOLD = 0.85;
 // Backstop on bank-sync alarm continuations (#511). MAX_PAGES_PER_RUN normally ends a run first;
@@ -1379,7 +1380,7 @@ export class TaxAgent extends Agent<Env> {
       } else if (score > second) second = score;
     }
     if (best && bestScore >= 0.8 && bestScore - second > 0.15) {
-      await this.linkReceiptToLine(userId, receipt.id, best.id, receipt);
+      await this.linkReceiptToLine(userId, receipt.id, best.id, receipt, true);
       return true;
     }
     return false;
@@ -1390,9 +1391,16 @@ export class TaxAgent extends Agent<Env> {
     receiptId: string,
     lineId: string,
     receipt?: { gst_cents: number | null; bucket: string | null; ato_label: string | null },
+    auto = false,
   ): Promise<void> {
-    await applyReceiptLink(this.env, userId, receiptId, lineId, receipt);
-    await this.audit(userId, "match", JSON.stringify({ receiptId, lineId }));
+    // #589/#587: with reconcile_proposals ON the receipt row stores the link's snapshot (0084 link_snapshot:
+    // auto-matcher or tap, and what the link changed) so the Review queue can list auto-links with an Undo that
+    // puts the line back (reconcileLinkedPairs / undoReceiptLink); the audit row keeps `auto` as a breadcrumb.
+    // OFF ⇒ no snapshot read, no column write, and the detail is unchanged.
+    const on = featureOn(this.env, "reconcile_proposals");
+    await applyReceiptLink(this.env, userId, receiptId, lineId, receipt, { snapshot: on, auto });
+    const detail = on && auto ? { receiptId, lineId, auto: true } : { receiptId, lineId };
+    await this.audit(userId, "match", JSON.stringify(detail));
     await this.notify(userId, `Matched a receipt to a statement line — counted once now.`, lineId);
   }
 
@@ -1400,7 +1408,8 @@ export class TaxAgent extends Agent<Env> {
    *  receipt to a bank line as evidence. Returns false (and writes nothing) unless both ids are this
    *  tenant's receipt and live bank line — see receiptLinkTargets. */
   async linkReceipt(userId: string, receiptId: string, lineId: string): Promise<boolean> {
-    const t = await receiptLinkTargets(this.env, userId, receiptId, lineId);
+    // #589: with reconcile_proposals ON the picker lists credit lines, so refuse opposite-direction pairs.
+    const t = await receiptLinkTargets(this.env, userId, receiptId, lineId, { sameDirection: featureOn(this.env, "reconcile_proposals") });
     if (!t) return false;
     await this.linkReceiptToLine(userId, receiptId, lineId, t.donor);
     return true;
@@ -1417,9 +1426,24 @@ export class TaxAgent extends Agent<Env> {
     return true;
   }
 
+  /** #589 (reconcile_proposals): Undo a link from the Check step — unlink + remember the pair as dismissed so
+   *  neither the import auto-matcher nor the proposer re-pairs it. False (nothing written) unless the id is
+   *  this tenant's currently-linked receipt. */
+  async undoReconcileLink(userId: string, receiptId: string): Promise<boolean> {
+    const lineId = await undoReceiptLink(this.env, userId, receiptId);
+    if (!lineId) return false;
+    await this.audit(userId, "unmatch", JSON.stringify({ receiptId, lineId, undo: true }));
+    return true;
+  }
+
   /** Manual unlink: detach a receipt so it counts standalone again. */
   async unlinkReceipt(userId: string, receiptId: string): Promise<void> {
-    await this.env.DB.prepare(`UPDATE transactions SET matched_txn_id = NULL, status = 'extracted' WHERE id = ? AND user_id = ? AND kind = 'receipt'`)
+    // #587: ON, the stored link snapshot goes with the link (it describes a link that no longer exists).
+    await this.env.DB.prepare(
+      featureOn(this.env, "reconcile_proposals")
+        ? `UPDATE transactions SET matched_txn_id = NULL, status = 'extracted', link_snapshot = NULL WHERE id = ? AND user_id = ? AND kind = 'receipt'`
+        : `UPDATE transactions SET matched_txn_id = NULL, status = 'extracted' WHERE id = ? AND user_id = ? AND kind = 'receipt'`,
+    )
       .bind(receiptId, userId)
       .run();
     await this.audit(userId, "unmatch", JSON.stringify({ receiptId }));
@@ -4661,14 +4685,17 @@ export class TaxAgent extends Agent<Env> {
     const jur = await this.jurisdictionFor(userId);
     const [readiness, situation] = await Promise.all([this.computeFilingReadiness(userId, startYear), getSituation(this.env, userId, profile)]);
     const signals = await journeySignals(this.env, userId, startYear, situation, jur);
+    const pack = await resolveRulePack(this.env, userId, jur);
     if (featureOn(this.env, "reconcile_proposals")) {
-      const cfg = reconcileConfigFromPack(await resolveRulePack(this.env, userId, jur));
+      const cfg = reconcileConfigFromPack(pack);
       signals.check.proposals = (await reconcileProposals(this.env, userId, startYear, cfg, jur)).proposals.length;
     }
+    // A7 (#588): the Records step's counts — claims with a record / under an exception, facts needed/stated.
+    signals.records = (await recordsView(this.env, userId, startYear, pack, jur)).block;
     // A11b (#592): Grow visibility (data presence is computed here, so existing tenants see their layers on
     // first load) + the open "looks like you have X" suggestions.
     // Navigation extras only: a Grow failure (e.g. 0083 not yet applied) must never take the whole shell down.
-    const grow = await (async () => growPayload(this.env, userId, startYear, { isPartner: isPartner(profile), pack: await resolveRulePack(this.env, userId, jur), descriptor: jur }))()
+    const grow = await (async () => growPayload(this.env, userId, startYear, { isPartner: isPartner(profile), pack, descriptor: jur }))()
       .catch((e): GrowPayload => { console.error("journey: grow payload failed", e instanceof Error ? e.message : String(e)); return { layers: [], suggestions: [] }; });
     // lodging_fy = #572's lodging-year default (the earliest unlodged FY whose year has ended), not the FY asked for.
     return assessJourney({ readiness, signals, grow, lodgingFy: lodgingFy(new Date(), jur.taxPeriod, await journeyLodgedFys(this.env, userId)) });
@@ -4693,6 +4720,29 @@ export class TaxAgent extends Agent<Env> {
     const err = await setGrowLayer(this.env, userId, { layer: body.layer, state: body.state, source: body.source, fy: body.fy }, availableLayers(this.env, isPartner(profile)));
     if (err) return { error: err };
     await this.audit(userId, "grow_layer_set", JSON.stringify({ layer: body.layer, state: body.state, source: body.source, ...(body.source === "detected" && body.state === "off" ? { fy: Number(body.fy) } : {}) }));
+    return { ok: true };
+  }
+
+  /**
+   * A7 (#588, ft_journey): the Records step — every confirmed claim with its record status, the facts to
+   * state, and the record-keeping exceptions open this FY. Read-only; counts, never a position figure.
+   */
+  async records(userId: string, startYear: number): Promise<RecordsView> {
+    const jur = await this.jurisdictionFor(userId);
+    return recordsView(this.env, userId, startYear, await resolveRulePack(this.env, userId, jur), jur);
+  }
+
+  /**
+   * A7 (#588, ft_journey): attest (or clear, kind = null) that a confirmed claim line falls under a
+   * record-keeping exception. Eligibility is re-derived server-side from the same view the page reads, so a
+   * stale or forged client can't attest a line the exception doesn't cover. An attestation, never evidence;
+   * no position query reads the column.
+   */
+  async setRecordException(userId: string, startYear: number, txnId: string, kind: string | null): Promise<{ ok: boolean; error?: string }> {
+    const jur = await this.jurisdictionFor(userId);
+    const err = await applyRecordException(this.env, userId, startYear, await resolveRulePack(this.env, userId, jur), txnId, kind, jur);
+    if (err) return { ok: false, error: err };
+    await this.audit(userId, "record_exception", JSON.stringify({ txnId, kind }));
     return { ok: true };
   }
 
@@ -4841,7 +4891,7 @@ export class TaxAgent extends Agent<Env> {
     if (hasInvestments || hasCompany)
       items.push({ item_key: "dividend_statements", title: "Upload dividend / managed-fund (AMMA) statements", rationale: "Franking credits and distribution components are captured from these — drop them in Documents.", trigger_bucket: "payg", due_hint: "After 30 June" });
     if (hasEmployment) {
-      items.push({ item_key: "payg_wfh_hours", title: "Set your working-from-home days/week (the #1 work deduction)", rationale: "Home-office running costs are claimed at the ATO fixed rate for the hours you work from home. Enter your days/week on the Dashboard — keep a record of your actual hours.", trigger_bucket: "payg", due_hint: "Anytime" });
+      items.push({ item_key: "payg_wfh_hours", title: "Set your working-from-home days/week (the #1 work deduction)", rationale: `Home-office running costs are claimed at the ATO fixed rate for the hours you work from home. ${featureOn(this.env, "ft_journey") ? "Enter your hours in Review" : "Enter your days/week on the Dashboard"} — keep a record of your actual hours.`, trigger_bucket: "payg", due_hint: "Anytime" });
       items.push({ item_key: "payg_equipment", title: "Bought any equipment for work? (laptop, monitor, desk, chair)", rationale: "Tools and equipment you bought for work are deductible — written off immediately if they're at or under the small-item threshold, otherwise depreciated over their effective life, apportioned for private use. Add them in Assets.", trigger_bucket: "payg", due_hint: "Before lodging" });
       items.push({ item_key: "payg_income_protection", title: "Income protection insurance held outside super?", rationale: "Premiums for income-protection (salary-continuance) cover held outside super are generally deductible. Cover for life/TPD/trauma, or anything held inside super, is not.", trigger_bucket: "payg", due_hint: "Before lodging" });
       items.push({ item_key: "payg_membership", title: "Union fees or a professional membership for your work?", rationale: "Annual union fees and subscriptions to professional associations connected to your work are generally deductible.", trigger_bucket: "payg", due_hint: "Before lodging" });
@@ -6256,22 +6306,27 @@ export class TaxAgent extends Agent<Env> {
   }
 
   /** Confirm a SUGGESTED deduction (Stage D) → confirmed_deductible (it now counts). User-driven, audited. */
-  async confirmSuggestedDeduction(userId: string, txnId: string): Promise<{ ok: boolean; denied?: boolean; needs_apportionment?: boolean }> {
+  async confirmSuggestedDeduction(
+    userId: string,
+    txnId: string,
+    input: WorthALookConfirmInput = {},
+  ): Promise<{ ok: boolean; denied?: boolean; needs_apportionment?: boolean; needs_label?: boolean; label_options?: string[]; needs_asset?: boolean }> {
     const row = await this.env.DB
       .prepare(`SELECT deductibility, bucket, ato_label, merchant FROM transactions WHERE id = ? AND user_id = ?`)
       .bind(txnId, userId)
       .first<{ deductibility: string | null; bucket: string | null; ato_label: string | null; merchant: string | null }>();
     if (!row) throw new Error("transaction not found");
-    if (row.deductibility !== "suggested_deductible") {
-      // #578 (relevance_scan): a 'worth a look' line (an occupation rule matched a payg line the default left
-      // out) is confirmable too — the user's tap is the only thing that ever makes it count. confirmWorthALook
-      // re-checks it against the CURRENT profile + rules and returns null when the flag is OFF or the line is
-      // not worth a look (⇒ the legacy answer below, byte-identical).
-      const w = await confirmWorthALook(this.env, userId, txnId);
-      if (w?.ok) await this.audit(userId, "confirm_deduction", JSON.stringify({ txnId, source: "relevance_scan" }));
-      if (w?.needs_apportionment) return { ok: false, needs_apportionment: true }; // mixed-use: set the work-use share instead
-      return { ok: !!w?.ok }; // only a live suggestion can be confirmed
+    // #578/#587 (relevance_scan): a 'worth a look' line (an occupation rule matched a payg line) confirms through
+    // confirmWorthALook WHATEVER its stamp, so it always takes the rule's single return label and a mixed-use
+    // line always needs its work-use share. The user's tap is the only thing that ever makes it count. It
+    // re-checks the line against the CURRENT profile + rules and returns null when the flag is OFF or the line
+    // is not worth a look (⇒ the legacy path below, byte-identical).
+    const w = await confirmWorthALook(this.env, userId, txnId, input);
+    if (w) {
+      if (w.ok) await this.audit(userId, "confirm_deduction", JSON.stringify({ txnId, source: "relevance_scan", workUsePct: input.workUsePct ?? null }));
+      return w;
     }
+    if (row.deductibility !== "suggested_deductible") return { ok: false }; // only a live suggestion can be confirmed
     // Re-check the CURRENT rule pack before it counts. A suggestion is a stored stamp written at
     // categorise time; a later rule-pack change (e.g. #403 denying raffles/art-unions/lotteries) does
     // NOT retro-touch it, so a stale suggestion could otherwise be confirmed into the position — an

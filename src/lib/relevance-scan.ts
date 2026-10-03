@@ -60,6 +60,25 @@ export function relevanceFloorCents(pack: unknown): number {
   return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : 2000;
 }
 
+/**
+ * #587: the items the work-from-home fixed rate per hour already covers (energy, internet, phone, stationery
+ * in AU), from the pack (`relevance.wfh_fixed_rate_covers`). Once the person has stated WFH hours, a line for
+ * one of these isn't claimed again on its own — the fixed-rate claim already includes it.
+ */
+export function wfhFixedRateCovers(pack: unknown): string[] {
+  const v = (pack as { relevance?: { wfh_fixed_rate_covers?: unknown } } | null)?.relevance?.wfh_fixed_rate_covers;
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && x.trim() !== "").map((x) => x.toLowerCase()) : [];
+}
+
+/** Does this merchant text name an item the WFH fixed rate covers? Whole-word match, case-insensitive. Pure. */
+export function coveredByWfhFixedRate(merchant: string | null | undefined, covers: readonly string[]): boolean {
+  const t = ` ${(merchant ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()} `;
+  return covers.some((k) => {
+    const w = k.replace(/[^a-z0-9]+/g, " ").trim();
+    return w !== "" && t.includes(` ${w} `);
+  });
+}
+
 /** Only occupation-scoped rules take part (spec A4: occupation tokens + 'all'). Property / entity / bucket
  *  rules are routed by their own buckets and never by a bank line's merchant here. */
 export function scanRules(rules: ClaimRule[]): ClaimRule[] {
@@ -111,4 +130,44 @@ export function worthALookText(rule: ClaimRule, occupationLabel: string | null):
   const golden = "It only counts if you paid it yourself and weren't reimbursed, it relates to earning your income, and you have a record of it.";
   const defer = rule.defer_to_agent ? " Confirm with a registered tax agent before relying on this." : "";
   return `${because} ${note} ${golden}${defer}`;
+}
+
+/**
+ * The single return labels a rule's `ato_label` allows (#587). A pack label may name alternatives
+ * ("D3/D5": clothing OR other work expenses) because one occupation rule covers several kinds of spend;
+ * a confirmed line must carry exactly ONE, or the worksheet groups it under a label that doesn't exist.
+ * Pure; jurisdiction-neutral (the separator is the pack's convention, the labels are the pack's own).
+ */
+export function ruleLabelOptions(atoLabel: string | null | undefined): string[] {
+  if (!atoLabel) return [];
+  return [...new Set(atoLabel.split("/").map((s) => s.trim()).filter(Boolean))];
+}
+
+/**
+ * Which single label a confirm writes (#587, the #578 deferral): the rule's label when it names one, the
+ * user's pick when it names alternatives (the pick must be one of them), nothing when the rule has no
+ * label. `needs_label` ⇒ the user must choose from `options` first.
+ */
+export function resolveConfirmLabel(ruleLabel: string | null | undefined, picked: string | null | undefined): { label: string | null; needs_label: boolean; options: string[] } {
+  const options = ruleLabelOptions(ruleLabel);
+  if (options.length === 0) return { label: null, needs_label: false, options };
+  if (options.length === 1) return { label: options[0]!, needs_label: false, options };
+  if (picked && options.includes(picked)) return { label: picked, needs_label: false, options };
+  return { label: null, needs_label: true, options };
+}
+
+/**
+ * A confirm puts the amount into the year as an immediate deduction. For a rule whose pack method is a
+ * depreciation method (or a div40 rule), a line above the FY's immediate-deduction threshold is a
+ * depreciating asset instead (claimed over its life), so it goes through Assets, never a confirm. Pure.
+ */
+export function confirmNeedsAsset(rule: Pick<ClaimRule, "claim_type" | "default_method">, amountCents: number, immediateThresholdCents: number | null): boolean {
+  const depreciating = rule.claim_type === "div40" || !!rule.default_method;
+  if (!depreciating || immediateThresholdCents == null) return false;
+  return Math.abs(amountCents) > immediateThresholdCents;
+}
+
+/** A confirm on this line needs the user's work-use share first (a mixed-use stamp or a non-immediate rule). */
+export function confirmNeedsShare(rule: Pick<ClaimRule, "claim_type">, deductibility: string | null | undefined): boolean {
+  return deductibility === "needs_apportionment" || rule.claim_type !== "immediate";
 }

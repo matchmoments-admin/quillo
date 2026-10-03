@@ -149,6 +149,8 @@ export interface TaxAgentRpc {
   journey(userId: string, startYear: number): Promise<import("./lib/journey").Journey>; // #582 (ft_journey)
   growLayers(userId: string, startYear: number): Promise<import("./lib/grow").GrowPayload>; // #592 (ft_journey)
   setGrowLayer(userId: string, body: { layer?: unknown; state?: unknown; source?: unknown; fy?: unknown }): Promise<{ ok: true } | { error: string }>; // #592
+  records(userId: string, startYear: number): Promise<import("./lib/records").RecordsView>; // #588 (ft_journey)
+  setRecordException(userId: string, startYear: number, txnId: string, kind: string | null): Promise<{ ok: boolean; error?: string }>; // #588 (ft_journey)
   setChecklistStatus(userId: string, id: string, status: string): Promise<void>;
   setClaimStatus(userId: string, id: string, status: string): Promise<void>;
   computeCgt(userId: string, propertyId: string): Promise<import("./lib/cgt").CgtResult & { property_id: string }>;
@@ -190,6 +192,7 @@ export interface TaxAgentRpc {
   recategorise(userId: string): Promise<{ requeued: number; statements: number }>;
   linkReceipt(userId: string, receiptId: string, lineId: string): Promise<boolean>;
   dismissReconcileProposal(userId: string, receiptId: string, lineId: string): Promise<boolean>;
+  undoReconcileLink(userId: string, receiptId: string): Promise<boolean>;
   unlinkReceipt(userId: string, receiptId: string): Promise<void>;
   runProactiveScan(userId: string): Promise<void>;
   detectAdvisory(userId: string): Promise<{ recurring: number; opportunities: number }>;
@@ -249,7 +252,7 @@ export interface TaxAgentRpc {
   listLoanInterest(userId: string, fy?: number): Promise<{ id: string; loan_account_id: string; fy: string; interest_cents: number; source: string; document_id: string | null }[]>;
   listLoanInterestReview(userId: string, fy: number): Promise<{ loan_account_id: string; loan_name: string; properties: { id: string; label: string | null }[]; recorded_cents: number | null; source: string | null; estimate_cents: number | null }[]>;
   runAccountantPass(userId: string, startYear: number): Promise<import("./agent").AccountantSummary>;
-  confirmSuggestedDeduction(userId: string, txnId: string): Promise<{ ok: boolean }>;
+  confirmSuggestedDeduction(userId: string, txnId: string, input?: { atoLabel?: string | null; workUsePct?: number | null }): Promise<{ ok: boolean; denied?: boolean; needs_apportionment?: boolean; needs_label?: boolean; label_options?: string[]; needs_asset?: boolean }>;
   draftOccupationRules(userId: string, occupation: string): Promise<import("./extract").OccupationRulesDraft>;
   addClaimabilityRules(userId: string, rules: { scope_type: string; scope_value: string; merchant_hint?: string | null; ato_label?: string | null; claim_type: string; default_method?: string | null; general_info_note: string }[]): Promise<{ inserted: number; ids: string[] }>;
 }

@@ -38,6 +38,9 @@ export function CarMethodsCard({ fyNum }: { fyNum: number }) {
     mutationFn: () => api.setCarUse(fyNum, { work_km: km.trim() === "" ? null : Math.max(0, Number(km)) }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["car-use", fyNum] });
+      // Records step (#588): its facts-stated count reads these inputs. No-op when those queries don't exist (flag OFF).
+      qc.invalidateQueries({ queryKey: ["records", fyNum] });
+      qc.invalidateQueries({ queryKey: ["journey", fyNum] });
       qc.invalidateQueries({ queryKey: ["report"] });
       qc.invalidateQueries({ queryKey: ["dashboard"] });
       toast.success("Saved your car km.");

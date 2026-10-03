@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
+import { Link } from "react-router-dom";
 import { api, saveBlob } from "../api";
 import { useActiveFy } from "../lib/activeFy";
 import { useFeatures } from "../lib/features";
@@ -146,7 +147,14 @@ export function Reports() {
               so the figures that feed this report can be reviewed/adjusted where the report is read
               (the audit found the report otherwise gave no WFH/car visibility). Gated exactly as on the
               Dashboard so flag-OFF leaves this report byte-identical. */}
-          {(features.has("wfh_car_methods") || features.has("car_methods") || features.has("car_logbook")) && (
+          {/* ft_journey (#588): the WFH + car editors live in Records only; the report keeps a read-only pointer. */}
+          {features.has("ft_journey") && (features.has("wfh_car_methods") || features.has("car_methods") || features.has("car_logbook")) && (
+            <Card className="flex flex-wrap items-center justify-between gap-3 p-4 text-sm">
+              <span className="text-muted">Work-from-home hours and car kilometres are entered in Review, beside your claims.</span>
+              <Link to="/review#records" className="font-medium text-ink underline">Open Review</Link>
+            </Card>
+          )}
+          {!features.has("ft_journey") && (features.has("wfh_car_methods") || features.has("car_methods") || features.has("car_logbook")) && (
             <CollapsibleSection title="Your work-from-home & car claim (edit)" defaultOpen={false}>
               {features.has("wfh_car_methods") && <WorkMethodsCard fyNum={fy} />}
               {(features.has("car_methods") || features.has("car_logbook")) && <CarMethodsCard fyNum={fy} />}

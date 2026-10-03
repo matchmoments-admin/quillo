@@ -1,6 +1,6 @@
 import type { CapitalImportParse, Txn, TxnDetail, Situation, SituationDraft, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse, UsageData, StatementInfo, IncomeRow, DocRow, AssetRow, ScheduleRow, ChecklistItem, ClaimSuggestion, FilingReadiness, ReviewSummary, Progress, AdminTenant, AdminOverview, AdminSpend, AiEdit, ClaimReview, OccupationRulesDraft, OccupationRuleCandidate, NoaCarryover, MovementSweep, BatchResult, ClarifyQuestion, ClarifyAnswer, ClaimMatch, AccountantSummary, SuggestedDeduction, WorkUse, CarUse, CarUseRates, ScanResult, CapitalLoss, OpeningDepreciation, AttributionState, AttributionInput, AttributionRow, IncomeActivity, PropertyOwner, EntityRole, CgtAssetRow, CgtEventRow, EssGrantRow, VehicleLogbookRow, TrustDistributionRow, SmsfMemberRow, SuperContributionRow, BasPeriodRow, PaygInstalmentRow, AskAnswer, SavingsData, PhiOverview, PhiInsurerOption, PhiProvidersResult, PhiScanResult, BillingOverview, PartnerPortal, AmmaComponents, PartnershipDistributionRow, CostBaseElements, BankConnection, BankSyncRun, IncomeStatementWait, SituationPeriod, SituationPeriodWrite, BankHistoryEvent, BankDisconnectResult, FyLodged, NoticedSignal, NoticedConfirmResult } from "./types";
-import type { GrowLayerKey, Journey, MytaxWorksheet } from "./types";
-import type { AskContext, EducationData } from "./types";
+import type { GrowLayerKey, Journey, MytaxWorksheet, RecordsView, ReconcileProposals, ReconcileLinked } from "./types";
+import type { AskContext, EducationData, RelevanceView, RelevanceConfirmResult } from "./types";
 
 // Clerk session token getter, wired from <TokenBridge> inside ClerkProvider (main.tsx).
 // Clerk tokens are short-lived, so we fetch a fresh one per request (getToken caches/refreshes).
@@ -105,10 +105,12 @@ export const api = {
     const qs = q.toString();
     return get<{ transactions: Txn[] }>(`/api/transactions${qs ? `?${qs}` : ""}`).then((r) => r.transactions);
   },
-  reconcilePairs: (opts: { fy?: number; limit?: number } = {}) => {
+  reconcilePairs: (opts: { fy?: number; limit?: number; forReceipt?: string } = {}) => {
     const q = new URLSearchParams();
     if (opts.fy) q.set("fy", String(opts.fy));
     if (opts.limit) q.set("limit", String(opts.limit));
+    // #589: a picked receipt — the server orders the lines for it (no client-side scorer).
+    if (opts.forReceipt) q.set("for_receipt", opts.forReceipt);
     const qs = q.toString();
     return get<{ receipts: Txn[]; lines: Txn[]; total_receipts: number; total_lines: number; lines_available: number }>(`/api/reconcile${qs ? `?${qs}` : ""}`);
   },
@@ -116,6 +118,11 @@ export const api = {
     get<{ statements: StatementInfo[] }>(`/api/statements${accountId ? `?account_id=${accountId}` : ""}`).then((r) => r.statements),
   matchLink: (receiptId: string, lineId: string) => post<{ ok: boolean }>("/api/match/link", { receiptId, lineId }),
   matchUnlink: (receiptId: string) => post<{ ok: boolean }>("/api/match/unlink", { receiptId }),
+  // A8 / #589 (reconcile_proposals; 404 when OFF): Check step's receipt-match proposals + linked pairs.
+  reconcileProposals: (fy: number) => get<ReconcileProposals>(`/api/reconcile/proposals?fy=${fy}`),
+  reconcileDismiss: (receiptId: string, lineId: string) => post<{ ok: boolean }>("/api/reconcile/proposals/dismiss", { receipt_id: receiptId, line_id: lineId }),
+  reconcileLinked: (fy: number) => get<ReconcileLinked>(`/api/reconcile/linked?fy=${fy}`),
+  reconcileUndoLink: (receiptId: string) => post<{ ok: boolean }>("/api/reconcile/linked/undo", { receipt_id: receiptId }),
   transaction: (id: string) => get<TxnDetail>(`/api/transactions/${id}`),
   upload: async (files: File | File[], bucket?: string): Promise<{ ok: boolean; txnId: string }> => {
     const fd = new FormData();
@@ -142,6 +149,14 @@ export const api = {
   // existing caller sends exactly the pre-#591 body.
   ask: (question: string, fy?: number, context?: AskContext) => post<AskAnswer>("/api/ask", context ? { question, fy, context } : { question, fy }),
   education: () => get<EducationData>("/api/education"),
+  // #587 Claims step (flag relevance_scan; both 404 when OFF). confirm sends the label pick / work-use share only when given.
+  relevance: (fy: number) => get<RelevanceView>(`/api/relevance?fy=${fy}`),
+  confirmWorthALook: (txnId: string, opts: { atoLabel?: string | null; workUsePct?: number | null } = {}) =>
+    post<RelevanceConfirmResult>("/api/relevance/confirm", {
+      txnId,
+      ...(opts.atoLabel ? { atoLabel: opts.atoLabel } : {}),
+      ...(opts.workUsePct != null ? { workUsePct: opts.workUsePct } : {}),
+    }),
   chat: (message: string, session_id?: string, fy?: number, page?: string) => post<AskAnswer & { session_id: string }>("/api/chat", { message, session_id, fy, page }),
   chatHistory: (sessionId: string) => get<{ messages: { role: string; content: string }[] }>(`/api/chat/${sessionId}`).then((r) => r.messages),
   usage: () => get<UsageData>("/api/usage"),
@@ -323,6 +338,8 @@ export const api = {
   // #592 (ft_journey): Grow layer switcher + suggestion answers. 404 when the flag is OFF.
   setGrowLayer: (b: { layer: GrowLayerKey; state: "on" | "off"; source: "switched" | "detected"; fy?: number }) =>
     send<{ ok: true }>("PUT", "/api/grow-layers", b),
+  records: (fy: number) => get<RecordsView>(`/api/records?fy=${fy}`),
+  setRecordException: (fy: number, txnId: string, kind: string | null) => post<{ ok: boolean; error?: string }>(`/api/records/exception?fy=${fy}`, { txn_id: txnId, kind }),
   // Soft per-FY sign-off (attestation only — Quillo never lodges)
   fySignoff: (fy?: number) => get<{ signoff: { signed_off_at: string } | null }>(`/api/signoff${fy ? `?fy=${fy}` : ""}`).then((r) => r.signoff),
   signOff: (fy?: number) => post<{ signoff: { signed_off_at: string } | null }>(`/api/signoff${fy ? `?fy=${fy}` : ""}`).then((r) => r.signoff),
@@ -529,7 +546,8 @@ export const api = {
   accountantSuggestions: (fy?: number) => get<{ suggestions: SuggestedDeduction[] }>(`/api/accountant/suggestions${fy != null ? `?fy=${fy}` : ""}`).then((r) => r.suggestions),
   // `denied` ⇒ the current rule pack no longer allows this suggestion (e.g. a raffle/art-union the pack
   // now denies); the server demotes it so the invalidated list drops the row rather than claiming it.
-  confirmDeduction: (txnId: string) => post<{ ok: boolean; denied?: boolean }>("/api/accountant/confirm", { txnId }),
+  confirmDeduction: (txnId: string) =>
+    post<{ ok: boolean; denied?: boolean; needs_apportionment?: boolean; needs_label?: boolean; needs_asset?: boolean; covered_by_wfh_rate?: boolean }>("/api/accountant/confirm", { txnId }),
 
   // Stage B — clarify-by-pattern
   clarifyQuestions: (fy?: number) => get<{ questions: ClarifyQuestion[] }>(`/api/clarify${fy != null ? `?fy=${fy}` : ""}`).then((r) => r.questions),

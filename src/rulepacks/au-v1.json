@@ -80,7 +80,34 @@
   ],
   "relevance": {
     "_note": "Relevance scan on bank lines (src/lib/relevance-scan.ts, first-timer spec A4 #578). floor_cents: a debit line that matched no rule and nothing denied is 'relevant' (worth sorting) at or above this amount, 'irrelevant' below it. Shapes what is SHOWN, never what is counted.",
-    "floor_cents": 2000
+    "floor_cents": 2000,
+    "_wfh_note": "wfh_fixed_rate_covers (#587): items the work-from-home fixed rate per hour already includes (PCG 2023/1: energy, internet, phone, stationery, computer consumables; not devices or furniture, which are claimed separately). Once WFH hours are stated (wfh_car_methods), a worth-a-look line naming one of these is not confirmed as its own claim (it would be counted twice). Whole-word match on the merchant text.",
+    "wfh_fixed_rate_covers": ["electricity", "power", "energy", "gas", "internet", "broadband", "nbn", "phone", "mobile", "stationery", "printer ink", "consumables", "utilities"]
+  },
+  "record_keeping": {
+    "_note": "Records step (src/lib/records.ts, first-timer spec A7 #588, flag ft_journey). 'exceptions' are the substantiation exceptions a user may ATTEST to on a confirmed claim line with no record (stored in transactions.record_exception — an attestation, never evidence, never read by the position). An exception is offered only while the FY total of the claims it covers is within limit_cents (re-checked on every read). 'labels' (and 'match', when given, narrowing by description) select both the lines an exception can cover and the confirmed claims that make up its total (work-related claims, excluding car); 'include_wfh' adds the fixed-rate WFH claim (hours x the FY rate) to the total. Titles and wording use {limit} for the exception's limit. 'platform_activities' are the abn_activity values whose payouts arrive net of platform fees (prompts the platform-fees fact). 'facts' are the facts a person states in Records. Wording is general information, confirm with a registered tax agent.",
+    "exceptions": {
+      "laundry_150": {
+        "limit_cents": 15000,
+        "labels": ["D3"],
+        "match": ["laundry", "laundromat", "dry clean", "dry-clean", "drycleaning"],
+        "title": "Laundry of {limit} or less",
+        "wording": "You can generally claim up to {limit} for washing, drying and ironing eligible work clothing without written evidence, even when your total work-related claims are above the overall limit. You still need to be able to show how you worked out the amount. Confirm with a registered tax agent."
+      },
+      "total_300": {
+        "limit_cents": 30000,
+        "labels": ["D2", "D3", "D4", "D5"],
+        "include_wfh": true,
+        "title": "Work-related claims of {limit} or less in total",
+        "wording": "If your total work-related expense claims are {limit} or less, you generally don't need written evidence such as receipts, but you still need to be able to show how you worked out each claim. That total doesn't include car expenses or claims covered by a travel, meal or award transport allowance. Confirm with a registered tax agent."
+      }
+    },
+    "platform_activities": ["rideshare", "delivery"],
+    "facts": {
+      "wfh_hours": "Hours you worked from home",
+      "car_km": "Work kilometres in your own car",
+      "platform_fees": "Platform income and fees"
+    }
   },
   "grow_detection": {
     "_note": "Grow layer detection (src/lib/grow.ts, first-timer spec A11 ticket b #592, flag ft_journey). Bank-line text that SUGGESTS a hidden Grow layer ('Looks like you have rental income: add it?'). A suggestion never switches a layer on by itself (owner ruling #535); the user says Yes or No. Each layer: the line direction to scan, whole-word stems matched case-insensitively against merchant + description, and the minimum number of matching lines in the FY. Property also uses the rent/lease stems of isRentLikeStem and investments the broker names of clarify.ts BROKER_CODES plus lines answered as capital:investment. Shapes what is SUGGESTED, never what is counted.",

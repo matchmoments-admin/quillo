@@ -8,6 +8,7 @@ export { StepFooter, type FooterAction } from "./StepFooter";
 export { ClaimCard } from "./ClaimCard";
 export { RecordRow } from "./RecordRow";
 export { CheckItem } from "./CheckItem";
+export { MatchProposalRow, type MatchSide } from "./MatchProposalRow";
 export { WorksheetLine, type WorksheetTick } from "./WorksheetLine";
 export { Chip, ChipGroup } from "./Chip";
 export { CompletenessMeter } from "./CompletenessMeter";

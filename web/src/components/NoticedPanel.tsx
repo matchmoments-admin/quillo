@@ -59,7 +59,7 @@ export function NoticedPanel() {
             busy={busyId === s.id}
             onYes={() => confirm.mutate(s)}
             onNo={() => dismiss.mutate(s)}
-            after={done[s.id] ? <Confirmed result={done[s.id]!.result} /> : undefined}
+            after={done[s.id] ? <NoticedConfirmed result={done[s.id]!.result} /> : undefined}
           />
         ))
       )}
@@ -68,7 +68,7 @@ export function NoticedPanel() {
   );
 }
 
-function Confirmed({ result }: { result: NoticedConfirmResult }) {
+export function NoticedConfirmed({ result }: { result: NoticedConfirmResult }) {
   if (result.kind === "payroll") {
     return (
       <div className="space-y-2 text-sm">

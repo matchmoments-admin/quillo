@@ -146,6 +146,7 @@ const router = createBrowserRouter([
       { path: "setup", element: <SetupStep /> },
       { path: "connect", element: <ConnectStep /> },
       { path: "review", element: <ReviewStep /> },
+      { path: "review/match", element: <ReviewStep /> },
       { path: "lodge", element: <LodgeStep /> },
       { path: "lodge/print", element: <LodgePrintStep /> },
       // The 6-step journey's URLs (#582) → their 4-step route (lib/legacyRoutes.ts OLD_STEP_ROUTES).

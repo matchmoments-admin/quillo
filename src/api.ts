@@ -14,6 +14,7 @@ import {
   listStatements,
   reconcilePairs,
   reconcileProposals,
+  reconcileLinkedPairs,
   listIncome,
   listDocuments,
   listAssets,
@@ -1481,6 +1482,24 @@ export async function handleApi(
     return json({ error: "not found" }, 404);
   }
 
+  // ── #589 linked pairs on the Check step (flag reconcile_proposals) ──
+  // GET  /api/reconcile/linked?fy=YYYY         → receipts linked to a line dated in the FY (auto-matched flagged)
+  // POST /api/reconcile/linked/undo {receipt_id} → unlink + dismiss the pair (never re-paired automatically)
+  if (resource === "reconcile" && id === "linked") {
+    if (!featureOn(env, "reconcile_proposals")) return json({ error: "not available" }, 404);
+    if (m === "GET" && !sub) {
+      const fy = Number(url.searchParams.get("fy")) || defaultFy();
+      if (!Number.isInteger(fy) || fy < 1900 || fy > 2200) return json({ error: "bad fy" }, 400);
+      return json(await reconcileLinkedPairs(env, uid, fy, jur));
+    }
+    if (m === "POST" && sub === "undo") {
+      const b = (await req.json().catch(() => ({}))) as { receipt_id?: unknown };
+      if (typeof b.receipt_id !== "string" || !b.receipt_id) return json({ error: "receipt_id required" }, 400);
+      return (await stub.undoReconcileLink(uid, b.receipt_id)) ? json({ ok: true }) : json({ error: "not found" }, 404);
+    }
+    return json({ error: "not found" }, 404);
+  }
+
   // GET /api/reconcile — unmatched receipts vs unmatched bank lines (for the Reconcile page).
   // #490: fy/limit/offset + true totals; lines come back ordered by best match score.
   if (resource === "reconcile" && m === "GET") {
@@ -1488,6 +1507,10 @@ export async function handleApi(
       fy: Number(url.searchParams.get("fy")) || undefined,
       limit: Number(url.searchParams.get("limit")) || undefined,
       offset: Number(url.searchParams.get("offset")) || undefined,
+      // #589: credit lines join the picker with the proposer (a refund receipt's manual path); OFF ⇒ debit-only.
+      includeCredits: featureOn(env, "reconcile_proposals"),
+      // Per-receipt server ordering only with the flag (OFF ⇒ the param is ignored ⇒ byte-identical).
+      forReceipt: featureOn(env, "reconcile_proposals") ? url.searchParams.get("for_receipt") || undefined : undefined,
     }));
   }
 
@@ -1668,6 +1691,24 @@ export async function handleApi(
     const fy = normaliseFyStart(url.searchParams.get("fy")) ?? defaultFy();
     return json(await relevanceView(env, uid, fy));
   }
+  // POST /api/relevance/confirm { txnId, atoLabel?, workUsePct? } → the Claims step's "Claim it" (#587). The SAME
+  // write path as /api/accountant/confirm (the DO's confirmSuggestedDeduction → confirmWorthALook), reachable
+  // without the accountant_pass flag. The answer says what is still needed (a label pick, a work-use share, or
+  // Assets) so the UI can ask instead of failing silently. 404 when the flag is OFF.
+  if (resource === "relevance" && m === "POST" && id === "confirm") {
+    if (!featureOn(env, "relevance_scan")) return json({ error: "not available" }, 404);
+    const b = (await req.json().catch(() => ({}))) as { txnId?: unknown; atoLabel?: unknown; workUsePct?: unknown };
+    if (typeof b.txnId !== "string") return json({ error: "txnId required" }, 400);
+    if (b.atoLabel != null && typeof b.atoLabel !== "string") return json({ error: "atoLabel must be a string" }, 400);
+    if (b.workUsePct != null && (typeof b.workUsePct !== "number" || !Number.isFinite(b.workUsePct) || b.workUsePct < 1 || b.workUsePct > 100)) {
+      return json({ error: "workUsePct must be between 1 and 100" }, 400);
+    }
+    try {
+      return json(await stub.confirmSuggestedDeduction(uid, b.txnId, { atoLabel: (b.atoLabel as string | null | undefined) ?? null, workUsePct: (b.workUsePct as number | null | undefined) ?? null }));
+    } catch (e) {
+      return json({ error: (e as Error).message }, 400);
+    }
+  }
 
   // GET /api/education (#591, flag ft_journey) — pack-driven education for the step pages: the ATO
   // occupation-guide link for each occupation on this tenant's people + the state revenue office links
@@ -1788,6 +1829,25 @@ export async function handleApi(
       const b = (await req.json().catch(() => ({}))) as { layer?: unknown; state?: unknown; source?: unknown; fy?: unknown };
       const r = await stub.setGrowLayer(uid, { layer: b.layer, state: b.state, source: b.source, fy: b.fy });
       return "error" in r ? json(r, 400) : json(r);
+    }
+  }
+
+  // ── Records step (A7, #588, flag ft_journey) — 404 when off ────────────────
+  // GET  /api/records?fy=            → confirmed claims with record status, facts to state, open exceptions.
+  // POST /api/records/exception?fy=  { txn_id, kind | null } → attest / clear a record-keeping exception on a
+  //      confirmed claim line (eligibility re-checked server-side; an attestation, never evidence).
+  if (resource === "records") {
+    if (!featureOn(env, "ft_journey")) return json({ error: "not found" }, 404);
+    const fy = Number(url.searchParams.get("fy")) || defaultFy();
+    if (!Number.isInteger(fy) || fy < 1900 || fy > 2200) return json({ error: "bad fy" }, 400);
+    if (m === "GET" && !id) return json(await stub.records(uid, fy));
+    if (m === "POST" && id === "exception") {
+      const body = (await req.json().catch(() => ({}))) as { txn_id?: unknown; kind?: unknown };
+      const txnId = typeof body.txn_id === "string" ? body.txn_id : "";
+      const kind = body.kind == null ? null : typeof body.kind === "string" ? body.kind : undefined;
+      if (!txnId || kind === undefined) return json({ error: "txn_id and kind (string or null) are required" }, 400);
+      const r = await stub.setRecordException(uid, fy, txnId, kind);
+      return json(r, r.ok ? 200 : 400);
     }
   }
 

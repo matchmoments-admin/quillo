@@ -18,11 +18,11 @@ import { COUNTABLE } from "../src/lib/queries";
 import { fyBounds } from "../src/lib/ledger-totals";
 import { buildAccountantSchedule, buildAccountantScheduleDetailed, buildScheduleDetail, tieBackChecks } from "../src/lib/accountant-schedule";
 import { fetchAskDigestRows, listAccounts, listIncome } from "../src/lib/queries";
-import { reconcileProposals, listClaims } from "../src/lib/queries";
+import { reconcileProposals, reconcileLinkedPairs, reconcilePairs, listClaims } from "../src/lib/queries";
 import { reconcileConfigFromPack } from "../src/lib/reconcile-proposer";
 import { resolveRulePack } from "../src/lib/report";
 import { AU_DESCRIPTOR } from "../src/lib/jurisdiction";
-import { receiptLinkTargets, applyReceiptLink } from "../src/lib/receipt-link";
+import { receiptLinkTargets, applyReceiptLink, undoReceiptLink } from "../src/lib/receipt-link";
 import { deleteRow, archiveRow, DeleteBlockedError, type DeleteBlocker, syncPropertyDisposalToCgt, syncIncomeCgtFromComponents, syncTxnCgtHolding, clearTxnCgt, clearOrphanedTxnCgt } from "../src/lib/situation-write";
 import { ordinaryAssessableCents, type AmmaComponents } from "../src/lib/managed-fund";
 import { draftHoldingFromTxn } from "../src/lib/clarify";
@@ -42,6 +42,7 @@ import { runRelevanceScan, confirmWorthALook, relevanceView } from "../src/lib/r
 import { updatePerson } from "../src/lib/situation-write";
 import { verdictForTxn } from "../src/lib/deductibility";
 import { noticeSignals, listNoticed, confirmNoticed, dismissNoticed, payrollEmployerSignals, incomeAnswerRows, INCOME_STATEMENT_PROMPT } from "../src/lib/noticed-signals";
+import { recordsView, applyRecordException } from "../src/lib/records";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
@@ -2231,6 +2232,79 @@ async function main() {
       check("pft11: link refuses a line that belongs to another tenant", !(await link(u, `${u}rTie`, `${um}lTieA`)));
       check("pft11: link refuses a receipt as the 'line'", !(await link(u, `${u}rTie`, `${u}rCash`)));
 
+      // #589 Check step: linked pairs (auto-matcher provenance) + Undo + the picker's credit path.
+      {
+        // The pair above was linked without a snapshot (a legacy / flag-OFF link) ⇒ listed, read as manual.
+        check("pft11 (#587): a link with no stored snapshot (legacy) reads as manual", (await reconcileLinkedPairs(RP_ENV, u, 2025)).pairs[0]?.auto === false);
+        // Re-link the way the auto-matcher does with reconcile_proposals ON (TaxAgent.linkReceiptToLine, auto).
+        const tgA = await receiptLinkTargets(RP_ENV, u, `${u}rExact`, `${u}lExact`);
+        await applyReceiptLink(RP_ENV, u, `${u}rExact`, `${u}lExact`, tgA!.donor, { snapshot: true, auto: true });
+        const lk = await reconcileLinkedPairs(RP_ENV, u, 2025);
+        check("pft11 (#589): the linked pair is listed for its FY, flagged auto from the receipt's stored link snapshot",
+          lk.pairs.length === 1 && lk.pairs[0]!.receipt.id === `${u}rExact` && lk.pairs[0]!.line.id === `${u}lExact` && lk.pairs[0]!.auto && !lk.truncated);
+        check("pft11 (#589): linked pairs are FY-scoped by the bank line's date", (await reconcileLinkedPairs(RP_ENV, u, 2024)).pairs.length === 0);
+        // A user's tap re-links the same pair: the snapshot is rewritten without `auto`.
+        await applyReceiptLink(RP_ENV, u, `${u}rExact`, `${u}lExact`, tgA!.donor, { snapshot: true });
+        check("pft11 (#589): a later manual link of the pair reads as manual (the latest link's snapshot wins)", !(await reconcileLinkedPairs(RP_ENV, u, 2025)).pairs[0]!.auto);
+        check("pft11 (#589): another tenant's receipt can't be undone", (await undoReceiptLink(RP_ENV, um, `${u}rExact`)) === null);
+        check("pft11 (#589): Undo returns the line it detached", (await undoReceiptLink(RP_ENV, u, `${u}rExact`)) === `${u}lExact`);
+        const undone = await buildReport(RP_ENV, u, 2025);
+        check("pft11 (#589): Undo is the exact inverse of the confirm — the receipt counts standalone again (position back to before)",
+          undone.taxable_position_cents === before.taxable_position_cents && undone.total_deductions_cents === before.total_deductions_cents);
+        check("pft11 (#589): an undone pair is dismissed — never proposed again (nor auto-linked: matchReceipt skips dismissals)",
+          !(await reconcileProposals(RP_ENV, u, 2025, cfg)).proposals.some((p) => p.receipt.id === `${u}rExact` && p.line.id === `${u}lExact`) &&
+          !!db.prepare(`SELECT 1 FROM reconcile_dismissals WHERE user_id = ? AND receipt_id = ? AND line_id = ?`).get(u, `${u}rExact`, `${u}lExact`));
+        check("pft11 (#589): Undo on an unlinked receipt writes nothing", (await undoReceiptLink(RP_ENV, u, `${u}rExact`)) === null && (await reconcileLinkedPairs(RP_ENV, u, 2025)).pairs.length === 0);
+        check("pft11 (#587): Undo clears the receipt's stored link snapshot", (db.prepare(`SELECT link_snapshot FROM transactions WHERE id = ?`).get(`${u}rExact`) as { link_snapshot: string | null }).link_snapshot === null);
+        // The manual picker: debit-only as today unless credits are asked for (reconcile_proposals ON); a
+        // picked credit receipt gets its credit line first, ordered by the server (no client scorer).
+        const pickOff = await reconcilePairs(RP_ENV, u, { fy: 2025 });
+        const pickOn = await reconcilePairs(RP_ENV, u, { fy: 2025, includeCredits: true, forReceipt: `${u}rRef` });
+        check("pft11 (#589): picker without credits is debit-only (flag OFF ⇒ unchanged)", pickOff.lines.length > 0 && pickOff.lines.every((l) => l.direction === "debit"));
+        check("pft11 (#589): picker with credits lists the credit line, first for the credit receipt — a manual path for money coming back",
+          pickOn.lines[0]?.id === `${u}lRef` && pickOn.lines.length === pickOff.lines.length + 1);
+        const pickTie = await reconcilePairs(RP_ENV, u, { fy: 2025, forReceipt: `${u}rTie` });
+        check("pft11 (#589): per-receipt server ordering puts the in-tolerance lines first",
+          [pickTie.lines[0]?.id, pickTie.lines[1]?.id].sort().join() === [`${u}lTieA`, `${u}lTieB`].sort().join());
+        // #587 (absorbing #589): with credit lines in the picker, a spend receipt can't be linked to money coming in.
+        check("pft11 (#587): sameDirection refuses a debit receipt on a credit line; the like-for-like pair still links",
+          (await receiptLinkTargets(RP_ENV, u, `${u}rTie`, `${u}lRef`, { sameDirection: true })) === null &&
+          (await receiptLinkTargets(RP_ENV, u, `${u}rTie`, `${u}lTieA`, { sameDirection: true })) !== null);
+        // #587: Undo puts back what the link changed. An uncategorised line takes the receipt's GST / bucket /
+        // label at link time (COALESCE fills gaps); the link's snapshot lets Undo clear exactly those, restore
+        // the line's and the receipt's prior statuses, and land the position back where it was.
+        const us = "pft11s";
+        seedTenant(us, "FT1 Jess — undo restores the donated fields");
+        inc(`${us}Sal`, us, "salary_payg", 3400000, { withholding_cents: 400000 });
+        run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, direction) VALUES (?, ?, 'upload', 'needs_review', 'bank_line', 8900, 8900, '2025-09-04', 'debit')`, `${us}l`, us);
+        run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, ato_label, gst_cents, direction, deductibility) VALUES (?, ?, 'upload', 'categorised', 'receipt', 8900, 8900, '2025-09-03', 'payg', 'D5', 809, 'debit', 'confirmed_deductible')`, `${us}r`, us);
+        const sBefore = await buildReport(RP_ENV, us, 2025);
+        const tg = await receiptLinkTargets(RP_ENV, us, `${us}r`, `${us}l`, { sameDirection: true });
+        const snap = tg ? await applyReceiptLink(RP_ENV, us, `${us}r`, `${us}l`, tg.donor, { snapshot: true, auto: true }) : null;
+        const lineRow = () => db.prepare(`SELECT gst_cents, bucket, ato_label, status FROM transactions WHERE id = ?`).get(`${us}l`) as { gst_cents: number | null; bucket: string | null; ato_label: string | null; status: string };
+        const linked = lineRow();
+        check("pft11s: the link snapshot records exactly the donated gaps + both prior statuses",
+          !!snap && snap.line_id === `${us}l` && snap.auto && JSON.stringify(snap.filled) === JSON.stringify({ gst_cents: 809, bucket: "payg", ato_label: "D5" }) && snap.line_status === "needs_review" && snap.receipt_status === "categorised" &&
+          (db.prepare(`SELECT link_snapshot FROM transactions WHERE id = ?`).get(`${us}r`) as { link_snapshot: string }).link_snapshot === JSON.stringify(snap) &&
+          linked.bucket === "payg" && linked.ato_label === "D5" && linked.gst_cents === 809);
+        check("pft11s: Undo returns the line", (await undoReceiptLink(RP_ENV, us, `${us}r`)) === `${us}l`);
+        const restored = lineRow();
+        const rec = db.prepare(`SELECT status, matched_txn_id FROM transactions WHERE id = ?`).get(`${us}r`) as { status: string; matched_txn_id: string | null };
+        check("pft11s: Undo clears the donated fields and restores the line's status; the receipt is unlinked with its prior status",
+          restored.bucket === null && restored.ato_label === null && restored.gst_cents === null && restored.status === "needs_review" && rec.matched_txn_id === null && rec.status === "categorised");
+        const sAfter = await buildReport(RP_ENV, us, 2025);
+        check("pft11s: after Undo the position is exactly where it was before the link",
+          sAfter.taxable_position_cents === sBefore.taxable_position_cents && sAfter.total_deductions_cents === sBefore.total_deductions_cents);
+        // A field the user changed after the link is theirs: Undo only clears a field still holding the donated value.
+        const tg2 = await receiptLinkTargets(RP_ENV, us, `${us}r`, `${us}l`, { sameDirection: true });
+        run(`DELETE FROM reconcile_dismissals WHERE user_id = ?`, us);
+        if (tg2) await applyReceiptLink(RP_ENV, us, `${us}r`, `${us}l`, tg2.donor, { snapshot: true });
+        run(`UPDATE transactions SET ato_label = 'D3' WHERE id = ?`, `${us}l`);
+        await undoReceiptLink(RP_ENV, us, `${us}r`);
+        const kept = lineRow();
+        check("pft11s: a label the user edited after the link survives Undo (only untouched donated fields are cleared)", kept.ato_label === "D3" && kept.gst_cents === null);
+      }
+
       // FY boundary: a runner-up dated just across 30 June still counts against the margin (review fix).
       const ub = "pft11b";
       seedTenant(ub, "FT1 boundary");
@@ -2838,7 +2912,7 @@ async function main() {
           `${u}${k}`, u, cents, cents, FY_DATE, v, v === "likely_not" ? 0 : null, merchant);
       }
     };
-    const rel = (u: string) => Object.fromEntries((db.prepare(`SELECT id, relevance, relevance_rule_id, deductibility, deductible_amount_cents FROM transactions WHERE user_id = ? ORDER BY id`).all(u) as { id: string; relevance: string | null; relevance_rule_id: string | null; deductibility: string | null; deductible_amount_cents: number | null }[]).map((r) => [r.id.slice(u.length), r]));
+    const rel = (u: string) => Object.fromEntries((db.prepare(`SELECT id, relevance, relevance_rule_id, deductibility, deductible_amount_cents, ato_label FROM transactions WHERE user_id = ? ORDER BY id`).all(u) as { id: string; relevance: string | null; relevance_rule_id: string | null; deductibility: string | null; deductible_amount_cents: number | null; ato_label: string | null }[]).map((r) => [r.id.slice(u.length), r]));
     const cards = (u: string) => db.prepare(`SELECT txn_id, rule_id, status, source, suggestion, person_id FROM claim_suggestions WHERE user_id = ? ORDER BY txn_id`).all(u) as { txn_id: string; rule_id: string; status: string; source: string; suggestion: string; person_id: string }[];
     const snapshot = (u: string) => JSON.stringify(db.prepare(`SELECT * FROM transactions WHERE user_id = ? ORDER BY id`).all(u)) + JSON.stringify(cards(u));
 
@@ -2877,14 +2951,26 @@ async function main() {
     const view = await relevanceView(RS_ON, u, 2025);
     check("pft9 GET /api/relevance view: counts per list + the 3 cards with their suggestion text",
       view.counts.worth_a_look === 3 && view.counts.irrelevant === 2 && view.counts.unscanned === 0 && view.worth_a_look.length === 3 && view.worth_a_look.every((w) => !!w.suggestion_id && w.status === "suggested"));
+    // #587: each card carries what the Claims step must ask BEFORE the tap, and the occupation guide.
+    check("pft9 view (#587): cards carry the rule's label choices (D3/D5), no work-use share for an immediate rule, not an asset, and the nurse ATO guide",
+      view.worth_a_look.every((w) => JSON.stringify(w.label_options) === '["D3","D5"]' && w.needs_work_use_pct === false && w.needs_asset === false &&
+        w.occupation === "nurse" && /^https:\/\/www\.ato\.gov\.au\//.test(w.ato_url ?? "") && w.has_record === 0 && w.reimbursed === 0));
 
-    // Confirm: the user's tap is the only thing that makes a line count.
-    const okA = await confirmWorthALook(RS_ON, u, `${u}Ahpra`);
+    // Confirm: the user's tap is the only thing that makes a line count. #587: the nurse rule names two return
+    // labels (D3/D5), so a confirm without a pick (or with a label the rule doesn't name) is refused with the
+    // options and writes nothing.
+    const noPick = await confirmWorthALook(RS_ON, u, `${u}Ahpra`);
+    const badPick = await confirmWorthALook(RS_ON, u, `${u}Ahpra`, { atoLabel: "D1" });
+    check("pft9 (#587): a D3/D5 rule needs the user's label pick — refused with the options, nothing written",
+      noPick?.ok === false && noPick.needs_label === true && JSON.stringify(noPick.label_options) === '["D3","D5"]' && badPick?.needs_label === true &&
+      rel(u).Ahpra!.deductibility === "undetermined" && (await buildReport(RS_ON, u, 2025)).taxable_position_cents === offPos);
+    const okA = await confirmWorthALook(RS_ON, u, `${u}Ahpra`, { atoLabel: "D5" });
     const posA = (await buildReport(RS_ON, u, 2025)).taxable_position_cents;
     check("pft9: confirming AHPRA moves the position by exactly its amount ($215)", okA?.ok === true && offPos - posA === 21500 && rel(u).Ahpra!.deductibility === "confirmed_deductible");
-    const okS = await confirmWorthALook(RS_ON, u, `${u}Shoes`);
+    check("pft9 (#587): the confirmed line takes the rule's return label the user picked (D5), not the categoriser's", rel(u).Ahpra!.ato_label === "D5");
+    const okS = await confirmWorthALook(RS_ON, u, `${u}Shoes`, { atoLabel: "D3" });
     const posS = (await buildReport(RS_ON, u, 2025)).taxable_position_cents;
-    check("pft9: confirming the denied shoes counts the FULL amount — the stamp's $0 claimable is cleared ($129)", okS?.ok === true && posA - posS === 12900 && rel(u).Shoes!.deductible_amount_cents === null);
+    check("pft9: confirming the denied shoes counts the FULL amount — the stamp's $0 claimable is cleared ($129)", okS?.ok === true && posA - posS === 12900 && rel(u).Shoes!.deductible_amount_cents === null && rel(u).Shoes!.ato_label === "D3");
     check("pft9: confirmed cards move to 'capturing' (the line is their evidence); a second confirm is refused",
       cards(u).filter((c) => c.status === "capturing").length === 2 && (await confirmWorthALook(RS_ON, u, `${u}Ahpra`))?.ok === false);
     check("pft9: an irrelevant line can't be confirmed through the worth-a-look path", (await confirmWorthALook(RS_ON, u, `${u}Woolies`)) === null);
@@ -2909,6 +2995,57 @@ async function main() {
       (await buildReport(RS_ON, ud, 2025)).taxable_position_cents === posD && rel(ud).Fuel!.deductibility === fuelV);
     check("pft9d: per-line cards stay out of the legacy claims list (served by /api/relevance)",
       cards(ud).length === 1 && (await listClaims(RS_ON, ud)).length === 0);
+    // #587: the Claims step routes a refused mixed-use line to the work-use share; confirming WITH it counts
+    // exactly amount x share and writes the rule's single label (D15).
+    const vD = await relevanceView(RS_ON, ud, 2025);
+    check("pft9d view (#587): the fuel card says a work-use share is needed before the tap", vD.worth_a_look.length === 1 && vD.worth_a_look[0]!.needs_work_use_pct === true);
+    const badPct = await confirmWorthALook(RS_ON, ud, "pft9dFuel", { workUsePct: 0 });
+    const cD60 = await confirmWorthALook(RS_ON, ud, "pft9dFuel", { workUsePct: 60 });
+    check("pft9d (#587): with a 60% work-use share the fuel counts exactly $48 of $80, labelled D15; a 0% share is refused",
+      badPct?.ok === false && cD60?.ok === true && rel(ud).Fuel!.deductible_amount_cents === 4800 && rel(ud).Fuel!.ato_label === "D15" &&
+      posD - (await buildReport(RS_ON, ud, 2025)).taxable_position_cents === 4800);
+
+    // #587: with WFH hours stated, the fixed rate per hour already includes internet, so an internet line is
+    // never claimed again on its own (it would count twice: work_method + the line). No hours ⇒ the share path.
+    {
+      const uw = "pft9w";
+      const RS_WFH = { ...RS_ON, FEATURES: `${(RS_ON as unknown as { FEATURES: string }).FEATURES},wfh_car_methods` } as unknown as Env;
+      seedTenant(uw, "FT office worker internet + WFH hours");
+      run(`INSERT INTO profiles (user_id) VALUES (?)`, uw);
+      run(`UPDATE persons SET occupation = 'office_professional' WHERE id = ?`, `person_self_${uw}`);
+      inc("pft9wSal", uw, "salary_payg", 6000000);
+      const netV = verdictForTxn("payg", null, "TELSTRA INTERNET", section).deductibility;
+      run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, direction, deductibility, merchant) VALUES ('pft9wNet', ?, 'upload', 'categorised', 'bank_line', 6000, 6000, ?, 'payg', 'debit', ?, 'TELSTRA INTERNET')`, uw, FY_DATE, netV);
+      await runRelevanceScan(RS_WFH, uw);
+      run(`INSERT INTO work_use_inputs (user_id, fy, wfh_hours) VALUES (?, 2025, 400)`, uw);
+      const posW = (await buildReport(RS_WFH, uw, 2025)).taxable_position_cents;
+      const cW = await confirmWorthALook(RS_WFH, uw, "pft9wNet", { workUsePct: 50 });
+      check("pft9w (#587): WFH hours stated ⇒ an internet line is refused as covered by the fixed rate; nothing written, position unchanged",
+        rel(uw).Net!.relevance === "worth_a_look" && cW?.ok === false && cW.covered_by_wfh_rate === true &&
+        rel(uw).Net!.deductibility === netV && (await buildReport(RS_WFH, uw, 2025)).taxable_position_cents === posW);
+      run(`UPDATE work_use_inputs SET wfh_hours = 0 WHERE user_id = ?`, uw);
+      const posW0 = (await buildReport(RS_WFH, uw, 2025)).taxable_position_cents;
+      const cW0 = await confirmWorthALook(RS_WFH, uw, "pft9wNet", { workUsePct: 50 });
+      check("pft9w (#587): without WFH hours the internet line takes the work-use share as usual (50% of $60 = $30)",
+        cW0?.ok === true && posW0 - (await buildReport(RS_WFH, uw, 2025)).taxable_position_cents === 3000);
+    }
+
+    // #587: a work laptop over the FY's immediate threshold on a depreciating rule is never confirmed as an
+    // immediate claim — it is routed to Assets (needs_asset), even with a work-use share.
+    const ua = "pft9a";
+    seedTenant(ua, "FT IT grad, laptop");
+    run(`INSERT INTO profiles (user_id) VALUES (?)`, ua);
+    run(`UPDATE persons SET occupation = 'it_professional' WHERE id = ?`, `person_self_${ua}`);
+    inc("pft9aSal", ua, "salary_payg", 7000000);
+    const lapV = verdictForTxn("payg", null, "JB HI FI LAPTOP", section).deductibility;
+    run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, direction, deductibility, merchant) VALUES ('pft9aLaptop', ?, 'upload', 'categorised', 'bank_line', 150000, 150000, ?, 'payg', 'debit', ?, 'JB HI FI LAPTOP')`, ua, FY_DATE, lapV);
+    await runRelevanceScan(RS_ON, ua);
+    const posL = (await buildReport(RS_ON, ua, 2025)).taxable_position_cents;
+    const cL = await confirmWorthALook(RS_ON, ua, "pft9aLaptop", { workUsePct: 80 });
+    const vL = await relevanceView(RS_ON, ua, 2025);
+    check("pft9a (#587): a $1,500 laptop on the IT rule is worth a look but routed to Assets (needs_asset), never an immediate claim — position unchanged",
+      rel(ua).Laptop!.relevance === "worth_a_look" && cL?.ok === false && cL.needs_asset === true && vL.worth_a_look[0]?.needs_asset === true &&
+      (await buildReport(RS_ON, ua, 2025)).taxable_position_cents === posL && rel(ua).Laptop!.deductibility === lapV);
 
     // Same lines, retail worker: no AHPRA card, no shoes card.
     const ur = "pft9r";
@@ -3103,6 +3240,73 @@ async function main() {
     inc("pft8mSal", u, "salary_payg", 3000000); // hand-keyed, no employer name
     const after = await payrollEmployerSignals(WP_ON, u, 2025);
     check("pft8m: a hand-keyed salary row clears the only marked employer's prompt", before.payrollEmployers?.[0]?.covered === false && after.payrollEmployers?.[0]?.covered === true);
+  }
+
+  // ── pftrec — the Records step (#588, flag ft_journey; spec A7 golden). A first-timer with 3 confirmed claims:
+  //    one backed by a matched receipt, one by a document, one bare; WFH ticked in About you with hours missing.
+  //    The records block counts claims + facts (never money); attesting the record-keeping exception on the
+  //    bare line is position-neutral (no countable predicate reads record_exception). ──
+  {
+    const u = "pftrec";
+    const SP_ON = { ...env, FEATURES: `${(env as { FEATURES: string }).FEATURES},situation_profile,ft_journey` } as unknown as Env;
+    seedTenant(u, "FT records step");
+    run(`INSERT INTO profiles (user_id) VALUES (?)`, u);
+    inc("pftrecSal", u, "salary_payg", 5500000);
+    const line = (id: string, merchant: string, cents: number, label: string, extra = "") =>
+      run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, ato_label, direction, deductibility, merchant${extra ? ", document_id" : ""}) VALUES (?, ?, 'upload', 'categorised', 'bank_line', ?, ?, ?, 'payg', ?, 'debit', 'confirmed_deductible', ?${extra ? ", ?" : ""})`,
+        ...[id, u, cents, cents, FY_DATE, label, merchant, ...(extra ? [extra] : [])]);
+    line("pftrecMonitor", "OFFICEWORKS 0423", 8900, "D5");
+    line("pftrecUnion", "UNION DUES", 6000, "D5", "pftrecDoc");
+    line("pftrecLaundry", "SPEEDY LAUNDROMAT", 4500, "D3");
+    // The monitor's receipt, linked through the same write a Match / Snap-a-receipt tap runs.
+    run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, direction, receipt_key) VALUES ('pftrecRcpt', ?, 'upload', 'extracted', 'receipt', 8900, 8900, ?, 'payg', 'debit', 'r2/key')`, u, FY_DATE);
+    const t = await receiptLinkTargets(env, u, "pftrecRcpt", "pftrecMonitor");
+    await applyReceiptLink(env, u, "pftrecRcpt", "pftrecMonitor", t!.donor);
+    // An unconfirmed line and a reimbursed confirmed line are not claims to record.
+    run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, ato_label, direction, deductibility) VALUES ('pftrecMaybe', ?, 'upload', 'categorised', 'bank_line', 2500, 2500, ?, 'payg', 'D5', 'debit', 'undetermined')`, u, FY_DATE);
+    run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, ato_label, direction, deductibility, reimbursed) VALUES ('pftrecRmb', ?, 'upload', 'categorised', 'bank_line', 3000, 3000, ?, 'payg', 'D5', 'debit', 'confirmed_deductible', 1)`, u, FY_DATE);
+    await upsertSituationPeriod(SP_ON, u, { person_id: `person_self_${u}`, fact: "wfh", value: "yes", starts_on: "2025-07-01" }, { fy: 2025, now: new Date("2026-10-03T00:00:00Z") });
+
+    const v1 = await recordsView(SP_ON, u, 2025, auV1RulePack);
+    check("pftrec: records block = { claims_total: 3, claims_with_record: 2, facts_needed: ['wfh_hours'], facts_done: [] }",
+      v1.block.claims_total === 3 && v1.block.claims_with_record === 2 && v1.block.claims_exception === 0 &&
+      JSON.stringify(v1.block.facts_needed) === '["wfh_hours"]' && v1.block.facts_done.length === 0);
+    check("pftrec: receipt / document records detected; the receipt row itself is not a separate claim",
+      v1.rows.find((r) => r.id === "pftrecMonitor")?.record?.kind === "receipt" && v1.rows.find((r) => r.id === "pftrecUnion")?.record?.kind === "document" && !v1.rows.some((r) => r.id === "pftrecRcpt"));
+    check("pftrec: the block carries no money figure and no refund wording", !/cents|refund/i.test(JSON.stringify(v1.block)));
+
+    // Bare laundry $45: total D2–D5 claims $194 ≤ $300 and laundry ≤ $150 ⇒ both exceptions open on it.
+    const lr = v1.rows.find((r) => r.id === "pftrecLaundry")!;
+    check("pftrec: the bare laundry line needs a record and may use either exception", lr.status === "needs_record" && lr.exception.eligible.slice().sort().join() === "laundry_150,total_300");
+    const posBefore = (await buildReport(SP_ON, u, 2025)).taxable_position_cents;
+    const refusal = await applyRecordException(SP_ON, u, 2025, auV1RulePack, "pftrecMonitor", "total_300");
+    check("pftrec: a recorded line can't be attested (refused, nothing written)", refusal !== null && (db.prepare(`SELECT record_exception FROM transactions WHERE id = 'pftrecMonitor'`).get() as { record_exception: string | null }).record_exception === null);
+    check("pftrec: another tenant can't attest this tenant's line", (await applyRecordException(SP_ON, "pft9", 2025, auV1RulePack, "pftrecLaundry", "total_300")) !== null);
+    check("pftrec: attesting the laundry exception is accepted", (await applyRecordException(SP_ON, u, 2025, auV1RulePack, "pftrecLaundry", "laundry_150")) === null);
+    const v2 = await recordsView(SP_ON, u, 2025, auV1RulePack);
+    check("pftrec: the attested line counts as an exception, never as a record", v2.block.claims_exception === 1 && v2.block.claims_with_record === 2);
+    check("pftrec: setting record_exception leaves taxable_position_cents unchanged", (await buildReport(SP_ON, u, 2025)).taxable_position_cents === posBefore);
+
+    // Entering WFH hours flips facts_done; the hours count toward the $300 total (500h × 70c = $350 ⇒ total_300 closes).
+    run(`INSERT INTO work_use_inputs (user_id, fy, wfh_hours) VALUES (?, 2025, 500)`, u);
+    const v3 = await recordsView(SP_ON, u, 2025, auV1RulePack);
+    check("pftrec: entering WFH hours flips facts_done", JSON.stringify(v3.block.facts_done) === '["wfh_hours"]');
+    check("pftrec: with the WFH claim the $300 total is exceeded ⇒ total_300 closes; the laundry exception still stands",
+      v3.exceptions.find((e) => e.key === "total_300")?.open === false && v3.rows.find((r) => r.id === "pftrecLaundry")?.status === "exception");
+    check("pftrec: clearing the attestation is always allowed", (await applyRecordException(SP_ON, u, 2025, auV1RulePack, "pftrecLaundry", null)) === null &&
+      (await recordsView(SP_ON, u, 2025, auV1RulePack)).block.claims_exception === 0);
+
+    // situation_profile OFF: no ticks ⇒ only facts already entered are needed.
+    const vOff = await recordsView({ ...env, FEATURES: `${(env as { FEATURES: string }).FEATURES},ft_journey` } as unknown as Env, u, 2025, auV1RulePack);
+    check("pftrec (situation_profile OFF): facts come only from what's entered (WFH hours) — no tick read", JSON.stringify(vOff.block.facts_needed) === '["wfh_hours"]');
+
+    // #587: platform payouts already recorded from bank credits (We noticed → platform, #577) count the money
+    // once; the annual-summary entry isn't offered on top (it would add the gross again), and the fact reads stated.
+    inc("pftrecGig", u, "business", 4200);
+    run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, direction, matched_income_id) VALUES ('pftrecPayout', ?, 'upload', 'ignored', 'bank_line', 4200, 4200, ?, 'credit', 'pftrecGig')`, u, FY_DATE);
+    const vP = await recordsView(SP_ON, u, 2025, auV1RulePack);
+    check("pftrec (#587): a payout recorded from a bank credit ⇒ payouts_recorded 1 and the platform fact reads stated",
+      vP.platform.payouts_recorded === 1 && vP.platform.entries.length === 0 && vP.block.facts_done.includes("platform_fees"));
   }
 
   console.log(`\n=== personas: ${pass} passed, ${fail} failed ===`);

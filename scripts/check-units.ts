@@ -3586,5 +3586,99 @@ console.log("first-timer income");
   check("payerKey: non-string ⇒ unnamed", payerKey(undefined) === "" && payerKey(42) === "");
 }
 
+// ── #584 (A10 ticket a): Before you start + glossary + step guides — the tax-advice denylist ──
+import { TAX_ADVICE_DENYLIST, denylistHits, stripComments } from "../src/lib/copy-denylist";
+import { GLOSSARY as LEGACY_GLOSSARY, FT_GLOSSARY, ANY_GLOSSARY } from "../web/src/content/glossary";
+import { STEP_GUIDES, STEP_ORDER } from "../web/src/content/stepGuides";
+import { BEFORE_YOU_START, ATO_LINKS } from "../web/src/content/beforeYouStart";
+import { beforeYouStartPayload, handleBeforeYouStart } from "../src/lib/before-you-start";
+console.log("first-timer copy denylist (#584)");
+{
+  // 1. The denylist itself: catches the banned shapes, passes the owner-mandated lines.
+  const bad = [
+    "You'll get a bigger refund", "you will get money back", "You're entitled to claim this", "Guaranteed savings",
+    "People like you claim $300", "Most students claim laptops", "On average, nurses deduct more",
+    "You don't need to lodge this year", "You must lodge a return", "You may not need to lodge", "Quillo lodges for you",
+    "your tax payable", "a 32% tax bracket", "the $18,200 threshold",
+  ];
+  for (const t of bad) check(`denylist catches: "${t}"`, denylistHits(t).length > 0);
+  const good = [
+    "Not everyone has to lodge. Check with the ATO's 'Do I need to lodge?' tool.",
+    "Even if you don't have to, lodging can get back tax your employer withheld.",
+    "Quillo can't lodge an individual return: only you, in myTax, or a registered tax agent can.",
+    "If you're unsure, confirm with a registered tax agent.",
+  ];
+  for (const t of good) check(`denylist passes: "${t.slice(0, 50)}…"`, denylistHits(t).length === 0);
+  check("denylist has a lodge-verdict rule and a peer-benchmark rule", TAX_ADVICE_DENYLIST.some((d) => d.name === "lodge verdict") && TAX_ADVICE_DENYLIST.some((d) => d.name === "peer benchmark"));
+
+  // 2. Scan: every web/src/content file (new content files are covered by default), the Before you
+  //    start page, every ft/ component, the first-timer glossary terms and the pack's before_you_start
+  //    block. LEGACY content predating the denylist is exempt by name (glossary.ts's legacy map uses
+  //    "refund" for merchant reversals; its FT_GLOSSARY map is scanned via the import below).
+  const LEGACY_CONTENT = new Set(["glossary.ts", "tabGuides.ts", "occupations.ts"]);
+  const offenders: string[] = [];
+  const scanText = (label: string, text: string) => {
+    text.split("\n").forEach((line, i) => {
+      const h = denylistHits(line);
+      if (h.length) offenders.push(`${label}:${i + 1} [${h.join(",")}] ${line.trim().slice(0, 90)}`);
+    });
+  };
+  const contentDir = path.join(process.cwd(), "web/src/content");
+  const scannedFiles: string[] = [];
+  for (const f of fs.readdirSync(contentDir).filter((n) => /\.tsx?$/.test(n) && !LEGACY_CONTENT.has(n))) {
+    scannedFiles.push(f);
+    scanText(`content/${f}`, stripComments(fs.readFileSync(path.join(contentDir, f), "utf8")));
+  }
+  const ftDir = path.join(process.cwd(), "web/src/components/ft");
+  if (fs.existsSync(ftDir)) {
+    for (const f of fs.readdirSync(ftDir).filter((n) => /\.tsx?$/.test(n))) {
+      scannedFiles.push(`ft/${f}`);
+      scanText(`components/ft/${f}`, stripComments(fs.readFileSync(path.join(ftDir, f), "utf8")));
+    }
+  }
+  scanText("pages/BeforeYouStart.tsx", stripComments(fs.readFileSync(path.join(process.cwd(), "web/src/pages/BeforeYouStart.tsx"), "utf8")));
+  for (const [k, v] of Object.entries(FT_GLOSSARY)) scanText(`FT_GLOSSARY.${k}`, `${v.term}\n${v.short}`);
+  const packBys = (rulePack as unknown as { before_you_start?: Record<string, unknown> }).before_you_start;
+  check("rule pack carries a before_you_start block", !!packBys);
+  for (const [k, v] of Object.entries(packBys ?? {})) if (typeof v === "string") scanText(`pack.before_you_start.${k}`, v);
+  check("scan covers beforeYouStart.ts + stepGuides.ts", scannedFiles.includes("beforeYouStart.ts") && scannedFiles.includes("stepGuides.ts"));
+  check(`first-timer copy passes the tax-advice denylist (offenders: ${offenders.join(" | ") || "none"})`, offenders.length === 0);
+
+  // 3. Before you start content contract (owner ruling 2026-10-03): the two required lines verbatim,
+  //    the ATO tool link, and no verdict of its own.
+  check("BYS: 'Not everyone has to lodge' line verbatim", BEFORE_YOU_START.lodgeLine === "Not everyone has to lodge. Check with the ATO's 'Do I need to lodge?' tool.");
+  check("BYS: 'Even if you don't have to' line verbatim", BEFORE_YOU_START.lodgeEvenIf === "Even if you don't have to, lodging can get back tax your employer withheld.");
+  check("BYS: lodge tool links to the ATO's Do I need to lodge? tool", ATO_LINKS.lodgeTool.url === "https://www.ato.gov.au/calculators-and-tools/tax-return-do-i-need-to-lodge");
+  check("BYS: every external link is an https ato.gov.au page", Object.values(ATO_LINKS).every((l) => /^https:\/\/www\.ato\.gov\.au\//.test(l.url)));
+  check("BYS: says it isn't a registered tax agent + general information only", BEFORE_YOU_START.doesnt.some((t) => /isn't a registered tax agent/.test(t) && /general information/.test(t)));
+  check("BYS: footnote is general-information framed", /^General information only/.test(BEFORE_YOU_START.footnote));
+
+  // 4. Step guides: one per journey step, each self-explaining, terms resolve, judgement steps defer.
+  check("step guides: Home + 6 steps in order", STEP_ORDER.length === 7 && STEP_ORDER.every((k, i) => STEP_GUIDES[k].n === i));
+  check("step guides: every step has an intro, a why and an ATO link", STEP_ORDER.every((k) => STEP_GUIDES[k].intro.length > 0 && STEP_GUIDES[k].why.length > 0 && STEP_GUIDES[k].links.length > 0));
+  check("step guides: every glossary term resolves", STEP_ORDER.every((k) => STEP_GUIDES[k].terms.every((t) => t in ANY_GLOSSARY)));
+  check("step guides: About you / Claims / Check defer to a registered tax agent", (["about", "claims", "check"] as const).every((k) => STEP_GUIDES[k].why.some((w) => /confirm with a registered tax agent/.test(w))));
+  check("step guides: Claims names the three golden rules", STEP_GUIDES.claims.why.some((w) => /golden rules/.test(w)));
+
+  // 5. Glossary additions: the spec's list, no key collision (so an existing <Term k> tip is unchanged).
+  const ftKeys = ["prefill", "income_statement", "notice_of_assessment", "tax_residency", "temporary_resident", "working_holiday_maker", "help_debt", "golden_rules", "mytax", "registered_tax_agent", "record_keeping_exception"];
+  check("FT glossary: every spec term present (ABN already in the legacy map)", ftKeys.every((k) => k in FT_GLOSSARY) && "abn" in LEGACY_GLOSSARY);
+  check("FT glossary: no key collides with the legacy glossary", Object.keys(FT_GLOSSARY).every((k) => !(k in LEGACY_GLOSSARY)));
+  check("ANY_GLOSSARY: legacy entries resolve to the same objects (OFF tips unchanged)", Object.entries(LEGACY_GLOSSARY).every(([k, v]) => ANY_GLOSSARY[k as keyof typeof ANY_GLOSSARY] === v));
+
+  // 6. Public probe: pure payload + the OFF gate.
+  check("BYS payload: missing/blank/non-string price slot ⇒ null", beforeYouStartPayload(undefined).price_line === null && beforeYouStartPayload({ before_you_start: { price_line: "  " } }).price_line === null && beforeYouStartPayload({ before_you_start: { price_line: 5 } }).price_line === null);
+  check("BYS payload: a set price slot passes through trimmed", beforeYouStartPayload({ before_you_start: { price_line: " From A$X " } }).price_line === "From A$X");
+  check("BYS payload: bundled pack's slot is unset (renders nothing until #523)", beforeYouStartPayload(rulePack as never).price_line === null);
+  const kvNull = { get: async () => null } as unknown;
+  const offRes = await handleBeforeYouStart(new Request("https://app.quillo.au/api/public/before-you-start"), { FEATURES: "", RULES: kvNull } as never);
+  check("BYS endpoint: ft_journey OFF ⇒ 404", offRes.status === 404);
+  const onRes = await handleBeforeYouStart(new Request("https://app.quillo.au/api/public/before-you-start"), { FEATURES: "ft_journey", RULES: kvNull } as never);
+  const onBody = (await onRes.json()) as { price_line: unknown };
+  check("BYS endpoint: ON ⇒ 200 with only the price slot (no tenant data)", onRes.status === 200 && JSON.stringify(Object.keys(onBody)) === '["price_line"]' && onBody.price_line === null);
+  const postRes = await handleBeforeYouStart(new Request("https://app.quillo.au/api/public/before-you-start", { method: "POST" }), { FEATURES: "ft_journey", RULES: kvNull } as never);
+  check("BYS endpoint: non-GET ⇒ 404", postRes.status === 404);
+}
+
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);
 process.exit(fail === 0 ? 0 : 1);

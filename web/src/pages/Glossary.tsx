@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
-import { GLOSSARY } from "../content/glossary";
+import { ANY_GLOSSARY, GLOSSARY } from "../content/glossary";
+import { useFeatures } from "../lib/features";
 import { Card, Input } from "../components/ui";
 
 // A browsable, searchable version of the same copy the in-app "What's this?" tooltips use
@@ -7,14 +8,17 @@ import { Card, Input } from "../components/ui";
 // only incidental — and gives tooltips a "read more" home later via #term anchors.
 export function Glossary() {
   const [q, setQ] = useState("");
+  // ft_journey (#584): the first-timer terms join the list only when ON — OFF lists GLOSSARY alone.
+  const { has } = useFeatures();
+  const source = has("ft_journey") ? ANY_GLOSSARY : GLOSSARY;
   const entries = useMemo(() => {
-    const all = Object.entries(GLOSSARY).map(([key, v]) => ({ key, ...v }));
+    const all = Object.entries(source).map(([key, v]) => ({ key, ...v }));
     const needle = q.trim().toLowerCase();
     if (!needle) return all.sort((a, b) => a.term.localeCompare(b.term));
     return all
       .filter((e) => e.term.toLowerCase().includes(needle) || e.short.toLowerCase().includes(needle))
       .sort((a, b) => a.term.localeCompare(b.term));
-  }, [q]);
+  }, [q, source]);
 
   return (
     <div className="mx-auto max-w-2xl space-y-6">

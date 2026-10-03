@@ -26,6 +26,7 @@ import { Income } from "./pages/Income";
 import { Documents } from "./pages/Documents";
 import { Assets } from "./pages/Assets";
 import { Glossary } from "./pages/Glossary";
+import { BeforeYouStart, beforeYouStartLoader } from "./pages/BeforeYouStart";
 import { setTokenGetter } from "./api";
 import { ActiveFyProvider } from "./lib/activeFy";
 
@@ -98,6 +99,14 @@ const router = createBrowserRouter([
         <SignUp routing="path" path="/sign-up" signInUrl="/sign-in" />
       </AuthScreen>
     ),
+  },
+  // Public "Before you start" (#584, flag ft_journey) — outside <Protected />, beside sign-in. The
+  // loader probes the public endpoint; flag OFF ⇒ it throws the router's standard 404, the same
+  // screen an unknown path shows today.
+  {
+    path: "/start",
+    loader: beforeYouStartLoader,
+    element: <BeforeYouStart />,
   },
   {
     path: "/",

@@ -1,7 +1,7 @@
 import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode } from "react";
 import { useState } from "react";
 import * as Tooltip from "@radix-ui/react-tooltip";
-import { GLOSSARY, type GlossaryKey } from "../content/glossary";
+import { ANY_GLOSSARY, type AnyGlossaryKey } from "../content/glossary";
 import { currencySymbol, currencyLocale } from "../lib/currency";
 
 // UK epic stop 2 — base-currency-aware money(). The SPA is single-tenant-per-session, so the base
@@ -256,8 +256,8 @@ export function Meter({ frac, className = "bg-green" }: { frac: number; classNam
 // ============================================================================
 
 /** Resolve a tip body from an explicit node or a glossary key. */
-function tipBody(k?: GlossaryKey, tip?: ReactNode): ReactNode | null {
-  return tip ?? (k ? GLOSSARY[k].short : null);
+function tipBody(k?: AnyGlossaryKey, tip?: ReactNode): ReactNode | null {
+  return tip ?? (k ? ANY_GLOSSARY[k].short : null);
 }
 
 /** The floating bubble — shared by InfoTip and Term. Card surface, ink text, above everything.
@@ -285,7 +285,7 @@ function TipBubble({ children, onDismiss }: { children: ReactNode; onDismiss?: (
  * stat labels and table headers. Pass a glossary `k` (preferred — keeps copy central) or an
  * explicit `tip`. Renders nothing if neither resolves, so call sites stay clean.
  */
-export function InfoTip({ k, tip, label, className = "" }: { k?: GlossaryKey; tip?: ReactNode; label?: string; className?: string }) {
+export function InfoTip({ k, tip, label, className = "" }: { k?: AnyGlossaryKey; tip?: ReactNode; label?: string; className?: string }) {
   const body = tipBody(k, tip);
   // Controlled so the tip also opens on TAP: Radix Tooltip only reacts to hover/focus, neither of
   // which fires on touch devices, so the ⓘ was dead on mobile/tablet. We keep hover/focus (via
@@ -297,7 +297,7 @@ export function InfoTip({ k, tip, label, className = "" }: { k?: GlossaryKey; ti
       <Tooltip.Trigger asChild>
         <button
           type="button"
-          aria-label={label ?? (k ? `What's this? ${GLOSSARY[k].term}` : "What's this?")}
+          aria-label={label ?? (k ? `What's this? ${ANY_GLOSSARY[k].term}` : "What's this?")}
           // Many tips sit inside a <label>; preventDefault stops the ⓘ from activating the label's
           // control (e.g. toggling a checkbox). Open (don't toggle) on tap: Android focuses the button
           // on tap which already opens it via onOpenChange, so a toggle would race-close it; dismissal is
@@ -318,9 +318,9 @@ export function InfoTip({ k, tip, label, className = "" }: { k?: GlossaryKey; ti
  * to the glossary term); the tip body comes from `k` or an explicit `tip`. Falls back to plain
  * text when no tip resolves, so it never breaks a sentence.
  */
-export function Term({ k, tip, children }: { k?: GlossaryKey; tip?: ReactNode; children?: ReactNode }) {
+export function Term({ k, tip, children }: { k?: AnyGlossaryKey; tip?: ReactNode; children?: ReactNode }) {
   const body = tipBody(k, tip);
-  const text = children ?? (k ? GLOSSARY[k].term : null);
+  const text = children ?? (k ? ANY_GLOSSARY[k].term : null);
   // Controlled for tap-to-open on touch (see InfoTip) — keeps hover/focus for desktop.
   const [open, setOpen] = useState(false);
   if (!body) return <>{text}</>;

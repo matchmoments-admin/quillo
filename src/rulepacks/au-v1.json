@@ -178,6 +178,10 @@
       { "match": "income-protection,income protection,salary continuance,income-insurance", "note": "Income-protection insurance premiums (outside super) are generally deductible because the benefit would be assessable income (s8-1). Confirm it's not a life/TPD/trauma policy, then mark it as a deduction." }
     ]
   },
+  "before_you_start": {
+    "_note": "A10 (#584): the public no-account Before you start screen (/start, flag ft_journey). price_line is the price/fit copy slot owned by launch-map pricing ticket #523: null renders nothing. Copy here is scanned by the tax-advice denylist in check-units.",
+    "price_line": null
+  },
   "occupations": {
     "_note": "#143: occupation deduction content keyed by income_activities.occupation_scope. 'suggest' items become claim_suggestions (suggested_deductible — never auto-counted; deny-by-default holds). 'warn' items pre-empt the ATO's top occupation errors. GENERAL INFO ONLY.",
     "nurse": {

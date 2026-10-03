@@ -18,6 +18,7 @@ import type { Situation } from "./db";
 import { suggestionText, type ClaimRule } from "./claimability";
 import { BUSINESS_INCOME_TYPES, RENT_INCOME_TYPES, FOREIGN_INCOME_TYPES } from "./taxonomy";
 import type { SituationProfile } from "./situation-profile";
+import { NON_RESIDENT_FOREIGN, NON_RESIDENT_FOREIGN_NOTE } from "./residency-assessability";
 
 export const READINESS_DISCLAIMER =
   "General information only — not tax advice. Quillo is not a registered tax or BAS agent. Confirm everything with a registered tax agent before lodging.";
@@ -258,8 +259,11 @@ export function assessReadiness(input: {
   // invariant — and each type carries its own label/explainer (a pension is never shown as a gift).
   for (const ex of report.income.excluded_by_type ?? []) {
     if (ex.gross_cents <= 0) continue;
+    // A13 (#580): foreign income left out for a non-resident period carries the residency note instead.
+    const nonResident = ex.reason === NON_RESIDENT_FOREIGN;
     lines.push({ group: "excluded", label: ex.income_type, amount_cents: ex.gross_cents,
-      basis: `${ex.n} income record(s) — captured, not counted`, why: excludedIncomeWhy(ex.income_type) });
+      basis: nonResident ? `${ex.n} income record(s) — earned while a foreign or temporary resident, not counted` : `${ex.n} income record(s) — captured, not counted`,
+      why: nonResident ? NON_RESIDENT_FOREIGN_NOTE : excludedIncomeWhy(ex.income_type) });
   }
   // Phase #138: net capital gain is assessable income — buildReport added it to taxable_position, so it
   // renders as an "income" line to keep the lines-sum == headline invariant. Present only when the
@@ -494,7 +498,9 @@ export function assessReadiness(input: {
     // business/rent buckets, because income_by_bucket is NOT entity-scoped: a company's sales land in
     // income_business while its income row is (correctly) kept out of the individual's by_type. Without the
     // entity types the user would be told to record income they already recorded.
-    const individualTypes = new Set(report.income.by_type.map((t) => t.income_type));
+    // A13 (#580): a type the residency periods left out was still RECORDED — it covers its bucket.
+    const individualTypes = new Set([...report.income.by_type.map((t) => t.income_type),
+      ...(report.income.excluded_by_type ?? []).filter((x) => x.reason === NON_RESIDENT_FOREIGN).map((x) => x.income_type)]);
     const entityTypes = new Set(signals.entityIncomeTypes ?? []);
     const has = (group: ReadonlySet<string>, from: Set<string>) => [...group].some((t) => from.has(t));
     const bucketCovered: Record<string, boolean> = {
@@ -641,6 +647,7 @@ export function assessReadiness(input: {
   // assessable (we never assert it). Each type keeps its own wording; a pension is never called a gift.
   for (const ex of report.income.excluded_by_type ?? []) {
     if (ex.gross_cents <= 0) continue;
+    if (ex.reason === NON_RESIDENT_FOREIGN) continue; // A13: one combined note below, not a per-type defer
     if (ex.income_type === "non_cash_benefit") {
       // Copy fork gated on the non_cash_income flag: pointing users at the "non-cash business income"
       // type is only actionable (and only rendered in the form) when the flag is on — OFF keeps the
@@ -660,6 +667,25 @@ export function assessReadiness(input: {
         `You've recorded ${money(ex.gross_cents)} of ${ex.income_type.replace(/_/g, " ")} income. It's EXCLUDED from your indicative position — confirm the treatment with a registered tax agent.${DEFER}`, true,
         [{ kind: "income", label: ex.income_type.replace(/_/g, " ") }]));
     }
+  }
+  // A13 (#580, residency_assessability): foreign income left out for a foreign / WHM / temporary-resident period —
+  // one INFO note naming the total, so no excluded dollar is silent. Present only when incomeTotals produced
+  // such entries (flag ON + a non-resident period) ⇒ OFF byte-identical.
+  const nonResidentEx = (report.income.excluded_by_type ?? []).filter((ex) => ex.reason === NON_RESIDENT_FOREIGN && ex.gross_cents > 0);
+  if (nonResidentEx.length) {
+    const cents = nonResidentEx.reduce((s, ex) => s + ex.gross_cents, 0);
+    const n = nonResidentEx.reduce((s, ex) => s + ex.n, 0);
+    findings.push(f("foreign_income_non_resident_excluded", "income", "info", `Foreign income left out: ${money(cents)} earned while you were a foreign or temporary resident`,
+      `${n} foreign income record(s) totalling ${money(cents)} are dated in a residency period that leaves this income out. ${NON_RESIDENT_FOREIGN_NOTE}`, true,
+      [{ kind: "income", label: "foreign income" }]));
+  }
+  // A13: an undated foreign-sourced row in a FY where the person's residency changed can't be placed — it stays
+  // IN the position (no automatic split) and we ask when it was earned.
+  if (report.income.residency_undated && report.income.residency_undated.n > 0) {
+    const u = report.income.residency_undated;
+    findings.push(f("foreign_income_undated_part_year", "income", "review", "When did you earn this foreign income? Your residency changed during the year.",
+      `${u.n} foreign income record(s) totalling ${money(u.gross_cents)} have no date, and your residency changed during the year. Some foreign income earned while you were a foreign or temporary resident is generally left out, so Quillo needs the date to know whether it counts. Until you add one, it stays in your estimate. Add the date on the income record.${DEFER}`, true,
+      [{ kind: "income", label: "foreign income" }]));
   }
   // B: AMMA managed-fund distributions can include an AMIT cost-base net amount — not assessable now, but it
   // adjusts the cost base of the units for the CGT calc on a future sale. Surface it as a defer nudge.
@@ -902,7 +928,8 @@ export function assessReadiness(input: {
     // (G10, review-only step) Foreign income for a person whose residency is set to something other than AU.
     // Foreign and temporary residents generally don't declare foreign-sourced income, but residency is a
     // multi-test judgement we only hold as a self-declared switch, so the income stays IN the position (no
-    // money change — excluding it is an owner decision) and the nudge defers. Jurisdiction note: "AU" is the
+    // money change from this nudge) and the nudge defers. A13 (#580, residency_assessability): once the SELF person's
+    // dated residency periods decide their foreign rows (income.residency_assessed), this nudge is retired. Jurisdiction note: "AU" is the
     // only home jurisdiction today; the comparison moves to profiles.jurisdiction with the residency-periods work.
     const selfPerson = situation.persons.find((p) => p.role === "self");
     const foreignIncomeCents = report.income.by_type.filter((it) => FOREIGN_INCOME_TYPES.has(it.income_type)).reduce((s, it) => s + it.gross_cents, 0);
@@ -910,7 +937,9 @@ export function assessReadiness(input: {
     // treating a value as non-AU — a resident must never get this nudge from a spelling.
     const residency = (selfPerson?.tax_residency ?? "").trim().toLowerCase();
     const isAuResident = residency === "" || ["au", "aus", "australia", "australian", "resident", "australian resident", "au resident"].includes(residency);
-    if (selfPerson && !isAuResident && foreignIncomeCents > 0) {
+    // A13: once the self person's dated periods decided their foreign rows (report.income.residency_assessed), this
+    // binary-residency nudge is suppressed — its "still counted" wording would be wrong for rows the periods placed.
+    if (selfPerson && !isAuResident && foreignIncomeCents > 0 && !report.income.residency_assessed) {
       findings.push(f("foreign_income_non_resident", "judgement", "review", "Foreign income recorded while your residency is set to non-Australian",
         `You've recorded ${money(foreignIncomeCents)} of foreign-sourced income, and your tax residency is set to "${selfPerson.tax_residency}". Foreign residents, and temporary residents (for example many working holiday makers and some international students), generally don't declare foreign-sourced income in Australia. It is still counted in your indicative position here, because residency depends on several tests that Quillo doesn't apply. Confirm your residency and whether this income should be declared with a registered tax agent.`, true,
         [{ kind: "income", label: "foreign income" }]));

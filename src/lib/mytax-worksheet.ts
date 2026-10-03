@@ -26,15 +26,16 @@ import { resolveJurisdictionForUser } from "./jurisdiction";
 import { payerKey } from "./first-timer-signals";
 import { READINESS_DISCLAIMER } from "./readiness";
 import { BUSINESS_INCOME_TYPES, RENT_INCOME_TYPES, isPropertyBucket } from "./taxonomy";
+import { NON_RESIDENT_FOREIGN, NON_RESIDENT_FOREIGN_NOTE } from "./residency-assessability";
 
-export type WorksheetLineKind = "check" | "type_in" | "answer";
+export type WorksheetLineKind = "check" | "type_in" | "answer" | "note";
 
 export interface WorksheetLine {
   key: string; // stable within the section (drives tick persistence in ticket b)
   label: string; // the myTax item / label: "1", "5/6", "D5", "21", "P8", "M2"
   name: string; // plain-English name of the line
   amount_cents: number | null; // null ⇒ "not entered" (e.g. an employer with no income statement yet)
-  kind: WorksheetLineKind; // check = prefilled, tick if it matches · type_in = enter it · answer = a question myTax asks
+  kind: WorksheetLineKind; // check = prefilled, tick if it matches · type_in = enter it · answer = a question myTax asks · note = information only, nothing to enter (amount always null)
   record_href: string | null; // SPA link to the records behind the line
   note?: string;
 }
@@ -271,6 +272,19 @@ function assembleWorksheet(report: Report, detail: ScheduleDetail, pack: MytaxPa
   if (rentUnlinked > 0) {
     typeIn.push({ key: "rent_unlinked", label: itemFor("rent").item, name: "Rent not linked to a property", amount_cents: rentUnlinked, kind: "type_in", record_href: "/income?type=rent",
       note: "Link this rent to its property so it lands in that property's rental schedule." });
+  }
+  // A13 (#580, residency_assessability): foreign income left out for a non-resident period is NOT a type-in line —
+  // one information note says how much and why. amount_cents stays null so the income tie-back is untouched.
+  // One note per myTax item the left-out types belong to (pack labels: item 20 vs P8 for foreign business).
+  const leftOutByItem = new Map<string, number>();
+  for (const x of report.income.excluded_by_type ?? []) {
+    if (x.reason !== NON_RESIDENT_FOREIGN || x.gross_cents <= 0) continue;
+    const item = itemFor(x.income_type).item;
+    leftOutByItem.set(item, (leftOutByItem.get(item) ?? 0) + x.gross_cents);
+  }
+  for (const [item, cents] of leftOutByItem) {
+    typeIn.push({ key: leftOutByItem.size === 1 ? "foreign_left_out" : `foreign_left_out:${item}`, label: item, name: `Foreign income — left out: ${money(cents)} while you were a foreign or temporary resident (see note)`, amount_cents: null, kind: "note", record_href: "/income",
+      note: NON_RESIDENT_FOREIGN_NOTE });
   }
 
   // Refund netting (report's refund_netting): each refund is netted on the SAME line its matched expense lands

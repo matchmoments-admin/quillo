@@ -19,7 +19,8 @@
 // MIRRORS are different by design: persons.tax_residency feeds the legacy CGT-discount eligibility
 // (is_resident_individual) and the non-resident defer, and persons.occupation feeds claimability. So a
 // residency period CAN move a disposal's discount through the mirror — the spec's intent (keep legacy
-// readers correct) — until A13 moves those readers onto residencyOn(). computeMirrors has the guard rails.
+// readers correct). A13 (#580) reads the periods directly for foreign-income assessability, but did NOT move the CGT
+// discount / non-resident-defer readers off the mirror (still open). computeMirrors has the guard rails.
 
 import type { Env } from "../env";
 import auV1RulePack from "../rulepacks/au-v1.json";

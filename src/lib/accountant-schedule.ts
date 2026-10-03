@@ -10,8 +10,10 @@ import {
   loanInterestV2Context,
   deductionGroupForRow,
   propertyRowCounts,
+  resolveRulePack,
   type Report,
 } from "./report";
+import { classifyIncomeRow, residencyAssessabilityContext, residencyAssessabilityOn, NON_RESIDENT_FOREIGN_NOTE } from "./residency-assessability";
 import { fyLabel, fyBounds, separateTaxpayerEntityIds, cgtPersonalScopeExpr, NON_ASSESSABLE_INCOME_TYPES } from "./ledger-totals";
 import { resolveJurisdictionForUser } from "./jurisdiction";
 import { deductibleInterestCents } from "./loan-interest";
@@ -298,6 +300,7 @@ export async function buildAccountantScheduleDetailed(
   const entityClause = separateIds.length ? ` AND (entity_id IS NULL OR entity_id NOT IN (${separateIds.map(() => "?").join(",")}))` : "";
   const incomeRowsP = safeAll<{
     txn_date: string | null;
+    person_id: string | null;
     income_type: string;
     ato_label: string | null;
     property_id: string | null;
@@ -310,7 +313,7 @@ export async function buildAccountantScheduleDetailed(
     fx_unconverted: number;
   }>(
     env.DB.prepare(
-      `SELECT txn_date, income_type, ato_label, property_id,
+      `SELECT txn_date, person_id, income_type, ato_label, property_id,
               COALESCE(amount_aud_cents, gross_cents) AS gross_cents,
               COALESCE(withholding_cents,0) AS withholding_cents,
               COALESCE(franking_credit_cents,0) AS franking_credit_cents,
@@ -690,7 +693,15 @@ export async function buildAccountantScheduleDetailed(
   // benefits, super pension) is EXCLUDED from the assessable income that the report headline
   // (total_income_cents) counts — so exclude it here too or the tie-back breaks. It's surfaced as a per-type
   // note (and stays visible via the report's excluded line), never silently dropped.
-  const assessableIncomeRows = incomeRows.filter((r) => !NON_ASSESSABLE_INCOME_TYPES.has(r.income_type));
+  // A13 (#580, residency_assessability): foreign income dated in a non-resident period is out of the report's
+  // total, so it comes out here too — the SAME classifier incomeTotals uses, on the same AUD-converted rows (an
+  // unconverted row is outside both, as before). Null context (flag OFF / no non-resident period) ⇒ no-op.
+  const residencyCtx = residencyAssessabilityOn(env)
+    ? await residencyAssessabilityContext(env, userId, startYear, { descriptor: jurisdiction, rulePack: await resolveRulePack(env, userId, jurisdiction) })
+    : null;
+  const residencyExcluded = (r: (typeof incomeRows)[number]) => !!residencyCtx && !r.fx_unconverted && classifyIncomeRow(r, residencyCtx) === "excluded";
+  const nonResidentRows = residencyCtx ? incomeRows.filter((r) => !NON_ASSESSABLE_INCOME_TYPES.has(r.income_type) && residencyExcluded(r)) : [];
+  const assessableIncomeRows = incomeRows.filter((r) => !NON_ASSESSABLE_INCOME_TYPES.has(r.income_type) && !residencyExcluded(r));
   const excludedRows = incomeRows.filter((r) => NON_ASSESSABLE_INCOME_TYPES.has(r.income_type));
   const excludedNoteFor = (income_type: string, n: number, cents: number): string => {
     if (income_type === "non_cash_benefit") return `${n} non-cash benefit(s) totalling ${d(cents)} are captured but EXCLUDED from assessable income (may be assessable at market value — confirm with a registered tax agent).`;
@@ -703,6 +714,9 @@ export async function buildAccountantScheduleDetailed(
     for (const t of [...new Set(excludedRows.map((r) => r.income_type))]) {
       const rs = excludedRows.filter((r) => r.income_type === t);
       notes.push(excludedNoteFor(t, rs.length, rs.reduce((s, r) => s + r.gross_cents, 0)));
+    }
+    if (nonResidentRows.length) {
+      notes.push(`${nonResidentRows.length} foreign income record(s) totalling ${d(nonResidentRows.reduce((s, r) => s + r.gross_cents, 0))} are dated in a non-resident period and EXCLUDED from assessable income. ${NON_RESIDENT_FOREIGN_NOTE}`);
     }
     const noDoc = assessableIncomeRows.filter((r) => !r.source_doc_id);
     if (noDoc.length) gaps.push({ section: "income", n: noDoc.length, total_cents: noDoc.reduce((s, r) => s + r.gross_cents, 0) });

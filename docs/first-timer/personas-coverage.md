@@ -9,6 +9,8 @@
 > G4/G12 (`government_payment`, `foreign_employment`), G6 (Div 35 nudge) and the G10 review nudge are
 > built behind flag `first_timer_income`, with goldens `pft1`–`pft6`. The tables below are the
 > pre-build snapshot; [`docs/personas.md`](../personas.md) is the live coverage tracker.
+> **Update (#580, spec A13):** M3/G10 exclusion (owner ruling #557) and G11 are built behind flag
+> `residency_assessability`, driven by dated residency periods (#571); goldens `pft13`/`pft13t`.
 
 ## Verdict
 

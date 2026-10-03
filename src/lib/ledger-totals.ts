@@ -7,6 +7,7 @@ import { computeBasNet, type BasNet } from "./gst";
 import { businessUsePct, logbookDeductionCents, chooseCarMethod } from "./car-logbook";
 import { summariseTrustDistributions, type TrustTotals } from "./trust";
 import { featureOn } from "./features";
+import { classifyIncomeRow, excludableIncomeTypes, hasNonResidentPeriod, NON_RESIDENT_FOREIGN, type ResidencyAssessabilityContext } from "./residency-assessability";
 import { ecpiExemptFraction, computeSmsfPosition, type SmsfPosition } from "./smsf";
 import { fyBoundsFor, fyStartYearSqlExpr, AU_DESCRIPTOR, type JurisdictionDescriptor } from "./jurisdiction";
 // Rule-pack thresholds are RESOLVED by the caller (buildReport → resolveRulePack, keyed by
@@ -81,6 +82,10 @@ export interface ExcludedIncomeRow {
   income_type: string;
   gross_cents: number;
   n: number;
+  // A13 (#580, residency_assessability): why a normally-assessable type is left out. Absent on the S4/D
+  // capture-only types (so their JSON is byte-identical); 'non_resident_foreign' = foreign-sourced income dated
+  // inside a foreign / WHM / temporary-resident period.
+  reason?: typeof NON_RESIDENT_FOREIGN;
 }
 
 export interface IncomeTotals {
@@ -94,6 +99,78 @@ export interface IncomeTotals {
   // as a non-cash benefit). non_cash_cents is a derived back-compat convenience (the non_cash_benefit row).
   excluded_by_type?: ExcludedIncomeRow[];
   non_cash_cents?: number;
+  // A13 (#580): undated foreign-sourced rows that STAYED IN because the person's residency changed during the FY
+  // (readiness asks when they were earned — foreign_income_undated_part_year). Present only when n > 0.
+  residency_undated?: { n: number; gross_cents: number };
+  // A13 (#580): true when the SELF person's dated residency periods decided which of their foreign-sourced rows
+  // count (flag ON and a foreign / WHM / temporary period for the self person in the FY). Readiness then retires the binary-residency #550 nudge — the
+  // periods (plus foreign_income_undated_part_year) now speak for those rows. Absent otherwise ⇒ byte-identical.
+  residency_assessed?: true;
+}
+
+/** One income row as the residency split sees it (row-level twin of IncomeTypeRow's sums). */
+export interface ResidencyIncomeRow {
+  id: string;
+  income_type: string;
+  person_id: string | null;
+  property_id: string | null;
+  txn_date: string | null;
+  gross_cents: number;
+  net_cents: number;
+  withholding_cents: number;
+  franking_credit_cents: number;
+  foreign_tax_paid_cents: number;
+}
+
+/** A13: the foreign-sourced rows a residency period leaves out of the position, and the undated ones it can't place. */
+export interface ResidencyIncomeSplit {
+  excluded: ResidencyIncomeRow[];
+  undated: ResidencyIncomeRow[];
+  // True when the SELF person has a non-resident period, i.e. their foreign rows were decided by periods (the
+  // #550 binary nudge is about the self person, so a spouse-only period must not retire it).
+  self_assessed: boolean;
+}
+
+/**
+ * A13 (#580): load the excludable-type rows (row-level, same scope + FX filter as incomeTotals) and classify each
+ * against the person's residency periods. Only called when residencyAssessabilityContext returned a context, so
+ * flag OFF (or nobody with a non-resident period) never runs this query.
+ */
+export async function residencyIncomeSplit(
+  env: Env,
+  userId: string,
+  startYear: number,
+  ctx: ResidencyAssessabilityContext,
+  opts: { excludeEntityIds?: string[] } = {},
+): Promise<ResidencyIncomeSplit> {
+  const types = excludableIncomeTypes(ctx.table);
+  const self_assessed = !!ctx.selfPersonId && hasNonResidentPeriod(ctx.profiles.get(ctx.selfPersonId), ctx.table);
+  if (!types.length) return { excluded: [], undated: [], self_assessed };
+  const where: string[] = ["user_id = ?", "fy = ?", FX_CONVERTED, `income_type IN (${types.map(() => "?").join(",")})`];
+  const binds: unknown[] = [userId, fyLabel(startYear), ...types];
+  if (opts.excludeEntityIds && opts.excludeEntityIds.length) {
+    where.push(`(entity_id IS NULL OR entity_id NOT IN (${opts.excludeEntityIds.map(() => "?").join(",")}))`);
+    binds.push(...opts.excludeEntityIds);
+  }
+  const rows = (await env.DB.prepare(
+    `SELECT id, income_type, person_id, property_id, txn_date,
+            COALESCE(amount_aud_cents, gross_cents, 0) AS gross_cents,
+            COALESCE(net_cents, amount_aud_cents, gross_cents, 0) AS net_cents,
+            COALESCE(withholding_cents,0) AS withholding_cents,
+            COALESCE(franking_credit_cents,0) AS franking_credit_cents,
+            COALESCE(foreign_tax_paid_cents,0) AS foreign_tax_paid_cents
+       FROM income WHERE ${where.join(" AND ")}
+      ORDER BY income_type, txn_date, id`,
+  )
+    .bind(...binds)
+    .all<ResidencyIncomeRow>()).results ?? [];
+  const out: ResidencyIncomeSplit = { excluded: [], undated: [], self_assessed };
+  for (const r of rows) {
+    const v = classifyIncomeRow(r, ctx);
+    if (v === "excluded") out.excluded.push(r);
+    else if (v === "undated_part_year") out.undated.push(r);
+  }
+  return out;
 }
 
 // S4/D: income types captured as evidence but NOT assessable in the indicative position (deny-by-default /
@@ -105,7 +182,7 @@ export const NON_ASSESSABLE_INCOME_TYPES = new Set(["non_cash_benefit", "super_p
 export async function incomeTotals(
   env: Env,
   userId: string,
-  opts: { startYear: number; personId?: string; propertyId?: string; excludeEntityIds?: string[] },
+  opts: { startYear: number; personId?: string; propertyId?: string; excludeEntityIds?: string[]; residencySplit?: ResidencyIncomeSplit | null },
 ): Promise<IncomeTotals> {
   const fy = fyLabel(opts.startYear);
   // Exclude foreign income we couldn't convert to AUD (flagged needs_review) from the headline —
@@ -138,7 +215,33 @@ export async function incomeTotals(
   )
     .bind(...binds)
     .all<IncomeTypeRow>();
-  const rows = res.results ?? [];
+  let rows = res.results ?? [];
+  // A13 (#580): rows a non-resident period leaves out come off their type's sums (the split was loaded with the
+  // same scope + FX filter). Absent/empty split ⇒ rows untouched ⇒ byte-identical. The split is tenant-wide, so a
+  // person/property-scoped call only subtracts rows inside its own scope.
+  const resExcluded = (opts.residencySplit?.excluded ?? []).filter((r) => (!opts.personId || r.person_id === opts.personId) && (!opts.propertyId || r.property_id === opts.propertyId));
+  const resUndated = (opts.residencySplit?.undated ?? []).filter((r) => (!opts.personId || r.person_id === opts.personId) && (!opts.propertyId || r.property_id === opts.propertyId));
+  const resExcludedByType = new Map<string, ExcludedIncomeRow>();
+  if (resExcluded.length) {
+    const byType = new Map(rows.map((r) => [r.income_type, { ...r }]));
+    for (const x of resExcluded) {
+      const t = byType.get(x.income_type);
+      if (t) {
+        t.n -= 1;
+        t.gross_cents -= x.gross_cents;
+        t.net_cents -= x.net_cents;
+        t.withholding_cents -= x.withholding_cents;
+        t.franking_credit_cents -= x.franking_credit_cents;
+        t.foreign_tax_paid_cents -= x.foreign_tax_paid_cents;
+      }
+      const e = resExcludedByType.get(x.income_type) ?? { income_type: x.income_type, gross_cents: 0, n: 0, reason: NON_RESIDENT_FOREIGN };
+      e.gross_cents += x.gross_cents;
+      e.n += 1;
+      resExcludedByType.set(x.income_type, e);
+    }
+    // Same order the SQL used (gross DESC); Array.prototype.sort is stable, so ties keep the query's order.
+    rows = [...byType.values()].filter((r) => r.n > 0).sort((a, b) => b.gross_cents - a.gross_cents);
+  }
   // S4/D: split off capture-only (non-assessable) types so they never reach the assessable headline. Single
   // GROUP-BY query, split in JS — no extra round-trip. assessable rows drive by_type/gross/credits; the
   // rest surface per-type via excluded_by_type (+ a non_cash_cents back-compat field). Empty/absent ⇒
@@ -147,6 +250,7 @@ export async function incomeTotals(
   const excluded_by_type: ExcludedIncomeRow[] = rows
     .filter((r) => NON_ASSESSABLE_INCOME_TYPES.has(r.income_type))
     .map((r) => ({ income_type: r.income_type, gross_cents: r.gross_cents, n: r.n }));
+  excluded_by_type.push(...resExcludedByType.values());
   return {
     by_type: assessable,
     gross_cents: assessable.reduce((s, r) => s + r.gross_cents, 0),
@@ -156,6 +260,8 @@ export async function incomeTotals(
     excluded_by_type,
     // Back-compat convenience: the non-cash benefit total only (existing consumers/tests read this).
     non_cash_cents: excluded_by_type.filter((r) => r.income_type === "non_cash_benefit").reduce((s, r) => s + r.gross_cents, 0),
+    ...(opts.residencySplit?.self_assessed ? { residency_assessed: true as const } : {}),
+    ...(resUndated.length ? { residency_undated: { n: resUndated.length, gross_cents: resUndated.reduce((s, r) => s + r.gross_cents, 0) } } : {}),
   };
 }
 

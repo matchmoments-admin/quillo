@@ -241,7 +241,7 @@ export async function listReviewGroups(
   // relevant + worth_a_look). Absent ⇒ the whole queue, exactly as before. The CALLER gates it on the flag.
   filter?: { relevance: string[]; fy: { start: string; end: string } },
 ): Promise<{ groups: ReviewGroup[]; truncated: boolean }> {
-  const rel = (filter?.relevance ?? []).filter((r) => (RELEVANCE_FILTER_VALUES as readonly string[]).includes(r));
+  const rel = [...new Set(filter?.relevance ?? [])].filter((r) => (RELEVANCE_FILTER_VALUES as readonly string[]).includes(r));
   const extra = filter && rel.length ? ` AND relevance IN (${rel.map(() => "?").join(",")}) AND txn_date >= ? AND txn_date <= ?` : "";
   const res = await env.DB.prepare(
     `SELECT id, merchant, raw_description, COALESCE(amount_aud_cents, amount_cents) AS amount_cents
@@ -702,11 +702,13 @@ export async function listSuggestedDeductions(env: Env, userId: string, startYea
   return res.results ?? [];
 }
 
-/** Claim suggestions (GENERAL-INFO), newest open first — for the Inbox/Dashboard nudge. */
+/** Claim suggestions (GENERAL-INFO), newest open first — for the Inbox/Dashboard nudge. Per-line 'worth a look'
+ *  cards (source relevance_scan, #578 — only written with that flag ON) are served by GET /api/relevance instead,
+ *  so a year of fuel lines can't flood this list. */
 export async function listClaims(env: Env, userId: string) {
   const res = await env.DB.prepare(
     `SELECT id, txn_id, asset_id, rule_id, suggestion, claim_type, estimated_deduction_cents, status, created_at
-       FROM claim_suggestions WHERE user_id = ? ORDER BY (status='suggested') DESC, created_at DESC LIMIT 100`,
+       FROM claim_suggestions WHERE user_id = ? AND source != 'relevance_scan' ORDER BY (status='suggested') DESC, created_at DESC LIMIT 100`,
   )
     .bind(userId)
     .all();

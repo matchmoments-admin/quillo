@@ -1616,8 +1616,6 @@ export async function handleApi(
     return json(await stub.scanTransactions(uid, fy));
   }
 
-  // #575: the myTax self-lodge worksheet (spec A9). Flag mytax_worksheet; 404 when off ⇒ byte-identical.
-  // Identity is the server-derived uid, like every resource.
   // GET /api/relevance?fy= → the relevance scan for one FY (#578, flag relevance_scan; spec A4): counts per
   // list, the 'worth a look' cards (each with its why), and the facts-to-state prompts. Read-only; the Claims
   // step (A6) and Records (A7) render it. 404 when the flag is OFF.
@@ -1627,6 +1625,8 @@ export async function handleApi(
     return json(await relevanceView(env, uid, fy));
   }
 
+  // #575: the myTax self-lodge worksheet (spec A9). Flag mytax_worksheet; 404 when off ⇒ byte-identical.
+  // Identity is the server-derived uid, like every resource.
   if (resource === "mytax-worksheet" && m === "GET") {
     const fy = Number(url.searchParams.get("fy")) || defaultFy();
     return mytaxWorksheetResponse(env, uid, fy);

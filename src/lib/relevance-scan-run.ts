@@ -29,6 +29,8 @@ import { isScannedBucket, relevanceFloorCents, scanLines, worthALookText, type R
 export const RESCAN_FACTS = ["employment", "abn_activity", "wfh", "car_for_work", "foreign_income"] as const;
 
 const SOURCE = "relevance_scan";
+/** Upper bound on statements written by one scan run (see runRelevanceScan). */
+export const MAX_WRITES_PER_RUN = 2000;
 
 interface LineRow {
   id: string;
@@ -110,6 +112,7 @@ export interface RelevanceScanSummary {
   changed: number;
   suggested: number;
   removed: number;
+  truncated: boolean;
 }
 
 /**
@@ -119,15 +122,22 @@ export interface RelevanceScanSummary {
 export async function runRelevanceScan(env: Env, userId: string, opts: { descriptor?: JurisdictionDescriptor } = {}): Promise<RelevanceScanSummary | null> {
   if (!featureOn(env, "relevance_scan")) return null;
   const ctx = await loadContext(env, userId, opts.descriptor);
+  // Bounded to the two latest FYs the tenant has bank lines in (the one usually being lodged + the current
+  // one) — anchored on the data, not the clock, so it is deterministic. Older lines keep whatever they had;
+  // the position never reads relevance anyway.
+  const latest = (await env.DB.prepare(`SELECT MAX(txn_date) AS d FROM transactions WHERE user_id = ? AND kind = 'bank_line' AND txn_date <= date('now', '+31 days')`).bind(userId).first<{ d: string | null }>())?.d ?? null;
+  const latestFy = fyStartYearForDate(ctx.descriptor, latest);
+  if (Number.isNaN(latestFy)) return { scanned: 0, changed: 0, suggested: 0, removed: 0, truncated: false };
+  const windowStart = fyBoundsFor(ctx.descriptor, latestFy - 1).start;
   const [lineRes, personRes, entityRes, periods, existingRes] = await Promise.all([
     env.DB.prepare(
       `SELECT id, bucket, ato_label, merchant, raw_description, COALESCE(amount_aud_cents, amount_cents) AS amount_cents,
               deductibility, reimbursed, txn_date, direction, status, relevance, relevance_rule_id
          FROM transactions
-        WHERE user_id = ? AND kind = 'bank_line'
+        WHERE user_id = ? AND kind = 'bank_line' AND txn_date >= ?
           AND ((COALESCE(direction,'debit') = 'debit' AND status NOT IN ('duplicate','ignored') AND (bucket IS NULL OR bucket IN ('payg','unknown')))
                OR relevance IS NOT NULL)`,
-    ).bind(userId).all<LineRow>(),
+    ).bind(userId, windowStart).all<LineRow>(),
     env.DB.prepare(`SELECT id, role, occupation FROM persons WHERE user_id = ? ORDER BY role = 'self' DESC, created_at, id`).bind(userId).all<{ id: string; role: string; occupation: string | null }>(),
     env.DB.prepare(`SELECT DISTINCT kind FROM entities WHERE user_id = ?`).bind(userId).all<{ kind: string }>(),
     featureOn(env, "situation_profile") ? listSituationPeriods(env, userId) : Promise.resolve([] as SituationPeriod[]),
@@ -198,8 +208,11 @@ export async function runRelevanceScan(env: Env, userId: string, opts: { descrip
     stmts.push(env.DB.prepare(`DELETE FROM claim_suggestions WHERE id = ? AND user_id = ? AND source = ? AND status = 'suggested'`).bind(e.id, userId, SOURCE));
     removed++;
   }
-  for (let i = 0; i < stmts.length; i += 50) await env.DB.batch(stmts.slice(i, i + 50));
-  return { scanned: target.size, changed, suggested, removed };
+  // Capped per run so a first scan over a large tenant can't exhaust one request; the writes are diffed, so the
+  // next ingest / re-scan simply carries on where this one stopped.
+  const capped = stmts.slice(0, MAX_WRITES_PER_RUN);
+  for (let i = 0; i < capped.length; i += 50) await env.DB.batch(capped.slice(i, i + 50));
+  return { scanned: target.size, changed, suggested, removed, truncated: stmts.length > MAX_WRITES_PER_RUN };
 }
 
 /**
@@ -220,12 +233,13 @@ export async function rescanAfterSituationChange(env: Env, userId: string, fact?
  * Confirm a 'worth a look' line into the position (the user's tap — never the scan). Called by the DO's
  * confirmSuggestedDeduction when the line is not a plain suggested_deductible stamp. Re-checks against the
  * CURRENT profile + rules first: the line must still be worth a look (the job still covers it and the rule
- * still matches), so a stale card can't count after the user removed the job. Then confirmed_deductible with
- * the claimable amount cleared to NULL (a denied stamp carries deductible_amount_cents = 0, which the
- * position would otherwise read as $0 claimable), and the card moves to 'capturing' (the line is its evidence).
+ * still matches), so a stale card can't count after the user removed the job. A mixed-use line (stamped
+ * needs_apportionment, or a non-'immediate' rule) is refused with needs_apportionment — it goes through the
+ * apportion action instead. Otherwise confirmed_deductible, clearing ONLY a denied stamp's $0 claimable to NULL
+ * (else the position would read $0), and the card moves to 'capturing' (the line is its evidence).
  * Returns null when the flag is OFF or the line is not a worth-a-look line (caller keeps its legacy answer).
  */
-export async function confirmWorthALook(env: Env, userId: string, txnId: string): Promise<{ ok: boolean } | null> {
+export async function confirmWorthALook(env: Env, userId: string, txnId: string): Promise<{ ok: boolean; needs_apportionment?: boolean } | null> {
   if (!featureOn(env, "relevance_scan")) return null;
   const row = await env.DB.prepare(
     `SELECT id, bucket, ato_label, merchant, raw_description, COALESCE(amount_aud_cents, amount_cents) AS amount_cents,
@@ -250,11 +264,24 @@ export async function confirmWorthALook(env: Env, userId: string, txnId: string)
     ctx.section,
     ctx.floor,
   );
-  if (res?.relevance !== "worth_a_look") return { ok: false };
-  await env.DB.batch([
-    env.DB.prepare(`UPDATE transactions SET deductibility = 'confirmed_deductible', deductible_amount_cents = NULL WHERE id = ? AND user_id = ? AND relevance = 'worth_a_look'`).bind(txnId, userId),
-    env.DB.prepare(`UPDATE claim_suggestions SET status = 'capturing' WHERE user_id = ? AND txn_id = ? AND source = ? AND status = 'suggested'`).bind(userId, txnId, SOURCE),
+  if (res?.relevance !== "worth_a_look" || !res.rule) return { ok: false };
+  // A one-tap confirm counts the WHOLE line, so it is only for an 'immediate' rule on a line nobody has said is
+  // mixed-use. A line stamped needs_apportionment (internet, phone, fuel…) or an apportioned / depreciating rule
+  // (a rider's fuel, a work computer) needs the work-use share first — the existing apportion action — so a tap
+  // can never put a whole private-use bill into the position. (review finding, #578)
+  if (row.deductibility === "needs_apportionment" || res.rule.claim_type !== "immediate") return { ok: false, needs_apportionment: true };
+  // Only the deny stamp's explicit $0 claimable is cleared (to NULL ⇒ the full amount, like any confirmed row);
+  // any other stored amount is left exactly as it was. The guard re-checks the stamp so a concurrent
+  // confirmed_not / confirm is never overwritten.
+  const res2 = await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE transactions SET deductibility = 'confirmed_deductible',
+              deductible_amount_cents = CASE WHEN deductibility = 'likely_not' THEN NULL ELSE deductible_amount_cents END
+        WHERE id = ? AND user_id = ? AND relevance = 'worth_a_look' AND COALESCE(deductibility, 'undetermined') = ?`,
+    ).bind(txnId, userId, row.deductibility ?? "undetermined"),
   ]);
+  if (!(res2[0]?.meta as { changes?: number } | undefined)?.changes) return { ok: false };
+  await env.DB.prepare(`UPDATE claim_suggestions SET status = 'capturing' WHERE user_id = ? AND txn_id = ? AND source = ? AND status = 'suggested'`).bind(userId, txnId, SOURCE).run();
   return { ok: true };
 }
 

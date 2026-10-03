@@ -564,7 +564,7 @@ export class TaxAgent extends Agent<Env> {
       // the direction so it picks an income_* / refund bucket). Both directions now get a bucket.
       const cat = transfer
         ? null
-        : this.deterministicCategorise(line.description, situation.rules, rulePack, { skipHints: line.direction === "credit", direction: line.direction });
+        : this.deterministicCategorise(line.description, situation.rules, rulePack, { skipHints: line.direction === "credit", direction: line.direction, entityKinds: situation.entities.map((e) => e.kind) });
       const status = transfer ? "ignored" : cat ? "extracted" : "needs_review";
       inserts.push(
         this.env.DB.prepare(
@@ -1457,12 +1457,25 @@ export class TaxAgent extends Agent<Env> {
     }));
   }
 
+  /**
+   * The pack's merchant hints for a tenant. #578 (relevance_scan): a hint may name `requires_entity_kind` (the
+   * SaaS / cloud / domain hints → company); for a tenant with no such entity — a PAYG employee or a first-timer —
+   * it is left out, so their subscriptions are not steered into the company bucket (relevance-scan.md D4).
+   * Flag OFF, or no entity kinds supplied ⇒ every hint (byte-identical).
+   */
+  private merchantHintsFor(rulePack: unknown, entityKinds: string[] | null): { match: string; bucket: string; ato_label: string; note?: string; requires_entity_kind?: string }[] | undefined {
+    const all = (rulePack as { merchant_hints?: { match: string; bucket: string; ato_label: string; note?: string; requires_entity_kind?: string }[] }).merchant_hints;
+    if (!Array.isArray(all) || entityKinds == null || !featureOn(this.env, "relevance_scan")) return all;
+    const kinds = new Set(entityKinds);
+    return all.filter((h) => !h.requires_entity_kind || kinds.has(h.requires_entity_kind));
+  }
+
   /** Deterministic categorisation for a statement line: user rule (1.0) then merchant hints (0.8). */
   private deterministicCategorise(
     merchant: string,
     rules: UserRule[],
     rulePack: typeof DEFAULT_RULE_PACK,
-    opts: { skipHints?: boolean; direction?: string | null } = {},
+    opts: { skipHints?: boolean; direction?: string | null; entityKinds?: string[] } = {},
   ): { bucket: string; ato_label: string; confidence: number; property_id?: string | null } | null {
     const rule = applyUserRules(merchant, rules, opts.direction);
     // A property-scoped rule carries its property_id so a learned rental rule re-attaches the property
@@ -1473,7 +1486,7 @@ export class TaxAgent extends Agent<Env> {
     // line or a refund from a SaaS vendor would be mis-bucketed as a company expense. Credits get
     // only user rules deterministically; the LLM (direction-aware) handles the rest.
     if (opts.skipHints) return null;
-    const hints = (rulePack as { merchant_hints?: { match: string; bucket: string; ato_label: string }[] }).merchant_hints;
+    const hints = this.merchantHintsFor(rulePack, opts.entityKinds ?? null);
     if (Array.isArray(hints)) {
       const m = merchant.toLowerCase();
       for (const h of hints) {
@@ -2073,7 +2086,7 @@ export class TaxAgent extends Agent<Env> {
         baseCurrency: baseCur,
         transport: (q) => fetchTransactionPage(this.env, conn.provider_user_id, { from: q.from, to: q.to, accountId: q.providerAccountId, next: q.next }),
         categorise: (merchant, direction) =>
-          this.deterministicCategorise(merchant, situation.rules, rulePack, { skipHints: direction === "credit", direction }),
+          this.deterministicCategorise(merchant, situation.rules, rulePack, { skipHints: direction === "credit", direction, entityKinds: situation.entities.map((e) => e.kind) }),
         // Per page: still selected + mapped the same way, AND the connection still live — so a
         // deselect, a remap, a revoke or a consent expiry stops collection on the next page.
         stillSelected: async (a) =>
@@ -4161,8 +4174,11 @@ export class TaxAgent extends Agent<Env> {
         `SELECT rule_id, status, source FROM claim_suggestions WHERE user_id = ?`,
       ).bind(userId).all<{ rule_id: string | null; status: string | null; source: string | null }>()
     ).results ?? [];
-    const firedRuleIds = new Set(suggestionRows.filter((r) => r.status !== "dismissed" && r.source !== "review" && r.rule_id).map((r) => r.rule_id as string));
-    const dismissedRuleIds = new Set(suggestionRows.filter((r) => r.status === "dismissed" && r.rule_id).map((r) => r.rule_id as string));
+    // #578: per-LINE 'worth a look' cards (source relevance_scan) are not rule-level evidence or rule-level
+    // dismissals — dismissing one line's card must not hide the rule from the sweep. (Those rows only exist with
+    // the relevance_scan flag ON, so OFF is byte-identical.)
+    const firedRuleIds = new Set(suggestionRows.filter((r) => r.status !== "dismissed" && r.source !== "review" && r.source !== "relevance_scan" && r.rule_id).map((r) => r.rule_id as string));
+    const dismissedRuleIds = new Set(suggestionRows.filter((r) => r.status === "dismissed" && r.source !== "relevance_scan" && r.rule_id).map((r) => r.rule_id as string));
     // Existing review-sourced rows keep the upsert idempotent (don't re-insert what's already there).
     const reviewSourced = new Set(suggestionRows.filter((r) => r.source === "review" && r.rule_id).map((r) => r.rule_id as string));
 
@@ -5932,7 +5948,7 @@ export class TaxAgent extends Agent<Env> {
       await setStage("claims");
       await this.reviewClaims(userId, startYear);
       const claimItems = (await this.env.DB.prepare(
-        `SELECT COUNT(*) AS n FROM claim_suggestions WHERE user_id = ? AND status IN ('suggested','capturing')`,
+        `SELECT COUNT(*) AS n FROM claim_suggestions WHERE user_id = ? AND status IN ('suggested','capturing') AND source != 'relevance_scan'`,
       ).bind(userId).first<{ n: number }>())?.n ?? 0;
 
       const summary: AccountantSummary = {
@@ -5955,7 +5971,7 @@ export class TaxAgent extends Agent<Env> {
   }
 
   /** Confirm a SUGGESTED deduction (Stage D) → confirmed_deductible (it now counts). User-driven, audited. */
-  async confirmSuggestedDeduction(userId: string, txnId: string): Promise<{ ok: boolean; denied?: boolean }> {
+  async confirmSuggestedDeduction(userId: string, txnId: string): Promise<{ ok: boolean; denied?: boolean; needs_apportionment?: boolean }> {
     const row = await this.env.DB
       .prepare(`SELECT deductibility, bucket, ato_label, merchant FROM transactions WHERE id = ? AND user_id = ?`)
       .bind(txnId, userId)
@@ -5968,6 +5984,7 @@ export class TaxAgent extends Agent<Env> {
       // not worth a look (⇒ the legacy answer below, byte-identical).
       const w = await confirmWorthALook(this.env, userId, txnId);
       if (w?.ok) await this.audit(userId, "confirm_deduction", JSON.stringify({ txnId, source: "relevance_scan" }));
+      if (w?.needs_apportionment) return { ok: false, needs_apportionment: true }; // mixed-use: set the work-use share instead
       return { ok: !!w?.ok }; // only a live suggestion can be confirmed
     }
     // Re-check the CURRENT rule pack before it counts. A suggestion is a stored stamp written at
@@ -7098,12 +7115,8 @@ export class TaxAgent extends Agent<Env> {
   ): string {
     const hint = bucketHint ? `\nThe user hinted this is bucket="${bucketHint}" — respect it unless the receipt clearly contradicts.` : "";
     // Optional merchant hints (e.g. SaaS/cloud) so well-known vendors categorise consistently.
-    // #578 (relevance_scan): a hint may name `requires_entity_kind` (the SaaS / cloud hints → company). For a
-    // tenant with no such entity — a PAYG employee or a first-timer — it is left out, so their subscriptions are
-    // not steered into the company bucket (relevance-scan.md D4). OFF ⇒ every hint rendered (byte-identical).
-    const allHints = (rulePack as { merchant_hints?: { match: string; bucket: string; ato_label: string; note?: string; requires_entity_kind?: string }[] }).merchant_hints;
-    const kinds = new Set(situation.entities.map((e) => e.kind));
-    const hints = Array.isArray(allHints) && featureOn(this.env, "relevance_scan") ? allHints.filter((h) => !h.requires_entity_kind || kinds.has(h.requires_entity_kind)) : allHints;
+    // #578: company-only hints are dropped for a tenant with no company (flag relevance_scan; OFF ⇒ all hints).
+    const hints = this.merchantHintsFor(rulePack, situation.entities.map((e) => e.kind));
     const hintLines =
       Array.isArray(hints) && hints.length
         ? [

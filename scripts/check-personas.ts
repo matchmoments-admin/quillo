@@ -18,7 +18,7 @@ import { COUNTABLE } from "../src/lib/queries";
 import { fyBounds } from "../src/lib/ledger-totals";
 import { buildAccountantSchedule, tieBackChecks } from "../src/lib/accountant-schedule";
 import { fetchAskDigestRows, listAccounts, listIncome } from "../src/lib/queries";
-import { reconcileProposals } from "../src/lib/queries";
+import { reconcileProposals, listClaims } from "../src/lib/queries";
 import { reconcileConfigFromPack } from "../src/lib/reconcile-proposer";
 import { resolveRulePack } from "../src/lib/report";
 import { AU_DESCRIPTOR } from "../src/lib/jurisdiction";
@@ -2663,6 +2663,24 @@ async function main() {
     await runRelevanceScan(RS_ON, u);
     check("pft9: after confirm the re-scan keeps the confirmed lines visible (relevant) and keeps the cards as history",
       rel(u).Ahpra!.relevance === "relevant" && cards(u).length === 3);
+
+    // A mixed-use line on an APPORTIONED rule can't be one-tap confirmed into the position at 100% (review
+    // finding): a delivery rider's fuel is worth a look, but confirm is refused with needs_apportionment.
+    const ud = "pft9d";
+    seedTenant(ud, "FT delivery rider fuel");
+    run(`INSERT INTO profiles (user_id) VALUES (?)`, ud);
+    run(`UPDATE persons SET occupation = 'delivery_rider' WHERE id = ?`, `person_self_${ud}`);
+    inc("pft9dSal", ud, "salary_payg", 3000000);
+    const fuelV = verdictForTxn("payg", null, "BP FUEL CONNECT", section).deductibility;
+    run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, direction, deductibility, merchant) VALUES ('pft9dFuel', ?, 'upload', 'categorised', 'bank_line', 8000, 8000, ?, 'payg', 'debit', ?, 'BP FUEL CONNECT')`, ud, FY_DATE, fuelV);
+    await runRelevanceScan(RS_ON, ud);
+    const posD = (await buildReport(RS_ON, ud, 2025)).taxable_position_cents;
+    const cD = await confirmWorthALook(RS_ON, ud, "pft9dFuel");
+    check("pft9d: a rider's fuel is worth a look, but a one-tap confirm is refused (needs the work-use share) — position unchanged",
+      rel(ud).Fuel!.relevance === "worth_a_look" && cD?.ok === false && cD.needs_apportionment === true &&
+      (await buildReport(RS_ON, ud, 2025)).taxable_position_cents === posD && rel(ud).Fuel!.deductibility === fuelV);
+    check("pft9d: per-line cards stay out of the legacy claims list (served by /api/relevance)",
+      cards(ud).length === 1 && (await listClaims(RS_ON, ud)).length === 0);
 
     // Same lines, retail worker: no AHPRA card, no shoes card.
     const ur = "pft9r";

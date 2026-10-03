@@ -204,8 +204,6 @@ export interface TaxAgentRpc {
   reviewClaims(userId: string, startYear: number): Promise<import("./agent").ClaimReview>;
   sweepMovements(userId: string): Promise<import("./agent").MovementSweep>;
   applyMovementSweep(userId: string, txnIds: string[]): Promise<{ ignored: number; skipped: number }>;
-  applyLoanSplit(userId: string, txnId: string, opts: { property_id: string; interest_cents?: number; interest_pct?: number }): Promise<{ ok: true; interest_cents: number }>;
-  applyLoanSplitGroup(userId: string, txnIds: string[], opts: { property_id: string; interest_pct: number }): Promise<{ applied: number; skipped: number; interest_cents: number }>;
   applyCorrectionBatch(userId: string, txnIds: string[], edits: { field: string; value: string }[], opts?: { learnRule?: boolean }): Promise<{ batch_id: string; updated: number; failures: { txnId: string; error: string }[]; rules_created?: number }>;
   confirmBatch(userId: string, txnIds: string[]): Promise<{ batch_id: string; updated: number; failures: { txnId: string; error: string }[] }>;
   ignoreBatch(userId: string, txnIds: string[]): Promise<{ batch_id: string; updated: number; failures: { txnId: string; error: string }[] }>;

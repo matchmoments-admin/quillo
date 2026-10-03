@@ -222,7 +222,7 @@ export interface Report {
 
 /**
  * The amount a captured expense row contributes to the indicative position. When `honorApportion`
- * is on (flag `loan_split`), the CLAIMABLE (apportioned) portion wins — `deductible_amount_cents`,
+ * is on (always, in the engine — the `loan_split` flag was hard-wired ON), the CLAIMABLE (apportioned) portion wins — `deductible_amount_cents`,
  * set e.g. by the guided loan interest/principal split — so only the deductible interest of a
  * mortgage line counts, never the principal. This MUST stay in lockstep with the SUM(COALESCE(...))
  * expressions in buildReport's byBucket + byPropertyRaw queries (golden: check-units.ts). A row with
@@ -233,10 +233,10 @@ export function positionAmountCents(
   honorApportion: boolean,
 ): number {
   // Honour the apportioned amount ONLY for rows the user has explicitly CONFIRMED deductible — the
-  // state the guided loan-split (and a year-end review) writes. Every other state keeps gross. This is
+  // state a year-end review / inline claim writes (and the retired guided loan-split wrote). Every other state keeps gross. This is
   // critical: the 0021 backfill set deductible_amount_cents=0 on likely_not (private) rows, and those
   // must still DISPLAY their gross in the excluded section (they're filtered out of the headline
-  // anyway by deductionGroupForRow). Scoping to confirmed_deductible also makes enabling the flag a
+  // anyway by deductionGroupForRow). Scoping to confirmed_deductible also made enabling the (now hard-wired) loan_split flag a
   // no-op for all existing data — only freshly-split/confirmed rows ever diverge from gross.
   if (honorApportion && row.deductibility === "confirmed_deductible" && row.deductible_amount_cents != null) {
     return row.deductible_amount_cents;
@@ -400,17 +400,17 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   const jurisdiction = await resolveJurisdictionForUser(env, userId);
   const { start, end } = fyBounds(startYear, jurisdiction);
   const rulePack = await resolveRulePack(env, userId, jurisdiction);
-  // Flag `loan_split`: when on, the position counts the claimable (apportioned) portion
-  // (deductible_amount_cents) of a row instead of the gross — see positionAmountCents. The SUM
-  // expressions below MUST mirror that helper exactly. Off ⇒ byte-identical legacy totals.
-  // DEPENDENCY: the inline_claim controls (work-use %) write deductible_amount_cents, so an inline
-  // work-use % only reduces the position while `loan_split` is ON; likewise an inline "not deductible"
-  // only drops from the headline while `position_excludes_nondeductible` is ON (deductionGroupForRow).
-  // Both are ON in prod, so inline_claim is correct there — but do not turn either off without also
-  // gating inline_claim, or every inline claim silently reverts to claiming the gross amount.
-  const honorApportion = featureOn(env, "loan_split");
-  const amtExpr = honorApportion ? claimExpr("") : "COALESCE(amount_aud_cents, amount_cents)";
-  const amtExprT = honorApportion ? claimExpr("t.") : "COALESCE(t.amount_aud_cents, t.amount_cents)";
+  // Apportionment is always honoured: the position counts the claimable (apportioned) portion
+  // (deductible_amount_cents) of a CONFIRMED-deductible row instead of the gross — see
+  // positionAmountCents. The SUM expressions below MUST mirror that helper exactly. This used to sit
+  // behind the `loan_split` flag, but turning it OFF was never safe (loan repayments would count gross
+  // and over-claim principal; inline work-use % and deductible amounts would revert to gross), so it
+  // was hard-wired ON here AND in accountant-schedule.ts together, keeping schedule and position tied.
+  // DEPENDENCY: an inline "not deductible" only drops from the headline while
+  // `position_excludes_nondeductible` is ON (deductionGroupForRow) — do not turn that off without
+  // also gating inline_claim.
+  const amtExpr = claimExpr("");
+  const amtExprT = claimExpr("t.");
 
   const useStatusDenied = (col: string) => useStatusDeniedExpr(col);
   // #254: flag-gated property deny-by-default marker (the literal "0" when off ⇒ byte-identical SQL).
@@ -628,7 +628,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   // tracked-spend display, EXACTLY like an attribution property deduction — and it's added to the
   // headline via loan_interest_total_cents below. The legacy split rows it supersedes were already
   // excluded from byBucket/byPropertyRaw (excludeSplitInterest, scoped to supersededLoanIds), so there's
-  // no double count. Restricted (at resolution) to income-producing properties, mirroring applyLoanSplit
+  // no double count. Restricted (at resolution) to income-producing properties, mirroring the retired per-line loan split
   // — interest is only deductible against a property held to earn assessable income (s8-1). Off ⇒ empty.
   for (const [pid, ded] of loanInterestByProp) {
     expDeductMap.set(pid, (expDeductMap.get(pid) ?? 0) + ded);
@@ -734,7 +734,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
               COALESCE(e.reimbursed,0) AS e_reimbursed,
               ${useStatusDenied("e.property_id")} AS e_use_status_denied,
               ${propUndetermined("e.bucket", "e.property_id")} AS e_property_undetermined,
-              ${honorApportion ? claimExpr("e.") : "COALESCE(e.amount_aud_cents, e.amount_cents)"} AS e_cents
+              ${claimExpr("e.")} AS e_cents
          FROM transactions r
          LEFT JOIN transactions e ON e.id = r.refund_for_txn_id AND e.user_id = r.user_id
         WHERE r.user_id = ? AND r.txn_date >= ? AND r.txn_date <= ? AND r.bucket = 'refund'
@@ -743,7 +743,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
       .bind(userId, start, end)
       .all<{ refund_cents: number; matched_id: string | null; e_bucket: string | null; e_deductibility: string; e_reimbursed: number; e_use_status_denied: number; e_property_undetermined: number; e_cents: number | null }>();
     // Cap netting PER matched expense at the amount that expense actually contributed to deductions
-    // (e_cents is the claim-aware amount — apportioned via claimExpr when loan_split is on — so a
+    // (e_cents is the claim-aware amount — apportioned via claimExpr — so a
     // partly-deductible cost can't be over-netted). Track cumulative netting per expense so several
     // refunds pointing at the SAME expense can't collectively net more than it gave (a $400 + $300
     // refund on one $500 cost nets $500, not $700).

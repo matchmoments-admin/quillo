@@ -30,7 +30,7 @@ const GROUP_OPTS = [
 type GroupKey = (typeof GROUP_OPTS)[number]["key"];
 
 // Page the 500-capped endpoint until exhausted, so the whole scope is in memory for client-side work.
-async function fetchAll(opts: { fy?: number; countable?: boolean }): Promise<Txn[]> {
+async function fetchAll(opts: { fy?: number; countable?: boolean; activity?: string }): Promise<Txn[]> {
   const all: Txn[] = [];
   for (let offset = 0; offset <= 20000; offset += 500) {
     const page = await api.transactions({ ...opts, limit: 500, offset });
@@ -62,12 +62,16 @@ export function Transactions() {
   // ?undated=true lands here from the Dashboard "add dates" CTA — show only items missing a date so the
   // user can open each and add one (the CTA used to point at the read-only report, where they couldn't).
   const [undatedOnly, setUndatedOnly] = useState(params.get("undated") === "true");
+  // #590: the myTax worksheet's "See records" links — ?label=D5 (that return label's lines) and
+  // ?activity=<income activity id> (lines attributed to one business, filtered server-side). Absent ⇒ unchanged.
+  const [labelFilter, setLabelFilter] = useState(params.get("label") ?? "");
+  const [activity, setActivity] = useState(params.get("activity") ?? "");
   const [kind, setKind] = useState(""); // "" | "receipt" | "bank_line" — absorbs the old Inbox Receipts/Bank-lines tabs
   const [group, setGroup] = useState<GroupKey>("none");
 
   // Needs review (default) / All segmented control, persisted in ?view=. Default to review unless a
   // Dashboard drill-through (?bucket= / ?property=) is present, which lands on the browse view.
-  const drill = !!(params.get("bucket") || params.get("property") || params.get("undated"));
+  const drill = !!(params.get("bucket") || params.get("property") || params.get("undated") || params.get("label") || params.get("activity"));
   const viewParam = params.get("view");
   const view: "review" | "all" = viewParam === "all" ? "all" : viewParam === "review" ? "review" : drill ? "all" : "review";
   const setView = (v: "review" | "all") =>
@@ -90,8 +94,8 @@ export function Transactions() {
     // countable here only drops duplicate/ignored (keeps both directions) — see listTransactions.
     // Undated items belong to no FY, so the FY-scoped fetch would never include them — load all years
     // when filtering to undated.
-    queryKey: ["transactions-all", allYears || undatedOnly ? "all" : activeFy, showExcluded],
-    queryFn: () => fetchAll({ fy: allYears || undatedOnly ? undefined : activeFy, countable: !showExcluded }),
+    queryKey: activity ? ["transactions-all", allYears || undatedOnly ? "all" : activeFy, showExcluded, { activity }] : ["transactions-all", allYears || undatedOnly ? "all" : activeFy, showExcluded],
+    queryFn: () => fetchAll({ fy: allYears || undatedOnly ? undefined : activeFy, countable: !showExcluded, ...(activity ? { activity } : {}) }),
     // Skip the full-scope load while the review tab is showing (it has its own all-time query).
     enabled: view === "all",
   });
@@ -105,6 +109,7 @@ export function Transactions() {
       if (bucket && t.bucket !== bucket) return false;
       if (propertyId && t.property_id !== propertyId) return false;
       if (undatedOnly && t.txn_date) return false;
+      if (labelFilter && t.ato_label !== labelFilter) return false;
       if (kind && t.kind !== kind) return false;
       if (from && (!t.txn_date || t.txn_date < from)) return false;
       if (to && (!t.txn_date || t.txn_date > to)) return false;
@@ -114,7 +119,7 @@ export function Transactions() {
       }
       return true;
     });
-  }, [all, search, from, to, bucket, propertyId, kind, undatedOnly]);
+  }, [all, search, from, to, bucket, propertyId, kind, undatedOnly, labelFilter]);
 
   // Headline: count + spend/income split (summing across directions would be meaningless).
   const spend = filtered.filter((t) => !isCredit(t)).reduce((s, t) => s + Math.abs(amt(t)), 0);
@@ -216,8 +221,20 @@ export function Transactions() {
               <button onClick={() => setUndatedOnly(false)} aria-label="Clear undated filter" className="hover:text-ink">✕</button>
             </span>
           )}
-          {(search || from || to || bucket || propertyId || kind || undatedOnly) && (
-            <button onClick={() => { setSearch(""); setFrom(""); setTo(""); setBucket(""); setPropertyId(""); setKind(""); setUndatedOnly(false); }} className="text-xs font-medium text-muted hover:text-ink">
+          {labelFilter && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-ink/5 px-2 py-0.5 text-xs font-medium text-ink">
+              Label {labelFilter}
+              <button onClick={() => setLabelFilter("")} aria-label="Clear label filter" className="hover:text-ink">✕</button>
+            </span>
+          )}
+          {activity && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-ink/5 px-2 py-0.5 text-xs font-medium text-ink">
+              One business activity
+              <button onClick={() => setActivity("")} aria-label="Clear business activity filter" className="hover:text-ink">✕</button>
+            </span>
+          )}
+          {(search || from || to || bucket || propertyId || kind || undatedOnly || labelFilter || activity) && (
+            <button onClick={() => { setSearch(""); setFrom(""); setTo(""); setBucket(""); setPropertyId(""); setKind(""); setUndatedOnly(false); setLabelFilter(""); setActivity(""); }} className="text-xs font-medium text-muted hover:text-ink">
               Clear filters ✕
             </button>
           )}

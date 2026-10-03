@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api } from "../api";
@@ -21,6 +21,13 @@ function fyBounds(startYear: number): { from: string; to: string } {
 
 // Document types the server's classifyAndRoute turns into an income row when it routes them
 // (src/agent.ts: payslip → salary, dividend_statement → dividend + franking, agent_rental_summary → rent).
+// #590: the myTax worksheet's "See records" link lands here with ?type=<income_type>. A worksheet line can
+// cover a family of types (mirror of src/lib/taxonomy.ts BUSINESS_INCOME_TYPES / RENT_INCOME_TYPES).
+const TYPE_FILTER_FAMILY: Record<string, readonly string[]> = {
+  business: ["business", "foreign_business", "non_cash_business"],
+  rent: ["rent", "foreign_rent"],
+};
+
 const INCOME_DOC_LABEL: Record<string, string> = {
   payslip: "Income statement",
   dividend_statement: "Dividend statement",
@@ -67,6 +74,12 @@ export function Income() {
   const { has } = useFeatures();
   const { data, isLoading, error } = useQuery({ queryKey: ["income", fy], queryFn: () => api.income({ fy }) });
   const [adding, setAdding] = useState(false);
+  // #590: ?type= narrows the table to one income type (family); absent => every row, as before.
+  const [params, setParams] = useSearchParams();
+  const typeFilter = params.get("type") ?? "";
+  const typeFamily = typeFilter ? TYPE_FILTER_FAMILY[typeFilter] ?? [typeFilter] : null;
+  const clearTypeFilter = () => setParams((prev) => { const n = new URLSearchParams(prev); n.delete("type"); return n; }, { replace: true });
+  const tableRows = typeFamily ? (data ?? []).filter((r) => typeFamily.includes(r.income_type)) : data ?? [];
 
   // #A1: upload an income statement → the existing documents-upload → payslip-extract → recordIncome path.
   const fileRef = useRef<HTMLInputElement>(null);
@@ -180,6 +193,12 @@ export function Income() {
         <Card className="p-6 text-sm text-muted">Couldn't load: {(error as Error).message}</Card>
       ) : (
         <Card className="overflow-hidden">
+          {typeFamily && (
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line px-4 py-2 text-sm">
+              <span className="text-muted">Showing {TYPE_LABEL[typeFilter] ?? typeFilter.replace(/_/g, " ")} only</span>
+              <button onClick={clearTypeFilter} className="text-xs font-medium text-muted hover:text-ink">Show all income ✕</button>
+            </div>
+          )}
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-xs uppercase tracking-wide text-muted">
@@ -192,9 +211,9 @@ export function Income() {
               </tr>
             </thead>
             <tbody>
-              {(data ?? []).map((r) => <IncomeLine key={r.id} row={r} fy={fy} />)}
-              {!(data ?? []).length && (
-                <tr className="border-t border-line"><td colSpan={6} className="px-4 py-6 text-muted">No income recorded for this FY. Upload a payslip or agent statement from Documents, or add one manually.</td></tr>
+              {tableRows.map((r) => <IncomeLine key={r.id} row={r} fy={fy} />)}
+              {!tableRows.length && (
+                <tr className="border-t border-line"><td colSpan={6} className="px-4 py-6 text-muted">{typeFamily && (data ?? []).length ? "Nothing of this type recorded for this FY yet." : "No income recorded for this FY. Upload a payslip or agent statement from Documents, or add one manually."}</td></tr>
               )}
             </tbody>
           </table>

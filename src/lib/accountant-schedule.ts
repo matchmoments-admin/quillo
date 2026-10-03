@@ -253,7 +253,32 @@ export async function buildAccountantScheduleDetailed(
   startYear: number,
   opts?: { report?: Report },
 ): Promise<{ schedule: AccountantSchedule; detail: ScheduleDetail }> {
-  const report = opts?.report ?? (await buildReport(env, userId, startYear));
+  const { schedule, detail } = await scheduleCore(env, userId, startYear, opts?.report, false);
+  return { schedule: schedule as AccountantSchedule, detail };
+}
+
+/**
+ * The schedule's own rows (ScheduleDetail) WITHOUT building the schedule (#590, narrowing the #575 deferral):
+ * the myTax worksheet re-groups only work-related / per-property / attribution / income rows, so this skips
+ * every read that feeds a section alone — per-asset depreciation (2), the engine source rows (CGT, ESS,
+ * trust, BAS, PAYG, closing holdings — each when its engine is live), the WFH diary, the loan register and
+ * the FX-excluded lists. The rows it DOES return come from the identical queries + routing the full build
+ * runs (same function body, it just stops before the sections), so the worksheet can't drift from the
+ * schedule. Used by the worksheet endpoint and its readiness signal (which runs on every readiness /
+ * journey read once mytax_worksheet is ON).
+ */
+export async function buildScheduleDetail(env: Env, userId: string, startYear: number, opts?: { report?: Report }): Promise<ScheduleDetail> {
+  return (await scheduleCore(env, userId, startYear, opts?.report, true)).detail;
+}
+
+async function scheduleCore(
+  env: Env,
+  userId: string,
+  startYear: number,
+  reportIn: Report | undefined,
+  detailOnly: boolean,
+): Promise<{ schedule: AccountantSchedule | null; detail: ScheduleDetail }> {
+  const report = reportIn ?? (await buildReport(env, userId, startYear));
   // Base-currency-aware column headers (stop 2). AU ⇒ base='AUD' ⇒ '(AUD)' ⇒ byte-identical CSV.
   const cur = report.base_currency ?? "AUD";
   const jurisdiction = await resolveJurisdictionForUser(env, userId);
@@ -349,7 +374,7 @@ export async function buildAccountantScheduleDetailed(
     owned_by: string;
     reimbursed: number;
   }
-  const depRowsP = safeAll<DepRow>(
+  const depRowsP = detailOnly ? Promise.resolve([] as DepRow[]) : safeAll<DepRow>(
     env.DB.prepare(
       `SELECT ${depCols}
          FROM depreciation_schedule d JOIN assets a ON a.id = d.asset_id LEFT JOIN properties p ON p.id = a.property_id
@@ -360,7 +385,7 @@ export async function buildAccountantScheduleDetailed(
       .bind(userId, fy)
       .all<DepRow>(),
   );
-  const depDeniedP = safeAll<DepRow & { use_status_denied: number }>(
+  const depDeniedP = detailOnly ? Promise.resolve([] as (DepRow & { use_status_denied: number })[]) : safeAll<DepRow & { use_status_denied: number }>(
     env.DB.prepare(
       `SELECT ${depCols}, (CASE WHEN ${rentFreeAsset} THEN 1 ELSE 0 END) AS use_status_denied
          FROM depreciation_schedule d JOIN assets a ON a.id = d.asset_id LEFT JOIN properties p ON p.id = a.property_id
@@ -431,7 +456,7 @@ export async function buildAccountantScheduleDetailed(
   // capital_cost_base_detail (C2): itemise the cost-base ELEMENTS under each disposal. Presentation only —
   // the section subtotal stays on the canonical figure, so the tie-back is unaffected by itemising.
   const costBaseDetailOn = featureOn(env, "capital_cost_base_detail");
-  const cgtEventsP = report.capital_gains
+  const cgtEventsP = !detailOnly && report.capital_gains
     ? safeAll<{
         event_date: string | null;
         code: string | null;
@@ -458,7 +483,7 @@ export async function buildAccountantScheduleDetailed(
           .all(),
       )
     : Promise.resolve([]);
-  const essGrantsP = report.ess
+  const essGrantsP = !detailOnly && report.ess
     ? safeAll<{
         scheme_type: string;
         grant_date: string | null;
@@ -478,7 +503,7 @@ export async function buildAccountantScheduleDetailed(
           .all(),
       )
     : Promise.resolve([]);
-  const trustRowsP = report.trust
+  const trustRowsP = !detailOnly && report.trust
     ? safeAll<{ trust_name: string | null; character: string; share_pct: number | null; amount_cents: number; franking_credit_cents: number }>(
         env.DB.prepare(
           `SELECT e.name AS trust_name, td.character, td.share_pct, td.amount_cents, td.franking_credit_cents
@@ -489,7 +514,7 @@ export async function buildAccountantScheduleDetailed(
           .all(),
       )
     : Promise.resolve([]);
-  const basRowsP = report.gst
+  const basRowsP = !detailOnly && report.gst
     ? safeAll<{ period_start: string; period_end: string; output_gst_cents: number; input_gst_cents: number; payg_instalment_cents: number; status: string }>(
         env.DB.prepare(
           `SELECT period_start, period_end, output_gst_cents, input_gst_cents, payg_instalment_cents, status
@@ -499,7 +524,7 @@ export async function buildAccountantScheduleDetailed(
           .all(),
       )
     : Promise.resolve([]);
-  const paygRowsP = report.payg_instalments_cents
+  const paygRowsP = !detailOnly && report.payg_instalments_cents
     ? safeAll<{ quarter: number | null; instalment_cents: number; basis: string | null }>(
         env.DB.prepare(`SELECT quarter, instalment_cents, basis FROM payg_instalments WHERE user_id = ? AND fy = ? ORDER BY quarter`).bind(userId, fy).all(),
       )
@@ -522,7 +547,7 @@ export async function buildAccountantScheduleDetailed(
   // cost base carried into that year — a wrong number on a tax deliverable, for a year that is closed.
   // `fy` is the 'YYYY-YY' label, whose lexical order matches chronological order, so `<=` is a valid
   // as-at test; acquisitions after year end are likewise not yet holdings.
-  const holdingsP = positionOn
+  const holdingsP = !detailOnly && positionOn
     ? safeAll<{ id: string; code: string | null; label: string | null; asset_kind: string; acquired_date: string | null; units: number | null; cost_base_cents: number }>(
         env.DB.prepare(
           `SELECT a.id AS id, a.code AS code, a.label AS label, a.asset_kind AS asset_kind,
@@ -534,7 +559,7 @@ export async function buildAccountantScheduleDetailed(
         ).bind(userId, end).all(),
       )
     : Promise.resolve([]);
-  const holdingDisposalsP = positionOn
+  const holdingDisposalsP = !detailOnly && positionOn
     ? safeAll<{ cgt_asset_id: string; units_disposed: number | null; cost_base_used_cents: number | null }>(
         env.DB.prepare(
           `SELECT ev.cgt_asset_id AS cgt_asset_id, ev.units_disposed AS units_disposed, ev.cost_base_used_cents AS cost_base_used_cents
@@ -702,6 +727,29 @@ export async function buildAccountantScheduleDetailed(
   const residencyExcluded = (r: (typeof incomeRows)[number]) => !!residencyCtx && !r.fx_unconverted && classifyIncomeRow(r, residencyCtx) === "excluded";
   const nonResidentRows = residencyCtx ? incomeRows.filter((r) => !NON_ASSESSABLE_INCOME_TYPES.has(r.income_type) && residencyExcluded(r)) : [];
   const assessableIncomeRows = incomeRows.filter((r) => !NON_ASSESSABLE_INCOME_TYPES.has(r.income_type) && !residencyExcluded(r));
+  // The worksheet's view of the schedule (ScheduleDetail): every input is final by here, so the detail-only
+  // build (buildScheduleDetail) stops now — nothing below feeds it.
+  const makeDetail = (): ScheduleDetail => ({
+    work_related: workRelated.map((r) => ({ id: r.id, bucket: r.bucket, ato_label: r.ato_label, counted_cents: r.counted_cents })),
+    property_items: [...byPropertyItems.entries()].flatMap(([property_id, rows]) => rows.map((r) => ({
+      id: r.id, property_id, counted_cents: r.counted_cents,
+      headline: deductionGroupForRow(r.bucket, r.deductibility, excludeNonDeductible, r.reimbursed, r.use_status_denied, r.property_undetermined) === "deduction",
+    }))),
+    attributions: attrRows.map((r) => ({
+      transaction_id: r.transaction_id,
+      ato_label: r.ato_label,
+      deductibility: r.deductibility,
+      entity_type: r.entity_type,
+      activity_type: r.activity_type,
+      income_activity_id: r.income_activity_id,
+      activity_label: r.activity_label,
+      property_id: r.property_id,
+      deduction_provision: r.deduction_provision,
+      amount_cents: attrItem(r),
+    })),
+    income: assessableIncomeRows.map((r) => ({ income_type: r.income_type, gross_cents: r.gross_cents, detail_json: r.detail_json, property_id: r.property_id, fx_unconverted: !!r.fx_unconverted })),
+  });
+  if (detailOnly) return { schedule: null, detail: makeDetail() };
   const excludedRows = incomeRows.filter((r) => NON_ASSESSABLE_INCOME_TYPES.has(r.income_type));
   const excludedNoteFor = (income_type: string, n: number, cents: number): string => {
     if (income_type === "non_cash_benefit") return `${n} non-cash benefit(s) totalling ${d(cents)} are captured but EXCLUDED from assessable income (may be assessable at market value — confirm with a registered tax agent).`;
@@ -1349,27 +1397,7 @@ export async function buildAccountantScheduleDetailed(
   }
 
   const schedule: AccountantSchedule = { fy: report.fy, start: report.start, end: report.end, abn: report.abn, disclaimer: SCHEDULE_DISCLAIMER, sections };
-  const detail: ScheduleDetail = {
-    work_related: workRelated.map((r) => ({ id: r.id, bucket: r.bucket, ato_label: r.ato_label, counted_cents: r.counted_cents })),
-    property_items: [...byPropertyItems.entries()].flatMap(([property_id, rows]) => rows.map((r) => ({
-      id: r.id, property_id, counted_cents: r.counted_cents,
-      headline: deductionGroupForRow(r.bucket, r.deductibility, excludeNonDeductible, r.reimbursed, r.use_status_denied, r.property_undetermined) === "deduction",
-    }))),
-    attributions: attrRows.map((r) => ({
-      transaction_id: r.transaction_id,
-      ato_label: r.ato_label,
-      deductibility: r.deductibility,
-      entity_type: r.entity_type,
-      activity_type: r.activity_type,
-      income_activity_id: r.income_activity_id,
-      activity_label: r.activity_label,
-      property_id: r.property_id,
-      deduction_provision: r.deduction_provision,
-      amount_cents: attrItem(r),
-    })),
-    income: assessableIncomeRows.map((r) => ({ income_type: r.income_type, gross_cents: r.gross_cents, detail_json: r.detail_json, property_id: r.property_id, fx_unconverted: !!r.fx_unconverted })),
-  };
-  return { schedule, detail };
+  return { schedule, detail: makeDetail() };
 }
 
 const l_fx = (r: number | null): Cell => (r != null ? r : "no rate");

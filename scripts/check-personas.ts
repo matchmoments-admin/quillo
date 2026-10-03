@@ -16,7 +16,7 @@ import { runScan, type ScanTxn } from "../src/lib/scan";
 import auV1RulePack from "../src/rulepacks/au-v1.json";
 import { COUNTABLE } from "../src/lib/queries";
 import { fyBounds } from "../src/lib/ledger-totals";
-import { buildAccountantSchedule, tieBackChecks } from "../src/lib/accountant-schedule";
+import { buildAccountantSchedule, buildAccountantScheduleDetailed, buildScheduleDetail, tieBackChecks } from "../src/lib/accountant-schedule";
 import { fetchAskDigestRows, listAccounts, listIncome } from "../src/lib/queries";
 import { reconcileProposals, listClaims } from "../src/lib/queries";
 import { reconcileConfigFromPack } from "../src/lib/reconcile-proposer";
@@ -2519,8 +2519,21 @@ async function main() {
       const ws = await buildMytaxWorksheet(WS_ENV_ON, u, 2025, { report: rep });
       const packOrder = (auV1RulePack as unknown as { mytax_sections: { key: string }[] }).mytax_sections.map((s) => s.key);
       const keys = ws.sections.map((s) => s.key);
-      check("pft12: sections follow the pack's myTax order (income check → deductions → medicare)",
-        JSON.stringify(keys) === JSON.stringify(["income_check", "deductions", "medicare"]) && keys.every((k, i) => i === 0 || packOrder.indexOf(k) > packOrder.indexOf(keys[i - 1])));
+      check("pft12: sections follow the pack's myTax order (contact/bank → personalise → income check → deductions → medicare → spouse/income tests)",
+        JSON.stringify(keys) === JSON.stringify(["contact_bank", "personalise", "income_check", "deductions", "medicare", "spouse_income_tests"]) && keys.every((k, i) => i === 0 || packOrder.indexOf(k) > packOrder.indexOf(keys[i - 1])));
+      // #590 (ato §b rows 11, 13, 17, 21, 22): the answer sections carry NO figure, so they can't move any tie-back.
+      const answerSections = ["contact_bank", "personalise", "medicare", "spouse_income_tests"];
+      check("pft12 (#590): contact/bank, Personalise, Medicare and spouse/income-test lines are questions or notes with no figure",
+        ws.sections.filter((x) => answerSections.includes(x.key)).every((x) => x.lines.every((l) => l.amount_cents === null && (l.kind === "answer" || l.kind === "note"))));
+      const pers = ws.sections.find((x) => x.key === "personalise")?.lines.map((l) => l.key) ?? [];
+      check("pft12 (#590): Personalise asks residency then spouse, then ticks salary (wages + employers) and deductions — nothing for income she doesn't have",
+        pers[0] === "residency" && pers[1] === "spouse" && pers.includes("tick:salary") && pers.includes("tick:deductions") && !pers.includes("tick:business") && !pers.includes("tick:foreign") && pers.includes("pre_ticked"));
+      const icKeys = ws.sections.find((x) => x.key === "income_check")?.lines.map((l) => l.key) ?? [];
+      check("pft12 (#590): the salary banner's occupation question leads the income lines; 'not entered' employer notes the ABN; prefill notes say to contact the payer",
+        icKeys[0] === "occupation" && lineOf(ws, "income_check", "occupation")?.kind === "answer" && /ABN/.test(lineOf(ws, "income_check", "salary:cafe two")?.note ?? "")
+          && /contact the employer or payer/.test(lineOf(ws, "income_check", "salary:big retail")?.note ?? "") && /Tax ready/.test(lineOf(ws, "income_check", "salary:big retail")?.note ?? ""));
+      check("pft12 (#590): Medicare always asks dependants; no spouse answer without a spouse; income tests is a note",
+        !!lineOf(ws, "medicare", "dependants") && !lineOf(ws, "medicare", "medicare_entitlement") && !lineOf(ws, "spouse_income_tests", "spouse_details") && lineOf(ws, "spouse_income_tests", "income_tests")?.kind === "note");
       // D-label totals == the accountant schedule's per-label subtotals (its deductions_by_label section).
       const sched = await buildAccountantSchedule(WS_ENV_ON, u, 2025, { report: rep });
       const byLabel = new Map<string, number>();
@@ -2539,8 +2552,9 @@ async function main() {
       check("pft12: Medicare section asks about private hospital cover with NO figure", lineOf(ws, "medicare", "private_hospital_cover")?.kind === "answer" && lineOf(ws, "medicare", "private_hospital_cover")?.amount_cents === null);
       check("pft12: no field named or containing refund / tax_payable; no tax-advice term in any copy",
         noRefundField(ws) && !/refund|tax payable|marginal rate/i.test(JSON.stringify(ws.sections) + ws.header.intro));
-      check("pft12: header carries the pack's lodgement timing + the general-information disclaimer",
-        ws.header.intro.includes("usually late July") && ws.header.intro.includes("31 October") && /General information only/.test(ws.disclaimer));
+      check("pft12: header carries the pack's lodgement timing (Tax ready first) + the general-information disclaimer",
+        /^Wait until your income statement says "Tax ready"/.test(ws.header.intro) && ws.header.intro.includes("usually late July") && ws.header.intro.includes("31 October")
+          && ws.header.self_lodge_due_on === "2026-10-31" && /General information only/.test(ws.disclaimer));
       const on = await wsReady(WS_ENV_ON, u);
       const fu = on.findings.find((x) => x.id === "worksheet_unlabelled");
       check("pft12 (ON): the unlabelled row raises worksheet_unlabelled (REVIEW, defers to a registered tax agent)",
@@ -2566,6 +2580,44 @@ async function main() {
       check("pft12: a matched refund is netted on its own D-line; visible lines == report deductions",
         rep3.refunds_cents === 10000 && lineOf(ws3, "deductions", "D5")?.amount_cents === 40000 - 10000 + wfh + 12000
           && lines3.reduce((s, l) => s + (l.amount_cents ?? 0), 0) === rep3.total_deductions_cents && ws3.tie_back.netted_credits_unplaced_cents === 0 && ws3.tie_back.ok);
+      // #590 (ato §b row 19): the ATO prefills managed fund distributions ⇒ a "check this matches" line, not a
+      // type-in, and Personalise gains the managed-funds tick. The income tie-back is unchanged.
+      inc("pft12Mf", u, "managed_fund_distribution", 15000);
+      const ws4 = await buildMytaxWorksheet(WS_ENV_ON, u, 2025);
+      check("pft12 (#590): a managed fund distribution is a CHECK line (prefilled), never typed in; still ties back",
+        lineOf(ws4, "income_check", "managed_fund_distribution")?.kind === "check" && lineOf(ws4, "income_check", "managed_fund_distribution")?.amount_cents === 15000
+          && !lineOf(ws4, "income_type_in", "managed_fund_distribution") && !!lineOf(ws4, "personalise", "tick:managed_funds") && ws4.tie_back.ok && ws4.tie_back.income_ok);
+    }
+
+    // #590: a WHM who became a resident, with a spouse, a study loan and hospital cover (situation_profile ON).
+    // Personalise reads the profile: residency dates + spouse answered, the WHM adjustment tick; adjustments asks
+    // WHM net income + notes the part-year threshold; Medicare asks the entitlement statement; spouse details asked.
+    {
+      const u = "pft12p";
+      const PROF_ENV = { ...env, FEATURES: `${(env as { FEATURES: string }).FEATURES},mytax_worksheet,situation_profile` } as unknown as Env;
+      seedTenant(u, "WHM to resident — Personalise from the profile");
+      inc("pft12pSal", u, "salary_payg", 3000000, { detail_json: JSON.stringify({ employer: "Farm Co" }) });
+      run(`UPDATE persons SET occupation = 'nurse' WHERE id = ?`, `person_self_${u}`);
+      const per = (id: string, fact: string, value: string, from: string, to: string) =>
+        run(`INSERT INTO situation_periods (id, user_id, subject_kind, subject_id, fact, value, starts_on, ends_on) VALUES (?, ?, 'person', ?, ?, ?, ?, ?)`, id, u, `person_self_${u}`, fact, value, from, to);
+      per("pft12pR1", "residency", "whm", "2025-07-01", "2025-12-31");
+      per("pft12pR2", "residency", "resident", "2026-01-01", "2026-06-30");
+      per("pft12pSp", "spouse", "yes", "2025-07-01", "2026-06-30");
+      per("pft12pHl", "study_loan", "yes", "2025-07-01", "2026-06-30");
+      per("pft12pPh", "private_hospital_cover", "yes", "2025-07-01", "2026-06-30");
+      const ws = await buildMytaxWorksheet(PROF_ENV, u, 2025);
+      const offProfile = await buildMytaxWorksheet(WS_ENV_ON, u, 2025);
+      check("pft12p (#590): Personalise quotes the residency dates + spouse answer and ticks the WHM net income adjustment",
+        /working holiday maker 1 Jul 2025 to 31 Dec 2025; Australian resident 1 Jan 2026 to 30 Jun 2026/.test(lineOf(ws, "personalise", "residency")?.note ?? "")
+          && /You told Quillo: yes/.test(lineOf(ws, "personalise", "spouse")?.note ?? "") && !!lineOf(ws, "personalise", "tick:whm_adjustment") && lineOf(ws, "personalise", "study_loan")?.kind === "note");
+      check("pft12p (#590): adjustments asks WHM net income and notes the part-year threshold; Medicare asks the entitlement statement; spouse details asked",
+        lineOf(ws, "adjustments", "whm_net_income")?.kind === "answer" && lineOf(ws, "adjustments", "part_year_threshold")?.kind === "note"
+          && !!lineOf(ws, "medicare", "medicare_entitlement") && /policy lines/.test(lineOf(ws, "medicare", "private_hospital_cover")?.note ?? "") && lineOf(ws, "spouse_income_tests", "spouse_details")?.kind === "answer");
+      check("pft12p (#590): the occupation answer quotes the pack's label; an arrival isn't 'leaving Australia'; ties back",
+        /You told Quillo: Nurse \/ midwife/.test(lineOf(ws, "income_check", "occupation")?.note ?? "") && ws.header.early_lodge_note === null && ws.tie_back.ok);
+      check("pft12p (#590): situation_profile OFF ⇒ no profile read — no adjustments section, generic residency question, figures identical",
+        !offProfile.sections.some((x) => x.key === "adjustments") && /Add your residency in About you/.test(lineOf(offProfile, "personalise", "residency")?.note ?? "")
+          && JSON.stringify(offProfile.tie_back) === JSON.stringify(ws.tie_back));
     }
 
     // FT3 Sam (pft3 fixture): an ABN tenant gets the business items section with per-activity totals.
@@ -2751,6 +2803,13 @@ async function main() {
         if (!ws.tie_back.ok || ws.tie_back.netted_credits_unplaced_cents !== 0 || !noRefundField(ws)) bad.push(`${t}:${JSON.stringify(ws.tie_back)}`);
       }
       check(`pft12 sweep: worksheet ties back to the report for all ${tenants.length} persona tenants${bad.length ? ` — FAILED ${bad.join(" | ")}` : ""}`, bad.length === 0);
+      // #590: the worksheet reads the detail-only schedule build (skips the section-only reads). It must return
+      // exactly the rows the full build exposes, for every tenant, with the worksheet flag set and the base env.
+      const drift: string[] = [];
+      for (const e of [WS_ENV_ON, env])
+        for (const t of tenants)
+          if (JSON.stringify(await buildScheduleDetail(e, t, 2025)) !== JSON.stringify((await buildAccountantScheduleDetailed(e, t, 2025)).detail)) drift.push(t);
+      check(`pft12 sweep: detail-only schedule build == the full build's detail for all ${tenants.length} tenants${drift.length ? ` — DRIFT ${drift.join(",")}` : ""}`, drift.length === 0);
     }
   }
 

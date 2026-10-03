@@ -15,7 +15,8 @@ import { Transactions } from "./Transactions";
 import { Review } from "./Review";
 import { Documents } from "./Documents";
 import { Reconcile } from "./Reconcile";
-import { Filing } from "./Filing";
+import { ShipIt } from "./ShipIt";
+import { ShipItPrint } from "./ShipItPrint";
 
 // Flag-aware routing for the first-timer journey (spec A11 "Page-by-page migration", #582).
 //
@@ -164,9 +165,21 @@ export function ReviewStep() {
   );
 }
 
-/** Lodge in myTax (placeholder until #590): today's filing page. */
+/** Lodge in myTax (#590): the Tax-ready gate, the myTax worksheet + mark as lodged; the legacy Filing page folds in here. */
 export const LodgeStep = () => (
   <StepRoute step="lodge">
-    <Filing />
+    <ShipIt />
   </StepRoute>
 );
+
+/**
+ * /lodge/print (#590): the worksheet laid out for paper — no step header/footer. OFF ⇒ the legacy Filing page
+ * (as for /lodge); without the worksheet flag there is nothing to print, so it goes back to /lodge.
+ */
+export function LodgePrintStep() {
+  const { has, loaded } = useFeatures();
+  if (!loaded) return null;
+  if (!has("ft_journey")) return <Navigate to={STEP_LEGACY_ROUTE.lodge} replace />;
+  if (!has("mytax_worksheet")) return <Navigate to="/lodge" replace />;
+  return <ShipItPrint />;
+}

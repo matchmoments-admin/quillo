@@ -607,31 +607,59 @@
     "self_lodge_due": "31 October",
     "_due_note": "#572: the machine form of self_lodge_due — the first {month, day} after the FY ends. The retention backstop (src/lib/lodging-year.ts) treats an FY with no lodged mark as lodged retention_backstop_days after it, so bank-data minimisation (A5) can't be held open forever by a user who never taps 'mark as lodged'. Lodging timing only — never a figure.",
     "self_lodge_due_after_fy_end": { "month": 10, "day": 31 },
-    "retention_backstop_days": 60
+    "retention_backstop_days": 60,
+    "phi_report_by": "mid-July",
+    "_590_note": "#590 (docs/first-timer/ato-lodgement-process.md §b rows 8, 9, 25, 27, 28): the ATO's own timing and after-lodging wording for the Lodge in myTax step — quoted ATO information, never a promise or a figure. Dates live here, never in copy (§c rule 8).",
+    "employer_finalise_by": "14 July",
+    "tax_ready_chase_after": "31 July",
+    "after_due_note": "The self-lodger date has passed. You can still lodge in myTax. The ATO generally doesn't apply a late-lodgment penalty when a return results in money back to you or nothing owing, and it warns before applying one.",
+    "processing_hint": "about 12 business days",
+    "amend_window": "generally within 2 years of the day after your notice of assessment",
+    "records_keep": "5 years from the date you lodge"
   },
   "mytax_sections": [
-    { "key": "income_check", "title": "Income: check this matches" },
+    { "key": "contact_bank", "title": "Contact and bank details" },
+    { "key": "personalise", "title": "Personalise return: what to tick" },
+    { "key": "income_check", "title": "Income: check what myTax prefilled" },
     { "key": "income_type_in", "title": "Income: type these in" },
-    { "key": "rental", "title": "Rental properties (item 21)" },
+    { "key": "rental", "title": "Income: rent, per property" },
+    { "key": "business", "title": "Income: sole trader and business items" },
     { "key": "deductions", "title": "Deductions" },
-    { "key": "business", "title": "Business and professional items" },
-    { "key": "medicare", "title": "Medicare and private health" }
+    { "key": "adjustments", "title": "Losses, offsets and adjustments" },
+    { "key": "medicare", "title": "Medicare and private health insurance" },
+    { "key": "spouse_income_tests", "title": "Spouse details and income tests" }
   ],
+  "_mytax_items_note": "#590: keys are in myTax's Income banner order (income statements → investments and property incl. rent → managed funds → sole trader and business → foreign → other); type-in lines sort by it. 'name' is the myTax banner name, shown first; 'item' is the paper-return number, shown second. Managed fund distributions are prefilled by the ATO (ato-lodgement-process.md §a.20).",
   "mytax_income_items": {
-    "salary_payg": { "item": "1", "name": "Salary or wages", "prefilled": true },
+    "salary_payg": { "item": "1", "name": "Salary, wages, allowances, tips, bonuses etc.", "prefilled": true },
     "government_payment": { "item": "5/6", "name": "Australian Government allowances and payments", "prefilled": true },
-    "interest": { "item": "10", "name": "Gross interest", "prefilled": true },
+    "interest": { "item": "10", "name": "Interest", "prefilled": true },
     "dividend": { "item": "11", "name": "Dividends", "prefilled": true },
-    "managed_fund_distribution": { "item": "13", "name": "Partnerships and trusts (managed fund distributions)", "prefilled": false },
+    "rent": { "item": "21", "name": "Rent", "prefilled": false },
+    "managed_fund_distribution": { "item": "13", "name": "Managed fund distributions", "prefilled": true },
     "business": { "item": "P8", "name": "Business income (sole trader)", "prefilled": false },
     "non_cash_business": { "item": "P8", "name": "Business income — non-cash (sole trader)", "prefilled": false },
     "foreign_business": { "item": "P8", "name": "Business income — foreign sources", "prefilled": false },
-    "foreign_employment": { "item": "20", "name": "Foreign source income — employment", "prefilled": false },
-    "foreign_pension": { "item": "20", "name": "Foreign source income — pensions", "prefilled": false },
-    "foreign_rent": { "item": "20", "name": "Foreign source income — rent", "prefilled": false },
-    "rent": { "item": "21", "name": "Rent", "prefilled": false },
+    "foreign_employment": { "item": "20", "name": "Foreign income — employment", "prefilled": false },
+    "foreign_pension": { "item": "20", "name": "Foreign income — pensions", "prefilled": false },
+    "foreign_rent": { "item": "20", "name": "Foreign income — rent", "prefilled": false },
     "other": { "item": "24", "name": "Other income", "prefilled": false }
   },
+  "_mytax_personalise_note": "#590 (ato-lodgement-process.md §b row 13): the Personalise return ticks, in myTax's order. A tick line shows when the user has income of one of 'income_types', or the situation profile says so ('profile': abn | foreign_income | whm), or ('deductions': true) the worksheet has a deduction line. myTax ticks some items itself and those can't be removed.",
+  "mytax_personalise_items": [
+    { "key": "salary", "name": "Salary, wages, government payments or FHSS", "income_types": ["salary_payg", "government_payment"], "employers": true },
+    { "key": "investments", "name": "Interest, dividends or other investment or property income (including rent)", "income_types": ["interest", "dividend", "rent"] },
+    { "key": "managed_funds", "name": "Managed fund or trust distributions", "income_types": ["managed_fund_distribution"] },
+    { "key": "business", "name": "Sole trader, business or partnership income (including personal services income)", "income_types": ["business", "non_cash_business", "foreign_business"], "profile": "abn" },
+    { "key": "foreign", "name": "Foreign income", "income_types": ["foreign_employment", "foreign_pension", "foreign_rent", "foreign_business"], "profile": "foreign_income" },
+    { "key": "other", "name": "Other income", "income_types": ["other"] },
+    { "key": "deductions", "name": "Deductions", "income_types": [], "deductions": true },
+    { "key": "whm_adjustment", "name": "Offsets or adjustments › Working holiday maker net income", "income_types": [], "profile": "whm" }
+  ],
+  "mytax_contact_lines": [
+    { "key": "contact_details", "label": "", "name": "Contact details", "note": "myTax shows the contact details the ATO holds. Check your address, phone and email are current." },
+    { "key": "bank_details", "label": "", "name": "Financial institution details", "note": "Check the bank account myTax shows is yours and still open: the ATO pays any money owed to you into it." }
+  ],
   "mytax_deduction_labels": {
     "D1": "Work-related car expenses",
     "D2": "Work-related travel expenses",
@@ -653,10 +681,39 @@
   "mytax_decline_in_value_label": "D5",
   "mytax_medicare_lines": [
     {
+      "key": "dependants",
+      "label": "",
+      "name": "Number of dependent children — myTax always asks this",
+      "note": "Count any dependent children you had during the year (enter 0 if none). If you're unsure who counts as a dependant, confirm with a registered tax agent. Quillo doesn't work out any levy."
+    },
+    {
       "key": "private_hospital_cover",
       "label": "M2",
       "name": "Private hospital cover — myTax asks whether you held an appropriate level all year",
       "note": "Have your private health insurance statement handy (myTax usually prefills it). Quillo doesn't work out any levy."
+    },
+    {
+      "key": "medicare_entitlement",
+      "label": "",
+      "name": "Medicare levy exemption — exemption days and a Medicare entitlement statement",
+      "note": "Your situation includes time as a temporary resident, working holiday maker or foreign resident. myTax asks about exemption days and whether you have a Medicare entitlement statement from Services Australia. If you're unsure, confirm with a registered tax agent.",
+      "when": "non_resident_period"
+    }
+  ],
+  "mytax_spouse_lines": [
+    {
+      "key": "spouse_details",
+      "label": "",
+      "name": "Spouse details — myTax asks for your spouse's details and income",
+      "note": "Have an estimate of your spouse's income for the year ready.",
+      "when": "spouse"
+    },
+    {
+      "key": "income_tests",
+      "label": "",
+      "name": "Income tests",
+      "note": "myTax always shows a few income-test questions. Some are prefilled from your income statement; answer the rest from your own records.",
+      "kind": "note"
     }
   ],
   "situation_facts": {

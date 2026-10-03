@@ -231,6 +231,7 @@ export async function handleApi(
       countable: url.searchParams.get("countable") === "1" || undefined,
       limit: Number(url.searchParams.get("limit")) || undefined,
       offset: Number(url.searchParams.get("offset")) || undefined,
+      activity: url.searchParams.get("activity") ?? undefined,
     });
     // grouped_review_v2: attach the normalised group_key so the SPA can cluster near-identical merchants
     // (strips dates/refs) instead of the exact string. Additive + flag-gated ⇒ OFF omits the field ⇒

@@ -4,11 +4,15 @@
 // types into myTax line by line. This module builds that worksheet's DATA; the Ship it page renders it
 // (ticket b).
 //
-// Layout follows myTax's Prepare sections (rule pack `mytax_sections`), and leads with what myTax will NOT
-// know: prefilled income becomes a short "check this matches" list, everything else is "type these in".
+// Layout follows myTax's own order (rule pack `mytax_sections`; #590 re-ordered it to the ATO research in
+// docs/first-timer/ato-lodgement-process.md §b): Contact and bank details → Personalise return (what to tick,
+// built from the situation profile + the income on file) → Income (prefilled "check this matches", typed-in,
+// rent, sole trader/business) → Deductions → Losses/offsets/adjustments → Medicare and private health →
+// Spouse and income tests. Prefilled income becomes a short "check this matches" list; everything else is
+// "type these in"; questions myTax asks are `answer` lines with no figure.
 //
 // PRESENTATION ONLY. Every figure is a re-grouping of rows buildReport and buildAccountantSchedule already
-// produced (buildAccountantScheduleDetailed exposes the schedule's own rows), so nothing here can disagree
+// produced (buildScheduleDetail exposes the schedule's own rows without building its sections), so nothing here can disagree
 // with the report — and `tie_back` proves it per tenant. Work-related rows with no D-label are deliberately
 // NOT given a line (guessing a label would be a customised judgement); they surface as the
 // `worksheet_unlabelled` readiness finding until the user confirms a label.
@@ -20,9 +24,12 @@ import type { Env } from "../env";
 import auV1RulePack from "../rulepacks/au-v1.json";
 import { featureOn } from "./features";
 import { buildReport, resolveRulePack, refundNetting, type Report } from "./report";
-import { buildAccountantScheduleDetailed, atoReturnLabel, type ScheduleDetail } from "./accountant-schedule";
+import { buildScheduleDetail, atoReturnLabel, type ScheduleDetail } from "./accountant-schedule";
 import { classifyAttribution, attributionCountsInPosition, isSoleTraderBusinessAttribution } from "./attribution";
-import { resolveJurisdictionForUser } from "./jurisdiction";
+import { resolveJurisdictionForUser, type JurisdictionDescriptor } from "./jurisdiction";
+import { lodgementTiming, selfLodgeDueDate } from "./lodging-year";
+import { profileForFy, type SituationProfile } from "./situation-profile";
+import { occupationGuide } from "./occupations";
 import { payerKey } from "./first-timer-signals";
 import { confirmedPrefillSignals } from "./noticed-signals";
 import { READINESS_DISCLAIMER } from "./readiness";
@@ -73,9 +80,27 @@ export interface WorksheetTieBack {
   ok: boolean;
 }
 
+export interface WorksheetHeader {
+  prefill_ready_hint: string;
+  self_lodge_due: string;
+  intro: string;
+  /** #590: the self-lodger due date for this FY (ISO), so the page can switch to after_due_note on the user's LOCAL day. */
+  self_lodge_due_on: string;
+  /** #590: quoted ATO information once the due date has passed — never a promise. */
+  after_due_note: string;
+  /** #590: "contact them before <due>" — a registered agent's lodgment program needs you on their books by then. */
+  agent_note: string;
+  /** #590 (ato §b row 10): a residency period that ends before the FY does (leaving Australia) ⇒ early-lodgment note; else null. */
+  early_lodge_note: string | null;
+  /** #590 (ato §b rows 25, 27, 28): after-lodging timing, quoted from the pack. */
+  processing_hint: string;
+  amend_window: string;
+  records_keep: string;
+}
+
 export interface MytaxWorksheet {
   fy: string;
-  header: { prefill_ready_hint: string; self_lodge_due: string; intro: string };
+  header: WorksheetHeader;
   sections: WorksheetSection[];
   unlabelled: { n: number; cents: number }; // counted work-related rows with no D-label (⇒ worksheet_unlabelled)
   tie_back: WorksheetTieBack;
@@ -89,14 +114,53 @@ interface IncomeItem {
   name: string;
   prefilled: boolean;
 }
+interface PackLine {
+  key: string;
+  label: string;
+  name: string;
+  note: string;
+  when?: string; // medicare/spouse: "non_resident_period" | "spouse" — absent ⇒ always
+  kind?: "answer" | "note";
+}
+interface PersonaliseItem {
+  key: string;
+  name: string;
+  income_types: string[];
+  employers?: boolean; // an employer on file (no statement yet) also means this tick
+  profile?: "abn" | "foreign_income" | "whm";
+  deductions?: boolean;
+}
 interface MytaxPack {
-  lodgement: { prefill_ready_hint: string; self_lodge_due: string };
+  lodgement: {
+    prefill_ready_hint: string;
+    self_lodge_due: string;
+    employer_finalise_by: string;
+    tax_ready_chase_after: string;
+    after_due_note: string;
+    processing_hint: string;
+    amend_window: string;
+    records_keep: string;
+    phi_report_by: string;
+  };
   mytax_sections: { key: string; title: string }[];
-  mytax_income_items: Record<string, IncomeItem>;
+  mytax_income_items: Record<string, IncomeItem>; // key order = myTax's Income banner order
   mytax_deduction_labels: Record<string, string>; // key order = the order myTax lists them
   mytax_work_method_labels: { wfh: string; car: string };
   mytax_decline_in_value_label: string;
-  mytax_medicare_lines: { key: string; label: string; name: string; note: string }[];
+  mytax_medicare_lines: PackLine[];
+  mytax_contact_lines: PackLine[];
+  mytax_spouse_lines: PackLine[];
+  mytax_personalise_items: PersonaliseItem[];
+}
+
+/** What the worksheet knows about the person (#590) — read only for the full worksheet, never the readiness signal. */
+export interface WorksheetContext {
+  /** The occupation where they earned most (persons.occupation, else the profile's longest job), as a display label. */
+  occupation: string | null;
+  /** The self person's situation profile for the FY (situation_profile ON), else null. */
+  profile: SituationProfile | null;
+  /** The self-lodger due date for the FY (ISO). */
+  dueOn: string;
 }
 
 /**
@@ -107,14 +171,23 @@ interface MytaxPack {
 export function mytaxPackContent(pack: unknown): MytaxPack {
   const p = (pack ?? {}) as Partial<MytaxPack>;
   const b = auV1RulePack as unknown as MytaxPack;
+  const arr = <T,>(v: T[] | undefined, fb: T[]): T[] => (Array.isArray(v) ? v : fb);
+  // A KV pack pushed before #590 has the old section order (no Personalise) and managed funds as a type-in. Its
+  // sections + income items would silently drop the new sections, so until `rulepack:push` lands the bundled
+  // order and item map stand in for it. A KV pack that carries `personalise` is #590-aware and wins outright.
+  const pre590 = Array.isArray(p.mytax_sections) && p.mytax_sections.length > 0 && !p.mytax_sections.some((x) => x?.key === "personalise");
   return {
-    lodgement: p.lodgement?.prefill_ready_hint && p.lodgement?.self_lodge_due ? p.lodgement : b.lodgement,
-    mytax_sections: Array.isArray(p.mytax_sections) && p.mytax_sections.length ? p.mytax_sections : b.mytax_sections,
-    mytax_income_items: p.mytax_income_items ?? b.mytax_income_items,
+    // Key by key: a KV pack pushed before #590 carries the timing keys but not the after-lodging ones.
+    lodgement: p.lodgement?.prefill_ready_hint && p.lodgement?.self_lodge_due ? { ...b.lodgement, ...p.lodgement } : b.lodgement,
+    mytax_sections: Array.isArray(p.mytax_sections) && p.mytax_sections.length && !pre590 ? p.mytax_sections : b.mytax_sections,
+    mytax_income_items: p.mytax_income_items && !pre590 ? p.mytax_income_items : b.mytax_income_items,
     mytax_deduction_labels: p.mytax_deduction_labels ?? b.mytax_deduction_labels,
     mytax_work_method_labels: p.mytax_work_method_labels?.wfh && p.mytax_work_method_labels?.car ? p.mytax_work_method_labels : b.mytax_work_method_labels,
     mytax_decline_in_value_label: p.mytax_decline_in_value_label ?? b.mytax_decline_in_value_label,
-    mytax_medicare_lines: Array.isArray(p.mytax_medicare_lines) ? p.mytax_medicare_lines : b.mytax_medicare_lines,
+    mytax_medicare_lines: arr(p.mytax_medicare_lines, b.mytax_medicare_lines),
+    mytax_contact_lines: arr(p.mytax_contact_lines, b.mytax_contact_lines),
+    mytax_spouse_lines: arr(p.mytax_spouse_lines, b.mytax_spouse_lines),
+    mytax_personalise_items: arr(p.mytax_personalise_items, b.mytax_personalise_items),
   };
 }
 
@@ -145,23 +218,56 @@ function employerOf(detail_json: string | null): string | null {
 
 // ── The builder ───────────────────────────────────────────────────────────────────────────────────────
 
-export async function buildMytaxWorksheet(env: Env, userId: string, startYear: number, opts?: { report?: Report }): Promise<MytaxWorksheet> {
+export async function buildMytaxWorksheet(env: Env, userId: string, startYear: number, opts?: { report?: Report; signalOnly?: boolean }): Promise<MytaxWorksheet> {
   const report = opts?.report ?? (await buildReport(env, userId, startYear));
-  // Independent reads — resolve concurrently (the schedule build dominates).
+  // Independent reads — resolve concurrently (the schedule rows dominate). #590: the detail-only schedule build
+  // skips every read that feeds a schedule section alone (the worksheet never reads the sections).
   const excludeNonDeductible = featureOn(env, "position_excludes_nondeductible");
-  const [{ detail }, rawPack, employerEntities, refunds, noticed] = await Promise.all([
-    buildAccountantScheduleDetailed(env, userId, startYear, { report }),
-    resolveJurisdictionForUser(env, userId).then((j) => resolveRulePack(env, userId, j)),
-    employmentEntityNames(env, userId),
+  const jurisdictionP = resolveJurisdictionForUser(env, userId);
+  const [detail, [descriptor, rawPack], employerEntities, refunds, noticed, ctxPart] = await Promise.all([
+    buildScheduleDetail(env, userId, startYear, { report }),
+    jurisdictionP.then(async (j) => [j, await resolveRulePack(env, userId, j)] as const),
+    // The readiness signal reads only `unlabelled`, which employer lines never touch — skip the read there.
+    opts?.signalOnly ? Promise.resolve([] as string[]) : employmentEntityNames(env, userId),
     // The SAME per-expense netting buildReport ran (report.start/end are its bounds), so each refund can be
     // netted on the line its expense lands on.
     featureOn(env, "refund_netting") ? refundNetting(env, userId, report.start, report.end, excludeNonDeductible).then((r) => r.netted) : Promise.resolve(new Map<string, number>()),
     // #577 wages_payer: confirmed government / interest "We noticed" signals ⇒ a "check this matches" line.
     // Flag OFF ⇒ [] (no read) ⇒ worksheet byte-identical.
-    confirmedPrefillSignals(env, userId, startYear),
+    opts?.signalOnly ? Promise.resolve([] as { kind: string; label: string; income_type: string }[]) : confirmedPrefillSignals(env, userId, startYear),
+    // #590: who the person is (occupation, residency dates, spouse, WHM) — the Personalise / Medicare / spouse
+    // answer lines. The readiness signal reads only `unlabelled`, so it skips these reads.
+    opts?.signalOnly ? Promise.resolve(null) : jurisdictionP.then((j) => personContext(env, userId, startYear, j)),
   ]);
   const pack = mytaxPackContent(rawPack);
-  return assembleWorksheet(report, detail, pack, employerEntities, excludeNonDeductible, new Map(refunds), noticed);
+  const ctx: WorksheetContext = { occupation: ctxPart?.occupation ?? null, profile: ctxPart?.profile ?? null, dueOn: selfLodgeDueDate(startYear, descriptor, lodgementTiming(rawPack)) };
+  return assembleWorksheet(report, detail, pack, employerEntities, excludeNonDeductible, new Map(refunds), noticed, ctx);
+}
+
+/** The self person's occupation + situation profile for the FY. The profile is read only with situation_profile ON. */
+async function personContext(env: Env, userId: string, startYear: number, descriptor: JurisdictionDescriptor): Promise<{ occupation: string | null; profile: SituationProfile | null }> {
+  const [occ, profiles] = await Promise.all([
+    env.DB.prepare(`SELECT id, occupation FROM persons WHERE user_id = ? AND role = 'self' ORDER BY created_at LIMIT 1`).bind(userId).first<{ id: string; occupation: string | null }>()
+      .catch((e: Error) => { if (/no such table|no such column/i.test(e.message)) return null; throw e; }),
+    featureOn(env, "situation_profile") ? profileForFy(env, userId, startYear, descriptor) : Promise.resolve([] as SituationProfile[]),
+  ]);
+  // Only the SELF person's profile (profileForFy sorts self first, but an account with no self person must not
+  // answer Personalise from someone else's periods).
+  const profile = profiles.find((p) => !!occ && p.person_id === occ.id) ?? null;
+  // The FY's own job (from the profile) first: persons.occupation mirrors only the most recent year.
+  return { occupation: occupationDisplay(null, profile) ?? occupationDisplay(occ?.occupation ?? null, null), profile };
+}
+
+/** A display label for the occupation token (pack guide label, else the token in words). Exported for units. */
+export function occupationDisplay(token: string | null, profile: SituationProfile | null): string | null {
+  let t = token?.trim() || null;
+  if (!t && profile?.jobs.length) {
+    // The job held longest in the FY stands in for "where you earned most" — the user confirms it in myTax.
+    const days = (j: { starts_on: string; ends_on: string }) => Date.parse(j.ends_on) - Date.parse(j.starts_on);
+    t = [...profile.jobs].sort((a, b) => days(b) - days(a))[0]?.occupation_token ?? null;
+  }
+  if (!t) return null;
+  return occupationGuide(t)?.label ?? t.replace(/_/g, " ");
 }
 
 /** Employer entities from About you / situation (kind 'employment'), so an employer with no income row yet still gets a line. */
@@ -177,7 +283,23 @@ async function employmentEntityNames(env: Env, userId: string): Promise<string[]
   }
 }
 
-function assembleWorksheet(report: Report, detail: ScheduleDetail, pack: MytaxPack, employerEntities: string[], excludeNonDeductible: boolean, netted: Map<string, number>, noticed: { kind: string; label: string; income_type: string }[] = []): MytaxWorksheet {
+const NO_CONTEXT: WorksheetContext = { occupation: null, profile: null, dueOn: "" };
+
+const PAYER_STILL_WRONG = "If it still doesn't match, contact the employer or payer so they correct it with the ATO (changing a prefilled figure in myTax can lead to an ATO query).";
+const EMPLOYER_ABN = "myTax will ask for the employer's ABN (it's on your payslip or income statement).";
+
+/** Residency types that are not an ordinary resident period — the Medicare exemption / entitlement questions. */
+const NON_ORDINARY_RESIDENCY = new Set(["temporary", "foreign", "whm"]);
+const RESIDENCY_WORDS: Record<string, string> = { resident: "Australian resident", temporary: "temporary resident", foreign: "foreign resident", whm: "working holiday maker", unsure: "not sure" };
+
+// Fixed formatting (not toLocaleDateString: ICU builds differ, and the worksheet must be byte-stable).
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const dayLabel = (iso: string) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  return m ? `${Number(m[3])} ${MONTHS[Number(m[2]) - 1] ?? m[2]} ${m[1]}` : iso;
+};
+
+function assembleWorksheet(report: Report, detail: ScheduleDetail, pack: MytaxPack, employerEntities: string[], excludeNonDeductible: boolean, netted: Map<string, number>, noticed: { kind: string; label: string; income_type: string }[] = [], ctx: WorksheetContext = NO_CONTEXT): MytaxWorksheet {
   const items = pack.mytax_income_items;
   const itemFor = (t: string): IncomeItem => items[t] ?? { item: items.other?.item ?? "24", name: t.replace(/_/g, " "), prefilled: false };
   const byType = new Map(report.income.by_type.map((r) => [r.income_type, r]));
@@ -212,11 +334,11 @@ function assembleWorksheet(report: Report, detail: ScheduleDetail, pack: MytaxPa
       for (const [key, g] of groups) {
         check.push({ key: `salary:${key}`, label: itemFor("salary_payg").item, name: `${itemFor("salary_payg").name} — ${g.name}`, amount_cents: g.cents, kind: "check",
           record_href: "/income?type=salary_payg",
-          note: `myTax prefills this from your employer's income statement. Tick it when myTax shows the same gross amount; if it doesn't, check whether the income statement is marked "tax ready".${i++ === 0 ? withheld : ""}` });
+          note: `myTax prefills this from your employer's income statement. Tick it when myTax shows the same gross amount; if it doesn't, check the income statement says "Tax ready" in myGov. ${PAYER_STILL_WRONG}${i++ === 0 ? withheld : ""}` });
       }
     } else {
       check.push({ key: "salary", label: itemFor("salary_payg").item, name: itemFor("salary_payg").name, amount_cents: salary.gross_cents, kind: "check", record_href: "/income?type=salary_payg",
-        note: `myTax prefills this from your employers' income statements. Tick it when myTax shows the same total.${withheld}` });
+        note: `myTax prefills this from your employers' income statements. Tick it when myTax shows the same total; if it doesn't, check each income statement says "Tax ready" in myGov. ${PAYER_STILL_WRONG}${withheld}` });
     }
     // An employer you told us about with no income recorded: the commonest first-timer miss.
     for (const name of employerEntities) {
@@ -224,14 +346,14 @@ function assembleWorksheet(report: Report, detail: ScheduleDetail, pack: MytaxPa
       if (!key || groups.has(key)) continue;
       groups.set(key, { name, cents: 0 });
       check.push({ key: `salary:${key}`, label: itemFor("salary_payg").item, name: `${itemFor("salary_payg").name} — ${name}`, amount_cents: null, kind: "check", record_href: "/income?type=salary_payg",
-        note: "Not entered — add your income statement from this employer. myTax should show it once the employer finalises it." });
+        note: `Not entered — add your income statement from this employer. myTax should show it once the employer marks it "Tax ready". If it hasn't prefilled, ${EMPLOYER_ABN}` });
     }
   } else {
     for (const name of employerEntities) {
       const key = payerKey(name);
       if (!key || check.some((l) => l.key === `salary:${key}`)) continue;
       check.push({ key: `salary:${key}`, label: itemFor("salary_payg").item, name: `${itemFor("salary_payg").name} — ${name}`, amount_cents: null, kind: "check", record_href: "/income?type=salary_payg",
-        note: "Not entered — add your income statement from this employer. myTax should show it once the employer finalises it." });
+        note: `Not entered — add your income statement from this employer. myTax should show it once the employer marks it "Tax ready". If it hasn't prefilled, ${EMPLOYER_ABN}` });
     }
   }
   for (const [t, it] of Object.entries(items)) {
@@ -241,7 +363,7 @@ function assembleWorksheet(report: Report, detail: ScheduleDetail, pack: MytaxPa
     const credit = t === "dividend" && r.franking_credit_cents > 0 ? ` Franking credits you recorded: ${money(r.franking_credit_cents)}.`
       : r.withholding_cents > 0 ? ` Tax withheld you recorded: ${money(r.withholding_cents)}.` : "";
     check.push({ key: t, label: it.item, name: it.name, amount_cents: r.gross_cents, kind: "check", record_href: `/income?type=${t}`,
-      note: `myTax usually prefills this. Tick it when myTax shows the same amount; if it doesn't, check which statement is missing.${credit}` });
+      note: `myTax usually prefills this. Tick it when myTax shows the same amount; if it doesn't, check which statement is missing. ${PAYER_STILL_WRONG}${credit}` });
   }
   // #577: a payer the user confirmed from bank credits ("Payments from Services Australia", "Interest from ING")
   // with no income of that type recorded: a "not entered" check line, never a figure from the bank credits.
@@ -253,6 +375,13 @@ function assembleWorksheet(report: Report, detail: ScheduleDetail, pack: MytaxPa
     if (check.some((l) => l.key === key)) continue;
     check.push({ key, label: it.item, name: `${it.name} — ${n.label}`, amount_cents: null, kind: "check", record_href: `/income?type=${n.income_type}`,
       note: `Your bank shows payments from ${n.label}. myTax usually prefills these: check this matches what myTax shows, or add it on the Income page. Quillo doesn't count the bank deposits themselves.` });
+  }
+
+  // #590 (ato §b row 17): the salary banner asks the occupation where you earned most. An answer line, never a figure.
+  if (check.some((l) => l.key === "salary" || l.key.startsWith("salary:"))) {
+    const idx = check.findIndex((l) => l.key === "salary" || l.key.startsWith("salary:"));
+    check.splice(idx, 0, { key: "occupation", label: itemFor("salary_payg").item, name: "Occupation where you earned most of your income", amount_cents: null, kind: "answer", record_href: "/about",
+      note: ctx.occupation ? `You told Quillo: ${ctx.occupation}. myTax asks this on the salary and wages banner.` : "myTax asks this on the salary and wages banner. Tell Quillo your job in About you so it's here for you." });
   }
 
   // ── 2. Income: type these in (not prefilled) ──────────────────────────────────────────────────────
@@ -288,6 +417,13 @@ function assembleWorksheet(report: Report, detail: ScheduleDetail, pack: MytaxPa
     typeIn.push({ key: "rent_unlinked", label: itemFor("rent").item, name: "Rent not linked to a property", amount_cents: rentUnlinked, kind: "type_in", record_href: "/income?type=rent",
       note: "Link this rent to its property so it lands in that property's rental schedule." });
   }
+  // myTax's Income banner order (the pack's mytax_income_items key order): rent before business, foreign after.
+  const itemOrder = Object.keys(items);
+  const typeRank = (k: string) => {
+    const i = itemOrder.indexOf(k === "rent_unlinked" ? "rent" : k);
+    return i < 0 ? itemOrder.length : i;
+  };
+  typeIn.sort((a, b) => typeRank(a.key) - typeRank(b.key));
   // A13 (#580, residency_assessability): foreign income left out for a non-resident period is NOT a type-in line —
   // one information note says how much and why. amount_cents stays null so the income tie-back is untouched.
   // One note per myTax item the left-out types belong to (pack labels: item 20 vs P8 for foreign business).
@@ -454,17 +590,73 @@ function assembleWorksheet(report: Report, detail: ScheduleDetail, pack: MytaxPa
     }
     for (const [key, a] of acts) {
       bizExpenses += a.cents;
-      business.push({ key: `expenses:${key}`, label: bizItem, name: `Business expenses — ${a.label}`, amount_cents: a.cents, kind: "type_in", record_href: `/transactions?activity=${encodeURIComponent(key)}`,
+      business.push({ key: `expenses:${key}`, label: bizItem, name: `Business expenses — ${a.label}`, amount_cents: a.cents, kind: "type_in", record_href: key === "unlinked" ? null : `/transactions?activity=${encodeURIComponent(key)}`,
         note: a.soleTrader ? "myTax asks for these by expense type in the business schedule — the full breakdown lists each one."
           : "This activity is held through a trust, partnership or other entity, so these costs may belong on that entity's return rather than yours. Confirm with a registered tax agent." });
     }
   }
 
+  // ── #590 Who the person is: the situation profile's residency / spouse answers ─────────────────────
+  const prof = ctx.profile;
+  const residency = prof?.residency ?? [];
+  const hasResidency = (t: string) => residency.some((r) => r.type === t);
+  const nonOrdinary = residency.some((r) => NON_ORDINARY_RESIDENCY.has(r.type));
+  const packLine = (m: PackLine, extraNote = ""): WorksheetLine => ({ key: m.key, label: m.label, name: m.name, amount_cents: null, kind: m.kind === "note" ? "note" : "answer", record_href: null, note: `${m.note}${extraNote}` });
+  const applies = (m: PackLine) => !m.when || (m.when === "non_resident_period" && nonOrdinary) || (m.when === "spouse" && prof?.flags.spouse === true);
+
+  // ── 0a. Contact and bank details (myTax shows these before Personalise) ─────────────────────────────
+  const contact: WorksheetLine[] = pack.mytax_contact_lines.map((m) => packLine(m));
+
+  // ── 0b. Personalise return: what to tick (ato §b row 13) ─────────────────────────────────────────────
+  const personalise: WorksheetLine[] = [];
+  const residencyNote = residency.length
+    ? `You told Quillo: ${residency.map((r) => `${RESIDENCY_WORDS[r.type] ?? r.type} ${dayLabel(r.starts_on)} to ${dayLabel(r.ends_on)}`).join("; ")}. myTax asks whether you were an Australian resident for tax purposes, and the dates if it was only part of the year.`
+    : "myTax asks this first, with the dates if you were a resident for only part of the year. Add your residency in About you so it's here for you.";
+  personalise.push({ key: "residency", label: "", name: "Were you an Australian resident for tax purposes all year?", amount_cents: null, kind: "answer", record_href: "/about",
+    note: `${residencyNote}${hasResidency("unsure") ? " If you're unsure, confirm with a registered tax agent." : ""}` });
+  personalise.push({ key: "spouse", label: "", name: "Did you have a spouse at any time during the year?", amount_cents: null, kind: "answer", record_href: "/about",
+    note: prof?.flags.spouse == null ? "myTax asks this next." : `You told Quillo: ${prof.flags.spouse ? "yes" : "no"}.` });
+  const incomeTypesOnFile = new Set(report.income.by_type.filter((r) => r.gross_cents !== 0).map((r) => r.income_type));
+  const profileSays = (k: PersonaliseItem["profile"]) =>
+    k === "abn" ? (prof?.abn_activities.length ?? 0) > 0 : k === "foreign_income" ? prof?.flags.foreign_income === true : k === "whm" ? hasResidency("whm") : false;
+  // Rental deductions and business expenses go in the rent item / business schedule, not under the Deductions tick.
+  const hasDeductionLines = deductions.length > 0;
+  for (const it of pack.mytax_personalise_items) {
+    const on = it.income_types.some((t) => incomeTypesOnFile.has(t)) || (it.employers && employerEntities.length > 0) || profileSays(it.profile) || (it.deductions && hasDeductionLines);
+    if (!on) continue;
+    personalise.push({ key: `tick:${it.key}`, label: "", name: `Tick: ${it.name}`, amount_cents: null, kind: "answer", record_href: null,
+      ...(it.key === "business" ? { note: "myTax then asks whether you received personal services income. The ATO has a PSI tool; if you're unsure, confirm with a registered tax agent." } : {}) });
+  }
+  personalise.push({ key: "pre_ticked", label: "", name: "Already ticked by myTax", amount_cents: null, kind: "note", record_href: null,
+    note: "myTax may tick some items itself from prefilled information, and you can't untick those. That's normal. Gifts, interest and tax-affairs deductions, Medicare and income tests always show without a tick." });
+  if (prof?.flags.study_loan) {
+    personalise.push({ key: "study_loan", label: "", name: "Study and training loans (HELP and others)", amount_cents: null, kind: "note", record_href: null,
+      note: "myTax works out any study loan repayment from your income. There's nothing to enter or tick." });
+  }
+
+  // ── 5b. Losses, offsets and adjustments (ato §b rows 16, 32) ─────────────────────────────────────────
+  const adjustments: WorksheetLine[] = [];
+  if (hasResidency("whm")) {
+    adjustments.push({ key: "whm_net_income", label: "", name: "Working holiday maker net income", amount_cents: null, kind: "answer", record_href: "/about",
+      note: "myTax asks your home country and whether all your income was earned while on your working holiday visa. myTax works out the tax on it. If you're unsure, confirm with a registered tax agent." });
+  }
+  // Temporary residents are residents for tax purposes, so only a resident/temporary gap makes it part-year.
+  const residentLike = (t: string) => t === "resident" || t === "temporary";
+  const residentDays = residency.filter((r) => residentLike(r.type));
+  if (residentDays.length && prof && (residency.some((r) => !residentLike(r.type)) || residentDays[0]!.starts_on > prof.fy_start || residentDays[residentDays.length - 1]!.ends_on < prof.fy_end)) {
+    adjustments.push({ key: "part_year_threshold", label: "", name: "Part-year tax-free threshold", amount_cents: null, kind: "note", record_href: null,
+      note: "myTax works this out from the residency dates you give on Personalise return. There's nothing to enter." });
+  }
+
   // ── 6. Medicare and private health (questions myTax asks — never a figure) ─────────────────────────
-  const medicare: WorksheetLine[] = pack.mytax_medicare_lines.map((m) => ({ key: m.key, label: m.label, name: m.name, amount_cents: null, kind: "answer" as const, record_href: null, note: m.note }));
+  const medicare: WorksheetLine[] = pack.mytax_medicare_lines.filter(applies).map((m) =>
+    packLine(m, m.key === "private_hospital_cover" && prof?.flags.private_hospital_cover === true ? ` You told Quillo you held hospital cover: check the policy lines myTax prefilled (insurers aim to report by ${pack.lodgement.phi_report_by}).` : ""));
+
+  // ── 7. Spouse details and income tests ───────────────────────────────────────────────────────────────
+  const spouseTests: WorksheetLine[] = pack.mytax_spouse_lines.filter(applies).map((m) => packLine(m));
 
   // ── Assemble in pack order; empty sections drop out ───────────────────────────────────────────────
-  const byKey: Record<string, WorksheetLine[]> = { income_check: check, income_type_in: typeIn, rental, deductions, business, medicare };
+  const byKey: Record<string, WorksheetLine[]> = { contact_bank: contact, personalise, income_check: check, income_type_in: typeIn, rental, deductions, business, adjustments, medicare, spouse_income_tests: spouseTests };
   const sections: WorksheetSection[] = pack.mytax_sections
     .flatMap((s) => {
       const lines = byKey[s.key] ?? [];
@@ -484,11 +676,7 @@ function assembleWorksheet(report: Report, detail: ScheduleDetail, pack: MytaxPa
 
   return {
     fy: report.fy,
-    header: {
-      prefill_ready_hint: pack.lodgement.prefill_ready_hint,
-      self_lodge_due: pack.lodgement.self_lodge_due,
-      intro: `Lodge in myTax after your prefill is ready (${pack.lodgement.prefill_ready_hint}). Self-lodgers are due by ${pack.lodgement.self_lodge_due}. Quillo doesn't lodge for you, and this isn't tax advice.`,
-    },
+    header: worksheetHeader(pack, ctx),
     sections,
     unlabelled: { n: unl.n, cents: unl.cents },
     tie_back: {
@@ -515,6 +703,33 @@ function assembleWorksheet(report: Report, detail: ScheduleDetail, pack: MytaxPa
   };
 }
 
+/**
+ * The page header (#590, ato §b rows 7–10): the ATO's "wait for Tax ready" rule leads, late July is only the
+ * usual timing. Dates from the pack, never copy (§c rule 8). Exported for units.
+ */
+export function worksheetHeader(pack: MytaxPack, ctx: WorksheetContext): WorksheetHeader {
+  const l = pack.lodgement;
+  const prof = ctx.profile;
+  // Leaving Australia: a resident period that ends before the FY does (and nothing resident after it).
+  const res = prof?.residency ?? [];
+  const lastResident = [...res].reverse().find((r) => r.type === "resident");
+  const leaving = !!prof && !!lastResident && lastResident.ends_on < prof.fy_end && !res.some((r) => r.starts_on > lastResident.ends_on && r.type === "resident");
+  return {
+    prefill_ready_hint: l.prefill_ready_hint,
+    self_lodge_due: l.self_lodge_due,
+    intro: `Wait until your income statement says "Tax ready" in myGov before you lodge. Employers have until ${l.employer_finalise_by} to finalise them, and the ATO sends a message to your myGov Inbox when all of them are ready. That's ${l.prefill_ready_hint}. If one still isn't ready after ${l.tax_ready_chase_after}, ask your employer. Self-lodgers are due by ${l.self_lodge_due}. You lodge in myTax; Quillo helps you get ready, and this isn't tax advice.`,
+    self_lodge_due_on: ctx.dueOn,
+    after_due_note: l.after_due_note,
+    agent_note: `Prefer a registered tax agent? Take this pack to any registered agent, and contact them before ${l.self_lodge_due} to be part of their lodgment program. The ATO's free Tax Help program is another option for simple returns.`,
+    early_lodge_note: leaving
+      ? "Leaving Australia? The ATO lets you lodge early. Prefilled information may not be complete yet, so check every line and type in anything myTax doesn't show."
+      : null,
+    processing_hint: l.processing_hint,
+    amend_window: l.amend_window,
+    records_keep: l.records_keep,
+  };
+}
+
 // ── Readiness signal + endpoint ─────────────────────────────────────────────────────────────────────
 
 /**
@@ -523,7 +738,7 @@ function assembleWorksheet(report: Report, detail: ScheduleDetail, pack: MytaxPa
  */
 export async function mytaxWorksheetSignals(env: Env, userId: string, startYear: number, report?: Report): Promise<{ worksheetUnlabelled?: { n: number; cents: number } }> {
   if (!featureOn(env, "mytax_worksheet")) return {};
-  const ws = await buildMytaxWorksheet(env, userId, startYear, { report });
+  const ws = await buildMytaxWorksheet(env, userId, startYear, { report, signalOnly: true });
   return { worksheetUnlabelled: ws.unlabelled };
 }
 

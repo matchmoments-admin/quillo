@@ -1,5 +1,5 @@
 import type { CapitalImportParse, Txn, TxnDetail, Situation, SituationDraft, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse, UsageData, StatementInfo, IncomeRow, DocRow, AssetRow, ScheduleRow, ChecklistItem, ClaimSuggestion, FilingReadiness, ReviewSummary, Progress, AdminTenant, AdminOverview, AdminSpend, AiEdit, ClaimReview, OccupationRulesDraft, OccupationRuleCandidate, NoaCarryover, MovementSweep, BatchResult, ClarifyQuestion, ClarifyAnswer, ClaimMatch, AccountantSummary, SuggestedDeduction, WorkUse, CarUse, CarUseRates, ScanResult, CapitalLoss, OpeningDepreciation, AttributionState, AttributionInput, AttributionRow, IncomeActivity, PropertyOwner, EntityRole, CgtAssetRow, CgtEventRow, EssGrantRow, VehicleLogbookRow, TrustDistributionRow, SmsfMemberRow, SuperContributionRow, BasPeriodRow, PaygInstalmentRow, AskAnswer, SavingsData, PhiOverview, PhiInsurerOption, PhiProvidersResult, PhiScanResult, BillingOverview, PartnerPortal, AmmaComponents, PartnershipDistributionRow, CostBaseElements, BankConnection, SituationPeriod, SituationPeriodWrite, BankHistoryEvent, BankDisconnectResult, FyLodged, NoticedSignal, NoticedConfirmResult } from "./types";
-import type { Journey } from "./types";
+import type { Journey, MytaxWorksheet } from "./types";
 import type { AskContext, EducationData } from "./types";
 
 // Clerk session token getter, wired from <TokenBridge> inside ClerkProvider (main.tsx).
@@ -90,8 +90,9 @@ async function send<T>(method: string, path: string, body?: unknown): Promise<T>
 const post = <T>(path: string, body?: unknown) => send<T>("POST", path, body);
 
 export const api = {
-  transactions: (opts: { status?: string; bucket?: string; property_id?: string; kind?: string; review?: boolean; fy?: number; countable?: boolean; offset?: number; limit?: number } = {}) => {
+  transactions: (opts: { status?: string; bucket?: string; property_id?: string; kind?: string; review?: boolean; fy?: number; countable?: boolean; offset?: number; limit?: number; activity?: string } = {}) => {
     const q = new URLSearchParams();
+    if (opts.activity) q.set("activity", opts.activity); // #590: lines attributed to one income activity
     if (opts.status) q.set("status", opts.status);
     if (opts.bucket) q.set("bucket", opts.bucket);
     if (opts.property_id) q.set("property_id", opts.property_id);
@@ -313,6 +314,8 @@ export const api = {
   filingReadiness: (fy?: number) => get<FilingReadiness>(`/api/filing-readiness${fy ? `?fy=${fy}` : ""}`),
   // #582 (ft_journey): one composite read for the new shell + Home. 404 when the flag is OFF.
   journey: (fy: number) => get<Journey>(`/api/journey?fy=${fy}`),
+  // #575/#590 (mytax_worksheet): the myTax self-lodge worksheet the Ship it step renders. 404 when the flag is OFF.
+  mytaxWorksheet: (fy: number) => get<MytaxWorksheet>(`/api/mytax-worksheet?fy=${fy}`),
   // Soft per-FY sign-off (attestation only — Quillo never lodges)
   fySignoff: (fy?: number) => get<{ signoff: { signed_off_at: string } | null }>(`/api/signoff${fy ? `?fy=${fy}` : ""}`).then((r) => r.signoff),
   signOff: (fy?: number) => post<{ signoff: { signed_off_at: string } | null }>(`/api/signoff${fy ? `?fy=${fy}` : ""}`).then((r) => r.signoff),

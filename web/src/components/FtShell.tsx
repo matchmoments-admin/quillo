@@ -156,12 +156,12 @@ export function FtShell({ gate }: { gate?: ReactNode }) {
           />
 
           {/* Phone top bar: brand only — navigation lives in the bottom bar. */}
-          <div className="sticky top-0 z-30 flex items-center gap-3 border-b border-line bg-paper/90 px-4 py-2 backdrop-blur md:hidden">
+          <div className="sticky top-0 z-30 flex items-center gap-3 border-b border-line bg-paper/90 px-4 py-2 backdrop-blur print:hidden md:hidden">
             <Brand />
           </div>
 
-          <div className="md:grid md:grid-cols-[240px_1fr]">
-            <aside className="sticky top-0 hidden h-screen flex-col border-r border-line bg-card px-3 py-5 md:flex" aria-label="Journey">
+          <div className="md:grid md:grid-cols-[240px_1fr] print:block">
+            <aside className="sticky top-0 hidden h-screen flex-col border-r border-line bg-card px-3 py-5 md:flex print:hidden" aria-label="Journey">
               <div className="px-2 pb-5">
                 <Brand />
               </div>
@@ -193,7 +193,7 @@ export function FtShell({ gate }: { gate?: ReactNode }) {
 
           {/* Phone bottom bar of four (spec A11). */}
           <nav
-            className="fixed inset-x-0 bottom-0 z-30 flex border-t border-line bg-paper/95 pb-[var(--safe-b)] backdrop-blur md:hidden"
+            className="fixed inset-x-0 bottom-0 z-30 flex border-t border-line bg-paper/95 pb-[var(--safe-b)] backdrop-blur print:hidden md:hidden"
             aria-label="Primary"
           >
             <NavLink

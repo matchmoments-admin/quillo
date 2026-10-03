@@ -204,7 +204,13 @@ D3 uniform, D5 phone at 40%, WFH hours, one unlabelled work row) asserts the wor
 the pack's myTax order, each D-line equals the accountant schedule's per-label subtotal, D-lines + the
 unlabelled amount equal the report's deductions, the unlabelled row raises `worksheet_unlabelled`, and
 flag OFF ⇒ endpoint 404 + no finding. FT3 Sam (`pft3`) gets the business-items section with per-activity
-totals, and a sweep asserts the worksheet's `tie_back` reconciles for every persona tenant.
+totals, and a sweep asserts the worksheet's `tie_back` reconciles for every persona tenant. #590 re-ordered the pack to myTax's own order (Contact and bank → Personalise → Income incl. rent and
+business → Deductions → Losses/offsets/adjustments → Medicare → Spouse and income tests): `pft12` now also asserts
+that order, that the answer sections carry no figure, the occupation answer line, the ABN / contact-the-payer
+notes, and that a managed fund distribution is a prefilled CHECK line that still ties back; `pft12p` (a WHM who
+became a resident, with a spouse, a study loan and hospital cover; `situation_profile` ON) asserts Personalise
+quotes the residency dates and spouse answer, the WHM net income adjustment, the Medicare entitlement question and
+the spouse-details question — and that with the profile OFF nothing is read and the figures are identical.
 
 **Relevance scan on bank lines (#578, flag `relevance_scan`):** golden `pft9` (FT nurse grad, bank-only:
 AHPRA renewal, HSU dues, nursing shoes, Woolworths, Netflix) runs `runRelevanceScan`

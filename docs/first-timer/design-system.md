@@ -63,7 +63,7 @@ Three layers. Components only ever touch layer 3.
 | `accent.hover` | `#17543F` | |
 | `accent.soft` | `#E2EEE8` | 'Worth a look' badges, selected chips |
 | `status.ok` | `#1E6B52` | recorded, done |
-| `status.warn` | `#9A6712` on `#FFF6EC` | needs a record / missing income statement |
+| `status.warn` | `#94630F` on `#FFF6EC` | needs a record / missing income statement. (Was `#9A6712`; nudged darker within the hue in #573 because it measured 4.37:1 on `surface.page`.) |
 | `status.danger` | `#9C3B2C` | errors, destructive confirmation |
 | `status.info` | `#2F5F9E` | neutral info |
 | `focus.ring` | `#1E6B52` at 40% | 2px outline, 2px offset, always visible on keyboard focus |

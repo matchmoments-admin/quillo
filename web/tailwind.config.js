@@ -1,9 +1,10 @@
-import { font, shadow, roleVar, themeCssVars } from "../design/tokens.mjs";
+import { shadow, roleVar, themeCssVars, themeTypeVars, themes, darkThemes } from "../design/tokens.mjs";
 
 // Colour classes resolve to CSS custom properties, never hex. The vars themselves
 // (`:root { --surface-page: 238 240 210; … }`) are emitted into Tailwind's base layer by the
-// plugin below from the single token source (../design/tokens.mjs, `themes.light`), so a
-// re-skin / new theme is a token change, not a markup change.
+// plugin below from the single token source (../design/tokens.mjs): `themes.legacy` on bare `:root`
+// (today's look), every other theme under `:root[data-theme="<name>"]` (set by web/src/lib/theme.ts
+// only when `ft_journey` is ON). A re-skin / new theme is a token change, not a markup change.
 //
 // Channel triplets keep Tailwind's alpha modifiers working: `bg-ink/5` → rgb(var(--text-primary) / 0.05).
 const role = (r) => `rgb(var(${roleVar(r)}) / <alpha-value>)`;
@@ -36,13 +37,13 @@ export default {
         surface: role("surface.sunken"), // soft panels / hover fills
         paper: role("surface.page"),
         card: role("surface.raised"),
-        yellow: role("accent.default"), // back-compat alias → sage (signature accent)
+        yellow: role("accent.highlight"), // back-compat alias → sage (signature highlight)
         "yellow-d": role("accent.strong"),
         // Named greens for the sidebar / feature surfaces.
         forest: role("brand.forest"),
         green: role("brand.green"),
         "green-d": role("brand.green-hover"),
-        sage: role("accent.default"),
+        sage: role("accent.highlight"),
         olive: role("brand.olive"),
         moss: role("accent.strong"),
         cream: role("brand.cream"),
@@ -57,12 +58,24 @@ export default {
         "caution-text-strong": role("status.caution-text-strong"),
         "danger-surface": role("status.danger-surface"),
         "danger-text": role("status.danger-text"),
+        // `white` is only ever "text/marks on a dark fill" in this app, so it follows the theme's
+        // inverse role (pure white in legacy → identical; near-black under quiet-dark).
+        white: role("text.inverse"),
+        // Direction A roles (spec A12) for the ft/ component library.
+        accent: role("accent.default"),
+        "accent-hover": role("accent.hover"),
+        "accent-soft": role("accent.soft"),
+        "line-strong": translucentRole("border.strong"),
+        ok: role("status.ok"),
+        "warn-surface": role("status.warn-surface"),
+        focus: translucentRole("focus.ring"),
       },
       fontFamily: {
-        // Strings already include the full fallback stack.
-        sans: font.sans,
-        serif: font.serif,
-        display: font.serif, // Anton — explicit alias for big display headings/numbers
+        // Per-theme CSS vars (tokens.mjs `themeType`); each value already includes its fallback stack.
+        sans: "var(--font-sans)",
+        serif: "var(--font-display)",
+        display: "var(--font-display)", // Anton (legacy) / Geist (quiet) — big display headings/numbers
+        mono: "var(--font-mono)", // Tailwind's default stack (legacy) / Geist Mono (quiet) — money figures
       },
       // NOTE: we intentionally do NOT remap Tailwind's default radius scale
       // (rounded-lg/xl/2xl) — the dashboard relies on those exact sizes for dense
@@ -74,10 +87,15 @@ export default {
     },
   },
   plugins: [
-    // Inject the light theme's role variables. Deterministic (pure function of tokens.mjs), so
-    // there is no generated file to keep in sync. A future theme adds e.g. `[data-theme="dark"]`.
+    // Inject every theme's colour-role + typography variables. Deterministic (pure function of
+    // tokens.mjs), so there is no generated file to keep in sync. `legacy` is the bare `:root`
+    // default; the attribute blocks are more specific, so they win whenever data-theme is set.
     function themeVars({ addBase }) {
-      addBase({ ":root": themeCssVars("light") });
+      const vars = (t) => ({ ...themeCssVars(t), ...themeTypeVars(t) });
+      addBase({ ":root": vars("legacy") });
+      for (const t of Object.keys(themes).filter((name) => name !== "legacy")) {
+        addBase({ [`:root[data-theme="${t}"]`]: { ...vars(t), colorScheme: darkThemes.includes(t) ? "dark" : "light" } });
+      }
     },
   ],
 };

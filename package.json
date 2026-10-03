@@ -22,7 +22,7 @@
     "test:e2e": "tsx scripts/e2e-journey.ts",
     "test:au-snapshot": "tsx scripts/check-au-snapshot.ts",
     "test:schema": "tsx scripts/check-schema-drift.ts",
-    "test": "npm run test:units && npm run test:shell && npm run test:colors && npm run test:personas && npm run test:e2e && npm run test:au-snapshot && npm run eval:statements && npm run test:schema",
+    "test": "npm run test:units && npm run test:shell && npm run test:colors && npm run test:theme && npm run test:personas && npm run test:e2e && npm run test:au-snapshot && npm run eval:statements && npm run test:schema",
     "rulepack:push": "node scripts/push-rulepack.mjs src/rulepacks/au-v1.json",
     "onboard": "node scripts/onboard.mjs",
     "preflight": "node scripts/preflight.mjs",
@@ -31,6 +31,7 @@
     "web:dev": "cd web && npm run dev",
     "test:shell": "tsx scripts/check-mobile-shell.ts",
     "test:colors": "tsx scripts/check-no-raw-colors.ts",
+    "test:theme": "tsx scripts/check-theme-contrast.ts",
     "sim:shell": "node scripts/sim-mobile-shell.mjs",
     "sim:shell:control": "node scripts/sim-mobile-shell.mjs --legacy"
   },

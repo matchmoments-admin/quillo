@@ -12,6 +12,8 @@ import { JourneySpine } from "./components/JourneySpine";
 import { Coachmarks } from "./components/Coachmarks";
 import { ChatProvider } from "./components/chat/ChatProvider";
 import { FloatingChat } from "./components/chat/FloatingChat";
+import { AppearanceSwitch } from "./components/AppearanceSwitch";
+import { useThemeSync } from "./lib/appearance";
 
 type NavItem = { to: string; label: string; icon: IconName; end?: boolean; badge?: boolean; flag?: string; admin?: boolean; partner?: boolean; expressHidden?: boolean };
 type NavGroup = { label: string; items: NavItem[] };
@@ -117,6 +119,8 @@ export function App() {
   const { fy } = useActiveFy();
   const dash = useQuery({ queryKey: ["dashboard", fy], queryFn: () => api.dashboard(fy), staleTime: 60_000 });
   const needsReview = dash.data?.needs_review ?? 0;
+  // <html data-theme>: `legacy` (today's look) unless ft_journey is ON (spec A12).
+  useThemeSync();
 
   // Close the mobile drawer on navigation.
   useEffect(() => setDrawer(false), [pathname]);
@@ -330,6 +334,7 @@ function Sidebar({ needsReview, open }: { needsReview: number; open: boolean }) 
           <UserButton afterSignOutUrl="/sign-in" />
           <span className="text-[11px] text-cream/55">Account &amp; sign out</span>
         </div>
+        <AppearanceSwitch />
       </div>
     </aside>
   );

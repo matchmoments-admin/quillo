@@ -29,6 +29,7 @@ import { cgtUnits } from "./lib/cgt";
 import { costBaseFromElements, validateCostBaseElements, withCostBaseElements, type CostBaseElements } from "./lib/capital";
 import { capitalReadinessSignals } from "./lib/capital-signals";
 import { firstTimerIncomeSignals, wantsIncomeStatementItem } from "./lib/first-timer-signals";
+import { mytaxWorksheetSignals } from "./lib/mytax-worksheet";
 import { applyCapitalColumnMap, type CapitalColumnMap, type CapitalDraftRow, type CapitalImportPreview } from "./lib/capital-import";
 import { resolveJurisdictionForUser, currentFyStartYearFor, baseCurrencyOf, AU_DESCRIPTOR, type JurisdictionDescriptor } from "./lib/jurisdiction";
 import { assessReadiness, type FilingReadiness, type FilingReadinessSignals } from "./lib/readiness";
@@ -4311,6 +4312,13 @@ export class TaxAgent extends Agent<Env> {
     // #550 first_timer_income: payer count + sole-trader expense total (src/lib/first-timer-signals.ts — the
     // same function the persona goldens call). Flag OFF ⇒ {} ⇒ findings byte-identical.
     const firstTimerSignals = await firstTimerIncomeSignals(this.env, userId, startYear, await this.jurisdictionFor(userId));
+    // #575 mytax_worksheet: unlabelled work-related rows (src/lib/mytax-worksheet.ts — the same function the
+    // persona goldens call). Reuses the report already built. Flag OFF ⇒ {} ⇒ findings byte-identical.
+    // Isolated: a presentation-only REVIEW nudge must never take down the readiness page (the endpoint itself still fails loudly).
+    const worksheetSignals = await mytaxWorksheetSignals(this.env, userId, startYear, report).catch((e) => {
+      console.error("mytax_worksheet signal failed", (e as Error).message);
+      return {};
+    });
     // GST registration status for the turnover nudge — registered if the tenant default is set OR any
     // entity is flagged (mirrors gstTotals' registration test in ledger-totals.ts).
     const entGstReg = (await this.env.DB.prepare(`SELECT COUNT(*) AS n FROM entities WHERE user_id = ? AND COALESCE(gst_registered,0) = 1`).bind(userId).first<{ n: number }>())?.n ?? 0;
@@ -4364,6 +4372,7 @@ export class TaxAgent extends Agent<Env> {
       mfCostBaseAdjustmentCents,
       ...capitalSignals,
       ...firstTimerSignals,
+      ...worksheetSignals,
       ...(featureOn(this.env, "non_cash_income") ? { nonCashIncomeEnabled: true } : {}),
       ...(integrityOn ? {
         frankingHoldingThresholdCents: integrityThresholds?.franking_holding_rule_threshold_cents ?? null,

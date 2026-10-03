@@ -101,6 +101,9 @@ export interface FilingReadinessSignals {
   entityIncomeTypes?: string[]; // income types recorded under a separate-taxpayer entity this FY (company/trust/…) → income-completeness coverage
   salaryPayerCount?: number; // distinct PAYG payers this FY → tax-free-threshold-with-two-payers info note
   individualBusinessExpenseCents?: number; // sole-trader expenses in the individual position → Div 35 defer note
+  // mytax_worksheet (#575) — populated ONLY when the flag is on (mytaxWorksheetSignals), so OFF ⇒ byte-identical.
+  // Counted work-related rows with no D-label: they can't become a myTax worksheet line until confirmed to one.
+  worksheetUnlabelled?: { n: number; cents: number };
 }
 
 export interface FilingReadiness {
@@ -905,6 +908,17 @@ export function assessReadiness(input: {
         `You've recorded ${money(foreignIncomeCents)} of foreign-sourced income, and your tax residency is set to "${selfPerson.tax_residency}". Foreign residents, and temporary residents (for example many working holiday makers and some international students), generally don't declare foreign-sourced income in Australia. It is still counted in your indicative position here, because residency depends on several tests that Quillo doesn't apply. Confirm your residency and whether this income should be declared with a registered tax agent.`, true,
         [{ kind: "income", label: "foreign income" }]));
     }
+  }
+
+  // mytax_worksheet (#575): a counted work-related expense with no D-label has no line on the myTax worksheet —
+  // picking the label for the user would be a customised judgement, so it's a Check item until they confirm one.
+  // Signal present only when the flag is on ⇒ OFF adds nothing. Never changes the position.
+  if (signals.worksheetUnlabelled && signals.worksheetUnlabelled.n > 0) {
+    const { n, cents } = signals.worksheetUnlabelled;
+    findings.push(f("worksheet_unlabelled", "classification", "review",
+      `${n} work-related expense${n === 1 ? "" : "s"} need${n === 1 ? "s" : ""} a myTax label before you lodge`,
+      `${money(cents)} of work-related expenses counted in your indicative position don't have a deduction label (D1–D10) yet, so they aren't on your myTax worksheet. Open each one and choose the label it belongs to — for example D3 for a compulsory uniform or D5 for a phone used for work. If you're not sure which label fits, confirm with a registered tax agent.`,
+      true, [{ kind: "transaction", label: "work-related, no label", count: n }]));
   }
 
   // (Super Notice-of-intent is surfaced via the year-end checklist (generateChecklist), not here, to

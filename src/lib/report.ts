@@ -392,6 +392,64 @@ export async function workUseRatesForUserFy(env: Env, userId: string, startYear:
   return hasRates ? workUseRatesForFy(thresholds) : null;
 }
 
+/**
+ * Refund netting (#258, flag `refund_netting` — the caller gates): net each refund ONLY against the specific
+ * DEDUCTIBLE expense it reverses, capped per expense. Extracted verbatim from buildReport (#575) so the myTax
+ * worksheet can net each refund on the SAME line its expense lands on — `netted` is the per-expense amount
+ * whose sum is `refunds_cents`.
+ */
+export async function refundNetting(
+  env: Env,
+  userId: string,
+  start: string,
+  end: string,
+  excludeNonDeductible: boolean,
+): Promise<{ refunds_cents: number; refunds_unmatched_cents: number; refunds_unmatched_n: number; netted: Map<string, number> }> {
+  let refunds_cents = 0;
+  let refunds_unmatched_cents = 0;
+  let refunds_unmatched_n = 0;
+  // #258: net a refund ONLY against the specific DEDUCTIBLE expense it reverses (refund_for_txn_id),
+  // capped at that expense's amount. A refund with no link, or one whose matched expense isn't a
+  // deduction (personal/non-deductible), is POSITION-NEUTRAL — a flatmate reimbursement or a personal
+  // return must not reduce unrelated work/property deductions. Reuses deductionGroupForRow (same
+  // use_status/property gates, alias 'e') so "deductible" means EXACTLY what the headline counts.
+  const refundRows = await env.DB.prepare(
+    `SELECT COALESCE(r.amount_aud_cents, r.amount_cents) AS refund_cents,
+            r.refund_for_txn_id AS matched_id,
+            e.bucket AS e_bucket, COALESCE(e.deductibility,'undetermined') AS e_deductibility,
+            COALESCE(e.reimbursed,0) AS e_reimbursed,
+            ${useStatusDeniedExpr("e.property_id")} AS e_use_status_denied,
+            ${propertyUndeterminedGatedExpr(env, "e.bucket", "e.property_id")} AS e_property_undetermined,
+            ${claimExpr("e.")} AS e_cents
+       FROM transactions r
+       LEFT JOIN transactions e ON e.id = r.refund_for_txn_id AND e.user_id = r.user_id
+      WHERE r.user_id = ? AND r.txn_date >= ? AND r.txn_date <= ? AND r.bucket = 'refund'
+        AND ${COUNTABLE_INCOME.replace(/\b(status|kind|matched_txn_id|direction|currency|amount_aud_cents)\b/g, "r.$1")}`,
+  )
+    .bind(userId, start, end)
+    .all<{ refund_cents: number; matched_id: string | null; e_bucket: string | null; e_deductibility: string; e_reimbursed: number; e_use_status_denied: number; e_property_undetermined: number; e_cents: number | null }>();
+  // Cap netting PER matched expense at the amount that expense actually contributed to deductions
+  // (e_cents is the claim-aware amount — apportioned via claimExpr — so a
+  // partly-deductible cost can't be over-netted). Track cumulative netting per expense so several
+  // refunds pointing at the SAME expense can't collectively net more than it gave (a $400 + $300
+  // refund on one $500 cost nets $500, not $700).
+  const nettedPerExpense = new Map<string, number>();
+  for (const r of refundRows.results ?? []) {
+    const matchedDeductible = !!r.matched_id && !!r.e_bucket &&
+      deductionGroupForRow(r.e_bucket, r.e_deductibility, excludeNonDeductible, r.e_reimbursed, r.e_use_status_denied, r.e_property_undetermined) === "deduction";
+    if (matchedDeductible) {
+      const already = nettedPerExpense.get(r.matched_id as string) ?? 0;
+      const toNet = Math.max(0, Math.min(r.refund_cents ?? 0, (r.e_cents ?? 0) - already));
+      refunds_cents += toNet;
+      nettedPerExpense.set(r.matched_id as string, already + toNet);
+    } else {
+      refunds_unmatched_n += 1;
+      refunds_unmatched_cents += r.refund_cents ?? 0;
+    }
+  }
+  return { refunds_cents, refunds_unmatched_cents, refunds_unmatched_n, netted: nettedPerExpense };
+}
+
 export async function buildReport(env: Env, userId: string, startYear: number): Promise<Report> {
   // Resolve the tenant's jurisdiction once and thread it into every date-range (fyBounds) path, exactly
   // like resolveRulePack below. AU (or flag OFF) ⇒ Jul–Jun ⇒ byte-identical. Label-keyed totals
@@ -718,50 +776,9 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   // refund on a $500 purchase = $300 net deductible). Netting is per matched expense (#258; the v1
   // global-netting generation was retired with refund_netting_v2). When the flag is off,
   // refunds_cents stays 0 and deductions are byte-identical to before.
-  let refunds_cents = 0;
-  let refunds_unmatched_cents = 0; // #258: refunds NOT netted (unlinked, or linked to a non-deductible/personal expense) — the nudge signal
-  let refunds_unmatched_n = 0;
-  if (featureOn(env, "refund_netting")) {
-    // #258: net a refund ONLY against the specific DEDUCTIBLE expense it reverses (refund_for_txn_id),
-    // capped at that expense's amount. A refund with no link, or one whose matched expense isn't a
-    // deduction (personal/non-deductible), is POSITION-NEUTRAL — a flatmate reimbursement or a personal
-    // return must not reduce unrelated work/property deductions. Reuses deductionGroupForRow (same
-    // use_status/property gates, alias 'e') so "deductible" means EXACTLY what the headline counts.
-    const refundRows = await env.DB.prepare(
-      `SELECT COALESCE(r.amount_aud_cents, r.amount_cents) AS refund_cents,
-              r.refund_for_txn_id AS matched_id,
-              e.bucket AS e_bucket, COALESCE(e.deductibility,'undetermined') AS e_deductibility,
-              COALESCE(e.reimbursed,0) AS e_reimbursed,
-              ${useStatusDenied("e.property_id")} AS e_use_status_denied,
-              ${propUndetermined("e.bucket", "e.property_id")} AS e_property_undetermined,
-              ${claimExpr("e.")} AS e_cents
-         FROM transactions r
-         LEFT JOIN transactions e ON e.id = r.refund_for_txn_id AND e.user_id = r.user_id
-        WHERE r.user_id = ? AND r.txn_date >= ? AND r.txn_date <= ? AND r.bucket = 'refund'
-          AND ${COUNTABLE_INCOME.replace(/\b(status|kind|matched_txn_id|direction|currency|amount_aud_cents)\b/g, "r.$1")}`,
-    )
-      .bind(userId, start, end)
-      .all<{ refund_cents: number; matched_id: string | null; e_bucket: string | null; e_deductibility: string; e_reimbursed: number; e_use_status_denied: number; e_property_undetermined: number; e_cents: number | null }>();
-    // Cap netting PER matched expense at the amount that expense actually contributed to deductions
-    // (e_cents is the claim-aware amount — apportioned via claimExpr — so a
-    // partly-deductible cost can't be over-netted). Track cumulative netting per expense so several
-    // refunds pointing at the SAME expense can't collectively net more than it gave (a $400 + $300
-    // refund on one $500 cost nets $500, not $700).
-    const nettedPerExpense = new Map<string, number>();
-    for (const r of refundRows.results ?? []) {
-      const matchedDeductible = !!r.matched_id && !!r.e_bucket &&
-        deductionGroupForRow(r.e_bucket, r.e_deductibility, excludeNonDeductible, r.e_reimbursed, r.e_use_status_denied, r.e_property_undetermined) === "deduction";
-      if (matchedDeductible) {
-        const already = nettedPerExpense.get(r.matched_id as string) ?? 0;
-        const toNet = Math.max(0, Math.min(r.refund_cents ?? 0, (r.e_cents ?? 0) - already));
-        refunds_cents += toNet;
-        nettedPerExpense.set(r.matched_id as string, already + toNet);
-      } else {
-        refunds_unmatched_n += 1;
-        refunds_unmatched_cents += r.refund_cents ?? 0;
-      }
-    }
-  }
+  const { refunds_cents, refunds_unmatched_cents, refunds_unmatched_n } = featureOn(env, "refund_netting")
+    ? await refundNetting(env, userId, start, end, excludeNonDeductible)
+    : { refunds_cents: 0, refunds_unmatched_cents: 0, refunds_unmatched_n: 0 };
   // Computed work-use deductions (WFH fixed-rate + car cents-per-km), flag-gated. These are NOT a %
   // of tracked spend — they're calculated from the per-FY work_use_inputs and REPLACE the itemised
   // running costs they cover (those stay excluded as needs_apportionment, so no double-claim). Off by

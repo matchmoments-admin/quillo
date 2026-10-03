@@ -1,6 +1,6 @@
 import type { Env } from "../env";
 import { COUNTABLE, FX_CONVERTED } from "./queries";
-import { classifyAttribution, splitAttribution } from "./attribution";
+import { classifyAttribution, splitAttribution, attributionCountsInPosition, isSoleTraderBusinessAttribution } from "./attribution";
 import { computeNetCapitalGain, cgtRulesForFy, type CgtPortfolioResult } from "./cgt";
 import { essAssessable, type EssAssessable } from "./ess";
 import { computeBasNet, type BasNet } from "./gst";
@@ -290,12 +290,9 @@ export async function attributionTotals(
       // (flag-independent); a "not deductible"/needs-apportionment verdict drops once the headline
       // excludes non-deductibles. Applied to the personal (individual/property) tracks only — the company
       // track stays byte-identical so it can't diverge from companyPositions. Undetermined still counts
-      // (attribution supersedes payg deny-by-default). Off-flag ⇒ only suggestions gate.
-      const d = r.deductibility ?? "undetermined";
-      if (track !== "company") {
-        if (d === "suggested_deductible") continue;
-        if (excludeNonDeductible && (d === "likely_not" || d === "confirmed_not" || d === "needs_apportionment")) continue;
-      }
+      // (attribution supersedes payg deny-by-default). Off-flag ⇒ only suggestions gate. Shared helper so the
+      // myTax worksheet (#575) re-groups exactly the rows counted here.
+      if (!attributionCountsInPosition(track, r.deductibility, excludeNonDeductible)) continue;
       // Prefer the snapshot; if a row stored only attributed_pct (the schema's XOR alternative), derive
       // the amount from the txn via the SAME pure helper the writer uses, so nothing silently drops.
       const amt = r.attributed_amount_cents ?? splitAttribution({ amount_cents: r.txn_amount ?? 0, owner_share_pct: r.attributed_pct, work_use_pct: r.work_use_pct });
@@ -306,7 +303,7 @@ export async function attributionTotals(
         // Only a genuine sole trader: an individual (or entity-less) business activity. A trust/partnership/SMSF
         // business also routes to the individual track today (pre-existing classifyAttribution behaviour), but its
         // income is a separate taxpayer's, so counting its costs here would fake a Div 35 loss.
-        if (track === "individual" && r.activity_type === "business" && (r.entity_type == null || r.entity_type === "individual")) individualBusiness += amt;
+        if (isSoleTraderBusinessAttribution(track, r)) individualBusiness += amt;
       }
     }
     return {

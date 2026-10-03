@@ -196,6 +196,13 @@ M1–M6). These four are a coverage lens for the self-lodging first-time taxpaye
 calls) → `assessReadiness`, and assert that flag `first_timer_income` never moves
 `taxable_position_cents` and that flag OFF adds none of the new findings.
 
+**myTax worksheet (#575, flag `mytax_worksheet`):** golden `pft12` (FT1 Jess complete: income statement,
+D3 uniform, D5 phone at 40%, WFH hours, one unlabelled work row) asserts the worksheet's sections follow
+the pack's myTax order, each D-line equals the accountant schedule's per-label subtotal, D-lines + the
+unlabelled amount equal the report's deductions, the unlabelled row raises `worksheet_unlabelled`, and
+flag OFF ⇒ endpoint 404 + no finding. FT3 Sam (`pft3`) gets the business-items section with per-activity
+totals, and a sweep asserts the worksheet's `tie_back` reconciles for every persona tenant.
+
 | # | Persona | Core tax shape | Golden |
 |---|---------|----------------|--------|
 | FT1 | **Jess**, first-job PAYG | one employer, started mid-year, **a bank feed instead of an income statement**, small work deductions | `pft1` |

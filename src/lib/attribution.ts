@@ -52,3 +52,30 @@ export function classifyAttribution(input: {
   if (input.entity_type === "company") return "company";
   return "individual";
 }
+
+/**
+ * The deductibility VETO the position applies to an attribution on the personal (individual / property)
+ * tracks — extracted from attributionTotals (ledger-totals.ts) so every reader that re-groups attribution
+ * rows (the myTax worksheet, #575) counts exactly the rows the headline counts. A positive suggestion never
+ * counts until confirmed (flag-independent); a not-deductible / needs-apportionment verdict drops once the
+ * headline excludes non-deductibles. The company track is never vetoed (it must not diverge from
+ * companyPositions). An excluded track never counts.
+ */
+export function attributionCountsInPosition(track: AttributionTrack, deductibility: string | null | undefined, excludeNonDeductible: boolean): boolean {
+  if (track === "excluded") return false;
+  if (track === "company") return true;
+  const d = deductibility ?? "undetermined";
+  if (d === "suggested_deductible") return false;
+  if (excludeNonDeductible && (d === "likely_not" || d === "confirmed_not" || d === "needs_apportionment")) return false;
+  return true;
+}
+
+/**
+ * A genuine sole trader's business cost: the individual track, a 'business' income activity, and an
+ * individual (or entity-less) claimant. A trust/partnership/SMSF business also routes to the individual
+ * track (classifyAttribution), but its income is a separate taxpayer's. Shared by attributionTotals (the
+ * Div 35 signal) and the myTax worksheet's business-items section.
+ */
+export function isSoleTraderBusinessAttribution(track: AttributionTrack, r: { activity_type?: string | null; entity_type?: string | null }): boolean {
+  return track === "individual" && r.activity_type === "business" && (r.entity_type == null || r.entity_type === "individual");
+}

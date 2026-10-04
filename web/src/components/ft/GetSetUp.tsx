@@ -11,7 +11,7 @@ export function SetupIntro({ compact = false }: { compact?: boolean }) {
   return (
     <FtCard className="space-y-4 p-4">
       <div className="space-y-1">
-        <p className="text-[15px] font-semibold text-ink">{SETUP_INTRO.title}</p>
+        <p className="text-sm font-semibold text-ink">{SETUP_INTRO.title}</p>
         <p className="max-w-[65ch] text-sm leading-relaxed text-muted">{SETUP_INTRO.lede}</p>
       </div>
       {!compact && (
@@ -54,7 +54,7 @@ export function MyTaxAccessCheck({ value, onChange, saving }: { value: MyTaxChec
     <FtCard className="space-y-4 p-4">
       <div className="space-y-1">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <p className="text-[15px] font-semibold text-ink">{MYTAX_CHECK.title}</p>
+          <p className="text-sm font-semibold text-ink">{MYTAX_CHECK.title}</p>
           <Badge tone={all ? "ok" : "neutral"}>{all ? "All set" : `${MYTAX_CHECK_KEYS.filter((k) => value[k]).length} of ${MYTAX_CHECK_KEYS.length}`}</Badge>
         </div>
         <p className="max-w-[65ch] text-sm leading-relaxed text-muted">{MYTAX_CHECK.lede}</p>
@@ -94,7 +94,7 @@ export function MyTaxAccessCheck({ value, onChange, saving }: { value: MyTaxChec
 export function TaxHelpCard() {
   return (
     <FtCard className="space-y-1 p-4">
-      <p className="text-[15px] font-semibold text-ink">{TAX_HELP.title}</p>
+      <p className="text-sm font-semibold text-ink">{TAX_HELP.title}</p>
       <p className="max-w-[65ch] text-sm leading-relaxed text-muted">{TAX_HELP.body}</p>
       <FtLink href={TAX_HELP.link.url} className="text-sm">
         {TAX_HELP.link.label}

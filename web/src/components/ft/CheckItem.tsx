@@ -3,7 +3,7 @@ import type { CheckTone } from "./model";
 import { FtButton, Skeleton, StatusGate, cx, type StatusProps } from "./primitives";
 
 const TONE: Record<CheckTone, { wrap: string; mark: string; label: string }> = {
-  warn: { wrap: "border-warn/30 bg-warn-surface", mark: "bg-warn text-white", label: "Needs a look" },
+  warn: { wrap: "border-warn/30 bg-warn/10", mark: "bg-warn text-white", label: "Needs a look" },
   info: { wrap: "border-line bg-card", mark: "bg-info text-white", label: "For your info" },
 };
 
@@ -31,18 +31,18 @@ export function CheckItem({
       {...status}
       emptyTitle={status.emptyTitle ?? "Nothing to check here"}
       skeleton={
-        <div className="flex gap-3 rounded-[14px] border border-line bg-card p-4">
+        <div className="flex gap-3 rounded-2xl border border-line bg-card shadow-card p-4">
           <Skeleton block className="h-6 w-6 rounded-full" />
           <Skeleton lines={3} className="flex-1" />
         </div>
       }
     >
-      <div className={cx("flex gap-3 rounded-[14px] border p-4", t.wrap)}>
+      <div className={cx("flex gap-3 rounded-2xl border p-4", t.wrap)}>
         <span aria-hidden className={cx("flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-bold", t.mark)}>
           {tone === "warn" ? "!" : "i"}
         </span>
         <div className="min-w-0 flex-1">
-          <p className="text-[15px] font-semibold text-ink">
+          <p className="text-sm font-semibold text-ink">
             <span className="sr-only">{t.label}: </span>
             {title}
           </p>

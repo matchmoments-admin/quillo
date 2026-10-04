@@ -4138,7 +4138,9 @@ console.log("ft component library (#583)");
   const prim = src("primitives.tsx");
   check("ft: TAP is the ≥44px floor and FtButton + both FtLink branches apply TAP + FOCUS",
     /TAP = "min-h-\[44px\] min-w-\[44px\]"/.test(prim) && (prim.match(/cx\(BUTTON_BASE, TAP, FOCUS/g) ?? []).length === 1 && /const cls = cx\(\s*TAP,\s*FOCUS/.test(prim));
-  check("ft: focus ring is visible (focus-visible outline on the focus.ring role)", /focus-visible:outline-2/.test(prim) && /focus-visible:outline-focus/.test(prim));
+  const uiSrc = stripComments(fs.readFileSync(path.join(process.cwd(), "web/src/components/ui.tsx"), "utf8"));
+  check("ft: focus ring is visible (production's ink ring: FOCUS = ui.tsx FOCUS_RING_CLASS, focus-visible:ring-2 ring-ink/25)",
+    /export const FOCUS = FOCUS_RING_CLASS;/.test(prim) && /FOCUS_RING_CLASS = "focus:outline-none focus-visible:ring-2 focus-visible:ring-ink\/25"/.test(uiSrc));
   // Reduced motion: every transition / animation / press-scale class sits behind motion-safe:.
   const motionOffenders: string[] = [];
   for (const f of files) {
@@ -4165,6 +4167,64 @@ console.log("ft component library (#583)");
   const wl = src("WorksheetLine.tsx");
   check("ft: WorksheetLine copies copyValue() and reports a blocked clipboard instead of failing silently", /writeText\(value\)/.test(wl) && /Couldn't copy/.test(wl));
 
+}
+
+// ── Journey visual parity (owner directive 2026-10-04) ──
+// "I really liked the look and feel we have in production, fonts and colours. Only the components updated
+// and the journey clearer. Don't change any of the core UI." So every ft_journey surface renders with
+// production's primitives and palette: no Direction A roles (accent / line-strong / ok / warn-surface /
+// focus), no quiet theme or Geist, no Direction A type tells, and every button/link tone is the SAME
+// string production's ui.tsx Button uses (shared, not re-typed).
+console.log("journey visual parity (production look)");
+{
+  const web = (p: string) => stripComments(fs.readFileSync(path.join(process.cwd(), "web/src", p), "utf8"));
+  const ftFiles = fs.readdirSync(path.join(process.cwd(), "web/src/components/ft")).filter((n) => n.endsWith(".tsx")).map((n) => `components/ft/${n}`);
+  // The new journey pages (each added by the first-timer program, rendered only under ft_journey).
+  const journeyPages = [
+    "components/FtShell.tsx", "pages/Home.tsx", "pages/Steps.tsx", "pages/AboutYou.tsx", "pages/ShipIt.tsx", "pages/ShipItPrint.tsx",
+    "pages/Grow.tsx", "pages/ReviewQueue.tsx", "components/connect/ConnectPage.tsx", "components/review/RecordCards.tsx",
+    "components/review/WorthALookCard.tsx",
+  ];
+  const scoped = [...ftFiles, ...journeyPages, "pages/BeforeYouStart.tsx"];
+  const banned: [string, RegExp][] = [
+    ["accent role", /\baccent\b|accent-/],
+    ["quiet theme", /quiet-/],
+    ["Geist font", /Geist/],
+    ["line-strong role", /line-strong/],
+    ["ok role", /(?:^|[\s"'`:])(?:bg|text|border|ring|outline|fill|stroke|divide|decoration)-ok\b/m],
+    ["warn-surface role", /warn-surface/],
+    ["focus role", /(?:outline|ring|border)-focus\b/],
+    ["Direction A type/radius", /rounded(?:-[tlrb]{1,2})?-\[14px\]|tracking-\[-0\.02em\]|font-mono|text-\[(?:15|17|19|26)px\]/],
+  ];
+  const offenders: string[] = [];
+  for (const f of scoped) {
+    const s = web(f);
+    for (const [label, re] of banned) if (re.test(s)) offenders.push(`${f} (${label}: ${s.match(re)?.[0]})`);
+  }
+  check(`parity: ft/ + journey pages use only production's palette/type (offenders: ${offenders.join(" | ") || "none"})`, offenders.length === 0);
+
+  const ui = web("components/ui.tsx");
+  const prim = web("components/ft/primitives.tsx");
+  check("parity: ui.tsx exports production's Button tones and Button renders exactly them",
+    /export const BUTTON_BASE =\s*"inline-flex h-10 items-center justify-center gap-2 rounded-full px-5 text-sm font-semibold transition disabled:opacity-50"/.test(ui) &&
+      /primary: "bg-ink text-cream hover:bg-green"/.test(ui) && /ghost: "border border-ink\/25 bg-transparent text-ink hover:bg-ink\/5"/.test(ui) &&
+      /highlight: "bg-sage text-ink hover:bg-moss"/.test(ui) && /className=\{`\$\{BUTTON_BASE\} \$\{BUTTON_TONE\[variant\]\} \$\{className\}`\}/.test(ui));
+  check("parity: FtButton/FtLink share ui.tsx's BUTTON_BASE + BUTTON_TONE (no local copy)",
+    /import \{[^}]*\bBUTTON_BASE\b[^}]*\bBUTTON_TONE\b[^}]*\} from "\.\.\/ui"/.test(prim) && !/const BUTTON_BASE\b/.test(prim) &&
+      /primary: BUTTON_TONE\.primary/.test(prim) && /secondary: BUTTON_TONE\.ghost/.test(prim) && /highlight: BUTTON_TONE\.highlight/.test(prim) &&
+      /cx\(BUTTON_BASE, TAP, FOCUS, VARIANT\[variant\], className\)/.test(prim) && /variant \? cx\(BUTTON_BASE, VARIANT\[variant\]\)/.test(prim));
+  check("parity: FtCard is production's Card surface (CARD_CLASS) and fields are production's Input (INPUT_CLASS)",
+    /export const CARD_CLASS = "rounded-2xl border border-line bg-card shadow-card"/.test(ui) && /cx\(CARD_CLASS, className\)/.test(prim) && /const FIELD = INPUT_CLASS;/.test(prim));
+  // Buttons and links on the journey pages go through FtButton / FtLink (the shell's nav + the native
+  // <details>/<summary> disclosures excepted): no bare <button>, <a>, <Link> or production <Button>.
+  const rawControls = journeyPages
+    .filter((f) => f !== "components/FtShell.tsx")
+    .filter((f) => /<(?:button|a|Link|Button)[\s>]/.test(web(f)));
+  check(`parity: journey pages render buttons/links only via FtButton/FtLink (offenders: ${rawControls.join(",") || "none"})`, rawControls.length === 0);
+  const shell = web("components/FtShell.tsx");
+  check("parity: FtShell rail is production's sidebar (forest panel, sage active pill, cream text) + production bottom tabs",
+    /bg-forest px-4 py-5 text-cream/.test(shell) && /"bg-sage text-forest"/.test(shell) && /text-cream\/70 hover:bg-cream\/10 hover:text-cream/.test(shell) &&
+      /isActive \? "text-forest" : "text-ink\/55"/.test(shell) && /className="grain"/.test(shell));
 }
 
 // ── A10 ticket b (#591): golden-rules strip, Why? drawer (Ask Quillo in context), state + newcomer cards ──

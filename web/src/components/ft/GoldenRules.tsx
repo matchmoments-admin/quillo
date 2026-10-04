@@ -33,9 +33,9 @@ export function GoldenRules({
             {scored && <span className="ml-2 normal-case tracking-normal">{goldenRulesMet(states)}</span>}
           </p>
         )}
-        <ul aria-label="The ATO's three golden rules" className="flex flex-wrap gap-x-3 gap-y-1 text-[13px]">
+        <ul aria-label="The ATO's three golden rules" className="flex flex-wrap gap-x-3 gap-y-1 text-xs">
           {states.map((s) => (
-            <li key={s.key} title={s.hint} className={cx("inline-flex items-center gap-1.5", scored && s.met ? "text-ok" : "text-muted")}>
+            <li key={s.key} title={s.hint} className={cx("inline-flex items-center gap-1.5", scored && s.met ? "text-safe" : "text-muted")}>
               <Tick on={scored && s.met} />
               <span>{s.label}</span>
               {scored && <span className="sr-only">{s.met ? "(done)" : "(not yet)"}</span>}
@@ -43,7 +43,7 @@ export function GoldenRules({
           ))}
         </ul>
         {guide?.ato_url && (
-          <FtLink href={guide.ato_url} className="text-[13px]">
+          <FtLink href={guide.ato_url} className="text-xs">
             ATO guide for {guide.label}
           </FtLink>
         )}

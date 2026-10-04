@@ -56,11 +56,11 @@ export function WhySheet({
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className="relative flex max-h-[85vh] w-full flex-col rounded-t-[14px] bg-card motion-safe:animate-[ft-sheet-in_220ms_cubic-bezier(0.16,1,0.3,1)] md:max-h-none md:w-[420px] md:rounded-none md:rounded-l-[14px]"
+        className="relative flex max-h-[85vh] w-full flex-col rounded-t-2xl bg-card motion-safe:animate-[ft-sheet-in_220ms_cubic-bezier(0.16,1,0.3,1)] md:max-h-none md:w-[420px] md:rounded-none md:rounded-l-2xl"
         style={{ boxShadow: `0 -8px 24px ${role("text-primary", 0.1)}` }}
       >
         <div className="flex items-center justify-between gap-3 border-b border-line px-5 py-2">
-          <h2 id={titleId} className="text-[17px] font-semibold tracking-[-0.02em] text-ink">
+          <h2 id={titleId} className="font-display text-xl tracking-wide text-forest">
             {title ?? (guide ? `Why ${guide.title}?` : "Why?")}
           </h2>
           <FtButton ref={closeRef} variant="ghost" onClick={onClose} aria-label="Close">
@@ -76,10 +76,10 @@ export function WhySheet({
           >
             {guide && (
               <>
-                <ul className="space-y-2 text-[15px] leading-relaxed text-ink">
+                <ul className="space-y-2 text-sm leading-relaxed text-ink">
                   {guide.why.map((w) => (
                     <li key={w} className="flex gap-2">
-                      <span aria-hidden className="mt-2.5 h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />
+                      <span aria-hidden className="mt-2.5 h-1.5 w-1.5 shrink-0 rounded-full bg-green" />
                       <span>{w}</span>
                     </li>
                   ))}

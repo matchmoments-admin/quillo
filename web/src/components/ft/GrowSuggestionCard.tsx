@@ -20,9 +20,9 @@ export function GrowSuggestionCard({
   return (
     <FtCard className="p-4">
       <div className="flex flex-wrap items-start gap-3">
-        <Badge tone="accent">Noticed</Badge>
+        <Badge tone="highlight">Noticed</Badge>
         <div className="min-w-0 flex-1">
-          <p className="text-[15px] font-semibold text-ink">{title}</p>
+          <p className="text-sm font-semibold text-ink">{title}</p>
           <p className="mt-0.5 max-w-[65ch] text-sm text-muted">{body}</p>
         </div>
       </div>

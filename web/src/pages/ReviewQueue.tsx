@@ -20,7 +20,6 @@ import {
   Skeleton,
   cx,
   FOCUS,
-  TAP,
   useWhyDrawer,
   type MatchSide,
 } from "../components/ft";
@@ -118,7 +117,7 @@ export function ReviewQueue() {
 
 function SectionTitle({ id, kind, count }: { id: string; kind: QueueKind; count: number }) {
   return (
-    <h2 id={id} className="text-[17px] font-semibold tracking-[-0.02em] text-ink">
+    <h2 id={id} className="font-display text-xl tracking-wide text-forest">
       {QUEUE_KIND_LABEL[kind]}
       <span className="ml-2 text-sm font-normal text-muted tnum">{count}</span>
     </h2>
@@ -299,7 +298,7 @@ function QueueBody() {
       {/* ── Header: counts + records completeness. Never a refund figure. ── */}
       <FtCard className="space-y-4 p-5">
         <div className="space-y-1">
-          <p className="text-[17px] font-semibold text-ink" aria-live="polite">
+          <p className="text-base font-semibold text-ink" aria-live="polite">
             {loading ? "Checking what's left…" : queueSummary(counts)}
           </p>
           <p className="max-w-[65ch] text-sm text-muted">
@@ -346,20 +345,20 @@ function QueueBody() {
           </div>
         )}
         <div>
-          <button
-            type="button"
+          <FtButton
+            variant="ghost"
             aria-expanded={estimateOpen}
             aria-controls="review-estimate"
             onClick={() => setEstimateOpen((o) => !o)}
-            className={cx(TAP, FOCUS, "inline-flex items-center rounded-lg text-sm text-accent underline underline-offset-2")}
+            className="-ml-5 underline underline-offset-2"
           >
             Your estimate (estimate only, general information)
-          </button>
+          </FtButton>
           {estimateOpen && (
             <div id="review-estimate" className="mt-2 rounded-lg border border-line bg-surface p-3">
               {j?.readiness.estimate ? (
                 <>
-                  <p className="text-[15px] text-ink">
+                  <p className="text-sm text-ink">
                     Estimated taxable position:{" "}
                     <span className="font-semibold tnum">
                       {j.readiness.estimate.confirmed_cents != null && j.readiness.estimate.confirmed_cents !== j.readiness.estimate.tracked_cents
@@ -406,7 +405,7 @@ function QueueBody() {
         />
       ) : counts.total === 0 ? (
         <FtCard className="p-4">
-          <p className="text-[15px] font-semibold text-ink">All reviewed for now.</p>
+          <p className="text-sm font-semibold text-ink">All reviewed for now.</p>
           <p className="mt-1 text-sm text-muted">Nothing to fix, claim, record or match. Come back here any time you add something new.</p>
         </FtCard>
       ) : null}
@@ -494,12 +493,12 @@ function QueueBody() {
               ))}
               {p.ambiguous.length > 0 && (
                 <FtCard>
-                  <p className="px-4 pt-3 text-[15px] font-semibold text-ink">Pick the bank line yourself</p>
+                  <p className="px-4 pt-3 text-sm font-semibold text-ink">Pick the bank line yourself</p>
                   <p className="px-4 text-sm text-muted">More than one bank line could fit these receipts, so Quillo won't guess.</p>
                   <ul className="mt-2 divide-y divide-line">
                     {p.ambiguous.map((a) => (
                       <li key={a.receipt.id} className="flex flex-wrap items-center gap-3 px-4 py-2">
-                        <span className="min-w-0 flex-1 text-[15px] text-ink">
+                        <span className="min-w-0 flex-1 text-sm text-ink">
                           {a.receipt.merchant ?? "Receipt"} <span className="text-muted">· {money(cents(a.receipt))} · {day(a.receipt.txn_date)}</span>
                         </span>
                         <FtLink to={pickerFor(a.receipt.id)} className="text-sm">
@@ -544,24 +543,24 @@ function QueueBody() {
 
           {/* ── Done: what's handled, still reachable (Undo a match, remove an exception, edit a fact). ── */}
           {doneCount + factsExtra.length > 0 && (
-            <details className="rounded-[14px] border border-line bg-card">
-              <summary className={cx(FOCUS, "min-h-[44px] cursor-pointer px-4 py-3 text-[15px] font-semibold text-ink")}>
+            <details className="rounded-2xl border border-line bg-card shadow-card">
+              <summary className={cx(FOCUS, "min-h-[44px] cursor-pointer px-4 py-3 text-sm font-semibold text-ink")}>
                 Done <span className="ml-1 text-sm font-normal text-muted tnum">{doneCount}</span>
               </summary>
               <div className="space-y-6 px-4 pb-4">
                 {yours.length > 0 && (
                   <div className="space-y-2">
-                    <h3 className="text-[15px] font-semibold text-ink">Your claims</h3>
+                    <h3 className="text-sm font-semibold text-ink">Your claims</h3>
                     <ul className="divide-y divide-line">
                       {yours.map((y) => (
                         <li key={y.label ?? ""} className="flex flex-wrap items-center justify-between gap-3 py-2">
-                          <span className="text-[15px] text-ink">
+                          <span className="text-sm text-ink">
                             {y.label ? (rel.data?.label_names[y.label] ? `${y.label} · ${rel.data.label_names[y.label]}` : y.label) : "No label yet"}
-                            <span className="ml-2 text-[13px] text-muted">
+                            <span className="ml-2 text-xs text-muted">
                               {y.n} {y.n === 1 ? "item" : "items"}
                             </span>
                           </span>
-                          <span className="font-mono text-[15px] font-semibold text-ink tnum">{money(y.cents)}</span>
+                          <span className="text-sm font-semibold text-ink tnum">{money(y.cents)}</span>
                         </li>
                       ))}
                     </ul>
@@ -570,7 +569,7 @@ function QueueBody() {
 
                 {rv && recDone.length > 0 && (
                   <div className="space-y-1">
-                    <h3 className="text-[15px] font-semibold text-ink">Claims with a record</h3>
+                    <h3 className="text-sm font-semibold text-ink">Claims with a record</h3>
                     {recDone.map((r) => (
                       <div key={r.id}>
                         {groupName(rv, r) && <p className="pt-2 text-xs text-muted">{groupName(rv, r)}</p>}
@@ -587,7 +586,7 @@ function QueueBody() {
 
                 {rv && (factsStated.length > 0 || factsExtra.length > 0) && (
                   <div className="space-y-2">
-                    <h3 className="text-[15px] font-semibold text-ink">Facts you state</h3>
+                    <h3 className="text-sm font-semibold text-ink">Facts you state</h3>
                     {[...factsStated, ...factsExtra].map((x) => (
                       <FactCard
                         key={x.key}
@@ -605,7 +604,7 @@ function QueueBody() {
 
                 {proposalsOn && autoPairs.length > 0 && (
                   <div className="space-y-2">
-                    <h3 className="text-[15px] font-semibold text-ink">Matched automatically</h3>
+                    <h3 className="text-sm font-semibold text-ink">Matched automatically</h3>
                     <p className="max-w-[65ch] text-sm text-muted">
                       Quillo matched these when your bank lines came in. If a receipt isn't for that payment, undo it: until you match the receipt to another line, the receipt and the bank line both count.
                     </p>
@@ -623,7 +622,7 @@ function QueueBody() {
 
                 {proposalsOn && yourPairs.length > 0 && (
                   <div className="space-y-2">
-                    <h3 className="text-[15px] font-semibold text-ink">Your matches</h3>
+                    <h3 className="text-sm font-semibold text-ink">Your matches</h3>
                     <p className="max-w-[65ch] text-sm text-muted">Undo a match only if the receipt isn't for that payment: until you match it again, the receipt and the bank line both count.</p>
                     {yourPairs.map((x) => (
                       <MatchProposalRow
@@ -639,12 +638,12 @@ function QueueBody() {
 
                 {p && p.no_line.length > 0 && (
                   <div className="space-y-2">
-                    <h3 className="text-[15px] font-semibold text-ink">No bank line this year</h3>
+                    <h3 className="text-sm font-semibold text-ink">No bank line this year</h3>
                     <p className="text-sm text-muted">Paid in cash? The receipt is still your record.</p>
                     <ul className="divide-y divide-line">
                       {p.no_line.map((r) => (
                         <li key={r.id} className="flex flex-wrap items-center gap-3 py-2">
-                          <span className="min-w-0 flex-1 text-[15px] text-ink">
+                          <span className="min-w-0 flex-1 text-sm text-ink">
                             {r.merchant ?? "Receipt"} <span className="text-muted">· {money(cents(r))} · {day(r.txn_date)}</span>
                           </span>
                           <FtLink to={pickerFor(r.id)} className="text-sm">
@@ -660,14 +659,14 @@ function QueueBody() {
           )}
 
           {/* ── Your documents (legacy /documents deep links land on #documents). ── */}
-          <details id="documents" open={hash === "#documents"} className="scroll-mt-20 rounded-[14px] border border-line bg-card">
-            <summary className={cx(FOCUS, "min-h-[44px] cursor-pointer px-4 py-3 text-[15px] font-semibold text-ink")}>Your documents</summary>
+          <details id="documents" open={hash === "#documents"} className="scroll-mt-20 rounded-2xl border border-line bg-card shadow-card">
+            <summary className={cx(FOCUS, "min-h-[44px] cursor-pointer px-4 py-3 text-sm font-semibold text-ink")}>Your documents</summary>
             <div className="px-4 pb-4">
               <Documents />
             </div>
           </details>
 
-          <div className="flex flex-wrap gap-x-4 gap-y-1 text-[13px]">
+          <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
             <FtLink to="/transactions?view=all">All transactions</FtLink>
             <FtLink to={MATCH_PICKER_ROUTE}>Match receipts yourself</FtLink>
             <FtLink to="/settings">Your sorting rules (in Settings)</FtLink>

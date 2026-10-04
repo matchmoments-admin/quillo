@@ -4,8 +4,8 @@ import { GoldenRules } from "./GoldenRules";
 import { CLAIM_BADGE_LABEL, type ClaimBadge, type GoldenRuleInput } from "./model";
 import { Badge, FtButton, FtCard, Skeleton, StatusGate, type StatusProps } from "./primitives";
 
-const BADGE_TONE: Record<ClaimBadge, "accent" | "ok" | "neutral" | "warn"> = {
-  worth_a_look: "accent",
+const BADGE_TONE: Record<ClaimBadge, "highlight" | "ok" | "neutral" | "warn"> = {
+  worth_a_look: "highlight",
   confirmed: "ok",
   not_work: "neutral",
   needs_record: "warn",
@@ -78,13 +78,13 @@ export function ClaimCard({
           <div className="flex items-start justify-between gap-4">
             <div className="min-w-0">
               <Badge tone={BADGE_TONE[badge]}>{CLAIM_BADGE_LABEL[badge]}</Badge>
-              <h3 className="mt-2 text-[17px] font-semibold leading-snug text-ink">{title}</h3>
-              {meta && <p className="mt-0.5 text-[13px] text-muted">{meta}</p>}
+              <h3 className="mt-2 text-base font-semibold leading-snug text-ink">{title}</h3>
+              {meta && <p className="mt-0.5 text-xs text-muted">{meta}</p>}
             </div>
-            <span className="shrink-0 font-mono text-[17px] font-semibold text-ink tnum">{money(amountCents)}</span>
+            <span className="shrink-0 text-base font-semibold text-ink tnum">{money(amountCents)}</span>
           </div>
           {why && <p className="max-w-[65ch] text-sm leading-relaxed text-muted">{why}</p>}
-          {evidence && <div className="text-[13px] text-ink">{evidence}</div>}
+          {evidence && <div className="text-xs text-ink">{evidence}</div>}
           <GoldenRules compact rules={rules ?? {}} guide={guide} />
           {(onClaim || onNotWork || onWhy) && (
             <div className="flex flex-wrap gap-2 pt-1">

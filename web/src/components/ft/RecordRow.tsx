@@ -3,12 +3,12 @@ import { RECORD_STATUS_LABEL, type RecordStatus } from "./model";
 import { FtButton, Skeleton, StatusGate, cx, type StatusProps } from "./primitives";
 
 const DOT: Record<RecordStatus, string> = {
-  recorded: "bg-ok",
+  recorded: "bg-safe",
   needs_record: "bg-warn",
   exception: "bg-info",
 };
 const TEXT: Record<RecordStatus, string> = {
-  recorded: "text-ok",
+  recorded: "text-safe",
   needs_record: "text-warn",
   exception: "text-info",
 };
@@ -47,8 +47,8 @@ export function RecordRow({
       <div className="flex min-h-[56px] items-center gap-3 border-b border-line px-1 py-2 last:border-0">
         <span aria-hidden className={cx("h-2.5 w-2.5 shrink-0 rounded-full", DOT[recordStatus])} />
         <div className="min-w-0 flex-1">
-          <p className="truncate text-[15px] text-ink">{label}</p>
-          <p className="text-[13px]">
+          <p className="truncate text-sm text-ink">{label}</p>
+          <p className="text-xs">
             <span className={cx("font-semibold", TEXT[recordStatus])}>{RECORD_STATUS_LABEL[recordStatus]}</span>
             {meta && <span className="text-muted"> · {meta}</span>}
           </p>

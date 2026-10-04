@@ -19,5 +19,6 @@ Curated cross-session memory for this repo. How it works:
 ## Gotchas
 
 ## Preferences
+- Owner (2026-10-04): the ft_journey redesign changes components + journey clarity ONLY, never production's look — reuse ui.tsx's exported BUTTON_TONE/CARD_CLASS/INPUT_CLASS; no accent/quiet/Geist roles (check-units "journey visual parity" enforces). [src: 3d49246d-fc0d-40f9-86a3-ad884ecefa78]
 
 ## Domain

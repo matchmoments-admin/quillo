@@ -87,8 +87,29 @@ export function ConfidencePill({ value }: { value: number | null }) {
   return <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${tone}`}>{label} · {pct}%</span>;
 }
 
+// The production surface / control class strings, exported so the first-timer journey (components/ft,
+// FtShell, the step pages) renders with exactly the same look instead of re-typing (and drifting from)
+// them. The components below use these constants verbatim, so their output is unchanged.
+
+/** Card surface (Card). */
+export const CARD_CLASS = "rounded-2xl border border-line bg-card shadow-card";
+/** Button geometry + type (Button). */
+export const BUTTON_BASE =
+  "inline-flex h-10 items-center justify-center gap-2 rounded-full px-5 text-sm font-semibold transition disabled:opacity-50";
+/** Button colour tones (Button's `variant`). */
+export const BUTTON_TONE = {
+  primary: "bg-ink text-cream hover:bg-green",
+  ghost: "border border-ink/25 bg-transparent text-ink hover:bg-ink/5",
+  highlight: "bg-sage text-ink hover:bg-moss",
+} as const;
+/** Text-field look (Input). */
+export const INPUT_CLASS =
+  "rounded-lg border border-line bg-card px-3 py-2 text-sm outline-none transition focus:border-ink/40 focus:ring-2 focus:ring-ink/10";
+/** Keyboard focus ring for custom controls (InfoTip / Term). */
+export const FOCUS_RING_CLASS = "focus:outline-none focus-visible:ring-2 focus-visible:ring-ink/25";
+
 export function Card({ children, className = "" }: { children: ReactNode; className?: string }) {
-  return <div className={`rounded-2xl border border-line bg-card shadow-card ${className}`}>{children}</div>;
+  return <div className={`${CARD_CLASS} ${className}`}>{children}</div>;
 }
 
 // Shared button language with the public landing page: pill-shaped, primary = forest,
@@ -102,16 +123,8 @@ export function Button({
   children: ReactNode;
   variant?: "primary" | "ghost" | "highlight";
 } & ButtonHTMLAttributes<HTMLButtonElement>) {
-  const base =
-    "inline-flex h-10 items-center justify-center gap-2 rounded-full px-5 text-sm font-semibold transition disabled:opacity-50";
-  const tone =
-    variant === "ghost"
-      ? "border border-ink/25 bg-transparent text-ink hover:bg-ink/5"
-      : variant === "highlight"
-        ? "bg-sage text-ink hover:bg-moss"
-        : "bg-ink text-cream hover:bg-green";
   return (
-    <button className={`${base} ${tone} ${className}`} {...props}>
+    <button className={`${BUTTON_BASE} ${BUTTON_TONE[variant]} ${className}`} {...props}>
       {children}
     </button>
   );
@@ -121,7 +134,7 @@ export function Button({
 export function Input({ className = "", ...props }: InputHTMLAttributes<HTMLInputElement>) {
   return (
     <input
-      className={`rounded-lg border border-line bg-card px-3 py-2 text-sm outline-none transition focus:border-ink/40 focus:ring-2 focus:ring-ink/10 ${className}`}
+      className={`${INPUT_CLASS} ${className}`}
       {...props}
     />
   );

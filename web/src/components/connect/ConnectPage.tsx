@@ -19,6 +19,7 @@ import { useActiveFy } from "../../lib/activeFy";
 import { Income } from "../../pages/Income";
 import { Accounts } from "../../pages/Accounts";
 import { Badge, ErrorState, FtButton, FtCard, FtLink, GeneralInfoNote, Skeleton, cx } from "../ft";
+import { INPUT_CLASS } from "../ui";
 import type { Account, StatementInfo } from "../../types";
 import {
   FIRST_RUN_WAIT_MS,
@@ -34,12 +35,12 @@ import {
   type ConnectedAccountRow,
 } from "./model";
 
-const INPUT = "min-h-[44px] w-full rounded-lg border border-line-strong bg-card px-3 text-[15px] text-ink";
+const INPUT = `min-h-[44px] w-full ${INPUT_CLASS}`;
 
 function Section({ id, title, children }: { id?: string; title: string; children: ReactNode }) {
   return (
     <section id={id} className="scroll-mt-20 space-y-3">
-      <h2 className="text-[17px] font-semibold text-ink">{title}</h2>
+      <h2 className="font-display text-xl tracking-wide text-forest">{title}</h2>
       {children}
     </section>
   );
@@ -65,7 +66,7 @@ export function ConnectPage() {
     <div className="space-y-8">
       <div className="space-y-3">
         {connected === "0" && (
-          <div role="alert" className="rounded-[14px] border border-danger/30 bg-danger-surface p-4 text-sm text-danger">
+          <div role="alert" className="rounded-2xl border border-danger/30 bg-danger-surface p-4 text-sm text-danger">
             {connectFailedCopy(params.get("reason"))}
           </div>
         )}
@@ -97,7 +98,7 @@ export function ConnectPage() {
       {bankOn && <ConnectedAccounts />}
       <Statements />
       <IncomeWaiting />
-      <details className="rounded-[14px] border border-line bg-paper p-3">
+      <details className="rounded-2xl border border-line bg-paper p-3">
         <summary className="min-h-[44px] cursor-pointer py-2 text-sm font-semibold text-ink">Advanced: manage accounts and statements</summary>
         <p className="mt-1 text-sm text-muted">Rename, archive or delete an account, remove a statement uploaded to the wrong account, or add a loan or investment account.</p>
         <div className="mt-3">
@@ -168,7 +169,7 @@ function ImportProgress({ connected }: { connected: boolean }) {
     if (awaiting) {
       return (
         <FtCard className="p-4">
-          <p role="status" aria-live="polite" className="text-[15px] font-semibold text-ink">
+          <p role="status" aria-live="polite" className="text-sm font-semibold text-ink">
             Bank connected. Starting your import…
           </p>
         </FtCard>
@@ -176,7 +177,7 @@ function ImportProgress({ connected }: { connected: boolean }) {
     }
     return connected ? (
       <FtCard className="p-4">
-        <p className="text-[15px] font-semibold text-ink">Bank connected</p>
+        <p className="text-sm font-semibold text-ink">Bank connected</p>
         <p className="mt-1 text-sm text-muted">No accounts came through to import. Check the list below, or connect again and pick the accounts to share.</p>
       </FtCard>
     ) : null;
@@ -190,7 +191,7 @@ function ImportProgress({ connected }: { connected: boolean }) {
   return (
     <FtCard className={cx("space-y-3 p-4", summary.phase === "attention" && "border-warn/40")}>
       <div role="status" aria-live="polite">
-        <p className="text-[15px] font-semibold text-ink">{importHeading(summary, elapsed)}</p>
+        <p className="text-sm font-semibold text-ink">{importHeading(summary, elapsed)}</p>
         {summary.phase === "running" && (
           <p className="mt-1 text-sm text-muted">
             {summary.imported > 0 ? `${linesLabel(summary.imported)} so far. ` : ""}
@@ -201,13 +202,13 @@ function ImportProgress({ connected }: { connected: boolean }) {
       </div>
       {summary.phase === "running" && (
         <div aria-hidden className="h-1.5 overflow-hidden rounded-full bg-surface">
-          <div className="h-full w-1/3 rounded-full bg-accent motion-safe:animate-pulse" />
+          <div className="h-full w-1/3 rounded-full bg-green motion-safe:animate-pulse" />
         </div>
       )}
       {summary.problems.length > 0 && (
         <ul className="space-y-2">
           {summary.problems.map((p) => (
-            <li key={p.connection_id} className="flex flex-col gap-2 rounded-lg bg-warn-surface p-3 sm:flex-row sm:items-center sm:justify-between">
+            <li key={p.connection_id} className="flex flex-col gap-2 rounded-lg bg-warn/10 p-3 sm:flex-row sm:items-center sm:justify-between">
               <p className="text-sm text-ink">
                 {p.institution ? <span className="font-semibold">{p.institution}: </span> : null}
                 {p.message}
@@ -270,7 +271,7 @@ function ConnectedAccounts() {
           {rows.map((r) => (
             <li key={r.id} className="flex items-center gap-3 p-3">
               <div className="min-w-0 flex-1">
-                <p className="truncate text-[15px] font-medium text-ink">
+                <p className="truncate text-sm font-medium text-ink">
                   {r.name}
                   {r.masked && <span className="ml-2 text-sm text-muted">••••{r.masked}</span>}
                 </p>
@@ -293,7 +294,7 @@ function ConnectedAccounts() {
         </ul>
       </FtCard>
       <p className="text-xs text-muted">Only accounts that are on are imported. Turning one off stops new imports; lines already brought in stay.</p>
-      <details className="rounded-[14px] border border-line bg-paper p-3">
+      <details className="rounded-2xl border border-line bg-paper p-3">
         <summary className="min-h-[44px] cursor-pointer py-2 text-sm font-semibold text-ink">Advanced: link to an existing account</summary>
         <div className="mt-2 space-y-3">
           <p className="text-sm text-muted">
@@ -478,7 +479,7 @@ function Statements() {
             return (
               <li key={s.id} className="flex flex-col gap-2 p-3 sm:flex-row sm:items-center sm:justify-between">
                 <div className="min-w-0">
-                  <p className="truncate text-[15px] font-medium text-ink">{s.filename ?? "Statement"}</p>
+                  <p className="truncate text-sm font-medium text-ink">{s.filename ?? "Statement"}</p>
                   <div className="mt-1">
                     <Badge tone={TONE_BADGE[v.tone]}>{v.label}</Badge>
                   </div>
@@ -524,7 +525,7 @@ function IncomeWaiting() {
               <FtCard className="space-y-2 p-4">
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge tone={it.state === "added" ? "ok" : "neutral"}>{it.state === "added" ? "Added" : "Waiting"}</Badge>
-                  <p className="text-[15px] font-semibold text-ink">{it.title}</p>
+                  <p className="text-sm font-semibold text-ink">{it.title}</p>
                 </div>
                 <p className="max-w-[65ch] text-sm text-muted">{it.body}</p>
                 {it.chase && <p className="max-w-[65ch] text-sm font-medium text-warn">{it.chase}</p>}
@@ -537,7 +538,7 @@ function IncomeWaiting() {
         {adding ? "Done adding" : "Add an income statement or other income"}
       </FtButton>
       {adding && (
-        <div className="rounded-[14px] border border-line bg-paper p-3">
+        <div className="rounded-2xl border border-line bg-paper p-3">
           <Income />
         </div>
       )}

@@ -24,7 +24,7 @@ import { QuickBooks } from "./QuickBooks";
 function SettingsLink({ what }: { what: string }) {
   return (
     <FtCard className="p-4">
-      <p className="text-[15px] text-ink">{what}</p>
+      <p className="text-sm text-ink">{what}</p>
       <p className="mt-0.5 text-sm text-muted">These are still edited in Settings while this area is being moved here.</p>
       <div className="mt-2">
         <FtLink to="/settings" variant="secondary">
@@ -41,7 +41,7 @@ function PropertyBody({ fyStart }: { fyStart: number }) {
       <SettingsLink what="Your properties, who owns them, and which loans they use." />
       <LoanInterestCard fy={fyStart} />
       <FtCard className="p-4">
-        <p className="text-[15px] text-ink">Rent you received is recorded with your income, and each property's position is on Reports.</p>
+        <p className="text-sm text-ink">Rent you received is recorded with your income, and each property's position is on Reports.</p>
         <div className="mt-2 flex flex-wrap gap-2">
           <FtLink to="/connect#income" variant="secondary">
             Your income
@@ -62,7 +62,7 @@ function InvestmentsBody() {
       {has("cgt_engine") && <CapitalEquity />}
       {has("ess_engine") && <EssGrants />}
       <FtCard className="p-4">
-        <p className="text-[15px] text-ink">Dividends and fund distributions are recorded with your income.</p>
+        <p className="text-sm text-ink">Dividends and fund distributions are recorded with your income.</p>
         <div className="mt-2">
           <FtLink to="/connect#income" variant="secondary">
             Your income
@@ -121,8 +121,8 @@ export function GrowRoute() {
       ) : (
         <header>
           <p className="text-xs font-semibold uppercase tracking-wider text-muted">Grow</p>
-          <h1 className="mt-1 font-display text-4xl text-ink">{GROW_LABEL[layer]}</h1>
-          <p className="mt-1 max-w-[65ch] text-[15px] text-muted">{GROW_BLURB[layer]}</p>
+          <h1 className="mt-1 font-display text-4xl text-forest">{GROW_LABEL[layer]}</h1>
+          <p className="mt-1 max-w-[65ch] text-sm text-muted">{GROW_BLURB[layer]}</p>
         </header>
       )}
       {hidden && (

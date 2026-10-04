@@ -2779,6 +2779,8 @@ console.log("retention PURGE_TABLES completeness");
   // purgeTenant still erases the tenant's per-day spend rows by scope (regression guard).
   const retentionSrc = fs.readFileSync(path.join(process.cwd(), "src", "lib", "retention.ts"), "utf8");
   check("purgeTenant erases daily_cost by scope", /DELETE FROM daily_cost WHERE scope = \?/.test(retentionSrc));
+  check("purgeTenant reseats the self person (no stuck \"profile isn't ready\" after a purge)", /INSERT OR IGNORE INTO persons \(id, user_id, display_name, role\) VALUES \(\?, \?, 'You', 'self'\)/.test(retentionSrc));
+  check("purgeTenant clears the tenant:init marker after the D1 wipe", retentionSrc.indexOf("tenant:init:") > retentionSrc.indexOf("INSERT OR IGNORE INTO persons"));
   // purgeTenant erases external stores BEFORE the D1 wipe (so a store failure can't leave orphaned
   // bytes audited as "complete"). Guard the ordering: the R2 list+delete must appear before the D1 batch.
   check("purge deletes R2 before the D1 wipe", retentionSrc.indexOf("RECEIPTS.delete") < retentionSrc.indexOf("env.DB.batch("));

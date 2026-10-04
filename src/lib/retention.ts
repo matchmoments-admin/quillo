@@ -234,9 +234,17 @@ export async function purgeTenant(env: Env, userId: string, deps: { bankUpstream
   const results = await env.DB.batch([
     ...deletes,
     env.DB.prepare(`INSERT OR IGNORE INTO profiles (user_id) VALUES (?)`).bind(userId),
+    // Reseat the self person too (same id shape as ensureTenant's selfPersonId — inlined to avoid an
+    // import cycle through situation-write → report). Without it the tenant had a profile but no "You",
+    // and the Get set up page sat on "Your profile isn't ready yet" forever after a purge.
+    env.DB.prepare(`INSERT OR IGNORE INTO persons (id, user_id, display_name, role) VALUES (?, ?, 'You', 'self')`).bind(`person_self_${userId}`, userId),
   ]);
-  // Count only the DELETE results (exclude the trailing reseat INSERT) so rowsDeleted stays truthful.
+  // Count only the DELETE results (exclude the trailing reseat INSERTs) so rowsDeleted stays truthful.
   const rowsDeleted = results.slice(0, deletes.length).reduce((n, r) => n + (r.meta?.changes ?? 0), 0);
+  // Clear ensureTenant's one-time init marker AFTER the wipe (never before: a request landing mid-purge
+  // would re-set it against rows about to vanish). With it left behind, a returning user under the same
+  // login was never re-bootstrapped. Best-effort: the reseat above already left a usable tenant.
+  await env.RULES.delete(`tenant:init:${userId}`).catch(() => {});
 
   // CDR record of the erasure, written only once it has actually happened (a purge that fails at R2/KV/D1
   // and is retried must not leave "purged" rows behind). Survives the purge — cdr_audit_log is retained.

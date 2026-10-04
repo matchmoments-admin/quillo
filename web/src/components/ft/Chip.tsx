@@ -3,7 +3,7 @@ import { FtButton, Skeleton, StatusGate, cx, type StatusProps } from "./primitiv
 
 /**
  * Chip (design-system.md §4): one tick-what-applies option. A toggle button (`aria-pressed`), with a
- * tick as well as the accent fill when selected so the state never relies on colour alone.
+ * tick as well as the highlight fill when selected so the state never relies on colour alone.
  */
 export function Chip({
   selected,
@@ -18,11 +18,11 @@ export function Chip({
 }) {
   return (
     <FtButton
-      variant="secondary"
+      variant={selected ? "highlight" : "secondary"}
       aria-pressed={selected}
       onClick={onToggle}
       disabled={disabled}
-      className={cx("rounded-full px-4 text-sm font-medium", selected && "border-accent bg-accent-soft text-accent hover:bg-accent-soft")}
+      className="px-4 font-medium"
     >
       <span aria-hidden className={cx("inline-block w-3 text-center", !selected && "opacity-0")}>
         ✓
@@ -50,7 +50,7 @@ export function ChipGroup<K extends string>({
 } & StatusProps) {
   return (
     <fieldset className="space-y-2">
-      <legend className="text-[15px] font-semibold text-ink">{label}</legend>
+      <legend className="text-sm font-semibold text-ink">{label}</legend>
       <StatusGate
         what="the options"
         {...status}

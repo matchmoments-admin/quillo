@@ -27,7 +27,7 @@ export function ShipItPrint() {
       </div>
 
       <header className="space-y-1">
-        <h1 className="text-[26px] font-semibold text-ink">myTax worksheet: FY {label}</h1>
+        <h1 className="font-display text-4xl text-forest">myTax worksheet: FY {label}</h1>
         <p className="text-xs text-muted">Prepared with Quillo on {printedOn}. Your own recorded figures, for you to type into myTax.</p>
       </header>
 
@@ -53,7 +53,7 @@ export function ShipItPrint() {
           {ws.data.sections.length === 0 && <p className="text-sm text-muted">Nothing to put in myTax yet.</p>}
           {ws.data.sections.map((s) => (
             <section key={s.key} className="break-inside-avoid-page">
-              <h2 className="border-b border-line-strong pb-1 text-base font-semibold text-ink">{s.title}</h2>
+              <h2 className="border-b border-ink/25 pb-1 text-base font-semibold text-ink">{s.title}</h2>
               <table className="mt-1 w-full text-sm">
                 <tbody>
                   {s.lines.map((l) => {
@@ -75,11 +75,11 @@ export function ShipItPrint() {
                         <td className="py-2 pr-2">
                           <div className="text-ink">
                             {l.name}
-                            {l.label && <span className="ml-2 whitespace-nowrap font-mono text-[11px] text-muted">{l.label}</span>}
+                            {l.label && <span className="ml-2 whitespace-nowrap text-[11px] text-muted">{l.label}</span>}
                           </div>
                           {l.note && <div className="mt-0.5 text-xs text-muted">{l.note}</div>}
                         </td>
-                        <td className="whitespace-nowrap py-2 text-right font-mono font-semibold text-ink tnum">
+                        <td className="whitespace-nowrap py-2 text-right font-semibold text-ink tnum">
                           {l.kind === "answer" ? (l.key.startsWith("tick:") ? "Tick in myTax" : "Answer in myTax") : l.kind === "note" ? "" : l.amount_cents == null ? "Not entered" : money(l.amount_cents)}
                         </td>
                       </tr>

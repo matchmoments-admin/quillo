@@ -4,7 +4,7 @@ import { FtCard, Skeleton, StatusGate, type StatusProps } from "./primitives";
 
 /**
  * One About you question (spec A2, #585): the question, a short help line, and either single-choice
- * options (one tap each, a tick plus the accent fill when chosen) or custom controls as children (a
+ * options (one tap each, a tick plus the highlight fill when chosen) or custom controls as children (a
  * date picker, the occupation field, the tick-what-applies chips). Follow-ups (visa type, part-year
  * date) go in `children` under the options. `problem` is shown as a plain message, never silently.
  */
@@ -29,7 +29,7 @@ export function SituationQuestion<K extends string>({
   return (
     <FtCard className="p-5">
       <fieldset className="space-y-4">
-        <legend className="text-[19px] font-semibold leading-snug text-ink">{title}</legend>
+        <legend className="font-display text-xl tracking-wide text-forest">{title}</legend>
         {help && <p className="max-w-[65ch] text-sm leading-relaxed text-muted">{help}</p>}
         <StatusGate
           what="this question"

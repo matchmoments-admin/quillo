@@ -94,23 +94,23 @@ export function WorksheetLine({
             <span className="sr-only">{tick.label}</span>
           </FtCheckbox>
         )}
-        {code && !codeAfter && <span className="rounded bg-surface px-1.5 py-0.5 font-mono text-xs font-semibold text-ink">{code}</span>}
+        {code && !codeAfter && <span className="rounded bg-surface px-1.5 py-0.5 text-xs font-semibold text-ink">{code}</span>}
         <div className="min-w-0 flex-1">
-          <p className="text-[15px] text-ink">
+          <p className="text-sm text-ink">
             {label}
-            {code && codeAfter && <span className="ml-2 whitespace-nowrap rounded bg-surface px-1.5 py-0.5 align-middle font-mono text-[11px] text-muted">{code}</span>}
+            {code && codeAfter && <span className="ml-2 whitespace-nowrap rounded bg-surface px-1.5 py-0.5 align-middle text-[11px] text-muted">{code}</span>}
           </p>
-          {note && <p className="mt-0.5 text-[13px] leading-snug text-muted">{note}</p>}
-          {tick?.stale && <p className="mt-0.5 text-[13px] font-semibold text-warn">This figure changed since you ticked it. Check it again in myTax.</p>}
+          {note && <p className="mt-0.5 text-xs leading-snug text-muted">{note}</p>}
+          {tick?.stale && <p className="mt-0.5 text-xs font-semibold text-warn">This figure changed since you ticked it. Check it again in myTax.</p>}
           {record && (
-            <FtLink to={record.to} className="text-[13px]">
+            <FtLink to={record.to} className="text-xs">
               {record.label}
             </FtLink>
           )}
         </div>
         {figure ?? (
           <>
-            <span ref={figureRef} className="font-mono text-[15px] font-semibold text-ink tnum">
+            <span ref={figureRef} className="text-sm font-semibold text-ink tnum">
               {money(amountCents)}
             </span>
             <FtButton

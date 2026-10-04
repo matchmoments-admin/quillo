@@ -12,8 +12,8 @@ function Side({ label, side }: { label: string; side: MatchSide }) {
   return (
     <div className="min-w-0 flex-1">
       <p className="text-xs font-semibold uppercase tracking-wider text-muted">{label}</p>
-      <p className="truncate text-[15px] text-ink">{side.name}</p>
-      <p className="text-[13px] text-muted">
+      <p className="truncate text-sm text-ink">{side.name}</p>
+      <p className="text-xs text-muted">
         <span className="tnum font-semibold text-ink">{side.amount}</span>
         {side.date && <span> · {side.date}</span>}
       </p>
@@ -47,12 +47,12 @@ export function MatchProposalRow({
       {...status}
       emptyTitle={status.emptyTitle ?? "Nothing to match"}
       skeleton={
-        <div className="rounded-[14px] border border-line bg-card p-4">
+        <div className="rounded-2xl border border-line bg-card shadow-card p-4">
           <Skeleton lines={3} />
         </div>
       }
     >
-      <div className="rounded-[14px] border border-line bg-card p-4">
+      <div className="rounded-2xl border border-line bg-card shadow-card p-4">
         {badge && (
           <div className="mb-2">
             <Badge tone="info">{badge}</Badge>
@@ -63,7 +63,7 @@ export function MatchProposalRow({
           <span aria-hidden className="hidden text-muted sm:block">→</span>
           <Side label="Bank line" side={line} />
         </div>
-        {note && <p className="mt-2 max-w-[65ch] text-[13px] leading-relaxed text-muted">{note}</p>}
+        {note && <p className="mt-2 max-w-[65ch] text-xs leading-relaxed text-muted">{note}</p>}
         <div className="mt-3 flex flex-wrap gap-2">
           {actions.map((a, i) => (
             <FtButton key={i} variant={a.primary ? "primary" : "secondary"} onClick={a.onClick} busy={a.busy} disabled={a.disabled}>

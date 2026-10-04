@@ -10,6 +10,7 @@ import { useWorksheetTicks } from "../lib/useWorksheetTicks";
 import { isTickable, tickId, tickProgress } from "../lib/worksheetTicks";
 import { Badge, EmptyState, ErrorState, FtButton, FtCard, FtCheckbox, FtLink, GeneralInfoNote, Skeleton, WorksheetLine } from "../components/ft";
 import { NoaCloseOff } from "./Filing";
+import { INPUT_CLASS } from "../components/ui";
 import type { MytaxWorksheet, MytaxWorksheetLine, MytaxWorksheetSection } from "../types";
 
 // Lodge in myTax — the last step of the first-timer journey (spec §0 design review + A9 ticket b, #590; flag
@@ -131,7 +132,7 @@ export function ShipIt() {
       )}
 
       <FtCard className="space-y-2 p-5">
-        <p className="text-[15px] leading-relaxed text-ink">
+        <p className="text-sm leading-relaxed text-ink">
           {ws.data?.header.intro ?? "Wait until your income statement says Tax ready in myGov before you lodge. You lodge in myTax; Quillo helps you get ready, and this isn't tax advice."}
         </p>
         {pastDue && ws.data && (
@@ -164,7 +165,7 @@ export function ShipIt() {
       ) : null}
 
       <FtCard className="space-y-3 p-5">
-        <h2 className="text-lg font-semibold text-ink">The full breakdown</h2>
+        <h2 className="font-display text-xl tracking-wide text-forest">The full breakdown</h2>
         <p className="text-sm text-muted">
           Every figure behind this worksheet, line by line, is in Reports.{" "}
           {ws.data && !pastDue ? ws.data.header.agent_note : "Prefer a registered tax agent? Take this pack to any registered agent."}
@@ -238,7 +239,7 @@ function Worksheet({
   return (
     <div className="space-y-5">
       {!ws.tie_back.ok && (
-        <div role="alert" className="rounded-[14px] border border-warn/40 bg-warn-surface p-4 text-sm text-ink">
+        <div role="alert" className="rounded-2xl border border-warn/40 bg-warn/10 p-4 text-sm text-ink">
           <p className="font-semibold text-warn">These lines don't add up to your full breakdown yet</p>
           <p className="mt-1">
             Something in your records is counted in Reports but doesn't land on a worksheet line (or the other way round). Don't copy these figures
@@ -247,7 +248,7 @@ function Worksheet({
         </div>
       )}
       {ws.unlabelled.n > 0 && (
-        <div className="rounded-[14px] border border-line bg-surface p-4 text-sm text-ink">
+        <div className="rounded-2xl border border-line bg-surface p-4 text-sm text-ink">
           <p>
             {ws.unlabelled.n === 1 ? "1 work expense needs" : `${ws.unlabelled.n} work expenses need`} a deduction label before it can go on a line here.{" "}
             <FtLink to="/review" className="text-sm">
@@ -281,7 +282,7 @@ function Worksheet({
 function WorksheetSectionCard({ section, ticks }: { section: MytaxWorksheetSection; ticks: ReturnType<typeof useWorksheetTicks> }) {
   return (
     <FtCard className="p-5">
-      <h2 className="text-lg font-semibold text-ink">{section.title}</h2>
+      <h2 className="font-display text-xl tracking-wide text-forest">{section.title}</h2>
       {SECTION_HINT[section.key] && <p className="mt-1 max-w-[65ch] text-sm text-muted">{SECTION_HINT[section.key]}</p>}
       <div className="mt-3">
         {section.lines.map((l) => {
@@ -332,7 +333,7 @@ function MarkLodged({ fy, label, progress, processingHint }: { fy: number; label
   const left = progress && progress.total > progress.done ? progress.total - progress.done : 0;
   return (
     <FtCard className="space-y-3 p-5">
-      <h2 className="text-lg font-semibold text-ink">Lodged in myTax?</h2>
+      <h2 className="font-display text-xl tracking-wide text-forest">Lodged in myTax?</h2>
       <p className="max-w-[65ch] text-sm text-muted">
         When you tick myTax's declaration, you're confirming every figure, including the prefilled ones, is right and that you hold the records. Then
         select Lodge.
@@ -367,7 +368,7 @@ function MarkLodged({ fy, label, progress, processingHint }: { fy: number; label
               max={localIsoDay()}
               required
               onChange={(e) => setDay(e.target.value)}
-              className="mt-1 block min-h-[44px] rounded-lg border border-line-strong bg-card px-3 text-[15px] font-normal text-ink"
+              className={`mt-1 block min-h-[44px] font-normal ${INPUT_CLASS}`}
             />
           </label>
           {mark.error && (
@@ -411,16 +412,16 @@ function AfterYouLodge({
   });
   const when = new Date(`${lodgedAt}T00:00:00`);
   return (
-    <FtCard className="space-y-4 border-ok/40 p-5">
+    <FtCard className="space-y-4 border-safe/40 p-5">
       <div>
-        <h2 className="text-lg font-semibold text-ink">After you lodge: FY {fyLabel(fy)}</h2>
+        <h2 className="font-display text-xl tracking-wide text-forest">After you lodge: FY {fyLabel(fy)}</h2>
         <p className="mt-1 text-sm text-muted">
           You marked FY {fyLabel(fy)} as lodged on {isNaN(when.getTime()) ? lodgedAt : when.toLocaleDateString()}. Your own record: Quillo doesn't
           lodge.
         </p>
       </div>
       <div>
-        <h3 className="text-[15px] font-semibold text-ink">What happens next</h3>
+        <h3 className="text-sm font-semibold text-ink">What happens next</h3>
         <ul className="mt-1 max-w-[65ch] list-disc space-y-1 pl-5 text-sm text-muted">
           <li>The ATO emails you a lodgment receipt.</li>
           <li>Most myTax returns are processed in {header?.processing_hint ?? "about 12 business days"}. You can follow it in myTax under Manage tax returns.</li>
@@ -433,12 +434,12 @@ function AfterYouLodge({
         </ul>
       </div>
       <div>
-        <h3 className="text-[15px] font-semibold text-ink">When your notice of assessment arrives</h3>
+        <h3 className="text-sm font-semibold text-ink">When your notice of assessment arrives</h3>
         <p className="mt-1 max-w-[65ch] text-sm text-muted">Add it here to close the year and carry anything forward.</p>
       </div>
       {noaOn && <NoaCloseOff />}
       <div>
-        <h3 className="text-[15px] font-semibold text-ink">Found something you missed?</h3>
+        <h3 className="text-sm font-semibold text-ink">Found something you missed?</h3>
         <p className="mt-1 max-w-[65ch] text-sm text-muted">
           Wait until your notice of assessment arrives, then in myGov go to ATO, Manage tax returns, and choose Amend. You can amend{" "}
           {header?.amend_window ?? "generally within 2 years of the day after your notice of assessment"}, and there's no fee. A new type of income or
@@ -476,7 +477,7 @@ function TaxReadyGate({ employers, ticks, known }: { employers: { key: string; n
   return (
     <FtCard className="space-y-3 p-5">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-lg font-semibold text-ink">Before you open myTax</h2>
+        <h2 className="font-display text-xl tracking-wide text-forest">Before you open myTax</h2>
         {ticks.ready && known && <Badge tone={ready ? "ok" : "warn"}>{ready ? "Ready for myTax" : "Not yet"}</Badge>}
       </div>
       <ul className="space-y-1">
@@ -519,7 +520,7 @@ function SoftSignoff({ fy, label }: { fy: number; label: string }) {
   if (signoff.isLoading) return null;
   return (
     <FtCard className="space-y-3 p-5">
-      <h2 className="text-lg font-semibold text-ink">Lodged in myTax?</h2>
+      <h2 className="font-display text-xl tracking-wide text-forest">Lodged in myTax?</h2>
       {signoff.data ? (
         <p className="text-sm text-muted">You marked FY {label} as done. Your own record: Quillo doesn't lodge.</p>
       ) : (

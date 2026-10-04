@@ -11,9 +11,9 @@ import type { Journey, JourneyStepStatus } from "../types";
 // shares; the estimate is the readiness engine's indicative taxable position, present only when there
 // are no blockers, and is never a refund or tax-payable figure.
 
-const TONE: Record<JourneyStepStatus, "ok" | "accent" | "warn" | "neutral"> = {
+const TONE: Record<JourneyStepStatus, "ok" | "highlight" | "warn" | "neutral"> = {
   done: "ok",
-  in_progress: "accent",
+  in_progress: "highlight",
   needs_attention: "warn",
   not_started: "neutral",
 };
@@ -31,8 +31,8 @@ function Hero({ j, label }: { j: Journey; label: string }) {
   if (isCold(j)) {
     return (
       <FtCard className="p-6">
-        <h1 className="text-[26px] font-semibold leading-tight tracking-[-0.02em] text-ink">Nothing in for FY {label} yet</h1>
-        <p className="mt-1 max-w-[65ch] text-[15px] text-muted">Start by checking you can get into myTax and answering a few questions about your year. Each step builds on the one before.</p>
+        <h1 className="font-display text-4xl text-forest">Nothing in for FY {label} yet</h1>
+        <p className="mt-1 max-w-[65ch] text-sm text-muted">Start by checking you can get into myTax and answering a few questions about your year. Each step builds on the one before.</p>
         <div className="mt-4">
           <FtLink to={STEP_ROUTE.setup} variant="primary">
             Get set up
@@ -45,11 +45,11 @@ function Hero({ j, label }: { j: Journey; label: string }) {
   const headline = blockers === 0 && review === 0 ? "Nothing to fix or check right now" : `${blockers} to fix · ${review} to check`;
   return (
     <FtCard className="p-6">
-      <p className="text-xs font-semibold uppercase tracking-wider text-muted">FY {label}</p>
-      <h1 className="mt-1 text-[26px] font-semibold leading-tight tracking-[-0.02em] text-ink">{headline}</h1>
+      <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-ink-3">FY {label}</p>
+      <h1 className="mt-1 font-display text-4xl text-forest">{headline}</h1>
       {estimate && (
         <div className="mt-3">
-          <p className="text-[15px] text-ink">
+          <p className="text-sm text-ink">
             Estimated taxable position:{" "}
             <span className="font-semibold tnum">
               {estimate.confirmed_cents != null && estimate.confirmed_cents !== estimate.tracked_cents
@@ -89,7 +89,7 @@ function GrowSuggestions({ j }: { j: Journey }) {
 function WhatsLeft({ j }: { j: Journey }) {
   return (
     <section aria-labelledby="whats-left" className="space-y-2">
-      <h2 id="whats-left" className="mb-2 text-[17px] font-semibold tracking-[-0.02em] text-ink">
+      <h2 id="whats-left" className="mb-2 font-display text-xl tracking-wide text-forest">
         What's left
       </h2>
       <GrowSuggestions j={j} />
@@ -103,7 +103,7 @@ function WhatsLeft({ j }: { j: Journey }) {
             {j.whats_left.map((w) => (
               <li key={w.id} className="flex flex-wrap items-center gap-3 px-4 py-2">
                 <Badge tone={w.severity === "blocker" ? "warn" : "info"}>{w.severity === "blocker" ? "To fix" : "To check"}</Badge>
-                <span className="min-w-0 flex-1 text-[15px] text-ink">{w.title}</span>
+                <span className="min-w-0 flex-1 text-sm text-ink">{w.title}</span>
                 <FtLink to={STEP_ROUTE[w.step]} className="text-sm">
                   {STEP_LABEL[w.step]}
                 </FtLink>
@@ -120,7 +120,7 @@ function StepRow({ j }: { j: Journey }) {
   const byKey = new Map(j.steps.map((s) => [s.key, s]));
   return (
     <section aria-labelledby="your-steps">
-      <h2 id="your-steps" className="mb-2 text-[17px] font-semibold tracking-[-0.02em] text-ink">
+      <h2 id="your-steps" className="mb-2 font-display text-xl tracking-wide text-forest">
         Your steps
       </h2>
       <ol className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
@@ -130,7 +130,7 @@ function StepRow({ j }: { j: Journey }) {
             <li key={k}>
               <FtLink to={STEP_ROUTE[k]} variant="secondary" className="w-full justify-between">
                 <span className="flex items-center gap-2">
-                  <span className="font-mono text-xs text-muted">{i + 1}</span>
+                  <span className="text-xs text-muted">{i + 1}</span>
                   <span>{STEP_LABEL[k]}</span>
                 </span>
                 {s && (
@@ -161,7 +161,7 @@ export function Home() {
         onRetry={() => void journey.refetch()}
         skeleton={
           <div className="space-y-6">
-            <Skeleton block className="h-36 rounded-[14px]" />
+            <Skeleton block className="h-36 rounded-2xl" />
             <Skeleton lines={3} />
           </div>
         }

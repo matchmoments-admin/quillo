@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api } from "../../api";
-import { money } from "../ui";
+import { INPUT_CLASS, money } from "../ui";
 import { Chip, ClaimCard, FtButton, FtCard, FtLink, TAP, FOCUS, cx, type WhyItem } from "../ft";
 import { parseWorkUsePct, summariseConfirm, type WorthALookGroup } from "../../lib/claims";
 
@@ -125,24 +125,24 @@ export function WorthALookCard({ group: g, labelNames, onWhy }: { group: WorthAL
         evidence={
           <div className="space-y-2">
             <details>
-              <summary className={cx(TAP, FOCUS, "inline-flex cursor-pointer items-center rounded-lg text-[13px] text-accent")}>Show the matched lines</summary>
-              <ul className="mt-1 space-y-1 text-[13px]">
+              <summary className={cx(TAP, FOCUS, "inline-flex cursor-pointer items-center rounded-lg text-xs text-forest")}>Show the matched lines</summary>
+              <ul className="mt-1 space-y-1 text-xs">
                 {g.lines.map((l) => (
                   <li key={l.txn_id} className="flex justify-between gap-3">
                     <span className="text-muted">
                       {l.txn_date ?? "No date"} · {l.merchant ?? "Bank line"}
                       {l.needs_asset && " · add in Assets"}
                     </span>
-                    <span className="font-mono tnum text-ink">{money(l.amount_cents)}</span>
+                    <span className="tnum text-ink">{money(l.amount_cents)}</span>
                   </li>
                 ))}
               </ul>
             </details>
             {g.asset_lines.length > 0 && (
-              <p className="text-[13px] text-ink">
+              <p className="text-xs text-ink">
                 {g.asset_lines.length === n ? "This is" : `${g.asset_lines.length} of these are`} over the limit for an immediate claim on a work item, so it's
                 usually claimed over its life instead.{" "}
-                <FtLink to="/assets" className="text-[13px]">
+                <FtLink to="/assets" className="text-xs">
                   Add it in Assets
                 </FtLink>
               </p>
@@ -153,7 +153,7 @@ export function WorthALookCard({ group: g, labelNames, onWhy }: { group: WorthAL
 
       {phase === "paid_back" && (
         <FtCard className="space-y-3 p-4">
-          <p className="text-[15px] font-semibold text-ink">Were you paid back for this?</p>
+          <p className="text-sm font-semibold text-ink">Were you paid back for this?</p>
           <p className="text-sm text-muted">If your employer or anyone else paid you back, it isn't yours to claim.</p>
           <div className="flex flex-wrap gap-2">
             <FtButton variant="primary" onClick={afterNotPaidBack} busy={confirm.isPending}>
@@ -173,7 +173,7 @@ export function WorthALookCard({ group: g, labelNames, onWhy }: { group: WorthAL
         <FtCard className="space-y-4 p-4">
           {labelOptions.length > 1 && (
             <fieldset className="space-y-2">
-              <legend className="text-[15px] font-semibold text-ink">Which label fits this?</legend>
+              <legend className="text-sm font-semibold text-ink">Which label fits this?</legend>
               <div className="flex flex-wrap gap-2">
                 {labelOptions.map((o) => (
                   <Chip key={o} selected={labelPick === o} onToggle={() => setLabelPick(labelPick === o ? null : o)}>
@@ -185,7 +185,7 @@ export function WorthALookCard({ group: g, labelNames, onWhy }: { group: WorthAL
           )}
           {needShare && (
             <div className="space-y-1">
-              <label htmlFor={`pct-${g.key}`} className="block text-[15px] font-semibold text-ink">
+              <label htmlFor={`pct-${g.key}`} className="block text-sm font-semibold text-ink">
                 What share did you use for work?
               </label>
               <p className="text-sm text-muted">This is mixed use, so only the work part counts. Keep a note of how you worked it out.</p>
@@ -197,11 +197,11 @@ export function WorthALookCard({ group: g, labelNames, onWhy }: { group: WorthAL
                   onChange={(e) => setPctRaw(e.target.value)}
                   placeholder="e.g. 40"
                   aria-invalid={pctRaw !== "" && pct === null}
-                  className={cx(TAP, FOCUS, "w-24 rounded-lg border border-line-strong bg-card px-3 text-[15px] text-ink")}
+                  className={cx(TAP, "w-24", INPUT_CLASS)}
                 />
-                <span className="text-[15px] text-ink">%</span>
+                <span className="text-sm text-ink">%</span>
               </div>
-              {pctRaw !== "" && pct === null && <p className="text-[13px] text-warn">Enter a whole number from 1 to 100.</p>}
+              {pctRaw !== "" && pct === null && <p className="text-xs text-warn">Enter a whole number from 1 to 100.</p>}
             </div>
           )}
           <div className="flex flex-wrap gap-2">
@@ -216,7 +216,7 @@ export function WorthALookCard({ group: g, labelNames, onWhy }: { group: WorthAL
       )}
 
       {note && (
-        <p role="status" className="rounded-lg bg-warn-surface px-3 py-2 text-sm text-warn">
+        <p role="status" className="rounded-lg bg-warn/10 px-3 py-2 text-sm text-warn">
           {note}
         </p>
       )}

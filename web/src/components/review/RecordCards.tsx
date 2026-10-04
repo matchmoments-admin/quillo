@@ -3,7 +3,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api } from "../../api";
 import { fyLabel } from "../../lib/activeFy";
-import { money, parseMoneyToCents } from "../ui";
+import { INPUT_CLASS, money, parseMoneyToCents } from "../ui";
 import { Badge, FtButton, FtCard, RecordRow } from "../ft";
 import { WorkMethodsCard } from "../WorkMethodsCard";
 import { CarMethodsCard } from "../CarMethodsCard";
@@ -53,7 +53,7 @@ export function NeedsRecordCard({
     <FtCard className="px-4 py-2">
       <div className="flex flex-wrap items-center gap-2 pt-2">
         <Badge tone="warn">Needs a record</Badge>
-        {group && <span className="text-[13px] text-muted">{group}</span>}
+        {group && <span className="text-xs text-muted">{group}</span>}
       </div>
       <RecordRow label={row.description ?? "Claim"} meta={recordMeta(row)} recordStatus={row.status} action={{ label: "Snap a receipt", onClick: onSnap, busy: snapBusy }} />
       {stale && (
@@ -116,7 +116,7 @@ export function FactCard({
     <FtCard className="p-4">
       <details open={defaultOpen}>
         <summary className="flex min-h-[44px] cursor-pointer flex-wrap items-center gap-2">
-          <span className="text-[15px] font-semibold text-ink">{fact.label}</span>
+          <span className="text-sm font-semibold text-ink">{fact.label}</span>
           <Badge tone={fact.done ? "ok" : "warn"}>{fact.done ? "Stated" : "To do"}</Badge>
         </summary>
         <div className="mt-3">
@@ -171,7 +171,7 @@ function PlatformFees({ view, fy, onSaved }: { view: RecordsView; fy: number; on
     onSuccess: after,
     onError: (e) => toast.error("Couldn't remove", { description: (e as Error).message }),
   });
-  const field = "mt-1 block min-h-[44px] w-full rounded-lg border border-line-strong bg-card px-3 text-[15px] text-ink";
+  const field = `mt-1 block min-h-[44px] w-full ${INPUT_CLASS}`;
   // Payouts already recorded from the bank lines (We noticed → platform) count the money once already;
   // adding the summary's gross on top would count it twice, so the entry form isn't offered.
   if (view.platform.payouts_recorded > 0 && view.platform.entries.length === 0) {

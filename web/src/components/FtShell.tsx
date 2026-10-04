@@ -23,32 +23,51 @@ import { WhySheet, cx, FOCUS, TAP } from "./ft";
 //     progress segments sits at the top of each step page (StepPage), not in the shell.
 // Step status comes from the one shared /api/journey query (useJourney), which Home reads too.
 
+// Look and feel = production's (owner directive 2026-10-04): the rail IS production's sidebar (App.tsx
+// Sidebar: forest panel, cream text, sage active pill, Anton wordmark); the phone bars are production's
+// top bar + bottom tab bar. `dark` = rendered on the forest rail; otherwise on the light sheets.
+
+// Status dots ride the row's text colour (currentColor), so they read on the forest rail, the sage
+// active pill and the light sheet alike; "needs attention" keeps a status colour that reads on each.
 const DOT: Record<JourneyStepStatus, string> = {
-  not_started: "border border-line-strong bg-transparent",
-  in_progress: "bg-accent/50",
-  needs_attention: "bg-warn",
-  done: "bg-ok",
+  not_started: "border border-current opacity-50",
+  in_progress: "bg-current opacity-50",
+  needs_attention: "",
+  done: "bg-current",
 };
 
-function StatusDot({ status }: { status: JourneyStepStatus | undefined }) {
-  return (
-    <span
-      aria-hidden
-      className={cx("inline-block h-2.5 w-2.5 flex-none rounded-full", status ? DOT[status] : "border border-line bg-transparent")}
-    />
-  );
+function StatusDot({ status, dark }: { status: JourneyStepStatus | undefined; dark?: boolean }) {
+  const cls = !status
+    ? "border border-current opacity-30"
+    : status === "needs_attention"
+      ? dark
+        ? "bg-caution-border"
+        : "bg-warn"
+      : DOT[status];
+  return <span aria-hidden className={cx("inline-block h-2.5 w-2.5 flex-none rounded-full", cls)} />;
 }
 
-const railLink = (isActive: boolean) =>
+/** Production's ink focus ring; on the forest rail the same ring in cream so it stays visible. */
+const RAIL_FOCUS = "focus:outline-none focus-visible:ring-2 focus-visible:ring-cream/40";
+
+/** Production's sidebar nav link (App.tsx Sidebar), or its light-surface twin for the phone sheets. */
+const railLink = (isActive: boolean, dark?: boolean) =>
   cx(
-    "flex items-center gap-3 rounded-lg px-3 text-sm font-semibold",
+    "flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold transition",
     TAP,
-    FOCUS,
-    isActive ? "bg-accent-soft text-accent" : "text-muted hover:bg-surface hover:text-ink",
+    dark ? RAIL_FOCUS : FOCUS,
+    isActive
+      ? "bg-sage text-forest"
+      : dark
+        ? "text-cream/70 hover:bg-cream/10 hover:text-cream"
+        : "text-ink/70 hover:bg-ink/5 hover:text-ink",
   );
 
+/** Production's sidebar group label. */
+const groupLabel = (dark?: boolean) => cx("px-3 pb-2 text-[10px] font-bold uppercase tracking-[0.2em]", dark ? "text-cream/45" : "text-ink-3");
+
 /** The four steps with their status — the rail on desktop, the Steps sheet on a phone. */
-function StepList({ onPick }: { onPick?: () => void }) {
+function StepList({ onPick, dark }: { onPick?: () => void; dark?: boolean }) {
   const journey = useJourney();
   const byKey = new Map<JourneyStepKey, { status: JourneyStepStatus; count: number }>(
     (journey.data?.steps ?? []).map((s) => [s.key, { status: s.status, count: s.count }]),
@@ -59,10 +78,10 @@ function StepList({ onPick }: { onPick?: () => void }) {
         const s = byKey.get(k);
         return (
           <li key={k}>
-            <NavLink to={STEP_ROUTE[k]} onClick={onPick} className={({ isActive }) => railLink(isActive)}>
-              <span className="w-4 flex-none text-right font-mono text-xs text-muted">{i + 1}</span>
+            <NavLink to={STEP_ROUTE[k]} onClick={onPick} className={({ isActive }) => railLink(isActive, dark)}>
+              <span className="w-4 flex-none text-right text-xs tnum opacity-60">{i + 1}</span>
               <span className="flex-1">{STEP_LABEL[k]}</span>
-              <StatusDot status={s?.status} />
+              <StatusDot status={s?.status} dark={dark} />
               <span className="sr-only">{s ? STATUS_LABEL[s.status] : "Status loading"}</span>
             </NavLink>
           </li>
@@ -73,17 +92,17 @@ function StepList({ onPick }: { onPick?: () => void }) {
 }
 
 /** The visible Grow layers (A11b, #592) — under the steps in the rail and the Steps sheet. Nothing when none. */
-function GrowList({ onPick }: { onPick?: () => void }) {
+function GrowList({ onPick, dark }: { onPick?: () => void; dark?: boolean }) {
   const journey = useJourney();
   const visible = (journey.data?.grow.layers ?? []).filter((l) => l.state === "on");
   if (visible.length === 0) return null;
   return (
-    <div className="mt-4">
-      <div className="px-3 pb-1 text-[10px] font-bold uppercase tracking-[0.2em] text-muted">Grow</div>
+    <div className="mt-5">
+      <div className={groupLabel(dark)}>Grow</div>
       <ul className="space-y-0.5">
         {visible.map((l) => (
           <li key={l.key}>
-            <NavLink to={GROW_ROUTE[l.key]} onClick={onPick} className={({ isActive }) => railLink(isActive)}>
+            <NavLink to={GROW_ROUTE[l.key]} onClick={onPick} className={({ isActive }) => railLink(isActive, dark)}>
               {GROW_LABEL[l.key]}
             </NavLink>
           </li>
@@ -97,7 +116,7 @@ function GrowList({ onPick }: { onPick?: () => void }) {
  * The Grow switcher (account menu): turn a layer on or off. A layer that already holds the user's entries is
  * locked on (nobody loses sight of their own records); Advisers is role-gated and never listed here.
  */
-function GrowSwitcher() {
+function GrowSwitcher({ dark }: { dark?: boolean }) {
   const journey = useJourney();
   const set = useSetGrowLayer();
   const [open, setOpen] = useState(false);
@@ -105,7 +124,7 @@ function GrowSwitcher() {
   if (layers.length === 0) return null;
   return (
     <div>
-      <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open} className={cx(railLink(false), "w-full justify-between")}>
+      <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open} className={cx(railLink(false, dark), "w-full justify-between")}>
         <span>Grow layers</span>
         <span aria-hidden className="text-xs">{open ? "−" : "+"}</span>
       </button>
@@ -115,16 +134,16 @@ function GrowSwitcher() {
             const on = l.state === "on";
             return (
               <li key={l.key}>
-                <label className={cx("flex cursor-pointer items-center gap-3 rounded-lg px-3 text-sm text-ink", TAP, l.has_data && "cursor-default")}>
+                <label className={cx("flex cursor-pointer items-center gap-3 rounded-xl px-3 text-sm", dark ? "text-cream/80" : "text-ink", TAP, l.has_data && "cursor-default")}>
                   <input
                     type="checkbox"
-                    className={cx("h-4 w-4 accent-accent", FOCUS)}
+                    className={cx("h-4 w-4", dark ? RAIL_FOCUS : FOCUS)}
                     checked={on}
                     disabled={l.has_data || set.isPending}
                     onChange={() => set.mutate({ layer: l.key, state: on ? "off" : "on", source: "switched" })}
                   />
                   <span className="flex-1">{GROW_LABEL[l.key]}</span>
-                  {l.has_data && <span className="text-[11px] text-muted">has your entries</span>}
+                  {l.has_data && <span className={cx("text-[11px]", dark ? "text-cream/55" : "text-muted")}>has your entries</span>}
                 </label>
               </li>
             );
@@ -136,7 +155,7 @@ function GrowSwitcher() {
 }
 
 /** Account menu items (spec A11: Billing, Alerts, Learn & glossary, year switcher, Settings, sign out). */
-function AccountMenu({ onPick }: { onPick?: () => void }) {
+function AccountMenu({ onPick, dark }: { onPick?: () => void; dark?: boolean }) {
   const { has } = useFeatures();
   const { isAdmin } = useAdminAccess();
   const { isPartner } = usePartnerAccess();
@@ -154,35 +173,45 @@ function AccountMenu({ onPick }: { onPick?: () => void }) {
   ];
   return (
     <div className="space-y-1">
+      {/* The year switcher is a light-surface control; on the forest rail it sits on a cream chip. */}
       <div className="px-3 py-1">
-        <FySwitcher />
+        <div className={cx("inline-flex", dark && "rounded-xl bg-cream px-2 py-1.5")}>
+          <FySwitcher />
+        </div>
       </div>
       {items
         .filter((it) => it.show)
         .map((it) => (
-          <NavLink key={it.to} to={it.to} onClick={onPick} className={({ isActive }) => railLink(isActive)}>
+          <NavLink key={it.to} to={it.to} onClick={onPick} className={({ isActive }) => railLink(isActive, dark)}>
             {it.label}
           </NavLink>
         ))}
-      <GrowSwitcher />
-      <div className="flex items-center gap-3 px-3 py-2">
+      <GrowSwitcher dark={dark} />
+      <div className="mt-1 flex items-center gap-3 rounded-xl px-2 py-2">
         <UserButton afterSignOutUrl="/sign-in" />
-        <span className="text-xs text-muted">Account &amp; sign out</span>
+        <span className={cx("text-[11px]", dark ? "text-cream/55" : "text-muted")}>Account &amp; sign out</span>
       </div>
     </div>
   );
 }
 
-function Brand() {
+/** Production's wordmark: App.tsx Sidebar (on the forest rail) or App.tsx Brand (on the paper top bar). */
+function Brand({ dark }: { dark?: boolean }) {
   return (
-    <Link to="/" className={cx("flex flex-none items-center gap-2.5 rounded-lg", FOCUS)}>
-      <span className="grid h-9 w-9 place-items-center rounded-xl bg-accent-soft font-display text-lg text-accent">Q</span>
-      <span className="font-display text-xl tracking-wide text-ink">Quillo</span>
+    <Link to="/" className={cx("flex flex-none items-center gap-2.5 rounded-xl", dark ? RAIL_FOCUS : FOCUS)}>
+      <span className="grid h-9 w-9 place-items-center rounded-xl bg-sage font-display text-lg text-forest">Q</span>
+      <span className={cx("font-display text-xl tracking-wide", dark ? "text-cream" : "text-forest")}>
+        Quillo<span className={dark ? "text-sage" : "text-green"}>.</span>
+      </span>
     </Link>
   );
 }
 
 type Sheet = "steps" | "ask" | "account" | null;
+
+/** Production's bottom tab item (App.tsx BottomTabBar). */
+const barItem = (isActive: boolean) =>
+  cx("relative flex flex-1 flex-col items-center gap-0.5 py-2 text-[11px] font-semibold", TAP, FOCUS, isActive ? "text-forest" : "text-ink/55");
 
 function BarButton({ label, onClick, active, children }: { label: string; onClick: () => void; active?: boolean; children: ReactNode }) {
   return (
@@ -190,7 +219,7 @@ function BarButton({ label, onClick, active, children }: { label: string; onClic
       type="button"
       onClick={onClick}
       aria-haspopup="dialog"
-      className={cx("flex flex-1 flex-col items-center gap-0.5 py-2 text-[11px] font-semibold", TAP, FOCUS, active ? "text-accent" : "text-muted")}
+      className={barItem(!!active)}
     >
       {children}
       <span>{label}</span>
@@ -216,6 +245,7 @@ export function FtShell({ gate }: { gate?: ReactNode }) {
     <Tooltip.Provider delayDuration={200} skipDelayDuration={400}>
       <ChatProvider>
         <div className="min-h-screen bg-paper text-ink">
+          <div className="grain" aria-hidden />
           {gate}
           <Toaster
             position="bottom-right"
@@ -227,25 +257,25 @@ export function FtShell({ gate }: { gate?: ReactNode }) {
           />
 
           {/* Phone top bar: brand only — navigation lives in the bottom bar. */}
-          <div className="sticky top-0 z-30 flex items-center gap-3 border-b border-line bg-paper/90 px-4 py-2 backdrop-blur print:hidden md:hidden">
+          <div className="sticky top-0 z-30 flex items-center gap-3 border-b border-line bg-paper/90 px-4 py-3 backdrop-blur print:hidden md:hidden">
             <Brand />
           </div>
 
-          <div className="md:grid md:grid-cols-[240px_1fr] print:block">
-            <aside className="sticky top-0 hidden h-screen flex-col border-r border-line bg-card px-3 py-5 md:flex print:hidden" aria-label="Journey">
+          <div className="md:grid md:grid-cols-[252px_1fr] print:block">
+            <aside className="sticky top-0 hidden h-screen flex-col bg-forest px-4 py-5 text-cream md:flex print:hidden" aria-label="Journey">
               <div className="px-2 pb-5">
-                <Brand />
+                <Brand dark />
               </div>
               <nav className="-mx-1 flex-1 overflow-y-auto px-1" aria-label="Steps">
-                <NavLink to="/" end className={({ isActive }) => railLink(isActive)}>
+                <NavLink to="/" end className={({ isActive }) => railLink(isActive, true)}>
                   Home
                 </NavLink>
-                <div className="mt-4 px-3 pb-1 text-[10px] font-bold uppercase tracking-[0.2em] text-muted">Your return</div>
-                <StepList />
-                <GrowList />
+                <div className={cx("mt-5", groupLabel(true))}>Your return</div>
+                <StepList dark />
+                <GrowList dark />
               </nav>
-              <div className="mt-4 border-t border-line pt-3">
-                <AccountMenu />
+              <div className="mt-4 border-t border-cream/15 pt-3">
+                <AccountMenu dark />
               </div>
             </aside>
 
@@ -271,7 +301,7 @@ export function FtShell({ gate }: { gate?: ReactNode }) {
             <NavLink
               to="/"
               end
-              className={({ isActive }) => cx("flex flex-1 flex-col items-center gap-0.5 py-2 text-[11px] font-semibold", TAP, FOCUS, isActive ? "text-accent" : "text-muted")}
+              className={({ isActive }) => barItem(isActive)}
             >
               <Glyph d="M3 8.5L9 3l6 5.5V15H3z" />
               <span>Home</span>

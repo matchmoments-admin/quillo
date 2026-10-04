@@ -19,7 +19,7 @@ export function StateEducationCard({ stateCode, ...status }: { stateCode: string
       {block && entry && (
         <FtCard className="space-y-2 p-4">
           <Badge tone="info">{block.label}</Badge>
-          <p className="text-[15px] font-semibold text-ink">{entry.name}</p>
+          <p className="text-sm font-semibold text-ink">{entry.name}</p>
           {block.intro && <p className="max-w-[65ch] text-sm leading-relaxed text-muted">{block.intro}</p>}
           <FtLink href={entry.url} className="text-sm">
             {entry.office}
@@ -45,7 +45,7 @@ export function NewcomerCard({ residency, ...status }: { residency: readonly (st
           const t = NEWCOMER_TOPICS[k];
           return (
             <div key={k} className="space-y-1">
-              <p className="text-[15px] font-semibold text-ink">{t.title}</p>
+              <p className="text-sm font-semibold text-ink">{t.title}</p>
               <p className="max-w-[65ch] text-sm leading-relaxed text-muted">{t.body}</p>
               <FtLink href={t.link.url} className="text-sm">
                 {t.link.label}

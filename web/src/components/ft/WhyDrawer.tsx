@@ -109,9 +109,9 @@ function Answer({ data }: { data: AskAnswer }) {
   return (
     <FtCard className="space-y-2 p-4">
       <div aria-live="polite" className="space-y-2">
-        <p className="whitespace-pre-wrap text-[15px] leading-relaxed text-ink">{data.answer}</p>
+        <p className="whitespace-pre-wrap text-sm leading-relaxed text-ink">{data.answer}</p>
         {data.caveats.length > 0 && (
-          <ul className="list-disc space-y-0.5 pl-5 text-[13px] text-muted">
+          <ul className="list-disc space-y-0.5 pl-5 text-xs text-muted">
             {data.caveats.map((c) => (
               <li key={c}>{c}</li>
             ))}
@@ -134,7 +134,7 @@ function AskNotice({ error }: { error: Error }) {
     text = error.message || "Something went wrong. Try again in a moment.";
   }
   return (
-    <p role="alert" className="rounded-lg bg-warn-surface px-3 py-2 text-sm text-warn">
+    <p role="alert" className="rounded-lg bg-warn/10 px-3 py-2 text-sm text-warn">
       {text}
     </p>
   );

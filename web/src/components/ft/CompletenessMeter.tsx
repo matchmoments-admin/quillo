@@ -30,7 +30,7 @@ export function CompletenessMeter({
       >
         <div className="flex items-baseline justify-between gap-3">
           <span className="text-sm font-semibold text-ink">{label}</span>
-          <span className="font-mono text-[13px] text-muted tnum">{c.label}</span>
+          <span className="text-xs text-muted tnum">{c.label}</span>
         </div>
         <div
           role="progressbar"
@@ -42,7 +42,7 @@ export function CompletenessMeter({
           className="h-2 overflow-hidden rounded-full bg-surface"
         >
           <div
-            className="h-full rounded-full bg-accent motion-safe:transition-[width] motion-safe:duration-200 motion-safe:ease-[cubic-bezier(0.16,1,0.3,1)]"
+            className="h-full rounded-full bg-green motion-safe:transition-[width] motion-safe:duration-200 motion-safe:ease-[cubic-bezier(0.16,1,0.3,1)]"
             style={{ width: `${c.pct}%` }}
           />
         </div>

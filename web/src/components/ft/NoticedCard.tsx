@@ -31,13 +31,13 @@ export function NoticedCard({
       what="this card"
       {...status}
       skeleton={
-        <div className="rounded-[14px] border border-line bg-card p-4">
+        <div className="rounded-2xl border border-line bg-card shadow-card p-4">
           <Skeleton lines={3} />
         </div>
       }
     >
-      <div className="rounded-[14px] border border-line bg-card p-4">
-        <p className="text-[15px] font-semibold text-ink">{copy.title}</p>
+      <div className="rounded-2xl border border-line bg-card shadow-card p-4">
+        <p className="text-sm font-semibold text-ink">{copy.title}</p>
         <p className="mt-1 text-sm text-muted">
           {ev.n} deposit{ev.n === 1 ? "" : "s"} · {amount}
           {span ? ` · ${span}` : ""}

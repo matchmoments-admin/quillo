@@ -27,7 +27,7 @@ export function StepHeader({
             <li
               key={JOURNEY_STEPS[i]}
               aria-current={s === "current" ? "step" : undefined}
-              className={cx("h-1.5 flex-1 rounded-full", s === "todo" ? "bg-surface" : s === "current" ? "bg-accent" : "bg-accent/45")}
+              className={cx("h-1.5 flex-1 rounded-full", s === "todo" ? "bg-surface" : s === "current" ? "bg-green" : "bg-green/45")}
             >
               <span className="sr-only">
                 {STEP_GUIDES[JOURNEY_STEPS[i] as JourneyStep].title}: {s === "done" ? "done" : s === "current" ? "current step" : "to do"}
@@ -35,7 +35,7 @@ export function StepHeader({
             </li>
           ))}
         </ol>
-        <span className="shrink-0 font-mono text-xs text-muted">{label}</span>
+        <span className="shrink-0 text-xs text-muted">{label}</span>
       </div>
       <StatusGate
         what="this step"
@@ -49,8 +49,8 @@ export function StepHeader({
       >
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
-            <h1 className="text-[26px] font-semibold leading-tight tracking-[-0.02em] text-ink">{title ?? guide.title}</h1>
-            <p className="mt-1 max-w-[65ch] text-[15px] leading-relaxed text-muted">{intro ?? guide.intro}</p>
+            <h1 className="font-display text-4xl text-forest">{title ?? guide.title}</h1>
+            <p className="mt-1 max-w-[65ch] text-sm leading-relaxed text-muted">{intro ?? guide.intro}</p>
           </div>
           {right}
         </div>

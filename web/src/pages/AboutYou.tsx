@@ -223,7 +223,7 @@ function FirstRun({
           {usingBedrock ? (
             <p className="text-sm text-muted">{CONSENT_COPY.bedrock}</p>
           ) : hasConsent ? (
-            <p className="text-sm text-ok">{CONSENT_COPY.done}</p>
+            <p className="text-sm text-safe">{CONSENT_COPY.done}</p>
           ) : (
             <div className="space-y-3">
               <p className="max-w-[65ch] text-sm leading-relaxed text-ink">{CONSENT_COPY.body}</p>
@@ -542,7 +542,7 @@ function Profile({ situation, fy, bounds, onWhy, onAskAgain }: { situation: Situ
       )}
 
       <section className="space-y-3">
-        <h2 className="text-[19px] font-semibold text-ink">{PEOPLE_COPY.title}</h2>
+        <h2 className="font-display text-xl tracking-wide text-forest">{PEOPLE_COPY.title}</h2>
         <p className="max-w-[65ch] text-sm text-muted">{PEOPLE_COPY.intro}</p>
         <FtCard className="space-y-2 p-4">
           <PeopleList persons={persons} onDone={invalidate} />
@@ -602,7 +602,7 @@ function FactCard({
   return (
     <FtCard className="space-y-3 p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h3 className="text-[15px] font-semibold text-ink">{FACT_LABEL[fact] ?? fact}</h3>
+        <h3 className="text-sm font-semibold text-ink">{FACT_LABEL[fact] ?? fact}</h3>
         {editing !== "new" && (
           <FtButton variant="ghost" className="text-sm" onClick={() => setEditing("new")}>
             Add
@@ -672,7 +672,7 @@ function LastYear() {
   const expanded = open ?? auto;
   return (
     <section className="space-y-3">
-      <FtButton variant="ghost" className="-ml-4 text-[19px]" aria-expanded={expanded} aria-controls="about-last-year" onClick={() => setOpen(!expanded)}>
+      <FtButton variant="ghost" className="-ml-4 font-display text-xl tracking-wide text-forest" aria-expanded={expanded} aria-controls="about-last-year" onClick={() => setOpen(!expanded)}>
         <span aria-hidden>{expanded ? "▾" : "▸"}</span> {CARRY_INS_COPY.title}
       </FtButton>
       {expanded && (

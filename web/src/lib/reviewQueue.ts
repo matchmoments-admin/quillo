@@ -57,10 +57,24 @@ export function queueCounts(i: QueueInputs): QueueCounts {
   return { ...c, total: QUEUE_KINDS.reduce((s, k) => s + c[k], 0) };
 }
 
-/** The one-line header summary: how many cards are left, never an amount. */
+/** How many cards are left, never an amount. */
 export function queueSummary(c: QueueCounts): string {
-  if (c.total === 0) return "Nothing left to review";
-  return `${c.total} ${c.total === 1 ? "thing" : "things"} to review`;
+  if (c.total === 0) return "Nothing left to look at";
+  return `${c.total} to look at`;
+}
+
+/**
+ * The header's ONE counts line (H&R Block review (d)11): cards left, then how many confirmed claims still
+ * need a record and how many facts are still to state, e.g. "6 to look at · 3 claims need a record". Counts
+ * only, never an amount; zero parts are left out.
+ */
+export function queueHeadline(c: QueueCounts, p: RecordsProgress | null): string {
+  const parts = [queueSummary(c)];
+  const claims = p ? Math.max(0, p.claimsTotal - p.claimsDone) : 0;
+  const facts = p ? Math.max(0, p.factsTotal - p.factsDone) : 0;
+  if (claims > 0) parts.push(`${claims} ${claims === 1 ? "claim needs" : "claims need"} a record`);
+  if (facts > 0) parts.push(`${facts} ${facts === 1 ? "fact" : "facts"} to state`);
+  return parts.join(" · ");
 }
 
 /** The kinds that have cards, in queue order (the header's filter chips). */

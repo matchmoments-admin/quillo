@@ -5468,6 +5468,16 @@ console.log("#589 Check step");
   check(`ReviewQueue.tsx copy passes the tax-advice denylist (offenders: ${hits.map((h) => h.trim().slice(0, 60)).join(" | ") || "none"})`, hits.length === 0);
   check("ReviewQueue.tsx labels the estimate 'estimate only, general information' and shows the readiness disclaimer + general-info note",
     checkSrc.includes("estimate only, general information") && checkSrc.includes("readiness.disclaimer") && checkSrc.includes("<GeneralInfoNote"));
+  // H&R Block review (d)11: a slimmer header (one counts line → records meter → filter chips); the estimate
+  // disclosure moves out of the header to beside Done, as a plain text-link toggle (no -ml-5 hack).
+  const hdrAt = checkSrc.indexOf("queueHeadline(counts, progress)");
+  const meterAt = checkSrc.indexOf("<CompletenessMeter");
+  const chipsAt = checkSrc.indexOf('aria-label="Show only"');
+  const doneAt = checkSrc.indexOf("Done <span");
+  const estAt = checkSrc.indexOf('aria-controls="review-estimate"');
+  check("ReviewQueue.tsx header: one counts line, then the records meter, then the filter chips; the estimate sits after Done",
+    hdrAt > 0 && hdrAt < meterAt && meterAt < chipsAt && doneAt > chipsAt && estAt > doneAt && (checkSrc.match(/<CompletenessMeter/g) ?? []).length === 1 &&
+      !/-ml-5/.test(checkSrc) && /variant="link"[^\n]*aria-controls="review-estimate"/.test(checkSrc));
   // Two matchLink callers, both a user's tap: Match on a proposal, and Snap a receipt (upload → link to the claim line).
   check("ReviewQueue.tsx: match writes are only the user's Match tap and Snap a receipt; nothing auto-confirms",
     (checkSrc.match(/api\.matchLink\(/g) ?? []).length === 2 && /onClick: \(\) => match\.mutate\(x\)/.test(checkSrc) && /api\.matchLink\(up\.txnId, lineId\)/.test(checkSrc));
@@ -5477,7 +5487,7 @@ console.log("#589 Check step");
 }
 
 // ── #587 Review queue (spec §0 step 3): counts, filters, records meter (web/src/lib/reviewQueue.ts) ──
-import { queueCounts, queueSummary, activeKinds, effectiveFilter, showKind, recordsProgress, openRecordRows, doneRecordRows, openFacts } from "../web/src/lib/reviewQueue";
+import { queueCounts, queueSummary, queueHeadline, activeKinds, effectiveFilter, showKind, recordsProgress, openRecordRows, doneRecordRows, openFacts } from "../web/src/lib/reviewQueue";
 import { coveredByWfhFixedRate, wfhFixedRateCovers } from "../src/lib/relevance-scan";
 console.log("review queue (#587)");
 {
@@ -5490,8 +5500,8 @@ console.log("review queue (#587)");
   check("queue: counts per kind (records = rows + open facts, matches = proposals + ambiguous) and a total",
     c.fix === 1 && c.check === 2 && c.noticed === 1 && c.claims === 3 && c.records === 3 && c.matches === 3 && c.total === 13);
   const z = queueCounts({ blockers: -1, review: NaN, noticed: 0, claimGroups: 0, proposals: 0, ambiguous: 0, recordRows: 0, factsOpen: Infinity });
-  check("queue: negative / non-finite inputs count as 0", z.total === 0 && queueSummary(z) === "Nothing left to review");
-  check("queue: summary is a count, never an amount", queueSummary(c) === "13 things to review" && queueSummary({ ...z, fix: 1, total: 1 }) === "1 thing to review" && !/\$|refund/i.test(queueSummary(c)));
+  check("queue: negative / non-finite inputs count as 0", z.total === 0 && queueSummary(z) === "Nothing left to look at");
+  check("queue: summary is a count, never an amount", queueSummary(c) === "13 to look at" && queueSummary({ ...z, fix: 1, total: 1 }) === "1 to look at" && !/\$|refund/i.test(queueSummary(c)));
   check("queue: chips in queue order, only kinds with cards", JSON.stringify(activeKinds({ ...z, records: 2, fix: 1, total: 3 })) === '["fix","records"]');
   check("queue: a filter whose kind ran out falls back to all; all shows every kind",
     effectiveFilter("claims", { ...z, records: 1, total: 1 }) === "all" && effectiveFilter("records", { ...z, records: 1, total: 1 }) === "records" &&
@@ -5500,6 +5510,10 @@ console.log("review queue (#587)");
   const pr = recordsProgress(block);
   check("queue: records meter = claims with a record or exception + facts stated (counts only; a done fact not needed doesn't count)",
     !!pr && pr.claimsDone === 2 && pr.claimsTotal === 3 && pr.factsDone === 1 && pr.factsTotal === 2 && pr.done === 3 && pr.total === 5 && !Object.keys(pr).some((k) => /cents|amount/.test(k)));
+  check("queue: the header's one counts line = cards left · claims needing a record · facts to state (zero parts dropped, never an amount)",
+    queueHeadline(c, pr) === "13 to look at · 1 claim needs a record · 1 fact to state" &&
+      queueHeadline({ ...z, records: 6, total: 6 }, { claimsDone: 0, claimsTotal: 3, factsDone: 2, factsTotal: 2, done: 2, total: 5 }) === "6 to look at · 3 claims need a record" &&
+      queueHeadline(z, null) === "Nothing left to look at" && !/\$|refund/i.test(queueHeadline(c, pr)));
   check("queue: nothing to count ⇒ no meter", recordsProgress({ claims_total: 0, claims_with_record: 0, claims_exception: 0, facts_needed: [], facts_done: [] }) === null && recordsProgress(null) === null);
   const view = {
     rows: [{ id: "a", status: "needs_record" }, { id: "b", status: "recorded" }, { id: "c", status: "exception" }],

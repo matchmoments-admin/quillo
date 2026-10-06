@@ -40,7 +40,7 @@ import {
   openFacts,
   openRecordRows,
   queueCounts,
-  queueSummary,
+  queueHeadline,
   recordsProgress,
   showKind,
   type QueueFilter,
@@ -58,7 +58,7 @@ import type { Journey, JourneyStepKey, NoticedConfirmResult, NoticedSignal, Reco
 // Each card leaves the queue once it's handled; a claimed item comes back as a record card until it has one
 // (claim → record → done). Done items (records, stated facts, matches incl. the import-time auto-links with
 // Undo) sit under a collapsed Done list.
-// Header: counts + the records completeness meter, never a refund figure; the estimate sits behind an
+// Header: one counts line, the records meter, the filter chips, never a refund figure; the estimate sits beside Done behind an
 // "estimate only, general information" link. Everyday spending is never shown here (power users have the
 // All transactions link). Every hook sits above the first conditional return (hooks lint gate; React #310).
 
@@ -295,23 +295,12 @@ function QueueBody() {
         }}
       />
 
-      {/* ── Header: counts + records completeness. Never a refund figure. ── */}
+      {/* ── Header (H&R Block review (d)11): one counts line, the records meter, the filter chips. Never a refund figure. ── */}
       <FtCard className="space-y-4 p-5">
-        <div className="space-y-1">
-          <p className="text-base font-semibold text-ink" aria-live="polite">
-            {loading ? "Checking what's left…" : queueSummary(counts)}
-          </p>
-          <p className="max-w-[65ch] text-sm text-muted">
-            {jobs.length > 0 ? (
-              <>
-                Based on your job as a <strong className="text-ink">{jobs.join(" and ")}</strong> and your bank lines.
-              </>
-            ) : (
-              "Based on your bank lines."
-            )}{" "}
-            You decide what's yours. Everyday spending isn't shown here.
-          </p>
-        </div>
+        <p className="text-base font-semibold text-ink" aria-live="polite">
+          {loading ? "Checking what's left…" : queueHeadline(counts, progress)}
+        </p>
+        {progress && <CompletenessMeter label="Records" done={progress.done} total={progress.total} />}
         {activeKinds(counts).length > 1 && (
           <div className="flex flex-wrap gap-2" role="group" aria-label="Show only">
             <Chip selected={f === "all"} onToggle={() => setFilter("all")}>
@@ -324,61 +313,16 @@ function QueueBody() {
             ))}
           </div>
         )}
-        {progress && (
-          <div className="space-y-1">
-            <CompletenessMeter label="Records" done={progress.done} total={progress.total} />
-            <p className="text-sm text-muted">
-              <span className="font-semibold text-ink tnum">
-                {progress.claimsDone} of {progress.claimsTotal}
-              </span>{" "}
-              claims have a record
-              {progress.factsTotal > 0 && (
-                <>
-                  {" · "}
-                  <span className="font-semibold text-ink tnum">
-                    {progress.factsDone} of {progress.factsTotal}
-                  </span>{" "}
-                  facts stated
-                </>
-              )}
-            </p>
-          </div>
-        )}
-        <div>
-          <FtButton
-            variant="ghost"
-            aria-expanded={estimateOpen}
-            aria-controls="review-estimate"
-            onClick={() => setEstimateOpen((o) => !o)}
-            className="-ml-5 underline underline-offset-2"
-          >
-            Your estimate (estimate only, general information)
-          </FtButton>
-          {estimateOpen && (
-            <div id="review-estimate" className="mt-2 rounded-lg border border-line bg-surface p-3">
-              {j?.readiness.estimate ? (
-                <>
-                  <p className="text-sm text-ink">
-                    Estimated taxable position:{" "}
-                    <span className="font-semibold tnum">
-                      {j.readiness.estimate.confirmed_cents != null && j.readiness.estimate.confirmed_cents !== j.readiness.estimate.tracked_cents
-                        ? `${money(j.readiness.estimate.confirmed_cents)} confirmed → ${money(j.readiness.estimate.tracked_cents)} tracked`
-                        : money(j.readiness.estimate.tracked_cents)}
-                    </span>{" "}
-                    <span className="text-muted">(estimate only, general information)</span>
-                  </p>
-                  <p className="mt-1 text-xs text-muted">{j.readiness.estimate.caption}</p>
-                </>
-              ) : (
-                <p className="text-sm text-muted">
-                  {blockers.length > 0 ? "Your estimate shows here once nothing is left to fix." : "Your estimate shows here once you've brought in your income and spending for the year."}
-                </p>
-              )}
-              {j && <p className="mt-2 max-w-[65ch] text-xs leading-relaxed text-muted">{j.readiness.disclaimer}</p>}
-              <GeneralInfoNote className="mt-1" />
-            </div>
-          )}
-        </div>
+        <p className="max-w-[65ch] text-xs text-muted">
+          {jobs.length > 0 ? (
+            <>
+              Based on your job as a <strong className="text-ink">{jobs.join(" and ")}</strong> and your bank lines.
+            </>
+          ) : (
+            "Based on your bank lines."
+          )}{" "}
+          You decide what's yours. Everyday spending isn't shown here.
+        </p>
       </FtCard>
 
       {journey.error && <ErrorState what="your checks" error={journey.error} onRetry={() => void journey.refetch()} />}
@@ -657,6 +601,37 @@ function QueueBody() {
               </div>
             </details>
           )}
+
+          {/* ── Your estimate, beside Done (H&R Block review (d)11): taxable position, never a refund, behind a disclosure. ── */}
+          <div>
+            <FtButton variant="link" className="text-sm" aria-expanded={estimateOpen} aria-controls="review-estimate" onClick={() => setEstimateOpen((o) => !o)}>
+              Your estimate (estimate only, general information)
+            </FtButton>
+            {estimateOpen && (
+              <div id="review-estimate" className="mt-2 rounded-lg border border-line bg-surface p-3">
+                {j?.readiness.estimate ? (
+                  <>
+                    <p className="text-sm text-ink">
+                      Estimated taxable position:{" "}
+                      <span className="font-semibold tnum">
+                        {j.readiness.estimate.confirmed_cents != null && j.readiness.estimate.confirmed_cents !== j.readiness.estimate.tracked_cents
+                          ? `${money(j.readiness.estimate.confirmed_cents)} confirmed → ${money(j.readiness.estimate.tracked_cents)} tracked`
+                          : money(j.readiness.estimate.tracked_cents)}
+                      </span>{" "}
+                      <span className="text-muted">(estimate only, general information)</span>
+                    </p>
+                    <p className="mt-1 text-xs text-muted">{j.readiness.estimate.caption}</p>
+                  </>
+                ) : (
+                  <p className="text-sm text-muted">
+                    {blockers.length > 0 ? "Your estimate shows here once nothing is left to fix." : "Your estimate shows here once you've brought in your income and spending for the year."}
+                  </p>
+                )}
+                {j && <p className="mt-2 max-w-[65ch] text-xs leading-relaxed text-muted">{j.readiness.disclaimer}</p>}
+                <GeneralInfoNote className="mt-1" />
+              </div>
+            )}
+          </div>
 
           {/* ── Your documents (legacy /documents deep links land on #documents). ── */}
           <details id="documents" open={hash === "#documents"} className="scroll-mt-20 rounded-2xl border border-line bg-card shadow-card">

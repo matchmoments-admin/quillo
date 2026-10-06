@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api";
@@ -7,6 +7,7 @@ import { useFeatures } from "../lib/features";
 import { useEducation } from "../lib/education";
 import { STEP_LABEL, STEP_ROUTE } from "../lib/journey";
 import {
+  NON_QUESTION_SCREENS,
   aboutScreens,
   aboutYouWrites,
   answersFromPeriods,
@@ -39,6 +40,7 @@ import {
   VALUE_LABEL,
   VISA_CHOICES,
 } from "../content/aboutYou";
+import { MYTAX_CHECK } from "../content/getSetUp";
 import { OCCUPATIONS, normaliseOccupation, occupationLabel } from "../content/occupations";
 import {
   Chip,
@@ -50,7 +52,9 @@ import {
   MyTaxAccessCheck,
   NewcomerCard,
   PeriodEditor,
+  SetupFinePrint,
   SetupIntro,
+  SetupPreflight,
   SituationQuestion,
   StateEducationCard,
   StepFooter,
@@ -202,7 +206,7 @@ function FirstRun({
   const back = () => (i > 0 ? setI(i - 1) : onLeaveQuestions ? onLeaveQuestions() : navigate("/"));
   const next = () => setI(Math.min(i + 1, screens.length - 1));
   const isLast = screen === "confirm";
-  const questions: readonly string[] = screens.filter((s) => s !== "consent" && s !== "intro");
+  const questions: readonly string[] = screens.filter((s) => !NON_QUESTION_SCREENS.includes(s));
   const questionN = questions.indexOf(screen) + 1;
   const questionTotal = questions.length;
 
@@ -211,16 +215,32 @@ function FirstRun({
       <StepHeader
         step="setup"
         onWhy={onWhy}
+        bare={screen === "intro"}
         sub={questionN > 0 ? `Question ${questionN} of ${questionTotal}` : undefined}
-        intro={screen === "consent" || screen === "intro" ? undefined : `For ${fyLabel(fy)}. You can change any answer later.`}
+        intro={NON_QUESTION_SCREENS.includes(screen) ? undefined : `For ${fyLabel(fy)}. You can change any answer later.`}
       />
 
+      {/* The opening card carries its own Start / Skip for now, so this screen has no footer. */}
       {screen === "intro" && (
         <>
-          <SetupIntro />
-          <MyTaxCheckCard situation={situation} />
-          <TaxHelpCard />
+          <SetupPreflight fy={fyLabel(fy)} onStart={next} onSkip={back} />
+          <SetupFinePrint />
         </>
+      )}
+
+      {screen === "mytax" && (
+        <MyTaxCheckCard
+          situation={situation}
+          escape={
+            <div className="flex max-w-[65ch] flex-wrap items-center gap-x-2 text-sm text-ink">
+              <span>{MYTAX_CHECK.escapeLead}</span>
+              <FtButton variant="link" className="font-semibold" onClick={next}>
+                {MYTAX_CHECK.escapeAction}
+              </FtButton>
+              <span className="text-muted">{MYTAX_CHECK.escapeTail}</span>
+            </div>
+          }
+        />
       )}
 
       {screen === "consent" && (
@@ -436,17 +456,19 @@ function FirstRun({
 
       {screen === "confirm" && <ConfirmSummary a={a} states={states} fy={fy} />}
 
-      <StepFooter
-        onBack={back}
-        primary={
-          isLast
-            ? { label: `Save and ${STEP_LABEL.connect.toLowerCase()}`, onClick: () => save.mutate(), busy: save.isPending }
-            : { label: "Next", onClick: next, disabled: blocked }
-        }
-        status={save.isError ? "error" : "ready"}
-        error={save.error}
-        onRetry={() => save.mutate()}
-      />
+      {screen !== "intro" && (
+        <StepFooter
+          onBack={back}
+          primary={
+            isLast
+              ? { label: `Save and ${STEP_LABEL.connect.toLowerCase()}`, onClick: () => save.mutate(), busy: save.isPending }
+              : { label: "Next", onClick: next, disabled: blocked }
+          }
+          status={save.isError ? "error" : "ready"}
+          error={save.error}
+          onRetry={() => save.mutate()}
+        />
+      )}
     </div>
   );
 }
@@ -489,7 +511,7 @@ function ConfirmSummary({ a, states, fy }: { a: AboutAnswers; states: readonly {
  * The user's own ticks, stored as a UI flag in profiles.ui_state.mytax_check (never credentials). Shown
  * optimistically; a failed save rolls back to the stored value and says so.
  */
-function MyTaxCheckCard({ situation }: { situation: Situation }) {
+function MyTaxCheckCard({ situation, escape }: { situation: Situation; escape?: ReactNode }) {
   const qc = useQueryClient();
   const stored = parseMyTaxCheck(situation.profile?.ui_state);
   const [local, setLocal] = useState<MyTaxCheck | null>(null);
@@ -503,6 +525,7 @@ function MyTaxCheckCard({ situation }: { situation: Situation }) {
       <MyTaxAccessCheck
         value={local ?? stored}
         saving={save.isPending}
+        escape={escape}
         onChange={(next) => {
           setLocal(next);
           save.mutate(next);

@@ -22,6 +22,26 @@ export const SETUP_INTRO = {
   lodgeLinks: [ATO_LINKS.lodgeTool, ATO_LINKS.nonLodgment] as readonly ExtLink[],
 } as const;
 
+/**
+ * Get set up's opening card (H&R Block review (d)5, patterns P1 + P12): the year as an eyebrow, the four
+ * steps one line each, what to have ready, Start / Skip for now. The fine print (what Quillo doesn't do,
+ * who has to lodge, Tax Help) sits in a collapsed disclosure under the card, its copy unchanged.
+ */
+export const SETUP_PREFLIGHT = {
+  eyebrow: (fy: string) => `FY ${fy} return`,
+  stepsLabel: "The four steps",
+  steps: {
+    setup: "Check you can get into myTax, then answer six quick questions about your year.",
+    connect: "Connect your bank or upload a statement, so Quillo can read your bank lines.",
+    review: "Work through one list of spending that may relate to your work, and the records for it.",
+    lodge: "Copy the worksheet into myTax and lodge your return yourself.",
+  } as Record<"setup" | "connect" | "review" | "lodge", string>,
+  need: ["Your myGov sign-in", "Your internet banking login", "Receipts, if you have them"] as readonly string[],
+  start: "Start",
+  skip: "Skip for now",
+  finePrint: "Before you start: the fine print",
+} as const;
+
 export interface MyTaxCheckItem {
   key: "mygov" | "linked" | "myid";
   /** What the user ticks when it's true for them. */
@@ -59,6 +79,10 @@ export const MYTAX_CHECK = {
   ] as readonly MyTaxCheckItem[],
   allTicked: "You're set to open myTax when it's time to lodge.",
   notYet: "You can keep going in Quillo meanwhile. You'll need this before you lodge, and linking can take a few tries.",
+  // The escape hatch on the check's own first-run screen (pattern P10): "Keep going" is a link to the next screen.
+  escapeLead: "Not set up yet?",
+  escapeAction: "Keep going",
+  escapeTail: "You'll need it before you lodge, and linking can take a few tries.",
 } as const;
 
 // Row 6: Tax Help named as the ATO's free option, its exclusions stated as information (no income figure).

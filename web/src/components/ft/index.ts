@@ -22,5 +22,6 @@ export { NoticedCard } from "./NoticedCard";
 export { SituationQuestion } from "./SituationQuestion";
 export { PeriodEditor, type PeriodDraft } from "./PeriodEditor";
 // #585 Get set up (spec §0): Before you start intro, the myTax access self-check, Tax Help.
-export { SetupIntro, MyTaxAccessCheck, TaxHelpCard } from "./GetSetUp";
+export { SetupIntro, SetupPreflight, SetupFinePrint, MyTaxAccessCheck, TaxHelpCard } from "./GetSetUp";
+export { PreflightSteps, YoullNeed } from "./Preflight";
 export { GrowSuggestionCard } from "./GrowSuggestionCard";

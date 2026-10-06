@@ -4941,9 +4941,9 @@ import { GROW_ROUTE, GROW_LEGACY_ROUTE } from "../web/src/lib/growRoutes";
 // ── #585 (spec A2): About you — answers → situation-period writes, periods → answers, Q4/Q5 job sync ──
 import {
   aboutYouWrites, answersFromPeriods, emptyAnswers, fyBoundsFor as ayFyBounds, addDays, residencyProblem, spouseProblem,
-  toggleTick, setOccupation, aboutScreens, occupationToken, fillPlan, hasAnswersForFy, parseMyTaxCheck, type AboutAnswers,
+  toggleTick, setOccupation, aboutScreens, NON_QUESTION_SCREENS, occupationToken, fillPlan, hasAnswersForFy, parseMyTaxCheck, type AboutAnswers,
 } from "../web/src/lib/aboutYou";
-import { MYTAX_CHECK, SETUP_INTRO, TAX_HELP } from "../web/src/content/getSetUp";
+import { MYTAX_CHECK, SETUP_INTRO, SETUP_PREFLIGHT, TAX_HELP } from "../web/src/content/getSetUp";
 import { normaliseOccupation as normOcc } from "../web/src/content/occupations";
 console.log("about you (#585)");
 {
@@ -4984,8 +4984,9 @@ console.log("about you (#585)");
   check("about Q2: spouse dates outside the year are a problem (an open side defaults to the FY edge, so it would invert)",
     !!spouseProblem(A({ spouse: "yes", spouseFrom: "2024-01-01" }), fy) && !!spouseProblem(A({ spouse: "yes", spouseTo: "2027-01-01" }), fy) &&
     spouseProblem(A({ spouse: "yes", spouseFrom: "2025-09-01" }), fy) === null && facts(A({ spouse: "yes", spouseFrom: "2024-01-01" })).length === 0);
-  check("setup: the Get set up intro comes first, then APP-8 consent only when missing, then six question screens in myTax order",
-    aboutScreens(true).join() === "intro,consent,residency,spouse,state,occupation,ticks,confirm" && aboutScreens(false).slice(0, 2).join() === "intro,residency" && aboutScreens(false).length === 7);
+  check("setup: the opening card comes first, then the myTax check on its own screen, then APP-8 consent only when missing, then six question screens in myTax order",
+    aboutScreens(true).join() === "intro,mytax,consent,residency,spouse,state,occupation,ticks,confirm" && aboutScreens(false).slice(0, 3).join() === "intro,mytax,residency" && aboutScreens(false).length === 8 &&
+      aboutScreens(true).filter((s) => !NON_QUESTION_SCREENS.includes(s)).length === 6);
   // Round trip: the periods the answers write read back to the same answers (re-entry shows what's recorded).
   const asPeriods = (a: AboutAnswers) => aboutYouWrites(a, "me", fy).map((x, i) => ({
     id: `p${i}`, subject_kind: "person" as const, subject_id: "me", fact: x.write.fact, value: x.write.value, ref_id: null,
@@ -5032,8 +5033,20 @@ console.log("about you (#585)");
   check("setup: ticks persist as a UI flag only — exactly-true values tick, anything else (missing, malformed) is unticked",
     JSON.stringify(parseMyTaxCheck(JSON.stringify({ theme: "x", mytax_check: { mygov: true, linked: "yes", myid: true } }))) === JSON.stringify({ mygov: true, linked: false, myid: true }) &&
     !parseMyTaxCheck("{oops").mygov && !parseMyTaxCheck(null).myid && !parseMyTaxCheck(JSON.stringify({ mytax_check: [true] })).mygov);
-  check("setup: the page mounts the intro, the myTax check, Tax Help, #591's cards and the Why? drawer on 'setup'",
-    /<SetupIntro \/>/.test(aySrc) && /<MyTaxCheckCard/.test(aySrc) && /<TaxHelpCard \/>/.test(aySrc) && /<NewcomerCard/.test(aySrc) && /<StateEducationCard/.test(aySrc) && /useWhyDrawer\("setup"\)/.test(aySrc));
+  check("setup: the page mounts the opening card + its fine print, the myTax check, Tax Help (profile), #591's cards and the Why? drawer on 'setup'",
+    /<SetupPreflight /.test(aySrc) && /<SetupFinePrint \/>/.test(aySrc) && /<MyTaxCheckCard/.test(aySrc) && /<TaxHelpCard \/>/.test(aySrc) && /<NewcomerCard/.test(aySrc) && /<StateEducationCard/.test(aySrc) && /useWhyDrawer\("setup"\)/.test(aySrc));
+  // H&R Block review (d)5–6: one opening card (year eyebrow, the four steps, "You'll need", Start + Skip for now);
+  // the fine print keeps SetupIntro's + Tax Help's copy; the myTax check screen has a "Keep going" escape hatch.
+  const gsuSrc = stripComments(fs.readFileSync(path.join(process.cwd(), "web/src/components/ft/GetSetUp.tsx"), "utf8"));
+  check("setup: opening card = FY eyebrow, one H1, the four steps one line each, You'll need badges, Start + Skip for now",
+    SETUP_PREFLIGHT.eyebrow("2025-26") === "FY 2025-26 return" && Object.keys(SETUP_PREFLIGHT.steps).join() === "setup,connect,review,lodge" &&
+      SETUP_PREFLIGHT.need.join(" · ") === "Your myGov sign-in · Your internet banking login · Receipts, if you have them" &&
+      /<PreflightSteps/.test(gsuSrc) && /<YoullNeed items=\{SETUP_PREFLIGHT\.need\}/.test(gsuSrc) && (gsuSrc.match(/<h1 /g) ?? []).length === 1 && /bare=\{screen === "intro"\}/.test(aySrc));
+  check("setup: the fine print carries SetupIntro's doesn't / lodge / non-lodgment copy and Tax Help, collapsed",
+    /<details[\s\S]*SETUP_INTRO\.doesnt[\s\S]*SETUP_INTRO\.lodgeLine[\s\S]*SETUP_INTRO\.nonLodgment[\s\S]*TAX_HELP\.body[\s\S]*<\/details>/.test(gsuSrc));
+  check("setup: the myTax check screen's escape hatch moves on (Keep going → next) without blocking",
+    MYTAX_CHECK.escapeLead === "Not set up yet?" && MYTAX_CHECK.escapeAction === "Keep going" && /You'll need it before you lodge/.test(MYTAX_CHECK.escapeTail) &&
+      /screen === "mytax" && \(\s*<MyTaxCheckCard/.test(aySrc) && /onClick=\{next\}>\s*\{MYTAX_CHECK\.escapeAction\}/.test(aySrc));
 }
 
 // ── #590 Ship it: worksheet ticks (web/src/lib/worksheetTicks.ts), routes, copy denylist ──
@@ -5204,6 +5217,9 @@ import { latestSyncRuns } from "../src/lib/bank-sync";
   }
   check(`connect: copy passes the tax-advice denylist (offenders: ${connectOffenders.join(" | ") || "none"})`, connectOffenders.length === 0);
   const page = stripComments(fs.readFileSync(path.join(connectDir, "ConnectPage.tsx"), "utf8"));
+  check("connect: opening card = numbered what-happens, You'll need, one primary, 'Upload a statement instead' as a text link",
+    /<PreflightSteps label="What happens"/.test(page) && /<YoullNeed items=\{\["Your internet banking login"\]\}/.test(page) &&
+      /variant="link"[\s\S]{0,160}?Upload a statement instead/.test(page) && !/Or upload a statement/.test(page));
   check("connect: no 'We noticed' cards on this step (they live in Review, #587)", !/Noticed/.test(page) && /!embedded && has\("wages_payer"\)/.test(fs.readFileSync(path.join(process.cwd(), "web/src/pages/Accounts.tsx"), "utf8")));
 }
 

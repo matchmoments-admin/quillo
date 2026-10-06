@@ -8,7 +8,8 @@ import { FtButton, Skeleton, StatusGate, cx, type StatusProps } from "./primitiv
  * small Why? text button beside it (it opens the explainer; the footer stays a two-button Back / primary
  * row), an optional `sub` line for progress inside the step ("Question 2 of 6"), then the step title and
  * its one-line intro. Title and intro come from content/stepGuides.ts so the header and the Why? sheet
- * never disagree; pass `title` / `intro` to override.
+ * never disagree; pass `title` / `intro` to override. `bare` keeps only the progress row, for an opening
+ * card that carries the step's heading itself (one H1 per screen).
  */
 export function StepHeader({
   step,
@@ -17,8 +18,9 @@ export function StepHeader({
   right,
   sub,
   onWhy,
+  bare = false,
   ...status
-}: { step: JourneyStep; title?: ReactNode; intro?: ReactNode; right?: ReactNode; sub?: ReactNode; onWhy?: () => void } & StatusProps) {
+}: { step: JourneyStep; title?: ReactNode; intro?: ReactNode; right?: ReactNode; sub?: ReactNode; onWhy?: () => void; bare?: boolean } & StatusProps) {
   const n = JOURNEY_STEPS.indexOf(step) + 1;
   const segs = segmentStates(n, STEP_TOTAL);
   const label = stepLabel(n, STEP_TOTAL);
@@ -57,13 +59,15 @@ export function StepHeader({
           </div>
         }
       >
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0">
-            <h1 className="font-display text-4xl text-forest">{title ?? guide.title}</h1>
-            <p className="mt-1 max-w-[65ch] text-sm leading-relaxed text-muted">{intro ?? guide.intro}</p>
+        {!bare && (
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0">
+              <h1 className="font-display text-4xl text-forest">{title ?? guide.title}</h1>
+              <p className="mt-1 max-w-[65ch] text-sm leading-relaxed text-muted">{intro ?? guide.intro}</p>
+            </div>
+            {right}
           </div>
-          {right}
-        </div>
+        )}
       </StatusGate>
     </header>
   );

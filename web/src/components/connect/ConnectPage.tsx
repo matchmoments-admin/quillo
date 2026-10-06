@@ -18,7 +18,7 @@ import { useFeatures } from "../../lib/features";
 import { useActiveFy } from "../../lib/activeFy";
 import { Income } from "../../pages/Income";
 import { Accounts } from "../../pages/Accounts";
-import { Badge, ErrorState, FtButton, FtCard, FtLink, GeneralInfoNote, Skeleton, cx } from "../ft";
+import { Badge, ErrorState, FtButton, FtCard, FtLink, GeneralInfoNote, PreflightSteps, Skeleton, YoullNeed, cx } from "../ft";
 import { INPUT_CLASS } from "../ui";
 import type { Account, StatementInfo } from "../../types";
 import {
@@ -36,6 +36,17 @@ import {
 } from "./model";
 
 const INPUT = `min-h-[44px] w-full ${INPUT_CLASS}`;
+
+// The opening card's "what happens", one line per step. The same facts the hero's prose carried, numbered.
+const CONNECT_STEPS = [
+  { key: "bank", title: "Sign in at your bank", body: "Never in Quillo: Quillo never sees your banking password." },
+  { key: "choose", title: "Choose the accounts to share", body: "Only the accounts you pick come through." },
+  { key: "import", title: "Quillo imports the year you're lodging", body: "Straight away, and you can leave the page while it runs." },
+] as const;
+const UPLOAD_STEPS = [
+  { key: "download", title: "Download a statement", body: "A CSV or PDF for the year you're lodging, from your bank's app or website." },
+  { key: "upload", title: "Upload it here", body: "Pick the account it's for, and Quillo reads the lines in." },
+] as const;
 
 function Section({ id, title, children }: { id?: string; title: string; children: ReactNode }) {
   return (
@@ -70,28 +81,29 @@ export function ConnectPage() {
             {connectFailedCopy(params.get("reason"))}
           </div>
         )}
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-          {bankOn ? (
-            <FtButton variant="primary" className="w-full sm:w-auto" onClick={() => connect.mutate()} busy={connect.isPending}>
-              {connect.isPending ? "Opening your bank…" : "Connect your bank"}
-            </FtButton>
-          ) : (
-            <FtButton variant="primary" className="w-full sm:w-auto" onClick={() => setShowUpload((v) => !v)} aria-expanded={showUpload}>
-              Upload a statement
-            </FtButton>
-          )}
-          {bankOn && (
-            <FtButton variant="ghost" className="w-full sm:w-auto" onClick={() => setShowUpload((v) => !v)} aria-expanded={showUpload}>
-              Or upload a statement
-            </FtButton>
-          )}
-        </div>
-        <p className="max-w-[65ch] text-sm text-muted">
-          {bankOn
-            ? "You sign in at your bank and choose the accounts to share. Quillo never sees your banking password, and imports the year you're lodging straight away."
-            : "Download a statement (CSV or PDF) for the year you're lodging from your bank's app or website, then upload it here."}
-        </p>
-        {showUpload && <StatementUpload />}
+        {/* The opening card (H&R Block review (d)9, P1 + P7): what happens, numbered; what you'll need; one primary. */}
+        <FtCard className="space-y-4 p-5">
+          <h2 className="font-display text-xl tracking-wide text-forest">{bankOn ? "Connect your bank" : "Upload a statement"}</h2>
+          <PreflightSteps label="What happens" items={bankOn ? CONNECT_STEPS : UPLOAD_STEPS} />
+          <YoullNeed items={["Your internet banking login"]} />
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            {bankOn ? (
+              <FtButton variant="primary" className="w-full sm:w-auto" onClick={() => connect.mutate()} busy={connect.isPending}>
+                {connect.isPending ? "Opening your bank…" : "Connect your bank"}
+              </FtButton>
+            ) : (
+              <FtButton variant="primary" className="w-full sm:w-auto" onClick={() => setShowUpload((v) => !v)} aria-expanded={showUpload}>
+                Upload a statement
+              </FtButton>
+            )}
+            {bankOn && (
+              <FtButton variant="link" className="justify-center text-sm" onClick={() => setShowUpload((v) => !v)} aria-expanded={showUpload}>
+                Upload a statement instead
+              </FtButton>
+            )}
+          </div>
+          {showUpload && <StatementUpload />}
+        </FtCard>
       </div>
 
       {bankOn && <ImportProgress connected={connected === "1"} />}

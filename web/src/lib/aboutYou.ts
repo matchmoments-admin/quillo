@@ -241,13 +241,16 @@ export function fillPlan(writes: readonly PlannedWrite[], existing: readonly Sit
 }
 
 /**
- * First-run screens in order: Get set up's intro (Before you start + the myTax access check, spec §0) first,
- * then the APP-8 consent screen when consent isn't recorded yet, then the six questions in myTax order.
+ * First-run screens in order: Get set up's opening card (spec §0; H&R Block review (d)5), then "Can you get
+ * into myTax?" on its own screen ((d)6, so the opening stays short), then the APP-8 consent screen when consent
+ * isn't recorded yet, then the six questions in myTax order.
  */
-export type AboutScreen = "intro" | "consent" | "residency" | "spouse" | "state" | "occupation" | "ticks" | "confirm";
+export type AboutScreen = "intro" | "mytax" | "consent" | "residency" | "spouse" | "state" | "occupation" | "ticks" | "confirm";
 export function aboutScreens(needsConsent: boolean): AboutScreen[] {
-  return ["intro", ...(needsConsent ? (["consent"] as AboutScreen[]) : []), "residency", "spouse", "state", "occupation", "ticks", "confirm"];
+  return ["intro", "mytax", ...(needsConsent ? (["consent"] as AboutScreen[]) : []), "residency", "spouse", "state", "occupation", "ticks", "confirm"];
 }
+/** The screens that aren't one of the six questions (no "Question n of 6" line). */
+export const NON_QUESTION_SCREENS: readonly AboutScreen[] = ["intro", "mytax", "consent"];
 
 /** Residency values the person has in the FY (NewcomerCard input). */
 export function residencyValuesInFy(periods: readonly SituationPeriod[], personId: string, fy: FyBounds): string[] {

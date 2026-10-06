@@ -75,6 +75,9 @@ import type { Situation, SituationPeriod } from "../types";
 //     existing period), "People in this return", and "From last year's return" (carry-ins, #435).
 // Every hook sits above the first conditional return (hooks lint gate; React #310 history).
 
+/** The id of the current question's problem line, which an invalid date field is described by (P5). */
+const PROBLEM_ID = "about-problem";
+
 const fmtDay = (iso: string | null) =>
   iso ? new Date(`${iso}T00:00:00Z`).toLocaleDateString("en-AU", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" }) : null;
 const span = (p: Pick<SituationPeriod, "starts_on" | "ends_on">) => `${fmtDay(p.starts_on) ?? "Any time before"} to ${fmtDay(p.ends_on) ?? "now"}`;
@@ -207,7 +210,9 @@ function FirstRun({
     <div className="mx-auto max-w-2xl space-y-6">
       <StepHeader
         step="setup"
-        intro={screen === "consent" || screen === "intro" ? undefined : `Question ${questionN} of ${questionTotal}, for ${fyLabel(fy)}. You can change any answer later.`}
+        onWhy={onWhy}
+        sub={questionN > 0 ? `Question ${questionN} of ${questionTotal}` : undefined}
+        intro={screen === "consent" || screen === "intro" ? undefined : `For ${fyLabel(fy)}. You can change any answer later.`}
       />
 
       {screen === "intro" && (
@@ -255,20 +260,30 @@ function FirstRun({
             value={a.residency}
             onChange={(k) => setA({ ...a, residency: k })}
             problem={problem}
+            problemId={PROBLEM_ID}
           >
             {a.residency === "part_year" && (
               <div className="space-y-3">
-                <div className="flex flex-wrap gap-2">
-                  <Chip selected={a.partYear.direction === "arrived"} onToggle={() => setA({ ...a, partYear: { ...a.partYear, direction: "arrived" } })}>
+                {/* One either/or pair (P8). Stacked on a phone: the labels are too long for half a row. */}
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <Chip className="w-full" selected={a.partYear.direction === "arrived"} onToggle={() => setA({ ...a, partYear: { ...a.partYear, direction: "arrived" } })}>
                     I arrived during the year
                   </Chip>
-                  <Chip selected={a.partYear.direction === "left"} onToggle={() => setA({ ...a, partYear: { ...a.partYear, direction: "left" } })}>
+                  <Chip className="w-full" selected={a.partYear.direction === "left"} onToggle={() => setA({ ...a, partYear: { ...a.partYear, direction: "left" } })}>
                     I left during the year
                   </Chip>
                 </div>
                 <label className="block space-y-1 text-sm">
                   <span className="font-medium text-ink">{a.partYear.direction === "arrived" ? "Date you arrived" : "Date you left"}</span>
-                  <FtInput type="date" min={bounds.start} max={bounds.end} value={a.partYear.date} onChange={(e) => setA({ ...a, partYear: { ...a.partYear, date: e.target.value } })} />
+                  <FtInput
+                    type="date"
+                    min={bounds.start}
+                    max={bounds.end}
+                    value={a.partYear.date}
+                    invalid={problem != null}
+                    aria-describedby={problem ? PROBLEM_ID : undefined}
+                    onChange={(e) => setA({ ...a, partYear: { ...a.partYear, date: e.target.value } })}
+                  />
                 </label>
               </div>
             )}
@@ -300,16 +315,31 @@ function FirstRun({
           value={a.spouse}
           onChange={(k) => setA({ ...a, spouse: k })}
           problem={problem}
+          problemId={PROBLEM_ID}
         >
           {a.spouse === "yes" && (
             <div className="grid gap-3 sm:grid-cols-2">
               <label className="block space-y-1 text-sm">
                 <span className="font-medium text-ink">From (optional)</span>
-                <FtInput type="date" className="w-full" value={a.spouseFrom} onChange={(e) => setA({ ...a, spouseFrom: e.target.value })} />
+                <FtInput
+                  type="date"
+                  className="w-full"
+                  value={a.spouseFrom}
+                  invalid={problem != null && !!a.spouseFrom}
+                  aria-describedby={problem && a.spouseFrom ? PROBLEM_ID : undefined}
+                  onChange={(e) => setA({ ...a, spouseFrom: e.target.value })}
+                />
               </label>
               <label className="block space-y-1 text-sm">
                 <span className="font-medium text-ink">To (optional)</span>
-                <FtInput type="date" className="w-full" value={a.spouseTo} onChange={(e) => setA({ ...a, spouseTo: e.target.value })} />
+                <FtInput
+                  type="date"
+                  className="w-full"
+                  value={a.spouseTo}
+                  invalid={problem != null && !!a.spouseTo}
+                  aria-describedby={problem && a.spouseTo ? PROBLEM_ID : undefined}
+                  onChange={(e) => setA({ ...a, spouseTo: e.target.value })}
+                />
               </label>
               <p className="text-xs text-muted sm:col-span-2">Leave the dates empty if it was the whole year.</p>
             </div>
@@ -408,7 +438,6 @@ function FirstRun({
 
       <StepFooter
         onBack={back}
-        onWhy={onWhy}
         primary={
           isLast
             ? { label: `Save and ${STEP_LABEL.connect.toLowerCase()}`, onClick: () => save.mutate(), busy: save.isPending }
@@ -507,6 +536,7 @@ function Profile({ situation, fy, bounds, onWhy, onAskAgain }: { situation: Situ
     <div className="space-y-6">
       <StepHeader
         step="setup"
+        onWhy={onWhy}
         intro={`Your answers for ${fyLabel(fy)}, each with the dates it applies. Edit anything that's changed.`}
         right={
           person?.id === self?.id ? (
@@ -557,7 +587,6 @@ function Profile({ situation, fy, bounds, onWhy, onAskAgain }: { situation: Situ
       <GeneralInfoNote />
       <StepFooter
         onBack={() => navigate("/")}
-        onWhy={onWhy}
         primary={{ label: `Next: ${STEP_LABEL.connect}`, onClick: () => navigate(STEP_ROUTE.connect) }}
       />
     </div>

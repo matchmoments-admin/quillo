@@ -33,9 +33,12 @@ export const cx = (...parts: (string | false | null | undefined)[]): string => p
  * ghost (bordered); `ghost` = the same without the border (Back links); `danger` = production's
  * destructive ghost (Accounts: `border-danger/40 text-danger`).
  */
-export type FtButtonVariant = "primary" | "secondary" | "highlight" | "ghost" | "danger";
+export type FtButtonVariant = "primary" | "secondary" | "highlight" | "ghost" | "danger" | "link";
 
-const VARIANT: Record<FtButtonVariant, string> = {
+/** The inline text-link look (FtLink's default, FtButton's `link` variant): underlined ink, 44px hit area. */
+const TEXT_LINK = cx(MOTION, "inline-flex items-center rounded-lg text-ink underline underline-offset-2 hover:text-green");
+
+const VARIANT: Record<Exclude<FtButtonVariant, "link">, string> = {
   primary: BUTTON_TONE.primary,
   secondary: BUTTON_TONE.ghost,
   highlight: BUTTON_TONE.highlight,
@@ -43,7 +46,10 @@ const VARIANT: Record<FtButtonVariant, string> = {
   danger: "border border-danger/40 bg-transparent text-danger hover:bg-danger/5",
 };
 
-/** The one button. `busy` disables it and announces the work in progress. Forwards its ref (focus management). */
+/**
+ * The one button. `busy` disables it and announces the work in progress. Forwards its ref (focus management).
+ * `variant="link"` renders it as an inline text link (a toggle or a small "Why?"), never a bespoke hack.
+ */
 export const FtButton = forwardRef<
   HTMLButtonElement,
   { variant?: FtButtonVariant; busy?: boolean; children: ReactNode } & ButtonHTMLAttributes<HTMLButtonElement>
@@ -54,7 +60,7 @@ export const FtButton = forwardRef<
       type={type}
       disabled={disabled || busy}
       aria-busy={busy || undefined}
-      className={cx(BUTTON_BASE, TAP, FOCUS, VARIANT[variant], className)}
+      className={variant === "link" ? cx(TAP, FOCUS, TEXT_LINK, className) : cx(BUTTON_BASE, TAP, FOCUS, VARIANT[variant], className)}
       {...props}
     >
       {children}
@@ -74,13 +80,8 @@ export function FtLink({
   className,
   children,
   ...props
-}: { to?: string; href?: string; variant?: FtButtonVariant; children: ReactNode } & Omit<AnchorHTMLAttributes<HTMLAnchorElement>, "href">) {
-  const cls = cx(
-    TAP,
-    FOCUS,
-    variant ? cx(BUTTON_BASE, VARIANT[variant]) : cx(MOTION, "inline-flex items-center rounded-lg text-ink underline underline-offset-2 hover:text-green"),
-    className,
-  );
+}: { to?: string; href?: string; variant?: Exclude<FtButtonVariant, "link">; children: ReactNode } & Omit<AnchorHTMLAttributes<HTMLAnchorElement>, "href">) {
+  const cls = cx(TAP, FOCUS, variant ? cx(BUTTON_BASE, VARIANT[variant]) : TEXT_LINK, className);
   if (to !== undefined) {
     return (
       <Link to={to} className={cls} {...props}>
@@ -97,6 +98,18 @@ export function FtLink({
 
 /** Text fields wear production's Input look (ui.tsx INPUT_CLASS, including its focus ring). */
 const FIELD = INPUT_CLASS;
+/**
+ * An invalid field (pattern P5): production's Input with its border swapped for the danger token, so the
+ * offending field is located, not just announced. Swapped rather than appended so the two border colours
+ * never fight on CSS order.
+ */
+const FIELD_INVALID = FIELD.replace("border-line", "border-danger");
+const field = (invalid?: boolean) => (invalid ? FIELD_INVALID : FIELD);
+
+/** What every ft/ field takes on top of its native props: `invalid` sets aria-invalid and the danger border. */
+export interface FieldState {
+  invalid?: boolean;
+}
 
 /** The one multi-line text field (#591, the Why? drawer's question box): 44px floor + the focus ring. */
 export const FtTextArea = forwardRef<HTMLTextAreaElement, TextareaHTMLAttributes<HTMLTextAreaElement>>(function FtTextArea({ className, rows = 2, ...props }, ref) {
@@ -110,9 +123,12 @@ export const FtTextArea = forwardRef<HTMLTextAreaElement, TextareaHTMLAttributes
   );
 });
 
-/** The one single-line field (#585 About you: dates, occupation): 44px floor + the focus ring. */
-export const FtInput = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputElement>>(function FtInput({ className, ...props }, ref) {
-  return <input ref={ref} className={cx(TAP, FIELD, className)} {...props} />;
+/**
+ * The one single-line field (#585 About you: dates, occupation): 44px floor + the focus ring. `invalid` marks
+ * it (aria-invalid + the danger border); pass the error's id as `aria-describedby` so it's read with the field.
+ */
+export const FtInput = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputElement> & FieldState>(function FtInput({ className, invalid, ...props }, ref) {
+  return <input ref={ref} aria-invalid={invalid || undefined} className={cx(TAP, field(invalid), className)} {...props} />;
 });
 
 /**
@@ -128,10 +144,10 @@ export function FtCheckbox({ checked, onChange, children, className }: { checked
   );
 }
 
-/** The one dropdown (#585 About you: a period's answer): 44px floor + the focus ring. */
-export const FtSelect = forwardRef<HTMLSelectElement, SelectHTMLAttributes<HTMLSelectElement>>(function FtSelect({ className, children, ...props }, ref) {
+/** The one dropdown (#585 About you: a period's answer): 44px floor + the focus ring; `invalid` as FtInput. */
+export const FtSelect = forwardRef<HTMLSelectElement, SelectHTMLAttributes<HTMLSelectElement> & FieldState>(function FtSelect({ className, invalid, children, ...props }, ref) {
   return (
-    <select ref={ref} className={cx(TAP, FIELD, className)} {...props}>
+    <select ref={ref} aria-invalid={invalid || undefined} className={cx(TAP, field(invalid), className)} {...props}>
       {children}
     </select>
   );

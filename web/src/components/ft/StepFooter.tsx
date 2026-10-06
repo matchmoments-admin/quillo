@@ -9,27 +9,18 @@ export interface FooterAction {
 }
 
 /**
- * Step footer (design-system.md §4): Back / Why? / primary. Sticks to the bottom of the step on a
- * phone (clearing the iOS home indicator) and sits inline on wider screens. The agent explains, it
- * never drives: Why? only opens the explainer, the user presses the primary action themselves.
+ * Step footer (design-system.md §4, pattern P7): two buttons, Back on the left and the primary on the
+ * right. Why? sits in StepHeader beside "Step n of 4". Sticks to the bottom of the step on a phone
+ * (clearing the iOS home indicator) and sits inline on wider screens. The agent explains, it never
+ * drives: the user presses the primary action themselves.
  * `status="error"` shows the error above the buttons (the step's action failed) and keeps them usable.
  */
-export function StepFooter({
-  onBack,
-  onWhy,
-  primary,
-  ...status
-}: { onBack?: () => void; onWhy?: () => void; primary?: FooterAction } & StatusProps) {
+export function StepFooter({ onBack, primary, ...status }: { onBack?: () => void; primary?: FooterAction } & StatusProps) {
   const buttons = (
     <div className="flex items-center gap-2">
       {onBack && (
         <FtButton variant="ghost" onClick={onBack}>
           Back
-        </FtButton>
-      )}
-      {onWhy && (
-        <FtButton variant="secondary" onClick={onWhy} aria-haspopup="dialog">
-          Why?
         </FtButton>
       )}
       {primary && (

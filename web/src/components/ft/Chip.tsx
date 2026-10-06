@@ -9,11 +9,14 @@ export function Chip({
   selected,
   onToggle,
   disabled,
+  className,
   children,
 }: {
   selected: boolean;
   onToggle: () => void;
   disabled?: boolean;
+  /** Layout only (e.g. `w-full` in a Yes / No pair); the look stays the chip's. */
+  className?: string;
   children: ReactNode;
 }) {
   return (
@@ -22,7 +25,7 @@ export function Chip({
       aria-pressed={selected}
       onClick={onToggle}
       disabled={disabled}
-      className="px-4 font-medium"
+      className={cx("px-4 font-medium", className)}
     >
       <span aria-hidden className={cx("inline-block w-3 text-center", !selected && "opacity-0")}>
         ✓

@@ -1,20 +1,24 @@
 import type { ReactNode } from "react";
 import { STEP_GUIDES } from "../../content/stepGuides";
 import { JOURNEY_STEPS, STEP_TOTAL, segmentStates, stepLabel, type JourneyStep } from "./model";
-import { Skeleton, StatusGate, cx, type StatusProps } from "./primitives";
+import { FtButton, Skeleton, StatusGate, cx, type StatusProps } from "./primitives";
 
 /**
- * Step header (spec A12 / design-system.md §4): progress segments, "Step n of 4", the step title and
- * its one-line intro. Title and intro come from content/stepGuides.ts so the header and the Why?
- * sheet never disagree; pass `title` / `intro` to override.
+ * Step header (spec A12 / design-system.md §4): progress segments, "Step n of 4 · N more after this", a
+ * small Why? text button beside it (it opens the explainer; the footer stays a two-button Back / primary
+ * row), an optional `sub` line for progress inside the step ("Question 2 of 6"), then the step title and
+ * its one-line intro. Title and intro come from content/stepGuides.ts so the header and the Why? sheet
+ * never disagree; pass `title` / `intro` to override.
  */
 export function StepHeader({
   step,
   title,
   intro,
   right,
+  sub,
+  onWhy,
   ...status
-}: { step: JourneyStep; title?: ReactNode; intro?: ReactNode; right?: ReactNode } & StatusProps) {
+}: { step: JourneyStep; title?: ReactNode; intro?: ReactNode; right?: ReactNode; sub?: ReactNode; onWhy?: () => void } & StatusProps) {
   const n = JOURNEY_STEPS.indexOf(step) + 1;
   const segs = segmentStates(n, STEP_TOTAL);
   const label = stepLabel(n, STEP_TOTAL);
@@ -36,7 +40,13 @@ export function StepHeader({
           ))}
         </ol>
         <span className="shrink-0 text-xs text-muted">{label}</span>
+        {onWhy && (
+          <FtButton variant="link" className="shrink-0 text-xs" onClick={onWhy} aria-haspopup="dialog">
+            Why?
+          </FtButton>
+        )}
       </div>
+      {sub && <p className="text-xs text-muted">{sub}</p>}
       <StatusGate
         what="this step"
         {...status}

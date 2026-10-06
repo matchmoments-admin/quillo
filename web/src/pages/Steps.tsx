@@ -93,11 +93,10 @@ function StepPage({ step, children }: { step: JourneyStepKey; children: ReactNod
   }, [hash]);
   return (
     <div className="space-y-6">
-      <StepHeader step={step} />
+      <StepHeader step={step} onWhy={() => openWhy()} />
       <div>{children}</div>
       <StepFooter
         onBack={() => navigate(prev ? STEP_ROUTE[prev] : "/")}
-        onWhy={() => openWhy()}
         primary={next ? { label: `Next: ${STEP_LABEL[next]}`, onClick: () => navigate(STEP_ROUTE[next]) } : { label: "Back to Home", onClick: () => navigate("/") }}
       />
       {drawer}

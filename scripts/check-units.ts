@@ -4115,7 +4115,9 @@ console.log("ft component library (#583)");
   check("ft: segmentStates(3) = done,done,current,todo", segmentStates(3).join(",") === "done,done,current,todo");
   check("ft: segmentStates clamps out-of-range / non-finite (never empty, never two currents)",
     segmentStates(0).join(",") === segmentStates(1).join(",") && segmentStates(99).filter((s) => s === "current").length === 1 && segmentStates(99)[3] === "current" && segmentStates(NaN).length === 4 && segmentStates(2, 0).length === 0);
-  check("ft: stepLabel = 'Step n of 4'", stepLabel(1) === "Step 1 of 4" && stepLabel(4) === "Step 4 of 4" && stepLabel(42) === "Step 4 of 4");
+  check("ft: stepLabel = 'Step n of 4 · N more after this', the last step says so (clamped)",
+    stepLabel(1) === "Step 1 of 4 · 3 more after this" && stepLabel(2) === "Step 2 of 4 · 2 more after this" && stepLabel(3) === "Step 3 of 4 · 1 more after this" &&
+      stepLabel(4) === "Step 4 of 4 · Last step" && stepLabel(42) === "Step 4 of 4 · Last step" && stepLabel(0) === stepLabel(1));
   const c = completeness(3, 8);
   check("ft: completeness counts items: 3 of 8 ⇒ 38%, label '3 of 8 ready'", c.pct === 38 && c.label === "3 of 8 ready" && Math.abs(c.frac - 0.375) < 1e-9);
   check("ft: completeness clamps: 0 items ⇒ 0% (not NaN); done > total ⇒ capped; negative/NaN ⇒ 0",
@@ -4166,6 +4168,16 @@ console.log("ft component library (#583)");
     sheet.indexOf("useEffect(") > -1 && sheet.indexOf("useEffect(") < sheet.indexOf("if (!open) return null"));
   const wl = src("WorksheetLine.tsx");
   check("ft: WorksheetLine copies copyValue() and reports a blocked clipboard instead of failing silently", /writeText\(value\)/.test(wl) && /Couldn't copy/.test(wl));
+  // H&R Block review (d) 1–4: two-button footer, Why? in the header, field error states, binary pairs.
+  const footer = src("StepFooter.tsx");
+  const header = src("StepHeader.tsx");
+  check("ft: StepFooter is two buttons (Back + primary); Why? lives in StepHeader as a text button",
+    !/Why\?|onWhy/.test(footer) && (footer.match(/<FtButton/g) ?? []).length === 2 && /onWhy && \(\s*<FtButton variant="link"[^>]*aria-haspopup="dialog"/.test(header) && /\{sub && </.test(header));
+  check("ft: FtInput/FtSelect `invalid` sets aria-invalid and swaps the border for production's danger token",
+    /aria-invalid=\{invalid \|\| undefined\}/.test(prim) && (prim.match(/field\(invalid\)/g) ?? []).length === 2 && /FIELD\.replace\("border-line", "border-danger"\)/.test(prim) && /INPUT_CLASS =\s*"[^"]*\bborder-line\b/.test(uiSrc));
+  const sq = src("SituationQuestion.tsx");
+  check("ft: SituationQuestion: two options ⇒ one full-width pair; the problem line describes the fieldset",
+    /pair \? "grid grid-cols-2" : "flex flex-wrap"/.test(sq) && /id=\{errId\}/.test(sq) && /aria-describedby=\{problem \? errId : undefined\}/.test(sq));
 
 }
 

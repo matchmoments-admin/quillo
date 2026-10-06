@@ -29,11 +29,15 @@ export function segmentStates(current: number, total: number = STEP_TOTAL): Segm
   return Array.from({ length: t }, (_, i) => (i + 1 < c ? "done" : i + 1 === c ? "current" : "todo"));
 }
 
-/** "Step n of 4", clamped like segmentStates. */
+/**
+ * "Step n of 4 · N more after this" (pattern P3: says how much is left, not only where you are), or
+ * "Step 4 of 4 · Last step". Clamped like segmentStates.
+ */
 export function stepLabel(current: number, total: number = STEP_TOTAL): string {
   const segs = segmentStates(current, total);
   const n = segs.indexOf("current") + 1;
-  return `Step ${n} of ${segs.length}`;
+  const left = segs.length - n;
+  return `Step ${n} of ${segs.length} · ${left > 0 ? `${left} more after this` : "Last step"}`;
 }
 
 export interface Completeness {

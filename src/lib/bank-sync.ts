@@ -1,4 +1,4 @@
-import { feedFingerprint, BasiqError, type TransactionPageResult } from "./basiq";
+import { feedFingerprint, ProviderError, type TransactionPageResult } from "./bank-feed-core";
 import { isTransferLike } from "./statements";
 import { cleanMerchant } from "./bank-parsers";
 
@@ -109,7 +109,7 @@ export interface SyncRun {
   counters: SyncCounters;
 }
 
-/** The page transport. Production binds fetchTransactionPage; tests pass a fake. */
+/** The page transport. Production binds the connection's provider fetchTransactionPage (bank-provider.ts); tests pass a fake. */
 export type FeedTransport = (q: { providerAccountId: string; from: string; to: string; next: string | null }) => Promise<TransactionPageResult>;
 
 export interface FeedCategory {
@@ -423,7 +423,7 @@ export async function syncRunStep(deps: SyncStepDeps, run: SyncRun, pageBudget: 
     return {
       done: true, truncated, pagesUsed, importedThisStep,
       error: (e as Error).message || "sync failed",
-      correlationId: e instanceof BasiqError ? (e.correlationId ?? null) : null,
+      correlationId: e instanceof ProviderError ? (e.correlationId ?? null) : null,
       run,
     };
   }

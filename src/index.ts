@@ -6,7 +6,7 @@ import { requireClerk } from "./auth/clerk";
 import { handleApi } from "./api";
 import { DeleteBlockedError } from "./lib/situation-write";
 import { handleCallback } from "./lib/qbo-oauth";
-import { takeConnectState } from "./lib/bank-connect";
+import { takeConnectState, stateForSession } from "./lib/bank-connect";
 import { verifyStripeWebhook } from "./lib/stripe";
 import { marketingResponse } from "./marketing/landing";
 import { legalResponse } from "./marketing/legal";
@@ -247,12 +247,23 @@ export default {
       // callback belongs to, and the DO is per-tenant — so the correct stub can only be chosen
       // once the tenant is known. Doing it inside a guessed stub would let one tenant's DO
       // coordinate another tenant's writes.
-      const userId = await takeConnectState(env, url.searchParams.get("state"));
+      // Our `state` rides in the redirect URL's query. Fallback: a provider that keeps the redirect
+      // server-side (Fiskil) may come back with only its auth-session id — mapped to the state at
+      // connect time, single-use and short-lived exactly like the state itself.
+      const sp = url.searchParams;
+      const sessionId = sp.get("sess_id") ?? sp.get("session_id");
+      const state = sp.get("state") ?? (await stateForSession(env, sessionId));
+      const userId = await takeConnectState(env, state);
       if (!userId) {
         console.warn("bank callback rejected: invalid_or_expired_state");
         return Response.redirect(`${url.origin}/accounts?connected=0&reason=invalid_or_expired_state`, 302);
       }
-      const r = await stubFor(env, userId).bankCallback(userId, url.searchParams.get("jobIds"));
+      const r = await stubFor(env, userId).bankCallback(userId, sp.get("jobIds"), {
+        outcome: sp.get("outcome"),
+        error: sp.get("error_type") ?? sp.get("error"),
+        errorId: sp.get("error_id"),
+        sessionId,
+      });
       if (!r.ok) console.warn(`bank callback failed: ${r.error}`);
       const q = r.ok
         ? `connected=1&accounts=${r.accounts}`

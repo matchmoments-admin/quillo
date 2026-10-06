@@ -1,5 +1,5 @@
 import type { Env } from "../env";
-import { deleteBasiqConnection, deleteBasiqUser } from "./basiq";
+import { bankProvider } from "./bank-provider";
 import { clearOrphanedTxnCgt } from "./situation-write";
 
 /**
@@ -31,22 +31,31 @@ import { clearOrphanedTxnCgt } from "./situation-write";
 
 // ── Upstream (the aggregator) ────────────────────────────────────────────────
 
-/** The two aggregator calls a withdrawal needs. Injected so tests run against a fake. */
+/**
+ * The two aggregator calls a withdrawal needs. Injected so tests run against a fake. `provider` is
+ * the row's own bank_connections.provider / profiles.bank_provider — a withdrawal is always sent to
+ * the aggregator that holds the consent, never to whichever one new connects currently use.
+ */
 export interface BankUpstream {
-  deleteConnection(providerUserId: string, providerConnectionId: string): Promise<void>;
-  deleteUser(providerUserId: string): Promise<void>;
+  deleteConnection(providerUserId: string, providerConnectionId: string, provider?: string | null): Promise<void>;
+  deleteUser(providerUserId: string, provider?: string | null): Promise<void>;
 }
 
-export function basiqUpstream(env: Env): BankUpstream {
+/** Routes each call to the provider named on the row (NULL on a legacy row ⇒ Basiq). */
+export function bankUpstream(env: Env): BankUpstream {
   return {
-    deleteConnection: (u, c) => deleteBasiqConnection(env, u, c),
-    deleteUser: (u) => deleteBasiqUser(env, u),
+    deleteConnection: (u, c, p) => bankProvider(env, p ?? null).revokeConnection(u, c),
+    deleteUser: (u, p) => bankProvider(env, p ?? null).deleteUser(u),
   };
 }
 
 // ── CDR audit log ────────────────────────────────────────────────────────────
 
 export type CdrEvent =
+  /** A consent flow was STARTED (auth session created) — recorded even if the consumer abandons it. */
+  | "consent_requested"
+  /** The consumer came back via the cancel/error redirect: no consent was granted. */
+  | "consent_abandoned"
   | "consent_granted"
   | "collected"
   | "consent_expired"
@@ -92,6 +101,12 @@ function errorClass(e: unknown): string {
   const err = e as { status?: number; code?: string; name?: string };
   if (typeof err?.status === "number") return `http_${err.status}${err.code ? `_${err.code}` : ""}`;
   return err?.name ?? "error";
+}
+
+/** The aggregator's support handle for a failure (Fiskil error_id / Basiq correlationId) — an id, safe to keep. */
+function errorId(e: unknown): string | null {
+  const id = (e as { correlationId?: unknown })?.correlationId;
+  return typeof id === "string" && id ? id.slice(0, 128) : null;
 }
 
 // ── Withdraw ─────────────────────────────────────────────────────────────────
@@ -148,14 +163,15 @@ async function revokeUpstream(
   let consumerDeleted = false;
   try {
     if (conn.provider_user_id && conn.provider_connection_id) {
-      await upstream.deleteConnection(conn.provider_user_id, conn.provider_connection_id);
+      await upstream.deleteConnection(conn.provider_user_id, conn.provider_connection_id, conn.provider);
     }
     if (last && conn.provider_user_id) {
-      await upstream.deleteUser(conn.provider_user_id);
+      await upstream.deleteUser(conn.provider_user_id, conn.provider);
       consumerDeleted = true;
     }
   } catch (e) {
     const cls = errorClass(e);
+    const eid = errorId(e);
     // Server-side only: the vendor message stays in Workers logs; the row, the CDR record and the
     // client get the error class.
     console.error(`[cdr] upstream revoke failed for connection ${conn.id}: ${(e as Error).message}`);
@@ -164,7 +180,7 @@ async function revokeUpstream(
     ).bind("The bank-side revoke didn't go through — use Retry, or we'll retry automatically.", conn.id, userId).run();
     await cdrAudit(env, userId, {
       event: "upstream_revoke_failed", connectionId: conn.id, provider: conn.provider, accessType: conn.access_type,
-      detail: { error: cls },
+      detail: eid ? { error: cls, error_id: eid } : { error: cls },
     });
     return { revoked: false, consumerDeleted: false, error: cls };
   }

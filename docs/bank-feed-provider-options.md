@@ -151,6 +151,12 @@ stays as is (bound from the provider). `ProviderError { status, code, correlatio
 
 Total ≈ **3–4 focused days**. No migration and no money-math change. Flag OFF ⇒ byte-identical.
 
+> **Status (2026-10-06):** PRs 1 and 2 have landed together. The seam is `src/lib/bank-provider.ts`
+> (`BankFeedProvider`, `bankProvider(env, id?)`). The shared helpers and the PS8 decision are in
+> `src/lib/bank-feed-core.ts`. Basiq is wrapped as `basiqProvider` with its behaviour unchanged, and
+> `src/lib/fiskil.ts` is `fiskilProvider`. Every SQL `'basiq'` literal in the DO now binds the row's
+> provider. No migration was needed. PR 3 (the human sandbox consent run) is what remains; see §7.
+
 ---
 
 ## 4 · Onboarding checklist: Fiskil
@@ -242,10 +248,49 @@ Total ≈ **3–4 focused days**. No migration and no money-math change. Flag OF
 1. **Fiskil's per-MAC rate and the definition of "active"**, which decides the cost model in ADR-0003 §8.
 2. **Written OSP permission for Cloudflare + AWS** under Quillo's own arrangement. Redbark is evidence, not a promise.
 3. **Representative vs "Sponsored access"** on Fiskil's terms, and whether long-term representative status is OK given no sponsored ADR is active on the Register.
-4. **Callback parameters** on Fiskil's redirect, and whether a query string on `redirect_uri` survives.
-5. **`account_id` filter semantics** and **transaction id stability** pending→posted.
-6. **`DELETE /end-users` scope**: does it revoke arrangements and delete Fiskil-held data?
+4. **Callback parameters** on Fiskil's redirect, and whether a query string on `redirect_uri` survives. *Partly resolved, see §7: still needs the human consent click.*
+5. **`account_id` filter semantics** and **transaction id stability** pending→posted. *Still open, see §7: needs consented sandbox data.*
+6. **`DELETE /end-users` scope**: does it revoke arrangements and delete Fiskil-held data? *Partly resolved, see §7: the API contract is verified, the data-deletion scope is a question for Fiskil.*
 7. **Cyber insurance** cost for a pre-revenue sole-director company. It's the likeliest due-diligence blocker.
+
+---
+
+## 7 · Sandbox verification (2026-10-06, the connector PR)
+
+The `FiskilProvider` (`src/lib/fiskil.ts`, behind `BANK_FEED_PROVIDER=fiskil`) was built against the live
+sandbox by direct API calls. Probe end users were created and then deleted.
+
+**Verified:**
+
+| Question | Answer |
+|---|---|
+| Token | `POST /v1/token {client_id, client_secret}` returns `{token, expires_in: 900}`. The JWT claims are `org_id, key_id, scope, exp, iat, jti`, with scope `api:banking api:user.read api:user.write`. **Nothing in the token says sandbox or production**, so `FISKIL_ENV` can't be checked against the keys. |
+| API version | Responses carry `x-fiskil-version: v3`, the Console default. The adapter pins `X-Fiskil-Version: v3` so a Console change can't reshape responses. `/v1/` in the path is a namespace, not the version. |
+| End users | `POST /v1/end-users {email}` returns `{end_user_id: "eu_…"}`. **There is no uniqueness check**: the same email twice gives two end users. `profiles.bank_provider_user_id` is the only 1:1 guard, and end-user create is never retried. |
+| Auth session | `POST /v1/auth/session {end_user_id, redirect_uri, cancel_uri}` returns `{id, session_id, expires_at (epoch s, +5 days), auth_url: "https://auth.fiskil.com?sess_id=…"}`. The redirect URI is held server-side (it isn't in `auth_url`), and a query string on it was accepted. Arbitrary redirect hosts were also accepted at session creation, so whether the Console allowlist is enforced at redirect time is unknown. |
+| Institutions | `GET /v1/institutions?client_id=` lists the real banks (NAB, CBA, ANZ, …) plus **`88888` "Banking Sandbox Data Holder"**. With sandbox keys, `88888` is the only `is_accessible: true` institution. |
+| Transactions filter | `from`/`to` must be RFC3339 instants: a bare `2025-07-01` gets `400 invalid from datetime: not in RFC3339 format`. Offsets like `+10:00` are accepted. `status` is validated (`PENDING | POSTED`). `page[size]` above 1000 is accepted and capped. |
+| Pagination | `links.next` is a full URL that carries `page[after]=<token>`. The adapter stores only the token and rebuilds each page from its own base URL. A garbage `page[after]` gets a **503** "temporarily unavailable", not a 400, so a bad cursor burns the retry budget and then fails the run. |
+| Errors | Front-door endpoints return `{name, id, message, temporary, timeout, fault}`. Data endpoints return `{id, name, message}`. `id` is the support `error_id`. |
+| Delete end user | `DELETE /v1/end-users/{id}` returns 204, then **404 `end_user_not_found` on a repeat** (treated as done). After a delete, `GET /banking/accounts?end_user_id=<deleted>` returns **200 with an empty list**, not 404. |
+| Revoke | `DELETE /v1/consent/{arrangement_id}` returns **204 even for an id that doesn't exist**, so a 204 means "accepted" and doesn't prove a consent existed. |
+| Consents | `GET /v1/consent?end_user_id=` returns `{consents: [], links: {}}` (the v3 envelope). |
+
+**How the adapter answers the remaining risks:**
+
+- **PS8 with a shared base URL:** the sandbox carve-out in `requiresAuResidency` needs `FISKIL_ENV=sandbox` **and** the connection's institution to be `88888`. Production keys left on `FISKIL_ENV=sandbox` therefore can't make a real bank's data look synthetic.
+- **Callback params (#4):** `state` is put in `redirect_uri`'s query. As a fallback, the auth `session_id` is mapped to the state in KV, and the callback accepts `state`, else `sess_id`/`session_id`. The cancel/error redirect goes to `cancel_uri` (`…&outcome=cancel`). The callback records the attempt with `error_type`/`error`/`error_id`/`session_id`, reduced to safe id characters. Fiskil's docs say only that "error details will be included in the query parameters".
+- **Account id space (#5):** the adapter stores the bank's `account_id`, which is also what `transactions[].account_id` carries, and sends it as the `account_id` filter. Every row is still re-checked locally against the selected account.
+- **Dates:** the window is sent as Sydney-local day bounds (DST-aware), and each row's ledger date is its Sydney-local date, so the provider filter and the local re-check use the same rule.
+
+**Still open:** these need a human to click through consent at `auth.fiskil.com`:
+
+1. Which query params Fiskil appends on success and cancel, and whether `?state=` survives. Check the Worker log for the callback line: a `state` hit is the primary path, and a `sess_id` hit means the fallback was needed.
+2. Whether the `account_id` filter takes the bank `account_id` (as built) or `fiskil_id`. Symptom if wrong: the consented account has transactions in the Fiskil Console but the sync imports 0, or other accounts' rows show up as dropped by the re-check.
+3. Whether `fiskil_id` is stable across re-fetches. A second sync should import 0 and count every row as a duplicate.
+4. Whether accounts are listed **immediately** after the callback. Fiskil fetches data asynchronously and recommends waiting for the `consent.received` webhook. If the callback shows `accounts=0`, wait a minute and connect again: the callback re-lists every live arrangement.
+5. Whether `posting_date_time` uses a local offset or UTC (it affects the FY edge only).
+6. For Fiskil, outside the API: does `DELETE /end-users` revoke the arrangements and delete Fiskil-held CDR data (PS12)? Does the Console enforce a redirect-URI allowlist? Fiskil emails consent notices to the end user's email, so is the synthetic `tenant-…@users.quillo.au` address acceptable for CDR receipts? This is a compliance question for #524.
 
 ---
 

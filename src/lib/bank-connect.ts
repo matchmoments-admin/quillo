@@ -23,11 +23,55 @@ const STATE_PREFIX = "bankstate:";
 /** Long enough for a consumer to authenticate at their bank, short enough to bound a leak. */
 const STATE_TTL_SECONDS = 600;
 
-/** Mint a single-use state handle for `userId` and return it. */
-export async function putConnectState(env: Env, userId: string): Promise<string> {
+/**
+ * Mint a single-use state handle for `userId` and return it. `ttlSeconds` lets a provider whose hosted
+ * flow is longer (Fiskil: OTP + the bank's own login) ask for more than the 10-minute default; it is
+ * clamped to [60 s, 1 h] so no caller can make a handle long-lived.
+ */
+export async function putConnectState(env: Env, userId: string, ttlSeconds: number = STATE_TTL_SECONDS): Promise<string> {
   const state = crypto.randomUUID();
-  await env.RULES.put(`${STATE_PREFIX}${state}`, userId, { expirationTtl: STATE_TTL_SECONDS });
+  const ttl = Math.min(3600, Math.max(60, Math.floor(ttlSeconds) || STATE_TTL_SECONDS));
+  await env.RULES.put(`${STATE_PREFIX}${state}`, userId, { expirationTtl: ttl });
   return state;
+}
+
+const SESSION_PREFIX = "banksess:";
+
+/**
+ * Fallback handle for providers that might not echo our `state` (Fiskil keeps redirect_uri
+ * server-side and its docs do not say which query parameters it appends): map the provider's own
+ * auth-session id to the state handle, for the same TTL. The session id is as unguessable as the
+ * state and sits in the same browser URL, so accepting it widens nothing — and it is consumed with
+ * the state, so it is single-use too.
+ */
+export async function putConnectSession(env: Env, sessionId: string, state: string, ttlSeconds: number = STATE_TTL_SECONDS): Promise<void> {
+  if (!sessionId || sessionId.length > 256) return;
+  const ttl = Math.min(3600, Math.max(60, Math.floor(ttlSeconds) || STATE_TTL_SECONDS));
+  await env.RULES.put(`${SESSION_PREFIX}${sessionId}`, state, { expirationTtl: ttl });
+}
+
+/** Resolve a provider session id back to its state handle (not consumed here — takeConnectState does that). */
+export async function stateForSession(env: Env, sessionId: string | null | undefined): Promise<string | null> {
+  if (!sessionId || sessionId.length > 256) return null;
+  const key = `${SESSION_PREFIX}${sessionId}`;
+  const state = await env.RULES.get(key);
+  if (!state) return null;
+  try {
+    await env.RULES.delete(key);
+  } catch {
+    // TTL bounds it.
+  }
+  return state;
+}
+
+/**
+ * A query value from the provider's redirect, reduced to something safe to store in an audit row:
+ * bounded length, printable ASCII only. Error codes/ids only ever — never free text from the bank.
+ */
+export function safeCallbackParam(v: string | null | undefined, max = 64): string | null {
+  if (!v) return null;
+  const s = v.replace(/[^A-Za-z0-9_.:\-]/g, "").slice(0, max);
+  return s || null;
 }
 
 /**

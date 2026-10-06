@@ -17,6 +17,8 @@ Curated cross-session memory for this repo. How it works:
 ## Build / tooling
 
 ## Gotchas
+- Fiskil sandbox+prod share ONE base URL and the JWT has no env marker, so FISKIL_ENV alone can't prove data is synthetic — PS8 carve-out also keys on sandbox institution `88888` (bank-feed-core requiresAuResidency). [src: 3d49246d-fc0d-40f9-86a3-ad884ecefa78]
+- Fiskil API: end users are NOT unique per email (never retry create); `DELETE /consent/{id}` returns 204 even for unknown ids; `from`/`to` must be RFC3339 (bare dates 400); a bad `page[after]` returns 503 not 400; pin `X-Fiskil-Version: v3`. Full list: docs/bank-feed-provider-options.md §7. [src: 3d49246d-fc0d-40f9-86a3-ad884ecefa78]
 
 ## Preferences
 - Owner (2026-10-04): the ft_journey redesign changes components + journey clarity ONLY, never production's look — reuse ui.tsx's exported BUTTON_TONE/CARD_CLASS/INPUT_CLASS; no accent/quiet/Geist roles (check-units "journey visual parity" enforces). [src: 3d49246d-fc0d-40f9-86a3-ad884ecefa78]

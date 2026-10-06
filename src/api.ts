@@ -1562,7 +1562,9 @@ export async function handleApi(
       const allowed = ["connect", "manage", "extend", "update", "reauthorise"] as const;
       // Never pass an unvalidated query param through to the aggregator URL.
       const safe = (allowed as readonly string[]).includes(action ?? "") ? (action as (typeof allowed)[number]) : "connect";
-      return json(await stub.bankConnectUrl(uid, safe));
+      // url.origin: a provider that takes its redirect per session (Fiskil) returns the consumer to
+      // this deployment's own /api/bank/callback (app.quillo.au in prod, localhost under wrangler dev).
+      return json(await stub.bankConnectUrl(uid, safe, url.origin));
     }
 
     // GET /api/bank/connections — connections + accounts, for the picker and consent dashboard.

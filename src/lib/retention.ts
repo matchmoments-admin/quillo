@@ -1,8 +1,8 @@
 import type { Env } from "../env";
 import { getProfile, getSituation } from "./db";
 import { revokeAndDisconnect } from "./qbo-oauth";
-import { basiqUpstream, cdrAudit, type BankUpstream } from "./bank-consent";
-import { basiqConfigured } from "./basiq";
+import { bankUpstream, cdrAudit, type BankUpstream } from "./bank-consent";
+import { bankProvider } from "./bank-provider";
 
 // APP 11.2 / APP 12 / APP 13 support: export a tenant's data, purge it across every store, and a
 // weekly FLAG sweep for records past the retention window (never auto-deletes — surfaces a nudge).
@@ -154,23 +154,31 @@ export async function purgeTenant(env: Env, userId: string, deps: { bankUpstream
   // so the upstream delete can be completed by hand.
   // A tenant who never connected a bank has no id => no call, no row, no new result field.
   let bankRevoked: boolean | undefined;
-  let bankProvider = "basiq";
+  let bankProviderId = "basiq";
   const bankUser = await env.DB.prepare(`SELECT bank_provider_user_id AS id, bank_provider AS provider FROM profiles WHERE user_id = ?`)
     .bind(userId)
     .first<{ id: string | null; provider: string | null }>();
   if (bankUser?.id) {
-    bankProvider = bankUser.provider ?? "basiq";
-    const upstream = deps.bankUpstream ?? (basiqConfigured(env) ? basiqUpstream(env) : null);
+    bankProviderId = bankUser.provider ?? "basiq";
+    // The consumer is deleted at the aggregator that ISSUED it (profiles.bank_provider), not the one
+    // new connects use. An unknown provider name can never succeed, so it is treated like a missing key.
+    let configured = false;
+    try {
+      configured = bankProvider(env, bankProviderId).configured();
+    } catch {
+      configured = false;
+    }
+    const upstream = deps.bankUpstream ?? (configured ? bankUpstream(env) : null);
     if (!upstream) {
       bankRevoked = false;
       console.error(`[cdr] purge for ${userId}: aggregator not configured — consumer ${bankUser.id} NOT deleted upstream; complete manually`);
       await cdrAudit(env, userId, {
-        event: "upstream_revoke_failed", provider: bankProvider,
+        event: "upstream_revoke_failed", provider: bankProviderId,
         detail: { error: "not_configured", provider_user_id: bankUser.id, during: "tenant_purge" },
       }).catch((err) => console.warn(`cdr audit (purge revoke pending) failed: ${(err as Error).message}`));
     } else {
       try {
-        await upstream.deleteUser(bankUser.id);
+        await upstream.deleteUser(bankUser.id, bankProviderId);
       } catch (e) {
         console.error(`[cdr] purge for ${userId}: upstream consumer delete failed: ${(e as Error).message}`);
         const st = (e as { status?: number }).status;
@@ -249,7 +257,7 @@ export async function purgeTenant(env: Env, userId: string, deps: { bankUpstream
   // CDR record of the erasure, written only once it has actually happened (a purge that fails at R2/KV/D1
   // and is retried must not leave "purged" rows behind). Survives the purge — cdr_audit_log is retained.
   if (bankRevoked) {
-    await cdrAudit(env, userId, { event: "tenant_purged", provider: bankProvider, detail: { consumer_deleted: true } })
+    await cdrAudit(env, userId, { event: "tenant_purged", provider: bankProviderId, detail: { consumer_deleted: true } })
       .catch((err) => console.warn(`cdr audit (tenant_purged) failed: ${(err as Error).message}`));
   }
 

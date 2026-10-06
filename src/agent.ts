@@ -56,18 +56,15 @@ import { cleanMerchant } from "./lib/bank-parsers";
 import { pdfPageCount, splitPdf, normalizePdf } from "./lib/pdf";
 import { getLedger, LedgerNotConnectedError, LedgerReauthError, type LedgerExpense } from "./ledger";
 import { redact } from "./lib/redact";
-import {
-  basiqConfigured, clientToken, consentUrl, createBasiqUser, getAccounts, getConsents,
-  fetchTransactionPage, requiresAuResidency,
-  type BasiqConsent, type ConsentAction, type AccessType,
-} from "./lib/basiq";
-import { putConnectState, takeConnectState, parseJobIds, syncWindow } from "./lib/bank-connect";
+import { requiresAuResidency, type AccessType } from "./lib/bank-feed-core";
+import { bankProvider, anyBankProviderConfigured, type BankFeedProvider, type ConsentAction } from "./lib/bank-provider";
+import { putConnectState, putConnectSession, takeConnectState, parseJobIds, syncWindow, safeCallbackParam } from "./lib/bank-connect";
 import {
   closeStaleRuns, openRun, loadRun, touchRun, syncRunStep, finishRun, runOutcome, skippedOf,
   FIRST_STEP_PAGES, PAGES_PER_STEP, MAX_PAGES_PER_RUN,
   type SyncRun, type SyncStepDeps,
 } from "./lib/bank-sync";
-import { basiqUpstream, cdrAudit, cdrHistory, consentLifecycle, disconnectBankConnection, type DisconnectResult, type LifecycleResult } from "./lib/bank-consent";
+import { bankUpstream, cdrAudit, cdrHistory, consentLifecycle, disconnectBankConnection, type DisconnectResult, type LifecycleResult } from "./lib/bank-consent";
 import { toBaseCurrency } from "./lib/fx";
 import { spentTodayCents, spentTodayGlobalCents, spentThisMonthGlobalCents, noteMeteringError, usageStatements } from "./lib/usage";
 import { billingPolicy, freeCreditGrantE4 } from "./lib/billing";
@@ -1583,33 +1580,80 @@ export class TaxAgent extends Agent<Env> {
 
   // ── Bank feeds via an Open Banking aggregator (ADR-0003, flag `bank_feed_cdr`) ────────────
   //
-  // The DO is the write-coordinator: `src/lib/basiq.ts` talks to the aggregator and normalises the
-  // response, `src/lib/bank-connect.ts` owns the round-trip state, and every D1 write lands here.
+  // The DO is the write-coordinator: an aggregator adapter behind `src/lib/bank-provider.ts`
+  // (Basiq or Fiskil) talks to the aggregator and normalises the response, `src/lib/bank-connect.ts`
+  // owns the round-trip state, and every D1 write lands here. A NEW connect uses the configured
+  // provider (BANK_FEED_PROVIDER); everything on an EXISTING row uses the provider recorded on it.
 
   /**
-   * The aggregator-side consumer id for this tenant, created on first use and then REUSED.
+   * The aggregator-side consumer id for this tenant at `provider`, created on first use and then
+   * REUSED.
    *
    * Reuse is not an optimisation. Basiq bills per user CREATED, for the full month, regardless of
    * activity — so calling createUser again on a reconnect would mint a second billable consumer for
    * the same human AND split their connections across two aggregator identities, which would make
-   * the consent dashboard and the PS12 delete path both incomplete.
+   * the consent dashboard and the PS12 delete path both incomplete. Fiskil end users have no
+   * uniqueness constraint at all (the same email twice ⇒ two end users), so the stored id is the only
+   * thing that keeps one tenant ↔ one end user.
+   *
+   * profiles holds ONE consumer id. When the tenant's existing consumer belongs to a DIFFERENT
+   * aggregator (the operator switched BANK_FEED_PROVIDER), it is only replaced once nothing live
+   * hangs off it: live connections ⇒ refuse (withdraw first, so the PS12 path stays complete);
+   * none ⇒ delete the old consumer upstream first (or, with no key for it, record its id in the
+   * retained CDR log for manual deletion — the same fallback purgeTenant uses), then mint the new one.
    */
-  private async basiqUserFor(userId: string): Promise<string> {
+  private async bankUserFor(userId: string, provider: BankFeedProvider): Promise<string> {
     const row = await this.env.DB.prepare(
-      `SELECT bank_provider_user_id AS id FROM profiles WHERE user_id = ?`,
-    ).bind(userId).first<{ id: string | null }>();
-    if (row?.id) return row.id;
+      `SELECT bank_provider_user_id AS id, bank_provider AS provider FROM profiles WHERE user_id = ?`,
+    ).bind(userId).first<{ id: string | null; provider: string | null }>();
+    if (row?.id) {
+      const owner = row.provider ?? "basiq";
+      if (owner === provider.id) return row.id;
+      const live = await this.env.DB.prepare(
+        `SELECT COUNT(*) AS n FROM bank_connections WHERE user_id = ? AND provider_user_id = ? AND status <> 'revoked'`,
+      ).bind(userId, row.id).first<{ n: number }>();
+      if ((live?.n ?? 0) > 0) {
+        throw new Error("You already have a bank connection through another provider — withdraw it in Settings → Bank connections first.");
+      }
+      let oldConfigured = false;
+      try {
+        oldConfigured = bankProvider(this.env, owner).configured();
+      } catch {
+        oldConfigured = false;
+      }
+      if (oldConfigured) {
+        // Throws on a vendor failure: the old consumer must not be orphaned. The user retries.
+        await bankProvider(this.env, owner).deleteUser(row.id);
+        await cdrAudit(this.env, userId, { event: "upstream_revoked", provider: owner, detail: { consumer_deleted: true, reason: "provider_switch" } });
+      } else {
+        console.error(`[cdr] provider switch for ${userId}: ${owner} not configured — consumer NOT deleted upstream; complete manually`);
+        await cdrAudit(this.env, userId, {
+          event: "upstream_revoke_failed", provider: owner,
+          detail: { error: "not_configured", provider_user_id: row.id, during: "provider_switch" },
+        });
+      }
+    }
 
-    // Basiq requires an email or mobile to identify the consumer in its own consent records.
-    // Nothing else about the tenant is sent. Tenants have no stored email on the DO path, so a
-    // deterministic per-tenant address is used — it identifies, it does not receive mail.
+    // The aggregator requires an email (or mobile) to identify the consumer in its own consent
+    // records. Nothing else about the tenant is sent. Tenants have no stored email on the DO path,
+    // so a deterministic per-tenant address is used — it identifies, it does not receive mail.
     const email = `tenant-${userId}@users.quillo.au`;
-    const id = await createBasiqUser(this.env, { email });
+    const id = await provider.createUser({ email });
     await this.env.DB.prepare(
-      `UPDATE profiles SET bank_provider_user_id = ?, bank_provider = 'basiq' WHERE user_id = ?`,
-    ).bind(id, userId).run();
-    await this.audit(userId, "bank_provider_user_created", JSON.stringify({ provider: "basiq" }));
+      `UPDATE profiles SET bank_provider_user_id = ?, bank_provider = ? WHERE user_id = ?`,
+    ).bind(id, provider.id, userId).run();
+    // The provider's consumer id is a support identifier (Fiskil go-live: log end_user_id) — not CDR data.
+    await this.audit(userId, "bank_provider_user_created", JSON.stringify({ provider: provider.id, provider_user_id: id }));
     return id;
+  }
+
+  /** The provider that holds this tenant's consumer (profiles.bank_provider), else the configured default. */
+  private async bankProviderForTenant(userId: string): Promise<{ provider: BankFeedProvider; providerUserId: string | null }> {
+    const row = await this.env.DB.prepare(
+      `SELECT bank_provider_user_id AS id, bank_provider AS provider FROM profiles WHERE user_id = ?`,
+    ).bind(userId).first<{ id: string | null; provider: string | null }>();
+    if (row?.id) return { provider: bankProvider(this.env, row.provider ?? "basiq"), providerUserId: row.id };
+    return { provider: bankProvider(this.env), providerUserId: null };
   }
 
   /**
@@ -1618,16 +1662,31 @@ export class TaxAgent extends Agent<Env> {
    * Rate-limited because this is both expensive (it can mint a billable consumer) and
    * abuse-attractive (ADR-0003 S6). Reuses the same KV counter shape as chatRateOk, which already
    * fails closed on a garbled value.
+   *
+   * `origin` is this request's own origin (the route passes url.origin): providers that take the
+   * redirect per session (Fiskil) send the consumer back to `${origin}/api/bank/callback`.
    */
-  async bankConnectUrl(userId: string, action: ConsentAction = "connect"): Promise<{ url: string }> {
-    if (!basiqConfigured(this.env)) throw new Error("bank feeds are not configured (BASIQ_API_KEY missing)");
+  async bankConnectUrl(userId: string, action: ConsentAction = "connect", origin?: string): Promise<{ url: string }> {
+    const provider = bankProvider(this.env);
+    if (!provider.configured()) throw new Error(`bank feeds are not configured (${provider.id} credentials missing)`);
     if (!(await this.bankRateOk(userId, "connect", 10))) throw new Error("too many connect attempts — try again later");
-    const basiqUserId = await this.basiqUserFor(userId);
-    const token = await clientToken(this.env, basiqUserId);
-    const state = await putConnectState(this.env, userId);
-    await this.audit(userId, "bank_connect_started", JSON.stringify({ action }));
-    // The token is a consumer-scoped bearer handed to the browser in a URL — never logged.
-    return { url: consentUrl(token, { action, state }) };
+    const providerUserId = await this.bankUserFor(userId, provider);
+    const state = await putConnectState(this.env, userId, provider.stateTtlSeconds);
+    const start = await provider.consentUrl(providerUserId, {
+      state,
+      action,
+      callbackUrl: origin ? `${origin}/api/bank/callback` : undefined,
+    });
+    if (start.sessionId) await putConnectSession(this.env, start.sessionId, state, provider.stateTtlSeconds);
+    // Every consent ATTEMPT is recorded with the provider's session id (Fiskil go-live: log
+    // session_id for consents created OR attempted), so an abandoned flow is still traceable.
+    await this.audit(userId, "bank_connect_started", JSON.stringify({ action, provider: provider.id, session_id: start.sessionId ?? null }));
+    await cdrAudit(this.env, userId, {
+      event: "consent_requested", provider: provider.id, accessType: "cdr",
+      detail: { action, session_id: start.sessionId ?? null },
+    }).catch((e) => console.error(`[cdr] consent_requested record failed: ${(e as Error).message}`));
+    // The URL may carry a consumer-scoped bearer (Basiq) — never logged.
+    return { url: start.url };
   }
 
   /**
@@ -1636,43 +1695,46 @@ export class TaxAgent extends Agent<Env> {
    *
    * Idempotent: a refreshed callback re-upserts the same rows rather than forking duplicates.
    */
-  async bankCallback(userId: string, jobIdsRaw: string | null): Promise<{ ok: boolean; connections: number; accounts: number; error?: string }> {
+  async bankCallback(
+    userId: string,
+    jobIdsRaw: string | null,
+    ret: { outcome?: string | null; error?: string | null; errorId?: string | null; sessionId?: string | null } = {},
+  ): Promise<{ ok: boolean; connections: number; accounts: number; error?: string }> {
+    const sessionId = safeCallbackParam(ret.sessionId, 128);
+    // The consumer came back through the cancel/error redirect: nothing was granted. Record the
+    // attempt's identifiers (session id, the provider's error code + error_id) — never free text.
+    if (ret.outcome === "cancel" || ret.error) {
+      const { provider } = await this.bankProviderForTenant(userId);
+      const detail = { session_id: sessionId, error: safeCallbackParam(ret.error), error_id: safeCallbackParam(ret.errorId) };
+      await this.audit(userId, "bank_consent_abandoned", JSON.stringify({ provider: provider.id, ...detail }));
+      await cdrAudit(this.env, userId, { event: "consent_abandoned", provider: provider.id, accessType: "cdr", detail })
+        .catch((e) => console.error(`[cdr] consent_abandoned record failed: ${(e as Error).message}`));
+      return { ok: false, connections: 0, accounts: 0, error: "consent_cancelled" };
+    }
+
     const jobIds = parseJobIds(jobIdsRaw);
-    const basiqUserId = await this.basiqUserFor(userId);
+    const { provider, providerUserId } = await this.bankProviderForTenant(userId);
+    // A callback can only follow a connect, which created the consumer. None ⇒ nothing to read.
+    if (!providerUserId) return { ok: false, connections: 0, accounts: 0, error: "no_bank_consumer" };
 
     // Consents describe WHAT the consumer agreed to; accounts describe what that unlocked. Both are
-    // needed: the consent dashboard is a CDR obligation, and the account picker needs the list.
-    let consents: BasiqConsent[] = [];
-    try {
-      consents = await getConsents(this.env, basiqUserId);
-    } catch (e) {
-      // A consent-read failure must not lose the connection the consumer just authorised.
-      console.warn(`bank callback: consent read failed (${(e as Error).message})`);
-    }
-    const active = consents.find((c) => c.status === "active") ?? consents[0] ?? null;
-
-    const accounts = await getAccounts(this.env, basiqUserId);
-    // One connection per institution the consumer linked.
-    const byConnection = new Map<string, typeof accounts>();
-    for (const a of accounts) {
-      if (!a.connectionId) continue;
-      const list = byConnection.get(a.connectionId) ?? [];
-      list.push(a);
-      byConnection.set(a.connectionId, list);
-    }
+    // needed: the consent dashboard is a CDR obligation, and the account picker needs the list. The
+    // adapter groups them into one row per institution connection with its governing consent.
+    const conns = await provider.listConnections(providerUserId);
+    const accountCount = conns.reduce((n, c) => n + c.accounts.length, 0);
 
     // Snapshot BEFORE the upsert, so the CDR record logs a grant only for a new connection or a
     // changed consent — not for every connection the aggregator re-lists on each callback.
     const before = new Map(
       ((await this.env.DB.prepare(
-        `SELECT provider_connection_id, status, consent_id, consent_expires_at FROM bank_connections WHERE user_id = ? AND provider = 'basiq'`,
-      ).bind(userId).all<{ provider_connection_id: string; status: string; consent_id: string | null; consent_expires_at: string | null }>()).results ?? [])
+        `SELECT provider_connection_id, status, consent_id, consent_expires_at FROM bank_connections WHERE user_id = ? AND provider = ?`,
+      ).bind(userId, provider.id).all<{ provider_connection_id: string; status: string; consent_id: string | null; consent_expires_at: string | null }>()).results ?? [])
         .map((r) => [r.provider_connection_id, r]),
     );
 
     const stmts: D1PreparedStatement[] = [];
-    for (const [connectionId, accts] of byConnection) {
-      const localId = crypto.randomUUID();
+    for (const conn of conns) {
+      const consent = conn.consent;
       // The trailing WHERE: a WITHDRAWN connection is never resurrected by a later callback (#576).
       // If its upstream revoke failed, the aggregator still lists it, and a connect for a DIFFERENT
       // bank would otherwise flip it back to 'active' and resume collecting against the consumer's wishes.
@@ -1680,8 +1742,8 @@ export class TaxAgent extends Agent<Env> {
         this.env.DB.prepare(
           `INSERT INTO bank_connections
              (id, user_id, provider, access_type, provider_user_id, provider_connection_id,
-              institution_id, status, consent_id, consent_scope, consent_granted_at, consent_expires_at)
-           VALUES (?, ?, 'basiq', ?, ?, ?, ?, 'active', ?, ?, ?, ?)
+              institution_id, institution, status, consent_id, consent_scope, consent_granted_at, consent_expires_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)
            ON CONFLICT(user_id, provider, provider_connection_id) DO UPDATE SET
              status = 'active',
              consent_id = excluded.consent_id,
@@ -1693,63 +1755,74 @@ export class TaxAgent extends Agent<Env> {
              last_error = NULL
            WHERE bank_connections.status <> 'revoked'`,
         ).bind(
-          localId,
+          crypto.randomUUID(),
           userId,
+          provider.id,
           // Sandbox institutions are synthetic, but the row still records 'cdr' — the STRICT
           // default. requiresAuResidency() is what distinguishes sandbox from production, not this.
           "cdr",
-          basiqUserId,
-          connectionId,
-          accts[0]?.institutionId ?? null,
-          active?.id ?? null,
-          active ? JSON.stringify(active.permissions) : null,
-          active?.created ?? null,
-          active?.expiryDate ?? null,
+          providerUserId,
+          conn.connectionId,
+          conn.institutionId,
+          conn.institutionName,
+          consent?.id ?? null,
+          consent ? JSON.stringify(consent.permissions) : null,
+          consent?.created ?? null,
+          consent?.expiryDate ?? null,
         ),
       );
-      for (const a of accts) {
+      for (const a of conn.accounts) {
         stmts.push(
           this.env.DB.prepare(
             `INSERT INTO bank_connection_accounts
                (id, user_id, connection_id, provider_account_id, masked_number, name, type, currency, selected)
              SELECT ?, ?, bc.id, ?, ?, ?, ?, ?, 0 FROM bank_connections bc
-              WHERE bc.user_id = ? AND bc.provider = 'basiq' AND bc.provider_connection_id = ?
+              WHERE bc.user_id = ? AND bc.provider = ? AND bc.provider_connection_id = ?
                 AND bc.status <> 'revoked'
              ON CONFLICT(user_id, connection_id, provider_account_id) DO UPDATE SET
                masked_number = excluded.masked_number,
                name = excluded.name,
                type = excluded.type,
                currency = excluded.currency`,
-          ).bind(crypto.randomUUID(), userId, a.id, a.last4, a.name, a.type, a.currency, userId, connectionId),
+          ).bind(crypto.randomUUID(), userId, a.id, a.last4, a.name, a.type, a.currency, userId, provider.id, conn.connectionId),
         );
       }
     }
     if (stmts.length) await this.env.DB.batch(stmts);
 
     // CDR record (0085): one consent_granted row per live connection this callback touched.
-    if (byConnection.size) {
+    if (conns.length) {
+      const byId = new Map(conns.map((c) => [c.connectionId, c]));
       const touched = await this.env.DB.prepare(
         `SELECT id, provider, access_type, provider_connection_id FROM bank_connections
-          WHERE user_id = ? AND status = 'active' AND provider = 'basiq'`,
-      ).bind(userId).all<{ id: string; provider: string; access_type: string; provider_connection_id: string }>();
+          WHERE user_id = ? AND status = 'active' AND provider = ?`,
+      ).bind(userId, provider.id).all<{ id: string; provider: string; access_type: string; provider_connection_id: string }>();
       for (const c of touched.results ?? []) {
-        const accts = byConnection.get(c.provider_connection_id);
-        if (!accts) continue;
+        const pc = byId.get(c.provider_connection_id);
+        if (!pc) continue;
+        const consentId = pc.consent?.id ?? null;
+        const expiresAt = pc.consent?.expiryDate ?? null;
         const prev = before.get(c.provider_connection_id);
-        const changed = !prev || prev.status !== "active" || prev.consent_id !== (active?.id ?? null) || prev.consent_expires_at !== (active?.expiryDate ?? null);
+        const changed = !prev || prev.status !== "active" || prev.consent_id !== consentId || prev.consent_expires_at !== expiresAt;
         if (!changed) continue;
         await cdrAudit(this.env, userId, {
           event: "consent_granted", connectionId: c.id, provider: c.provider, accessType: c.access_type,
-          accountCount: accts.length, detail: { consent_id: active?.id ?? null, expires_at: active?.expiryDate ?? null },
+          accountCount: pc.accounts.length,
+          detail: { consent_id: consentId, expires_at: expiresAt, ...(sessionId ? { session_id: sessionId } : {}) },
         }).catch((e) => console.error(`[cdr] consent_granted record failed: ${(e as Error).message}`));
       }
     }
 
+    const consentIds = [...new Set(conns.map((c) => c.consent?.id).filter((x): x is string => !!x))];
     await this.audit(
       userId,
       "bank_consent_granted",
       // Counts and ids only — never an account number, never a payload (ADR-0003 S10/S11).
-      JSON.stringify({ connections: byConnection.size, accounts: accounts.length, consent_id: active?.id ?? null, jobs: jobIds.length }),
+      JSON.stringify({
+        provider: provider.id, connections: conns.length, accounts: accountCount,
+        consent_id: consentIds[0] ?? null, ...(consentIds.length > 1 ? { consent_ids: consentIds } : {}),
+        jobs: jobIds.length, ...(sessionId ? { session_id: sessionId } : {}),
+      }),
     );
 
     // Connect → done → imported. The consumer already chose which accounts to share on the bank's
@@ -1770,7 +1843,7 @@ export class TaxAgent extends Agent<Env> {
     } catch (e) {
       console.warn(`[bank] auto-import after consent failed: ${(e as Error).message}`);
     }
-    return { ok: true, connections: byConnection.size, accounts: accounts.length };
+    return { ok: true, connections: conns.length, accounts: accountCount };
   }
 
   /** Connections + their accounts, for the picker and the consent dashboard. */
@@ -1935,7 +2008,7 @@ export class TaxAgent extends Agent<Env> {
    * per account), so a re-sync, an overlapping window or a remapped feed account is a no-op.
    */
   async bankSync(userId: string, opts: { fy?: string } = {}): Promise<{ imported: number; skipped: number; fetched: number; runs: number; errors: string[]; in_progress: boolean }> {
-    if (!basiqConfigured(this.env)) throw new Error("bank feeds are not configured (BASIQ_API_KEY missing)");
+    if (!anyBankProviderConfigured(this.env)) throw new Error("bank feeds are not configured (no aggregator credentials)");
     if (!(await this.bankRateOk(userId, "sync", 30))) throw new Error("too many sync attempts — try again later");
 
     const descriptor = await this.jurisdictionFor(userId);
@@ -1966,9 +2039,9 @@ export class TaxAgent extends Agent<Env> {
     // and the sync kept pulling. Collecting outside a live consent is the failure with a regulator
     // attached, so the expiry is enforced at the puller rather than waiting on a lifecycle sweep.
     const conns = await this.env.DB.prepare(
-      `SELECT c.id, c.access_type, (c.consent_expires_at IS NOT NULL AND c.consent_expires_at <= datetime('now')) AS expired
+      `SELECT c.id, c.provider, c.access_type, (c.consent_expires_at IS NOT NULL AND c.consent_expires_at <= datetime('now')) AS expired
          FROM bank_connections c WHERE c.user_id = ? AND c.status = 'active'`,
-    ).bind(userId).all<{ id: string; access_type: string; expired: number }>();
+    ).bind(userId).all<{ id: string; provider: string; access_type: string; expired: number }>();
 
     // An interrupted run (its alarm chain died) must neither block this sync nor keep reading as
     // live. Lines it already wrote are real and stay; re-pulling them is a deduplicated no-op.
@@ -1989,7 +2062,7 @@ export class TaxAgent extends Agent<Env> {
         ).bind(crypto.randomUUID(), userId, conn.id, from, to).run();
         await this.env.DB.prepare(`UPDATE bank_connections SET status = 'expired' WHERE id = ? AND user_id = ? AND status = 'active'`)
           .bind(conn.id, userId).run();
-        await cdrAudit(this.env, userId, { event: "consent_expired", connectionId: conn.id, provider: "basiq", accessType: conn.access_type });
+        await cdrAudit(this.env, userId, { event: "consent_expired", connectionId: conn.id, provider: conn.provider, accessType: conn.access_type });
         errors.push("A bank consent has expired — reconnect it to keep importing.");
         runs++;
         continue;
@@ -2092,7 +2165,7 @@ export class TaxAgent extends Agent<Env> {
     try {
       // The flag is the kill switch: turning it off mid-backfill must stop collection, not just
       // new syncs. Same for a removed API key.
-      if (!featureOn(this.env, "bank_feed_cdr") || !basiqConfigured(this.env)) {
+      if (!featureOn(this.env, "bank_feed_cdr") || !anyBankProviderConfigured(this.env)) {
         throw new Error("bank feeds are disabled — sync stopped");
       }
       const loaded = await Promise.all(runIds.map((id) => loadRun(this.env.DB, userId, id)));
@@ -2161,10 +2234,10 @@ export class TaxAgent extends Agent<Env> {
     const rulePack = await this.loadRulePack(profile.rule_pack_ver);
     const situation = await getSituation(this.env, userId, profile);
     const connRows = await db.prepare(
-      `SELECT id, provider_user_id, access_type, status,
+      `SELECT id, provider, provider_user_id, access_type, status, institution_id,
               (consent_expires_at IS NOT NULL AND consent_expires_at <= datetime('now')) AS expired
          FROM bank_connections WHERE user_id = ?`,
-    ).bind(userId).all<{ id: string; provider_user_id: string; access_type: string; status: string; expired: number }>();
+    ).bind(userId).all<{ id: string; provider: string; provider_user_id: string; access_type: string; status: string; institution_id: string | null; expired: number }>();
     const connById = new Map((connRows.results ?? []).map((c) => [c.id, c]));
 
     let left = budget;
@@ -2184,12 +2257,24 @@ export class TaxAgent extends Agent<Env> {
         out.pending.push(run);
         continue;
       }
-      const residency = requiresAuResidency(this.env, conn.access_type as AccessType);
+      // Each connection is read through the aggregator that holds ITS consent (bank_connections.provider).
+      let provider: BankFeedProvider;
+      try {
+        provider = bankProvider(this.env, conn.provider);
+        if (!provider.configured()) throw new Error(`bank feeds are not configured for ${provider.id}`);
+      } catch (e) {
+        const error = (e as Error).message || "bank-data provider unavailable";
+        await finishRun(db, userId, run, { status: "failed", error, correlationId: null });
+        out.errors.push(error);
+        continue;
+      }
+      // PS8: provider-aware (Fiskil's sandbox carve-out also requires its sandbox data holder).
+      const residency = requiresAuResidency(this.env, conn.access_type as AccessType, conn.provider, conn.institution_id);
       const deps: SyncStepDeps = {
         db,
         userId,
         baseCurrency: baseCur,
-        transport: (q) => fetchTransactionPage(this.env, conn.provider_user_id, { from: q.from, to: q.to, accountId: q.providerAccountId, next: q.next }),
+        transport: (q) => provider.fetchTransactionPage(conn.provider_user_id, { from: q.from, to: q.to, accountId: q.providerAccountId, next: q.next }),
         categorise: (merchant, direction) =>
           this.deterministicCategorise(merchant, situation.rules, rulePack, { skipHints: direction === "credit", direction, entityKinds: situation.entities.map((e) => e.kind) }),
         // Per page: still selected + mapped the same way, AND the connection still live — so a
@@ -2204,7 +2289,7 @@ export class TaxAgent extends Agent<Env> {
         // Stamp the tenant as holding CDR data, one-way, BEFORE the first production CDR line is
         // written — not after the whole sync, which on a resumable backfill could be many minutes
         // (and alarm hops) later. From here getLLM refuses non-AU-resident inference for them on
-        // EVERY path; disconnecting or flipping BASIQ_ENV back cannot clear it (migration 0077).
+        // EVERY path; disconnecting or flipping BASIQ_ENV/FISKIL_ENV back cannot clear it (migration 0077).
         beforeFirstWrite: residency ? () => this.markCdrTainted(userId) : undefined,
       };
       const fetchedBefore = run.counters.fetched;
@@ -2225,9 +2310,10 @@ export class TaxAgent extends Agent<Env> {
       // CDR record of the collection (0085, #576): window, accounts and counts only. Not allowed to
       // fail the sync — the lines already committed.
       await cdrAudit(this.env, userId, {
-        event: "collected", connectionId: run.connectionId, provider: "basiq", accessType: conn.access_type,
+        event: "collected", connectionId: run.connectionId, provider: conn.provider, accessType: conn.access_type,
         accountCount: run.cursor.accounts.length, rowCount: run.counters.imported, fromDate: run.from, toDate: run.to,
-        detail: { fetched: run.counters.fetched, pages: run.counters.pages, status },
+        // error_id: the aggregator's support handle for a failed run (Fiskil go-live checklist) — an id only.
+        detail: { fetched: run.counters.fetched, pages: run.counters.pages, status, ...(step.correlationId ? { error_id: step.correlationId } : {}) },
       }).catch((e) => console.error(`[cdr] collected record failed: ${(e as Error).message}`));
     }
     return out;
@@ -2330,7 +2416,7 @@ export class TaxAgent extends Agent<Env> {
   async bankDisconnect(userId: string, connectionId: string): Promise<DisconnectResult> {
     // ADR-0003 S6: while an upstream revoke keeps failing, each call is a vendor call + CDR rows.
     if (!(await this.bankRateOk(userId, "disconnect", 20))) throw new Error("too many attempts — try again later");
-    const r = await disconnectBankConnection(this.env, userId, connectionId, basiqUpstream(this.env));
+    const r = await disconnectBankConnection(this.env, userId, connectionId, bankUpstream(this.env));
     await this.audit(userId, "bank_disconnect", JSON.stringify({
       connectionId, ok: r.ok, upstreamRevoked: r.upstreamRevoked, consumerDeleted: r.consumerDeleted,
       accounts: r.accounts, linesDeleted: r.linesDeleted,
@@ -2340,7 +2426,7 @@ export class TaxAgent extends Agent<Env> {
 
   /** Weekly (cron, flag-gated): mark expired consents, send the pre-expiry reminder, retry failed upstream revokes. */
   async bankConsentLifecycle(userId: string): Promise<LifecycleResult> {
-    const r = await consentLifecycle(this.env, userId, basiqUpstream(this.env));
+    const r = await consentLifecycle(this.env, userId, bankUpstream(this.env));
     if (r.expired || r.reminded || r.upstreamRetried || r.deletesCompleted) {
       await this.audit(userId, "bank_consent_lifecycle", JSON.stringify(r));
     }

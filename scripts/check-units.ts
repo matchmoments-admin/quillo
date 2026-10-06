@@ -4571,7 +4571,9 @@ console.log("bank consent lifecycle (#576)");
     const U8 = "bk-u8";
     ins(`INSERT INTO bank_connections (id, user_id, provider_connection_id, status, consent_expires_at, expiry_reminded_at) VALUES ('R1c', ?, 'pr1', 'revoked', '2027-01-01', NULL)`, U8);
     ins(`INSERT INTO bank_connections (id, user_id, provider_connection_id, status, consent_expires_at, expiry_reminded_at) VALUES ('E1c', ?, 'pe1', 'expired', '2027-01-01', '2026-12-01')`, U8);
-    const up = (pc: string, exp: string) => bdb.prepare(upsertSql).run(crypto.randomUUID(), U8, "cdr", "bu8", pc, null, "cons", "[]", "2026-01-01", exp);
+    // Binds: id, user, provider (now bound, not a 'basiq' literal), access_type, provider user, connection,
+    // institution_id, institution name, consent id, scope, granted, expires.
+    const up = (pc: string, exp: string) => bdb.prepare(upsertSql).run(crypto.randomUUID(), U8, "basiq", "cdr", "bu8", pc, null, null, "cons", "[]", "2026-01-01", exp);
     up("pr1", "2028-01-01");
     check("callback (executed): a WITHDRAWN connection is not resurrected", q<{ status: string }>(`SELECT status FROM bank_connections WHERE id='R1c'`).status === "revoked");
     up("pe1", "2027-01-01");
@@ -5521,6 +5523,371 @@ console.log("review queue (#587)");
   } as unknown as Parameters<typeof openRecordRows>[0];
   check("queue: record cards = needs_record rows only; recorded + exception go under Done; open facts = needed and not stated",
     openRecordRows(view).map((r) => r.id).join() === "a" && doneRecordRows(view).map((r) => r.id).join() === "b,c" && openFacts(view).map((x) => x.key).join() === "wfh_hours");
+}
+
+// ── Fiskil provider (BANK_FEED_PROVIDER=fiskil) + the provider seam. A FAKE Fiskil transport (no network):
+// token caching, retries, pagination, filters, the account-number boundary, revoke/delete, and an
+// end-to-end bounded sync over the in-memory D1 (the #511 / #576 shim pattern).
+import {
+  requiresAuResidency as residencyFor, providerEnvironment, screenRows, FISKIL_SANDBOX_INSTITUTION_ID, ProviderError,
+  feedFingerprint as fp,
+} from "../src/lib/bank-feed-core";
+import { activeBankProviderId, bankProvider, anyBankProviderConfigured } from "../src/lib/bank-provider";
+import {
+  fiskilProvider, FiskilError, _resetFiskilTokenCache, pageAfterToken, sydneyInstant, sydneyDate, FISKIL_API_VERSION,
+} from "../src/lib/fiskil";
+import { bankUpstream } from "../src/lib/bank-consent";
+import { putConnectState, putConnectSession, stateForSession, takeConnectState, safeCallbackParam } from "../src/lib/bank-connect";
+console.log("bank feed — provider seam + Fiskil adapter");
+{
+  // ── PS8, provider-aware. Fiskil sandbox + prod share ONE base URL, so the env var alone could be wrong
+  // in the dangerous direction; the carve-out also needs Fiskil's sandbox data holder.
+  const fsb = { FISKIL_ENV: "sandbox" } as unknown as Env;
+  const fprod = { FISKIL_ENV: "production" } as unknown as Env;
+  const SBX = FISKIL_SANDBOX_INSTITUTION_ID;
+  check("PS8 fiskil: sandbox env + sandbox data holder ⇒ no residency (synthetic data)", residencyFor(fsb, "cdr", "fiskil", SBX) === false);
+  check("PS8 fiskil: sandbox env + a REAL bank ⇒ residency REQUIRED (prod keys with the var left on sandbox)", residencyFor(fsb, "cdr", "fiskil", "2") === true);
+  check("PS8 fiskil: unknown institution ⇒ residency required", residencyFor(fsb, "cdr", "fiskil", null) === true);
+  check("PS8 fiskil: production env ⇒ residency required even at the sandbox holder", residencyFor(fprod, "cdr", "fiskil", SBX) === true);
+  check("PS8 fiskil: web-connector data never (APP-8 governs)", residencyFor(fprod, "web", "fiskil", "2") === false);
+  check("PS8: an unknown provider fails CLOSED", residencyFor({} as Env, "cdr", "acme", SBX) === true);
+  check("PS8: basiq unchanged by the provider arg (BASIQ_ENV decides)", residencyFor({ BASIQ_ENV: "production" } as unknown as Env, "cdr", "basiq") === true
+    && residencyFor({} as Env, "cdr", "basiq") === false);
+  check("FISKIL_ENV defaults to sandbox; only 'production' flips it", providerEnvironment({} as Env, "fiskil") === "sandbox"
+    && providerEnvironment({ FISKIL_ENV: "prod" } as unknown as Env, "fiskil") === "sandbox"
+    && providerEnvironment({ FISKIL_ENV: "PRODUCTION" } as unknown as Env, "fiskil") === "production");
+
+  // ── Provider selection: default basiq (nothing changes until set); a typo is refused, never re-routed.
+  check("BANK_FEED_PROVIDER unset ⇒ basiq", activeBankProviderId({} as Env) === "basiq" && bankProvider({} as Env).id === "basiq");
+  check("BANK_FEED_PROVIDER=fiskil ⇒ fiskil", bankProvider({ BANK_FEED_PROVIDER: " Fiskil " } as unknown as Env).id === "fiskil");
+  check("BANK_FEED_PROVIDER typo throws (never silently routes to another aggregator)",
+    (() => { try { activeBankProviderId({ BANK_FEED_PROVIDER: "fiskl" } as unknown as Env); return false; } catch { return true; } })());
+  check("a stored row's provider wins over the default; NULL legacy row ⇒ basiq",
+    bankProvider({ BANK_FEED_PROVIDER: "fiskil" } as unknown as Env, "basiq").id === "basiq" && bankProvider({ BANK_FEED_PROVIDER: "fiskil" } as unknown as Env, null).id === "basiq");
+  check("an unknown stored provider throws", (() => { try { bankProvider({} as Env, "acme"); return false; } catch { return true; } })());
+  check("fiskil ships dark without BOTH credentials", !bankProvider({ FISKIL_CLIENT_ID: "x" } as unknown as Env, "fiskil").configured()
+    && bankProvider({ FISKIL_CLIENT_ID: "x", FISKIL_CLIENT_SECRET: "y" } as unknown as Env, "fiskil").configured());
+  check("anyBankProviderConfigured: false with nothing, true with only fiskil keys", !anyBankProviderConfigured({} as Env)
+    && anyBankProviderConfigured({ FISKIL_CLIENT_ID: "x", FISKIL_CLIENT_SECRET: "y" } as unknown as Env));
+
+  // ── Dates: Sydney-local day bounds as RFC3339 instants (bare dates are rejected live), DST-aware.
+  check("sydneyInstant: winter (AEST) start of day", sydneyInstant("2025-07-01", "00:00:00") === "2025-07-01T00:00:00+10:00");
+  check("sydneyInstant: summer (AEDT) end of day", sydneyInstant("2026-01-15", "23:59:59") === "2026-01-15T23:59:59+11:00");
+  check("sydneyDate: 00:30 AEST on 1 July is 1 July (the FY start), not 30 June", sydneyDate("2025-06-30T14:30:00Z") === "2025-07-01");
+  check("sydneyDate: offset timestamps keep their local date", sydneyDate("2026-06-30T23:59:00+10:00") === "2026-06-30");
+  check("sydneyDate: bare date passes through; junk ⇒ ''", sydneyDate("2025-09-01") === "2025-09-01" && sydneyDate("nope") === "" && sydneyDate(null) === "");
+
+  // ── Cursor: only the page[after] token is kept, never the URL.
+  check("pageAfterToken extracts the token from links.next", pageAfterToken("https://api.fiskil.com/end-users?page%5Bafter%5D=eu_abc&page%5Bsize%5D=1") === "eu_abc");
+  check("pageAfterToken: no next ⇒ null (pagination done)", pageAfterToken(undefined) === null && pageAfterToken("") === null);
+  check("pageAfterToken: a next link with NO token throws (would otherwise truncate silently)",
+    (() => { try { pageAfterToken("https://api.fiskil.com/x?page%5Bsize%5D=1"); return false; } catch (e) { return e instanceof FiskilError; } })());
+  check("pageAfterToken: an injected token shape is refused",
+    (() => { try { pageAfterToken("https://api.fiskil.com/x?page%5Bafter%5D=a%26b%3Dc"); return false; } catch { return true; } })());
+
+  // ── screenRows is the shared posted / window / account re-check.
+  const sr = screenRows([
+    { id: "a", accountId: "A", status: "POSTED", postDate: "2025-07-01", description: "x", amount: "-1.00", direction: "debit", currency: "aud", providerClass: null },
+    { id: "b", accountId: "A", status: "PENDING", postDate: "2025-07-02", description: "x", amount: "1", direction: "credit", currency: "AUD", providerClass: null },
+    { id: "c", accountId: "A", status: "POSTED", postDate: "2025-06-30", description: "x", amount: "1", direction: "credit", currency: "AUD", providerClass: null },
+    { id: "d", accountId: "B", status: "POSTED", postDate: "2025-07-03", description: "x", amount: "1", direction: "credit", currency: "AUD", providerClass: null },
+  ], { from: "2025-07-01", to: "2026-06-30", accountId: "A" });
+  check("screenRows: posted + in-window + right account only; currency upper-cased",
+    sr.transactions.length === 1 && sr.transactions[0]!.id === "a" && sr.transactions[0]!.currency === "AUD" && sr.skippedPending === 1 && sr.skippedOutOfWindow === 1);
+
+  // ── The fake Fiskil. Routes on method + path; records every call; never touches the network.
+  type Call = { method: string; url: URL; headers: Record<string, string>; body: unknown };
+  const fenv = { FISKIL_CLIENT_ID: "cid", FISKIL_CLIENT_SECRET: "csecret", FISKIL_ENV: "sandbox" } as unknown as Env;
+  const jsonRes = (status: number, body: unknown) => new Response(body === null ? null : JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+  const fake = (route: (c: Call) => Response | Promise<Response>) => {
+    const calls: Call[] = [];
+    const slept: number[] = [];
+    let clock = 1_000_000;
+    const f = (async (input: string, init?: RequestInit) => {
+      const c: Call = { method: init?.method ?? "GET", url: new URL(String(input)), headers: (init?.headers ?? {}) as Record<string, string>, body: init?.body ? JSON.parse(String(init.body)) : undefined };
+      calls.push(c);
+      return route(c);
+    }) as unknown as typeof fetch;
+    return { calls, slept, deps: { fetch: f, sleep: async (ms: number) => { slept.push(ms); }, now: () => clock }, tick: (ms: number) => { clock += ms; } };
+  };
+  let tokenN = 0;
+  const tokenRoute = (c: Call): Response | null => (c.url.pathname === "/v1/token" ? jsonRes(200, { token: `jwt-${++tokenN}`, expires_in: 900 }) : null);
+
+  // Token caching: one mint for many calls; re-mint after (15 min − margin); in-isolate only.
+  _resetFiskilTokenCache();
+  {
+    const fk = fake((c) => tokenRoute(c) ?? jsonRes(200, { consents: [], links: {} }));
+    const p = fiskilProvider(fenv, fk.deps);
+    await p.listConsents("eu1");
+    await p.listConsents("eu1");
+    const mints = () => fk.calls.filter((c) => c.url.pathname === "/v1/token").length;
+    check("token: minted once and cached across calls", mints() === 1);
+    check("token: sent as Bearer with the pinned API version header",
+      fk.calls[1]!.headers.Authorization === `Bearer jwt-${tokenN}` && fk.calls[1]!.headers["X-Fiskil-Version"] === FISKIL_API_VERSION && FISKIL_API_VERSION === "v3");
+    check("token request carries client_id/secret in the JSON body", (fk.calls[0]!.body as { client_id: string }).client_id === "cid");
+    fk.tick(12 * 60 * 1000);
+    await p.listConsents("eu1");
+    check("token: still cached at 12 min (inside the 2-min margin)", mints() === 1);
+    fk.tick(2 * 60 * 1000);
+    await p.listConsents("eu1");
+    check("token: re-minted at 14 min (15-min JWT, no refresh token)", mints() === 2);
+  }
+  // A 401 mid-life (rotated key) ⇒ re-mint once and retry.
+  _resetFiskilTokenCache();
+  {
+    let first = true;
+    const fk = fake((c) => tokenRoute(c) ?? (first ? ((first = false), jsonRes(401, { name: "unauthorized", id: "e401" })) : jsonRes(200, { consents: [], links: {} })));
+    await fiskilProvider(fenv, fk.deps).listConsents("eu1");
+    check("401 ⇒ one fresh token, then the call succeeds", fk.calls.filter((c) => c.url.pathname === "/v1/token").length === 2);
+  }
+
+  // Retry policy: temporary/5xx/network retried with backoff; 4xx validation never; create never.
+  _resetFiskilTokenCache();
+  {
+    let n = 0;
+    const fk = fake((c) => tokenRoute(c) ?? (++n === 1 ? jsonRes(503, { id: "Y2lv", name: "service unavailable", message: "transaction temporarily unavailable" }) : jsonRes(200, { transactions: [], links: {} })));
+    await fiskilProvider(fenv, fk.deps).fetchTransactionPage("eu1", { accountId: "A1", from: "2025-07-01", to: "2026-06-30", next: null });
+    check("503 (data-holder outage) is retried with backoff, then succeeds", n === 2 && fk.slept.length === 1 && fk.slept[0]! > 0);
+  }
+  _resetFiskilTokenCache();
+  {
+    let n = 0;
+    const fk = fake((c) => tokenRoute(c) ?? (++n, jsonRes(400, { id: "-Spd", name: "bad request", message: "invalid from datetime" })));
+    const err = await fiskilProvider(fenv, fk.deps).fetchTransactionPage("eu1", { accountId: "A1", from: "2025-07-01", to: "2026-06-30", next: null }).then(() => null, (e) => e);
+    check("400 validation error is NOT retried", n === 1 && fk.slept.length === 0);
+    check("the error is typed and carries Fiskil's error_id (correlation id) in the object AND the message",
+      err instanceof FiskilError && err instanceof ProviderError && err.correlationId === "-Spd" && err.status === 400 && /error_id -Spd/.test(err.message) && !err.temporary);
+  }
+  _resetFiskilTokenCache();
+  {
+    let n = 0;
+    const fk = fake((c) => tokenRoute(c) ?? (++n, jsonRes(400, { id: "t1", name: "x", message: "m", temporary: true, timeout: false, fault: false })));
+    await fiskilProvider(fenv, fk.deps).listConsents("eu1").catch(() => {});
+    check("a 4xx flagged temporary:true IS retried (Fiskil says so), up to 3 attempts", n === 3 && fk.slept.length === 2);
+  }
+  _resetFiskilTokenCache();
+  {
+    let n = 0;
+    const fk = fake((c) => { const t = tokenRoute(c); if (t) return t; n++; if (n === 1) throw new TypeError("network down"); return jsonRes(200, { consents: [], links: {} }); });
+    await fiskilProvider(fenv, fk.deps).listConsents("eu1");
+    check("a network error is retried", n === 2);
+  }
+  _resetFiskilTokenCache();
+  {
+    let n = 0;
+    const fk = fake((c) => tokenRoute(c) ?? (++n, jsonRes(503, { id: "c503", name: "unavailable", message: "x" })));
+    const err = await fiskilProvider(fenv, fk.deps).createUser({ email: "tenant-u@users.quillo.au" }).then(() => null, (e) => e);
+    check("end-user create is NEVER retried (no uniqueness ⇒ a retry could mint a duplicate consumer)", n === 1 && err instanceof FiskilError);
+  }
+
+  // createUser + consent URL.
+  _resetFiskilTokenCache();
+  {
+    const fk = fake((c) => tokenRoute(c) ?? (c.url.pathname === "/v1/end-users" ? jsonRes(200, { end_user_id: "eu_new" })
+      : jsonRes(200, { id: "cid", session_id: "sess123", expires_at: 1791711796, auth_url: "https://auth.fiskil.com?sess_id=sess123" })));
+    const p = fiskilProvider(fenv, fk.deps);
+    check("createUser returns end_user_id and sends only the identifying email",
+      (await p.createUser({ email: "tenant-u1@users.quillo.au", name: "ignored" })) === "eu_new" && JSON.stringify(fk.calls.at(-1)!.body) === '{"email":"tenant-u1@users.quillo.au"}');
+    const start = await p.consentUrl("eu_new", { state: "st-1", callbackUrl: "https://app.quillo.au/api/bank/callback" });
+    const body = fk.calls.at(-1)!.body as { end_user_id: string; redirect_uri: string; cancel_uri: string };
+    check("consentUrl: POST /v1/auth/session for this end user", fk.calls.at(-1)!.url.pathname === "/v1/auth/session" && body.end_user_id === "eu_new");
+    check("consentUrl: our state rides in redirect_uri's query", new URL(body.redirect_uri).searchParams.get("state") === "st-1" && new URL(body.redirect_uri).pathname === "/api/bank/callback");
+    check("consentUrl: cancel_uri carries the state AND outcome=cancel", new URL(body.cancel_uri).searchParams.get("state") === "st-1" && new URL(body.cancel_uri).searchParams.get("outcome") === "cancel");
+    check("consentUrl: returns Fiskil's hosted auth_url + the session id (recorded even if abandoned)", start.url.startsWith("https://auth.fiskil.com") && start.sessionId === "sess123");
+    check("consentUrl: http allowed only on localhost (wrangler dev)",
+      !!(await p.consentUrl("eu_new", { state: "s", callbackUrl: "http://localhost:8788/api/bank/callback" }))
+      && (await p.consentUrl("eu_new", { state: "s", callbackUrl: "http://evil.example/api/bank/callback" }).then(() => false, () => true))
+      && (await p.consentUrl("eu_new", { state: "s" }).then(() => false, () => true)));
+  }
+  _resetFiskilTokenCache();
+  {
+    const fk = fake((c) => tokenRoute(c) ?? jsonRes(200, { session_id: "s", auth_url: "https://evil.example/?sess_id=s" }));
+    check("consentUrl refuses an auth_url that is not on fiskil.com",
+      await fiskilProvider(fenv, fk.deps).consentUrl("eu", { state: "s", callbackUrl: "https://app.quillo.au/api/bank/callback" }).then(() => false, () => true));
+  }
+
+  // Callback listing: per-arrangement consents, active only; the unmasked account number NEVER crosses.
+  _resetFiskilTokenCache();
+  const ACCT_NO = "062000123456789";
+  {
+    const fk = fake((c) => {
+      const t = tokenRoute(c); if (t) return t;
+      if (c.url.pathname === "/v1/consent") {
+        // Paginated: first page has a next link.
+        return c.url.searchParams.get("page[after]") === "arr_live"
+          ? jsonRes(200, { consents: [{ arrangement_id: "arr_dead", active: false, institution_id: "88888", permissions: ["bank:transactions:read"] }], links: {} })
+          : jsonRes(200, { consents: [{ arrangement_id: "arr_live", active: true, institution_id: "88888", institution_name: "Banking Sandbox Data Holder", created_at: "2026-10-06T00:00:00Z", expires_at: "2027-10-06T00:00:00Z", permissions: ["bank:accounts.basic:read", "bank:transactions:read"] }], links: { next: "https://api.fiskil.com/consent?page%5Bafter%5D=arr_live&page%5Bsize%5D=1000" } });
+      }
+      if (c.url.pathname === "/v1/banking/accounts") return jsonRes(200, { accounts: [
+        { account_id: "acc-1", fiskil_id: "fa1", arrangement_id: "arr_live", institution_id: "88888", display_name: "Everyday", masked_number: "xxx-xxx xxxxx6789", account_number: ACCT_NO, bsb: "062000", product_category: "TRANS_AND_SAVINGS_ACCOUNTS" },
+        { account_id: "acc-9", fiskil_id: "fa9", arrangement_id: "arr_dead", institution_id: "88888", display_name: "Old", masked_number: "xxxx1111", account_number: "999988881111" },
+      ], links: {} });
+      return jsonRes(404, { name: "nope" });
+    });
+    const conns = await fiskilProvider(fenv, fk.deps).listConnections("eu1");
+    const out = JSON.stringify(conns);
+    check("listConnections: walks consent pages (page[after] token)", fk.calls.filter((c) => c.url.pathname === "/v1/consent").length === 2);
+    check("listConnections: one connection per ACTIVE arrangement, governed by its own consent",
+      conns.length === 1 && conns[0]!.connectionId === "arr_live" && conns[0]!.consent?.id === "arr_live" && conns[0]!.consent?.expiryDate === "2027-10-06T00:00:00Z" && conns[0]!.institutionName === "Banking Sandbox Data Holder");
+    check("listConnections: accounts under an inactive arrangement are dropped (never selectable, never fetched)", conns[0]!.accounts.length === 1 && !out.includes("acc-9"));
+    check("account boundary: last4 from masked_number; the unmasked account_number and BSB never cross", conns[0]!.accounts[0]!.last4 === "6789" && !out.includes(ACCT_NO) && !out.includes("062000") && !/account_number|bsb/.test(out));
+    check("account id is the bank's account_id (same id space as transactions[].account_id)", conns[0]!.accounts[0]!.id === "acc-1");
+  }
+
+  // Transactions: filters, posted-only, window, account re-check, sign, namespaced ids, opaque cursor.
+  _resetFiskilTokenCache();
+  const ftx = (id: string, o: Record<string, unknown> = {}) => ({ fiskil_id: id, account_id: "acc-1", status: "POSTED", posting_date_time: "2025-09-01T10:00:00+10:00", description: `DESC ${id}`, amount: "-12.34", currency: "AUD", category: { primary_category: "SHOPPING", secondary_category: "GROCERIES" }, ...o });
+  {
+    const fk = fake((c) => {
+      const t = tokenRoute(c); if (t) return t;
+      const after = c.url.searchParams.get("page[after]");
+      if (!after) return jsonRes(200, { transactions: [
+        ftx("t1"),
+        ftx("t2", { amount: "250.00", description: "SALARY" }),
+        ftx("t3", { status: "PENDING" }),
+        ftx("t4", { posting_date_time: "2025-06-30T13:00:00Z" }), // 23:00 AEST 30 Jun ⇒ previous FY
+        ftx("t5", { account_id: "acc-OTHER" }),
+        ftx("t6", { posting_date_time: "2025-06-30T14:30:00Z" }), // 00:30 AEST 1 Jul ⇒ in FY
+      ], links: { next: "https://api.fiskil.com/v1/banking/transactions?end_user_id=eu1&page%5Bafter%5D=tok_2&page%5Bsize%5D=1000" } });
+      if (after === "tok_2") return jsonRes(200, { transactions: [ftx("t7", { currency: "usd" })], links: {} });
+      return jsonRes(500, {});
+    });
+    const p = fiskilProvider(fenv, fk.deps);
+    const pg = await p.fetchTransactionPage("eu1", { accountId: "acc-1", from: "2025-07-01", to: "2026-06-30", next: null });
+    const qy = fk.calls.at(-1)!.url.searchParams;
+    check("transactions: filtered at the source by end user, ACCOUNT, Sydney-day window, POSTED, page size 1000",
+      qy.get("end_user_id") === "eu1" && qy.get("account_id") === "acc-1" && qy.get("from") === "2025-07-01T00:00:00+10:00"
+      && qy.get("to") === "2026-06-30T23:59:59+10:00" && qy.get("status") === "POSTED" && qy.get("page[size]") === "1000" && !qy.has("page[after]"));
+    const ids = pg.transactions.map((t) => t.id).join(",");
+    check("transactions: pending skipped, prior-FY skipped, other account dropped, 00:30 AEST 1 Jul kept", ids === "fiskil:t1,fiskil:t2,fiskil:t6" && pg.skippedPending === 1 && pg.skippedOutOfWindow === 1);
+    check("transactions: negative amount ⇒ debit, positive ⇒ credit, unsigned integer cents",
+      pg.transactions[0]!.direction === "debit" && pg.transactions[0]!.amountCents === 1234 && pg.transactions[1]!.direction === "credit" && pg.transactions[1]!.amountCents === 25000);
+    check("transactions: ids namespaced 'fiskil:' so they can't collide with Basiq's on the fingerprint", (await fp("fiskil:t1")) !== (await fp("t1")));
+    check("transactions: Fiskil's category is a diagnostic hint only (providerClass), never a tax category", pg.transactions[0]!.providerClass === "SHOPPING/GROCERIES");
+    check("cursor: only the page[after] TOKEN is returned, never the URL", pg.next === "tok_2");
+    const pg2 = await p.fetchTransactionPage("eu1", { accountId: "acc-1", from: "2025-07-01", to: "2026-06-30", next: pg.next });
+    const q2 = fk.calls.at(-1)!.url;
+    check("cursor: the next page is rebuilt on OUR base URL with the same filters + page[after]",
+      q2.origin === "https://api.fiskil.com" && q2.searchParams.get("page[after]") === "tok_2" && q2.searchParams.get("account_id") === "acc-1" && q2.searchParams.get("status") === "POSTED");
+    check("cursor: last page ⇒ next null; currency normalised", pg2.next === null && pg2.transactions[0]!.currency === "USD");
+    check("cursor: a malformed persisted cursor is refused before any fetch",
+      await p.fetchTransactionPage("eu1", { accountId: "acc-1", from: "2025-07-01", to: "2026-06-30", next: "https://evil.example/x" }).then(() => false, (e) => e instanceof FiskilError));
+  }
+
+  // Revoke / delete: right endpoints, already-gone is success, a real failure throws.
+  _resetFiskilTokenCache();
+  {
+    let st = 204;
+    const fk = fake((c) => tokenRoute(c) ?? (st === 204 ? new Response(null, { status: 204 }) : jsonRes(st, { name: st === 404 ? "end_user_not_found" : "boom", id: `e${st}` })));
+    const p = fiskilProvider(fenv, fk.deps);
+    await p.revokeConnection("eu1", "arr/1");
+    check("revokeConnection: DELETE /v1/consent/{arrangement_id} (id URL-encoded)", fk.calls.at(-1)!.method === "DELETE" && fk.calls.at(-1)!.url.pathname === "/v1/consent/arr%2F1");
+    await p.deleteUser("eu 1");
+    check("deleteUser: DELETE /v1/end-users/{id}", fk.calls.at(-1)!.method === "DELETE" && fk.calls.at(-1)!.url.pathname === "/v1/end-users/eu%201");
+    st = 404;
+    check("deleteUser / revoke: 404 = already gone, not an error",
+      await p.deleteUser("eu1").then(() => true, () => false) && await p.revokeConnection("eu1", "arr").then(() => true, () => false));
+    st = 500;
+    const err = await p.deleteUser("eu1").then(() => null, (e) => e);
+    check("deleteUser: a 500 is retried, then throws with its error_id", err instanceof FiskilError && err.correlationId === "e500" && fk.slept.length >= 2);
+  }
+
+  // The withdraw/purge router sends each call to the provider named on the ROW.
+  _resetFiskilTokenCache();
+  {
+    const realFetch = globalThis.fetch;
+    const seen: string[] = [];
+    globalThis.fetch = (async (input: string, init?: RequestInit) => {
+      const u = new URL(String(input));
+      if (u.pathname === "/v1/token") return jsonRes(200, { token: "t", expires_in: 900 });
+      seen.push(`${init?.method} ${u.host}${u.pathname}`);
+      return new Response(null, { status: 204 });
+    }) as typeof fetch;
+    try {
+      const up = bankUpstream({ ...fenv, BANK_FEED_PROVIDER: "basiq" } as unknown as Env);
+      await up.deleteConnection("eu1", "arr1", "fiskil");
+      await up.deleteUser("eu1", "fiskil");
+      check("bankUpstream routes a fiskil row to Fiskil even when new connects default to basiq",
+        seen.join("|") === "DELETE api.fiskil.com/v1/consent/arr1|DELETE api.fiskil.com/v1/end-users/eu1");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  }
+
+  // Callback state: session-id fallback is single-use; callback params are reduced to safe ids.
+  {
+    const kv = new Map<string, string>();
+    const kenv = { RULES: { put: async (k: string, v: string) => { kv.set(k, v); }, get: async (k: string) => kv.get(k) ?? null, delete: async (k: string) => { kv.delete(k); } } } as unknown as Env;
+    const st = await putConnectState(kenv, "tenant-1", 1800);
+    await putConnectSession(kenv, "sess-9", st, 1800);
+    const viaSession = await stateForSession(kenv, "sess-9");
+    check("session fallback: sess_id resolves to the state, then the state to the tenant", viaSession === st && (await takeConnectState(kenv, viaSession)) === "tenant-1");
+    check("session fallback: single-use (both handles consumed)", (await stateForSession(kenv, "sess-9")) === null && (await takeConnectState(kenv, st)) === null);
+    check("safeCallbackParam: ids/codes only, bounded, no free text", safeCallbackParam("CONSENT_ENDUSER_DENIED") === "CONSENT_ENDUSER_DENIED"
+      && safeCallbackParam("<script>alert(1)</script>") === "scriptalert1script" && (safeCallbackParam("x".repeat(500)) ?? "").length === 64 && safeCallbackParam(null) === null);
+  }
+
+  // ── End to end: the bounded sync (bank-sync.ts) driven through the REAL Fiskil adapter over a fake
+  // transport, into an in-memory D1 with every migration. Two pages, checkpoint, resume, re-sync.
+  _resetFiskilTokenCache();
+  {
+    class S {
+      private params: unknown[] = [];
+      constructor(private db: DatabaseSync, private sql: string) {}
+      bind(...a: unknown[]) { this.params = a.map((x) => (x === undefined ? null : x)); return this; }
+      async all<T>() { return { results: this.db.prepare(this.sql).all(...(this.params as never[])) as T[], success: true, meta: {} }; }
+      async first<T>() { return (this.db.prepare(this.sql).get(...(this.params as never[])) as T) ?? null; }
+      async run() { const r = this.db.prepare(this.sql).run(...(this.params as never[])); return { success: true, meta: { changes: Number(r.changes ?? 0) } }; }
+      async settle() { return /^\s*(select|with)/i.test(this.sql) ? this.all() : this.run(); }
+    }
+    const sq = new DatabaseSync(":memory:");
+    for (const f of fs.readdirSync(path.join(process.cwd(), "migrations")).filter((f) => f.endsWith(".sql")).sort()) sq.exec(fs.readFileSync(path.join(process.cwd(), "migrations", f), "utf8"));
+    const db = { prepare: (sql: string) => new S(sq, sql), batch: async (s: S[]) => { const out = []; for (const x of s) out.push(await x.settle()); return out; } } as unknown as D1Database;
+    const UF = "u-fiskil";
+    sq.prepare(`INSERT INTO bank_connections (id, user_id, provider, provider_user_id, provider_connection_id, institution_id, status) VALUES ('fc1', ?, 'fiskil', 'eu1', 'arr_live', '88888', 'active')`).run(UF);
+    sq.prepare(`INSERT INTO bank_connection_accounts (id, user_id, connection_id, provider_account_id, account_id, selected) VALUES ('fb1', ?, 'fc1', 'acc-1', 'accF', 1)`).run(UF);
+    const fk = fake((c) => {
+      const t = tokenRoute(c); if (t) return t;
+      const after = c.url.searchParams.get("page[after]");
+      if (!after) return jsonRes(200, { transactions: [ftx("e1", { description: "OFFICEWORKS 0423" }), ftx("e2", { description: "Transfer to savings" })], links: { next: "https://api.fiskil.com/v1/banking/transactions?page%5Bafter%5D=pg2" } });
+      if (after === "pg2") return jsonRes(200, { transactions: [ftx("e3", { description: "NEW MERCHANT", amount: "99.00" })], links: {} });
+      return jsonRes(500, {});
+    });
+    const prov = fiskilProvider(fenv, fk.deps);
+    const transport: FeedTransport = (qq) => prov.fetchTransactionPage("eu1", { accountId: qq.providerAccountId, from: qq.from, to: qq.to, next: qq.next });
+    const deps = (): SyncStepDeps => ({
+      db, userId: UF, baseCurrency: "AUD", transport,
+      categorise: (m) => (/officeworks/i.test(m) ? { bucket: "payg", ato_label: "D5", confidence: 1 } : null),
+      stillSelected: async () => true,
+    });
+    const run = await openRun(db, { userId: UF, connectionId: "fc1", from: "2025-07-01", to: "2026-06-30", accounts: [{ p: "acc-1", a: "accF" }] });
+    const s1 = await syncRunStep(deps(), run!, 1);
+    const ck = sq.prepare(`SELECT cursor FROM bank_sync_runs WHERE id = ?`).get(run!.id) as { cursor: string };
+    check("e2e fiskil: page 1 written, run checkpointed with the opaque TOKEN (no URL persisted)",
+      s1.pagesUsed === 1 && !s1.done && JSON.parse(ck.cursor).next === "pg2" && !ck.cursor.includes("http"));
+    const reloaded = await loadRun(db, UF, run!.id);
+    const s2 = await syncRunStep(deps(), reloaded!, 10);
+    check("e2e fiskil: resume from the persisted token finishes the account", s2.done && !s2.error && fk.calls.at(-1)!.url.searchParams.get("page[after]") === "pg2");
+    await finishRun(db, UF, reloaded!, { status: "ok", error: null, correlationId: null });
+    const rows = sq.prepare(`SELECT raw_description d, status, source, direction, amount_cents a, line_fingerprint f FROM transactions WHERE user_id = ? ORDER BY raw_description`).all(UF) as { d: string; status: string; source: string; direction: string; a: number; f: string }[];
+    const by = (d: string) => rows.find((r) => r.d === d);
+    check("e2e fiskil: 3 lines land as cdr_feed bank lines", rows.length === 3 && rows.every((r) => r.source === "cdr_feed"));
+    check("e2e fiskil: the same money-visible decisions (rule ⇒ extracted, transfer ⇒ ignored, unknown ⇒ needs_review)",
+      by("OFFICEWORKS 0423")?.status === "extracted" && by("Transfer to savings")?.status === "ignored" && by("NEW MERCHANT")?.status === "needs_review");
+    check("e2e fiskil: sign ⇒ direction (credit for +99.00), unsigned cents", by("NEW MERCHANT")?.direction === "credit" && by("NEW MERCHANT")?.a === 9900);
+    check("e2e fiskil: fingerprint = feed|fiskil:<fiskil_id>", by("OFFICEWORKS 0423")?.f === (await fp("fiskil:e1")));
+    const run2 = await openRun(db, { userId: UF, connectionId: "fc1", from: "2025-07-01", to: "2026-06-30", accounts: [{ p: "acc-1", a: "accF" }] });
+    const s3 = await syncRunStep(deps(), run2!, 10);
+    check("e2e fiskil: re-sync is idempotent (stable fiskil ids ⇒ 0 imported, 3 duplicates)", s3.importedThisStep === 0 && run2!.counters.duplicates === 3);
+    await finishRun(db, UF, run2!, { status: "ok", error: null, correlationId: null });
+    // A provider failure mid-run is returned with Fiskil's error_id as the correlation id.
+    const failing = fiskilProvider(fenv, fake((c) => tokenRoute(c) ?? jsonRes(400, { id: "errX", name: "bad request", message: "nope" })).deps);
+    const run3 = await openRun(db, { userId: UF, connectionId: "fc1", from: "2025-07-01", to: "2026-06-30", accounts: [{ p: "acc-1", a: "accF" }] });
+    const s4 = await syncRunStep({ ...deps(), transport: (qq) => failing.fetchTransactionPage("eu1", { accountId: qq.providerAccountId, from: qq.from, to: qq.to, next: qq.next }) }, run3!, 10);
+    await finishRun(db, UF, run3!, { status: "failed", error: s4.error, correlationId: s4.correlationId });
+    const fr = sq.prepare(`SELECT status, error, correlation_id c FROM bank_sync_runs WHERE id = ?`).get(run3!.id) as { status: string; error: string; c: string };
+    check("e2e fiskil: a failed run records Fiskil's error_id on the run (correlation_id + error text)", fr.status === "failed" && fr.c === "errX" && /error_id errX/.test(fr.error));
+  }
 }
 
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);

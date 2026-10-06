@@ -138,6 +138,14 @@ DEFAULT_INFERENCE_REGION = "ap-southeast-2"
 # proven live on Bedrock ap-southeast-2 (CDR Privacy Safeguard 8) and (b) the CDR Representative
 # arrangement with Basiq is signed. Leave on sandbox; flipping it is a deliberate, gated decision.
 BASIQ_ENV = "sandbox"
+# Which aggregator a NEW bank connect uses: 'basiq' | 'fiskil'. Unset ⇒ 'basiq' (behaviour-identical).
+# Basiq declined to onboard Quillo (docs/bank-feed-provider-options.md); flip to 'fiskil' only once the
+# FISKIL_* secrets are set. Existing connections keep the provider recorded on their own row.
+# BANK_FEED_PROVIDER = "fiskil"
+# Fiskil environment: 'sandbox' | 'production', fail-closed exactly like BASIQ_ENV. Fiskil sandbox and
+# production share one base URL (the keys decide), so the PS8 sandbox carve-out ALSO requires the
+# connection to be at Fiskil's sandbox data holder — a real bank's data is never treated as synthetic.
+FISKIL_ENV = "sandbox"
 # QuickBooks base URL: start on sandbox; flip to production when ready.
 QBO_BASE_URL = "https://quickbooks.api.intuit.com"
 # prod: https://quickbooks.api.intuit.com
@@ -151,6 +159,8 @@ QBO_BASE_URL = "https://quickbooks.api.intuit.com"
 # AWS_ACCESS_KEY_ID        (only when inference_provider=bedrock)
 # AWS_SECRET_ACCESS_KEY    (only when inference_provider=bedrock)
 # BASIQ_API_KEY            Basiq dashboard → application → Developers → API keys (per application)
+# FISKIL_CLIENT_ID         Fiskil Console → API keys (sandbox and production keys are separate)
+# FISKIL_CLIENT_SECRET     Fiskil Console → API keys
 # STRIPE_SECRET_KEY        Stripe → Developers → API keys
 # STRIPE_WEBHOOK_SECRET    Stripe → Developers → Webhooks → signing secret
 # NOTE: QBO refresh/access tokens are NOT secrets — they rotate on every use and are

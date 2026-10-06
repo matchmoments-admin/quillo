@@ -1,12 +1,24 @@
 import type { Env } from "../env";
-import { sha256hex } from "./base64";
+import {
+  ProviderError, screenRows, toCents, last4Of, feedFingerprint, requiresAuResidency, providerEnvironment,
+  type AccessType, type FeedTransaction, type TransactionPageResult, type ProviderAccount, type ProviderConsent,
+  type ProviderConnection,
+} from "./bank-feed-core";
+import type { BankFeedProvider, ConsentAction } from "./bank-provider";
+
+// The provider-neutral helpers live in bank-feed-core.ts; re-exported so existing importers keep working.
+export { toCents, last4Of, feedFingerprint, requiresAuResidency };
+export type { AccessType, TransactionPageResult, ConsentAction };
+/** The shape is provider-neutral now (FeedTransaction); the old name is kept for existing callers. */
+export type BasiqTransaction = FeedTransaction;
 
 /**
- * Basiq (Open Banking / CDR aggregator) API client — ADR-0003.
+ * Basiq (Open Banking / CDR aggregator) API client — ADR-0003. One implementation of the
+ * BankFeedProvider seam (src/lib/bank-provider.ts); see basiqProvider at the bottom.
  *
  * Transport only: this module talks to Basiq and normalises what comes back. It writes nothing,
- * reads no tenant state, and makes no tax judgement. The ledger write lives in the DO (PR 4) so it
- * shares the statement path's categorise → Inbox/Sort pipeline.
+ * reads no tenant state, and makes no tax judgement. The ledger write lives in the DO so it shares
+ * the statement path's categorise → Inbox/Sort pipeline.
  *
  * Two rules run through everything here:
  *   1. Quillo never sees a banking credential. Consent and authentication happen on Basiq's hosted
@@ -25,42 +37,16 @@ const API_VERSION = "3.0";
 /** Max page size Basiq accepts on the transactions list. */
 export const MAX_PAGE_SIZE = 500;
 
-/** How a connection's data reached us. The legal obligations differ — see requiresAuResidency. */
-export type AccessType = "cdr" | "web";
-
 export type BasiqEnvironment = "sandbox" | "production";
 
+/** BASIQ_ENV, fail-closed: only the literal 'production' (any case) flips it. See requiresAuResidency. */
 export function basiqEnvironment(env: Env): BasiqEnvironment {
-  return (env.BASIQ_ENV ?? "sandbox").toLowerCase() === "production" ? "production" : "sandbox";
+  return providerEnvironment(env, "basiq");
 }
 
 /** False when no API key is configured — the whole surface ships dark, like Stripe. */
 export function basiqConfigured(env: Env): boolean {
   return Boolean(env.BASIQ_API_KEY);
-}
-
-/**
- * Does this connection's data force AU-resident inference (CDR Privacy Safeguard 8)?
- *
- * TRUE only when BOTH hold:
- *   - access_type === 'cdr'. Web-connector data is ordinary personal information: the existing
- *     APP-8 cross-border consent gate governs it and PS8 does not attach. CDR data is governed by
- *     the Privacy Safeguards for its whole life inside Quillo — it does not become "ordinary" data
- *     after categorisation — and a consumer cannot consent past PS8.
- *   - the environment is 'production'. Sandbox connections return synthetic data from a test
- *     institution (Hooli). There is no consumer, so there is no consumer's CDR data to disclose and
- *     no safeguard to breach. Gating on this is what makes the feed testable before Bedrock is
- *     activated; without it every sandbox sync would fail closed on a compliance rule protecting
- *     data that does not exist.
- *
- * The second condition is a genuine carve-out, so it is deliberately narrow: it keys off BASIQ_ENV,
- * the same var that already refuses production access until the residency guard and the CDR
- * representative arrangement are both real (wrangler.toml). Flipping that var is the single gate.
- *
- * Callers pass the result to decide whether to call assertAuResidency (src/llm.ts) before inference.
- */
-export function requiresAuResidency(env: Env, accessType: AccessType): boolean {
-  return accessType === "cdr" && basiqEnvironment(env) === "production";
 }
 
 /** Shape Basiq returns on error: a list envelope of error objects. Never contains our payload. */
@@ -69,16 +55,11 @@ interface BasiqErrorBody {
   data?: { code?: string; title?: string; detail?: string }[];
 }
 
-export class BasiqError extends Error {
-  readonly status: number;
-  readonly code: string | undefined;
-  readonly correlationId: string | undefined;
+/** A Basiq API failure. A ProviderError, so the provider-neutral sync records it the same way. */
+export class BasiqError extends ProviderError {
   constructor(status: number, code: string | undefined, message: string, correlationId?: string) {
-    super(message);
+    super(status, code, message, correlationId, status >= 500);
     this.name = "BasiqError";
-    this.status = status;
-    this.code = code;
-    this.correlationId = correlationId;
   }
 }
 
@@ -169,9 +150,6 @@ export async function clientToken(env: Env, basiqUserId: string): Promise<string
   return tok.access_token;
 }
 
-/** Consent-UI actions. `connect` adds an institution; `manage` is the consumer's own dashboard. */
-export type ConsentAction = "connect" | "manage" | "extend" | "update" | "reauthorise";
-
 /**
  * The hosted consent URL the consumer is sent to. Authentication happens there and on the data
  * holder's own site — never in Quillo, which is why no banking credential can reach us.
@@ -261,14 +239,8 @@ export async function deleteBasiqConnection(env: Env, basiqUserId: string, conne
 
 // ── Consents ─────────────────────────────────────────────────────────────────
 
-export interface BasiqConsent {
-  id: string;
-  status: string; // active | revoked | expired
-  created?: string;
-  expiryDate?: string;
-  /** The consented data clusters, e.g. account.basic, transaction.detail. */
-  permissions: string[];
-}
+/** status: active | revoked | expired; permissions e.g. account.basic, transaction.detail. */
+export type BasiqConsent = ProviderConsent;
 
 interface RawConsent {
   id: string;
@@ -300,16 +272,8 @@ export async function getConsents(env: Env, basiqUserId: string): Promise<BasiqC
 
 // ── Accounts ─────────────────────────────────────────────────────────────────
 
-export interface BasiqAccount {
-  id: string;
-  name: string | null;
-  /** LAST FOUR DIGITS ONLY — a full account number is never returned from this module. */
-  last4: string | null;
-  type: string | null;
-  currency: string | null;
-  connectionId: string | null;
-  institutionId: string | null;
-}
+/** LAST FOUR DIGITS ONLY — a full account number is never returned from this module. */
+export type BasiqAccount = ProviderAccount;
 
 interface RawAccount {
   id: string;
@@ -319,16 +283,6 @@ interface RawAccount {
   currency?: string;
   connection?: string;
   institution?: string;
-}
-
-/**
- * Truncate an account number to its last four digits. Applied at the boundary so a full number
- * never reaches a caller, a log line or the database (ADR-0003 S11).
- */
-export function last4Of(accountNo: string | null | undefined): string | null {
-  if (!accountNo) return null;
-  const digits = accountNo.replace(/\D/g, "");
-  return digits.length >= 4 ? digits.slice(-4) : null;
 }
 
 export async function getAccounts(env: Env, basiqUserId: string): Promise<BasiqAccount[]> {
@@ -350,20 +304,6 @@ export async function getAccounts(env: Env, basiqUserId: string): Promise<BasiqA
 
 // ── Transactions ─────────────────────────────────────────────────────────────
 
-export interface BasiqTransaction {
-  id: string;
-  accountId: string;
-  /** ISO date (YYYY-MM-DD) the transaction posted. Posted-only, so never null. */
-  postDate: string;
-  description: string;
-  /** Unsigned cents. Direction carries the sign, matching the statement path's storage. */
-  amountCents: number;
-  direction: "debit" | "credit";
-  currency: string;
-  /** Provider class/subClass. Kept for diagnostics — NEVER used as a tax category. */
-  providerClass: string | null;
-}
-
 interface RawTransaction {
   id: string;
   status?: string;
@@ -374,29 +314,6 @@ interface RawTransaction {
   account?: string;
   postDate?: string;
   class?: string;
-}
-
-/**
- * Decimal money string → unsigned integer cents, without floating point.
- *
- * Basiq returns `amount` as a STRING, negative for outgoing funds ("-24.50"). Going through
- * parseFloat would put binary-float error into the money path; every other amount in this codebase
- * is integer cents, so the string is parsed digit-wise instead.
- *
- * Returns the ABSOLUTE value — sign is carried by `direction`, matching how the statement importer
- * stores amount_cents unsigned.
- */
-export function toCents(amount: string | number | null | undefined): number {
-  if (amount == null) return 0;
-  const raw = String(amount).trim();
-  if (!raw) return 0;
-  const m = /^[+-]?(\d*)(?:\.(\d*))?$/.exec(raw.replace(/,/g, ""));
-  if (!m) return 0;
-  const whole = m[1] || "0";
-  // Pad to exactly 2 decimal places, truncating anything finer (no institution reports sub-cents,
-  // and rounding here would invent money).
-  const frac = (m[2] ?? "").padEnd(2, "0").slice(0, 2);
-  return Number(whole) * 100 + Number(frac);
 }
 
 /**
@@ -418,11 +335,6 @@ export function postDateFilter(from: string, to: string, accountId?: string): st
   const parts = [`transaction.postDate.gteq('${from}')`, `transaction.postDate.lteq('${to}')`];
   if (accountId) parts.push(`account.id.eq('${accountId}')`);
   return parts.join(",");
-}
-
-/** Namespaced dedup key for a fed line. Distinct from the statement fingerprint's input shape. */
-export function feedFingerprint(providerTxnId: string): Promise<string> {
-  return sha256hex(`feed|${providerTxnId}`);
 }
 
 interface TransactionPage {
@@ -453,35 +365,16 @@ export function safeNextUrl(next: string, basiqUserId: string): string {
   return u.toString();
 }
 
-/** One page of POSTED, in-window transactions for one account, plus the cursor to the next page. */
-export interface TransactionPageResult {
-  transactions: BasiqTransaction[];
-  /** Rows the provider returned that we discarded, and why. Recorded on the sync run. */
-  skippedPending: number;
-  skippedOutOfWindow: number;
-  /** Absolute `links.next` URL, or null when this account's pagination is exhausted. */
-  next: string | null;
-}
-
 /**
  * Fetch ONE page of POSTED transactions for ONE selected account within [from, to] (inclusive,
  * YYYY-MM-DD). Pass `next` (a previous page's cursor) to continue; omit it to start.
  *
- * One page per call is the point (#511). The old loop walked up to 200 pages x 500 rows and held
- * every row in memory inside a single Durable Object request, which blows the Workers subrequest
- * cap around ~45k rows. A page-at-a-time transport lets the caller (src/lib/bank-sync.ts) flush each
- * page to D1, checkpoint a resume cursor on the run row, and stop at a budget — continuing in a
- * later invocation.
+ * One page per call is the point (#511). A page-at-a-time transport lets the caller
+ * (src/lib/bank-sync.ts) flush each page to D1, checkpoint a resume cursor on the run row, and stop
+ * at a budget — continuing in a later invocation.
  *
- * Two deliberate defences:
- *
- *  1. THE WINDOW IS RE-ENFORCED LOCALLY. The provider filter is sent as a bandwidth optimisation,
- *     but Basiq's published spec documents which fields are filterable without pinning the operator
- *     syntax. If that filter is wrong or silently ignored, an unfiltered pull would drag transactions
- *     from other financial years into the tax position. So every row is re-checked against the
- *     window here. The correctness of a tax figure never rests on a vendor query string.
- *  2. POSTED ONLY. Pending ids are unstable — Basiq documents that a transaction's id refreshes on
- *     the pending → posted transition, so fingerprinting a pending row would double-count it later.
+ * The posted-only / window / account re-checks are the shared screenRows (bank-feed-core.ts): the
+ * correctness of a tax figure never rests on a vendor query string, and pending ids are unstable.
  *
  * ONE QUERY PER SELECTED ACCOUNT. Filtering account-side after the rows arrive would mean the
  * unselected accounts' transactions were still collected, and under the CDR data minimisation is
@@ -505,37 +398,71 @@ export async function fetchTransactionPage(
   }
 
   const page: TransactionPage = await apiGet<TransactionPage>(env, url, "getTransactions");
-  const transactions: BasiqTransaction[] = [];
-  let skippedPending = 0;
-  let skippedOutOfWindow = 0;
-  for (const t of page.data ?? []) {
-    if ((t.status ?? "").toLowerCase() !== "posted") {
-      skippedPending++;
-      continue;
-    }
-    // postDate is an ISO 8601 datetime; the date part is what the ledger keys on.
-    const postDate = (t.postDate ?? "").slice(0, 10);
-    if (!postDate || postDate < from || postDate > to) {
-      skippedOutOfWindow++;
-      continue;
-    }
-    // Defence in depth: the provider filter is the collection limit, but this re-check means a
-    // wrong/ignored filter still cannot land another account's rows in the ledger.
-    if (!t.id || t.account !== accountId) continue;
-    const direction = (t.direction ?? "").toLowerCase() === "credit" ? "credit" : "debit";
-    transactions.push({
+  const screened = screenRows(
+    (page.data ?? []).map((t) => ({
       id: t.id,
       accountId: t.account,
-      postDate,
-      description: t.description ?? "",
-      amountCents: toCents(t.amount),
-      direction,
-      // Normalised at the boundary. A provider returning "aud" would otherwise compare unequal
-      // to the base currency, marking every line unconvertible — which excludes the whole
-      // account from the position via FX_CONVERTED and silently zeroes the year.
-      currency: (t.currency ?? "AUD").trim().toUpperCase(),
+      status: t.status,
+      // postDate is an ISO 8601 datetime; the date part is what the ledger keys on.
+      postDate: (t.postDate ?? "").slice(0, 10),
+      description: t.description,
+      amount: t.amount,
+      direction: (t.direction ?? "").toLowerCase() === "credit" ? ("credit" as const) : ("debit" as const),
+      currency: t.currency,
       providerClass: t.class ?? null,
-    });
+    })),
+    { from, to, accountId },
+  );
+  return { ...screened, next: page.links?.next || null };
+}
+
+// ── The BankFeedProvider seam ────────────────────────────────────────────────
+
+/**
+ * Basiq connections, as the callback records them: one per Basiq connection (institution), grouped
+ * from the account list. Behaviour-identical to the pre-seam callback: Basiq's consent is per CONSUMER,
+ * so the single active consent (else the first) governs every connection, and a consent-read failure
+ * never loses the connections the consumer just authorised.
+ */
+export async function basiqConnections(env: Env, basiqUserId: string): Promise<ProviderConnection[]> {
+  let consents: BasiqConsent[] = [];
+  try {
+    consents = await getConsents(env, basiqUserId);
+  } catch (e) {
+    console.warn(`bank callback: consent read failed (${(e as Error).message})`);
   }
-  return { transactions, skippedPending, skippedOutOfWindow, next: page.links?.next || null };
+  const active = consents.find((c) => c.status === "active") ?? consents[0] ?? null;
+  const accounts = await getAccounts(env, basiqUserId);
+  const byConnection = new Map<string, ProviderAccount[]>();
+  for (const a of accounts) {
+    if (!a.connectionId) continue;
+    const list = byConnection.get(a.connectionId) ?? [];
+    list.push(a);
+    byConnection.set(a.connectionId, list);
+  }
+  return [...byConnection].map(([connectionId, accts]) => ({
+    connectionId,
+    institutionId: accts[0]?.institutionId ?? null,
+    institutionName: null,
+    consent: active,
+    accounts: accts,
+  }));
+}
+
+export function basiqProvider(env: Env): BankFeedProvider {
+  return {
+    id: "basiq",
+    configured: () => basiqConfigured(env),
+    environment: () => basiqEnvironment(env),
+    stateTtlSeconds: 600,
+    createUser: (identity) => createBasiqUser(env, { email: identity.email }),
+    // Basiq's redirect URL is configured in its dashboard; the state rides on the consent URL.
+    consentUrl: async (u, opts) => ({ url: consentUrl(await clientToken(env, u), { action: opts.action, state: opts.state }) }),
+    listConsents: (u) => getConsents(env, u),
+    listAccounts: (u) => getAccounts(env, u),
+    listConnections: (u) => basiqConnections(env, u),
+    fetchTransactionPage: (u, q) => fetchTransactionPage(env, u, q),
+    revokeConnection: (u, c) => deleteBasiqConnection(env, u, c),
+    deleteUser: (u) => deleteBasiqUser(env, u),
+  };
 }

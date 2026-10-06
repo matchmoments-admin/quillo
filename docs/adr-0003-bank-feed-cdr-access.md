@@ -9,7 +9,12 @@ CDR legal review (#524), which also owns whether consent *expiry* (not just with
 auto-delete. D1 below is resolved — the build
 started before FY25/26 filed, deliberately; **D2/D4 (vendor terms, 12-month minimum) remain open**
 on [#475](https://github.com/matchmoments-admin/quillo/issues/475), and no production access exists.
-**Date:** 2026-07-26 (status updated 2026-10-03)
+**Update 2026-10-06:** Basiq declined to onboard Quillo. **Fiskil** (`ADRBNK000246`) is the intended
+principal ([bank-feed-provider-options.md](bank-feed-provider-options.md)). The connector is now
+provider-neutral (`src/lib/bank-provider.ts`), with a Fiskil adapter selected by `BANK_FEED_PROVIDER=fiskil`.
+`requiresAuResidency` is provider-aware. Fiskil's sandbox and production share one base URL, so its sandbox
+carve-out also requires the connection to be at Fiskil's sandbox data holder.
+**Date:** 2026-07-26 (status updated 2026-10-06)
 **Supersedes:** the "Redbark seasonal bank-feed" draft spec (that design is **not viable** — see §2)
 **Related:** [ADR-0002 canonical sources](adr-0002-canonical-sources.md), APP-8 consent gate, `docs/personas.md`
 

@@ -13,6 +13,15 @@
 
 ---
 
+> **Update 2026-10-06: Basiq declined; Fiskil is the new principal.** The connector now sits behind a
+> provider seam (`src/lib/bank-provider.ts`). Basiq still works and is still the default. Setting
+> `BANK_FEED_PROVIDER=fiskil` plus the `FISKIL_CLIENT_ID`/`FISKIL_CLIENT_SECRET` secrets routes new
+> connects through `src/lib/fiskil.ts`. `FISKIL_ENV` defaults to `sandbox`. The PS8 sandbox carve-out
+> for Fiskil also requires the connection to be at Fiskil's sandbox data holder (`88888`). The sandbox
+> facts verified live, and what still needs a human consent click, are in
+> [bank-feed-provider-options.md §7](bank-feed-provider-options.md#7--sandbox-verification-2026-10-06-the-connector-pr).
+> Most of the Basiq-specific owner actions below are superseded.
+
 ## 1. One-line summary
 
 **The connector is built and the compliance guards are real; the consent dashboard landed in #576

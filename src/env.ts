@@ -55,6 +55,14 @@ export interface Env {
   // once the AU-residency guard is proven live AND the CDR Representative arrangement is signed.
   // The connector REFUSES 'production' until then — unset/anything-else is treated as sandbox.
   BASIQ_ENV?: string;
+  // Which aggregator a NEW bank connect goes through: 'basiq' | 'fiskil'. Unset ⇒ 'basiq' (nothing
+  // changes until it is set); an unknown value is refused, never silently re-routed. Existing
+  // connections always keep the provider recorded on their row (src/lib/bank-provider.ts).
+  BANK_FEED_PROVIDER?: string;
+  // Fiskil environment, 'sandbox' | 'production', read exactly like BASIQ_ENV (unset ⇒ sandbox).
+  // Fiskil's sandbox and production share ONE base URL — the credentials decide — so the PS8 sandbox
+  // carve-out ALSO requires the connection to be at Fiskil's sandbox data holder (requiresAuResidency).
+  FISKIL_ENV?: string;
 
   // Secrets
   ANTHROPIC_API_KEY: string;
@@ -80,6 +88,12 @@ export interface Env {
   // don't share data, so the sandbox key is scoped to `quillo-dev`. Absent ⇒ the bank-feed routes
   // stay dark (the same ships-dark pattern as Stripe). Set via `wrangler secret put BASIQ_API_KEY`.
   BASIQ_API_KEY?: string;
+  // Optional (flag `bank_feed_cdr`, BANK_FEED_PROVIDER=fiskil): Fiskil Console → API keys. Server-side
+  // only — exchanged for a 15-minute app-scoped JWT cached in-isolate; the browser only ever sees
+  // Fiskil's hosted auth_url. Both absent ⇒ the Fiskil provider reports unconfigured (ships dark).
+  // Set via `wrangler secret put FISKIL_CLIENT_ID` / `FISKIL_CLIENT_SECRET`.
+  FISKIL_CLIENT_ID?: string;
+  FISKIL_CLIENT_SECRET?: string;
   // Optional (flag phi_provider_directory): Google Places API (New) key for the interim Extras
   // provider finder. Server-side only — never reaches the SPA. Absent ⇒ fetchProviders returns []
   // (the UI falls back to "Open in Maps" + the Healthdirect signpost). Set via
@@ -171,8 +185,12 @@ export interface TaxAgentRpc {
   disconnectQuickBooks(userId: string): Promise<{ ok: boolean; revoked: boolean }>;
   // Bank feeds (ADR-0003, flag `bank_feed_cdr`). bankCallback takes an ALREADY-RESOLVED userId:
   // the single-use state handle is consumed in index.ts so the correct per-tenant DO is chosen.
-  bankConnectUrl(userId: string, action?: "connect" | "manage" | "extend" | "update" | "reauthorise"): Promise<{ url: string }>;
-  bankCallback(userId: string, jobIdsRaw: string | null): Promise<{ ok: boolean; connections: number; accounts: number; error?: string }>;
+  bankConnectUrl(userId: string, action?: "connect" | "manage" | "extend" | "update" | "reauthorise", origin?: string): Promise<{ url: string }>;
+  bankCallback(
+    userId: string,
+    jobIdsRaw: string | null,
+    ret?: { outcome?: string | null; error?: string | null; errorId?: string | null; sessionId?: string | null },
+  ): Promise<{ ok: boolean; connections: number; accounts: number; error?: string }>;
   bankConnections(userId: string): Promise<{ connections: unknown[] }>;
   bankSelectAccounts(userId: string, selections: { providerAccountId: string; selected: boolean; accountId?: string | null }[]): Promise<{ updated: number; conflicts: string[] }>;
   bankSync(userId: string, opts?: { fy?: string }): Promise<{ imported: number; skipped: number; fetched: number; runs: number; errors: string[]; in_progress: boolean }>;

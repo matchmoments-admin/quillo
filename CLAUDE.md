@@ -91,7 +91,7 @@ The canonical roles map onto this repo's existing taxonomy (`ready-for-human` â†
 `needs-decision`). See `docs/agents/triage-labels.md`.
 
 ### Domain docs
-Single-context: `CONTEXT.md` at root (lazily created) + ADRs flat as `docs/adr-NNNN-*.md`.
+Single-context: `GLOSSARY.md` at root (lazily created) + ADRs flat as `docs/adr-NNNN-*.md`.
 See `docs/agents/domain.md`.
 
 ## Memory

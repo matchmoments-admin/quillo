@@ -264,7 +264,7 @@ async function journeyOn() {
   const rel = await relevanceView(ON, u, FY);
   const b1 = bunnings(u, "s1"), b2 = bunnings(u, "s2");
   check("review: both Bunnings lines are 'worth a look' for a tradesperson (tools rule), with the ATO tradesperson guide",
-    rel.worth_a_look.length === 2 && rel.worth_a_look.every((w) => [b1, b2].includes(w.txn_id) && w.rule_id === "au-occ-tradie-tools" && w.occupation === "tradesperson" && /ato\.gov\.au/.test(w.ato_url ?? "")), rel.worth_a_look);
+    rel.worth_a_look.length === 2 && rel.worth_a_look.every((w) => [b1, b2].includes(w.txn_id) && w.rule_id === "au-occ-tradie-tools" && w.occupation === "tradesperson" && /^https:\/\/www\.ato\.gov\.au\//.test(w.ato_url ?? "")), rel.worth_a_look);
   check("review: every card explains why, without a dollar figure or tax-advice wording",
     rel.worth_a_look.every((w) => /Worth a look because you work as/.test(w.suggestion ?? "") && !/\$\s?\d/.test(w.suggestion ?? "") && !denylist.test(w.suggestion ?? "")));
   const others = (db.prepare(`SELECT id, merchant FROM transactions WHERE user_id = ? AND relevance = 'relevant'`).all(u) as { id: string; merchant: string }[]);

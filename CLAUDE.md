@@ -20,7 +20,7 @@ a tax-position report. **General information only — never tax advice.**
 - `npm run eval` / `npm run eval:gate` — promptfoo categorisation eval (what `.github/workflows/evals.yml` runs).
 - `npm run web:build` — build the SPA. `npm run deploy` (`wrangler deploy && npm run rulepack:push`) — deploy the Worker + push the rule pack.
 - Migrations: `npx wrangler d1 execute tax-agent-db --remote --file=migrations/NNNN_x.sql` (in order).
-- `npm run rulepack:push` — push `src/rulepacks/au-v1.json` to KV `rulepack:au-v1` (**do this whenever the rule pack changes** — KV shadows the bundled default).
+- `npm run rulepack:push` — push `src/rulepacks/au-v1.json` to KV `rulepack:au-v1` (**do this whenever the rule pack changes** — KV wins key-by-key over the bundled default). A stale KV copy no longer hides new top-level sections: `src/lib/rulepack.ts` fills missing keys from the bundle and logs `rulepack:au-v1 KV copy is stale…`, so local dev needs no `wrangler kv key put --local` — but an EDITED existing key still needs a push (`--local` for `wrangler dev`).
 
 ## Non-negotiable invariants
 - **Multi-tenant**: every table has `user_id`; identity is derived server-side (verified HMAC key / Clerk / mailbox), **never** a client header.

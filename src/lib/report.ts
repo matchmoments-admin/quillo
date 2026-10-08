@@ -9,6 +9,7 @@ import { residencyAssessabilityContext } from "./residency-assessability";
 import { RENT_INCOME_TYPES } from "./taxonomy";
 import { resolveLoanInterest, deductibleInterestCents, type LoanInterestSource } from "./loan-interest";
 import auV1RulePack from "../rulepacks/au-v1.json";
+import { readRulePackOverride } from "./rulepack";
 import { computeWorkMethodDeductions, workUseRatesForFy, type WorkMethodDeductions, type WorkUseInputs, type WorkUseRates } from "./work-use";
 import { fyBounds, fyLabel as fyLabelOf } from "./ledger-totals";
 import { resolveJurisdictionForUser, currentFyStartYearFor, fyStartYearForDate, baseCurrencyOf, AU_DESCRIPTOR, type JurisdictionDescriptor } from "./jurisdiction";
@@ -373,10 +374,10 @@ export async function resolveRulePack(env: Env, userId: string, descriptor: Juri
     const p = await env.DB.prepare(`SELECT rule_pack_ver FROM profiles WHERE user_id = ?`).bind(userId).first<{ rule_pack_ver: string | null }>();
     if (p?.rule_pack_ver && p.rule_pack_ver !== "au-v1") ver = p.rule_pack_ver;
   } catch { /* no profile (test env) → jurisdiction default */ }
-  try {
-    const override = env.RULES ? await env.RULES.get(`rulepack:${ver}`, "json") : null;
-    if (override) return override as RulePackThresholds;
-  } catch { /* KV unavailable (test env) → bundled default */ }
+  // KV override merged over the bundle (src/lib/rulepack.ts): a stale KV copy can no longer hide newer
+  // top-level sections. KV unavailable / absent (test env) → bundled default, byte-identical.
+  const override = await readRulePackOverride(env.RULES, ver);
+  if (override) return override as unknown as RulePackThresholds;
   return auV1RulePack as unknown as RulePackThresholds;
 }
 

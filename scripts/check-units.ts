@@ -6164,7 +6164,7 @@ console.log("security & compliance dashboard (#636)");
     !ro.get("script-src")?.includes("'unsafe-inline'") && ro.get("script-src")?.includes(LANDING_INLINE_SCRIPT_HASH) === true &&
     enf.get("script-src")?.includes("'unsafe-inline'") === true);
   const landingHtml = await marketingResponse().text();
-  const inline = [...landingHtml.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => `'sha256-${createHash("sha256").update(m[1]!).digest("base64")}'`);
+  const inline = [...landingHtml.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script\s*>/gi)].map((m) => `'sha256-${createHash("sha256").update(m[1]!).digest("base64")}'`);
   check("landing inline <script> hash matches LANDING_INLINE_SCRIPT_HASH (edit the script ⇒ update the hash)",
     inline.length === 1 && inline[0] === LANDING_INLINE_SCRIPT_HASH);
   check("web/public/_headers is generated from the module (no drift between Worker + asset-served headers)",

@@ -6209,18 +6209,29 @@ console.log("security & compliance dashboard (#636)");
     e.isDirectory() ? walk(path.join(dir, e.name)) : e.name.endsWith(".ts") ? [path.join(dir, e.name)] : []);
   for (const file of walk(path.join(process.cwd(), "src"))) {
     fs.readFileSync(file, "utf8").split("\n").forEach((line, i) => {
-      if (!/console\.(log|warn|error|info|debug)\(/.test(line)) return;
-      for (const m of line.matchAll(/\$\{([^}]*)\}/g)) {
-        if (/\blogTag\(/.test(m[1]!)) continue; // hashed via logTag — not the value itself
-        const ids = m[1]!.match(/[A-Za-z_$][\w$]*(?:\??\.[A-Za-z_$][\w$]*)*/g) ?? [];
+      const call = line.match(/console\.(?:log|warn|error|info|debug)\(([\s\S]*)$/);
+      if (!call) return;
+      // Expressions to inspect: every ${…} interpolation, plus the bare (non-string) arguments —
+      // `console.log("x", email)` must fail just like `${email}`.
+      const exprs = [...call[1]!.matchAll(/\$\{([^}]*)\}/g)].map((m) => m[1]!);
+      exprs.push(call[1]!.replace(/`(?:[^`\\]|\\.)*`|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, "").replace(/\/\/.*$/, "")); // strings + trailing comment out
+      for (const expr of exprs) {
+        if (/\blogTag\(/.test(expr)) continue; // hashed via logTag — not the value itself
+        const ids = expr.match(/[A-Za-z_$][\w$]*(?:\??\.[A-Za-z_$][\w$]*)*/g) ?? [];
         for (const id of ids) {
           const last = id.split(/\??\./).pop() ?? "";
-          if (SENSITIVE.test(last)) offenders.push(`${path.relative(process.cwd(), file)}:${i + 1} \${${m[1]}}`);
+          if (SENSITIVE.test(last)) offenders.push(`${path.relative(process.cwd(), file)}:${i + 1} ${id}`);
         }
       }
     });
   }
   check(`no console.* line logs a PII-bearing field (email/name/description/merchant/account no./localpart/raw body)${offenders.length ? ` — ${offenders.join("; ")}` : ""}`, offenders.length === 0);
+  check("no console.* call spans multiple lines (the lint above reads one line per call)",
+    walk(path.join(process.cwd(), "src")).every((f) => !/console\.(log|warn|error|info|debug)\(\s*$/m.test(fs.readFileSync(f, "utf8"))));
+  check("llm.ts: a Bedrock error never carries the raw response body", !/Bedrock InvokeModel[^\n]*res\.text\(\)/.test(fs.readFileSync(path.join(process.cwd(), "src", "llm.ts"), "utf8")));
+  // Behavioural: a WebSocket upgrade passes through untouched (a 101 can't be re-wrapped).
+  const ws = { status: 101, headers: new Headers(), webSocket: {} } as unknown as Response;
+  check("withSecurityHeaders: 101/webSocket response returned as-is", withSecurityHeaders(ws) === ws);
   const clerkSrc = fs.readFileSync(path.join(process.cwd(), "src", "auth", "clerk.ts"), "utf8");
   check("clerk.ts: not-allowlisted log carries a hashed sub tag, not the email or raw sub",
     /sub_tag=\$\{await logTag\(sub\)\}/.test(clerkSrc) && !/console\.[a-z]+\([^\n]*email/.test(clerkSrc));

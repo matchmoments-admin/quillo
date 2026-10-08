@@ -4489,7 +4489,7 @@ console.log("golden rules + Why? drawer + education cards (#591)");
 // migration (node:sqlite, the personas/e2e shim) with a FAKE aggregator — no live Basiq call, so a
 // stale sandbox key can't make these flaky.
 import { DatabaseSync } from "node:sqlite";
-import { disconnectBankConnection, consentLifecycle, cdrHistory, type BankUpstream } from "../src/lib/bank-consent";
+import { disconnectBankConnection, consentLifecycle, cdrHistory, inactiveEndUserSweep, inactiveEndUserQueueSize, INACTIVE_END_USER_DAYS, type BankUpstream } from "../src/lib/bank-consent";
 import { purgeTenant as purgeTenantForBank } from "../src/lib/retention";
 import { deleteBasiqConnection } from "../src/lib/basiq";
 console.log("bank consent lifecycle (#576)");
@@ -4763,6 +4763,163 @@ console.log("bank consent lifecycle (#576)");
   check("bankCallback never resurrects a withdrawn connection (upsert WHERE status <> 'revoked')", /WHERE bank_connections\.status <> 'revoked'/.test(agentSrc));
   check("bankCallback never re-adds accounts under a withdrawn connection", /bc\.provider_connection_id = \?\s*\n\s*AND bc\.status <> 'revoked'/.test(agentSrc));
   check("nothing in the withdraw path writes cdr_tainted", !/cdr_tainted/.test(fs.readFileSync(path.join(process.cwd(), "src/lib/bank-consent.ts"), "utf8").replace(/\/\/.*|\/\*[\s\S]*?\*\//g, "").replace(/^\s*\*.*$/gm, "")));
+
+  // ── #639 A6: consent EXPIRY ⇒ the PS12 delete (flag cdr_expiry_delete); disconnect also deletes the feed's
+  //    minimisation rollups/tombstones (#594); inactive end users deleted after 30 days (cdr_inactive_user_delete).
+  {
+    const XON = { ...benv, FEATURES: "cdr_expiry_delete" } as unknown as Env;
+    const UX = "bk-x1";
+    ins(`INSERT INTO profiles (user_id, bank_provider_user_id, bank_provider) VALUES (?, 'eux', 'fiskil')`, UX);
+    ins(`INSERT INTO accounts (id, user_id, name, source) VALUES ('AX1', ?, 'Fed', 'cdr_feed')`, UX);
+    ins(`INSERT INTO accounts (id, user_id, name, source) VALUES ('AX2', ?, 'Stmt', 'statement')`, UX);
+    ins(`INSERT INTO bank_connections (id, user_id, provider, provider_user_id, provider_connection_id, status, consent_expires_at) VALUES ('CX1', ?, 'fiskil', 'eux', 'pcx1', 'active', '2026-09-01T00:00:00Z')`, UX);
+    ins(`INSERT INTO bank_connection_accounts (id, user_id, connection_id, provider_account_id, account_id, selected) VALUES ('BAX1', ?, 'CX1', 'pax1', 'AX1', 1)`, UX);
+    for (const id of ["X1", "X2"]) ins(`INSERT INTO transactions (id, user_id, source, status, kind, account_id, line_fingerprint, amount_cents) VALUES (?, ?, 'cdr_feed', 'extracted', 'bank_line', 'AX1', ?, 100)`, id, UX, `f${id}`);
+    ins(`INSERT INTO transactions (id, user_id, source, status, kind, account_id, statement_id, line_fingerprint, amount_cents) VALUES ('XS', ?, 'statement', 'extracted', 'bank_line', 'AX2', 'SX', 'fxs', 100)`, UX);
+    ins(`INSERT INTO bank_line_rollups (id, user_id, account_id, statement_id, fy, n, total_cents) VALUES ('RX1', ?, 'AX1', NULL, '2025-26', 3, 300)`, UX);
+    ins(`INSERT INTO bank_line_tombstones (user_id, account_id, line_fingerprint, fy, statement_id) VALUES (?, 'AX1', 'tomb1', '2025-26', NULL)`, UX);
+    ins(`INSERT INTO bank_line_rollups (id, user_id, account_id, statement_id, fy, n, total_cents) VALUES ('RX2', ?, 'AX2', 'SX', '2025-26', 2, 200)`, UX);
+    ins(`INSERT INTO bank_line_tombstones (user_id, account_id, line_fingerprint, fy, statement_id) VALUES (?, 'AX2', 'tomb2', '2025-26', 'SX')`, UX);
+    const nowX = new Date("2026-10-04T00:00:00Z");
+
+    const off = await consentLifecycle(benv, UX, fakeUpstream().up, nowX);
+    check("expiry (cdr_expiry_delete OFF): marked expired, lines KEPT (byte-identical behaviour), no delete counters",
+      off.expired === 1 && off.expiredDeleted === 0 && n(`SELECT COUNT(*) n FROM transactions WHERE user_id=? AND source='cdr_feed'`, UX) === 2 &&
+      q<{ d: string | null }>(`SELECT data_deleted_at d FROM bank_connections WHERE id='CX1'`).d === null);
+    const fx = fakeUpstream();
+    const onRun = await consentLifecycle(XON, UX, fx.up, nowX);
+    check("expiry (ON): an already-expired consent's CDR lines are deleted on the next sweep (backlog covered)",
+      onRun.expiredDeleted === 1 && onRun.expiredLinesDeleted === 2 && n(`SELECT COUNT(*) n FROM transactions WHERE user_id=? AND source='cdr_feed'`, UX) === 0);
+    check("expiry (ON): no upstream call at expiry (the consent already lapsed at the data holder)", fx.calls.length === 0);
+    check("expiry (ON): statement lines untouched", n(`SELECT COUNT(*) n FROM transactions WHERE id='XS'`) === 1);
+    check("expiry (ON) / #594: the feed account's rollup + tombstone deleted; a statement's own rollup + tombstone kept",
+      n(`SELECT COUNT(*) n FROM bank_line_rollups WHERE id='RX1'`) === 0 && n(`SELECT COUNT(*) n FROM bank_line_tombstones WHERE line_fingerprint='tomb1'`) === 0 &&
+      n(`SELECT COUNT(*) n FROM bank_line_rollups WHERE id='RX2'`) === 1 && n(`SELECT COUNT(*) n FROM bank_line_tombstones WHERE line_fingerprint='tomb2'`) === 1);
+    check("expiry (ON): data_deleted_at set, account list deleted, account handed back to statements",
+      !!q<{ d: string | null }>(`SELECT data_deleted_at d FROM bank_connections WHERE id='CX1'`).d &&
+      n(`SELECT COUNT(*) n FROM bank_connection_accounts WHERE connection_id='CX1'`) === 0 && q<{ source: string }>(`SELECT source FROM accounts WHERE id='AX1'`).source === "statement");
+    const evX = (bdb.prepare(`SELECT event, detail FROM cdr_audit_log WHERE connection_id='CX1' ORDER BY rowid`).all() as { event: string; detail: string | null }[]);
+    check("expiry (ON): CDR record = consent_expired → data_deleted {reason: consent_expired}",
+      JSON.stringify(evX.map((e) => e.event)) === JSON.stringify(["consent_expired", "data_deleted"]) && JSON.parse(evX[1]!.detail!).reason === "consent_expired");
+    const again = await consentLifecycle(XON, UX, fakeUpstream().up, nowX);
+    check("expiry (ON): idempotent — a second sweep deletes nothing and writes no CDR row",
+      again.expiredDeleted === 0 && n(`SELECT COUNT(*) n FROM cdr_audit_log WHERE connection_id='CX1'`) === 2);
+    // A consent that lapses with the flag ON: marked AND deleted in the same sweep.
+    ins(`INSERT INTO bank_connections (id, user_id, provider, provider_user_id, provider_connection_id, status, consent_expires_at) VALUES ('CX2', ?, 'fiskil', 'eux', 'pcx2', 'active', '2026-10-01T00:00:00Z')`, UX);
+    ins(`INSERT INTO bank_connection_accounts (id, user_id, connection_id, provider_account_id, account_id, selected) VALUES ('BAX2', ?, 'CX2', 'pax2', 'AX1', 1)`, UX);
+    bdb.prepare(`UPDATE accounts SET source='cdr_feed' WHERE id='AX1'`).run();
+    ins(`INSERT INTO transactions (id, user_id, source, status, kind, account_id, line_fingerprint, amount_cents) VALUES ('X3', ?, 'cdr_feed', 'extracted', 'bank_line', 'AX1', 'fX3', 100)`, UX);
+    const same = await consentLifecycle(XON, UX, fakeUpstream().up, nowX);
+    check("expiry (ON): a consent lapsing this week is marked expired and deleted in the same sweep",
+      same.expired === 1 && same.expiredDeleted === 1 && n(`SELECT COUNT(*) n FROM transactions WHERE id='X3'`) === 0);
+
+    // A renewal made before the old consent lapsed, feeding the SAME Quillo account: the expiry must not wipe it.
+    const UN = "bk-x6";
+    ins(`INSERT INTO profiles (user_id) VALUES (?)`, UN);
+    ins(`INSERT INTO accounts (id, user_id, name, source) VALUES ('AN1', ?, 'Fed', 'cdr_feed')`, UN);
+    ins(`INSERT INTO bank_connections (id, user_id, provider_connection_id, status, consent_expires_at) VALUES ('CN-old', ?, 'arr-old', 'active', '2026-10-01T00:00:00Z')`, UN);
+    ins(`INSERT INTO bank_connections (id, user_id, provider_connection_id, status, consent_expires_at) VALUES ('CN-new', ?, 'arr-new', 'active', '2027-09-20T00:00:00Z')`, UN);
+    ins(`INSERT INTO bank_connection_accounts (id, user_id, connection_id, provider_account_id, account_id, selected) VALUES ('BN1', ?, 'CN-old', 'pa', 'AN1', 1)`, UN);
+    ins(`INSERT INTO bank_connection_accounts (id, user_id, connection_id, provider_account_id, account_id, selected) VALUES ('BN2', ?, 'CN-new', 'pa', 'AN1', 1)`, UN);
+    ins(`INSERT INTO transactions (id, user_id, source, status, kind, account_id, line_fingerprint, amount_cents) VALUES ('N1', ?, 'cdr_feed', 'extracted', 'bank_line', 'AN1', 'fN1', 100)`, UN);
+    const ren = await consentLifecycle(XON, UN, fakeUpstream().up, nowX);
+    check("expiry (ON): an account a LIVE renewal still feeds is NOT wiped (lines + source kept; old row stamped deleted)",
+      ren.expired === 1 && ren.expiredDeleted === 1 && n(`SELECT COUNT(*) n FROM transactions WHERE id='N1'`) === 1 &&
+      q<{ source: string }>(`SELECT source FROM accounts WHERE id='AN1'`).source === "cdr_feed" &&
+      !!q<{ d: string | null }>(`SELECT data_deleted_at d FROM bank_connections WHERE id='CN-old'`).d);
+
+    // #594: a WITHDRAWAL also deletes the feed's rollups/tombstones (flags irrelevant — the tables only hold
+    // rows when minimisation ran).
+    const UW = "bk-x2";
+    ins(`INSERT INTO profiles (user_id) VALUES (?)`, UW);
+    ins(`INSERT INTO accounts (id, user_id, name, source) VALUES ('AW1', ?, 'Fed', 'cdr_feed')`, UW);
+    ins(`INSERT INTO bank_connections (id, user_id, provider_connection_id, status) VALUES ('CW1', ?, 'pcw1', 'active')`, UW);
+    ins(`INSERT INTO bank_connection_accounts (id, user_id, connection_id, provider_account_id, account_id, selected) VALUES ('BAW1', ?, 'CW1', 'paw1', 'AW1', 1)`, UW);
+    ins(`INSERT INTO bank_line_rollups (id, user_id, account_id, statement_id, fy, n, total_cents) VALUES ('RW1', ?, 'AW1', NULL, '2025-26', 4, 400)`, UW);
+    ins(`INSERT INTO bank_line_tombstones (user_id, account_id, line_fingerprint, fy, statement_id) VALUES (?, 'AW1', 'tombw', '2025-26', NULL)`, UW);
+    ins(`INSERT INTO bank_line_rollups (id, user_id, account_id, statement_id, fy, n, total_cents) VALUES ('RW9', 'someone-else', 'AW1', NULL, '2025-26', 1, 1)`);
+    await disconnectBankConnection(benv, UW, "CW1", fakeUpstream().up);
+    check("withdraw (#594): the disconnected account's feed rollup + tombstone are deleted (PS12 covers derived totals)",
+      n(`SELECT COUNT(*) n FROM bank_line_rollups WHERE user_id=?`, UW) === 0 && n(`SELECT COUNT(*) n FROM bank_line_tombstones WHERE user_id=?`, UW) === 0);
+    check("withdraw (#594): another tenant's rollup on a same-named account id is untouched", n(`SELECT COUNT(*) n FROM bank_line_rollups WHERE id='RW9'`) === 1);
+
+    // Last-connection semantics: with the flag ON an EXPIRED consent no longer counts as live, so withdrawing
+    // the only ACTIVE one deletes the end user; OFF it still counts (legacy) and the end user is kept.
+    const lastCase = async (e: Env, u: string) => {
+      ins(`INSERT INTO profiles (user_id, bank_provider_user_id, bank_provider) VALUES (?, ?, 'basiq')`, u, `eu-${u}`);
+      ins(`INSERT INTO bank_connections (id, user_id, provider_user_id, provider_connection_id, status) VALUES (?, ?, ?, 'p-exp', 'expired')`, `${u}-E`, u, `eu-${u}`);
+      ins(`INSERT INTO bank_connections (id, user_id, provider_user_id, provider_connection_id, status) VALUES (?, ?, ?, 'p-act', 'active')`, `${u}-A`, u, `eu-${u}`);
+      return await disconnectBankConnection(e, u, `${u}-A`, fakeUpstream().up);
+    };
+    check("withdraw: flag OFF — an expired sibling still counts as live (consumer kept, legacy)", !(await lastCase(benv, "bk-x3")).consumerDeleted);
+    check("withdraw: flag ON — an expired sibling is spent, so the last ACTIVE withdrawal deletes the consumer", (await lastCase(XON, "bk-x4")).consumerDeleted);
+
+    // Re-consent: the callback upsert (executed) clears data_deleted_at on an EXPIRED row it reactivates, so a later
+    // withdrawal deletes the new lines; a revoked row is never touched.
+    const upSql = /`INSERT INTO bank_connections\s*\n\s*\(id, user_id, provider, access_type[\s\S]*?WHERE bank_connections\.status <> 'revoked'`/.exec(fs.readFileSync(path.join(process.cwd(), "src/agent.ts"), "utf8"))?.[0].slice(1, -1);
+    if (upSql) {
+      const UR = "bk-x5";
+      ins(`INSERT INTO bank_connections (id, user_id, provider, provider_connection_id, status, data_deleted_at) VALUES ('ER1', ?, 'basiq', 'per1', 'expired', '2026-09-02')`, UR);
+      ins(`INSERT INTO bank_connections (id, user_id, provider, provider_connection_id, status, data_deleted_at) VALUES ('RR1', ?, 'basiq', 'prr1', 'revoked', '2026-09-02')`, UR);
+      const up = (pc: string) => bdb.prepare(upSql).run(crypto.randomUUID(), UR, "basiq", "cdr", "bu", pc, null, null, "c", "[]", "2026-10-01", "2027-10-01");
+      up("per1"); up("prr1");
+      check("re-consent: an expired row reactivates with data_deleted_at cleared (the next withdrawal deletes again)",
+        q<{ status: string; d: string | null }>(`SELECT status, data_deleted_at d FROM bank_connections WHERE id='ER1'`).status === "active" &&
+        q<{ d: string | null }>(`SELECT data_deleted_at d FROM bank_connections WHERE id='ER1'`).d === null);
+      check("re-consent: a withdrawn row keeps status + data_deleted_at", q<{ status: string; d: string | null }>(`SELECT status, data_deleted_at d FROM bank_connections WHERE id='RR1'`).d === "2026-09-02");
+    } else check("re-consent: callback upsert SQL found", false);
+
+    // Inactive end users.
+    const IOFF = benv;
+    const ION = { ...benv, FEATURES: "cdr_inactive_user_delete" } as unknown as Env;
+    const UI = "bk-i1";
+    ins(`INSERT INTO profiles (user_id, bank_provider_user_id, bank_provider) VALUES (?, 'eui1', 'fiskil')`, UI);
+    ins(`INSERT INTO bank_connections (id, user_id, provider, provider_user_id, provider_connection_id, status, created_at, revoked_at) VALUES ('CI1', ?, 'fiskil', 'eui1', 'pci1', 'revoked', '2026-08-01 00:00:00', '2026-09-20T00:00:00Z')`, UI);
+    ins(`INSERT INTO cdr_audit_log (id, user_id, connection_id, event, created_at) VALUES ('ai1', ?, 'CI1', 'consent_withdrawn', '2026-09-20 00:00:00')`, UI);
+    const fi0 = fakeUpstream();
+    check("inactive (OFF): nothing read, no vendor call", (await inactiveEndUserSweep(IOFF, UI, fi0.up, new Date("2026-12-01T00:00:00Z"))).state === "none" && fi0.calls.length === 0);
+    const qd = await inactiveEndUserSweep(ION, UI, fi0.up, new Date("2026-10-04T00:00:00Z"));
+    check("inactive: 14 days after the last consent ended ⇒ queued, due 30 days after it (no vendor call)",
+      qd.state === "queued" && qd.due_at === "2026-10-20T00:00:00.000Z" && fi0.calls.length === 0 && INACTIVE_END_USER_DAYS === 30);
+    check("inactive: the queue counts the tenant", (await inactiveEndUserQueueSize(ION)) >= 1);
+    const fdown2 = fakeUpstream({ fail: true });
+    const fl = await inactiveEndUserSweep(ION, UI, fdown2.up, new Date("2026-10-21T00:00:00Z"));
+    check("inactive: a failed delete ⇒ end_user_delete_failed (error class only), id kept for the retry",
+      fl.state === "failed" && q<{ id: string | null }>(`SELECT bank_provider_user_id id FROM profiles WHERE user_id=?`, UI).id === "eui1" &&
+      q<{ detail: string }>(`SELECT detail FROM cdr_audit_log WHERE user_id=? AND event='end_user_delete_failed'`, UI).detail === JSON.stringify({ reason: "inactive", error: "http_503" }));
+    const fi1 = fakeUpstream();
+    const del = await inactiveEndUserSweep(ION, UI, fi1.up, new Date("2026-10-28T00:00:00Z"));
+    check("inactive: past 30 days ⇒ deleteUser(eui1) through the seam; a failed attempt did NOT reset the clock",
+      del.state === "deleted" && JSON.stringify(fi1.calls) === JSON.stringify([["deleteUser", "eui1"]]));
+    check("inactive: id forgotten, connection marked revoked upstream, end_user_deleted recorded (no CDR content)",
+      q<{ id: string | null }>(`SELECT bank_provider_user_id id FROM profiles WHERE user_id=?`, UI).id === null &&
+      !!q<{ u: string | null }>(`SELECT upstream_revoked_at u FROM bank_connections WHERE id='CI1'`).u &&
+      JSON.parse(q<{ detail: string }>(`SELECT detail FROM cdr_audit_log WHERE user_id=? AND event='end_user_deleted'`, UI).detail).inactive_days === 38);
+    const fi2 = fakeUpstream();
+    check("inactive: idempotent — a re-run reads 'none' and calls nothing", (await inactiveEndUserSweep(ION, UI, fi2.up, new Date("2026-11-30T00:00:00Z"))).state === "none" && fi2.calls.length === 0);
+    // A live consent keeps the end user; an abandoned connect (end user, no connection) is deleted after 30 days.
+    ins(`INSERT INTO profiles (user_id, bank_provider_user_id, bank_provider) VALUES ('bk-i2', 'eui2', 'fiskil')`);
+    ins(`INSERT INTO bank_connections (id, user_id, provider_user_id, provider_connection_id, status, created_at) VALUES ('CI2', 'bk-i2', 'eui2', 'pci2', 'active', '2025-01-01 00:00:00')`);
+    check("inactive: a tenant with a LIVE consent is never queued", (await inactiveEndUserSweep(ION, "bk-i2", fakeUpstream().up, new Date("2027-06-01T00:00:00Z"))).state === "active");
+    ins(`INSERT INTO profiles (user_id, bank_provider_user_id, bank_provider) VALUES ('bk-i3', 'eui3', 'fiskil')`);
+    ins(`INSERT INTO cdr_audit_log (id, user_id, event, created_at) VALUES ('ai3', 'bk-i3', 'consent_requested', '2026-08-01 00:00:00')`);
+    ins(`INSERT INTO cdr_audit_log (id, user_id, event, created_at) VALUES ('ai3b', 'bk-i3', 'consent_abandoned', '2026-08-01 00:05:00')`);
+    const fi3 = fakeUpstream();
+    check("inactive: an ABANDONED connect's end user is deleted 30 days later",
+      (await inactiveEndUserSweep(ION, "bk-i3", fi3.up, new Date("2026-09-05T00:00:00Z"))).state === "deleted" && JSON.stringify(fi3.calls) === JSON.stringify([["deleteUser", "eui3"]]));
+    // No activity on record at all: never deleted on sight — the clock starts now (with a record).
+    ins(`INSERT INTO profiles (user_id, bank_provider_user_id, bank_provider) VALUES ('bk-i5', 'eui5', 'fiskil')`);
+    const fi5 = fakeUpstream();
+    const first5 = await inactiveEndUserSweep(ION, "bk-i5", fi5.up, new Date());
+    check("inactive: an end user with NO activity on record is queued (not deleted) and the clock starts with a record",
+      first5.state === "queued" && fi5.calls.length === 0 && n(`SELECT COUNT(*) n FROM cdr_audit_log WHERE user_id='bk-i5' AND event='end_user_inactive'`) === 1);
+    check("inactive: ...and is deleted 30 days after that record", (await inactiveEndUserSweep(ION, "bk-i5", fi5.up, new Date(Date.now() + 31 * 864e5))).state === "deleted");
+    // Expired consent: inactive from the expiry date.
+    ins(`INSERT INTO profiles (user_id, bank_provider_user_id, bank_provider) VALUES ('bk-i4', 'eui4', 'basiq')`);
+    ins(`INSERT INTO bank_connections (id, user_id, provider_user_id, provider_connection_id, status, created_at, consent_expires_at) VALUES ('CI4', 'bk-i4', 'eui4', 'pci4', 'expired', '2025-09-01 00:00:00', '2026-09-01T00:00:00Z')`);
+    check("inactive: an expired consent is queued from its expiry date", (await inactiveEndUserSweep(ION, "bk-i4", fakeUpstream().up, new Date("2026-09-20T00:00:00Z"))).state === "queued");
+    check("inactive: ...and deleted once 30 days have passed", (await inactiveEndUserSweep(ION, "bk-i4", fakeUpstream().up, new Date("2026-10-02T00:00:00Z"))).state === "deleted");
+  }
 
   // 8. Transport: deleteBasiqConnection hits the right URL, treats 404 as done, throws otherwise.
   const realFetch = globalThis.fetch;
@@ -6656,6 +6813,235 @@ console.log("access control: admin MFA + API rate limiting + Clerk cutover seams
   const dash = await buildSecurityDashboard(ON, new Date(t0.getTime() + 1_300_000));
   const access = dash.panels.find((p) => p.key === "access")!;
   check("source: dashboard Access panel lights up from the record (no 'pending #638')", access.metrics.mfa_enforced_for_admin === true && !("pending_ticket" in access));
+}
+// ── #581 bank_minimisation: SHRINKABLE_WHERE never matches a credit, a linked line, a relevant / worth-a-look /
+//    unsorted line, a loan account or a non-payg bucket; a feed re-sync honours tombstones only with the flag ON.
+import { SHRINKABLE_WHERE } from "../src/lib/minimise";
+console.log("bank minimisation — SHRINKABLE_WHERE + feed tombstones (#581)");
+{
+  const sq = new DatabaseSync(":memory:");
+  const md = nodePath.join(process.cwd(), "migrations");
+  for (const f of nodeFs.readdirSync(md).filter((f) => f.endsWith(".sql")).sort()) sq.exec(nodeFs.readFileSync(nodePath.join(md, f), "utf8"));
+  const U = "u581";
+  sq.prepare(`INSERT INTO accounts (id, user_id, name, type) VALUES ('a', ?, 'Everyday', 'transaction')`).run(U);
+  sq.prepare(`INSERT INTO accounts (id, user_id, name, type) VALUES ('loan', ?, 'Home loan', 'loan')`).run(U);
+  let seq = 0;
+  // A baseline shrinkable line; each case overrides one column (or adds one link) and must stop matching.
+  const line = (over: Record<string, unknown> = {}) => {
+    const id = `t${++seq}`;
+    const row: Record<string, unknown> = {
+      id, user_id: U, source: "statement", status: "extracted", kind: "bank_line", account_id: "a", line_fingerprint: `fp${seq}`,
+      amount_cents: 1000, amount_aud_cents: 1000, txn_date: "2025-09-01", direction: "debit", bucket: "payg",
+      deductibility: "likely_not", deductible_amount_cents: 0, relevance: "irrelevant", ...over,
+    };
+    const cols = Object.keys(row);
+    sq.prepare(`INSERT INTO transactions (${cols.join(",")}) VALUES (${cols.map(() => "?").join(",")})`).run(...(Object.values(row) as never[]));
+    return id;
+  };
+  const matches = (id: string) => !!sq.prepare(`SELECT 1 FROM transactions t WHERE t.id = ? AND ${SHRINKABLE_WHERE}`).get(id);
+  check("SHRINKABLE: baseline irrelevant payg likely_not debit matches", matches(line()));
+  check("SHRINKABLE: confirmed_not payg matches; unscanned (relevance NULL) matches", matches(line({ deductibility: "confirmed_not" })) && matches(line({ relevance: null })));
+  check("SHRINKABLE: an ignored line the user stamped deductible is KEPT (likely/confirmed deductible, needs apportionment); one carrying GST is KEPT",
+    !matches(line({ status: "ignored", bucket: null, deductibility: "likely_deductible" })) && !matches(line({ status: "ignored", bucket: "payg", deductibility: "confirmed_deductible" })) &&
+    !matches(line({ status: "ignored", bucket: null, deductibility: "needs_apportionment" })) && !matches(line({ gst_cents: 120 })));
+  check("SHRINKABLE: an ignored transfer (no bucket) matches; a cdr_feed line matches", matches(line({ status: "ignored", bucket: null, deductibility: "undetermined", deductible_amount_cents: null })) && matches(line({ source: "cdr_feed" })));
+  const never: [string, Record<string, unknown>][] = [
+    ["a credit", { direction: "credit" }],
+    ["a credit even when ignored", { direction: "credit", status: "ignored", bucket: null }],
+    ["a NULL direction (legacy)", { direction: null }],
+    ["a receipt", { kind: "receipt" }],
+    ["relevant", { relevance: "relevant" }],
+    ["worth a look", { relevance: "worth_a_look" }],
+    ["unsorted (undetermined)", { deductibility: "undetermined" }],
+    ["unsorted (needs_apportionment)", { deductibility: "needs_apportionment" }],
+    ["likely deductible", { deductibility: "likely_deductible" }],
+    ["confirmed deductible", { deductibility: "confirmed_deductible" }],
+    ["still needs review", { status: "needs_review" }],
+    ["a non-payg bucket", { bucket: "property_rented" }],
+    ["an ignored line in a non-payg bucket", { status: "ignored", bucket: "company" }],
+    ["a company bucket", { bucket: "company" }],
+    ["reimbursed", { reimbursed: 1 }],
+    ["a positive claimable amount", { deductible_amount_cents: 500 }],
+    ["an asset link", { asset_id: "as1" }],
+    ["a property link", { property_id: "p1" }],
+    ["a document link", { document_id: "d1" }],
+    ["a receipt image", { receipt_key: "r2/k" }],
+    ["a payer link", { payer_person_id: "pp" }],
+    ["a duplicate flag", { duplicate_of: "t1" }],
+    ["unconverted FX (no AUD amount)", { amount_aud_cents: null }],
+    ["undated", { txn_date: null }],
+    ["no fingerprint (can't be tombstoned)", { line_fingerprint: null }],
+    ["no account", { account_id: null }],
+    ["a loan account (interest lines feed loan_interest_summaries)", { account_id: "loan" }],
+    ["a qbo_feed / manual source", { source: "qbo_feed" }],
+  ];
+  for (const [why, over] of never) check(`SHRINKABLE never matches ${why}`, !matches(line(over)));
+  const linked: [string, (id: string) => void][] = [
+    ["a matched receipt", (id) => sq.prepare(`INSERT INTO transactions (id, user_id, source, status, kind, matched_txn_id) VALUES (?, ?, 'upload', 'extracted', 'receipt', ?)`).run(`r${id}`, U, id)],
+    ["a refund credit pointing at it", (id) => sq.prepare(`INSERT INTO transactions (id, user_id, source, status, kind, direction, refund_for_txn_id) VALUES (?, ?, 'statement', 'extracted', 'bank_line', 'credit', ?)`).run(`rf${id}`, U, id)],
+    ["a claim link", (id) => sq.prepare(`INSERT INTO claim_links (id, user_id, claim_id, txn_id) VALUES (?, ?, 'c', ?)`).run(`cl${id}`, U, id)],
+    ["an attribution", (id) => sq.prepare(`INSERT INTO transaction_attributions (id, user_id, transaction_id, entity_id) VALUES (?, ?, ?, 'e')`).run(`ta${id}`, U, id)],
+    ["a claim suggestion", (id) => sq.prepare(`INSERT INTO claim_suggestions (id, user_id, txn_id, suggestion) VALUES (?, ?, ?, 's')`).run(`cs${id}`, U, id)],
+    ["a capital holding", (id) => sq.prepare(`INSERT INTO cgt_assets (id, user_id, asset_kind, cost_base_cents, txn_id) VALUES (?, ?, 'shares', 100, ?)`).run(`ca${id}`, U, id)],
+    ["a PHI benefit", (id) => sq.prepare(`INSERT INTO phi_benefit_usage (id, user_id, policy_id, category, txn_id) VALUES (?, ?, 'pol', 'dental', ?)`).run(`pb${id}`, U, id)],
+  ];
+  for (const [why, link] of linked) { const id = line(); link(id); check(`SHRINKABLE never matches a line with ${why}`, !matches(id)); }
+
+  // Feed re-sync: a tombstoned provider transaction is skipped only with honourTombstones (flag ON).
+  class Stmt2 {
+    private params: unknown[] = [];
+    constructor(private sql: string) {}
+    bind(...a: unknown[]) { this.params = a.map((x) => (x === undefined ? null : x)); return this; }
+    async all<T>() { return { results: sq.prepare(this.sql).all(...(this.params as never[])) as T[], success: true, meta: {} }; }
+    async first<T>() { return (sq.prepare(this.sql).get(...(this.params as never[])) as T) ?? null; }
+    async run() { const r = sq.prepare(this.sql).run(...(this.params as never[])); return { success: true, meta: { changes: Number(r.changes ?? 0) } }; }
+    async settle() { return /^\s*(select|with)/i.test(this.sql) ? this.all() : this.run(); }
+  }
+  const fdb = { prepare: (s: string) => new Stmt2(s), batch: async (s: Stmt2[]) => { const o = []; for (const x of s) o.push(await x.settle()); return o; } } as unknown as D1Database;
+  sq.prepare(`INSERT INTO bank_connections (id, user_id, provider_connection_id, status) VALUES ('c', ?, 'pc', 'active')`).run(U);
+  const tFp = await feedFingerprint("shrunk-1");
+  sq.prepare(`INSERT INTO bank_line_tombstones (user_id, account_id, line_fingerprint, fy) VALUES (?, 'a', ?, '2025-26')`).run(U, tFp);
+  const tx = (id: string): BasiqTransaction => ({ id, accountId: "pa", postDate: "2025-09-01", description: "GROCER", amountCents: 1000, direction: "debit", currency: "AUD", providerClass: null });
+  const transport: FeedTransport = async () => ({ transactions: [tx("shrunk-1"), tx("fresh-1")], skippedPending: 0, skippedOutOfWindow: 0, next: null });
+  const fdeps = (honour: boolean): SyncStepDeps => ({ db: fdb, userId: U, baseCurrency: "AUD", transport, categorise: () => null, stillSelected: async () => true, honourTombstones: honour });
+  const fr1 = await openRun(fdb, { userId: U, connectionId: "c", from: "2025-07-01", to: "2026-06-30", accounts: [{ p: "pa", a: "a" }] });
+  await syncRunStep(fdeps(true), fr1!, 5);
+  await finishRun(fdb, U, fr1!, { status: "ok", error: null, correlationId: null });
+  const fedFps = () => (sq.prepare(`SELECT line_fingerprint FROM transactions WHERE user_id = ? AND source = 'cdr_feed' AND raw_description = 'GROCER'`).all(U) as { line_fingerprint: string }[]).map((r) => r.line_fingerprint);
+  check("feed re-sync (bank_minimisation ON): a tombstoned line is NOT revived; a fresh line still lands; counted as a duplicate",
+    fedFps().length === 1 && !fedFps().includes(tFp) && fr1!.counters.imported === 1 && fr1!.counters.duplicates === 1);
+  const fr2 = await openRun(fdb, { userId: U, connectionId: "c", from: "2025-07-01", to: "2026-06-30", accounts: [{ p: "pa", a: "a" }] });
+  await syncRunStep(fdeps(false), fr2!, 5);
+  await finishRun(fdb, U, fr2!, { status: "ok", error: null, correlationId: null });
+  check("feed re-sync (OFF): the insert SQL never reads the tombstone table (legacy behaviour — the line lands)", fedFps().includes(tFp));
+}
+
+// ── #639 A6 CDR data controls: no CDR data in non-production (Schedule 2 3(b)), S8b statement redaction, the
+//    lodge-date record retention, the minimisation notice and the dashboard lifecycle record. ──
+import {
+  requiresAuResidency as residency639, cdrBlockedInThisDeployment, isNonProductionDeployment, productionCredentialsBlockedHere,
+  FISKIL_SANDBOX_INSTITUTION_ID as SBX639,
+} from "../src/lib/bank-feed-core";
+import { redactStatementLine, statementLinesForModel, redact as redactFree } from "../src/lib/redact";
+import { recordRetentionEndsOn } from "../src/lib/retention";
+import { lodgementTiming as timing639 } from "../src/lib/lodging-year";
+import { minimisationNotices } from "../src/lib/minimise";
+import { lifecycleSourceRecord, emptyTally } from "../src/lib/retention-schedule";
+import { parseSourceRecord as parseSrc639, buildSecurityDashboard as buildDash639 } from "../src/lib/security-dashboard";
+console.log("A6 CDR data controls (#639)");
+{
+  // (4) CDR never reaches non-production. Production keeps the PS8 rule: real data ⇒ AU residency.
+  const prodFiskil = { FISKIL_ENV: "production" } as unknown as Env;
+  const prodBasiq = { BASIQ_ENV: "production" } as unknown as Env;
+  check("PS8: production env + a REAL institution forces AU residency (Fiskil)", residency639(prodFiskil, "cdr", "fiskil", "2") === true);
+  check("PS8: production env + the sandbox holder still forces AU residency (prod creds ⇒ real)", residency639(prodFiskil, "cdr", "fiskil", SBX639) === true);
+  check("PS8: production env forces AU residency (Basiq)", residency639(prodBasiq, "cdr", "basiq") === true);
+  check("PS8: the ONLY carve-outs are Fiskil's sandbox holder 88888 (non-prod creds) and Basiq sandbox",
+    SBX639 === "88888" && residency639({} as Env, "cdr", "fiskil", "88888") === false && residency639({} as Env, "cdr", "basiq") === false &&
+    residency639({} as Env, "cdr", "fiskil", "88889") === true && residency639({} as Env, "cdr", "fiskil", null) === true && residency639({} as Env, "cdr", "acme", "88888") === true);
+  const dev = (extra: Record<string, string> = {}) => ({ DEV_AUTH_BYPASS: "1", ...extra }) as unknown as Env;
+  check("non-prod marker: only DEV_AUTH_BYPASS === '1' (not 'true', not '0', not unset)",
+    isNonProductionDeployment(dev()) && !isNonProductionDeployment({ DEV_AUTH_BYPASS: "true" } as unknown as Env) &&
+    !isNonProductionDeployment({ DEV_AUTH_BYPASS: "0" } as unknown as Env) && !isNonProductionDeployment({} as Env));
+  check("non-prod: Fiskil sandbox holder 88888 on sandbox creds is ALLOWED (synthetic data)", cdrBlockedInThisDeployment(dev(), "cdr", "fiskil", SBX639) === false);
+  check("non-prod: a REAL bank is BLOCKED even with FISKIL_ENV left on sandbox (prod keys, wrong var)", cdrBlockedInThisDeployment(dev(), "cdr", "fiskil", "2") === true);
+  check("non-prod: an unknown institution is BLOCKED", cdrBlockedInThisDeployment(dev(), "cdr", "fiskil", null) === true);
+  check("non-prod: FISKIL_ENV=production is BLOCKED even at 88888", cdrBlockedInThisDeployment(dev({ FISKIL_ENV: "production" }), "cdr", "fiskil", SBX639) === true);
+  check("non-prod: Basiq sandbox test bank (AU00000) ALLOWED; Basiq production BLOCKED",
+    cdrBlockedInThisDeployment(dev(), "cdr", "basiq", "AU00000") === false && cdrBlockedInThisDeployment(dev({ BASIQ_ENV: "production" }), "cdr", "basiq", "AU00000") === true);
+  check("non-prod: Basiq with the var on sandbox but a REAL bank (prod keys in .dev.vars) is BLOCKED",
+    cdrBlockedInThisDeployment(dev(), "cdr", "basiq", "AU01001") === true && cdrBlockedInThisDeployment(dev(), "cdr", "basiq", null) === true);
+  check("non-prod: an unknown provider is BLOCKED (fail closed)", cdrBlockedInThisDeployment(dev(), "cdr", "acme", SBX639) === true);
+  check("production: the guard never blocks (its control is AU residency, PS8)",
+    cdrBlockedInThisDeployment(prodFiskil, "cdr", "fiskil", "2") === false && cdrBlockedInThisDeployment({} as Env, "cdr", "fiskil", null) === false);
+  check("non-prod: a new connect on production credentials is refused; sandbox creds allowed; production allowed",
+    productionCredentialsBlockedHere(dev({ FISKIL_ENV: "production" }), "fiskil") && !productionCredentialsBlockedHere(dev(), "fiskil") && !productionCredentialsBlockedHere(prodFiskil, "fiskil"));
+  const agent639 = fs.readFileSync(path.join(process.cwd(), "src/agent.ts"), "utf8");
+  check("the guard runs at all three entry points: connect URL, callback (before any write), sync (before the first fetch)",
+    /productionCredentialsBlockedHere\(this\.env, provider\.id\)/.test(agent639) &&
+    /listed\.filter\(\(c\) => !cdrBlockedInThisDeployment\(this\.env, "cdr", provider\.id, c\.institutionId\)\)/.test(agent639) &&
+    /if \(cdrBlockedInThisDeployment\(this\.env, conn\.access_type as AccessType, conn\.provider, conn\.institution_id\)\) \{/.test(agent639) &&
+    agent639.indexOf("if (cdrBlockedInThisDeployment(") < agent639.indexOf("transport: (q) => provider.fetchTransactionPage("));
+  check("wrangler.toml never sets DEV_AUTH_BYPASS (production can't look like non-production)",
+    !/^\s*DEV_AUTH_BYPASS\s*=/m.test(fs.readFileSync(path.join(process.cwd(), "wrangler.toml"), "utf8")));
+
+  // (3) S8b: narrow statement redaction.
+  const red: [string, string][] = [
+    ["TRANSFER TO 062-000 12345678", "TRANSFER TO [REDACTED:BANK]"],
+    ["ACCOUNT 12345 2025-03-12", "ACCOUNT [REDACTED:ACCT] 2025-03-12"],
+    ["PAYMENT ACCT 12345678 THANKYOU", "PAYMENT ACCT [REDACTED:ACCT] THANKYOU"],
+    ["A/C No: 9876543", "A/C No: [REDACTED:ACCT]"],
+    ["Account number 1234-5678", "Account number [REDACTED:ACCT]"],
+    ["Card 4111 1111 1111 1111 purchase", "Card [REDACTED:CARD] purchase"],
+    ["4111111111111111 COLES", "[REDACTED:CARD] COLES"],
+    ["5555-5555-5555-4444 AMAZON", "[REDACTED:CARD] AMAZON"],
+    ["BSB 062000 ACC 12345678", "BSB [REDACTED:BANK]"],
+    ["Transfer to BSB 062-000 Acc 12345678", "Transfer to BSB [REDACTED:BANK]"],
+    ["ACC NO 1234 5678", "ACC NO [REDACTED:ACCT]"],
+    ["TFR 062000-12345678", "TFR [REDACTED:BANK]"],
+    ["Acct 12-3456-7890123-00", "Acct [REDACTED:ACCT]"],
+    ["Paid 4111111111111111, thanks", "Paid [REDACTED:CARD], thanks"],
+    ["CARD 4111111111111111.", "CARD [REDACTED:CARD]."],
+  ];
+  for (const [i, o] of red) check(`S8b redacts: ${JSON.stringify(i)}`, redactStatementLine(i) === o);
+  const keep = ["UBER *TRIP 123456 SYDNEY", "WOOLWORTHS 1234 12.50", "CALL 1300-123-456", "DATE 2025-03-12 AMT 1,234.00", "12/03/2025 COLES 0423",
+    "xxxx xxxx xxxx 1234 CAFE", "****1234 CAFE", "BPAY 12345 CRN 987654321", "1234567890123456 REF (not Luhn)", "Account 1234", "INV 123 456", "PAYPAL *STEAM 4029357733", "ACCESS 123456 GYM", "ACCOR HOTELS 123456", "AMT 1,234.50",
+    "TFR 062-000", "BPAY 23796 CRN 1234567890128", "AMAZON MKTPLC 123-456", "INV123-456", "SALARY 300 400 12345", "ORDER 1234567890128 SHIPPED"];
+  for (const k of keep) check(`S8b keeps: ${JSON.stringify(k)}`, redactStatementLine(k) === k);
+  const t639 = Date.now();
+  for (const kw of ["ACCT", "BSB", "ACCT no", "Account number"]) redactStatementLine(kw + " ".repeat(20000) + "x" + ":".repeat(20000));
+  check("S8b: no catastrophic backtracking on long separator runs (< 500 ms for 4 × 40k chars)", Date.now() - t639 < 500);
+  check("S8b is narrower than redact(): a bare 6-digit reference survives here but not in redact()",
+    redactStatementLine("UBER *TRIP 123456") === "UBER *TRIP 123456" && redactFree("UBER *TRIP 123456") !== "UBER *TRIP 123456");
+  const rows639 = [{ id: "a", merchant: "TFR 062-000 12345678" }, { id: "b", merchant: null }];
+  check("statementLinesForModel: OFF returns the same array; ON maps merchant only, null kept",
+    statementLinesForModel(rows639, false) === rows639 && statementLinesForModel(rows639, true)[0]!.merchant === "TFR [REDACTED:BANK]" && statementLinesForModel(rows639, true)[1]!.merchant === null);
+  check("categoriseStatement routes BOTH paths through statementLinesForModel behind redact_statement_lines",
+    /const items = statementLinesForModel\(rows\.results \?\? \[\], featureOn\(this\.env, "redact_statement_lines"\)\);/.test(agent639) &&
+    /submitBatchCategorisation\(userId, statementId, items, system, llm\)/.test(agent639));
+
+  // (1) #594 record retention: 5 years from the LODGE date, not 30 June.
+  const T = timing639(rulePack);
+  const today = new Date("2031-09-01T00:00:00Z");
+  check("retention: FY 2025-26 lodged 2026-10-15 ⇒ records kept until 2031-10-15 (not 30 June 2031)",
+    recordRetentionEndsOn("2025-09-01", 5, { lodged_at: "2026-10-15", status: "lodged", signed_off_at: "2026-10-15" }, today, AU_DESCRIPTOR, T) === "2031-10-15");
+  check("retention: an unmarked year counts from the backstop (due 31 Oct + 60 days = 2026-12-30) ⇒ 2031-12-30",
+    recordRetentionEndsOn("2025-09-01", 5, null, today, AU_DESCRIPTOR, T) === "2031-12-30");
+  check("retention: a NOA-closed year counts from the NOA confirmation day",
+    recordRetentionEndsOn("2025-09-01", 5, { lodged_at: null, status: "closed_with_noa", signed_off_at: "2026-11-02 10:00:00" }, today, AU_DESCRIPTOR, T) === "2031-11-02");
+  check("retention: a year not yet lodged and before its backstop has not started its clock (null)",
+    recordRetentionEndsOn("2025-09-01", 5, null, new Date("2026-11-01T00:00:00Z"), AU_DESCRIPTOR, T) === null);
+  const retSrc = fs.readFileSync(path.join(process.cwd(), "src/lib/retention.ts"), "utf8");
+  check("flagOldData uses the lodge-date rule (no 30 June arithmetic left)", /recordRetentionEndsOn\(oldest\.d/.test(retSrc) && !/Date\.UTC\(expiryYear, 5, 30\)/.test(retSrc));
+
+  // (1) #594 notice: one per FY, counts only, never money / refund wording.
+  const notes = minimisationNotices({ shrunk: 41, total_cents: 99999, lodged_fys: ["2024-25", "2025-26"], by_account_fy: [
+    { account_id: "a", fy: "2025-26", n: 30, total_cents: 1 }, { account_id: "b", fy: "2025-26", n: 10, total_cents: 1 }, { account_id: "a", fy: "2024-25", n: 1, total_cents: 1 }] });
+  check("notice: one per FY that shrank, oldest first, singular/plural right",
+    notes.length === 2 && notes[0]!.startsWith("We tidied up 1 everyday transaction from FY 2024-25") && notes[1]!.startsWith("We tidied up 40 everyday transactions from FY 2025-26"));
+  check("notice: points at Settings › Your data, no $ figure, no refund wording", notes.every((x) => /Settings › Your data/.test(x) && !/\$|refund|999/.test(x)));
+  check("notice: nothing shrank ⇒ no notice", minimisationNotices(null).length === 0 && minimisationNotices({ shrunk: 0, total_cents: 0, by_account_fy: [], lodged_fys: [] }).length === 0);
+
+  // (5) the dashboard lifecycle record: counts only, parses, lights the panel.
+  const t = { ...emptyTally(), tenants: 3, flagged: 1, shrunk: 40, expired_consents_deleted: 1, expiry_lines_deleted: 2, end_users_deleted: 1 };
+  const allOn = { FEATURES: "bank_minimisation,cdr_expiry_delete,cdr_inactive_user_delete" } as unknown as Env;
+  const rec = lifecycleSourceRecord(allOn, t, 4, new Date("2026-10-12T08:00:00Z"), { partial: false });
+  check("lifecycle record: contract metrics present (last_run_at, flagged, deleted, deletion_queue)",
+    rec.metrics?.last_run_at === "2026-10-12T08:00:00.000Z" && rec.metrics?.flagged === 1 && rec.metrics?.deleted === 42 && rec.metrics?.deletion_queue === 4 && rec.status === "ok");
+  check("lifecycle record: flags OFF ⇒ 'warn' naming them", lifecycleSourceRecord({} as Env, t, 0, new Date(), { partial: false }).status === "warn" &&
+    /OFF: bank_minimisation, cdr_expiry_delete, cdr_inactive_user_delete/.test(lifecycleSourceRecord({} as Env, t, 0, new Date(), { partial: false }).summary));
+  check("lifecycle record: a failure ⇒ 'warn'", lifecycleSourceRecord(allOn, { ...t, failures: 1 }, 0, new Date(), { partial: false }).status === "warn");
+  check("lifecycle record: round-trips through the dashboard's parser", parseSrc639(JSON.stringify(rec))?.metrics?.deletion_queue === 4);
+  const kv639 = new Map<string, string>([["security:source:retention", JSON.stringify(rec)]]);
+  const denv639 = { FEATURES: "", DB: { prepare: () => ({ bind: () => ({ first: async () => null, all: async () => ({ results: [] }) }), first: async () => null, all: async () => ({ results: [] }) }) },
+    RULES: { get: async (k: string) => kv639.get(k) ?? null, put: async () => {} } } as unknown as Env;
+  const dash639 = await buildDash639(denv639, new Date("2026-10-12T09:00:00Z")).catch(() => null);
+  const lp = dash639?.panels.find((p) => p.key === "lifecycle");
+  check("lifecycle record: lights the Data lifecycle panel (no longer 'Not yet set up')", !!lp && lp.status === "ok" && lp.metrics.deletion_queue === 4);
+  const indexSrc639 = fs.readFileSync(path.join(process.cwd(), "src/index.ts"), "utf8");
+  check("weekly cron: minimisation, inactive end users and the record are wired, each behind its flag",
+    /if \(featureOn\(env, "bank_minimisation"\)\) \{/.test(indexSrc639) && /if \(featureOn\(env, "cdr_inactive_user_delete"\)\) \{/.test(indexSrc639) &&
+    /await publishLifecycleRecord\(env, tally,/.test(indexSrc639));
 }
 
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);

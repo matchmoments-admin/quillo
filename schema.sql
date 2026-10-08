@@ -1432,3 +1432,32 @@ CREATE TABLE IF NOT EXISTS grow_layers (
   updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (user_id, layer)
 );
+-- 0081 (bank_minimisation, first-timer A5 #581): irrelevant debits past the retention window shrink to
+-- per-account / per-statement / per-FY totals (src/lib/minimise.ts). Rollups keep statement reconciliation
+-- tying out; tombstones (fingerprint only, no description) stop a statement re-upload or a feed re-sync from
+-- reviving a shrunk line. statement_id NULL = cdr_feed lines (writer upserts by `IS ?`, not ON CONFLICT).
+CREATE TABLE IF NOT EXISTS bank_line_rollups (
+  id           TEXT PRIMARY KEY,
+  user_id      TEXT NOT NULL,
+  account_id   TEXT NOT NULL,
+  statement_id TEXT,                       -- NULL for cdr_feed lines
+  fy           TEXT NOT NULL,              -- '2025-26'
+  direction    TEXT NOT NULL DEFAULT 'debit',
+  n            INTEGER NOT NULL DEFAULT 0,
+  total_cents  INTEGER NOT NULL DEFAULT 0, -- sum of amount_aud_cents of the shrunk lines
+  first_date   TEXT,
+  last_date    TEXT,
+  updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (user_id, account_id, statement_id, fy, direction)
+);
+CREATE INDEX IF NOT EXISTS idx_bank_rollup_stmt ON bank_line_rollups(user_id, statement_id);
+CREATE TABLE IF NOT EXISTS bank_line_tombstones (
+  user_id          TEXT NOT NULL,
+  account_id       TEXT NOT NULL,
+  line_fingerprint TEXT NOT NULL,          -- sha256, no description text
+  fy               TEXT NOT NULL,
+  statement_id     TEXT,                   -- the statement the line came from (NULL = cdr_feed); a purge forgets it
+  PRIMARY KEY (user_id, account_id, line_fingerprint)
+);
+CREATE INDEX IF NOT EXISTS idx_bank_tomb_fp ON bank_line_tombstones(user_id, line_fingerprint);
+CREATE INDEX IF NOT EXISTS idx_bank_tomb_stmt ON bank_line_tombstones(user_id, statement_id);

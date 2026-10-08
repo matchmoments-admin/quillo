@@ -967,6 +967,13 @@ export async function handleApi(
       return json({ ok: true, lodging_fy: await lodgingNow() });
     }
   }
+  // ── Settings › Your data (#594, flag bank_minimisation) ──────────────────────────────────────────────
+  // GET /api/data-retention → { tidied, fys } — how many everyday bank lines have been tidied into per-account
+  // totals (counts only). 404 when the flag is off. uid is server-derived.
+  if (resource === "data-retention" && m === "GET") {
+    if (!featureOn(env, "bank_minimisation")) return json({ error: "not available" }, 404);
+    return json((await stub.dataRetentionSummary(uid)) ?? { tidied: 0, fys: [] });
+  }
   // ── NOA carry-overs (B1 noa_capture): confirm-before-write FY close ───────────
   if (resource === "noa" && featureOn(env, "noa_capture")) {
     if (m === "GET" && !id) {

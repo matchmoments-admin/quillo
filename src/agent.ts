@@ -46,15 +46,16 @@ import { computeFilingReadiness as computeFilingReadinessFor, loadClaimRules as 
 import { readJourney } from "./lib/journey-read";
 import { rollSchedule, balancingAdjustment, fyStartYearOf, isLowCostAsset, looksLikePersonalTransfer, assetDepreciatesForTaxpayer, depMethodConflict, resolveDiv40Life, type DepAsset } from "./lib/depreciation";
 import { matchClaimRules, suggestionText, enumerateSituationClaims, classifyClaim, uncoveredOccupations, ruleKey, type ClaimRule, type ClaimContext, type ClaimSituation } from "./lib/claimability";
-import { parseCsv, applyColumnMap, lineFingerprint, deriveBalances, reconcileStatement, isLiabilityAccount, fuzzyMerchant, isTransferLike, isLoanInterestLine, classifyMovement, movementTreatment, type ColumnMap, type Reconciliation, type StatementLine, type MovementClass } from "./lib/statements";
+import { minimiseTenant, minimisationNotices, tidiedSummary, tombstonedFingerprints, rolledUpLineCount, forgetStatementMinimisation, type MinimiseResult, type TidiedSummary } from "./lib/minimise";
+import { parseCsv, applyColumnMap, statementLineFingerprints, deriveBalances, reconcileStatement, isLiabilityAccount, fuzzyMerchant, isTransferLike, isLoanInterestLine, classifyMovement, movementTreatment, type ColumnMap, type Reconciliation, type StatementLine, type MovementClass } from "./lib/statements";
 import { groupKey, groupForClarify, rulePatternForStem, draftHoldingFromTxn, isClarifyLeftover, CLARIFY_LEFTOVER_WHERE, type ClarifyRow } from "./lib/clarify";
 import { scoreClaimMatches, type ScoredTxn } from "./lib/claim-match";
 import { batchStatementStatus, isStaleBatch } from "./lib/batch";
 import { cleanMerchant } from "./lib/bank-parsers";
 import { pdfPageCount, splitPdf, normalizePdf } from "./lib/pdf";
 import { getLedger, LedgerNotConnectedError, LedgerReauthError, type LedgerExpense } from "./ledger";
-import { redact } from "./lib/redact";
-import { requiresAuResidency, type AccessType } from "./lib/bank-feed-core";
+import { redact, statementLinesForModel } from "./lib/redact";
+import { requiresAuResidency, cdrBlockedInThisDeployment, productionCredentialsBlockedHere, type AccessType } from "./lib/bank-feed-core";
 import { bankProvider, anyBankProviderConfigured, type BankFeedProvider, type ConsentAction } from "./lib/bank-provider";
 import { putConnectState, putConnectSession, takeConnectState, parseJobIds, syncWindow, safeCallbackParam } from "./lib/bank-connect";
 import {
@@ -62,7 +63,7 @@ import {
   FIRST_STEP_PAGES, PAGES_PER_STEP, MAX_PAGES_PER_RUN,
   type SyncRun, type SyncStepDeps,
 } from "./lib/bank-sync";
-import { bankUpstream, cdrAudit, cdrHistory, consentLifecycle, disconnectBankConnection, type DisconnectResult, type LifecycleResult } from "./lib/bank-consent";
+import { bankUpstream, cdrAudit, cdrHistory, consentLifecycle, disconnectBankConnection, inactiveEndUserSweep, type DisconnectResult, type InactiveEndUserState, type LifecycleResult } from "./lib/bank-consent";
 import { toBaseCurrency } from "./lib/fx";
 import { spentTodayCents, spentTodayGlobalCents, spentThisMonthGlobalCents, noteMeteringError, usageStatements } from "./lib/usage";
 import { billingPolicy, freeCreditGrantE4 } from "./lib/billing";
@@ -582,18 +583,20 @@ export class TaxAgent extends Agent<Env> {
       .bind(userId, stmt.account_id)
       .all<{ line_fingerprint: string }>();
     for (const r of prior.results ?? []) seen.add(r.line_fingerprint);
+    // bank_minimisation (#581): a line shrunk into a rollup left a tombstone — treat it as already on file so a
+    // re-upload (or an overlapping statement) can never resurrect it. OFF ⇒ [] (the table is never read).
+    for (const fp of await tombstonedFingerprints(this.env, userId, stmt.account_id)) seen.add(fp);
 
     const inserts: D1PreparedStatement[] = [];
     let skipped = 0;
     // Occurrence counter per (date, amount, direction, merchant): genuine same-day repeat lines on a
     // balance-less statement (credit cards) must each get a distinct fingerprint, or the unique-key
-    // guard silently drops all but the first. Counted in parse order so a re-upload reproduces them.
-    const occ = new Map<string, number>();
-    for (const line of lines) {
-      const base = `${line.date}|${line.amount_cents}|${line.direction ?? "debit"}|${cleanMerchant(line.raw_description).toLowerCase()}`;
-      const occurrence = occ.get(base) ?? 0;
-      occ.set(base, occurrence + 1);
-      const fp = await lineFingerprint(stmt.account_id, line, occurrence);
+    // guard silently drops all but the first. Counted in parse order so a re-upload reproduces them
+    // (statementLineFingerprints owns the counter).
+    const fps = await statementLineFingerprints(stmt.account_id, lines);
+    for (let li = 0; li < lines.length; li++) {
+      const line = lines[li]!;
+      const fp = fps[li]!;
       if (seen.has(fp)) {
         skipped++;
         continue;
@@ -649,9 +652,11 @@ export class TaxAgent extends Agent<Env> {
     // re-confirming a statement dedup-skips every line (delta 0) and previously zeroed a correct
     // count. Also persist the reconcile result computed above so the flag reflects this import, not
     // a stale parse-time value.
-    const posted = (await this.env.DB.prepare(
+    // Lines minimised into rollups (bank_minimisation, #581) still belong to the statement — counted so a shrunk
+    // statement keeps its true posted count (OFF ⇒ + 0).
+    const posted = ((await this.env.DB.prepare(
       `SELECT COUNT(*) AS n FROM transactions WHERE user_id = ? AND statement_id = ? AND kind = 'bank_line'`,
-    ).bind(userId, statementId).first<{ n: number }>())?.n ?? imported;
+    ).bind(userId, statementId).first<{ n: number }>())?.n ?? imported) + (await rolledUpLineCount(this.env, userId, statementId));
     await this.env.DB.prepare(`UPDATE statements SET status='imported', imported_count=?, reconciled=?, recon_diff_cents=? WHERE id=?`)
       .bind(posted, recon.available ? (recon.ok ? 1 : 0) : null, recon.available ? recon.diff_cents : null, statementId)
       .run();
@@ -971,6 +976,9 @@ export class TaxAgent extends Agent<Env> {
         .bind(userId, statementId)
         .run();
       linesRemoved = del.meta?.changes ?? 0;
+      // bank_minimisation (#581): the statement's rollups + tombstones go with it, so a re-upload restores those
+      // lines instead of skipping them against an orphaned rollup. OFF ⇒ no-op.
+      await forgetStatementMinimisation(this.env, userId, statementId);
       // C1: the deleted bank_lines may have seeded capital holdings — drop the now-orphaned parcels.
       await clearOrphanedTxnCgt(this.env, userId);
     }
@@ -982,6 +990,27 @@ export class TaxAgent extends Agent<Env> {
     await this.env.DB.prepare(`DELETE FROM statements WHERE id = ? AND user_id = ?`).bind(statementId, userId).run();
     await this.audit(userId, "statement_deleted", JSON.stringify({ statementId, status: stmt.status, purge, linesRemoved }));
     return { deleted: true, linesRemoved };
+  }
+
+  /**
+   * Bank-data minimisation for this tenant (first-timer A5, #581; flag bank_minimisation, OFF ⇒ null, nothing
+   * read or written). Irrelevant debits in a lodged FY held ≥ 60 days shrink to per-account rollups + tombstones
+   * (src/lib/minimise.ts). Runs on the DO so the per-(account, FY) audit rows join this tenant's hash chain.
+   * Called by the weekly cron (#594, src/index.ts); after a shrink the user gets ONE notice per FY that shrank
+   * (counts only, pointing at Settings › Your data).
+   */
+  async minimiseBankLines(userId: string, now?: string): Promise<MinimiseResult | null> {
+    const result = await minimiseTenant(this.env, userId, now ? new Date(now) : new Date(), {
+      descriptor: await this.jurisdictionFor(userId),
+      audit: (event, detail) => this.audit(userId, event, detail),
+    });
+    for (const body of minimisationNotices(result)) await this.notify(userId, body, null);
+    return result;
+  }
+
+  /** Settings › Your data (#594): how many everyday lines have been tidied. null when bank_minimisation is OFF. */
+  async dataRetentionSummary(userId: string): Promise<TidiedSummary | null> {
+    return await tidiedSummary(this.env, userId);
   }
 
   /**
@@ -1009,9 +1038,11 @@ export class TaxAgent extends Agent<Env> {
     let flagsFixed = 0;
     const recoveredIds: string[] = [];
     for (const s of stmts.results ?? []) {
-      const actual = (await this.env.DB.prepare(
+      // + lines minimised into rollups (#581): a shrunk statement is NOT missing lines — without this the repair
+      // would purge and re-import it (losing every correction) on each run. OFF ⇒ + 0.
+      const actual = ((await this.env.DB.prepare(
         `SELECT COUNT(*) AS n FROM transactions WHERE user_id = ? AND statement_id = ? AND kind = 'bank_line'`,
-      ).bind(userId, s.id).first<{ n: number }>())?.n ?? 0;
+      ).bind(userId, s.id).first<{ n: number }>())?.n ?? 0) + (await rolledUpLineCount(this.env, userId, s.id));
 
       // Read + validate the sidecar ONCE, up front. Purging before confirming the sidecar is
       // readable/parseable would risk an empty statement if the re-read later failed — so the gap
@@ -1086,7 +1117,11 @@ export class TaxAgent extends Agent<Env> {
     )
       .bind(userId, statementId)
       .all<{ id: string; merchant: string | null; amount_cents: number | null; txn_date: string | null; direction: string | null }>();
-    const items = rows.results ?? [];
+    // S8b (#639, flag redact_statement_lines): account / card / BSB-shaped text is redacted from the merchant
+    // BEFORE it reaches the model, on both the live and the batch path below (redactStatementLine is narrow —
+    // a line without such a shape is passed through unchanged). Only the model input changes: rows are
+    // updated by id, never by merchant. OFF ⇒ the same row objects as before (byte-identical).
+    const items = statementLinesForModel(rows.results ?? [], featureOn(this.env, "redact_statement_lines"));
     if (!items.length) return { categorised: 0 };
 
     const profile = await this.requireProfile(userId);
@@ -1691,6 +1726,8 @@ export class TaxAgent extends Agent<Env> {
   async bankConnectUrl(userId: string, action: ConsentAction = "connect", origin?: string): Promise<{ url: string }> {
     const provider = bankProvider(this.env);
     if (!provider.configured()) throw new Error(`bank feeds are not configured (${provider.id} credentials missing)`);
+    // #639 (Schedule 2 3(b)): a non-production deployment never starts a consent on production credentials.
+    if (productionCredentialsBlockedHere(this.env, provider.id)) throw new Error("production bank-feed credentials can't be used outside production — use the sandbox");
     if (!(await this.bankRateOk(userId, "connect", 10))) throw new Error("too many connect attempts — try again later");
     const providerUserId = await this.bankUserFor(userId, provider);
     const state = await putConnectState(this.env, userId, provider.stateTtlSeconds);
@@ -1742,7 +1779,21 @@ export class TaxAgent extends Agent<Env> {
     // Consents describe WHAT the consumer agreed to; accounts describe what that unlocked. Both are
     // needed: the consent dashboard is a CDR obligation, and the account picker needs the list. The
     // adapter groups them into one row per institution connection with its governing consent.
-    const conns = await provider.listConnections(providerUserId);
+    // #639 (Schedule 2 3(b)): in a NON-production deployment only the sandbox carve-out is stored — a real bank's
+    // connection (and its account list, which is CDR data) is dropped before anything is written. Production:
+    // the filter keeps everything (cdrBlockedInThisDeployment is always false there).
+    const listed = await provider.listConnections(providerUserId);
+    const conns = listed.filter((c) => !cdrBlockedInThisDeployment(this.env, "cdr", provider.id, c.institutionId));
+    if (conns.length < listed.length) {
+      console.error(`[cdr] non-production: refused ${listed.length - conns.length} real-bank connection(s) for tenant ${userId}`);
+      // Don't leave the refused consent live at the aggregator: revoke it (best effort; already-gone is success).
+      for (const c of listed) {
+        if (conns.includes(c)) continue;
+        await provider.revokeConnection(providerUserId, c.connectionId)
+          .catch((e) => console.error(`[cdr] non-production revoke failed: ${(e as Error).name}`));
+      }
+      await this.audit(userId, "bank_nonprod_refused", JSON.stringify({ provider: provider.id, refused: listed.length - conns.length }));
+    }
     const accountCount = conns.reduce((n, c) => n + c.accounts.length, 0);
 
     // Snapshot BEFORE the upsert, so the CDR record logs a grant only for a new connection or a
@@ -1760,6 +1811,8 @@ export class TaxAgent extends Agent<Env> {
       // The trailing WHERE: a WITHDRAWN connection is never resurrected by a later callback (#576).
       // If its upstream revoke failed, the aggregator still lists it, and a connect for a DIFFERENT
       // bank would otherwise flip it back to 'active' and resume collecting against the consumer's wishes.
+      // A re-consented EXPIRED row clears data_deleted_at (#639): its old lines were deleted at expiry, and the
+      // lines collected under the new consent must be deleted again on a later withdrawal / expiry.
       stmts.push(
         this.env.DB.prepare(
           `INSERT INTO bank_connections
@@ -1774,6 +1827,7 @@ export class TaxAgent extends Agent<Env> {
              consent_expires_at = excluded.consent_expires_at,
              expiry_reminded_at = CASE WHEN excluded.consent_expires_at IS bank_connections.consent_expires_at
                                        THEN bank_connections.expiry_reminded_at ELSE NULL END,
+             data_deleted_at = CASE WHEN bank_connections.status = 'expired' THEN NULL ELSE bank_connections.data_deleted_at END,
              last_error = NULL
            WHERE bank_connections.status <> 'revoked'`,
         ).bind(
@@ -2290,6 +2344,14 @@ export class TaxAgent extends Agent<Env> {
         out.errors.push(error);
         continue;
       }
+      // #639 (Schedule 2 3(b)): CDR data is never collected into a non-production deployment — only the sandbox
+      // carve-out passes. Checked before the first page is fetched, so not even a page is held in memory here.
+      if (cdrBlockedInThisDeployment(this.env, conn.access_type as AccessType, conn.provider, conn.institution_id)) {
+        const error = "real bank data can't be collected outside production — use the sandbox";
+        await finishRun(db, userId, run, { status: "failed", error, correlationId: null });
+        out.errors.push(error);
+        continue;
+      }
       // PS8: provider-aware (Fiskil's sandbox carve-out also requires its sandbox data holder).
       const residency = requiresAuResidency(this.env, conn.access_type as AccessType, conn.provider, conn.institution_id);
       const deps: SyncStepDeps = {
@@ -2313,6 +2375,8 @@ export class TaxAgent extends Agent<Env> {
         // (and alarm hops) later. From here getLLM refuses non-AU-resident inference for them on
         // EVERY path; disconnecting or flipping BASIQ_ENV/FISKIL_ENV back cannot clear it (migration 0077).
         beforeFirstWrite: residency ? () => this.markCdrTainted(userId) : undefined,
+        // bank_minimisation (#581): a re-sync must not revive a line already shrunk into a rollup.
+        honourTombstones: featureOn(this.env, "bank_minimisation"),
       };
       const fetchedBefore = run.counters.fetched;
       const skippedBefore = skippedOf(run.counters);
@@ -2364,9 +2428,9 @@ export class TaxAgent extends Agent<Env> {
    *  2. REDACTION (ADR-0003 S8). Bank descriptions routinely carry BSB fragments, BPAY CRNs and
    *     PANs, so the merchant string is redacted before it reaches the model.
    *
-   * Redaction is deliberately NOT applied to statement lines here. `redact()` matches any 6+ digit
-   * run, so applying it to the existing path would change what the model sees, hence categorisation,
-   * hence the tax position — a money-output change that needs its own flag and persona golden.
+   * Statement lines are NOT run through `redact()`: it matches any 6+ digit run, so it would change what
+   * the model sees for ordinary lines, hence categorisation, hence the tax position. They get the narrow
+   * `redactStatementLine` instead (S8b, flag redact_statement_lines — see categoriseStatement).
    */
   async categoriseFeedLines(userId: string): Promise<{ categorised: number }> {
     const rows = await this.env.DB.prepare(
@@ -2449,9 +2513,22 @@ export class TaxAgent extends Agent<Env> {
   /** Weekly (cron, flag-gated): mark expired consents, send the pre-expiry reminder, retry failed upstream revokes. */
   async bankConsentLifecycle(userId: string): Promise<LifecycleResult> {
     const r = await consentLifecycle(this.env, userId, bankUpstream(this.env));
-    if (r.expired || r.reminded || r.upstreamRetried || r.deletesCompleted) {
-      await this.audit(userId, "bank_consent_lifecycle", JSON.stringify(r));
+    if (r.expired || r.reminded || r.upstreamRetried || r.deletesCompleted || r.expiredDeleted) {
+      // Flag OFF (cdr_expiry_delete) ⇒ the two expiry-delete counters are 0 and left out: the audit detail
+      // (part of the hash chain) stays byte-identical to before.
+      const { expiredDeleted, expiredLinesDeleted, ...base } = r;
+      await this.audit(userId, "bank_consent_lifecycle", JSON.stringify(expiredDeleted ? { ...base, expiredDeleted, expiredLinesDeleted } : base));
     }
+    return r;
+  }
+
+  /**
+   * Weekly (cron, flag cdr_inactive_user_delete — #639): delete the aggregator end user once the tenant has held
+   * no live consent for 30 days. Logic + tests in src/lib/bank-consent.ts (inactiveEndUserSweep).
+   */
+  async bankInactiveEndUser(userId: string): Promise<InactiveEndUserState> {
+    const r = await inactiveEndUserSweep(this.env, userId, bankUpstream(this.env));
+    if (r.state === "deleted" || r.state === "failed") await this.audit(userId, "bank_end_user_inactive", JSON.stringify(r));
     return r;
   }
 

@@ -80,6 +80,46 @@ export function requiresAuResidency(
   return true;
 }
 
+/**
+ * Is this a NON-PRODUCTION deployment (local `wrangler dev`, a preview)? The one marker is DEV_AUTH_BYPASS=1:
+ * it is what makes a non-production deployment usable at all, and production must never set it (wrangler.toml
+ * forbids it; auth fails closed without it). Read strictly — only the literal "1".
+ */
+export function isNonProductionDeployment(env: Env): boolean {
+  return env.DEV_AUTH_BYPASS === "1";
+}
+
+/**
+ * CDR data never reaches non-production (CDR Rules Schedule 2, control 3(b); docs/security/data-handling.md §6).
+ * TRUE ⇒ the caller must refuse to collect or store this connection's data here. It is "a non-production
+ * deployment AND data that could be real". The ONLY ways through are the sandbox test banks on sandbox
+ * credentials: Fiskil's data holder 88888 (FISKIL_ENV not 'production'), or Basiq's AU00000 (BASIQ_ENV not
+ * 'production'). A real bank, an unknown institution, an unknown provider or production credentials are blocked
+ * in non-production; production is never blocked by this (its guard is AU residency, PS8).
+ */
+export function cdrBlockedInThisDeployment(
+  env: Env,
+  accessType: AccessType,
+  provider: string = "basiq",
+  institutionId?: string | null,
+): boolean {
+  if (!isNonProductionDeployment(env)) return false;
+  if (requiresAuResidency(env, accessType, provider, institutionId)) return true;
+  // Basiq's carve-out keys on BASIQ_ENV alone, and Basiq sandbox + production share one base URL — so production
+  // keys in .dev.vars with the var left on 'sandbox' would pass. Non-production therefore ALSO requires Basiq's
+  // sandbox institution (the Hooli test bank), mirroring the Fiskil 88888 rule. (Basiq is not the live provider.)
+  if (accessType === "cdr" && provider === "basiq") return institutionId !== BASIQ_SANDBOX_INSTITUTION_ID;
+  return false;
+}
+
+/** Basiq's sandbox test bank ("Hooli"). Only used by the non-production guard above. */
+export const BASIQ_SANDBOX_INSTITUTION_ID = "AU00000";
+
+/** Non-production must never hold production aggregator credentials in use: a new connect is refused. */
+export function productionCredentialsBlockedHere(env: Env, provider: BankProviderId): boolean {
+  return isNonProductionDeployment(env) && providerEnvironment(env, provider) === "production";
+}
+
 // ── Errors ───────────────────────────────────────────────────────────────────
 
 /**

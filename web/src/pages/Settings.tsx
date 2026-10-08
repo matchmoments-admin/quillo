@@ -530,6 +530,7 @@ function PrivacyPanel({
         </div>
         {exportData.isError && <p className="mt-2 text-xs text-danger">Export failed: {(exportData.error as Error).message}</p>}
         {purge.isError && <p className="mt-2 text-xs text-danger">Delete failed: {(purge.error as Error).message}</p>}
+        <DataRetentionNote />
       </div>
 
       <p className="mt-3 text-xs text-muted">
@@ -553,6 +554,33 @@ function PrivacyPanel({
     </div>
   ) : (
     panel
+  );
+}
+
+// Settings › Your data — what Quillo keeps and what it tidies (#594, spec A5; flag bank_minimisation). Counts only.
+// OFF ⇒ renders nothing and makes no request (the query is disabled), so the panel is unchanged.
+function DataRetentionNote() {
+  const { has } = useFeatures();
+  const on = has("bank_minimisation");
+  const q = useQuery({ queryKey: ["data-retention"], queryFn: () => api.dataRetention(), enabled: on, staleTime: 60_000 });
+  if (!on) return null;
+  const tidied = q.data?.tidied ?? 0;
+  return (
+    <div className="mt-3 space-y-1 text-xs text-muted">
+      <p>
+        <span className="font-medium text-ink">Kept:</span> all income credits and anything that might be part of your
+        return.{" "}
+        <span className="font-medium text-ink">Tidied:</span>{" "}
+        {tidied === 1 ? "1 everyday transaction" : `${tidied.toLocaleString()} everyday transactions`} (per-account totals kept,
+        so your statements still balance).
+      </p>
+      <p>
+        Everyday spending your return doesn't need is tidied once that year is lodged — or 60 days after the lodgement
+        due date if you don't mark it as lodged — and only after we've held it for at least 60 days. If you withdraw a
+        bank connection, the data collected through it is deleted. Keep your own records for your return: the ATO
+        generally asks for 5 years from when you lodge. (General information only.)
+      </p>
+    </div>
   );
 }
 

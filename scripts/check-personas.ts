@@ -43,6 +43,10 @@ import { updatePerson } from "../src/lib/situation-write";
 import { verdictForTxn } from "../src/lib/deductibility";
 import { noticeSignals, listNoticed, confirmNoticed, dismissNoticed, payrollEmployerSignals, incomeAnswerRows, INCOME_STATEMENT_PROMPT } from "../src/lib/noticed-signals";
 import { recordsView, applyRecordException } from "../src/lib/records";
+import { minimiseTenant, tombstonedFingerprints, rolledUpLineCount, statementLedgerTieOut, forgetStatementMinimisation } from "../src/lib/minimise";
+import { statementLineFingerprints, type StatementLine } from "../src/lib/statements";
+import { listStatements } from "../src/lib/queries";
+import { statementLinesForModel } from "../src/lib/redact";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
@@ -3307,6 +3311,241 @@ async function main() {
     const vP = await recordsView(SP_ON, u, 2025, auV1RulePack);
     check("pftrec (#587): a payout recorded from a bank credit ⇒ payouts_recorded 1 and the platform fact reads stated",
       vP.platform.payouts_recorded === 1 && vP.platform.entries.length === 0 && vP.block.facts_done.includes("platform_fees"));
+  }
+
+  // ── pft10 — FT1 Jess, bank data minimisation (#581, flag bank_minimisation; spec A5 ticket a, owner rulings
+  //    #534 + residual Q1). 40 irrelevant debits (36 private payg + 4 own-account transfers), 3 relevant debits,
+  //    1 worth-a-look, 1 matched receipt's line and 6 credits on one statement with balances. Once the FY is lodged
+  //    (the user's mark, or the due-date + 60 days backstop) AND a line has been held 60 days, exactly the 40
+  //    irrelevant rows shrink to a rollup + tombstones; the position, every accountant tie-back and the statement
+  //    reconciliation are byte-identical; a re-upload inserts nothing. ──
+  {
+    const BM_ON = { ...env, FEATURES: `${(env as { FEATURES: string }).FEATURES},bank_minimisation` } as unknown as Env;
+    const u = "pft10";
+    seedTenant(u, "FT1 Jess, lodged FY — bank minimisation");
+    run(`INSERT INTO profiles (user_id) VALUES (?)`, u);
+    inc("pft10Sal", u, "salary_payg", 5200000);
+    run(`INSERT INTO accounts (id, user_id, name, type, source) VALUES ('pft10Acct', ?, 'Everyday', 'transaction', 'statement')`, u);
+    // Statement lines in parse order. kind: i = irrelevant payg, x = transfer (ignored), r = relevant, w = worth a look,
+    // m = the line a receipt is matched to, c = credit.
+    type K = "i" | "x" | "r" | "w" | "m" | "c";
+    const L: { k: K; line: StatementLine }[] = [];
+    const ln = (k: K, date: string, raw: string, cents: number, direction: "debit" | "credit" = "debit") =>
+      L.push({ k, line: { date, description: raw.split(" ")[0]!, raw_description: raw, amount_cents: cents, direction, balance_cents: null } as StatementLine });
+    const day = (n: number) => `2025-${String(7 + Math.floor(n / 28)).padStart(2, "0")}-${String(1 + (n % 28)).padStart(2, "0")}`;
+    // Two same-day identical coffees exercise the fingerprint's occurrence counter.
+    ln("i", "2025-09-09", "CAFE NEWTOWN", 550);
+    ln("i", "2025-09-09", "CAFE NEWTOWN", 550);
+    for (let n = 0; n < 34; n++) ln("i", day(n), `GROCER ${n % 3} SYDNEY`, 2000 + n * 37);
+    for (let n = 0; n < 4; n++) ln("x", day(40 + n), `TRANSFER TO SAVINGS ${n}`, 50000);
+    for (let n = 0; n < 3; n++) ln("r", day(50 + n), `AHPRA RENEWAL ${n}`, 21500);
+    ln("w", day(55), "NURSING SHOES DIRECT", 12900);
+    ln("m", day(56), "OFFICEWORKS 0423", 4400);
+    for (let n = 0; n < 6; n++) ln("c", day(60 + n), `EMPLOYER PAY ${n}`, 180000, "credit");
+    const lines = L.map((x) => x.line);
+    const fps = await statementLineFingerprints("pft10Acct", lines);
+    const opening = 100000;
+    const closing = opening + lines.reduce((t, l) => t + (l.direction === "credit" ? l.amount_cents : -l.amount_cents), 0);
+    run(`INSERT INTO statements (id, user_id, account_id, filename, file_key, format, row_count, imported_count, opening_cents, closing_cents, reconciled, recon_diff_cents, status)
+         VALUES ('pft10Stmt', ?, 'pft10Acct', 'jess.csv', 'k/jess.csv', 'csv', ?, ?, ?, ?, 1, 0, 'imported')`, u, lines.length, lines.length, opening, closing);
+    const CREATED = "2026-01-15 00:00:00";
+    const idOf = (i: number) => `pft10L${String(i).padStart(2, "0")}`;
+    L.forEach((x, i) => {
+      const l = x.line;
+      const v: [string | null, string, string, string | null, number | null] =
+        x.k === "i" ? ["payg", "likely_not", "extracted", "irrelevant", 0]
+        : x.k === "x" ? [null, "undetermined", "ignored", null, null]
+        : x.k === "r" ? ["payg", "likely_deductible", "extracted", "relevant", null]
+        : x.k === "w" ? ["payg", "likely_not", "extracted", "worth_a_look", 0]
+        : x.k === "m" ? ["payg", "likely_not", "extracted", "irrelevant", 0]
+        : ["income_salary", "undetermined", "extracted", null, null];
+      run(`INSERT INTO transactions (id, user_id, source, status, kind, account_id, statement_id, line_fingerprint, raw_description, merchant,
+             amount_cents, currency, amount_aud_cents, txn_date, direction, bucket, deductibility, relevance, deductible_amount_cents, created_at)
+           VALUES (?, ?, 'statement', ?, 'bank_line', 'pft10Acct', 'pft10Stmt', ?, ?, ?, ?, 'AUD', ?, ?, ?, ?, ?, ?, ?, ?)`,
+        idOf(i), u, v[2], fps[i], l.raw_description, l.description, l.amount_cents, l.amount_cents, l.date, l.direction, v[0], v[1], v[3], v[4], CREATED);
+    });
+    const idsOf = (k: K) => L.flatMap((x, i) => (x.k === k ? [idOf(i)] : []));
+    const irrelevantIds = [...idsOf("i"), ...idsOf("x")];
+    const irrelevantTotal = L.reduce((t, x) => t + (x.k === "i" || x.k === "x" ? x.line.amount_cents : 0), 0);
+    run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, direction, deductibility, matched_txn_id, merchant)
+         VALUES ('pft10Rcpt', ?, 'upload', 'extracted', 'receipt', 4400, 4400, ?, 'payg', 'debit', 'likely_not', ?, 'Officeworks')`, u, day(56), idsOf("m")[0]);
+    run(`INSERT INTO claim_suggestions (id, user_id, person_id, txn_id, rule_id, suggestion, status, source) VALUES ('pft10Cs', ?, ?, ?, 'au-occ-nurse', 'Worth a look', 'suggested', 'relevance_scan')`, u, `person_self_${u}`, idsOf("w")[0]);
+    run(`INSERT INTO corrections (id, user_id, txn_id, field, old_value, new_value) VALUES ('pft10Cor', ?, ?, 'bucket', 'unknown', 'payg')`, u, irrelevantIds[5]);
+    run(`INSERT INTO corrections (id, user_id, txn_id, field, old_value, new_value) VALUES ('pft10CorKeep', ?, ?, 'bucket', 'unknown', 'payg')`, u, idsOf("r")[0]);
+    check("pft10 seed: 40 irrelevant (36 payg + 4 transfers), 3 relevant, 1 worth-a-look, 1 matched line, 6 credits", irrelevantIds.length === 40 && L.length === 51);
+
+    const NOW = new Date("2026-10-03T00:00:00Z");
+    const txnSnap = () => JSON.stringify(db.prepare(`SELECT * FROM transactions WHERE user_id = ? ORDER BY id`).all(u));
+    const count = (sql: string, ...p: unknown[]) => Number((db.prepare(sql).get(...(p as never[])) as { n: number }).n);
+    const idsLeft = () => (db.prepare(`SELECT id FROM transactions WHERE user_id = ? AND kind = 'bank_line' ORDER BY id`).all(u) as { id: string }[]).map((r) => r.id);
+    const before = {
+      txns: txnSnap(),
+      pos: (await buildReport(env, u, 2025)).taxable_position_cents,
+      ties: JSON.stringify(tieBackChecks(await buildAccountantSchedule(env, u, 2025))),
+      tie: await statementLedgerTieOut(env, u, "pft10Stmt"),
+    };
+    check("pft10 seed: the statement ties out from the ledger before any shrink", before.tie?.ok === true && before.tie.lines === 51 && before.tie.expected_cents === closing);
+
+    // Flag OFF: nothing read, nothing written.
+    run(`INSERT INTO fy_signoff (user_id, fy, status, lodged_at) VALUES (?, 2025, 'lodged', '2026-08-03')`, u); // lodged 61 days before NOW
+    check("pft10 (OFF): minimiseTenant is a no-op (null) — rows byte-identical, rollup table untouched",
+      (await minimiseTenant(env, u, NOW)) === null && txnSnap() === before.txns && count(`SELECT COUNT(*) AS n FROM bank_line_rollups WHERE user_id = ?`, u) === 0);
+    check("pft10 (OFF): tombstones are never read and rollups never counted", (await tombstonedFingerprints(env, u, "pft10Acct")).length === 0 && (await rolledUpLineCount(env, u, "pft10Stmt")) === 0);
+
+    // Window: FY lodged, but the lines have only been held 59 days ⇒ nothing.
+    run(`UPDATE transactions SET created_at = '2026-08-05 00:00:00' WHERE user_id = ? AND kind = 'bank_line'`, u);
+    check("pft10 window: lodged FY but lines held only 59 days ⇒ nothing shrinks", (await minimiseTenant(BM_ON, u, NOW))?.shrunk === 0 && idsLeft().length === 51);
+    run(`UPDATE transactions SET created_at = ? WHERE user_id = ? AND kind = 'bank_line'`, CREATED, u);
+    // Window: FY not lodged (no mark; NOW is before the 30 Dec 2026 backstop) ⇒ nothing.
+    run(`UPDATE fy_signoff SET lodged_at = NULL, status = NULL WHERE user_id = ?`, u);
+    const notLodged = await minimiseTenant(BM_ON, u, NOW);
+    check("pft10 window: FY not lodged and before the backstop ⇒ nothing shrinks", notLodged?.shrunk === 0 && notLodged.lodged_fys.length === 0 && idsLeft().length === 51);
+    run(`UPDATE fy_signoff SET lodged_at = '2026-08-03', status = 'lodged' WHERE user_id = ?`, u);
+    check("pft10 window: everything above left the rows byte-identical", txnSnap() === before.txns);
+
+    // Shrink.
+    const audits: { event: string; detail: string }[] = [];
+    const res = await minimiseTenant(BM_ON, u, NOW, { audit: async (event, detail) => { audits.push({ event, detail }); } });
+    const left = idsLeft();
+    check("pft10: exactly the 40 irrelevant rows are gone; relevant, worth-a-look, matched and every credit kept",
+      res?.shrunk === 40 && left.length === 11 && irrelevantIds.every((id) => !left.includes(id)) &&
+      [...idsOf("r"), ...idsOf("w"), ...idsOf("m"), ...idsOf("c")].every((id) => left.includes(id)) && count(`SELECT COUNT(*) AS n FROM transactions WHERE id = 'pft10Rcpt'`) === 1);
+    const roll = db.prepare(`SELECT account_id, statement_id, fy, direction, n, total_cents FROM bank_line_rollups WHERE user_id = ?`).all(u) as { account_id: string; statement_id: string | null; fy: string; direction: string; n: number; total_cents: number }[];
+    check("pft10: one rollup (account, statement, FY 2025-26, debit) with n = 40 and the exact sum",
+      roll.length === 1 && roll[0]!.n === 40 && roll[0]!.total_cents === irrelevantTotal && roll[0]!.fy === "2025-26" && roll[0]!.statement_id === "pft10Stmt" && roll[0]!.direction === "debit");
+    check("pft10: 40 tombstones, fingerprint only (sha256), FY label", count(`SELECT COUNT(*) AS n FROM bank_line_tombstones WHERE user_id = ? AND fy = '2025-26' AND length(line_fingerprint) = 64`, u) === 40);
+    check("pft10: the correction carrying a shrunk line's merchant history is deleted; a kept line's is not",
+      count(`SELECT COUNT(*) AS n FROM corrections WHERE id = 'pft10Cor'`) === 0 && count(`SELECT COUNT(*) AS n FROM corrections WHERE id = 'pft10CorKeep'`) === 1);
+    check("pft10: one audit row per (account, FY) — counts and totals only, no line content",
+      audits.length === 1 && audits[0]!.event === "bank_lines_minimised" && JSON.parse(audits[0]!.detail).n === 40 && JSON.parse(audits[0]!.detail).total_cents === irrelevantTotal && !/GROCER|CAFE|TRANSFER/.test(audits[0]!.detail));
+    check("pft10: taxable_position_cents byte-identical after the shrink", (await buildReport(BM_ON, u, 2025)).taxable_position_cents === before.pos && (await buildReport(env, u, 2025)).taxable_position_cents === before.pos);
+    check("pft10: every accountant-schedule tie-back byte-identical", JSON.stringify(tieBackChecks(await buildAccountantSchedule(BM_ON, u, 2025))) === before.ties);
+    const after = await statementLedgerTieOut(BM_ON, u, "pft10Stmt");
+    check("pft10: statement reconciliation ties out against live lines + the rollup (expected/closing/diff identical)",
+      after?.ok === true && after.lines === 11 && after.rolled_up === 40 && after.expected_cents === before.tie!.expected_cents && after.diff_cents === before.tie!.diff_cents);
+    const ls = (await listStatements(BM_ON, u, "pft10Acct")) as { total_lines: number; categorised_count: number; rolled_up_lines: number }[];
+    const lsOff = (await listStatements(env, u, "pft10Acct")) as Record<string, unknown>[];
+    check("pft10: the Accounts statement row still shows all 51 lines (rollup included); OFF the row is the legacy shape",
+      ls[0]?.total_lines === 51 && ls[0]?.rolled_up_lines === 40 && ls[0]?.categorised_count === 51 && lsOff[0]?.total_lines === 11 && !("rolled_up_lines" in lsOff[0]!));
+    check("pft10: confirmImport / repair posted count adds the rollup (11 live + 40 rolled = row_count)", 11 + (await rolledUpLineCount(BM_ON, u, "pft10Stmt")) === lines.length);
+
+    // Re-import the same statement: confirmImport's seen set = live fingerprints ∪ tombstones.
+    const seenFor = async (e: Env) => new Set([
+      ...(db.prepare(`SELECT line_fingerprint FROM transactions WHERE user_id = ? AND account_id = 'pft10Acct' AND line_fingerprint IS NOT NULL`).all(u) as { line_fingerprint: string }[]).map((r) => r.line_fingerprint),
+      ...(await tombstonedFingerprints(e, u, "pft10Acct")),
+    ]);
+    const reFps = await statementLineFingerprints("pft10Acct", lines);
+    const seenOn = await seenFor(BM_ON);
+    check("pft10: re-importing the same statement inserts 0 rows (tombstones honoured)", reFps.filter((f) => !seenOn.has(f)).length === 0);
+    const seenOff = await seenFor(env);
+    check("pft10 (OFF): the kill-switch stops reading tombstones (the 40 would re-import — documented)", reFps.filter((f) => !seenOff.has(f)).length === 40);
+    const again = await minimiseTenant(BM_ON, u, NOW);
+    check("pft10: a second run shrinks nothing and leaves the rollup unchanged (idempotent)",
+      again?.shrunk === 0 && JSON.stringify(db.prepare(`SELECT n, total_cents FROM bank_line_rollups WHERE user_id = ?`).all(u)) === JSON.stringify([{ n: 40, total_cents: irrelevantTotal }]));
+    const NO_EXCL = { ...BM_ON, FEATURES: (BM_ON as unknown as { FEATURES: string }).FEATURES.split(",").filter((f) => f !== "position_excludes_nondeductible").join(",") } as unknown as Env;
+    check("pft10: interlock — without position_excludes_nondeductible minimisation refuses to run (null)", (await minimiseTenant(NO_EXCL, u, NOW)) === null);
+    check("pft10: tombstones carry their statement_id", count(`SELECT COUNT(*) AS n FROM bank_line_tombstones WHERE user_id = ? AND statement_id = 'pft10Stmt'`, u) === 40);
+    // 'Remove + re-import' (deleteStatement purge) forgets the statement's minimisation: rollup + tombstones go, so the
+    // re-upload restores the 40 lines instead of skipping them against an orphaned rollup.
+    await forgetStatementMinimisation(env, u, "pft10Stmt");
+    check("pft10 (OFF): forgetting is a no-op with the flag OFF", count(`SELECT COUNT(*) AS n FROM bank_line_tombstones WHERE user_id = ?`, u) === 40);
+    await forgetStatementMinimisation(BM_ON, u, "pft10Stmt");
+    const seenAfterPurge = await seenFor(BM_ON);
+    check("pft10: after a purge the statement's rollup + tombstones are gone and a re-upload restores the 40 lines",
+      count(`SELECT COUNT(*) AS n FROM bank_line_rollups WHERE user_id = ?`, u) === 0 && count(`SELECT COUNT(*) AS n FROM bank_line_tombstones WHERE user_id = ?`, u) === 0 &&
+      reFps.filter((f) => !seenAfterPurge.has(f)).length === 40);
+
+    // Backstop (owner ruling, residual Q1): an FY never marked lodged shrinks from the self-lodger due date + 60 days.
+    const ub = "pft10b";
+    seedTenant(ub, "FT1 Jess, never marks lodged");
+    run(`INSERT INTO profiles (user_id) VALUES (?)`, ub);
+    run(`INSERT INTO accounts (id, user_id, name, type, source) VALUES ('pft10bAcct', ?, 'Everyday', 'transaction', 'cdr_feed')`, ub);
+    const feedLine = (id: string, fp: string, cents: number, date: string) =>
+      run(`INSERT INTO transactions (id, user_id, source, status, kind, account_id, line_fingerprint, raw_description, amount_cents, currency, amount_aud_cents, txn_date, direction, bucket, deductibility, deductible_amount_cents, created_at)
+           VALUES (?, ?, 'cdr_feed', 'extracted', 'bank_line', 'pft10bAcct', ?, 'GROCER', ?, 'AUD', ?, ?, 'debit', 'payg', 'likely_not', 0, ?)`, id, ub, fp, cents, cents, date, CREATED);
+    for (let n = 0; n < 3; n++) feedLine(`pft10b${n}`, `feedfp${n}`, 1000, "2025-10-01");
+    check("pft10b backstop: unmarked FY 2025-26 holds every line on 29 Dec 2026", (await minimiseTenant(BM_ON, ub, new Date("2026-12-29T00:00:00Z")))?.shrunk === 0);
+    const bs = await minimiseTenant(BM_ON, ub, new Date("2026-12-30T00:00:00Z"));
+    const rb = db.prepare(`SELECT statement_id, n, total_cents FROM bank_line_rollups WHERE user_id = ?`).all(ub) as { statement_id: string | null; n: number; total_cents: number }[];
+    check("pft10b backstop: from 30 Dec 2026 (due date + 60 days) the feed lines shrink into a NULL-statement rollup",
+      bs?.shrunk === 3 && rb.length === 1 && rb[0]!.statement_id === null && rb[0]!.n === 3 && rb[0]!.total_cents === 3000);
+    feedLine("pft10b9", "feedfp9", 500, "2025-11-01");
+    await minimiseTenant(BM_ON, ub, new Date("2027-01-05T00:00:00Z"));
+    const rb2 = db.prepare(`SELECT n, total_cents, first_date, last_date FROM bank_line_rollups WHERE user_id = ?`).all(ub) as { n: number; total_cents: number; first_date: string; last_date: string }[];
+    check("pft10b: a later shrink folds into the SAME NULL-statement rollup (explicit IS lookup, no duplicate row)",
+      rb2.length === 1 && rb2[0]!.n === 4 && rb2[0]!.total_cents === 3500 && rb2[0]!.first_date === "2025-10-01" && rb2[0]!.last_date === "2025-11-01");
+  }
+
+  // ── pfts8b — S8b statement-line redaction (#639, ADR-0003 §10 S8b; flag redact_statement_lines). Uses the
+  //    PRODUCTION mapping categoriseStatement hands the model (statementLinesForModel, live + batch). Proves:
+  //    (1) OFF ⇒ the identical array (byte-identical model input); (2) across EVERY statement line all the persona
+  //    tenants above hold, ON changes no model text — so the model sees byte-identical input and every persona's
+  //    categorisation, and therefore position, is unchanged; (3) on a tenant whose lines DO carry account / card /
+  //    BSB shapes, only those identifiers are replaced — merchant words, bare reference numbers, amounts, dates and
+  //    direction are kept — and the stored rows and taxable_position_cents are identical ON vs OFF. ──
+  {
+    const RS_ON = { ...env, FEATURES: `${(env as { FEATURES: string }).FEATURES},redact_statement_lines` } as unknown as Env;
+    type ModelRow = { id: string; merchant: string | null; amount_cents: number | null; txn_date: string | null; direction: string | null };
+    const modelRows = (where: string, ...p: unknown[]) =>
+      db.prepare(`SELECT id, merchant, amount_cents, txn_date, direction FROM transactions WHERE kind = 'bank_line' AND statement_id IS NOT NULL ${where} ORDER BY user_id, id`).all(...(p as never[])) as ModelRow[];
+
+    const all = modelRows("");
+    check("pfts8b (OFF): the model input is the SAME array — byte-identical", statementLinesForModel(all, false) === all);
+    const changed = statementLinesForModel(all, true).filter((r, i) => r.merchant !== all[i]!.merchant);
+    check(`pfts8b: across all ${all.length} persona statement lines, ON changes no model text ⇒ every persona's categorisation + position unchanged`,
+      all.length > 0 && changed.length === 0);
+    // The categorisation eval set (merchants the model is scored on) and the statement-import fixtures: none of
+    // them carries an account / card / BSB shape, so ON leaves every one byte-identical — the eval baseline holds.
+    const evalMerchants = fs.readdirSync(path.join(process.cwd(), "evals", "cases")).filter((f) => f.endsWith(".json"))
+      .flatMap((f) => JSON.parse(fs.readFileSync(path.join(process.cwd(), "evals", "cases", f), "utf8")) as { merchant?: unknown }[])
+      .map((c) => c.merchant).filter((x): x is string => typeof x === "string");
+    const fixtureLines = fs.readdirSync(path.join(process.cwd(), "evals", "statements")).filter((f) => f.endsWith(".csv"))
+      .flatMap((f) => fs.readFileSync(path.join(process.cwd(), "evals", "statements", f), "utf8").split("\n"));
+    const asRows = (xs: string[]) => xs.map((merchant, i) => ({ id: String(i), merchant }));
+    const evalRows = asRows([...evalMerchants, ...fixtureLines]);
+    check(`pfts8b: the ${evalMerchants.length} eval merchants + ${fixtureLines.length} statement-fixture lines are untouched ON (eval baseline holds)`,
+      evalMerchants.length > 0 && statementLinesForModel(evalRows, true).every((r, i) => r.merchant === evalRows[i]!.merchant));
+
+    const u = "pfts8b";
+    seedTenant(u, "FT1 Jess — statement lines with account / card / BSB text");
+    run(`INSERT INTO profiles (user_id) VALUES (?)`, u);
+    inc("pfts8bSal", u, "salary_payg", 5200000);
+    run(`INSERT INTO accounts (id, user_id, name, type, source) VALUES ('pfts8bAcct', ?, 'Everyday', 'transaction', 'statement')`, u);
+    run(`INSERT INTO statements (id, user_id, account_id, filename, file_key, format, row_count, imported_count, status) VALUES ('pfts8bStmt', ?, 'pfts8bAcct', 's.csv', 'k/s.csv', 'csv', 7, 7, 'imported')`, u);
+    // [id, merchant, cents, bucket, ato_label, deductibility, status]
+    const L: [string, string, number, string | null, string | null, string, string][] = [
+      ["pfts8b1", "UBER *TRIP 123456 SYDNEY", 3150, "payg", "D2", "likely_deductible", "extracted"],
+      ["pfts8b2", "OFFICEWORKS 0423 12.50", 1250, "payg", "D5", "likely_deductible", "extracted"],
+      ["pfts8b3", "TRANSFER TO 062-000 12345678", 50000, null, null, "undetermined", "ignored"],
+      ["pfts8b4", "PAYMENT ACCT 98765432 THANK YOU", 20000, null, null, "undetermined", "ignored"],
+      ["pfts8b5", "AHPRA RENEWAL CARD 4111 1111 1111 1111", 21500, "payg", "D5", "likely_deductible", "extracted"],
+      ["pfts8b6", "WOOLWORTHS 1234 2025-09-01", 8800, "payg", null, "likely_not", "extracted"],
+      ["pfts8b7", "BPAY 12345 CRN 987654321", 4000, "payg", null, "likely_not", "extracted"],
+    ];
+    for (const [id, merchant, cents, bucket, label, ded, status] of L) {
+      run(`INSERT INTO transactions (id, user_id, source, status, kind, account_id, statement_id, merchant, raw_description, amount_cents, amount_aud_cents, txn_date, direction, bucket, ato_label, deductibility)
+           VALUES (?, ?, 'statement', ?, 'bank_line', 'pfts8bAcct', 'pfts8bStmt', ?, ?, ?, ?, ?, 'debit', ?, ?, ?)`,
+        id, u, status, merchant, merchant, cents, cents, FY_DATE, bucket, label, ded);
+    }
+    const rows = modelRows("AND user_id = ?", u);
+    const snap = () => JSON.stringify(db.prepare(`SELECT * FROM transactions WHERE user_id = ? ORDER BY id`).all(u));
+    const before = snap();
+    const on = statementLinesForModel(rows, true);
+    const m = (id: string) => on.find((r) => r.id === id)!.merchant;
+    check("pfts8b: a BSB + account, an 'ACCT' number and a Luhn-valid card number are redacted",
+      m("pfts8b3") === "TRANSFER TO [REDACTED:BANK]" && m("pfts8b4") === "PAYMENT ACCT [REDACTED:ACCT] THANK YOU" && m("pfts8b5") === "AHPRA RENEWAL CARD [REDACTED:CARD]");
+    check("pfts8b: bare reference runs, store numbers, amounts and dates are KEPT (the reason redact() was declined)",
+      m("pfts8b1") === "UBER *TRIP 123456 SYDNEY" && m("pfts8b2") === "OFFICEWORKS 0423 12.50" && m("pfts8b6") === "WOOLWORTHS 1234 2025-09-01" && m("pfts8b7") === "BPAY 12345 CRN 987654321");
+    check("pfts8b: the merchant words the model categorises on survive every redaction", /TRANSFER TO/.test(m("pfts8b3")!) && /AHPRA RENEWAL/.test(m("pfts8b5")!) && /PAYMENT/.test(m("pfts8b4")!));
+    check("pfts8b: no account / card digits reach the model", ![m("pfts8b3"), m("pfts8b4"), m("pfts8b5")].some((x) => /12345678|98765432|4111/.test(x ?? "")));
+    check("pfts8b: ids, order, amounts, dates and directions are identical — only merchant text can differ",
+      JSON.stringify(on.map(({ merchant: _m, ...rest }) => rest)) === JSON.stringify(rows.map(({ merchant: _m, ...rest }) => rest)));
+    check("pfts8b: redaction never writes — the stored rows are byte-identical", snap() === before);
+    const posOff = (await buildReport(env, u, 2025)).taxable_position_cents;
+    const posOn = (await buildReport(RS_ON, u, 2025)).taxable_position_cents;
+    // NB: the model doesn't run here, so this pins only that the flag has no OTHER effect on the position; the
+    // categorisation side is covered by "ON changes no model text" above (identical input ⇒ identical output path).
+    check("pfts8b: the flag has no effect on the position outside the model input (ON = OFF)", posOn === posOff);
   }
 
   console.log(`\n=== personas: ${pass} passed, ${fail} failed ===`);

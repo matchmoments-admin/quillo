@@ -369,6 +369,9 @@ export const api = {
   markLodged: (fy: number, lodgedOn?: string) => post<{ lodged: FyLodged; lodging_fy: number }>(`/api/lodged?fy=${fy}`, lodgedOn ? { lodged_on: lodgedOn } : {}),
   unmarkLodged: (fy: number) => send<{ ok: boolean; lodging_fy: number }>("DELETE", `/api/lodged?fy=${fy}`),
 
+  // Settings › Your data (flag bank_minimisation, #594): everyday bank lines tidied into per-account totals.
+  dataRetention: () => get<{ tidied: number; fys: string[] }>("/api/data-retention"),
+
   // NOA carry-overs (B1 noa_capture): confirm-before-write FY close
   noaCarryovers: (fy?: number) => get<{ carryovers: NoaCarryover[] }>(`/api/noa${fy != null ? `?fy=${fy}` : ""}`).then((r) => r.carryovers),
   confirmNoa: (id: string) => post<{ carryover: NoaCarryover }>(`/api/noa/${id}`, {}),

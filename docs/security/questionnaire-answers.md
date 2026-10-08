@@ -135,7 +135,8 @@ independence gap against Schedule 2 cl 1.6(4) in our control matrix.
 
 - D1 point-in-time restore (Time Travel, 30 days).
 - Daily export to an access-restricted, encrypted R2 bucket, 35 daily + 12 monthly; tested restore
-  [status: #635] ([backup-dr.md](backup-dr.md)).
+  (2026-10-08: a production export restored into a scratch DB with every table's row count matching;
+  [backup-dr.md](backup-dr.md) §6).
 - Statement upload remains available if the feed is paused; rule pack and code are rebuildable from git.
 - Key-person risk mitigated by written runbooks and a named backup contact.
 

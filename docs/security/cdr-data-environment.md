@@ -81,7 +81,7 @@ direct debits, balances history beyond what transactions carry, or any ability t
 | `TaxAgent` Durable Object | Per-tenant write coordinator | Cloudflare (location chosen by Cloudflare; `locationHint: "oc"` is a latency hint, **not** a residency guarantee) |
 | D1 `tax-agent-db` | System of record | Cloudflare (primary location set by Cloudflare when the database was created; **not** guaranteed to be in Australia — confirm the region in the dashboard and record it here) |
 | Workers Logs (observability) | Runtime logs | Cloudflare. Rule: ids and error classes only, never CDR content (#634 removes remaining PII) |
-| D1 backups (planned R2 bucket) | Daily export | Cloudflare R2 (#635) |
+| D1 backups (R2 `tax-agent-backups`, private) | Daily export | Cloudflare R2 (#635) |
 | AWS Bedrock (`au.` inference profile) | Categorisation and other model calls for CDR-tainted tenants | AWS ap-southeast-2 / ap-southeast-4 |
 | Fiskil API and hosted consent UI | Collection, consent | Fiskil (Australia). The principal, not an OSP of Quillo |
 | Clerk | Authenticates the consumer before any CDR data is shown | Clerk (US). Holds identity only; never receives CDR data |

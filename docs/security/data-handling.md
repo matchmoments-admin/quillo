@@ -45,7 +45,7 @@ Quillo's own categorisation (ADR-0003).
 | `cdr_audit_log`, `audit_log` | **6 years** from creation (r9.3(5) record-keeping); excluded from tenant purge | Delete when older than 6 years (job to build — not yet scheduled) |
 | Receipts and other user records (non-CDR) | 5 years (ATO record-keeping) unless the user deletes earlier | User-controlled deletion / purge |
 | Workers Logs | Cloudflare default (days) | Expire automatically; never contain CDR content |
-| Backups (planned) | 35 daily + 12 monthly (#635) | Lifecycle rule expiry; a deleted consumer's CDR data ages out of backups within the retention window — disclose in Fiskil's CDR policy |
+| Backups (D1 export, [backup-dr.md](backup-dr.md)) | 35 daily + 12 monthly (#635) | Lifecycle rule expiry; a deleted consumer's CDR data ages out of backups within the retention window — disclose in Fiskil's CDR policy |
 
 The scheduled retention job and user notice are [#594] / [#639]. Until they ship, withdrawal deletion and
 account purge are the active controls.

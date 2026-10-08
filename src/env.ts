@@ -120,6 +120,12 @@ export interface Env {
   // Security & compliance page's backup check lists it for the newest export (key, size, age) — it
   // never reads an object's body. Absent ⇒ the Backups panel says "Not yet set up".
   BACKUPS?: R2Bucket;
+  // Optional (#635 A2, flag d1_backups): the daily D1 export calls the account REST export endpoint.
+  // CF_ACCOUNT_ID + D1_DATABASE_ID are plain vars (wrangler.toml); D1_EXPORT_TOKEN is a SECRET — an
+  // API token scoped to Account · D1 · Read on this account only. Absent ⇒ the run records "not configured".
+  CF_ACCOUNT_ID?: string;
+  D1_DATABASE_ID?: string;
+  D1_EXPORT_TOKEN?: string;
   // Optional (#636 A3): a fine-grained, READ-ONLY GitHub token (security events + Dependabot alerts +
   // secret-scanning alerts on matchmoments-admin/quillo) for the dashboard's scanning-alert counts.
   // Absent ⇒ only the public Actions run status is read and the alert counts show "needs token".

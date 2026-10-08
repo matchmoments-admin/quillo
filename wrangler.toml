@@ -51,6 +51,14 @@ database_id = "76e1c20a-efa2-4042-858a-7e24be4c14ce"   # wrangler d1 create tax-
 binding = "RECEIPTS"
 bucket_name = "tax-agent-receipts"
 
+# --- R2: daily D1 exports (#635, docs/security/backup-dr.md). PRIVATE bucket — no r2.dev URL, no
+# custom domain; R2 encrypts at rest (AES-256). Lifecycle rules (35 daily + 12 monthly) live on the
+# bucket, not here. WARNING: the bucket must EXIST before the next `wrangler deploy` or the deploy fails:
+#   npx wrangler r2 bucket create tax-agent-backups --location oc
+[[r2_buckets]]
+binding = "BACKUPS"
+bucket_name = "tax-agent-backups"
+
 # --- KV: nonce dedup (anti-replay), cached ledger account/tax-code lookups, rule packs ---
 [[kv_namespaces]]
 binding = "RULES"
@@ -89,10 +97,16 @@ simple = { limit = 300, period = 60 }
 # --- Cron: proactive suggestion engine (weekly Mon 08:00 UTC) ---
 [triggers]
 # Mon 08:00 UTC: proactive scan. Every 10 min: poll + apply finished async categorisation batches.
-crons = ["0 8 * * 1", "*/10 * * * *"]
+# Daily 16:30 UTC (02:30 AEST / 03:30 AEDT): D1 export -> BACKUPS (#635; flag d1_backups; the string
+# must equal BACKUP_CRON in src/lib/backups.ts).
+crons = ["0 8 * * 1", "*/10 * * * *", "30 16 * * *"]
 
 [vars]
 JURISDICTION = "AU"
+# D1 export target for the daily backup (#635). Not secrets: the account + database ids. The token
+# (D1_EXPORT_TOKEN, Account · D1 · Read) is a secret — see docs/security/backup-dr.md.
+CF_ACCOUNT_ID = "192777a993ba94d262ede60d8f9a480c"
+D1_DATABASE_ID = "76e1c20a-efa2-4042-858a-7e24be4c14ce"
 # Enabled feature flags (comma-separated; see src/lib/features.ts). Each new behaviour ships
 # behind a flag so it can be disabled with one edit + redeploy (instant rollback, no data change).
 FEATURES = "refund_netting,income_dedupe,asset_defaults,bulk_import,deductibility_review,guide_me,txn_bulk_edit,claim_review,txn_scan,position_confirmed_range,position_excludes_nondeductible,position_excludes_property_undetermined,accountant_pass,wfh_car_methods,car_methods,wfh_generate_diary,attribution_engine,cgt_engine,ess_engine,car_logbook,trust_distributions,apply_to_siblings,loan_interest_v2,gst_bas,smsf_engine,ask_quillo,accountant_schedule,ask_actions,advisory_layer,advisory_partners_energy,franking_gross_up,super_deduction,mf_components,partnership_distributions,jurisdiction_period,currency_base,chat_nav,ai_edit_feed,ask_actions_v2,record_credit_income,phi_extras_tracker,phi_provider_directory,billing,accountant_xlsx,quillo_fee_deduction,txn_inline_edit,clarify_direction_guard,asset_life_default,income_statement_multi,income_statement_upload,noa_capture,attribution_labels,asset_class_defaults,mobile_bottom_tabs,nav_disclosure,carryforward_position,integrity_nudges,dep_method_lock,payg_express,cgt_parcel_method,trading_stock,non_cash_income,txn_scan_v2,inline_claim,accountant_schedule_v2,readiness_audit_v2,bulk_confirm,grouped_review_v2,nav_progress_strip,unified_review_groups,bulk_ignore,grouped_deductions,rule_from_action,capital_holding_detail,capital_entity_scope,capital_from_txn,capital_income_link,capital_cost_base_detail,capital_position,capital_statement_ingest,property_capital_detail,reportable_amounts,company_carryforward,first_timer_income"

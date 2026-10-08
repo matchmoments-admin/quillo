@@ -4778,7 +4778,7 @@ export class TaxAgent extends Agent<Env> {
       } : {}),
     };
 
-    return assessReadiness({ report, situation, claimMatches: [...matchedById.values()], signals, generatedAt: new Date().toISOString(), excludeNonDeductible: featureOn(this.env, "position_excludes_nondeductible"), excludePropertyUndetermined: featureOn(this.env, "position_excludes_property_undetermined"), auditFindingsV2: featureOn(this.env, "readiness_audit_v2"), reconcileProposals: featureOn(this.env, "reconcile_proposals") });
+    return assessReadiness({ report, situation, claimMatches: [...matchedById.values()], signals, generatedAt: new Date().toISOString(), excludeNonDeductible: featureOn(this.env, "position_excludes_nondeductible"), excludePropertyUndetermined: featureOn(this.env, "position_excludes_property_undetermined"), auditFindingsV2: featureOn(this.env, "readiness_audit_v2"), reconcileProposals: featureOn(this.env, "reconcile_proposals"), journeyHomes: featureOn(this.env, "ft_journey") ? { aboutYou: featureOn(this.env, "situation_profile") } : undefined });
   }
 
   // ── FIRST-TIMER JOURNEY (A11, #582, flag ft_journey) ──
@@ -7549,7 +7549,7 @@ export class TaxAgent extends Agent<Env> {
     const llm = await getLLM(this.env, profile, { userId });
     await this.auditXborderInference(userId, provider, "guide_me", llm.modelId);
     const situation = await getSituation(this.env, userId, profile);
-    const { system, user } = buildGuidePrompt(tab, progress, redact(renderSituation(situation)));
+    const { system, user } = buildGuidePrompt(tab, progress, redact(renderSituation(situation)), { journey: featureOn(this.env, "ft_journey") });
     const result = await extractGuide(llm, system, user);
     await this.env.RULES.put(cacheKey, JSON.stringify(result), { expirationTtl: 60 * 30 });
     await this.audit(userId, "guide_me", JSON.stringify({ tab, steps: result.steps.length }));
@@ -7905,7 +7905,7 @@ export class TaxAgent extends Agent<Env> {
     await this.audit(userId, "auto_rule", JSON.stringify({ merchant: txn.merchant, bucket: txn.bucket, ruleId }));
     await this.notify(
       userId,
-      `Learned — I'll file "${txn.merchant}" as ${txn.bucket} (${txn.ato_label}) from now on. You can edit this rule in Settings.`,
+      `Learned — I'll file "${txn.merchant}" as ${txn.bucket} (${txn.ato_label}) from now on. You can edit this rule in ${featureOn(this.env, "ft_journey") ? "Review › Your sorting rules" : "Settings"}.`, // #593: rules moved to Review
       txnId,
     );
   }

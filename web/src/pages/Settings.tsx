@@ -10,7 +10,7 @@ import { Card, Spinner, BUCKET_LABEL, InfoTip, money, parseMoneyToCents } from "
 import { AiChangesFeed } from "../components/AiChangesFeed";
 import { BankConsents } from "../components/BankConsents";
 import { CarryIns, PeopleList, runDelete } from "../components/ProfileSections";
-import { EntityFields, PropertyFields, entityToBody, entityToValue, propertyToBody, propertyError, emptyEntity, emptyProperty, OWNED_STATUSES, TENANT_STATUSES, USE_STATUSES, DENY_USE_STATUSES, isTenantStatus, statusLabel, propertyStatusLabel, type EntityValue, type PropertyValue } from "../components/SituationFields";
+import { ENTITY_KINDS, EntityFields, PropertyFields, entityToBody, entityToValue, propertyToBody, propertyError, emptyEntity, emptyProperty, OWNED_STATUSES, TENANT_STATUSES, USE_STATUSES, DENY_USE_STATUSES, isTenantStatus, statusLabel, propertyStatusLabel, type EntityValue, type PropertyValue } from "../components/SituationFields";
 import type { Account, Property, LoanProperty, IncomeActivity, Situation } from "../types";
 import { isPropertyBucket } from "../lib/buckets";
 
@@ -119,7 +119,7 @@ export function Settings() {
 /** ft_journey ON: where the tax sections went, one link per new home (targets from SETTINGS_SECTION_MOVES). */
 function MovedSections({ aboutYouLive }: { aboutYouLive: boolean }) {
   const homes: { anchor: string; what: string }[] = [
-    ...(aboutYouLive ? [{ anchor: "people", what: "People and last year's carry-ins" }] : []),
+    ...(aboutYouLive ? [{ anchor: "people", what: "People and last year's carry-ins" }, { anchor: "employers", what: "Your employers" }] : []),
     { anchor: "properties", what: "Properties and their loans" },
     { anchor: "entities", what: "Business, companies, trusts, GST and BAS, SMSF and super" },
     { anchor: "rules", what: "Your sorting rules" },
@@ -216,19 +216,37 @@ function PropertySections({ s, accounts, onDone, anchored = false }: { s: Situat
   );
 }
 
-function BusinessSections({ s, onDone, anchored = false }: { s: Situation; onDone: () => void; anchored?: boolean }) {
+function BusinessSections({ s, onDone, anchored = false, employersElsewhere = false }: { s: Situation; onDone: () => void; anchored?: boolean; employersElsewhere?: boolean }) {
   const { has } = useFeatures();
   const a = (id: string) => (anchored ? id : undefined);
   return (
     <>
-      {/* Entities */}
-      <Section id={a("entities")} title={<>Entities (employment · company · novated lease) <InfoTip k="entities" /></>}>
-        {s.entities.map((e) => (
-          <EditableEntity key={e.id} entity={e} onDone={onDone} />
-        ))}
-        {!s.entities.length && <Empty>No entities yet. Add your employer, company (with ABN), or a novated lease so spend routes to the right tax "hat".</Empty>}
-        <AddEntity onDone={onDone} />
-      </Section>
+      {/* Entities. #593: with Get set up's profile mode live, employers are edited there (next to the
+          employment periods), so Grow › Business keeps companies, trusts, partnerships, SMSF and leases. */}
+      {employersElsewhere ? (
+        <Section id={a("entities")} title={<>Entities (company · trust · partnership · novated lease) <InfoTip k="entities" /></>}>
+          {s.entities.filter((e) => e.kind !== "employment").map((e) => (
+            <EditableEntity key={e.id} entity={e} onDone={onDone} kinds={NON_EMPLOYER_KINDS} />
+          ))}
+          {!s.entities.some((e) => e.kind !== "employment") && <Empty>No entities yet. Add your company (with ABN), trust, partnership or a novated lease so spend routes to the right tax "hat".</Empty>}
+          <AddEntity onDone={onDone} kinds={NON_EMPLOYER_KINDS} />
+          <p className="px-1 pt-1 text-xs text-muted">
+            Your employers are in{" "}
+            <Link to="/setup#employers" className="text-ink underline underline-offset-2">
+              Get set up
+            </Link>
+            .
+          </p>
+        </Section>
+      ) : (
+        <Section id={a("entities")} title={<>Entities (employment · company · novated lease) <InfoTip k="entities" /></>}>
+          {s.entities.map((e) => (
+            <EditableEntity key={e.id} entity={e} onDone={onDone} />
+          ))}
+          {!s.entities.length && <Empty>No entities yet. Add your employer, company (with ABN), or a novated lease so spend routes to the right tax "hat".</Empty>}
+          <AddEntity onDone={onDone} />
+        </Section>
+      )}
 
       {/* Business activities (#155) — a sole trader names their activity (e.g. "Rideshare", "Freelance
           design") so spend can attribute to it. Auto-seeded for employers/companies; manual for ABN
@@ -357,11 +375,38 @@ export function PropertySettings() {
   return <SituationGate sit={sit}>{(s) => <PropertySections anchored s={s} accounts={accts.data ?? []} onDone={invalidate} />}</SituationGate>;
 }
 
-/** Grow › Business & companies: entities through super contributions (anchors #entities … #super). */
+/**
+ * Grow › Business & companies: entities through super contributions (anchors #entities … #super). Employers
+ * move to Get set up (#employers) only while its profile mode is live (ft_journey + situation_profile, the
+ * same rule as People); otherwise they stay here with the other entities.
+ */
 export function BusinessSettings() {
   const { sit, invalidate } = useSituation();
-  return <SituationGate sit={sit}>{(s) => <BusinessSections anchored s={s} onDone={invalidate} />}</SituationGate>;
+  const { has } = useFeatures();
+  const employersElsewhere = has("ft_journey") && has("situation_profile");
+  return <SituationGate sit={sit}>{(s) => <BusinessSections anchored employersElsewhere={employersElsewhere} s={s} onDone={invalidate} />}</SituationGate>;
 }
+
+/**
+ * Get set up (profile mode, ft_journey + situation_profile): your employers — `employment` entities only,
+ * moved out of Grow › Business (#593). The caller renders the #employers section around it. Employers marked
+ * from bank pay ("My wages", #577) are employment entities too, so they show here.
+ */
+export function EmployerList({ entities, onDone }: { entities: Situation["entities"]; onDone: () => void }) {
+  const employers = entities.filter((e) => e.kind === "employment");
+  return (
+    <>
+      {employers.map((e) => (
+        <EditableEntity key={e.id} entity={e} onDone={onDone} kinds={EMPLOYER_KINDS} />
+      ))}
+      {!employers.length && <Empty>No employers yet. Add each employer who pays you wages so your work spending and their income statement line up.</Empty>}
+      <AddEntity onDone={onDone} kinds={EMPLOYER_KINDS} />
+    </>
+  );
+}
+
+const EMPLOYER_KINDS: readonly string[] = ["employment"];
+const NON_EMPLOYER_KINDS: readonly string[] = ENTITY_KINDS.filter((k) => k !== "employment");
 
 /** Review: the per-user sorting rules (anchor #rules). */
 export function RulesSettings() {
@@ -772,7 +817,7 @@ function AddLoanProperty({ accounts, properties, onDone }: { accounts: Account[]
 }
 
 
-function EditableEntity({ entity, onDone }: { entity: { id: string; kind: string; name: string | null; detail_json?: string | null }; onDone: () => void }) {
+function EditableEntity({ entity, onDone, kinds }: { entity: { id: string; kind: string; name: string | null; detail_json?: string | null }; onDone: () => void; kinds?: readonly string[] }) {
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState<EntityValue>(() => entityToValue(entity));
   const save = useMutation({ mutationFn: () => api.updateEntity(entity.id, entityToBody(value)), onSuccess: () => { setEditing(false); onDone(); } });
@@ -789,7 +834,7 @@ function EditableEntity({ entity, onDone }: { entity: { id: string; kind: string
   }
   return (
     <div className="flex flex-wrap items-start gap-2 rounded-lg bg-surface px-3 py-2">
-      <div className="flex-1"><EntityFields value={value} onChange={setValue} /></div>
+      <div className="flex-1"><EntityFields value={value} onChange={setValue} kinds={kinds} /></div>
       <button className={btn} disabled={!value.name || save.isPending} onClick={() => save.mutate()}>Save</button>
       <button className={del} onClick={() => setEditing(false)}>cancel</button>
     </div>
@@ -863,8 +908,8 @@ function entityLabel(e: { kind: string; name: string | null; detail_json?: strin
   return bits.join(" — ");
 }
 
-function AddEntity({ onDone }: { onDone: () => void }) {
-  const [value, setValue] = useState<EntityValue>(emptyEntity());
+function AddEntity({ onDone, kinds }: { onDone: () => void; kinds?: readonly string[] }) {
+  const [value, setValue] = useState<EntityValue>(() => emptyEntity(kinds?.[0]));
   const m = useMutation({
     mutationFn: () => api.addEntity(entityToBody(value)),
     onSuccess: () => {
@@ -875,7 +920,7 @@ function AddEntity({ onDone }: { onDone: () => void }) {
   return (
     <div className="flex flex-wrap items-start gap-2 pt-2">
       <div className="flex-1">
-        <EntityFields value={value} onChange={setValue} />
+        <EntityFields value={value} onChange={setValue} kinds={kinds} />
       </div>
       <button className={btn} disabled={!value.name || m.isPending} onClick={() => m.mutate()}>
         Add

@@ -55,6 +55,9 @@ export const TAB_PURPOSE: Record<string, string> = {
   settings: "your situation, entities, rules, people, privacy & AI consent",
 };
 
+// #593 (ft_journey): Settings is account-only — the tax sections moved to Get set up, Grow and Review.
+const SETTINGS_PURPOSE_JOURNEY = "your account: privacy & AI consent, exporting or deleting your data, bank connections and devices";
+
 const GUARDRAILS =
   "General information only — never tax advice, never predict a refund or assert deductibility; " +
   "suggest confirming with a registered tax agent where relevant. Be concrete and specific to THIS " +
@@ -177,8 +180,8 @@ export function buildAskSystem(
 }
 
 /** Build the system + user prompt for the personalised "Guide me" walkthrough. Pure (unit-tested). */
-export function buildGuidePrompt(tab: string, progress: Progress, situationText: string): { system: string; user: string } {
-  const purpose = TAB_PURPOSE[tab] ?? `the "${tab}" screen`;
+export function buildGuidePrompt(tab: string, progress: Progress, situationText: string, opts: { journey?: boolean } = {}): { system: string; user: string } {
+  const purpose = (opts.journey && tab === "settings" ? SETTINGS_PURPOSE_JOURNEY : TAB_PURPOSE[tab]) ?? `the "${tab}" screen`;
   const system =
     `You are Quillo's friendly in-app guide for an Australian tax-evidence assistant. The user is on ${purpose}. ` +
     `Give them 3–6 SHORT, concrete next steps to make progress HERE, grounded in their live data below. ` +

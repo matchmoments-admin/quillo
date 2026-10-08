@@ -71,8 +71,9 @@ function namePlaceholder(kind: string): string {
  * Controlled editor for one tax entity (kind-aware). Renders only the fields; the caller
  * owns layout, the Add/Save button and submission. Used by Settings (add-new) and the
  * onboarding wizard (edit a draft row). Mirrors the detail{} shape renderSituation() reads.
+ * `kinds` narrows the kind picker (#593: employers are edited in Get set up, the rest in Grow › Business).
  */
-export function EntityFields({ value, onChange }: { value: EntityValue; onChange: (v: EntityValue) => void }) {
+export function EntityFields({ value, onChange, kinds = ENTITY_KINDS }: { value: EntityValue; onChange: (v: EntityValue) => void; kinds?: readonly string[] }) {
   const set = (patch: Partial<EntityValue>) => onChange({ ...value, ...patch });
   const setDetail = (patch: Partial<EntityDetail>) => onChange({ ...value, detail: { ...value.detail, ...patch } });
   const abn = value.detail.abn ?? "";
@@ -83,7 +84,7 @@ export function EntityFields({ value, onChange }: { value: EntityValue; onChange
     <div className="space-y-2">
       <div className="flex flex-wrap gap-2">
         <select className={fieldInput} value={value.kind} onChange={(e) => set({ kind: e.target.value })}>
-          {ENTITY_KINDS.map((k) => (
+          {kinds.map((k) => (
             <option key={k} value={k}>
               {k === "employment" ? "employment (PAYG)" : k}
             </option>

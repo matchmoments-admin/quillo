@@ -6052,7 +6052,7 @@ console.log("security & compliance dashboard (#636)");
     if (u.endsWith("/healthz")) return new Response(JSON.stringify({ ok: true }), { status: 200 });
     if (u === "https://app.quillo.au/") return new Response("<html>", { status: 200, headers: { "content-type": "text/html", "content-security-policy-report-only": "default-src 'self'" } });
     if (u.includes("/actions/runs")) return new Response(JSON.stringify({ workflow_runs: [{ name: "CodeQL", conclusion: "success", created_at: "2026-10-07T00:00:00Z", html_url: "https://github.com/x/y/actions/runs/1" }] }), { status: 200 });
-    if (u.includes("api.github.com")) return new Response("SECRET VENDOR BODY", { status: 401 });
+    if (new URL(u).hostname === "api.github.com") return new Response("SECRET VENDOR BODY", { status: 401 });
     return new Response("SECRET VENDOR BODY", { status: 500 });
   }) as typeof fetch;
   const deps: CheckDeps = { fetch: fakeFetch, now: () => nowAt };

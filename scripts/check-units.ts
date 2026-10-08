@@ -5144,7 +5144,8 @@ import { GROW_ROUTE, GROW_LEGACY_ROUTE } from "../web/src/lib/growRoutes";
   check("settings split (#593): the auto-learned rule alert points at Review › Your sorting rules with ft_journey ON, 'in Settings' OFF",
     agentSrc.includes('You can edit this rule in ${featureOn(this.env, "ft_journey") ? "Review › Your sorting rules" : "Settings"}.') &&
     reviewQSrc.includes("Your sorting rules") &&
-    /journeyHomes: featureOn\(this\.env, "ft_journey"\) \? \{ aboutYou: featureOn\(this\.env, "situation_profile"\) \} : undefined/.test(agentSrc) &&
+    // computeFilingReadiness moved to src/lib/filing-readiness.ts (#595); the DO delegates to it.
+    /journeyHomes: featureOn\(env, "ft_journey"\) \? \{ aboutYou: featureOn\(env, "situation_profile"\) \} : undefined/.test(fs.readFileSync(path.join(process.cwd(), "src/lib/filing-readiness.ts"), "utf8")) &&
     /buildGuidePrompt\(tab, progress, redact\(renderSituation\(situation\)\), \{ journey: featureOn\(this\.env, "ft_journey"\) \}\)/.test(agentSrc));
 }
 

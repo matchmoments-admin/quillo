@@ -1492,8 +1492,16 @@ mode is live, i.e. `situation_profile` ON too; otherwise they stay on Settings),
 ON, `/settings#<anchor>` redirects to `<home>#<anchor>`, and Settings renders only a "where your tax
 details went" card, Privacy & AI + Your data (`#privacy`, `#your-data`), bank connections
 (`#bank-connections`), devices (`#devices`) and the AI changes feed. The Grow and Review homes compose the
-same editors (exported from `Settings.tsx`), so nothing was rewritten. All entities (employment included)
-live on Grow › Business for now. OFF, Settings is byte-identical (SSR-compared).
+same editors (exported from `Settings.tsx`), so nothing was rewritten. Employers (`entities.kind =
+'employment'`) live in Get set up's profile mode (`#employers`, next to the employment periods; marked
+"My wages" employers show there too) while it is live; companies, trusts, partnerships, SMSF and leases
+stay on Grow › Business. With the profile mode off, employers stay on Grow › Business and
+`/settings#employers` falls back to `/grow/business#entities`. Server copy that said "in Settings" names
+the new home with `ft_journey` ON — the auto-learned rule alert (Review › Your sorting rules), the
+`occupation_missing` finding (Get set up, only while its profile mode is live), the `psi_check` finding
+(Grow › Business) and the Guide-me purpose for the Settings tab (account only); OFF keeps the exact
+strings. Bank connections and Privacy stay on Settings, so their "in Settings" copy is unchanged.
+OFF, Settings is byte-identical (SSR-compared).
 
 ### Server
 

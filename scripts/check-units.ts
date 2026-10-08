@@ -1447,6 +1447,14 @@ console.log("readiness");
     check("readiness_audit_v2 OFF: no rental_zero_income / occupation_missing (byte-identical)", !off.findings.some((x) => x.id === "rental_zero_income" || x.id === "occupation_missing"));
     check("readiness_audit_v2 ON: flags a rented property with $0 rent but deductions claimed", on.findings.some((x) => x.id === "rental_zero_income" && x.severity === "review"));
     check("readiness_audit_v2 ON: flags a missing occupation", on.findings.some((x) => x.id === "occupation_missing"));
+    // #593 (ft_journey): the occupation's home is Get set up only while its profile mode is live; OFF keeps the exact old string.
+    const occ = (o: ReturnType<typeof assessReadiness>) => o.findings.find((x) => x.id === "occupation_missing")?.general_info_note ?? "";
+    const occOff = occ(on);
+    const occJourney = occ(assessReadiness({ ...base, auditFindingsV2: true, journeyHomes: { aboutYou: true } }));
+    const occJourneyNoProfile = occ(assessReadiness({ ...base, auditFindingsV2: true, journeyHomes: { aboutYou: false } }));
+    check("occupation_missing (#593): flag OFF keeps the exact 'Add it in Settings' string; ON points at Get set up (Settings while profile mode is off)",
+      occOff.endsWith("Add it in Settings before you hand off.") && occJourney.endsWith("Add it in Get set up before you hand off.") &&
+      occJourneyNoProfile === occOff && occJourney.replace("Get set up", "Settings") === occOff);
   }
 
   // Unknown-bucket spend → BLOCKER finding + NOT ready (review Medium: the gate used to be vacuous).
@@ -1521,6 +1529,15 @@ console.log("readiness");
   const psiReport = mkReport({ income: { by_type: [{ income_type: "business", n: 1, gross_cents: 11_000_000, net_cents: 11_000_000, withholding_cents: 0, franking_credit_cents: 0, foreign_tax_paid_cents: 0 }], gross_cents: 11_000_000, withholding_cents: 0, franking_credit_cents: 0, foreign_tax_paid_cents: 0 }, total_income_cents: 11_000_000, taxable_position_cents: 11_000_000 });
   const psi = run(psiReport, noSignals());
   check("business income → PSI defer review finding", psi.findings.some((f) => f.id === "psi_check" && f.defer_to_agent && f.severity === "review"));
+  {
+    // #593 (ft_journey): business activities moved to Grow › Business; OFF keeps the exact old "in Settings" string.
+    const psiDetail = (o: ReturnType<typeof assessReadiness>) => o.findings.find((f) => f.id === "psi_check")?.general_info_note ?? "";
+    const offD = psiDetail(psi);
+    const onD = psiDetail(assessReadiness({ report: psiReport, situation: mkSituation(), claimMatches: [], signals: noSignals(), generatedAt: "2026-06-03T00:00:00Z", journeyHomes: { aboutYou: false } }));
+    check("psi_check (#593): OFF says 'against the business activity in Settings'; ON says 'in Grow › Business', nothing else changes",
+      offD.includes("against the business activity in Settings.") && onD.includes("against the business activity in Grow › Business.") &&
+      onD.replace("Grow › Business", "Settings") === offD);
+  }
   check("PSI nudge doesn't change the position or block readiness", psi.readiness_score.ready && psi.position.indicative_taxable_position_cents === 11_000_000);
   check("no business income → no PSI finding", !run(trustReport, noSignals()).findings.some((f) => f.id === "psi_check"));
   // S2: psi_status variants — declared "applies" sharpens the nudge; "all assessed as not_psi" suppresses it.
@@ -1959,6 +1976,14 @@ console.log("buildGuidePrompt (Guide me)");
   check("user embeds the live numbers", user.includes('"needs_review":12') && user.includes("338"));
   check("user embeds the situation summary", user.includes("Taxpayer: nurse"));
   check("unknown tab degrades gracefully", buildGuidePrompt("bogus", progress, "").system.includes('"bogus"'));
+  // #593 (ft_journey): Settings is account-only, so the Guide-me purpose for it says so; OFF / other tabs unchanged.
+  const setOff = buildGuidePrompt("settings", progress, "x");
+  check("buildGuidePrompt (#593): settings purpose is account-only with the journey ON; OFF and other tabs byte-identical",
+    setOff.system.includes("your situation, entities, rules, people, privacy & AI consent") &&
+    JSON.stringify(buildGuidePrompt("settings", progress, "x", {})) === JSON.stringify(setOff) &&
+    buildGuidePrompt("settings", progress, "x", { journey: true }).system.includes("your account: privacy & AI consent") &&
+    !buildGuidePrompt("settings", progress, "x", { journey: true }).system.includes("entities, rules") &&
+    JSON.stringify(buildGuidePrompt("inbox", progress, "x", { journey: true })) === JSON.stringify(buildGuidePrompt("inbox", progress, "x")));
 }
 
 console.log("buildAskSystem (Ask Quillo)");
@@ -5066,7 +5091,7 @@ import { GROW_ROUTE, GROW_LEGACY_ROUTE } from "../web/src/lib/growRoutes";
   const homes = Object.fromEntries(SETTINGS_SECTION_MOVES.map((m) => [m.anchor, m.home]));
   check("settings split (#593): each moved section has the #436 home (people/carry-ins → Get set up, property → Grow, business/super → Grow, rules → Review)",
     JSON.stringify(homes) === JSON.stringify({
-      people: "/setup", "carry-ins": "/setup", properties: "/grow/property", loans: "/grow/property",
+      people: "/setup", "carry-ins": "/setup", employers: "/setup", properties: "/grow/property", loans: "/grow/property",
       entities: "/grow/business", activities: "/grow/business", gst: "/grow/business", bas: "/grow/business",
       trust: "/grow/business", partnership: "/grow/business", smsf: "/grow/business", super: "/grow/business", rules: "/review",
     }));
@@ -5076,6 +5101,7 @@ import { GROW_ROUTE, GROW_LEGACY_ROUTE } from "../web/src/lib/growRoutes";
     settingsSectionHome("#super", { aboutYou: false }) === "/grow/business#super" && settingsSectionHome("properties", { aboutYou: true }) === "/grow/property#properties");
   check("settings split (#593): People + carry-ins stay on Settings until Get set up's profile mode is live; kept / unknown / malformed anchors stay put",
     settingsSectionHome("#people", { aboutYou: false }) === null && settingsSectionHome("#carry-ins", { aboutYou: false }) === null &&
+    SETTINGS_SECTION_MOVES.every((m) => m.fallback === undefined || m.needsAboutYou === true) &&
     SETTINGS_KEPT_ANCHORS.every((a) => settingsSectionHome(`#${a}`, { aboutYou: true }) === null && !(a in homes)) &&
     settingsSectionHome("", { aboutYou: true }) === null && settingsSectionHome("#nope", { aboutYou: true }) === null && settingsSectionHome("#%E0", { aboutYou: true }) === null);
   // The anchor must exist where the redirect lands — otherwise the link "works" but drops you at the top of a long page.
@@ -5093,6 +5119,33 @@ import { GROW_ROUTE, GROW_LEGACY_ROUTE } from "../web/src/lib/growRoutes";
     !/PropertySections|BusinessSections|RulesSection/.test(ftBlock) && !/[Aa]ppearance/.test(settingsSrc) &&
     /if \(movedTo\) return <Navigate to=\{movedTo\} replace \/>;\n  if \(sit\.isLoading\)/.test(settingsSrc) &&
     web("components/BankConsents.tsx").includes(`id="bank-connections"`) && settingsSrc.includes(`anchored ? "devices"`) && settingsSrc.includes(`id="privacy"`) && settingsSrc.includes(`anchored ? "your-data"`));
+  // #593 follow-up: employers (entities.kind = 'employment') live in Get set up (next to the employment periods) while
+  // its profile mode is live; companies / trusts / partnerships stay in Grow › Business. Profile mode off ⇒ employers
+  // stay with the other entities on Grow › Business (#entities), never stranded on the account-only Settings.
+  check("settings split (#593 employers): /settings#employers → Get set up's #employers when profile mode is live, else Grow › Business #entities",
+    settingsSectionHome("#employers", { aboutYou: true }) === "/setup#employers" && settingsSectionHome("#employers", { aboutYou: false }) === "/grow/business#entities" &&
+    settingsSectionHome("#entities", { aboutYou: true }) === "/grow/business#entities");
+  const bizFn = /function BusinessSections[\s\S]*?\n\}\n/.exec(settingsSrc)?.[0] ?? "";
+  const employerFn = /export function EmployerList[\s\S]*?\n\}\n/.exec(settingsSrc)?.[0] ?? "";
+  const bizSettingsFn = /export function BusinessSettings[\s\S]*?\n\}\n/.exec(settingsSrc)?.[0] ?? "";
+  check("settings split (#593 employers): Grow › Business drops employment entities only when employers live in Get set up (ft_journey + situation_profile); the OFF entities block is unchanged",
+    /employersElsewhere = has\("ft_journey"\) && has\("situation_profile"\)/.test(bizSettingsFn) && /employersElsewhere=\{employersElsewhere\}/.test(bizSettingsFn) &&
+    /s\.entities\.filter\(\(e\) => e\.kind !== "employment"\)/.test(bizFn) && /kinds=\{NON_EMPLOYER_KINDS\}/.test(bizFn) && bizFn.includes(`to="/setup#employers"`) &&
+    bizFn.includes(`<Section id={a("entities")} title={<>Entities (employment · company · novated lease) <InfoTip k="entities" /></>}>`) &&
+    /\{s\.entities\.map\(\(e\) => \(\n\s*<EditableEntity key=\{e\.id\} entity=\{e\} onDone=\{onDone\} \/>/.test(bizFn) && /<AddEntity onDone=\{onDone\} \/>/.test(bizFn) &&
+    /NON_EMPLOYER_KINDS: readonly string\[\] = ENTITY_KINDS\.filter\(\(k\) => k !== "employment"\)/.test(settingsSrc));
+  check("settings split (#593 employers): Get set up renders #employers with employment entities only (add + edit pinned to the employment kind), next to the employment answers",
+    /e\.kind === "employment"/.test(employerFn) && /kinds=\{EMPLOYER_KINDS\}/.test(employerFn) && /EMPLOYER_KINDS: readonly string\[\] = \["employment"\]/.test(settingsSrc) &&
+    /<section id="employers"[\s\S]*?<EmployerList entities=\{situation\.entities\} onDone=\{invalidate\} \/>/.test(aboutSrc) &&
+    aboutSrc.indexOf(`id="employers"`) > aboutSrc.indexOf("PROFILE_FACTS.map") && aboutSrc.indexOf(`id="employers"`) < aboutSrc.indexOf(`id="people"`) &&
+    /kinds = ENTITY_KINDS/.test(web("components/SituationFields.tsx")) && /useState<EntityValue>\(\(\) => emptyEntity\(kinds\?\.\[0\]\)\)/.test(settingsSrc));
+  // Server messages that said "in Settings": ON names the new home, OFF keeps the exact string (persona goldens + AU snapshot).
+  const agentSrc = fs.readFileSync(path.join(process.cwd(), "src/agent.ts"), "utf8");
+  check("settings split (#593): the auto-learned rule alert points at Review › Your sorting rules with ft_journey ON, 'in Settings' OFF",
+    agentSrc.includes('You can edit this rule in ${featureOn(this.env, "ft_journey") ? "Review › Your sorting rules" : "Settings"}.') &&
+    reviewQSrc.includes("Your sorting rules") &&
+    /journeyHomes: featureOn\(this\.env, "ft_journey"\) \? \{ aboutYou: featureOn\(this\.env, "situation_profile"\) \} : undefined/.test(agentSrc) &&
+    /buildGuidePrompt\(tab, progress, redact\(renderSituation\(situation\)\), \{ journey: featureOn\(this\.env, "ft_journey"\) \}\)/.test(agentSrc));
 }
 
 // ── #585 (spec A2): About you — answers → situation-period writes, periods → answers, Q4/Q5 job sync ──

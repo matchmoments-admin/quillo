@@ -123,6 +123,12 @@ export const CARRY_INS_COPY = {
   intro: "Carried-forward capital losses and opening depreciation values from last year. They're kept for your registered tax agent; Quillo never applies them to your position by itself.",
 };
 
+// #593: employers moved here from Grow › Business — they sit next to the employment answers they explain.
+export const EMPLOYERS_COPY = {
+  title: "Your employers",
+  intro: "Each employer who pays you wages, including any you marked from your bank pay. Quillo uses them to sort your work spending and to check each employer's income statement is added.",
+};
+
 export const PEOPLE_COPY = {
   title: "People in this return",
   intro: "You, and a spouse or dependant only if their tax affairs sit alongside yours.",

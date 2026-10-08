@@ -248,11 +248,16 @@ export function assessReadiness(input: {
   excludePropertyUndetermined?: boolean; // mirrors the `position_excludes_property_undetermined` flag (#254; default off = legacy)
   auditFindingsV2?: boolean; // mission-audit #7/#8 safety findings (readiness_audit_v2); default off ⇒ byte-identical
   reconcileProposals?: boolean; // A8 (#574): add position.taxable_position_confirmed_cents; default off ⇒ byte-identical
+  // #593 (ft_journey): Settings is account-only, so "fix it" copy names the section's new home. `aboutYou` =
+  // Get set up's profile mode is live (situation_profile ON too) — the occupation lives there only then.
+  // Undefined (flag OFF) ⇒ the exact legacy "in Settings" strings ⇒ byte-identical.
+  journeyHomes?: { aboutYou: boolean };
 }): FilingReadiness {
   const { report, situation, claimMatches, signals, generatedAt } = input;
   const excludeNonDeductible = input.excludeNonDeductible ?? false;
   const auditFindingsV2 = input.auditFindingsV2 ?? false;
   const excludePropertyUndetermined = input.excludePropertyUndetermined ?? false;
+  const journeyHomes = input.journeyHomes;
   const findings: ReadinessFinding[] = [];
 
   // ── (1) position with reasoning — straight from the report, no new maths ──
@@ -583,7 +588,7 @@ export function assessReadiness(input: {
     const self = situation.persons.find((p) => p.role === "self");
     if (self && !self.occupation) {
       findings.push(f("occupation_missing", "completeness", "review", "Your occupation isn't set",
-        "Your occupation tailors which work-related deductions apply — without it, Quillo can't suggest the deductions specific to your job, and your agent lacks context. Add it in Settings before you hand off.", false, []));
+        `Your occupation tailors which work-related deductions apply — without it, Quillo can't suggest the deductions specific to your job, and your agent lacks context. Add it in ${journeyHomes?.aboutYou ? "Get set up" : "Settings"} before you hand off.`, false, []));
     }
     if (report.ess && report.ess.assessable_discount_cents > 0) {
       findings.push(f("ess_taxing_point", "income", "info", "Confirm your ESS discount and its taxing point",
@@ -774,7 +779,7 @@ export function assessReadiness(input: {
   } else if (hasBusinessIncome && !signals.psiAllAssessed) {
     // Not yet assessed → prompt them to assess and record it (the original general nudge + where to set it).
     findings.push(f("psi_check", "judgement", "review", "Sole-trader income — check whether the PSI rules apply",
-      `Some of your income is sole-trader/ABN business income. If it's mainly a reward for your personal skills or labour (typical for contractors and freelancers), the Personal Services Income (PSI) rules in Division 86 can limit which expenses you're able to claim. The PSI tests are fact-specific — confirm with a registered tax agent, then record the outcome against the business activity in Settings.${DEFER}`, true, []));
+      `Some of your income is sole-trader/ABN business income. If it's mainly a reward for your personal skills or labour (typical for contractors and freelancers), the Personal Services Income (PSI) rules in Division 86 can limit which expenses you're able to claim. The PSI tests are fact-specific — confirm with a registered tax agent, then record the outcome against the business activity in ${journeyHomes ? "Grow › Business" : "Settings"}.${DEFER}`, true, []));
   }
   // hasBusinessIncome && psiAllAssessed && not "applies" (i.e. assessed as not_psi) → no nudge: they've decided.
   // GST/consumption-tax registration threshold — a self-employed taxpayer whose business turnover

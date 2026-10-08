@@ -32,6 +32,7 @@ import {
   ABOUT_Q,
   CARRY_INS_COPY,
   CONSENT_COPY,
+  EMPLOYERS_COPY,
   FACT_LABEL,
   PEOPLE_COPY,
   PROFILE_FACTS,
@@ -66,6 +67,7 @@ import {
 } from "../components/ft";
 import { CarryIns, PeopleList } from "../components/ProfileSections";
 import { CONSENT_TEXT } from "./Onboarding";
+import { EmployerList } from "./Settings";
 import type { Situation, SituationPeriod } from "../types";
 
 // Get set up — step 1 of 4 (spec §0 design review + A2, #585; flags ft_journey + situation_profile). It is
@@ -99,7 +101,7 @@ export function AboutYou() {
   const [params, setParams] = useSearchParams();
   const sit = useQuery({ queryKey: ["situation"], queryFn: () => api.situation() });
   const why = useWhyDrawer("setup");
-  // #593: People and last year's carry-ins moved here from Settings; /settings#people, #carry-ins land on them.
+  // #593: People, employers and last year's carry-ins moved here; /settings#people, #employers, #carry-ins land on them.
   useHashScroll();
 
   const data = sit.data;
@@ -596,6 +598,15 @@ function Profile({ situation, fy, bounds, onWhy, onAskAgain }: { situation: Situ
           ))}
         </div>
       )}
+
+      {/* #593: employers (employment entities) moved here from Grow › Business, next to the employment answers. */}
+      <section id="employers" className="scroll-mt-20 space-y-3">
+        <h2 className="font-display text-xl tracking-wide text-forest">{EMPLOYERS_COPY.title}</h2>
+        <p className="max-w-[65ch] text-sm text-muted">{EMPLOYERS_COPY.intro}</p>
+        <FtCard className="space-y-2 p-4">
+          <EmployerList entities={situation.entities} onDone={invalidate} />
+        </FtCard>
+      </section>
 
       <section id="people" className="scroll-mt-20 space-y-3">
         <h2 className="font-display text-xl tracking-wide text-forest">{PEOPLE_COPY.title}</h2>

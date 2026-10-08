@@ -106,7 +106,9 @@ export const STEP_LEGACY_ROUTE: Record<JourneyStepKey, string> = {
  * Settings used to hold has ONE new home, addressed by the same anchor id there, so `/settings#<anchor>`
  * (a bookmark, an old help link) redirects to `<home>#<anchor>` with the flag ON. People and the prior-year
  * carry-ins move only when Get set up's profile mode is live (ft_journey + situation_profile, #585);
- * otherwise they stay on Settings. Per-user rules move to Review (the sorting step); the rest go to Grow.
+ * otherwise they stay on Settings. Employers (`employment` entities) also live in Get set up while its profile
+ * mode is live, next to the employment answers; otherwise they stay with the other entities on Grow › Business
+ * (`fallback`). Per-user rules move to Review (the sorting step); the rest go to Grow.
  */
 export interface SettingsSectionMove {
   /** The section's anchor id, on Settings (old) and on its new home. */
@@ -117,11 +119,14 @@ export interface SettingsSectionMove {
   homeLabel: string;
   /** Moves only when Get set up's profile mode is live (situation_profile ON too). */
   needsAboutYou?: boolean;
+  /** needsAboutYou sections only: where it lives while the profile mode is off (else it stays on Settings). */
+  fallback?: string;
 }
 
 export const SETTINGS_SECTION_MOVES: readonly SettingsSectionMove[] = [
   { anchor: "people", home: "/setup", homeLabel: "Get set up", needsAboutYou: true },
   { anchor: "carry-ins", home: "/setup", homeLabel: "Get set up", needsAboutYou: true },
+  { anchor: "employers", home: "/setup", homeLabel: "Get set up", needsAboutYou: true, fallback: "/grow/business#entities" },
   { anchor: "properties", home: "/grow/property", homeLabel: "Grow › Property" },
   { anchor: "loans", home: "/grow/property", homeLabel: "Grow › Property" },
   { anchor: "entities", home: "/grow/business", homeLabel: "Grow › Business & companies" },
@@ -141,7 +146,7 @@ export const SETTINGS_KEPT_ANCHORS: readonly string[] = ["ai-changes", "privacy"
 /**
  * Where `/settings#<hash>` goes with ft_journey ON: the moved section's new home (with its anchor), or null
  * when the section stays on Settings (a kept anchor, an unknown one, or People / carry-ins while Get set up's
- * profile mode is off).
+ * profile mode is off). Employers fall back to Grow › Business's entities while the profile mode is off.
  */
 export function settingsSectionHome(hash: string, opts: { aboutYou: boolean }): string | null {
   let anchor: string;
@@ -151,6 +156,7 @@ export function settingsSectionHome(hash: string, opts: { aboutYou: boolean }): 
     return null; // a malformed %-escape is not one of ours
   }
   const move = SETTINGS_SECTION_MOVES.find((m) => m.anchor === anchor);
-  if (!move || (move.needsAboutYou && !opts.aboutYou)) return null;
+  if (!move) return null;
+  if (move.needsAboutYou && !opts.aboutYou) return move.fallback ?? null;
   return `${move.home}#${move.anchor}`;
 }

@@ -1,6 +1,7 @@
 import type { Env } from "../env";
 import auV1RulePack from "../rulepacks/au-v1.json";
 import { featureOn } from "./features";
+import { readRulePackOverride } from "./rulepack";
 
 /**
  * Public "Before you start" payload (spec docs/first-timer/spec.md A10, #584).
@@ -28,14 +29,11 @@ export function beforeYouStartPayload(pack: PackShape | null | undefined): Befor
   return { price_line: price };
 }
 
-/** Rule pack the public screen (and #591 /api/education) reads: the KV override (pushed by `npm run rulepack:push`) shadows the bundled default, as everywhere else. */
+/** Rule pack the public screen (and #591 /api/education) reads: the KV override (pushed by `npm run rulepack:push`) wins key-by-key over the bundled default, as everywhere else. */
 export async function loadPack(env: Env): Promise<PackShape> {
-  try {
-    const override = await env.RULES.get("rulepack:au-v1", "json");
-    if (override && typeof override === "object") return override as PackShape;
-  } catch {
-    /* KV unavailable ⇒ fall back to the bundled pack */
-  }
+  // KV unavailable ⇒ bundled pack; a stale KV copy has its missing top-level keys filled from the bundle.
+  const override = await readRulePackOverride(env.RULES, "au-v1");
+  if (override) return override as PackShape;
   return auV1RulePack as PackShape;
 }
 

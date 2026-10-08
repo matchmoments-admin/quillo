@@ -70,6 +70,7 @@ import { spentTodayCents, spentTodayGlobalCents, spentThisMonthGlobalCents, note
 import { billingPolicy, freeCreditGrantE4 } from "./lib/billing";
 import { parseTransactionAlert } from "./lib/bank-parsers";
 import auV1RulePack from "./rulepacks/au-v1.json";
+import { readRulePackOverride } from "./lib/rulepack";
 import { assertBucketKeys, isBucket, isPropertyBucket, normalizeAtoLabel, DEDUCTIBILITY_STATES, WAGE_INCOME_TYPES } from "./lib/taxonomy";
 import { verdictForTxn } from "./lib/deductibility";
 import { featureOn, categoriseMode } from "./lib/features";
@@ -7533,8 +7534,9 @@ export class TaxAgent extends Agent<Env> {
   }
 
   private async loadRulePack(ver: string): Promise<typeof DEFAULT_RULE_PACK> {
-    const override = await this.env.RULES.get(`rulepack:${ver}`, "json");
-    const pack = (override as typeof DEFAULT_RULE_PACK | null) ?? DEFAULT_RULE_PACK;
+    // KV override merged over the bundle (src/lib/rulepack.ts) so a stale KV copy can't hide newer sections.
+    const override = await readRulePackOverride(this.env.RULES, ver);
+    const pack = (override as unknown as typeof DEFAULT_RULE_PACK | null) ?? DEFAULT_RULE_PACK;
     // Warn (don't throw) if a KV override drifted from the taxonomy's known buckets.
     if (pack?.buckets) assertBucketKeys(pack.buckets);
     return pack;

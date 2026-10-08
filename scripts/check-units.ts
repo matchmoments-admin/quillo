@@ -6267,5 +6267,47 @@ console.log("security & compliance dashboard (#636)");
   check("index.ts: /csp-report logs the summary, never the raw body", /summariseCspReport\(raw\)/.test(indexSrc) && !/console\.[a-z]+\(`csp-report: \$\{raw\}`/.test(indexSrc));
 }
 
+// ── Rule pack: a stale KV copy must not hide newer bundled top-level sections (owner-testing defect) ──
+import { mergeRulePack, applyRulePackOverride, readRulePackOverride } from "../src/lib/rulepack";
+import { loadPack as loadBysPack } from "../src/lib/before-you-start";
+import bundledAuV1 from "../src/rulepacks/au-v1.json";
+{
+  const bundled = bundledAuV1 as unknown as Record<string, unknown>;
+  // A KV copy pushed before state_education / situation_facts / grow_detection / mytax_* existed.
+  const stale: Record<string, unknown> = { version: "au-v1", buckets: { custom: true }, guidance: "KV guidance" };
+  const origWarn = console.warn;
+  const warnings: string[] = [];
+  console.warn = (...a: unknown[]) => { warnings.push(a.map(String).join(" ")); };
+  try {
+    const m = mergeRulePack(stale, bundled);
+    check("rulepack: KV pack missing keys ⇒ bundled values used (state_education, situation_facts, grow_detection, mytax_sections)",
+      ["state_education", "situation_facts", "grow_detection", "mytax_sections"].every((k) => m.pack[k] === bundled[k]) && m.missing.includes("state_education"));
+    check("rulepack: KV pack has key ⇒ KV value used", m.pack.guidance === "KV guidance" && (m.pack.buckets as { custom?: boolean }).custom === true);
+    check("rulepack: complete KV pack ⇒ returned as-is, nothing missing", (() => { const full = { ...bundled, guidance: "x" }; const r = mergeRulePack(full, bundled); return r.pack === full && r.missing.length === 0; })());
+    check("rulepack: version mismatch is detected", mergeRulePack({ version: "au-v0" }, bundled).versionMismatch?.kv === "au-v0" && m.versionMismatch === null);
+
+    const merged = applyRulePackOverride("au-v1", stale)!;
+    check("rulepack: stale KV logs ONE warning listing missing keys (no content)",
+      warnings.length === 1 && warnings[0]!.includes("state_education") && !warnings[0]!.includes("KV guidance") && merged.state_education === bundled.state_education);
+    applyRulePackOverride("au-v1", { ...stale });
+    check("rulepack: the same drift warns once per isolate", warnings.length === 1);
+    const uk = applyRulePackOverride("uk-2025", { version: "uk-2025" })!;
+    check("rulepack: a non-bundled pack id is never back-filled with AU content", !("state_education" in uk) && warnings.length === 1);
+    check("rulepack: null / non-object override ⇒ null (caller uses bundle)", applyRulePackOverride("au-v1", null) === null && applyRulePackOverride("au-v1", "x") === null && applyRulePackOverride("au-v1", []) === null);
+
+    // KV absent / throwing ⇒ identical to before: no override, bundled default.
+    check("rulepack: no RULES binding ⇒ null", (await readRulePackOverride(undefined, "au-v1")) === null);
+    const throwingKv = { get: async () => { throw new Error("kv down"); } } as unknown as KVNamespace;
+    check("rulepack: KV throws ⇒ null", (await readRulePackOverride(throwingKv, "au-v1")) === null);
+    const emptyKv = { get: async () => null } as unknown as KVNamespace;
+    check("rulepack: KV miss ⇒ loadPack returns the bundled pack itself", (await loadBysPack({ RULES: emptyKv } as unknown as Env)) === (bundledAuV1 as unknown));
+    const staleKv = { get: async (k: string) => (k === "rulepack:au-v1" ? { ...stale } : null) } as unknown as KVNamespace;
+    const viaLoad = (await loadBysPack({ RULES: staleKv } as unknown as Env)) as Record<string, unknown>;
+    check("rulepack: loadPack (Get set up / education) sees state_education through a stale KV copy", viaLoad.state_education === bundled.state_education && viaLoad.guidance === "KV guidance");
+  } finally {
+    console.warn = origWarn;
+  }
+}
+
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);
 process.exit(fail === 0 ? 0 : 1);

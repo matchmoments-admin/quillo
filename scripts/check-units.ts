@@ -2754,6 +2754,124 @@ console.log("token-crypto (QBO envelope encryption)");
   check("enc_ver=1 with no key → actionable error", clearMsg.includes("QBO_TOKEN_KEY"));
 }
 
+// ── #637 (security A4): the one token write path, fail-closed, plaintext detection, backfill ─────
+import { sealTokenPair, tokenStorageBlocked, TokenKeyMissingError, isPlaintextEncVer, looksSealedWith } from "../src/lib/token-crypto";
+import { backfillQboTokens } from "../src/lib/qbo-token-backfill";
+import { DatabaseSync } from "node:sqlite";
+
+console.log("token-crypto fail-closed + QBO token backfill (#637)");
+{
+  const keyed = { QBO_TOKEN_KEY: "unit-test-secret-key" } as Env;
+  const keyedFc = { QBO_TOKEN_KEY: "unit-test-secret-key", FEATURES: "qbo_token_fail_closed" } as Env;
+  const bare = {} as Env;
+  const bareFc = { FEATURES: "refund_netting,qbo_token_fail_closed" } as Env;
+  const acc = "eyJhbGciOi.access.tok", ref = "AB11700000000refreshTOKENxyz";
+
+  // sealTokenPair with a key: both sealed, enc_ver 1, round-trips (flag irrelevant).
+  for (const [label, env] of [["key", keyed], ["key + fail-closed", keyedFc]] as const) {
+    const p = await sealTokenPair(env, acc, ref);
+    check(`sealTokenPair (${label}) → enc_ver 1, both sealed`, p.encVer === 1 && p.access !== acc && p.refresh !== ref);
+    check(`sealTokenPair (${label}) round-trips`, (await readToken(env, p.access, p.encVer)) === acc && (await readToken(env, p.refresh, p.encVer)) === ref);
+  }
+  const nullAcc = await sealTokenPair(keyed, null, ref);
+  check("sealTokenPair keeps a null access token null", nullAcc.access === null && nullAcc.encVer === 1);
+
+  // No key, flag OFF ⇒ legacy plaintext (byte-identical to before #637).
+  const legacy = await sealTokenPair(bare, acc, ref);
+  check("no key + flag OFF → legacy plaintext, enc_ver 0", legacy.encVer === 0 && legacy.access === acc && legacy.refresh === ref);
+  check("tokenStorageBlocked false without the flag", tokenStorageBlocked(bare) === false);
+
+  // No key, flag ON ⇒ refused with a typed, clear error; never a plaintext pair.
+  let refused: unknown = null;
+  try {
+    await sealTokenPair(bareFc, acc, ref);
+  } catch (e) {
+    refused = e;
+  }
+  check("no key + fail-closed → TokenKeyMissingError", refused instanceof TokenKeyMissingError);
+  check("…with an actionable message naming the secret", refused instanceof Error && refused.message.includes("QBO_TOKEN_KEY"));
+  check("tokenStorageBlocked true with fail-closed and no key", tokenStorageBlocked(bareFc) === true);
+  check("tokenStorageBlocked false once the key is set", tokenStorageBlocked(keyedFc) === false);
+
+  // Plaintext detection.
+  check("isPlaintextEncVer: 0 / null / undefined are plaintext", isPlaintextEncVer(0) && isPlaintextEncVer(null) && isPlaintextEncVer(undefined));
+  check("isPlaintextEncVer: 1 is sealed", !isPlaintextEncVer(1));
+  const sealedRef = await sealToken(keyed, ref);
+  check("looksSealedWith: a sealed value authenticates", await looksSealedWith(keyed, sealedRef));
+  check("looksSealedWith: a plaintext token does not (even a base64-looking one)", !(await looksSealedWith(keyed, ref)) && !(await looksSealedWith(keyed, "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo=")));
+  check("looksSealedWith: wrong key → false", !(await looksSealedWith({ QBO_TOKEN_KEY: "other" } as Env, sealedRef)));
+  check("looksSealedWith: no key → false, never throws", !(await looksSealedWith(bare, sealedRef)));
+
+  // Backfill against a real SQLite qbo_connections (schema from the migrations that build it).
+  const db = new DatabaseSync(":memory:");
+  db.exec(`CREATE TABLE qbo_connections (user_id TEXT PRIMARY KEY, realm_id TEXT NOT NULL, access_token TEXT,
+    access_expires_at TEXT, refresh_token TEXT NOT NULL, refresh_expires_at TEXT, updated_at TEXT NOT NULL DEFAULT (datetime('now')));`);
+  db.exec(fs.readFileSync(path.join(process.cwd(), "migrations", "0014_qbo_token_enc.sql"), "utf8"));
+  class Stmt {
+    private p: unknown[] = [];
+    constructor(private sql: string) {}
+    bind(...a: unknown[]) { this.p = a.map((x) => (x === undefined ? null : x)); return this; }
+    async all<T>() { return { results: db.prepare(this.sql).all(...(this.p as never[])) as T[] }; }
+    async first<T>() { return (db.prepare(this.sql).get(...(this.p as never[])) as T) ?? null; }
+    async run() { const r = db.prepare(this.sql).run(...(this.p as never[])); return { meta: { changes: Number(r.changes) } }; }
+  }
+  const DB = { prepare: (s: string) => new Stmt(s) } as unknown as D1Database;
+  const ins = (u: string, a: string | null, r: string, v: number) =>
+    db.prepare(`INSERT INTO qbo_connections (user_id, realm_id, access_token, refresh_token, enc_ver) VALUES (?, 'realm', ?, ?, ?)`).run(u, a, r, v);
+  ins("plain-1", "acc-1", "ref-1", 0);
+  ins("plain-nullacc", null, "ref-2", 0);
+  ins("sealed-ok", await sealToken(keyed, "acc-3"), await sealToken(keyed, "ref-3"), 1);
+  ins("sealed-other", await sealToken({ QBO_TOKEN_KEY: "old" } as Env, "acc-4"), await sealToken({ QBO_TOKEN_KEY: "old" } as Env, "ref-4"), 1);
+  ins("mislabelled", await sealToken(keyed, "acc-5"), await sealToken(keyed, "ref-5"), 0);
+  const snapshot = () => JSON.stringify(db.prepare(`SELECT user_id, access_token, refresh_token, enc_ver FROM qbo_connections ORDER BY user_id`).all());
+  const before = snapshot();
+
+  const dry = await backfillQboTokens({ ...keyed, DB }, { dryRun: true });
+  check("dry run counts plaintext rows (3 enc_ver=0) and writes nothing", dry.plaintext === 3 && dry.sealed_now === 0 && snapshot() === before);
+  check("dry run classifies enc_ver=1 rows (1 ok, 1 undecryptable)", dry.sealed_ok === 1 && dry.sealed_undecryptable === 1 && dry.total === 5);
+  const dryNoKey = await backfillQboTokens({ ...bare, DB }, { dryRun: true });
+  check("dry run works without the key (counts only)", dryNoKey.key_configured === false && dryNoKey.plaintext === 3 && snapshot() === before);
+  let noKeyThrew = false;
+  try {
+    await backfillQboTokens({ ...bare, DB }, { dryRun: false });
+  } catch {
+    noKeyThrew = true;
+  }
+  check("real run without the key refuses (nothing to seal with)", noKeyThrew && snapshot() === before);
+
+  const run1 = await backfillQboTokens({ ...keyed, DB }, { dryRun: false });
+  check("real run seals the 2 plaintext rows", run1.sealed_now === 2 && run1.errors === 0);
+  check("…relabels the already-sealed enc_ver=0 row instead of double-sealing", run1.relabelled === 1);
+  const row = (u: string) => db.prepare(`SELECT access_token, refresh_token, enc_ver FROM qbo_connections WHERE user_id = ?`).get(u) as { access_token: string | null; refresh_token: string; enc_ver: number };
+  const p1 = row("plain-1");
+  check("sealed row: enc_ver 1, ciphertext ≠ plaintext", p1.enc_ver === 1 && p1.refresh_token !== "ref-1" && p1.access_token !== "acc-1");
+  check("sealed row decrypts to the original tokens", (await readToken(keyed, p1.access_token, 1)) === "acc-1" && (await readToken(keyed, p1.refresh_token, 1)) === "ref-1");
+  const p2 = row("plain-nullacc");
+  check("null access token stays null after sealing", p2.access_token === null && (await readToken(keyed, p2.refresh_token, 1)) === "ref-2");
+  const p5 = row("mislabelled");
+  check("relabelled row still decrypts with one open (not double-sealed)", p5.enc_ver === 1 && (await readToken(keyed, p5.refresh_token, 1)) === "ref-5");
+  const pick = (snap: string, u: string) => JSON.stringify((JSON.parse(snap) as { user_id: string }[]).find((r) => r.user_id === u));
+  check("enc_ver=1 rows left byte-for-byte untouched", pick(snapshot(), "sealed-ok") === pick(before, "sealed-ok") && pick(snapshot(), "sealed-other") === pick(before, "sealed-other"));
+  const outText = JSON.stringify(run1);
+  check("output is counts only — no tokens or tenant ids", !/acc-|ref-|plain-|sealed-|mislabelled|realm/.test(outText));
+
+  const afterRun1 = snapshot();
+  const run2 = await backfillQboTokens({ ...keyed, DB }, { dryRun: false });
+  check("idempotent: second run finds no plaintext and changes nothing", run2.plaintext === 0 && run2.sealed_now === 0 && run2.relabelled === 0 && snapshot() === afterRun1);
+  check("second run sees 4 decryptable sealed rows + 1 undecryptable", run2.sealed_ok === 4 && run2.sealed_undecryptable === 1);
+
+  // Concurrency guard: if a token refresh rewrites the row between read and write, the backfill skips it.
+  ins("racy", "acc-6", "ref-6", 0);
+  const racyDB = {
+    prepare: (s: string) => {
+      if (/^\s*UPDATE/i.test(s)) db.prepare(`UPDATE qbo_connections SET refresh_token = 'rotated' WHERE user_id = 'racy'`).run();
+      return new Stmt(s);
+    },
+  } as unknown as D1Database;
+  const run3 = await backfillQboTokens({ ...keyed, DB: racyDB }, { dryRun: false });
+  check("a concurrently-refreshed row is skipped, not clobbered", run3.skipped_concurrent === 1 && run3.sealed_now === 0 && row("racy").refresh_token === "rotated");
+}
+
 // ── Retention purge list completeness: every tenant table is erased (except audit_log) ──────
 import { PURGE_TABLES, redactSecrets } from "../src/lib/retention";
 

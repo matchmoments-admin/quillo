@@ -161,8 +161,10 @@ const PRIVACY_BODY = /* html */ `
   personal information and we do not let third parties use it to train their models.</p>
 
   <h2>6. Security</h2>
-  <p>Data is encrypted in transit and at rest, access is scoped to your account, and connected-service tokens are stored
-  encrypted and used only for the access you authorised.</p>
+  <p>Data is encrypted in transit and at rest, and access is scoped to your account. Access tokens for services you
+  connect (such as QuickBooks) are held only on our servers, are never sent to your browser or included in data
+  exports, and are used only for the access you authorised. Disconnecting a service deletes its tokens and asks the
+  provider to revoke them.</p>
 
   <h2>7. Retention &amp; your rights</h2>
   <p>We keep your tax records while your account is active and, by default, aligned to the ATO record-keeping rule —

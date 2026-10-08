@@ -1,7 +1,8 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import { useAdminAccess } from "../lib/features";
-import { Card, Spinner, money } from "../components/ui";
+import { Link } from "react-router-dom";
+import { BUTTON_BASE, BUTTON_TONE, Card, Spinner, money } from "../components/ui";
 import { ROLES, ROLE_LABEL, type Role, type AdminTenant, type AdminSpend } from "../types";
 
 // Founder-only platform view: who signed up, their activity + AI spend, and a per-tenant roles editor.
@@ -20,7 +21,10 @@ export function Admin() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-semibold tracking-tight">Admin</h1>
+      <div className="flex flex-wrap items-center gap-3">
+        <h1 className="flex-1 text-2xl font-semibold tracking-tight">Admin</h1>
+        <Link to="/admin/security" className={`${BUTTON_BASE} ${BUTTON_TONE.ghost}`}>Security &amp; compliance</Link>
+      </div>
 
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
         <Metric label="Tenants" value={String(o?.tenants ?? 0)} sub={`+${o?.signups_7d ?? 0} this week`} />

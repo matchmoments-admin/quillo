@@ -170,7 +170,7 @@ function meter(env: Env, ctx: LLMContext | undefined, client: Anthropic, modelId
  * Falls back to the unsuffixed pair so a single-jurisdiction deployment (today) needs no new
  * secrets and behaves identically.
  */
-function awsCredentialsFor(env: Env, descriptor: JurisdictionDescriptor): { accessKeyId?: string; secretAccessKey?: string } {
+export function awsCredentialsFor(env: Env, descriptor: JurisdictionDescriptor): { accessKeyId?: string; secretAccessKey?: string } {
   // Dynamic key lookup: the suffixed names are declared on Env, but which one applies is only known
   // at runtime from the descriptor.
   const vars = env as unknown as Record<string, string | undefined>;

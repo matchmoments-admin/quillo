@@ -8,7 +8,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy && npm run rulepack:push",
+    "deploy": "wrangler deploy && npm run rulepack:push && npm run security:push-docs",
     "schema": "wrangler d1 execute tax-agent-db --file=schema.sql",
     "schema:local": "wrangler d1 execute tax-agent-db --local --file=schema.sql",
     "eval": "promptfoo eval -c evals/promptfooconfig.yaml --output evals/results.json --no-write",
@@ -24,6 +24,7 @@
     "test:schema": "tsx scripts/check-schema-drift.ts",
     "test": "npm run test:units && npm run test:shell && npm run test:colors && npm run test:theme && npm run test:personas && npm run test:e2e && npm run test:au-snapshot && npm run eval:statements && npm run test:schema",
     "rulepack:push": "node scripts/push-rulepack.mjs src/rulepacks/au-v1.json",
+    "security:push-docs": "tsx scripts/push-security-docs.ts",
     "onboard": "node scripts/onboard.mjs",
     "preflight": "node scripts/preflight.mjs",
     "web:install": "cd web && npm install",

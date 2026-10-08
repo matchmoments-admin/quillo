@@ -6008,5 +6008,121 @@ console.log("bank feed — provider seam + Fiskil adapter");
   }
 }
 
+import {
+  handleAdminSecurity, runScheduledSecurityChecks, buildSecurityDashboard, parseSourceRecord, controlMatrixRecord, ospRegisterRecord,
+  assessHeaders, SECURITY_KV, type CheckDeps,
+} from "../src/lib/security-dashboard";
+console.log("security & compliance dashboard (#636)");
+{
+  class Stmt {
+    private params: unknown[] = [];
+    constructor(private db: DatabaseSync, private sql: string) {}
+    bind(...a: unknown[]) { this.params = a.map((x) => (x === undefined ? null : x)); return this; }
+    async all<T>() { return { results: this.db.prepare(this.sql).all(...(this.params as never[])) as T[], success: true, meta: {} }; }
+    async first<T>() { return (this.db.prepare(this.sql).get(...(this.params as never[])) as T) ?? null; }
+    async run() { const r = this.db.prepare(this.sql).run(...(this.params as never[])); return { success: true, meta: { changes: Number(r.changes ?? 0) } }; }
+  }
+  const sq = new DatabaseSync(":memory:");
+  const migDir = nodePath.join(process.cwd(), "migrations");
+  for (const f of nodeFs.readdirSync(migDir).filter((f) => f.endsWith(".sql")).sort()) sq.exec(nodeFs.readFileSync(nodePath.join(migDir, f), "utf8"));
+  // Seed: one admin, one ordinary tenant with PII + content that must NEVER reach the payload.
+  const EMAIL = "secret.person@example.com";
+  sq.prepare(`INSERT INTO profiles (user_id, roles, email) VALUES ('adm1', '["individual","admin"]', 'founder@example.com')`).run();
+  sq.prepare(`INSERT INTO profiles (user_id, roles, email, cdr_tainted, inference_provider) VALUES ('u1', '["individual"]', ?, 1, 'anthropic')`).run(EMAIL);
+  sq.prepare(`INSERT INTO transactions (id, user_id, source, merchant, raw_description) VALUES ('t1', 'u1', 'upload', 'SECRET MERCHANT PTY', 'SECRET LINE TEXT')`).run();
+  sq.prepare(`INSERT INTO bank_connections (id, user_id, access_type, status, institution, last_error) VALUES ('c1', 'u1', 'cdr', 'active', 'SECRET BANK', 'SECRET ERROR BODY')`).run();
+  sq.prepare(`INSERT INTO cdr_audit_log (id, user_id, connection_id, event, detail) VALUES ('a1', 'u1', 'c1', 'consent_granted', '{"note":"SECRET DETAIL"}')`).run();
+  sq.prepare(`INSERT INTO cdr_audit_log (id, user_id, connection_id, event) VALUES ('a2', 'u1', 'c1', 'consent_withdrawn')`).run();
+  sq.prepare(`INSERT INTO bank_sync_runs (id, user_id, connection_id, status, error) VALUES ('r1', 'u1', 'c1', 'failed', 'SECRET SYNC ERROR')`).run();
+  const db = { prepare: (sql: string) => new Stmt(sq, sql) } as unknown as D1Database;
+  const kvStore = new Map<string, string>();
+  let kvOps = 0;
+  const kv = {
+    get: async (k: string) => { kvOps++; return kvStore.get(k) ?? null; },
+    put: async (k: string, v: string) => { kvOps++; kvStore.set(k, v); },
+  } as unknown as KVNamespace;
+  const mkEnv = (features: string, extra: Record<string, unknown> = {}) =>
+    ({ DB: db, RULES: kv, FEATURES: features, CLERK_ISSUER: "https://x.clerk.accounts.dev", DEFAULT_INFERENCE_PROVIDER: "anthropic", ...extra }) as unknown as Env;
+  let fetches = 0;
+  const T0 = new Date("2026-10-08T00:00:00Z");
+  let nowAt = T0;
+  const fakeFetch = (async (input: RequestInfo | URL) => {
+    fetches++;
+    const u = String(input);
+    if (u.endsWith("/healthz")) return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    if (u === "https://app.quillo.au/") return new Response("<html>", { status: 200, headers: { "content-type": "text/html", "content-security-policy-report-only": "default-src 'self'" } });
+    if (u.includes("/actions/runs")) return new Response(JSON.stringify({ workflow_runs: [{ name: "CodeQL", conclusion: "success", created_at: "2026-10-07T00:00:00Z", html_url: "https://github.com/x/y/actions/runs/1" }] }), { status: 200 });
+    if (new URL(u).hostname === "api.github.com") return new Response("SECRET VENDOR BODY", { status: 401 });
+    return new Response("SECRET VENDOR BODY", { status: 500 });
+  }) as typeof fetch;
+  const deps: CheckDeps = { fetch: fakeFetch, now: () => nowAt };
+  const req = (m: string, path: string) => new Request(`https://app.quillo.au/api/${path}`, { method: m });
+  const call = (env: Env, uid: string, m: string, path: string) => handleAdminSecurity(req(m, path), env, uid, path.split("/"), deps);
+
+  const off = mkEnv("");
+  check("security: a non-admin GET gets 404 (not 403 — the page isn't discoverable)", (await call(off, "u1", "GET", "admin/security"))?.status === 404);
+  check("security: a non-admin POST /check gets 404", (await call(off, "u1", "POST", "admin/security/check"))?.status === 404);
+  check("security: an unknown tenant gets 404", (await call(off, "nobody", "GET", "admin/security"))?.status === 404);
+  check("security: other admin paths fall through (null)", (await call(off, "adm1", "GET", "admin/overview")) === null);
+
+  // Flag OFF ⇒ the cron does NOTHING: no KV read/write, no outbound fetch.
+  kvOps = 0; fetches = 0;
+  check("security: flag OFF ⇒ scheduled checks return 'flag_off'", (await runScheduledSecurityChecks(off, deps)) === "flag_off");
+  check("security: flag OFF ⇒ the cron touched neither KV nor the network", kvOps === 0 && fetches === 0);
+  check("security: flag OFF ⇒ 'Run checks now' is refused (409) with no fetch", (await call(off, "adm1", "POST", "admin/security/check"))?.status === 409 && fetches === 0);
+
+  const getRes = await call(off, "adm1", "GET", "admin/security");
+  const body = await getRes!.text();
+  const dash = JSON.parse(body) as Awaited<ReturnType<typeof buildSecurityDashboard>>;
+  const panel = (k: string) => dash.panels.find((p) => p.key === k)!;
+  check("security: admin GET 200 with all ten panels", getRes!.status === 200 && dash.panels.length === 10);
+  check("security: payload carries no email, merchant, description, bank name, error body or audit detail",
+    !/SECRET|@example\.com/.test(body));
+  check("security: unbuilt sources say 'Not yet set up' with their ticket (matrix #642, backups #635, lifecycle #639, OSP #642)",
+    ["control_matrix", "backups", "lifecycle", "osp"].every((k) => panel(k).status === "not_set_up") && panel("backups").pending_ticket === 635 && panel("control_matrix").pending_ticket === 642);
+  check("security: never-run live checks say 'not checked', not a fake status", panel("headers").status === "not_checked" && dash.last_check_at === null);
+  check("security: CDR activity is counts only", panel("cdr").metrics.consents_granted === 1 && panel("cdr").metrics.consents_withdrawn === 1 && panel("cdr").metrics.active_cdr_connections === 1);
+  check("security: errors panel counts the failed sync", panel("errors").metrics.bank_sync_failed_7d === 1 && panel("errors").status === "warn");
+  check("security: access panel = admin ids only + Clerk dev instance flagged", panel("access").metrics.admin_ids === "adm1" && panel("access").metrics.clerk_instance === "development" && panel("access").status === "warn");
+  check("security: residency counts a CDR-tainted tenant refused non-AU inference", panel("residency").metrics.cdr_tainted_tenants === 1 && panel("residency").metrics.tainted_refused_non_au === 1);
+  check("security: monitoring_enabled mirrors the flag", dash.monitoring_enabled === false);
+
+  // Flag ON ⇒ the cron runs once, then stays quiet until the interval passes.
+  const on = mkEnv("security_monitoring");
+  fetches = 0;
+  check("security: flag ON ⇒ first scheduled tick runs the checks", (await runScheduledSecurityChecks(on, deps)) === "ran" && fetches > 0);
+  const snap = JSON.parse(kvStore.get(SECURITY_KV.snapshot)!) as { trigger: string; checks: Record<string, { status: string; metrics: Record<string, unknown> }> };
+  check("security: snapshot stored in KV with trigger 'schedule'", snap.trigger === "schedule");
+  check("security: headers check flags report-only CSP + missing HSTS as warn", snap.checks.headers!.status === "warn" && snap.checks.headers!.metrics.csp_report_only === true);
+  check("security: no AWS AU keys ⇒ Bedrock probe is 'not_set_up' (no call made)", snap.checks.bedrock!.status === "not_set_up");
+  check("security: GitHub alerts without a token ⇒ 'needs token'; CodeQL run read publicly", snap.checks.github!.metrics.dependabot_open === "needs token" && snap.checks.github!.metrics.codeql_conclusion === "success");
+  check("security: no vendor error body is stored", !/SECRET/.test(kvStore.get(SECURITY_KV.snapshot)!));
+  nowAt = new Date(T0.getTime() + 60 * 60 * 1000);
+  fetches = 0;
+  check("security: flag ON ⇒ next tick within the day is 'fresh' (no re-scan every 10 minutes)", (await runScheduledSecurityChecks(on, deps)) === "fresh" && fetches === 0);
+  nowAt = new Date(T0.getTime() + 25 * 60 * 60 * 1000);
+  check("security: flag ON ⇒ runs again after 24h", (await runScheduledSecurityChecks(on, deps)) === "ran");
+  check("security: manual run within a minute of the last is throttled (429)", (await call(on, "adm1", "POST", "admin/security/check"))?.status === 429);
+  nowAt = new Date(nowAt.getTime() + 2 * 60 * 1000);
+  const manual = await call(on, "adm1", "POST", "admin/security/check");
+  const mBody = await manual!.text();
+  check("security: admin 'Run checks now' (flag ON) returns the refreshed dashboard", manual!.status === 200 && JSON.parse(mBody).last_check_trigger === "manual" && !/SECRET|@example\.com/.test(mBody));
+
+  // Source contracts light panels up.
+  const md = `# Matrix\n\n| ID | Clause | Control | Evidence | Status |\n|---|---|---|---|---|\n| C1 | 1.3 | Governance | docs/x.md | ✅ |\n| C2 | 1.7 | Incident plan | — | 🟡 partial |\n| C3 | 2.2 | MFA | | ⬜ |\n`;
+  const cm = controlMatrixRecord(md, "2026-10-08T00:00:00Z");
+  check("security: control matrix table parses ✅/🟡/⬜ into ok/warn/todo", cm?.rows?.map((r) => r.status).join() === "ok,warn,todo" && cm?.metrics?.done === 1 && cm?.rows?.[0]?.label === "Governance");
+  const osp = ospRegisterRecord(`| Service | Country | Role |\n|---|---|---|\n| Cloudflare | United States | hosting |\n| AWS Bedrock | Australia | inference |\n`, "2026-10-08T00:00:00Z");
+  check("security: OSP register parses providers + countries", osp?.metrics?.providers === 2 && osp?.metrics?.countries === "Australia, United States");
+  kvStore.set(SECURITY_KV.source("control_matrix"), JSON.stringify(cm));
+  kvStore.set(SECURITY_KV.source("mfa"), JSON.stringify({ at: "2026-10-08T00:00:00Z", status: "ok", summary: "MFA on", metrics: { mfa_enforced_for_admin: true }, evidence: [{ label: "bad", href: "javascript:alert(1)" }] }));
+  const lit = await buildSecurityDashboard(on, nowAt);
+  check("security: a published control matrix lights its panel up", lit.panels.find((p) => p.key === "control_matrix")!.status === "warn" && lit.panels.find((p) => p.key === "control_matrix")!.rows?.length === 3);
+  check("security: source evidence links are sanitised (no javascript: hrefs)", !JSON.stringify(lit).includes("javascript:"));
+  check("security: parseSourceRecord rejects malformed records", parseSourceRecord("{}") === null && parseSourceRecord("not json") === null && parseSourceRecord(JSON.stringify({ at: "2026-01-01T00:00:00Z", status: "great" })) === null);
+  const hh = assessHeaders(new Headers({ "strict-transport-security": "max-age=31536000; includeSubDomains", "content-security-policy": "default-src 'self'" }));
+  check("security: assessHeaders accepts a 1-year HSTS + enforcing CSP", hh.hsts === true && hh.csp_enforcing === true);
+}
+
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);
 process.exit(fail === 0 ? 0 : 1);

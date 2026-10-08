@@ -93,6 +93,7 @@ import { buildAccountantSchedule, scheduleToCsv, scheduleToXlsx } from "./lib/ac
 import { mytaxWorksheetResponse } from "./lib/mytax-worksheet";
 import { getProgress } from "./lib/progress";
 import { featureOn } from "./lib/features";
+import { handleAdminSecurity } from "./lib/security-dashboard";
 import { latestSyncRuns } from "./lib/bank-sync";
 import { incomeStatementWait } from "./lib/income-statement-wait";
 import { holdingPosition } from "./lib/capital";
@@ -1987,6 +1988,9 @@ export async function handleApi(
   // ── Admin (founder only — cross-tenant) ───────────────────────────────────
   // Every admin route requires the caller's profile to hold the 'admin' role; the cross-tenant
   // reads hit D1 directly (the per-tenant DO is the wrong place for platform aggregates).
+  // Security & compliance dashboard (#636): its own gate — 404 (not 403) for a non-admin.
+  const security = await handleAdminSecurity(req, env, uid, parts);
+  if (security) return security;
   if (resource === "admin") {
     if (!isAdmin(await getProfile(env, uid))) return json({ error: "forbidden" }, 403);
     if (m === "GET" && id === "overview") return json(await platformOverview(env));

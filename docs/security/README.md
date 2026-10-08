@@ -12,6 +12,7 @@ everything else.
 | [cdr-data-environment.md](cdr-data-environment.md) | CDE boundary, data-flow diagram, where CDR data lives, segregation (cl 1.4, 2(e)) |
 | [incident-response-plan.md](incident-response-plan.md) | Severity, lifecycle, Fiskil/OAIC/consumer/ACSC notification, playbooks, tabletop (cl 1.7) |
 | [access-control-standard.md](access-control-standard.md) | MFA, least privilege, JIT admin, quarterly review, joiners/leavers (control requirement 1) |
+| [clerk-production-cutover.md](clerk-production-cutover.md) | Owner runbook: Clerk development → production instance, DNS, keys, admin MFA, test plan, rollback (#638) |
 | [vulnerability-management.md](vulnerability-management.md) | Scanners, patch SLAs, triage, secure SDLC (A7, #640), plus the controls assessment program and independence gap (cl 1.6) |
 | [secrets-and-encryption.md](secrets-and-encryption.md) | QBO token encryption, CDR credential posture, secrets inventory (A4, #637) |
 | [data-handling.md](data-handling.md) | Classification, minimisation, retention, deletion, non-production (control requirement 3) |

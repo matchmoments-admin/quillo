@@ -94,6 +94,7 @@ import { mytaxWorksheetResponse } from "./lib/mytax-worksheet";
 import { getProgress } from "./lib/progress";
 import { featureOn } from "./lib/features";
 import { handleAdminSecurity } from "./lib/security-dashboard";
+import { adminMfaBlock } from "./lib/access-control";
 import { latestSyncRuns } from "./lib/bank-sync";
 import { incomeStatementWait } from "./lib/income-statement-wait";
 import { holdingPosition } from "./lib/capital";
@@ -1988,6 +1989,13 @@ export async function handleApi(
   // ── Admin (founder only — cross-tenant) ───────────────────────────────────
   // Every admin route requires the caller's profile to hold the 'admin' role; the cross-tenant
   // reads hit D1 directly (the per-tenant DO is the wrong place for platform aggregates).
+  // Admin MFA (#638, flag admin_mfa_required): ONE seam in front of every /api/admin/* route, the
+  // security page included. Only an already-verified admin is challenged — a non-admin falls through to
+  // the routes' own 403/404 below, so the MFA rule never reveals that an admin surface exists.
+  if (resource === "admin" && featureOn(env, "admin_mfa_required") && isAdmin(await getProfile(env, uid))) {
+    const mfaBlock = adminMfaBlock(env, user);
+    if (mfaBlock) return mfaBlock;
+  }
   // Security & compliance dashboard (#636): its own gate — 404 (not 403) for a non-admin.
   const security = await handleAdminSecurity(req, env, uid, parts);
   if (security) return security;

@@ -281,6 +281,19 @@ async function signalCredits(env: Env, userId: string, s: NoticedSignal, lists: 
 }
 
 /**
+ * The transaction ids behind a set of signals (re-derived with the SAME triage confirm uses — evidence stores
+ * counts only, never ids). The journey's Review count uses it so a credit an open card already stands for
+ * isn't counted again as an undecided line (#595). Read-only.
+ */
+export async function signalTxnIds(env: Env, userId: string, signals: NoticedSignal[], descriptor: JurisdictionDescriptor = AU_DESCRIPTOR): Promise<string[]> {
+  if (!signals.length) return [];
+  const lists = await listsFor(env, userId, descriptor);
+  const ids = new Set<string>();
+  for (const s of signals) for (const r of await signalCredits(env, userId, s, lists, descriptor)) ids.add(r.id);
+  return [...ids];
+}
+
+/**
  * "Yes" on a signal. Claims the row first (open|dismissed → confirmed, guarded) so a double tap can't apply it
  * twice; a failure part-way restores the prior status so the user can retry. Situation periods are written
  * only when `situation_profile` is ON (the profile's writer and mirrors are that flag's).

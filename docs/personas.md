@@ -289,10 +289,12 @@ It found one bug, fixed with it: open "We noticed" cards were never counted in t
 
 Still open from the findings doc: G7/G8 (sole-trader onboarding, platform statements) and per-person scoping of the
 Div 35 and residency nudges for multi-person tenants. The About-you editor (A2) shipped in #585. Not yet in the
-e2e journey: bank-data minimisation after lodging (A5, #594 open). Known gap the e2e records rather than asserts as
-intended: with `situation_profile` ON a brand-new tenant's Get set up reads "in progress" (1 left), not "not started",
-because `persons.tax_residency` defaults to `AU` and the journey falls back to that column until a residency period
-exists.
+e2e journey: bank-data minimisation after lodging (A5, #594 open). Fixed after the e2e (#595 follow-up): with
+`situation_profile` ON, Get set up counts only the user's own answers — a residency period with source `user` /
+`onboarding` — so a brand-new tenant reads "not started" (the `persons.tax_residency` default of `AU` is not an
+answer; the e2e now asserts it). And Review counts one item per transaction across sources: with `relevance_scan`
+OFF and `wages_payer` ON, a payroll deposit an open "We noticed" card stands for is no longer also counted as an
+undecided line (the e2e's dedupe scenario asserts both sides).
 
 ## How it's wired (for maintainers)
 

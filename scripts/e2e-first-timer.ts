@@ -200,8 +200,9 @@ async function journeyOn() {
   const j0 = await snap();
   check("signup: ensureTenant seats a profile + the self person", !!one(`SELECT 1 AS x FROM profiles WHERE user_id = ?`, u) && !!one(`SELECT 1 AS x FROM persons WHERE id = ?`, me));
   // Connect reads "needs attention" from the start: readiness's nothing_captured BLOCKER points into Connect.
-  check(`signup: no step done; Connect is the thing to do (nothing captured); Review + Lodge not started [${stepLine(j0)}]`,
-    j0.steps.every((s) => s.status !== "done") && steps(j0).connect === "needs_attention" && steps(j0).review === "not_started" && steps(j0).lodge === "not_started" &&
+  // Get set up is NOT started: persons.tax_residency defaults to 'AU', but a default is not the user's answer (#595).
+  check(`signup: no step done; Get set up not started; Connect is the thing to do (nothing captured); Review + Lodge not started [${stepLine(j0)}]`,
+    steps(j0).setup === "not_started" && steps(j0).connect === "needs_attention" && steps(j0).review === "not_started" && steps(j0).lodge === "not_started" &&
     j0.whats_left.some((w) => w.id === "nothing_captured" && w.step === "connect"));
   check("signup: the lodging-year default is the year just ended (FY 2025-26)", j0.lodging_fy === FY);
 
@@ -418,8 +419,32 @@ async function journeyOff(onTotals: { position: number; deductions: number; inco
   check(`OFF: report + readiness byte-identical to the committed baseline — first difference at line ${i + 1}`, false, { expected: exp[i] ?? "(end)", current: cur[i] ?? "(end)" });
 }
 
+// relevance_scan OFF, wages_payer ON (#595): the legacy review queue holds credits too, so a payroll deposit
+// the open "We noticed" card stands for must not ALSO count as an undecided line — one item per transaction.
+async function reviewDedupe() {
+  console.log("\nfirst-timer e2e — relevance_scan OFF, wages_payer ON (Review dedupe)\n");
+  const u = "ftE2EDedupe";
+  const env = mkEnv([...PROD_FEATURES.filter((f) => !JOURNEY_FLAGS.includes(f)), ...JOURNEY_FLAGS.filter((f) => f !== "relevance_scan")]);
+  await ensureTenant(env, u);
+  await importStatements(env, u);
+  const open = await listNoticed(env, u, FY);
+  const reviewCount = async () => (await readJourney(env, u, FY, deps)).steps.find((s) => s.key === "review")!.count;
+  const settled = await reviewCount();
+  // The categoriser left the payroll deposits for review (low confidence): they join the legacy queue.
+  run(`UPDATE transactions SET status = 'needs_review', confidence = 0.5 WHERE user_id = ? AND direction = 'credit' AND status <> 'ignored'`, u);
+  const credits = one<{ n: number }>(`SELECT COUNT(*) AS n FROM transactions WHERE user_id = ? AND direction = 'credit' AND status = 'needs_review'`, u).n;
+  const unsure = await reviewCount();
+  check(`dedupe: the open payroll card covers its ${credits} deposits — Review count unchanged (${settled} → ${unsure}), not +${credits}`,
+    open.length === 1 && open[0]!.kind === "payroll" && credits === 2 && unsure === settled, { open: open.length, credits, settled, unsure });
+  // Once the card is answered its deposits are ordinary lines again: each one counts (once).
+  run(`UPDATE noticed_signals SET status = 'dismissed' WHERE user_id = ?`, u);
+  const after = await reviewCount();
+  check(`dedupe: card dismissed → the deposits count as lines (${settled} - 1 card + ${credits} lines = ${after})`, after === settled - 1 + credits, { settled, after });
+}
+
 async function main() {
   const on = await journeyOn();
+  await reviewDedupe();
   await journeyOff(on);
   console.log(`\n=== e2e first-timer: ${pass} passed, ${fail} failed ===`);
   if (fail > 0) process.exit(1);

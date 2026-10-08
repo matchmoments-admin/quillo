@@ -31,11 +31,9 @@ jobs:
       # Blocking: these are already true in prod, so a failure is a regression.
       - name: Security headers — baseline (blocking)
         run: node scripts/check-security-headers.mjs "$TARGET/" --group=baseline
-      # INFORMATIONAL until #634 (A1 security headers) ships: HSTS, an enforcing CSP and
-      # enforced frame-ancestors are expected to FAIL today (CSP is report-only, no HSTS).
-      # When #634 is live, delete `continue-on-error` so this becomes a gate.
-      - name: Security headers — pending #634 (informational)
-        continue-on-error: true
+      # Blocking since #634 shipped (deployed 2026-10-08, version 360d8a04): HSTS, an enforcing
+      # CSP and blocked framing are live in prod, so a failure here is a regression.
+      - name: Security headers — HSTS / enforcing CSP / framing (blocking)
         run: node scripts/check-security-headers.mjs "$TARGET/" --group=pending
 
   zap:

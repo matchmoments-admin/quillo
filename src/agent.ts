@@ -230,6 +230,29 @@ function thresholdForFy(fy: string): FyThreshold | undefined {
 // applyUserRules + the direction guard live in ./lib/rules (pure → unit-tested).
 
 export class TaxAgent extends Agent<Env> {
+  // ── Scheduling needs a named instance (agents SDK ≥0.5, #640 follow-up) ─────────────────────────────
+  // The SDK's schedule() and alarm() read `this.name` (observability events, onStart's MCP restore), and
+  // PartyServer only sets it via getAgentByName()/setName(). We address tenants with plain
+  // idFromName(userId) + native RPC (stubFor in index.ts), so the name is never set by the SDK and
+  // schedule() would throw. Name the instance after its tenant before the first schedule — only after
+  // proving this DO really IS that tenant's (ctx.id must equal idFromName(userId)), so a stray userId can
+  // never mislabel another tenant's instance. setName persists the name, so the later alarm hydrates it.
+  private async ensureNamedFor(userId: string): Promise<void> {
+    try {
+      if (this.name === userId) return;
+    } catch {
+      /* unnamed yet — fall through */
+    }
+    if (!this.ctx.id.equals(this.env.TaxAgent.idFromName(userId))) {
+      throw new Error("tenant mismatch: refusing to name this agent instance");
+    }
+    await this.setName(userId); // throws if already named differently
+  }
+  private async scheduleFor<P>(userId: string, delaySeconds: number, callback: keyof this, payload: P): Promise<void> {
+    await this.ensureNamedFor(userId);
+    await this.schedule(delaySeconds, callback, payload);
+  }
+
   // ── Per-tenant write lock (#577, closes #571's deferred concurrency note) ──────────────────────────────
   // One DO per tenant, but D1 awaits interleave concurrent RPCs: two simultaneous situation-period writes could
   // both pass the overlap check, and a "We noticed" confirm racing a period edit could do the same. Every
@@ -2117,7 +2140,7 @@ export class TaxAgent extends Agent<Env> {
     await this.audit(userId, "bank_sync", JSON.stringify({ from, to, fetched: res.fetched, imported: res.imported, runs, errors: errors.length, in_progress: inProgress, closed_stale: closedStale }));
     // Scheduled LAST, so the continuation can never interleave with this request's own writes.
     if (res.pending.length) {
-      await this.schedule(1, "bankSyncContinue", { userId, runIds: res.pending.map((r) => r.id), hop: 1 });
+      await this.scheduleFor(userId, 1, "bankSyncContinue", { userId, runIds: res.pending.map((r) => r.id), hop: 1 });
     }
     return { imported: res.imported, skipped: res.skipped, fetched: res.fetched, runs, errors, in_progress: inProgress };
   }
@@ -2175,7 +2198,7 @@ export class TaxAgent extends Agent<Env> {
 
       const res = await this.bankSyncAdvance(userId, runs, PAGES_PER_STEP);
       if (res.pending.length && payload.hop < BANK_SYNC_MAX_HOPS) {
-        await this.schedule(1, "bankSyncContinue", { userId, runIds: res.pending.map((r) => r.id), hop: payload.hop + 1 });
+        await this.scheduleFor(userId, 1, "bankSyncContinue", { userId, runIds: res.pending.map((r) => r.id), hop: payload.hop + 1 });
         return;
       }
       // Backstop only — MAX_PAGES_PER_RUN normally ends a run long before the hop cap.
@@ -2185,7 +2208,7 @@ export class TaxAgent extends Agent<Env> {
       await this.audit(userId, "bank_sync_continued", JSON.stringify({ hops: payload.hop, errors: res.errors.length }));
       // The post-import pipeline gets its OWN invocation (fresh subrequest budget, and short enough
       // for the SDK running due callbacks inside blockConcurrencyWhile on a cold start).
-      await this.schedule(1, "bankSyncFinalise", { userId });
+      await this.scheduleFor(userId, 1, "bankSyncFinalise", { userId });
     } catch (e) {
       const msg = (e as Error).message || "sync continuation failed";
       for (const id of runIds) {
@@ -2197,7 +2220,7 @@ export class TaxAgent extends Agent<Env> {
       await this.audit(userId, "bank_sync_continue_failed", JSON.stringify({ error: msg })).catch(() => {});
       // Lines earlier hops wrote still need the post-import pipeline; failed runs stay eligible
       // (post_import_at IS NULL), so this — or the next sync — picks them up.
-      await this.schedule(1, "bankSyncFinalise", { userId }).catch(() => {});
+      await this.scheduleFor(userId, 1, "bankSyncFinalise", { userId }).catch(() => {});
     }
   }
 

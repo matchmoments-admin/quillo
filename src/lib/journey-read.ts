@@ -16,12 +16,12 @@ import { resolveRulePack } from "./report";
 import { reconcileProposals } from "./queries";
 import { reconcileConfigFromPack } from "./reconcile-proposer";
 import { recordsView } from "./records";
-import { listNoticed } from "./noticed-signals";
+import { listNoticed, signalTxnIds } from "./noticed-signals";
 import { growPayload, type GrowPayload } from "./grow";
 import { isPartner } from "./roles";
 import { lodgingFy } from "./lodging-year";
 import { computeFilingReadiness, type FilingReadinessDeps } from "./filing-readiness";
-import { assessJourney, coldJourney, journeyLodgedFys, journeySignals, type Journey } from "./journey";
+import { assessJourney, coldJourney, journeyLodgedFys, journeySignals, undecidedAmong, type Journey } from "./journey";
 
 /**
  * One composite read for the new app shell + Home: readiness (unaudited — see computeFilingReadiness),
@@ -41,7 +41,14 @@ export async function readJourney(env: Env, userId: string, startYear: number, d
   // A3 (#577) + spec §0: the open "We noticed…" cards (payroll / platform / government / interest / foreign) are
   // Review cards, so they count in the Review step. Without this the step could read "done" while a payroll card
   // still waited for its answer (#595). wages_payer OFF ⇒ no read, count stays 0.
-  if (featureOn(env, "wages_payer")) signals.bring_in.open_signals = (await listNoticed(env, userId, startYear)).length;
+  // One item per transaction across sources: a credit an open card stands for is not also an undecided line
+  // (with relevance_scan OFF the legacy review queue holds credits too, so a payroll deposit counted twice).
+  if (featureOn(env, "wages_payer")) {
+    const open = await listNoticed(env, userId, startYear);
+    signals.bring_in.open_signals = open.length;
+    const covered = await undecidedAmong(env, userId, startYear, await signalTxnIds(env, userId, open, jur), jur);
+    signals.claims.undecided = Math.max(0, signals.claims.undecided - covered);
+  }
   if (featureOn(env, "reconcile_proposals")) {
     const cfg = reconcileConfigFromPack(pack);
     signals.check.proposals = (await reconcileProposals(env, userId, startYear, cfg, jur)).proposals.length;

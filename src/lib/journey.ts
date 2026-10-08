@@ -213,6 +213,37 @@ export async function journeyLodgedFys(env: Env, userId: string): Promise<number
 
 // ── D1 signal gathering ────────────────────────────────────────────────────────────────────────────
 
+/** Situation-period sources that are the user's own answer (0078: user | onboarding | noticed). */
+const USER_ANSWER_SOURCES = new Set(["user", "onboarding"]);
+
+/** The "undecided claim line" predicate: A4's relevance lists with relevance_scan ON, else the legacy review queue. */
+function undecidedWhere(env: Env): string {
+  return featureOn(env, "relevance_scan")
+    ? `kind = 'bank_line' AND status NOT IN ('duplicate','ignored')
+         AND relevance IN ('relevant','worth_a_look')
+         AND COALESCE(deductibility,'undetermined') NOT IN ('confirmed_deductible','confirmed_not')`
+    : NEEDS_REVIEW;
+}
+
+/**
+ * How many of `txnIds` (this FY) journeySignals counted as undecided lines. The composer subtracts these when
+ * an open "We noticed" card already stands for them, so one payroll deposit is never two Review items (#595).
+ */
+export async function undecidedAmong(env: Env, userId: string, startYear: number, txnIds: string[], descriptor: JurisdictionDescriptor = AU_DESCRIPTOR): Promise<number> {
+  if (!txnIds.length) return 0;
+  const { start, end } = fyBounds(startYear, descriptor);
+  let total = 0;
+  for (let i = 0; i < txnIds.length; i += 90) { // D1 caps bound parameters at 100 per statement
+    const chunk = txnIds.slice(i, i + 90);
+    const r = await env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM transactions WHERE user_id = ? AND txn_date >= ? AND txn_date <= ? AND ${undecidedWhere(env)}
+         AND id IN (${chunk.map(() => "?").join(",")})`,
+    ).bind(userId, start, end, ...chunk).first<{ n: number }>();
+    total += r?.n ?? 0;
+  }
+  return total;
+}
+
 /**
  * Count the per-step signals for one FY. Read-only; called by the DO's journey().
  * `situation` is the tenant's getSituation() (self person first).
@@ -238,8 +269,11 @@ export async function journeySignals(
     // Only periods overlapping this FY (open-ended dates count as unbounded on that side).
     const periods = (await listSituationPeriods(env, userId, self.id)).filter((p) => (!p.starts_on || p.starts_on <= end) && (!p.ends_on || p.ends_on >= start));
     const unsure = situationFacts().residency?.unsure_value ?? null;
-    const res = periods.filter((p) => p.fact === "residency");
-    if (res.length) residencyAnswered = res.every((p) => p.value != null && p.value !== unsure);
+    // Only the user's own answer counts (#595): persons.tax_residency defaults to 'AU' on every new person,
+    // so falling back to it made a brand-new tenant's Get set up read "in progress" before any question
+    // was answered. A residency period the user (or first run) wrote is the answer; a default is not.
+    const res = periods.filter((p) => p.fact === "residency" && USER_ANSWER_SOURCES.has(p.source));
+    residencyAnswered = res.length > 0 && res.every((p) => p.value != null && p.value !== unsure);
     occupationSet = occupationSet || periods.some((p) => p.fact === "employment");
   }
 
@@ -253,13 +287,7 @@ export async function journeySignals(
   // Claims (spec: done = no relevant / worth_a_look line left undecided for the FY). With A4's
   // relevance_scan ON that is the scan's lists (same line filter as relevanceView) minus lines the user
   // has confirmed either way; OFF, the FY's legacy review queue stands in.
-  const undecided = featureOn(env, "relevance_scan")
-    ? await n(`SELECT COUNT(*) AS n FROM transactions
-                WHERE user_id = ? AND kind = 'bank_line' AND status NOT IN ('duplicate','ignored')
-                  AND relevance IN ('relevant','worth_a_look')
-                  AND COALESCE(deductibility,'undetermined') NOT IN ('confirmed_deductible','confirmed_not')
-                  AND txn_date >= ? AND txn_date <= ?`, userId, start, end)
-    : await n(`SELECT COUNT(*) AS n FROM transactions WHERE user_id = ? AND txn_date >= ? AND txn_date <= ? AND ${NEEDS_REVIEW}`, userId, start, end);
+  const undecided = await n(`SELECT COUNT(*) AS n FROM transactions WHERE user_id = ? AND txn_date >= ? AND txn_date <= ? AND ${undecidedWhere(env)}`, userId, start, end);
   // Lodge in myTax: a sign-off row means the user reached the hand-off; #572's lodged rule means the year is lodged.
   // lodged_at (0087) is only read with situation_profile ON (fy-signoff.ts: gating is the caller's job);
   // OFF, only a NOA close counts — the same rule minus the user's own mark, which OFF can't record.

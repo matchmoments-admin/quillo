@@ -17,7 +17,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          # 22: promptfoo >= 0.124 (bumped in #640 for audit fixes) requires node >= 22.22.
+          node-version: "22"
           cache: "npm"
       - run: npm ci
       - name: Run promptfoo eval

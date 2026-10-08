@@ -6114,6 +6114,27 @@ console.log("security & compliance dashboard (#636)");
   check("security: control matrix table parses ✅/🟡/⬜ into ok/warn/todo", cm?.rows?.map((r) => r.status).join() === "ok,warn,todo" && cm?.metrics?.done === 1 && cm?.rows?.[0]?.label === "Governance");
   const osp = ospRegisterRecord(`| Service | Country | Role |\n|---|---|---|\n| Cloudflare | United States | hosting |\n| AWS Bedrock | Australia | inference |\n`, "2026-10-08T00:00:00Z");
   check("security: OSP register parses providers + countries", osp?.metrics?.providers === 2 && osp?.metrics?.countries === "Australia, United States");
+  // The REAL security pack (#642) must stay parseable by the dashboard: every Schedule 2 row lands, each
+  // with a unique id, and a status cell's leading glyph is what counts (a "✅" inside a 🟡 cell would
+  // silently over-report met controls to the dashboard Fiskil sees).
+  {
+    const { readFileSync } = await import("node:fs");
+    const realMd = readFileSync("docs/security/control-matrix.md", "utf8");
+    const real = controlMatrixRecord(realMd, "2026-10-08T00:00:00Z");
+    const ids = real?.rows?.map((r) => r.id) ?? [];
+    const sch2 = ["1.3(1)", "1.4(1)", "1.5(1)(a)", "1.6(4)", "1.7(3)(c)", "1(a)", "1(i)", "2(e)", "3(c)", "4(c)", "5(c)", "6(c)"];
+    check("security pack: control matrix parses with Schedule 2 Part 1 + Part 2 rows, unique ids", (real?.rows?.length ?? 0) >= 47 && new Set(ids).size === ids.length && sch2.every((id) => ids.includes(id)));
+    const lead = new Map<string, string>();
+    for (const line of realMd.split("\n")) {
+      const c = line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((x) => x.trim());
+      const id = c[0]!.replace(/[*_`]/g, "").slice(0, 40);
+      if (c.length === 6 && ids.includes(id)) lead.set(id, c[4]!.startsWith("✅") ? "ok" : c[4]!.startsWith("🟡") ? "warn" : "todo");
+    }
+    check("security pack: every status cell parses as its leading glyph", (real?.rows ?? []).every((r) => lead.get(r.id) === r.status));
+    const realOsp = ospRegisterRecord(readFileSync("docs/security/osp-register.md", "utf8"), "2026-10-08T00:00:00Z");
+    const ospIds = (realOsp?.rows ?? []).map((r) => r.id).join(" ");
+    check("security pack: OSP register parses (Service | Country) incl. Cloudflare, AWS Bedrock, Fiskil", (realOsp?.rows?.length ?? 0) >= 15 && /Cloudflare D1/.test(ospIds) && /AWS Bedrock/.test(ospIds) && /Fiskil/.test(ospIds) && String(realOsp?.metrics?.countries).includes("Australia"));
+  }
   kvStore.set(SECURITY_KV.source("control_matrix"), JSON.stringify(cm));
   kvStore.set(SECURITY_KV.source("mfa"), JSON.stringify({ at: "2026-10-08T00:00:00Z", status: "ok", summary: "MFA on", metrics: { mfa_enforced_for_admin: true }, evidence: [{ label: "bad", href: "javascript:alert(1)" }] }));
   const lit = await buildSecurityDashboard(on, nowAt);

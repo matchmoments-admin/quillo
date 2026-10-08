@@ -20,6 +20,7 @@ import { Income } from "../../pages/Income";
 import { Accounts } from "../../pages/Accounts";
 import { Badge, ErrorState, FtButton, FtCard, FtLink, GeneralInfoNote, PreflightSteps, Skeleton, YoullNeed, cx } from "../ft";
 import { INPUT_CLASS } from "../ui";
+import { CdrPolicyNote } from "../CdrPolicyLink";
 import type { Account, StatementInfo } from "../../types";
 import {
   FIRST_RUN_WAIT_MS,
@@ -102,6 +103,7 @@ export function ConnectPage() {
               </FtButton>
             )}
           </div>
+          {bankOn && <CdrPolicyNote />}
           {showUpload && <StatementUpload />}
         </FtCard>
       </div>

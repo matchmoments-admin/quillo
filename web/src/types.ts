@@ -1572,3 +1572,24 @@ export interface RecordsView {
   group_labels: Record<string, string>;
   disclaimer: string;
 }
+
+// Security & compliance dashboard (#636) — mirrors src/lib/security-dashboard.ts. Counts/ids/timestamps only.
+export type SecurityPanelStatus = "ok" | "warn" | "fail" | "not_set_up" | "not_checked";
+export interface SecurityPanel {
+  key: string;
+  title: string;
+  status: SecurityPanelStatus;
+  checked_at: string | null;
+  summary: string;
+  metrics: Record<string, number | string | boolean | null>;
+  rows?: { id: string; label: string; status: "ok" | "warn" | "todo"; note?: string }[];
+  evidence: { label: string; href: string }[];
+  pending_ticket?: number;
+}
+export interface SecurityDashboard {
+  generated_at: string;
+  monitoring_enabled: boolean;
+  last_check_at: string | null;
+  last_check_trigger: "manual" | "schedule" | null;
+  panels: SecurityPanel[];
+}

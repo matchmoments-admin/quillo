@@ -1,6 +1,7 @@
 import type { CapitalImportParse, Txn, TxnDetail, Situation, SituationDraft, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse, UsageData, StatementInfo, IncomeRow, DocRow, AssetRow, ScheduleRow, ChecklistItem, ClaimSuggestion, FilingReadiness, ReviewSummary, Progress, AdminTenant, AdminOverview, AdminSpend, AiEdit, ClaimReview, OccupationRulesDraft, OccupationRuleCandidate, NoaCarryover, MovementSweep, BatchResult, ClarifyQuestion, ClarifyAnswer, ClaimMatch, AccountantSummary, SuggestedDeduction, WorkUse, CarUse, CarUseRates, ScanResult, CapitalLoss, OpeningDepreciation, AttributionState, AttributionInput, AttributionRow, IncomeActivity, PropertyOwner, EntityRole, CgtAssetRow, CgtEventRow, EssGrantRow, VehicleLogbookRow, TrustDistributionRow, SmsfMemberRow, SuperContributionRow, BasPeriodRow, PaygInstalmentRow, AskAnswer, SavingsData, PhiOverview, PhiInsurerOption, PhiProvidersResult, PhiScanResult, BillingOverview, PartnerPortal, AmmaComponents, PartnershipDistributionRow, CostBaseElements, BankConnection, BankSyncRun, IncomeStatementWait, SituationPeriod, SituationPeriodWrite, BankHistoryEvent, BankDisconnectResult, FyLodged, NoticedSignal, NoticedConfirmResult } from "./types";
 import type { GrowLayerKey, Journey, MytaxWorksheet, RecordsView, ReconcileProposals, ReconcileLinked } from "./types";
 import type { AskContext, EducationData, RelevanceView, RelevanceConfirmResult } from "./types";
+import type { SecurityDashboard } from "./types";
 
 // Clerk session token getter, wired from <TokenBridge> inside ClerkProvider (main.tsx).
 // Clerk tokens are short-lived, so we fetch a fresh one per request (getToken caches/refreshes).
@@ -580,6 +581,9 @@ export const api = {
   adminOverview: () => get<AdminOverview>("/api/admin/overview"),
   adminTenants: () => get<{ tenants: AdminTenant[] }>("/api/admin/tenants").then((r) => r.tenants),
   adminSpend: () => get<AdminSpend>("/api/admin/spend"),
+  // Security & compliance (#636): 404 for non-admins; the check run needs the security_monitoring flag.
+  adminSecurity: () => get<SecurityDashboard>("/api/admin/security"),
+  runSecurityChecks: () => post<SecurityDashboard>("/api/admin/security/check"),
   setTenantRoles: (userId: string, roles: string[]) => send<{ ok: boolean; roles: string[] }>("PUT", `/api/admin/tenants/${encodeURIComponent(userId)}/roles`, { roles }),
   // Partner portal (role 'partner') — the caller's own org only.
   partnerOverview: () => get<PartnerPortal>("/api/partner/overview"),

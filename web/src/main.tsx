@@ -18,6 +18,7 @@ import { Extras } from "./pages/Extras";
 import { Billing } from "./pages/Billing";
 import { Filing } from "./pages/Filing";
 import { Admin } from "./pages/Admin";
+import { SecurityCompliance } from "./pages/SecurityCompliance";
 import { Partner } from "./pages/Partner";
 import { Accounts } from "./pages/Accounts";
 import { Reconcile } from "./pages/Reconcile";
@@ -140,6 +141,7 @@ const router = createBrowserRouter([
       { path: "billing", element: <Billing /> },
       { path: "filing", element: <FtRedirect><Filing /></FtRedirect> },
       { path: "admin", element: <Admin /> },
+      { path: "admin/security", element: <SecurityCompliance /> },
       { path: "partner", element: <Partner /> },
       // Journey steps — four since the design review (spec §0, #585). OFF ⇒ each redirects to the legacy
       // page it replaces, except /review, which IS the legacy "By label" page when OFF (rendered in place).

@@ -109,6 +109,14 @@ export interface Env {
   MAPS_EMBED_KEY?: string;
   // (GEOAPIFY_KEY — the original Geoapify-backed finder — was removed in #637; nothing reads it.
   // Delete the prod secret with `npx wrangler secret delete GEOAPIFY_KEY`.)
+  // Optional (#635 A2 / #636 A3): the access-restricted R2 bucket holding daily D1 exports. The
+  // Security & compliance page's backup check lists it for the newest export (key, size, age) — it
+  // never reads an object's body. Absent ⇒ the Backups panel says "Not yet set up".
+  BACKUPS?: R2Bucket;
+  // Optional (#636 A3): a fine-grained, READ-ONLY GitHub token (security events + Dependabot alerts +
+  // secret-scanning alerts on matchmoments-admin/quillo) for the dashboard's scanning-alert counts.
+  // Absent ⇒ only the public Actions run status is read and the alert counts show "needs token".
+  GITHUB_TOKEN?: string;
 }
 
 /**

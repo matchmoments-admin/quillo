@@ -14,6 +14,7 @@ import { handleWaitlist } from "./marketing/waitlist";
 import { spentTodayGlobalCents } from "./lib/usage";
 import { featureOn } from "./lib/features";
 import { handleBeforeYouStart } from "./lib/before-you-start";
+import { runScheduledSecurityChecks } from "./lib/security-dashboard";
 
 // The DO class must be exported from the Worker's main module for the binding.
 export { TaxAgent } from "./agent";
@@ -342,7 +343,7 @@ export default {
   // Cron — two schedules (see wrangler.toml):
   //  - frequent (*/10): poll + apply finished async categorisation batches.
   //  - weekly (Mon 08:00): proactive suggestions for every tenant.
-  async scheduled(evt: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
+  async scheduled(evt: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     if (evt.cron === "0 8 * * 1") {
       // Current AU FY start year (Jul–Jun) for the depreciation roll-forward.
       const now = new Date();
@@ -394,6 +395,14 @@ export default {
       }
       return;
     }
+    // Security & compliance checks (#636): flag-gated — OFF ⇒ returns before touching KV or the network.
+    // ON ⇒ runs at most once a day (SCHEDULED_INTERVAL_MS), never every tick. Isolated so a failing
+    // probe can't stop the batch drain below.
+    // waitUntil: the probes (≤8s each) run alongside the batch drain instead of delaying it.
+    ctx.waitUntil(
+      runScheduledSecurityChecks(env).catch((e) => console.error(`security checks failed: ${(e as Error).name}`)),
+    );
+
     // Frequent: only users with a pending batch job (cheap query, no per-tenant fan-out). Draining
     // in-flight batches is safe even when over budget — the cost was already incurred at submission;
     // polling/applying just accounts for it and unblocks the user (so it runs unconditionally).

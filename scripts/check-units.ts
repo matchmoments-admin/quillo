@@ -6164,7 +6164,13 @@ console.log("security & compliance dashboard (#636)");
     !ro.get("script-src")?.includes("'unsafe-inline'") && ro.get("script-src")?.includes(LANDING_INLINE_SCRIPT_HASH) === true &&
     enf.get("script-src")?.includes("'unsafe-inline'") === true);
   const landingHtml = await marketingResponse().text();
-  const inline = [...landingHtml.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script\s*>/gi)].map((m) => `'sha256-${createHash("sha256").update(m[1]!).digest("base64")}'`);
+  // Plain string scan (not an HTML regex): the page is our own static template with one `<script>`.
+  const inline: string[] = [];
+  for (let at = landingHtml.indexOf("<script>"); at !== -1; at = landingHtml.indexOf("<script>", at + 1)) {
+    const end = landingHtml.indexOf("</script>", at);
+    inline.push(`'sha256-${createHash("sha256").update(landingHtml.slice(at + "<script>".length, end)).digest("base64")}'`);
+  }
+  check("landing page has no <script> variant the scan above would miss", (landingHtml.match(/<script/gi) ?? []).length === inline.length);
   check("landing inline <script> hash matches LANDING_INLINE_SCRIPT_HASH (edit the script ⇒ update the hash)",
     inline.length === 1 && inline[0] === LANDING_INLINE_SCRIPT_HASH);
   check("web/public/_headers is generated from the module (no drift between Worker + asset-served headers)",

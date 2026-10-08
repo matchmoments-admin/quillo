@@ -24,7 +24,7 @@ jobs:
       # Node 22, NOT 20: check-personas.ts, check-au-snapshot.ts and e2e-journey.ts import
       # `node:sqlite`, which does not exist before 22.5. On 20 the whole suite dies at the first
       # persona with ERR_UNKNOWN_BUILTIN_MODULE. Keep in step with `engines` in package.json.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: "22"
           cache: npm
@@ -47,7 +47,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: "22"
       - name: npm audit — server runtime deps (blocking)

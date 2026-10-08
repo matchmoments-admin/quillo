@@ -261,7 +261,9 @@ export async function extractStatement(
   const parsed = StatementToolInput.safeParse(toolUse.input);
   if (!parsed.success) {
     // Log WHY so a future mismatch is diagnosable from Workers Logs (don't guess again).
-    console.error(`statement schema mismatch: ${JSON.stringify(parsed.error.issues).slice(0, 600)}`);
+    // Path + code only — a Zod issue can echo the offending VALUE (a bank-line description), which is
+    // personal information and must not reach Workers Logs (#634 log hygiene).
+    console.error(`statement schema mismatch: ${JSON.stringify(parsed.error.issues.map((i) => ({ path: i.path, code: i.code }))).slice(0, 600)}`);
     throw new Error("couldn't read the transaction table from this PDF — the layout wasn't recognised; try a CSV export instead");
   }
   const d = parsed.data;

@@ -15,45 +15,10 @@ import { spentTodayGlobalCents } from "./lib/usage";
 import { featureOn } from "./lib/features";
 import { handleBeforeYouStart } from "./lib/before-you-start";
 import { runScheduledSecurityChecks } from "./lib/security-dashboard";
+import { withSecurityHeaders, summariseCspReport, logTag } from "./lib/security-headers";
 
 // The DO class must be exported from the Worker's main module for the binding.
 export { TaxAgent } from "./agent";
-
-// Content-Security-Policy for the SPA shell. Shipped REPORT-ONLY first: an enforcing
-// `connect-src` mistake would lock every user out of Clerk auth, and the local runtime is
-// deploy-only (macOS 12.6 can't run workerd) so we can't validate the allowlist before prod.
-// Report-Only never blocks — it only POSTs violations to /csp-report — so it is safe to ship and
-// gives us server-side visibility of any unexpected outbound call (the supply-chain concern behind
-// adopting @assistant-ui/react). Flip to enforcing (`Content-Security-Policy`) in a fast-follow once
-// prod reports confirm zero false positives. Allowlist = self + Google Fonts + Clerk; assistant-ui
-// under useLocalRuntime needs nothing beyond 'self' (its optional cloud SDK is never constructed).
-const CSP_DIRECTIVES = [
-  "default-src 'self'",
-  "base-uri 'self'",
-  "object-src 'none'",
-  "frame-ancestors 'self'",
-  "script-src 'self' 'unsafe-inline' https://*.clerk.accounts.dev https://*.clerk.com https://challenges.cloudflare.com",
-  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-  "font-src 'self' https://fonts.gstatic.com",
-  "img-src 'self' data: blob: https://*.clerk.com https://img.clerk.com",
-  "connect-src 'self' https://*.clerk.accounts.dev https://*.clerk.com",
-  "worker-src 'self' blob:",
-  "frame-src 'self' https://*.clerk.com https://challenges.cloudflare.com https://www.google.com",
-  "form-action 'self'",
-  "report-uri /csp-report",
-].join("; ");
-
-// Attach the Report-Only CSP (+ a couple of cheap always-safe headers) to the SPA's HTML shell only.
-// Hashed JS/CSS/font assets don't need it and we must not disturb their caching headers.
-function withSecurityHeaders(res: Response): Response {
-  const ct = res.headers.get("content-type") ?? "";
-  if (!ct.includes("text/html")) return res;
-  const h = new Headers(res.headers);
-  h.set("Content-Security-Policy-Report-Only", CSP_DIRECTIVES);
-  h.set("X-Content-Type-Options", "nosniff");
-  h.set("Referrer-Policy", "strict-origin-when-cross-origin");
-  return new Response(res.body, { status: res.status, statusText: res.statusText, headers: h });
-}
 
 /**
  * Run a one-time, KV-guarded backfill at most `maxAttempts` times, claiming the attempt BEFORE the
@@ -103,7 +68,7 @@ async function runPooled<T>(items: T[], concurrency: number, fn: (item: T) => Pr
   await Promise.all(workers);
 }
 
-export default {
+const handler = {
   async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(req.url);
 
@@ -114,11 +79,13 @@ export default {
     // CSP violation sink (public — browsers POST reports with no auth header, so this must sit
     // before the /api Clerk gate). We only log: a violation here means either a misconfigured
     // allowlist (tighten the policy) or an unexpected outbound call from a bundled dep (investigate).
-    // Bounded body read so a spammed report can't be a memory amplifier.
+    // Bounded body read so a spammed report can't be a memory amplifier. Logs ONLY the directive +
+    // the blocked ORIGIN (or keyword) — never the raw report, whose document-uri / blocked-uri /
+    // script-sample carry full URLs, query strings and page content (#634 log hygiene).
     if (url.pathname === "/csp-report" && req.method === "POST") {
       try {
-        const raw = (await req.text()).slice(0, 4096);
-        console.warn(`csp-report: ${raw}`);
+        const raw = (await req.text()).slice(0, 8192);
+        for (const line of summariseCspReport(raw)) console.warn(`csp-report: ${line}`);
       } catch {
         /* ignore malformed reports */
       }
@@ -314,7 +281,7 @@ export default {
     // Static assets / SPA. Now that "/" is in run_worker_first, the Worker runs for
     // the app host's "/" too, so it must hand back to the assets binding (which honours
     // the single-page-application fallback to index.html).
-    if (env.ASSETS) return withSecurityHeaders(await env.ASSETS.fetch(req));
+    if (env.ASSETS) return env.ASSETS.fetch(req); // security headers added by the default-export wrapper
     return new Response("not found", { status: 404 });
   },
 
@@ -324,7 +291,7 @@ export default {
     const parsed = await parseEmail(message);
     const userId = await userIdFromLocalpart(env, parsed.localpart);
     if (!userId) {
-      console.warn(`email to unknown mailbox: ${parsed.localpart}`);
+      console.warn(`email to unknown mailbox: tag=${await logTag(parsed.localpart)}`); // never the address itself
       return; // unknown recipient — drop silently
     }
 
@@ -467,5 +434,15 @@ export default {
         console.error(`statement repair failed for ${t.user_id}: ${(e as Error).message}`);
       }
     }
+  },
+} satisfies ExportedHandler<Env>;
+
+// Every Worker response (API JSON, marketing/legal HTML, redirects, the SPA shell) gets the security
+// headers — HSTS, nosniff, Referrer-Policy, X-Frame-Options, Permissions-Policy, and the enforcing CSP
+// on HTML (src/lib/security-headers.ts, #634). Asset-only paths get the same set from web/public/_headers.
+export default {
+  ...handler,
+  async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    return withSecurityHeaders(await handler.fetch(req, env, ctx));
   },
 } satisfies ExportedHandler<Env>;

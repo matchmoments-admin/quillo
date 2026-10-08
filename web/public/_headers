@@ -1,0 +1,10 @@
+# GENERATED from src/lib/security-headers.ts (renderHeadersFile) — do not edit by hand.
+# scripts/check-units.ts fails if this file drifts from the module.
+/*
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  X-Frame-Options: DENY
+  Permissions-Policy: camera=(), microphone=(), geolocation=(self), payment=(), usb=()
+  Content-Security-Policy: default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'unsafe-inline' https://*.clerk.accounts.dev https://*.clerk.com https://*.quillo.au https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: https://img.clerk.com https://*.clerk.accounts.dev https://*.clerk.com https://*.quillo.au https://images.unsplash.com; connect-src 'self' https://*.clerk.accounts.dev https://*.clerk.com https://*.quillo.au https://clerk-telemetry.com; worker-src 'self' blob:; frame-src 'self' https://*.clerk.accounts.dev https://*.clerk.com https://*.quillo.au https://challenges.cloudflare.com https://www.google.com; form-action 'self'; report-uri /csp-report
+  Content-Security-Policy-Report-Only: default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'sha256-8woiXogcaygrxb6TawRP1g4tS7dJcuo1UCzSy8DZtHQ=' https://*.clerk.accounts.dev https://*.clerk.com https://*.quillo.au https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: https://img.clerk.com https://*.clerk.accounts.dev https://*.clerk.com https://*.quillo.au https://images.unsplash.com; connect-src 'self' https://*.clerk.accounts.dev https://*.clerk.com https://*.quillo.au https://clerk-telemetry.com; worker-src 'self' blob:; frame-src 'self' https://*.clerk.accounts.dev https://*.clerk.com https://*.quillo.au https://challenges.cloudflare.com https://www.google.com; form-action 'self'; report-uri /csp-report

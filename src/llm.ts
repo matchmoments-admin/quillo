@@ -256,7 +256,11 @@ export async function getLLM(
         const signed = await signBedrockInvoke({ region, accessKeyId, secretAccessKey, modelId, body });
         const res = await fetch(signed.url, { method: "POST", headers: signed.headers, body: signed.body });
         if (!res.ok) {
-          throw new Error(`Bedrock InvokeModel ${res.status}: ${await res.text()}`);
+          // Error type + a capped message only — this error reaches Workers Logs via the api/cron error
+          // handlers, and a full Bedrock body is not something to log verbatim (#634 log hygiene).
+          const errType = res.headers.get("x-amzn-ErrorType") ?? "unknown";
+          const errMsg = await res.json().then((j) => { const m = (j as { message?: unknown } | null)?.message; return typeof m === "string" ? m.slice(0, 160) : ""; }, () => "");
+          throw new Error(`Bedrock InvokeModel ${res.status} ${errType}: ${errMsg}`);
         }
         const msg = (await res.json()) as Anthropic.Message;
         if (ctx?.userId && msg.usage) {

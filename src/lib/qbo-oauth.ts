@@ -105,7 +105,9 @@ export async function handleCallback(env: Env, url: URL, origin: string): Promis
   if (!res.ok) {
     // Capture intuit_tid (Intuit's trace id) so support can correlate the failure.
     const tid = res.headers.get("intuit_tid") ?? "n/a";
-    console.error(`qbo token exchange failed: ${res.status} intuit_tid=${tid} ${await res.text()}`);
+    // Log Intuit's OAuth `error` code only (e.g. invalid_grant) — never the raw response body (#634).
+    const errCode = await res.json().then((j) => { const e = (j as { error?: unknown } | null)?.error; return typeof e === "string" ? e.slice(0, 60) : "unknown"; }, () => "non-json");
+    console.error(`qbo token exchange failed: ${res.status} intuit_tid=${tid} error=${errCode}`);
     return { ok: false, error: `token exchange ${res.status}` };
   }
   const tok = (await res.json()) as { access_token: string; expires_in: number; refresh_token: string; x_refresh_token_expires_in: number };

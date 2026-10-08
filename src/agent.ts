@@ -7900,7 +7900,8 @@ export class TaxAgent extends Agent<Env> {
     )
       .bind(crypto.randomUUID(), userId, body, txnId)
       .run();
-    console.log(`[notify ${userId}] ${body}`);
+    // Never log the body: notifications quote merchants, amounts and descriptions (#634 log hygiene).
+    console.log(`[notify ${userId}] ${body.length} chars${txnId ? ` txn=${txnId}` : ""}`);
   }
 
   /** Append-only, per-tenant hash chain. Serialised by this DO, so race-free. */

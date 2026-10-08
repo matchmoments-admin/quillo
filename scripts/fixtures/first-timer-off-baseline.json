@@ -1,0 +1,216 @@
+{
+  "readiness": {
+    "disclaimer": "General information only — not tax advice. Quillo is not a registered tax or BAS agent. Confirm everything with a registered tax agent before lodging.",
+    "findings": [
+      {
+        "category": "classification",
+        "defer_to_agent": false,
+        "evidence_refs": [
+          {
+            "count": 2,
+            "kind": "transaction"
+          }
+        ],
+        "general_info_note": "These total $90.00 and are excluded from the indicative position by default until you confirm they relate to earning your income (work-related). Private spend stays excluded; mark the work-related ones in the Inbox.",
+        "id": "payg_unresolved",
+        "severity": "review",
+        "title": "2 personal/work transaction(s) need a deductibility decision"
+      }
+    ],
+    "fy": "2025-26",
+    "handoff": {
+      "abn": null,
+      "situation_summary": "Occupation: tradesperson"
+    },
+    "narrative": null,
+    "position": {
+      "caption": "Indicative taxable position (income − deductions − depreciation). This is NOT your tax payable or refund.",
+      "credits": {
+        "foreign_tax_paid_cents": 0,
+        "franking_credit_cents": 0,
+        "gst_credits_cents": 0,
+        "withholding_cents": 780000
+      },
+      "indicative_taxable_position_cents": 5179550,
+      "lines": [
+        {
+          "amount_cents": 5200000,
+          "basis": "1 income record(s)",
+          "group": "income",
+          "label": "salary_payg",
+          "why": "Salary/wages you recorded (generally item 1). PAYG withheld is shown as a credit, not a deduction."
+        },
+        {
+          "amount_cents": 12050,
+          "basis": "1 countable transaction(s)",
+          "group": "excluded",
+          "label": "payg",
+          "why": "Private or non-deductible spend (e.g. groceries, personal living costs, entertainment) — generally not deductible under s8-1(2)(b), so it's excluded from your position."
+        },
+        {
+          "amount_cents": 12050,
+          "basis": "1 countable transaction(s)",
+          "group": "deduction",
+          "label": "payg · D5",
+          "why": "Work-related deductions you recorded (the D-labels). Each still needs to satisfy its own deductibility test."
+        },
+        {
+          "amount_cents": 9000,
+          "basis": "2 countable transaction(s)",
+          "group": "excluded",
+          "label": "payg",
+          "why": "Not yet confirmed as work-related — excluded by default until you confirm it relates to earning your income. Review it in the Inbox."
+        },
+        {
+          "amount_cents": 8400,
+          "basis": "120 hrs × 70c/hr",
+          "group": "deduction",
+          "label": "Working from home (fixed rate)",
+          "why": "Home-office running costs claimed using the ATO fixed-rate method for the hours you worked from home. This method already covers electricity, internet, phone and stationery, so those individual receipts are not also claimed (they stay excluded below)."
+        }
+      ],
+      "per_property": []
+    },
+    "readiness_score": {
+      "blockers": 0,
+      "info": 0,
+      "ready": true,
+      "review": 1
+    }
+  },
+  "report": {
+    "abn": null,
+    "by_bucket": [
+      {
+        "ato_label": null,
+        "bucket": "payg",
+        "gst_cents": 0,
+        "n": 3,
+        "total_cents": 21050
+      },
+      {
+        "ato_label": "D5",
+        "bucket": "payg",
+        "gst_cents": 0,
+        "n": 1,
+        "total_cents": 12050
+      }
+    ],
+    "by_property": [],
+    "company_quarters": [
+      {
+        "gst_cents": 0,
+        "quarter": "Q1 Jul–Sep",
+        "total_cents": 0
+      },
+      {
+        "gst_cents": 0,
+        "quarter": "Q2 Oct–Dec",
+        "total_cents": 0
+      },
+      {
+        "gst_cents": 0,
+        "quarter": "Q3 Jan–Mar",
+        "total_cents": 0
+      },
+      {
+        "gst_cents": 0,
+        "quarter": "Q4 Apr–Jun",
+        "total_cents": 0
+      }
+    ],
+    "company_tracked_cents": 0,
+    "deduction_breakdown": [
+      {
+        "ato_label": null,
+        "bucket": "payg",
+        "deductibility": "confirmed_not",
+        "gst_cents": 0,
+        "n": 1,
+        "property_undetermined": 0,
+        "reimbursed": 0,
+        "total_cents": 12050,
+        "use_status_denied": 0
+      },
+      {
+        "ato_label": "D5",
+        "bucket": "payg",
+        "deductibility": "confirmed_deductible",
+        "gst_cents": 0,
+        "n": 1,
+        "property_undetermined": 0,
+        "reimbursed": 0,
+        "total_cents": 12050,
+        "use_status_denied": 0
+      },
+      {
+        "ato_label": null,
+        "bucket": "payg",
+        "deductibility": "undetermined",
+        "gst_cents": 0,
+        "n": 2,
+        "property_undetermined": 0,
+        "reimbursed": 0,
+        "total_cents": 9000,
+        "use_status_denied": 0
+      }
+    ],
+    "depreciation_cents": 0,
+    "end": "2026-06-30",
+    "fy": "2025-26",
+    "gst_credits_cents": 0,
+    "income": {
+      "by_type": [
+        {
+          "foreign_tax_paid_cents": 0,
+          "franking_credit_cents": 0,
+          "gross_cents": 5200000,
+          "income_type": "salary_payg",
+          "n": 1,
+          "net_cents": 5200000,
+          "withholding_cents": 780000
+        }
+      ],
+      "excluded_by_type": [],
+      "foreign_tax_paid_cents": 0,
+      "franking_credit_cents": 0,
+      "gross_cents": 5200000,
+      "non_cash_cents": 0,
+      "withholding_cents": 780000
+    },
+    "income_by_bucket": [
+      {
+        "ato_label": null,
+        "bucket": "income_personal",
+        "gst_cents": 0,
+        "n": 2,
+        "total_cents": 700000
+      }
+    ],
+    "per_property": [],
+    "refunds_cents": 0,
+    "resolved_deductible_cents": 12050,
+    "start": "2025-07-01",
+    "taxable_position_cents": 5179550,
+    "taxable_position_confirmed_cents": 5179550,
+    "total_deductions_cents": 20450,
+    "total_income_cents": 5200000,
+    "undated": {
+      "n": 0,
+      "total_cents": 0
+    },
+    "undated_detail": [],
+    "work_method": {
+      "car_cents": 0,
+      "car_work_km": 0,
+      "rates": {
+        "car_cents_per_km": 88,
+        "car_km_cap": 5000,
+        "wfh_cents_per_hour": 70
+      },
+      "total_cents": 8400,
+      "wfh_cents": 8400,
+      "wfh_hours": 120
+    }
+  }
+}

@@ -16,6 +16,7 @@ import { featureOn } from "./lib/features";
 import { handleBeforeYouStart } from "./lib/before-you-start";
 import { runScheduledSecurityChecks } from "./lib/security-dashboard";
 import { withSecurityHeaders, summariseCspReport, logTag } from "./lib/security-headers";
+import { ipRateLimit, userRateLimit, publishAccessSource } from "./lib/access-control";
 
 // The DO class must be exported from the Worker's main module for the binding.
 export { TaxAgent } from "./agent";
@@ -75,6 +76,12 @@ const handler = {
     if (url.pathname === "/healthz") {
       return Response.json({ ok: true });
     }
+
+    // General per-IP rate limit (#638, ADR-0003 S6; flag api_rate_limit — OFF ⇒ null, no binding call).
+    // Pre-auth, so it also brakes token-guessing and unauthenticated JWT-verification load. The path
+    // list (and its exclusions: /healthz, the Stripe webhook) lives in ipRateLimited().
+    const ipLimited = await ipRateLimit(req, env, url.pathname);
+    if (ipLimited) return ipLimited;
 
     // CSP violation sink (public — browsers POST reports with no auth header, so this must sit
     // before the /api Clerk gate). We only log: a violation here means either a misconfigured
@@ -253,6 +260,9 @@ const handler = {
         const msg = auth.status === 403 ? "not yet available" : "unauthorized";
         return new Response(msg, { status: auth.status });
       }
+      // Per-tenant rate limit (#638; flag api_rate_limit), keyed by the server-derived tenant id.
+      const userLimited = await userRateLimit(env, auth.user.userId);
+      if (userLimited) return userLimited;
       // Error boundary: a throw inside any /api handler must become a readable JSON 500,
       // never a raw Cloudflare 1101 ("Worker threw exception") HTML page that the UI then
       // shows verbatim. Log with method+path so Workers Logs pinpoint the failing route.
@@ -368,6 +378,11 @@ const handler = {
     // waitUntil: the probes (≤8s each) run alongside the batch drain instead of delaying it.
     ctx.waitUntil(
       runScheduledSecurityChecks(env).catch((e) => console.error(`security checks failed: ${(e as Error).name}`)),
+    );
+    // Access-control source record for the dashboard (#638): KV `security:source:mfa`, rewritten only
+    // when a flag/admin-count/Clerk-instance change makes it differ, or daily. Counts + flag states only.
+    ctx.waitUntil(
+      publishAccessSource(env).catch((e) => console.error(`access source publish failed: ${(e as Error).name}`)),
     );
 
     // Frequent: only users with a pending batch job (cheap query, no per-tenant fan-out). Draining

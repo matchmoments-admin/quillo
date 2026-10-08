@@ -2,6 +2,7 @@ import { createRemoteJWKSet, jwtVerify } from "jose";
 import type { Env } from "../env";
 import type { AuthedUser } from "./access";
 import { logTag } from "../lib/security-headers";
+import { secondFactorAgeMinutes } from "../lib/access-control";
 
 /**
  * Authenticate a web request via Clerk, then enforce a single-user allowlist.
@@ -33,11 +34,25 @@ import { logTag } from "../lib/security-headers";
 let jwks: ReturnType<typeof createRemoteJWKSet> | null = null;
 let jwksFor = "";
 
-const ALLOWED_AZP = new Set([
+const DEFAULT_AZP = [
   "https://app.quillo.au",
   "http://localhost:5173", // vite dev
   "http://localhost:8787", // wrangler dev
-]);
+];
+
+/**
+ * The authorized parties (`azp` = the browser Origin that minted the token). CLERK_AUTHORIZED_PARTIES
+ * (comma-separated origins) REPLACES the default list when set — the production cutover sets it to just
+ * "https://app.quillo.au" so a production-instance token can only ever come from the real app origin
+ * (docs/security/clerk-production-cutover.md). Unset/empty => the historical default (unchanged).
+ */
+export function authorizedParties(env: Pick<Env, "CLERK_AUTHORIZED_PARTIES">): Set<string> {
+  const custom = (env.CLERK_AUTHORIZED_PARTIES ?? "")
+    .split(",")
+    .map((s) => s.trim().replace(/\/$/, ""))
+    .filter(Boolean);
+  return new Set(custom.length ? custom : DEFAULT_AZP);
+}
 
 // The founder's Clerk sub maps to the legacy pilot tenant "me". Hard default (overridable via
 // CLERK_FOUNDER_SUB) so an empty/missing var can never collapse other testers onto "me".
@@ -52,7 +67,9 @@ export async function requireClerk(req: Request, env: Env): Promise<ClerkAuthRes
     // Compared against the exact string "1" so a well-meaning "true"/"yes"/"on" fails SAFE
     // (closed) rather than being coerced truthy and quietly unlocking the API.
     if (env.DEV_AUTH_BYPASS === "1") {
-      return { ok: true, user: { email: "dev@local", userId: "me" } }; // local dev, no auth in front
+      // Local dev, no auth in front. `mfa` stays unset, so with admin_mfa_required ON the admin routes
+      // refuse even locally (fail closed) — which is also how the 403 path is exercised in dev.
+      return { ok: true, user: { email: "dev@local", userId: "me" } };
     }
     console.error("auth: CLERK_ISSUER is unset and DEV_AUTH_BYPASS is not '1' — refusing the request");
     return { ok: false, status: 401 };
@@ -71,14 +88,21 @@ export async function requireClerk(req: Request, env: Env): Promise<ClerkAuthRes
 
   let sub: string;
   let email = "";
+  let mfaAgeMin: number | null = null;
   try {
     const { payload } = await jwtVerify(token, jwks, { issuer });
     // azp (authorized party) must be one of our known origins (when present).
     const azp = typeof payload.azp === "string" ? payload.azp : null;
-    if (azp && !ALLOWED_AZP.has(azp)) return { ok: false, status: 401 };
+    if (azp && !authorizedParties(env).has(azp)) return { ok: false, status: 401 };
+    // With an explicit CLERK_AUTHORIZED_PARTIES (production), a token that carries NO azp is refused too:
+    // the lock-down must not be sidestepped by a token minted without an Origin. Unset ⇒ unchanged.
+    if (!azp && (env.CLERK_AUTHORIZED_PARTIES ?? "").trim()) return { ok: false, status: 401 };
     if (typeof payload.sub !== "string") return { ok: false, status: 401 };
     sub = payload.sub;
     if (typeof payload.email === "string") email = payload.email;
+    // Second-factor evidence (#638): the v2 session token's `fva` claim, read from the SIGNATURE-
+    // VERIFIED payload only. Consumed by the admin MFA gate (src/lib/access-control.ts).
+    mfaAgeMin = secondFactorAgeMinutes(payload.fva);
   } catch {
     return { ok: false, status: 401 };
   }
@@ -103,5 +127,8 @@ export async function requireClerk(req: Request, env: Env): Promise<ClerkAuthRes
   // missing/empty CLERK_FOUNDER_SUB can't silently merge two humans into "me".
   const founderSub = env.CLERK_FOUNDER_SUB?.trim() || FOUNDER_SUB_DEFAULT;
   const userId = sub === founderSub ? "me" : sub;
-  return { ok: true, user: { email, userId } };
+  return {
+    ok: true,
+    user: { email, userId, mfa: mfaAgeMin !== null, ...(mfaAgeMin !== null ? { mfaAgeMin } : {}) },
+  };
 }

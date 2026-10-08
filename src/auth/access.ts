@@ -4,6 +4,11 @@ import type { Env } from "../env";
 export interface AuthedUser {
   email: string;
   userId: string;
+  /** Clerk only: true when this session verified a second factor (the `fva` claim). Absent => not
+   *  verified — the admin MFA gate (flag admin_mfa_required) fails closed on anything but `true`. */
+  mfa?: boolean;
+  /** Clerk only: minutes since that second factor was verified (`fva[1]`); absent when not verified. */
+  mfaAgeMin?: number;
 }
 
 // Cache the JWKS per team domain across requests (module scope survives within an isolate).

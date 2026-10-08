@@ -68,6 +68,24 @@ not_found_handling = "single-page-application"
 # decides what each host returns; on the app host "/" is handed back to ASSETS).
 run_worker_first = ["/", "/waitlist", "/terms", "/privacy", "/api/*", "/ingest", "/correct", "/consent", "/healthz", "/csp-report", "/agents/*"]
 
+# --- General API rate limiting (#638, ADR-0003 S6) ---
+# Workers Rate Limiting bindings. INERT until the `api_rate_limit` flag is ON (the code never calls
+# them otherwise). Counters are per Cloudflare location and eventually consistent — an abuse brake,
+# not an exact quota; the AI spend caps + per-op KV limits (chat, bank) stay the hard ceilings.
+# `period` must be 10 or 60 seconds. namespace_id is any account-unique integer string.
+# Per IP, pre-auth: /api/*, /ingest, /correct, /consent, /csp-report, /waitlist (not /healthz or the
+# Stripe webhook). 600/min leaves room for a household/office NAT of several active users.
+[[ratelimits]]
+name = "API_IP_RATE_LIMITER"
+namespace_id = "6381"
+simple = { limit = 600, period = 60 }
+# Per tenant, post-auth: all /api/*. 300/min ≈ 5 req/s sustained — well above a page load's fan-out
+# and the client-side bulk loops (confirm/ignore/apply-to-siblings), far below scripted scraping.
+[[ratelimits]]
+name = "API_USER_RATE_LIMITER"
+namespace_id = "6382"
+simple = { limit = 300, period = 60 }
+
 # --- Cron: proactive suggestion engine (weekly Mon 08:00 UTC) ---
 [triggers]
 # Mon 08:00 UTC: proactive scan. Every 10 min: poll + apply finished async categorisation batches.

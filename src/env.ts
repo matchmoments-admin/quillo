@@ -27,6 +27,13 @@ export interface Env {
   CLERK_ISSUER?: string;
   CLERK_ALLOWED_USERS?: string;
   CLERK_FOUNDER_SUB?: string;           // the founder's Clerk sub → mapped to the pilot tenant "me"; others get their own tenant
+  ADMIN_MFA_MAX_AGE_MIN?: string;       // admin MFA gate: max minutes since the second factor was verified (default 720)
+  CLERK_AUTHORIZED_PARTIES?: string;    // comma-separated allowed `azp` origins; set => REPLACES the default list (prod cutover: "https://app.quillo.au")
+
+  // General API rate limiting (flag `api_rate_limit`, #638): Workers Rate Limiting bindings
+  // ([[ratelimits]] in wrangler.toml). Absent => the limiter allows (it is an abuse brake, not auth).
+  API_IP_RATE_LIMITER?: RateLimit;      // pre-auth, keyed by CF-Connecting-IP
+  API_USER_RATE_LIMITER?: RateLimit;    // post-auth, keyed by the server-derived tenant id
 
   // Vars (wrangler.toml [vars])
   JURISDICTION: string;

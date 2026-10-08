@@ -6346,5 +6346,151 @@ import bundledAuV1 from "../src/rulepacks/au-v1.json";
   }
 }
 
+import {
+  secondFactorVerified, adminMfaBlock, ipRateLimit, userRateLimit, ipRateLimited, accessSourceRecord, publishAccessSource,
+  clerkInstance, ADMIN_MFA_MESSAGE, adminMfaMaxAgeMin,
+} from "../src/lib/access-control";
+import { authorizedParties } from "../src/auth/clerk";
+import { handleApi } from "../src/api";
+import { generateKeyPair, exportJWK, SignJWT } from "jose";
+import nodeHttp from "node:http";
+console.log("access control: admin MFA + API rate limiting + Clerk cutover seams (#638)");
+{
+  // ── fva parsing: only a well-formed, non-negative second-factor age counts ──
+  check("mfa: fva [5, 3] ⇒ second factor verified", secondFactorVerified([5, 3]) === true);
+  check("mfa: fva [5, 0] ⇒ verified (0 minutes ago)", secondFactorVerified([5, 0]) === true);
+  check("mfa: fva [5, -1] ⇒ NOT verified", secondFactorVerified([5, -1]) === false);
+  check("mfa: missing fva (v1 token) ⇒ NOT verified", secondFactorVerified(undefined) === false);
+  check("mfa: malformed fva ⇒ NOT verified (fail closed)", [[5], [5, "3"], "5,3", { 1: 3 }, [5, NaN], [5, null]].every((v) => secondFactorVerified(v) === false));
+
+  // ── azp list: default unchanged; CLERK_AUTHORIZED_PARTIES replaces it (prod cutover) ──
+  const def = authorizedParties({});
+  check("clerk: default azp list unchanged (app + 2 localhost)", def.size === 3 && def.has("https://app.quillo.au") && def.has("http://localhost:5173"));
+  const prod = authorizedParties({ CLERK_AUTHORIZED_PARTIES: " https://app.quillo.au/ , " });
+  check("clerk: CLERK_AUTHORIZED_PARTIES replaces the list (trailing slash + blanks trimmed)", prod.size === 1 && prod.has("https://app.quillo.au") && !prod.has("http://localhost:5173"));
+  check("clerk: instance detection", clerkInstance({ CLERK_ISSUER: "https://x.clerk.accounts.dev" }) === "development" && clerkInstance({ CLERK_ISSUER: "https://clerk.quillo.au" }) === "production" && clerkInstance({}) === "not configured");
+
+  // ── End to end through REAL signature verification: fva rides the verified payload into user.mfa ──
+  const { publicKey, privateKey } = await generateKeyPair("RS256");
+  const jwk = { ...(await exportJWK(publicKey)), kid: "k1", alg: "RS256", use: "sig" };
+  const server = nodeHttp.createServer((_q, s) => { s.setHeader("content-type", "application/json"); s.end(JSON.stringify({ keys: [jwk] })); });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+  const issuer = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const tok = (claims: Record<string, unknown>) =>
+    new SignJWT(claims).setProtectedHeader({ alg: "RS256", kid: "k1" }).setIssuer(issuer).setSubject("user_admin").setIssuedAt().setExpirationTime("5m").sign(privateKey);
+  const clerkEnv = (extra: Record<string, string> = {}) => ({ CLERK_ISSUER: issuer, CLERK_FOUNDER_SUB: "user_founder", ...extra }) as unknown as Env;
+  const authed = async (t: string, e = clerkEnv()) => requireClerk(new Request("https://app.quillo.au/api/x", { headers: { Authorization: `Bearer ${t}` } }), e);
+  const withMfa = await authed(await tok({ azp: "https://app.quillo.au", fva: [2, 2], v: 2 }));
+  check("clerk: verified token with fva [2,2] ⇒ user.mfa === true, age 2", withMfa.ok === true && withMfa.user.mfa === true && withMfa.user.mfaAgeMin === 2 && withMfa.user.userId === "user_admin");
+  const noMfa = await authed(await tok({ azp: "https://app.quillo.au", fva: [2, -1], v: 2 }));
+  check("clerk: verified token with fva [2,-1] ⇒ user.mfa === false, no age", noMfa.ok === true && noMfa.user.mfa === false && noMfa.user.mfaAgeMin === undefined);
+  const v1 = await authed(await tok({ azp: "https://app.quillo.au" }));
+  check("clerk: token without fva ⇒ user.mfa === false", v1.ok === true && v1.user.mfa === false);
+  const good = await tok({ azp: "https://app.quillo.au", fva: [1, 1] });
+  const forged = await authed(good.slice(0, -4) + (good.endsWith("AAAA") ? "BBBB" : "AAAA"));
+  check("clerk: tampered signature ⇒ 401 (fva is only trusted from a verified payload)", forged.ok === false);
+  const badAzp = await authed(await tok({ azp: "http://localhost:5173", fva: [1, 1] }), clerkEnv({ CLERK_AUTHORIZED_PARTIES: "https://app.quillo.au" }));
+  check("clerk: with CLERK_AUTHORIZED_PARTIES=app only, a localhost azp ⇒ 401", badAzp.ok === false);
+  const noAzpLocked = await authed(await tok({ fva: [1, 1] }), clerkEnv({ CLERK_AUTHORIZED_PARTIES: "https://app.quillo.au" }));
+  check("clerk: with CLERK_AUTHORIZED_PARTIES set, a token with NO azp ⇒ 401", noAzpLocked.ok === false);
+  const noAzpDefault = await authed(await tok({ fva: [1, 1] }));
+  check("clerk: without the override, a token with no azp is still accepted (unchanged)", noAzpDefault.ok === true);
+  const okAzp = await authed(await tok({ azp: "http://localhost:5173", fva: [1, 1] }));
+  check("clerk: without the override, localhost azp still accepted (unchanged)", okAzp.ok === true);
+  server.close();
+
+  // ── adminMfaBlock: OFF ⇒ null; ON ⇒ only mfa === true passes ──
+  const envF = (features: string) => ({ FEATURES: features }) as unknown as Env;
+  check("mfa gate: flag OFF ⇒ never blocks (byte-identical)", adminMfaBlock(envF(""), {}) === null && adminMfaBlock(envF(""), { mfa: false }) === null);
+  check("mfa gate: flag ON + fresh second factor ⇒ passes", adminMfaBlock(envF("admin_mfa_required"), { mfa: true, mfaAgeMin: 5 }) === null);
+  check("mfa gate: flag ON + mfa true but no age ⇒ blocked (fail closed)", adminMfaBlock(envF("admin_mfa_required"), { mfa: true })?.status === 403);
+  const stale = adminMfaBlock(envF("admin_mfa_required"), { mfa: true, mfaAgeMin: 721 });
+  check("mfa gate: second factor older than 12h ⇒ 403 admin_mfa_stale", stale?.status === 403 && /admin_mfa_stale/.test(await stale.text()));
+  check("mfa gate: ADMIN_MFA_MAX_AGE_MIN overrides; junk ⇒ default 720", adminMfaMaxAgeMin({ ADMIN_MFA_MAX_AGE_MIN: "60" }) === 60 && adminMfaMaxAgeMin({ ADMIN_MFA_MAX_AGE_MIN: "-5" }) === 720 && adminMfaMaxAgeMin({}) === 720
+    && adminMfaBlock({ FEATURES: "admin_mfa_required", ADMIN_MFA_MAX_AGE_MIN: "60" } as unknown as Env, { mfa: true, mfaAgeMin: 61 })?.status === 403);
+  const blk = adminMfaBlock(envF("admin_mfa_required"), {});
+  const blkBody = blk ? (JSON.parse(await blk.text()) as { error: string; code: string }) : null;
+  check("mfa gate: flag ON + no mfa ⇒ 403 with code + clear message", blk?.status === 403 && blkBody?.code === "admin_mfa_required" && blkBody.error === ADMIN_MFA_MESSAGE);
+
+  // ── The seam in handleApi: every /api/admin/* route, after isAdmin ──
+  class Stmt {
+    private params: unknown[] = [];
+    constructor(private db: DatabaseSync, private sql: string) {}
+    bind(...a: unknown[]) { this.params = a.map((x) => (x === undefined ? null : x)); return this; }
+    async all<T>() { return { results: this.db.prepare(this.sql).all(...(this.params as never[])) as T[], success: true, meta: {} }; }
+    async first<T>() { return (this.db.prepare(this.sql).get(...(this.params as never[])) as T) ?? null; }
+    async run() { const r = this.db.prepare(this.sql).run(...(this.params as never[])); return { success: true, meta: { changes: Number(r.changes ?? 0) } }; }
+  }
+  const sq = new DatabaseSync(":memory:");
+  const migDir = nodePath.join(process.cwd(), "migrations");
+  for (const f of nodeFs.readdirSync(migDir).filter((f) => f.endsWith(".sql")).sort()) sq.exec(nodeFs.readFileSync(nodePath.join(migDir, f), "utf8"));
+  sq.prepare(`INSERT INTO profiles (user_id, roles, email) VALUES ('adm1', '["individual","admin"]', 'founder@example.com')`).run();
+  sq.prepare(`INSERT INTO profiles (user_id, roles, email) VALUES ('u1', '["individual"]', 'secret.person@example.com')`).run();
+  const db = { prepare: (sql: string) => new Stmt(sq, sql), batch: async (s: Stmt[]) => Promise.all(s.map((x) => x.run())) } as unknown as D1Database;
+  const kvStore = new Map<string, string>();
+  const kv = {
+    get: async (k: string) => kvStore.get(k) ?? null,
+    put: async (k: string, v: string) => { kvStore.set(k, v); },
+    delete: async (k: string) => { kvStore.delete(k); },
+  } as unknown as KVNamespace;
+  const mkEnv = (features: string, extra: Record<string, unknown> = {}) =>
+    ({ DB: db, RULES: kv, FEATURES: features, JURISDICTION: "AU", CLERK_ISSUER: "https://x.clerk.accounts.dev", DEFAULT_INFERENCE_PROVIDER: "anthropic", ...extra }) as unknown as Env;
+  const api = async (env: Env, user: { userId: string; email: string; mfa?: boolean; mfaAgeMin?: number }, path: string) => {
+    const r = await handleApi(new Request(`https://app.quillo.au/api/${path}`), env, user, {} as never);
+    return { status: r.status, body: await r.text() };
+  };
+  const ON = mkEnv("admin_mfa_required");
+  const OFF = mkEnv("");
+  const admin = { userId: "adm1", email: "founder@example.com" };
+  check("seam: flag OFF ⇒ admin without MFA still reaches /admin/security (unchanged)", (await api(OFF, admin, "admin/security")).status === 200);
+  const blocked = await api(ON, admin, "admin/security");
+  check("seam: flag ON ⇒ admin without MFA gets 403 admin_mfa_required on /admin/security", blocked.status === 403 && /admin_mfa_required/.test(blocked.body));
+  const blockedOv = await api(ON, { ...admin, mfa: false }, "admin/tenants");
+  check("seam: flag ON ⇒ admin without MFA gets 403 on every admin route (/admin/tenants)", blockedOv.status === 403 && /admin_mfa_required/.test(blockedOv.body));
+  check("seam: flag ON ⇒ admin WITH fresh MFA reaches /admin/security", (await api(ON, { ...admin, mfa: true, mfaAgeMin: 3 }, "admin/security")).status === 200);
+  const nonAdmin = await api(ON, { userId: "u1", email: "x", mfa: false }, "admin/security");
+  check("seam: flag ON ⇒ non-admin still gets the page's own 404 (MFA rule not revealed)", nonAdmin.status === 404 && !/mfa/i.test(nonAdmin.body));
+  const nonAdminTen = await api(ON, { userId: "u1", email: "x", mfa: true }, "admin/tenants");
+  check("seam: flag ON ⇒ non-admin WITH mfa still 403 forbidden (MFA never grants admin)", nonAdminTen.status === 403 && /forbidden/.test(nonAdminTen.body));
+
+  // ── Rate limiting ──
+  check("rate: path coverage", ipRateLimited("/api/report", "GET") && ipRateLimited("/ingest", "POST") && ipRateLimited("/waitlist", "POST") && ipRateLimited("/csp-report", "POST"));
+  check("rate: exclusions (/healthz, Stripe webhook, static GET)", !ipRateLimited("/healthz", "GET") && !ipRateLimited("/api/stripe/webhook", "POST") && ipRateLimited("/api/stripe/webhook", "GET") && !ipRateLimited("/assets/x.js", "GET") && !ipRateLimited("/", "GET"));
+  const calls: string[] = [];
+  const binding = (success: boolean) => ({ limit: async ({ key }: { key: string }) => { calls.push(key); return { success }; } }) as unknown as RateLimit;
+  const throwing = { limit: async () => { throw new Error("boom"); } } as unknown as RateLimit;
+  const rq = (path: string, m = "GET") => new Request(`https://app.quillo.au${path}`, { method: m, headers: { "cf-connecting-ip": "203.0.113.9" } });
+  calls.length = 0;
+  check("rate: flag OFF ⇒ no binding call, no block", (await ipRateLimit(rq("/api/x"), mkEnv("", { API_IP_RATE_LIMITER: binding(false) }), "/api/x")) === null
+    && (await userRateLimit(mkEnv("", { API_USER_RATE_LIMITER: binding(false) }), "u1")) === null && calls.length === 0);
+  const rlOn = (extra: Record<string, unknown>) => mkEnv("api_rate_limit", extra);
+  const r429 = await ipRateLimit(rq("/api/x"), rlOn({ API_IP_RATE_LIMITER: binding(false) }), "/api/x");
+  check("rate: ON + over the IP limit ⇒ 429 + Retry-After, keyed by CF-Connecting-IP", r429?.status === 429 && r429.headers.get("retry-after") === "60" && calls.at(-1) === "ip:203.0.113.9");
+  check("rate: ON + under the limit ⇒ allowed", (await ipRateLimit(rq("/api/x"), rlOn({ API_IP_RATE_LIMITER: binding(true) }), "/api/x")) === null);
+  check("rate: ON + /healthz never consults the limiter", (await ipRateLimit(rq("/healthz"), rlOn({ API_IP_RATE_LIMITER: binding(false) }), "/healthz")) === null);
+  const u429 = await userRateLimit(rlOn({ API_USER_RATE_LIMITER: binding(false) }), "u1");
+  check("rate: ON + over the per-user limit ⇒ 429, keyed by the server-derived tenant", u429?.status === 429 && calls.at(-1) === "user:u1");
+  check("rate: binding missing or throwing ⇒ allow (abuse brake, not an outage)", (await userRateLimit(rlOn({}), "u1")) === null && (await userRateLimit(rlOn({ API_USER_RATE_LIMITER: throwing }), "u1")) === null);
+  {
+    const toml = nodeFs.readFileSync("wrangler.toml", "utf8");
+    check("wrangler.toml declares both rate-limit bindings", /name = "API_IP_RATE_LIMITER"/.test(toml) && /name = "API_USER_RATE_LIMITER"/.test(toml));
+  }
+
+  // ── Dashboard source record (KV security:source:mfa) ──
+  const rec = accessSourceRecord(mkEnv(""), 1, "2026-10-08T00:00:00Z");
+  check("source: flags OFF + dev Clerk ⇒ warn with the flag states", rec.status === "warn" && rec.metrics?.mfa_enforced_for_admin === false && rec.metrics?.instance === "development" && rec.metrics?.admin_accounts === 1);
+  check("source: prod Clerk + both flags ON ⇒ ok", accessSourceRecord(mkEnv("admin_mfa_required,api_rate_limit", { CLERK_ISSUER: "https://clerk.quillo.au" }), 1, "2026-10-08T00:00:00Z").status === "ok");
+  check("source: record passes the dashboard's parser", parseSourceRecord(JSON.stringify(rec)) !== null);
+  const t0 = new Date("2026-10-08T00:00:00Z");
+  check("source: first publish writes", (await publishAccessSource(OFF, t0)) === "written");
+  check("source: unchanged within a day ⇒ no write", (await publishAccessSource(OFF, new Date(t0.getTime() + 600_000))) === "unchanged");
+  check("source: a flag flip ⇒ rewritten", (await publishAccessSource(ON, new Date(t0.getTime() + 1_200_000))) === "written");
+  const stored = kvStore.get(SECURITY_KV.source("mfa"))!;
+  check("source: stored record carries no email / ids", !/@example\.com|adm1|u1/.test(stored) && JSON.parse(stored).metrics.mfa_enforced_for_admin === true);
+  const dash = await buildSecurityDashboard(ON, new Date(t0.getTime() + 1_300_000));
+  const access = dash.panels.find((p) => p.key === "access")!;
+  check("source: dashboard Access panel lights up from the record (no 'pending #638')", access.metrics.mfa_enforced_for_admin === true && !("pending_ticket" in access));
+}
+
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);
 process.exit(fail === 0 ? 0 : 1);

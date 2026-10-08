@@ -37,3 +37,25 @@ jobs:
       # reconciliation + schema drift. Run as one step so a failure names the script that broke.
       - name: Money-path tests (npm test)
         run: npm test
+
+  # Dependency audit (#640). BLOCKING on HIGH/CRITICAL in what ships — the Worker's runtime deps
+  # (root) and the SPA's runtime deps (web/). The full tree (dev tooling: wrangler/miniflare,
+  # promptfoo, tailwind) is reported but not gating: those advisories have no upstream fix yet,
+  # never run in production, and are tracked in docs/security/vulnerability-management.md
+  # ("Accepted dev-only exceptions"). `npm audit` reads the lockfile, so no install is needed.
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: npm audit — server runtime deps (blocking)
+        run: npm audit --omit=dev --audit-level=high
+      - name: npm audit — web runtime deps (blocking)
+        run: npm --prefix web audit --omit=dev --audit-level=high
+      - name: npm audit — full tree incl. dev tooling (informational)
+        continue-on-error: true
+        run: |
+          npm audit --audit-level=high
+          npm --prefix web audit --audit-level=high

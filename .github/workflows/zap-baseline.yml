@@ -1,0 +1,74 @@
+name: DAST (ZAP baseline + security headers)
+
+# Weekly passive scan of production (#640, epic #633). OWASP ZAP *baseline* = spider + passive
+# rules only: it sends ordinary GETs and inspects the responses, never attacks or submits forms,
+# and runs unauthenticated (it only sees the public shell + sign-in surface). Safe against prod.
+#
+# Fails only on a HIGH-risk alert (riskcode 3). Medium/low/informational alerts are in the
+# report artifact for triage under docs/security/vulnerability-management.md.
+on:
+  schedule:
+    - cron: "41 20 * * 0" # weekly, Mon 06:41 AEST
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "URL to scan"
+        default: "https://app.quillo.au"
+
+permissions:
+  contents: read
+
+jobs:
+  headers:
+    runs-on: ubuntu-latest
+    env:
+      TARGET: ${{ inputs.target || 'https://app.quillo.au' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      # Blocking: these are already true in prod, so a failure is a regression.
+      - name: Security headers — baseline (blocking)
+        run: node scripts/check-security-headers.mjs "$TARGET/" --group=baseline
+      # INFORMATIONAL until #634 (A1 security headers) ships: HSTS, an enforcing CSP and
+      # enforced frame-ancestors are expected to FAIL today (CSP is report-only, no HSTS).
+      # When #634 is live, delete `continue-on-error` so this becomes a gate.
+      - name: Security headers — pending #634 (informational)
+        continue-on-error: true
+        run: node scripts/check-security-headers.mjs "$TARGET/" --group=pending
+
+  zap:
+    runs-on: ubuntu-latest
+    env:
+      TARGET: ${{ inputs.target || 'https://app.quillo.au' }}
+    steps:
+      - name: ZAP baseline scan (passive, unauthenticated)
+        run: |
+          mkdir -p zap && chmod 777 zap
+          # -I: don't exit non-zero on WARN — the HIGH gate below decides pass/fail.
+          # -m 2: spider for at most 2 minutes. Reports land in ./zap via /zap/wrk.
+          docker run --rm -v "$PWD/zap:/zap/wrk:rw" ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py -t "$TARGET" -m 2 -I \
+              -J zap-report.json -r zap-report.html -w zap-report.md \
+            || echo "zap-baseline exited $? (judged on the report below)"
+
+      - name: Upload ZAP report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zap-baseline-report
+          path: zap/
+          retention-days: 90
+
+      - name: Fail on HIGH-risk alerts only
+        run: |
+          test -s zap/zap-report.json || { echo "::error::ZAP produced no report"; exit 1; }
+          {
+            echo "## ZAP baseline — $TARGET"
+            jq -r '[.site[].alerts[]] | group_by(.riskdesc|split(" ")[0]) | map("- \(.[0].riskdesc|split(" ")[0]): \(length)") | .[]' zap/zap-report.json
+          } >> "$GITHUB_STEP_SUMMARY"
+          HIGH=$(jq '[.site[].alerts[] | select(.riskcode == "3")] | length' zap/zap-report.json)
+          jq -r '.site[].alerts[] | select(.riskcode == "3") | "::error::HIGH — \(.name) (\(.instances|length) instance(s))"' zap/zap-report.json
+          echo "HIGH alerts: $HIGH"
+          test "$HIGH" -eq 0

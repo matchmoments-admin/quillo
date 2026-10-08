@@ -100,3 +100,57 @@ export const STEP_LEGACY_ROUTE: Record<JourneyStepKey, string> = {
   review: "/review",
   lodge: "/filing",
 };
+
+/**
+ * Settings becomes account-only (#593, spec A11 ticket c, decision #436; flag ft_journey). Each tax section
+ * Settings used to hold has ONE new home, addressed by the same anchor id there, so `/settings#<anchor>`
+ * (a bookmark, an old help link) redirects to `<home>#<anchor>` with the flag ON. People and the prior-year
+ * carry-ins move only when Get set up's profile mode is live (ft_journey + situation_profile, #585);
+ * otherwise they stay on Settings. Per-user rules move to Review (the sorting step); the rest go to Grow.
+ */
+export interface SettingsSectionMove {
+  /** The section's anchor id, on Settings (old) and on its new home. */
+  anchor: string;
+  /** New home route; the redirect appends `#<anchor>`. */
+  home: string;
+  /** Plain name of the new home, for the "moved" card on Settings. */
+  homeLabel: string;
+  /** Moves only when Get set up's profile mode is live (situation_profile ON too). */
+  needsAboutYou?: boolean;
+}
+
+export const SETTINGS_SECTION_MOVES: readonly SettingsSectionMove[] = [
+  { anchor: "people", home: "/setup", homeLabel: "Get set up", needsAboutYou: true },
+  { anchor: "carry-ins", home: "/setup", homeLabel: "Get set up", needsAboutYou: true },
+  { anchor: "properties", home: "/grow/property", homeLabel: "Grow › Property" },
+  { anchor: "loans", home: "/grow/property", homeLabel: "Grow › Property" },
+  { anchor: "entities", home: "/grow/business", homeLabel: "Grow › Business & companies" },
+  { anchor: "activities", home: "/grow/business", homeLabel: "Grow › Business & companies" },
+  { anchor: "gst", home: "/grow/business", homeLabel: "Grow › Business & companies" },
+  { anchor: "bas", home: "/grow/business", homeLabel: "Grow › Business & companies" },
+  { anchor: "trust", home: "/grow/business", homeLabel: "Grow › Business & companies" },
+  { anchor: "partnership", home: "/grow/business", homeLabel: "Grow › Business & companies" },
+  { anchor: "smsf", home: "/grow/business", homeLabel: "Grow › Business & companies" },
+  { anchor: "super", home: "/grow/business", homeLabel: "Grow › Business & companies" },
+  { anchor: "rules", home: "/review", homeLabel: "Review" },
+];
+
+/** The account sections that stay on Settings (their anchors resolve in place). */
+export const SETTINGS_KEPT_ANCHORS: readonly string[] = ["ai-changes", "privacy", "your-data", "bank-connections", "devices"];
+
+/**
+ * Where `/settings#<hash>` goes with ft_journey ON: the moved section's new home (with its anchor), or null
+ * when the section stays on Settings (a kept anchor, an unknown one, or People / carry-ins while Get set up's
+ * profile mode is off).
+ */
+export function settingsSectionHome(hash: string, opts: { aboutYou: boolean }): string | null {
+  let anchor: string;
+  try {
+    anchor = decodeURIComponent(hash.replace(/^#/, ""));
+  } catch {
+    return null; // a malformed %-escape is not one of ours
+  }
+  const move = SETTINGS_SECTION_MOVES.find((m) => m.anchor === anchor);
+  if (!move || (move.needsAboutYou && !opts.aboutYou)) return null;
+  return `${move.home}#${move.anchor}`;
+}

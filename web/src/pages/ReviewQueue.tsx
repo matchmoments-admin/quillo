@@ -47,6 +47,7 @@ import {
   type QueueKind,
 } from "../lib/reviewQueue";
 import { Documents } from "./Documents";
+import { RulesSettings } from "./Settings";
 import { Review as ByLabel } from "./Review";
 import type { Journey, JourneyStepKey, NoticedConfirmResult, NoticedSignal, ReconcileRow } from "../types";
 
@@ -641,10 +642,17 @@ function QueueBody() {
             </div>
           </details>
 
+          {/* ── Your sorting rules (moved from Settings, #593; /settings#rules lands here). ── */}
+          <details id="rules" open={hash === "#rules"} className="scroll-mt-20 rounded-2xl border border-line bg-card shadow-card">
+            <summary className={cx(FOCUS, "min-h-[44px] cursor-pointer px-4 py-3 text-sm font-semibold text-ink")}>Your sorting rules</summary>
+            <div className="px-4 pb-4">
+              <RulesSettings />
+            </div>
+          </details>
+
           <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
             <FtLink to="/transactions?view=all">All transactions</FtLink>
             <FtLink to={MATCH_PICKER_ROUTE}>Match receipts yourself</FtLink>
-            <FtLink to="/settings">Your sorting rules (in Settings)</FtLink>
           </div>
         </div>
       )}

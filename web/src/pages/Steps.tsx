@@ -1,6 +1,7 @@
-import { useEffect, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import { Navigate, useLocation, useNavigate } from "react-router-dom";
 import { useFeatures } from "../lib/features";
+import { useHashScroll } from "../lib/useHashScroll";
 import { JOURNEY_STEP_KEYS, STEP_LABEL, STEP_ROUTE } from "../lib/journey";
 import { STEP_LEGACY_ROUTE, journeyRouteFor, oldStepRouteFor } from "../lib/legacyRoutes";
 import { FtLink, StepFooter, StepHeader, useWhyDrawer } from "../components/ft";
@@ -75,22 +76,9 @@ function StepPage({ step, children }: { step: JourneyStepKey; children: ReactNod
   const i = JOURNEY_STEP_KEYS.indexOf(step);
   const prev = i > 0 ? JOURNEY_STEP_KEYS[i - 1] : undefined;
   const next = JOURNEY_STEP_KEYS[i + 1];
-  // A #section deep link (/bring-in#income, /records#documents) scrolls once the composed page has
-  // rendered — client navigation doesn't scroll to an anchor by itself. Retries briefly while the
-  // section's page is still loading its data.
-  const { hash } = useLocation();
-  useEffect(() => {
-    if (!hash) return;
-    let tries = 0;
-    const t = window.setInterval(() => {
-      const el = document.getElementById(decodeURIComponent(hash.slice(1)));
-      if (el || ++tries > 20) {
-        window.clearInterval(t);
-        el?.scrollIntoView({ block: "start" });
-      }
-    }, 100);
-    return () => window.clearInterval(t);
-  }, [hash]);
+  // A #section deep link (/connect#income, /review#documents, /review#rules) scrolls once the composed
+  // page has rendered (lib/useHashScroll.ts).
+  useHashScroll();
   return (
     <div className="space-y-6">
       <StepHeader step={step} onWhy={() => openWhy()} />

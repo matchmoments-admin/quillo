@@ -1,20 +1,33 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Link } from "react-router-dom";
+import { Link, Navigate, useLocation } from "react-router-dom";
 import { api } from "../api";
 import { useFeatures } from "../lib/features";
+import { settingsSectionHome } from "../lib/legacyRoutes";
+import { useHashScroll } from "../lib/useHashScroll";
 import { BUCKETS } from "../types";
 import { Card, Spinner, BUCKET_LABEL, InfoTip, money, parseMoneyToCents } from "../components/ui";
 import { AiChangesFeed } from "../components/AiChangesFeed";
 import { BankConsents } from "../components/BankConsents";
 import { CarryIns, PeopleList, runDelete } from "../components/ProfileSections";
 import { EntityFields, PropertyFields, entityToBody, entityToValue, propertyToBody, propertyError, emptyEntity, emptyProperty, OWNED_STATUSES, TENANT_STATUSES, USE_STATUSES, DENY_USE_STATUSES, isTenantStatus, statusLabel, propertyStatusLabel, type EntityValue, type PropertyValue } from "../components/SituationFields";
-import type { Account, Property, LoanProperty, IncomeActivity } from "../types";
+import type { Account, Property, LoanProperty, IncomeActivity, Situation } from "../types";
 import { isPropertyBucket } from "../lib/buckets";
 
 const input = "rounded-lg border border-line bg-card px-3 py-2 text-sm";
 const btn = "rounded-lg bg-ink px-3 py-2 text-sm font-medium text-white hover:bg-ink/90 disabled:opacity-50";
 const del = "text-xs text-muted hover:text-danger";
+
+// Settings (#593, spec A11 ticket c, decision #436). With ft_journey OFF this page renders every section
+// exactly as it always has. ON it is ACCOUNT-ONLY: consent + Your data (export, delete), bank connections,
+// devices (ingest keys) and the recent AI changes. Each tax section moved to ONE new home (the table is
+// SETTINGS_SECTION_MOVES in lib/legacyRoutes.ts), composed there from the section components below:
+//   People + prior-year carry-ins → Get set up (/setup, only while its profile mode is live — #585)
+//   Properties + loan attribution → Grow › Property (/grow/property)
+//   Entities, activities, GST, BAS, trust/partnership distributions, SMSF, super → Grow › Business
+//   Per-user rules → Review (/review#rules)
+// A `/settings#<section>` deep link redirects to `<new home>#<section>`. Every hook sits above the first
+// conditional return (hooks lint gate; React #310 history).
 
 export function Settings() {
   const qc = useQueryClient();
@@ -23,13 +36,53 @@ export function Settings() {
   const keys = useQuery({ queryKey: ["keys"], queryFn: () => api.keys() });
   const invalidate = () => qc.invalidateQueries({ queryKey: ["situation"] });
   const { has } = useFeatures();
+  const { hash } = useLocation();
+  const ft = has("ft_journey");
   // #585: with About you live (ft_journey + situation_profile), People and the prior-year carry-ins live in its
   // profile mode instead (spec A2); OFF ⇒ both sections render here exactly as before.
-  const aboutYouLive = has("ft_journey") && has("situation_profile");
+  const aboutYouLive = ft && has("situation_profile");
+  useHashScroll(ft);
+  const movedTo = ft && hash ? settingsSectionHome(hash, { aboutYou: aboutYouLive }) : null;
 
+  if (movedTo) return <Navigate to={movedTo} replace />;
   if (sit.isLoading) return <Spinner />;
   if (sit.error) return <Card className="p-6 text-sm text-muted">Couldn't load: {(sit.error as Error).message}</Card>;
   const s = sit.data!;
+
+  const devices = (
+    <DevicesSection
+      anchored={ft}
+      loading={keys.isLoading}
+      keys={keys.data ?? []}
+      onRevoke={(id) => api.revokeKey(id).then(() => qc.invalidateQueries({ queryKey: ["keys"] }))}
+      onMinted={() => qc.invalidateQueries({ queryKey: ["keys"] })}
+    />
+  );
+  const privacy = (
+    <PrivacyPanel
+      anchored={ft}
+      profile={s.profile}
+      onChange={() => {
+        invalidate();
+        qc.invalidateQueries({ queryKey: ["progress"] });
+      }}
+    />
+  );
+
+  if (ft) {
+    return (
+      <div className="space-y-8">
+        <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
+        <MovedSections aboutYouLive={aboutYouLive} />
+        <AiChangesFeed />
+        {privacy}
+        {has("bank_feed_cdr") && <BankConsents />}
+        {!aboutYouLive && <PeopleSection id="people" persons={s.persons ?? []} onDone={invalidate} />}
+        {!aboutYouLive && <CarryInsSection id="carry-ins" />}
+        {devices}
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-8">
@@ -39,45 +92,111 @@ export function Settings() {
       <AiChangesFeed />
 
       {/* Privacy & AI processing (APP-8 consent dashboard) */}
-      <PrivacyPanel
-        profile={s.profile}
-        onChange={() => {
-          invalidate();
-          qc.invalidateQueries({ queryKey: ["progress"] });
-        }}
-      />
+      {privacy}
 
       {/* Bank connections — the CDR consent dashboard (#576, ADR-0003 §6.4). Flag-gated. */}
       {has("bank_feed_cdr") && <BankConsents />}
 
       {/* People (taxpayers) — occupation/residency drive deduction hints */}
-      {aboutYouLive && (
-        <Card className="p-4 text-sm text-muted">
-          People and last year's carry-ins now live in{" "}
-          <Link to="/setup" className="text-ink underline underline-offset-2">
-            Get set up
-          </Link>
-          .
-        </Card>
-      )}
-      {!aboutYouLive && (
-        <Section title={<>People (taxpayers) <InfoTip k="persons" /></>}>
-          <PeopleList persons={s.persons ?? []} onDone={invalidate} />
-        </Section>
-      )}
+      <PeopleSection persons={s.persons ?? []} onDone={invalidate} />
 
+      <PropertySections s={s} accounts={accts.data ?? []} onDone={invalidate} />
+
+      {/* Prior-year carry-ins — captured for your agent. CAPTURE-ONLY: never auto-applied to your
+          position (a capital loss offsets capital gains only; an opening value is the agent's to apply). */}
+      <CarryInsSection />
+
+      <BusinessSections s={s} onDone={invalidate} />
+
+      <RulesSection s={s} onDone={invalidate} />
+
+      {/* Devices / keys */}
+      {devices}
+    </div>
+  );
+}
+
+/** ft_journey ON: where the tax sections went, one link per new home (targets from SETTINGS_SECTION_MOVES). */
+function MovedSections({ aboutYouLive }: { aboutYouLive: boolean }) {
+  const homes: { anchor: string; what: string }[] = [
+    ...(aboutYouLive ? [{ anchor: "people", what: "People and last year's carry-ins" }] : []),
+    { anchor: "properties", what: "Properties and their loans" },
+    { anchor: "entities", what: "Business, companies, trusts, GST and BAS, SMSF and super" },
+    { anchor: "rules", what: "Your sorting rules" },
+  ];
+  return (
+    <Card className="p-4">
+      <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted">Looking for your tax details?</div>
+      <p className="text-sm text-muted">Settings now holds your account only. Your tax details live where you use them:</p>
+      <ul className="mt-2 space-y-1 text-sm">
+        {homes.map((h) => {
+          const to = settingsSectionHome(`#${h.anchor}`, { aboutYou: aboutYouLive });
+          if (!to) return null;
+          return (
+            <li key={h.anchor}>
+              {h.what}:{" "}
+              <Link to={to} className="font-medium text-ink underline underline-offset-2">
+                {movedLabel(to)}
+              </Link>
+            </li>
+          );
+        })}
+      </ul>
+    </Card>
+  );
+}
+
+function movedLabel(to: string): string {
+  if (to.startsWith("/setup")) return "Get set up";
+  if (to.startsWith("/grow/property")) return "Grow › Property";
+  if (to.startsWith("/grow/business")) return "Grow › Business & companies";
+  return "Review";
+}
+
+// ── Section groups, composed by Settings (flag OFF) and by their new homes (flag ON, #593) ───────────────
+// `anchored` / `id` add the section's anchor id (a wrapper div) — only in the ON homes, so OFF markup is
+// byte-identical to before the split.
+
+function PeopleSection({ id, persons, onDone }: { id?: string; persons: NonNullable<Situation["persons"]>; onDone: () => void }) {
+  return (
+    <Section id={id} title={<>People (taxpayers) <InfoTip k="persons" /></>}>
+      <PeopleList persons={persons} onDone={onDone} />
+    </Section>
+  );
+}
+
+function CarryInsSection({ id }: { id?: string }) {
+  return (
+    <Section
+      id={id}
+      title={
+        <>
+          Prior-year carry-ins{" "}
+          <InfoTip tip="Carried-forward capital losses and opening depreciation values from last year. These are stored for your registered tax agent — Quillo never auto-applies them to your position (a capital loss offsets capital gains only, not income)." />
+        </>
+      }
+    >
+      <CarryIns />
+    </Section>
+  );
+}
+
+function PropertySections({ s, accounts, onDone, anchored = false }: { s: Situation; accounts: Account[]; onDone: () => void; anchored?: boolean }) {
+  return (
+    <>
       {/* Properties */}
-      <Section title={<>Properties <InfoTip k="property_status" /></>}>
+      <Section id={anchored ? "properties" : undefined} title={<>Properties <InfoTip k="property_status" /></>}>
         {s.properties.map((p) => (
-          <EditableProperty key={p.id} property={p} onDone={invalidate} />
+          <EditableProperty key={p.id} property={p} onDone={onDone} />
         ))}
         {!s.properties.length && <Empty>No properties yet. Add an investment or rented property so its expenses attribute correctly.</Empty>}
-        <AddProperty onDone={invalidate} />
+        <AddProperty onDone={onDone} />
       </Section>
 
       {/* Loan → property links — set the deductible-interest % each loan funds. Set-up data only:
           it pre-fills the guided interest/principal split later; nothing is claimed here. */}
       <Section
+        id={anchored ? "loans" : undefined}
         title={
           <>
             Loan interest attribution{" "}
@@ -86,43 +205,36 @@ export function Settings() {
         }
       >
         {(s.loans_properties ?? []).map((lp) => (
-          <EditableLoanProperty key={lp.id} link={lp} accounts={accts.data ?? []} properties={s.properties} onDone={invalidate} />
+          <EditableLoanProperty key={lp.id} link={lp} accounts={accounts} properties={s.properties} onDone={onDone} />
         ))}
         {!(s.loans_properties ?? []).length && (
           <Empty>No loan links yet. Link a loan to the property it funds so its interest can be split out at tax time.</Empty>
         )}
-        <AddLoanProperty accounts={accts.data ?? []} properties={s.properties} onDone={invalidate} />
+        <AddLoanProperty accounts={accounts} properties={s.properties} onDone={onDone} />
       </Section>
+    </>
+  );
+}
 
-      {/* Prior-year carry-ins — captured for your agent. CAPTURE-ONLY: never auto-applied to your
-          position (a capital loss offsets capital gains only; an opening value is the agent's to apply). */}
-      {!aboutYouLive && (
-        <Section
-          title={
-            <>
-              Prior-year carry-ins{" "}
-              <InfoTip tip="Carried-forward capital losses and opening depreciation values from last year. These are stored for your registered tax agent — Quillo never auto-applies them to your position (a capital loss offsets capital gains only, not income)." />
-            </>
-          }
-        >
-          <CarryIns />
-        </Section>
-      )}
-
+function BusinessSections({ s, onDone, anchored = false }: { s: Situation; onDone: () => void; anchored?: boolean }) {
+  const { has } = useFeatures();
+  const a = (id: string) => (anchored ? id : undefined);
+  return (
+    <>
       {/* Entities */}
-      <Section title={<>Entities (employment · company · novated lease) <InfoTip k="entities" /></>}>
+      <Section id={a("entities")} title={<>Entities (employment · company · novated lease) <InfoTip k="entities" /></>}>
         {s.entities.map((e) => (
-          <EditableEntity key={e.id} entity={e} onDone={invalidate} />
+          <EditableEntity key={e.id} entity={e} onDone={onDone} />
         ))}
         {!s.entities.length && <Empty>No entities yet. Add your employer, company (with ABN), or a novated lease so spend routes to the right tax "hat".</Empty>}
-        <AddEntity onDone={invalidate} />
+        <AddEntity onDone={onDone} />
       </Section>
 
       {/* Business activities (#155) — a sole trader names their activity (e.g. "Rideshare", "Freelance
           design") so spend can attribute to it. Auto-seeded for employers/companies; manual for ABN
           sole traders. attribution_engine is what makes attribution useful, so gate the section on it. */}
       {has("attribution_engine") && (
-        <Section title={<>Business activities <InfoTip tip="Name a business/sole-trader activity (e.g. 'Rideshare', 'Freelance design') so its income and expenses attribute to it. Salary and rental activities are created automatically. Optionally tag an occupation (e.g. it_professional) for future occupation-specific hints. General information." /></>}>
+        <Section id={a("activities")} title={<>Business activities <InfoTip tip="Name a business/sole-trader activity (e.g. 'Rideshare', 'Freelance design') so its income and expenses attribute to it. Salary and rental activities are created automatically. Optionally tag an occupation (e.g. it_professional) for future occupation-specific hints. General information." /></>}>
           <BusinessActivities entities={s.entities} />
         </Section>
       )}
@@ -130,29 +242,29 @@ export function Settings() {
       {/* GST registration (the tenant default — the fallback for a sole trader with no company entity).
           Drives the indicative BAS on Reports. A company's own GST flag is set on its entity above. */}
       {has("gst_bas") && (
-        <Section title={<>GST registration <InfoTip tip="Tick this if you're registered for GST (e.g. an ABN sole trader). Quillo then shows an indicative BAS position on Reports — GST collected on business income minus GST credits on business spend. A company's GST flag is set on its entity. General information — confirm with a registered tax/BAS agent." /></>}>
-          <GstRegistration registered={(s.profile?.gst_registered ?? 0) === 1} onDone={invalidate} />
+        <Section id={a("gst")} title={<>GST registration <InfoTip tip="Tick this if you're registered for GST (e.g. an ABN sole trader). Quillo then shows an indicative BAS position on Reports — GST collected on business income minus GST credits on business spend. A company's GST flag is set on its entity. General information — confirm with a registered tax/BAS agent." /></>}>
+          <GstRegistration registered={(s.profile?.gst_registered ?? 0) === 1} onDone={onDone} />
         </Section>
       )}
 
       {/* BAS periods + PAYG instalments (#174) — actual lodged/draft figures. Recorded BAS periods
           OVERRIDE the ledger-derived indicative BAS for the FY; PAYG instalments are informational. */}
       {has("gst_bas") && (
-        <Section title={<>BAS periods &amp; PAYG instalments <InfoTip tip="Enter your actual quarterly BAS figures (GST collected / credits) — these override Quillo's ledger estimate for that year on Reports. PAYG instalments are pre-payments toward your income tax (informational, never in your position). Quillo never lodges. General information — confirm with a registered tax/BAS agent." /></>}>
+        <Section id={a("bas")} title={<>BAS periods &amp; PAYG instalments <InfoTip tip="Enter your actual quarterly BAS figures (GST collected / credits) — these override Quillo's ledger estimate for that year on Reports. PAYG instalments are pre-payments toward your income tax (informational, never in your position). Quillo never lodges. General information — confirm with a registered tax/BAS agent." /></>}>
           <BasPeriods />
         </Section>
       )}
 
       {/* Trust distributions (#139) — what a trust distributed to you, character retained */}
       {has("trust_distributions") && (
-        <Section title={<>Trust distributions <InfoTip tip="Your share of a trust's net income, with its character retained (a franked dividend stays franked). It's assessable to you. Add a trust entity above first. General information — confirm with a registered tax agent." /></>}>
+        <Section id={a("trust")} title={<>Trust distributions <InfoTip tip="Your share of a trust's net income, with its character retained (a franked dividend stays franked). It's assessable to you. Add a trust entity above first. General information — confirm with a registered tax agent." /></>}>
           <TrustDistributions trusts={s.entities.filter((e) => e.kind === "trust")} />
         </Section>
       )}
 
       {/* Partnership distributions (Slice E) — your share of partnership net income, character retained */}
       {has("partnership_distributions") && (
-        <Section title={<>Partnership distributions <InfoTip tip="Your share of a partnership's net income, with its character retained (a franked dividend stays franked, a discounted capital gain stays discounted). It's assessable to you; the partnership lodges its own return. Add a partnership entity above first. General information — confirm with a registered tax agent." /></>}>
+        <Section id={a("partnership")} title={<>Partnership distributions <InfoTip tip="Your share of a partnership's net income, with its character retained (a franked dividend stays franked, a discounted capital gain stays discounted). It's assessable to you; the partnership lodges its own return. Add a partnership entity above first. General information — confirm with a registered tax agent." /></>}>
           <PartnershipDistributions partnerships={s.entities.filter((e) => e.kind === "partnership")} />
         </Section>
       )}
@@ -160,58 +272,113 @@ export function Settings() {
       {/* SMSF members + balances (#140) — drives the ECPI exempt fraction. Fund earnings are recorded
           as income against the SMSF entity (Income page). SMSF is a separate taxpayer. */}
       {has("smsf_engine") && (
-        <Section title={<>SMSF members &amp; balances <InfoTip tip="A self-managed super fund is a separate taxpayer. Add each member's pension- and accumulation-phase balances so Quillo can compute the ECPI exempt fraction (the share of fund income that's tax-exempt in pension phase). Record the fund's earnings as income against the SMSF entity. General information — confirm with a registered tax/SMSF agent." /></>}>
+        <Section id={a("smsf")} title={<>SMSF members &amp; balances <InfoTip tip="A self-managed super fund is a separate taxpayer. Add each member's pension- and accumulation-phase balances so Quillo can compute the ECPI exempt fraction (the share of fund income that's tax-exempt in pension phase). Record the fund's earnings as income against the SMSF entity. General information — confirm with a registered tax/SMSF agent." /></>}>
           <SmsfMembers funds={s.entities.filter((e) => e.kind === "smsf")} />
         </Section>
       )}
 
       {/* Super contributions (#140) — concessional / non-concessional, for cap context. Capture-only. */}
       {has("smsf_engine") && (
-        <Section title={<>Super contributions <InfoTip tip="Concessional (pre-tax, e.g. salary sacrifice + employer SG) and non-concessional (after-tax) contributions, recorded for the contributions-cap context your agent checks. Capture-only — Quillo doesn't apply the cap. General information." /></>}>
+        <Section id={a("super")} title={<>Super contributions <InfoTip tip="Concessional (pre-tax, e.g. salary sacrifice + employer SG) and non-concessional (after-tax) contributions, recorded for the contributions-cap context your agent checks. Capture-only — Quillo doesn't apply the cap. General information." /></>}>
           <SuperContributions persons={s.persons ?? []} />
         </Section>
       )}
+    </>
+  );
+}
 
-      {/* Rules */}
-      <Section title={<>Per-user rules <InfoTip k="user_rules" /></>}>
+function RulesSection({ s, onDone, anchored = false }: { s: Situation; onDone: () => void; anchored?: boolean }) {
+  return (
+    <Section id={anchored ? "rules" : undefined} title={<>Per-user rules <InfoTip k="user_rules" /></>}>
         {s.rules.map((r) => (
-          <EditableRule key={r.id} rule={r} properties={s.properties} onDone={invalidate} />
+          <EditableRule key={r.id} rule={r} properties={s.properties} onDone={onDone} />
         ))}
         {!s.rules.length && <Empty>No rules yet. Add a shortcut like "Ray White → rental agent" — or just correct the same merchant twice and Quillo will offer to learn it for you.</Empty>}
-        <AddRule properties={s.properties} onDone={invalidate} />
+        <AddRule properties={s.properties} onDone={onDone} />
         <p className="px-1 pt-1 text-xs text-muted">
           Matching is case-insensitive and matches any merchant <em>containing</em> the text; the highest-priority rule wins.
           Quillo also auto-learns a rule when you correct the same merchant twice — you'll get an alert when it does.
         </p>
-      </Section>
-
-      {/* Devices / keys */}
-      <Section title={<>Devices (ingest keys) <InfoTip k="devices" /></>}>
-        {keys.isLoading ? (
-          <Spinner />
-        ) : (
-          (keys.data ?? []).map((k) => (
-            <Row
-              key={k.key_id}
-              label={`${k.label ?? "key"} · ${k.key_id}${k.revoked_at ? " (revoked)" : ""}`}
-              onDelete={k.revoked_at ? undefined : () => api.revokeKey(k.key_id).then(() => qc.invalidateQueries({ queryKey: ["keys"] }))}
-              deleteLabel="revoke"
-            />
-          ))
-        )}
-        <MintKey onDone={() => qc.invalidateQueries({ queryKey: ["keys"] })} />
-      </Section>
-    </div>
+    </Section>
   );
 }
+
+function DevicesSection({
+  anchored,
+  loading,
+  keys,
+  onRevoke,
+  onMinted,
+}: {
+  anchored: boolean;
+  loading: boolean;
+  keys: { key_id: string; label?: string | null; revoked_at?: string | null }[];
+  onRevoke: (keyId: string) => Promise<unknown>;
+  onMinted: () => void;
+}) {
+  return (
+    <Section id={anchored ? "devices" : undefined} title={<>Devices (ingest keys) <InfoTip k="devices" /></>}>
+      {loading ? (
+        <Spinner />
+      ) : (
+        keys.map((k) => (
+          <Row
+            key={k.key_id}
+            label={`${k.label ?? "key"} · ${k.key_id}${k.revoked_at ? " (revoked)" : ""}`}
+            onDelete={k.revoked_at ? undefined : () => onRevoke(k.key_id)}
+            deleteLabel="revoke"
+          />
+        ))
+      )}
+      <MintKey onDone={onMinted} />
+    </Section>
+  );
+}
+
+// ── The sections' new homes (flag ft_journey ON, #593): each fetches the situation and renders its group
+// with anchors, so Grow › Property / Grow › Business / Review compose the SAME editors Settings had. ────────
+
+function useSituation() {
+  const qc = useQueryClient();
+  const sit = useQuery({ queryKey: ["situation"], queryFn: () => api.situation() });
+  return { sit, invalidate: () => qc.invalidateQueries({ queryKey: ["situation"] }) };
+}
+
+function SituationGate({ sit, children }: { sit: ReturnType<typeof useSituation>["sit"]; children: (s: Situation) => React.ReactNode }) {
+  if (sit.isLoading) return <Spinner />;
+  if (sit.error || !sit.data) return <Card className="p-6 text-sm text-muted">Couldn't load: {(sit.error as Error | null)?.message ?? "no data"}</Card>;
+  return <>{children(sit.data)}</>;
+}
+
+/** Grow › Property: Properties + loan interest attribution (anchors #properties, #loans). */
+export function PropertySettings() {
+  const { sit, invalidate } = useSituation();
+  const accts = useQuery({ queryKey: ["accounts"], queryFn: () => api.accounts() });
+  return <SituationGate sit={sit}>{(s) => <PropertySections anchored s={s} accounts={accts.data ?? []} onDone={invalidate} />}</SituationGate>;
+}
+
+/** Grow › Business & companies: entities through super contributions (anchors #entities … #super). */
+export function BusinessSettings() {
+  const { sit, invalidate } = useSituation();
+  return <SituationGate sit={sit}>{(s) => <BusinessSections anchored s={s} onDone={invalidate} />}</SituationGate>;
+}
+
+/** Review: the per-user sorting rules (anchor #rules). */
+export function RulesSettings() {
+  const { sit, invalidate } = useSituation();
+  return <SituationGate sit={sit}>{(s) => <RulesSection anchored s={s} onDone={invalidate} />}</SituationGate>;
+}
+
 
 // APP-8 consent dashboard: shows current cross-border processing state + the recorded consent text
 // and date, and lets the user withdraw consent (which re-arms the gate on the US/Anthropic path).
 // Bedrock/AU tenants process in Australia, so no cross-border consent is required.
 function PrivacyPanel({
+  anchored = false,
   profile,
   onChange,
 }: {
+  anchored?: boolean;
   profile?: { consent_xborder: number; consent_xborder_at?: string | null; consent_xborder_text?: string | null; inference_provider: string | null; inference_region?: string | null };
   onChange: () => void;
 }) {
@@ -244,7 +411,7 @@ function PrivacyPanel({
     if (typed === "DELETE") purge.mutate();
   };
 
-  return (
+  const panel = (
     <Card className="p-4">
       <div className="mb-3 text-xs font-medium uppercase tracking-wide text-muted">
         Privacy &amp; AI processing <InfoTip k="app8" />
@@ -298,7 +465,7 @@ function PrivacyPanel({
       )}
 
       {/* APP 12 / APP 13 — your data */}
-      <div className="mt-4 border-t border-line pt-3">
+      <div id={anchored ? "your-data" : undefined} className="mt-4 border-t border-line pt-3">
         <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted">Your data</div>
         <div className="flex flex-wrap gap-2">
           <button
@@ -334,6 +501,14 @@ function PrivacyPanel({
       </p>
     </Card>
   );
+  // ft_journey ON (#593): anchors #privacy and #your-data; OFF the markup is unchanged.
+  return anchored ? (
+    <div id="privacy" className="scroll-mt-20">
+      {panel}
+    </div>
+  ) : (
+    panel
+  );
 }
 
 function GstRegistration({ registered, onDone }: { registered: boolean; onDone: () => void }) {
@@ -354,12 +529,20 @@ function GstRegistration({ registered, onDone }: { registered: boolean; onDone: 
   );
 }
 
-function Section({ title, children }: { title: React.ReactNode; children: React.ReactNode }) {
-  return (
+function Section({ id, title, children }: { id?: string; title: React.ReactNode; children: React.ReactNode }) {
+  const card = (
     <Card className="p-4">
       <div className="mb-3 text-xs font-medium uppercase tracking-wide text-muted">{title}</div>
       <div className="space-y-2">{children}</div>
     </Card>
+  );
+  // An anchored section (its new home, flag ON — #593) gets an id wrapper; without one the markup is unchanged.
+  return id ? (
+    <div id={id} className="scroll-mt-20">
+      {card}
+    </div>
+  ) : (
+    card
   );
 }
 

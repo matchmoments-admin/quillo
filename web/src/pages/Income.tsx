@@ -471,7 +471,7 @@ function AddIncomeForm({ fy, onDone }: { fy: string; onDone: () => void }) {
           saved with no property and 400'd server-side with no feedback. */}
       <Button onClick={() => add.mutate()} disabled={add.isPending || (isMf ? !mfHasAny : !gross) || (needsProperty && !propertyId)}>{add.isPending ? "Saving…" : "Save income"}</Button>
       {needsProperty && properties.length === 0 ? (
-        <p className="text-xs text-muted">Add a rental property first in <Link to="/settings" className="font-medium text-ink underline">Settings → Properties</Link>, then come back to record its rent.</p>
+        <p className="text-xs text-muted">Add a rental property first in {/* #593: ON, properties live on Grow › Property; OFF unchanged. */}{has("ft_journey") ? <Link to="/grow/property#properties" className="font-medium text-ink underline">Grow → Property</Link> : <Link to="/settings" className="font-medium text-ink underline">Settings → Properties</Link>}, then come back to record its rent.</p>
       ) : needsProperty && !propertyId ? (
         <p className="text-xs text-muted">Choose which property this rent is for so it counts in that property's position.</p>
       ) : null}

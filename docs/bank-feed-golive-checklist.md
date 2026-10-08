@@ -8,13 +8,18 @@
 > Context: Basiq declined to onboard Quillo; **Fiskil** is the CDR principal we're applying to as a
 > CDR Representative ([provider options](bank-feed-provider-options.md)). Sandbox credentials exist
 > (`.dev.vars`, verified 2026-10-06); the Fiskil adapter is being built.
+>
+> **Security pack:** the Schedule 2 security controls, policies, OSP register, incident response plan and
+> questionnaire answer bank live in [`docs/security/`](security/README.md). Its
+> [control matrix](security/control-matrix.md) is the master tracker for security readiness (epic #633);
+> owner actions are in [`docs/security/owner-tasks.md`](security/owner-tasks.md) (C1–C9).
 
 ## 1. Request live access (Fiskil Console)
 
 | # | Fiskil step | Quillo answer / status |
 |---|---|---|
 | 1 | Complete application + company profile | ⬜👤 Young Milton Pty Ltd (trading as Quillo), ABN, contact `brendan@quillo.au` (forwards to the owner's Gmail via Cloudflare Email Routing). Use case: read-only bank transactions so first-time taxpayers can find work-related deductions and keep records for **their own** myTax return. Not lending, not payments, no action initiation |
-| 2 | Submit security questionnaire | ⬜👤 Draft answers from: ADR-0003 (architecture + controls), `docs/cdr-ps8-findings.md`, auth (Clerk, fail-closed — #504), tenant isolation (every table `user_id`, identity server-side), encryption in transit (TLS everywhere), secrets in Cloudflare secrets, audit logs (`audit_log`, `cdr_audit_log` 0085), residency guard (`getLLM` refuses non-AU inference for CDR-tainted tenants). **Open for the questionnaire:** cyber-insurance (Fiskil's checks ask), data-at-rest location (see §2 *Data sovereignty*) |
+| 2 | Submit security questionnaire | ⬜👤 Answer bank: [`docs/security/questionnaire-answers.md`](security/questionnaire-answers.md); submit once every [control-matrix](security/control-matrix.md) row is ✅. Also drawn from: ADR-0003 (architecture + controls), `docs/cdr-ps8-findings.md`, auth (Clerk, fail-closed — #504), tenant isolation (every table `user_id`, identity server-side), encryption in transit (TLS everywhere), secrets in Cloudflare secrets, audit logs (`audit_log`, `cdr_audit_log` 0085), residency guard (`getLLM` refuses non-AU inference for CDR-tainted tenants). **Open for the questionnaire:** cyber-insurance (Fiskil's checks ask), data-at-rest location (see §2 *Data sovereignty*) |
 | 3 | Review compliance checklist | 🟡 This document, §2 |
 | 4 | Work through developer checklist | 🟡 This document, §3 — the Fiskil adapter (in progress) covers most items |
 | 5 | Set up production environment + final E2E test | ⬜ After approval: production `FISKIL_CLIENT_ID/SECRET` via `wrangler secret put`, `BANK_FEED_PROVIDER=fiskil`, `FISKIL_ENV=production`, redirect URL `https://app.quillo.au/api/bank/callback` (no trailing '.' — that broke the Basiq test), first real consent smoke test, then flip `bank_feed_cdr` |
@@ -34,9 +39,9 @@
 | Requirement | Quillo answer / status |
 |---|---|
 | Data minimisation strategy (store only essential data) | ✅ Account picker / auto-select only **consented** accounts; transactions fetched **per selected account** with server-side filters (verified on Basiq #512; Fiskil filter semantics being verified in the adapter); full account number / BSB **never read** past the provider boundary (last 4 only); vendor categories are a hint, never stored as truth. **Retention model** (#534): keep all credits + relevant/unsorted debits; irrelevant debits shrink to per-account totals after the year is lodged + 60 days (backstop: 31 Oct + 60 days) — core built (#581, flag `bank_minimisation`), cron + user notice = #594 ⬜ |
-| Deletion / de-identification when no longer needed | 🟡 Built: consent withdrawal → upstream revoke → PS12 deletion of CDR lines (#576); account deletion → `purgeTenant` revokes the provider user (#576) and reseats a clean tenant (#623); minimisation shrink (#581). To do: scheduled retention job + notice (#594); **inactive end-user deletion** policy (see §3) |
+| Deletion / de-identification when no longer needed | 🟡 See [`docs/security/data-handling.md`](security/data-handling.md) §5 (note: consent **expiry** stops collection but does not yet delete — #639). Built: consent withdrawal → upstream revoke → PS12 deletion of CDR lines (#576); account deletion → `purgeTenant` revokes the provider user (#576) and reseats a clean tenant (#623); minimisation shrink (#581). To do: scheduled retention job + notice (#594); **inactive end-user deletion** policy (see §3) |
 | Testing procedures for data-management compliance | 🟡 Automated: consent lifecycle tests (#576), minimisation goldens `pft10/pft10b` (#581), purge reseat checks (#623), PURGE_TABLES schema-drift test. To add: Fiskil-adapter equivalents (in progress) |
-| Identifiable customer data stored per data-sovereignty rules | 🟡 **Open — needs the lawyer.** Inference: CDR-tainted tenants are forced to AWS Bedrock `ap-southeast-2/-4` (`au.` profile, IAM-denied outside AU) — but the **Anthropic use-case form is still unsubmitted** (blocks all Bedrock) 👤. Storage: Cloudflare D1 with `locationHint: "oc"` — a latency hint, **not** a residency guarantee; Cloudflare is US-incorporated. PS8 analysis (`docs/cdr-ps8-findings.md`, #474) recommends Option A (reasonable steps via contract) — needs counsel + Fiskil's written OK to name **Cloudflare and AWS as OSPs**. Fiskil itself is onshore-only |
+| Identifiable customer data stored per data-sovereignty rules | 🟡 **Open — needs the lawyer.** OSPs and locations: [`docs/security/osp-register.md`](security/osp-register.md). Inference: CDR-tainted tenants are forced to AWS Bedrock `ap-southeast-2/-4` (`au.` profile, IAM-denied outside AU) — but the **Anthropic use-case form is still unsubmitted** (blocks all Bedrock) 👤. Storage: Cloudflare D1 with `locationHint: "oc"` — a latency hint, **not** a residency guarantee; Cloudflare is US-incorporated. PS8 analysis (`docs/cdr-ps8-findings.md`, #474) recommends Option A (reasonable steps via contract) — needs counsel + Fiskil's written OK to name **Cloudflare and AWS as OSPs**. Fiskil itself is onshore-only |
 
 ## 3. Developer checklist
 
@@ -52,7 +57,7 @@
 ## Owner actions, in order
 
 1. 👤 Send Fiskil the intro message (`docs/bank-feed-provider-options.md`) from `brendan@quillo.au`.
-2. 👤 Complete the Console **application + company profile**, then the **security questionnaire** (I can draft answers from the table above).
+2. 👤 Complete the Console **application + company profile**, then the **security questionnaire** (answers: [`docs/security/questionnaire-answers.md`](security/questionnaire-answers.md); full owner checklist: [`docs/security/owner-tasks.md`](security/owner-tasks.md)).
 3. 👤 **Customize UI**: branding, 12-month consent, the purpose text above, accounts + transactions scopes only.
 4. 👤 Submit the **Anthropic use-case form** in the Bedrock console (Sydney + Melbourne).
 5. 👤 Book an Australian privacy/CDR **lawyer**: representative agreement + PS8 data-at-rest position + OSP naming.

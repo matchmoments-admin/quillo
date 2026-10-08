@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { api } from "../api";
 import { Card, Spinner } from "./ui";
 import type { BankConnection } from "../types";
+import { CdrPolicyNote } from "./CdrPolicyLink";
 
 /**
  * Bank connections — the consent dashboard (#576, ADR-0003 §6.4). Rendered only when
@@ -114,6 +115,7 @@ export function BankConsents() {
           Each bank you've connected, what you agreed to share and until when. Withdrawing stops Quillo collecting
           straight away, ends the bank-data provider's access, and deletes the transactions imported from that bank.
         </p>
+        <CdrPolicyNote className="mt-1 text-xs text-muted" />
       </div>
 
       {isLoading ? (

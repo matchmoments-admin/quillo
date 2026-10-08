@@ -4,6 +4,7 @@ import { UserButton } from "@clerk/clerk-react";
 import { Toaster } from "sonner";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import { useFeatures, useAdminAccess, usePartnerAccess } from "../lib/features";
+import { CdrPolicyFooterLink } from "./CdrPolicyLink";
 import { FySwitcher } from "../lib/activeFy";
 import { JOURNEY_STEP_KEYS, STATUS_LABEL, STEP_LABEL, STEP_ROUTE, stepForPath, useJourney } from "../lib/journey";
 import { GROW_LABEL, GROW_ROUTE, useSetGrowLayer } from "../lib/grow";
@@ -289,6 +290,7 @@ export function FtShell({ gate }: { gate?: ReactNode }) {
                 General information only, not tax advice. Quillo is not a registered tax or BAS agent, does not
                 lodge returns, and never holds or moves your money. If you're unsure, confirm with a registered
                 tax agent.
+                <CdrPolicyFooterLink />
               </footer>
             </div>
           </div>

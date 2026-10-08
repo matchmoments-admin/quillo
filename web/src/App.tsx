@@ -7,6 +7,7 @@ import { Toaster } from "sonner";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import { api } from "./api";
 import { useFeatures, useAdminAccess, usePartnerAccess } from "./lib/features";
+import { CdrPolicyFooterLink } from "./components/CdrPolicyLink";
 import { FySwitcher, useActiveFy } from "./lib/activeFy";
 import { JourneySpine } from "./components/JourneySpine";
 import { Coachmarks } from "./components/Coachmarks";
@@ -217,6 +218,7 @@ export function App() {
             <a href="mailto:hello@quillo.au?subject=Quillo%20support" className="text-ink underline underline-offset-2">
               Contact support
             </a>
+            <CdrPolicyFooterLink />
           </footer>
         </div>
       </div>

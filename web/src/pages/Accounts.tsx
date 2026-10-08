@@ -8,6 +8,7 @@ import { useActiveFy } from "../lib/activeFy";
 import { Button, Card, Spinner, money, InfoTip, parseMoneyToCents, parseDecimal } from "../components/ui";
 import type { Account, StatementInfo, StatementParse } from "../types";
 import { NoticedPanel } from "../components/NoticedPanel";
+import { CdrPolicyNote } from "../components/CdrPolicyLink";
 
 const SOURCE_LABEL: Record<string, string> = {
   cdr_feed: "Bank feed",
@@ -223,6 +224,7 @@ function BankFeed({ accounts }: { accounts: Account[] }) {
             Connect a bank once and transactions flow in automatically — no statement uploads. You sign in at your
             bank; Quillo never sees your banking password.
           </p>
+          <CdrPolicyNote className="mt-1 text-xs text-muted" />
         </div>
         <div className="flex gap-2">
           <Button onClick={() => connect.mutate("connect")} disabled={connect.isPending}>

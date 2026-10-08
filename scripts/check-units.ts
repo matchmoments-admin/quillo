@@ -6209,7 +6209,8 @@ console.log("security & compliance dashboard (#636)");
 
   // No-PII-in-logs lint: no console.* line in src/ interpolates a field that holds personal information
   // (emails, names, descriptions/merchants, account numbers, mailbox localparts, raw bodies/reports).
-  const SENSITIVE = /^(email|emails|name|first_?name|last_?name|full_?name|display_?name|description|raw_?description|merchant|payee|memo|narration|bsb|account_?number|acct_?number|tfn|phone|address|localpart|body|raw|text|report)$/i;
+  // Bare `name` is deliberately absent: `(e as Error).name` is an error class, not a person.
+  const SENSITIVE = /^(email|emails|first_?name|last_?name|full_?name|display_?name|description|raw_?description|merchant|payee|memo|narration|bsb|account_?number|acct_?number|tfn|phone|address|localpart|body|raw|text|report)$/i;
   const offenders: string[] = [];
   const walk = (dir: string): string[] => fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
     e.isDirectory() ? walk(path.join(dir, e.name)) : e.name.endsWith(".ts") ? [path.join(dir, e.name)] : []);

@@ -1,6 +1,7 @@
 import type { Env } from "../env";
 import { bankProvider } from "./bank-provider";
 import { clearOrphanedTxnCgt } from "./situation-write";
+import { featureOn } from "./features";
 
 /**
  * Bank-feed consent lifecycle — withdraw, Privacy Safeguard 12 delete, expiry, CDR audit log
@@ -64,7 +65,11 @@ export type CdrEvent =
   | "upstream_revoked"
   | "upstream_revoke_failed"
   | "data_deleted"
-  | "tenant_purged";
+  | "tenant_purged"
+  /** #639: the aggregator end user was deleted after 30 days with no live consent (Fiskil developer checklist). */
+  | "end_user_deleted"
+  /** #639: that delete failed at the aggregator — an error class only; retried by the next weekly sweep. */
+  | "end_user_delete_failed";
 
 export interface CdrAuditEntry {
   event: CdrEvent;
@@ -138,10 +143,20 @@ export interface DisconnectResult {
 const CONN_COLS = `id, provider, access_type, provider_user_id, provider_connection_id, status,
                    upstream_revoked_at, data_deleted_at`;
 
-/** Other connections that still have upstream access (anything not withdrawn). */
+/**
+ * The statuses that no longer hold a live consent. A withdrawn connection never does. An EXPIRED one is a
+ * spent consent too, but it only counts as such when `cdr_expiry_delete` is ON: with the flag OFF its lines are
+ * still held (expiry only stops collection), so it must keep counting as live — otherwise a withdrawal's
+ * last-connection sweep would delete them and the flag-OFF behaviour would change.
+ */
+function deadStatusesSql(env: Env): string {
+  return featureOn(env, "cdr_expiry_delete") ? `('revoked', 'expired')` : `('revoked')`;
+}
+
+/** Other connections that still have upstream access (anything not withdrawn — or expired, see above). */
 async function liveOtherConnections(env: Env, userId: string, exceptId: string): Promise<number> {
   const r = await env.DB.prepare(
-    `SELECT COUNT(*) AS n FROM bank_connections WHERE user_id = ? AND id <> ? AND status <> 'revoked'`,
+    `SELECT COUNT(*) AS n FROM bank_connections WHERE user_id = ? AND id <> ? AND status NOT IN ${deadStatusesSql(env)}`,
   ).bind(userId, exceptId).first<{ n: number }>();
   return r?.n ?? 0;
 }
@@ -247,6 +262,11 @@ async function deleteCdrLinesForAccount(env: Env, userId: string, accountId: str
     env.DB.prepare(
       `DELETE FROM transactions WHERE user_id = ? AND account_id = ? AND source = 'cdr_feed' AND kind = 'bank_line'`,
     ).bind(userId, accountId),
+    // #594: the bank-minimisation totals and fingerprint tombstones of this account's FEED lines are CDR-derived
+    // too (statement_id IS NULL = cdr_feed; a statement's own rollups belong to the statement and stay). With
+    // them gone a later re-consent re-collects the period as fresh lines. No-op when nothing was ever shrunk.
+    env.DB.prepare(`DELETE FROM bank_line_rollups WHERE user_id = ? AND account_id = ? AND statement_id IS NULL`).bind(userId, accountId),
+    env.DB.prepare(`DELETE FROM bank_line_tombstones WHERE user_id = ? AND account_id = ? AND statement_id IS NULL`).bind(userId, accountId),
   );
   if (resetSource) {
     // Hand the account back to statement uploads ONLY when nothing fed remains on it — so the
@@ -274,7 +294,13 @@ async function deleteCdrLinesForAccount(env: Env, userId: string, accountId: str
  * sweep widens to all cdr_feed lines, and any cdr_feed account left with no lines is handed back to
  * statements (an account claimed and released before its first sync would otherwise stay locked).
  */
-async function runPs12Delete(env: Env, userId: string, conn: ConnRow, nowIso: string): Promise<{ accounts: number; linesDeleted: number }> {
+async function runPs12Delete(
+  env: Env,
+  userId: string,
+  conn: ConnRow,
+  nowIso: string,
+  reason: "consent_withdrawn" | "consent_expired" = "consent_withdrawn",
+): Promise<{ accounts: number; linesDeleted: number }> {
   const last = (await liveOtherConnections(env, userId, conn.id)) === 0;
   const mapped = await env.DB.prepare(
     `SELECT DISTINCT account_id FROM bank_connection_accounts WHERE user_id = ? AND connection_id = ? AND account_id IS NOT NULL`,
@@ -292,7 +318,7 @@ async function runPs12Delete(env: Env, userId: string, conn: ConnRow, nowIso: st
   const stillFed = await env.DB.prepare(
     `SELECT DISTINCT a.account_id FROM bank_connection_accounts a
        JOIN bank_connections c ON c.id = a.connection_id AND c.user_id = a.user_id
-      WHERE a.user_id = ? AND a.connection_id <> ? AND c.status <> 'revoked'
+      WHERE a.user_id = ? AND a.connection_id <> ? AND c.status NOT IN ${deadStatusesSql(env)}
         AND a.selected = 1 AND a.account_id IS NOT NULL`,
   ).bind(userId, conn.id).all<{ account_id: string }>();
   const fed = new Set((stillFed.results ?? []).map((r) => r.account_id));
@@ -326,7 +352,7 @@ async function runPs12Delete(env: Env, userId: string, conn: ConnRow, nowIso: st
   await env.DB.batch(tail);
   await cdrAudit(env, userId, {
     event: "data_deleted", connectionId: conn.id, provider: conn.provider, accessType: conn.access_type,
-    accountCount: accounts, rowCount: linesDeleted, detail: { reason: "consent_withdrawn", tenant_wide: last },
+    accountCount: accounts, rowCount: linesDeleted, detail: { reason, tenant_wide: last },
   });
   return { accounts, linesDeleted };
 }
@@ -396,6 +422,10 @@ export interface LifecycleResult {
   upstreamRetried: number;
   /** Withdrawals whose PS12 delete had not completed, finished by this sweep. */
   deletesCompleted: number;
+  /** #639 (cdr_expiry_delete): expired consents whose PS12 delete ran on this sweep (0 when the flag is OFF). */
+  expiredDeleted: number;
+  /** Bank lines those expiry deletes removed. */
+  expiredLinesDeleted: number;
 }
 
 /**
@@ -403,11 +433,15 @@ export interface LifecycleResult {
  *  - mark consents past their expiry as 'expired' (bankSync already refuses them; this makes the
  *    dashboard and the CDR record say so),
  *  - send ONE reminder per consent inside the reminder window (ADR-0003 §6.4),
- *  - retry upstream revokes that failed at withdrawal time.
+ *  - retry upstream revokes that failed at withdrawal time,
+ *  - (#639, flag `cdr_expiry_delete`) run the PS12 delete for every EXPIRED consent whose data is still held.
  *
- * Expiry deliberately does NOT auto-delete the collected lines: whether expiry makes lines already
- * in a prepared return "redundant" under PS12 is the legal reading routed to #524. The consumer
- * can withdraw (and delete) from the dashboard at any time.
+ * Expiry deletion. Once the use consent ends the collected data is redundant (PS12, r7.12–7.13), so with
+ * `cdr_expiry_delete` ON an expired consent goes through the SAME delete as a withdrawal (runPs12Delete,
+ * reason 'consent_expired'), at expiry — no grace period. It covers consents that expired before the flag was
+ * flipped too (status 'expired', data_deleted_at NULL). The connection is NOT revoked upstream (the consent has
+ * already lapsed at the data holder); the aggregator end user is removed 30 days later by inactiveEndUserSweep.
+ * OFF ⇒ expiry only marks the row and stops collection, exactly as before.
  */
 export async function consentLifecycle(
   env: Env,
@@ -416,7 +450,7 @@ export async function consentLifecycle(
   now: Date = new Date(),
 ): Promise<LifecycleResult> {
   const nowIso = now.toISOString();
-  const out: LifecycleResult = { expired: 0, reminded: 0, upstreamRetried: 0, deletesCompleted: 0 };
+  const out: LifecycleResult = { expired: 0, reminded: 0, upstreamRetried: 0, deletesCompleted: 0, expiredDeleted: 0, expiredLinesDeleted: 0 };
 
   const active = await env.DB.prepare(
     `SELECT id, provider, access_type, institution, institution_id, consent_expires_at, expiry_reminded_at
@@ -474,7 +508,150 @@ export async function consentLifecycle(
     await runPs12Delete(env, userId, c, nowIso);
     out.deletesCompleted++;
   }
+
+  // Expiry ⇒ PS12 delete (#639). Runs after the expire loop above, so a consent that lapsed this week is
+  // deleted on the same sweep. Each row at most once (data_deleted_at); a re-consent clears it (bankCallback).
+  if (featureOn(env, "cdr_expiry_delete")) {
+    const expired = await env.DB.prepare(
+      `SELECT ${CONN_COLS} FROM bank_connections WHERE user_id = ? AND status = 'expired' AND data_deleted_at IS NULL`,
+    ).bind(userId).all<ConnRow>();
+    for (const c of expired.results ?? []) {
+      const r = await runPs12Delete(env, userId, c, nowIso, "consent_expired");
+      out.expiredDeleted++;
+      out.expiredLinesDeleted += r.linesDeleted;
+    }
+  }
   return out;
+}
+
+// ── Inactive end users (#639, Fiskil developer checklist) ────────────────────
+
+/** Days with no live consent before the aggregator end user is deleted. */
+export const INACTIVE_END_USER_DAYS = 30;
+
+export type InactiveEndUserState =
+  /** No aggregator end user on file (never connected, or already deleted). */
+  | { state: "none" }
+  /** A consent is still live (active / pending / error) — the end user is in use. */
+  | { state: "active" }
+  /** No live consent, but not yet 30 days: queued. `due_at` is when it becomes eligible. */
+  | { state: "queued"; inactive_since: string; due_at: string }
+  | { state: "deleted"; inactive_since: string }
+  | { state: "failed"; error: string };
+
+/** SQLite 'YYYY-MM-DD HH:MM:SS' or ISO → epoch ms (UTC); NaN when unparseable. */
+function ts(v: string | null | undefined): number {
+  if (!v) return NaN;
+  const iso = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(v) ? `${v.replace(" ", "T")}Z` : v;
+  return Date.parse(iso);
+}
+
+/**
+ * The moment the tenant's CDR relationship last showed any activity: the newest CDR record (consent requested /
+ * granted / abandoned / collected / withdrawn / expired / deleted…), a connection's creation, revocation or a
+ * past expiry. Failed end-user deletes and pre-expiry reminders are NOT activity (otherwise a failing delete
+ * would push its own retry back forever). NaN when nothing is on record.
+ */
+async function lastCdrActivity(env: Env, userId: string, nowMs: number): Promise<number> {
+  const a = await env.DB.prepare(
+    `SELECT MAX(created_at) AS t FROM cdr_audit_log
+      WHERE user_id = ? AND event NOT IN ('end_user_delete_failed', 'expiry_reminder')`,
+  ).bind(userId).first<{ t: string | null }>();
+  const c = await env.DB.prepare(
+    `SELECT created_at, revoked_at, consent_expires_at FROM bank_connections WHERE user_id = ?`,
+  ).bind(userId).all<{ created_at: string | null; revoked_at: string | null; consent_expires_at: string | null }>();
+  let latest = ts(a?.t);
+  const bump = (v: number) => {
+    if (Number.isFinite(v) && v <= nowMs && !(v <= latest)) latest = v;
+  };
+  for (const r of c.results ?? []) {
+    bump(ts(r.created_at));
+    bump(ts(r.revoked_at));
+    bump(ts(r.consent_expires_at)); // only once it is in the past (bump ignores the future)
+  }
+  return latest;
+}
+
+/**
+ * Weekly, per tenant, flag `cdr_inactive_user_delete`: delete the aggregator END USER once the tenant has held
+ * no live consent for INACTIVE_END_USER_DAYS — every consent withdrawn or expired, or a connect that was started
+ * and abandoned. A withdrawal of the last connection already deletes the end user (revokeUpstream); this catches
+ * expiry, abandoned connects and a delete that failed. Through the BankProvider seam (`upstream.deleteUser`,
+ * routed to the provider on the profile row), then the id is forgotten so a later connect mints a fresh one, and
+ * connections under it are marked revoked upstream (deleting the user revoked them). Idempotent: once the id is
+ * cleared the tenant reads 'none'. A vendor failure records end_user_delete_failed (error class only) and is
+ * retried next week. Never touches cdr_tainted or any local data — that is PS12's job.
+ */
+export async function inactiveEndUserSweep(
+  env: Env,
+  userId: string,
+  upstream: BankUpstream,
+  now: Date = new Date(),
+): Promise<InactiveEndUserState> {
+  if (!featureOn(env, "cdr_inactive_user_delete")) return { state: "none" };
+  const p = await env.DB.prepare(`SELECT bank_provider_user_id, bank_provider FROM profiles WHERE user_id = ?`)
+    .bind(userId)
+    .first<{ bank_provider_user_id: string | null; bank_provider: string | null }>();
+  const endUser = p?.bank_provider_user_id;
+  if (!endUser) return { state: "none" };
+
+  const live = await env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM bank_connections WHERE user_id = ? AND status NOT IN ('revoked', 'expired')`,
+  ).bind(userId).first<{ n: number }>();
+  if ((live?.n ?? 0) > 0) return { state: "active" };
+
+  const nowMs = now.getTime();
+  const last = await lastCdrActivity(env, userId, nowMs);
+  // Nothing on record at all (an end user minted before the CDR log existed): treat as long inactive.
+  const since = Number.isFinite(last) ? last : 0;
+  const dueMs = since + INACTIVE_END_USER_DAYS * 86_400_000;
+  const sinceIso = new Date(since).toISOString();
+  if (nowMs < dueMs) return { state: "queued", inactive_since: sinceIso, due_at: new Date(dueMs).toISOString() };
+
+  const provider = p?.bank_provider ?? null;
+  try {
+    await upstream.deleteUser(endUser, provider);
+  } catch (e) {
+    const cls = errorClass(e);
+    const eid = errorId(e);
+    console.error(`[cdr] inactive end-user delete failed for tenant ${userId}: ${cls}`);
+    await cdrAudit(env, userId, {
+      event: "end_user_delete_failed", provider,
+      detail: eid ? { reason: "inactive", error: cls, error_id: eid } : { reason: "inactive", error: cls },
+    });
+    return { state: "failed", error: cls };
+  }
+  const nowIso = now.toISOString();
+  const inactiveDays = Math.floor((nowMs - since) / 86_400_000);
+  await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE profiles SET bank_provider_user_id = NULL, bank_provider = NULL WHERE user_id = ? AND bank_provider_user_id = ?`,
+    ).bind(userId, endUser),
+    env.DB.prepare(
+      `UPDATE bank_connections SET upstream_revoked_at = ?, last_error = NULL
+        WHERE user_id = ? AND provider_user_id = ? AND upstream_revoked_at IS NULL`,
+    ).bind(nowIso, userId, endUser),
+    cdrAuditStmt(env, userId, {
+      event: "end_user_deleted", provider,
+      detail: { reason: "inactive", inactive_days: Number.isFinite(last) ? inactiveDays : null },
+    }),
+  ]);
+  return { state: "deleted", inactive_since: sinceIso };
+}
+
+/**
+ * Platform-wide size of the inactive end-user deletion queue (the Security & compliance "Data lifecycle" panel):
+ * tenants holding an aggregator end user with no live consent — whether still inside the 30 days or due. Counts
+ * only. Read directly (no DO): it is a cross-tenant tally, never a write.
+ */
+export async function inactiveEndUserQueueSize(env: Env): Promise<number> {
+  const r = await env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM profiles p
+      WHERE p.bank_provider_user_id IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM bank_connections c
+                         WHERE c.user_id = p.user_id AND c.status NOT IN ('revoked', 'expired'))`,
+  ).first<{ n: number }>();
+  return Number(r?.n ?? 0);
 }
 
 /** The consumer's CDR record (newest first) — shown on the consent dashboard. No CDR content. */

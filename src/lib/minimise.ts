@@ -20,7 +20,9 @@
 // the shrunk lines — that detail is exactly the data being minimised.
 //
 // Flag `bank_minimisation` (kill-switch, lands OFF): OFF ⇒ every export here is a no-op that touches neither
-// 0081 table. The weekly cron, the user notice and the PS12 disconnect extension are #594.
+// 0081 table. #594 wires it: the weekly cron (src/index.ts) calls TaxAgent.minimiseBankLines, which posts one
+// notice per FY tidied (minimisationNotices); Settings › Your data reads tidiedSummary; and a CDR withdrawal /
+// expiry deletes the feed rollups + tombstones of its accounts (bank-consent.ts deleteCdrLinesForAccount).
 
 import type { Env } from "../env";
 import { featureOn } from "./features";
@@ -265,6 +267,42 @@ async function shrinkChunk(
     perAccount.set(r.account_id, a);
   }
   return deleted;
+}
+
+// ── #594: the user notice + the Settings › Your data summary ──────────────────────────────────────────────
+
+/**
+ * The notice(s) after a shrink (spec A5 "User notice"): ONE per FY that shrank, counts only — never a merchant,
+ * an amount or a refund figure. Empty when nothing shrank (no notice on a no-op run). Pure, so the copy is
+ * unit-tested.
+ */
+export function minimisationNotices(result: MinimiseResult | null): string[] {
+  if (!result || result.shrunk <= 0) return [];
+  const byFy = new Map<string, number>();
+  for (const a of result.by_account_fy) byFy.set(a.fy, (byFy.get(a.fy) ?? 0) + a.n);
+  return [...byFy.entries()]
+    .filter(([, n]) => n > 0)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([fy, n]) =>
+      `We tidied up ${n} everyday transaction${n === 1 ? "" : "s"} from FY ${fy} that your return doesn't need. ` +
+      `Totals per account are kept, so your statements still balance. See Settings › Your data for what we keep.`);
+}
+
+export interface TidiedSummary {
+  /** Lines folded into per-account totals, all years. */
+  tidied: number;
+  /** The FY labels that have been tidied, ascending. */
+  fys: string[];
+}
+
+/** Settings › Your data: how many everyday lines have been tidied. null when the flag is OFF (nothing read). */
+export async function tidiedSummary(env: Env, userId: string): Promise<TidiedSummary | null> {
+  if (!featureOn(env, "bank_minimisation")) return null;
+  const r = await env.DB.prepare(
+    `SELECT fy, COALESCE(SUM(n), 0) AS n FROM bank_line_rollups WHERE user_id = ? GROUP BY fy ORDER BY fy`,
+  ).bind(userId).all<{ fy: string; n: number }>();
+  const rows = (r.results ?? []).filter((x) => Number(x.n) > 0);
+  return { tidied: rows.reduce((t, x) => t + Number(x.n), 0), fys: rows.map((x) => x.fy) };
 }
 
 /**

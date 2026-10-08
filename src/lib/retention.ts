@@ -3,6 +3,9 @@ import { getProfile, getSituation } from "./db";
 import { revokeAndDisconnect } from "./qbo-oauth";
 import { bankUpstream, cdrAudit, type BankUpstream } from "./bank-consent";
 import { bankProvider } from "./bank-provider";
+import { resolveRulePack } from "./report";
+import { fyStartYearForDate, resolveJurisdictionForUser, type JurisdictionDescriptor } from "./jurisdiction";
+import { lodgementTiming, retentionLodgedOn, type FySignoffState, type LodgementTiming } from "./lodging-year";
 
 // APP 11.2 / APP 12 / APP 13 support: export a tenant's data, purge it across every store, and a
 // weekly FLAG sweep for records past the retention window (never auto-deletes — surfaces a nudge).
@@ -334,14 +337,41 @@ export async function hasPendingNudge(env: Env, userId: string, bodyPattern: str
 }
 
 /**
- * Weekly FLAG sweep (called from the cron): if the tenant has countable records older than their
- * retention window (default 5y from FY end), surface ONE notification so they can decide. Never
- * deletes. Idempotent within the window — won't re-notify if a retention nudge is already pending.
+ * The day a record dated `recordDate` leaves its record-keeping window, or null while the window hasn't started.
+ *
+ * ATO rule (#594 research): records are kept for 5 years **from the date you LODGE** that year's return — not
+ * from 30 June. "Lodged" is the single rule in fy-signoff.ts as read for retention by lodging-year.ts
+ * (`retentionLodgedOn`): the user's own mark, a NOA close, or — for a year never marked — the self-lodger due
+ * date + the pack's backstop days, which stands in for the unknown lodge date (it can only be later than the
+ * true one for an on-time lodger, so the nudge is never early). A year not lodged and before the backstop has
+ * not started its clock ⇒ null. Timing comes from the tenant's RESOLVED rule pack; the FY from its descriptor.
+ */
+export function recordRetentionEndsOn(
+  recordDate: string,
+  years: number,
+  signoff: FySignoffState | null,
+  today: Date,
+  descriptor: JurisdictionDescriptor,
+  timing: LodgementTiming,
+): string | null {
+  const fy = fyStartYearForDate(descriptor, recordDate);
+  if (!Number.isFinite(fy)) return null;
+  const lodgedOn = retentionLodgedOn(fy, signoff, today, descriptor, timing);
+  if (!lodgedOn) return null;
+  const d = new Date(`${lodgedOn}T00:00:00Z`);
+  d.setUTCFullYear(d.getUTCFullYear() + years);
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * Weekly FLAG sweep (called from the cron): if the tenant's OLDEST dated record is past its retention window
+ * (default 5 years from the date that year was lodged — recordRetentionEndsOn), surface ONE notification so
+ * they can decide. Never deletes. Idempotent within the window — won't re-notify if a retention nudge is
+ * already pending.
  */
 export async function flagOldData(env: Env, userId: string, now = new Date()): Promise<boolean> {
   const profile = await getProfile(env, userId);
   const years = profile?.retention_years ?? 5;
-  // Oldest dated record (FY runs Jul–Jun; a record dated in FY Y "expires" at 30 Jun (Y+1) + years).
   const oldest = await env.DB.prepare(
     `SELECT MIN(txn_date) AS d FROM transactions
       WHERE user_id = ? AND txn_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'`,
@@ -349,12 +379,19 @@ export async function flagOldData(env: Env, userId: string, now = new Date()): P
     .bind(userId)
     .first<{ d: string | null }>();
   if (!oldest?.d) return false;
-  const oldestYear = Number(oldest.d.slice(0, 4));
-  const oldestMonth = Number(oldest.d.slice(5, 7));
-  const fyStart = oldestMonth >= 7 ? oldestYear : oldestYear - 1;
-  const expiryYear = fyStart + 1 + years; // 30 Jun of (fyStart+1), plus the retention window
-  const expired = now.getTime() > Date.UTC(expiryYear, 5, 30); // month 5 = June
-  if (!expired) return false;
+  const descriptor = await resolveJurisdictionForUser(env, userId);
+  const timing = lodgementTiming(await resolveRulePack(env, userId, descriptor));
+  const fy = fyStartYearForDate(descriptor, oldest.d);
+  let signoff: FySignoffState | null = null;
+  try {
+    signoff = await env.DB.prepare(`SELECT lodged_at, status, signed_off_at FROM fy_signoff WHERE user_id = ? AND fy = ?`)
+      .bind(userId, fy)
+      .first<FySignoffState>();
+  } catch {
+    /* lodged_at not migrated (0087) — fall back to the backstop date, the latest presumed lodge day */
+  }
+  const endsOn = recordRetentionEndsOn(oldest.d, years, signoff, now, descriptor, timing);
+  if (!endsOn || now.toISOString().slice(0, 10) <= endsOn) return false;
 
   // Don't pile up nudges — skip if an unread retention notice already exists.
   const existing = await env.DB.prepare(
@@ -371,7 +408,7 @@ export async function flagOldData(env: Env, userId: string, now = new Date()): P
     .bind(
       crypto.randomUUID(),
       userId,
-      `Some of your records are now past your ${years}-year retention window. They're kept until you choose to delete them — you can export or delete your data anytime in Settings → Privacy. (General information only.)`,
+      `Some of your records are now past your ${years}-year retention window (counted from when you lodged that year's return). They're kept until you choose to delete them — you can export or delete your data anytime in Settings → Privacy. (General information only.)`,
     )
     .run();
   return true;

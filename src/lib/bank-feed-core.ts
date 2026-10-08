@@ -80,6 +80,37 @@ export function requiresAuResidency(
   return true;
 }
 
+/**
+ * Is this a NON-PRODUCTION deployment (local `wrangler dev`, a preview)? The one marker is DEV_AUTH_BYPASS=1:
+ * it is what makes a non-production deployment usable at all, and production must never set it (wrangler.toml
+ * forbids it; auth fails closed without it). Read strictly — only the literal "1".
+ */
+export function isNonProductionDeployment(env: Env): boolean {
+  return env.DEV_AUTH_BYPASS === "1";
+}
+
+/**
+ * CDR data never reaches non-production (CDR Rules Schedule 2, control 3(b); docs/security/data-handling.md §6).
+ * TRUE ⇒ the caller must refuse to collect or store this connection's data here. It is exactly "a
+ * non-production deployment AND data that would be real" — i.e. requiresAuResidency's carve-out is the ONLY way
+ * through: Fiskil's sandbox data holder (88888) with FISKIL_ENV not 'production', or Basiq with BASIQ_ENV not
+ * 'production'. A real bank, an unknown institution, an unknown provider or production credentials are blocked
+ * in non-production; production is never blocked by this (its guard is AU residency, PS8).
+ */
+export function cdrBlockedInThisDeployment(
+  env: Env,
+  accessType: AccessType,
+  provider: string = "basiq",
+  institutionId?: string | null,
+): boolean {
+  return isNonProductionDeployment(env) && requiresAuResidency(env, accessType, provider, institutionId);
+}
+
+/** Non-production must never hold production aggregator credentials in use: a new connect is refused. */
+export function productionCredentialsBlockedHere(env: Env, provider: BankProviderId): boolean {
+  return isNonProductionDeployment(env) && providerEnvironment(env, provider) === "production";
+}
+
 // ── Errors ───────────────────────────────────────────────────────────────────
 
 /**

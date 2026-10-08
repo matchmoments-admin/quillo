@@ -202,6 +202,7 @@ export interface TaxAgentRpc {
   deleteStatement(userId: string, statementId: string, purge?: boolean): Promise<{ deleted: boolean; linesRemoved: number }>;
   repairStatements(userId: string): Promise<{ statements: number; recovered: number; flagsFixed: number }>;
   minimiseBankLines(userId: string, now?: string): Promise<import("./lib/minimise").MinimiseResult | null>;
+  dataRetentionSummary(userId: string): Promise<import("./lib/minimise").TidiedSummary | null>;
   setAccountSource(userId: string, accountId: string, source: string): Promise<void>;
   syncQboAccounts(userId: string): Promise<{ synced: number }>;
   disconnectQuickBooks(userId: string): Promise<{ ok: boolean; revoked: boolean }>;
@@ -219,7 +220,9 @@ export interface TaxAgentRpc {
   categoriseFeedLines(userId: string): Promise<{ categorised: number }>;
   // #576 consent dashboard: withdraw (local stop → upstream revoke → PS12 delete), weekly lifecycle, CDR record.
   bankDisconnect(userId: string, connectionId: string): Promise<{ ok: boolean; error?: string; upstreamRevoked: boolean; upstreamError?: string; consumerDeleted: boolean; accounts: number; linesDeleted: number }>;
-  bankConsentLifecycle(userId: string): Promise<{ expired: number; reminded: number; upstreamRetried: number; deletesCompleted: number }>;
+  bankConsentLifecycle(userId: string): Promise<import("./lib/bank-consent").LifecycleResult>;
+  // #639: delete the aggregator end user after 30 days with no live consent (flag cdr_inactive_user_delete).
+  bankInactiveEndUser(userId: string): Promise<import("./lib/bank-consent").InactiveEndUserState>;
   bankHistory(userId: string): Promise<{ events: Record<string, unknown>[] }>;
   withdrawConsent(userId: string): Promise<{ ok: boolean }>;
   setGstRegistered(userId: string, registered: boolean): Promise<{ ok: true; gst_registered: number }>;

@@ -46,6 +46,7 @@ import { recordsView, applyRecordException } from "../src/lib/records";
 import { minimiseTenant, tombstonedFingerprints, rolledUpLineCount, statementLedgerTieOut, forgetStatementMinimisation } from "../src/lib/minimise";
 import { statementLineFingerprints, type StatementLine } from "../src/lib/statements";
 import { listStatements } from "../src/lib/queries";
+import { statementLinesForModel } from "../src/lib/redact";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
@@ -3473,6 +3474,76 @@ async function main() {
     const rb2 = db.prepare(`SELECT n, total_cents, first_date, last_date FROM bank_line_rollups WHERE user_id = ?`).all(ub) as { n: number; total_cents: number; first_date: string; last_date: string }[];
     check("pft10b: a later shrink folds into the SAME NULL-statement rollup (explicit IS lookup, no duplicate row)",
       rb2.length === 1 && rb2[0]!.n === 4 && rb2[0]!.total_cents === 3500 && rb2[0]!.first_date === "2025-10-01" && rb2[0]!.last_date === "2025-11-01");
+  }
+
+  // ── pfts8b — S8b statement-line redaction (#639, ADR-0003 §10 S8b; flag redact_statement_lines). Uses the
+  //    PRODUCTION mapping categoriseStatement hands the model (statementLinesForModel, live + batch). Proves:
+  //    (1) OFF ⇒ the identical array (byte-identical model input); (2) across EVERY statement line all the persona
+  //    tenants above hold, ON changes no model text — so the model sees byte-identical input and every persona's
+  //    categorisation, and therefore position, is unchanged; (3) on a tenant whose lines DO carry account / card /
+  //    BSB shapes, only those identifiers are replaced — merchant words, bare reference numbers, amounts, dates and
+  //    direction are kept — and the stored rows and taxable_position_cents are identical ON vs OFF. ──
+  {
+    const RS_ON = { ...env, FEATURES: `${(env as { FEATURES: string }).FEATURES},redact_statement_lines` } as unknown as Env;
+    type ModelRow = { id: string; merchant: string | null; amount_cents: number | null; txn_date: string | null; direction: string | null };
+    const modelRows = (where: string, ...p: unknown[]) =>
+      db.prepare(`SELECT id, merchant, amount_cents, txn_date, direction FROM transactions WHERE kind = 'bank_line' AND statement_id IS NOT NULL ${where} ORDER BY user_id, id`).all(...(p as never[])) as ModelRow[];
+
+    const all = modelRows("");
+    check("pfts8b (OFF): the model input is the SAME array — byte-identical", statementLinesForModel(all, false) === all);
+    const changed = statementLinesForModel(all, true).filter((r, i) => r.merchant !== all[i]!.merchant);
+    check(`pfts8b: across all ${all.length} persona statement lines, ON changes no model text ⇒ every persona's categorisation + position unchanged`,
+      all.length > 0 && changed.length === 0);
+    // The categorisation eval set (merchants the model is scored on) and the statement-import fixtures: none of
+    // them carries an account / card / BSB shape, so ON leaves every one byte-identical — the eval baseline holds.
+    const evalMerchants = fs.readdirSync(path.join(process.cwd(), "evals", "cases")).filter((f) => f.endsWith(".json"))
+      .flatMap((f) => JSON.parse(fs.readFileSync(path.join(process.cwd(), "evals", "cases", f), "utf8")) as { merchant?: unknown }[])
+      .map((c) => c.merchant).filter((x): x is string => typeof x === "string");
+    const fixtureLines = fs.readdirSync(path.join(process.cwd(), "evals", "statements")).filter((f) => f.endsWith(".csv"))
+      .flatMap((f) => fs.readFileSync(path.join(process.cwd(), "evals", "statements", f), "utf8").split("\n"));
+    const asRows = (xs: string[]) => xs.map((merchant, i) => ({ id: String(i), merchant }));
+    const evalRows = asRows([...evalMerchants, ...fixtureLines]);
+    check(`pfts8b: the ${evalMerchants.length} eval merchants + ${fixtureLines.length} statement-fixture lines are untouched ON (eval baseline holds)`,
+      evalMerchants.length > 0 && statementLinesForModel(evalRows, true).every((r, i) => r.merchant === evalRows[i]!.merchant));
+
+    const u = "pfts8b";
+    seedTenant(u, "FT1 Jess — statement lines with account / card / BSB text");
+    run(`INSERT INTO profiles (user_id) VALUES (?)`, u);
+    inc("pfts8bSal", u, "salary_payg", 5200000);
+    run(`INSERT INTO accounts (id, user_id, name, type, source) VALUES ('pfts8bAcct', ?, 'Everyday', 'transaction', 'statement')`, u);
+    run(`INSERT INTO statements (id, user_id, account_id, filename, file_key, format, row_count, imported_count, status) VALUES ('pfts8bStmt', ?, 'pfts8bAcct', 's.csv', 'k/s.csv', 'csv', 7, 7, 'imported')`, u);
+    // [id, merchant, cents, bucket, ato_label, deductibility, status]
+    const L: [string, string, number, string | null, string | null, string, string][] = [
+      ["pfts8b1", "UBER *TRIP 123456 SYDNEY", 3150, "payg", "D2", "likely_deductible", "extracted"],
+      ["pfts8b2", "OFFICEWORKS 0423 12.50", 1250, "payg", "D5", "likely_deductible", "extracted"],
+      ["pfts8b3", "TRANSFER TO 062-000 12345678", 50000, null, null, "undetermined", "ignored"],
+      ["pfts8b4", "PAYMENT ACCT 98765432 THANK YOU", 20000, null, null, "undetermined", "ignored"],
+      ["pfts8b5", "AHPRA RENEWAL CARD 4111 1111 1111 1111", 21500, "payg", "D5", "likely_deductible", "extracted"],
+      ["pfts8b6", "WOOLWORTHS 1234 2025-09-01", 8800, "payg", null, "likely_not", "extracted"],
+      ["pfts8b7", "BPAY 12345 CRN 987654321", 4000, "payg", null, "likely_not", "extracted"],
+    ];
+    for (const [id, merchant, cents, bucket, label, ded, status] of L) {
+      run(`INSERT INTO transactions (id, user_id, source, status, kind, account_id, statement_id, merchant, raw_description, amount_cents, amount_aud_cents, txn_date, direction, bucket, ato_label, deductibility)
+           VALUES (?, ?, 'statement', ?, 'bank_line', 'pfts8bAcct', 'pfts8bStmt', ?, ?, ?, ?, ?, 'debit', ?, ?, ?)`,
+        id, u, status, merchant, merchant, cents, cents, FY_DATE, bucket, label, ded);
+    }
+    const rows = modelRows("AND user_id = ?", u);
+    const snap = () => JSON.stringify(db.prepare(`SELECT * FROM transactions WHERE user_id = ? ORDER BY id`).all(u));
+    const before = snap();
+    const on = statementLinesForModel(rows, true);
+    const m = (id: string) => on.find((r) => r.id === id)!.merchant;
+    check("pfts8b: a BSB + account, an 'ACCT' number and a Luhn-valid card number are redacted",
+      m("pfts8b3") === "TRANSFER TO [REDACTED:BANK]" && m("pfts8b4") === "PAYMENT ACCT [REDACTED:ACCT] THANK YOU" && m("pfts8b5") === "AHPRA RENEWAL CARD [REDACTED:CARD]");
+    check("pfts8b: bare reference runs, store numbers, amounts and dates are KEPT (the reason redact() was declined)",
+      m("pfts8b1") === "UBER *TRIP 123456 SYDNEY" && m("pfts8b2") === "OFFICEWORKS 0423 12.50" && m("pfts8b6") === "WOOLWORTHS 1234 2025-09-01" && m("pfts8b7") === "BPAY 12345 CRN 987654321");
+    check("pfts8b: the merchant words the model categorises on survive every redaction", /TRANSFER TO/.test(m("pfts8b3")!) && /AHPRA RENEWAL/.test(m("pfts8b5")!) && /PAYMENT/.test(m("pfts8b4")!));
+    check("pfts8b: no account / card digits reach the model", ![m("pfts8b3"), m("pfts8b4"), m("pfts8b5")].some((x) => /12345678|98765432|4111/.test(x ?? "")));
+    check("pfts8b: ids, order, amounts, dates and directions are identical — only merchant text can differ",
+      JSON.stringify(on.map(({ merchant: _m, ...rest }) => rest)) === JSON.stringify(rows.map(({ merchant: _m, ...rest }) => rest)));
+    check("pfts8b: redaction never writes — the stored rows are byte-identical", snap() === before);
+    const posOff = (await buildReport(env, u, 2025)).taxable_position_cents;
+    const posOn = (await buildReport(RS_ON, u, 2025)).taxable_position_cents;
+    check("pfts8b: taxable_position_cents identical with the flag ON and OFF", posOn === posOff);
   }
 
   console.log(`\n=== personas: ${pass} passed, ${fail} failed ===`);

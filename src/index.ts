@@ -15,6 +15,7 @@ import { spentTodayGlobalCents } from "./lib/usage";
 import { featureOn } from "./lib/features";
 import { handleBeforeYouStart } from "./lib/before-you-start";
 import { runScheduledSecurityChecks } from "./lib/security-dashboard";
+import { emptyTally, publishLifecycleRecord } from "./lib/retention-schedule";
 import { withSecurityHeaders, summariseCspReport, logTag } from "./lib/security-headers";
 import { ipRateLimit, userRateLimit, publishAccessSource } from "./lib/access-control";
 import { BACKUP_CRON, runD1Backup } from "./lib/backups";
@@ -347,6 +348,9 @@ const handler = {
         .bind(cursor, SLICE)
         .all<{ user_id: string }>();
       const batch = users.results ?? [];
+      // #639: what the data-lifecycle steps did this run — counts only — published for the admin dashboard.
+      const tally = emptyTally();
+      tally.tenants = batch.length;
       await runPooled(batch, CONCURRENCY, async (u) => {
         // Isolate per-tenant failures — one tenant's bad asset/data must not abort the sweep for all.
         try {
@@ -354,8 +358,8 @@ const handler = {
           await stub.runProactiveScan(u.user_id);
           // Keep each tenant's depreciation_schedule materialised through the current FY (carry-forward).
           await stub.rollForward(u.user_id, fyStart);
-          // Retention: flag (never delete) records past the tenant's window.
-          await stub.flagOldData(u.user_id);
+          // Retention: flag (never delete) records past the tenant's window (5 years from the lodge date).
+          if ((await stub.flagOldData(u.user_id)).flagged) tally.flagged++;
           // Savings & Opportunities: deterministic recurring-bill detection + factual opportunities
           // (no LLM → no AI-spend interaction). Flag-gated so OFF ⇒ no read/write path, byte-identical.
           if (featureOn(env, "advisory_layer")) await stub.detectAdvisory(u.user_id);
@@ -364,11 +368,39 @@ const handler = {
           if (featureOn(env, "phi_extras_tracker")) await stub.detectBenefitsReset(u.user_id);
           // Bank-feed consents (#576, ADR-0003 §6.4): mark expired, remind before expiry, retry failed
           // upstream revokes. Flag-gated ⇒ OFF means no read/write path, byte-identical.
-          if (featureOn(env, "bank_feed_cdr")) await stub.bankConsentLifecycle(u.user_id);
+          if (featureOn(env, "bank_feed_cdr")) {
+            const lc = await stub.bankConsentLifecycle(u.user_id);
+            tally.expired_consents_deleted += lc.expiredDeleted ?? 0;
+            tally.expiry_lines_deleted += lc.expiredLinesDeleted ?? 0;
+          }
         } catch (e) {
+          tally.failures++;
           console.error(`weekly cron failed for ${u.user_id}: ${(e as Error).message}`);
         }
+        // Data lifecycle (#594 / #639), each step isolated so one failing can't skip the others. Each is
+        // flag-gated here AND inside (OFF ⇒ no DO call, no read, no write — byte-identical).
+        // Retention schedule: irrelevant debits of a lodged FY (or due date + 60 days) shrink to per-account totals.
+        if (featureOn(env, "bank_minimisation")) {
+          try {
+            tally.shrunk += (await stubFor(env, u.user_id).minimiseBankLines(u.user_id))?.shrunk ?? 0;
+          } catch (e) {
+            tally.failures++;
+            console.error(`bank minimisation failed for ${u.user_id}: ${(e as Error).name}`);
+          }
+        }
+        // Inactive end users: 30 days with no live consent ⇒ delete the aggregator end user.
+        if (featureOn(env, "cdr_inactive_user_delete")) {
+          try {
+            const r = await stubFor(env, u.user_id).bankInactiveEndUser(u.user_id);
+            if (r.state === "deleted") tally.end_users_deleted++;
+            if (r.state === "failed") tally.failures++;
+          } catch (e) {
+            tally.failures++;
+            console.error(`inactive end-user sweep failed for ${u.user_id}: ${(e as Error).name}`);
+          }
+        }
       });
+      await publishLifecycleRecord(env, tally, new Date(), { partial: batch.length === SLICE || cursor !== "" });
       // A full slice means more tenants remain → resume after the last id next tick. A short slice
       // means we reached the end → clear the cursor so the next run round-robins from the start.
       if (batch.length === SLICE) {

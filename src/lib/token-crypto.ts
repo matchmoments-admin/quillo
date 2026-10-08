@@ -33,7 +33,9 @@ export function tokenEncryptionEnabled(env: Env): boolean {
 export class TokenKeyMissingError extends Error {
   readonly code = "token_key_missing";
   constructor() {
-    super("QuickBooks tokens can't be stored: encryption is required but QBO_TOKEN_KEY is not set. Set the secret, then reconnect.");
+    // User-safe copy: this message can reach the browser (e.g. the QBO purchases route returns e.message).
+    // The operator signal is the error class / `code` plus the server-side log, not the text.
+    super(TOKEN_STORAGE_BLOCKED_MESSAGE);
     this.name = "TokenKeyMissingError";
   }
 }

@@ -2755,7 +2755,7 @@ console.log("token-crypto (QBO envelope encryption)");
 }
 
 // ── #637 (security A4): the one token write path, fail-closed, plaintext detection, backfill ─────
-import { sealTokenPair, tokenStorageBlocked, TokenKeyMissingError, isPlaintextEncVer, looksSealedWith } from "../src/lib/token-crypto";
+import { sealTokenPair, tokenStorageBlocked, TokenKeyMissingError, isPlaintextEncVer, looksSealedWith, TOKEN_STORAGE_BLOCKED_MESSAGE } from "../src/lib/token-crypto";
 import { backfillQboTokens } from "../src/lib/qbo-token-backfill";
 import { DatabaseSync } from "node:sqlite";
 
@@ -2789,7 +2789,7 @@ console.log("token-crypto fail-closed + QBO token backfill (#637)");
     refused = e;
   }
   check("no key + fail-closed → TokenKeyMissingError", refused instanceof TokenKeyMissingError);
-  check("…with an actionable message naming the secret", refused instanceof Error && refused.message.includes("QBO_TOKEN_KEY"));
+  check("…with user-safe copy that never names the secret", refused instanceof Error && refused.message === TOKEN_STORAGE_BLOCKED_MESSAGE && !refused.message.includes("QBO_TOKEN_KEY"));
   check("tokenStorageBlocked true with fail-closed and no key", tokenStorageBlocked(bareFc) === true);
   check("tokenStorageBlocked false once the key is set", tokenStorageBlocked(keyedFc) === false);
 

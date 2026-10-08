@@ -216,7 +216,10 @@ export class QuickBooksAdapter implements LedgerAdapter {
   private async refresh(conn: QboConnection): Promise<string> {
     // Fail closed BEFORE asking Intuit to rotate: if the rotated token couldn't be stored sealed,
     // don't rotate it (the stored one stays valid for when the key is restored).
-    if (tokenStorageBlocked(this.env)) throw new TokenKeyMissingError();
+    if (tokenStorageBlocked(this.env)) {
+      console.error("qbo refresh refused: token encryption required but QBO_TOKEN_KEY is not set");
+      throw new TokenKeyMissingError();
+    }
     const { token_endpoint } = await getEndpoints(this.env);
     const basic = btoa(`${this.env.QBO_CLIENT_ID}:${this.env.QBO_CLIENT_SECRET}`);
     const res = await fetch(token_endpoint, {

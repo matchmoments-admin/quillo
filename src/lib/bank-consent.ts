@@ -68,6 +68,8 @@ export type CdrEvent =
   | "tenant_purged"
   /** #639: the aggregator end user was deleted after 30 days with no live consent (Fiskil developer checklist). */
   | "end_user_deleted"
+  /** #639: an end user with no CDR activity on record — starts its 30-day inactivity clock. */
+  | "end_user_inactive"
   /** #639: that delete failed at the aggregator — an error class only; retried by the next weekly sweep. */
   | "end_user_delete_failed";
 
@@ -238,7 +240,8 @@ async function revokeUpstream(
  * KNOWN RESIDUALS (not keyed to a txn id, so not reachable from here — routed to the CDR legal review
  * #524, which decides delete vs keep, because several feed the position): clarify_questions
  * (sample_desc), user_rules auto-learned from a feed merchant, recurring_bills/opportunities,
- * eval_cases, assets auto-linked from a feed line, chat history, and merchant names in audit_log.
+ * eval_cases, assets auto-linked from a feed line, chat history, noticed_signals evidence (payer names / totals
+ * from feed credits), and merchant names / bank_lines_minimised per-account totals in audit_log.
  *
  * Returns the number of bank lines deleted.
  */
@@ -326,6 +329,11 @@ async function runPs12Delete(
   let accounts = 0;
   let linesDeleted = 0;
   for (const accountId of ids) {
+    // Feed lines carry no connection id, so a delete is per ACCOUNT. On EXPIRY an account a live connection
+    // still feeds (a renewal made before the old consent lapsed, mapped to the same Quillo account) is skipped:
+    // its lines are now held under the live consent, and deleting them would wipe the renewal's data plus the
+    // user's corrections / links. They are deleted when THAT consent ends. (Withdrawal keeps its #576 behaviour.)
+    if (reason === "consent_expired" && fed.has(accountId)) continue;
     linesDeleted += await deleteCdrLinesForAccount(env, userId, accountId, !fed.has(accountId));
     accounts++;
   }
@@ -602,13 +610,26 @@ export async function inactiveEndUserSweep(
 
   const nowMs = now.getTime();
   const last = await lastCdrActivity(env, userId, nowMs);
-  // Nothing on record at all (an end user minted before the CDR log existed): treat as long inactive.
-  const since = Number.isFinite(last) ? last : 0;
+  // Nothing on record at all (an end user minted before the CDR log existed, or a connect whose consent_requested
+  // record was lost): never delete on sight — START the 30-day clock now with a record, so it is deleted 30 days
+  // from today and a connect in flight has a full window to land.
+  if (!Number.isFinite(last)) {
+    await cdrAudit(env, userId, { event: "end_user_inactive", provider: p?.bank_provider ?? null, detail: { reason: "no_activity_on_record" } });
+    return { state: "queued", inactive_since: now.toISOString(), due_at: new Date(nowMs + INACTIVE_END_USER_DAYS * 86_400_000).toISOString() };
+  }
+  const since = last;
   const dueMs = since + INACTIVE_END_USER_DAYS * 86_400_000;
   const sinceIso = new Date(since).toISOString();
   if (nowMs < dueMs) return { state: "queued", inactive_since: sinceIso, due_at: new Date(dueMs).toISOString() };
 
   const provider = p?.bank_provider ?? null;
+  // Last look right before the vendor call (the DO can interleave a connect at the awaits above): any live
+  // connection, or a consent attempt within the window, keeps the end user.
+  const liveNow = await env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM bank_connections WHERE user_id = ? AND status NOT IN ('revoked', 'expired')`,
+  ).bind(userId).first<{ n: number }>();
+  if ((liveNow?.n ?? 0) > 0) return { state: "active" };
+  if ((await lastCdrActivity(env, userId, nowMs)) > since) return { state: "queued", inactive_since: sinceIso, due_at: new Date(dueMs).toISOString() };
   try {
     await upstream.deleteUser(endUser, provider);
   } catch (e) {
@@ -633,7 +654,7 @@ export async function inactiveEndUserSweep(
     ).bind(nowIso, userId, endUser),
     cdrAuditStmt(env, userId, {
       event: "end_user_deleted", provider,
-      detail: { reason: "inactive", inactive_days: Number.isFinite(last) ? inactiveDays : null },
+      detail: { reason: "inactive", inactive_days: inactiveDays },
     }),
   ]);
   return { state: "deleted", inactive_since: sinceIso };

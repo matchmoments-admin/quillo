@@ -91,10 +91,10 @@ export function isNonProductionDeployment(env: Env): boolean {
 
 /**
  * CDR data never reaches non-production (CDR Rules Schedule 2, control 3(b); docs/security/data-handling.md §6).
- * TRUE ⇒ the caller must refuse to collect or store this connection's data here. It is exactly "a
- * non-production deployment AND data that would be real" — i.e. requiresAuResidency's carve-out is the ONLY way
- * through: Fiskil's sandbox data holder (88888) with FISKIL_ENV not 'production', or Basiq with BASIQ_ENV not
- * 'production'. A real bank, an unknown institution, an unknown provider or production credentials are blocked
+ * TRUE ⇒ the caller must refuse to collect or store this connection's data here. It is "a non-production
+ * deployment AND data that could be real". The ONLY ways through are the sandbox test banks on sandbox
+ * credentials: Fiskil's data holder 88888 (FISKIL_ENV not 'production'), or Basiq's AU00000 (BASIQ_ENV not
+ * 'production'). A real bank, an unknown institution, an unknown provider or production credentials are blocked
  * in non-production; production is never blocked by this (its guard is AU residency, PS8).
  */
 export function cdrBlockedInThisDeployment(
@@ -103,8 +103,17 @@ export function cdrBlockedInThisDeployment(
   provider: string = "basiq",
   institutionId?: string | null,
 ): boolean {
-  return isNonProductionDeployment(env) && requiresAuResidency(env, accessType, provider, institutionId);
+  if (!isNonProductionDeployment(env)) return false;
+  if (requiresAuResidency(env, accessType, provider, institutionId)) return true;
+  // Basiq's carve-out keys on BASIQ_ENV alone, and Basiq sandbox + production share one base URL — so production
+  // keys in .dev.vars with the var left on 'sandbox' would pass. Non-production therefore ALSO requires Basiq's
+  // sandbox institution (the Hooli test bank), mirroring the Fiskil 88888 rule. (Basiq is not the live provider.)
+  if (accessType === "cdr" && provider === "basiq") return institutionId !== BASIQ_SANDBOX_INSTITUTION_ID;
+  return false;
 }
+
+/** Basiq's sandbox test bank ("Hooli"). Only used by the non-production guard above. */
+export const BASIQ_SANDBOX_INSTITUTION_ID = "AU00000";
 
 /** Non-production must never hold production aggregator credentials in use: a new connect is refused. */
 export function productionCredentialsBlockedHere(env: Env, provider: BankProviderId): boolean {

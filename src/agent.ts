@@ -1786,6 +1786,12 @@ export class TaxAgent extends Agent<Env> {
     const conns = listed.filter((c) => !cdrBlockedInThisDeployment(this.env, "cdr", provider.id, c.institutionId));
     if (conns.length < listed.length) {
       console.error(`[cdr] non-production: refused ${listed.length - conns.length} real-bank connection(s) for tenant ${userId}`);
+      // Don't leave the refused consent live at the aggregator: revoke it (best effort; already-gone is success).
+      for (const c of listed) {
+        if (conns.includes(c)) continue;
+        await provider.revokeConnection(providerUserId, c.connectionId)
+          .catch((e) => console.error(`[cdr] non-production revoke failed: ${(e as Error).name}`));
+      }
       await this.audit(userId, "bank_nonprod_refused", JSON.stringify({ provider: provider.id, refused: listed.length - conns.length }));
     }
     const accountCount = conns.reduce((n, c) => n + c.accounts.length, 0);

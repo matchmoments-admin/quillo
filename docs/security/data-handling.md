@@ -27,9 +27,11 @@ as Restricted — CDR for all model calls.
   relevant or unsorted debits; **irrelevant debits shrink to per-account totals** once the year is lodged and the
   line has been held 60 days (backstop: the 31 October due date + 60 days when the year is never marked). The
   weekly cron runs it; the user gets one notice per year tidied, and Settings › Your data shows the count.
-- **Statement-line redaction before inference** (S8b, #639, flag `redact_statement_lines`): account numbers,
-  BSBs and full card numbers are removed from statement lines before the categorisation model call; merchant
-  words, amounts, dates and bare reference numbers are kept, so categorisation is unchanged (golden `pfts8b`).
+- **Statement-line redaction before inference** (S8b, #639, flag `redact_statement_lines`): text *shaped* like
+  a bank identifier is removed from statement lines before the categorisation model call — Luhn-valid card
+  numbers, a hyphenated BSB followed by an account, and numbers after an explicit `BSB` / `ACC` / `ACCT` / `ACCOUNT` / `A/C`
+  keyword. It is deliberately narrow: merchant words, amounts, dates and bare reference numbers are kept, so
+  categorisation is unchanged (golden `pfts8b`) — and an unlabelled bare digit run is therefore NOT redacted.
 
 ## 3. Use
 
@@ -43,7 +45,7 @@ Quillo's own categorisation (ADR-0003).
 | Data | Retained | Then |
 |---|---|---|
 | CDR transactions (active consent) | While the consent is active and the data is needed for the consumer's open tax year(s) | Minimisation shrink after lodgement (+60 days); full deletion on withdrawal/expiry (§5) |
-| CDR transactions after consent withdrawn or expired | **Not retained** — deleted at withdrawal (PS12) and, with `cdr_expiry_delete` ON, at expiry (§5.2) | — |
+| CDR transactions after consent withdrawn or expired | **Not retained** — the lines, account list and feed totals/tombstones are deleted at withdrawal (PS12) and, with `cdr_expiry_delete` ON, at expiry (§5.2). Derived leftovers not keyed to a line (clarify samples, learned rules, recurring bills, noticed-signal evidence, per-account totals in `audit_log`) are the #524 legal review's call | — |
 | Fiskil end user (at Fiskil) | While any consent is live | Deleted 30 days after the last consent ends or a connect is abandoned (§5.6, flag `cdr_inactive_user_delete`), at withdrawal of the last connection, and on account deletion |
 | `cdr_audit_log`, `audit_log` | **6 years** from creation (r9.3(5) record-keeping); excluded from tenant purge | Delete when older than 6 years (job to build — not yet scheduled) |
 | Receipts and other user records (non-CDR) | 5 years **from the date that year's return was lodged** (ATO record-keeping; the user's mark, a NOA close, or the due date + 60 days if never marked) unless the user deletes earlier | One nudge when the oldest record passes it (`flagOldData`); user-controlled deletion / purge |
@@ -113,9 +115,11 @@ Withdrawing the last connection already deletes the end user immediately. Code: 
   the consumer to reproduce; do not copy rows out.
 - **Enforced in code (#639):** a non-production deployment (`DEV_AUTH_BYPASS=1`; production never sets it)
   refuses a connect on production credentials, drops a real bank's connection at the callback before anything
-  is stored, and fails a sync before the first page is fetched. Only the sandbox carve-out passes (Fiskil
-  institution `88888` with sandbox credentials, or Basiq sandbox) — `cdrBlockedInThisDeployment` in
-  [`src/lib/bank-feed-core.ts`](../../src/lib/bank-feed-core.ts), unit-tested ("non-prod:" checks).
+  is stored (and revokes it at the aggregator), and fails a sync before the first page is fetched. Only the
+  sandbox test banks pass on sandbox credentials (Fiskil `88888`, Basiq `AU00000`) — `cdrBlockedInThisDeployment`
+  in [`src/lib/bank-feed-core.ts`](../../src/lib/bank-feed-core.ts), unit-tested ("non-prod:" checks).
+  **Residual:** the marker is `DEV_AUTH_BYPASS=1`; a non-production run without it is treated as production, so
+  never run local or preview with production aggregator keys.
 
 ## 7. Data loss prevention
 

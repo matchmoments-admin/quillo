@@ -4813,6 +4813,21 @@ console.log("bank consent lifecycle (#576)");
     check("expiry (ON): a consent lapsing this week is marked expired and deleted in the same sweep",
       same.expired === 1 && same.expiredDeleted === 1 && n(`SELECT COUNT(*) n FROM transactions WHERE id='X3'`) === 0);
 
+    // A renewal made before the old consent lapsed, feeding the SAME Quillo account: the expiry must not wipe it.
+    const UN = "bk-x6";
+    ins(`INSERT INTO profiles (user_id) VALUES (?)`, UN);
+    ins(`INSERT INTO accounts (id, user_id, name, source) VALUES ('AN1', ?, 'Fed', 'cdr_feed')`, UN);
+    ins(`INSERT INTO bank_connections (id, user_id, provider_connection_id, status, consent_expires_at) VALUES ('CN-old', ?, 'arr-old', 'active', '2026-10-01T00:00:00Z')`, UN);
+    ins(`INSERT INTO bank_connections (id, user_id, provider_connection_id, status, consent_expires_at) VALUES ('CN-new', ?, 'arr-new', 'active', '2027-09-20T00:00:00Z')`, UN);
+    ins(`INSERT INTO bank_connection_accounts (id, user_id, connection_id, provider_account_id, account_id, selected) VALUES ('BN1', ?, 'CN-old', 'pa', 'AN1', 1)`, UN);
+    ins(`INSERT INTO bank_connection_accounts (id, user_id, connection_id, provider_account_id, account_id, selected) VALUES ('BN2', ?, 'CN-new', 'pa', 'AN1', 1)`, UN);
+    ins(`INSERT INTO transactions (id, user_id, source, status, kind, account_id, line_fingerprint, amount_cents) VALUES ('N1', ?, 'cdr_feed', 'extracted', 'bank_line', 'AN1', 'fN1', 100)`, UN);
+    const ren = await consentLifecycle(XON, UN, fakeUpstream().up, nowX);
+    check("expiry (ON): an account a LIVE renewal still feeds is NOT wiped (lines + source kept; old row stamped deleted)",
+      ren.expired === 1 && ren.expiredDeleted === 1 && n(`SELECT COUNT(*) n FROM transactions WHERE id='N1'`) === 1 &&
+      q<{ source: string }>(`SELECT source FROM accounts WHERE id='AN1'`).source === "cdr_feed" &&
+      !!q<{ d: string | null }>(`SELECT data_deleted_at d FROM bank_connections WHERE id='CN-old'`).d);
+
     // #594: a WITHDRAWAL also deletes the feed's rollups/tombstones (flags irrelevant — the tables only hold
     // rows when minimisation ran).
     const UW = "bk-x2";
@@ -4892,6 +4907,13 @@ console.log("bank consent lifecycle (#576)");
     const fi3 = fakeUpstream();
     check("inactive: an ABANDONED connect's end user is deleted 30 days later",
       (await inactiveEndUserSweep(ION, "bk-i3", fi3.up, new Date("2026-09-05T00:00:00Z"))).state === "deleted" && JSON.stringify(fi3.calls) === JSON.stringify([["deleteUser", "eui3"]]));
+    // No activity on record at all: never deleted on sight — the clock starts now (with a record).
+    ins(`INSERT INTO profiles (user_id, bank_provider_user_id, bank_provider) VALUES ('bk-i5', 'eui5', 'fiskil')`);
+    const fi5 = fakeUpstream();
+    const first5 = await inactiveEndUserSweep(ION, "bk-i5", fi5.up, new Date());
+    check("inactive: an end user with NO activity on record is queued (not deleted) and the clock starts with a record",
+      first5.state === "queued" && fi5.calls.length === 0 && n(`SELECT COUNT(*) n FROM cdr_audit_log WHERE user_id='bk-i5' AND event='end_user_inactive'`) === 1);
+    check("inactive: ...and is deleted 30 days after that record", (await inactiveEndUserSweep(ION, "bk-i5", fi5.up, new Date(Date.now() + 31 * 864e5))).state === "deleted");
     // Expired consent: inactive from the expiry date.
     ins(`INSERT INTO profiles (user_id, bank_provider_user_id, bank_provider) VALUES ('bk-i4', 'eui4', 'basiq')`);
     ins(`INSERT INTO bank_connections (id, user_id, provider_user_id, provider_connection_id, status, created_at, consent_expires_at) VALUES ('CI4', 'bk-i4', 'eui4', 'pci4', 'expired', '2025-09-01 00:00:00', '2026-09-01T00:00:00Z')`);
@@ -6925,8 +6947,10 @@ console.log("A6 CDR data controls (#639)");
   check("non-prod: a REAL bank is BLOCKED even with FISKIL_ENV left on sandbox (prod keys, wrong var)", cdrBlockedInThisDeployment(dev(), "cdr", "fiskil", "2") === true);
   check("non-prod: an unknown institution is BLOCKED", cdrBlockedInThisDeployment(dev(), "cdr", "fiskil", null) === true);
   check("non-prod: FISKIL_ENV=production is BLOCKED even at 88888", cdrBlockedInThisDeployment(dev({ FISKIL_ENV: "production" }), "cdr", "fiskil", SBX639) === true);
-  check("non-prod: Basiq sandbox ALLOWED, Basiq production BLOCKED",
-    cdrBlockedInThisDeployment(dev(), "cdr", "basiq") === false && cdrBlockedInThisDeployment(dev({ BASIQ_ENV: "production" }), "cdr", "basiq") === true);
+  check("non-prod: Basiq sandbox test bank (AU00000) ALLOWED; Basiq production BLOCKED",
+    cdrBlockedInThisDeployment(dev(), "cdr", "basiq", "AU00000") === false && cdrBlockedInThisDeployment(dev({ BASIQ_ENV: "production" }), "cdr", "basiq", "AU00000") === true);
+  check("non-prod: Basiq with the var on sandbox but a REAL bank (prod keys in .dev.vars) is BLOCKED",
+    cdrBlockedInThisDeployment(dev(), "cdr", "basiq", "AU01001") === true && cdrBlockedInThisDeployment(dev(), "cdr", "basiq", null) === true);
   check("non-prod: an unknown provider is BLOCKED (fail closed)", cdrBlockedInThisDeployment(dev(), "cdr", "acme", SBX639) === true);
   check("production: the guard never blocks (its control is AU residency, PS8)",
     cdrBlockedInThisDeployment(prodFiskil, "cdr", "fiskil", "2") === false && cdrBlockedInThisDeployment({} as Env, "cdr", "fiskil", null) === false);
@@ -6944,19 +6968,29 @@ console.log("A6 CDR data controls (#639)");
   // (3) S8b: narrow statement redaction.
   const red: [string, string][] = [
     ["TRANSFER TO 062-000 12345678", "TRANSFER TO [REDACTED:BANK]"],
-    ["TFR 062-000", "TFR [REDACTED:BANK]"],
-    ["DD 062 000 12345678", "DD [REDACTED:BANK]"],
+    ["ACCOUNT 12345 2025-03-12", "ACCOUNT [REDACTED:ACCT] 2025-03-12"],
     ["PAYMENT ACCT 12345678 THANKYOU", "PAYMENT ACCT [REDACTED:ACCT] THANKYOU"],
     ["A/C No: 9876543", "A/C No: [REDACTED:ACCT]"],
     ["Account number 1234-5678", "Account number [REDACTED:ACCT]"],
     ["Card 4111 1111 1111 1111 purchase", "Card [REDACTED:CARD] purchase"],
     ["4111111111111111 COLES", "[REDACTED:CARD] COLES"],
     ["5555-5555-5555-4444 AMAZON", "[REDACTED:CARD] AMAZON"],
+    ["BSB 062000 ACC 12345678", "BSB [REDACTED:BANK]"],
+    ["Transfer to BSB 062-000 Acc 12345678", "Transfer to BSB [REDACTED:BANK]"],
+    ["ACC NO 1234 5678", "ACC NO [REDACTED:ACCT]"],
+    ["TFR 062000-12345678", "TFR [REDACTED:BANK]"],
+    ["Acct 12-3456-7890123-00", "Acct [REDACTED:ACCT]"],
+    ["Paid 4111111111111111, thanks", "Paid [REDACTED:CARD], thanks"],
+    ["CARD 4111111111111111.", "CARD [REDACTED:CARD]."],
   ];
   for (const [i, o] of red) check(`S8b redacts: ${JSON.stringify(i)}`, redactStatementLine(i) === o);
   const keep = ["UBER *TRIP 123456 SYDNEY", "WOOLWORTHS 1234 12.50", "CALL 1300-123-456", "DATE 2025-03-12 AMT 1,234.00", "12/03/2025 COLES 0423",
-    "xxxx xxxx xxxx 1234 CAFE", "****1234 CAFE", "BPAY 12345 CRN 987654321", "1234567890123456 REF (not Luhn)", "Account 1234", "INV 123 456", "PAYPAL *STEAM 4029357733"];
+    "xxxx xxxx xxxx 1234 CAFE", "****1234 CAFE", "BPAY 12345 CRN 987654321", "1234567890123456 REF (not Luhn)", "Account 1234", "INV 123 456", "PAYPAL *STEAM 4029357733", "ACCESS 123456 GYM", "ACCOR HOTELS 123456", "AMT 1,234.50",
+    "TFR 062-000", "BPAY 23796 CRN 1234567890128", "AMAZON MKTPLC 123-456", "INV123-456", "SALARY 300 400 12345", "ORDER 1234567890128 SHIPPED"];
   for (const k of keep) check(`S8b keeps: ${JSON.stringify(k)}`, redactStatementLine(k) === k);
+  const t639 = Date.now();
+  for (const kw of ["ACCT", "BSB", "ACCT no", "Account number"]) redactStatementLine(kw + " ".repeat(20000) + "x" + ":".repeat(20000));
+  check("S8b: no catastrophic backtracking on long separator runs (< 500 ms for 4 × 40k chars)", Date.now() - t639 < 500);
   check("S8b is narrower than redact(): a bare 6-digit reference survives here but not in redact()",
     redactStatementLine("UBER *TRIP 123456") === "UBER *TRIP 123456" && redactFree("UBER *TRIP 123456") !== "UBER *TRIP 123456");
   const rows639 = [{ id: "a", merchant: "TFR 062-000 12345678" }, { id: "b", merchant: null }];

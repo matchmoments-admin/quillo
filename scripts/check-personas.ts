@@ -3543,7 +3543,9 @@ async function main() {
     check("pfts8b: redaction never writes — the stored rows are byte-identical", snap() === before);
     const posOff = (await buildReport(env, u, 2025)).taxable_position_cents;
     const posOn = (await buildReport(RS_ON, u, 2025)).taxable_position_cents;
-    check("pfts8b: taxable_position_cents identical with the flag ON and OFF", posOn === posOff);
+    // NB: the model doesn't run here, so this pins only that the flag has no OTHER effect on the position; the
+    // categorisation side is covered by "ON changes no model text" above (identical input ⇒ identical output path).
+    check("pfts8b: the flag has no effect on the position outside the model input (ON = OFF)", posOn === posOff);
   }
 
   console.log(`\n=== personas: ${pass} passed, ${fail} failed ===`);

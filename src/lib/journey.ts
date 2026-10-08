@@ -5,8 +5,9 @@
 // slot A7 fills (`records`). The step rules live here as a PURE function (assessJourney) so they are unit-tested
 // offline; journeySignals() does the D1 counting for the DO's journey() (the goldens cover the pure rules).
 //
-// Signals other tickets own are NOT guessed at here: until they land, the open payroll/platform
-// signals (a Review card since spec §0) are 0 (A3 noticed_signals wires its own count) and `records` is null (A7). Claims reads A4's
+// Signals other tickets own are NOT guessed at here: journeySignals leaves the open "we noticed" signal count
+// at 0 and `records` null; the composer (journey-read.ts readJourney) fills both — open signals from A3's
+// noticed_signals (wages_payer, #595) and A7's records block. Claims reads A4's
 // relevance lists when relevance_scan is ON, else the legacy review queue. Lodged = #572's fy_signoff rule
 // (lodged_at OR a NOA close — fy-signoff.ts), so Lodge in myTax agrees with the Filing page and /api/lodged.
 //

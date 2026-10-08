@@ -16,6 +16,7 @@ import { resolveRulePack } from "./report";
 import { reconcileProposals } from "./queries";
 import { reconcileConfigFromPack } from "./reconcile-proposer";
 import { recordsView } from "./records";
+import { listNoticed } from "./noticed-signals";
 import { growPayload, type GrowPayload } from "./grow";
 import { isPartner } from "./roles";
 import { lodgingFy } from "./lodging-year";
@@ -37,6 +38,10 @@ export async function readJourney(env: Env, userId: string, startYear: number, d
   const [readiness, situation] = await Promise.all([computeFilingReadiness(env, userId, startYear, deps), getSituation(env, userId, profile)]);
   const signals = await journeySignals(env, userId, startYear, situation, jur);
   const pack = await resolveRulePack(env, userId, jur);
+  // A3 (#577) + spec §0: the open "We noticed…" cards (payroll / platform / government / interest / foreign) are
+  // Review cards, so they count in the Review step. Without this the step could read "done" while a payroll card
+  // still waited for its answer (#595). wages_payer OFF ⇒ no read, count stays 0.
+  if (featureOn(env, "wages_payer")) signals.bring_in.open_signals = (await listNoticed(env, userId, startYear)).length;
   if (featureOn(env, "reconcile_proposals")) {
     const cfg = reconcileConfigFromPack(pack);
     signals.check.proposals = (await reconcileProposals(env, userId, startYear, cfg, jur)).proposals.length;

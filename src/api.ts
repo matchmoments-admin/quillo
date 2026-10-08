@@ -82,6 +82,8 @@ import { listNoticed, type ConfirmBody } from "./lib/noticed-signals";
 import { setAttributions, getAttributions, clearAttributions } from "./lib/attribution-write";
 import { listNoaCarryovers, confirmNoaCarryover, deleteNoaCarryover } from "./lib/noa-store";
 import { buildConnectUrl, qboStatus } from "./lib/qbo-oauth";
+import { tokenStorageBlocked, TOKEN_STORAGE_BLOCKED_MESSAGE } from "./lib/token-crypto";
+import { backfillQboTokens } from "./lib/qbo-token-backfill";
 import { QuickBooksAdapter } from "./ledger/qbo";
 import { LedgerReauthError } from "./ledger";
 import { buildReport, reportToCsv, currentFyStartYear, workUseRatesForUserFy, resolveRulePack } from "./lib/report";
@@ -1647,6 +1649,9 @@ export async function handleApi(
     // callback is handled as a PUBLIC route in index.ts (Intuit can't send our Bearer token).
     if (id === "connect" && m === "GET") {
       if (!env.QBO_CLIENT_ID) return json({ error: "QuickBooks is not configured (QBO_CLIENT_ID missing)." }, 400);
+      // Fail closed (flag qbo_token_fail_closed): don't send the user to Intuit if we couldn't store
+      // the resulting tokens encrypted.
+      if (tokenStorageBlocked(env)) return json({ error: TOKEN_STORAGE_BLOCKED_MESSAGE, code: "token_key_missing" }, 503);
       const connectUrl = await buildConnectUrl(env, uid, url.origin);
       // Log the exact authorize URL we hand the browser so `wrangler tail` can confirm the
       // redirect_uri we send Intuit (diagnostic for the production connect issue).
@@ -1989,6 +1994,16 @@ export async function handleApi(
     // GET /api/admin/spend — cross-tenant AI-spend + abuse view (per-tenant today/7d, who hit the daily
     // cap, who's a large share of the global ceiling). Read-only; reads existing llm_usage/daily_cost.
     if (m === "GET" && id === "spend") return json(await platformSpend(env));
+    // POST /api/admin/qbo-token-backfill[?dry_run=1] — seal any legacy plaintext QuickBooks tokens
+    // with QBO_TOKEN_KEY (#637). Idempotent; counts-only output (no tokens, no tenant ids). Dry run
+    // works without the key; a real run without it is a 409.
+    if (m === "POST" && id === "qbo-token-backfill") {
+      const dryRun = ["1", "true"].includes(url.searchParams.get("dry_run") ?? "");
+      if (!dryRun && !env.QBO_TOKEN_KEY) return json({ error: "QBO_TOKEN_KEY is not set — set the secret first (dry_run=1 works without it)." }, 409);
+      const result = await backfillQboTokens(env, { dryRun });
+      console.log(`qbo token backfill: ${JSON.stringify(result)}`); // counts only
+      return json(result);
+    }
     // PUT /api/admin/tenants/:tenantId/roles { roles: [...] } — assign platform roles.
     if (m === "PUT" && id === "tenants" && sub && parts[3] === "roles") {
       const target = sub;

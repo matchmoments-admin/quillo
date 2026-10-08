@@ -45,7 +45,7 @@
 import type { Env } from "../env";
 import { type LedgerAdapter, type LedgerExpense, LedgerNotConnectedError, LedgerReauthError } from "./adapter";
 import { getEndpoints } from "../lib/qbo-oauth";
-import { sealToken, readToken, tokenEncryptionEnabled } from "../lib/token-crypto";
+import { readToken, sealTokenPair, tokenStorageBlocked, TokenKeyMissingError } from "../lib/token-crypto";
 
 interface QboConnection {
   user_id: string;
@@ -214,6 +214,12 @@ export class QuickBooksAdapter implements LedgerAdapter {
   }
 
   private async refresh(conn: QboConnection): Promise<string> {
+    // Fail closed BEFORE asking Intuit to rotate: if the rotated token couldn't be stored sealed,
+    // don't rotate it (the stored one stays valid for when the key is restored).
+    if (tokenStorageBlocked(this.env)) {
+      console.error("qbo refresh refused: token encryption required but QBO_TOKEN_KEY is not set");
+      throw new TokenKeyMissingError();
+    }
     const { token_endpoint } = await getEndpoints(this.env);
     const basic = btoa(`${this.env.QBO_CLIENT_ID}:${this.env.QBO_CLIENT_SECRET}`);
     const res = await fetch(token_endpoint, {
@@ -259,17 +265,16 @@ export class QuickBooksAdapter implements LedgerAdapter {
 
     // Persist the ROTATED refresh token immediately — the next refresh fails otherwise. Re-seal
     // under the current key when encryption is enabled (also upgrades a legacy plaintext row to
-    // enc_ver=1 on its first refresh). Tokens are never logged.
-    const enc = tokenEncryptionEnabled(this.env);
-    const accessVal = enc ? await sealToken(this.env, tok.access_token) : tok.access_token;
-    const refreshVal = enc ? await sealToken(this.env, tok.refresh_token) : tok.refresh_token;
+    // enc_ver=1 on its first refresh). sealTokenPair refuses plaintext under fail-closed (backstop
+    // to the pre-check at the top). Tokens are never logged.
+    const stored = await sealTokenPair(this.env, tok.access_token, tok.refresh_token);
     await this.env.DB.prepare(
       `UPDATE qbo_connections
           SET access_token = ?, access_expires_at = ?, refresh_token = ?,
               refresh_expires_at = ?, enc_ver = ?, updated_at = datetime('now')
         WHERE user_id = ?`,
     )
-      .bind(accessVal, accessExpires, refreshVal, refreshExpires, enc ? 1 : 0, conn.user_id)
+      .bind(stored.access, accessExpires, stored.refresh, refreshExpires, stored.encVer, conn.user_id)
       .run();
 
     return tok.access_token;

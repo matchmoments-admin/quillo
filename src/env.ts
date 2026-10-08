@@ -69,7 +69,8 @@ export interface Env {
   QBO_CLIENT_ID: string;
   QBO_CLIENT_SECRET: string;
   // Optional: when set, QuickBooks OAuth tokens are AES-GCM envelope-encrypted at rest in D1
-  // (see lib/token-crypto.ts). Absent = tokens stay plaintext (graceful, backward-compatible).
+  // (see lib/token-crypto.ts). Absent = tokens stay plaintext, unless flag qbo_token_fail_closed is
+  // on, in which case QBO connect/refresh refuse to store tokens at all.
   QBO_TOKEN_KEY?: string;
   // Only present when a tenant uses inference_provider=bedrock. Credentials are PER JURISDICTION:
   // each suffixed pair is backed by its own IAM user whose policy denies Bedrock outside that
@@ -106,9 +107,8 @@ export interface Env {
   // API + the app's HTTP referrers. The Embed API is free/unlimited. Absent ⇒ no in-app map (the list +
   // "Open in Maps" links still work). Distinct from the server-only GOOGLE_PLACES_KEY.
   MAPS_EMBED_KEY?: string;
-  // Legacy: the original Geoapify-backed finder. Geoapify has no allied-health categories, so the
-  // finder moved to Google (above). Declared but unused — removable in a later cleanup.
-  GEOAPIFY_KEY?: string;
+  // (GEOAPIFY_KEY — the original Geoapify-backed finder — was removed in #637; nothing reads it.
+  // Delete the prod secret with `npx wrangler secret delete GEOAPIFY_KEY`.)
 }
 
 /**

@@ -1,5 +1,5 @@
 import type { Env } from "../env";
-import { sealToken, readToken, tokenEncryptionEnabled } from "./token-crypto";
+import { readToken, sealTokenPair, tokenStorageBlocked, TOKEN_STORAGE_BLOCKED_MESSAGE } from "./token-crypto";
 
 // QuickBooks OAuth2 connect flow (Phase 4). Tokens land in qbo_connections; the
 // QuickBooksAdapter refreshes + rotates them from there. The agent is a reader/
@@ -87,6 +87,13 @@ export async function handleCallback(env: Env, url: URL, origin: string): Promis
   // CSRF: the state must be one we issued (KV-stored, 10-min TTL) and maps to the tenant.
   const userId = await env.RULES.get(`qbostate:${state}`);
   if (!userId) return { ok: false, error: "bad or expired state" };
+  // Fail closed BEFORE exchanging the code: if the tokens couldn't be stored sealed, don't have
+  // Intuit issue them at all (nothing to discard or revoke).
+  if (tokenStorageBlocked(env)) {
+    console.error("qbo connect refused: token encryption required but QBO_TOKEN_KEY is not set");
+    await env.RULES.delete(`qbostate:${state}`);
+    return { ok: false, error: TOKEN_STORAGE_BLOCKED_MESSAGE };
+  }
 
   const { token_endpoint } = await getEndpoints(env);
   const basic = btoa(`${env.QBO_CLIENT_ID}:${env.QBO_CLIENT_SECRET}`);
@@ -105,17 +112,16 @@ export async function handleCallback(env: Env, url: URL, origin: string): Promis
 
   const accessExp = new Date(Date.now() + tok.expires_in * 1000).toISOString();
   const refreshExp = new Date(Date.now() + tok.x_refresh_token_expires_in * 1000).toISOString();
-  // Envelope-encrypt both tokens when QBO_TOKEN_KEY is configured (enc_ver=1); otherwise store
-  // plaintext (enc_ver=0) so connect keeps working until the secret is set. Both tokens always use
-  // the same enc_ver since they're written together. Tokens are never logged.
-  const enc = tokenEncryptionEnabled(env);
-  const accessVal = enc ? await sealToken(env, tok.access_token) : tok.access_token;
-  const refreshVal = enc ? await sealToken(env, tok.refresh_token) : tok.refresh_token;
+  // Envelope-encrypt both tokens when QBO_TOKEN_KEY is configured (enc_ver=1). With no key: refuse
+  // when `qbo_token_fail_closed` is on (nothing is stored — the user sees a clear error), otherwise
+  // the legacy plaintext fallback (enc_ver=0). The pre-exchange check above makes the refusal
+  // here unreachable in practice; it stays as the backstop. Tokens are never logged.
+  const stored = await sealTokenPair(env, tok.access_token, tok.refresh_token);
   await env.DB.prepare(
     `INSERT OR REPLACE INTO qbo_connections (user_id, realm_id, access_token, access_expires_at, refresh_token, refresh_expires_at, enc_ver, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
   )
-    .bind(userId, realmId, accessVal, accessExp, refreshVal, refreshExp, enc ? 1 : 0)
+    .bind(userId, realmId, stored.access, accessExp, stored.refresh, refreshExp, stored.encVer)
     .run();
   await env.RULES.delete(`qbostate:${state}`);
   return { ok: true };

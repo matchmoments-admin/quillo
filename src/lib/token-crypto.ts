@@ -1,4 +1,5 @@
 import type { Env } from "../env";
+import { featureOn } from "./features";
 
 // Application-layer envelope encryption for the QuickBooks OAuth tokens stored in D1.
 // Cloudflare already encrypts D1 at rest; this adds a SECOND, app-held key (the QBO_TOKEN_KEY
@@ -8,15 +9,93 @@ import type { Env } from "../env";
 // each sealed value is self-describing (no separate IV column needed). `enc_ver` on the row marks
 // the storage format: 0 = legacy plaintext, 1 = sealed by this module.
 //
-// Activation is graceful: with no QBO_TOKEN_KEY set, writes stay plaintext (enc_ver=0) so QBO keeps
-// working; once the secret is configured, new writes seal (enc_ver=1) and the dual-read below
-// transparently handles both. Set it with:  npx wrangler secret put QBO_TOKEN_KEY  (any high-entropy
-// string — it's hashed to a 256-bit key, so length doesn't matter). Tokens are NEVER logged.
+// Activation order (docs/security/secrets-and-encryption.md):
+//   1. set the secret   openssl rand -base64 32, then  npx wrangler secret put QBO_TOKEN_KEY
+//                       (any high-entropy string — it's hashed to a 256-bit key)
+//   2. backfill         POST /api/admin/qbo-token-backfill?dry_run=1, then without dry_run — seals any
+//                       legacy enc_ver=0 rows in place (idempotent, counts-only output)
+//   3. fail closed      add `qbo_token_fail_closed` to FEATURES — from then on a token write with no key
+//                       is REFUSED (TokenKeyMissingError) instead of being stored in plaintext.
+// With the flag OFF and no key, writes stay plaintext (enc_ver=0) exactly as before — the flag exists
+// only so prod can't break between deploying this and setting the secret. Tokens are NEVER logged.
+//
+// Plaintext detection is by `enc_ver`, not by guessing at the value: an Intuit refresh token is an
+// alphanumeric string that can look like base64. Where the backfill needs to second-guess a row it
+// uses the GCM authentication tag (looksSealedWith) — a plaintext never authenticates.
 
 const IV_BYTES = 12;
 
 export function tokenEncryptionEnabled(env: Env): boolean {
   return !!env.QBO_TOKEN_KEY;
+}
+
+/** Thrown when a token write is refused because no key is configured and fail-closed is on. */
+export class TokenKeyMissingError extends Error {
+  readonly code = "token_key_missing";
+  constructor() {
+    // User-safe copy: this message can reach the browser (e.g. the QBO purchases route returns e.message).
+    // The operator signal is the error class / `code` plus the server-side log, not the text.
+    super(TOKEN_STORAGE_BLOCKED_MESSAGE);
+    this.name = "TokenKeyMissingError";
+  }
+}
+
+/** True when token writes must be sealed or refused (flag `qbo_token_fail_closed`). */
+export function tokenFailClosed(env: Env): boolean {
+  return featureOn(env, "qbo_token_fail_closed");
+}
+
+/** True when a token write right now would be refused — check BEFORE starting an OAuth exchange. */
+export function tokenStorageBlocked(env: Env): boolean {
+  return !tokenEncryptionEnabled(env) && tokenFailClosed(env);
+}
+
+/** User-facing copy for a refused connect (never names the secret). */
+export const TOKEN_STORAGE_BLOCKED_MESSAGE =
+  "QuickBooks can't be connected right now: secure token storage isn't configured. Please try again later.";
+
+/** A token pair as it should be written to qbo_connections. */
+export interface StoredTokenPair {
+  access: string | null;
+  refresh: string;
+  encVer: 0 | 1;
+}
+
+/**
+ * The ONE write path for QBO tokens (connect + refresh). Seals both tokens with QBO_TOKEN_KEY
+ * (enc_ver=1). With no key: refuses when fail-closed is on (TokenKeyMissingError), otherwise falls
+ * back to legacy plaintext (enc_ver=0). Both tokens always share one enc_ver.
+ */
+export async function sealTokenPair(env: Env, access: string | null, refresh: string): Promise<StoredTokenPair> {
+  if (tokenEncryptionEnabled(env)) {
+    return {
+      access: access == null ? null : await sealToken(env, access),
+      refresh: await sealToken(env, refresh),
+      encVer: 1,
+    };
+  }
+  if (tokenFailClosed(env)) throw new TokenKeyMissingError();
+  return { access, refresh, encVer: 0 };
+}
+
+/** enc_ver 0 / null ⇒ the row is stored in plaintext. */
+export function isPlaintextEncVer(encVer: number | null | undefined): boolean {
+  return (encVer ?? 0) === 0;
+}
+
+/**
+ * True when `value` authenticates as a sealToken() output under the CURRENT key. AES-GCM's 128-bit
+ * tag makes a false positive on a plaintext token cryptographically negligible, so this is a safe
+ * "already sealed?" check for the backfill. Never throws.
+ */
+export async function looksSealedWith(env: Env, value: string): Promise<boolean> {
+  if (!tokenEncryptionEnabled(env)) return false;
+  try {
+    await openToken(env, value);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function aesKey(env: Env): Promise<CryptoKey> {
@@ -67,7 +146,7 @@ export async function openToken(env: Env, sealed: string): Promise<string> {
  */
 export async function readToken(env: Env, value: string | null, encVer: number | null): Promise<string | null> {
   if (value == null) return null;
-  if ((encVer ?? 0) === 0) return value;
+  if (isPlaintextEncVer(encVer)) return value;
   // enc_ver=1 means this value was sealed with QBO_TOKEN_KEY. If the key is now missing (unset or a
   // new env without it), fail with a clear, actionable error rather than an opaque GCM exception
   // from hashing `undefined`. Callers (connection/revoke) surface this so the fix is obvious:

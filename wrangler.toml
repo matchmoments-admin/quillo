@@ -163,5 +163,11 @@ QBO_BASE_URL = "https://quickbooks.api.intuit.com"
 # FISKIL_CLIENT_SECRET     Fiskil Console → API keys
 # STRIPE_SECRET_KEY        Stripe → Developers → API keys
 # STRIPE_WEBHOOK_SECRET    Stripe → Developers → Webhooks → signing secret
+# QBO_TOKEN_KEY            AES-256-GCM key sealing QBO tokens in D1 (`openssl rand -base64 32`);
+#                          see docs/security/secrets-and-encryption.md for the set → backfill → fail-closed order
+# AWS_ACCESS_KEY_ID_AU / AWS_SECRET_ACCESS_KEY_AU   per-jurisdiction Bedrock IAM user (optional; falls back to unsuffixed)
+# GOOGLE_PLACES_KEY        Places API (New), server-only (flag phi_provider_directory)
+# MAPS_EMBED_KEY           Maps Embed API — PUBLIC by design (iframe URL); restrict by referrer
+# Full inventory (code vs here vs `wrangler secret list`): docs/security/secrets-and-encryption.md
 # NOTE: QBO refresh/access tokens are NOT secrets — they rotate on every use and are
 #       persisted per-tenant in D1 (qbo_connections), seeded by the OAuth connect flow (Stage 5).

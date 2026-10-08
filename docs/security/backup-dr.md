@@ -34,6 +34,9 @@ Version 1.0, last checked 2026-10-08.
   ([Workflows example: backup D1](https://developers.cloudflare.com/workflows/examples/backup-d1/),
   [API: export](https://developers.cloudflare.com/api/resources/d1/subresources/database/methods/export/)).
   Running it in the Worker means no GitHub Actions secret and no separate pipeline.
+- **Key dates are UTC.** The run at 16:30 UTC is already the *next* day in Australia, so
+  `d1/daily/2026-10-08.sql` is the state at about **02:30 AEST on 9 October**. When you choose an
+  export, read its `exported_at` metadata.
 - **Steps:** start the export → poll with `current_bookmark` until `status: complete` (an export that
   stops being polled cancels itself) → download the signed URL → `BACKUPS.put("d1/daily/<YYYY-MM-DD>.sql")`.
   The first export of each month is copied to `d1/monthly/<YYYY-MM>.sql`. The object's metadata
@@ -82,6 +85,12 @@ npx wrangler r2 bucket lifecycle list tax-agent-backups
 #    Permissions: Account · D1 · Read          (export accepts D1 Read; nothing else)
 #    Account resources: Include · Matchmoments@outlook.com's Account (192777a993ba94d262ede60d8f9a480c)
 #    Client IP filtering: none (Workers egress IPs aren't fixed). TTL: optional, set a calendar reminder to rotate yearly.
+#    The API reference lists "D1 Read" / "D1 Write" as accepted for export. Verify Read is enough BEFORE
+#    storing it (this starts an export job and changes nothing):
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "content-type: application/json" \
+  -d '{"output_format":"polling"}' \
+  https://api.cloudflare.com/client/v4/accounts/192777a993ba94d262ede60d8f9a480c/d1/database/76e1c20a-efa2-4042-858a-7e24be4c14ce/export | head -c 300
+#    "success":true means good. HTTP 403 means re-issue the token with Account · D1 · Edit and note it here.
 npx wrangler secret put D1_EXPORT_TOKEN
 
 # 4. Turn it on: add d1_backups to FEATURES in wrangler.toml, then deploy

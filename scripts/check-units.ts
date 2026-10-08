@@ -6427,6 +6427,35 @@ console.log("daily D1 backup (#635)");
   const dash = await buildSecurityDashboard({ ...mkEnv(""), DB: { prepare: () => ({ bind() { return this; }, first: async () => ({ n: 0 }), all: async () => ({ results: [] }) }) } } as unknown as Env, nowAt);
   const bp = dash.panels.find((p) => p.key === "backups")!;
   check("backup: the dashboard's Backups panel lights up from the record", bp.status === "fail" && bp.metrics.last_restore_test_at === LAST_RESTORE_TEST.at && !bp.pending_ticket);
+
+  // A stale "ok" record (the cron stopped firing) must not look healthy forever.
+  kvStore.set(SECURITY_KV.source("backups"), raw); // the 2026-11-01 ok record
+  const dashEnv = { ...mkEnv(""), DB: { prepare: () => ({ bind() { return this; }, first: async () => ({ n: 0 }), all: async () => ({ results: [] }) }) } } as unknown as Env;
+  const fresh = (await buildSecurityDashboard(dashEnv, new Date("2026-11-02T10:00:00Z"))).panels.find((p) => p.key === "backups")!;
+  const old = (await buildSecurityDashboard(dashEnv, new Date("2026-11-04T10:00:00Z"))).panels.find((p) => p.key === "backups")!;
+  check("backup: a fresh ok record ⇒ panel ok", fresh.status === "ok");
+  check("backup: an ok record older than 36h ⇒ panel warns it may have stopped", old.status === "warn" && /may have stopped/.test(old.summary));
+
+  // Retried run after a partial failure (daily stored, monthly copy missing) repairs the monthly copy.
+  mode = "ok";
+  nowAt = new Date("2026-12-01T16:30:00Z");
+  objects.set(`${BACKUP_PREFIX.daily}2026-12-01.sql`, { bytes: new TextEncoder().encode(DUMP) });
+  fetches = 0;
+  const rep = await runD1Backup(mkEnv("d1_backups"), deps);
+  check("backup: a skipped retry still creates a missing monthly copy (no re-export)", rep.status === "skipped" && fetches === 0 && objects.has(`${BACKUP_PREFIX.monthly}2026-12.sql`));
+
+  // success:false envelope ⇒ fail, not a hang.
+  nowAt = new Date("2026-12-02T16:30:00Z");
+  const sfFetch = (async () => Response.json({ success: false, errors: [{ message: "SECRET VENDOR BODY" }] })) as unknown as typeof fetch;
+  const sf = await runD1Backup(mkEnv("d1_backups"), { ...deps, fetch: sfFetch });
+  check("backup: success:false ⇒ fail with a generic reason", sf.status === "fail" && sf.reason === "export API returned no result");
+
+  // An export that never completes stops at the deadline (no runaway cron).
+  nowAt = new Date("2026-12-03T16:30:00Z");
+  let t = nowAt.getTime();
+  const slow = (async () => Response.json({ success: true, result: { status: "active", at_bookmark: "bm-x" } })) as unknown as typeof fetch;
+  const dl = await runD1Backup(mkEnv("d1_backups"), { fetch: slow, now: () => new Date(t), sleep: async () => { t += 60_000; } });
+  check("backup: a never-completing export fails at the deadline", dl.status === "fail" && /not complete after/.test(dl.reason));
 }
 
 import {

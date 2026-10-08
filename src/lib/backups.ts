@@ -170,6 +170,9 @@ export async function runD1Backup(env: Env, deps: BackupDeps = defaultDeps()): P
     const missing = [!env.BACKUPS && "BACKUPS bucket", !env.D1_EXPORT_TOKEN && "D1_EXPORT_TOKEN", !env.CF_ACCOUNT_ID && "CF_ACCOUNT_ID", !env.D1_DATABASE_ID && "D1_DATABASE_ID"].filter(Boolean);
     if (missing.length) throw new BackupError(`not configured (missing ${missing.join(", ")})`);
     if (await env.BACKUPS!.head(dailyKey)) {
+      // Retried cron: today's export exists. Still make sure the monthly copy does (a previous attempt
+      // may have stored the daily and then failed on the copy).
+      await ensureMonthly(env, dailyKey, day.slice(0, 7), { source: "d1-export", database_id: String(env.D1_DATABASE_ID), exported_at: at });
       outcome = { status: "skipped", key: dailyKey };
     } else {
       const { url, bookmark } = await pollExport(env, deps);

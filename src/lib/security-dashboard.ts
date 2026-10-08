@@ -502,14 +502,18 @@ export async function buildSecurityDashboard(env: Env, now: Date = new Date()): 
   {
     const b = c?.backups;
     const r = src.backups;
+    // A daily job that stopped firing leaves its last "ok" record behind forever — age it here so a
+    // dead cron shows as stale even while the live checks (security_monitoring) are OFF.
+    const stale = !!r && now.getTime() - Date.parse(r.at) > 36 * 36e5;
+    const rStatus: PanelStatus = r ? (stale ? worst(r.status, "warn") : r.status) : "not_set_up";
     if ((!b || b.status === "not_set_up") && !r) panels.push(notSetUp("backups", "Backups and DR", 635, "no D1 export bucket or restore test recorded"));
     else {
       const live = fromCheck(b);
       panels.push({
         key: "backups", title: "Backups and DR",
-        status: r ? worst(live.status === "not_set_up" || live.status === "not_checked" ? r.status : live.status, r.status) : live.status,
+        status: r ? worst(live.status === "not_set_up" || live.status === "not_checked" ? rStatus : live.status, rStatus) : live.status,
         checked_at: live.checked_at ?? r?.at ?? null,
-        summary: [b && b.status !== "not_set_up" ? b.summary : null, r?.summary].filter(Boolean).join(" · ") || live.summary,
+        summary: [stale ? `No backup run recorded since ${r!.at.slice(0, 10)} — the daily export may have stopped` : null, b && b.status !== "not_set_up" ? b.summary : null, r?.summary].filter(Boolean).join(" · ") || live.summary,
         metrics: { ...live.metrics, ...(r?.metrics ?? {}) },
         evidence: [...(r?.evidence ?? []), { label: "D1 Time Travel (30 days, built in)", href: "https://developers.cloudflare.com/d1/reference/time-travel/" }],
       });

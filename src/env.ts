@@ -201,6 +201,7 @@ export interface TaxAgentRpc {
   confirmCapitalImport(userId: string, importId: string, selectedRows?: number[] | null): Promise<{ holdings: number; disposals: number; unmatched: { source_row: number; code: string | null }[] }>;
   deleteStatement(userId: string, statementId: string, purge?: boolean): Promise<{ deleted: boolean; linesRemoved: number }>;
   repairStatements(userId: string): Promise<{ statements: number; recovered: number; flagsFixed: number }>;
+  minimiseBankLines(userId: string, now?: string): Promise<import("./lib/minimise").MinimiseResult | null>;
   setAccountSource(userId: string, accountId: string, source: string): Promise<void>;
   syncQboAccounts(userId: string): Promise<{ synced: number }>;
   disconnectQuickBooks(userId: string): Promise<{ ok: boolean; revoked: boolean }>;

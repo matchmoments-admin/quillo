@@ -134,6 +134,11 @@ export interface SyncStepDeps {
   stillSelected: (acct: RunAccount) => Promise<boolean>;
   /** Called once, BEFORE the first line of this step is written (the PS8 taint hook). */
   beforeFirstWrite?: () => Promise<void>;
+  /**
+   * bank_minimisation (#581): skip a line whose fingerprint is tombstoned (it was shrunk into a rollup), so a
+   * re-sync can't revive it. Off/absent ⇒ the insert SQL is byte-identical and the 0081 table is never read.
+   */
+  honourTombstones?: boolean;
 }
 
 export interface SyncStepResult {
@@ -347,6 +352,10 @@ export async function syncRunStep(deps: SyncStepDeps, run: SyncRun, pageBudget: 
       // Fingerprints are independent hashes — computed together rather than one await per row.
       const fps = await Promise.all(page.transactions.map((t) => feedFingerprint(t.id)));
       const inserts: D1PreparedStatement[] = [];
+      // Per TENANT, like the feed fingerprint itself (the provider transaction id) — index idx_bank_tomb_fp (0081).
+      const tombGuard = deps.honourTombstones
+        ? `\n                  AND NOT EXISTS (SELECT 1 FROM bank_line_tombstones WHERE user_id = ? AND line_fingerprint = ?)`
+        : "";
       page.transactions.forEach((t, k) => {
         const merchant = cleanMerchant(t.description);
         const transfer = isTransferLike(t.description);
@@ -371,7 +380,7 @@ export async function syncRunStep(deps: SyncStepDeps, run: SyncRun, pageBudget: 
                   merchant, amount_cents, currency, amount_aud_cents, txn_date, direction, bucket, ato_label, confidence, property_id)
                SELECT ?, ?, 'cdr_feed', ?, 'bank_line', ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                 WHERE NOT EXISTS (SELECT 1 FROM transactions WHERE user_id = ? AND line_fingerprint = ?)
-                  AND EXISTS (SELECT 1 FROM bank_connections WHERE id = ? AND user_id = ? AND status = 'active')
+                  AND EXISTS (SELECT 1 FROM bank_connections WHERE id = ? AND user_id = ? AND status = 'active')${tombGuard}
                ON CONFLICT(user_id, account_id, line_fingerprint) DO NOTHING`,
             )
             .bind(
@@ -384,6 +393,7 @@ export async function syncRunStep(deps: SyncStepDeps, run: SyncRun, pageBudget: 
               cat?.bucket ?? null, cat?.ato_label ?? null, cat ? cat.confidence : null, cat?.property_id ?? null,
               userId, fps[k],
               run.connectionId, userId,
+              ...(deps.honourTombstones ? [userId, fps[k]] : []),
             ),
         );
       });

@@ -268,6 +268,24 @@ export function lineFingerprint(accountId: string, line: StatementLine, occurren
   return sha256hex(`${accountId}|${line.date}|${line.amount_cents}|${dir}|${norm}${bal}${occ}`);
 }
 
+/**
+ * Every line's re-upload fingerprint, in parse order — the ONE place the occurrence counter lives. Genuine
+ * same-day repeat lines on a balance-less statement (credit cards) each get a distinct fingerprint
+ * (occurrence per date|amount|direction|merchant), counted in parse order so a re-upload reproduces them.
+ * Used by confirmImport's dedup and by the minimisation goldens (a tombstoned line must match exactly).
+ */
+export async function statementLineFingerprints(accountId: string, lines: StatementLine[]): Promise<string[]> {
+  const occ = new Map<string, number>();
+  const out: string[] = [];
+  for (const line of lines) {
+    const base = `${line.date}|${line.amount_cents}|${line.direction ?? "debit"}|${cleanMerchant(line.raw_description).toLowerCase()}`;
+    const occurrence = occ.get(base) ?? 0;
+    occ.set(base, occurrence + 1);
+    out.push(await lineFingerprint(accountId, line, occurrence));
+  }
+  return out;
+}
+
 export interface Reconciliation {
   available: boolean; // false when the statement carries no balances to check against
   ok: boolean; // expected closing == stated closing (to the cent) AND continuity holds

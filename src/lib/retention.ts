@@ -96,6 +96,10 @@ export const PURGE_TABLES = [
   // 0079 (wages_payer, first-timer A3 #577): "We noticed…" credit-triage signals and the user's decision.
   "noticed_signals",
   "grow_layers",             // 0083 (ft_journey, A11b #592) — the user's Grow layer on/off choices
+  // 0081 (bank_minimisation, first-timer A5 #581): the per-account totals irrelevant debits shrink into, and
+  // the fingerprint tombstones that stop re-imports reviving them — tenant data, purged + exported.
+  "bank_line_rollups",
+  "bank_line_tombstones",
 ] as const;
 
 // Columns that must NEVER leave the system in an APP-12 export, even though the row belongs to the

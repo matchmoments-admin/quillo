@@ -11,7 +11,7 @@
 //   confirmNoticed · relevanceView/confirmWorthALook · recordsView · reconcileProposals/receiptLinkTargets/
 //   applyReceiptLink · computeFilingReadiness · readJourney (the DO's journey()) · buildMytaxWorksheet ·
 //   markFyLodged/lodgedOnError/lodgingFy · purgeTenant (a returning user starts over, #623) · buildReport.
-// What is REPLAYED as the exact SQL it runs (cited), because a Durable Object method can't be instantiated
+// What is REPLAYED (cited; the SQL each runs, narrowed to the columns this fixture exercises), because a Durable Object method can't be instantiated
 // without the Cloudflare Agent base: confirmImport's line INSERT, the categoriser's bucket write (an LLM call —
 // replaced by a fixed, plausible outcome), stampDeductibility, setDeductibility ("Not work-related"),
 // saveWorkUse (WFH hours) and addIncome (the income statement). Each replay cites its source.
@@ -30,6 +30,7 @@ import { fileURLToPath } from "node:url";
 import type { Env } from "../src/env";
 import { buildReport } from "../src/lib/report";
 import { parseCsv, applyColumnMap, lineFingerprint, isTransferLike, type ColumnMap, type StatementLine } from "../src/lib/statements";
+import { cleanMerchant } from "../src/lib/bank-parsers";
 import { verdictForTxn } from "../src/lib/deductibility";
 import { assertCanonicalSource, reconcileProposals } from "../src/lib/queries";
 import { reconcileConfigFromPack } from "../src/lib/reconcile-proposer";
@@ -137,11 +138,11 @@ async function importStatements(env: Env, u: string): Promise<string> {
     const occ = new Map<string, number>();
     let i = 0;
     for (const line of s.lines) {
-      const base = `${line.date}|${line.amount_cents}|${line.direction ?? "debit"}|${line.description.toLowerCase()}`;
+      const base = `${line.date}|${line.amount_cents}|${line.direction ?? "debit"}|${cleanMerchant(line.raw_description).toLowerCase()}`;
       const occurrence = occ.get(base) ?? 0;
       occ.set(base, occurrence + 1);
       const fp = await lineFingerprint(accountId, line, occurrence);
-      const status = isTransferLike(line.raw_description) ? "ignored" : "needs_review"; // no user rule / hint ⇒ to the categoriser
+      const status = isTransferLike(line.raw_description) ? "ignored" : "needs_review"; // a fresh tenant has no rules; no pack merchant hint matches the fixture (deterministicCategorise ⇒ null)
       run(
         `INSERT INTO transactions (id, user_id, source, status, kind, account_id, statement_id, line_fingerprint, raw_description,
            merchant, amount_cents, currency, amount_aud_cents, txn_date, direction, bucket, ato_label, confidence, property_id)
@@ -157,7 +158,7 @@ async function importStatements(env: Env, u: string): Promise<string> {
         WHERE user_id = ? AND status = 'needs_review'`, u);
   // stampDeductibility (agent.ts): verdictForTxn over payg rows that are undetermined; likely_not ⇒ $0 claimable.
   const section = (auV1RulePack as unknown as { payg_deductibility: Parameters<typeof verdictForTxn>[3] }).payg_deductibility;
-  for (const r of db.prepare(`SELECT id, bucket, ato_label, merchant FROM transactions WHERE user_id = ? AND bucket = 'payg' AND (deductibility IS NULL OR deductibility = 'undetermined')`).all(u) as { id: string; bucket: string; ato_label: string | null; merchant: string | null }[]) {
+  for (const r of db.prepare(`SELECT id, bucket, ato_label, merchant FROM transactions WHERE user_id = ? AND bucket = 'payg' AND (deductibility IS NULL OR deductibility = 'undetermined' OR (deductibility = 'suggested_deductible' AND deductible_amount_cents IS NULL))`).all(u) as { id: string; bucket: string; ato_label: string | null; merchant: string | null }[]) {
     const v = verdictForTxn(r.bucket, r.ato_label, r.merchant, section);
     if (v.deductibility !== "undetermined") run(`UPDATE transactions SET deductibility = ?, deductible_amount_cents = ? WHERE id = ? AND user_id = ?`, v.deductibility, v.deductibility === "likely_not" ? 0 : null, r.id, u);
   }

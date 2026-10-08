@@ -42,7 +42,7 @@ import { upsertSituationPeriod, fillSituationPeriod, deleteSituationPeriod, Situ
 import { applyCapitalColumnMap, type CapitalColumnMap, type CapitalDraftRow, type CapitalImportPreview } from "./lib/capital-import";
 import { resolveJurisdictionForUser, currentFyStartYearFor, baseCurrencyOf, AU_DESCRIPTOR, type JurisdictionDescriptor } from "./lib/jurisdiction";
 import type { FilingReadiness } from "./lib/readiness";
-import { computeFilingReadiness as computeFilingReadinessFor } from "./lib/filing-readiness";
+import { computeFilingReadiness as computeFilingReadinessFor, loadClaimRules as loadClaimRulesFor } from "./lib/filing-readiness";
 import { readJourney } from "./lib/journey-read";
 import { rollSchedule, balancingAdjustment, fyStartYearOf, isLowCostAsset, looksLikePersonalTransfer, assetDepreciatesForTaxpayer, depMethodConflict, resolveDiv40Life, type DepAsset } from "./lib/depreciation";
 import { matchClaimRules, suggestionText, enumerateSituationClaims, classifyClaim, uncoveredOccupations, ruleKey, type ClaimRule, type ClaimContext, type ClaimSituation } from "./lib/claimability";
@@ -4236,17 +4236,8 @@ export class TaxAgent extends Agent<Env> {
    * assessFilingReadiness so the column list + tenant scope can't drift across the three call sites.
    */
   private async loadClaimRules(userId: string, rulePackVer: string): Promise<ClaimRule[]> {
-    const pack = await this.loadRulePack(rulePackVer);
-    const packRules = ((pack as { claimability?: ClaimRule[] }).claimability ?? []) as ClaimRule[];
-    // NB: requires_entity_kind is a pack-only field (JSON rules); the claimability_rules table has no
-    // such column — selecting it would throw "no such column". D1 rows carry no entity AND-gate.
-    const d1 = (
-      await this.env.DB.prepare(
-        `SELECT id, scope_type, scope_value, merchant_hint, ato_label, claim_type, default_method, general_info_note, defer_to_agent
-           FROM claimability_rules WHERE rule_pack_ver = ? AND (user_id IS NULL OR user_id = ?)`,
-      ).bind(rulePackVer, userId).all<ClaimRule>()
-    ).results ?? [];
-    return [...packRules, ...d1];
+    // The one implementation lives in src/lib/filing-readiness.ts (#595), which readiness also calls.
+    return loadClaimRulesFor(this.env, userId, rulePackVer, { loadRulePack: (ver) => this.loadRulePack(ver) });
   }
 
   // ── PHASE 3: Find & attach claim evidence (claim_links) ────────────────────

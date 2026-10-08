@@ -15,6 +15,7 @@ Curated cross-session memory for this repo. How it works:
 - Never store secrets, tokens, or PII here.
 
 ## Build / tooling
+- Readiness + GET /api/journey composition live in src/lib (filing-readiness.ts computeFilingReadiness, journey-read.ts readJourney; DO methods delegate) — test them directly instead of replicating the DO. scripts/e2e-first-timer.ts is the 4-step journey e2e; its flag-OFF baseline re-captures with UPDATE_SNAPSHOT=1. [src: 3d49246d-fc0d-40f9-86a3-ad884ecefa78]
 
 ## Gotchas
 - Fiskil sandbox+prod share ONE base URL and the JWT has no env marker, so FISKIL_ENV alone can't prove data is synthetic — PS8 carve-out also keys on sandbox institution `88888` (bank-feed-core requiresAuResidency). [src: 3d49246d-fc0d-40f9-86a3-ad884ecefa78]

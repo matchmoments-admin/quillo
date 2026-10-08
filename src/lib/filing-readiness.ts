@@ -38,8 +38,12 @@ async function requireProfile(env: Env, userId: string): Promise<Profile> {
   return p;
 }
 
-/** Pack rules + the tenant's / global D1 claimability overrides (same scope as the DO's loadClaimRules). */
-async function loadClaimRules(env: Env, userId: string, rulePackVer: string, deps: FilingReadinessDeps): Promise<ClaimRule[]> {
+/**
+ * The tenant's claim-rule set: the rule pack ∪ per-tenant D1 rows. D1 rows are scoped so a global pack
+ * override (user_id IS NULL) applies to everyone while AI gap-fill rows stay tenant-private. The single
+ * implementation: the DO's loadClaimRules (suggestClaims / reviewClaims) delegates here.
+ */
+export async function loadClaimRules(env: Env, userId: string, rulePackVer: string, deps: FilingReadinessDeps): Promise<ClaimRule[]> {
   const pack = await deps.loadRulePack(rulePackVer);
   const packRules = ((pack as { claimability?: ClaimRule[] }).claimability ?? []) as ClaimRule[];
   // NB: requires_entity_kind is a pack-only field (JSON rules); the claimability_rules table has no such column.

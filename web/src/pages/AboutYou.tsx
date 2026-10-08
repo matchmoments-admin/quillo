@@ -1,9 +1,10 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api";
 import { useActiveFy, fyLabel } from "../lib/activeFy";
 import { useFeatures } from "../lib/features";
+import { useHashScroll } from "../lib/useHashScroll";
 import { useEducation } from "../lib/education";
 import { STEP_LABEL, STEP_ROUTE } from "../lib/journey";
 import {
@@ -98,6 +99,8 @@ export function AboutYou() {
   const [params, setParams] = useSearchParams();
   const sit = useQuery({ queryKey: ["situation"], queryFn: () => api.situation() });
   const why = useWhyDrawer("setup");
+  // #593: People and last year's carry-ins moved here from Settings; /settings#people, #carry-ins land on them.
+  useHashScroll();
 
   const data = sit.data;
   const self = data?.persons?.find((p) => p.role === "self") ?? data?.persons?.[0];
@@ -594,7 +597,7 @@ function Profile({ situation, fy, bounds, onWhy, onAskAgain }: { situation: Situ
         </div>
       )}
 
-      <section className="space-y-3">
+      <section id="people" className="scroll-mt-20 space-y-3">
         <h2 className="font-display text-xl tracking-wide text-forest">{PEOPLE_COPY.title}</h2>
         <p className="max-w-[65ch] text-sm text-muted">{PEOPLE_COPY.intro}</p>
         <FtCard className="space-y-2 p-4">
@@ -721,9 +724,11 @@ function LastYear() {
   const noa = useQuery({ queryKey: ["noa", "all"], queryFn: () => api.noaCarryovers(), enabled: has("noa_capture") });
   const auto = (losses.data?.length ?? 0) > 0 || (openings.data?.length ?? 0) > 0 || (noa.data ?? []).some((c) => c.status === "confirmed");
   const [open, setOpen] = useState<boolean | null>(null);
-  const expanded = open ?? auto;
+  // A /settings#carry-ins deep link (#593) opens the section it points at.
+  const { hash } = useLocation();
+  const expanded = open ?? (auto || hash === "#carry-ins");
   return (
-    <section className="space-y-3">
+    <section id="carry-ins" className="scroll-mt-20 space-y-3">
       <FtButton variant="ghost" className="-ml-4 font-display text-xl tracking-wide text-forest" aria-expanded={expanded} aria-controls="about-last-year" onClick={() => setOpen(!expanded)}>
         <span aria-hidden>{expanded ? "▾" : "▸"}</span> {CARRY_INS_COPY.title}
       </FtButton>

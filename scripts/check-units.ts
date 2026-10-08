@@ -5019,7 +5019,7 @@ import type { FilingReadiness as JFilingReadiness, ReadinessFinding as JFinding 
 }
 
 // ── #582/#585 ft_journey: the ONE legacy → journey route table + the old 6-step URLs (web/src/lib/legacyRoutes.ts) ──
-import { LEGACY_ROUTES, OLD_STEP_ROUTES, STEP_LEGACY_ROUTE, journeyRouteFor, oldStepRouteFor, toJourneyHref } from "../web/src/lib/legacyRoutes";
+import { LEGACY_ROUTES, OLD_STEP_ROUTES, STEP_LEGACY_ROUTE, journeyRouteFor, oldStepRouteFor, toJourneyHref, SETTINGS_SECTION_MOVES, SETTINGS_KEPT_ANCHORS, settingsSectionHome } from "../web/src/lib/legacyRoutes";
 // (web/src/lib/journey.ts imports react-query, which the server CI job doesn't install — read its route table as text.)
 import { GROW_ROUTE, GROW_LEGACY_ROUTE } from "../web/src/lib/growRoutes";
 {
@@ -5056,6 +5056,43 @@ import { GROW_ROUTE, GROW_LEGACY_ROUTE } from "../web/src/lib/growRoutes";
     toJourneyHref("/filing") === "/lodge" && toJourneyHref("/income#x") === "/connect#income" && toJourneyHref("/review?fy=2025") === "/review?fy=2025" &&
     toJourneyHref("/claims?view=labels") === "/review?view=labels" && toJourneyHref("/records?x=1") === "/review?x=1#documents" &&
     toJourneyHref("/inbox") === "/review" && toJourneyHref("/reports?fy=2025") === "/reports?fy=2025" && toJourneyHref("https://ato.gov.au/filing") === "https://ato.gov.au/filing");
+
+  // ── #593 Settings becomes account-only: every old Settings section anchor redirects to its new home ──
+  const web = (f: string) => fs.readFileSync(path.join(process.cwd(), "web/src", f), "utf8");
+  const settingsSrc = web("pages/Settings.tsx");
+  const growSrc = web("pages/Grow.tsx");
+  const aboutSrc = web("pages/AboutYou.tsx");
+  const reviewQSrc = web("pages/ReviewQueue.tsx");
+  const homes = Object.fromEntries(SETTINGS_SECTION_MOVES.map((m) => [m.anchor, m.home]));
+  check("settings split (#593): each moved section has the #436 home (people/carry-ins → Get set up, property → Grow, business/super → Grow, rules → Review)",
+    JSON.stringify(homes) === JSON.stringify({
+      people: "/setup", "carry-ins": "/setup", properties: "/grow/property", loans: "/grow/property",
+      entities: "/grow/business", activities: "/grow/business", gst: "/grow/business", bas: "/grow/business",
+      trust: "/grow/business", partnership: "/grow/business", smsf: "/grow/business", super: "/grow/business", rules: "/review",
+    }));
+  check("settings split (#593): /settings#<anchor> redirects to <registered home>#<same anchor> for every moved section (#properties, #people, #rules, #carry-ins, #super …)",
+    ["properties", "people", "rules", "carry-ins", "super"].every((a) => a in homes) &&
+    SETTINGS_SECTION_MOVES.every((m) => settingsSectionHome(`#${m.anchor}`, { aboutYou: true }) === `${m.home}#${m.anchor}` && isRouted(m.home)) &&
+    settingsSectionHome("#super", { aboutYou: false }) === "/grow/business#super" && settingsSectionHome("properties", { aboutYou: true }) === "/grow/property#properties");
+  check("settings split (#593): People + carry-ins stay on Settings until Get set up's profile mode is live; kept / unknown / malformed anchors stay put",
+    settingsSectionHome("#people", { aboutYou: false }) === null && settingsSectionHome("#carry-ins", { aboutYou: false }) === null &&
+    SETTINGS_KEPT_ANCHORS.every((a) => settingsSectionHome(`#${a}`, { aboutYou: true }) === null && !(a in homes)) &&
+    settingsSectionHome("", { aboutYou: true }) === null && settingsSectionHome("#nope", { aboutYou: true }) === null && settingsSectionHome("#%E0", { aboutYou: true }) === null);
+  // The anchor must exist where the redirect lands — otherwise the link "works" but drops you at the top of a long page.
+  const growAnchored = (a: string) => new RegExp(`id=\\{anchored \\? "${a}"|a\\("${a}"\\)`).test(settingsSrc);
+  check("settings split (#593): every moved anchor is rendered in its new home (About you ids, Grow composes the Settings editors with ids, Review #rules)",
+    SETTINGS_SECTION_MOVES.every((m) =>
+      m.home === "/setup" ? aboutSrc.includes(`id="${m.anchor}"`)
+      : m.home === "/review" ? reviewQSrc.includes(`id="${m.anchor}"`) && /<RulesSettings \/>/.test(reviewQSrc)
+      : growAnchored(m.anchor)) &&
+    /function PropertyBody[\s\S]*?<PropertySettings \/>/.test(growSrc) && /function BusinessBody[\s\S]*?<BusinessSettings \/>/.test(growSrc) &&
+    !/Open in Settings/.test(growSrc) && !/to="\/settings"/.test(reviewQSrc));
+  const ftBlock = /\n  if \(ft\) \{([\s\S]*?)\n  \}\n/.exec(settingsSrc)?.[1] ?? "";
+  check("settings split (#593): with ft_journey ON Settings is account-only (consent/your data, bank connections, devices) and redirects moved anchors before rendering",
+    ftBlock.length > 0 && /\{privacy\}/.test(ftBlock) && /<BankConsents \/>/.test(ftBlock) && /\{devices\}/.test(ftBlock) &&
+    !/PropertySections|BusinessSections|RulesSection/.test(ftBlock) && !/[Aa]ppearance/.test(settingsSrc) &&
+    /if \(movedTo\) return <Navigate to=\{movedTo\} replace \/>;\n  if \(sit\.isLoading\)/.test(settingsSrc) &&
+    web("components/BankConsents.tsx").includes(`id="bank-connections"`) && settingsSrc.includes(`anchored ? "devices"`) && settingsSrc.includes(`id="privacy"`) && settingsSrc.includes(`anchored ? "your-data"`));
 }
 
 // ── #585 (spec A2): About you — answers → situation-period writes, periods → answers, Q4/Q5 job sync ──
@@ -5576,9 +5613,9 @@ console.log("#589 Check step");
     JSON.stringify(legacy) === JSON.stringify(["/assets", "/income", "/settings", "/inbox", "/inbox", "/inbox"]) &&
     findingFixLink({ evidence_refs: [] }).label === "Sort it out" && findingFixLink({ evidence_refs: [{ kind: "income" }] }).label === "Review income");
   // ON (journey): repointed through the ONE legacy → journey table; missing evidence goes to Records.
-  check("findingLinks ON: income → Connect, transactions → Review, document → Review's documents, kept routes stay",
+  check("findingLinks ON: income → Connect, transactions → Review, document → Review's documents, property → Grow › Property (#593)",
     findingFixLinkForKind("income", { journey: true }).to === "/connect#income" && findingFixLinkForKind("transaction", { journey: true }).to === "/review" &&
-    findingFixLinkForKind("document", { journey: true }).to === "/review#documents" && findingFixLinkForKind("property", { journey: true }).to === "/settings");
+    findingFixLinkForKind("document", { journey: true }).to === "/review#documents" && findingFixLinkForKind("property", { journey: true }).to === "/grow/property#properties");
   check("legacyRoutes (#587): the fallback picker /review/match is routed to the Review step", /path: "review\/match", element: <ReviewStep \/>/.test(fs.readFileSync(path.join(process.cwd(), "web/src/main.tsx"), "utf8")));
   // The Check page and its match row: tax-advice denylist (no refund wording, no figures in copy), and the
   // page never renders a refund / tax-payable field.

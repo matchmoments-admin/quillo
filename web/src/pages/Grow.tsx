@@ -2,6 +2,7 @@ import { Navigate, useParams } from "react-router-dom";
 import { useFeatures } from "../lib/features";
 import { useActiveFy } from "../lib/activeFy";
 import { useJourney } from "../lib/journey";
+import { useHashScroll } from "../lib/useHashScroll";
 import { GROW_BLURB, GROW_LABEL, GROW_LEGACY_ROUTE, isGrowKey, useSetGrowLayer } from "../lib/grow";
 import { FtButton, FtCard, FtLink, GeneralInfoNote } from "../components/ft";
 import { LoanInterestCard } from "../components/LoanInterestCard";
@@ -12,33 +13,20 @@ import { Assets } from "./Assets";
 import { Extras } from "./Extras";
 import { Savings } from "./Savings";
 import { QuickBooks } from "./QuickBooks";
+import { BusinessSettings, PropertySettings } from "./Settings";
 
 // Grow pages at /grow/:layer (spec A11 ticket b, #592; flag ft_journey). Each is COMPOSED from the existing
-// pages/components — no rewrites. Property and Business still keep their editors in Settings until the
-// Settings split (#593) moves those sections here, so those pages link to them for now.
+// pages/components — no rewrites. Property and Business compose the editors that used to live on Settings
+// (#593: Settings is account-only with the flag ON); `/settings#properties` etc. land on their anchors here.
 //
 // A Grow page is always reachable by URL (every legacy deep link keeps working), even when the layer is
 // hidden from the rail; a hidden, switchable layer shows a one-tap "Show in my menu". OFF, a /grow URL
 // redirects to the legacy page it composes. Every hook sits above the first conditional return.
 
-function SettingsLink({ what }: { what: string }) {
-  return (
-    <FtCard className="p-4">
-      <p className="text-sm text-ink">{what}</p>
-      <p className="mt-0.5 text-sm text-muted">These are still edited in Settings while this area is being moved here.</p>
-      <div className="mt-2">
-        <FtLink to="/settings" variant="secondary">
-          Open in Settings
-        </FtLink>
-      </div>
-    </FtCard>
-  );
-}
-
 function PropertyBody({ fyStart }: { fyStart: number }) {
   return (
     <div className="space-y-4">
-      <SettingsLink what="Your properties, who owns them, and which loans they use." />
+      <PropertySettings />
       <LoanInterestCard fy={fyStart} />
       <FtCard className="p-4">
         <p className="text-sm text-ink">Rent you received is recorded with your income, and each property's position is on Reports.</p>
@@ -74,7 +62,7 @@ function InvestmentsBody() {
 }
 
 function BusinessBody() {
-  return <SettingsLink what="Business activities, companies, trusts and partnerships, GST registration, BAS periods and super contributions." />;
+  return <BusinessSettings />;
 }
 
 function LayerBody({ layer, fyStart }: { layer: GrowLayerKey; fyStart: number }) {
@@ -107,6 +95,7 @@ export function GrowRoute() {
   const { fy: fyStart } = useActiveFy();
   const journey = useJourney();
   const set = useSetGrowLayer();
+  useHashScroll(loaded && has("ft_journey"));
   if (!loaded) return null;
   if (!isGrowKey(layer)) return <Navigate to="/" replace />;
   if (!has("ft_journey")) return <Navigate to={GROW_LEGACY_ROUTE[layer]} replace />;

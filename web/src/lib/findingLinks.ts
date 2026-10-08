@@ -25,6 +25,8 @@ export function findingFixLinkForKind(kind: string | null | undefined, opts: { j
   }
   if (!opts.journey) return link;
   if (kind === "document") return { to: "/review#documents", label: link.label };
+  // #593: with the journey on, property records live on Grow › Property (Settings is account-only).
+  if (kind === "property") return { to: "/grow/property#properties", label: link.label };
   return { to: toJourneyHref(link.to), label: link.label };
 }
 

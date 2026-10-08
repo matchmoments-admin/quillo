@@ -1484,6 +1484,17 @@ With `ft_journey` OFF every route behaves exactly as today. With it ON:
 **not** changed, so server output stays byte-identical. The SPA maps legacy hrefs to new routes
 with one table, `web/src/lib/legacyRoutes.ts`, used by the redirects and by `findingLinks.ts`.
 
+**Settings split (as built, #593).** `SETTINGS_SECTION_MOVES` in the same file gives each old Settings
+section an anchor and ONE new home: `#people` / `#carry-ins` → `/setup` (only while Get set up's profile
+mode is live, i.e. `situation_profile` ON too; otherwise they stay on Settings), `#properties` / `#loans` →
+`/grow/property`, `#entities` `#activities` `#gst` `#bas` `#trust` `#partnership` `#smsf` `#super` →
+`/grow/business`, `#rules` → `/review` (a "Your sorting rules" panel under the queue). With `ft_journey`
+ON, `/settings#<anchor>` redirects to `<home>#<anchor>`, and Settings renders only a "where your tax
+details went" card, Privacy & AI + Your data (`#privacy`, `#your-data`), bank connections
+(`#bank-connections`), devices (`#devices`) and the AI changes feed. The Grow and Review homes compose the
+same editors (exported from `Settings.tsx`), so nothing was rewritten. All entities (employment included)
+live on Grow › Business for now. OFF, Settings is byte-identical (SSR-compared).
+
 ### Server
 
 - `GET /api/journey?fy=` (new, `src/api.ts` → DO method `journey(userId, fy)` composing readiness,

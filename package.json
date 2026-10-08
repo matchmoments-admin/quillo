@@ -37,10 +37,10 @@
     "sim:shell:control": "node scripts/sim-mobile-shell.mjs --legacy"
   },
   "dependencies": {
-    "@anthropic-ai/bedrock-sdk": "^0.29.2",
-    "@anthropic-ai/sdk": "^0.40.1",
-    "@cantoo/pdf-lib": "^2.7.1",
-    "agents": "^0.7.9",
+    "@anthropic-ai/bedrock-sdk": "^0.34.2",
+    "@anthropic-ai/sdk": "^0.131.0",
+    "@cantoo/pdf-lib": "^2.11.1",
+    "agents": "^0.26.0",
     "fflate": "^0.8.3",
     "jose": "^5.9.6",
     "postal-mime": "^2.4.4",

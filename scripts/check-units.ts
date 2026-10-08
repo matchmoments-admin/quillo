@@ -6124,5 +6124,109 @@ console.log("security & compliance dashboard (#636)");
   check("security: assessHeaders accepts a 1-year HSTS + enforcing CSP", hh.hsts === true && hh.csp_enforcing === true);
 }
 
+// ── #634 security headers + log hygiene (CDR Schedule 2 evidence) ─────────────────────────────────
+{
+  console.log("\nsecurity headers + log hygiene (#634)");
+  const { CSP, CSP_REPORT_ONLY, HSTS, BASE_SECURITY_HEADERS, HTML_SECURITY_HEADERS, LANDING_INLINE_SCRIPT_HASH,
+    withSecurityHeaders, renderHeadersFile, summariseCspReport, blockedOrigin, logTag } = await import("../src/lib/security-headers");
+  const { marketingResponse } = await import("../src/marketing/landing");
+  const { createHash } = await import("node:crypto");
+  const dirs = (p: string) => new Map(p.split(";").map((d) => d.trim().split(/\s+/)).map(([k, ...v]) => [k!, v]));
+  const enf = dirs(CSP);
+  const ro = dirs(CSP_REPORT_ONLY);
+
+  check("HSTS: 1 year + includeSubDomains, NO preload (owner decision)", HSTS === "max-age=31536000; includeSubDomains" && !/preload/i.test(HSTS));
+  check("base headers: HSTS, nosniff, strict-origin-when-cross-origin, X-Frame-Options DENY, Permissions-Policy",
+    BASE_SECURITY_HEADERS["Strict-Transport-Security"] === HSTS &&
+    BASE_SECURITY_HEADERS["X-Content-Type-Options"] === "nosniff" &&
+    BASE_SECURITY_HEADERS["Referrer-Policy"] === "strict-origin-when-cross-origin" &&
+    BASE_SECURITY_HEADERS["X-Frame-Options"] === "DENY" &&
+    /camera=\(\)/.test(BASE_SECURITY_HEADERS["Permissions-Policy"] ?? "") &&
+    /microphone=\(\)/.test(BASE_SECURITY_HEADERS["Permissions-Policy"] ?? ""));
+  check("Permissions-Policy keeps geolocation for self (Extras 'providers near me')", /geolocation=\(self\)/.test(BASE_SECURITY_HEADERS["Permissions-Policy"] ?? ""));
+  check("CSP is ENFORCING (Content-Security-Policy), with a stricter Report-Only probe alongside",
+    HTML_SECURITY_HEADERS["Content-Security-Policy"] === CSP && HTML_SECURITY_HEADERS["Content-Security-Policy-Report-Only"] === CSP_REPORT_ONLY);
+  check("CSP: frame-ancestors 'none', object-src 'none', base-uri 'self', form-action 'self', default-src 'self'",
+    enf.get("frame-ancestors")?.join(" ") === "'none'" && enf.get("object-src")?.join(" ") === "'none'" &&
+    enf.get("base-uri")?.join(" ") === "'self'" && enf.get("form-action")?.join(" ") === "'self'" && enf.get("default-src")?.join(" ") === "'self'");
+  check("CSP: no wildcard source, no 'unsafe-eval', no http: scheme anywhere",
+    ![...enf.values()].flat().some((s) => s === "*" || s === "'unsafe-eval'" || s.startsWith("http:")));
+  // The allowlist the SPA + marketing pages need (audited + headless-Chrome verified under wrangler dev).
+  const has = (d: string, ...srcs: string[]) => srcs.every((s) => enf.get(d)?.includes(s));
+  check("CSP allowlist: Clerk (dev + prod FAPI) script/connect/img, Turnstile, Google Fonts, Maps iframe, Unsplash, blob:/data:",
+    has("script-src", "'self'", "https://*.clerk.accounts.dev", "https://*.quillo.au", "https://challenges.cloudflare.com") &&
+    has("connect-src", "'self'", "https://*.clerk.accounts.dev", "https://*.quillo.au") &&
+    has("style-src", "https://fonts.googleapis.com") && has("font-src", "'self'", "https://fonts.gstatic.com") &&
+    has("img-src", "'self'", "data:", "blob:", "https://img.clerk.com", "https://images.unsplash.com") &&
+    has("frame-src", "https://challenges.cloudflare.com", "https://www.google.com") && has("worker-src", "'self'", "blob:") &&
+    has("report-uri", "/csp-report"));
+  check("Report-Only probe: same policy minus 'unsafe-inline' scripts (landing inline script allowed by hash)",
+    !ro.get("script-src")?.includes("'unsafe-inline'") && ro.get("script-src")?.includes(LANDING_INLINE_SCRIPT_HASH) === true &&
+    enf.get("script-src")?.includes("'unsafe-inline'") === true);
+  const landingHtml = await marketingResponse().text();
+  const inline = [...landingHtml.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => `'sha256-${createHash("sha256").update(m[1]!).digest("base64")}'`);
+  check("landing inline <script> hash matches LANDING_INLINE_SCRIPT_HASH (edit the script ⇒ update the hash)",
+    inline.length === 1 && inline[0] === LANDING_INLINE_SCRIPT_HASH);
+  check("web/public/_headers is generated from the module (no drift between Worker + asset-served headers)",
+    fs.readFileSync(path.join(process.cwd(), "web", "public", "_headers"), "utf8") === renderHeadersFile());
+  check("wrangler.toml still routes /csp-report through the Worker", /run_worker_first[^\n]*"\/csp-report"/.test(fs.readFileSync("wrangler.toml", "utf8")));
+
+  const html = withSecurityHeaders(new Response("<p>x</p>", { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "public, max-age=300" } }));
+  const jsonRes = withSecurityHeaders(Response.json({ ok: true }, { status: 201 }));
+  const redirect = withSecurityHeaders(Response.redirect("https://app.quillo.au/x", 302));
+  check("withSecurityHeaders(HTML): enforcing CSP + Report-Only + HSTS, existing headers kept",
+    html.headers.get("content-security-policy") === CSP && html.headers.get("content-security-policy-report-only") === CSP_REPORT_ONLY &&
+    html.headers.get("strict-transport-security") === HSTS && html.headers.get("cache-control") === "public, max-age=300");
+  check("withSecurityHeaders(API JSON): HSTS + nosniff + XFO, no CSP, status kept",
+    jsonRes.status === 201 && jsonRes.headers.get("strict-transport-security") === HSTS && jsonRes.headers.get("x-content-type-options") === "nosniff" &&
+    jsonRes.headers.get("x-frame-options") === "DENY" && jsonRes.headers.get("content-security-policy") === null);
+  check("withSecurityHeaders(redirect): immutable redirect headers re-wrapped, Location kept",
+    redirect.status === 302 && redirect.headers.get("location") === "https://app.quillo.au/x" && redirect.headers.get("strict-transport-security") === HSTS);
+  check("withSecurityHeaders: re-applying doesn't duplicate the CSP header",
+    withSecurityHeaders(html).headers.get("content-security-policy") === CSP);
+
+  // /csp-report summary: directive + blocked ORIGIN only — never URLs, query strings, samples, document-uri.
+  const legacy = summariseCspReport(JSON.stringify({ "csp-report": {
+    "document-uri": "https://app.quillo.au/accounts?email=jane%40example.com", "effective-directive": "script-src-elem",
+    "blocked-uri": "https://evil.example.com/x.js?token=SECRET", "script-sample": "jane@example.com", disposition: "enforce" } }));
+  const modern = summariseCspReport(JSON.stringify([{ type: "csp-violation", body: {
+    documentURL: "https://app.quillo.au/documents/123", effectiveDirective: "img-src", blockedURL: "data", disposition: "report" } }]));
+  check("csp-report legacy format → directive + origin only", legacy.length === 1 && legacy[0] === "directive=script-src-elem blocked=https://evil.example.com mode=enforce");
+  check("csp-report Reporting-API format → directive + keyword", modern.length === 1 && modern[0] === "directive=img-src blocked=data mode=report");
+  check("csp-report summary never carries the email, path, query, token or sample", !/jane|example\.com\/|SECRET|accounts|x\.js|\?/.test(legacy.join(" ") + modern.join(" ")));
+  check("csp-report: garbage / non-JSON → nothing logged", summariseCspReport("not json").length === 0 && summariseCspReport("{}").length === 0);
+  check("blockedOrigin: keyword passthrough, scheme-only for data:/blob:, origin for URLs",
+    blockedOrigin("inline") === "inline" && blockedOrigin("eval") === "eval" && blockedOrigin("blob:https://app.quillo.au/abc") === "blob" &&
+    blockedOrigin("data:image/png;base64,AAAA") === "data" && blockedOrigin("https://a.b/c?d=e") === "https://a.b" && blockedOrigin(42) === "unknown");
+  const tag = await logTag("jane@example.com");
+  check("logTag: short stable hex hash, not the input", /^[0-9a-f]{12}$/.test(tag) && tag === (await logTag("jane@example.com")) && !tag.includes("jane"));
+
+  // No-PII-in-logs lint: no console.* line in src/ interpolates a field that holds personal information
+  // (emails, names, descriptions/merchants, account numbers, mailbox localparts, raw bodies/reports).
+  const SENSITIVE = /^(email|emails|name|first_?name|last_?name|full_?name|display_?name|description|raw_?description|merchant|payee|memo|narration|bsb|account_?number|acct_?number|tfn|phone|address|localpart|body|raw|text|report)$/i;
+  const offenders: string[] = [];
+  const walk = (dir: string): string[] => fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+    e.isDirectory() ? walk(path.join(dir, e.name)) : e.name.endsWith(".ts") ? [path.join(dir, e.name)] : []);
+  for (const file of walk(path.join(process.cwd(), "src"))) {
+    fs.readFileSync(file, "utf8").split("\n").forEach((line, i) => {
+      if (!/console\.(log|warn|error|info|debug)\(/.test(line)) return;
+      for (const m of line.matchAll(/\$\{([^}]*)\}/g)) {
+        if (/\blogTag\(/.test(m[1]!)) continue; // hashed via logTag — not the value itself
+        const ids = m[1]!.match(/[A-Za-z_$][\w$]*(?:\??\.[A-Za-z_$][\w$]*)*/g) ?? [];
+        for (const id of ids) {
+          const last = id.split(/\??\./).pop() ?? "";
+          if (SENSITIVE.test(last)) offenders.push(`${path.relative(process.cwd(), file)}:${i + 1} \${${m[1]}}`);
+        }
+      }
+    });
+  }
+  check(`no console.* line logs a PII-bearing field (email/name/description/merchant/account no./localpart/raw body)${offenders.length ? ` — ${offenders.join("; ")}` : ""}`, offenders.length === 0);
+  const clerkSrc = fs.readFileSync(path.join(process.cwd(), "src", "auth", "clerk.ts"), "utf8");
+  check("clerk.ts: not-allowlisted log carries a hashed sub tag, not the email or raw sub",
+    /sub_tag=\$\{await logTag\(sub\)\}/.test(clerkSrc) && !/console\.[a-z]+\([^\n]*email/.test(clerkSrc));
+  const indexSrc = fs.readFileSync(path.join(process.cwd(), "src", "index.ts"), "utf8");
+  check("index.ts: /csp-report logs the summary, never the raw body", /summariseCspReport\(raw\)/.test(indexSrc) && !/console\.[a-z]+\(`csp-report: \$\{raw\}`/.test(indexSrc));
+}
+
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);
 process.exit(fail === 0 ? 0 : 1);

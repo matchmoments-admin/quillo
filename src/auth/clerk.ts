@@ -1,6 +1,7 @@
 import { createRemoteJWKSet, jwtVerify } from "jose";
 import type { Env } from "../env";
 import type { AuthedUser } from "./access";
+import { logTag } from "../lib/security-headers";
 
 /**
  * Authenticate a web request via Clerk, then enforce a single-user allowlist.
@@ -90,8 +91,9 @@ export async function requireClerk(req: Request, env: Env): Promise<ClerkAuthRes
     .map((s) => s.trim())
     .filter(Boolean);
   if (allowed.length > 0 && !allowed.includes(sub)) {
-    // Log the verified sub so a would-be tester's id can be captured while the list is active.
-    console.log(`clerk: verified but not allowlisted — sub=${sub} email=${email}`);
+    // Log a short hash of the sub only — never the email (personal information, #634). To allowlist
+    // a tester, read their full user id from the Clerk dashboard; the tag lets you correlate repeats.
+    console.log(`clerk: verified but not allowlisted — sub_tag=${await logTag(sub)}`);
     return { ok: false, status: 403 };
   }
 

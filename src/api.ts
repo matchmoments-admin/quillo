@@ -1654,9 +1654,9 @@ export async function handleApi(
       // the resulting tokens encrypted.
       if (tokenStorageBlocked(env)) return json({ error: TOKEN_STORAGE_BLOCKED_MESSAGE, code: "token_key_missing" }, 503);
       const connectUrl = await buildConnectUrl(env, uid, url.origin);
-      // Log the exact authorize URL we hand the browser so `wrangler tail` can confirm the
-      // redirect_uri we send Intuit (diagnostic for the production connect issue).
-      console.log(`qbo connect: redirect_uri=${url.origin}/api/qbo/callback authorize=${connectUrl}`);
+      // Log the redirect_uri we send Intuit (diagnostic for the production connect issue) — but not
+      // the full authorize URL, which carries the single-use CSRF `state` nonce (#634 log hygiene).
+      console.log(`qbo connect: redirect_uri=${url.origin}/api/qbo/callback`);
       return json({ url: connectUrl });
     }
     if (id === "reconcile" && m === "GET") {

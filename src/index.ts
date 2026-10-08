@@ -17,6 +17,7 @@ import { handleBeforeYouStart } from "./lib/before-you-start";
 import { runScheduledSecurityChecks } from "./lib/security-dashboard";
 import { withSecurityHeaders, summariseCspReport, logTag } from "./lib/security-headers";
 import { ipRateLimit, userRateLimit, publishAccessSource } from "./lib/access-control";
+import { BACKUP_CRON, runD1Backup } from "./lib/backups";
 
 // The DO class must be exported from the Worker's main module for the binding.
 export { TaxAgent } from "./agent";
@@ -321,6 +322,13 @@ const handler = {
   //  - frequent (*/10): poll + apply finished async categorisation batches.
   //  - weekly (Mon 08:00): proactive suggestions for every tenant.
   async scheduled(evt: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    // Daily D1 export -> BACKUPS (#635). Its own cron so it never shares a tick's budget with the
+    // batch drain. Flag OFF ⇒ returns before touching anything. Never throws (records its own failure).
+    if (evt.cron === BACKUP_CRON) {
+      const r = await runD1Backup(env);
+      if (r.status !== "flag_off") console.log(`d1 backup: ${r.status}`);
+      return;
+    }
     if (evt.cron === "0 8 * * 1") {
       // Current AU FY start year (Jul–Jun) for the depreciation roll-forward.
       const now = new Date();

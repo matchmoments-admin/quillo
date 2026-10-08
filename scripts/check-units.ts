@@ -6345,6 +6345,89 @@ import bundledAuV1 from "../src/rulepacks/au-v1.json";
     console.warn = origWarn;
   }
 }
+import { runD1Backup, BACKUP_CRON, BACKUP_PREFIX, LAST_RESTORE_TEST } from "../src/lib/backups";
+console.log("daily D1 backup (#635)");
+{
+  const kvStore = new Map<string, string>();
+  let kvOps = 0;
+  const kv = {
+    get: async (k: string) => { kvOps++; return kvStore.get(k) ?? null; },
+    put: async (k: string, v: string) => { kvOps++; kvStore.set(k, v); },
+  } as unknown as KVNamespace;
+  const objects = new Map<string, { bytes: Uint8Array; meta?: Record<string, string> }>();
+  let r2Ops = 0;
+  const toBytes = async (v: unknown) => new Uint8Array(v instanceof ArrayBuffer ? v : await new Response(v as BodyInit).arrayBuffer());
+  const r2 = {
+    head: async (k: string) => { r2Ops++; return objects.has(k) ? { key: k, size: objects.get(k)!.bytes.length } : null; },
+    get: async (k: string) => { r2Ops++; const o = objects.get(k); return o ? { key: k, size: o.bytes.length, body: new Response(o.bytes).body } : null; },
+    put: async (k: string, v: unknown, opts?: R2PutOptions) => { r2Ops++; const bytes = await toBytes(v); objects.set(k, { bytes, meta: opts?.customMetadata as Record<string, string> }); return { key: k, size: bytes.length }; },
+  } as unknown as R2Bucket;
+  const SIGNED = "https://d1-export.example.invalid/dump.sql?sig=SIGNED_SECRET";
+  const DUMP = "PRAGMA defer_foreign_keys=TRUE;\nCREATE TABLE t (x);\nINSERT INTO t VALUES (1);\n";
+  let fetches = 0;
+  let mode: "ok" | "error" | "http500" = "ok";
+  const bodies: string[] = [];
+  const fakeFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    fetches++;
+    const u = String(input);
+    if (u === SIGNED) return new Response(DUMP, { status: 200, headers: { "content-length": String(DUMP.length) } });
+    if (u.includes("/d1/database/") && u.endsWith("/export")) {
+      const b = JSON.parse(String(init?.body ?? "{}")) as { current_bookmark?: string };
+      bodies.push(String(init?.body));
+      if (mode === "http500") return new Response("SECRET VENDOR BODY", { status: 500 });
+      if (mode === "error") return Response.json({ success: true, result: { status: "error", error: "SECRET VENDOR BODY" } });
+      return b.current_bookmark
+        ? Response.json({ success: true, result: { status: "complete", at_bookmark: "bm-2", result: { filename: "x.sql", signed_url: SIGNED } } })
+        : Response.json({ success: true, result: { status: "active", at_bookmark: "bm-1", messages: [] } });
+    }
+    return new Response("unexpected", { status: 599 });
+  }) as typeof fetch;
+  let nowAt = new Date("2026-11-01T16:30:00Z");
+  const deps = { fetch: fakeFetch, now: () => nowAt, sleep: async () => {} };
+  const mkEnv = (features: string, extra: Record<string, unknown> = {}) =>
+    ({ RULES: kv, FEATURES: features, BACKUPS: r2, CF_ACCOUNT_ID: "acc", D1_DATABASE_ID: "db1", D1_EXPORT_TOKEN: "TOKEN_SECRET", ...extra }) as unknown as Env;
+
+  const wr = nodeFs.readFileSync(nodePath.join(process.cwd(), "wrangler.toml"), "utf8");
+  check("backup: wrangler.toml declares BACKUP_CRON exactly", wr.includes(`"${BACKUP_CRON}"`));
+  check("backup: wrangler.toml binds BACKUPS", /binding = "BACKUPS"/.test(wr));
+
+  check("backup: flag OFF ⇒ 'flag_off'", (await runD1Backup(mkEnv(""), deps)).status === "flag_off");
+  check("backup: flag OFF ⇒ no KV, R2 or network touch", kvOps === 0 && r2Ops === 0 && fetches === 0);
+
+  const nc = await runD1Backup(mkEnv("d1_backups", { D1_EXPORT_TOKEN: undefined }), deps);
+  const ncRec = parseSourceRecord(kvStore.get(SECURITY_KV.source("backups")) ?? null);
+  check("backup: missing token ⇒ fail + a 'not configured' record (never silent)", nc.status === "fail" && ncRec?.status === "fail" && /not configured.*D1_EXPORT_TOKEN/.test(ncRec.summary) && fetches === 0);
+
+  const ok = await runD1Backup(mkEnv("d1_backups"), deps);
+  const daily = `${BACKUP_PREFIX.daily}2026-11-01.sql`;
+  check("backup: happy path polls with the bookmark and stores the dump", ok.status === "ok" && ok.key === daily && new TextDecoder().decode(objects.get(daily)!.bytes) === DUMP && /"current_bookmark":"bm-1"/.test(bodies[1] ?? ""));
+  check("backup: first export of the month is also kept as the monthly copy", ok.status === "ok" && ok.monthly === `${BACKUP_PREFIX.monthly}2026-11.sql` && objects.get(`${BACKUP_PREFIX.monthly}2026-11.sql`)?.bytes.length === DUMP.length);
+  check("backup: object metadata carries the Time Travel bookmark", objects.get(daily)?.meta?.at_bookmark === "bm-2");
+  const raw = kvStore.get(SECURITY_KV.source("backups"))!;
+  const rec = parseSourceRecord(raw);
+  check("backup: status record satisfies the #636 source contract", rec?.status === "ok" && rec.metrics?.last_restore_test_at === LAST_RESTORE_TEST.at && rec.metrics?.last_export_key === daily && rec.metrics?.last_export_bytes === DUMP.length && rec.evidence?.[0]?.href.endsWith("docs/security/backup-dr.md") === true);
+  check("backup: the signed URL and the token never reach the record", !/SIGNED_SECRET|TOKEN_SECRET|sig=/.test(raw));
+
+  fetches = 0;
+  check("backup: a retried run the same day is skipped without exporting", (await runD1Backup(mkEnv("d1_backups"), deps)).status === "skipped" && fetches === 0 && kvStore.get(SECURITY_KV.source("backups")) === raw);
+
+  nowAt = new Date("2026-11-02T16:30:00Z");
+  const second = await runD1Backup(mkEnv("d1_backups"), deps);
+  check("backup: a later day in the month writes a daily but no new monthly", second.status === "ok" && second.monthly === null && objects.has(`${BACKUP_PREFIX.daily}2026-11-02.sql`));
+
+  nowAt = new Date("2026-11-03T16:30:00Z");
+  mode = "error";
+  const er = await runD1Backup(mkEnv("d1_backups"), deps);
+  const erRaw = kvStore.get(SECURITY_KV.source("backups"))!;
+  check("backup: an export error ⇒ fail record, no vendor body stored", er.status === "fail" && parseSourceRecord(erRaw)?.status === "fail" && !/SECRET VENDOR BODY/.test(erRaw) && !objects.has(`${BACKUP_PREFIX.daily}2026-11-03.sql`));
+  mode = "http500";
+  const h5 = await runD1Backup(mkEnv("d1_backups"), deps);
+  check("backup: an API HTTP failure is reduced to its status", h5.status === "fail" && h5.reason === "export API HTTP 500" && !/SECRET VENDOR BODY/.test(kvStore.get(SECURITY_KV.source("backups"))!));
+
+  const dash = await buildSecurityDashboard({ ...mkEnv(""), DB: { prepare: () => ({ bind() { return this; }, first: async () => ({ n: 0 }), all: async () => ({ results: [] }) }) } } as unknown as Env, nowAt);
+  const bp = dash.panels.find((p) => p.key === "backups")!;
+  check("backup: the dashboard's Backups panel lights up from the record", bp.status === "fail" && bp.metrics.last_restore_test_at === LAST_RESTORE_TEST.at && !bp.pending_ticket);
+}
 
 import {
   secondFactorVerified, adminMfaBlock, ipRateLimit, userRateLimit, ipRateLimited, accessSourceRecord, publishAccessSource,

@@ -16,7 +16,7 @@ everything else.
 | [vulnerability-management.md](vulnerability-management.md) | Scanners, patch SLAs, triage, secure SDLC (A7, #640), plus the controls assessment program and independence gap (cl 1.6) |
 | [secrets-and-encryption.md](secrets-and-encryption.md) | QBO token encryption, CDR credential posture, secrets inventory (A4, #637) |
 | [data-handling.md](data-handling.md) | Classification, minimisation, retention, deletion, non-production (control requirement 3) |
-| [backup-dr.md](backup-dr.md) | Backups and DR (stub; completed by #635) |
+| [backup-dr.md](backup-dr.md) | Backups and DR: daily D1 export, RPO/RTO, restore runbook, restore test record (#635) |
 | [endpoint-standard.md](endpoint-standard.md) | macOS hardening (2(d), control requirement 5) |
 | [acceptable-use.md](acceptable-use.md) | Acceptable use policy (6(b)) |
 | [training-and-screening-record.md](training-and-screening-record.md) | Training and police-check records (6(a), 6(c)) |

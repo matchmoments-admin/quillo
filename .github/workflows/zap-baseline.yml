@@ -25,7 +25,7 @@ jobs:
       TARGET: ${{ inputs.target || 'https://app.quillo.au' }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: "22"
       # Blocking: these are already true in prod, so a failure is a regression.

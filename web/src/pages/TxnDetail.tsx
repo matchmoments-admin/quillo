@@ -164,6 +164,9 @@ export function TxnDetail() {
   // is a property bucket, or is a refund whose link picker must be seen (hiding it silently under-nets a
   // deduction). Computed before the early returns so the drawer-open effect below can be a real hook.
   const detailRelevant = !!label || !date || isPropertyBucket(bucket) || (has("refund_netting") && isRefund);
+  // The receipt route answers 410 when the row outlives its stored object (the bucket was cleared) — show
+  // that plainly instead of a broken image. Declared above the early return (hooks rule, see #310 crash).
+  const [receiptMissing, setReceiptMissing] = useState(false);
   // Slice 6: the "More options" drawer auto-opens when relevance APPEARS (a one-way effect), but never
   // fights a manual collapse — once the user closes it, it stays closed unless relevance re-appears.
   const [moreOpen, setMoreOpen] = useState(false);
@@ -315,7 +318,11 @@ export function TxnDetail() {
           {isPdf ? (
             <div className="grid h-64 place-items-center bg-surface text-sm text-muted">PDF receipt</div>
           ) : txn.receipt_key ? (
-            <img src={api.receiptUrl(id)} alt="receipt" className="max-h-[28rem] w-full object-contain bg-surface" />
+            receiptMissing ? (
+              <div className="grid h-64 place-items-center bg-surface px-6 text-center text-sm text-muted">Original file no longer stored</div>
+            ) : (
+              <img src={api.receiptUrl(id)} alt="receipt" className="max-h-[28rem] w-full object-contain bg-surface" onError={() => setReceiptMissing(true)} />
+            )
           ) : (
             <div className="grid h-64 place-items-center bg-surface text-sm text-muted">No receipt attached</div>
           )}

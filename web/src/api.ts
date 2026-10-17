@@ -1,6 +1,7 @@
 import type { CapitalImportParse, Txn, TxnDetail, Situation, SituationDraft, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse, UsageData, StatementInfo, IncomeRow, DocRow, AssetRow, ScheduleRow, ChecklistItem, ClaimSuggestion, FilingReadiness, ReviewSummary, Progress, AdminTenant, AdminOverview, AdminSpend, AiEdit, ClaimReview, OccupationRulesDraft, OccupationRuleCandidate, NoaCarryover, MovementSweep, BatchResult, ClarifyQuestion, ClarifyAnswer, ClaimMatch, AccountantSummary, SuggestedDeduction, WorkUse, CarUse, CarUseRates, ScanResult, CapitalLoss, OpeningDepreciation, AttributionState, AttributionInput, AttributionRow, IncomeActivity, PropertyOwner, EntityRole, CgtAssetRow, CgtEventRow, EssGrantRow, VehicleLogbookRow, TrustDistributionRow, SmsfMemberRow, SuperContributionRow, BasPeriodRow, PaygInstalmentRow, AskAnswer, SavingsData, PhiOverview, PhiInsurerOption, PhiProvidersResult, PhiScanResult, BillingOverview, PartnerPortal, AmmaComponents, PartnershipDistributionRow, CostBaseElements, BankConnection, BankSyncRun, IncomeStatementWait, SituationPeriod, SituationPeriodWrite, BankHistoryEvent, BankDisconnectResult, FyLodged, NoticedSignal, NoticedConfirmResult } from "./types";
 import type { GrowLayerKey, Journey, MytaxWorksheet, RecordsView, ReconcileProposals, ReconcileLinked } from "./types";
 import type { AskContext, EducationData, RelevanceView, RelevanceConfirmResult } from "./types";
+import { compressImageForUpload, compressImagesForUpload, prepareImageUpload } from "./lib/compress-image";
 import type { SecurityDashboard } from "./types";
 
 // Clerk session token getter, wired from <TokenBridge> inside ClerkProvider (main.tsx).
@@ -127,7 +128,16 @@ export const api = {
   transaction: (id: string) => get<TxnDetail>(`/api/transactions/${id}`),
   upload: async (files: File | File[], bucket?: string): Promise<{ ok: boolean; txnId: string }> => {
     const fd = new FormData();
-    for (const f of Array.isArray(files) ? files : [files]) fd.append("file", f);
+    // Resize + re-encode photos before upload (R2 storage; EXIF/GPS stripped, orientation kept). PDFs pass through.
+    const list = Array.isArray(files) ? files : [files];
+    if (list.length === 1) {
+      // Single receipt: also send the original photo's hash so duplicate detection matches older uploads.
+      const { file, originalHash } = await prepareImageUpload(list[0]!);
+      fd.append("file", file);
+      if (originalHash) fd.append("orig_sha256", originalHash);
+    } else {
+      for (const f of await compressImagesForUpload(list)) fd.append("file", f);
+    }
     if (bucket) fd.append("bucket", bucket);
     // Don't set content-type — the browser adds the multipart boundary. Just add auth.
     const res = await fetch("/api/upload", { method: "POST", credentials: "include", headers: await authHeaders(), body: fd });
@@ -184,7 +194,7 @@ export const api = {
   // browser sets the multipart boundary. Errors (over cap / consent / budget) surface for a manual fallback.
   phiScanReceipt: async (file: File): Promise<PhiScanResult> => {
     const fd = new FormData();
-    fd.append("file", file);
+    fd.append("file", await compressImageForUpload(file));
     const res = await fetch("/api/phi/usage/scan", { method: "POST", credentials: "include", headers: await authHeaders(), body: fd });
     if (res.status === 401) throw new Error("unauthorized");
     if (!res.ok) throw await errFrom(res);
@@ -452,7 +462,9 @@ export const api = {
   },
   uploadDocument: async (file: File): Promise<{ docId: string; doc_type: string; routed: boolean }> => {
     const fd = new FormData();
-    fd.append("file", file);
+    const prepared = await prepareImageUpload(file); // photos shrink; PDFs are stored verbatim
+    fd.append("file", prepared.file);
+    if (prepared.originalHash) fd.append("orig_sha256", prepared.originalHash);
     const res = await fetch("/api/documents/upload", { method: "POST", credentials: "include", headers: await authHeaders(), body: fd });
     if (!res.ok) throw await errFrom(res);
     return res.json();

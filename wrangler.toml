@@ -51,6 +51,11 @@ database_id = "76e1c20a-efa2-4042-858a-7e24be4c14ce"   # wrangler d1 create tax-
 binding = "RECEIPTS"
 bucket_name = "tax-agent-receipts"
 
+# --- Images: server-side receipt image compression before the R2 put (flag receipt_image_compression,
+# src/lib/r2-store.ts). Unused while the flag is OFF. Free plan: 5,000 unique transformations/month.
+[images]
+binding = "IMAGES"
+
 # --- R2: daily D1 exports (#635, docs/security/backup-dr.md). PRIVATE bucket — no r2.dev URL, no
 # custom domain; R2 encrypts at rest (AES-256). Lifecycle rules (35 daily + 12 monthly) live on the
 # bucket, not here. WARNING: the bucket must EXIST before the next `wrangler deploy` or the deploy fails:

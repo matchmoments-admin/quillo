@@ -6,6 +6,9 @@ export interface Env {
   DB: D1Database;
   RECEIPTS: R2Bucket;
   RULES: KVNamespace;
+  // Cloudflare Images binding ([images] in wrangler.toml) — server-side receipt image compression behind
+  // flag receipt_image_compression (src/lib/r2-store.ts maybeCompressImage). Absent => images stored as received.
+  IMAGES?: ImagesBinding;
 
   // Static assets (the web SPA served from this same Worker).
   ASSETS?: Fetcher;
@@ -147,11 +150,11 @@ export interface TaxAgentRpc {
   ): Promise<{ ok: true; period?: unknown; skipped?: boolean } | { ok: false; error: string; status: number }>;
   confirmNoticedSignal(userId: string, id: string, body: import("./lib/noticed-signals").ConfirmBody | null): Promise<{ ok: true; result: import("./lib/noticed-signals").ConfirmResult } | { ok: false; error: string; status: number }>;
   dismissNoticedSignal(userId: string, id: string): Promise<{ ok: true; status: string } | { ok: false; error: string; status: number }>;
-  ingest(userId: string, source: string, bytes: ArrayBuffer, mime: string, bucketHint?: string | null): Promise<string>;
+  ingest(userId: string, source: string, bytes: ArrayBuffer, mime: string, bucketHint?: string | null, originalHash?: string | null): Promise<string>;
   ingestImages(userId: string, source: string, images: { bytes: ArrayBuffer; mime: string }[], bucketHint?: string | null): Promise<string>;
   ingestText(userId: string, source: string, text: string): Promise<string>;
   ingestCategoriseText(userId: string, source: string, text: string, bucketHint?: string | null): Promise<string>;
-  classifyAndRoute(userId: string, source: string, bytes: ArrayBuffer, mime: string): Promise<{ docId: string; doc_type: string; routed: boolean }>;
+  classifyAndRoute(userId: string, source: string, bytes: ArrayBuffer, mime: string, originalHash?: string | null): Promise<{ docId: string; doc_type: string; routed: boolean }>;
   deleteDocument(userId: string, docId: string): Promise<{ deleted: boolean; income_removed: number; txns_removed: number }>;
   recordIncome(userId: string, inc: { income_type: string; gross_cents: number; person_id?: string | null; entity_id?: string | null; property_id?: string | null; ato_label?: string | null; fy?: string | null; net_cents?: number | null; withholding_cents?: number | null; franking_credit_cents?: number | null; foreign_tax_paid_cents?: number | null; currency?: string | null; source_doc_id?: string | null; txn_date?: string | null; detail_json?: string | null; needs_review?: number }): Promise<string>;
   incomeMatches(userId: string): Promise<{ suggestions: { txn_id: string; merchant: string | null; txn_amount_cents: number; txn_date: string | null; bucket: string | null; income_id: string; income_type: string; income_gross_cents: number; income_net_cents: number | null; income_date: string | null }[]; matched: { txn_id: string; merchant: string | null; txn_amount_cents: number; txn_date: string | null; income_id: string; income_type: string; income_gross_cents: number }[] }>;

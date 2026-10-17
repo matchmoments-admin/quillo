@@ -22,7 +22,7 @@ import { matchEnergyOffer, getOfferById, buildReferralUrl, opportunityTakesEnerg
 import { deriveWfhHours, generateWfhDiary, type WfhLeaveRange } from "./lib/work-use";
 import { applyUserRules, RULE_CREDIT_BUCKETS } from "./lib/rules";
 import { sha256hex, sha256hexBytes } from "./lib/base64";
-import { CAPITAL_ROWS_MISSING_MESSAGE, STATEMENT_LINES_MISSING_MESSAGE, maybeCompressImage, objectExists, putCompressed, putJson, putStatementOriginal, readStoredJson, statementFileKey } from "./lib/r2-store";
+import { CAPITAL_ROWS_MISSING_MESSAGE, STATEMENT_LINES_MISSING_MESSAGE, keyStillReferenced, maybeCompressImage, objectExists, putCompressed, putJson, putStatementOriginal, readStoredJson, statementFileKey } from "./lib/r2-store";
 import { getLLM, assertDataResidency, type LLM } from "./llm";
 import { extractReceipt, extractReceipts, extractFromText, extractColumnMap, extractCapitalColumnMap, extractStatement, extractBatch, extractSituationDraft, extractOccupationRules, extractGuide, extractAnswer, classifyDocument, extractPayslip, extractIncomeStatement, extractNoticeOfAssessment, extractAgentStatement, extractDepreciationSchedule, extractDividend, extractHealthClaim, batchParams, parseBatchMessage, mapBatchItems, ALLOWED_NAV_ROUTES, type Extracted, type ExtractedStatement, type SituationDraft, type OccupationRulesDraft, type AnswerResult } from "./extract";
 import { mapIncomeStatementToRows } from "./lib/income-statement";
@@ -300,13 +300,13 @@ export class TaxAgent extends Agent<Env> {
       .bind(userId, imageHash, bytesHash)
       .first<{ id: string; merchant: string | null; receipt_key: string | null }>();
     if (prior) {
-      // Reuse the original's object when it is still stored; otherwise (bucket cleared) store this copy so
-      // the duplicate row restores the evidence.
-      let dupKey = prior.receipt_key;
-      if (!dupKey || !(await objectExists(this.env.RECEIPTS, dupKey))) {
-        dupKey = key;
+      // Reuse the original's object instead of storing a second copy.
+      // When the original's object was cleared, restore it AT THE ORIGINAL'S KEY (the row the user keeps) and
+      // point the duplicate there too.
+      const dupKey = prior.receipt_key ?? key;
+      if (!(await objectExists(this.env.RECEIPTS, dupKey))) {
         const stored = await maybeCompressImage(this.env, bytes, mime);
-        await this.env.RECEIPTS.put(key, stored.bytes, { httpMetadata: { contentType: stored.mime } });
+        await this.env.RECEIPTS.put(dupKey, stored.bytes, { httpMetadata: { contentType: stored.mime } });
       }
       await this.env.DB.prepare(
         `INSERT INTO transactions (id, user_id, source, status, receipt_key, image_hash, duplicate_of)
@@ -443,6 +443,10 @@ export class TaxAgent extends Agent<Env> {
     // error leaves nothing orphaned in R2 (S3). Anthropic path is a cheap client construct, no I/O.
     const llm = await getLLM(this.env, profile, { userId });
     // PDFs are stored byte-for-byte (evidence integrity); CSVs are gzipped (readStored decompresses).
+    // `wrote` = this request created the object. A concurrent retry of the same file (a long PDF parse can
+    // outlive a gateway 502) shares the key, so only the request that created it may clean it up, and the
+    // survivor re-checks the original right before inserting its row (parseStoredStatement).
+    const wrote = !(await objectExists(this.env.RECEIPTS, fileKey));
     await putStatementOriginal(this.env.RECEIPTS, fileKey, bytes, format);
     try {
       return await this.parseStoredStatement(userId, accountId, filename, bytes, format, { statementId, fileKey, fileHash, llm, provider, isLiability });
@@ -451,10 +455,7 @@ export class TaxAgent extends Agent<Env> {
       const owner = await this.env.DB.prepare(`SELECT 1 AS x FROM statements WHERE user_id = ? AND file_key = ? LIMIT 1`)
         .bind(userId, fileKey)
         .first<{ x: number }>();
-      if (!owner) {
-        await this.env.RECEIPTS.delete(fileKey).catch(() => {});
-        await this.env.RECEIPTS.delete(`${fileKey}.lines`).catch(() => {});
-      }
+      if (wrote && !owner) await this.env.RECEIPTS.delete(fileKey).catch(() => {});
       throw e;
     }
   }
@@ -547,6 +548,9 @@ export class TaxAgent extends Agent<Env> {
 
     // Store the normalised lines beside the raw file so confirmImport never re-extracts.
     await putJson(this.env.RECEIPTS, `${fileKey}.lines`, lines);
+    // A concurrent failed attempt at the same file may have removed the shared original while this parse ran
+    // (parseStatement's cleanup) — put it back before a row points at it.
+    if (!(await objectExists(this.env.RECEIPTS, fileKey))) await putStatementOriginal(this.env.RECEIPTS, fileKey, bytes, format);
     if (recon.available && !recon.ok) {
       await this.audit(userId, "statement_recon_fail", JSON.stringify({ statementId, diff: recon.diff_cents, bad: recon.first_bad_line }));
     }
@@ -1063,14 +1067,9 @@ export class TaxAgent extends Agent<Env> {
       // C1: the deleted bank_lines may have seeded capital holdings — drop the now-orphaned parcels.
       await clearOrphanedTxnCgt(this.env, userId);
     }
-    // Statement originals are content-addressed (statementFileKey), so keep the object if another statement
-    // row still points at it (two concurrent uploads of the same file can both land a row).
-    const sharedKey = stmt.file_key
-      ? await this.env.DB.prepare(`SELECT 1 AS x FROM statements WHERE user_id = ? AND file_key = ? AND id <> ? LIMIT 1`)
-          .bind(userId, stmt.file_key, statementId)
-          .first<{ x: number }>()
-      : null;
-    if (stmt.file_key && !sharedKey) {
+    // Statement originals are content-addressed (statementFileKey), but idx_stmt_filehash UNIQUE(user_id,
+    // file_hash) means only one row can ever own a key, so deleting it here is safe.
+    if (stmt.file_key) {
       // Best-effort R2 cleanup: the original upload + the normalised-lines sidecar parse wrote. A missing
       // object (already cleared from the bucket) is fine — R2 delete is idempotent and errors are swallowed.
       await this.env.RECEIPTS.delete(stmt.file_key).catch(() => {});
@@ -3652,10 +3651,15 @@ export class TaxAgent extends Agent<Env> {
     // Exact-duplicate guard: identical bytes ⇒ same document. Without this, a re-sent email
     // (reply-all, re-delivery) would double-count income/expenses AND re-bill the model call —
     // the old ingest() path deduped on image_hash and this path must too.
-    const dupDoc = await this.env.DB.prepare(`SELECT id, doc_type FROM documents WHERE user_id = ? AND image_hash IN (?, ?) LIMIT 1`)
+    const dupDoc = await this.env.DB.prepare(`SELECT id, doc_type, r2_key FROM documents WHERE user_id = ? AND image_hash IN (?, ?) LIMIT 1`)
       .bind(userId, imageHash, bytesHash)
-      .first<{ id: string; doc_type: string }>();
+      .first<{ id: string; doc_type: string; r2_key: string | null }>();
     if (dupDoc) {
+      // Same bytes as a document whose original was cleared from storage: put this copy back (no model call).
+      if (dupDoc.r2_key && !(await objectExists(this.env.RECEIPTS, dupDoc.r2_key))) {
+        const restored = await maybeCompressImage(this.env, bytes, mime);
+        await this.env.RECEIPTS.put(dupDoc.r2_key, restored.bytes, { httpMetadata: { contentType: restored.mime } });
+      }
       await this.audit(userId, "classify_duplicate", JSON.stringify({ duplicateOf: dupDoc.id }));
       await this.notify(userId, `Looks like a document you already uploaded (${dupDoc.doc_type}) — skipped re-reading it.`, null);
       return { docId: dupDoc.id, doc_type: dupDoc.doc_type, routed: false };
@@ -3827,10 +3831,9 @@ export class TaxAgent extends Agent<Env> {
     await this.env.DB.prepare(`DELETE FROM documents WHERE id = ? AND user_id = ?`).bind(docId, userId).run();
     // Keep the object if a transaction outside this document still points at it (a duplicate receipt row
     // reuses its original's object); an already-missing object deletes as a no-op.
-    const keyStillUsed = doc.r2_key
-      ? await this.env.DB.prepare(`SELECT 1 AS x FROM transactions WHERE user_id = ? AND receipt_key = ? LIMIT 1`).bind(userId, doc.r2_key).first<{ x: number }>()
-      : null;
-    if (doc.r2_key && !keyStillUsed) await this.env.RECEIPTS.delete(doc.r2_key).catch(() => {});
+    if (doc.r2_key && !(await keyStillReferenced(this.env.DB, userId, doc.r2_key, { includeDocuments: false }))) {
+      await this.env.RECEIPTS.delete(doc.r2_key).catch(() => {});
+    }
     const income_removed = inc.meta?.changes ?? 0;
     const txns_removed = txn.meta?.changes ?? 0;
     await this.audit(userId, "document_deleted", JSON.stringify({ docId, income_removed, txns_removed }));
@@ -6490,13 +6493,9 @@ export class TaxAgent extends Agent<Env> {
     // share the document's object — only delete an object no OTHER row still points at. A key whose object
     // is already gone (bucket cleared) deletes as a no-op.
     for (const k of keys) {
-      const stillUsed = await this.env.DB.prepare(
-        `SELECT 1 AS x FROM transactions WHERE user_id = ? AND receipt_key = ? AND id <> ?
-         UNION ALL SELECT 1 AS x FROM documents WHERE user_id = ? AND r2_key = ? LIMIT 1`,
-      )
-        .bind(userId, k, txnId, userId, k)
-        .first<{ x: number }>();
-      if (!stillUsed) await this.env.RECEIPTS.delete(k).catch(() => {});
+      if (!(await keyStillReferenced(this.env.DB, userId, k, { exceptTxnId: txnId, includeDocuments: true }))) {
+        await this.env.RECEIPTS.delete(k).catch(() => {});
+      }
     }
 
     await this.env.DB.prepare(`DELETE FROM corrections WHERE txn_id = ? AND user_id = ?`).bind(txnId, userId).run();

@@ -87,8 +87,7 @@ export async function readStored(bucket: Bucket, key: string): Promise<{ bytes: 
   const obj = await bucket.get(key);
   if (!obj) return null;
   let bytes: Uint8Array = new Uint8Array(await obj.arrayBuffer());
-  const marked = obj.customMetadata?.qenc === "gzip" || obj.httpMetadata?.contentEncoding === "gzip";
-  if (marked && isGzip(bytes)) bytes = await gunzip(bytes);
+  if (isGzipMarked(obj) && isGzip(bytes)) bytes = await gunzip(bytes);
   return { bytes, contentType: obj.httpMetadata?.contentType ?? "application/octet-stream" };
 }
 
@@ -97,6 +96,27 @@ export async function readStoredJson<T>(bucket: Bucket, key: string): Promise<T 
   const got = await readStored(bucket, key);
   if (!got) return null;
   return JSON.parse(dec.decode(got.bytes)) as T;
+}
+
+/**
+ * Does any row OTHER than the one being deleted still point at `key`? A duplicate receipt reuses its
+ * original's object (ingest) and a document-routed receipt shares its document's object, so deletes must not
+ * pull an object out from under another row. `exceptTxnId` excludes the transaction being deleted;
+ * `includeDocuments` also counts documents.r2_key (false when deleting the document itself).
+ */
+export async function keyStillReferenced(
+  db: D1Database,
+  userId: string,
+  key: string,
+  opts: { exceptTxnId?: string; includeDocuments: boolean },
+): Promise<boolean> {
+  const txn = await db.prepare(`SELECT 1 AS x FROM transactions WHERE user_id = ? AND receipt_key = ? AND id <> ? LIMIT 1`)
+    .bind(userId, key, opts.exceptTxnId ?? "")
+    .first<{ x: number }>();
+  if (txn) return true;
+  if (!opts.includeDocuments) return false;
+  const doc = await db.prepare(`SELECT 1 AS x FROM documents WHERE user_id = ? AND r2_key = ? LIMIT 1`).bind(userId, key).first<{ x: number }>();
+  return !!doc;
 }
 
 export async function objectExists(bucket: Bucket, key: string): Promise<boolean> {
@@ -108,16 +128,22 @@ export async function objectExists(bucket: Bucket, key: string): Promise<boolean
  * 410 carrying ORIGINAL_MISSING_MESSAGE when the row's object is gone. Never a 500 for a missing object.
  */
 export async function originalResponse(bucket: Bucket, key: string): Promise<Response> {
-  const got = await readStored(bucket, key);
-  if (!got) {
+  const obj = await bucket.get(key);
+  if (!obj) {
     return new Response(JSON.stringify({ error: ORIGINAL_MISSING_MESSAGE, code: "original_missing" }), {
       status: 410,
       headers: { "content-type": "application/json" },
     });
   }
-  return new Response(got.bytes, {
-    headers: { "content-type": got.contentType, "cache-control": "private, max-age=60" },
-  });
+  const headers = { "content-type": obj.httpMetadata?.contentType ?? "application/octet-stream", "cache-control": "private, max-age=60" };
+  if (!isGzipMarked(obj)) return new Response(obj.body, { headers }); // stream (large PDFs never buffered)
+  let bytes: Uint8Array = new Uint8Array(await obj.arrayBuffer());
+  if (isGzip(bytes)) bytes = await gunzip(bytes);
+  return new Response(bytes, { headers });
+}
+
+function isGzipMarked(obj: { customMetadata?: Record<string, string>; httpMetadata?: R2HTTPMetadata }): boolean {
+  return obj.customMetadata?.qenc === "gzip" || obj.httpMetadata?.contentEncoding === "gzip";
 }
 
 /**
@@ -144,6 +170,19 @@ export async function putStatementOriginal(bucket: Bucket, key: string, bytes: A
 export const IMAGE_MAX_EDGE = 2000;
 export const IMAGE_QUALITY = 80;
 
+export const IMAGE_MIN_SHORT_EDGE = 1000;
+
+/** Server twin of the SPA's fitWithin (kept in step by scripts/check-receipt-storage.ts). */
+export function fitImage(w: number, h: number): { width: number; height: number } {
+  const longest = Math.max(w, h);
+  const shortest = Math.min(w, h);
+  if (longest <= IMAGE_MAX_EDGE || shortest <= 0) return { width: w, height: h };
+  let scale = IMAGE_MAX_EDGE / longest;
+  if (shortest * scale < IMAGE_MIN_SHORT_EDGE) scale = Math.min(1, IMAGE_MIN_SHORT_EDGE / shortest);
+  if (scale >= 1) return { width: w, height: h };
+  return { width: Math.max(1, Math.round(w * scale)), height: Math.max(1, Math.round(h * scale)) };
+}
+
 const COMPRESSIBLE_IMAGE = /^image\/(jpeg|jpg|pjpeg|png|webp|heic|heif|avif|tiff)$/i;
 
 /**
@@ -161,8 +200,13 @@ export async function maybeCompressImage(
   const untouched = { bytes, mime, compressed: false };
   if (!featureOn(env, "receipt_image_compression") || !env.IMAGES || !COMPRESSIBLE_IMAGE.test(mime)) return untouched;
   try {
+    // Same sizing rule as the SPA (web/src/lib/compress-image.ts fitWithin): longest edge <= 2000px, but a
+    // tall receipt / scrolling screenshot keeps its short edge >= 1000px so the text stays readable.
+    const info = await env.IMAGES.info(new Blob([bytes]).stream());
+    const dims = "width" in info ? fitImage(info.width, info.height) : null;
+    if (!dims) return untouched; // SVG / unknown dimensions — store as received
     const result = await env.IMAGES.input(new Blob([bytes]).stream())
-      .transform({ width: IMAGE_MAX_EDGE, height: IMAGE_MAX_EDGE, fit: "scale-down" })
+      .transform({ width: dims.width, height: dims.height, fit: "scale-down" })
       .output({ format: "image/jpeg", quality: IMAGE_QUALITY });
     const out = await new Response(result.image()).arrayBuffer();
     if (out.byteLength === 0 || out.byteLength >= bytes.byteLength) return untouched;

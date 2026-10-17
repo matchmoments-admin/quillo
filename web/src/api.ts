@@ -1,7 +1,7 @@
 import type { CapitalImportParse, Txn, TxnDetail, Situation, SituationDraft, Notification, DashboardData, KeyRow, QboStatus, Reconcile, Report, Account, StatementParse, UsageData, StatementInfo, IncomeRow, DocRow, AssetRow, ScheduleRow, ChecklistItem, ClaimSuggestion, FilingReadiness, ReviewSummary, Progress, AdminTenant, AdminOverview, AdminSpend, AiEdit, ClaimReview, OccupationRulesDraft, OccupationRuleCandidate, NoaCarryover, MovementSweep, BatchResult, ClarifyQuestion, ClarifyAnswer, ClaimMatch, AccountantSummary, SuggestedDeduction, WorkUse, CarUse, CarUseRates, ScanResult, CapitalLoss, OpeningDepreciation, AttributionState, AttributionInput, AttributionRow, IncomeActivity, PropertyOwner, EntityRole, CgtAssetRow, CgtEventRow, EssGrantRow, VehicleLogbookRow, TrustDistributionRow, SmsfMemberRow, SuperContributionRow, BasPeriodRow, PaygInstalmentRow, AskAnswer, SavingsData, PhiOverview, PhiInsurerOption, PhiProvidersResult, PhiScanResult, BillingOverview, PartnerPortal, AmmaComponents, PartnershipDistributionRow, CostBaseElements, BankConnection, BankSyncRun, IncomeStatementWait, SituationPeriod, SituationPeriodWrite, BankHistoryEvent, BankDisconnectResult, FyLodged, NoticedSignal, NoticedConfirmResult } from "./types";
 import type { GrowLayerKey, Journey, MytaxWorksheet, RecordsView, ReconcileProposals, ReconcileLinked } from "./types";
 import type { AskContext, EducationData, RelevanceView, RelevanceConfirmResult } from "./types";
-import { compressImageForUpload, compressImagesForUpload, prepareImageUpload } from "./lib/compress-image";
+import { compressImageForUpload, compressImagesForUpload, prepareImageUpload, setClientCompression } from "./lib/compress-image";
 import type { SecurityDashboard } from "./types";
 
 // Clerk session token getter, wired from <TokenBridge> inside ClerkProvider (main.tsx).
@@ -153,7 +153,13 @@ export const api = {
   setTxnReimbursed: (id: string, reimbursed: boolean) => send<{ ok: boolean; reimbursed: boolean }>("PATCH", `/api/transactions/${id}/flags`, { reimbursed }),
 
   // Phase 2
-  dashboard: (fy?: number) => get<DashboardData>(`/api/dashboard${fy ? `?fy=${fy}` : ""}`),
+  dashboard: (fy?: number) =>
+    get<DashboardData>(`/api/dashboard${fy ? `?fy=${fy}` : ""}`).then((d) => {
+      // Client-side photo compression is flag-gated (receipt_client_compression); the dashboard payload is the
+      // SPA's flag source and loads before any upload screen. Until it arrives, uploads go up untouched.
+      setClientCompression(Array.isArray(d.features) && d.features.includes("receipt_client_compression"));
+      return d;
+    }),
   progress: () => get<Progress>("/api/progress"),
   guideMe: (tab: string) => post<{ headline: string; steps: string[] }>("/api/guide", { tab }),
   // `context` (#591, the Why? drawer, ft_journey) is only put on the body when given, so every

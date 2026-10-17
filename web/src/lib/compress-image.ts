@@ -5,8 +5,9 @@
  * - Longest edge capped at MAX_EDGE (2000px): receipt text stays legible (the ATO "true and clear" copy bar)
  *   and it is above what the vision model reads anyway (~1568px).
  * - Re-encoded as JPEG at QUALITY 0.8 (universally decodable; Safari can't encode WebP from a canvas).
- * - EXIF is dropped (a canvas re-encode carries no metadata, so phone GPS never leaves the device), while the
- *   EXIF orientation is honoured first (`imageOrientation: "from-image"`) so a sideways photo stays upright.
+ * - EXIF is dropped whenever the re-encode is used (a canvas re-encode carries no metadata, so the photo's GPS
+ *   doesn't leave the device), while the EXIF orientation is honoured first (`imageOrientation: "from-image"`)
+ *   so a sideways photo stays upright. When we fall back to the original (below) its EXIF is uploaded as-is.
  * - Falls back to the ORIGINAL file whenever the result isn't smaller, the file isn't a raster image (PDFs are
  *   never touched), it is an animated GIF, or the browser can't decode it (e.g. HEIC outside Safari). A
  *   compression failure must never block an upload.
@@ -16,12 +17,29 @@ export const QUALITY = 0.8;
 
 const COMPRESSIBLE = /^image\/(jpeg|jpg|pjpeg|png|webp|heic|heif|avif|bmp|tiff)$/i;
 
-/** Target size for a source of w×h: longest edge at most maxEdge, never upscaled, aspect preserved. */
-export function fitWithin(w: number, h: number, maxEdge = MAX_EDGE): { width: number; height: number } {
+/** Never shrink the SHORT edge below this: a tall full-page screenshot (1179×10000) must stay readable. */
+export const MIN_SHORT_EDGE = 1000;
+
+/**
+ * Target size for a source of w×h: longest edge at most maxEdge — unless that would push the short edge under
+ * MIN_SHORT_EDGE (long receipts / scrolling screenshots), in which case the short edge is held at
+ * MIN_SHORT_EDGE instead. Never upscales; aspect preserved. Mirrored server-side in src/lib/r2-store.ts.
+ */
+export function fitWithin(w: number, h: number, maxEdge = MAX_EDGE, minShort = MIN_SHORT_EDGE): { width: number; height: number } {
   const longest = Math.max(w, h);
-  if (longest <= maxEdge || longest <= 0) return { width: w, height: h };
-  const scale = maxEdge / longest;
+  const shortest = Math.min(w, h);
+  if (longest <= maxEdge || shortest <= 0) return { width: w, height: h };
+  let scale = maxEdge / longest;
+  if (shortest * scale < minShort) scale = Math.min(1, minShort / shortest);
+  if (scale >= 1) return { width: w, height: h };
   return { width: Math.max(1, Math.round(w * scale)), height: Math.max(1, Math.round(h * scale)) };
+}
+
+// Flag receipt_client_compression, fed from the dashboard payload (api.dashboard). OFF / not yet known ⇒
+// every file is uploaded exactly as picked (the pre-compression behaviour).
+let clientCompressionOn = false;
+export function setClientCompression(on: boolean): void {
+  clientCompressionOn = on;
 }
 
 export function isCompressibleImage(file: { type: string }): boolean {
@@ -34,7 +52,7 @@ function jpegName(name: string): string {
 }
 
 export async function compressImageForUpload(file: File): Promise<File> {
-  if (!isCompressibleImage(file) || typeof createImageBitmap !== "function" || typeof document === "undefined") return file;
+  if (!clientCompressionOn || !isCompressibleImage(file) || typeof createImageBitmap !== "function" || typeof document === "undefined") return file;
   let bitmap: ImageBitmap | null = null;
   try {
     bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });

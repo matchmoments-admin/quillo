@@ -18,9 +18,9 @@ import { fileURLToPath } from "node:url";
 import type { Env } from "../src/env";
 import {
   ORIGINAL_MISSING_MESSAGE, STATEMENT_LINES_MISSING_MESSAGE, CAPITAL_ROWS_MISSING_MESSAGE, gzip, gunzip, isGzip, maybeCompressImage, objectExists, originalResponse, putCompressed, putJson,
-  putStatementOriginal, readStored, readStoredJson, statementFileKey, IMAGE_MAX_EDGE, IMAGE_QUALITY,
+  putStatementOriginal, readStored, readStoredJson, statementFileKey, IMAGE_MAX_EDGE, IMAGE_QUALITY, fitImage, keyStillReferenced,
 } from "../src/lib/r2-store";
-import { fitWithin, isCompressibleImage, MAX_EDGE, QUALITY } from "../web/src/lib/compress-image";
+import { compressImageForUpload, fitWithin, isCompressibleImage, MAX_EDGE, QUALITY } from "../web/src/lib/compress-image";
 import { purgeTenant } from "../src/lib/retention";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -44,7 +44,7 @@ class FakeR2 {
     const o = this.m.get(key);
     if (!o) return null;
     const copy = o.bytes.slice();
-    return { arrayBuffer: async () => copy.buffer, text: async () => new TextDecoder().decode(copy), httpMetadata: o.httpMetadata, customMetadata: o.customMetadata } as unknown as R2ObjectBody;
+    return { body: new Blob([copy]).stream(), arrayBuffer: async () => copy.buffer, text: async () => new TextDecoder().decode(copy), httpMetadata: o.httpMetadata, customMetadata: o.customMetadata } as unknown as R2ObjectBody;
   }
   async head(key: string) { return this.m.has(key) ? ({} as R2Object) : null; }
   async delete(keys: string | string[]) { for (const k of Array.isArray(keys) ? keys : [keys]) this.m.delete(k); }
@@ -136,17 +136,44 @@ async function missingOriginals() {
   check("…deletes what is still stored and wipes the rows", !r2.m.has("u9/still-here") && (db.prepare(`SELECT COUNT(*) AS n FROM transactions WHERE user_id = 'u9'`).get() as { n: number }).n === 0);
 }
 
+async function sharedKeys() {
+  console.log("\n== shared objects survive deletes (keyStillReferenced over real SQLite) ==");
+  const db = new DatabaseSync(":memory:");
+  for (const f of fs.readdirSync(path.join(root, "migrations")).filter((f) => f.endsWith(".sql")).sort()) db.exec(fs.readFileSync(path.join(root, "migrations", f), "utf8"));
+  const D1 = { prepare: (sql: string) => { let p: unknown[] = []; const st = { bind: (...a: unknown[]) => { p = a; return st; }, first: async () => (db.prepare(sql).get(...(p as never[])) ?? null) }; return st; } } as unknown as D1Database;
+  const ins = (sql: string) => db.prepare(sql).run();
+  ins(`INSERT INTO transactions (id, user_id, source, status, receipt_key, image_hash) VALUES ('orig', 'u1', 'web', 'extracted', 'u1/orig', 'h')`);
+  ins(`INSERT INTO transactions (id, user_id, source, status, receipt_key, image_hash, duplicate_of) VALUES ('dup', 'u1', 'web', 'duplicate', 'u1/orig', 'h', 'orig')`);
+  ins(`INSERT INTO documents (id, user_id, doc_type, r2_key) VALUES ('doc', 'u1', 'receipt', 'u1/docs/doc')`);
+  ins(`INSERT INTO transactions (id, user_id, source, status, receipt_key, document_id) VALUES ('fromdoc', 'u1', 'email', 'extracted', 'u1/docs/doc', 'doc')`);
+  check("deleting the ORIGINAL keeps the object its duplicate row still uses", await keyStillReferenced(D1, "u1", "u1/orig", { exceptTxnId: "orig", includeDocuments: true }));
+  check("deleting the DUPLICATE keeps the original's object", await keyStillReferenced(D1, "u1", "u1/orig", { exceptTxnId: "dup", includeDocuments: true }));
+  ins(`DELETE FROM transactions WHERE id = 'dup'`);
+  check("…once only the original remains, deleting it frees the object", !(await keyStillReferenced(D1, "u1", "u1/orig", { exceptTxnId: "orig", includeDocuments: true })));
+  check("deleting a document-routed receipt keeps the document's object", await keyStillReferenced(D1, "u1", "u1/docs/doc", { exceptTxnId: "fromdoc", includeDocuments: true }));
+  ins(`DELETE FROM transactions WHERE document_id = 'doc'`);
+  check("deleteDocument (its own transactions gone) frees the document's object", !(await keyStillReferenced(D1, "u1", "u1/docs/doc", { includeDocuments: false })));
+  check("references are tenant-scoped (another tenant's row never pins u1's object)", !(await keyStillReferenced(D1, "u2", "u1/orig", { includeDocuments: true })));
+}
+
 async function images() {
   console.log("\n== image compression ==");
   check("server + client share the 2000px / q80 legibility settings", IMAGE_MAX_EDGE === 2000 && MAX_EDGE === 2000 && IMAGE_QUALITY === 80 && QUALITY === 0.8);
   check("fitWithin: a 4032×3024 phone photo → 2000×1500", JSON.stringify(fitWithin(4032, 3024)) === JSON.stringify({ width: 2000, height: 1500 }));
   check("fitWithin: portrait 3024×4032 → 1500×2000", JSON.stringify(fitWithin(3024, 4032)) === JSON.stringify({ width: 1500, height: 2000 }));
   check("fitWithin never upscales a small image", JSON.stringify(fitWithin(640, 460)) === JSON.stringify({ width: 640, height: 460 }));
+  check("fitWithin keeps a tall full-page screenshot readable (1179×10000 → short edge 1000, not 236)", JSON.stringify(fitWithin(1179, 10000)) === JSON.stringify({ width: 1000, height: 8482 }), fitWithin(1179, 10000));
+  check("fitWithin leaves a narrow-but-short-edge-under-1000 image at full size (800×6000)", JSON.stringify(fitWithin(800, 6000)) === JSON.stringify({ width: 800, height: 6000 }));
+  const cases: [number, number][] = [[4032, 3024], [3024, 4032], [640, 460], [1179, 10000], [800, 6000], [2500, 2500], [12000, 1500]];
+  check("server fitImage == client fitWithin on every case (one sizing rule)", cases.every(([w, h]) => JSON.stringify(fitImage(w, h)) === JSON.stringify(fitWithin(w, h))));
+  const picked = new File([new Uint8Array(10)], "r.jpg", { type: "image/jpeg" });
+  check("client compression OFF by default (flag receipt_client_compression not yet read) ⇒ the picked file is uploaded as-is", (await compressImageForUpload(picked)) === picked);
   check("client compresses JPEG/PNG/HEIC but never a PDF or GIF", isCompressibleImage({ type: "image/jpeg" }) && isCompressibleImage({ type: "image/png" }) && isCompressibleImage({ type: "image/heic" }) && !isCompressibleImage({ type: "application/pdf" }) && !isCompressibleImage({ type: "image/gif" }));
 
   const big = new Uint8Array(10_000).fill(7).buffer as ArrayBuffer;
   let calls = 0;
   const binding = (outBytes: number | "throw") => ({
+    info: async () => ({ format: "image/jpeg", fileSize: 10_000, width: 4032, height: 3024 }),
     input: () => ({
       transform: () => ({
         output: async () => {
@@ -183,23 +210,25 @@ function sourceGuards() {
 
   const ingest = body("ingest");
   check("ingest: duplicate check runs BEFORE any R2 put", ingest.indexOf("status <> 'duplicate'") > 0 && ingest.indexOf("status <> 'duplicate'") < ingest.indexOf("RECEIPTS.put"));
-  check("ingest: a duplicate reuses the original's object when it still exists", /let dupKey = prior\.receipt_key;/.test(ingest) && /objectExists\(this\.env\.RECEIPTS, dupKey\)/.test(ingest));
+  check("ingest: a duplicate reuses the original's key, restoring the object THERE if it was cleared", /const dupKey = prior\.receipt_key \?\? key;/.test(ingest) && /RECEIPTS\.put\(dupKey,/.test(ingest));
   check("ingest: the image hash is over the RECEIVED bytes (before compression)", ingest.indexOf("sha256hexBytes(bytes)") < ingest.indexOf("maybeCompressImage"));
 
   check("ingest: dedupe matches the SPA's pre-compression hash OR the received-bytes hash", /image_hash IN \(\?, \?\)/.test(ingest) && /validHash\(originalHash\) \?\? bytesHash/.test(ingest));
   check("/api/upload + /api/documents/upload forward orig_sha256 to the DO", (api.match(/form\.get\("orig_sha256"\)/g) ?? []).length === 2);
-  check("deleteDocument keeps an object a transaction still points at", /keyStillUsed/.test(body("deleteDocument")));
+  check("deleteDocument checks keyStillReferenced AFTER deleting its own transactions", body("deleteDocument").indexOf("DELETE FROM transactions") < body("deleteDocument").indexOf("keyStillReferenced"));
 
   const route = body("classifyAndRoute");
   check("classifyAndRoute: duplicate-document check matches either hash", /image_hash IN \(\?, \?\)/.test(route));
-  check("classifyAndRoute: duplicate-document guard runs BEFORE the R2 put (no orphan per re-send)", route.indexOf("dupDoc") > 0 && route.indexOf("return { docId: dupDoc.id") < route.indexOf("RECEIPTS.put"));
+  check("classifyAndRoute: duplicate-document guard runs BEFORE the R2 put (no orphan per re-send)", route.indexOf("dupDoc") > 0 && route.indexOf("return { docId: dupDoc.id") < route.indexOf("RECEIPTS.put(r2key"));
 
   const parse = body("parseStatement");
   check("parseStatement: content-addressed original key", /const fileKey = statementFileKey\(userId, fileHash\);/.test(parse));
   check("parseStatement: exact re-upload short-circuit kept (duplicate: true)", /duplicate: true/.test(parse));
   check("parseStatement: a re-upload restores a cleared original without re-parsing", /putStatementOriginal\(this\.env\.RECEIPTS, existing\.file_key, bytes, format\)/.test(parse));
   check("parseStatement: a parsed statement whose sidecar is gone is replaced, not dead-ended", /existing\.status === "parsed" && .*objectExists\(this\.env\.RECEIPTS, `\$\{existing\.file_key\}\.lines`\)/.test(parse));
-  check("parseStatement: a failed parse removes the unreferenced original", /catch \(e\) \{[\s\S]*RECEIPTS\.delete\(fileKey\)[\s\S]*throw e;/.test(parse));
+  check("parseStatement: a failed parse removes the unreferenced original it created (not a concurrent retry's)", /if \(wrote && !owner\) await this\.env\.RECEIPTS\.delete\(fileKey\)/.test(parse));
+  check("parseStoredStatement re-puts a shared original a concurrent failure removed, before inserting its row", /if \(!\(await objectExists\(this\.env\.RECEIPTS, fileKey\)\)\) await putStatementOriginal/.test(agent));
+  check("classifyAndRoute: an exact re-upload restores a cleared document original", /dupDoc\.r2_key && !\(await objectExists\(this\.env\.RECEIPTS, dupDoc\.r2_key\)\)/.test(body("classifyAndRoute")));
   check("statement sidecar written gzipped", /putJson\(this\.env\.RECEIPTS, `\$\{fileKey\}\.lines`, lines\)/.test(agent));
 
   check("confirmImport: missing sidecar → clear 'no longer stored' error (409 at the route), not a crash", /readStoredJson<StatementLine\[\]>\(this\.env\.RECEIPTS, `\$\{stmt\.file_key\}\.lines`\)/.test(body("confirmImport")) && /if \(!lines\) throw new Error\(STATEMENT_LINES_MISSING_MESSAGE\)/.test(body("confirmImport")));
@@ -207,9 +236,9 @@ function sourceGuards() {
   check("capital import: .rows sidecar + CSV written gzipped", /putJson\(this\.env\.RECEIPTS, `\$\{fileKey\}\.rows`, preview\.rows\)/.test(agent) && /putCompressed\(this\.env\.RECEIPTS, fileKey, bytes, "text\/csv"\)/.test(agent));
 
   const delTxn = body("deleteTransaction");
-  check("deleteTransaction keeps an object another transaction/document still points at", /receipt_key = \? AND id <> \?/.test(delTxn) && /documents WHERE user_id = \? AND r2_key = \?/.test(delTxn) && /if \(!stillUsed\)/.test(delTxn));
+  check("deleteTransaction deletes an object only when keyStillReferenced says no other row uses it", /keyStillReferenced\(this\.env\.DB, userId, k, \{ exceptTxnId: txnId, includeDocuments: true \}\)/.test(delTxn));
   check("deleteTransaction tolerates an already-missing object", /RECEIPTS\.delete\(k\)\.catch\(/.test(delTxn));
-  check("deleteStatement keeps a content-addressed object another statement row shares", /file_key = \? AND id <> \?/.test(body("deleteStatement")));
+  check("one statement row per (user_id, file_hash) — so a content-addressed key has one owner", /CREATE UNIQUE INDEX IF NOT EXISTS idx_stmt_filehash ON statements\(user_id, file_hash\)/.test(fs.readFileSync(path.join(root, "schema.sql"), "utf8")));
   check("deleteDocument tolerates an already-missing object", /RECEIPTS\.delete\(doc\.r2_key\)\.catch\(/.test(body("deleteDocument")));
   check("statement keys stay under the tenant prefix (purgeTenant's sweep covers them)", statementFileKey("u1", "ab").startsWith("u1/statements/"));
 }
@@ -217,6 +246,7 @@ function sourceGuards() {
 async function main() {
   await compression();
   await missingOriginals();
+  await sharedKeys();
   await images();
   sourceGuards();
   console.log(`\n=== receipt storage: ${pass} passed, ${fail} failed ===`);

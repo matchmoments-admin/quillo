@@ -22,6 +22,7 @@ import { matchEnergyOffer, getOfferById, buildReferralUrl, opportunityTakesEnerg
 import { deriveWfhHours, generateWfhDiary, type WfhLeaveRange } from "./lib/work-use";
 import { applyUserRules, RULE_CREDIT_BUCKETS } from "./lib/rules";
 import { sha256hex, sha256hexBytes } from "./lib/base64";
+import { CAPITAL_ROWS_MISSING_MESSAGE, STATEMENT_LINES_MISSING_MESSAGE, keyStillReferenced, maybeCompressImage, objectExists, putCompressed, putJson, putStatementOriginal, readStoredJson, statementFileKey } from "./lib/r2-store";
 import { getLLM, assertDataResidency, type LLM } from "./llm";
 import { extractReceipt, extractReceipts, extractFromText, extractColumnMap, extractCapitalColumnMap, extractStatement, extractBatch, extractSituationDraft, extractOccupationRules, extractGuide, extractAnswer, classifyDocument, extractPayslip, extractIncomeStatement, extractNoticeOfAssessment, extractAgentStatement, extractDepreciationSchedule, extractDividend, extractHealthClaim, batchParams, parseBatchMessage, mapBatchItems, ALLOWED_NAV_ROUTES, type Extracted, type ExtractedStatement, type SituationDraft, type OccupationRulesDraft, type AnswerResult } from "./extract";
 import { mapIncomeStatementToRows } from "./lib/income-statement";
@@ -228,6 +229,11 @@ function thresholdForFy(fy: string): FyThreshold | undefined {
  */
 // applyUserRules + the direction guard live in ./lib/rules (pure → unit-tested).
 
+/** A client-supplied SHA-256 (hex) if well-formed, else null. */
+function validHash(h: string | null | undefined): string | null {
+  return typeof h === "string" && /^[0-9a-f]{64}$/.test(h) ? h : null;
+}
+
 export class TaxAgent extends Agent<Env> {
   // ── Scheduling needs a named instance (agents SDK ≥0.5, #640 follow-up) ─────────────────────────────
   // The SDK's schedule() and alarm() read `this.name` (observability events, onStart's MCP restore), and
@@ -271,27 +277,42 @@ export class TaxAgent extends Agent<Env> {
     bytes: ArrayBuffer,
     mime: string,
     bucketHint: string | null = null,
+    originalHash: string | null = null,
   ): Promise<string> {
     const txnId = crypto.randomUUID();
     const key = `${userId}/${txnId}`;
-    await this.env.RECEIPTS.put(key, bytes, { httpMetadata: { contentType: mime } });
 
     // Exact-duplicate detection: identical bytes ⇒ same receipt. If we've already captured
     // this image, record a 'duplicate' row (linked to the original) and SKIP the Claude
     // call — saves cost and stops double-counting. The user can delete it.
-    const imageHash = await sha256hexBytes(bytes);
+    // The hash is over the RECEIVED bytes (before any server-side compression) so it matches every
+    // existing image_hash. A duplicate reuses the original's stored object instead of writing a second
+    // copy (deleteTransaction keeps an object another row still points at).
+    // `originalHash` is the SPA's SHA-256 of the photo BEFORE it compressed it client-side: storing that keeps
+    // the hash comparable with receipts uploaded before client compression, and a re-upload matches on
+    // either hash. Tenant-scoped, so a bad value can only mis-dedupe the sender's own receipts.
+    const bytesHash = await sha256hexBytes(bytes);
+    const imageHash = validHash(originalHash) ?? bytesHash;
     const prior = await this.env.DB.prepare(
-      `SELECT id, merchant FROM transactions
-        WHERE user_id = ? AND image_hash = ? AND status <> 'duplicate' ORDER BY created_at LIMIT 1`,
+      `SELECT id, merchant, receipt_key FROM transactions
+        WHERE user_id = ? AND image_hash IN (?, ?) AND status <> 'duplicate' ORDER BY created_at LIMIT 1`,
     )
-      .bind(userId, imageHash)
-      .first<{ id: string; merchant: string | null }>();
+      .bind(userId, imageHash, bytesHash)
+      .first<{ id: string; merchant: string | null; receipt_key: string | null }>();
     if (prior) {
+      // Reuse the original's object instead of storing a second copy.
+      // When the original's object was cleared, restore it AT THE ORIGINAL'S KEY (the row the user keeps) and
+      // point the duplicate there too.
+      const dupKey = prior.receipt_key ?? key;
+      if (!(await objectExists(this.env.RECEIPTS, dupKey))) {
+        const stored = await maybeCompressImage(this.env, bytes, mime);
+        await this.env.RECEIPTS.put(dupKey, stored.bytes, { httpMetadata: { contentType: stored.mime } });
+      }
       await this.env.DB.prepare(
         `INSERT INTO transactions (id, user_id, source, status, receipt_key, image_hash, duplicate_of)
          VALUES (?, ?, ?, 'duplicate', ?, ?, ?)`,
       )
-        .bind(txnId, userId, source, key, imageHash, prior.id)
+        .bind(txnId, userId, source, dupKey, imageHash, prior.id)
         .run();
       await this.audit(userId, "ingest_duplicate", JSON.stringify({ txnId, duplicateOf: prior.id }));
       await this.notify(
@@ -302,6 +323,8 @@ export class TaxAgent extends Agent<Env> {
       return txnId;
     }
 
+    const stored = await maybeCompressImage(this.env, bytes, mime);
+    await this.env.RECEIPTS.put(key, stored.bytes, { httpMetadata: { contentType: stored.mime } });
     await this.env.DB.prepare(
       `INSERT INTO transactions (id, user_id, source, status, receipt_key, image_hash)
        VALUES (?, ?, ?, 'needs_extraction', ?, ?)`,
@@ -333,7 +356,8 @@ export class TaxAgent extends Agent<Env> {
     let i = 0;
     for (const im of images) {
       const k = `${userId}/${txnId}-${i++}`;
-      await this.env.RECEIPTS.put(k, im.bytes, { httpMetadata: { contentType: im.mime } });
+      const stored = await maybeCompressImage(this.env, im.bytes, im.mime);
+      await this.env.RECEIPTS.put(k, stored.bytes, { httpMetadata: { contentType: stored.mime } });
       keys.push(k);
     }
     const imageHash = await sha256hexBytes(first.bytes);
@@ -389,21 +413,62 @@ export class TaxAgent extends Agent<Env> {
     if (!(await this.withinBudget(userId, null))) throw new Error("ai_budget_reached");
 
     const fileHash = await sha256hexBytes(bytes);
-    const existing = await this.env.DB.prepare(`SELECT id FROM statements WHERE user_id = ? AND file_hash = ?`)
+    const existing = await this.env.DB.prepare(`SELECT id, file_key, status FROM statements WHERE user_id = ? AND file_hash = ?`)
       .bind(userId, fileHash)
-      .first<{ id: string }>();
+      .first<{ id: string; file_key: string | null; status: string }>();
     if (existing) {
-      return { statementId: existing.id, columnMap: null, preview: [], rowCount: 0, duplicate: true };
+      if (existing.status === "parsed" && (!existing.file_key || !(await objectExists(this.env.RECEIPTS, `${existing.file_key}.lines`)))) {
+        // A never-imported statement whose parsed lines are no longer stored can't be confirmed, and the
+        // short-circuit below would block the re-upload forever. Drop the stale record (nothing was imported
+        // from it) and parse this upload fresh.
+        await this.deleteStatement(userId, existing.id);
+      } else {
+        // Exact re-upload short-circuit (unchanged). If the original was cleared from storage, this upload
+        // is the same bytes — put it back so the statement has its evidence again. No model call.
+        if (existing.file_key && !(await objectExists(this.env.RECEIPTS, existing.file_key))) {
+          await putStatementOriginal(this.env.RECEIPTS, existing.file_key, bytes, format);
+          await this.audit(userId, "statement_original_restored", JSON.stringify({ statementId: existing.id }));
+        }
+        return { statementId: existing.id, columnMap: null, preview: [], rowCount: 0, duplicate: true };
+      }
     }
 
     const statementId = crypto.randomUUID();
-    const fileKey = `${userId}/statements/${statementId}`;
+    // Content-addressed: a retried upload of the same file overwrites ONE object instead of leaving a
+    // uuid-keyed copy per attempt (the real bucket held 8 such orphaned duplicate PDFs).
+    const fileKey = statementFileKey(userId, fileHash);
 
     // Resolve the LLM (validates the inference provider + any required secrets) BEFORE writing the
     // file to R2 — a misconfigured Bedrock tenant throws here, and doing it first means a config
     // error leaves nothing orphaned in R2 (S3). Anthropic path is a cheap client construct, no I/O.
     const llm = await getLLM(this.env, profile, { userId });
-    await this.env.RECEIPTS.put(fileKey, bytes, { httpMetadata: { contentType: format === "pdf" ? "application/pdf" : "text/csv" } });
+    // PDFs are stored byte-for-byte (evidence integrity); CSVs are gzipped (readStored decompresses).
+    // `wrote` = this request created the object. A concurrent retry of the same file (a long PDF parse can
+    // outlive a gateway 502) shares the key, so only the request that created it may clean it up, and the
+    // survivor re-checks the original right before inserting its row (parseStoredStatement).
+    const wrote = !(await objectExists(this.env.RECEIPTS, fileKey));
+    await putStatementOriginal(this.env.RECEIPTS, fileKey, bytes, format);
+    try {
+      return await this.parseStoredStatement(userId, accountId, filename, bytes, format, { statementId, fileKey, fileHash, llm, provider, isLiability });
+    } catch (e) {
+      // The parse failed after the put: don't leave the original orphaned (no statements row points at it).
+      const owner = await this.env.DB.prepare(`SELECT 1 AS x FROM statements WHERE user_id = ? AND file_key = ? LIMIT 1`)
+        .bind(userId, fileKey)
+        .first<{ x: number }>();
+      if (wrote && !owner) await this.env.RECEIPTS.delete(fileKey).catch(() => {});
+      throw e;
+    }
+  }
+
+  private async parseStoredStatement(
+    userId: string,
+    accountId: string,
+    filename: string,
+    bytes: ArrayBuffer,
+    format: string,
+    c: { statementId: string; fileKey: string; fileHash: string; llm: LLM; provider: string; isLiability: boolean },
+  ): Promise<{ statementId: string; columnMap: ColumnMap | null; preview: unknown[]; rowCount: number; duplicate: boolean; reconciliation?: Reconciliation }> {
+    const { statementId, fileKey, fileHash, llm, provider, isLiability } = c;
     await this.auditXborderInference(userId, provider, "parse_statement", llm.modelId);
 
     let lines: StatementLine[];
@@ -482,7 +547,10 @@ export class TaxAgent extends Agent<Env> {
     }
 
     // Store the normalised lines beside the raw file so confirmImport never re-extracts.
-    await this.env.RECEIPTS.put(`${fileKey}.lines`, JSON.stringify(lines), { httpMetadata: { contentType: "application/json" } });
+    await putJson(this.env.RECEIPTS, `${fileKey}.lines`, lines);
+    // A concurrent failed attempt at the same file may have removed the shared original while this parse ran
+    // (parseStatement's cleanup) — put it back before a row points at it.
+    if (!(await objectExists(this.env.RECEIPTS, fileKey))) await putStatementOriginal(this.env.RECEIPTS, fileKey, bytes, format);
     if (recon.available && !recon.ok) {
       await this.audit(userId, "statement_recon_fail", JSON.stringify({ statementId, diff: recon.diff_cents, bad: recon.first_bad_line }));
     }
@@ -556,9 +624,9 @@ export class TaxAgent extends Agent<Env> {
     if (!stmt) throw new Error("statement not found");
 
     // Use the normalised lines stored at parse time (so a PDF is never re-extracted).
-    const sidecar = await this.env.RECEIPTS.get(`${stmt.file_key}.lines`);
-    if (!sidecar) throw new Error("parsed lines missing — re-upload the statement");
-    const lines = JSON.parse(await sidecar.text()) as StatementLine[];
+    // readStoredJson decompresses a gzipped sidecar and reads a pre-compression (plain JSON) one unchanged.
+    const lines = await readStoredJson<StatementLine[]>(this.env.RECEIPTS, `${stmt.file_key}.lines`);
+    if (!lines) throw new Error(STATEMENT_LINES_MISSING_MESSAGE);
 
     // Reconciliation gate: refuse to import a statement that doesn't balance unless the user
     // explicitly overrides after reviewing the flagged line(s). This is the proof of completeness.
@@ -782,9 +850,21 @@ export class TaxAgent extends Agent<Env> {
 
     const fileHash = await sha256hexBytes(bytes);
     const existing = await this.env.DB.prepare(
-      `SELECT id FROM capital_imports WHERE user_id = ? AND file_hash = ? AND status != 'discarded'`,
-    ).bind(userId, fileHash).first<{ id: string }>();
-    if (existing) return { importId: existing.id, columnMap: null, preview: null, duplicate: true };
+      `SELECT id, file_key, status FROM capital_imports WHERE user_id = ? AND file_hash = ? AND status != 'discarded'`,
+    ).bind(userId, fileHash).first<{ id: string; file_key: string; status: string }>();
+    if (existing) {
+      if (existing.status === "parsed" && !(await objectExists(this.env.RECEIPTS, `${existing.file_key}.rows`))) {
+        // A parsed-but-uncommitted import whose extracted rows are no longer stored can never be confirmed;
+        // discard it so this re-upload parses fresh instead of being short-circuited onto a dead preview.
+        await this.env.DB.prepare(`UPDATE capital_imports SET status = 'discarded' WHERE id = ? AND user_id = ? AND status = 'parsed'`)
+          .bind(existing.id, userId).run();
+      } else {
+        if (!(await objectExists(this.env.RECEIPTS, existing.file_key))) {
+          await putCompressed(this.env.RECEIPTS, existing.file_key, bytes, "text/csv"); // restore the cleared original
+        }
+        return { importId: existing.id, columnMap: null, preview: null, duplicate: true };
+      }
+    }
 
     const text = new TextDecoder().decode(bytes);
     const rows = parseCsv(text);
@@ -793,10 +873,16 @@ export class TaxAgent extends Agent<Env> {
     const importId = crypto.randomUUID();
     const fileKey = `${userId}/capital-imports/${importId}`;
     const llm = await getLLM(this.env, profile, { userId });
-    await this.env.RECEIPTS.put(fileKey, bytes, { httpMetadata: { contentType: "text/csv" } });
+    await putCompressed(this.env.RECEIPTS, fileKey, bytes, "text/csv");
     await this.auditXborderInference(userId, provider, "parse_capital_import", llm.modelId);
 
-    const columnMap = await extractCapitalColumnMap(llm, rows);
+    let columnMap: CapitalColumnMap;
+    try {
+      columnMap = await extractCapitalColumnMap(llm, rows);
+    } catch (e) {
+      await this.env.RECEIPTS.delete(fileKey).catch(() => {}); // no row will point at it — don't orphan it
+      throw e;
+    }
     // day_first comes from the TENANT'S JURISDICTION, never from the model and never assumed: 03/04 is
     // 3 April here and 4 March in the US, and guessing wrong silently moves a disposal across a FY
     // boundary (and across the 12-month discount threshold).
@@ -809,7 +895,7 @@ export class TaxAgent extends Agent<Env> {
       throw new Error("I couldn't find any holdings or trades in that file. Check it's the trade/holdings export rather than a summary.");
     }
 
-    await this.env.RECEIPTS.put(`${fileKey}.rows`, JSON.stringify(preview.rows));
+    await putJson(this.env.RECEIPTS, `${fileKey}.rows`, preview.rows);
     await this.env.DB.prepare(
       `INSERT INTO capital_imports (id, user_id, filename, file_hash, file_key, status, column_map, row_count)
        VALUES (?, ?, ?, ?, ?, 'parsed', ?, ?)`,
@@ -839,9 +925,8 @@ export class TaxAgent extends Agent<Env> {
     if (!imp) throw new Error("import not found");
     if (imp.status === "imported") throw new Error("That import has already been committed.");
 
-    const obj = await this.env.RECEIPTS.get(`${imp.file_key}.rows`);
-    if (!obj) throw new Error("The extracted rows have expired — re-upload the file.");
-    const all = JSON.parse(await obj.text()) as CapitalDraftRow[];
+    const all = await readStoredJson<CapitalDraftRow[]>(this.env.RECEIPTS, `${imp.file_key}.rows`);
+    if (!all) throw new Error(CAPITAL_ROWS_MISSING_MESSAGE);
     const wanted = selectedRows && selectedRows.length ? new Set(selectedRows) : null;
     const rows = all.filter((r) => !r.problem && (!wanted || wanted.has(r.source_row)));
 
@@ -982,8 +1067,11 @@ export class TaxAgent extends Agent<Env> {
       // C1: the deleted bank_lines may have seeded capital holdings — drop the now-orphaned parcels.
       await clearOrphanedTxnCgt(this.env, userId);
     }
+    // Statement originals are content-addressed (statementFileKey), but idx_stmt_filehash UNIQUE(user_id,
+    // file_hash) means only one row can ever own a key, so deleting it here is safe.
     if (stmt.file_key) {
-      // Best-effort R2 cleanup: the original upload + the normalised-lines sidecar parse wrote.
+      // Best-effort R2 cleanup: the original upload + the normalised-lines sidecar parse wrote. A missing
+      // object (already cleared from the bucket) is fine — R2 delete is idempotent and errors are swallowed.
       await this.env.RECEIPTS.delete(stmt.file_key).catch(() => {});
       await this.env.RECEIPTS.delete(`${stmt.file_key}.lines`).catch(() => {});
     }
@@ -1049,14 +1137,11 @@ export class TaxAgent extends Agent<Env> {
       // branch only deletes after we hold good lines here.
       let sidecarLines: StatementLine[] | null = null;
       if (s.file_key) {
-        const sc = await this.env.RECEIPTS.get(`${s.file_key}.lines`);
-        if (sc) {
-          try {
-            const parsed = JSON.parse(await sc.text());
-            if (Array.isArray(parsed)) sidecarLines = parsed as StatementLine[];
-          } catch {
-            /* unreadable sidecar → leave the statement untouched */
-          }
+        try {
+          const parsed = await readStoredJson<unknown>(this.env.RECEIPTS, `${s.file_key}.lines`);
+          if (Array.isArray(parsed)) sidecarLines = parsed as StatementLine[];
+        } catch {
+          /* unreadable sidecar → leave the statement untouched (a missing one reads as null) */
         }
       }
 
@@ -3556,23 +3641,34 @@ export class TaxAgent extends Agent<Env> {
    * consent gate BEFORE any model call (classification is itself a cross-border disclosure), then
    * classify and dispatch to the right typed extractor. Low-confidence is held in needs_review.
    */
-  async classifyAndRoute(userId: string, source: string, bytes: ArrayBuffer, mime: string): Promise<{ docId: string; doc_type: string; routed: boolean }> {
+  async classifyAndRoute(userId: string, source: string, bytes: ArrayBuffer, mime: string, originalHash: string | null = null): Promise<{ docId: string; doc_type: string; routed: boolean }> {
     const docId = crypto.randomUUID();
     const r2key = `${userId}/docs/${docId}`;
-    await this.env.RECEIPTS.put(r2key, bytes, { httpMetadata: { contentType: mime } });
-    const imageHash = await sha256hexBytes(bytes);
+    // originalHash: the SPA's hash of a photo before client-side compression (see ingest).
+    const bytesHash = await sha256hexBytes(bytes);
+    const imageHash = validHash(originalHash) ?? bytesHash;
 
     // Exact-duplicate guard: identical bytes ⇒ same document. Without this, a re-sent email
     // (reply-all, re-delivery) would double-count income/expenses AND re-bill the model call —
     // the old ingest() path deduped on image_hash and this path must too.
-    const dupDoc = await this.env.DB.prepare(`SELECT id, doc_type FROM documents WHERE user_id = ? AND image_hash = ? LIMIT 1`)
-      .bind(userId, imageHash)
-      .first<{ id: string; doc_type: string }>();
+    const dupDoc = await this.env.DB.prepare(`SELECT id, doc_type, r2_key FROM documents WHERE user_id = ? AND image_hash IN (?, ?) LIMIT 1`)
+      .bind(userId, imageHash, bytesHash)
+      .first<{ id: string; doc_type: string; r2_key: string | null }>();
     if (dupDoc) {
+      // Same bytes as a document whose original was cleared from storage: put this copy back (no model call).
+      if (dupDoc.r2_key && !(await objectExists(this.env.RECEIPTS, dupDoc.r2_key))) {
+        const restored = await maybeCompressImage(this.env, bytes, mime);
+        await this.env.RECEIPTS.put(dupDoc.r2_key, restored.bytes, { httpMetadata: { contentType: restored.mime } });
+      }
       await this.audit(userId, "classify_duplicate", JSON.stringify({ duplicateOf: dupDoc.id }));
       await this.notify(userId, `Looks like a document you already uploaded (${dupDoc.doc_type}) — skipped re-reading it.`, null);
       return { docId: dupDoc.id, doc_type: dupDoc.doc_type, routed: false };
     }
+    // Stored only AFTER the duplicate guard: a re-sent document used to leave one orphaned copy per resend
+    // (the real bucket held 5 identical copies of one PDF). PDFs are stored verbatim; images may be
+    // re-encoded (flag receipt_image_compression) — the hash above is over the received bytes either way.
+    const storedDoc = await maybeCompressImage(this.env, bytes, mime);
+    await this.env.RECEIPTS.put(r2key, storedDoc.bytes, { httpMetadata: { contentType: storedDoc.mime } });
 
     const profile = await this.requireProfile(userId);
     const provider = profile.inference_provider ?? this.env.DEFAULT_INFERENCE_PROVIDER;
@@ -3733,7 +3829,11 @@ export class TaxAgent extends Agent<Env> {
     const txn = await this.env.DB.prepare(`DELETE FROM transactions WHERE user_id = ? AND document_id = ?`).bind(userId, docId).run();
     await clearOrphanedTxnCgt(this.env, userId); // C1: no parcel may outlive the transaction that evidenced it
     await this.env.DB.prepare(`DELETE FROM documents WHERE id = ? AND user_id = ?`).bind(docId, userId).run();
-    if (doc.r2_key) await this.env.RECEIPTS.delete(doc.r2_key).catch(() => {});
+    // Keep the object if a transaction outside this document still points at it (a duplicate receipt row
+    // reuses its original's object); an already-missing object deletes as a no-op.
+    if (doc.r2_key && !(await keyStillReferenced(this.env.DB, userId, doc.r2_key, { includeDocuments: false }))) {
+      await this.env.RECEIPTS.delete(doc.r2_key).catch(() => {});
+    }
     const income_removed = inc.meta?.changes ?? 0;
     const txns_removed = txn.meta?.changes ?? 0;
     await this.audit(userId, "document_deleted", JSON.stringify({ docId, income_removed, txns_removed }));
@@ -6389,7 +6489,14 @@ export class TaxAgent extends Agent<Env> {
         /* ignore malformed json */
       }
     }
-    for (const k of keys) await this.env.RECEIPTS.delete(k);
+    // A duplicate receipt row reuses its original's object (ingest), and a routed document's transaction can
+    // share the document's object — only delete an object no OTHER row still points at. A key whose object
+    // is already gone (bucket cleared) deletes as a no-op.
+    for (const k of keys) {
+      if (!(await keyStillReferenced(this.env.DB, userId, k, { exceptTxnId: txnId, includeDocuments: true }))) {
+        await this.env.RECEIPTS.delete(k).catch(() => {});
+      }
+    }
 
     await this.env.DB.prepare(`DELETE FROM corrections WHERE txn_id = ? AND user_id = ?`).bind(txnId, userId).run();
     // Remove any claim evidence pointing at this txn (else reviewClaims folds stale links into 'capturing').
@@ -6906,7 +7013,8 @@ export class TaxAgent extends Agent<Env> {
     // Store the image only AFTER a successful read — a failed OCR (bad photo) leaves no orphan bytes.
     const receiptId = crypto.randomUUID();
     const key = `${userId}/phi/${receiptId}`;
-    await this.env.RECEIPTS.put(key, bytes, { httpMetadata: { contentType: mime } });
+    const storedPhi = await maybeCompressImage(this.env, bytes, mime);
+    await this.env.RECEIPTS.put(key, storedPhi.bytes, { httpMetadata: { contentType: storedPhi.mime } });
     await this.audit(userId, "phi_receipt_scanned", JSON.stringify({ receiptId, category: claim.category_guess, confidence: claim.confidence }));
 
     // Prefer the fund rebate (what counts against the limit); fall back to the charged total. The user

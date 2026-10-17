@@ -1,4 +1,5 @@
 import type { Env, TaxAgentRpc } from "./env";
+import { originalResponse } from "./lib/r2-store";
 import type { AuthedUser } from "./auth/access";
 import { entityActionSpec } from "./extract";
 import { getProfile, getSituation } from "./lib/db";
@@ -312,9 +313,13 @@ export async function handleApi(
     if (images.length === 0) return json({ error: "empty file" }, 400);
 
     const first = images[0]!;
+    // The SPA compresses photos before upload and sends the ORIGINAL photo's SHA-256 so duplicate detection
+    // still matches receipts stored before client-side compression (validated in the DO).
+    const origEntry = form.get("orig_sha256");
+    const originalHash = typeof origEntry === "string" ? origEntry : null;
     const txnId =
       images.length === 1
-        ? await stub.ingest(uid, "web", first.bytes, first.mime, bucketHint)
+        ? await stub.ingest(uid, "web", first.bytes, first.mime, bucketHint, originalHash)
         : await stub.ingestImages(uid, "web", images, bucketHint);
     return json({ ok: true, txnId });
   }
@@ -323,14 +328,8 @@ export async function handleApi(
   if (resource === "receipt" && id && m === "GET") {
     const key = await receiptKeyFor(env, uid, id);
     if (!key) return json({ error: "not found" }, 404);
-    const obj = await env.RECEIPTS.get(key);
-    if (!obj) return json({ error: "not found" }, 404);
-    return new Response(obj.body, {
-      headers: {
-        "content-type": obj.httpMetadata?.contentType ?? "application/octet-stream",
-        "cache-control": "private, max-age=60",
-      },
-    });
+    // 410 + "original file no longer stored" when the row outlives its object (bucket cleared) — never a 500.
+    return originalResponse(env.RECEIPTS, key);
   }
 
   // GET /api/notifications  ·  POST /api/notifications/:id/read
@@ -1455,7 +1454,8 @@ export async function handleApi(
       const file = entry as unknown as Blob;
       const bytes = await file.arrayBuffer();
       if (bytes.byteLength === 0) return json({ error: "empty file" }, 400);
-      const out = await stub.classifyAndRoute(uid, "web", bytes, file.type || "application/octet-stream");
+      const origEntry = form.get("orig_sha256"); // the photo's hash before client-side compression (see /api/upload)
+      const out = await stub.classifyAndRoute(uid, "web", bytes, file.type || "application/octet-stream", typeof origEntry === "string" ? origEntry : null);
       return json(out);
     }
     // GET /api/documents/:id/download — stream the R2 object (scoped to the tenant).
@@ -1464,11 +1464,7 @@ export async function handleApi(
         .bind(id, uid)
         .first<{ r2_key: string | null }>();
       if (!row?.r2_key) return json({ error: "not found" }, 404);
-      const obj = await env.RECEIPTS.get(row.r2_key);
-      if (!obj) return json({ error: "not found" }, 404);
-      return new Response(obj.body, {
-        headers: { "content-type": obj.httpMetadata?.contentType ?? "application/octet-stream", "cache-control": "private, max-age=60" },
-      });
+      return originalResponse(env.RECEIPTS, row.r2_key); // 410 with a clear message when the object is gone
     }
   }
 

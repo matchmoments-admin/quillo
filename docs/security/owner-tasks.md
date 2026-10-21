@@ -64,10 +64,13 @@ Quick version:
 
 ## C6 — Bedrock use-case form (Sydney + Melbourne)
 
-- [ ] AWS console → Amazon Bedrock (region **ap-southeast-2**) → Model access / model catalog → Anthropic
-      → submit the use-case details form. Repeat in **ap-southeast-4**.
-- [ ] Enable the Claude Haiku model used by `bedrockModelIdFor` (`au.` inference profile).
-- [ ] Tell the coordinator so #641 (live residency verification) can run.
+- [x] AWS console → Amazon Bedrock (region **ap-southeast-2**) → Model access / model catalog → Anthropic
+      → submit the use-case details form. (ap-southeast-4 isn't opted in on the account yet; that's optional.)
+- [x] Accept the Claude Haiku 4.5 **Marketplace agreement**: one Playground message as root, in Sydney.
+      It needed Billing → Payment currency set (AUD) first; see CONFIG.md §3. Done 2026-10-22.
+- [x] Tell the coordinator so #641 (live residency verification) can run. `npm run probe:bedrock` passed 5/5.
+- [ ] Optional: the same Playground step for **Claude Sonnet 5.5**, ready for the reasoning tier.
+- [ ] Set a $20 AWS Budget alert, and check the Bedrock on-demand quotas for Haiku 4.5 (`au.`) in Service Quotas.
 
 ## C7 — Lawyer
 

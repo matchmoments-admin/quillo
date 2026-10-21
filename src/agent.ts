@@ -23,7 +23,7 @@ import { deriveWfhHours, generateWfhDiary, type WfhLeaveRange } from "./lib/work
 import { applyUserRules, RULE_CREDIT_BUCKETS } from "./lib/rules";
 import { sha256hex, sha256hexBytes } from "./lib/base64";
 import { CAPITAL_ROWS_MISSING_MESSAGE, STATEMENT_LINES_MISSING_MESSAGE, keyStillReferenced, maybeCompressImage, objectExists, putCompressed, putJson, putStatementOriginal, readStoredJson, statementFileKey } from "./lib/r2-store";
-import { getLLM, assertDataResidency, type LLM } from "./llm";
+import { getLLM, assertDataResidency, resolveProvider, type LLM } from "./llm";
 import { extractReceipt, extractReceipts, extractFromText, extractColumnMap, extractCapitalColumnMap, extractStatement, extractBatch, extractSituationDraft, extractOccupationRules, extractGuide, extractAnswer, classifyDocument, extractPayslip, extractIncomeStatement, extractNoticeOfAssessment, extractAgentStatement, extractDepreciationSchedule, extractDividend, extractHealthClaim, batchParams, parseBatchMessage, mapBatchItems, ALLOWED_NAV_ROUTES, type Extracted, type ExtractedStatement, type SituationDraft, type OccupationRulesDraft, type AnswerResult } from "./extract";
 import { mapIncomeStatementToRows } from "./lib/income-statement";
 import { fyForDate, buildReport, useStatusDeniedExpr, propertyUndeterminedGatedExpr, resolveRulePack } from "./lib/report";
@@ -88,6 +88,8 @@ const BATCH_THRESHOLD = 60;
 // subrequest limits (e.g. a 1,500-line backfill ≈ 38 calls), so we fall back to batch and record the
 // override rather than time out mid-run. Not a silent cap — the fallback is audited + notified.
 const LIVE_MAX_LINES = 200;
+// Chunks categorised in parallel on the live path when the Batch API is unavailable (Bedrock).
+const LIVE_BEDROCK_CONCURRENCY = 3;
 
 type RulePack = typeof auV1RulePack;
 
@@ -403,7 +405,7 @@ export class TaxAgent extends Agent<Env> {
     // file or any work (mirrors the receipt/inbox paths) so a refusal leaves nothing orphaned in
     // R2; the API layer maps consent_required to a 403.
     const profile = await this.requireProfile(userId);
-    const provider = profile.inference_provider ?? this.env.DEFAULT_INFERENCE_PROVIDER;
+    const provider = resolveProvider(this.env, profile);
     if (provider === "anthropic" && profile.consent_xborder !== 1) throw new Error("consent_required");
 
     // Daily AI-budget gate BEFORE storing the file or making the column-map / extraction calls — a
@@ -844,7 +846,7 @@ export class TaxAgent extends Agent<Env> {
     // inference call unless the tenant is on Bedrock/AU. Same ordering as parseStatement so a refusal
     // leaves nothing orphaned in R2.
     const profile = await this.requireProfile(userId);
-    const provider = profile.inference_provider ?? this.env.DEFAULT_INFERENCE_PROVIDER;
+    const provider = resolveProvider(this.env, profile);
     if (provider === "anthropic" && profile.consent_xborder !== 1) throw new Error("consent_required");
     if (!(await this.withinBudget(userId, null))) throw new Error("ai_budget_reached");
 
@@ -1210,7 +1212,7 @@ export class TaxAgent extends Agent<Env> {
     if (!items.length) return { categorised: 0 };
 
     const profile = await this.requireProfile(userId);
-    const provider = profile.inference_provider ?? this.env.DEFAULT_INFERENCE_PROVIDER;
+    const provider = resolveProvider(this.env, profile);
     if (provider === "anthropic" && profile.consent_xborder !== 1) return { categorised: 0 }; // consent gate
     const rulePack = await this.loadRulePack(profile.rule_pack_ver);
     const situation = await getSituation(this.env, userId, profile);
@@ -1260,24 +1262,34 @@ export class TaxAgent extends Agent<Env> {
     }
 
     let categorised = 0;
-    for (let i = 0; i < items.length; i += 40) {
-      const chunk = items.slice(i, i + 40);
+    const chunks: (typeof items)[] = [];
+    for (let i = 0; i < items.length; i += 40) chunks.push(items.slice(i, i + 40));
+    // Bedrock can't hand a large import to the async Batch API, so the whole import runs live inside
+    // this request. Sequential 5-15s calls on a 500-line statement approach the ~90s that already
+    // produced a Cloudflare 502 (see parseStatement), so on that path run a few chunks at a time.
+    // Kept small: the `au.` profile's on-demand quota applies, and invokeBedrock retries a 429.
+    // The Anthropic live path (only ever ≤ LIVE_MAX_LINES) stays sequential, byte-identical.
+    const concurrency = canBatch ? 1 : LIVE_BEDROCK_CONCURRENCY;
+    for (let i = 0; i < chunks.length; i += concurrency) {
       // Stop categorising once the daily $ budget is hit; the rest stays needs_review.
       if (!(await this.withinBudget(userId, null))) break;
-      const results = await extractBatch(
+      const round = chunks.slice(i, i + concurrency);
+      const results = await Promise.all(round.map((chunk) => extractBatch(
         llm,
         system,
         chunk.map((c) => ({ merchant: c.merchant ?? "", amount_cents: c.amount_cents ?? 0, date: c.txn_date, direction: c.direction as "debit" | "credit" | null })),
-      );
+      )));
       const updates: D1PreparedStatement[] = [];
-      for (const { id, item } of mapBatchItems(chunk.map((c) => c.id), results)) {
-        updates.push(
-          this.env.DB.prepare(
-            `UPDATE transactions SET status='extracted', bucket=?, ato_label=?, confidence=?, reasoning=? WHERE id=? AND user_id=?`,
-          ).bind(item.bucket, item.ato_label, item.confidence, item.reasoning, id, userId),
-        );
-        categorised++;
-      }
+      round.forEach((chunk, k) => {
+        for (const { id, item } of mapBatchItems(chunk.map((c) => c.id), results[k]!)) {
+          updates.push(
+            this.env.DB.prepare(
+              `UPDATE transactions SET status='extracted', bucket=?, ato_label=?, confidence=?, reasoning=? WHERE id=? AND user_id=?`,
+            ).bind(item.bucket, item.ato_label, item.confidence, item.reasoning, id, userId),
+          );
+          categorised++;
+        }
+      });
       if (updates.length) await this.env.DB.batch(updates);
     }
     await this.audit(userId, "statement_categorised", JSON.stringify({ statementId, categorised }));
@@ -2532,7 +2544,7 @@ export class TaxAgent extends Agent<Env> {
     if (!items.length) return { categorised: 0 };
 
     const profile = await this.requireProfile(userId);
-    const provider = profile.inference_provider ?? this.env.DEFAULT_INFERENCE_PROVIDER;
+    const provider = resolveProvider(this.env, profile);
     if (provider === "anthropic" && profile.consent_xborder !== 1) return { categorised: 0 }; // APP-8 gate
 
     // NOTE: the PS8 assert that used to live here has moved into getLLM (see migration 0077). It
@@ -2745,7 +2757,7 @@ export class TaxAgent extends Agent<Env> {
   ): Promise<{ llm: LLM; system: string; situation: Situation } | null> {
     const profile = await this.requireProfile(userId);
 
-    const provider = profile.inference_provider ?? this.env.DEFAULT_INFERENCE_PROVIDER;
+    const provider = resolveProvider(this.env, profile);
     if (provider === "anthropic" && profile.consent_xborder !== 1) {
       await this.markStatus(txnId, "blocked_consent");
       await this.notify(
@@ -3671,7 +3683,7 @@ export class TaxAgent extends Agent<Env> {
     await this.env.RECEIPTS.put(r2key, storedDoc.bytes, { httpMetadata: { contentType: storedDoc.mime } });
 
     const profile = await this.requireProfile(userId);
-    const provider = profile.inference_provider ?? this.env.DEFAULT_INFERENCE_PROVIDER;
+    const provider = resolveProvider(this.env, profile);
     if (provider === "anthropic" && profile.consent_xborder !== 1) {
       await this.fileDocument(userId, { id: docId, doc_type: "unknown", r2_key: r2key, image_hash: imageHash, needs_review: 1 });
       await this.notify(userId, "Cross-border processing consent (APP 8) is required before the US inference API can read this document. Record consent to proceed.", null);
@@ -4290,7 +4302,7 @@ export class TaxAgent extends Agent<Env> {
   /** Parse a quantity-surveyor depreciation schedule (PDF) → bulk-create assets + first schedules. */
   async importDepreciationSchedule(userId: string, docId: string, bytes: ArrayBuffer, mime: string): Promise<{ created: number }> {
     const profile = await this.requireProfile(userId);
-    const provider = profile.inference_provider ?? this.env.DEFAULT_INFERENCE_PROVIDER;
+    const provider = resolveProvider(this.env, profile);
     if (provider === "anthropic" && profile.consent_xborder !== 1) throw new Error("consent_required");
     const llm = await getLLM(this.env, profile, { userId });
     await this.auditXborderInference(userId, provider, "import_depreciation_schedule", llm.modelId);
@@ -4660,7 +4672,7 @@ export class TaxAgent extends Agent<Env> {
    */
   async draftOccupationRules(userId: string, occupation: string): Promise<OccupationRulesDraft> {
     const profile = await this.requireProfile(userId);
-    const provider = profile.inference_provider ?? this.env.DEFAULT_INFERENCE_PROVIDER;
+    const provider = resolveProvider(this.env, profile);
     if (provider === "anthropic" && profile.consent_xborder !== 1) {
       throw new Error("consent_required");
     }
@@ -7002,7 +7014,7 @@ export class TaxAgent extends Agent<Env> {
   ): Promise<{ receipt_key: string; provider: string | null; category: string | null; amount_cents: number | null; used_on: string | null; confidence: number }> {
     await this.requireHealthConsent(userId);
     const profile = await this.requireProfile(userId);
-    const provider = profile.inference_provider ?? this.env.DEFAULT_INFERENCE_PROVIDER;
+    const provider = resolveProvider(this.env, profile);
     if (provider === "anthropic" && profile.consent_xborder !== 1) throw new Error("consent_required");
     if (!(await this.withinBudget(userId, null))) throw new Error("ai_budget_reached");
 
@@ -7384,7 +7396,7 @@ export class TaxAgent extends Agent<Env> {
    */
   async draftSituation(userId: string, message: string): Promise<SituationDraft> {
     const profile = await this.requireProfile(userId);
-    const provider = profile.inference_provider ?? this.env.DEFAULT_INFERENCE_PROVIDER;
+    const provider = resolveProvider(this.env, profile);
     if (provider === "anthropic" && profile.consent_xborder !== 1) {
       throw new Error("consent_required");
     }
@@ -7417,7 +7429,7 @@ export class TaxAgent extends Agent<Env> {
     const q = (question ?? "").trim();
     if (!q) throw new Error("empty question");
     const profile = await this.requireProfile(userId);
-    const provider = profile.inference_provider ?? this.env.DEFAULT_INFERENCE_PROVIDER;
+    const provider = resolveProvider(this.env, profile);
     if (provider === "anthropic" && profile.consent_xborder !== 1) throw new Error("consent_required");
     if (!(await this.withinBudget(userId, null))) throw new Error("ai_budget_reached");
     // #591: the Why? drawer makes /api/ask a one-tap call, so a Why? question shares the chat's
@@ -7464,7 +7476,7 @@ export class TaxAgent extends Agent<Env> {
     const maxChars = Number(this.env.CHAT_MAX_MESSAGE_CHARS ?? 0);
     if (maxChars > 0 && text.length > maxChars) throw new Error("chat_message_too_long");
     const profile = await this.requireProfile(userId);
-    const provider = profile.inference_provider ?? this.env.DEFAULT_INFERENCE_PROVIDER;
+    const provider = resolveProvider(this.env, profile);
     if (provider === "anthropic" && profile.consent_xborder !== 1) throw new Error("consent_required");
     if (!(await this.withinBudget(userId, null))) throw new Error("ai_budget_reached");
     // Per-tenant rate limit (burst + daily turn count) — a fast backstop so a bad actor can't hammer
@@ -7536,7 +7548,7 @@ export class TaxAgent extends Agent<Env> {
 
   async guideMe(userId: string, tab: string): Promise<{ headline: string; steps: string[] }> {
     const profile = await this.requireProfile(userId);
-    const provider = profile.inference_provider ?? this.env.DEFAULT_INFERENCE_PROVIDER;
+    const provider = resolveProvider(this.env, profile);
     if (provider === "anthropic" && profile.consent_xborder !== 1) throw new Error("consent_required");
 
     const progress = await getProgress(this.env, userId);

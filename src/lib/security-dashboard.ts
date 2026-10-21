@@ -4,7 +4,7 @@ import { isAdmin } from "./roles";
 import { getProfile } from "./db";
 import { signBedrockInvoke } from "./sigv4";
 import { AU_DESCRIPTOR } from "./jurisdiction";
-import { awsCredentialsFor, bedrockModelIdFor, resolveProvider } from "../llm";
+import { awsCredentialsFor, bedrockModelIdFor, resolveProvider, resolveRegion } from "../llm";
 
 // ── Security & compliance dashboard (#636, A3 of epic #633) ──────────────────────────────────────
 //
@@ -631,7 +631,7 @@ export async function buildSecurityDashboard(env: Env, now: Date = new Date()): 
       const rows = await env.DB.prepare(`SELECT inference_provider, inference_region FROM profiles WHERE cdr_tainted = 1`).all<{ inference_provider: string | null; inference_region: string | null }>();
       for (const r of rows.results ?? []) {
         tainted++;
-        const region = r.inference_region ?? env.DEFAULT_INFERENCE_REGION ?? AU_DESCRIPTOR.residency.regions[0]!;
+        const region = resolveRegion(env, r, AU_DESCRIPTOR);
         if (resolveProvider(env, r) === "bedrock" && AU_DESCRIPTOR.residency.regions.includes(region)) onAu++;
       }
     } catch { /* table/column missing ⇒ zero */ }

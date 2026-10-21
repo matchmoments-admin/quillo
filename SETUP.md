@@ -21,9 +21,10 @@ only for a specific track.
 ## 3. Inference credentials [now — pick one]
 - **US Anthropic (simplest):** `wrangler secret put ANTHROPIC_API_KEY`. Requires an APP-8
   cross-border consent record per tenant before the first receipt is read (see step 5).
-- **AU-resident (Bedrock Sydney):** set the tenant's `inference_provider='bedrock'` and add
-  AWS creds (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`); wire the Bedrock branch in
-  `src/llm.ts` and confirm Haiku 4.5 is enabled in `ap-southeast-2`. Required for any
+- **AU-resident (Bedrock Sydney):** add AWS creds (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`).
+  Then either set a tenant's `inference_provider='bedrock'`, or set `DEFAULT_INFERENCE_PROVIDER="bedrock"`
+  for everyone. The Bedrock branch in `src/llm.ts` is built. The model's Marketplace agreement must
+  be accepted first: see CONFIG.md §3, and prove it with `npm run probe:bedrock`. Required for any
   CDR-sourced data (Privacy Safeguard 8).
 
 ## 4. Onboard yourself (register your situation) [now]

@@ -75,7 +75,7 @@ export function resolveProvider(env: Env, profile: ProviderProfile | null): stri
  * residency assert and getLLM so the thing we CHECK is the thing we CALL.
  */
 export function resolveRegion(env: Env, profile: ProviderProfile | null, descriptor: JurisdictionDescriptor): string {
-  return profile?.inference_region ?? env.DEFAULT_INFERENCE_REGION ?? descriptor.residency.regions[0];
+  return profile?.inference_region ?? env.DEFAULT_INFERENCE_REGION ?? descriptor.residency.regions[0]!;
 }
 
 /**
@@ -181,6 +181,65 @@ export function awsCredentialsFor(env: Env, descriptor: JurisdictionDescriptor):
   };
 }
 
+// Bedrock statuses worth a second attempt: throttling (429) and transient server faults. A 4xx
+// other than 429 is a request/permission problem a retry can't fix.
+const BEDROCK_RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
+
+export interface InvokeBedrockOptions {
+  fetchImpl?: typeof fetch;
+  sleep?: (ms: number) => Promise<void>;
+  maxRetries?: number;
+  timeoutMs?: number;
+}
+
+/**
+ * POST a signed Bedrock InvokeModel request, retrying throttling/transient faults.
+ *
+ * The Anthropic SDK path retries for free; the raw fetch did not, so one 429 on a busy `au.`
+ * profile failed a whole receipt or statement. Every attempt goes to the SAME region and profile —
+ * a retry must never become a reroute, because the region is the residency claim. `sign` is called
+ * per attempt since the SigV4 signature embeds the request time.
+ *
+ * A timeout is NOT retried: the model may still be generating (and billing) the first request.
+ */
+export async function invokeBedrock(
+  sign: () => Promise<{ url: string; headers: Record<string, string>; body: string }>,
+  opts: InvokeBedrockOptions = {},
+): Promise<Response> {
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const maxRetries = opts.maxRetries ?? 2;
+  // Generous on purpose: InvokeModel is non-streaming, so nothing arrives until generation ends, and
+  // an 8192-token depreciation schedule can legitimately run past a minute. The Anthropic SDK path
+  // defaults to 10 minutes; this only exists so a hung connection can't hold a request forever.
+  const timeoutMs = opts.timeoutMs ?? 300_000;
+  for (let attempt = 0; ; attempt++) {
+    const signed = await sign();
+    let res: Response;
+    try {
+      res = await fetchImpl(signed.url, { method: "POST", headers: signed.headers, body: signed.body, signal: AbortSignal.timeout(timeoutMs) });
+    } catch (e) {
+      const name = (e as { name?: string } | null)?.name;
+      if (name === "TimeoutError" || name === "AbortError") throw new Error(`Bedrock InvokeModel timeout after ${timeoutMs}ms`);
+      throw e;
+    }
+    if (res.ok) return res;
+    if (attempt < maxRetries && BEDROCK_RETRYABLE_STATUS.has(res.status)) {
+      // Visible in Workers Logs, so sustained throttling on the `au.` profile shows up before users do.
+      console.warn(`bedrock_retry status=${res.status} type=${res.headers.get("x-amzn-ErrorType") ?? "unknown"} attempt=${attempt + 1}`);
+      // Drain the body so the connection is released, then back off (jittered exponential).
+      await res.body?.cancel().catch(() => {});
+      await sleep(250 * 2 ** attempt + Math.floor(Math.random() * 250));
+      continue;
+    }
+    // Error type + a capped message only — this error reaches Workers Logs via the api/cron error
+    // handlers, and a full Bedrock body is not something to log verbatim (#634 log hygiene).
+    const errType = res.headers.get("x-amzn-ErrorType") ?? "unknown";
+    const errMsg = await res.json().then((j) => { const m = (j as { message?: unknown } | null)?.message; return typeof m === "string" ? m.slice(0, 160) : ""; }, () => "");
+    throw new Error(`Bedrock InvokeModel ${res.status} ${errType}: ${errMsg}`);
+  }
+}
+
 export async function getLLM(
   env: Env,
   profile: ProviderProfile | null,
@@ -253,15 +312,7 @@ export async function getLLM(
         // the bedrock anthropic_version marker.
         const { model: _model, ...rest } = params as Anthropic.MessageCreateParamsNonStreaming & { model?: string };
         const body = JSON.stringify({ anthropic_version: "bedrock-2023-05-31", ...rest });
-        const signed = await signBedrockInvoke({ region, accessKeyId, secretAccessKey, modelId, body });
-        const res = await fetch(signed.url, { method: "POST", headers: signed.headers, body: signed.body });
-        if (!res.ok) {
-          // Error type + a capped message only — this error reaches Workers Logs via the api/cron error
-          // handlers, and a full Bedrock body is not something to log verbatim (#634 log hygiene).
-          const errType = res.headers.get("x-amzn-ErrorType") ?? "unknown";
-          const errMsg = await res.json().then((j) => { const m = (j as { message?: unknown } | null)?.message; return typeof m === "string" ? m.slice(0, 160) : ""; }, () => "");
-          throw new Error(`Bedrock InvokeModel ${res.status} ${errType}: ${errMsg}`);
-        }
+        const res = await invokeBedrock(() => signBedrockInvoke({ region, accessKeyId, secretAccessKey, modelId, body }));
         const msg = (await res.json()) as Anthropic.Message;
         if (ctx?.userId && msg.usage) {
           try {

@@ -1,0 +1,25 @@
+# The categorisation eval against the AU-resident path: Bedrock `au.` Haiku 4.5 in Sydney, the same
+# model id getLLM emits for an AU tenant (src/llm.ts bedrockModelIdFor). Same prompt, cases and
+# assertions as promptfooconfig.yaml, so the pass rate is directly comparable with `npm run eval`.
+# Run: npm run eval:bedrock (needs AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY — the invoke-only key in .dev.vars).
+# Not in CI: CI holds no AWS credentials.
+description: "Tax-agent categorisation (fields -> bucket + ATO label) — Bedrock au. (Sydney)"
+
+prompts:
+  - file://prompts/categorise.cjs
+
+providers:
+  - id: bedrock:au.anthropic.claude-haiku-4-5-20251001-v1:0
+    config:
+      region: ap-southeast-2
+      max_tokens: 512
+      temperature: 0
+
+tests: file://load_cases.cjs
+
+defaultTest:
+  options:
+    transform: "output.match(/\\{[\\s\\S]*\\}/) ? output.match(/\\{[\\s\\S]*\\}/)[0] : output"
+    # Grader stays on the Anthropic API (as in promptfooconfig.yaml): it only sees the committed eval
+    # fixtures, never tenant data, and Sonnet's Bedrock Marketplace agreement isn't accepted yet.
+    provider: anthropic:messages:claude-sonnet-4-6

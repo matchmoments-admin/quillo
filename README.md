@@ -38,8 +38,8 @@ same transaction. Instead:
 ## The three seams that make "start simple, switch later" cheap
 
 1. **`src/llm.ts` — inference factory.** Every Claude call goes through `getLLM(profile)`.
-   Switching a tenant to AU-resident Bedrock is a config field + ~10 lines (the seam is
-   written, commented, and throws until wired). No call-site changes.
+   Switching to AU-resident Bedrock is config only: a tenant's `inference_provider`, or
+   `DEFAULT_INFERENCE_PROVIDER` for everyone (see CONFIG.md §3). No call-site changes.
 2. **`src/ingest/auth.ts` — per-tenant keyed HMAC.** Identity is derived from the key
    that verifies the signature, never a client header. One tenant now; add a row + key later.
 3. **`src/ledger/*` — `LedgerAdapter`.** Agent logic only calls `pushExpense`/`resolveAccount`.

@@ -87,11 +87,11 @@ Verified against account `417755753627`:
 - ✅ IAM `QuilloBedrockAuInvoke` — allow only the `au.` profile + AU model ARNs, explicit deny
   outside AU regions. **Tested: a `us-east-1` call was refused by policy.**
 - ✅ Runtime credentials in prod secrets.
-- ❌ **BLOCKED: the Anthropic use-case form has not been submitted.** Every `InvokeModel` returns
-  `ResourceNotFoundException: Model use case details have not been submitted`. Bedrock console →
-  Model access → Anthropic, in **both** Sydney and Melbourne, then ~15 min.
-- ❌ No tenant flipped (`profiles.inference_provider` is still the env default). Deliberate — flipping
-  before the form clears would just make the app throw.
+- ✅ Use-case form submitted and the Haiku 4.5 **Marketplace agreement** accepted (2026-10-22). The
+  agreement was blocked until Billing → Payment currency was set (AUD); see CONFIG.md §3.
+- ✅ Bedrock live 2026-10-22: `npm run probe:bedrock` 5/5 (receipt image, statement PDF, Ask, prompt cache, CDR-tainted refusal) on `au.anthropic.claude-haiku-4-5-20251001-v1:0` in ap-southeast-2.
+- ⏳ No tenant flipped yet: the owner-tenant pilot comes next, then `DEFAULT_INFERENCE_PROVIDER="bedrock"`
+  (CONFIG.md §3 steps 6–7).
 
 > ⚠️ **CONFIG.md's old SCP advice was wrong** — SCPs need AWS Organizations and this is a standalone
 > account. The identity-based deny above is the equivalent control. Already corrected.
@@ -110,7 +110,7 @@ Six further MEDIUM/LOW review findings are in the plan file, not yet ticketed.
 
 ## 7. Owner actions — nobody else can do these
 
-1. **Submit the Anthropic use-case form** (Bedrock console, both AU regions). Blocks all Bedrock.
+1. ~~**Submit the Anthropic use-case form**~~ Done 2026-10-22, with the Haiku 4.5 Marketplace agreement. Sonnet models are still not accepted (one Playground run each, as root, in Sydney).
 2. **Delete the `quillo-setup` IAM access key.** Part of the secret appeared in a screenshot; the
    key has done its job.
 3. **Send the Basiq message** — draft delivered. Longest lead item, and its answers resolve

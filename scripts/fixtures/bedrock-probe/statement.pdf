@@ -1,0 +1,44 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>
+endobj
+5 0 obj
+<< /Length 849 >>
+stream
+BT /F1 9 Tf 40 800 Td 12 TL
+(Sample Bank - Everyday Account statement) Tj T*
+(Account: 062-000 1234 5678   Period: 01/03/2026 - 31/03/2026) Tj T*
+() Tj T*
+(Date        Description                         Debit      Credit    Balance) Tj T*
+(01/03/2026  Opening balance                                            1,250.00) Tj T*
+(03/03/2026  SALARY ACME PTY LTD                            3,100.00   4,350.00) Tj T*
+(05/03/2026  OFFICEWORKS DARLINGHURST          263.95                 4,086.05) Tj T*
+(09/03/2026  WOOLWORTHS 1234 SYDNEY            112.40                 3,973.65) Tj T*
+(15/03/2026  OPAL TRAVEL                        50.00                 3,923.65) Tj T*
+(22/03/2026  TELSTRA MOBILE                     65.00                 3,858.65) Tj T*
+(31/03/2026  Closing balance                                            3,858.65) Tj T*
+ET
+endstream
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000000309 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+1209
+%%EOF

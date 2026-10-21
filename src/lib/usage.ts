@@ -23,17 +23,22 @@ interface Rate {
   cacheWrite: number;
 }
 const HAIKU: Rate = { in: 1.0, out: 5.0, cacheRead: 0.1, cacheWrite: 1.25 };
+// Bedrock GEOGRAPHIC inference profiles (`au.`, `eu.`) are billed at +10% over the global rate.
+// Source: the Bedrock Marketplace rate card for Haiku 4.5, dimensions APS2_input_tokens_standard 1.1 /
+// output 5.5 / cache_read 0.11 / cache_write 1.375 (vs the *_global_standard 1 / 5 / 0.1 / 1.25), read
+// 2026-10-22. Pricing these at the global rate under-read spend and the budget gate by 10%.
+const HAIKU_GEO: Rate = { in: 1.1, out: 5.5, cacheRead: 0.11, cacheWrite: 1.375 };
 const PRICING: Record<string, Rate> = {
   "claude-haiku-4-5-20251001": HAIKU,
   // Bedrock inference-profile ids. `au.` is the live AU-residency profile (see llm.ts); `apac.` is
   // kept priced so reverting that one-line constant can never land us on the un-priced path — an
   // un-priced model silently costs at the Haiku floor and under-reads the budget gate (#80).
-  "au.anthropic.claude-haiku-4-5-20251001-v1:0": HAIKU,
+  "au.anthropic.claude-haiku-4-5-20251001-v1:0": HAIKU_GEO,
   // `eu.` is the UK/EU geographic profile — declared but inert (no UK tenant). Priced anyway
   // because LLM_MODEL_IDS is derived from the jurisdiction table, so an un-priced jurisdiction
   // fails the golden at CI rather than at runtime.
-  "eu.anthropic.claude-haiku-4-5-20251001-v1:0": HAIKU,
-  "apac.anthropic.claude-haiku-4-5-20251001-v1:0": HAIKU,
+  "eu.anthropic.claude-haiku-4-5-20251001-v1:0": HAIKU_GEO,
+  "apac.anthropic.claude-haiku-4-5-20251001-v1:0": HAIKU_GEO,
 };
 
 /**

@@ -13,7 +13,7 @@ import type { LLM } from "../src/llm";
 import { isValidAbn, normaliseAbn } from "../web/src/lib/abn";
 import { billableCents, billableE4, freeCreditGrantE4 } from "../src/lib/billing";
 import { costCents, isPricedModel, toE4, centsFromE4 } from "../src/lib/usage";
-import { LLM_MODEL_IDS, resolveProvider, assertAuResidency, assertDataResidency, bedrockModelIdFor, getLLM } from "../src/llm";
+import { LLM_MODEL_IDS, resolveProvider, resolveRegion, assertAuResidency, assertDataResidency, bedrockModelIdFor, getLLM, invokeBedrock } from "../src/llm";
 import type { ProviderProfile } from "../src/llm";
 import { AU_DESCRIPTOR, UK_DESCRIPTOR, ALL_JURISDICTIONS } from "../src/lib/jurisdiction";
 import {
@@ -2462,6 +2462,74 @@ console.log("CDR residency seam — getLLM (migration 0077)");
   // disconnect would otherwise have silently re-opened.
   check("taint does not depend on BASIQ_ENV (sandbox env still refuses a tainted tenant)",
     (await threw(() => getLLM({ ...anthropicEnv, BASIQ_ENV: "sandbox" } as unknown as Env, prof(1)))) !== null);
+}
+
+// Bedrock MVP readiness. Per-locale region: with no global DEFAULT_INFERENCE_REGION (wrangler.toml
+// leaves it unset), each tenant's region comes from its own jurisdiction — a UK tenant must not
+// inherit Sydney. An explicit global region stays a fail-closed override (goldens above).
+console.log("Bedrock MVP readiness — per-locale region, retry, geo pricing, wire shape");
+{
+  const noRegion = { DEFAULT_INFERENCE_PROVIDER: "bedrock" } as unknown as Env;
+  check("per-locale: AU tenant with no env region ⇒ ap-southeast-2", resolveRegion(noRegion, null, AU_DESCRIPTOR) === "ap-southeast-2");
+  check("per-locale: UK tenant with no env region ⇒ eu-west-2 (not Sydney)", resolveRegion(noRegion, null, UK_DESCRIPTOR) === "eu-west-2");
+  check("per-locale: a tenant's own region override still wins",
+    resolveRegion(noRegion, { inference_provider: "bedrock", inference_region: "ap-southeast-4" }, AU_DESCRIPTOR) === "ap-southeast-4");
+
+  // Geo profiles bill at +10% (APS2 *_standard rate card), not the global rate.
+  const AU_ID = "au.anthropic.claude-haiku-4-5-20251001-v1:0";
+  check("au. input priced at the geo rate ($1.10/M → 110c)", Math.round(costCents(AU_ID, { input_tokens: 1_000_000 })) === 110);
+  check("au. output priced at the geo rate ($5.50/M → 550c)", Math.round(costCents(AU_ID, { input_tokens: 0, output_tokens: 1_000_000 })) === 550);
+  check("direct Anthropic Haiku stays at the global rate ($1/M → 100c)", Math.round(costCents("claude-haiku-4-5-20251001", { input_tokens: 1_000_000 })) === 100);
+
+  // invokeBedrock: retries throttling/transient faults on the SAME signed URL, never anything else.
+  const signedFor = { url: "https://bedrock-runtime.ap-southeast-2.amazonaws.com/model/au.x/invoke", headers: {}, body: "{}" };
+  const run = async (statuses: number[], maxRetries = 2) => {
+    const urls: string[] = []; let signs = 0; let i = 0;
+    const fetchImpl = (async (url: string) => {
+      urls.push(url);
+      const st = statuses[Math.min(i++, statuses.length - 1)]!;
+      return new Response(JSON.stringify(st === 200 ? { ok: true } : { message: "nope" }), { status: st, headers: { "x-amzn-ErrorType": st === 429 ? "ThrottlingException" : "X" } });
+    }) as unknown as typeof fetch;
+    let err: string | null = null; let status = 0;
+    try { status = (await invokeBedrock(async () => { signs++; return signedFor; }, { fetchImpl, sleep: async () => {}, maxRetries })).status; }
+    catch (e) { err = (e as Error).message; }
+    return { urls, signs, err, status };
+  };
+  const t1 = await run([429, 200]);
+  check("invokeBedrock: 429 then 200 ⇒ succeeds after one retry", t1.status === 200 && t1.urls.length === 2);
+  check("invokeBedrock: re-signs every attempt (SigV4 date changes)", t1.signs === 2);
+  check("invokeBedrock: a retry never reroutes (same region/profile URL)", t1.urls.every((u) => u === signedFor.url));
+  const t2 = await run([400]);
+  check("invokeBedrock: a 400 is NOT retried", t2.urls.length === 1 && !!t2.err?.startsWith("Bedrock InvokeModel 400"));
+  const t3 = await run([503, 503, 503, 503]);
+  check("invokeBedrock: gives up after maxRetries (1 + 2 attempts)", t3.urls.length === 3 && !!t3.err?.includes("503"));
+  const t4 = await run([429, 429, 429]);
+  check("invokeBedrock: exhausted throttling surfaces the error type", !!t4.err?.includes("ThrottlingException"));
+
+  // getLLM's Bedrock create(): the wire shape InvokeModel needs — model in the URL, not the body,
+  // plus the bedrock anthropic_version marker — and the content passes through untouched.
+  const realFetch = globalThis.fetch;
+  let seenUrl = "", seenBody: Record<string, unknown> = {};
+  globalThis.fetch = (async (url: string, init: RequestInit) => {
+    seenUrl = url; seenBody = JSON.parse(String(init.body));
+    return new Response(JSON.stringify({ id: "m", type: "message", role: "assistant", content: [{ type: "text", text: "OK" }], usage: { input_tokens: 1, output_tokens: 1 } }), { status: 200 });
+  }) as unknown as typeof fetch;
+  try {
+    const llm = await getLLM({ DEFAULT_INFERENCE_PROVIDER: "bedrock", AWS_ACCESS_KEY_ID: "a", AWS_SECRET_ACCESS_KEY: "s" } as unknown as Env, null);
+    const msg = await llm.create({ model: llm.modelId, max_tokens: 5, tools: [{ name: "t", input_schema: { type: "object" } }], tool_choice: { type: "tool", name: "t" }, messages: [{ role: "user", content: "hi" }] }, "test");
+    check("Bedrock create: posts to the au. profile in Sydney", seenUrl === "https://bedrock-runtime.ap-southeast-2.amazonaws.com/model/au.anthropic.claude-haiku-4-5-20251001-v1:0/invoke");
+    check("Bedrock create: body carries anthropic_version and NO model field", seenBody.anthropic_version === "bedrock-2023-05-31" && !("model" in seenBody));
+    check("Bedrock create: forced tool_choice passes through unchanged", (seenBody.tool_choice as { type?: string } | undefined)?.type === "tool");
+    check("Bedrock create: returns the parsed message", (msg.content[0] as { text?: string }).text === "OK");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+
+  // The SPA reads profile.inference_provider to skip the US-consent step; /api/situation must send
+  // the RESOLVED provider, or an env-level Bedrock default still shows every AU tester the consent wall.
+  const apiSrc = fs.readFileSync(path.join(process.cwd(), "src", "api.ts"), "utf8");
+  check("/api/situation returns the resolved inference provider (env default honoured in the UI)",
+    /inference_provider:\s*resolveProvider\(env,\s*profile\)/.test(apiSrc));
 }
 
 // ADR-0002 canonical source. The bug these exist for: parseStatement refused 'qbo_feed' but not

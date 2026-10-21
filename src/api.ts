@@ -3,6 +3,7 @@ import { originalResponse } from "./lib/r2-store";
 import type { AuthedUser } from "./auth/access";
 import { entityActionSpec } from "./extract";
 import { getProfile, getSituation } from "./lib/db";
+import { resolveProvider } from "./llm";
 import {
   listTransactions,
   listReviewGroups,
@@ -348,7 +349,10 @@ export async function handleApi(
     const profile = await getProfile(env, uid);
     if (!profile) return json({ error: "no profile" }, 404);
     const s = await getSituation(env, uid, profile);
-    return json(s);
+    // The SPA decides "processed in Australia ⇒ no US-consent step" from profile.inference_provider.
+    // Send the RESOLVED provider (tenant override → env default), not the raw column: with the
+    // default on Bedrock the column is NULL, and the consent wall would otherwise still show.
+    return json({ ...s, profile: { ...s.profile, inference_provider: resolveProvider(env, profile) } });
   }
 
   // POST /api/situation/draft  { message } — onboarding conversational front door. Returns a

@@ -54,7 +54,7 @@ export interface Env {
   CHAT_MAX_TURNS_PER_DAY?: string;      // Ask Quillo: per-tenant chat turns per day (0/unset = unlimited)
   CHAT_MAX_MESSAGE_CHARS?: string;      // Ask Quillo: max chars per chat message (0/unset = unlimited)
   DEFAULT_INFERENCE_PROVIDER: string;   // 'anthropic' | 'bedrock'
-  DEFAULT_INFERENCE_REGION: string;     // e.g. 'ap-southeast-2'
+  DEFAULT_INFERENCE_REGION?: string;    // global override; unset ⇒ the tenant's jurisdiction default
   QBO_BASE_URL: string;                 // sandbox or production
   FEATURES?: string;                    // comma-separated enabled feature flags (see lib/features.ts)
   CATEGORISE_MODE?: string;             // 'auto' | 'live' | 'batch' — default categorisation path (per-tenant override: profiles.categorise_mode)

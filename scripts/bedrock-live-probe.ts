@@ -15,7 +15,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { Env } from "../src/env";
-import { getLLM, type LLM, type ProviderProfile } from "../src/llm";
+import { getLLM, resolveRegion, type LLM, type ProviderProfile } from "../src/llm";
 import { extractReceipt, extractStatement, extractAnswer } from "../src/extract";
 import { AU_DESCRIPTOR } from "../src/lib/jurisdiction";
 
@@ -125,7 +125,7 @@ const evidence = {
   probe: "bedrock-live-probe",
   at: new Date().toISOString(),
   model: (await getLLM(env, tenant)).modelId,
-  region: AU_DESCRIPTOR.residency.regions[0],
+  region: resolveRegion(env, tenant, AU_DESCRIPTOR), // the region actually signed for, not the expectation
   allowed_regions: AU_DESCRIPTOR.residency.regions,
   passed: results.filter((r) => r.pass).length,
   total: results.length,

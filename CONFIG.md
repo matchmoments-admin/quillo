@@ -62,7 +62,7 @@ Snap → share → email a receipt; it lands in your inbox, no app needed.
 Today inference runs on **Claude (US Anthropic)** with your recorded APP-8 consent. Bedrock
 gives genuine AU residency (Sydney). **The seam is now fully built** (WebCrypto SigV4 in
 `src/llm.ts` + `src/lib/sigv4.ts`, no `@aws-sdk/*`) and is **flag-gated/inert**: it stays off
-until a tenant is flipped to `bedrock` AND the AWS secrets below are set. Claude (US) remains the
+until a tenant (or `DEFAULT_INFERENCE_PROVIDER`) is set to `bedrock` AND the AWS secrets below are set. Claude (US) remains the
 default; flipping a tenant without secrets fails loudly (it won't silently use the US provider).
 
 1. **AWS account** with **Amazon Bedrock** access. Request **Claude Haiku 4.5** under Model access
@@ -135,12 +135,26 @@ default; flipping a tenant without secrets fails loudly (it won't silently use t
    With Bedrock, cross-border (US) consent is no longer required for that tenant (the consent gate
    already exempts the bedrock path), and Settings shows "Processed in Australia 🇦🇺".
 7. **Or flip the default:** `DEFAULT_INFERENCE_PROVIDER = "bedrock"` in `wrangler.toml`, then deploy.
-   Every tenant without an explicit override moves to its locale's Bedrock profile.
-   `/api/situation` sends the *resolved* provider, so the SPA skips the US-consent step without
-   writing the column. To revert, set it back to `anthropic` and deploy.
+   Every tenant without an explicit override moves to Bedrock. Today every `getLLM` call site passes
+   the AU descriptor, so that means the `au.` profile. `/api/situation` sends the *resolved* provider,
+   so the SPA skips the US-consent step without writing the column.
+   - **Before flipping**, check `SELECT COUNT(*) FROM batch_jobs WHERE status='submitted'` is 0. An
+     in-flight Anthropic batch can't be polled through a Bedrock client and would end up `failed` after 24h.
+   - **To revert**, first pin the tenants who never gave US consent, so they don't hit a consent wall
+     (or, if CDR-tainted, a residency refusal):
+     `UPDATE profiles SET inference_provider='bedrock' WHERE inference_provider IS NULL AND (cdr_tainted=1 OR consent_xborder IS NOT 1);`
+     Then set the var back to `anthropic` and run `npm run deploy`. A dashboard edit is overwritten by the next deploy.
 
-> **Retries:** Bedrock calls retry 429/5xx up to twice, with backoff, on the **same** region and
-> profile; they never reroute. Each attempt has a 60s timeout, and a timeout is not retried.
+> **Retries:** Bedrock calls retry 429/500/502/503/504 up to twice, with jittered backoff, on the
+> **same** region and profile; they never reroute. Each retry logs `bedrock_retry` to Workers Logs. Each
+> attempt has a 300s timeout, and a timeout is not retried (the first request may still be billing).
+>
+> **Large imports:** with no Batch API, a Bedrock statement import categorises live in the upload
+> request, three 40-line chunks at a time. Moving very large imports (1,000+ lines) onto a DO-alarm
+> continuation is tracked separately.
+>
+> **Currency:** the spend caps and `daily_cost` are in USD at the rate card, but AWS invoices Bedrock in
+> AUD, so the invoice reads about 1.5× the dashboard figure.
 
 > **Note:** Bedrock has no Anthropic Batch API, so Bedrock tenants always categorise in **live**
 > mode (sequential per-chunk) — large imports run synchronously rather than via the async batch.

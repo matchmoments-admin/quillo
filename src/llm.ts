@@ -209,7 +209,10 @@ export async function invokeBedrock(
   const fetchImpl = opts.fetchImpl ?? fetch;
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const maxRetries = opts.maxRetries ?? 2;
-  const timeoutMs = opts.timeoutMs ?? 60_000;
+  // Generous on purpose: InvokeModel is non-streaming, so nothing arrives until generation ends, and
+  // an 8192-token depreciation schedule can legitimately run past a minute. The Anthropic SDK path
+  // defaults to 10 minutes; this only exists so a hung connection can't hold a request forever.
+  const timeoutMs = opts.timeoutMs ?? 300_000;
   for (let attempt = 0; ; attempt++) {
     const signed = await sign();
     let res: Response;
@@ -222,6 +225,8 @@ export async function invokeBedrock(
     }
     if (res.ok) return res;
     if (attempt < maxRetries && BEDROCK_RETRYABLE_STATUS.has(res.status)) {
+      // Visible in Workers Logs, so sustained throttling on the `au.` profile shows up before users do.
+      console.warn(`bedrock_retry status=${res.status} type=${res.headers.get("x-amzn-ErrorType") ?? "unknown"} attempt=${attempt + 1}`);
       // Drain the body so the connection is released, then back off (jittered exponential).
       await res.body?.cancel().catch(() => {});
       await sleep(250 * 2 ** attempt + Math.floor(Math.random() * 250));

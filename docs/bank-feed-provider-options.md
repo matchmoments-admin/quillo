@@ -180,7 +180,7 @@ Total ≈ **3–4 focused days**. No migration and no money-math change. Flag OF
 - [ ] Compliance checklist: branded consent UI, consent period, documented data uses, data-minimisation strategy, deletion/de-identification process, data-sovereignty compliance.
 - [ ] Developer checklist: error handling + retries, log `end_user_id`/`consent_id`/`session_id`/`error_id`, delete unused end users, pagination.
 - [ ] Lawyer review of the representative agreement (#524) **before signing**.
-- [ ] Bedrock Anthropic use-case form submitted (handoff §7.1). Still blocks any production CDR inference.
+- [x] Bedrock Anthropic use-case form submitted and Haiku 4.5 Marketplace agreement accepted (2026-10-22); `npm run probe:bedrock` 5/5.
 - [ ] Flip `FISKIL_ENV=production` only after all of the above. `bank_feed_cdr` stays OFF until #524 clears.
 
 ---

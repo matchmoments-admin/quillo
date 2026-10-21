@@ -2505,6 +2505,13 @@ console.log("Bedrock MVP readiness — per-locale region, retry, geo pricing, wi
   check("invokeBedrock: gives up after maxRetries (1 + 2 attempts)", t3.urls.length === 3 && !!t3.err?.includes("503"));
   const t4 = await run([429, 429, 429]);
   check("invokeBedrock: exhausted throttling surfaces the error type", !!t4.err?.includes("ThrottlingException"));
+  {
+    let calls = 0;
+    const timingOut = (async () => { calls++; throw Object.assign(new Error("The operation was aborted due to timeout"), { name: "TimeoutError" }); }) as unknown as typeof fetch;
+    let err = "";
+    try { await invokeBedrock(async () => signedFor, { fetchImpl: timingOut, sleep: async () => {} }); } catch (e) { err = (e as Error).message; }
+    check("invokeBedrock: a timeout is NOT retried (the first request may still be billing)", calls === 1 && err.startsWith("Bedrock InvokeModel timeout"));
+  }
 
   // getLLM's Bedrock create(): the wire shape InvokeModel needs — model in the URL, not the body,
   // plus the bedrock anthropic_version marker — and the content passes through untouched.
@@ -2527,6 +2534,16 @@ console.log("Bedrock MVP readiness — per-locale region, retry, geo pricing, wi
 
   // The SPA reads profile.inference_provider to skip the US-consent step; /api/situation must send
   // the RESOLVED provider, or an env-level Bedrock default still shows every AU tester the consent wall.
+  // The APP-8 consent gates must resolve the provider exactly as getLLM does. The old inline
+  // `inference_provider ?? env.DEFAULT_INFERENCE_PROVIDER` dropped resolveProvider's final
+  // `?? "anthropic"`: with the env var unset the gate saw undefined, skipped consent, and getLLM
+  // still called the US API — failing OPEN.
+  const agentSrc = fs.readFileSync(path.join(process.cwd(), "src", "agent.ts"), "utf8");
+  check("consent gates resolve the provider via resolveProvider (no inline env fallback)",
+    !/inference_provider \?\? this\.env\.DEFAULT_INFERENCE_PROVIDER/.test(agentSrc) &&
+      (agentSrc.match(/const provider = resolveProvider\(this\.env, profile\);/g) ?? []).length >= 13);
+  check("with DEFAULT_INFERENCE_PROVIDER unset, an untouched tenant resolves to anthropic (so consent is required)",
+    resolveProvider({} as unknown as Env, { inference_provider: null, inference_region: null }) === "anthropic");
   const apiSrc = fs.readFileSync(path.join(process.cwd(), "src", "api.ts"), "utf8");
   check("/api/situation returns the resolved inference provider (env default honoured in the UI)",
     /inference_provider:\s*resolveProvider\(env,\s*profile\)/.test(apiSrc));

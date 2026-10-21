@@ -6,7 +6,8 @@
 ANTHROPIC_API_KEY="sk-ant-..."
 QBO_CLIENT_ID=""            # Intuit Developer app → Keys & Credentials
 QBO_CLIENT_SECRET=""        # Intuit Developer app → Keys & Credentials
-# Only when a tenant uses inference_provider = 'bedrock' (AU residency path):
+# AU residency path: needed when a tenant (or DEFAULT_INFERENCE_PROVIDER) is 'bedrock', and by
+# `npm run probe:bedrock` / `npm run eval:bedrock`. Use the invoke-only quillo-bedrock-runtime key.
 AWS_ACCESS_KEY_ID=""
 AWS_SECRET_ACCESS_KEY=""
 # Basiq (CDR / open-banking bank feeds, flag `bank_feed_cdr`). Dashboard → your application →

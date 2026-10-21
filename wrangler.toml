@@ -168,8 +168,9 @@ CLERK_FOUNDER_SUB = "user_3EX9q24hvBuYNz3Hk6Pg6O5FfBq"
 # flip a tenant's profiles.inference_provider to 'bedrock' for in-jurisdiction residency.
 # This var is only the default for tenants with no explicit provider set.
 DEFAULT_INFERENCE_PROVIDER = "anthropic"
-# DEFAULT_INFERENCE_REGION is deliberately UNSET: each tenant's region comes from its jurisdiction
-# descriptor (AU ⇒ ap-southeast-2, UK ⇒ eu-west-2), so one locale's default can't be applied to another.
+# DEFAULT_INFERENCE_REGION is deliberately UNSET: the region comes from the jurisdiction descriptor
+# getLLM is given (AU ⇒ ap-southeast-2, UK ⇒ eu-west-2), so one locale's default can't be applied to
+# another. Today every call site passes AU; a second locale must thread its own descriptor through.
 # Setting it is a GLOBAL override, and a region outside a tenant's jurisdiction fails closed.
 # Basiq environment for CDR bank feeds (flag `bank_feed_cdr`): 'sandbox' | 'production'.
 # UNLIKE QBO above, this is NOT just a base-URL switch — 'production' means real consumers' real

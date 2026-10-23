@@ -346,7 +346,10 @@ export function TxnDetail() {
             {/* Not an <h1>: the global heading rule forces Anton-uppercase, which would distort
                 a user-supplied merchant name. Keep merchant data in mixed-case sans. */}
             <div className="truncate text-xl font-semibold tracking-tight">{txn.merchant ?? "Unknown merchant"}</div>
-            <ConfidencePill value={txn.confidence} />
+            <span className="inline-flex flex-none items-center gap-1">
+              <ConfidencePill value={txn.confidence} />
+              <InfoTip k="confidence" />
+            </span>
           </div>
 
           {txn.duplicate_of && (

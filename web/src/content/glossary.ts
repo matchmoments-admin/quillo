@@ -34,6 +34,11 @@ const ATO = {
   foreign: { label: "Foreign and temporary resident income (ATO)", url: "https://www.ato.gov.au/individuals-and-families/income-deductions-offsets-and-records/income-you-must-declare/foreign-and-worldwide-income/foreign-and-temporary-resident-income" },
   mygov: { label: "Link myGov to the ATO", url: "https://www.ato.gov.au/online-services/online-services-for-individuals-and-sole-traders/ato-online-services-and-mygov/create-a-mygov-account-and-link-it-to-the-ato" },
   amend: { label: "Amend your tax return (ATO)", url: "https://www.ato.gov.au/individuals-and-families/your-tax-return/amend-your-tax-return/how-to-request-an-amendment-to-your-tax-return" },
+  incomeStatement: { label: "Access your income statement (ATO)", url: "https://www.ato.gov.au/individuals-and-families/jobs-and-employment-types/working-as-an-employee/income-statements/access-your-income-statement" },
+  wfhFixedRate: { label: "Working from home: fixed rate method (ATO)", url: "https://www.ato.gov.au/individuals-and-families/income-deductions-offsets-and-records/deductions-you-can-claim/work-related-deductions/working-from-home-expenses/fixed-rate-method" },
+  mls: { label: "Medicare levy surcharge (ATO)", url: "https://www.ato.gov.au/individuals-and-families/medicare-and-private-health-insurance/medicare-levy-surcharge/medicare-levy-surcharge-income-thresholds-and-rates" },
+  studyLoans: { label: "Study and training loan repayments (ATO)", url: "https://www.ato.gov.au/tax-rates-and-codes/study-and-training-support-loans-rates-and-repayment-thresholds" },
+  businessItems: { label: "Business and professional items in myTax (ATO)", url: "https://www.ato.gov.au/individuals-and-families/your-tax-return/instructions-to-complete-your-tax-return/mytax-instructions/2026/income/sole-trader-and-business-income-or-losses-and-partnership-distributions/business-and-professional-items" },
 } as const;
 
 export const GLOSSARY = {
@@ -123,14 +128,20 @@ export const GLOSSARY = {
     term: "Confidence",
     short:
       "How sure the AI was about this categorisation. 'review' or 'low' means a human should check it — the AI never finalises anything on its own.",
+    why: "The category decides which part of your records a line counts toward, so the low-confidence lines are the ones worth checking first.",
+    related: ["bucket", "reasoning"],
   },
   bucket: {
     term: "Bucket",
     short: `The tax context a transaction belongs to (PAYG, company, a property…). It groups your spending by where it broadly sits — it doesn't decide deductibility on its own. ${DEFER}`,
+    why: "It decides which return or schedule a line counts toward (your own, a company's, or a property's), so a line in the wrong one shows up in the wrong total.",
+    related: ["ato_label", "confidence"],
   },
   ato_label: {
     term: "ATO label",
     short: `A finer category within the bucket (e.g. company:office-supplies) — roughly where this would sit on a tax return. It's an organising label, not a claim. ${DEFER}`,
+    why: "Labels group your costs the way the return asks for them, which makes each figure quicker to find when you enter it in myTax or hand it to a registered tax agent.",
+    related: ["bucket", "mytax"],
   },
   reasoning: {
     term: "Why this bucket?",
@@ -228,6 +239,8 @@ export const GLOSSARY = {
     term: "Reconcile",
     short:
       "Checking the imported transactions add up to the statement's own opening/closing totals — proof the import is complete and accurate, with nothing missed or double-counted.",
+    why: "A statement that reconciles shows nothing was missed or counted twice, so the totals your position is built from are complete.",
+    related: ["account_source"],
   },
 
   // ── Year-end / reports ───────────────────────────────────────────────────────────────────
@@ -358,7 +371,8 @@ export const FT_GLOSSARY = {
     short:
       "A study loan from the Higher Education Loan Program. Once your income passes the ATO's repayment threshold, a compulsory repayment is worked out through your return.",
     why: "A HELP debt can change the result of your return once your income passes the repayment threshold, so it is worth knowing whether you have one before you lodge.",
-    related: ["income_statement"],
+    ato: ATO.studyLoans,
+    related: ["income_statement", "rfba"],
   },
   golden_rules: {
     term: "The three golden rules",
@@ -391,6 +405,95 @@ export const FT_GLOSSARY = {
     why: "Even under the exception you still need to show how you worked out each amount, so a simple note of what you spent and why still matters.",
     ato: ATO.records,
     related: ["golden_rules", "deduction"],
+  },
+  taxable_position: {
+    term: "Indicative taxable position",
+    short:
+      "Quillo's running estimate of your taxable income for the year: the income you've recorded, less the deductions you've confirmed so far. It's built only from the records in Quillo and it isn't the ATO's assessment.",
+    why: "It shows where your records stand before you lodge. The figure that counts is the one on your notice of assessment, after the ATO processes your return.",
+    related: ["deduction", "notice_of_assessment", "deductible_vs_claimable"],
+  },
+  payg_withholding: {
+    term: "Tax withheld (PAYG withholding)",
+    short:
+      "The tax your employer or another payer took out of your pay and sent to the ATO before the money reached you. It's shown on your income statement next to your gross pay.",
+    why: "Your return compares the tax worked out on your income with the tax already withheld, so the withheld figure you enter needs to match your income statement.",
+    ato: ATO.incomeStatement,
+    related: ["income_statement", "tax_ready", "payg"],
+  },
+  tax_ready: {
+    term: "Tax ready",
+    short:
+      "The status your employer gives your income statement once they've finalised it for the year. Until it says tax ready, the figures on it can still change.",
+    why: "Starting from a tax-ready income statement means the pay and tax withheld you enter are final, which avoids having to amend your return later.",
+    ato: ATO.incomeStatement,
+    related: ["income_statement", "prefill", "payg_withholding"],
+  },
+  wfh_fixed_rate: {
+    term: "Fixed-rate method (working from home)",
+    short:
+      "One of the ATO's methods for working-from-home running costs: a set rate for each hour you worked from home, covering things like electricity, internet and phone. The ATO sets the rate for each year, and some costs, such as equipment, are worked out separately.",
+    why: "The method relies on a record of the actual hours you worked from home through the year, such as a diary or timesheet. An estimate alone isn't accepted.",
+    ato: ATO.wfhFixedRate,
+    related: ["home_office", "golden_rules", "record_keeping_exception"],
+  },
+  cost_base: {
+    term: "Cost base",
+    short:
+      "What an asset cost you for capital gains purposes: generally what you paid for it, plus costs such as brokerage, stamp duty and legal fees on buying and selling it. It's taken away from what you sold it for to work out a gain or loss.",
+    why: "The cost base sets the size of the gain or loss when you sell, so the purchase records are worth keeping for as long as you own the asset, and for a while after you sell.",
+    related: ["capital_gains", "cgt_discount"],
+  },
+  cgt_discount: {
+    term: "CGT discount",
+    short:
+      "A reduction in the part of a capital gain that counts as income, generally available to an individual who sold an asset after holding it for at least 12 months. Some people, such as foreign residents, may not be able to use it, or only in part.",
+    why: "The dates you bought and sold decide whether the discount can apply, so both dates belong in the records for each sale. If you're unsure, confirm with a registered tax agent.",
+    related: ["capital_gains", "cost_base", "tax_residency"],
+  },
+  effective_life: {
+    term: "Effective life",
+    short:
+      "How many years an asset is expected to be used to earn income. It sets how quickly the asset's cost is spread across your returns as decline in value. The ATO publishes the usual effective life for most kinds of asset.",
+    why: "A longer effective life spreads the cost over more years, so the figure chosen for each asset changes how much counts in each year's return.",
+    related: ["depreciation", "asset"],
+  },
+  negative_gearing: {
+    term: "Negative gearing",
+    short:
+      "When an investment property's deductible costs (such as loan interest, repairs and council rates) are more than the rent it earns, the property makes a net rental loss for the year. That loss can generally reduce your other income.",
+    why: "A property's net result feeds into your taxable income, so each property's rent and costs need to be recorded against that property. Confirm the treatment with a registered tax agent.",
+    related: ["property_rented", "deduction", "taxable_position"],
+  },
+  rfba: {
+    term: "Reportable fringe benefits amount (RFBA)",
+    short:
+      "The grossed-up value of certain fringe benefits your employer gave you, such as a car through a novated lease, shown on your income statement. It isn't taxed as income, but some income tests count it. Quillo doesn't calculate it.",
+    why: "It can change income-tested results such as the Medicare levy surcharge and study-loan repayments, so it's copied from your income statement exactly as shown.",
+    related: ["income_statement", "novated_lease", "mls"],
+  },
+  mls: {
+    term: "Medicare levy surcharge",
+    short:
+      "An extra levy for people whose income for surcharge purposes is above the ATO's threshold and who didn't hold an appropriate level of private hospital cover for all or part of the year. The ATO works it out from your return; Quillo doesn't.",
+    why: "Your return asks whether you held private hospital cover and for which days, so the statement from your health insurer is the record to keep.",
+    ato: ATO.mls,
+    related: ["rfba", "mytax"],
+  },
+  sole_trader: {
+    term: "Sole trader",
+    short:
+      "Someone who runs a business as an individual, under their own ABN, rather than through a company or trust. The business's income and costs go in your own return.",
+    why: "No employer reports this income for you, so your own records of what the business earned and spent are what your return relies on.",
+    ato: ATO.businessItems,
+    related: ["abn", "gst", "income_business"],
+  },
+  div7a: {
+    term: "Division 7A (private company loans)",
+    short:
+      "Tax rules that can treat money a private company pays or lends to a shareholder or their associate, or a debt it forgives, as an unfranked dividend, unless it's set up in the required way, such as under a complying loan agreement.",
+    why: "Taking money out of your own company other than as wages or dividends can have tax consequences for you personally. Confirm the arrangement with a registered tax agent.",
+    related: ["company", "franking_credit"],
   },
 } as const satisfies Record<string, GlossaryEntry>;
 

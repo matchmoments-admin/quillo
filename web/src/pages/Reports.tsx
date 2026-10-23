@@ -4,7 +4,7 @@ import { Link } from "react-router-dom";
 import { api, saveBlob } from "../api";
 import { useActiveFy } from "../lib/activeFy";
 import { useFeatures } from "../lib/features";
-import { Card, Spinner, money, BUCKET_LABEL, InfoTip } from "../components/ui";
+import { Card, Spinner, money, BUCKET_LABEL, InfoTip, Term } from "../components/ui";
 import { ScanFindings } from "../components/ScanFindings";
 import { WorkMethodsCard } from "../components/WorkMethodsCard";
 import { CarMethodsCard, NovatedLeaseCarNote } from "../components/CarMethodsCard";
@@ -108,7 +108,7 @@ export function Reports() {
                 </div>
               </div>
             ) : (
-              <Stat label="Indicative position (individual)" value={money(data!.taxable_position_cents)} />
+              <Stat label={<>Indicative position (individual) <InfoTip k="taxable_position" /></>} value={money(data!.taxable_position_cents)} />
             )}
           </Card>
           <p className="px-1 text-xs text-muted">
@@ -135,7 +135,7 @@ export function Reports() {
               <>
                 {" "}Your income statement also carries{" "}
                 <span className="font-medium text-ink">{money(data!.reportable_amounts.rfba_cents + data!.reportable_amounts.resc_cents)}</span>{" "}
-                of reportable amounts (fringe benefits / employer super) — not income and not in the position,
+                of reportable amounts (<Term k="rfba">fringe benefits</Term> / employer super) — not income and not in the position,
                 but used for government income tests; they're in your accountant pack.
               </>
             )}
@@ -321,7 +321,7 @@ export function Reports() {
 
           {data!.per_property.length > 0 && (
             <Card className="overflow-hidden">
-              <Th>Per-property position (rent − deductions − depreciation)</Th>
+              <Th>Per-property position (rent − deductions − depreciation) <InfoTip k="negative_gearing" /></Th>
               <table className="w-full text-sm">
                 <PagedRows rows={data!.per_property} cols={4} render={(p) => (
                     <tr key={p.property_id} className="border-t border-line">

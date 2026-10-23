@@ -10,7 +10,11 @@ import { useWorksheetTicks } from "../lib/useWorksheetTicks";
 import { isTickable, tickId, tickProgress } from "../lib/worksheetTicks";
 import { Badge, EmptyState, ErrorState, FtButton, FtCard, FtCheckbox, FtLink, GeneralInfoNote, Skeleton, WorksheetLine } from "../components/ft";
 import { NoaCloseOff } from "./Filing";
-import { INPUT_CLASS } from "../components/ui";
+import { INPUT_CLASS, InfoTip, Term } from "../components/ui";
+import type { AnyGlossaryKey } from "../content/glossary";
+
+// Worksheet lines whose myTax question has an Explain term (design audit #696: the unexplained "M2" chip).
+const WORKSHEET_TERM: Partial<Record<string, AnyGlossaryKey>> = { private_hospital_cover: "mls" };
 import type { MytaxWorksheet, MytaxWorksheetLine, MytaxWorksheetSection } from "../types";
 
 // Lodge in myTax — the last step of the first-timer journey (spec §0 design review + A9 ticket b, #590; flag
@@ -211,7 +215,11 @@ function ReadinessSummary({ loading, known, blockers, review }: { loading: boole
         </FtLink>
       </p>
     );
-  return <p className="text-sm text-muted">Nothing flagged in Review. That's not a clearance: if you're unsure, confirm with a registered tax agent.</p>;
+  return (
+    <p className="text-sm text-muted">
+      Nothing flagged in Review. That's not a clearance: if you're unsure, confirm with a <Term k="registered_tax_agent">registered tax agent</Term>.
+    </p>
+  );
 }
 
 function Worksheet({
@@ -301,7 +309,7 @@ function WorksheetSectionCard({ section, ticks }: { section: MytaxWorksheetSecti
               key={id}
               code={l.label || undefined}
               codeAfter
-              label={l.name}
+              label={WORKSHEET_TERM[l.key] ? <>{l.name} <InfoTip k={WORKSHEET_TERM[l.key]} /></> : l.name}
               amountCents={l.amount_cents}
               note={l.note}
               figure={figure}
@@ -333,14 +341,16 @@ function MarkLodged({ fy, label, progress, processingHint }: { fy: number; label
   const left = progress && progress.total > progress.done ? progress.total - progress.done : 0;
   return (
     <FtCard className="space-y-3 p-5">
-      <h2 className="font-display text-xl tracking-wide text-forest">Lodged in myTax?</h2>
+      <h2 className="font-display text-xl tracking-wide text-forest">
+        Lodged in <Term k="mytax">myTax</Term>?
+      </h2>
       <p className="max-w-[65ch] text-sm text-muted">
         When you tick myTax's declaration, you're confirming every figure, including the prefilled ones, is right and that you hold the records. Then
         select Lodge.
       </p>
       <p className="max-w-[65ch] text-sm text-muted">
         Once you've lodged FY {label} in myTax, mark it here. The ATO emails you a receipt, most myTax returns are processed in{" "}
-        {processingHint ?? "about 12 business days"}, and your notice of assessment arrives in your myGov Inbox. Marking it is your own record:
+        {processingHint ?? "about 12 business days"}, and your <Term k="notice_of_assessment">notice of assessment</Term> arrives in your myGov Inbox. Marking it is your own record:
         Quillo doesn't lodge.
       </p>
       {!open ? (
@@ -477,7 +487,9 @@ function TaxReadyGate({ employers, ticks, known }: { employers: { key: string; n
   return (
     <FtCard className="space-y-3 p-5">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="font-display text-xl tracking-wide text-forest">Before you open myTax</h2>
+        <h2 className="font-display text-xl tracking-wide text-forest">
+          Before you open myTax <InfoTip k="tax_ready" />
+        </h2>
         {ticks.ready && known && <Badge tone={ready ? "ok" : "warn"}>{ready ? "Ready for myTax" : "Not yet"}</Badge>}
       </div>
       <ul className="space-y-1">
@@ -520,7 +532,9 @@ function SoftSignoff({ fy, label }: { fy: number; label: string }) {
   if (signoff.isLoading) return null;
   return (
     <FtCard className="space-y-3 p-5">
-      <h2 className="font-display text-xl tracking-wide text-forest">Lodged in myTax?</h2>
+      <h2 className="font-display text-xl tracking-wide text-forest">
+        Lodged in <Term k="mytax">myTax</Term>?
+      </h2>
       {signoff.data ? (
         <p className="text-sm text-muted">You marked FY {label} as done. Your own record: Quillo doesn't lodge.</p>
       ) : (

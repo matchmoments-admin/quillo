@@ -6,7 +6,7 @@ import { api, saveBlob } from "../api";
 import { useActiveFy, useLodgedMark } from "../lib/activeFy";
 import { useFeatures } from "../lib/features";
 import { findingFixLink } from "../lib/findingLinks";
-import { Card, Spinner, money } from "../components/ui";
+import { Card, Spinner, money, InfoTip, Term } from "../components/ui";
 import { ClaimsCard } from "./Dashboard";
 import type { PositionLine, ReadinessFinding, ClaimReview, ClaimReviewItem, OccupationRuleCandidate } from "../types";
 import { confirmAction } from "../components/ConfirmDialog";
@@ -200,7 +200,7 @@ export function Filing() {
 
           {/* Indicative position with reasoning */}
           <Card className="p-4">
-            <div className="text-xs uppercase tracking-wide text-muted">Indicative taxable position</div>
+            <div className="text-xs uppercase tracking-wide text-muted">Indicative taxable position <InfoTip k="taxable_position" /></div>
             <div className="mt-1 text-3xl font-semibold tabular-nums">{money(data.position.indicative_taxable_position_cents)}</div>
             <div className="mt-1 text-xs text-muted">{data.position.caption}</div>
             <div className="mt-3 flex flex-wrap gap-x-6 gap-y-1 text-sm text-muted">
@@ -330,7 +330,7 @@ export function NoaCloseOff() {
     <Card className="space-y-3 p-4 print:hidden">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <div className="text-sm font-semibold">Close a tax year off your Notice of Assessment</div>
+          <div className="text-sm font-semibold">Close a tax year off your <Term k="notice_of_assessment">Notice of Assessment</Term></div>
           <p className="mt-0.5 text-xs text-muted">
             Upload an ATO NOA (any year). We'll read the carried-forward losses and reference balances,
             then you confirm before anything is recorded. Quillo doesn't lodge — general information only.

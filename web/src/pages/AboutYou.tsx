@@ -45,6 +45,7 @@ import {
 } from "../content/aboutYou";
 import { MYTAX_CHECK } from "../content/getSetUp";
 import { OCCUPATIONS, normaliseOccupation, occupationLabel } from "../content/occupations";
+import { InfoTip } from "../components/ui";
 import {
   Chip,
   ChipGroup,
@@ -285,7 +286,7 @@ function FirstRun({
       {screen === "residency" && (
         <>
           <SituationQuestion
-            title={ABOUT_Q.residency.title}
+            title={<>{ABOUT_Q.residency.title} <InfoTip k="tax_residency" /></>}
             help={ABOUT_Q.residency.help}
             options={RESIDENCY_CHOICES}
             value={a.residency}
@@ -475,9 +476,12 @@ function FirstRun({
               </p>
             )}
             {a.ticks.includes("study") && (
-              <Chip selected={a.ticks.includes("study_loan")} onToggle={() => setA(toggleTick(a, "study_loan"))}>
-                {STUDY_LOAN_LABEL}
-              </Chip>
+              <div className="flex items-center gap-2">
+                <Chip selected={a.ticks.includes("study_loan")} onToggle={() => setA(toggleTick(a, "study_loan"))}>
+                  {STUDY_LOAN_LABEL}
+                </Chip>
+                <InfoTip k="help_debt" />
+              </div>
             )}
             {a.ticks.includes("abn") && (
               <ChipGroup

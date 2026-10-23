@@ -20,7 +20,7 @@ import { useActiveFy } from "../../lib/activeFy";
 import { Income } from "../../pages/Income";
 import { Accounts } from "../../pages/Accounts";
 import { Badge, ErrorState, FtButton, FtCard, FtLink, GeneralInfoNote, PreflightSteps, Skeleton, YoullNeed, cx } from "../ft";
-import { INPUT_CLASS } from "../ui";
+import { INPUT_CLASS, InfoTip } from "../ui";
 import { CdrPolicyNote } from "../CdrPolicyLink";
 import type { Account, StatementInfo } from "../../types";
 import {
@@ -50,7 +50,7 @@ const UPLOAD_STEPS = [
   { key: "upload", title: "Upload it here", body: "Pick the account it's for, and Quillo reads the lines in." },
 ] as const;
 
-function Section({ id, title, children }: { id?: string; title: string; children: ReactNode }) {
+function Section({ id, title, children }: { id?: string; title: ReactNode; children: ReactNode }) {
   return (
     <section id={id} className="scroll-mt-20 space-y-3">
       <h2 className="font-display text-xl tracking-wide text-forest">{title}</h2>
@@ -531,7 +531,7 @@ function IncomeWaiting() {
 
   if (q.isLoading) return null;
   return (
-    <Section id="income" title="Your income statement">
+    <Section id="income" title={<>Your income statement <InfoTip k="income_statement" /></>}>
       {q.isError ? (
         <ErrorState what="your income statement status" error={q.error} onRetry={() => q.refetch()} />
       ) : (

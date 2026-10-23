@@ -3,6 +3,7 @@ import { useState } from "react";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import { ANY_GLOSSARY, type AnyGlossaryKey } from "../content/glossary";
 import { currencySymbol, currencyLocale } from "../lib/currency";
+import { ExplainCard, ExplainSheet, tipVariant } from "./ExplainTip.prototype"; // PROTOTYPE #698
 
 // UK epic stop 2 — base-currency-aware money(). The SPA is single-tenant-per-session, so the base
 // currency is module-level state set ONCE from situation.base_currency (see setMoneyCurrency, called by
@@ -337,6 +338,9 @@ export function Term({ k, tip, children }: { k?: AnyGlossaryKey; tip?: ReactNode
   // Controlled for tap-to-open on touch (see InfoTip) — keeps hover/focus for desktop.
   const [open, setOpen] = useState(false);
   if (!body) return <>{text}</>;
+  const pv = tipVariant(); // PROTOTYPE #698
+  if (pv === "B") return <ExplainCard k={k} tip={tip} trigger={text} />;
+  if (pv === "C") return <ExplainSheet k={k} tip={tip} trigger={text} />;
   return (
     <Tooltip.Root open={open} onOpenChange={setOpen}>
       <Tooltip.Trigger asChild>

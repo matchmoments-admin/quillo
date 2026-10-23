@@ -2,6 +2,7 @@ import { Link, useLoaderData } from "react-router-dom";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import { Card, Term } from "../components/ui";
 import { ATO_LINKS, BEFORE_YOU_START as C, BEFORE_YOU_START_LINKS, type ExtLink } from "../content/beforeYouStart";
+import { TipVariantSwitcher } from "../components/ExplainTip.prototype"; // PROTOTYPE #698
 
 /** What the public probe returns (src/lib/before-you-start.ts). */
 export interface BeforeYouStartData {
@@ -127,6 +128,7 @@ export function BeforeYouStart() {
 
           <footer className="pt-2 text-xs leading-relaxed text-muted">{C.footnote}</footer>
         </main>
+        {import.meta.env.DEV && <TipVariantSwitcher />}
       </div>
     </Tooltip.Provider>
   );

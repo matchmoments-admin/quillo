@@ -15,6 +15,7 @@ import { ChatProvider } from "./components/chat/ChatProvider";
 import { FloatingChat } from "./components/chat/FloatingChat";
 import { useThemeSync } from "./lib/appearance";
 import { FtShell } from "./components/FtShell";
+import { PARTNER_NAV_LABEL } from "./lib/cuts";
 
 // `hideFlag`: a #697 cut — the item is hidden while that flag is ON (OFF ⇒ shown exactly as before).
 type NavItem = { to: string; label: string; icon: IconName; end?: boolean; badge?: boolean; flag?: string; hideFlag?: string; admin?: boolean; partner?: boolean; expressHidden?: boolean };
@@ -65,8 +66,8 @@ const GROUPS: NavGroup[] = [
   {
     label: "5 · Save",
     items: [
-      { to: "/savings", label: "Savings", icon: "income", flag: "advisory_layer" },
-      { to: "/extras", label: "Extras", icon: "shield", flag: "phi_extras_tracker" },
+      { to: "/savings", label: "Savings", icon: "income", flag: "advisory_layer", hideFlag: "hide_savings" },
+      { to: "/extras", label: "Extras", icon: "shield", flag: "phi_extras_tracker", hideFlag: "hide_extras" },
     ],
   },
   {
@@ -76,13 +77,15 @@ const GROUPS: NavGroup[] = [
   {
     label: "Connections",
     items: [
-      { to: "/quickbooks", label: "QuickBooks", icon: "check" },
+      // hide_quickbooks_nav: a connected user reaches QuickBooks from Settings instead.
+      { to: "/quickbooks", label: "QuickBooks", icon: "check", hideFlag: "hide_quickbooks_nav" },
       { to: "/notifications", label: "Alerts", icon: "bell" },
       { to: "/billing", label: "Billing", icon: "card", flag: "billing" },
     ],
   },
   {
     label: "Partner",
+    // hide_partner_nav renames the heading and item (lib/cuts.tsx PARTNER_NAV_LABEL); still partner-role only.
     items: [{ to: "/partner", label: "Partner portal", icon: "income", partner: true }],
   },
   {
@@ -249,6 +252,7 @@ function Sidebar({ needsReview, open }: { needsReview: number; open: boolean }) 
   const { isAdmin } = useAdminAccess();
   const { isPartner } = usePartnerAccess();
   const navDisclosure = has("nav_disclosure");
+  const partnerRenamed = has("hide_partner_nav");
   // payg_express (audit wave 2): a single-PAYG tenant doesn't need the Assets/CGT surface — the server
   // decides eligibility (situation.payg_express_eligible, present only when the flag is on) and the nav
   // simply hides marked items. Reuses the shared ["situation"] query (no extra fetch); the mobile "More"
@@ -262,7 +266,7 @@ function Sidebar({ needsReview, open }: { needsReview: number; open: boolean }) 
     if (!items.length) return null;
     return (
       <div key={g.label || "home"} className="mt-5 first:mt-1">
-        {g.label && <div className="px-3 pb-2 text-[10px] font-bold uppercase tracking-[0.2em] text-cream/45">{g.label}</div>}
+        {g.label && <div className="px-3 pb-2 text-[10px] font-bold uppercase tracking-[0.2em] text-cream/45">{g.label === "Partner" && partnerRenamed ? PARTNER_NAV_LABEL : g.label}</div>}
         {items.map((it) => (
           <NavLink
             key={it.to}
@@ -277,7 +281,7 @@ function Sidebar({ needsReview, open }: { needsReview: number; open: boolean }) 
             {({ isActive }) => (
               <>
                 <Icon name={it.icon} />
-                <span>{it.label}</span>
+                <span>{it.to === "/partner" && partnerRenamed ? PARTNER_NAV_LABEL : it.label}</span>
                 {it.badge && needsReview > 0 && (
                   <span
                     className={`ml-auto rounded-full px-2 py-0.5 text-[11px] font-bold tnum ${

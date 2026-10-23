@@ -33,6 +33,7 @@ import { FtRedirect, HomeIndex, OldStepRedirect, SetupStep, ConnectStep, ReviewS
 import { setTokenGetter } from "./api";
 import { ActiveFyProvider } from "./lib/activeFy";
 import { RouteError } from "./components/RouteError";
+import { CutRoute, PartnerRoute, QuickBooksRoute } from "./lib/cuts";
 
 const PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY as string | undefined;
 
@@ -151,15 +152,16 @@ const router = createBrowserRouter([
       { path: "notifications", element: <Notifications /> },
       { path: "settings", element: <Settings /> },
       { path: "onboarding", element: <FtRedirect><Onboarding /></FtRedirect> },
-      { path: "quickbooks", element: <FtRedirect><QuickBooks /></FtRedirect> },
+      // #697 cuts: hide_quickbooks_nav / hide_savings / hide_extras / hide_partner_nav (lib/cuts.tsx). OFF ⇒ unchanged.
+      { path: "quickbooks", element: <FtRedirect><QuickBooksRoute><QuickBooks /></QuickBooksRoute></FtRedirect> },
       { path: "reports", element: <Reports /> },
-      { path: "savings", element: <FtRedirect><Savings /></FtRedirect> },
-      { path: "extras", element: <FtRedirect><Extras /></FtRedirect> },
+      { path: "savings", element: <FtRedirect><CutRoute flag="hide_savings" to="/"><Savings /></CutRoute></FtRedirect> },
+      { path: "extras", element: <FtRedirect><CutRoute flag="hide_extras" to="/"><Extras /></CutRoute></FtRedirect> },
       { path: "billing", element: <Billing /> },
       { path: "filing", element: <FtRedirect><Filing /></FtRedirect> },
       { path: "admin", element: <Admin /> },
       { path: "admin/security", element: <SecurityCompliance /> },
-      { path: "partner", element: <Partner /> },
+      { path: "partner", element: <PartnerRoute><Partner /></PartnerRoute> },
       // Journey steps — four since the design review (spec §0, #585). OFF ⇒ each redirects to the legacy
       // page it replaces, except /review, which IS the legacy "By label" page when OFF (rendered in place).
       { path: "setup", element: <SetupStep /> },

@@ -8,6 +8,7 @@ import { CdrPolicyFooterLink } from "./CdrPolicyLink";
 import { FySwitcher } from "../lib/activeFy";
 import { JOURNEY_STEP_KEYS, STATUS_LABEL, STEP_LABEL, STEP_ROUTE, stepForPath, useJourney } from "../lib/journey";
 import { GROW_LABEL, GROW_ROUTE, useSetGrowLayer } from "../lib/grow";
+import { PARTNER_NAV_LABEL, useGrowLayerCut } from "../lib/cuts";
 import type { JourneyStepKey, JourneyStepStatus } from "../types";
 import { ChatProvider } from "./chat/ChatProvider";
 import { WhySheet, cx, FOCUS, TAP } from "./ft";
@@ -95,7 +96,9 @@ function StepList({ onPick, dark }: { onPick?: () => void; dark?: boolean }) {
 /** The visible Grow layers (A11b, #592) — under the steps in the rail and the Steps sheet. Nothing when none. */
 function GrowList({ onPick, dark }: { onPick?: () => void; dark?: boolean }) {
   const journey = useJourney();
-  const visible = (journey.data?.grow.layers ?? []).filter((l) => l.state === "on");
+  // #697 cuts (hide_savings / hide_extras / hide_quickbooks_nav) drop their layer from the rail.
+  const cut = useGrowLayerCut();
+  const visible = (journey.data?.grow.layers ?? []).filter((l) => l.state === "on" && !cut(l.key, l.has_data));
   if (visible.length === 0) return null;
   return (
     <div className="mt-5">
@@ -121,7 +124,8 @@ function GrowSwitcher({ dark }: { dark?: boolean }) {
   const journey = useJourney();
   const set = useSetGrowLayer();
   const [open, setOpen] = useState(false);
-  const layers = (journey.data?.grow.layers ?? []).filter((l) => l.switchable);
+  const cut = useGrowLayerCut();
+  const layers = (journey.data?.grow.layers ?? []).filter((l) => l.switchable && !cut(l.key, l.has_data));
   if (layers.length === 0) return null;
   return (
     <div>
@@ -169,7 +173,7 @@ function AccountMenu({ onPick, dark }: { onPick?: () => void; dark?: boolean }) 
     { to: "/notifications", label: "Alerts", show: true },
     { to: "/glossary", label: "Learn & glossary", show: true },
     { to: "/settings", label: "Settings", show: true },
-    { to: "/partner", label: "Partner portal", show: isPartner && !growListsAdvisers },
+    { to: "/partner", label: has("hide_partner_nav") ? PARTNER_NAV_LABEL : "Partner portal", show: isPartner && !growListsAdvisers },
     { to: "/admin", label: "Admin", show: isAdmin },
   ];
   return (

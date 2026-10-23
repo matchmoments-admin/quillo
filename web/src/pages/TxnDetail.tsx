@@ -415,13 +415,29 @@ export function TxnDetail() {
                 date and refund-link live in the "More options" drawer below (auto-opens when relevant). */}
             {propertyField}
 
-            <button
-              onClick={() => save.mutate()}
-              disabled={save.isPending}
-              className="w-full rounded-lg bg-ink py-2.5 font-medium text-white transition hover:bg-ink/90 disabled:opacity-50"
-            >
-              {save.isPending ? "Saving…" : dirty ? "Save correction" : "Confirm as-is"}
-            </button>
+            {/* An uncategorised line can't be "confirmed as-is" (save() deliberately sends nothing for it).
+                It used to look like it worked and jump to the Inbox with the row still there (#696). Now
+                the button waits for a category and says why. */}
+            {(() => {
+              const needsCategory = !dirty && (!txn.bucket || txn.bucket === "unknown");
+              return (
+                <>
+                  <button
+                    onClick={() => save.mutate()}
+                    disabled={save.isPending || needsCategory}
+                    aria-describedby={needsCategory ? "txn-needs-category" : undefined}
+                    className="w-full rounded-lg bg-ink py-2.5 font-medium text-white transition hover:bg-ink/90 disabled:opacity-50"
+                  >
+                    {save.isPending ? "Saving…" : dirty ? "Save correction" : "Confirm as-is"}
+                  </button>
+                  {needsCategory && (
+                    <p id="txn-needs-category" className="text-xs text-muted">
+                      Pick a category above first, then save.
+                    </p>
+                  )}
+                </>
+              );
+            })()}
             {save.isError && <p className="text-sm text-danger">Couldn't save: {(save.error as Error).message}</p>}
           </Card>
 
@@ -434,7 +450,7 @@ export function TxnDetail() {
                 <span className="font-medium">{BUCKET_LABEL[applyTo.edit.bucket as keyof typeof BUCKET_LABEL] ?? applyTo.edit.bucket}</span> to all of
                 them and remember it for future imports?
               </div>
-              <p className="text-xs text-muted">Updates them in one step — you can Undo. General information only — not tax advice.</p>
+              <p className="text-xs text-muted">Updates them in one step. You can re-open any of them from Transactions to change it. General information only — not tax advice.</p>
               <div className="flex gap-2">
                 <button
                   onClick={() => fanout.mutate()}
@@ -458,7 +474,7 @@ export function TxnDetail() {
           {/* R7 — reassure on rent: not deductible for an employee, but point to the claim she CAN make. */}
           {looksRent && (
             <Card className="border-line bg-surface p-3 text-xs text-muted">
-              Rent on your own home isn't deductible when you're an employee — but your home-office <span className="font-medium text-ink">running costs are</span>, via the working-from-home method on your Dashboard. General information only.
+              Rent on your own home generally isn't deductible when you're an employee — but your home-office <span className="font-medium text-ink">running costs may be claimable</span>, via the working-from-home method on your Dashboard. General information only — confirm with a registered tax agent.
             </Card>
           )}
           {/* G4 — phone/internet double-dip guard: the 70c fixed rate already bundles these. */}

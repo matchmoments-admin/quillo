@@ -154,7 +154,14 @@ export function Reports() {
               <Link to="/review#records" className="font-medium text-ink underline">Open Review</Link>
             </Card>
           )}
-          {!features.has("ft_journey") && (features.has("wfh_car_methods") || features.has("car_methods") || features.has("car_logbook")) && (
+          {/* #697 cut (hide_reports_wfh_car): the Dashboard holds the one WFH + car editor; the report points at it. */}
+          {!features.has("ft_journey") && features.has("hide_reports_wfh_car") && (features.has("wfh_car_methods") || features.has("car_methods") || features.has("car_logbook")) && (
+            <Card className="flex flex-wrap items-center justify-between gap-3 p-4 text-sm">
+              <span className="text-muted">Work-from-home hours and car kilometres are entered on your Dashboard, and feed the deductions above.</span>
+              <Link to="/#wfh-car" className="font-medium text-ink underline">Edit on the Dashboard</Link>
+            </Card>
+          )}
+          {!features.has("ft_journey") && !features.has("hide_reports_wfh_car") && (features.has("wfh_car_methods") || features.has("car_methods") || features.has("car_logbook")) && (
             <CollapsibleSection title="Your work-from-home & car claim (edit)" defaultOpen={false}>
               {features.has("wfh_car_methods") && <WorkMethodsCard fyNum={fy} />}
               {(features.has("car_methods") || features.has("car_logbook")) && <CarMethodsCard fyNum={fy} />}

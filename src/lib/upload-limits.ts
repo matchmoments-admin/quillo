@@ -30,6 +30,7 @@ export const UPLOAD_LIMITS = {
   receiptTotal: 40 * MB,
   document: 25 * MB,
   statement: 25 * MB,
+  statementCsv: 5 * MB, // a CSV this size is already ~60k rows; a personal year is a few thousand (#746)
   capital: 10 * MB,
   emailRaw: 40 * MB,
 } as const;
@@ -44,6 +45,7 @@ const LABEL: Record<UploadKind, string> = {
   receiptTotal: "set of receipt images",
   document: "document",
   statement: "statement",
+  statementCsv: "CSV statement",
   capital: "import file",
   emailRaw: "email",
 };
@@ -58,6 +60,8 @@ export function tooLargeMessage(kind: UploadKind): string {
   const hint =
     kind === "statement"
       ? " Split it into shorter date ranges, or download it as CSV instead of PDF."
+      : kind === "statementCsv"
+        ? " A year of personal banking is usually far smaller. Split it into shorter date ranges, one account per file."
       : kind === "receiptTotal"
         ? " Upload fewer images at once."
         : " Try a smaller photo or scan, or split the file.";

@@ -9,8 +9,6 @@ export interface Known {
 }
 
 export const KNOWN: Known[] = [
-  { match: /^first-timer\|error path: oversize/, issue: "#746", why: "statement upload has no size limit" },
-  { match: /^first-timer\|first run lands on Get set up/, issue: "#765", why: "the first-run gate treats the resolved Bedrock provider as 'set up', so it never fires" },
   { match: /^persona:james\|a duplicate entity role is refused/, issue: "PR #753", why: "a duplicate entity role is a UNIQUE-constraint 500" },
 ];
 

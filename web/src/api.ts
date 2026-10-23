@@ -284,7 +284,7 @@ export const api = {
   deleteLoanProperty: (id: string) => send<{ ok: boolean }>("DELETE", `/api/loans-properties/${id}`),
   syncQboAccounts: () => post<{ synced: number }>("/api/qbo/sync-accounts"),
   parseStatement: async (file: File, accountId: string): Promise<StatementParse> => {
-    assertUploadSize(file.size, "statement");
+    assertUploadSize(file.size, /\.pdf$/i.test(file.name) ? "statement" : "statementCsv"); // #746: CSV is rows, not pages
     const fd = new FormData();
     fd.append("file", file);
     fd.append("account_id", accountId);

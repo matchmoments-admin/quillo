@@ -395,7 +395,7 @@ function StatementUpload() {
   const upload = useMutation({
     mutationKey: ["parseStatement"],
     mutationFn: async (file: File) => {
-      assertUploadSize(file.size, "statement"); // before creating the account, so a refused file leaves nothing behind
+      assertUploadSize(file.size, /\.pdf$/i.test(file.name) ? "statement" : "statementCsv"); // before creating the account, so a refused file leaves nothing behind
       let accountId = chosen;
       if (accountId === "new") {
         const name = bankName.trim() || "Bank account";

@@ -7851,5 +7851,31 @@ console.log("entity role duplicate guard (#699)");
     /if \(await entityRoleExists\(env, uid, body\)\) return json\(\{ error: [^}]+\}, 409\);\s*\n\s*return routedEntityWrite\(env, stub, uid, "entity_role", "create"/.test(api699));
 }
 
+// ── #765: the first-run redirect keys on "set-up started", not on the (now always-Bedrock) provider ──
+{
+  console.log("\nfirst-run gate (#765)");
+  const { needsFirstRun } = await import("../web/src/lib/firstRun");
+  const base = { consentXborder: 0, entityCount: 0, uiState: null };
+  check("a brand-new tenant (Bedrock default, nothing set up) is sent to set-up", needsFirstRun(base));
+  check("a legacy tenant who consented is not redirected", !needsFirstRun({ ...base, consentXborder: 1 }));
+  check("a tenant with entities is not redirected", !needsFirstRun({ ...base, entityCount: 1 }));
+  check("redirect fires once: the setup_started marker stops it", !needsFirstRun({ ...base, uiState: JSON.stringify({ setup_started: true }) }));
+  check("ft_journey: a started set-up step is not redirected", !needsFirstRun({ ...base, setupStatus: "in_progress" }) && needsFirstRun({ ...base, setupStatus: "not_started" }));
+  check("garbage ui_state doesn't crash or suppress the redirect", needsFirstRun({ ...base, uiState: "{not json" }));
+  const app765 = fs.readFileSync(path.join(process.cwd(), "web/src/App.tsx"), "utf8");
+  check("FirstRunGate no longer treats the resolved provider as 'set up'", !/inference_provider === "bedrock"/.test(app765.slice(app765.indexOf("function FirstRunGate"), app765.indexOf("export function App()"))));
+}
+
+// ── #746: a CSV statement has its own, much smaller ceiling than a PDF ──
+{
+  console.log("\nCSV statement ceiling (#746)");
+  const srv746 = await import("../src/lib/upload-limits");
+  const web746 = await import("../web/src/lib/upload-limits");
+  check("CSV statement cap is 5 MB on both sides, under the PDF cap", srv746.UPLOAD_LIMITS.statementCsv === 5 * srv746.MB && web746.UPLOAD_LIMITS.statementCsv === srv746.UPLOAD_LIMITS.statementCsv && srv746.UPLOAD_LIMITS.statementCsv < srv746.UPLOAD_LIMITS.statement);
+  check("the refusal says what to do", /Split it into shorter date ranges/.test(srv746.tooLargeMessage("statementCsv")) && srv746.tooLargeMessage("statementCsv") === web746.tooLargeMessage("statementCsv"));
+  const api746 = fs.readFileSync(path.join(process.cwd(), "src/api.ts"), "utf8");
+  check("POST /api/statements refuses an oversize CSV", /format === "csv" && fileTooLarge\(bytes\.byteLength, "statementCsv"\)/.test(api746));
+}
+
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);
 process.exit(fail === 0 ? 0 : 1);

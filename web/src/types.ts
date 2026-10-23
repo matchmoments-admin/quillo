@@ -718,6 +718,20 @@ export interface SmsfFundPosition {
   ecpi_exempt_cents: number;
   fund_taxable_income_cents: number;
 }
+// #766: mirrors src/lib/ledger-totals.ts CompanyPosition — a company is a SEPARATE taxpayer, never in the
+// individual's taxable_position_cents.
+export interface CompanyPosition {
+  entity_id: string;
+  name: string | null;
+  base_rate_entity: number;
+  assessable_income_cents: number;
+  deductions_cents: number;
+  current_year_loss_cents: number;       // max(0, deductions − income) this FY
+  carried_forward_losses_cents: number;  // prior-year losses brought in
+  total_carry_forward_cents: number;     // carried_forward + this year's loss
+  shareholder_loan_balance_cents: number;// person→company funding (NOT Div 7A)
+  rd_eligible: boolean;
+}
 
 // CGT entry rows (#138 UI). Mirror the cgt_assets / cgt_events tables.
 export interface CgtAssetRow {
@@ -925,6 +939,9 @@ export interface Report {
   reportable_amounts?: { rfba_cents: number; resc_cents: number }; // RFBA/RESC off payslips — reportable, never assessable, never in the position
   trust?: TrustTotals;                  // #139 — assessable distributions added to taxable_position_cents
   smsf_funds?: SmsfFundPosition[];      // #140 — per-fund position (separate taxpayer)
+  company_positions?: CompanyPosition[]; // G4 / #766 — per-company position (separate taxpayer)
+  company_unattributed_cents?: number;   // company-bucket spend not assignable to one company (2+ companies)
+  company_unattributed_n?: number;
   franking_gross_up_cents?: number;     // 3a — franking credits grossed up INTO assessable income (s207-20)
   super_deduction?: { claimed_cents: number; contributed_cents: number; cap_cents: number; over_cap: boolean; ato_label?: "D12" }; // 3a — personal-deductible super (s290-150); D12 is the return label (D11 = foreign-pension UPP, never super)
   trading_stock?: { opening_cents: number; closing_cents: number; adjustment_cents: number; valuation_basis: string | null }; // audit wave 4 — s 70-35 adjustment (flag trading_stock)

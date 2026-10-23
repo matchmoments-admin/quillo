@@ -52,6 +52,7 @@ Legend — **engine**: backend computes it (✓ live behind flag); **UI**: a web
 | Occupation content (person-level) | ✓ | ✓ | ✓ | — | 3,7 |
 | Occupation scope on an activity | ✓ | ✗ | ◑ | — | 3,7 |
 | Trust distributions / streaming | ✓ | ✓ | ✓ | `trust_distributions` (ON) | 8 |
+| Company position (separate taxpayer: income, deductions, loss carry-forward, director loan) | ✓ | ✓ Settings entities + `entity_id` income/attribution | ✓ Reports "Company positions" card (#766; QA persona `james` now a hard check) | `attribution_engine` + `company_carryforward` (ON) | 8,9 |
 | SMSF / pension / ECPI | ✓ | ✓ entity kind + member balances (#171) | ✓ | `smsf_engine` (ON) | 10 |
 | Accountant schedule export (itemised CSV: per-txn lines, engine schedules, NOT-CLAIMED, substantiation) | ✓ | ✓ Reports/Filing download | ✓ | `accountant_schedule` | all |
 | Novated lease / salary packaging | ✗ | ◑ entity kind only | ◑ RFBA line + generic rule finding | `reportable_amounts` (ON) for the RFBA | 11 |
@@ -67,7 +68,7 @@ super contributions, activity-create). So end-to-end in the app today:
   `accountant_schedule`): per-transaction lines with substantiation, the engine schedules, and an
   EXPLICITLY-NOT-CLAIMED section with reasons — every section tied back to `buildReport` exactly
   (asserted per persona).
-- **Nearly:** P8 (company + trust ✓; Div 7A depth thin), P9 (ESS ✓; R&D / s40-880 blackhole costs are
+- **Nearly:** P8 (company + trust ✓, and the company position is now shown on Reports (#766); Div 7A depth thin), P9 (ESS ✓; R&D / s40-880 blackhole costs are
   engine-only — no auto-claim, and `rd_claims` has no writer, so there is no capture form. #126 was
   closed not-planned; a capture form is an open product decision for the grow path, see
   [`first-timer/persona-2-9-trace.md`](first-timer/persona-2-9-trace.md) D5).

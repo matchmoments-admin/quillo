@@ -14,8 +14,10 @@ export interface Persona {
   seed(api: Api): Promise<void>;
   /** What the position API must show once seeded. */
   expectReport(r: Report): string | null;
-  /** Text the persona should be able to see on a page (route → regex). */
+  /** Text the persona should be able to see on a page (route → regex). A miss is a recorded GAP. */
   expectUi: [string, RegExp][];
+  /** Text the persona MUST see (route → regex): a closed gap, so a miss FAILS the run. */
+  requireUi?: [string, RegExp][];
 }
 interface Report {
   total_income_cents: number;
@@ -94,8 +96,10 @@ export const PERSONAS: Persona[] = [
       await income(api, { income_type: "business", gross_cents: 25_000_000, entity_id: co.id });
     },
     expectReport: (r) => ((r.company_positions?.length ?? 0) > 0 ? null : "company income recorded but no company position"),
-    // The /reports gap is #766: company_positions are computed but no SPA code renders them.
-    expectUi: [["/reports", /James Holdings/], ["/settings", /James Holdings/]],
+    expectUi: [["/settings", /James Holdings/]],
+    // #766 closed the /reports gap: the company's own figure ($250,000 of company income) renders in the
+    // "Company positions" card, apart from the individual position.
+    requireUi: [["/reports", /Company positions[\s\S]*James Holdings[\s\S]*250,000/i]],
   },
 ];
 
@@ -130,6 +134,11 @@ export async function personaRun(ctx: Ctx, p: Persona) {
     const text = await page.locator("body").innerText();
     if (re.test(text)) ctx.rec.pass(suite, ctx.vp, `sees their data on ${route}`);
     else ctx.rec.gap(suite, ctx.vp, `sees their data on ${route}`, `no ${re} on ${new URL(page.url()).pathname}`);
+  }
+  for (const [route, re] of p.requireUi ?? []) {
+    await visit(page, probe, ctx.base, route, ctx.vp);
+    const text = await page.locator("body").innerText();
+    ctx.rec.expect(suite, ctx.vp, `sees their data on ${route}`, re.test(text), `no ${re} on ${new URL(page.url()).pathname}`);
   }
   await context.close();
 }

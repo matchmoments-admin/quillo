@@ -5633,7 +5633,7 @@ import { GROW_ROUTE, GROW_LEGACY_ROUTE } from "../web/src/lib/growRoutes";
 // ── #585 (spec A2): About you — answers → situation-period writes, periods → answers, Q4/Q5 job sync ──
 import {
   aboutYouWrites, answersFromPeriods, emptyAnswers, fyBoundsFor as ayFyBounds, addDays, residencyProblem, spouseProblem,
-  toggleTick, setOccupation, aboutScreens, NON_QUESTION_SCREENS, occupationToken, fillPlan, hasAnswersForFy, parseMyTaxCheck, type AboutAnswers,
+  toggleTick, setOccupation, jobUntickClearsOccupation, aboutScreens, NON_QUESTION_SCREENS, occupationToken, fillPlan, hasAnswersForFy, parseMyTaxCheck, type AboutAnswers,
 } from "../web/src/lib/aboutYou";
 import { MYTAX_CHECK, SETUP_INTRO, SETUP_PREFLIGHT, TAX_HELP } from "../web/src/content/getSetUp";
 import { normaliseOccupation as normOcc } from "../web/src/content/occupations";
@@ -5671,6 +5671,9 @@ console.log("about you (#585)");
   check("about Q4↔Q5: picking an occupation ticks 'a job'; unticking it means not working yet; ticking it again asks Q4 again",
     setOccupation(emptyAnswers(), "nurse").ticks.includes("job") && toggleTick(setOccupation(emptyAnswers(), "nurse"), "job").occupation === "none" &&
     toggleTick(A({ occupation: "none" }), "job").occupation === "" && !setOccupation(A({ ticks: ["job"] }), "none").ticks.includes("job"));
+  check("about Q5 (F11): unticking 'a job' over a typed occupation asks first; no occupation or 'not working yet' doesn't",
+    jobUntickClearsOccupation(setOccupation(emptyAnswers(), "nurse")) && !jobUntickClearsOccupation(A({ ticks: ["job"] })) &&
+    !jobUntickClearsOccupation(A({ occupation: "none" })) && !jobUntickClearsOccupation(emptyAnswers()));
   check("about Q4: free-text occupation becomes a pack-valid token; known labels resolve to the canonical token",
     occupationToken("Head chef", normOcc) === "head_chef" && occupationToken("Delivery rider / courier", normOcc) === "delivery_rider" && occupationToken("  ", normOcc) === "" && occupationToken("2nd job", normOcc) === "nd_job");
   check("about Q2: spouse dates outside the year are a problem (an open side defaults to the FY edge, so it would invert)",

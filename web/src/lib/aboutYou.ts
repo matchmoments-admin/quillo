@@ -217,6 +217,15 @@ export function toggleTick(a: AboutAnswers, key: TickKey): AboutAnswers {
   return { ...a, ticks, occupation };
 }
 
+/**
+ * Unticking 'a job' while Q4 holds a typed occupation would replace it with "not working yet" — the two
+ * questions are one state. That is a real change of answer the person can't see from Q5, so the page asks
+ * first (design audit F11). True ⇒ confirm before calling toggleTick(a, "job").
+ */
+export function jobUntickClearsOccupation(a: AboutAnswers): boolean {
+  return a.ticks.includes("job") && a.occupation !== "" && a.occupation !== "none";
+}
+
 export function setOccupation(a: AboutAnswers, occupation: string): AboutAnswers {
   const working = occupation !== "" && occupation !== "none";
   const ticks = a.ticks.filter((k) => k !== "job");

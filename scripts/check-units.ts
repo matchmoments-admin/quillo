@@ -7032,6 +7032,32 @@ import { lodgementTiming as timing639 } from "../src/lib/lodging-year";
 import { minimisationNotices } from "../src/lib/minimise";
 import { lifecycleSourceRecord, emptyTally } from "../src/lib/retention-schedule";
 import { parseSourceRecord as parseSrc639, buildSecurityDashboard as buildDash639 } from "../src/lib/security-dashboard";
+console.log("security sweep #694: internal error text never reaches the browser");
+{
+  const { publicErrorMessage, scrubApiErrorResponse, INTERNAL_ERROR_MESSAGE } = await import("../src/lib/security-headers");
+  check("public error: a D1 constraint error becomes the generic message",
+    publicErrorMessage("D1_ERROR: NOT NULL constraint failed: transactions.amount_cents: SQLITE_CONSTRAINT") === INTERNAL_ERROR_MESSAGE);
+  check("public error: 'no such column' / SQLITE_ codes become the generic message",
+    publicErrorMessage("no such column: foo") === INTERNAL_ERROR_MESSAGE && publicErrorMessage("SQLITE_BUSY: database is locked") === INTERNAL_ERROR_MESSAGE);
+  const bedrock = "Bedrock InvokeModel 403 AccessDeniedException: User: arn:aws:iam::123456789012:user/quillo-x is not authorized to perform: bedrock:InvokeModel on resource: arn:aws:bedrock:ap-southeast-2::foundation-model/m";
+  const scrubbed = publicErrorMessage(bedrock);
+  check("public error: AWS ARNs (and the account id inside them) are redacted, the error type kept",
+    !/123456789012|arn:aws:iam|foundation-model/.test(scrubbed) && /AccessDeniedException/.test(scrubbed));
+  check("public error: deliberate user-facing messages pass through unchanged",
+    ["invalid bucket: foo", "transaction not found", "refund target expense not found", "a refund can't link to itself"].every((m) => publicErrorMessage(m) === m));
+  check("public error: empty / missing ⇒ 'internal error'", publicErrorMessage(undefined) === "internal error" && publicErrorMessage("") === "internal error");
+  const r400 = await scrubApiErrorResponse(Response.json({ error: "D1_ERROR: UNIQUE constraint failed: properties.id", code: "x" }, { status: 400 }), "POST /api/x");
+  const b400 = (await r400.json()) as { error: string; code: string };
+  check("scrub: a 400 carrying a D1 error is rewritten, status and other fields kept", r400.status === 400 && b400.error === INTERNAL_ERROR_MESSAGE && b400.code === "x");
+  const okRes = Response.json({ error: "D1_ERROR looks odd but this is a 200" });
+  check("scrub: success responses are returned as-is (same object, never buffered)", (await scrubApiErrorResponse(okRes, "GET /api/y")) === okRes);
+  const plain = await scrubApiErrorResponse(Response.json({ error: "invalid bucket: foo" }, { status: 400 }), "POST /api/z");
+  check("scrub: a normal validation 400 is unchanged", ((await plain.json()) as { error: string }).error === "invalid bucket: foo");
+  const idx694 = fs.readFileSync(path.join(process.cwd(), "src/index.ts"), "utf8");
+  check("index: /api responses go through scrubApiErrorResponse and the 500 uses publicErrorMessage",
+    /await scrubApiErrorResponse\(await handleApi\(/.test(idx694) && /error: publicErrorMessage\(err\?\.message\)/.test(idx694));
+}
+
 console.log("A6 CDR data controls (#639)");
 {
   // (4) CDR never reaches non-production. Production keeps the PS8 rule: real data ⇒ AU residency.

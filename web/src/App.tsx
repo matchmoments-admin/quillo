@@ -16,6 +16,7 @@ import { FloatingChat } from "./components/chat/FloatingChat";
 import { useThemeSync } from "./lib/appearance";
 import { FtShell } from "./components/FtShell";
 import { PARTNER_NAV_LABEL } from "./lib/cuts";
+import { needsFirstRun } from "./lib/firstRun";
 
 // `hideFlag`: a #697 cut — the item is hidden while that flag is ON (OFF ⇒ shown exactly as before).
 type NavItem = { to: string; label: string; icon: IconName; end?: boolean; badge?: boolean; flag?: string; hideFlag?: string; admin?: boolean; partner?: boolean; expressHidden?: boolean };
@@ -101,14 +102,26 @@ const GROUPS: NavGroup[] = [
 function FirstRunGate({ to = "/onboarding" }: { to?: string }) {
   const navigate = useNavigate();
   const { pathname } = useLocation();
+  const { fy } = useActiveFy();
   const sit = useQuery({ queryKey: ["situation"], queryFn: () => api.situation() });
+  // Under ft_journey the set-up step's own status is the best signal (answers recorded ⇒ started).
+  const ft = to === "/setup";
+  const journey = useQuery({ queryKey: ["journey", fy], queryFn: () => api.journey(fy), enabled: ft });
   useEffect(() => {
     if (sit.isLoading || !sit.data || pathname === to) return;
+    if (ft && journey.isLoading) return;
     const p = sit.data;
-    const hasConsent = (p.profile?.consent_xborder ?? 0) === 1 || p.profile?.inference_provider === "bedrock";
-    const hasEntities = (p.entities?.length ?? 0) > 0;
-    if (!hasConsent && !hasEntities) navigate(to, { replace: true });
-  }, [sit.isLoading, sit.data, pathname, navigate, to]);
+    const go = needsFirstRun({
+      consentXborder: p.profile?.consent_xborder,
+      entityCount: p.entities?.length ?? 0,
+      uiState: p.profile?.ui_state,
+      setupStatus: ft ? journey.data?.steps.find((s) => s.key === "setup")?.status : undefined,
+    });
+    if (!go) return;
+    // Redirect ONCE: record it, so a user who leaves set-up isn't bounced back on every load.
+    void api.setUiState({ setup_started: true }).catch(() => {});
+    navigate(to, { replace: true });
+  }, [sit.isLoading, sit.data, ft, journey.isLoading, journey.data, pathname, navigate, to]);
   return null;
 }
 

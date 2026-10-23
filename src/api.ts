@@ -1108,6 +1108,8 @@ export async function handleApi(
       if (bytes.byteLength === 0) return json({ error: "empty file" }, 400);
       const filename = (entry as unknown as { name?: string }).name ?? "statement.csv";
       const format = filename.toLowerCase().endsWith(".pdf") ? "pdf" : "csv";
+      // A CSV is rows, not pages: hold it to a much smaller ceiling than a PDF (#746).
+      if (format === "csv" && fileTooLarge(bytes.byteLength, "statementCsv")) return tooLargeResponse("statementCsv");
       try {
         return json(await stub.parseStatement(uid, accEntry, filename, bytes, format));
       } catch (e) {

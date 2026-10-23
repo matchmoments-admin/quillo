@@ -46,7 +46,13 @@ const rec = new Recorder();
   const leaked = fs.readdirSync(dist).filter((f) => f.endsWith(".js") && /cWEuaW52YWxpZCQ/.test(fs.readFileSync(path.join(dist, f), "utf8")));
   rec.expect("build", "-", "production bundle carries no QA auth bypass", leaked.length === 0, leaked.join(", "));
 }
-execFileSync(path.join(ROOT, "web", "node_modules", ".bin", "vite"), ["build", "--mode", "qa", "--outDir", "dist-qa", "--emptyOutDir"], { cwd: path.join(ROOT, "web"), stdio: ["ignore", "ignore", "inherit"] });
+// The QA bundle must never carry a real Clerk key: a developer's web/.env would otherwise win and the page
+// would fetch clerk-js from Clerk (not hermetic). A process env var beats .env files in Vite.
+execFileSync(path.join(ROOT, "web", "node_modules", ".bin", "vite"), ["build", "--mode", "qa", "--outDir", "dist-qa", "--emptyOutDir"], {
+  cwd: path.join(ROOT, "web"),
+  stdio: ["ignore", "ignore", "inherit"],
+  env: { ...process.env, VITE_CLERK_PUBLISHABLE_KEY: "pk_test_cWEuaW52YWxpZCQ" },
+});
 const fx = writeFixtures();
 const browser = await chromium.launch();
 

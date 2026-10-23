@@ -188,6 +188,9 @@ export async function firstTimerJourney(ctx: Ctx, server: QaServer, answers: Set
   });
 
   await step(ctx, suite, "first run lands on Get set up", { flags: ["ft_journey"] }, async () => {
+    // The first-run redirect fires ONCE per tenant (#765, ui_state.setup_started). The empty route sweep
+    // runs on this same tenant first and uses it up, so clear the marker to test a true first visit.
+    await api("PATCH", "/api/ui-state", { patch: { setup_started: false } });
     const p = await visit(page, probe, ctx.base, "/", ctx.vp);
     if (p) return p;
     await page.waitForURL(/\/setup/, { timeout: 8000 }).catch(() => {});

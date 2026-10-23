@@ -7769,6 +7769,39 @@ console.log("A6 CDR data controls (#639)");
   check("no prototype code ships", !fs.existsSync(path.join(process.cwd(), "web/src/components/ExplainTip.prototype.tsx")) && !/tipVariant|ExplainTip\.prototype/.test(ui698));
 }
 
+// ── #699: the QA inference stub + SPA auth bypass are unreachable in production ─────────────
+console.log("QA stub (#699): dev-only, impossible in prod");
+{
+  const { llmStubEnabled, stubColumnMap, STUB_MODEL_ID, STUB_ANSWER } = await import("../src/lib/llm-stub");
+  const toml699 = fs.readFileSync(path.join(process.cwd(), "wrangler.toml"), "utf8");
+  const prodIssuer = /^CLERK_ISSUER\s*=\s*"([^"]*)"/m.exec(toml699)?.[1] ?? "";
+  check("wrangler.toml (what deploy ships) sets a CLERK_ISSUER", prodIssuer.length > 0);
+  check("wrangler.toml never sets QA_LLM_STUB or DEV_AUTH_BYPASS", !/^\s*(QA_LLM_STUB|DEV_AUTH_BYPASS)\s*=/m.test(toml699));
+  check("stub OFF with prod's CLERK_ISSUER even if both dev vars are set",
+    llmStubEnabled({ QA_LLM_STUB: "1", DEV_AUTH_BYPASS: "1", CLERK_ISSUER: prodIssuer }) === false);
+  check("stub OFF without DEV_AUTH_BYPASS", llmStubEnabled({ QA_LLM_STUB: "1" }) === false);
+  check("stub OFF for a truthy-but-not-'1' value", llmStubEnabled({ QA_LLM_STUB: "true", DEV_AUTH_BYPASS: "1" }) === false);
+  check("stub ON only for QA_LLM_STUB=1 + DEV_AUTH_BYPASS=1 + no issuer", llmStubEnabled({ QA_LLM_STUB: "1", DEV_AUTH_BYPASS: "1", CLERK_ISSUER: "" }) === true);
+  const prodLike = await getLLM({ QA_LLM_STUB: "1", DEV_AUTH_BYPASS: "1", CLERK_ISSUER: prodIssuer, ANTHROPIC_API_KEY: "x" } as unknown as Env, null);
+  check("getLLM in a prod-like env never returns the stub", prodLike.modelId !== STUB_MODEL_ID);
+  const stub = await getLLM({ QA_LLM_STUB: "1", DEV_AUTH_BYPASS: "1" } as unknown as Env, null);
+  check("getLLM under the QA env returns the stub", stub.modelId === STUB_MODEL_ID);
+  const ask = await stub.create({ model: stub.modelId, max_tokens: 10, tool_choice: { type: "tool", name: "give_answer" }, tools: [], messages: [{ role: "user", content: "hi" }] }, "ask");
+  const askInput = (ask.content[0] as { input?: { answer?: string } }).input;
+  check("stub answer is general-info framed, zero usage", askInput?.answer === STUB_ANSWER && /general information/i.test(STUB_ANSWER) && ask.usage.input_tokens === 0);
+  const westpac = fs.readFileSync(path.join(process.cwd(), "evals/statements/westpac-sample.csv"), "utf8").trim().split("\n").slice(0, 6)
+    .map((l, i) => `row ${i}: ${JSON.stringify(l.split(","))}`).join("\n");
+  const expected699 = JSON.parse(fs.readFileSync(path.join(process.cwd(), "evals/statements/westpac-sample.expected.json"), "utf8")).columnMap;
+  const cm = stubColumnMap(westpac);
+  check("stub column map reads the westpac fixture like the model does",
+    (["header_row", "date_col", "description_col", "debit_col", "credit_col", "balance_col", "sign_convention"] as const).every((k) => cm[k] === expected699[k]));
+  const main699 = fs.readFileSync(path.join(process.cwd(), "web/src/main.tsx"), "utf8");
+  check("SPA auth bypass is gated on a `--mode qa` build AND a loopback host",
+    /const QA_AUTH_BYPASS =\s*import\.meta\.env\.MODE === "qa" &&/.test(main699) && /\["localhost", "127\.0\.0\.1"\]\.includes\(window\.location\.hostname\)/.test(main699));
+  const webPkg699 = JSON.parse(fs.readFileSync(path.join(process.cwd(), "web/package.json"), "utf8")) as { scripts: Record<string, string> };
+  check("the production web build never uses --mode qa", !/--mode\s+qa/.test(webPkg699.scripts.build ?? ""));
+}
+
 // ── F14 (design audit #696): novated lease ⇒ the car card warns about claiming leased running costs again ──
 {
   console.log("\nNovated lease car warning (F14)");

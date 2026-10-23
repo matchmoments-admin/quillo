@@ -38,7 +38,9 @@
     "test:colors": "tsx scripts/check-no-raw-colors.ts",
     "test:theme": "tsx scripts/check-theme-contrast.ts",
     "sim:shell": "node scripts/sim-mobile-shell.mjs",
-    "sim:shell:control": "node scripts/sim-mobile-shell.mjs --legacy"
+    "sim:shell:control": "node scripts/sim-mobile-shell.mjs --legacy",
+    "qa:browser": "tsx scripts/qa/run.ts",
+    "qa:smoke-prod": "tsx scripts/qa/smoke-prod.ts"
   },
   "dependencies": {
     "@anthropic-ai/bedrock-sdk": "^0.29.2",

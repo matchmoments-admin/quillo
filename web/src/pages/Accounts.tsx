@@ -82,7 +82,8 @@ export function Accounts({ embedded = false }: { embedded?: boolean } = {}) {
       // a statements-only PAYG user's biggest claims aren't statement lines (G7).
       toast.success(`Imported ${r.statements} statement(s)`, {
         description: `${r.imported} transaction(s)${r.skipped ? `, ${r.skipped} already on file` : ""}.${errs}`,
-        action: { label: "See your claims", onClick: () => navigate("/dashboard") },
+        // #697 (hide_dashboard_claims): the claims list moved to Filing.
+        action: { label: "See your claims", onClick: () => navigate(has("hide_dashboard_claims") ? "/filing" : "/dashboard") },
       });
     },
     onError: (e) => toast.error("Bulk import failed", { description: (e as Error).message }),

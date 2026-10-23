@@ -9,6 +9,7 @@ import { WorkMethodsCard } from "../components/WorkMethodsCard";
 import { CarMethodsCard } from "../components/CarMethodsCard";
 import { SetupChecklist } from "../components/SetupChecklist";
 import { useFeatures } from "../lib/features";
+import { useHashScroll } from "../lib/useHashScroll";
 import { CHART_SERIES } from "../lib/theme";
 import type { ChecklistItem } from "../types";
 
@@ -19,6 +20,10 @@ export function Dashboard() {
   const { fy, label } = useActiveFy();
   const { has } = useFeatures();
   const { data, isLoading, error } = useQuery({ queryKey: ["dashboard", fy], queryFn: () => api.dashboard(fy) });
+  // #697 cut (hide_reports_wfh_car): these editors become the ONE WFH/car editor, so Reports and the checklist
+  // link to /#wfh-car. OFF ⇒ no anchor and no scroll (byte-identical). Above the early returns (#310).
+  const wfhCarCanonical = has("hide_reports_wfh_car");
+  useHashScroll(wfhCarCanonical);
   if (isLoading) return <Spinner />;
   if (error) return <Panel className="text-sm text-muted">Couldn't load: {(error as Error).message}</Panel>;
   const d = data!;
@@ -81,11 +86,21 @@ export function Dashboard() {
           figures feeding it can be adjusted where the report is read. Same component, so there is no
           code drift: editing it updates both. Kept intentionally; whether the calculators eventually
           move to a queue-invoked screen is a question map #432 owns, not a duplicate to quietly delete. */}
-      {has("wfh_car_methods") && <WorkMethodsCard fyNum={fy} />}
-      {(has("car_methods") || has("car_logbook")) && <CarMethodsCard fyNum={fy} />}
+      {wfhCarCanonical && (has("wfh_car_methods") || has("car_methods") || has("car_logbook")) ? (
+        <div id="wfh-car" className="scroll-mt-20 space-y-6">
+          {has("wfh_car_methods") && <WorkMethodsCard fyNum={fy} />}
+          {(has("car_methods") || has("car_logbook")) && <CarMethodsCard fyNum={fy} />}
+        </div>
+      ) : (
+        <>
+          {has("wfh_car_methods") && <WorkMethodsCard fyNum={fy} />}
+          {(has("car_methods") || has("car_logbook")) && <CarMethodsCard fyNum={fy} />}
+        </>
+      )}
 
       <ChecklistCard />
-      <ClaimsCard />
+      {/* #697 cut (hide_dashboard_claims): the one claims list lives on Filing, beside "Find my claims". */}
+      {!has("hide_dashboard_claims") && <ClaimsCard />}
 
       {/* Breakdowns. Slice 14: hide a breakdown entirely when it has no rows (a salary-only user
           shouldn't see an empty "By property" table). */}
@@ -228,7 +243,8 @@ function ChecklistCard() {
   );
 }
 
-function ClaimsCard() {
+/** Suggested claims: keep / dismiss / find evidence. Rendered here, or on Filing with hide_dashboard_claims ON. */
+export function ClaimsCard() {
   const qc = useQueryClient();
   const { data } = useQuery({ queryKey: ["claims"], queryFn: () => api.claims() });
   const [evidenceFor, setEvidenceFor] = useState<string | null>(null);

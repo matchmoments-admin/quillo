@@ -183,6 +183,11 @@ function AddCgtAssetForm({ onDone }: { onDone: () => void }) {
   // nothing ever captured them. cost_base_cents is now COMPUTED from these elements server-side, so the one
   // figure the engine reads can't disagree with the itemisation shown here.
   const costBaseDetail = has("capital_cost_base_detail");
+  // #697 cut (hide_cgt_property_kind): a rental's cost base belongs in the property's Capital details, so the
+  // add form stops offering "Property" (a second place that could disagree). Existing property rows, the import
+  // and the CGT engine path are untouched. OFF ⇒ every kind, as before.
+  const propertyKindHidden = has("hide_cgt_property_kind");
+  const kinds = propertyKindHidden ? CGT_KINDS.filter((k) => k !== "property") : CGT_KINDS;
   const [brokerage, setBrokerage] = useState("");
   const [incidental, setIncidental] = useState("");
   const [cbNote, setCbNote] = useState("");
@@ -228,8 +233,9 @@ function AddCgtAssetForm({ onDone }: { onDone: () => void }) {
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <label className="text-sm">Kind
           <select className="mt-1 w-full rounded-lg border border-line px-3 py-2 text-sm" value={kind} onChange={(e) => setKind(e.target.value)}>
-            {CGT_KINDS.map((k) => <option key={k} value={k}>{KIND_LABEL[k]}</option>)}
+            {kinds.map((k) => <option key={k} value={k}>{KIND_LABEL[k]}</option>)}
           </select>
+          {propertyKindHidden && <span className="mt-1 block text-xs text-muted">A rental property? Its cost base goes in the property's Capital details.</span>}
         </label>
         <label className="text-sm">Code / name<Input className="mt-1 w-full" value={code} onChange={(e) => setCode(e.target.value)} placeholder="CBA, BTC…" /></label>
         {holdingDetail && <label className="text-sm">Units held<Input className="mt-1 w-full" inputMode="decimal" value={units} onChange={(e) => setUnits(e.target.value)} placeholder="e.g. 120 or 0.5" /></label>}

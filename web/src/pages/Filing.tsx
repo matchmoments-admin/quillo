@@ -7,6 +7,7 @@ import { useActiveFy, useLodgedMark } from "../lib/activeFy";
 import { useFeatures } from "../lib/features";
 import { findingFixLink } from "../lib/findingLinks";
 import { Card, Spinner, money } from "../components/ui";
+import { ClaimsCard } from "./Dashboard";
 import type { PositionLine, ReadinessFinding, ClaimReview, ClaimReviewItem, OccupationRuleCandidate } from "../types";
 
 const fyLabelOf = (start: number) => `${start}-${String((start + 1) % 100).padStart(2, "0")}`;
@@ -118,6 +119,13 @@ export function Filing() {
       </p>
 
       {features.has("claim_review") && <FindMyClaims fy={fy} />}
+      {/* #697 cut (hide_dashboard_claims): the one suggested-claims list (keep / dismiss / find evidence) sits
+          here beside the sweep that creates it, instead of on the Dashboard. OFF ⇒ not rendered (as before). */}
+      {features.has("hide_dashboard_claims") && (
+        <div className="print:hidden">
+          <ClaimsCard />
+        </div>
+      )}
 
       {isLoading ? (
         <Spinner />
@@ -250,11 +258,19 @@ export function Filing() {
             )}
           </Card>
 
-          {/* Claims + checklist live on the Dashboard; link rather than duplicate the accept/dismiss controls. */}
-          <Card className="p-4 text-sm print:hidden">
-            Suggested deductions and your FY checklist are on the{" "}
-            <Link to="/dashboard" className="text-ink underline underline-offset-2">Dashboard</Link> — accept or dismiss them there, then re-check this page.
-          </Card>
+          {/* Claims + checklist live on the Dashboard; link rather than duplicate the accept/dismiss controls.
+              #697 (hide_dashboard_claims): the claims are above now, so only the checklist is sent there. */}
+          {features.has("hide_dashboard_claims") ? (
+            <Card className="p-4 text-sm print:hidden">
+              Your FY checklist is on the{" "}
+              <Link to="/dashboard" className="text-ink underline underline-offset-2">Dashboard</Link> — tick items off there, then re-check this page.
+            </Card>
+          ) : (
+            <Card className="p-4 text-sm print:hidden">
+              Suggested deductions and your FY checklist are on the{" "}
+              <Link to="/dashboard" className="text-ink underline underline-offset-2">Dashboard</Link> — accept or dismiss them there, then re-check this page.
+            </Card>
+          )}
 
           <p className="text-xs text-muted">{data.disclaimer}</p>
         </>

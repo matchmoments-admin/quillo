@@ -20,6 +20,7 @@ import { deductibleInterestCents } from "./loan-interest";
 import { classifyAttribution, splitAttribution } from "./attribution";
 import { exclusionReason } from "./readiness";
 import { featureOn } from "./features";
+import { reportableAmountsByEmployer } from "./reportable-amounts";
 import { parseCostBaseElements, costBaseBreakdownRows, holdingPosition } from "./capital";
 import { generateWfhDiary, WFH_WEEKDAY_NAMES } from "./work-use";
 import { buildXlsx, type XlsxCell, type XlsxSheet } from "./xlsx";
@@ -808,22 +809,9 @@ async function scheduleCore(
   if (featureOn(env, "reportable_amounts")) {
     // RFBA/RESC are ANNUAL figures — a per-period payslip repeats the same annual/YTD number, so one row
     // per EMPLOYER at the MAX seen, never a sum (mirrors buildReport's reportable_amounts exactly;
-    // incomeRows already carries the separate-taxpayer entityClause, so the scopes agree).
-    const raByEmployer = new Map<string, { rfba_cents: number; resc_cents: number }>();
-    for (const r of incomeRows) {
-      if (!r.detail_json) continue;
-      try {
-        const dj = JSON.parse(r.detail_json) as { employer?: string | null; rfba_cents?: number | null; resc_cents?: number | null };
-        const rfba = Math.max(0, Math.round(dj.rfba_cents ?? 0));
-        const resc = Math.max(0, Math.round(dj.resc_cents ?? 0));
-        if (rfba === 0 && resc === 0) continue;
-        const key = dj.employer ?? "(employer not stated)";
-        const cur2 = raByEmployer.get(key) ?? { rfba_cents: 0, resc_cents: 0 };
-        raByEmployer.set(key, { rfba_cents: Math.max(cur2.rfba_cents, rfba), resc_cents: Math.max(cur2.resc_cents, resc) });
-      } catch {
-        /* not a payslip/income-statement detail blob */
-      }
-    }
+    // incomeRows already carries the separate-taxpayer entityClause, so the scopes agree). The fold itself
+    // is the same function buildReport calls (reportable-amounts.ts).
+    const raByEmployer = reportableAmountsByEmployer(incomeRows.map((r) => r.detail_json));
     if (raByEmployer.size) {
       const raNotes = [
         "Reportable fringe benefits (e.g. a novated lease) and reportable employer super are NOT assessable income and are NOT in any figure above — but they count toward government income tests (e.g. Medicare levy surcharge, study-loan repayments, family assistance).",

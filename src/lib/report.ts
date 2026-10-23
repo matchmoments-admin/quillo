@@ -13,6 +13,7 @@ import { readRulePackOverride } from "./rulepack";
 import { computeWorkMethodDeductions, workUseRatesForFy, type WorkMethodDeductions, type WorkUseInputs, type WorkUseRates } from "./work-use";
 import { fyBounds, fyLabel as fyLabelOf } from "./ledger-totals";
 import { composePosition, type PositionSummands } from "./position";
+import { reportableAmountsByEmployer, reportableAmountsTotal } from "./reportable-amounts";
 import { resolveJurisdictionForUser, currentFyStartYearFor, fyStartYearForDate, baseCurrencyOf, AU_DESCRIPTOR, type JurisdictionDescriptor } from "./jurisdiction";
 
 // Tax period is jurisdiction-driven (jurisdiction.ts). The optional descriptor defaults to AU so every
@@ -934,27 +935,8 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
     )
       .bind(userId, `${startYear}-${String((startYear + 1) % 100).padStart(2, "0")}`, ...separateIds)
       .all<{ detail_json: string }>();
-    const byEmployer = new Map<string, { rfba: number; resc: number }>();
-    for (const r of detailRows.results ?? []) {
-      try {
-        const d = JSON.parse(r.detail_json) as { employer?: string | null; rfba_cents?: number | null; resc_cents?: number | null };
-        const rfba = Math.max(0, Math.round(d.rfba_cents ?? 0));
-        const resc = Math.max(0, Math.round(d.resc_cents ?? 0));
-        if (rfba === 0 && resc === 0) continue;
-        const key = d.employer ?? "(employer not stated)";
-        const cur = byEmployer.get(key) ?? { rfba: 0, resc: 0 };
-        byEmployer.set(key, { rfba: Math.max(cur.rfba, rfba), resc: Math.max(cur.resc, resc) });
-      } catch {
-        /* not JSON — not a payslip/income-statement detail blob */
-      }
-    }
-    let rfba = 0;
-    let resc = 0;
-    for (const v of byEmployer.values()) {
-      rfba += v.rfba;
-      resc += v.resc;
-    }
-    if (rfba > 0 || resc > 0) reportable_amounts = { rfba_cents: rfba, resc_cents: resc };
+    // The per-employer MAX fold is shared with the accountant pack (reportable-amounts.ts).
+    reportable_amounts = reportableAmountsTotal(reportableAmountsByEmployer((detailRows.results ?? []).map((r) => r.detail_json))) ?? undefined;
   }
   // Phase #140: per-SMSF fund position (separate taxpayer) — NOT added to the personal position. Its
   // income is already excluded from the personal headline above (separateIds). Flag-gated.

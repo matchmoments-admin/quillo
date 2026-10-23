@@ -124,8 +124,35 @@ export async function objectExists(bucket: Bucket, key: string): Promise<boolean
 }
 
 /**
- * The HTTP response for "show me the original": the decompressed bytes with their stored content type, or a
- * 410 carrying ORIGINAL_MISSING_MESSAGE when the row's object is gone. Never a 500 for a missing object.
+ * Content types an original may be served back AS (inline). The stored type comes from the uploader: the
+ * browser's `file.type`, a device's content-type header, or an email attachment's MIME part, so it is
+ * attacker-chosen. The SPA opens originals as a same-origin `blob:` URL, which keeps the response type, so a
+ * stored `text/html` / `image/svg+xml` file would run its script on the app origin (security sweep #694).
+ * Anything not on this list is served as `application/octet-stream`, which the browser downloads instead.
+ */
+const INLINE_SAFE_TYPES = new Set([
+  "application/pdf",
+  "image/jpeg",
+  "image/jpg",
+  "image/png",
+  "image/webp",
+  "image/gif",
+  "image/heic",
+  "image/heif",
+  "text/plain",
+  "text/csv",
+]);
+
+/** The content type to SERVE a stored original with: the stored one when it is inert, else octet-stream. */
+export function safeServedContentType(stored: string | null | undefined): string {
+  const base = (stored ?? "").split(";")[0]!.trim().toLowerCase();
+  return INLINE_SAFE_TYPES.has(base) ? (stored as string) : "application/octet-stream";
+}
+
+/**
+ * The HTTP response for "show me the original": the decompressed bytes with their stored content type (when
+ * inert; see safeServedContentType), or a 410 carrying ORIGINAL_MISSING_MESSAGE when the row's object is gone.
+ * Never a 500 for a missing object.
  */
 export async function originalResponse(bucket: Bucket, key: string): Promise<Response> {
   const obj = await bucket.get(key);
@@ -135,7 +162,7 @@ export async function originalResponse(bucket: Bucket, key: string): Promise<Res
       headers: { "content-type": "application/json" },
     });
   }
-  const headers = { "content-type": obj.httpMetadata?.contentType ?? "application/octet-stream", "cache-control": "private, max-age=60" };
+  const headers = { "content-type": safeServedContentType(obj.httpMetadata?.contentType), "cache-control": "private, max-age=60" };
   if (!isGzipMarked(obj)) return new Response(obj.body, { headers }); // stream (large PDFs never buffered)
   let bytes: Uint8Array = new Uint8Array(await obj.arrayBuffer());
   if (isGzip(bytes)) bytes = await gunzip(bytes);

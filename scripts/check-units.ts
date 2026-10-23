@@ -6661,6 +6661,23 @@ import bundledAuV1 from "../src/rulepacks/au-v1.json";
   }
 }
 import { runD1Backup, BACKUP_CRON, BACKUP_PREFIX, LAST_RESTORE_TEST } from "../src/lib/backups";
+console.log("security sweep #694: stored originals are never served as an active document type");
+{
+  const { safeServedContentType, originalResponse } = await import("../src/lib/r2-store");
+  check("served type: PDF / raster images / plain text keep their stored type",
+    ["application/pdf", "image/jpeg", "image/png", "image/webp", "image/heic", "text/plain; charset=utf-8", "text/csv"].every((t) => safeServedContentType(t) === t));
+  check("served type: HTML, SVG, XHTML, XML and JS are downgraded to octet-stream",
+    ["text/html", "TEXT/HTML; charset=utf-8", "image/svg+xml", "application/xhtml+xml", "text/xml", "application/javascript", "text/javascript"]
+      .every((t) => safeServedContentType(t) === "application/octet-stream"));
+  check("served type: missing / empty / junk ⇒ octet-stream", [null, undefined, "", "   ", "html"].every((t) => safeServedContentType(t) === "application/octet-stream"));
+  // End to end through originalResponse: an emailed/uploaded .html stored with its attacker-chosen type.
+  const bucket = { get: async () => ({ body: "<script>alert(1)</script>", httpMetadata: { contentType: "text/html" }, customMetadata: {} }) } as unknown as Parameters<typeof originalResponse>[0];
+  const res = await originalResponse(bucket, "u/documents/x");
+  check("originalResponse: a stored text/html object is served as application/octet-stream", res.headers.get("content-type") === "application/octet-stream");
+  const pdfBucket = { get: async () => ({ body: "%PDF-1.7", httpMetadata: { contentType: "application/pdf" }, customMetadata: {} }) } as unknown as Parameters<typeof originalResponse>[0];
+  check("originalResponse: a stored PDF is still served inline as application/pdf", (await originalResponse(pdfBucket, "u/documents/y")).headers.get("content-type") === "application/pdf");
+}
+
 console.log("daily D1 backup (#635)");
 {
   const kvStore = new Map<string, string>();

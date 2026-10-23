@@ -69,6 +69,7 @@ import { exclusionReason } from "../src/lib/readiness";
 import fs from "node:fs";
 import path from "node:path";
 import { composePosition, type PositionSummands } from "../src/lib/position";
+import { reportableAmountsByEmployer, reportableAmountsTotal, EMPLOYER_NOT_STATED } from "../src/lib/reportable-amounts";
 import type Anthropic from "@anthropic-ai/sdk";
 
 let pass = 0,
@@ -7296,6 +7297,31 @@ console.log("A6 CDR data controls (#639)");
   const reportSrc = fs.readFileSync(path.join(process.cwd(), "src/lib/report.ts"), "utf8");
   check("report.ts: both endpoints go through composePosition (no inline copy of the formula)",
     (reportSrc.match(/composePosition\(summands,/g) ?? []).length === 2 && !/net_capital_gain_cents \?\? 0\) \+ \(ess/.test(reportSrc));
+}
+
+// ── reportable-amounts.ts: the ONE RFBA/RESC per-employer fold (report payload + accountant pack) ──
+{
+  console.log("\nreportable amounts: per-employer MAX fold");
+  const slip = (employer: string | null, rfba: number | null, resc: number | null = null) => JSON.stringify({ employer, rfba_cents: rfba, resc_cents: resc });
+  const m = reportableAmountsByEmployer([
+    slip("Acme", 500_000, 20_000), slip("Acme", 500_000, 20_000), slip("Acme", 520_000, 10_000), // 3 payslips repeating the annual figure
+    slip("Beta", null, 30_000), slip("Beta", 0, 0),
+    null, "", "not json", "null", "5", JSON.stringify({ gross: 1 }), // skipped: null / empty / unparseable / unrelated
+    slip(null, 100_000), slip(null, 40_000, 7_000),                   // unnamed employers merge under one key
+    slip("Gamma", -50, 12.6),                                          // clamp ≥0, rounded
+  ]);
+  check("reportable: MAX per employer, never a sum of repeated payslips", m.get("Acme")?.rfba_cents === 520_000 && m.get("Acme")?.resc_cents === 20_000);
+  check("reportable: null and 0 treated the same", m.get("Beta")?.rfba_cents === 0 && m.get("Beta")?.resc_cents === 30_000);
+  check("reportable: unnamed employers merge under the fallback key", m.get(EMPLOYER_NOT_STATED)?.rfba_cents === 100_000 && m.get(EMPLOYER_NOT_STATED)?.resc_cents === 7_000);
+  check("reportable: negatives clamp to 0, fractions round", m.get("Gamma")?.rfba_cents === 0 && m.get("Gamma")?.resc_cents === 13);
+  check("reportable: first-seen employer order, unrelated blobs absent", [...m.keys()].join("|") === `Acme|Beta|${EMPLOYER_NOT_STATED}|Gamma`);
+  const t = reportableAmountsTotal(m);
+  check("reportable: total sums the per-employer MAXes", t?.rfba_cents === 620_000 && t?.resc_cents === 57_013);
+  check("reportable: nothing to report ⇒ null (report omits the field)", reportableAmountsTotal(reportableAmountsByEmployer([slip("X", 0, 0), null])) === null);
+  const rSrc = fs.readFileSync(path.join(process.cwd(), "src/lib/report.ts"), "utf8");
+  const aSrc = fs.readFileSync(path.join(process.cwd(), "src/lib/accountant-schedule.ts"), "utf8");
+  check("report.ts + accountant-schedule.ts both use the shared fold (no inline copy)",
+    /reportableAmountsByEmployer\(/.test(rSrc) && /reportableAmountsByEmployer\(/.test(aSrc) && !/rfba_cents \?\? 0\)\)/.test(rSrc + aSrc));
 }
 
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);

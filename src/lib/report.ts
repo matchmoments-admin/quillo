@@ -12,6 +12,7 @@ import auV1RulePack from "../rulepacks/au-v1.json";
 import { readRulePackOverride } from "./rulepack";
 import { computeWorkMethodDeductions, workUseRatesForFy, type WorkMethodDeductions, type WorkUseInputs, type WorkUseRates } from "./work-use";
 import { fyBounds, fyLabel as fyLabelOf } from "./ledger-totals";
+import { composePosition, type PositionSummands } from "./position";
 import { resolveJurisdictionForUser, currentFyStartYearFor, fyStartYearForDate, baseCurrencyOf, AU_DESCRIPTOR, type JurisdictionDescriptor } from "./jurisdiction";
 
 // Tax period is jurisdiction-driven (jurisdiction.ts). The optional descriptor defaults to AU so every
@@ -884,13 +885,22 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   // tracked and the confirmed-range positions below (it's an ATO-confirmed reduction, so it belongs in
   // the conservative floor too — like depreciation/super). Off ⇒ 0 ⇒ byte-identical for both.
   const carried_tax_loss_cents = featureOn(env, "carryforward_position") ? await carriedTaxLossCents(env, userId, startYear) : 0;
-  const preLossPosition =
-    income.gross_cents + (capital_gains?.net_capital_gain_cents ?? 0) + (ess?.assessable_discount_cents ?? 0) + (trust?.assessable_cents ?? 0) + (partnership?.assessable_cents ?? 0)
-    + (franking_gross_up_cents ?? 0) + (trading_stock?.adjustment_cents ?? 0) - total_deductions_cents - dep.total_cents - (super_deduction?.claimed_cents ?? 0);
+  // Every summand except the endpoint-specific deductions — shared by the tracked and confirmed ends so a
+  // new life situation can't land in one and not the other (position.ts owns the formula).
+  const summands: PositionSummands = {
+    income_cents: income.gross_cents,
+    net_capital_gain_cents: capital_gains?.net_capital_gain_cents ?? 0,
+    ess_assessable_cents: ess?.assessable_discount_cents ?? 0,
+    trust_assessable_cents: trust?.assessable_cents ?? 0,
+    partnership_assessable_cents: partnership?.assessable_cents ?? 0,
+    franking_gross_up_cents: franking_gross_up_cents ?? 0,
+    trading_stock_adjustment_cents: trading_stock?.adjustment_cents ?? 0,
+    depreciation_cents: dep.total_cents,
+    super_deduction_cents: super_deduction?.claimed_cents ?? 0,
+  };
   // The loss offsets ONLY positive income — it can't push the position below zero; the unused remainder
   // stays carried (not modelled further).
-  const tax_losses_applied_cents = Math.min(carried_tax_loss_cents, Math.max(0, preLossPosition));
-  const taxable_position_cents = preLossPosition - tax_losses_applied_cents;
+  const { tax_losses_applied_cents, position_cents: taxable_position_cents } = composePosition(summands, total_deductions_cents, carried_tax_loss_cents);
   // Phase #137: indicative BAS position — SEPARATE from income tax (never added to taxable_position).
   // Flag-gated; only surfaced when a business is GST-registered.
   let gst: GstPosition | undefined;
@@ -1001,12 +1011,9 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
     // The trading-stock adjustment is calculation-substantiated (like depreciation/super), not
     // discretionary tracked spend — it belongs in BOTH endpoints or the range inverts by the
     // adjustment (confirmed ≥ tracked invariant).
-    const confirmedPreLoss =
-      income.gross_cents + (capital_gains?.net_capital_gain_cents ?? 0) + (ess?.assessable_discount_cents ?? 0) + (trust?.assessable_cents ?? 0) + (partnership?.assessable_cents ?? 0)
-      + (franking_gross_up_cents ?? 0) + (trading_stock?.adjustment_cents ?? 0) - confirmed_deductions_cents - dep.total_cents - (super_deduction?.claimed_cents ?? 0);
     // B2: the carried tax loss is ATO-confirmed, so it reduces the confirmed floor too (capped at the
     // confirmed pre-loss position). Off ⇒ carried_tax_loss_cents=0 ⇒ byte-identical.
-    taxable_position_confirmed_cents = confirmedPreLoss - Math.min(carried_tax_loss_cents, Math.max(0, confirmedPreLoss));
+    taxable_position_confirmed_cents = composePosition(summands, confirmed_deductions_cents, carried_tax_loss_cents).position_cents;
   }
 
   // Emit base_currency ONLY when it's not the legacy 'AUD' default — an AU report (or flag OFF) stays

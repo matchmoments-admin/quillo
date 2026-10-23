@@ -2740,7 +2740,7 @@ console.log("Bedrock MVP readiness — per-locale region, retry, geo pricing, wi
       !/inference_provider \?\?/.test(aiCallSrc) &&
       /const provider = resolveProvider\(env, req\.profile\);/.test(aiCallSrc) &&
       (agentSrc.match(/const provider = resolveProvider\(this\.env, profile\);/g) ?? []).length +
-        (agentSrc.match(/aiCall\(this\.aiDeps,/g) ?? []).length >= 13);
+        (agentSrc.match(/aiCall[^(\n]*\(this\.aiDeps,/g) ?? []).length >= 13);
   check("with DEFAULT_INFERENCE_PROVIDER unset, an untouched tenant resolves to anthropic (so consent is required)",
     resolveProvider({} as unknown as Env, { inference_provider: null, inference_region: null }) === "anthropic");
   const apiSrc = fs.readFileSync(path.join(process.cwd(), "src", "api.ts"), "utf8");
@@ -7704,12 +7704,23 @@ console.log("A6 CDR data controls (#639)");
   // Split into class members; a member that builds an LLM client must also call withinBudget.
   // pollBatchJobs only collects results for batches whose submit was already budget-gated.
   const EXEMPT_721 = new Set(["pollBatchJobs"]);
-  const ungated = agentSrc721
-    .split(/\n  (?=(?:private |public )?(?:async )?[a-zA-Z_]+\s*\()/)
-    .filter((m) => m.includes("getLLM(") && !m.includes("withinBudget("))
-    .map((m) => m.replace(/^(?:private |public )?(?:async )?/, "").split("(")[0]!)
+  const members721 = agentSrc721.split(/\n  (?=(?:private |public )?(?:async )?[a-zA-Z_]+\s*\()/);
+  const name721 = (m: string) => m.replace(/^(?:private |public )?(?:async )?/, "").split("(")[0]!;
+  // aiCall runs the budget gate itself, except with budget: "caller", where the member must call withinBudget.
+  const ungated = members721
+    .filter((m) => (m.includes("getLLM(") || /budget: "caller"/.test(m)) && !m.includes("withinBudget("))
+    .map(name721)
     .filter((name) => !EXEMPT_721.has(name));
   check(`no model call skips the budget gate (ungated: ${ungated.join(", ") || "none"})`, ungated.length === 0);
+
+  // Source guard (same style as the RECEIPTS.get( ban): a model client in agent.ts comes from aiCall only, so
+  // the APP-8 consent gate cannot be forgotten. pollBatchJobs is exempt: it only collects the results of
+  // batches whose submit already passed aiCall's gates in categoriseStatement.
+  const rawLLM = members721.filter((m) => m.includes("getLLM(")).map(name721).filter((name) => !EXEMPT_721.has(name));
+  check(`no raw getLLM( in src/agent.ts outside aiCall (found in: ${rawLLM.join(", ") || "none"})`, rawLLM.length === 0);
+  check("no inline APP-8 consent check left in src/agent.ts (it lives in src/lib/ai-call.ts)", !/consent_xborder !== 1/.test(agentSrc721));
+  check("src/agent.ts never builds the inference audit row by hand (aiCall records it)", !/"xborder_inference"|"au_inference"/.test(agentSrc721));
+  check("every model-calling DO method goes through aiCall (13 call sites)", (agentSrc721.match(/aiCall[^(\n]*\(this\.aiDeps,/g) ?? []).length >= 13);
 }
 
 // ── #721: aiCall is the one gate in front of every model call (APP-8 consent + budget + inference audit) ──

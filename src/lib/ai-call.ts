@@ -65,11 +65,11 @@ export interface AiCallRequest<T> {
    * duplicate short-circuit that needs no model call. Returning `{ result }` ends the call there, with
    * no client built and no inference audited.
    */
-  afterGates?: () => Promise<{ result: T } | void>;
+  afterGates?: () => Promise<{ result: NoInfer<T> } | void>;
   /** Return this instead of throwing consent_required. */
-  onConsentRequired?: () => T | Promise<T>;
+  onConsentRequired?: () => NoInfer<T> | Promise<NoInfer<T>>;
   /** Return this instead of throwing ai_budget_reached. */
-  onBudgetReached?: () => T | Promise<T>;
+  onBudgetReached?: () => NoInfer<T> | Promise<NoInfer<T>>;
 }
 
 export interface AiCallContext {

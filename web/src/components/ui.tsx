@@ -1,5 +1,7 @@
 import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode } from "react";
-import { useState } from "react";
+import { useState, useSyncExternalStore } from "react";
+import * as Dialog from "@radix-ui/react-dialog";
+import * as Popover from "@radix-ui/react-popover";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import { ANY_GLOSSARY, type AnyGlossaryKey } from "../content/glossary";
 import { currencySymbol, currencyLocale } from "../lib/currency";
@@ -261,8 +263,7 @@ export function Meter({ frac, className = "bg-green" }: { frac: number; classNam
 }
 
 // ============================================================================
-// Educational "What's this?" tooltips (Radix — accessible on hover AND keyboard
-// focus). Copy is the single source of truth in content/glossary.ts. Provider is
+// Educational "What's this?" Explain tips (Radix — hover/focus preview, click/tap for the full card). Copy is the single source of truth in content/glossary.ts. Provider is
 // mounted once in App.tsx. Tooltips are an ENHANCEMENT: never the only path to
 // essential info, and every deductibility-adjacent tip defers to the year-end
 // review + a registered agent (the softener lives in the glossary copy).
@@ -273,56 +274,135 @@ function tipBody(k?: AnyGlossaryKey, tip?: ReactNode): ReactNode | null {
   return tip ?? (k ? ANY_GLOSSARY[k].short : null);
 }
 
-/** The floating bubble — shared by InfoTip and Term. Card surface, ink text, above everything.
- * `onDismiss` closes the controlled tip when the user taps/clicks outside it (the touch-dismiss path). */
-function TipBubble({ children, onDismiss }: { children: ReactNode; onDismiss?: () => void }) {
+// Explain tips (#698, map #692; owner decision 2026-10-24). One trigger, two presentations:
+//   - touch / narrow screens: a bottom SHEET (thumb-reachable, room for the why, links that work);
+//   - desktop: a hover preview bubble (the short copy) and, on click, an anchored CARD with
+//     What it is / Why it matters for your tax / the official page / related terms.
+// A tooltip can't hold links (it isn't interactive), so the card and sheet are Radix Popover/Dialog.
+const COARSE_QUERY = "(pointer: coarse), (max-width: 639px)";
+function subscribeCoarse(cb: () => void) {
+  if (typeof window === "undefined" || !window.matchMedia) return () => {};
+  const mq = window.matchMedia(COARSE_QUERY);
+  mq.addEventListener("change", cb);
+  return () => mq.removeEventListener("change", cb);
+}
+const getCoarse = () => typeof window !== "undefined" && !!window.matchMedia && window.matchMedia(COARSE_QUERY).matches;
+function useCoarsePointer(): boolean {
+  return useSyncExternalStore(subscribeCoarse, getCoarse, () => false);
+}
+
+const EXPLAIN_LABEL = "text-[10px] font-semibold uppercase tracking-wider text-muted";
+
+/** The shared Explain content: what / why / official page / related terms. `onHop` swaps the term in place. */
+function ExplainBody({ k, tip, onHop, sheet }: { k?: AnyGlossaryKey; tip?: ReactNode; onHop: (k: AnyGlossaryKey) => void; sheet?: boolean }) {
+  const e = k ? ANY_GLOSSARY[k] : undefined;
+  const related = (e?.related ?? []).filter((r): r is AnyGlossaryKey => r in ANY_GLOSSARY);
   return (
-    <Tooltip.Portal>
-      <Tooltip.Content
-        side="top"
-        align="center"
-        sideOffset={6}
-        collisionPadding={12}
-        onPointerDownOutside={onDismiss}
-        className="z-[70] max-w-[18rem] select-none rounded-xl border border-line bg-card px-3 py-2.5 text-xs leading-relaxed text-ink-2 shadow-card"
-      >
-        {children}
-        <Tooltip.Arrow className="fill-card" width={11} height={6} />
-      </Tooltip.Content>
-    </Tooltip.Portal>
+    <div className={sheet ? "text-sm leading-relaxed text-ink-2" : "text-xs leading-relaxed text-ink-2"}>
+      <div className={EXPLAIN_LABEL}>What it is</div>
+      <p className="mt-0.5">{tipBody(k, tip)}</p>
+      {e?.why && (
+        <>
+          <div className={`mt-2.5 ${EXPLAIN_LABEL}`}>Why it matters for your tax</div>
+          <p className="mt-0.5">{e.why}</p>
+        </>
+      )}
+      {e?.ato && (
+        <a href={e.ato.url} target="_blank" rel="noreferrer" className="mt-2.5 inline-block font-semibold text-forest underline underline-offset-2">
+          {e.ato.label} ↗
+        </a>
+      )}
+      {related.length > 0 && (
+        <div className="mt-3 flex flex-wrap gap-1.5">
+          {related.map((r) => (
+            <button key={r} type="button" onClick={() => onHop(r)} className="min-h-[28px] rounded-full border border-line px-2.5 text-[11px] text-ink-2 transition hover:border-ink/40 hover:text-ink">
+              {ANY_GLOSSARY[r].term}
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="mt-3 flex items-center justify-between gap-3 text-[11px] text-muted">
+        <span>General information only, not tax advice.</span>
+        {k && <a href={`/glossary#${k}`} className="underline underline-offset-2">Glossary</a>}
+      </div>
+    </div>
+  );
+}
+
+/** The trigger + presentation shared by InfoTip and Term. `renderTrigger` gets the props the trigger needs. */
+function Explain({ k, tip, label, trigger }: { k?: AnyGlossaryKey; tip?: ReactNode; label: string; trigger: (props: { onClick: (e: React.MouseEvent) => void; "aria-label"?: string }) => ReactNode }) {
+  const coarse = useCoarsePointer();
+  const [open, setOpen] = useState(false);
+  const [hover, setHover] = useState(false);
+  const [cur, setCur] = useState<AnyGlossaryKey | undefined>(k);
+  const show = (o: boolean) => { setOpen(o); if (o) { setCur(k); setHover(false); } };
+  // Many tips sit inside a <label>; preventDefault stops the trigger activating the label's control.
+  const onClick = (e: React.MouseEvent) => { e.preventDefault(); show(!open); };
+  const term = cur ? ANY_GLOSSARY[cur].term : "What's this?";
+  const body = <ExplainBody k={cur} tip={cur === k ? tip : undefined} onHop={setCur} sheet={coarse} />;
+
+  if (coarse) {
+    return (
+      <Dialog.Root open={open} onOpenChange={show}>
+        {/* Our onClick preventDefaults, so Radix's own toggle is skipped; Trigger still restores focus on close. */}
+        <Dialog.Trigger asChild>{trigger({ onClick, "aria-label": label })}</Dialog.Trigger>
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 z-[70] bg-ink/30" />
+          <Dialog.Content className="fixed inset-x-0 bottom-0 z-[71] max-h-[80vh] overflow-y-auto rounded-t-2xl border-t border-line bg-card px-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] pt-3 shadow-card">
+            <div aria-hidden className="mx-auto mb-3 h-1 w-10 rounded-full bg-line" />
+            <div className="flex items-start justify-between gap-3">
+              <Dialog.Title className="font-display text-xl text-forest">{term}</Dialog.Title>
+              <Dialog.Close className="min-h-[32px] rounded-full px-2 text-sm text-muted">Close</Dialog.Close>
+            </div>
+            <Dialog.Description className="sr-only">Explanation of {term}</Dialog.Description>
+            <div className="mt-2">{body}</div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
+    );
+  }
+  return (
+    <Popover.Root open={open} onOpenChange={show}>
+      <Tooltip.Root open={hover && !open} onOpenChange={setHover}>
+        <Popover.Trigger asChild>
+          <Tooltip.Trigger asChild>{trigger({ onClick, "aria-label": label })}</Tooltip.Trigger>
+        </Popover.Trigger>
+        <Tooltip.Portal>
+          <Tooltip.Content side="top" align="center" sideOffset={6} collisionPadding={12}
+            className="z-[70] max-w-[18rem] select-none rounded-xl border border-line bg-card px-3 py-2.5 text-xs leading-relaxed text-ink-2 shadow-card">
+            {tipBody(k, tip)}
+            <span className="mt-1 block text-[10px] text-muted">Click for more</span>
+            <Tooltip.Arrow className="fill-card" width={11} height={6} />
+          </Tooltip.Content>
+        </Tooltip.Portal>
+      </Tooltip.Root>
+      <Popover.Portal>
+        <Popover.Content side="bottom" align="start" sideOffset={6} collisionPadding={12}
+          className="z-[70] w-[20rem] max-w-[calc(100vw-24px)] rounded-xl border border-line bg-card p-3.5 shadow-card">
+          <div className="mb-1.5 font-semibold text-ink">{term}</div>
+          {body}
+          <Popover.Arrow className="fill-card" width={11} height={6} />
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover.Root>
   );
 }
 
 /**
- * A small ⓘ trigger that reveals an educational snippet on hover/focus. Use next to headings,
- * stat labels and table headers. Pass a glossary `k` (preferred — keeps copy central) or an
- * explicit `tip`. Renders nothing if neither resolves, so call sites stay clean.
+ * A small ⓘ trigger next to headings, stat labels and table headers. Pass a glossary `k` (preferred —
+ * keeps copy central) or an explicit `tip`. Renders nothing if neither resolves, so call sites stay clean.
+ * The hit area is 24px (WCAG 2.5.8) while the visible circle stays 15px.
  */
 export function InfoTip({ k, tip, label, className = "" }: { k?: AnyGlossaryKey; tip?: ReactNode; label?: string; className?: string }) {
-  const body = tipBody(k, tip);
-  // Controlled so the tip also opens on TAP: Radix Tooltip only reacts to hover/focus, neither of
-  // which fires on touch devices, so the ⓘ was dead on mobile/tablet. We keep hover/focus (via
-  // onOpenChange) for desktop and add an explicit tap toggle + outside-tap dismiss.
-  const [open, setOpen] = useState(false);
-  if (!body) return null;
+  if (!tipBody(k, tip)) return null;
   return (
-    <Tooltip.Root open={open} onOpenChange={setOpen}>
-      <Tooltip.Trigger asChild>
-        <button
-          type="button"
-          aria-label={label ?? (k ? `What's this? ${ANY_GLOSSARY[k].term}` : "What's this?")}
-          // Many tips sit inside a <label>; preventDefault stops the ⓘ from activating the label's
-          // control (e.g. toggling a checkbox). Open (don't toggle) on tap: Android focuses the button
-          // on tap which already opens it via onOpenChange, so a toggle would race-close it; dismissal is
-          // handled by outside-tap (TipBubble onDismiss) + Escape instead.
-          onClick={(e) => { e.preventDefault(); setOpen(true); }}
-          className={`inline-grid h-[15px] w-[15px] flex-none translate-y-[-1px] place-items-center rounded-full border border-ink-3/40 align-middle text-[10px] font-bold leading-none text-ink-3 transition hover:border-ink/50 hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-ink/25 ${className}`}
-        >
+    <Explain k={k} tip={tip} label={label ?? (k ? `What's this? ${ANY_GLOSSARY[k].term}` : "What's this?")}
+      trigger={(p) => (
+        <button type="button" {...p}
+          className={`relative inline-grid h-[15px] w-[15px] flex-none translate-y-[-1px] place-items-center rounded-full border border-ink-3/40 align-middle text-[10px] font-bold leading-none text-ink-3 transition before:absolute before:-inset-[5px] before:content-[''] hover:border-ink/50 hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-ink/25 ${className}`}>
           i
         </button>
-      </Tooltip.Trigger>
-      <TipBubble onDismiss={() => setOpen(false)}>{body}</TipBubble>
-    </Tooltip.Root>
+      )} />
   );
 }
 
@@ -332,24 +412,15 @@ export function InfoTip({ k, tip, label, className = "" }: { k?: AnyGlossaryKey;
  * text when no tip resolves, so it never breaks a sentence.
  */
 export function Term({ k, tip, children }: { k?: AnyGlossaryKey; tip?: ReactNode; children?: ReactNode }) {
-  const body = tipBody(k, tip);
   const text = children ?? (k ? ANY_GLOSSARY[k].term : null);
-  // Controlled for tap-to-open on touch (see InfoTip) — keeps hover/focus for desktop.
-  const [open, setOpen] = useState(false);
-  if (!body) return <>{text}</>;
+  if (!tipBody(k, tip)) return <>{text}</>;
   return (
-    <Tooltip.Root open={open} onOpenChange={setOpen}>
-      <Tooltip.Trigger asChild>
-        <button
-          type="button"
-          // Open (not toggle) on tap — see InfoTip; dismissal is outside-tap + Escape.
-          onClick={(e) => { e.preventDefault(); setOpen(true); }}
-          className="cursor-help rounded-sm underline decoration-dotted decoration-ink-3/60 underline-offset-2 transition hover:decoration-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-ink/25"
-        >
+    <Explain k={k} tip={tip} label={k ? `What's this? ${ANY_GLOSSARY[k].term}` : "What's this?"}
+      trigger={(p) => (
+        <button type="button" onClick={p.onClick}
+          className="cursor-help rounded-sm underline decoration-dotted decoration-ink-3/60 underline-offset-2 transition hover:decoration-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-ink/25">
           {text}
         </button>
-      </Tooltip.Trigger>
-      <TipBubble onDismiss={() => setOpen(false)}>{body}</TipBubble>
-    </Tooltip.Root>
+      )} />
   );
 }

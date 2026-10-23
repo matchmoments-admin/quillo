@@ -41,6 +41,8 @@ export function Glossary() {
               <Card className="p-4">
                 <div className="font-display text-lg tracking-wide text-forest">{e.term}</div>
                 <p className="mt-1 text-sm leading-relaxed text-ink-2">{e.short}</p>
+                {e.why && <p className="mt-2 text-sm leading-relaxed text-ink-2"><span className="font-semibold text-ink">Why it matters for your tax. </span>{e.why}</p>}
+                {e.ato && <a href={e.ato.url} target="_blank" rel="noreferrer" className="mt-2 inline-block text-sm font-semibold text-forest underline underline-offset-2">{e.ato.label} ↗</a>}
               </Card>
             </div>
           ))}

@@ -7532,5 +7532,24 @@ console.log("A6 CDR data controls (#639)");
   check(`no model call skips the budget gate (ungated: ${ungated.join(", ") || "none"})`, ungated.length === 0);
 }
 
+// ── #698: Explain tips — why/ato/related copy is general information, links are official, keys resolve ──
+{
+  console.log("\nExplain tips (#698)");
+  const { ANY_GLOSSARY: G698 } = await import("../web/src/content/glossary");
+  const { denylistHits: dh698 } = await import("../src/lib/copy-denylist");
+  const entries698 = Object.entries(G698) as [string, { term: string; short: string; why?: string; ato?: { label: string; url: string }; related?: readonly string[] }][];
+  const whyHits = entries698.filter(([, e]) => e.why && (dh698(e.why).length > 0 || /\$\s?\d|\byou should\b|\byou can claim\b|\brefund of\b/i.test(e.why))).map(([k]) => k);
+  check(`every 'why' passes the tax-advice denylist, no dollar figures or "you should" (offenders: ${whyHits.join(",") || "none"})`, whyHits.length === 0);
+  const badLinks = entries698.filter(([, e]) => e.ato && !/^https:\/\/www\.(ato|tpb)\.gov\.au\//.test(e.ato.url)).map(([k]) => k);
+  check(`every Explain link is an official ato.gov.au / tpb.gov.au page (offenders: ${badLinks.join(",") || "none"})`, badLinks.length === 0);
+  const badRel = entries698.flatMap(([k, e]) => (e.related ?? []).filter((r) => !(r in G698) || r === k).map((r) => `${k}→${r}`));
+  check(`every related term resolves and isn't self-referential (offenders: ${badRel.join(",") || "none"})`, badRel.length === 0);
+  check("the first-timer terms all carry a 'why'", ["prefill", "income_statement", "notice_of_assessment", "tax_residency", "temporary_resident", "working_holiday_maker", "help_debt", "golden_rules", "mytax", "registered_tax_agent", "record_keeping_exception"].every((k) => !!(G698 as Record<string, { why?: string }>)[k]?.why));
+  const ui698 = fs.readFileSync(path.join(process.cwd(), "web/src/components/ui.tsx"), "utf8");
+  check("Explain: sheet on coarse/narrow screens, popover card on desktop, 24px hit area on the ⓘ",
+    /COARSE_QUERY = "\(pointer: coarse\), \(max-width: 639px\)"/.test(ui698) && /<Dialog\.Root/.test(ui698) && /<Popover\.Root/.test(ui698) && /before:-inset-\[5px\]/.test(ui698));
+  check("no prototype code ships", !fs.existsSync(path.join(process.cwd(), "web/src/components/ExplainTip.prototype.tsx")) && !/tipVariant|ExplainTip\.prototype/.test(ui698));
+}
+
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);
 process.exit(fail === 0 ? 0 : 1);

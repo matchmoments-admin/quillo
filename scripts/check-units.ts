@@ -3992,6 +3992,32 @@ console.log("currency de-anchoring (toBaseCurrency / baseCurrencyOf / currencySy
   check("D12 label is constant even with zero contributions", sd.contributed_cents === 0 && sd.claimed_cents === 0 && sd.ato_label === "D12");
 }
 
+// ── #697 cuts 6, 8, 9: Reports' duplicate WFH/car editors, the Dashboard claims card, the CGT "property" kind ──
+{
+  console.log("\n#697 cuts: Reports WFH/car editors, Dashboard claims card, CGT property kind");
+  const prod697p = (/^FEATURES\s*=\s*"([^"]*)"/m.exec(fs.readFileSync("wrangler.toml", "utf8"))?.[1] ?? "").split(",").map((s) => s.trim());
+  const { FEATURE_KEYS: FK697p } = await import("../src/lib/features");
+  const w = (f: string) => fs.readFileSync(path.join(process.cwd(), "web", "src", f), "utf8");
+  const dash = w("pages/Dashboard.tsx"), reports = w("pages/Reports.tsx"), filing = w("pages/Filing.tsx"), cgt = w("components/income/CapitalEquity.tsx");
+  for (const k of ["hide_reports_wfh_car", "hide_dashboard_claims", "hide_cgt_property_kind"])
+    check(`${k}: registered and ON in wrangler.toml`, (FK697p as readonly string[]).includes(k) && prod697p.includes(k));
+  check("WFH/car: Reports renders the editors only when the cut is OFF, a pointer to /#wfh-car when ON",
+    /!features\.has\("ft_journey"\) && !features\.has\("hide_reports_wfh_car"\)[^\n]*\n\s*<CollapsibleSection/.test(reports) &&
+    /features\.has\("hide_reports_wfh_car"\)[\s\S]{0,400}<Link to="\/#wfh-car"/.test(reports));
+  check("WFH/car: the Dashboard keeps the canonical editors, anchored #wfh-car + hash-scrolled only when ON",
+    /<div id="wfh-car"[^>]*>\s*\{has\("wfh_car_methods"\) && <WorkMethodsCard/.test(dash) && /useHashScroll\(wfhCarCanonical\)/.test(dash) &&
+    /href: wfhOnDashboard \? "\/#wfh-car" : "\/reports"/.test(w("components/SetupChecklist.tsx")));
+  check("claims: the Dashboard drops ClaimsCard when ON; Filing renders it (only when ON) beside Find my claims",
+    /\{!has\("hide_dashboard_claims"\) && <ClaimsCard \/>\}/.test(dash) && /export function ClaimsCard\(\)/.test(dash) &&
+    /features\.has\("hide_dashboard_claims"\) && \(\s*<div className="print:hidden">\s*<ClaimsCard \/>/.test(filing) &&
+    /Suggested deductions and your FY checklist are on the/.test(filing));
+  check("CGT: the add form drops the 'property' kind when ON; the kind itself and its label stay (existing rows render)",
+    /propertyKindHidden \? CGT_KINDS\.filter\(\(k\) => k !== "property"\) : CGT_KINDS/.test(cgt) && /\{kinds\.map\(\(k\) => <option/.test(cgt) &&
+    /const CGT_KINDS = \[[^\]]*"property"/.test(cgt) && /property: "Property"/.test(cgt));
+  check("CGT: no persona golden reaches the add form (the property CGT path is exercised server-side)",
+    !/from "[^"]*CapitalEquity"/.test(fs.readFileSync(path.join(process.cwd(), "scripts", "check-personas.ts"), "utf8")));
+}
+
 // ── Repo hygiene: no LITERAL NUL bytes in tracked source ───────────────────────────────────────
 // A raw 0x00 makes grep, ripgrep and `git diff` classify the WHOLE file as binary and skip it
 // SILENTLY — no warning, no error, just no results. `src/lib/report.ts` (the money/tax-position

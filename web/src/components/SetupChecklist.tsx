@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
+import { useFeatures } from "../lib/features";
 import { api } from "../api";
 import { useActiveFy } from "../lib/activeFy";
 import { QueryError } from "./ui";
@@ -27,6 +28,7 @@ type Item = { id: string; title: string; why: string; href: string; done: boolea
 
 export function SetupChecklist() {
   const { fy } = useActiveFy();
+  const wfhOnDashboard = useFeatures().has("hide_reports_wfh_car");
   const [marks, setMarks] = useState<Marks>(readMarks);
 
   const sitQ = useQuery({ queryKey: ["situation"], queryFn: () => api.situation() });
@@ -102,7 +104,8 @@ export function SetupChecklist() {
           why: "Home-office running costs are the most-claimed PAYG deduction — capture the hours so they count.",
           // The WFH hours editor (WorkMethodsCard) lives on / and /reports; the checklist itself mounts
           // on /, so linking there was a no-op — send the user to the copy they can actually reach.
-          href: "/reports",
+          // #697 (hide_reports_wfh_car): Reports no longer carries the editor; it's the Dashboard's, anchored.
+          href: wfhOnDashboard ? "/#wfh-car" : "/reports",
           done: (wu?.wfh_hours ?? 0) > 0 || (wu?.wfh_days_per_week ?? 0) > 0,
           manual: false,
         } as Item]

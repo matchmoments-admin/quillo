@@ -31,6 +31,7 @@ import { GrowRoute } from "./pages/Grow";
 import { FtRedirect, HomeIndex, OldStepRedirect, SetupStep, ConnectStep, ReviewStep, LodgeStep, LodgePrintStep } from "./pages/Steps";
 import { setTokenGetter } from "./api";
 import { ActiveFyProvider } from "./lib/activeFy";
+import { RouteError } from "./components/RouteError";
 
 const PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY as string | undefined;
 
@@ -106,16 +107,20 @@ const router = createBrowserRouter([
     ),
   },
   // Public "Before you start" (#584, flag ft_journey) — outside <Protected />, beside sign-in. The
-  // loader probes the public endpoint; flag OFF ⇒ it throws the router's standard 404, the same
-  // screen an unknown path shows today.
+  // loader probes the public endpoint; flag OFF ⇒ it throws a 404, which RouteError renders as the
+  // same "Page not found" screen an unknown path shows.
   {
     path: "/start",
     loader: beforeYouStartLoader,
     element: <BeforeYouStart />,
+    errorElement: <RouteError />,
   },
   {
     path: "/",
     element: <Protected />,
+    // An unmatched URL (and any render crash below) lands here instead of React Router's developer
+    // screen (#696). The router routes a no-match 404 to this "/" route's errorElement.
+    errorElement: <RouteError />,
     children: [
       // ft_journey (#582): "/" is Home when ON; legacy pages wrapped in <FtRedirect> move to their
       // journey step when ON and render exactly as today when OFF (pages/Steps.tsx, lib/legacyRoutes.ts).

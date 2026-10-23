@@ -7324,5 +7324,20 @@ console.log("A6 CDR data controls (#639)");
     /reportableAmountsByEmployer\(/.test(rSrc) && /reportableAmountsByEmployer\(/.test(aSrc) && !/rfba_cents \?\? 0\)\)/.test(rSrc + aSrc));
 }
 
+// ── #721: every DO method that calls the model also runs the budget gate ──
+{
+  console.log("\nbudget gate on every model call (#721)");
+  const agentSrc721 = fs.readFileSync(path.join(process.cwd(), "src/agent.ts"), "utf8");
+  // Split into class members; a member that builds an LLM client must also call withinBudget.
+  // pollBatchJobs only collects results for batches whose submit was already budget-gated.
+  const EXEMPT_721 = new Set(["pollBatchJobs"]);
+  const ungated = agentSrc721
+    .split(/\n  (?=(?:private |public )?(?:async )?[a-zA-Z_]+\s*\()/)
+    .filter((m) => m.includes("getLLM(") && !m.includes("withinBudget("))
+    .map((m) => m.replace(/^(?:private |public )?(?:async )?/, "").split("(")[0]!)
+    .filter((name) => !EXEMPT_721.has(name));
+  check(`no model call skips the budget gate (ungated: ${ungated.join(", ") || "none"})`, ungated.length === 0);
+}
+
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);
 process.exit(fail === 0 ? 0 : 1);

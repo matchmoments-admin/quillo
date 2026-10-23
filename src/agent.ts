@@ -4311,6 +4311,8 @@ export class TaxAgent extends Agent<Env> {
     const profile = await this.requireProfile(userId);
     const provider = resolveProvider(this.env, profile);
     if (provider === "anthropic" && profile.consent_xborder !== 1) throw new Error("consent_required");
+    // Cost caps + wallet gate, like every other model call (it was missing here: #721).
+    if (!(await this.withinBudget(userId, null))) throw new Error("ai_budget_reached");
     const llm = await getLLM(this.env, profile, { userId });
     await this.auditXborderInference(userId, provider, "import_depreciation_schedule", llm.modelId);
     const doc = await this.env.DB.prepare(`SELECT property_id FROM documents WHERE id = ? AND user_id = ?`)

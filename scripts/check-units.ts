@@ -7511,10 +7511,69 @@ console.log("A6 CDR data controls (#639)");
   const t = reportableAmountsTotal(m);
   check("reportable: total sums the per-employer MAXes", t?.rfba_cents === 620_000 && t?.resc_cents === 57_013);
   check("reportable: nothing to report ⇒ null (report omits the field)", reportableAmountsTotal(reportableAmountsByEmployer([slip("X", 0, 0), null])) === null);
-  const rSrc = fs.readFileSync(path.join(process.cwd(), "src/lib/report.ts"), "utf8");
-  const aSrc = fs.readFileSync(path.join(process.cwd(), "src/lib/accountant-schedule.ts"), "utf8");
-  check("report.ts + accountant-schedule.ts both use the shared fold (no inline copy)",
-    /reportableAmountsByEmployer\(/.test(rSrc) && /reportableAmountsByEmployer\(/.test(aSrc) && !/rfba_cents \?\? 0\)\)/.test(rSrc + aSrc));
+  const raModSrc = fs.readFileSync(path.join(process.cwd(), "src/lib/situations/reportable-amounts.ts"), "utf8");
+  check("the reportable-amounts module uses the shared fold (no inline copy)",
+    /reportableAmountsByEmployer\(/.test(raModSrc) && /reportableAmountsTotal\(/.test(raModSrc) && !/rfba_cents \?\? 0\)\)/.test(raModSrc));
+}
+
+// ── ADR-0004 step 1: the SituationModule registry is the ONLY source of situation fields ──
+{
+  console.log("\nsituation registry (ADR-0004)");
+  const { SITUATIONS, loadSituations, situationFields, situationSections } = await import("../src/lib/situations");
+  const raMods = SITUATIONS.filter((m) => m.key === "reportable_amounts");
+  check("registry: exactly one module owns reportable_amounts, information only (no contributes)",
+    raMods.length === 1 && raMods[0].flag === "reportable_amounts" && raMods[0].contributes === undefined && typeof raMods[0].schedule === "function");
+  check("registry: every module owns a distinct Report field", new Set(SITUATIONS.map((m) => m.key)).size === SITUATIONS.length);
+
+  // A stub D1 that records every query and returns two payslip blobs.
+  const queries: string[] = [];
+  const stubDb = {
+    prepare: (sql: string) => {
+      queries.push(sql);
+      const stmt = {
+        bind: (..._a: unknown[]) => stmt,
+        all: async () => ({ results: [
+          { detail_json: JSON.stringify({ employer: "Acme", rfba_cents: 850_000, resc_cents: 120_000 }) },
+          { detail_json: JSON.stringify({ employer: "Acme", rfba_cents: 850_000, resc_cents: 120_000 }) },
+        ] }),
+      };
+      return stmt;
+    },
+  };
+  const ctxFor = (features: string) => ({
+    env: { DB: stubDb, FEATURES: features } as unknown as import("../src/env").Env,
+    scope: { userId: "u", personId: null }, startYear: 2025, fy: "2025-26", bounds: { start: "2025-07-01", end: "2026-06-30" },
+    jurisdiction: AU_DESCRIPTOR, rulePack: {} as RulePackThresholds, separateIds: [] as string[], currency: "AUD",
+  });
+  const offCtx = ctxFor("");
+  const offLoaded = await loadSituations(offCtx);
+  const offFields = situationFields(offLoaded);
+  check("registry: a disabled module is not loaded (no query) and its field is ABSENT (not undefined-valued)",
+    queries.length === 0 && offLoaded.length === 0 && !("reportable_amounts" in offFields) && Object.keys(offFields).length === 0);
+  check("registry: a disabled module contributes no pack section", situationSections(offLoaded, offCtx).length === 0);
+  const onCtx = ctxFor("reportable_amounts");
+  const onLoaded = await loadSituations(onCtx);
+  const onFields = situationFields(onLoaded);
+  check("registry: enabled ⇒ the field is the per-employer MAX total (repeated payslip not summed)",
+    queries.length === 1 && onFields.reportable_amounts?.rfba_cents === 850_000 && onFields.reportable_amounts?.resc_cents === 120_000);
+  const onSecs = situationSections(onLoaded, onCtx);
+  check("registry: enabled ⇒ one informational pack section, one row per employer, no tie_back",
+    onSecs.length === 1 && onSecs[0].key === "reportable_amounts" && onSecs[0].rows.length === 1 && onSecs[0].tie_back === undefined && onSecs[0].subtotal_cents === undefined);
+  // A generic stub module: flag OFF ⇒ load is never called; load ⇒ null ⇒ no key.
+  const boom = { key: "gst" as const, flag: "gst_bas" as const, load: async () => { throw new Error("loaded while OFF"); }, field: (r: never) => r };
+  const empty = { key: "car_logbook" as const, flag: "car_logbook" as const, load: async () => null, field: (r: never) => r };
+  const stubLoaded = await loadSituations(ctxFor("car_logbook"), [boom, empty]);
+  check("registry: flag OFF ⇒ load never runs; load ⇒ null ⇒ field absent", stubLoaded.length === 0 && Object.keys(situationFields(stubLoaded)).length === 0);
+
+  // Source guards: reportable amounts can't creep back inline into buildReport or the pack.
+  const rSrc = stripComments(fs.readFileSync(path.join(process.cwd(), "src/lib/report.ts"), "utf8"));
+  const aSrc = stripComments(fs.readFileSync(path.join(process.cwd(), "src/lib/accountant-schedule.ts"), "utf8"));
+  check("source guard: report.ts never computes reportable amounts inline (no flag check, fold, query or field assignment)",
+    !/featureOn\(env, "reportable_amounts"\)/.test(rSrc) && !/reportableAmounts(ByEmployer|Total)/.test(rSrc) && !/from "\.\/reportable-amounts"/.test(rSrc)
+    && !/rfba_cents/.test(rSrc.replace(/reportable_amounts\?: \{ rfba_cents: number; resc_cents: number \};/, ""))
+    && !/^\s*reportable_amounts\s*[,:=]/m.test(rSrc) && /\.\.\.situations,/.test(rSrc) && /loadSituations\(/.test(rSrc));
+  check("source guard: the accountant pack takes reportable amounts from the registry only",
+    !/featureOn\(env, "reportable_amounts"\)/.test(aSrc) && !/reportableAmounts(ByEmployer|Total)/.test(aSrc) && !/key: "reportable_amounts"/.test(aSrc) && /situationSections\(/.test(aSrc));
 }
 
 // ── #721: every DO method that calls the model also runs the budget gate ──

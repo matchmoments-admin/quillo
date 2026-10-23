@@ -5,8 +5,9 @@
  * They are REPORTABLE, not assessable: never in the position, never summed into income. They matter
  * because government income tests (MLS, study-loan repayments, Div 293, family assistance) add them.
  *
- * The fold is the one place that knows the rules; buildReport (report.ts) and the accountant pack
- * (accountant-schedule.ts) both call it, so the payload and the pack can never disagree:
+ * The fold is the one place that knows the rules. Its only caller is the situation module
+ * (situations/reportable-amounts.ts, ADR-0004), which feeds both the report payload and the accountant
+ * pack, so the two can never disagree:
  *   - RFBA/RESC are ANNUAL figures. A per-period payslip repeats the same annual/YTD number, so take
  *     the MAX per employer and never a sum (12 monthly payslips are not 12× the RFBA).
  *   - Both write paths land on the same keys (payslip: rfba_cents may be null; income statement:

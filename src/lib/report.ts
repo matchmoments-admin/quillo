@@ -13,7 +13,7 @@ import { readRulePackOverride } from "./rulepack";
 import { computeWorkMethodDeductions, workUseRatesForFy, type WorkMethodDeductions, type WorkUseInputs, type WorkUseRates } from "./work-use";
 import { fyBounds, fyLabel as fyLabelOf } from "./ledger-totals";
 import { composePosition, type PositionSummands } from "./position";
-import { reportableAmountsByEmployer, reportableAmountsTotal } from "./reportable-amounts";
+import { loadSituations, situationFields, type ReportContext } from "./situations";
 import { resolveJurisdictionForUser, currentFyStartYearFor, fyStartYearForDate, baseCurrencyOf, AU_DESCRIPTOR, type JurisdictionDescriptor } from "./jurisdiction";
 
 // Tax period is jurisdiction-driven (jurisdiction.ts). The optional descriptor defaults to AU so every
@@ -190,7 +190,8 @@ export interface Report {
   // rfba_cents / resc_cents). Reportable, NOT assessable — NEVER in taxable_position. They feed income
   // tests (Medicare levy surcharge, Div 293, study-loan repayment income, family assistance) that this
   // app never computes, so the figures must reach the agent instead of dying in detail_json. Present
-  // only when the reportable_amounts flag is on AND a non-zero amount exists for the FY.
+  // only when the reportable_amounts flag is on AND a non-zero amount exists for the FY. Owned by the
+  // situation registry (src/lib/situations/reportable-amounts.ts, ADR-0004) — never assigned in this file.
   reportable_amounts?: { rfba_cents: number; resc_cents: number };
   // Phase #139: assessable trust distributions to this person (character retained). ADDED to
   // taxable_position_cents. Present only when the trust_distributions flag is on AND there are rows.
@@ -918,26 +919,15 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   if (featureOn(env, "car_logbook")) {
     car_logbook = (await carLogbookPosition(env, userId, startYear, work_method?.car_cents ?? 0)) ?? undefined;
   }
-  // reportable_amounts: RFBA/RESC out of income.detail_json for the FY. Both write paths land on the
-  // same keys (payslip: rfba_cents may be null; income statement: rfb_cents renamed to rfba_cents,
-  // 0-defaulted, resc_cents alongside) — treat null and 0 identically. detail_json is free-form
-  // (AMMA components, employer meta), so parse defensively and ignore rows that aren't ours.
-  // RFBA/RESC are ANNUAL figures: a per-period payslip prints the same annual/YTD number every time, so
-  // take the MAX per employer and never a sum — 12 monthly payslips are not 12× the RFBA. (Two employers
-  // that both omitted a name merge under the fallback key; under-stating beats N×-overstating for a
-  // defer-to-agent figure.) Separate-taxpayer entity rows are excluded, matching the headline's own
-  // exclusion and the accountant pack's entityClause, so payload and pack can never disagree.
-  let reportable_amounts: { rfba_cents: number; resc_cents: number } | undefined;
-  if (featureOn(env, "reportable_amounts")) {
-    const raEntityClause = separateIds.length ? ` AND (entity_id IS NULL OR entity_id NOT IN (${separateIds.map(() => "?").join(",")}))` : "";
-    const detailRows = await env.DB.prepare(
-      `SELECT detail_json FROM income WHERE user_id = ? AND fy = ? AND detail_json IS NOT NULL${raEntityClause}`,
-    )
-      .bind(userId, `${startYear}-${String((startYear + 1) % 100).padStart(2, "0")}`, ...separateIds)
-      .all<{ detail_json: string }>();
-    // The per-employer MAX fold is shared with the accountant pack (reportable-amounts.ts).
-    reportable_amounts = reportableAmountsTotal(reportableAmountsByEmployer((detailRows.results ?? []).map((r) => r.detail_json))) ?? undefined;
-  }
+  // ADR-0004: life situations on the SituationModule registry (src/lib/situations/). Each enabled module
+  // loads over ONE context and owns ONE Report field; a flag-OFF module is not loaded (no query) and its
+  // field is absent ⇒ byte-identical. Information-only modules (reportable amounts) never reach the
+  // position; a contributing module will feed composePosition's summands, never an inline sum here.
+  const situationCtx: ReportContext = {
+    env, scope: { userId, personId: null }, startYear, fy: fyLabelOf(startYear), bounds: { start, end },
+    jurisdiction, rulePack, separateIds, currency: baseCurrencyOf(env, jurisdiction),
+  };
+  const situations = situationFields(await loadSituations(situationCtx));
   // Phase #140: per-SMSF fund position (separate taxpayer) — NOT added to the personal position. Its
   // income is already excluded from the personal headline above (separateIds). Flag-gated.
   let smsf_funds: SmsfFundPosition[] | undefined;
@@ -1043,7 +1033,8 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
     gst,
     payg_instalments_cents,
     car_logbook,
-    reportable_amounts,
+    // The registry's fields, spread where reportable_amounts always sat so the payload's key order holds.
+    ...situations,
     trust,
     partnership,
     smsf_funds,

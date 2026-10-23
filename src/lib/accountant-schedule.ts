@@ -20,7 +20,7 @@ import { deductibleInterestCents } from "./loan-interest";
 import { classifyAttribution, splitAttribution } from "./attribution";
 import { exclusionReason } from "./readiness";
 import { featureOn } from "./features";
-import { reportableAmountsByEmployer } from "./reportable-amounts";
+import { SITUATIONS, loadSituations, situationSections, type LoadedSituation, type ReportContext } from "./situations";
 import { parseCostBaseElements, costBaseBreakdownRows, holdingPosition } from "./capital";
 import { generateWfhDiary, WFH_WEEKDAY_NAMES } from "./work-use";
 import { buildXlsx, type XlsxCell, type XlsxSheet } from "./xlsx";
@@ -568,8 +568,20 @@ async function scheduleCore(
         ).bind(userId, fy).all(),
       )
     : Promise.resolve([]);
-  const [items, incomeRows, depRows, depDenied, attrRows, cgtEvents, essGrants, trustRows, basRows, paygRows, holdingRows, holdingDisposals] =
-    await Promise.all([itemsP, incomeRowsP, depRowsP, depDeniedP, attrRowsP, cgtEventsP, essGrantsP, trustRowsP, basRowsP, paygRowsP, holdingsP, holdingDisposalsP]);
+  // ADR-0004: the registry's pack sections. Only modules that are ON and have a `schedule` load (their
+  // reader runs over the SAME context buildReport used); none enabled ⇒ no read at all ⇒ byte-identical.
+  const scheduleModules = SITUATIONS.filter((m) => m.schedule && featureOn(env, m.flag));
+  const situationsP: Promise<{ ctx: ReportContext; loaded: LoadedSituation[] } | null> = detailOnly || !scheduleModules.length
+    ? Promise.resolve(null)
+    : (async () => {
+        const ctx: ReportContext = {
+          env, scope: { userId, personId: null }, startYear, fy, bounds: { start, end },
+          jurisdiction, rulePack: await resolveRulePack(env, userId, jurisdiction), separateIds, currency: cur,
+        };
+        return { ctx, loaded: await loadSituations(ctx, scheduleModules) };
+      })();
+  const [items, incomeRows, depRows, depDenied, attrRows, cgtEvents, essGrants, trustRows, basRows, paygRows, holdingRows, holdingDisposals, situationsLoaded] =
+    await Promise.all([itemsP, incomeRowsP, depRowsP, depDeniedP, attrRowsP, cgtEventsP, essGrantsP, trustRowsP, basRowsP, paygRowsP, holdingsP, holdingDisposalsP, situationsP]);
   const disposalsByAsset = new Map<string, { units_disposed: number | null; cost_base_used_cents: number | null }[]>();
   for (const e of holdingDisposals) {
     const list = disposalsByAsset.get(e.cgt_asset_id) ?? [];
@@ -803,28 +815,13 @@ async function scheduleCore(
     });
   }
 
-  // 3b (reportable_amounts): RFBA / RESC captured off payslips and income statements. Reportable, NOT
-  // assessable — never in any total, and deliberately NO tie_back (they contribute to no report figure;
-  // the C3 informational precedent). Surfaced because they feed income tests this app never computes.
-  if (featureOn(env, "reportable_amounts")) {
-    // RFBA/RESC are ANNUAL figures — a per-period payslip repeats the same annual/YTD number, so one row
-    // per EMPLOYER at the MAX seen, never a sum (mirrors buildReport's reportable_amounts exactly;
-    // incomeRows already carries the separate-taxpayer entityClause, so the scopes agree). The fold itself
-    // is the same function buildReport calls (reportable-amounts.ts).
-    const raByEmployer = reportableAmountsByEmployer(incomeRows.map((r) => r.detail_json));
-    if (raByEmployer.size) {
-      const raNotes = [
-        "Reportable fringe benefits (e.g. a novated lease) and reportable employer super are NOT assessable income and are NOT in any figure above — but they count toward government income tests (e.g. Medicare levy surcharge, study-loan repayments, family assistance).",
-        "One row per employer at the highest amount reported — a per-period payslip repeats the same annual figure.",
-        "General information only — confirm the treatment with a registered tax agent.",
-      ];
-      sections.push({
-        key: "reportable_amounts",
-        title: "Reportable amounts (informational — not income, not in any total)",
-        columns: ["Employer", `Reportable fringe benefits — RFBA (${cur})`, `Reportable employer super — RESC (${cur})`],
-        rows: capped([...raByEmployer.entries()], raNotes).map(([emp, v]) => [emp, d(v.rfba_cents), d(v.resc_cents)]),
-        notes: raNotes,
-      });
+  // 3b. Life-situation sections from the registry (ADR-0004), in registry order — today reportable
+  // amounts (RFBA/RESC: informational, NO tie_back, never in any total). The module owns the rows and
+  // notes; the pack only applies its row cap.
+  if (situationsLoaded) {
+    for (const sec of situationSections(situationsLoaded.loaded, situationsLoaded.ctx)) {
+      const notes = sec.notes ?? [];
+      sections.push({ ...sec, rows: capped(sec.rows, notes), notes });
     }
   }
 

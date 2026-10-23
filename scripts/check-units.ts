@@ -7688,6 +7688,27 @@ console.log("A6 CDR data controls (#639)");
     /export function Review\(\)/.test(web697("pages/Review.tsx")) && /reviewSummary:/.test(web697("api.ts")));
 }
 
+// ── F16/F17 (design audit #696): destructive deletes ask first, through ONE shared confirm ──
+{
+  console.log("\nDestructive deletes confirm (F16/F17)");
+  const rd = (f: string) => fs.readFileSync(path.join(process.cwd(), "web/src", f), "utf8");
+  const dlg = rd("components/ConfirmDialog.tsx");
+  check("ConfirmDialog: Radix Dialog alertdialog, Cancel focused by default, mounted once in the signed-in tree",
+    /<Dialog\.Root/.test(dlg) && /role="alertdialog"/.test(dlg) && /autoFocus[\s\S]{0,120}close\(false\)/.test(dlg) && /<ConfirmHost \/>/.test(rd("main.tsx")));
+  const prof = rd("components/ProfileSections.tsx");
+  check("runDelete asks before deleting (and returns on cancel), and the carry-in deletes ask too",
+    /const ok = await confirmAction\(/.test(prof) && /if \(!ok\) return;/.test(prof) && (prof.match(/await confirmAction\(/g) ?? []).length >= 3);
+  const sets = rd("pages/Settings.tsx");
+  check("Settings: Row, rule and loan-link deletes ask first", /function Row[\s\S]{0,400}await confirmAction\(/.test(sets) && /Delete rule/.test(sets) && /Delete link/.test(sets));
+  const sites: [string, string][] = [["pages/Assets.tsx", "Delete asset"], ["pages/Income.tsx", "Delete income"], ["components/income/CapitalEquity.tsx", "Delete holding"],
+    ["components/income/CapitalEquity.tsx", "Delete disposal"], ["components/income/EssGrants.tsx", "Delete grant"], ["components/CarMethodsCard.tsx", "Delete logbook"]];
+  const missing = sites.filter(([f, l]) => !rd(f).includes(`confirmLabel: "${l}"`)).map(([f, l]) => `${f}:${l}`);
+  check(`Assets / Income / capital / ESS / logbook deletes ask first (missing: ${missing.join(", ") || "none"})`, missing.length === 0);
+  const filing = rd("pages/Filing.tsx");
+  check("Filing NOA: the buttons name the object, and both ask before deleting the carry-forward figures",
+    /Remove NOA record \(re-opens the year\)/.test(filing) && /Discard this reading/.test(filing) && !/>Undo \(re-open the year\)</.test(filing) && /deletes the carry-forward figures/.test(filing));
+}
+
 // ── #698: Explain tips — why/ato/related copy is general information, links are official, keys resolve ──
 {
   console.log("\nExplain tips (#698)");

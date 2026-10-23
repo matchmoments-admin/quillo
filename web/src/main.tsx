@@ -34,6 +34,7 @@ import { setTokenGetter } from "./api";
 import { ActiveFyProvider } from "./lib/activeFy";
 import { RouteError } from "./components/RouteError";
 import { CutRoute, PartnerRoute, QuickBooksRoute } from "./lib/cuts";
+import { ConfirmHost } from "./components/ConfirmDialog";
 
 const PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY as string | undefined;
 
@@ -91,6 +92,7 @@ function Protected() {
     <>
       <SignedIn>
         <TokenBridge />
+        <ConfirmHost />
         <ActiveFyProvider>
           <App />
         </ActiveFyProvider>

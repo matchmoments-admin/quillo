@@ -7,6 +7,7 @@ import { CapitalImport } from "./CapitalImport";
 import type { CgtAssetRow } from "../../types";
 import { useFeatures } from "../../lib/features";
 import { parseCostBaseElements } from "../../lib/capital";
+import { confirmAction } from "../ConfirmDialog";
 
 const CGT_KINDS = ["shares", "crypto", "property", "managed_fund", "other"] as const;
 const KIND_LABEL: Record<string, string> = { shares: "Shares", crypto: "Crypto", property: "Property", managed_fund: "Managed fund", other: "Other" };
@@ -141,7 +142,7 @@ export function CapitalEquity() {
                     </td>
                   );
                 })()}
-                <td className="px-2 py-1 text-right"><button className="text-xs text-danger hover:underline" onClick={() => api.deleteCgtAsset(a.id).then(invalidate).catch((e: Error) => toast.error("Couldn't delete holding", { description: e.message }))}>delete</button></td>
+                <td className="px-2 py-1 text-right"><button className="text-xs text-danger hover:underline" onClick={async () => { if (await confirmAction({ title: `Delete the holding “${kindLabel(a)}”?`, body: "Its cost base goes with it. This can't be undone.", confirmLabel: "Delete holding" })) api.deleteCgtAsset(a.id).then(invalidate).catch((e: Error) => toast.error("Couldn't delete holding", { description: e.message })); }}>delete</button></td>
               </tr>
             ))}
           </tbody>
@@ -164,7 +165,7 @@ export function CapitalEquity() {
                   <td className="px-2 py-1 text-muted tabular-nums">{e.event_date}</td>
                   <td className="px-2 py-1 text-right tabular-nums text-muted">proceeds {money(e.proceeds_cents)} − cost {money(e.cost_base_used_cents)}</td>
                   <td className={`px-2 py-1 text-right tabular-nums font-medium ${e.proceeds_cents - e.cost_base_used_cents < 0 ? "text-danger" : ""}`}>{money(e.proceeds_cents - e.cost_base_used_cents)}</td>
-                  <td className="px-2 py-1 text-right"><button className="text-xs text-danger hover:underline" onClick={() => api.deleteCgtEvent(e.id).then(invalidate).catch((err: Error) => toast.error("Couldn't delete disposal", { description: err.message }))}>delete</button></td>
+                  <td className="px-2 py-1 text-right"><button className="text-xs text-danger hover:underline" onClick={async () => { if (await confirmAction({ title: `Delete the ${e.event_date} disposal of “${a ? kindLabel(a) : "this holding"}”?`, body: "This can't be undone.", confirmLabel: "Delete disposal" })) api.deleteCgtEvent(e.id).then(invalidate).catch((err: Error) => toast.error("Couldn't delete disposal", { description: err.message })); }}>delete</button></td>
                 </tr>
               );
             })}

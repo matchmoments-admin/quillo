@@ -5,6 +5,7 @@ import { useFeatures } from "../lib/features";
 import { Card, Spinner, Button, Input, money, parseMoneyToCents, InfoTip } from "../components/ui";
 import { isTenantStatus } from "../components/SituationFields";
 import type { AssetRow, ScheduleRow } from "../types";
+import { confirmAction } from "../components/ConfirmDialog";
 
 const CLASS_LABEL: Record<string, string> = {
   div40_plant: "Plant & equipment (Div 40)",
@@ -85,7 +86,7 @@ function AssetLine({ a, showCar, propLabel }: { a: AssetRow; showCar: boolean; p
         <td className="px-4 py-2 text-right tabular-nums">{money(a.cost_cents)}</td>
         <td className="px-4 py-2 text-right tabular-nums">{money(a.this_fy_deduction_cents)}</td>
         <td className="px-4 py-2 text-right tabular-nums text-muted">{money(a.adjustable_value_cents)}</td>
-        <td className="px-4 py-2 text-right"><button className="text-xs text-danger hover:underline" onClick={() => del.mutate()}>delete</button></td>
+        <td className="px-4 py-2 text-right"><button className="text-xs text-danger hover:underline" onClick={async () => { if (await confirmAction({ title: `Delete the asset “${a.label}”?`, body: "Its depreciation schedule goes with it. This can't be undone.", confirmLabel: "Delete asset" })) del.mutate(); }}>delete</button></td>
       </tr>
       {open && (
         <tr className="bg-surface/40">

@@ -8,6 +8,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api, isDeleteBlocked } from "../api";
 import { money, parseMoneyToCents } from "./ui";
+import { confirmAction } from "./ConfirmDialog";
 import { PersonFields, personToBody, personToValue, emptyPerson, type PersonValue } from "./SituationFields";
 import type { Person } from "../types";
 
@@ -36,8 +37,17 @@ export function PeopleList({ persons, onDone }: { persons: Person[]; onDone: () 
 // reason and offer Archive when the parent supports it — instead of silently swallowing the error.
 export async function runDelete(
   del: () => Promise<unknown>,
-  opts: { onDone: () => void; label: string; archive?: () => Promise<unknown> },
+  opts: { onDone: () => void; label: string; name?: string | null; archive?: () => Promise<unknown> },
 ): Promise<void> {
+  // F17 (design audit #696): one tap used to delete. Ask first, naming the object; there's no undo for these rows.
+  const ok = await confirmAction({
+    title: opts.name ? `Delete the ${opts.label} “${opts.name}”?` : `Delete this ${opts.label}?`,
+    body: opts.archive
+      ? "This can't be undone. If records still use it, you'll be offered Archive instead."
+      : "This can't be undone.",
+    confirmLabel: `Delete ${opts.label}`,
+  });
+  if (!ok) return;
   try {
     await del();
     opts.onDone();
@@ -93,7 +103,15 @@ export function CarryIns() {
         {(losses.data ?? []).map((l) => (
           <div key={l.id} className="flex items-center justify-between rounded-lg bg-surface px-3 py-2 text-sm">
             <span>FY {l.prior_fy} · {money(l.loss_cents)} <span className="text-muted">— offsets future capital gains only, not income</span></span>
-            <button onClick={() => delLoss.mutate(l.id)} disabled={delLoss.isPending} className={del}>delete</button>
+            <button
+              onClick={async () => {
+                if (await confirmAction({ title: `Delete the FY ${l.prior_fy} capital loss (${money(l.loss_cents)})?`, body: "It stops being carried forward to offset future capital gains. This can't be undone.", confirmLabel: "Delete loss" })) delLoss.mutate(l.id);
+              }}
+              disabled={delLoss.isPending}
+              className={del}
+            >
+              delete
+            </button>
           </div>
         ))}
         {!(losses.data ?? []).length && <Empty>None recorded. Add a prior-year capital loss for your agent to carry forward.</Empty>}
@@ -108,7 +126,15 @@ export function CarryIns() {
         {(openings.data ?? []).map((d) => (
           <div key={d.id} className="flex items-center justify-between rounded-lg bg-surface px-3 py-2 text-sm">
             <span>FY {d.fy} · {money(d.opening_adjustable_value_cents)} <span className="text-muted">— for your agent to apply</span></span>
-            <button onClick={() => delDep.mutate(d.id)} disabled={delDep.isPending} className={del}>delete</button>
+            <button
+              onClick={async () => {
+                if (await confirmAction({ title: `Delete the FY ${d.fy} opening value (${money(d.opening_adjustable_value_cents)})?`, body: "This can't be undone.", confirmLabel: "Delete opening value" })) delDep.mutate(d.id);
+              }}
+              disabled={delDep.isPending}
+              className={del}
+            >
+              delete
+            </button>
           </div>
         ))}
         {!(openings.data ?? []).length && <Empty>None recorded. Add an opening adjustable value from last year's depreciation schedule.</Empty>}
@@ -135,7 +161,7 @@ function EditablePerson({ person, onDone }: { person: Person; onDone: () => void
         <div className="flex flex-none gap-3">
           <button onClick={() => { setValue(personToValue(person)); setEditing(true); }} className={del}>edit</button>
           {/* The 'self' person anchors entities/properties/income — never deletable here. */}
-          {!isSelf && <button onClick={() => runDelete(() => api.deletePerson(person.id), { onDone, label: "person" })} className={del}>delete</button>}
+          {!isSelf && <button onClick={() => runDelete(() => api.deletePerson(person.id), { onDone, label: "person", name: person.display_name })} className={del}>delete</button>}
         </div>
       </div>
     );

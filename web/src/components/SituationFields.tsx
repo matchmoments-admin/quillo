@@ -9,6 +9,22 @@ export const fieldInput = "rounded-lg border border-line bg-card px-3 py-2 text-
 
 export const ENTITY_KINDS = ["company", "employment", "novated_lease", "individual", "trust", "smsf", "partnership"] as const;
 
+// Plain-words labels for the stored slugs (#696 design audit): pickers and rows showed "novated_lease",
+// "smsf" and "self" verbatim. Display only; the stored values are unchanged.
+const ENTITY_KIND_LABEL: Record<string, string> = {
+  company: "Company (Pty Ltd)",
+  employment: "Employer (PAYG job)",
+  novated_lease: "Novated car lease",
+  individual: "Individual",
+  trust: "Trust",
+  smsf: "Self-managed super fund (SMSF)",
+  partnership: "Partnership",
+};
+export const entityKindLabel = (kind: string): string => ENTITY_KIND_LABEL[kind] ?? kind;
+
+const PERSON_ROLE_LABEL: Record<string, string> = { self: "You", spouse: "Spouse or partner", dependent: "Dependant", other: "Other" };
+export const personRoleLabel = (role: string): string => PERSON_ROLE_LABEL[role] ?? role;
+
 // Hand-mirror of PROPERTY_STATUSES in src/lib/taxonomy.ts — keep in sync. Two relationship groups:
 // "own" (landlord/occupier) vs "rent" (tenant). Tenant statuses have no cost base / CGT / ownership %.
 export const PROPERTY_STATUSES = ["rented", "vacant", "owner_occupied", "sold", "renting_residence", "renting_business"] as const;
@@ -86,7 +102,7 @@ export function EntityFields({ value, onChange, kinds = ENTITY_KINDS }: { value:
         <select className={fieldInput} value={value.kind} onChange={(e) => set({ kind: e.target.value })}>
           {kinds.map((k) => (
             <option key={k} value={k}>
-              {k === "employment" ? "employment (PAYG)" : k}
+              {entityKindLabel(k)}
             </option>
           ))}
         </select>
@@ -291,7 +307,7 @@ export function PersonFields({ value, onChange, lockRole = false }: { value: Per
         <input className={`${fieldInput} flex-1`} placeholder="Name" value={value.display_name} onChange={(e) => set({ display_name: e.target.value })} />
         <select className={fieldInput} value={value.role} disabled={lockRole} onChange={(e) => set({ role: e.target.value })}>
           {PERSON_ROLES.map((r) => (
-            <option key={r} value={r}>{r}</option>
+            <option key={r} value={r}>{personRoleLabel(r)}</option>
           ))}
         </select>
         <select className={fieldInput} value={value.tax_residency} onChange={(e) => set({ tax_residency: e.target.value })} title="Tax residency">

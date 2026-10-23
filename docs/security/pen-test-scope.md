@@ -51,7 +51,7 @@ The code is public at <https://github.com/matchmoments-admin/quillo>, so the tes
 | T9 | Admin endpoints | `/api/admin/*` (spend, tenant roles, referrals, QBO token backfill, the Security & compliance page) | Reaching admin as a normal tenant. Role self-assignment through `PUT /api/admin/tenants/:id/roles`. The MFA gate with `admin_mfa_required` ON (S-05). Whether a 403/404 leaks that the admin surface exists |
 | T10 | Rate limits and cost caps | `API_IP_RATE_LIMITER` (600/min), `API_USER_RATE_LIMITER` (300/min), the per-tenant and global AI spend caps (`MAX_DAILY_COST_CENTS`, `MAX_DAILY_COST_CENTS_GLOBAL`, `MAX_MONTHLY_COST_CENTS_GLOBAL`) | Whether the limits can be bypassed (IP rotation, header spoofing, parallel tenants), and whether one tenant can burn the global AI budget. Prove each limit with a short burst, not a flood (see §4) |
 | T11 | Bedrock inference and prompt injection | Every model call: extraction, categorisation, document classification, chat/Ask (`src/llm.ts`, `src/extract.ts`) | Instructions planted in receipts, PDFs, statement lines and emails that try to change the tool call, write to the wrong record, leak another tenant's data or the system prompt, or get a chat `proposed_action` applied that the user didn't confirm. Every call is pinned to one record-only tool, and actions are checked against the tenant's own ids. Try to break that. Also test the residency gate: can a CDR-tainted tenant reach a non-Bedrock provider? |
-| T12 | Headers and CSP | Live response headers, `src/lib/security-headers.ts`, `web/public/_headers` | CSP bypasses beyond the known `'unsafe-inline'` and `*.quillo.au` weaknesses (#714), clickjacking, CORS on `/api/*`, HSTS, cache headers on authenticated responses |
+| T12 | Headers and CSP | Live response headers, `src/lib/security-headers.ts`, `web/public/_headers` | CSP bypasses (`script-src` has no `'unsafe-inline'` and no `*.quillo.au` since #714), clickjacking, CORS on `/api/*`, HSTS, cache headers on authenticated responses |
 | T13 | Marketing hosts | `https://quillo.au/`, `https://www.quillo.au/` (waitlist, terms, privacy) | Light coverage only: the waitlist form and any injection. They share the Worker, so a bug there can matter |
 
 ## 3. Out of scope
@@ -130,9 +130,8 @@ one exposes the owner's own return.
 
 Two details for option A:
 
-- **Don't host the preview on a `quillo.au` subdomain.** The prod CSP trusts `https://*.quillo.au` as
-  a script source (#714), so content served from a preview host there would be trusted by prod. Use
-  `*.workers.dev`.
+- **Don't host the preview on a `quillo.au` subdomain.** The prod CSP no longer trusts `*.quillo.au`
+  (#714), but cookies and HSTS `includeSubDomains` still span the apex. Use `*.workers.dev`.
 - **Mark it as non-production without turning auth off.** Set `DEV_AUTH_BYPASS=1` as a *secret* on the
   preview (never in `wrangler.toml`: `check-units` refuses that), **and** set `CLERK_ISSUER` to the
   preview Clerk instance. The auth bypass only applies when `CLERK_ISSUER` is unset
@@ -208,7 +207,7 @@ spend time proving them again.
 | [#711](https://github.com/matchmoments-admin/quillo/issues/711) (S-03) | Receipt mailbox accepts mail from any sender, no rate limit | Open. Inert in prod (0 mailboxes issued) |
 | [#712](https://github.com/matchmoments-admin/quillo/issues/712) (S-04) | OAuth `state` not bound to the starting browser (QBO and bank callbacks) | Open |
 | [#713](https://github.com/matchmoments-admin/quillo/issues/713) (S-08) | No server-side upload size cap | Open |
-| [#714](https://github.com/matchmoments-admin/quillo/issues/714) (S-09) | CSP `script-src` allows `'unsafe-inline'` and `*.quillo.au` | Open. Hash-based Report-Only probe live |
+| [#714](https://github.com/matchmoments-admin/quillo/issues/714) (S-09) | CSP `script-src` allows `'unsafe-inline'` and `*.quillo.au` | Fixed by the #714 PR: hash-only inline script enforced, exact Clerk FAPI hosts |
 | S-02, [#518](https://github.com/matchmoments-admin/quillo/issues/518) | Partly exposed `quillo-setup` IAM key | Owner action |
 | S-05, [#519](https://github.com/matchmoments-admin/quillo/issues/519) | Admin routes gated by role only while `admin_mfa_required` is OFF in prod; prod on the Clerk development instance | Owner switch (ON in the preview, so it can be tested) |
 | S-12, [#519](https://github.com/matchmoments-admin/quillo/issues/519) | `CLERK_AUTHORIZED_PARTIES` unset in prod, `localhost` in the default list, token without `azp` accepted | Fixed by the cutover runbook |

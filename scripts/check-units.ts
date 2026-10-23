@@ -331,6 +331,30 @@ console.log("isTransferLike");
   check("does NOT flag a normal merchant", !isTransferLike("WOOLWORTHS 1234 SYDNEY"));
 }
 
+// ── Security sweep #694 / #714: strict script-src (no 'unsafe-inline', no *.quillo.au) ──
+console.log("security sweep #694 (#714): enforced CSP allows inline script only by hash, and only exact first-party hosts");
+{
+  const { CSP, CSP_REPORT_ONLY, LANDING_INLINE_SCRIPT_HASH } = await import("../src/lib/security-headers");
+  const dirs714 = (p: string) => new Map(p.split(";").map((d) => d.trim().split(/\s+/)).map(([k, ...v]) => [k!, v]));
+  const enf714 = dirs714(CSP);
+  const ro714 = dirs714(CSP_REPORT_ONLY);
+  const script = enf714.get("script-src") ?? [];
+  check("script-src: no 'unsafe-inline' and no 'unsafe-eval'", !script.includes("'unsafe-inline'") && !script.includes("'unsafe-eval'"));
+  check("script-src: the marketing page's one inline script is allowed by its hash", script.includes(LANDING_INLINE_SCRIPT_HASH));
+  check("script-src: Clerk dev FAPI, Clerk prod FAPI (exact hosts) and Turnstile are allowed",
+    ["'self'", "https://*.clerk.accounts.dev", "https://clerk.quillo.au", "https://clerk.app.quillo.au", "https://challenges.cloudflare.com"].every((x) => script.includes(x)));
+  check("no directive trusts a wildcard of OUR domain (*.quillo.au), enforced or report-only",
+    ![...enf714.values(), ...ro714.values()].flat().some((x) => /\*\.quillo\.au/.test(x)));
+  check("Report-Only probe: the Clerk dev wildcard narrowed to this instance's exact FAPI host (wrangler.toml CLERK_ISSUER)",
+    !(ro714.get("script-src") ?? []).includes("https://*.clerk.accounts.dev") && (ro714.get("script-src") ?? []).includes("https://obliging-eel-28.clerk.accounts.dev")
+      && /CLERK_ISSUER = "https:\/\/obliging-eel-28\.clerk\.accounts\.dev"/.test(fs.readFileSync("wrangler.toml", "utf8")));
+  // The SPA shell must stay inline-script free, or the enforced policy blocks it (a blank app in prod).
+  const shell = fs.readFileSync(path.join(process.cwd(), "web", "index.html"), "utf8");
+  const scripts714 = shell.match(/<script\b[^>]*>/gi) ?? [];
+  check("web/index.html: every <script> is external (src=), so the built shell needs no inline allowance",
+    scripts714.length >= 1 && scripts714.every((t) => /\ssrc=/.test(t)) && !/\son[a-z]+=/i.test(shell));
+}
+
 // ── Stage A movement classifier: auto-ignore safe set vs CONFIRM/REVIEW set (B3) ─
 console.log("classifyMovement");
 {
@@ -6699,15 +6723,14 @@ console.log("security & compliance dashboard (#636)");
   // The allowlist the SPA + marketing pages need (audited + headless-Chrome verified under wrangler dev).
   const has = (d: string, ...srcs: string[]) => srcs.every((s) => enf.get(d)?.includes(s));
   check("CSP allowlist: Clerk (dev + prod FAPI) script/connect/img, Turnstile, Google Fonts, Maps iframe, Unsplash, blob:/data:",
-    has("script-src", "'self'", "https://*.clerk.accounts.dev", "https://*.quillo.au", "https://challenges.cloudflare.com") &&
-    has("connect-src", "'self'", "https://*.clerk.accounts.dev", "https://*.quillo.au") &&
+    has("script-src", "'self'", "https://*.clerk.accounts.dev", "https://clerk.quillo.au", "https://challenges.cloudflare.com") &&
+    has("connect-src", "'self'", "https://*.clerk.accounts.dev", "https://clerk.quillo.au") &&
     has("style-src", "https://fonts.googleapis.com") && has("font-src", "'self'", "https://fonts.gstatic.com") &&
     has("img-src", "'self'", "data:", "blob:", "https://img.clerk.com", "https://images.unsplash.com") &&
     has("frame-src", "https://challenges.cloudflare.com", "https://www.google.com") && has("worker-src", "'self'", "blob:") &&
     has("report-uri", "/csp-report"));
-  check("Report-Only probe: same policy minus 'unsafe-inline' scripts (landing inline script allowed by hash)",
-    !ro.get("script-src")?.includes("'unsafe-inline'") && ro.get("script-src")?.includes(LANDING_INLINE_SCRIPT_HASH) === true &&
-    enf.get("script-src")?.includes("'unsafe-inline'") === true);
+  check("Report-Only probe: no 'unsafe-inline' scripts either (landing inline script allowed by hash) — see #714 block for the enforced side",
+    !ro.get("script-src")?.includes("'unsafe-inline'") && ro.get("script-src")?.includes(LANDING_INLINE_SCRIPT_HASH) === true);
   const landingHtml = await marketingResponse().text();
   // Plain string scan (not an HTML regex): the page is our own static template with one `<script>`.
   const inline: string[] = [];

@@ -154,7 +154,9 @@ default; flipping a tenant without secrets fails loudly (it won't silently use t
 > continuation is tracked separately.
 >
 > **Currency:** the spend caps and `daily_cost` are in USD at the rate card, but AWS invoices Bedrock in
-> AUD, so the invoice reads about 1.5× the dashboard figure.
+> AUD, so the invoice reads about 1.5× the dashboard figure. The user's wallet is AUD too, so each debit
+> converts first: cost × `USD_TO_AUD_RATE` (1.55, wrangler.toml) × (1 + `COST_MARKUP_PCT`/100). The rate
+> is fixed; update it if AUD/USD moves about 5% or more.
 
 > **Note:** Bedrock has no Anthropic Batch API, so Bedrock tenants always categorise in **live**
 > mode (sequential per-chunk) — large imports run synchronously rather than via the async batch.

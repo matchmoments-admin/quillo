@@ -12,15 +12,19 @@ import type { Env } from "../env";
 export interface BillingPolicy {
   markupPct: number; // % added over measured cost, e.g. 30 = +30%
   appFeeCents: number; // flat application fee added on top
+  fxRate: number; // measured cost is in USD (the rate cards); the wallet + Stripe top-ups are AUD. 1 = pass-through
 }
 
 /** Read the (env-global for now) pricing policy. Per-tenant overrides can replace this later. */
 export function billingPolicy(env: Env): BillingPolicy {
   const markupPct = Number(env.COST_MARKUP_PCT ?? 0);
   const appFeeCents = Number(env.APP_FEE_CENTS ?? 0);
+  const fxRate = Number(env.USD_TO_AUD_RATE ?? 1);
   return {
     markupPct: Number.isFinite(markupPct) && markupPct > 0 ? markupPct : 0,
     appFeeCents: Number.isFinite(appFeeCents) && appFeeCents > 0 ? appFeeCents : 0,
+    // Never below 1: a garbage or sub-1 rate would bill users under our real cost.
+    fxRate: Number.isFinite(fxRate) && fxRate > 1 ? fxRate : 1,
   };
 }
 

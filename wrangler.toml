@@ -145,6 +145,11 @@ APP_FEE_CENTS = "0"
 # Usage-based billing (flag `billing`): one-off free credit allowance granted on first AI use, in cents.
 # 500 = $5. Then the user tops up (Stripe) and pays measured AI cost × (1 + COST_MARKUP_PCT/100).
 FREE_CREDIT_GRANT_CENTS = "500"
+# Measured AI cost is in USD (Anthropic + Bedrock rate cards) but the wallet and Stripe top-ups are AUD,
+# and both providers invoice us at the USD price converted to AUD. Each wallet debit is therefore
+# cost × USD_TO_AUD_RATE × (1 + COST_MARKUP_PCT/100). Fixed, not live: revisit if AUD/USD moves ~5%+.
+# The spend caps above stay in USD. Unset or < 1 ⇒ 1 (no conversion).
+USD_TO_AUD_RATE = "1.55"
 # Clerk auth (replaces Cloudflare Access). CLERK_ISSUER = the Clerk Frontend API URL
 # (derived from the publishable key). The Worker verifies session JWTs against
 # ${CLERK_ISSUER}/.well-known/jwks.json. For local dev, leave CLERK_ISSUER unset AND set

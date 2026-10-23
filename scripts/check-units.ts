@@ -11,7 +11,7 @@ import { batchStatementStatus, isStaleBatch, BATCH_MAX_AGE_MS } from "../src/lib
 import { extractSituationDraft, parseBatchMessage, mapBatchItems, type BatchItem } from "../src/extract";
 import type { LLM } from "../src/llm";
 import { isValidAbn, normaliseAbn } from "../web/src/lib/abn";
-import { billableCents, billableE4, freeCreditGrantE4 } from "../src/lib/billing";
+import { billableCents, billableE4, billingPolicy, freeCreditGrantE4 } from "../src/lib/billing";
 import { costCents, isPricedModel, toE4, centsFromE4 } from "../src/lib/usage";
 import { LLM_MODEL_IDS, resolveProvider, resolveRegion, assertAuResidency, assertDataResidency, bedrockModelIdFor, getLLM, invokeBedrock } from "../src/llm";
 import type { ProviderProfile } from "../src/llm";
@@ -2781,6 +2781,25 @@ console.log("billableE4 (wallet debit, sub-cent exact) + free grant");
   // Free grant: default $2 = 2,000,000 e4; env override respected.
   check("free grant default $2 → 2,000,000 e4", freeCreditGrantE4({} as Env) === 2_000_000);
   check("free grant env override $5 → 5,000,000 e4", freeCreditGrantE4({ FREE_CREDIT_GRANT_CENTS: "500" } as unknown as Env) === 5_000_000);
+}
+
+console.log("USD → AUD wallet conversion (USD_TO_AUD_RATE)");
+{
+  const pol = (v?: string) => billingPolicy({ COST_MARKUP_PCT: "30", USD_TO_AUD_RATE: v } as unknown as Env);
+  check("fx unset ⇒ 1 (pass-through)", pol(undefined).fxRate === 1);
+  check("fx 1.55 read from env", pol("1.55").fxRate === 1.55);
+  check("fx garbage ⇒ 1", pol("abc").fxRate === 1);
+  check("fx below 1 ⇒ 1 (never bill under real cost)", pol("0.65").fxRate === 1);
+  // $1 USD of usage (1,000,000 e4) at 1.55 + 30% → A$2.015 debited, above the ~A$1.55 real cost.
+  const p = pol("1.55");
+  check("debit = cost × fx × (1 + margin): $1 USD → 2,015,000 e4", billableE4(1_000_000 * p.fxRate, p.markupPct) === 2_015_000);
+  check("debit covers the AUD cost", billableE4(1_000_000 * p.fxRate, p.markupPct) > 1_000_000 * p.fxRate);
+  check("sub-cent call still exact: 3000 e4 → 6045", billableE4(3000 * p.fxRate, p.markupPct) === 6045);
+  const usageSrc = fs.readFileSync(new URL("../src/lib/usage.ts", import.meta.url), "utf8");
+  check("usage.ts wallet debit applies fxRate", /billableE4\(toE4\(cents\) \* policy\.fxRate, policy\.markupPct\)/.test(usageSrc));
+  const toml = fs.readFileSync(new URL("../wrangler.toml", import.meta.url), "utf8");
+  const rate = Number(/^USD_TO_AUD_RATE\s*=\s*"([^"]+)"/m.exec(toml)?.[1]);
+  check("wrangler.toml sets a USD_TO_AUD_RATE > 1", Number.isFinite(rate) && rate > 1);
 }
 
 // ── Progress / next-action engine: the "what do I do now" precedence (pure, offline) ─────────

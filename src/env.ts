@@ -60,6 +60,7 @@ export interface Env {
   CATEGORISE_MODE?: string;             // 'auto' | 'live' | 'batch' — default categorisation path (per-tenant override: profiles.categorise_mode)
   COST_MARKUP_PCT?: string;             // markup % over measured AI cost for the billable figure, e.g. '30' = +30% (display only today)
   APP_FEE_CENTS?: string;               // flat application fee in cents added on top of marked-up AI cost (display only today)
+  USD_TO_AUD_RATE?: string;             // converts measured AI cost (USD rate cards) to the AUD wallet before the markup; unset/<1 ⇒ 1
   // Basiq (CDR bank feeds, flag `bank_feed_cdr`). 'sandbox' | 'production'. Guards the blast radius
   // of a misconfiguration: 'production' means real consumers' real bank data, which may only flow
   // once the AU-residency guard is proven live AND the CDR Representative arrangement is signed.

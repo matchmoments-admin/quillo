@@ -83,7 +83,8 @@ import { relevanceView } from "./lib/relevance-scan-run";
 import { listNoticed, type ConfirmBody } from "./lib/noticed-signals";
 import { setAttributions, getAttributions, clearAttributions } from "./lib/attribution-write";
 import { listNoaCarryovers, confirmNoaCarryover, deleteNoaCarryover } from "./lib/noa-store";
-import { buildConnectUrl, qboStatus } from "./lib/qbo-oauth";
+import { buildConnectUrl, qboStatus, QBO_STATE_TTL_SECONDS } from "./lib/qbo-oauth";
+import { mintBinding, bindingSetCookie, QBO_BINDING, BANK_BINDING } from "./lib/oauth-binding";
 import { tokenStorageBlocked, TOKEN_STORAGE_BLOCKED_MESSAGE } from "./lib/token-crypto";
 import { backfillQboTokens } from "./lib/qbo-token-backfill";
 import { QuickBooksAdapter } from "./ledger/qbo";
@@ -1587,7 +1588,13 @@ export async function handleApi(
       const safe = (allowed as readonly string[]).includes(action ?? "") ? (action as (typeof allowed)[number]) : "connect";
       // url.origin: a provider that takes its redirect per session (Fiskil) returns the consumer to
       // this deployment's own /api/bank/callback (app.quillo.au in prod, localhost under wrangler dev).
-      return json(await stub.bankConnectUrl(uid, safe, url.origin));
+      // Bind the state to THIS browser (#712): only the hash goes to KV; the nonce rides in an HttpOnly
+      // cookie scoped to /api/bank/callback. The SPA still receives just { url }.
+      const bind = await mintBinding();
+      const started = await stub.bankConnectUrl(uid, safe, url.origin, bind.hash);
+      const res = json({ url: started.url });
+      res.headers.append("Set-Cookie", bindingSetCookie(BANK_BINDING, bind.nonce, started.stateTtlSeconds));
+      return res;
     }
 
     // GET /api/bank/connections — connections + accounts, for the picker and consent dashboard.
@@ -1673,11 +1680,16 @@ export async function handleApi(
       // Fail closed (flag qbo_token_fail_closed): don't send the user to Intuit if we couldn't store
       // the resulting tokens encrypted.
       if (tokenStorageBlocked(env)) return json({ error: TOKEN_STORAGE_BLOCKED_MESSAGE, code: "token_key_missing" }, 503);
-      const connectUrl = await buildConnectUrl(env, uid, url.origin);
+      // Bind the state to THIS browser (#712): only the nonce's hash is stored with the state; the nonce
+      // rides in an HttpOnly SameSite=Lax cookie scoped to /api/qbo/callback.
+      const bind = await mintBinding();
+      const connectUrl = await buildConnectUrl(env, uid, url.origin, bind.hash);
       // Log the redirect_uri we send Intuit (diagnostic for the production connect issue) — but not
       // the full authorize URL, which carries the single-use CSRF `state` nonce (#634 log hygiene).
       console.log(`qbo connect: redirect_uri=${url.origin}/api/qbo/callback`);
-      return json({ url: connectUrl });
+      const res = json({ url: connectUrl });
+      res.headers.append("Set-Cookie", bindingSetCookie(QBO_BINDING, bind.nonce, QBO_STATE_TTL_SECONDS));
+      return res;
     }
     if (id === "reconcile" && m === "GET") {
       // Only receipts are candidate QBO purchases — statement bank_lines come from the

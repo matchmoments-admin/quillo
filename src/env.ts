@@ -212,7 +212,7 @@ export interface TaxAgentRpc {
   disconnectQuickBooks(userId: string): Promise<{ ok: boolean; revoked: boolean }>;
   // Bank feeds (ADR-0003, flag `bank_feed_cdr`). bankCallback takes an ALREADY-RESOLVED userId:
   // the single-use state handle is consumed in index.ts so the correct per-tenant DO is chosen.
-  bankConnectUrl(userId: string, action?: "connect" | "manage" | "extend" | "update" | "reauthorise", origin?: string): Promise<{ url: string }>;
+  bankConnectUrl(userId: string, action: "connect" | "manage" | "extend" | "update" | "reauthorise" | undefined, origin: string | undefined, bindHash: string): Promise<{ url: string; stateTtlSeconds: number }>;
   bankCallback(
     userId: string,
     jobIdsRaw: string | null,

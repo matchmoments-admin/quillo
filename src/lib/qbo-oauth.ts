@@ -1,5 +1,6 @@
 import type { Env } from "../env";
 import { readToken, sealTokenPair, tokenStorageBlocked, TOKEN_STORAGE_BLOCKED_MESSAGE } from "./token-crypto";
+import { bindingMatches, decodeBoundState, encodeBoundState, BINDING_MISMATCH } from "./oauth-binding";
 
 // QuickBooks OAuth2 connect flow (Phase 4). Tokens land in qbo_connections; the
 // QuickBooksAdapter refreshes + rotates them from there. The agent is a reader/
@@ -65,9 +66,16 @@ export async function getEndpoints(env: Env): Promise<OidcEndpoints> {
   return FALLBACK_ENDPOINTS;
 }
 
-export async function buildConnectUrl(env: Env, userId: string, origin: string): Promise<string> {
+/** How long a started connect stays valid; the binding cookie lives exactly as long. */
+export const QBO_STATE_TTL_SECONDS = 600;
+
+/**
+ * `bindHash` is the SHA-256 of the nonce the route sets in the browser's binding cookie (#712,
+ * src/lib/oauth-binding.ts): the callback only accepts this state from the browser that holds it.
+ */
+export async function buildConnectUrl(env: Env, userId: string, origin: string, bindHash: string): Promise<string> {
   const state = crypto.randomUUID();
-  await env.RULES.put(`qbostate:${state}`, userId, { expirationTtl: 600 });
+  await env.RULES.put(`qbostate:${state}`, encodeBoundState(userId, bindHash), { expirationTtl: QBO_STATE_TTL_SECONDS });
   const { authorization_endpoint } = await getEndpoints(env);
   const u = new URL(authorization_endpoint);
   u.searchParams.set("client_id", env.QBO_CLIENT_ID);
@@ -78,20 +86,27 @@ export async function buildConnectUrl(env: Env, userId: string, origin: string):
   return u.toString();
 }
 
-export async function handleCallback(env: Env, url: URL, origin: string): Promise<{ ok: boolean; error?: string }> {
+export async function handleCallback(env: Env, url: URL, origin: string, bindNonce: string | null): Promise<{ ok: boolean; error?: string }> {
   const code = url.searchParams.get("code");
   const realmId = url.searchParams.get("realmId");
   const state = url.searchParams.get("state");
   if (!code || !realmId || !state) return { ok: false, error: "missing code/realmId/state" };
 
-  // CSRF: the state must be one we issued (KV-stored, 10-min TTL) and maps to the tenant.
-  const userId = await env.RULES.get(`qbostate:${state}`);
-  if (!userId) return { ok: false, error: "bad or expired state" };
+  // CSRF: the state must be one we issued (KV-stored, 10-min TTL) and maps to the tenant. It is consumed on
+  // first read, whatever happens next: a retry starts a fresh connect rather than replaying this one.
+  const raw = await env.RULES.get(`qbostate:${state}`);
+  if (!raw) return { ok: false, error: "bad or expired state" };
+  await env.RULES.delete(`qbostate:${state}`).catch(() => undefined); // TTL is the backstop
+  const bound = decodeBoundState(raw);
+  // Account-linking CSRF (#712): the state must come back in the SAME browser that started the connect,
+  // proven by the HttpOnly binding cookie. A forwarded authorize link arrives without it and is refused
+  // BEFORE the code is exchanged, so no tokens are ever issued into the wrong tenant.
+  if (!bound || !(await bindingMatches(bindNonce, bound.bindHash))) return { ok: false, error: BINDING_MISMATCH };
+  const userId = bound.userId;
   // Fail closed BEFORE exchanging the code: if the tokens couldn't be stored sealed, don't have
   // Intuit issue them at all (nothing to discard or revoke).
   if (tokenStorageBlocked(env)) {
     console.error("qbo connect refused: token encryption required but QBO_TOKEN_KEY is not set");
-    await env.RULES.delete(`qbostate:${state}`);
     return { ok: false, error: TOKEN_STORAGE_BLOCKED_MESSAGE };
   }
 
@@ -125,7 +140,6 @@ export async function handleCallback(env: Env, url: URL, origin: string): Promis
   )
     .bind(userId, realmId, stored.access, accessExp, stored.refresh, refreshExp, stored.encVer)
     .run();
-  await env.RULES.delete(`qbostate:${state}`);
   return { ok: true };
 }
 

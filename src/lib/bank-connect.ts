@@ -1,4 +1,5 @@
 import type { Env } from "../env";
+import { bindingMatches, decodeBoundState, encodeBoundState } from "./oauth-binding";
 
 /**
  * Connect-flow state for the bank feed (ADR-0003 §6.3).
@@ -17,6 +18,8 @@ import type { Env } from "../env";
  *   - single-use   — consumed on read, so a leaked redirect URL (browser history, a shared link,
  *                    a referrer header) cannot be replayed into someone else's tenant
  *   - short-lived  — a 10-minute TTL bounds the window even if it is never consumed
+ *   - bound        — honoured only from the browser that started the connect, via an HttpOnly
+ *                    cookie nonce whose hash is stored with the state (#712, src/lib/oauth-binding.ts)
  */
 
 const STATE_PREFIX = "bankstate:";
@@ -28,11 +31,15 @@ const STATE_TTL_SECONDS = 600;
  * flow is longer (Fiskil: OTP + the bank's own login) ask for more than the 10-minute default; it is
  * clamped to [60 s, 1 h] so no caller can make a handle long-lived.
  */
-export async function putConnectState(env: Env, userId: string, ttlSeconds: number = STATE_TTL_SECONDS): Promise<string> {
+export async function putConnectState(env: Env, userId: string, ttlSeconds: number | undefined, bindHash: string): Promise<string> {
   const state = crypto.randomUUID();
-  const ttl = Math.min(3600, Math.max(60, Math.floor(ttlSeconds) || STATE_TTL_SECONDS));
-  await env.RULES.put(`${STATE_PREFIX}${state}`, userId, { expirationTtl: ttl });
+  await env.RULES.put(`${STATE_PREFIX}${state}`, encodeBoundState(userId, bindHash), { expirationTtl: connectStateTtl(ttlSeconds) });
   return state;
+}
+
+/** The clamped TTL a state (and its browser-binding cookie) lives for. */
+export function connectStateTtl(ttlSeconds: number = STATE_TTL_SECONDS): number {
+  return Math.min(3600, Math.max(60, Math.floor(ttlSeconds) || STATE_TTL_SECONDS));
 }
 
 const SESSION_PREFIX = "banksess:";
@@ -81,17 +88,22 @@ export function safeCallbackParam(v: string | null | undefined, max = 64): strin
  * The delete is best-effort and happens after the read: a KV delete failure must not turn a
  * legitimate first use into an error, and the TTL is the backstop.
  */
-export async function takeConnectState(env: Env, state: string | null | undefined): Promise<string | null> {
+export async function takeConnectState(env: Env, state: string | null | undefined, bindNonce: string | null | undefined): Promise<string | null> {
   if (!state) return null;
   const key = `${STATE_PREFIX}${state}`;
-  const userId = await env.RULES.get(key);
-  if (!userId) return null;
+  const raw = await env.RULES.get(key);
+  if (!raw) return null;
   try {
     await env.RULES.delete(key);
   } catch {
     // TTL still bounds it; a failed delete must not break a valid connect.
   }
-  return userId;
+  // Browser binding (#712): the state is only honoured from the browser holding the HttpOnly cookie set
+  // when this connect started (src/lib/oauth-binding.ts). A forwarded consent link is refused, and the
+  // state is consumed either way.
+  const bound = decodeBoundState(raw);
+  if (!bound || !(await bindingMatches(bindNonce, bound.bindHash))) return null;
+  return bound.userId;
 }
 
 /**

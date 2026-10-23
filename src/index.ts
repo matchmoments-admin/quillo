@@ -8,6 +8,7 @@ import { handleApi } from "./api";
 import { DeleteBlockedError } from "./lib/situation-write";
 import { handleCallback } from "./lib/qbo-oauth";
 import { takeConnectState, stateForSession } from "./lib/bank-connect";
+import { readCookie, redirectClearingBinding, QBO_BINDING, BANK_BINDING } from "./lib/oauth-binding";
 import { verifyStripeWebhook } from "./lib/stripe";
 import { marketingResponse } from "./marketing/landing";
 import { legalResponse } from "./marketing/legal";
@@ -207,14 +208,15 @@ const handler = {
     // via the `state` nonce (KV → userId), set when the SPA initiated connect, not the app
     // session — the standard OAuth CSRF protection. Must be matched BEFORE the /api/ gate.
     if (url.pathname === "/api/qbo/callback" && req.method === "GET") {
-      const r = await handleCallback(env, url, url.origin);
+      const r = await handleCallback(env, url, url.origin, readCookie(req, QBO_BINDING.name));
       // Surface the failure reason to the UI (and logs) so a failed callback isn't a silent
       // connected=0. Note: the "redirect_uri invalid" error happens on Intuit's authorize
       // page BEFORE this callback ever runs, so it won't appear here — that's an Intuit-side
       // registration/propagation issue, not something our server sees.
       if (!r.ok) console.warn(`qbo callback failed: ${r.error}`);
       const reason = r.ok ? "" : `&reason=${encodeURIComponent(r.error ?? "unknown")}`;
-      return Response.redirect(`${url.origin}/quickbooks?connected=${r.ok ? "1" : "0"}${reason}`, 302);
+      // The binding cookie is single-use like the state: clear it on every outcome (#712).
+      return redirectClearingBinding(`${url.origin}/quickbooks?connected=${r.ok ? "1" : "0"}${reason}`, QBO_BINDING);
     }
 
     // Bank-feed consent callback — PUBLIC by necessity, like the QBO one above: the consumer
@@ -234,10 +236,12 @@ const handler = {
       const sp = url.searchParams;
       const sessionId = sp.get("sess_id") ?? sp.get("session_id");
       const state = sp.get("state") ?? (await stateForSession(env, sessionId));
-      const userId = await takeConnectState(env, state);
+      // The state must come back in the browser that started the connect (HttpOnly binding cookie, #712);
+      // a forwarded consent link has no cookie and gets the same refusal as an unknown state.
+      const userId = await takeConnectState(env, state, readCookie(req, BANK_BINDING.name));
       if (!userId) {
-        console.warn("bank callback rejected: invalid_or_expired_state");
-        return Response.redirect(`${url.origin}/accounts?connected=0&reason=invalid_or_expired_state`, 302);
+        console.warn("bank callback rejected: invalid_or_expired_state (or not the starting browser)");
+        return redirectClearingBinding(`${url.origin}/accounts?connected=0&reason=invalid_or_expired_state`, BANK_BINDING);
       }
       const r = await stubFor(env, userId).bankCallback(userId, sp.get("jobIds"), {
         outcome: sp.get("outcome"),
@@ -249,7 +253,7 @@ const handler = {
       const q = r.ok
         ? `connected=1&accounts=${r.accounts}`
         : `connected=0&reason=${encodeURIComponent(r.error ?? "unknown")}`;
-      return Response.redirect(`${url.origin}/accounts?${q}`, 302);
+      return redirectClearingBinding(`${url.origin}/accounts?${q}`, BANK_BINDING);
     }
 
     // Public "Before you start" probe (#584, flag ft_journey): static rule-pack content for the

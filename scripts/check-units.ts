@@ -8026,5 +8026,110 @@ console.log("entity role duplicate guard (#699)");
   check("POST /api/statements refuses an oversize CSV", /format === "csv" && fileTooLarge\(bytes\.byteLength, "statementCsv"\)/.test(api746));
 }
 
+// ── #724: one-time cron backfills — global marker + KV-cursor paging ──
+{
+  console.log("\none-time backfills (#724)");
+  const { runBackfillOnce, backfillDoneKey, backfillCursorKey } = await import("../src/lib/backfill");
+  const mk = (tenants: string[]) => {
+    const kv = new Map<string, string>();
+    const ops = { gets: 0, puts: 0, scans: 0 };
+    const env = {
+      RULES: {
+        get: async (k: string) => { ops.gets++; return kv.get(k) ?? null; },
+        put: async (k: string, v: string) => { ops.puts++; kv.set(k, v); },
+        delete: async (k: string) => { kv.delete(k); },
+      },
+      DB: {
+        prepare: (sql: string) => ({
+          bind: (after: unknown, limit: unknown) => ({
+            all: async <T,>() => {
+              ops.scans++;
+              if (!/FROM profiles WHERE user_id > \? ORDER BY user_id LIMIT \?/.test(sql)) throw new Error(`unexpected sql ${sql}`);
+              const rows = [...tenants].sort().filter((u) => u > String(after)).slice(0, Number(limit));
+              return { results: rows.map((user_id) => ({ user_id })) as T[] };
+            },
+          }),
+        }),
+      },
+    };
+    return { kv, ops, env };
+  };
+  const flag = (u: string) => `backfill:t:${u}`;
+  const reset = (o: { gets: number; puts: number; scans: number }) => { o.gets = 0; o.puts = 0; o.scans = 0; };
+
+  // A fresh deploy pages through N tenants across ticks, each exactly once.
+  const tenants724 = Array.from({ length: 7 }, (_, i) => `user_${i}`);
+  const f = mk(tenants724);
+  const runs = new Map<string, number>();
+  const work = async (u: string) => { runs.set(u, (runs.get(u) ?? 0) + 1); };
+  const states: string[] = [];
+  for (let tick = 0; tick < 5; tick++) states.push((await runBackfillOnce(f.env, "t", work, { tenantFlag: flag, pageSize: 3 })).state);
+  check("fresh deploy: 7 tenants at page 3 → paged, paged, completed, then done", states.join(",") === "paged,paged,completed,done,done");
+  check("fresh deploy: every tenant ran exactly once", tenants724.every((u) => runs.get(u) === 1) && runs.size === 7);
+  check("fresh deploy: global marker set and cursor cleared", f.kv.get(backfillDoneKey("t")) === "done" && !f.kv.has(backfillCursorKey("t")));
+  check("fresh deploy: per-tenant flags are 'done'", tenants724.every((u) => f.kv.get(flag(u)) === "done"));
+
+  // Once the global marker is set, a tick is one KV read and no D1 scan.
+  reset(f.ops);
+  const r1 = await runBackfillOnce(f.env, "t", work, { tenantFlag: flag, pageSize: 3, gate: async () => { throw new Error("gate must not run"); } });
+  check("global marker short-circuits: one KV read, zero scans, zero writes, gate not consulted", r1.state === "done" && f.ops.gets === 1 && f.ops.scans === 0 && f.ops.puts === 0);
+
+  // An existing per-tenant marker (prod tenants that already ran) is honoured.
+  const g = mk(["a", "b", "c"]);
+  g.kv.set(flag("a"), "done");
+  g.kv.set(flag("c"), "done");
+  const ran: string[] = [];
+  const rg = await runBackfillOnce(g.env, "t", async (u) => { ran.push(u); }, { tenantFlag: flag });
+  check("existing per-tenant marker honoured: only the unmarked tenant runs", ran.join(",") === "b" && rg.state === "completed");
+  check("existing per-tenant markers: pass completes and sets the global marker", g.kv.get(backfillDoneKey("t")) === "done");
+
+  // A failure on one tenant doesn't set the global marker; it is retried next tick.
+  const h = mk(["a", "b", "c"]);
+  let failB = true;
+  const hruns: string[] = [];
+  const hwork = async (u: string) => { hruns.push(u); if (u === "b" && failB) throw new Error("transient"); };
+  const origErr = console.error;
+  console.error = () => {};
+  const t1 = await runBackfillOnce(h.env, "t", hwork, { tenantFlag: flag });
+  console.error = origErr;
+  check("failure: the pass ends as retry and the global marker is NOT set", t1.state === "retry" && !h.kv.has(backfillDoneKey("t")));
+  failB = false;
+  const t2 = await runBackfillOnce(h.env, "t", hwork, { tenantFlag: flag });
+  check("failure: next tick retries only the failed tenant, then sets the marker", t2.state === "completed" && hruns.join(",") === "a,b,c,b" && h.kv.get(backfillDoneKey("t")) === "done");
+
+  // A failure on an early page keeps the pass dirty through later pages.
+  const d = mk(["a", "b", "c"]);
+  console.error = () => {};
+  const d1 = await runBackfillOnce(d.env, "t", async (u) => { if (u === "a" && !d.kv.has("ok")) throw new Error("x"); }, { tenantFlag: flag, pageSize: 2 });
+  const d2 = await runBackfillOnce(d.env, "t", async () => {}, { tenantFlag: flag, pageSize: 2 });
+  const d3 = await runBackfillOnce(d.env, "t", async () => {}, { tenantFlag: flag, pageSize: 2 });
+  console.error = origErr;
+  check("failure on page 1 carries through: paged → retry (not completed) → ...", d1.state === "paged" && d2.state === "retry" && !d.kv.has(backfillDoneKey("t")));
+  const d4 = await runBackfillOnce(d.env, "t", async () => {}, { tenantFlag: flag, pageSize: 2 });
+  check("... the fresh pass retries tenant a and the marker is set at its end", d3.state === "paged" && d4.state === "completed" && d.kv.get(flag("a")) === "done");
+
+  // A tenant whose attempts are exhausted never lets the marker be set.
+  const x = mk(["a"]);
+  x.kv.set(flag("a"), "attempt:3");
+  let xran = false;
+  const xr = await runBackfillOnce(x.env, "t", async () => { xran = true; }, { tenantFlag: flag });
+  check("gave-up tenant: not re-run, and the global marker stays unset", !xran && xr.state === "retry" && !x.kv.has(backfillDoneKey("t")));
+
+  // The gate (AI ceiling) skips before any D1 scan.
+  const y = mk(["a"]);
+  const yr = await runBackfillOnce(y.env, "t", async () => {}, { tenantFlag: flag, gate: async () => false });
+  check("gate false ⇒ gated, no D1 scan", yr.state === "gated" && y.ops.scans === 0);
+
+  // Wiring: the */10 cron uses runBackfillOnce for all three, keeping the legacy per-tenant flags.
+  const idx724 = fs.readFileSync(path.join(process.cwd(), "src/index.ts"), "utf8");
+  check("index.ts: no unbounded `SELECT user_id FROM profiles` scan left", !/SELECT user_id FROM profiles`/.test(idx724));
+  check(
+    "index.ts: the three backfills keep their legacy per-tenant flags",
+    /runBackfillOnce\(env, "reclass-lowcost-assets-v1"[\s\S]*?backfill:reclass-lowcost-assets-v1:\$\{uid\}/.test(idx724) &&
+      /runBackfillOnce\(env, "income-assets-v2"[\s\S]*?backfill:income-assets-v2:\$\{uid\}/.test(idx724) &&
+      /runBackfillOnce\(env, "repair-statements-v1"[\s\S]*?repair:statements-v1:\$\{uid\}/.test(idx724),
+  );
+}
+
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);
 process.exit(fail === 0 ? 0 : 1);

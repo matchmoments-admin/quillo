@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api } from "../../api";
 import { Card, Button, Input, money } from "../ui";
+import { confirmAction } from "../ConfirmDialog";
 
 // ESS (#141): employee share scheme grants. Upfront/deferral discounts are assessable; startup defers to CGT.
 const ESS_SCHEMES = ["taxed_upfront", "deferral", "startup"] as const;
@@ -29,7 +30,7 @@ export function EssGrants() {
                 <td className="px-2 py-1">{SCHEME_LABEL[g.scheme_type] ?? g.scheme_type}{g.ownership_gt_10pct ? " · >10%" : ""}</td>
                 <td className="px-2 py-1 text-muted tabular-nums">{g.taxing_point_date ?? g.grant_date ?? "—"}</td>
                 <td className="px-2 py-1 text-right tabular-nums text-muted">discount {money(g.discount_cents)}</td>
-                <td className="px-2 py-1 text-right"><button className="text-xs text-danger hover:underline" onClick={() => api.deleteEssGrant(g.id).then(invalidate).catch((e: Error) => toast.error("Couldn't delete ESS grant", { description: e.message }))}>delete</button></td>
+                <td className="px-2 py-1 text-right"><button className="text-xs text-danger hover:underline" onClick={async () => { if (await confirmAction({ title: `Delete this ${SCHEME_LABEL[g.scheme_type] ?? "ESS"} grant?`, body: "This can't be undone.", confirmLabel: "Delete grant" })) api.deleteEssGrant(g.id).then(invalidate).catch((e: Error) => toast.error("Couldn't delete ESS grant", { description: e.message })); }}>delete</button></td>
               </tr>
             ))}
           </tbody>

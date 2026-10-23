@@ -9,6 +9,7 @@ import { findingFixLink } from "../lib/findingLinks";
 import { Card, Spinner, money } from "../components/ui";
 import { ClaimsCard } from "./Dashboard";
 import type { PositionLine, ReadinessFinding, ClaimReview, ClaimReviewItem, OccupationRuleCandidate } from "../types";
+import { confirmAction } from "../components/ConfirmDialog";
 
 const fyLabelOf = (start: number) => `${start}-${String((start + 1) % 100).padStart(2, "0")}`;
 
@@ -370,10 +371,26 @@ export function NoaCloseOff() {
                   className="rounded-lg bg-ink px-3 py-1.5 text-xs font-medium text-white hover:bg-ink/90 disabled:opacity-60">
                   {confirm.isPending ? "…" : "Confirm & close the year"}
                 </button>
-                <button onClick={() => remove.mutate(c.id)} disabled={remove.isPending} className="rounded-lg border border-line px-3 py-1.5 text-xs hover:bg-surface disabled:opacity-60">Discard</button>
+                <button
+                  onClick={async () => {
+                    if (await confirmAction({ title: `Discard what we read from your FY ${fyLabelOf(c.source_fy)} Notice of Assessment?`, body: "Nothing has been recorded yet. You can upload the notice again.", confirmLabel: "Discard reading" })) remove.mutate(c.id);
+                  }}
+                  disabled={remove.isPending}
+                  className="rounded-lg border border-line px-3 py-1.5 text-xs hover:bg-surface disabled:opacity-60"
+                >
+                  Discard this reading
+                </button>
               </>
             ) : (
-              <button onClick={() => remove.mutate(c.id)} disabled={remove.isPending} className="rounded-lg border border-line px-3 py-1.5 text-xs hover:bg-surface disabled:opacity-60">Undo (re-open the year)</button>
+              <button
+                onClick={async () => {
+                  if (await confirmAction({ title: `Remove the FY ${fyLabelOf(c.source_fy)} Notice of Assessment record?`, body: "This re-opens the year and deletes the carry-forward figures it recorded (the capital loss and opening depreciation it carried in). To get them back, upload and confirm the notice again.", confirmLabel: "Remove record" })) remove.mutate(c.id);
+                }}
+                disabled={remove.isPending}
+                className="rounded-lg border border-line px-3 py-1.5 text-xs hover:bg-surface disabled:opacity-60"
+              >
+                Remove NOA record (re-opens the year)
+              </button>
             )}
           </div>
         </div>

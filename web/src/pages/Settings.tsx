@@ -14,6 +14,7 @@ import { CarryIns, PeopleList, runDelete } from "../components/ProfileSections";
 import { ENTITY_KINDS, EntityFields, PropertyFields, entityKindLabel, entityToBody, entityToValue, propertyToBody, propertyError, emptyEntity, emptyProperty, OWNED_STATUSES, TENANT_STATUSES, USE_STATUSES, DENY_USE_STATUSES, isTenantStatus, statusLabel, propertyStatusLabel, type EntityValue, type PropertyValue } from "../components/SituationFields";
 import type { Account, Property, LoanProperty, IncomeActivity, Situation } from "../types";
 import { isPropertyBucket } from "../lib/buckets";
+import { confirmAction } from "../components/ConfirmDialog";
 
 const input = "rounded-lg border border-line bg-card px-3 py-2 text-sm";
 const btn = "rounded-lg bg-ink px-3 py-2 text-sm font-medium text-white hover:bg-ink/90 disabled:opacity-50";
@@ -625,11 +626,16 @@ function Section({ id, title, children }: { id?: string; title: React.ReactNode;
 }
 
 function Row({ label, onDelete, deleteLabel = "delete" }: { label: string; onDelete?: () => void; deleteLabel?: string }) {
+  // F17 (design audit #696): ask first, naming the row — none of these has an undo.
+  const verb = deleteLabel.charAt(0).toUpperCase() + deleteLabel.slice(1);
+  const ask = async () => {
+    if (await confirmAction({ title: `${verb} “${label}”?`, body: "This can't be undone.", confirmLabel: verb })) onDelete?.();
+  };
   return (
     <div className="flex items-center justify-between rounded-lg bg-surface px-3 py-2 text-sm">
       <span className="truncate">{label}</span>
       {onDelete && (
-        <button onClick={onDelete} className={del}>
+        <button onClick={ask} className={del}>
           {deleteLabel}
         </button>
       )}
@@ -672,7 +678,7 @@ function EditableProperty({ property, onDone }: { property: { id: string; label:
         <span className="truncate">{property.label} — {propertyStatusLabel(property.status)}</span>
         <div className="flex flex-none gap-3">
           <button onClick={() => setEditing(true)} className={del}>edit</button>
-          <button onClick={() => runDelete(() => api.deleteProperty(property.id), { onDone, label: "property" })} className={del}>delete</button>
+          <button onClick={() => runDelete(() => api.deleteProperty(property.id), { onDone, label: "property", name: property.label })} className={del}>delete</button>
         </div>
       </div>
     );
@@ -784,7 +790,7 @@ function EditableLoanProperty({
           <button onClick={() => { setPct(String(link.deductible_interest_pct)); setEditing(true); }} className={del}>
             edit
           </button>
-          <button onClick={() => remove.mutate()} disabled={remove.isPending} className={del}>
+          <button onClick={async () => { if (await confirmAction({ title: `Delete the loan link “${label}”?`, body: "Its interest stops being linked to this property. This can't be undone.", confirmLabel: "Delete link" })) remove.mutate(); }} disabled={remove.isPending} className={del}>
             delete
           </button>
         </div>
@@ -860,7 +866,7 @@ function EditableEntity({ entity, onDone, kinds }: { entity: { id: string; kind:
         <span className="truncate">{entityLabel(entity)}</span>
         <div className="flex flex-none gap-3">
           <button onClick={() => { setValue(entityToValue(entity)); setEditing(true); }} className={del}>edit</button>
-          <button onClick={() => runDelete(() => api.deleteEntity(entity.id), { onDone, label: "entity", archive: () => api.archiveEntity(entity.id) })} className={del}>delete</button>
+          <button onClick={() => runDelete(() => api.deleteEntity(entity.id), { onDone, label: "entity", name: entityLabel(entity), archive: () => api.archiveEntity(entity.id) })} className={del}>delete</button>
         </div>
       </div>
     );
@@ -891,7 +897,7 @@ function EditableRule({ rule, properties, onDone }: { rule: { id: string; patter
         <span className="truncate">"{rule.pattern}" → {BUCKET_LABEL[rule.bucket] ?? rule.bucket} · {rule.ato_label}{propLabel ? ` · ${propLabel}` : ""}</span>
         <div className="flex flex-none gap-3">
           <button onClick={() => { setPattern(rule.pattern); setBucket(rule.bucket); setLabel(rule.ato_label); setPropertyId(rule.property_id ?? ""); setEditing(true); }} className={del}>edit</button>
-          <button onClick={() => api.deleteRule(rule.id).then(onDone)} className={del}>delete</button>
+          <button onClick={async () => { if (await confirmAction({ title: `Delete the rule “${rule.pattern}”?`, body: "Future matching transactions won't be sorted by it. This can't be undone.", confirmLabel: "Delete rule" })) api.deleteRule(rule.id).then(onDone); }} className={del}>delete</button>
         </div>
       </div>
     );

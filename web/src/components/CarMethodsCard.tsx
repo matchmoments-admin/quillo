@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { confirmAction } from "./ConfirmDialog";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api } from "../api";
@@ -111,7 +112,7 @@ function VehicleLogbooks({ assets }: { assets: AssetRow[] }) {
                 <td className="px-2 py-1 tabular-nums">{l.fy}</td>
                 <td className="px-2 py-1 text-muted tabular-nums">{l.business_use_pct != null ? `${Math.round(l.business_use_pct)}%` : l.total_km ? `${Math.round(((l.business_km ?? 0) / l.total_km) * 100)}%` : "—"} business</td>
                 <td className="px-2 py-1 text-right tabular-nums text-muted">running {money(l.running_costs_cents)}</td>
-                <td className="px-2 py-1 text-right"><button className="text-xs text-danger hover:underline" onClick={() => { if (confirm("Delete this logbook? You'll need to re-enter the km and running costs.")) api.deleteVehicleLogbook(l.id).then(invalidate); }}>delete</button></td>
+                <td className="px-2 py-1 text-right"><button className="text-xs text-danger hover:underline" onClick={async () => { if (await confirmAction({ title: `Delete the FY ${l.fy} logbook?`, body: "You'll need to re-enter the km and running costs. This can't be undone.", confirmLabel: "Delete logbook" })) api.deleteVehicleLogbook(l.id).then(invalidate); }}>delete</button></td>
               </tr>
             ))}
           </tbody>

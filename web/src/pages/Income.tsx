@@ -9,6 +9,7 @@ import { Card, Spinner, Button, Input, money, parseMoneyToCents, InfoTip } from 
 import { CapitalEquity } from "../components/income/CapitalEquity";
 import { EssGrants } from "../components/income/EssGrants";
 import type { IncomeRow } from "../types";
+import { confirmAction } from "../components/ConfirmDialog";
 
 // Mirror of src/lib/ledger-totals.ts NON_ASSESSABLE_INCOME_TYPES — income types captured but EXCLUDED
 // from the assessable position. Keep in sync with the server (the source of truth for the math).
@@ -309,7 +310,7 @@ function IncomeLine({ row, fy }: { row: IncomeRow; fy: string }) {
       <td className="px-4 py-2 text-right tabular-nums">{money(row.amount_aud_cents ?? row.gross_cents)}</td>
       <td className="px-4 py-2 text-right tabular-nums text-muted">{row.withholding_cents ? money(row.withholding_cents) : "—"}</td>
       <td className="px-4 py-2 text-right tabular-nums text-muted">{row.franking_credit_cents ? money(row.franking_credit_cents) : "—"}</td>
-      <td className="px-4 py-2 text-right"><button className="text-xs text-danger hover:underline" onClick={() => del.mutate()} disabled={del.isPending}>delete</button></td>
+      <td className="px-4 py-2 text-right"><button className="text-xs text-danger hover:underline" onClick={async () => { if (await confirmAction({ title: `Delete this ${TYPE_LABEL[row.income_type] ?? "income"} row (${money(row.amount_aud_cents ?? row.gross_cents)})?`, body: "It comes out of your income. This can't be undone.", confirmLabel: "Delete income" })) del.mutate(); }} disabled={del.isPending}>delete</button></td>
     </tr>
   );
 }

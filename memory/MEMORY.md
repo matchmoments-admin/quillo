@@ -18,13 +18,22 @@ Curated cross-session memory for this repo. How it works:
 - Readiness + GET /api/journey composition live in src/lib (filing-readiness.ts computeFilingReadiness, journey-read.ts readJourney; DO methods delegate) — test them directly instead of replicating the DO. scripts/e2e-first-timer.ts is the 4-step journey e2e; its flag-OFF baseline re-captures with UPDATE_SNAPSHOT=1. [src: 3d49246d-fc0d-40f9-86a3-ad884ecefa78]
 - R2 (tax-agent-receipts) reads go through src/lib/r2-store.ts (readStored/readStoredJson/originalResponse) — JSON sidecars + CSVs are gzipped on write and objects may be missing (owner cleared the bucket 2026-10); a raw `RECEIPTS.get(` is banned by scripts/check-receipt-storage.ts. Worktrees need `ln -s <main>/web/node_modules web/node_modules` for the web gates. [src: 3d49246d-fc0d-40f9-86a3-ad884ecefa78]
 
+- Browser QA: `npm run qa:browser` (Chromium vs local wrangler dev, 1280+390px, journey flags ON, AI stubbed, scratch D1; `--only=journeys,routes,legacy,personas`, `QA_PORT=` when 8796 is taken) and `npm run qa:smoke-prod` (GET-only). Ticketed defects go in `scripts/qa/known.ts` so only NEW failures go red; remove the entry when the fix lands. [src: e7c6f36d-084a-49b8-af46-e75a95fd72e5]
+- Every model call goes through `aiCall` (`src/lib/ai-call.ts`): consent → budget → getLLM → audit → callback; a raw `getLLM(` in agent.ts fails check-units. New life situations are `src/lib/situations/<key>.ts` modules (ADR-0004); money combines only in `composePosition`. [src: e7c6f36d-084a-49b8-af46-e75a95fd72e5]
+
 ## Gotchas
 - Fiskil sandbox+prod share ONE base URL and the JWT has no env marker, so FISKIL_ENV alone can't prove data is synthetic — PS8 carve-out also keys on sandbox institution `88888` (bank-feed-core requiresAuResidency). [src: 3d49246d-fc0d-40f9-86a3-ad884ecefa78]
 - Fiskil API: end users are NOT unique per email (never retry create); `DELETE /consent/{id}` returns 204 even for unknown ids; `from`/`to` must be RFC3339 (bare dates 400); a bad `page[after]` returns 503 not 400; pin `X-Fiskil-Version: v3`. Full list: docs/bank-feed-provider-options.md §7. [src: 3d49246d-fc0d-40f9-86a3-ad884ecefa78]
 - Parallel-agent squash merges can silently REVERT earlier PRs: #619 deleted all of #581 (minimise.ts, 0081, flag, goldens) while prod D1 kept the tables; restored in #639. Before building on a "closed" ticket, confirm its files exist on main (`git log --oneline -- <file>`). [src: 3d49246d-fc0d-40f9-86a3-ad884ecefa78]
 - Bedrock Claude needs a per-model AWS Marketplace agreement (one root Playground call in Sydney). If even root gets "not authorized to perform the required AWS Marketplace actions", the cause was Billing → Payment currency unset (AUD is the only option on AWS Australia); `get-foundation-model-availability` agreementAvailability flips NOT_AVAILABLE→AVAILABLE. [src: e7c6f36d-084a-49b8-af46-e75a95fd72e5]
 
+- Squash-merging the bottom of a STACKED PR chain with `--delete-branch` makes GitHub CLOSE the PRs above it (their base vanished) — they can't be reopened onto main. Recover: `git rebase --onto origin/main <old-parent-tip> <branch>`, force-push, open a fresh PR. Better: target every stacked PR at main from the start. [src: e7c6f36d-084a-49b8-af46-e75a95fd72e5]
+- Bedrock is the default provider since 2026-10-24, so `/api/situation` reports `inference_provider='bedrock'` for EVERY tenant — never use the provider (or consent) as a proxy for "has done set-up"; that broke the first-run redirect (#765). Use `needsFirstRun` (web/src/lib/firstRun.ts). [src: e7c6f36d-084a-49b8-af46-e75a95fd72e5]
+- A developer `web/.env` beats Vite mode files: the QA bundle must get `VITE_CLERK_PUBLISHABLE_KEY` via process env (run.ts does), or it fetches real clerk-js. [src: e7c6f36d-084a-49b8-af46-e75a95fd72e5]
+
 ## Preferences
 - Owner (2026-10-04): the ft_journey redesign changes components + journey clarity ONLY, never production's look — reuse ui.tsx's exported BUTTON_TONE/CARD_CLASS/INPUT_CLASS; no accent/quiet/Geist roles (check-units "journey visual parity" enforces). [src: 3d49246d-fc0d-40f9-86a3-ad884ecefa78]
+
+- Owner (2026-10-24, map #692): act on my own recommendations without re-asking; log every judgement call/uncertainty in the map's "Owner review notes"; CLAUDE.md hard stops (money judgement, destructive migrations, outward-facing third-party actions) still hold. [src: e7c6f36d-084a-49b8-af46-e75a95fd72e5]
 
 ## Domain

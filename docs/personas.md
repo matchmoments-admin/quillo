@@ -1,6 +1,6 @@
 # Quillo persona coverage
 
-The **10 Australian taxpayer personas** are Quillo's coverage contract. They are the lens for every
+The **Australian taxpayer personas** (P1–P10, plus P11 added for ADR-0004) are Quillo's coverage contract. They are the lens for every
 change to the data model, the tax-position pipeline, or the user workflow. This doc is the canonical
 tracker; the executable counterpart is `scripts/check-personas.ts` (`npm run test:personas`), which
 drives each persona through the real `buildReport` and asserts its position.
@@ -23,6 +23,7 @@ drives each persona through the real `buildReport` and asserts its position.
 | 8 | **James** — company + discretionary trust | trust streaming, bucket company, Div 7A, GST |
 | 9 | **Aisha** — startup founder | pre-revenue Pty Ltd, R&D, s40-880, ESS |
 | 10 | **Margaret** — self-funded retiree / SMSF + crypto | SMSF pension/ECPI, franking, crypto CGT |
+| 11 | **Chris** — PAYG employee with a novated lease | salary packaging (pre-tax + post-tax deductions), RFBA on the income statement |
 
 ## Workflow (the 6-stop happy path)
 
@@ -53,6 +54,7 @@ Legend — **engine**: backend computes it (✓ live behind flag); **UI**: a web
 | Trust distributions / streaming | ✓ | ✓ | ✓ | `trust_distributions` (ON) | 8 |
 | SMSF / pension / ECPI | ✓ | ✓ entity kind + member balances (#171) | ✓ | `smsf_engine` (ON) | 10 |
 | Accountant schedule export (itemised CSV: per-txn lines, engine schedules, NOT-CLAIMED, substantiation) | ✓ | ✓ Reports/Filing download | ✓ | `accountant_schedule` | all |
+| Novated lease / salary packaging | ✗ | ◑ entity kind only | ◑ RFBA line + generic rule finding | `reportable_amounts` (ON) for the RFBA | 11 |
 | Quillo fee → D10 "cost of managing tax affairs" deduction (auto-recorded on a paid Stripe top-up) | ✓ | ✓ Billing top-up | ✓ | `quillo_fee_deduction` (ON) | all (golden: pfeeon/pfeeoff) |
 
 **Bottom line (2026-06-10).** The *engines* for all 10 personas are live and **every persona flag is
@@ -73,6 +75,51 @@ super contributions, activity-create). So end-to-end in the app today:
   (#182–#184).
 
 Verify flag state against `wrangler.toml` FEATURES (the source of truth) rather than trusting this prose.
+
+### Persona 11 — novated lease (ADR-0004, 2026-10)
+
+ADR-0004 settles that **a persona comes before its module**. P1–P10 had no novated lease, so P11 (Chris)
+was added before any novated-lease engine. Golden: tenant `pnl` in `scripts/check-personas.ts`. The older
+`p11` tenant in that file is the #157 loan-interest fixture, which is unrelated.
+
+**Shape.** Chris is a PAYG employee who salary-packages a car through their employer:
+- The income statement shows $85,000 gross. That is a $95,000 package less $10,000 of pre-tax lease
+  deductions. It also shows $17,000 withheld and an RFBA of $11,000.
+- The bank shows net-pay credits, a payment to the lease provider, fuel (some of it reimbursed through the
+  package) and a uniform.
+
+**What the golden pins today (no engine):**
+- Salary counts once, at the printed gross. Withholding is a credit. Net-pay credits stay out of income.
+- The position is $85,000 − $200 = $84,800 at both endpoints.
+- The RFBA is information only. It is on the payload, it gets an info readiness finding and a pack row, and
+  the flag ON/OFF position is identical.
+- The lease-provider payment (`car:novated`, not deductible), undecided fuel and reimbursed fuel are all
+  excluded. No novated-lease cost reaches deductions.
+- Readiness raises the `au-novated-car` rule as a generic **review** finding. The glossary tip explains the
+  RFBA.
+- **GAP #754** (`needs-decision`). If car work km are recorded, cents-per-km is claimed in full ($2,640 for
+  3,000 km). `car_inputs` has no vehicle, so the engine can't tell the packaged car from a private one, and
+  no finding ties the claim to the lease. This is pinned as-is, and money output is unchanged.
+- **GAP #755** (copy only). A reimbursed row's readiness line says "not yet confirmed as work-related".
+
+**Coverage: engine ✗ / UI ◑ / display ◑.**
+- *Engine ✗:* there is no salary-packaging model. The pre-tax amount, the post-tax employee contribution
+  (ECM) and the lease term aren't captured. The `entities.kind='novated_lease'` row feeds no figure, and
+  nothing feeds income tests.
+- *UI ◑:* the novated lease can be entered as an entity (vehicle and provider) in Settings and onboarding.
+  The RFBA comes in off the payslip or income statement. There is nowhere to enter the packaging amounts
+  or to say which car the km were driven in.
+- *Display ◑:* the RFBA shows on Reports, in readiness and in the accountant pack, and the rule shows as a
+  generic finding. Nothing shows the package itself.
+
+**What closes it:** the ADR-0004 **novated-lease SituationModule** (`src/lib/situations/novated-lease.ts`,
+migration-order step 3). It would have:
+- a `salary_packaging (user_id, fy, entity_id)` table;
+- an information-only `field` holding the pre-tax and post-tax amounts and the RFBA, for income tests;
+- `findings` for the #754 car-claim decision;
+- a `schedule` section for the pack.
+
+It lands flag-gated, with OFF byte-identical, and flips the P11 golden.
 
 ### Audit wave 4 additions (2026-07)
 

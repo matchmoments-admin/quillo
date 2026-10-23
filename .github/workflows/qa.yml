@@ -1,0 +1,48 @@
+name: New-user browser QA
+
+# The automated new-user QA suite (#699, scripts/qa/README.md): the real SPA in Chromium against a local
+# `wrangler dev` with every first-timer journey flag ON, the QA inference stub (no paid model, no
+# secrets) and a scratch D1, at 1280px and 390px. It is its own job, not part of `npm test`: it boots
+# wrangler several times and needs a Chromium binary, so it takes minutes, where the unit gate takes
+# seconds. Known defects are tracked by issue in scripts/qa/known.ts and don't fail the job; any NEW
+# failure does.
+on:
+  pull_request:
+    paths:
+      - "src/**"
+      - "web/**"
+      - "scripts/qa/**"
+      - "migrations/**"
+      - "schema.sql"
+      - "wrangler.toml"
+      - "package.json"
+      - ".github/workflows/qa.yml"
+
+jobs:
+  browser-qa:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm --prefix web ci
+      # playwright is a transitive dependency (promptfoo → playwright-extra); install the browser for
+      # exactly that version.
+      - name: Install Chromium
+        run: npx --no-install playwright install --with-deps chromium
+      - name: Browser QA (npm run qa:browser)
+        run: npm run qa:browser
+      - name: Upload the QA report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-report
+          path: |
+            .qa/report.md
+            .qa/report.json
+            .qa/wrangler-*.log
+          if-no-files-found: ignore

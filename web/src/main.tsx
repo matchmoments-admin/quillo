@@ -36,7 +36,15 @@ import { RouteError } from "./components/RouteError";
 import { CutRoute, PartnerRoute, QuickBooksRoute } from "./lib/cuts";
 import { ConfirmHost } from "./components/ConfirmDialog";
 
-const PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY as string | undefined;
+// QA-only (#699, scripts/qa): a `vite build --mode qa` bundle served by local `wrangler dev` (whose API
+// runs the DEV_AUTH_BYPASS tenant) renders the app without the Clerk session gate. A production build
+// has MODE "production", so Vite drops this branch from the bundle; even a QA bundle refuses any
+// non-loopback host. Guarded by a check-units golden.
+const QA_AUTH_BYPASS =
+  import.meta.env.MODE === "qa" && ["localhost", "127.0.0.1"].includes(window.location.hostname);
+// A QA build needs no real Clerk key (nothing signs in); this placeholder decodes to an unroutable host.
+const PUBLISHABLE_KEY =
+  (import.meta.env.VITE_CLERK_PUBLISHABLE_KEY as string | undefined) || (QA_AUTH_BYPASS ? "pk_test_cWEuaW52YWxpZCQ" : undefined);
 
 const queryClient: QueryClient = new QueryClient({
   // The completion spine + per-tab guides read ["progress"]; the Filing page's year-end position
@@ -88,6 +96,13 @@ function AuthScreen({ children }: { children: React.ReactNode }) {
 
 // Everything under "/" requires a signed-in user; signed-out visitors go to sign-in.
 function Protected() {
+  if (QA_AUTH_BYPASS) {
+    return (
+      <ActiveFyProvider>
+        <App />
+      </ActiveFyProvider>
+    );
+  }
   return (
     <>
       <SignedIn>

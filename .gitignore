@@ -22,3 +22,7 @@ diagrams/quillo-test-arch.png
 
 # agent memory scratch space (per-session, never committed)
 memory/.scratch/
+
+# browser QA suite (scripts/qa, #699): QA-mode SPA bundle + run output
+web/dist-qa/
+.qa/

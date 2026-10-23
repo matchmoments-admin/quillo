@@ -4,6 +4,7 @@ import type { Profile } from "./lib/db";
 import { recordUsage, noteMeteringError } from "./lib/usage";
 import { signBedrockInvoke } from "./lib/sigv4";
 import { AU_DESCRIPTOR, ALL_JURISDICTIONS, type JurisdictionDescriptor } from "./lib/jurisdiction";
+import { llmStubEnabled, stubMessage, STUB_MODEL_ID } from "./lib/llm-stub";
 
 /**
  * Inference factory — the single seam through which ALL Claude calls go.
@@ -247,6 +248,17 @@ export async function getLLM(
   // Optional so all existing call sites are byte-identical: every tenant today is AU.
   descriptor: JurisdictionDescriptor = AU_DESCRIPTOR,
 ): Promise<LLM> {
+  // QA-only (#699): local `wrangler dev` with DEV_AUTH_BYPASS + QA_LLM_STUB and no CLERK_ISSUER gets a
+  // deterministic stub — no network, no usage recorded. Unreachable in production (see llm-stub.ts).
+  if (llmStubEnabled(env)) {
+    const client = new Proxy({} as Anthropic, {
+      get() {
+        throw new Error("QA LLM stub supports metered create() only — use live categorisation.");
+      },
+    });
+    return { client, modelId: STUB_MODEL_ID, create: async (params) => stubMessage(params) };
+  }
+
   // ── THE RESIDENCY SEAM ──
   // This function is the single place every Claude call goes through, which is precisely why the
   // check belongs here rather than at the call sites. A review found CDR-derived transaction text

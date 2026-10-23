@@ -22,6 +22,10 @@ export interface Env {
   // wrangler.toml. Without it, a missing auth config fails CLOSED (401) instead of silently
   // serving the founder's tenant to anyone (ADR-0003 S1).
   DEV_AUTH_BYPASS?: string;
+  // QA-only inference stub (scripts/qa, #699). "1" swaps every model call for a deterministic stub —
+  // honoured ONLY alongside DEV_AUTH_BYPASS="1" with CLERK_ISSUER unset (src/lib/llm-stub.ts), so a
+  // production Worker can never reach it. Never set in wrangler.toml.
+  QA_LLM_STUB?: string;
 
   // Clerk auth. CLERK_ISSUER = Clerk Frontend API URL (JWKS lives under it). When unset the API
   // refuses requests unless DEV_AUTH_BYPASS="1". CLERK_ALLOWED_USERS is an OPTIONAL kill-switch

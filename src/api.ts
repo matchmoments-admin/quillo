@@ -56,6 +56,7 @@ import {
   addPropertyOwner,
   listPropertyOwners,
   addEntityRole,
+  entityRoleExists,
   listEntityRoles,
   listIncomeActivities,
   addIncomeActivity,
@@ -868,7 +869,12 @@ export async function handleApi(
   }
   if (resource === "entity-roles") {
     if (m === "GET" && !id) return json({ entity_roles: await listEntityRoles(env, uid) });
-    if (m === "POST" && !id) { const body = (await req.json()) as Record<string, unknown>; return routedEntityWrite(env, stub, uid, "entity_role", "create", null, body, () => addEntityRole(env, uid, body as { person_id: string; entity_id: string; role: string })); }
+    if (m === "POST" && !id) {
+      const body = (await req.json()) as Record<string, unknown>;
+      // A repeat of an existing role hit the UNIQUE index as a 500; refuse it as a conflict (#699 QA).
+      if (await entityRoleExists(env, uid, body)) return json({ error: "That person already has this role on this entity." }, 409);
+      return routedEntityWrite(env, stub, uid, "entity_role", "create", null, body, () => addEntityRole(env, uid, body as { person_id: string; entity_id: string; role: string }));
+    }
     if (m === "DELETE" && id) return routedEntityDelete(env, stub, uid, "entity_role", id, () => deleteRow(env, uid, "entity_roles", id));
   }
   if (resource === "income-activities") {

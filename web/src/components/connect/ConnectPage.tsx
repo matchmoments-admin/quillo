@@ -14,6 +14,7 @@ import { useLocation, useSearchParams } from "react-router-dom";
 import { useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api } from "../../api";
+import { assertUploadSize } from "../../lib/upload-limits";
 import { useFeatures } from "../../lib/features";
 import { useActiveFy } from "../../lib/activeFy";
 import { Income } from "../../pages/Income";
@@ -394,6 +395,7 @@ function StatementUpload() {
   const upload = useMutation({
     mutationKey: ["parseStatement"],
     mutationFn: async (file: File) => {
+      assertUploadSize(file.size, "statement"); // before creating the account, so a refused file leaves nothing behind
       let accountId = chosen;
       if (accountId === "new") {
         const name = bankName.trim() || "Bank account";

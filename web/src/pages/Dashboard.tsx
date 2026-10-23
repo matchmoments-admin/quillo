@@ -69,7 +69,8 @@ export function Dashboard() {
       )}
 
       {/* Savings run-rate — the "yearly wake-up figure" (factual annualisation), links into the Save tab. */}
-      {has("advisory_layer") && <RunRateStrip fy={fy} />}
+      {/* #697 cut (hide_savings): the strip links only into Savings, so it goes with it. */}
+      {has("advisory_layer") && !has("hide_savings") && <RunRateStrip fy={fy} />}
 
       {/* Working-from-home + car: the #1 PAYG claims, captured here on the Position surface. #245: WFH
           and car are now separate tools (car has nothing to do with WFH).

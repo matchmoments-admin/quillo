@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link, Navigate, useLocation } from "react-router-dom";
 import { api } from "../api";
 import { useFeatures } from "../lib/features";
+import { QuickBooksSettingsLink } from "../lib/cuts";
 import { settingsSectionHome } from "../lib/legacyRoutes";
 import { useHashScroll } from "../lib/useHashScroll";
 import { BUCKETS } from "../types";
@@ -77,6 +78,7 @@ export function Settings() {
         <AiChangesFeed />
         {privacy}
         {has("bank_feed_cdr") && <BankConsents />}
+        <QuickBooksSettingsLink to="/grow/integrations" />
         {!aboutYouLive && <PeopleSection id="people" persons={s.persons ?? []} onDone={invalidate} />}
         {!aboutYouLive && <CarryInsSection id="carry-ins" />}
         {devices}
@@ -96,6 +98,9 @@ export function Settings() {
 
       {/* Bank connections — the CDR consent dashboard (#576, ADR-0003 §6.4). Flag-gated. */}
       {has("bank_feed_cdr") && <BankConsents />}
+
+      {/* #697 cut (hide_quickbooks_nav): QuickBooks left the nav; a connected user gets here. Self-gates. */}
+      <QuickBooksSettingsLink to="/quickbooks" />
 
       {/* People (taxpayers) — occupation/residency drive deduction hints */}
       <PeopleSection persons={s.persons ?? []} onDone={invalidate} />

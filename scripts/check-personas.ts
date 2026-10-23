@@ -11,7 +11,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Env } from "../src/env";
-import { buildReport, useStatusDeniedExpr, propertyUndeterminedGatedExpr } from "../src/lib/report";
+import { buildReport, useStatusDeniedExpr, propertyUndeterminedGatedExpr, deductionGroupForRow } from "../src/lib/report";
 import { runScan, type ScanTxn } from "../src/lib/scan";
 import auV1RulePack from "../src/rulepacks/au-v1.json";
 import { COUNTABLE } from "../src/lib/queries";
@@ -31,6 +31,7 @@ import { capitalReadinessSignals } from "../src/lib/capital-signals";
 import { firstTimerIncomeSignals } from "../src/lib/first-timer-signals";
 import { buildMytaxWorksheet, mytaxWorksheetSignals, mytaxWorksheetResponse, type MytaxWorksheet } from "../src/lib/mytax-worksheet";
 import { assessReadiness, type FilingReadinessSignals } from "../src/lib/readiness";
+import { computeFilingReadiness } from "../src/lib/filing-readiness";
 import { getSituation, type Situation, type Profile } from "../src/lib/db";
 import { upsertSituationPeriod, fillSituationPeriod, deleteSituationPeriod, SituationPeriodError, clearSignOffFy } from "../src/lib/situation-write";
 import { aboutYouWrites, emptyAnswers as ayEmpty, fyBoundsFor as ayFyBounds, type AboutAnswers } from "../web/src/lib/aboutYou";
@@ -3546,6 +3547,102 @@ async function main() {
     // NB: the model doesn't run here, so this pins only that the flag has no OTHER effect on the position; the
     // categorisation side is covered by "ON changes no model text" above (identical input ⇒ identical output path).
     check("pfts8b: the flag has no effect on the position outside the model input (ON = OFF)", posOn === posOff);
+  }
+
+  // ── Persona P11 (novated lease): a PAYG employee who salary-packages a car through their employer.
+  //    docs/personas.md "P11". ADR-0004: a persona comes BEFORE its module, so this pins TODAY's behaviour
+  //    with no novated-lease engine. (Tenant id `pnl`: the older `p11` tenant above is the #157
+  //    loan-interest fixture, unrelated.)
+  //    - Pre-tax packaging: the income statement's gross is ALREADY after the pre-tax lease deductions, so
+  //      salary counts once at the printed gross. Post-tax (ECM) contributions come out of net pay and are
+  //      never a deduction; there is no field for them (engine ✗).
+  //    - The RFBA ($11,000, the car's grossed-up taxable value) is on the income statement: REPORTABLE,
+  //      never assessable.
+  //    - Bank lines: two net-pay credits, a lease-provider payment the rule pack labels car:novated
+  //      (not deductible), undecided fuel, fuel the lease provider reimbursed, and one real work expense. ──
+  {
+    const u = "pnl";
+    seedTenant(u, "P11 novated lease");
+    run(`INSERT INTO profiles (user_id) VALUES (?)`, u);
+    run(`INSERT INTO entities (id, user_id, kind, name, person_id, entity_type) VALUES ('pnleEmp', ?, 'employment', 'Metro Health', ?, 'payg_employment')`, u, `person_self_${u}`);
+    run(`INSERT INTO entities (id, user_id, kind, name, detail_json, person_id) VALUES ('pnleNL', ?, 'novated_lease', 'Car lease', ?, ?)`, u, JSON.stringify({ vehicle: "Hatchback", provider: "Lease provider" }), `person_self_${u}`);
+    // Income statement: $85k gross (package $95k less $10k pre-tax lease deductions), $17k withheld, RFBA $11k.
+    inc("pnlSal", u, "salary_payg", 8500000, { withholding_cents: 1700000, detail_json: JSON.stringify({ employer: "Metro Health", rfba_cents: 1100000, resc_cents: 0 }) });
+    const pay = (id: string, cents: number) =>
+      run(`INSERT INTO transactions (id, user_id, source, status, kind, merchant, amount_cents, amount_aud_cents, txn_date, bucket, direction) VALUES (?, ?, 'upload', 'categorised', 'bank_line', 'METRO HEALTH PAY', ?, ?, ?, 'income_personal', 'credit')`, id, u, cents, cents, FY_DATE);
+    pay("pnlPay1", 260000);
+    pay("pnlPay2", 260000);
+    const spend = (id: string, merchant: string, cents: number, label: string | null, ded: string, reimbursed = 0) =>
+      run(`INSERT INTO transactions (id, user_id, source, status, kind, merchant, amount_cents, amount_aud_cents, txn_date, bucket, ato_label, direction, deductibility, reimbursed) VALUES (?, ?, 'upload', 'categorised', 'bank_line', ?, ?, ?, ?, 'payg', ?, 'debit', ?, ?)`, id, u, merchant, cents, cents, FY_DATE, label, ded, reimbursed);
+    spend("pnlLease", "LEASE PROVIDER PTY LTD", 45000, "car:novated", "likely_not"); // the au-novated-car rule's label
+    spend("pnlFuel", "AMPOL", 9000, null, "undetermined");
+    spend("pnlFuelR", "AMPOL", 7000, null, "likely_deductible", 1); // reimbursed through the package
+    spend("pnlUni", "UNIFORM SHOP", 20000, "D3", "likely_deductible");
+
+    const NL_ON = { ...env, FEATURES: `${(env as { FEATURES: string }).FEATURES},reportable_amounts` } as unknown as Env;
+    const nlDeps = { loadRulePack: async () => auV1RulePack as unknown, now: new Date("2026-10-03T00:00:00Z") };
+    const r = await buildReport(NL_ON, u, 2025);
+    const rOff = await buildReport(env, u, 2025);
+
+    // Salary + the PAYG position.
+    check("P11: salary counts ONCE at the income statement's gross (already after pre-tax packaging) — $85,000",
+      r.total_income_cents === 8500000 && r.income.by_type.length === 1 && r.income.by_type[0].income_type === "salary_payg" && r.income.by_type[0].gross_cents === 8500000);
+    check("P11: PAYG withheld ($17,000) is carried as a credit, never deducted", r.income.by_type[0].withholding_cents === 1700000);
+    check("P11: net-pay bank credits ($5,200) stay out of income (shown apart, no double count with the income statement)",
+      r.income_by_bucket.some((b) => b.bucket === "income_personal" && b.total_cents === 520000) && r.total_income_cents === 8500000);
+    check("P11: indicative position = $85,000 − $200 uniform = $84,800 (both endpoints)", r.taxable_position_cents === 8480000 && r.taxable_position_confirmed_cents === 8480000);
+
+    // RFBA: information only.
+    check("P11: RFBA $11,000 is on the payload (flag ON)", r.reportable_amounts?.rfba_cents === 1100000 && r.reportable_amounts?.resc_cents === 0);
+    check("P11: RFBA is NOT in the position — flag ON and OFF give the identical position and income",
+      r.taxable_position_cents === rOff.taxable_position_cents && r.total_income_cents === rOff.total_income_cents && rOff.reportable_amounts === undefined);
+
+    // The lease itself is never claimed as a car deduction.
+    const brk = (id: string) => db.prepare(`SELECT bucket, ato_label, deductibility, reimbursed FROM transactions WHERE id = ?`).get(id) as { bucket: string; ato_label: string | null; deductibility: string; reimbursed: number };
+    const dg = (id: string) => { const b = brk(id); return deductionGroupForRow(b.bucket, b.deductibility, true, b.reimbursed, 0, 0); };
+    check("P11: the lease-provider payment (car:novated, not deductible), undecided fuel and reimbursed fuel are all EXCLUDED",
+      dg("pnlLease") === "excluded" && dg("pnlFuel") === "excluded" && dg("pnlFuelR") === "excluded" && dg("pnlUni") === "deduction");
+    check("P11: deductions are exactly the $200 uniform — no novated-lease cost reaches the position", r.total_deductions_cents === 20000 && r.work_method === undefined);
+
+    // Readiness + explain output as it is today.
+    const ready = await computeFilingReadiness(NL_ON, u, 2025, nlDeps);
+    const readyOff = await computeFilingReadiness(env, u, 2025, nlDeps);
+    const fid = (x: typeof ready) => x.findings.map((f) => `${f.id}:${f.severity}`).sort().join("|");
+    check("P11 readiness (ON): RFBA info finding + the au-novated-car defer finding + the undecided fuel line — nothing else",
+      fid(ready) === "payg_unresolved:review|reportable_amounts:info|rule:au-novated-car:review");
+    check("P11 readiness (OFF): the reportable-amounts finding is absent; the rest is unchanged",
+      fid(readyOff) === "payg_unresolved:review|rule:au-novated-car:review");
+    const nlLine = (label: string, amount: number) => ready.position.lines.find((l) => l.label === label && l.amount_cents === amount);
+    check("P11 readiness lines: the lease payment is an EXCLUDED line (private / non-deductible), the uniform a deduction line",
+      nlLine("payg · car:novated", 45000)?.group === "excluded" && nlLine("payg · D3", 20000)?.group === "deduction");
+    // GAP #755: a reimbursed row is explained as "not yet confirmed as work-related" (excludedWhy ignores
+    // `reimbursed`). Copy only; the money is right. Pinned until #755 lands.
+    check("P11 readiness lines (GAP #755): the reimbursed fuel line carries the generic 'not yet confirmed' why",
+      /^Not yet confirmed as work-related/.test(nlLine("payg", 7000)?.why ?? ""));
+    check("P11 readiness: the position caption still says it is NOT tax payable or a refund", ready.position.indicative_taxable_position_cents === 8480000 && /NOT your tax payable or refund/.test(ready.position.caption));
+    const { GLOSSARY } = await import("../web/src/content/glossary");
+    check("P11 explain: the novated_lease tip explains the WHAT and the WHY (RFBA on the income statement)",
+      /salary-packaged/.test(GLOSSARY.novated_lease.short) && /reportable fringe benefit/i.test(GLOSSARY.novated_lease.why ?? ""));
+
+    // Accountant pack.
+    const sched = await buildAccountantSchedule(NL_ON, u, 2025, { report: r });
+    const ra = sched.sections.find((s) => s.key === "reportable_amounts");
+    check("P11 pack: one informational RFBA row for the employer, no tie_back",
+      ra?.rows.length === 1 && ra.rows[0][0] === "Metro Health" && ra.rows[0][1] === "11000.00" && ra.tie_back === undefined);
+    check("P11 pack: every section ties back to the report", tieBackChecks(sched).every((t) => t.ok));
+
+    // GAP #754: car work km recorded alongside the novated lease. car_inputs has no vehicle, so the engine
+    // can't tell the packaged car from a private one: cents-per-km is claimed in full ($2,640) and no finding
+    // links it to the lease. Pinned as-is (money output unchanged); the ADR-0004 novated-lease module decides.
+    run(`INSERT INTO car_inputs (user_id, fy, work_km) VALUES (?, 2025, 3000)`, u);
+    const rKm = await buildReport(NL_ON, u, 2025);
+    check("P11 (GAP #754): 3,000 work km ⇒ cents-per-km $2,640 is claimed despite the novated lease (position $82,160)",
+      rKm.work_method?.car_cents === 264000 && rKm.total_deductions_cents === 284000 && rKm.taxable_position_cents === 8216000);
+    const readyKm = await computeFilingReadiness(NL_ON, u, 2025, nlDeps);
+    check("P11 (GAP #754): readiness raises no finding that ties the car claim to the novated lease (same findings as without km)",
+      fid(readyKm) === fid(ready));
+    check("P11 (GAP #754): the pack's work-methods section ties back with the car claim in it",
+      tieBackChecks(await buildAccountantSchedule(NL_ON, u, 2025, { report: rKm })).every((t) => t.ok));
   }
 
   console.log(`\n=== personas: ${pass} passed, ${fail} failed ===`);

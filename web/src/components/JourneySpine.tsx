@@ -105,7 +105,9 @@ export function JourneySpine({ pathname }: { pathname: string }) {
       {progressStrip ? <div className="hidden lg:block">{spineNav}</div> : spineNav}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="min-w-0 text-xs text-muted">{parts.join(" · ")}</span>
-        <div className="flex flex-none items-center gap-2">
+        {/* Wraps (not flex-none): at 390px the CTA + "What do I do here?" pill were ~27px wider than the
+            screen, which gave every legacy page a horizontal scroll on a phone (#696). */}
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
           {data && (
             <button
               type="button"

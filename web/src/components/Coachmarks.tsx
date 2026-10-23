@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
+import { useFeatures } from "../lib/features";
 
 // First-login walkthrough (C5): a 5-step guided tour of the core workflow, shown ONCE per tenant on
 // the first authenticated session after onboarding. Cancellable at any step ("Skip tour"). Persisted
@@ -53,6 +54,7 @@ export function Coachmarks({ pathname }: { pathname: string }) {
   const qc = useQueryClient();
   const navigate = useNavigate();
   const [i, setI] = useState(0);
+  const { has } = useFeatures();
   const sit = useQuery({ queryKey: ["situation"], queryFn: () => api.situation() });
   const seen = useMutation({
     mutationFn: () => api.setUiState({ tour_seen: true }),
@@ -76,8 +78,12 @@ export function Coachmarks({ pathname }: { pathname: string }) {
   const last = i === STEPS.length - 1;
   const dismiss = () => seen.mutate();
 
+  // Sit ABOVE the "Ask Quillo" launcher (h-14, z-[60], bottom-right) and, on a phone, the bottom tab
+  // bar. At bottom-4 the launcher covered the tour's Next button and the bar covered its body (#696).
+  // --tabbar-clearance collapses to 2rem at lg, so one value clears the launcher at every width.
+  const lift = has("mobile_bottom_tabs") ? "bottom-[calc(var(--tabbar-clearance)+4.5rem)]" : "bottom-[5.5rem]";
   return (
-    <div className="fixed bottom-4 right-4 z-50 w-[20rem] max-w-[calc(100vw-2rem)] rounded-2xl border border-line bg-card p-4 shadow-card">
+    <div className={`fixed ${lift} right-4 z-50 w-[20rem] max-w-[calc(100vw-2rem)] rounded-2xl border border-line bg-card p-4 shadow-card`}>
       <div className="flex items-start justify-between gap-2">
         <div className="font-display text-base tracking-wide text-forest">{step.title}</div>
         <button onClick={dismiss} aria-label="Skip tour" className="flex-none text-xs font-semibold text-ink-3 transition hover:text-ink">

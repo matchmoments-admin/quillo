@@ -855,6 +855,19 @@ export async function addEntityRole(env: Env, userId: string, r: { person_id: st
   return id;
 }
 
+/**
+ * Does this exact person → entity role already exist? entity_roles is UNIQUE on (user_id, person_id,
+ * entity_id, role), so a repeat POST (a double-submit, or re-adding the director role addEntity already
+ * seeds for a new company) hit the index and surfaced as a 500 (#699 QA). The route refuses it as a 409.
+ */
+export async function entityRoleExists(env: Env, userId: string, r: { person_id?: unknown; entity_id?: unknown; role?: unknown }): Promise<boolean> {
+  if (typeof r.person_id !== "string" || typeof r.entity_id !== "string" || typeof r.role !== "string") return false;
+  const row = await env.DB.prepare(`SELECT 1 AS x FROM entity_roles WHERE user_id = ? AND person_id = ? AND entity_id = ? AND role = ? LIMIT 1`)
+    .bind(userId, r.person_id, r.entity_id, r.role)
+    .first<{ x: number }>();
+  return !!row;
+}
+
 export async function listEntityRoles(env: Env, userId: string) {
   return (await env.DB.prepare(`SELECT id, person_id, entity_id, role, ownership_pct, start_date, end_date FROM entity_roles WHERE user_id = ? ORDER BY created_at`).bind(userId).all()).results ?? [];
 }

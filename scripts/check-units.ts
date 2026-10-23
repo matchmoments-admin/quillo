@@ -7783,5 +7783,40 @@ console.log("A6 CDR data controls (#639)");
     /e\.kind === "novated_lease"/.test(carSrc) && /<Term k="novated_lease">/.test(carSrc) && /<NovatedLeaseCarNote \/>/.test(carSrc) && /<NovatedLeaseCarNote /.test(repSrc));
 }
 
+// ── #699 QA: a duplicate entity role is a 409, not a UNIQUE-constraint 500 ───────────────────
+console.log("entity role duplicate guard (#699)");
+{
+  const { DatabaseSync: Sqlite699 } = await import("node:sqlite");
+  const { addEntity: addEntity699, addEntityRole: addEntityRole699, entityRoleExists } = await import("../src/lib/situation-write");
+  const sq = new Sqlite699(":memory:");
+  const migDir699 = path.join(process.cwd(), "migrations");
+  for (const f of fs.readdirSync(migDir699).filter((f) => f.endsWith(".sql")).sort()) sq.exec(fs.readFileSync(path.join(migDir699, f), "utf8"));
+  const stmt = (sql: string) => {
+    let params: unknown[] = [];
+    const st = {
+      bind: (...a: unknown[]) => { params = a.map((x) => (x === undefined ? null : x)); return st; },
+      first: async () => (sq.prepare(sql).get(...(params as never[])) as unknown) ?? null,
+      all: async () => ({ results: sq.prepare(sql).all(...(params as never[])) }),
+      run: async () => { const r = sq.prepare(sql).run(...(params as never[])); return { success: true, meta: { changes: Number(r.changes ?? 0) } }; },
+    };
+    return st;
+  };
+  const env699 = { DB: { prepare: stmt, batch: async (ss: ReturnType<typeof stmt>[]) => Promise.all(ss.map((x) => x.all())) } } as unknown as Env;
+  const U = "u699";
+  sq.prepare(`INSERT INTO tenants (user_id, display_name) VALUES (?, 'QA')`).run(U);
+  sq.prepare(`INSERT INTO persons (id, user_id, display_name, role) VALUES (?, ?, 'You', 'self')`).run(`person_self_${U}`, U);
+  const co = await addEntity699(env699, U, { kind: "company", name: "James Holdings Pty Ltd" });
+  const self = `person_self_${U}`;
+  check("a new company seeds the self → director role", await entityRoleExists(env699, U, { person_id: self, entity_id: co, role: "director" }));
+  check("a different role on the same entity is not a duplicate", !(await entityRoleExists(env699, U, { person_id: self, entity_id: co, role: "shareholder" })));
+  check("another tenant's identical role is not a duplicate", !(await entityRoleExists(env699, "someone-else", { person_id: self, entity_id: co, role: "director" })));
+  check("a malformed body is not a duplicate (the write path validates it)", !(await entityRoleExists(env699, U, { person_id: 1, entity_id: co, role: "director" })));
+  const dupThrows = await addEntityRole699(env699, U, { person_id: self, entity_id: co, role: "director" }).then(() => false, (e) => /UNIQUE/i.test(String(e)));
+  check("…and without the guard the repeat hits the UNIQUE index (why the route checks first)", dupThrows);
+  const api699 = fs.readFileSync(path.join(process.cwd(), "src/api.ts"), "utf8");
+  check("POST /api/entity-roles refuses an existing role with a 409 before writing",
+    /if \(await entityRoleExists\(env, uid, body\)\) return json\(\{ error: [^}]+\}, 409\);\s*\n\s*return routedEntityWrite\(env, stub, uid, "entity_role", "create"/.test(api699));
+}
+
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);
 process.exit(fail === 0 ? 0 : 1);

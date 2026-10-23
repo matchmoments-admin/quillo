@@ -86,7 +86,9 @@ try {
     console.log("\n▶ legacy server (production flag set)");
     const server = await startServer({ name: "legacy", port: PORT, flags: prodFeatures() });
     try {
-      for (const vp of VPS) await routeSweep({ browser, base: server.base, vp, rec }, "flags-off", {}, { expect404: ["/start"] });
+      // /start is gated by ft_journey: a 404 only while prod has it OFF (it went ON 2026-10-24, map #692).
+      const prodHasFt = prodFeatures().includes("ft_journey");
+      for (const vp of VPS) await routeSweep({ browser, base: server.base, vp, rec }, "flags-off", {}, { expect404: prodHasFt ? [] : ["/start"] });
     } finally {
       await server.stop();
     }

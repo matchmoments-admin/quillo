@@ -167,3 +167,48 @@ export async function logTag(value: string): Promise<string> {
   const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
   return Array.from(new Uint8Array(d).slice(0, 6), (b) => b.toString(16).padStart(2, "0")).join("");
 }
+
+// ── Error text that reaches the browser (security sweep #694) ──────────────────────────────────────────
+
+/** What the client sees instead of a database error: schema names and SQL are internals, not help. */
+export const INTERNAL_ERROR_MESSAGE = "Something went wrong on our side. Please try again, and contact support if it keeps happening.";
+
+const DB_ERROR = /\bD1_(?:ERROR|EXEC_ERROR|TYPE_ERROR|COLUMN_NOTFOUND)\b|\bSQLITE_[A-Z]+\b|\bno such (?:table|column)\b|\b(?:UNIQUE|NOT NULL|FOREIGN KEY|CHECK) constraint failed\b/i;
+const AWS_ARN = /\barn:aws[a-z-]*:[^\s"',)]+/gi;
+
+/**
+ * Make an error message safe to return to the client. A database error becomes INTERNAL_ERROR_MESSAGE
+ * (D1 messages name tables, columns and constraints). An AWS ARN (a Bedrock AccessDenied message carries
+ * the IAM user ARN, and with it the account id) is replaced by `arn:aws:…`. Everything else, including the
+ * deliberate user-facing validation messages the handlers throw, passes through unchanged. The full
+ * original still goes to Workers Logs at the call site.
+ */
+export function publicErrorMessage(message: string | null | undefined): string {
+  const m = typeof message === "string" && message.trim() ? message : "internal error";
+  if (DB_ERROR.test(m)) return INTERNAL_ERROR_MESSAGE;
+  return m.replace(AWS_ARN, "arn:aws:…");
+}
+
+/**
+ * Apply publicErrorMessage to an /api error response's `{ error }` field. Many handlers answer 400/409 with
+ * `(e as Error).message`, so this runs once at the /api boundary instead of at each of them. Success and
+ * non-JSON responses pass through untouched (never buffered); only error bodies are read.
+ */
+export async function scrubApiErrorResponse(res: Response, where: string): Promise<Response> {
+  if (res.status < 400 || !(res.headers.get("content-type") ?? "").includes("application/json")) return res;
+  const text = await res.text();
+  const headers = new Headers(res.headers);
+  headers.delete("content-length");
+  const init = { status: res.status, statusText: res.statusText, headers };
+  let body: unknown;
+  try { body = JSON.parse(text); } catch { return new Response(text, init); }
+  if (body && typeof body === "object" && typeof (body as { error?: unknown }).error === "string") {
+    const original = (body as { error: string }).error;
+    const safe = publicErrorMessage(original);
+    if (safe !== original) {
+      console.warn(`api error redacted for the client: ${where}: ${original.slice(0, 300)}`);
+      return new Response(JSON.stringify({ ...(body as object), error: safe }), init);
+    }
+  }
+  return new Response(text, init);
+}

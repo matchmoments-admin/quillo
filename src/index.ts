@@ -16,7 +16,7 @@ import { featureOn } from "./lib/features";
 import { handleBeforeYouStart } from "./lib/before-you-start";
 import { runScheduledSecurityChecks } from "./lib/security-dashboard";
 import { emptyTally, publishLifecycleRecord } from "./lib/retention-schedule";
-import { withSecurityHeaders, summariseCspReport, logTag } from "./lib/security-headers";
+import { withSecurityHeaders, summariseCspReport, logTag, publicErrorMessage, scrubApiErrorResponse } from "./lib/security-headers";
 import { ipRateLimit, userRateLimit, publishAccessSource } from "./lib/access-control";
 import { BACKUP_CRON, runD1Backup } from "./lib/backups";
 
@@ -269,7 +269,8 @@ const handler = {
       // never a raw Cloudflare 1101 ("Worker threw exception") HTML page that the UI then
       // shows verbatim. Log with method+path so Workers Logs pinpoint the failing route.
       try {
-        return await handleApi(req, env, auth.user, stubFor(env, auth.user.userId));
+        // Error bodies pass through scrubApiErrorResponse: no SQL / schema / AWS ARNs to the browser (#694).
+        return await scrubApiErrorResponse(await handleApi(req, env, auth.user, stubFor(env, auth.user.userId)), `${req.method} ${url.pathname}`);
       } catch (e) {
         // A blocked delete (dependent financial records still reference the row) is a
         // 409, not a 500 — return the blockers so the UI can offer "archive instead".
@@ -278,7 +279,7 @@ const handler = {
         }
         const err = e as Error;
         console.error(`api error: ${req.method} ${url.pathname}: ${err?.stack ?? err?.message ?? err}`);
-        return Response.json({ error: err?.message ?? "internal error" }, { status: 500 });
+        return Response.json({ error: publicErrorMessage(err?.message) }, { status: 500 }); // full text logged above
       }
     }
 

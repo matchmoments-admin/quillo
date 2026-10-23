@@ -12,15 +12,38 @@ export const DEFER = "Whether it's actually claimable is confirmed in your year-
 export interface GlossaryEntry {
   /** Canonical display term (used as the /glossary heading + the Term default text). */
   term: string;
-  /** Short tooltip body — keep to ~2–4 short sentences. */
+  /** Short tooltip body — keep to ~2–4 short sentences. Shown as "What it is" in the Explain card. */
   short: string;
+  /** Optional "Why it matters for your tax": what this changes in the user's return or records.
+   *  General information only (scanned by the tax-advice denylist). Absent ⇒ the card shows `short` alone. */
+  why?: string;
+  /** Optional official page to read more. Only https ato.gov.au / tpb.gov.au links (a unit test checks). */
+  ato?: { label: string; url: string };
+  /** Optional related glossary keys, shown as chips to hop between terms (each must resolve). */
+  related?: readonly string[];
 }
+
+// Official pages reused by the Explain cards (same URLs the Before you start page and rule pack use).
+const ATO = {
+  mytax: { label: "Lodge online with myTax (ATO)", url: "https://www.ato.gov.au/individuals-and-families/your-tax-return/how-to-lodge-your-tax-return/lodge-your-tax-return-online-with-mytax" },
+  agent: { label: "Lodge with a registered tax agent (ATO)", url: "https://www.ato.gov.au/individuals-and-families/your-tax-return/how-to-lodge-your-tax-return/lodge-your-tax-return-with-a-registered-tax-agent" },
+  deductions: { label: "Claiming deductions (ATO)", url: "https://www.ato.gov.au/individuals-and-families/income-deductions-offsets-and-records/deductions-you-can-claim/claiming-deductions" },
+  records: { label: "Records you need to keep (ATO)", url: "https://www.ato.gov.au/individuals-and-families/income-deductions-offsets-and-records/records-you-need-to-keep" },
+  residency: { label: "Your tax residency (ATO)", url: "https://www.ato.gov.au/individuals-and-families/coming-to-australia-or-going-overseas/your-tax-residency" },
+  whm: { label: "Working holiday makers (ATO)", url: "https://www.ato.gov.au/individuals-and-families/coming-to-australia-or-going-overseas/coming-to-australia/working-holiday-makers" },
+  foreign: { label: "Foreign and temporary resident income (ATO)", url: "https://www.ato.gov.au/individuals-and-families/income-deductions-offsets-and-records/income-you-must-declare/foreign-and-worldwide-income/foreign-and-temporary-resident-income" },
+  mygov: { label: "Link myGov to the ATO", url: "https://www.ato.gov.au/online-services/online-services-for-individuals-and-sole-traders/ato-online-services-and-mygov/create-a-mygov-account-and-link-it-to-the-ato" },
+  amend: { label: "Amend your tax return (ATO)", url: "https://www.ato.gov.au/individuals-and-families/your-tax-return/amend-your-tax-return/how-to-request-an-amendment-to-your-tax-return" },
+} as const;
 
 export const GLOSSARY = {
   // ── Buckets (mirror BUCKET_LABEL keys in components/ui.tsx) ───────────────────────────────
   payg: {
     term: "PAYG",
     short: `Spending in your personal/individual context — you're an employee taxed under PAYG (Pay As You Go) withholding. ${DEFER}`,
+    why: "Your employer already withholds tax from your pay, so your return mainly adds up your income and any deductions, then compares that with the tax already withheld.",
+    ato: ATO.mytax,
+    related: ["income_statement", "deduction"],
   },
   company: {
     term: "Company",
@@ -64,22 +87,35 @@ export const GLOSSARY = {
   deduction: {
     term: "Deduction",
     short: `A deduction is a work- or income-related cost you subtract from your income, so you're taxed on less (and often get more back). To claim one you generally must have paid it yourself, it must relate to earning your income, and you need a record (receipt/invoice). ${DEFER}`,
+    why: "Deductions lower the income you are taxed on, so keeping the receipt and noting what each cost was for is what lets a claim stand up if the ATO asks.",
+    ato: ATO.deductions,
+    related: ["golden_rules", "record_keeping_exception", "depreciation"],
   },
   depreciation: {
     term: "Depreciation (decline in value)",
     short: `Instead of claiming a lasting item (a laptop, tools, rental fixtures) all in one year, you spread its cost over its effective life — a portion is deductible each year until it's written down. Items under the instant-write-off threshold can be claimed in full. ${DEFER}`,
+    why: "A lasting item is spread over several returns rather than one, so Quillo keeps it on your asset list and carries the remaining value into next year.",
+    ato: ATO.deductions,
+    related: ["deduction", "asset"],
   },
   capital_gains: {
     term: "Capital gains tax (CGT)",
     short: `When you sell an asset — shares, crypto, an investment property — the profit (proceeds minus cost base) is added to your income. Hold it more than 12 months and generally only HALF the gain is taxed (the 50% CGT discount); capital losses offset capital gains and any excess carries forward. ${DEFER}`,
+    why: "A sale can add to your income for the year, and the purchase records (cost base) decide how much. Keeping the buy and sell records together is what makes it straightforward.",
+    related: ["franking_credit", "asset"],
   },
   franking_credit: {
     term: "Franking credit",
     short: `A franking (imputation) credit is company tax already paid on a franked dividend. You declare the dividend PLUS the credit as income, then the credit reduces your tax — so the profit isn't taxed twice, and it can even add to a refund. ${DEFER}`,
+    why: "Both the dividend and its franking credit go on your return, so the dividend statement from the company or share registry is the record to keep.",
+    related: ["capital_gains"],
   },
   home_office: {
     term: "Working-from-home costs",
     short: `As an employee, the rent or mortgage on your own home isn't deductible — but the extra RUNNING costs of working from home (electricity, internet, phone, some equipment) generally are, via the fixed-rate (per hour) or actual-cost method. You need a record of your actual hours. ${DEFER}`,
+    why: "Working-from-home costs are claimed with a method that needs a record of your hours, so a diary or timesheet kept through the year matters more than any single receipt.",
+    ato: ATO.deductions,
+    related: ["deduction", "golden_rules"],
   },
 
   // ── Categorisation mechanics ──────────────────────────────────────────────────────────────
@@ -106,6 +142,8 @@ export const GLOSSARY = {
     term: "GST",
     short:
       "Goods and Services Tax — the 10% included in most Australian prices (the GST portion is 1/11th of a GST-inclusive amount). Overseas purchases carry no Australian GST.",
+    why: "If your business is registered for GST, the GST in your prices and purchases is reported on your BAS, separately from your income tax return.",
+    related: ["abn", "bas", "itc", "gst_registered"],
   },
   itc: {
     term: "GST credits (ITC)",
@@ -114,6 +152,8 @@ export const GLOSSARY = {
   abn: {
     term: "ABN",
     short: "Australian Business Number — your business's public identifier. It appears on the report header so your accountant knows which entity it's for.",
+    why: "Income earned under an ABN is business income: you keep your own records of it and of the costs of earning it, because no employer reports it for you.",
+    related: ["gst", "bas", "income_business"],
   },
   bas: {
     term: "BAS",
@@ -145,6 +185,8 @@ export const GLOSSARY = {
     term: "Novated lease",
     short:
       "A car salary-packaged through your employer. Its costs are part of that arrangement — not company expenses — so they're treated separately.",
+    why: "A novated lease can change what appears on your income statement (a reportable fringe benefit amount) and how your car costs are treated, so the lease statements are worth keeping with your tax records.",
+    related: ["paid_via"],
   },
   gst_registered: {
     term: "GST registered",
@@ -267,56 +309,88 @@ export const FT_GLOSSARY = {
     term: "Prefill",
     short:
       "When you lodge in myTax, the ATO fills in some details it already holds, like income from your employer and bank interest. Check each pre-filled item matches your own records before you lodge.",
+    why: "Pre-filled figures can be incomplete early in the season. Checking each one against your own records before you lodge avoids having to amend your return later.",
+    ato: ATO.mytax,
+    related: ["income_statement", "mytax"],
   },
   income_statement: {
     term: "Income statement",
     short:
       "Your employer's year-end summary of what they paid you and the tax they withheld, reported to the ATO through payroll. You'll find it in ATO online services through myGov once it's marked tax ready.",
+    why: "It is the main record of your wages and the tax already withheld. Waiting until it is marked tax ready means your return starts from final figures.",
+    ato: ATO.mygov,
+    related: ["prefill", "mytax"],
   },
   notice_of_assessment: {
     term: "Notice of assessment",
     short:
       "The ATO's letter after it processes your return, setting out how it assessed your tax for the year. Keep it: it's the starting point if anything needs correcting later.",
+    why: "It confirms what the ATO assessed. If something on it looks wrong, it is the starting point for asking for an amendment.",
+    ato: ATO.amend,
+    related: ["mytax"],
   },
   tax_residency: {
     term: "Tax residency",
     short:
       "Whether you're an Australian resident for tax purposes. It isn't the same as your visa or citizenship, and it changes which income counts and how it's taxed. The ATO has a tool to help you work it out.",
+    why: "Residency decides which of your income Australia taxes and which rates apply, so it is one of the first things to settle before you lodge.",
+    ato: ATO.residency,
+    related: ["temporary_resident", "working_holiday_maker"],
   },
   temporary_resident: {
     term: "Temporary resident",
     short:
       "Someone on a temporary visa who is generally treated as a temporary resident for tax. Some foreign income may not need to be declared in Australia. If you're unsure, confirm with a registered tax agent.",
+    why: "As a temporary resident, some income earned overseas may be left out of your Australian return, which changes what you need to gather.",
+    ato: ATO.foreign,
+    related: ["tax_residency", "working_holiday_maker"],
   },
   working_holiday_maker: {
     term: "Working holiday maker",
     short:
       "Someone in Australia on a working holiday visa (subclass 417 or 462). The ATO applies its own working holiday maker rates to this income, so you don't work them out yourself.",
+    why: "Working holiday income is taxed under its own rules, so your employer needs to know you are on this visa and your return reports that income on that basis.",
+    ato: ATO.whm,
+    related: ["tax_residency", "temporary_resident"],
   },
   help_debt: {
     term: "HELP debt",
     short:
       "A study loan from the Higher Education Loan Program. Once your income passes the ATO's repayment threshold, a compulsory repayment is worked out through your return.",
+    why: "A HELP debt can change the result of your return once your income passes the repayment threshold, so it is worth knowing whether you have one before you lodge.",
+    related: ["income_statement"],
   },
   golden_rules: {
     term: "The three golden rules",
     short:
       "The ATO's test for a work-related deduction: you spent the money yourself and weren't paid back, it's directly related to earning your income, and you have a record to prove it. Each claim needs all three.",
+    why: "Every work-related claim is checked against these three tests. Quillo asks for the receipt or record because without it a claim usually cannot be supported.",
+    ato: ATO.deductions,
+    related: ["deduction", "record_keeping_exception"],
   },
   mytax: {
     term: "myTax",
     short:
       "The ATO's free online tool for lodging your own return, reached through myGov. Quillo prepares a worksheet in myTax order; you lodge in myTax yourself.",
+    why: "It is where your return is actually lodged. Quillo gets your records ready in myTax order; you enter the figures and lodge it yourself.",
+    ato: ATO.mytax,
+    related: ["prefill", "registered_tax_agent"],
   },
   registered_tax_agent: {
     term: "Registered tax agent",
     short:
       "A professional registered with the Tax Practitioners Board who can give you tax advice and lodge for you. Quillo is not one: it gives general information only.",
+    why: "Quillo gives general information only. If your situation is unusual, a registered tax agent can confirm what applies to you and can lodge for you.",
+    ato: ATO.agent,
+    related: ["mytax"],
   },
   record_keeping_exception: {
     term: "Record-keeping exception",
     short:
       "For a small total of work-related expenses, the ATO doesn't require written receipts, but you still need to show you spent the money and how you worked out the amount. The ATO sets the limit; check its records page.",
+    why: "Even under the exception you still need to show how you worked out each amount, so a simple note of what you spent and why still matters.",
+    ato: ATO.records,
+    related: ["golden_rules", "deduction"],
   },
 } as const satisfies Record<string, GlossaryEntry>;
 

@@ -3,8 +3,9 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api } from "../api";
 import { useFeatures } from "../lib/features";
-import { Card, Button, Input, money, parseMoneyToCents } from "./ui";
+import { Card, Button, Input, Term, money, parseMoneyToCents } from "./ui";
 import type { AssetRow } from "../types";
+import { NOVATED_LEASE_CAR_NOTE } from "../content/car";
 
 // Car deductions — its own tool (#245), split out of the work-from-home panel: car has nothing to do
 // with WFH. Two ATO methods, you claim ONE:
@@ -60,6 +61,8 @@ export function CarMethodsCard({ fyNum }: { fyNum: number }) {
         </div>
       </div>
 
+      <NovatedLeaseCarNote />
+
       {centsPerKmEnabled && (
         <label className="block text-sm">
           <span className="text-xs font-medium uppercase tracking-wide text-muted">Work-related car km this year (cents-per-km)</span>
@@ -84,6 +87,25 @@ export function CarMethodsCard({ fyNum }: { fyNum: number }) {
 
       {has("car_logbook") && <VehicleLogbooks assets={assets.data ?? []} />}
     </Card>
+  );
+}
+
+/**
+ * F14 (design audit #696): a novated lease pays the car's running costs through salary packaging, so a
+ * cents-per-km or logbook claim on the same car can double-count. Renders only when the situation has a
+ * novated-lease entity; changes no figure. Shares the ["situation"] query cache with the rest of the app.
+ */
+export function NovatedLeaseCarNote({ className = "" }: { className?: string }) {
+  const sit = useQuery({ queryKey: ["situation"], queryFn: () => api.situation() });
+  if (!(sit.data?.entities ?? []).some((e) => e.kind === "novated_lease")) return null;
+  return (
+    <div role="note" className={`space-y-1 rounded-lg border border-warn/40 bg-warn/5 px-3 py-2 text-xs text-ink ${className}`}>
+      <div className="font-semibold">
+        {NOVATED_LEASE_CAR_NOTE.lead} <Term k="novated_lease">{NOVATED_LEASE_CAR_NOTE.term}</Term>
+      </div>
+      <p>{NOVATED_LEASE_CAR_NOTE.body}</p>
+      <p className="text-muted">{NOVATED_LEASE_CAR_NOTE.defer}</p>
+    </div>
   );
 }
 

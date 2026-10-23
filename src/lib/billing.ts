@@ -1,4 +1,5 @@
 import type { Env } from "../env";
+import { featureOn } from "./features";
 
 // Pricing policy lives here and nowhere else. Today this only powers a DISPLAY figure ("what this
 // tenant's AI usage would cost them"): we measure real inference cost per tenant in llm_usage
@@ -60,4 +61,24 @@ export function billableE4(rawE4: number, markupPct: number, flatFeeE4 = 0): num
   const raw = Math.max(0, rawE4 || 0);
   if (raw <= 0) return 0;
   return Math.round(raw * (1 + (markupPct || 0) / 100)) + Math.max(0, flatFeeE4 || 0);
+}
+
+// ── Why an AI call was refused (#699 QA) ───────────────────────────────────────
+// TaxAgent.withinBudget refuses for two different reasons and callers only see "ai_budget_reached":
+// an EMPTY WALLET (billing ON, balance ≤ 0 after the one-off grant), which the user fixes in Billing, or a
+// DAILY CAP (per-tenant or platform), which resets on its own. Telling an out-of-credit user "AI is paused
+// for today, try again after the reset" sends them to wait for a reset that never helps.
+export const OUT_OF_CREDIT_MESSAGE = "You're out of AI credits. Top up in Billing to keep using AI features.";
+export const DAILY_PAUSE_MESSAGE = "AI is paused for today (daily limit reached) — try again after the reset.";
+
+/** Pure: the refusal text for a tenant whose AI call was refused. */
+export function budgetRefusalMessage(billingOn: boolean, balanceE4: number | null | undefined): string {
+  return billingOn && Number(balanceE4 ?? 0) <= 0 ? OUT_OF_CREDIT_MESSAGE : DAILY_PAUSE_MESSAGE;
+}
+
+/** The refusal text for `ai_budget_reached`, read after the refusal (one indexed read; billing OFF ⇒ no read). */
+export async function budgetRefusal(env: Env, userId: string): Promise<string> {
+  if (!featureOn(env, "billing")) return DAILY_PAUSE_MESSAGE;
+  const row = await env.DB.prepare(`SELECT credit_balance_e4 AS b FROM profiles WHERE user_id = ?`).bind(userId).first<{ b: number | null }>();
+  return budgetRefusalMessage(true, row?.b ?? 0);
 }

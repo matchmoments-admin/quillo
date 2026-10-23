@@ -96,6 +96,7 @@ import { buildAccountantSchedule, scheduleToCsv, scheduleToXlsx } from "./lib/ac
 import { mytaxWorksheetResponse } from "./lib/mytax-worksheet";
 import { getProgress } from "./lib/progress";
 import { featureOn } from "./lib/features";
+import { budgetRefusal } from "./lib/billing";
 import { handleAdminSecurity } from "./lib/security-dashboard";
 import { adminMfaBlock } from "./lib/access-control";
 import { latestSyncRuns } from "./lib/bank-sync";
@@ -370,7 +371,7 @@ export async function handleApi(
     } catch (e) {
       const msg = (e as Error).message;
       if (msg === "consent_required") return json({ error: "consent_required" }, 403);
-      if (msg === "ai_budget_reached") return json({ error: "AI is paused for today (daily limit reached) — try again after the reset, or fill the form in manually." }, 429);
+      if (msg === "ai_budget_reached") return json({ error: `${(await budgetRefusal(env, uid)).replace(/\.$/, "")}, or fill the form in manually.` }, 429);
       throw e;
     }
   }
@@ -385,7 +386,7 @@ export async function handleApi(
     } catch (e) {
       const msg = (e as Error).message;
       if (msg === "consent_required") return json({ error: "consent_required" }, 403);
-      if (msg === "ai_budget_reached") return json({ error: "AI is paused for today (daily limit reached) — try again after the reset." }, 429);
+      if (msg === "ai_budget_reached") return json({ error: await budgetRefusal(env, uid) }, 429);
       throw e;
     }
   }
@@ -404,7 +405,7 @@ export async function handleApi(
     } catch (e) {
       const msg = (e as Error).message;
       if (msg === "consent_required") return json({ error: "consent_required" }, 403);
-      if (msg === "ai_budget_reached") return json({ error: "AI is paused for today (daily limit reached) — try again after the reset." }, 429);
+      if (msg === "ai_budget_reached") return json({ error: await budgetRefusal(env, uid) }, 429);
       if (msg === "chat_rate_limited") return json({ error: "You're asking questions too quickly — give it a moment and try again." }, 429);
       throw e;
     }
@@ -422,7 +423,7 @@ export async function handleApi(
       } catch (e) {
         const msg = (e as Error).message;
         if (msg === "consent_required") return json({ error: "consent_required" }, 403);
-        if (msg === "ai_budget_reached") return json({ error: "AI is paused for today (daily limit reached) — try again after the reset." }, 429);
+        if (msg === "ai_budget_reached") return json({ error: await budgetRefusal(env, uid) }, 429);
         if (msg === "chat_rate_limited") return json({ error: "You're sending messages too quickly — give it a moment and try again." }, 429);
         if (msg === "chat_message_too_long") return json({ error: "That message is too long — please shorten it and try again." }, 400);
         throw e;
@@ -1056,7 +1057,7 @@ export async function handleApi(
       } catch (e) {
         const msg = (e as Error).message;
         if (msg === "consent_required") return json({ error: "consent_required" }, 403);
-        if (msg === "ai_budget_reached") return json({ error: "AI is paused for today (daily limit reached) — try again after the reset." }, 429);
+        if (msg === "ai_budget_reached") return json({ error: await budgetRefusal(env, uid) }, 429);
         return json({ error: msg }, 422);
       }
     }
@@ -1106,7 +1107,7 @@ export async function handleApi(
       } catch (e) {
         const msg = (e as Error).message;
         if (msg === "consent_required") return json({ error: "consent_required" }, 403);
-        if (msg === "ai_budget_reached") return json({ error: "AI is paused for today (daily limit reached) — try again after the reset." }, 429);
+        if (msg === "ai_budget_reached") return json({ error: await budgetRefusal(env, uid) }, 429);
         return json({ error: msg }, 422); // unreadable statement / extraction failure — show the reason
       }
     }
@@ -1909,7 +1910,7 @@ export async function handleApi(
       } catch (e) {
         const msg = (e as Error).message;
         if (msg === "consent_required") return json({ error: "consent_required" }, 403);
-        if (msg === "ai_budget_reached") return json({ error: "AI is paused for today (daily limit reached) — try again after the reset." }, 429);
+        if (msg === "ai_budget_reached") return json({ error: await budgetRefusal(env, uid) }, 429);
         throw e;
       }
     }

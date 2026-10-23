@@ -11,7 +11,7 @@ import { batchStatementStatus, isStaleBatch, BATCH_MAX_AGE_MS } from "../src/lib
 import { extractSituationDraft, parseBatchMessage, mapBatchItems, type BatchItem } from "../src/extract";
 import type { LLM } from "../src/llm";
 import { isValidAbn, normaliseAbn } from "../web/src/lib/abn";
-import { billableCents, billableE4, billingPolicy, freeCreditGrantE4 } from "../src/lib/billing";
+import { billableCents, billableE4, billingPolicy, freeCreditGrantE4, budgetRefusalMessage, budgetRefusal, OUT_OF_CREDIT_MESSAGE, DAILY_PAUSE_MESSAGE } from "../src/lib/billing";
 import { costCents, isPricedModel, toE4, centsFromE4 } from "../src/lib/usage";
 import { LLM_MODEL_IDS, resolveProvider, resolveRegion, assertAuResidency, assertDataResidency, bedrockModelIdFor, getLLM, invokeBedrock } from "../src/llm";
 import type { ProviderProfile } from "../src/llm";
@@ -2962,6 +2962,21 @@ console.log("billableCents");
   check("rounds to whole cents (33c +30% = 42.9 → 43)", billableCents(33, 30, 0) === 43);
   check("never bills less than measured cost (markup ≥ 0)", billableCents(250, 0, 0) >= 250);
   check("negative/garbage inputs floor at 0", billableCents(-100, -5, -5) === 0);
+}
+
+// #699 QA: a refused AI call names the real reason — an empty wallet is fixed in Billing, a daily cap resets.
+console.log("budget refusal message (#699)");
+{
+  check("billing ON + empty wallet → out-of-credit message", budgetRefusalMessage(true, 0) === OUT_OF_CREDIT_MESSAGE && /top up in billing/i.test(OUT_OF_CREDIT_MESSAGE));
+  check("billing ON + negative balance → out-of-credit", budgetRefusalMessage(true, -5) === OUT_OF_CREDIT_MESSAGE);
+  check("billing ON + credit left → it was the daily cap", budgetRefusalMessage(true, 10_000) === DAILY_PAUSE_MESSAGE);
+  check("billing OFF → the daily-cap message, byte-identical to before", budgetRefusalMessage(false, 0) === "AI is paused for today (daily limit reached) — try again after the reset.");
+  const envWith = (features: string, b: number | null) => ({ FEATURES: features, DB: { prepare: () => ({ bind: () => ({ first: async () => (b == null ? null : { b }) }) }) } }) as unknown as Env;
+  check("budgetRefusal reads the wallet when billing is ON", (await budgetRefusal(envWith("billing", 0), "u")) === OUT_OF_CREDIT_MESSAGE);
+  check("budgetRefusal: a missing profile reads as empty", (await budgetRefusal(envWith("billing", null), "u")) === OUT_OF_CREDIT_MESSAGE);
+  check("budgetRefusal: billing OFF never reads D1", (await budgetRefusal({ FEATURES: "" } as unknown as Env, "u")) === DAILY_PAUSE_MESSAGE);
+  const apiSrc699 = fs.readFileSync(path.join(process.cwd(), "src/api.ts"), "utf8");
+  check("no API route hard-codes the daily-pause text for ai_budget_reached", !/ai_budget_reached"\) return json\(\{ error: "AI is paused/.test(apiSrc699));
 }
 
 console.log("billableE4 (wallet debit, sub-cent exact) + free grant");

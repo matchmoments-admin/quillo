@@ -24,7 +24,7 @@ migration (a data rewrite, so an explicit go + reverse plan).
 | Lock `azp` to the real origin | `CLERK_AUTHORIZED_PARTIES` (comma list) replaces the default list (`app.quillo.au` + two localhost dev origins) — `authorizedParties()` in `src/auth/clerk.ts` | ready, unset |
 | Founder ↔ legacy tenant `me` | `CLERK_FOUNDER_SUB` in `wrangler.toml` | must be updated (step 5) |
 | Publishable key | `VITE_CLERK_PUBLISHABLE_KEY` in `web/.env` (gitignored), baked in at `npm run web:build` | must be swapped (step 5) |
-| CSP allows the production Frontend API | `src/lib/security-headers.ts` allowlists `https://*.quillo.au` (covers `clerk.quillo.au`) | ready |
+| CSP allows the production Frontend API | `src/lib/security-headers.ts` allowlists the exact hosts `https://clerk.quillo.au` and `https://clerk.app.quillo.au` (#714 removed the `*.quillo.au` wildcard; any other FAPI host must be added there) | ready |
 | Admin MFA enforcement | flag `admin_mfa_required` — `/api/admin/*` needs a verified second factor (`fva` claim) | built, OFF (step 6) |
 | General API rate limiting | flag `api_rate_limit` + `[[ratelimits]]` bindings | built, OFF (step 7) |
 | Dashboard evidence | Security & compliance → Access control panel shows Clerk instance + both flags (KV `security:source:mfa`, refreshed by the 10-minute cron) | live |

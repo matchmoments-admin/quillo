@@ -14,9 +14,12 @@
 //   - fonts.googleapis.com / gstatic Anton + Inter (web/index.html, landing, legal)
 //   - *.clerk.accounts.dev           Clerk DEV instance Frontend API (clerk-js script, XHR, avatars)
 //   - *.clerk.com, img.clerk.com     Clerk-hosted assets / avatars
-//   - *.quillo.au                    Clerk PRODUCTION Frontend API (clerk.quillo.au / clerk.app.quillo.au,
-//                                    A5 / #638) — first-party, listed now so the prod-instance cutover
-//                                    can't be broken by this policy
+//   - clerk.quillo.au,               Clerk PRODUCTION Frontend API (A5 / #638; the cutover runbook,
+//     clerk.app.quillo.au            docs/security/clerk-production-cutover.md, names one of the two) —
+//                                    listed now so the prod-instance cutover can't be broken by this
+//                                    policy. EXACT hosts, not *.quillo.au (#714): a wildcard would trust
+//                                    script from any subdomain we ever point anywhere (a preview, a
+//                                    third-party CNAME).
 //   - clerk-telemetry.com            Clerk dev-instance telemetry beacon
 //   - challenges.cloudflare.com      Turnstile (Clerk bot protection) — script + iframe
 //   - www.google.com                 Maps embed iframe (Extras → PHI providers)
@@ -25,14 +28,24 @@
 // Stripe Checkout, Intuit, and the Fiskil/Basiq hosted-consent flows are TOP-LEVEL redirects
 // (window.location / 302), which CSP does not govern — no entries needed.
 //
-// 'unsafe-inline' stays on script-src for now: Clerk's documented CSP requires it (absent a nonce),
-// and an over-strict enforced policy locks users out of sign-in. The stricter REPORT-ONLY policy
-// below drops it (the marketing page's inline script is allowed by hash) so the /csp-report sink
-// tells us whether the tightening would break anything before we enforce it.
+// No 'unsafe-inline' on script-src (#714). The SPA's built index.html has no inline script (one external
+// module bundle), clerk-js and Turnstile load as external scripts from the hosts below, and the
+// marketing page's single inline <script> is allowed by its sha256. This was the hash-based
+// Report-Only probe; a headless-Chrome cold load of /, /sign-in and /start under `wrangler dev`
+// showed no report-only violations before it was promoted to enforcing. (Clerk's docs suggest
+// 'unsafe-inline' only as a fallback for apps that can't hash or nonce their own inline scripts.)
+// Inline STYLES stay allowed: Clerk's components inject <style> at runtime.
+//
+// The Report-Only header now probes the next step: the Clerk dev-instance wildcard narrowed to this
+// deployment's exact Frontend API host. It never blocks; /csp-report says whether it would.
 
-const CLERK = "https://*.clerk.accounts.dev https://*.clerk.com https://*.quillo.au";
+const CLERK_PROD_FAPI = "https://clerk.quillo.au https://clerk.app.quillo.au";
+const CLERK = `https://*.clerk.accounts.dev https://*.clerk.com ${CLERK_PROD_FAPI}`;
+/** The dev instance's exact Frontend API host (wrangler.toml CLERK_ISSUER), for the Report-Only probe. */
+const CLERK_DEV_FAPI = "https://obliging-eel-28.clerk.accounts.dev";
+const CLERK_EXACT = `${CLERK_DEV_FAPI} https://*.clerk.com ${CLERK_PROD_FAPI}`;
 
-function policy(scriptSrc: string): string {
+function policy(scriptSrc: string, clerk: string = CLERK): string {
   return [
     "default-src 'self'",
     "base-uri 'self'",
@@ -41,25 +54,24 @@ function policy(scriptSrc: string): string {
     `script-src ${scriptSrc}`,
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
     "font-src 'self' data: https://fonts.gstatic.com",
-    `img-src 'self' data: blob: https://img.clerk.com ${CLERK} https://images.unsplash.com`,
-    `connect-src 'self' ${CLERK} https://clerk-telemetry.com`,
+    `img-src 'self' data: blob: https://img.clerk.com ${clerk} https://images.unsplash.com`,
+    `connect-src 'self' ${clerk} https://clerk-telemetry.com`,
     "worker-src 'self' blob:",
-    `frame-src 'self' ${CLERK} https://challenges.cloudflare.com https://www.google.com`,
+    `frame-src 'self' ${clerk} https://challenges.cloudflare.com https://www.google.com`,
     "form-action 'self'",
     "report-uri /csp-report",
   ].join("; ");
 }
 
-/** ENFORCED policy. */
-export const CSP = policy(`'self' 'unsafe-inline' ${CLERK} https://challenges.cloudflare.com`);
 /** sha256 of the marketing page's one inline <script> (src/marketing/landing.ts). check-units recomputes
  *  it from the page, so editing that script without updating this fails the suite rather than
- *  silently spamming /csp-report. */
+ *  letting the enforced policy silently block it. */
 export const LANDING_INLINE_SCRIPT_HASH = "'sha256-8woiXogcaygrxb6TawRP1g4tS7dJcuo1UCzSy8DZtHQ='";
-/** Stricter REPORT-ONLY probe: identical except inline script is allowed only by hash (no
- *  'unsafe-inline'). Never blocks — it only reports, telling us whether the enforced policy can drop
- *  'unsafe-inline' later. */
-export const CSP_REPORT_ONLY = policy(`'self' ${LANDING_INLINE_SCRIPT_HASH} ${CLERK} https://challenges.cloudflare.com`);
+/** ENFORCED policy: inline script only by hash, never 'unsafe-inline' (#714). */
+export const CSP = policy(`'self' ${LANDING_INLINE_SCRIPT_HASH} ${CLERK} https://challenges.cloudflare.com`);
+/** REPORT-ONLY probe: the enforced policy with the Clerk dev wildcard narrowed to the exact Frontend API
+ *  host. Never blocks; it tells us whether that narrowing would break anything before we enforce it. */
+export const CSP_REPORT_ONLY = policy(`'self' ${LANDING_INLINE_SCRIPT_HASH} ${CLERK_EXACT} https://challenges.cloudflare.com`, CLERK_EXACT);
 
 /** No `preload` — submitting the domain to the HSTS preload list is a separate owner decision. */
 export const HSTS = "max-age=31536000; includeSubDomains";

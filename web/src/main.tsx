@@ -1,5 +1,6 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
+import { toast } from "sonner";
 import { QueryClient, QueryClientProvider, MutationCache } from "@tanstack/react-query";
 import { createBrowserRouter, RouterProvider, Navigate } from "react-router-dom";
 import { ClerkProvider, SignIn, SignUp, SignedIn, SignedOut, RedirectToSignIn, useAuth } from "@clerk/clerk-react";
@@ -52,6 +53,17 @@ const queryClient: QueryClient = new QueryClient({
       // #582 (ft_journey): the shell's step dots + Home read ["journey", fy]. With the flag OFF the
       // query never exists, so this is a no-op (no request).
       queryClient.invalidateQueries({ queryKey: ["journey"] });
+    },
+    // Safety net for silent failures (#696 design audit): dozens of saves and deletes (Settings,
+    // carry-ins, assets, capital, Dashboard checklist, undo…) had no onError, so a failed write just
+    // left the form as it was and the user believed it had worked. Any mutation WITHOUT its own
+    // onError now gets one plain toast. A mutation that reports its error itself either defines
+    // onError (skipped here) or sets `meta: { errorShownInline: true }`.
+    onError: (error, _vars, _ctx, mutation) => {
+      if (mutation.options.onError || mutation.meta?.errorShownInline) return;
+      const msg = error instanceof Error && error.message ? error.message.trim() : "The request failed";
+      const detail = /[.!?]$/.test(msg) ? msg : `${msg}.`;
+      toast.error("That didn't go through", { description: `${detail} Please try again.` });
     },
   }),
   // refetchOnWindowFocus was causing visible flashing: every time the tab regained focus

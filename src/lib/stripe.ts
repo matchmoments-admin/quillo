@@ -42,27 +42,39 @@ export async function createTopupCheckout(env: Env, userId: string, amountCents:
 }
 
 /** Verify a Stripe webhook signature (HMAC-SHA256 over `${t}.${payload}`, the `v1=` scheme) and return
- *  the parsed event — or null if not configured, malformed, or the signature doesn't match. */
-export async function verifyStripeWebhook(env: Env, payload: string, sigHeader: string | null): Promise<StripeEvent | null> {
+ *  the parsed event — or null if not configured, malformed, stale, or no signature matches.
+ *
+ *  The header can carry SEVERAL `v1=` signatures (Stripe sends one per active secret while a webhook secret
+ *  is being rolled); the event is valid when ANY of them matches. The timestamp must be a finite number
+ *  within the 5-minute tolerance: a non-numeric `t` used to skip the replay check entirely. */
+export async function verifyStripeWebhook(env: Env, payload: string, sigHeader: string | null, nowMs = Date.now()): Promise<StripeEvent | null> {
   const secret = env.STRIPE_WEBHOOK_SECRET;
   if (!secret || !sigHeader) return null;
-  const parts: Record<string, string> = {};
+  let t: string | null = null;
+  const v1s: string[] = [];
   for (const kv of sigHeader.split(",")) {
     const i = kv.indexOf("=");
-    if (i > 0) parts[kv.slice(0, i).trim()] = kv.slice(i + 1).trim();
+    if (i <= 0) continue;
+    const k = kv.slice(0, i).trim();
+    const v = kv.slice(i + 1).trim();
+    if (k === "t") t = v;
+    else if (k === "v1" && v) v1s.push(v);
   }
-  const t = parts["t"];
-  const v1 = parts["v1"];
-  if (!t || !v1) return null;
+  if (!t || v1s.length === 0) return null;
+  // Replay guard first (cheap), and fail CLOSED on a timestamp that is not a number.
+  const ts = Number(t);
+  if (!/^\d+$/.test(t) || !Number.isFinite(ts) || Math.abs(nowMs / 1000 - ts) > 300) return null;
   const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   const mac = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${t}.${payload}`));
   const hex = [...new Uint8Array(mac)].map((b) => b.toString(16).padStart(2, "0")).join("");
-  if (hex.length !== v1.length) return null;
-  let diff = 0;
-  for (let i = 0; i < hex.length; i++) diff |= hex.charCodeAt(i) ^ v1.charCodeAt(i);
-  if (diff !== 0) return null;
-  // Reject events older than 5 minutes (replay guard).
-  const ts = Number(t);
-  if (Number.isFinite(ts) && Math.abs(Date.now() / 1000 - ts) > 300) return null;
+  // Constant-time per candidate; check every candidate (no early exit on the first match).
+  let matched = false;
+  for (const v1 of v1s) {
+    if (v1.length !== hex.length) continue;
+    let diff = 0;
+    for (let i = 0; i < hex.length; i++) diff |= hex.charCodeAt(i) ^ v1.charCodeAt(i);
+    if (diff === 0) matched = true;
+  }
+  if (!matched) return null;
   try { return JSON.parse(payload) as StripeEvent; } catch { return null; }
 }

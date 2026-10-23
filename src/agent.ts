@@ -3127,6 +3127,12 @@ export class TaxAgent extends Agent<Env> {
     userId: string,
     d: { trust_entity_id: string; fy?: string | null; beneficiary_person_id?: string | null; beneficiary_entity_id?: string | null; share_pct?: number | null; amount_cents: number; character?: string | null; franking_credit_cents?: number },
   ): Promise<string> {
+    // Cross-tenant FK guard (security sweep #694), as recordEssGrant does: the accountant schedule joins
+    // entities by id alone, so a foreign trust id would surface another tenant's trust name.
+    await assertOwns(this.env, userId, [
+      { table: "entities", id: d.trust_entity_id, label: "trust" },
+      { table: "entities", id: d.beneficiary_entity_id, label: "beneficiary entity" },
+    ]);
     const id = crypto.randomUUID();
     const fy = d.fy ?? this.currentFyLabel(await this.jurisdictionFor(userId));
     await this.env.DB.prepare(
@@ -3145,6 +3151,7 @@ export class TaxAgent extends Agent<Env> {
     userId: string,
     d: { partnership_entity_id: string; fy?: string | null; beneficiary_person_id?: string | null; share_pct?: number | null; amount_cents: number; character?: string | null; franking_credit_cents?: number },
   ): Promise<string> {
+    await assertOwns(this.env, userId, [{ table: "entities", id: d.partnership_entity_id, label: "partnership" }]); // sweep #694
     const id = crypto.randomUUID();
     const fy = d.fy ?? this.currentFyLabel(await this.jurisdictionFor(userId));
     await this.env.DB.prepare(
@@ -5079,6 +5086,11 @@ export class TaxAgent extends Agent<Env> {
       if (!ref) throw new Error("refund target expense not found");
       if (ref.direction !== "debit") throw new Error("a refund must link to an expense (a debit), not another credit");
     }
+    // property_id is a cross-row FK too: it must be THIS tenant's property (security sweep #694). The report
+    // joins properties by id alone, so a foreign id would surface another tenant's property label.
+    if (field === "property_id" && newValue) {
+      await assertOwns(this.env, userId, [{ table: "properties", id: newValue, label: "property" }]);
+    }
     // Clearing a property_id / refund link (e.g. unlinking) must persist as NULL, not '', or the
     // report's `IS NOT NULL` / join filters treat the dangling '' as a real reference.
     const bound: string | null = (field === "property_id" || field === "refund_for_txn_id") && !newValue ? null : newValue;
@@ -5165,6 +5177,9 @@ export class TaxAgent extends Agent<Env> {
       if (pid) pid.value = "";
       else norm.push({ field: "property_id", column: "property_id", value: "" });
     }
+    // Cross-tenant FK guard (security sweep #694): a batch property_id must be THIS tenant's property.
+    const pidEdit = norm.find((n) => n.field === "property_id");
+    if (pidEdit?.value) await assertOwns(this.env, userId, [{ table: "properties", id: pidEdit.value, label: "property" }]);
     const ids = txnIds.slice(0, 500);
     const batchId = crypto.randomUUID();
     const selectCols = [...new Set(norm.map((n) => n.column))];

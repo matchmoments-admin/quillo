@@ -2,6 +2,7 @@ import type { CapitalImportParse, Txn, TxnDetail, Situation, SituationDraft, Not
 import type { GrowLayerKey, Journey, MytaxWorksheet, RecordsView, ReconcileProposals, ReconcileLinked } from "./types";
 import type { AskContext, EducationData, RelevanceView, RelevanceConfirmResult } from "./types";
 import { compressImageForUpload, compressImagesForUpload, prepareImageUpload, setClientCompression } from "./lib/compress-image";
+import { assertUploadSize } from "./lib/upload-limits";
 import type { SecurityDashboard } from "./types";
 
 // Clerk session token getter, wired from <TokenBridge> inside ClerkProvider (main.tsx).
@@ -133,10 +134,14 @@ export const api = {
     if (list.length === 1) {
       // Single receipt: also send the original photo's hash so duplicate detection matches older uploads.
       const { file, originalHash } = await prepareImageUpload(list[0]!);
+      assertUploadSize(file.size, "receipt"); // the Worker refuses it too (413); this just saves the upload
       fd.append("file", file);
       if (originalHash) fd.append("orig_sha256", originalHash);
     } else {
-      for (const f of await compressImagesForUpload(list)) fd.append("file", f);
+      const ready = await compressImagesForUpload(list);
+      for (const f of ready) assertUploadSize(f.size, "receipt");
+      assertUploadSize(ready.reduce((n, f) => n + f.size, 0), "receiptTotal");
+      for (const f of ready) fd.append("file", f);
     }
     if (bucket) fd.append("bucket", bucket);
     // Don't set content-type — the browser adds the multipart boundary. Just add auth.
@@ -200,7 +205,9 @@ export const api = {
   // browser sets the multipart boundary. Errors (over cap / consent / budget) surface for a manual fallback.
   phiScanReceipt: async (file: File): Promise<PhiScanResult> => {
     const fd = new FormData();
-    fd.append("file", await compressImageForUpload(file));
+    const ready = await compressImageForUpload(file);
+    assertUploadSize(ready.size, "receipt");
+    fd.append("file", ready);
     const res = await fetch("/api/phi/usage/scan", { method: "POST", credentials: "include", headers: await authHeaders(), body: fd });
     if (res.status === 401) throw new Error("unauthorized");
     if (!res.ok) throw await errFrom(res);
@@ -277,6 +284,7 @@ export const api = {
   deleteLoanProperty: (id: string) => send<{ ok: boolean }>("DELETE", `/api/loans-properties/${id}`),
   syncQboAccounts: () => post<{ synced: number }>("/api/qbo/sync-accounts"),
   parseStatement: async (file: File, accountId: string): Promise<StatementParse> => {
+    assertUploadSize(file.size, "statement");
     const fd = new FormData();
     fd.append("file", file);
     fd.append("account_id", accountId);
@@ -469,6 +477,7 @@ export const api = {
   uploadDocument: async (file: File): Promise<{ docId: string; doc_type: string; routed: boolean }> => {
     const fd = new FormData();
     const prepared = await prepareImageUpload(file); // photos shrink; PDFs are stored verbatim
+    assertUploadSize(prepared.file.size, "document");
     fd.append("file", prepared.file);
     if (prepared.originalHash) fd.append("orig_sha256", prepared.originalHash);
     const res = await fetch("/api/documents/upload", { method: "POST", credentials: "include", headers: await authHeaders(), body: fd });
@@ -478,6 +487,7 @@ export const api = {
   // C6 (capital_statement_ingest): upload a broker / registry / crypto-exchange CSV and get back a PREVIEW.
   // This writes nothing to the register — committing is a separate, explicit call.
   parseCapitalImport: async (file: File): Promise<CapitalImportParse> => {
+    assertUploadSize(file.size, "capital");
     const fd = new FormData();
     fd.append("file", file);
     const res = await fetch("/api/capital-imports", { method: "POST", credentials: "include", headers: await authHeaders(), body: fd });

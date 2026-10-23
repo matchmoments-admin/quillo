@@ -90,6 +90,74 @@ const line = (o: Partial<StatementLine> & { amount_cents: number; direction: "de
   ...o,
 });
 
+// ── Security sweep #694 / #713: upload size ceilings ──────────────────────────
+console.log("security sweep #694 (#713): uploads over the size ceiling are refused before the body is read");
+{
+  const srv = await import("../src/lib/upload-limits");
+  const web = await import("../web/src/lib/upload-limits");
+  const shared = Object.keys(web.UPLOAD_LIMITS) as Array<keyof typeof web.UPLOAD_LIMITS>;
+  check("limits: the SPA mirror matches the Worker for every kind it checks",
+    shared.every((k) => web.UPLOAD_LIMITS[k] === srv.UPLOAD_LIMITS[k]));
+  check("limits: the SPA's message matches the Worker's 413 text word for word",
+    shared.every((k) => web.tooLargeMessage(k) === srv.tooLargeMessage(k)));
+  check("limits: ceilings sit inside the 128 MB isolate (with base64 + RPC copies) and above a large phone photo",
+    srv.UPLOAD_LIMITS.receipt >= 15 * srv.MB && Object.values(srv.UPLOAD_LIMITS).every((n) => n * 3 < 128 * srv.MB));
+  check("message: names the limit in MB and gives a next step",
+    srv.tooLargeMessage("statement") === "That statement is too large (the limit is 25 MB). Split it into shorter date ranges, or download it as CSV instead of PDF.");
+
+  const reqWith = (len: string | null) => new Request("https://app.example/api/upload", { method: "POST", headers: len == null ? {} : { "content-length": len } });
+  check("declared: Content-Length over the ceiling + multipart overhead ⇒ refused",
+    srv.declaredTooLarge(reqWith(String(srv.UPLOAD_LIMITS.receiptTotal + srv.MULTIPART_OVERHEAD + 1)), "receiptTotal"));
+  check("declared: a body at the ceiling plus form overhead passes",
+    !srv.declaredTooLarge(reqWith(String(srv.UPLOAD_LIMITS.receiptTotal + srv.MULTIPART_OVERHEAD)), "receiptTotal"));
+  check("declared: a raw (non-multipart) body gets no overhead allowance",
+    srv.declaredTooLarge(reqWith(String(srv.UPLOAD_LIMITS.receipt + 1)), "receipt", false));
+  check("declared: missing / junk Content-Length is left to the per-file check",
+    !srv.declaredTooLarge(reqWith(null), "receipt") && !srv.declaredTooLarge(reqWith("abc"), "receipt"));
+  check("file: one byte over ⇒ refused; at the limit ⇒ kept",
+    srv.fileTooLarge(srv.UPLOAD_LIMITS.document + 1, "document") && !srv.fileTooLarge(srv.UPLOAD_LIMITS.document, "document"));
+  let webThrew = "";
+  try { web.assertUploadSize(web.UPLOAD_LIMITS.capital + 1, "capital"); } catch (e) { webThrew = (e as Error).message; }
+  check("SPA: an oversized pick throws the same user-facing message", webThrew === srv.tooLargeMessage("capital"));
+
+  // End to end through handleApi: a declared 60 MB body is a 413 with the message, and the form is NEVER parsed.
+  const { handleApi } = await import("../src/api");
+  const stmt = { bind: () => stmt, first: async () => null, all: async () => ({ results: [] }), run: async () => ({ meta: {} }) };
+  const env713 = { FEATURES: "capital_statement_ingest,phi_extras_tracker", DB: { prepare: () => stmt, batch: async () => [] }, RULES: { get: async () => null, put: async () => {} } } as unknown as Env;
+  const routes: Array<[string, string]> = [
+    ["/api/upload", "receiptTotal"], ["/api/phi/usage/scan", "receipt"], ["/api/statements", "statement"],
+    ["/api/documents/upload", "document"], ["/api/capital-imports", "capital"],
+  ];
+  for (const [p, kind] of routes) {
+    let parsed = false;
+    const req = new Request(`https://app.example${p}`, { method: "POST", headers: { "content-length": String(60 * srv.MB) } });
+    Object.defineProperty(req, "formData", { value: async () => { parsed = true; return new FormData(); } });
+    const res = await handleApi(req, env713, { userId: "u713", email: null } as never, {} as never).catch((e) => new Response(String(e), { status: 599 }));
+    const body = res.status === 413 ? ((await res.json()) as { error?: string }) : {};
+    check(`${p}: a declared 60 MB body ⇒ 413 "${kind}" message, body never parsed`,
+      res.status === 413 && body.error === srv.tooLargeMessage(kind as keyof typeof srv.UPLOAD_LIMITS) && !parsed);
+  }
+  // A body sent WITHOUT Content-Length is still bounded per file after the parse.
+  {
+    const big = new File([new Uint8Array(srv.UPLOAD_LIMITS.document + 1)], "scan.pdf", { type: "application/pdf" });
+    const fd = new FormData();
+    fd.append("file", big);
+    const req = new Request("https://app.example/api/documents/upload", { method: "POST" });
+    Object.defineProperty(req, "formData", { value: async () => fd });
+    const res = await handleApi(req, env713, { userId: "u713", email: null } as never, { classifyAndRoute: async () => { throw new Error("must not reach the model"); } } as never)
+      .catch((e) => new Response(String(e), { status: 599 }));
+    check("/api/documents/upload: no Content-Length but a 25 MB + 1 part ⇒ 413, never reaches the DO", res.status === 413);
+  }
+
+  const indexSrc713 = fs.readFileSync(path.join(process.cwd(), "src/index.ts"), "utf8");
+  check("/ingest: Content-Length is checked before the body is buffered",
+    /declaredTooLarge\(req, "receipt", false\)[\s\S]{0,200}await req\.arrayBuffer\(\)/.test(indexSrc713));
+  // src/index.ts can't load under node (cloudflare: imports), so the email handler is checked by source.
+  check("email: an over-size message is bounced (setReject) BEFORE parseEmail reads the raw MIME",
+    /fileTooLarge\(message\.rawSize, "emailRaw"\)\) \{\s*message\.setReject\(tooLargeMessage\("emailRaw"\)\);\s*return;\s*\}\s*const parsed = await parseEmail\(message\)/.test(indexSrc713));
+  check("email: each decoded attachment is held to the document ceiling", /fileTooLarge\(att\.bytes\.byteLength, "document"\)/.test(indexSrc713));
+}
+
 // ── Reconciliation: the completeness proof ───────────────────────────────────
 console.log("reconcileStatement");
 {

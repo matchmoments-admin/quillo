@@ -101,6 +101,7 @@ import { latestSyncRuns } from "./lib/bank-sync";
 import { incomeStatementWait } from "./lib/income-statement-wait";
 import { holdingPosition } from "./lib/capital";
 import { groupKey } from "./lib/clarify";
+import { declaredTooLarge, fileTooLarge, tooLargeResponse } from "./lib/upload-limits";
 
 const json = (data: unknown, status = 200) =>
   new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json" } });
@@ -296,6 +297,7 @@ export async function handleApi(
   // only for the unauthenticated device endpoint /ingest. ingest() awaits extraction, so
   // the response returns once the receipt is categorised.
   if (resource === "upload" && m === "POST") {
+    if (declaredTooLarge(req, "receiptTotal")) return tooLargeResponse("receiptTotal"); // before buffering (#713)
     const form = await req.formData();
     // One or more `file` parts (multi-screenshot = one receipt). workers-types under-types
     // FormData, so cast the entries through Blob and drop any stray text fields.
@@ -303,6 +305,8 @@ export async function handleApi(
       (f): f is Blob => typeof f !== "string",
     );
     if (blobs.length === 0) return json({ error: "no file" }, 400);
+    if (blobs.some((b) => fileTooLarge(b.size, "receipt"))) return tooLargeResponse("receipt");
+    if (fileTooLarge(blobs.reduce((n, b) => n + b.size, 0), "receiptTotal")) return tooLargeResponse("receiptTotal");
     const bucketEntry = form.get("bucket");
     const bucketHint = typeof bucketEntry === "string" ? bucketEntry : null;
 
@@ -620,10 +624,12 @@ export async function handleApi(
     // PREFILL (writes nothing). Per-tenant daily scan cap before the billable call; consent + budget gated
     // in the DO. Over cap / any failure ⇒ the SPA falls back to manual typing.
     if (id === "usage" && sub === "scan" && m === "POST") {
+      if (declaredTooLarge(req, "receipt")) return tooLargeResponse("receipt"); // before the cap, so a refused file doesn't use a scan
       if (!(await withinPhiScanCap(env, uid))) return json({ error: "Daily receipt-scan limit reached — type the claim in, or try again tomorrow." }, 429);
       const form = await req.formData();
       const blob = (form.getAll("file") as unknown as Array<Blob | string>).find((f): f is Blob => typeof f !== "string");
       if (!blob) return json({ error: "no file" }, 400);
+      if (fileTooLarge(blob.size, "receipt")) return tooLargeResponse("receipt");
       const bytes = await blob.arrayBuffer();
       if (bytes.byteLength === 0) return json({ error: "empty file" }, 400);
       try { return json(await stub.scanPhiReceipt(uid, bytes, blob.type || "image/jpeg")); } catch (e) { return json({ error: (e as Error).message }, 400); }
@@ -1036,9 +1042,11 @@ export async function handleApi(
     // POST /api/capital-imports (multipart: file) → extract + preview. NOTHING is written to
     // cgt_assets/cgt_events here; that needs the explicit confirm below.
     if (m === "POST" && !id) {
+      if (declaredTooLarge(req, "capital")) return tooLargeResponse("capital");
       const form = await req.formData();
       const entry = form.get("file");
       if (entry == null || typeof entry === "string") return json({ error: "no file" }, 400);
+      if (fileTooLarge((entry as unknown as Blob).size, "capital")) return tooLargeResponse("capital");
       const bytes = await (entry as unknown as Blob).arrayBuffer();
       if (bytes.byteLength === 0) return json({ error: "empty file" }, 400);
       const filename = (entry as unknown as { name?: string }).name ?? "holdings.csv";
@@ -1080,12 +1088,14 @@ export async function handleApi(
   if (resource === "statements") {
     // POST /api/statements (multipart: file + account_id) → parse + preview (no commit yet)
     if (m === "POST" && !id) {
+      if (declaredTooLarge(req, "statement")) return tooLargeResponse("statement");
       const form = await req.formData();
       const entry = form.get("file");
       const accEntry = form.get("account_id");
       if (entry == null || typeof entry === "string") return json({ error: "no file" }, 400);
       if (typeof accEntry !== "string") return json({ error: "no account_id" }, 400);
       const file = entry as unknown as Blob;
+      if (fileTooLarge(file.size, "statement")) return tooLargeResponse("statement");
       const bytes = await file.arrayBuffer();
       if (bytes.byteLength === 0) return json({ error: "empty file" }, 400);
       const filename = (entry as unknown as { name?: string }).name ?? "statement.csv";
@@ -1452,10 +1462,12 @@ export async function handleApi(
     }
     // POST /api/documents/upload (multipart: file) → classify + route via the Smart Inbox.
     if (m === "POST" && id === "upload") {
+      if (declaredTooLarge(req, "document")) return tooLargeResponse("document");
       const form = await req.formData();
       const entry = form.get("file");
       if (entry == null || typeof entry === "string") return json({ error: "no file" }, 400);
       const file = entry as unknown as Blob;
+      if (fileTooLarge(file.size, "document")) return tooLargeResponse("document");
       const bytes = await file.arrayBuffer();
       if (bytes.byteLength === 0) return json({ error: "empty file" }, 400);
       const origEntry = form.get("orig_sha256"); // the photo's hash before client-side compression (see /api/upload)

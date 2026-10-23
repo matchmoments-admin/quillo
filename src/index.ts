@@ -1,6 +1,7 @@
 import type { Env, TaxAgentRpc } from "./env";
 import { verifyIngest } from "./ingest/auth";
 import { parseEmail } from "./lib/email";
+import { declaredTooLarge, fileTooLarge, tooLargeMessage, UPLOAD_LIMITS } from "./lib/upload-limits";
 import { userIdFromLocalpart } from "./lib/db";
 import { requireClerk } from "./auth/clerk";
 import { handleApi } from "./api";
@@ -126,7 +127,10 @@ const handler = {
     // (a) Web upload + (c) iOS Shortcut + (d) Android app all POST signed bytes here.
     // Tenant identity is DERIVED from the verifying key — never a client header (B1).
     if (url.pathname === "/ingest" && req.method === "POST") {
+      // Size ceiling BEFORE buffering (#713): a raw image/PDF/text body, so no multipart allowance.
+      if (declaredTooLarge(req, "receipt", false)) return new Response(tooLargeMessage("receipt"), { status: 413 });
       const body = await req.arrayBuffer(); // read ONCE (fixes §3 clone/re-read bug)
+      if (fileTooLarge(body.byteLength, "receipt")) return new Response(tooLargeMessage("receipt"), { status: 413 });
       const verified = await verifyIngest(env, req, body, Date.now());
       if (!verified) return new Response("unauthorized", { status: 401 });
 
@@ -301,6 +305,12 @@ const handler = {
   // (b) EMAIL ingest — Cloudflare Email Routing delivers here. Tenant is derived
   // server-side from the verified recipient mailbox, not from any client input.
   async email(message: ForwardableEmailMessage, env: Env, _ctx: ExecutionContext): Promise<void> {
+    // Size ceiling before the MIME parse buffers it (#713). Bounce rather than drop, so a genuine sender
+    // learns the message wasn't filed.
+    if (fileTooLarge(message.rawSize, "emailRaw")) {
+      message.setReject(tooLargeMessage("emailRaw"));
+      return;
+    }
     const parsed = await parseEmail(message);
     const userId = await userIdFromLocalpart(env, parsed.localpart);
     if (!userId) {
@@ -316,6 +326,10 @@ const handler = {
     // Emailed attachments are ambiguous (payslip? agent summary? receipt?) — route through the
     // Smart Inbox classifier rather than assuming a receipt.
     for (const att of parsed.attachments) {
+      if (fileTooLarge(att.bytes.byteLength, "document")) {
+        console.warn(`email attachment skipped: ${att.bytes.byteLength} bytes is over the ${UPLOAD_LIMITS.document} byte limit`);
+        continue;
+      }
       await stub.classifyAndRoute(userId, "email", att.bytes, att.mime);
     }
   },

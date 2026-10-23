@@ -5,6 +5,9 @@ export interface FooterAction {
   label: ReactNode;
   onClick?: () => void;
   disabled?: boolean;
+  /** Why the primary is disabled, shown as visible text beside it (#696: a greyed Next with no reason
+   *  is a glass door, and `title` never shows on a phone). Rendered only while `disabled`. */
+  disabledReason?: ReactNode;
   busy?: boolean;
 }
 
@@ -23,8 +26,20 @@ export function StepFooter({ onBack, primary, ...status }: { onBack?: () => void
           Back
         </FtButton>
       )}
+      {primary?.disabled && primary.disabledReason && (
+        <p id="step-footer-reason" className="ml-auto text-right text-xs text-muted">
+          {primary.disabledReason}
+        </p>
+      )}
       {primary && (
-        <FtButton variant="primary" className="ml-auto" onClick={primary.onClick} disabled={primary.disabled} busy={primary.busy}>
+        <FtButton
+          variant="primary"
+          className={primary.disabled && primary.disabledReason ? undefined : "ml-auto"}
+          onClick={primary.onClick}
+          disabled={primary.disabled}
+          busy={primary.busy}
+          aria-describedby={primary.disabled && primary.disabledReason ? "step-footer-reason" : undefined}
+        >
           {primary.label}
         </FtButton>
       )}

@@ -469,7 +469,13 @@ function FirstRun({
           primary={
             isLast
               ? { label: `Save and ${STEP_LABEL.connect.toLowerCase()}`, onClick: () => save.mutate(), busy: save.isPending }
-              : { label: "Next", onClick: next, disabled: blocked }
+              : {
+                  label: "Next",
+                  onClick: next,
+                  disabled: blocked,
+                  // A field problem already shows its own message above; only the consent gate needs one here.
+                  disabledReason: screen === "consent" && !hasConsent ? "Press “I consent” above to continue." : undefined,
+                }
           }
           status={save.isError ? "error" : "ready"}
           error={save.error}

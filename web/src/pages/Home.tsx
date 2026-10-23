@@ -3,7 +3,7 @@ import { JOURNEY_STEP_KEYS, STATUS_LABEL, STEP_LABEL, STEP_ROUTE, useJourney } f
 import { money } from "../components/ui";
 import { Badge, EmptyState, FtCard, FtLink, GeneralInfoNote, GrowSuggestionCard, Skeleton, StatusGate } from "../components/ft";
 import { useSetGrowLayer } from "../lib/grow";
-import type { Journey, JourneyStepStatus } from "../types";
+import type { Journey, JourneyStepKey, JourneyStepStatus } from "../types";
 
 // Home (spec A11 "Home", #582; flag ft_journey — only routed when ON). Three blocks, same order in
 // every state: (1) the readiness hero, (2) What's left, (3) a quiet step row. No calculators, no
@@ -27,15 +27,26 @@ function isCold(j: Journey): boolean {
   return j.whats_left.some((w) => w.id === "nothing_captured");
 }
 
+/**
+ * The cold hero's next move: the first step that isn't done. It used to always say "Start by checking
+ * you can get into myTax… Get set up", even after Get set up was done, which sent a first-timer back to a
+ * finished step instead of on to Connect (#696 design audit).
+ */
+const COLD_NEXT: Partial<Record<JourneyStepKey, string>> = {
+  setup: "Start by checking you can get into myTax and answering a few questions about your year. Each step builds on the one before.",
+  connect: "You're set up. Next, connect your bank or upload a statement, so Quillo can read your bank lines.",
+};
+
 function Hero({ j, label }: { j: Journey; label: string }) {
   if (isCold(j)) {
+    const next = JOURNEY_STEP_KEYS.find((k) => j.steps.find((s) => s.key === k)?.status !== "done") ?? "setup";
     return (
       <FtCard className="p-6">
         <h1 className="font-display text-4xl text-forest">Nothing in for FY {label} yet</h1>
-        <p className="mt-1 max-w-[65ch] text-sm text-muted">Start by checking you can get into myTax and answering a few questions about your year. Each step builds on the one before.</p>
+        <p className="mt-1 max-w-[65ch] text-sm text-muted">{COLD_NEXT[next] ?? `Next: ${STEP_LABEL[next]}. Each step builds on the one before.`}</p>
         <div className="mt-4">
-          <FtLink to={STEP_ROUTE.setup} variant="primary">
-            Get set up
+          <FtLink to={STEP_ROUTE[next]} variant="primary">
+            {STEP_LABEL[next]}
           </FtLink>
         </div>
       </FtCard>

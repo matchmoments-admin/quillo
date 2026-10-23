@@ -21,37 +21,10 @@ import { emptyTally, publishLifecycleRecord } from "./lib/retention-schedule";
 import { withSecurityHeaders, summariseCspReport, logTag, publicErrorMessage, scrubApiErrorResponse } from "./lib/security-headers";
 import { ipRateLimit, userRateLimit, publishAccessSource } from "./lib/access-control";
 import { BACKUP_CRON, runD1Backup } from "./lib/backups";
+import { runBackfillOnce } from "./lib/backfill";
 
 // The DO class must be exported from the Worker's main module for the binding.
 export { TaxAgent } from "./agent";
-
-/**
- * Run a one-time, KV-guarded backfill at most `maxAttempts` times, claiming the attempt BEFORE the
- * work. The old pattern set the "done" flag AFTER the AI work, so a mid-run failure (e.g. an
- * Anthropic 429 that lands AFTER some paid batches were already submitted) left the flag unset and
- * the 10-minute cron re-ran — and re-paid for — the whole backfill every tick, forever (C2). Claiming up
- * front bounds the blast radius to `maxAttempts` paid tries even if every one crashes; on success
- * we flip to "done" so it never runs again. The work itself stays idempotent (recategorise only
- * re-queues null/unknown lines; with C6 it skips statements already in an in-flight batch).
- * KV states: "done" | "attempt:N".
- */
-async function runOnceGuarded(
-  env: Env,
-  flag: string,
-  maxAttempts: number,
-  fn: () => Promise<void>,
-): Promise<void> {
-  const cur = await env.RULES.get(flag);
-  if (cur === "done") return;
-  const attempts = cur?.startsWith("attempt:") ? Number(cur.slice("attempt:".length)) || 0 : 0;
-  if (attempts >= maxAttempts) return; // gave up after repeated failures — don't keep paying to retry
-  // Interim "attempt:N" state carries a TTL so a permanently-wedged tenant (every attempt crashes)
-  // self-heals after the window rather than counting failed attempts forever; the terminal "done"
-  // flag is PERMANENT (no TTL) so a completed one-time backfill never silently re-runs and re-spends.
-  await env.RULES.put(flag, `attempt:${attempts + 1}`, { expirationTtl: 60 * 60 * 24 * 7 }); // claim BEFORE the work
-  await fn();
-  await env.RULES.put(flag, "done"); // success → never re-run (permanent)
-}
 
 // locationHint 'oc' (Oceania) is a LATENCY hint only — NOT a data-residency
 // guarantee (review finding B5). Genuine AU residency comes from Bedrock inference.
@@ -450,64 +423,53 @@ const handler = {
     const pending = await env.DB.prepare(`SELECT DISTINCT user_id FROM batch_jobs WHERE status = 'submitted'`).all<{ user_id: string }>();
     for (const u of pending.results) await stubFor(env, u.user_id).pollBatchJobs(u.user_id);
 
-    // One-time backfill (NON-spendy — no model call, so it runs BEFORE the AI-cost gate below):
-    // repair auto-created needs_review assets the v1 linker mis-handled — unwind personal transfers
-    // wrongly depreciated, and reclass low-cost (≤$300) items from a multi-year schedule to an
-    // immediate write-off. Guarded per tenant (claim-before-work, bounded) so it runs once. Iterate
-    // REAL tenants from `profiles` (founder's data lives under "me", not a Clerk id).
-    const assetFixTenants = await env.DB.prepare(`SELECT user_id FROM profiles`).all<{ user_id: string }>();
-    for (const t of assetFixTenants.results ?? []) {
-      try {
-        await runOnceGuarded(env, `backfill:reclass-lowcost-assets-v1:${t.user_id}`, 3, () =>
-          stubFor(env, t.user_id).reclassMisbucketedAssets(t.user_id).then(() => undefined),
-        );
-      } catch (e) {
-        console.error(`asset reclass backfill failed for ${t.user_id}: ${(e as Error).message}`);
-      }
-    }
+    // One-time backfills (#724): each runs through runBackfillOnce — a global KV marker
+    // (`backfill:<key>:done`) so a finished backfill costs ONE KV read a tick and no D1 scan, KV-cursor
+    // paging over `profiles` (at most BACKFILL_PAGE_SIZE tenants a tick), and the original per-tenant
+    // claim-before-work guards (same KV flags, so tenants that already ran are never re-run).
+
+    // NON-spendy (no model call, so no AI-cost gate): repair auto-created needs_review assets the v1
+    // linker mis-handled — unwind personal transfers wrongly depreciated, and reclass low-cost (<=$300)
+    // items from a multi-year schedule to an immediate write-off.
+    await runBackfillOnce(env, "reclass-lowcost-assets-v1", (uid) => stubFor(env, uid).reclassMisbucketedAssets(uid).then(() => undefined), {
+      tenantFlag: (uid) => `backfill:reclass-lowcost-assets-v1:${uid}`,
+      label: "asset reclass",
+    });
 
     // Cost-safety gate for the SPENDY backfills below (C1): recategorise/repairStatements submit NEW
     // batch jobs (Anthropic bills at submission). If the platform's daily ceiling is already hit,
     // skip them this tick — they're one-time backfills with no deadline, so deferring to a day with
     // headroom costs nothing but stops the cron spending past the global cap. (withinBudget inside
-    // categoriseStatement is the per-submit backstop; this avoids even starting the work.)
-    const globalCeiling = Number(env.MAX_DAILY_COST_CENTS_GLOBAL ?? 0);
-    if (globalCeiling > 0 && (await spentTodayGlobalCents(env)) >= globalCeiling) {
-      console.warn("skipping one-time backfills this tick — global daily AI ceiling already reached");
-      return;
-    }
+    // categoriseStatement is the per-submit backstop; this avoids even starting the work.) Evaluated
+    // lazily — only when a spendy backfill isn't done yet — and at most once a tick.
+    let budgetOk: Promise<boolean> | undefined;
+    const withinGlobalCeiling = () =>
+      (budgetOk ??= (async () => {
+        const globalCeiling = Number(env.MAX_DAILY_COST_CENTS_GLOBAL ?? 0);
+        if (globalCeiling > 0 && (await spentTodayGlobalCents(env)) >= globalCeiling) {
+          console.warn("skipping one-time backfills this tick — global daily AI ceiling already reached");
+          return false;
+        }
+        return true;
+      })());
 
-    // One-time backfill: re-categorise data imported before the income/asset buckets existed, so
-    // stranded credits get income buckets and capital purchases link to assets. Guarded per tenant
-    // (claim-before-work, bounded attempts) so a transient failure can't loop it forever (C2).
-    //
-    // Iterate REAL tenants from `profiles` (like the weekly scan), NOT CLERK_ALLOWED_USERS: the
-    // allow-list holds Clerk subject ids (e.g. user_3EX9…), but the founder's data lives under the
-    // mapped tenant id "me" (see src/auth/clerk.ts). The earlier v1 backfill keyed off the Clerk id,
-    // so its UPDATE matched 0 rows and silently no-op'd — hence the v2 flag key here.
-    const tenants = await env.DB.prepare(`SELECT user_id FROM profiles`).all<{ user_id: string }>();
-    for (const t of tenants.results ?? []) {
-      try {
-        await runOnceGuarded(env, `backfill:income-assets-v2:${t.user_id}`, 3, () =>
-          stubFor(env, t.user_id).recategorise(t.user_id).then(() => undefined),
-        );
-      } catch (e) {
-        console.error(`backfill recategorise failed for ${t.user_id}: ${(e as Error).message}`);
-      }
-    }
+    // Re-categorise data imported before the income/asset buckets existed, so stranded credits get
+    // income buckets and capital purchases link to assets. Keyed off REAL tenants (`profiles`), NOT
+    // CLERK_ALLOWED_USERS: the founder's data lives under the mapped tenant id "me" (src/auth/clerk.ts).
+    // The earlier v1 keyed off the Clerk id and silently no-op'd — hence the v2 key.
+    await runBackfillOnce(env, "income-assets-v2", (uid) => stubFor(env, uid).recategorise(uid).then(() => undefined), {
+      tenantFlag: (uid) => `backfill:income-assets-v2:${uid}`,
+      gate: withinGlobalCeiling,
+      label: "recategorise",
+    });
 
-    // One-time statement repair: recover lines dropped by the old credit-card de-dup bug (re-import
-    // from the stored R2 sidecar with the fixed fingerprint) and correct stale imported_count /
-    // reconciled flags. Idempotent; claim-before-work guarded so it runs at most a few times.
-    for (const t of tenants.results ?? []) {
-      try {
-        await runOnceGuarded(env, `repair:statements-v1:${t.user_id}`, 3, () =>
-          stubFor(env, t.user_id).repairStatements(t.user_id).then(() => undefined),
-        );
-      } catch (e) {
-        console.error(`statement repair failed for ${t.user_id}: ${(e as Error).message}`);
-      }
-    }
+    // Statement repair: recover lines dropped by the old credit-card de-dup bug (re-import from the
+    // stored R2 sidecar with the fixed fingerprint) and correct stale imported_count / reconciled flags.
+    await runBackfillOnce(env, "repair-statements-v1", (uid) => stubFor(env, uid).repairStatements(uid).then(() => undefined), {
+      tenantFlag: (uid) => `repair:statements-v1:${uid}`,
+      gate: withinGlobalCeiling,
+      label: "statement repair",
+    });
   },
 } satisfies ExportedHandler<Env>;
 

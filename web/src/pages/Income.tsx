@@ -159,7 +159,7 @@ export function Income() {
 
       <div className="grid grid-cols-3 gap-3">
         <Card className="p-4"><div className="text-xs uppercase tracking-wide text-muted">Gross income</div><div className="mt-1 text-xl font-semibold tabular-nums">{money(total)}</div></Card>
-        <Card className="p-4"><div className="text-xs uppercase tracking-wide text-muted">PAYG withheld</div><div className="mt-1 text-xl font-semibold tabular-nums">{money(withholding)}</div></Card>
+        <Card className="p-4"><div className="text-xs uppercase tracking-wide text-muted">PAYG withheld <InfoTip k="payg_withholding" /></div><div className="mt-1 text-xl font-semibold tabular-nums">{money(withholding)}</div></Card>
         <Card className="p-4"><div className="text-xs uppercase tracking-wide text-muted">Franking credits <InfoTip k="franking_credit" /></div><div className="mt-1 text-xl font-semibold tabular-nums">{money(franking)}</div></Card>
       </div>
 

@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api } from "../api";
 import { useFeatures } from "../lib/features";
-import { Card, Button, Input, money } from "./ui";
+import { Card, Button, Input, Term, money } from "./ui";
 
 // Working-from-home (fixed-rate) + car (cents-per-km) inputs. WFH is captured in DAYS PER WEEK — the
 // way people actually think about it — and the annual hours are derived transparently (≈ days × 7.6h ×
@@ -121,7 +121,9 @@ export function WorkMethodsCard({ fyNum, diaryCollapsed = false }: { fyNum: numb
   return (
     <Card className="space-y-3 p-4">
       <div>
-        <div className="text-sm font-semibold">Working from home (fixed-rate method)</div>
+        <div className="text-sm font-semibold">
+          Working from home (<Term k="wfh_fixed_rate">fixed-rate method</Term>)
+        </div>
         <div className="text-xs text-muted">
           <span className="font-medium text-ink">Why this matters:</span> from 1 July 2024 the ATO needs a record of your{" "}
           <span className="font-medium">actual hours</span> worked from home for the whole year — a blanket "I worked X days"

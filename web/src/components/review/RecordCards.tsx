@@ -3,7 +3,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api } from "../../api";
 import { fyLabel } from "../../lib/activeFy";
-import { INPUT_CLASS, money, parseMoneyToCents } from "../ui";
+import { INPUT_CLASS, InfoTip, money, parseMoneyToCents } from "../ui";
 import { Badge, FtButton, FtCard, RecordRow } from "../ft";
 import { WorkMethodsCard } from "../WorkMethodsCard";
 import { CarMethodsCard } from "../CarMethodsCard";
@@ -84,9 +84,12 @@ export function NeedsRecordCard({
               </FtButton>
             </div>
           ) : (
-            <FtButton variant="ghost" className="text-sm" onClick={() => setOpen(true)}>
-              It's under the record-keeping exception
-            </FtButton>
+            <span className="inline-flex items-center gap-1">
+              <FtButton variant="ghost" className="text-sm" onClick={() => setOpen(true)}>
+                It's under the record-keeping exception
+              </FtButton>
+              <InfoTip k="record_keeping_exception" />
+            </span>
           )}
         </div>
       )}

@@ -148,7 +148,7 @@ export function CapitalEquity() {
         </table>
       )}
       <div className="flex items-center justify-between border-t border-line pt-2">
-        <div className="text-xs uppercase tracking-wide text-muted">Disposals (sell / swap / spend)</div>
+        <div className="text-xs uppercase tracking-wide text-muted">Disposals (sell / swap / spend) <InfoTip k="cgt_discount" /></div>
         <Button variant="ghost" disabled={!assetList.length} onClick={() => setAddingEvent((v) => !v)}>{addingEvent ? "Cancel" : "+ Record a disposal"}</Button>
       </div>
       {addingEvent && assetList.length > 0 && <AddCgtEventForm assets={assetList} onDone={() => { setAddingEvent(false); invalidate(); }} />}
@@ -240,7 +240,7 @@ function AddCgtAssetForm({ onDone }: { onDone: () => void }) {
         <label className="text-sm">Code / name<Input className="mt-1 w-full" value={code} onChange={(e) => setCode(e.target.value)} placeholder="CBA, BTC…" /></label>
         {holdingDetail && <label className="text-sm">Units held<Input className="mt-1 w-full" inputMode="decimal" value={units} onChange={(e) => setUnits(e.target.value)} placeholder="e.g. 120 or 0.5" /></label>}
         <label className="text-sm">Acquired<Input className="mt-1 w-full" type="date" value={acquired} onChange={(e) => setAcquired(e.target.value)} /></label>
-        <label className="text-sm">{costBaseDetail ? "Purchase price ($)" : "Cost base ($)"}<Input className="mt-1 w-full" inputMode="decimal" value={costBase} onChange={(e) => setCostBase(e.target.value)} /></label>
+        <label className="text-sm">{costBaseDetail ? "Purchase price ($)" : "Cost base ($)"} <InfoTip k="cost_base" /><Input className="mt-1 w-full" inputMode="decimal" value={costBase} onChange={(e) => setCostBase(e.target.value)} /></label>
         {costBaseDetail && <label className="text-sm">Brokerage ($)<Input className="mt-1 w-full" inputMode="decimal" value={brokerage} onChange={(e) => setBrokerage(e.target.value)} placeholder="e.g. 9.50" /></label>}
         {costBaseDetail && <label className="text-sm">Other costs ($)<Input className="mt-1 w-full" inputMode="decimal" value={incidental} onChange={(e) => setIncidental(e.target.value)} placeholder="transfer duty, fees" /></label>}
         {costBaseDetail && <label className="text-sm">Evidence<Input className="mt-1 w-full" value={cbNote} onChange={(e) => setCbNote(e.target.value)} placeholder="CommSec contract note 1234" /></label>}

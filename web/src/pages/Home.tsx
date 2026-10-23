@@ -1,6 +1,6 @@
 import { useActiveFy } from "../lib/activeFy";
 import { JOURNEY_STEP_KEYS, STATUS_LABEL, STEP_LABEL, STEP_ROUTE, useJourney } from "../lib/journey";
-import { money } from "../components/ui";
+import { money, Term } from "../components/ui";
 import { Badge, EmptyState, FtCard, FtLink, GeneralInfoNote, GrowSuggestionCard, Skeleton, StatusGate } from "../components/ft";
 import { useSetGrowLayer } from "../lib/grow";
 import type { Journey, JourneyStepKey, JourneyStepStatus } from "../types";
@@ -61,7 +61,7 @@ function Hero({ j, label }: { j: Journey; label: string }) {
       {estimate && (
         <div className="mt-3">
           <p className="text-sm text-ink">
-            Estimated taxable position:{" "}
+            Estimated <Term k="taxable_position">taxable position</Term>:{" "}
             <span className="font-semibold tnum">
               {estimate.confirmed_cents != null && estimate.confirmed_cents !== estimate.tracked_cents
                 ? `${money(estimate.confirmed_cents)} confirmed → ${money(estimate.tracked_cents)} tracked`

@@ -7644,6 +7644,32 @@ console.log("A6 CDR data controls (#639)");
     !/featureOn\(env, "reportable_amounts"\)/.test(aSrc) && !/reportableAmounts(ByEmployer|Total)/.test(aSrc) && !/key: "reportable_amounts"/.test(aSrc) && /situationSections\(/.test(aSrc));
 }
 
+// ── Design audit #696 Explain rollout: the first-timer terms exist, and the wired terms render where they appear ──
+{
+  console.log("\nExplain rollout (#696)");
+  const { ANY_GLOSSARY: G696, FT_GLOSSARY: FT696, GLOSSARY: L696 } = await import("../web/src/content/glossary");
+  const { denylistHits: dh696 } = await import("../src/lib/copy-denylist");
+  const NEW_KEYS = ["taxable_position", "payg_withholding", "wfh_fixed_rate", "cost_base", "cgt_discount", "effective_life", "negative_gearing", "rfba", "mls", "tax_ready", "sole_trader", "div7a"];
+  const ft = FT696 as Record<string, { short: string; why?: string; related?: readonly string[] }>;
+  const weak = NEW_KEYS.filter((k) => !ft[k] || !ft[k].why || !(ft[k].related ?? []).length || k in L696);
+  check(`new first-timer terms: each in FT_GLOSSARY (flag-OFF /glossary unchanged) with short + why + related (offenders: ${weak.join(",") || "none"})`, weak.length === 0);
+  const figures = NEW_KEYS.filter((k) => ft[k] && (/\$\s?\d|\d+(?:\.\d+)?\s?%|\d+\s?c\b|cents? (?:per|an) hour/i.test(ft[k].short + " " + ft[k].why) || dh696(ft[k].short + " " + ft[k].why).length > 0));
+  check(`new first-timer terms: no dollar figure or rate, and the denylist passes (offenders: ${figures.join(",") || "none"})`, figures.length === 0);
+  const needWhy = ["confidence", "bucket", "ato_label", "reconcile"].filter((k) => !(G696 as Record<string, { why?: string }>)[k]?.why);
+  check(`audit "exist but not rendered" keys now carry a why (missing: ${needWhy.join(",") || "none"})`, needWhy.length === 0);
+  const wired: [string, string][] = [
+    ["pages/AboutYou.tsx", "tax_residency"], ["pages/AboutYou.tsx", "help_debt"], ["components/connect/ConnectPage.tsx", "income_statement"],
+    ["pages/ShipIt.tsx", "tax_ready"], ["pages/ShipIt.tsx", "mytax"], ["pages/ShipIt.tsx", "notice_of_assessment"], ["pages/ShipIt.tsx", "registered_tax_agent"],
+    ["pages/Home.tsx", "taxable_position"], ["components/review/RecordCards.tsx", "record_keeping_exception"], ["components/WorkMethodsCard.tsx", "wfh_fixed_rate"],
+    ["pages/Income.tsx", "payg_withholding"], ["pages/Reports.tsx", "taxable_position"], ["pages/Reports.tsx", "rfba"], ["pages/Reports.tsx", "negative_gearing"],
+    ["pages/Filing.tsx", "taxable_position"], ["pages/Filing.tsx", "notice_of_assessment"], ["pages/TxnDetail.tsx", "confidence"], ["pages/Assets.tsx", "effective_life"],
+    ["components/income/CapitalEquity.tsx", "cost_base"], ["components/income/CapitalEquity.tsx", "cgt_discount"], ["components/AttributionPanel.tsx", "div7a"],
+  ];
+  const unwired = wired.filter(([f, k]) => !fs.readFileSync(path.join(process.cwd(), "web/src", f), "utf8").includes(`k="${k}"`)).map(([f, k]) => `${f}:${k}`);
+  check(`Explain terms render where the term appears (missing: ${unwired.join(", ") || "none"})`, unwired.length === 0);
+  check("Lodge: the M2 private-hospital-cover line explains the Medicare levy surcharge", /private_hospital_cover: "mls"/.test(fs.readFileSync(path.join(process.cwd(), "web/src/pages/ShipIt.tsx"), "utf8")));
+}
+
 // ── #721: every DO method that calls the model also runs the budget gate ──
 {
   console.log("\nbudget gate on every model call (#721)");

@@ -200,7 +200,7 @@ function AddAssetForm({ onDone }: { onDone: () => void }) {
         <label className="text-sm">Acquired<Input className="mt-1 w-full" type="date" value={acquired} onChange={(e) => setAcquired(e.target.value)} /></label>
         {assetClass === "div40_plant" && (
           <>
-            <label className="text-sm">Effective life (yrs){carClass ? <span className="text-muted"> — optional</span> : null}
+            <label className="text-sm">Effective life (yrs) <InfoTip k="effective_life" />{carClass ? <span className="text-muted"> — optional</span> : null}
               <Input className="mt-1 w-full" inputMode="decimal" value={life} onChange={(e) => setLife(e.target.value)} placeholder={carClass ? "standard life if blank" : undefined} />
               {carClass ? <span className="mt-0.5 block text-[11px] text-muted">Leave blank and we'll use the ATO standard life for this asset. Override only if your schedule specifies one.</span> : null}
             </label>

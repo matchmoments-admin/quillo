@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import { useFeatures } from "../lib/features";
-import { Card, Spinner, money } from "./ui";
+import { Card, Spinner, Term, money } from "./ui";
 import type { Person, IncomeActivity, AttributionInput } from "../types";
 
 type EntityLite = { id: string; kind: string; name: string | null };
@@ -172,7 +172,7 @@ export function AttributionPanel({ txnId, txnAmountCents, entities, persons }: {
               </div>
             )}
             {companyIds.has(r.entity_id) && (
-              <p className="text-[11px] text-muted">Recorded as a loan from you to the company (not a Division 7A dividend — that risk runs the other way).</p>
+              <p className="text-[11px] text-muted">Recorded as a loan from you to the company (not a <Term k="div7a">Division 7A</Term> dividend — that risk runs the other way).</p>
             )}
           </div>
         ))}

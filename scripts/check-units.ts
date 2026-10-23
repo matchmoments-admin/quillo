@@ -6781,6 +6781,34 @@ import { authorizedParties } from "../src/auth/clerk";
 import { handleApi } from "../src/api";
 import { generateKeyPair, exportJWK, SignJWT } from "jose";
 import nodeHttp from "node:http";
+console.log("security sweep #694: Stripe webhook signature (secret rotation + replay window)");
+{
+  const { verifyStripeWebhook } = await import("../src/lib/stripe");
+  const env = { STRIPE_WEBHOOK_SECRET: "unit-test-webhook-secret" } as unknown as Env;
+  const now = 1_790_000_000_000;
+  const t = String(Math.floor(now / 1000));
+  const payload = JSON.stringify({ id: "evt_1", type: "checkout.session.completed" });
+  const sign = async (secret: string, ts: string) => {
+    const k = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    const mac = await crypto.subtle.sign("HMAC", k, new TextEncoder().encode(`${ts}.${payload}`));
+    return [...new Uint8Array(mac)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  };
+  const good = await sign("unit-test-webhook-secret", t);
+  const other = await sign("unit-test-other-secret", t);
+  check("stripe sig: a single valid v1 verifies", (await verifyStripeWebhook(env, payload, `t=${t},v1=${good}`, now))?.id === "evt_1");
+  check("stripe sig: during a secret roll, a valid v1 FIRST and an old one last still verifies",
+    (await verifyStripeWebhook(env, payload, `t=${t},v1=${good},v1=${other}`, now))?.id === "evt_1");
+  check("stripe sig: ...and with the valid v1 last", (await verifyStripeWebhook(env, payload, `t=${t},v1=${other},v1=${good}`, now))?.id === "evt_1");
+  check("stripe sig: only wrong-secret signatures ⇒ refused", (await verifyStripeWebhook(env, payload, `t=${t},v1=${other}`, now)) === null);
+  check("stripe sig: tampered payload ⇒ refused", (await verifyStripeWebhook(env, payload.replace("evt_1", "evt_2"), `t=${t},v1=${good}`, now)) === null);
+  check("stripe sig: older than 5 minutes ⇒ refused", (await verifyStripeWebhook(env, payload, `t=${t},v1=${good}`, now + 301_000)) === null);
+  const junkT = "abc";
+  check("stripe sig: a non-numeric t fails CLOSED (used to skip the replay check)",
+    (await verifyStripeWebhook(env, payload, `t=${junkT},v1=${await sign("unit-test-webhook-secret", junkT)}`, now)) === null);
+  check("stripe sig: no secret / no header ⇒ refused",
+    (await verifyStripeWebhook({} as Env, payload, `t=${t},v1=${good}`, now)) === null && (await verifyStripeWebhook(env, payload, null, now)) === null);
+}
+
 console.log("access control: admin MFA + API rate limiting + Clerk cutover seams (#638)");
 {
   // ── fva parsing: only a well-formed, non-negative second-factor age counts ──

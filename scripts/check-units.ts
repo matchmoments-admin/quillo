@@ -7682,6 +7682,7 @@ console.log("A6 CDR data controls (#639)");
     ["pages/Income.tsx", "payg_withholding"], ["pages/Reports.tsx", "taxable_position"], ["pages/Reports.tsx", "rfba"], ["pages/Reports.tsx", "negative_gearing"],
     ["pages/Filing.tsx", "taxable_position"], ["pages/Filing.tsx", "notice_of_assessment"], ["pages/TxnDetail.tsx", "confidence"], ["pages/Assets.tsx", "effective_life"],
     ["components/income/CapitalEquity.tsx", "cost_base"], ["components/income/CapitalEquity.tsx", "cgt_discount"], ["components/AttributionPanel.tsx", "div7a"],
+    ["pages/Reports.tsx", "company"], ["pages/Reports.tsx", "div7a"],
   ];
   const unwired = wired.filter(([f, k]) => !fs.readFileSync(path.join(process.cwd(), "web/src", f), "utf8").includes(`k="${k}"`)).map(([f, k]) => `${f}:${k}`);
   check(`Explain terms render where the term appears (missing: ${unwired.join(", ") || "none"})`, unwired.length === 0);
@@ -7814,6 +7815,28 @@ console.log("QA stub (#699): dev-only, impossible in prod");
   const repSrc = fs.readFileSync(path.join(process.cwd(), "web/src/pages/Reports.tsx"), "utf8");
   check("novated-lease car note: renders only for a novated_lease entity, explains the term, and sits on the car card + the Reports method comparison",
     /e\.kind === "novated_lease"/.test(carSrc) && /<Term k="novated_lease">/.test(carSrc) && /<NovatedLeaseCarNote \/>/.test(carSrc) && /<NovatedLeaseCarNote /.test(repSrc));
+}
+
+// ── #766: Reports renders the per-company position (P8 James), apart from the individual position ──
+{
+  console.log("\nCompany positions on Reports (#766)");
+  const rep766 = fs.readFileSync(path.join(process.cwd(), "web/src/pages/Reports.tsx"), "utf8");
+  const types766 = fs.readFileSync(path.join(process.cwd(), "web/src/types.ts"), "utf8");
+  const { denylistHits: dh766 } = await import("../src/lib/copy-denylist");
+  const iface766 = /export interface CompanyPosition \{[^}]*\}/.exec(types766)?.[0] ?? "";
+  check("company positions: web Report mirrors company_positions with the engine's CompanyPosition fields",
+    /company_positions\?: CompanyPosition\[\]/.test(types766) &&
+    ["assessable_income_cents", "deductions_cents", "total_carry_forward_cents", "shareholder_loan_balance_cents"].every((f) => iface766.includes(f)));
+  check("company positions: the Detailed tax positions group renders when only a company is present",
+    /\(data!\.company_positions && data!\.company_positions\.length > 0\)\) && \(\s*<CollapsibleSection title="Detailed tax positions">/.test(rep766));
+  const start766 = rep766.indexOf("Company positions (a separate taxpayer)");
+  const card766 = start766 < 0 ? "" : rep766.slice(start766, rep766.indexOf("{data!.smsf_funds && data!.smsf_funds.length > 0 && ("));
+  check("company positions: the card shows income, deductions, loss carried forward and the director loan, inside the Detailed group",
+    card766.length > 0 && start766 > rep766.indexOf('<CollapsibleSection title="Detailed tax positions">') &&
+    ["c.assessable_income_cents", "c.deductions_cents", "c.total_carry_forward_cents", "c.shareholder_loan_balance_cents"].every((f) => card766.includes(f)));
+  check("company positions: explains company + Div 7A, says it's not in the individual position, general info + registered tax agent, denylist clean",
+    /<InfoTip k="company" \/>/.test(card766) && /<Term k="div7a">/.test(card766) && /not part of your individual position/.test(card766) &&
+    /General information only/.test(card766) && /registered tax agent/.test(card766) && dh766(card766.replace(/<[^>]+>|\{[^}]*\}/g, " ")).length === 0);
 }
 
 // ── #699 QA: a duplicate entity role is a 409, not a UNIQUE-constraint 500 ───────────────────

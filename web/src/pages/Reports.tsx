@@ -197,7 +197,7 @@ export function Reports() {
           {/* EPIC #134 engine outputs — each renders only when its flag is on and there's data. Grouped
               under one collapsible so the densest detail folds away when it isn't relevant; the whole
               group is omitted (not an empty header) when a simple PAYG return has none of it. */}
-          {(data!.capital_gains || data!.ess || data!.trust || data!.franking_gross_up_cents != null || data!.super_deduction || data!.trading_stock || data!.car_logbook || data!.gst || (data!.smsf_funds && data!.smsf_funds.length > 0)) && (
+          {(data!.capital_gains || data!.ess || data!.trust || data!.franking_gross_up_cents != null || data!.super_deduction || data!.trading_stock || data!.car_logbook || data!.gst || (data!.smsf_funds && data!.smsf_funds.length > 0) || (data!.company_positions && data!.company_positions.length > 0)) && (
           <CollapsibleSection title="Detailed tax positions">
           {data!.capital_gains && (
             <Card className="overflow-hidden">
@@ -295,6 +295,42 @@ export function Reports() {
                   ? "From the BAS periods you recorded (Settings)."
                   : "Estimated from your ledger — record your actual BAS periods in Settings to override this."}
                 {data!.payg_instalments_cents ? ` PAYG instalments recorded this year: ${money(data!.payg_instalments_cents)} (pre-payments toward income tax — not part of your position).` : ""}
+              </p>
+            </Card>
+          )}
+
+          {/* #766: the per-company position (P8 James). A company is a separate taxpayer with its own return, so
+              none of this is in the individual position above — the engine keeps it out of the headline. */}
+          {data!.company_positions && data!.company_positions.length > 0 && (
+            <Card className="overflow-hidden">
+              <Th>Company positions (a separate taxpayer) <InfoTip k="company" /></Th>
+              {data!.company_positions.map((c) => (
+                <div key={c.entity_id} className="border-t border-line p-4">
+                  <div className="mb-3 text-sm font-medium text-ink">{c.name ?? "Company"}</div>
+                  <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+                    <Stat label="Company income" value={money(c.assessable_income_cents)} />
+                    <Stat label="Company deductions" value={money(c.deductions_cents)} />
+                    {c.total_carry_forward_cents > 0 && <Stat label="Loss carried forward" value={money(c.total_carry_forward_cents)} />}
+                    {c.shareholder_loan_balance_cents > 0 && <Stat label="You've lent the company" value={money(c.shareholder_loan_balance_cents)} />}
+                  </div>
+                  {c.carried_forward_losses_cents > 0 && c.current_year_loss_cents > 0 && (
+                    <p className="mt-2 text-xs text-muted">
+                      Includes {money(c.carried_forward_losses_cents)} brought in from earlier years and {money(c.current_year_loss_cents)} from this year.
+                    </p>
+                  )}
+                </div>
+              ))}
+              {data!.company_unattributed_cents ? (
+                <p className="border-t border-line px-4 py-2.5 text-xs text-warn">
+                  {money(data!.company_unattributed_cents)} of company spend ({data!.company_unattributed_n ?? 0} line{data!.company_unattributed_n === 1 ? "" : "s"}) isn't
+                  assigned to one company yet, so it's in none of the figures above.
+                </p>
+              ) : null}
+              <p className="border-t border-line px-4 py-2.5 text-xs text-muted">
+                Each company lodges its own return, so these figures are not part of your individual position above. Money you've
+                lent the company is owed back to you; it isn't your income or a deduction. Money the company pays or lends to you
+                is a different matter (<Term k="div7a">Division 7A</Term>). General information only — confirm the company's
+                figures with a registered tax agent.
               </p>
             </Card>
           )}

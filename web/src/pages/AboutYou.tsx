@@ -178,6 +178,7 @@ function FirstRun({
   const consent = useMutation({
     mutationFn: () => api.consent(CONSENT_TEXT),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["situation"] }),
+    meta: { errorShownInline: true }, // the consent card shows it
   });
 
   const save = useMutation({
@@ -202,6 +203,7 @@ function FirstRun({
       navigate(STEP_ROUTE.connect);
       qc.invalidateQueries({ queryKey: ["situation"] });
     },
+    meta: { errorShownInline: true }, // StepFooter shows it, with Retry
   });
 
   const screen = screens[i]!;

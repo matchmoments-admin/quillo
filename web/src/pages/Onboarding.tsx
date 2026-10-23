@@ -16,6 +16,8 @@ import {
   emptyEntity,
   emptyProperty,
   emptyPerson,
+  entityKindLabel,
+  personRoleLabel,
   type EntityValue,
   type PropertyValue,
   type PersonValue,
@@ -289,7 +291,7 @@ export function Onboarding() {
         <Card className="p-5">
           <StepHead n={idx + 1} total={stepKeys.length} title={<>Your entities <InfoTip k="entities" /></>} />
           <p className="mb-3 text-sm text-muted">Company, PAYG employment, novated lease. Confirm or edit what I drafted; add any I missed.</p>
-          <ExistingList items={(s?.entities ?? []).map((e) => `${e.kind}${e.name ? ` — ${e.name}` : ""}`)} />
+          <ExistingList items={(s?.entities ?? []).map((e) => `${entityKindLabel(e.kind)}${e.name ? ` — ${e.name}` : ""}`)} />
           <div className="space-y-3">
             {entities.map((e, i) => (
               <div key={i} className="rounded-lg bg-surface p-3">
@@ -440,7 +442,7 @@ function Summary({
         <div className="text-xs font-medium uppercase tracking-wide text-muted">People ({persons.length})</div>
         {persons.map((p, i) => (
           <div key={i}>
-            • {p.display_name || (p.role === "self" ? "You" : "Taxpayer")} — {p.role}
+            • {p.display_name || (p.role === "self" ? "You" : "Taxpayer")}{p.role === "self" ? "" : ` — ${personRoleLabel(p.role)}`}
             {p.occupation ? ` · ${p.occupation}` : " · occupation not set"} · {p.tax_residency === "foreign" ? "foreign resident" : "AU resident"}
           </div>
         ))}
@@ -450,7 +452,7 @@ function Summary({
         {entities.length ? (
           entities.map((e, i) => (
             <div key={i}>
-              • {e.kind}
+              • {entityKindLabel(e.kind)}
               {e.name ? ` — ${e.name}` : ""}
               {e.kind === "company" && (e.detail.abn ? ` · ABN ${e.detail.abn}` : "") + (e.detail.gst_registered ? " · GST registered" : " · not GST registered")}
               {e.kind === "novated_lease" && e.detail.vehicle ? ` · ${e.detail.vehicle}${e.detail.provider ? ` via ${e.detail.provider}` : ""}` : ""}

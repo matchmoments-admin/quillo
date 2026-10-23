@@ -10,7 +10,7 @@ import { Card, Spinner, BUCKET_LABEL, InfoTip, money, parseMoneyToCents } from "
 import { AiChangesFeed } from "../components/AiChangesFeed";
 import { BankConsents } from "../components/BankConsents";
 import { CarryIns, PeopleList, runDelete } from "../components/ProfileSections";
-import { ENTITY_KINDS, EntityFields, PropertyFields, entityToBody, entityToValue, propertyToBody, propertyError, emptyEntity, emptyProperty, OWNED_STATUSES, TENANT_STATUSES, USE_STATUSES, DENY_USE_STATUSES, isTenantStatus, statusLabel, propertyStatusLabel, type EntityValue, type PropertyValue } from "../components/SituationFields";
+import { ENTITY_KINDS, EntityFields, PropertyFields, entityKindLabel, entityToBody, entityToValue, propertyToBody, propertyError, emptyEntity, emptyProperty, OWNED_STATUSES, TENANT_STATUSES, USE_STATUSES, DENY_USE_STATUSES, isTenantStatus, statusLabel, propertyStatusLabel, type EntityValue, type PropertyValue } from "../components/SituationFields";
 import type { Account, Property, LoanProperty, IncomeActivity, Situation } from "../types";
 import { isPropertyBucket } from "../lib/buckets";
 
@@ -224,7 +224,7 @@ function BusinessSections({ s, onDone, anchored = false, employersElsewhere = fa
       {/* Entities. #593: with Get set up's profile mode live, employers are edited there (next to the
           employment periods), so Grow › Business keeps companies, trusts, partnerships, SMSF and leases. */}
       {employersElsewhere ? (
-        <Section id={a("entities")} title={<>Entities (company · trust · partnership · novated lease) <InfoTip k="entities" /></>}>
+        <Section id={a("entities")} title={<>Companies, trusts, partnerships, SMSFs &amp; car leases <InfoTip k="entities" /></>}>
           {s.entities.filter((e) => e.kind !== "employment").map((e) => (
             <EditableEntity key={e.id} entity={e} onDone={onDone} kinds={NON_EMPLOYER_KINDS} />
           ))}
@@ -923,7 +923,7 @@ function entityLabel(e: { kind: string; name: string | null; detail_json?: strin
   } catch {
     /* ignore */
   }
-  const bits = [e.kind, e.name].filter(Boolean);
+  const bits = [entityKindLabel(e.kind), e.name].filter(Boolean);
   if (e.kind === "company") {
     if (d.abn) bits.push(`ABN ${d.abn}`);
     bits.push(d.gst_registered ? "GST registered" : "not GST registered");
@@ -1114,7 +1114,7 @@ function SmsfMembers({ funds }: { funds: { id: string; name: string | null }[] }
   const members = useQuery({ queryKey: ["smsf-members"], queryFn: () => api.smsfMembers() });
   const [adding, setAdding] = useState(false);
   const invalidate = () => { qc.invalidateQueries({ queryKey: ["smsf-members"] }); qc.invalidateQueries({ queryKey: ["report"] }); };
-  if (!funds.length) return <Empty>Add an SMSF entity above first (Entities → kind "smsf"), then record each member's balances.</Empty>;
+  if (!funds.length) return <Empty>Add your fund above first (choose "Self-managed super fund (SMSF)"), then record each member&apos;s balances.</Empty>;
   const fundName = (id: string) => funds.find((f) => f.id === id)?.name ?? "SMSF";
   return (
     <div className="space-y-2">
@@ -1305,7 +1305,7 @@ function AddIncomeActivity({ entities, onDone }: { entities: { id: string; kind:
         <input className={input} placeholder="Label e.g. Rideshare" value={label} onChange={(e) => setLabel(e.target.value)} />
         <select className={input} value={entityId} onChange={(e) => setEntityId(e.target.value)}>
           <option value="">Me (individual)</option>
-          {pickable.map((e) => <option key={e.id} value={e.id}>{e.name ?? e.kind}</option>)}
+          {pickable.map((e) => <option key={e.id} value={e.id}>{e.name ?? entityKindLabel(e.kind)}</option>)}
         </select>
         <input className={input} placeholder="Occupation e.g. it_professional" value={scope} onChange={(e) => setScope(e.target.value)} />
       </div>

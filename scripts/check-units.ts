@@ -68,6 +68,7 @@ import { csvCell, substantiationStatus, impliedWorkUsePct, scheduleToCsv, type A
 import { exclusionReason } from "../src/lib/readiness";
 import fs from "node:fs";
 import path from "node:path";
+import { composePosition, type PositionSummands } from "../src/lib/position";
 import type Anthropic from "@anthropic-ai/sdk";
 
 let pass = 0,
@@ -7265,6 +7266,36 @@ console.log("A6 CDR data controls (#639)");
   check("weekly cron: minimisation, inactive end users and the record are wired, each behind its flag",
     /if \(featureOn\(env, "bank_minimisation"\)\) \{/.test(indexSrc639) && /if \(featureOn\(env, "cdr_inactive_user_delete"\)\) \{/.test(indexSrc639) &&
     /await publishLifecycleRecord\(env, tally,/.test(indexSrc639));
+}
+
+// ── position.ts: the ONE position formula (shared by the tracked and confirmed endpoints) ──
+{
+  console.log("\nposition: composePosition");
+  const zero: PositionSummands = {
+    income_cents: 0, net_capital_gain_cents: 0, ess_assessable_cents: 0, trust_assessable_cents: 0, partnership_assessable_cents: 0,
+    franking_gross_up_cents: 0, trading_stock_adjustment_cents: 0, depreciation_cents: 0, super_deduction_cents: 0,
+  };
+  const s: PositionSummands = {
+    income_cents: 8_000_000, net_capital_gain_cents: 50_000, ess_assessable_cents: 20_000, trust_assessable_cents: 30_000,
+    partnership_assessable_cents: -10_000, franking_gross_up_cents: 4_000, trading_stock_adjustment_cents: -3_000,
+    depreciation_cents: 120_000, super_deduction_cents: 500_000,
+  };
+  const p = composePosition(s, 250_000, 0);
+  check("composePosition: every assessable summand added, every reduction subtracted",
+    p.pre_loss_cents === 8_000_000 + 50_000 + 20_000 + 30_000 - 10_000 + 4_000 - 3_000 - 250_000 - 120_000 - 500_000 && p.position_cents === p.pre_loss_cents && p.tax_losses_applied_cents === 0);
+  const withLoss = composePosition(s, 250_000, 1_000_000);
+  check("composePosition: a carried loss reduces the position by the loss", withLoss.tax_losses_applied_cents === 1_000_000 && withLoss.position_cents === p.pre_loss_cents - 1_000_000);
+  const bigLoss = composePosition({ ...zero, income_cents: 300_000 }, 100_000, 999_999_999);
+  check("composePosition: the loss offsets only positive income — never pushes the position below zero", bigLoss.tax_losses_applied_cents === 200_000 && bigLoss.position_cents === 0);
+  const negative = composePosition({ ...zero, income_cents: 100_000 }, 400_000, 50_000);
+  check("composePosition: a negative pre-loss position applies no loss", negative.tax_losses_applied_cents === 0 && negative.position_cents === -300_000);
+  // The confirmed endpoint uses fewer (or equal) deductions over the SAME summands ⇒ confirmed ≥ tracked.
+  const tracked = composePosition(s, 250_000, 70_000).position_cents;
+  const confirmed = composePosition(s, 90_000, 70_000).position_cents;
+  check("composePosition: fewer confirmed deductions over the same summands ⇒ confirmed ≥ tracked (range never inverts)", confirmed >= tracked);
+  const reportSrc = fs.readFileSync(path.join(process.cwd(), "src/lib/report.ts"), "utf8");
+  check("report.ts: both endpoints go through composePosition (no inline copy of the formula)",
+    (reportSrc.match(/composePosition\(summands,/g) ?? []).length === 2 && !/net_capital_gain_cents \?\? 0\) \+ \(ess/.test(reportSrc));
 }
 
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);

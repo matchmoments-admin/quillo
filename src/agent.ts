@@ -58,7 +58,7 @@ import { getLedger, LedgerNotConnectedError, LedgerReauthError, type LedgerExpen
 import { redact, statementLinesForModel } from "./lib/redact";
 import { requiresAuResidency, cdrBlockedInThisDeployment, productionCredentialsBlockedHere, type AccessType } from "./lib/bank-feed-core";
 import { bankProvider, anyBankProviderConfigured, type BankFeedProvider, type ConsentAction } from "./lib/bank-provider";
-import { putConnectState, putConnectSession, takeConnectState, parseJobIds, syncWindow, safeCallbackParam } from "./lib/bank-connect";
+import { putConnectState, putConnectSession, takeConnectState, connectStateTtl, parseJobIds, syncWindow, safeCallbackParam } from "./lib/bank-connect";
 import {
   closeStaleRuns, openRun, loadRun, touchRun, syncRunStep, finishRun, runOutcome, skippedOf,
   FIRST_STEP_PAGES, PAGES_PER_STEP, MAX_PAGES_PER_RUN,
@@ -1820,14 +1820,14 @@ export class TaxAgent extends Agent<Env> {
    * `origin` is this request's own origin (the route passes url.origin): providers that take the
    * redirect per session (Fiskil) send the consumer back to `${origin}/api/bank/callback`.
    */
-  async bankConnectUrl(userId: string, action: ConsentAction = "connect", origin?: string): Promise<{ url: string }> {
+  async bankConnectUrl(userId: string, action: ConsentAction = "connect", origin: string | undefined, bindHash: string): Promise<{ url: string; stateTtlSeconds: number }> {
     const provider = bankProvider(this.env);
     if (!provider.configured()) throw new Error(`bank feeds are not configured (${provider.id} credentials missing)`);
     // #639 (Schedule 2 3(b)): a non-production deployment never starts a consent on production credentials.
     if (productionCredentialsBlockedHere(this.env, provider.id)) throw new Error("production bank-feed credentials can't be used outside production — use the sandbox");
     if (!(await this.bankRateOk(userId, "connect", 10))) throw new Error("too many connect attempts — try again later");
     const providerUserId = await this.bankUserFor(userId, provider);
-    const state = await putConnectState(this.env, userId, provider.stateTtlSeconds);
+    const state = await putConnectState(this.env, userId, provider.stateTtlSeconds, bindHash); // bound to the starting browser (#712)
     const start = await provider.consentUrl(providerUserId, {
       state,
       action,
@@ -1842,7 +1842,7 @@ export class TaxAgent extends Agent<Env> {
       detail: { action, session_id: start.sessionId ?? null },
     }).catch((e) => console.error(`[cdr] consent_requested record failed: ${(e as Error).message}`));
     // The URL may carry a consumer-scoped bearer (Basiq) — never logged.
-    return { url: start.url };
+    return { url: start.url, stateTtlSeconds: connectStateTtl(provider.stateTtlSeconds) };
   }
 
   /**

@@ -150,6 +150,106 @@ console.log("reconcileStatement");
   check("...and that wrong opening fails reconcile (proves the flag is load-bearing)", !reconcileStatement(ccBal, dAsset.opening_cents, dAsset.closing_cents, true).ok);
 }
 
+// ── Security sweep #694 / #712: OAuth state is bound to the browser that started the connect ──
+console.log("security sweep #694 (#712): QuickBooks + bank callbacks only honour the state from the starting browser");
+{
+  const ob = await import("../src/lib/oauth-binding");
+  const qbo = await import("../src/lib/qbo-oauth");
+  const bank = await import("../src/lib/bank-connect");
+  const kv = new Map<string, string>();
+  const kenv = {
+    FEATURES: "bank_feed_cdr",
+    QBO_CLIENT_ID: "cid", QBO_CLIENT_SECRET: "csecret", QBO_BASE_URL: "https://sandbox-quickbooks.api.intuit.com",
+    RULES: {
+      get: async (k: string, t?: string) => { const v = kv.get(k) ?? null; return v != null && t === "json" ? JSON.parse(v) : v; },
+      put: async (k: string, v: string) => { kv.set(k, v); },
+      delete: async (k: string) => { kv.delete(k); },
+    },
+    DB: { prepare: () => { const st = { bind: () => st, first: async () => null, all: async () => ({ results: [] }), run: async () => ({ meta: {} }) }; return st; } },
+  } as unknown as Env;
+  kv.set("qbo:oidc:sandbox", JSON.stringify({ authorization_endpoint: "https://appcenter.intuit.example/connect/oauth2", token_endpoint: "https://oauth.intuit.example/token", revocation_endpoint: "https://oauth.intuit.example/revoke" }));
+
+  const a = await ob.mintBinding();
+  const b = await ob.mintBinding();
+  check("binding: a 256-bit base64url nonce, stored only as its SHA-256", /^[A-Za-z0-9_-]{43}$/.test(a.nonce) && /^[0-9a-f]{64}$/.test(a.hash) && a.nonce !== b.nonce);
+  check("binding: the nonce matches its own hash, never another's, never null / junk",
+    (await ob.bindingMatches(a.nonce, a.hash)) && !(await ob.bindingMatches(b.nonce, a.hash)) && !(await ob.bindingMatches(null, a.hash))
+      && !(await ob.bindingMatches(a.nonce, null)) && !(await ob.bindingMatches("x;y", a.hash)));
+  const setC = ob.bindingSetCookie(ob.QBO_BINDING, a.nonce, 600);
+  check("cookie: HttpOnly, Secure, SameSite=Lax, scoped to the callback path, TTL of the state",
+    setC === `quillo_qbo_bind=${a.nonce}; Path=/api/qbo/callback; Max-Age=600; HttpOnly; Secure; SameSite=Lax`
+      && ob.bindingSetCookie(ob.BANK_BINDING, a.nonce, 99999).includes("Path=/api/bank/callback; Max-Age=3600;"));
+  check("cookie: clear is Max-Age=0 on the same path", ob.bindingClearCookie(ob.BANK_BINDING) === "quillo_bank_bind=; Path=/api/bank/callback; Max-Age=0; HttpOnly; Secure; SameSite=Lax");
+  const cookieReq = new Request("https://app.example/x", { headers: { cookie: `other=1; quillo_qbo_bind=${a.nonce}; z=2` } });
+  check("readCookie: finds the named cookie among others; absent ⇒ null",
+    ob.readCookie(cookieReq, "quillo_qbo_bind") === a.nonce && ob.readCookie(cookieReq, "quillo_bank_bind") === null && ob.readCookie(new Request("https://app.example/"), "x") === null);
+
+  // QuickBooks: the attack (A's authorize link completed in V's browser) is refused BEFORE the code exchange.
+  const realFetch = globalThis.fetch;
+  let tokenCalls = 0;
+  globalThis.fetch = (async () => { tokenCalls++; return new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 }); }) as typeof fetch;
+  try {
+    const authUrl = new URL(await qbo.buildConnectUrl(kenv, "tenant-A", "https://app.example", a.hash));
+    const state = authUrl.searchParams.get("state")!;
+    const stored = kv.get(`qbostate:${state}`) ?? "";
+    check("qbo connect: KV holds the tenant + the nonce HASH, never the nonce", stored.includes("tenant-A") && stored.includes(a.hash) && !stored.includes(a.nonce));
+    const cb = new URL(`https://app.example/api/qbo/callback?code=c&realmId=r&state=${state}`);
+    const victim = await qbo.handleCallback(kenv, cb, "https://app.example", null);
+    check("qbo callback: no binding cookie (V's browser) ⇒ refused, no token exchange, state consumed",
+      !victim.ok && victim.error === ob.BINDING_MISMATCH && tokenCalls === 0 && !kv.has(`qbostate:${state}`));
+    check("qbo callback: the consumed state can't be retried even WITH the right cookie",
+      (await qbo.handleCallback(kenv, cb, "https://app.example", a.nonce)).error === "bad or expired state" && tokenCalls === 0);
+
+    const url2 = new URL(await qbo.buildConnectUrl(kenv, "tenant-A", "https://app.example", a.hash));
+    const cb2 = new URL(`https://app.example/api/qbo/callback?code=c&realmId=r&state=${url2.searchParams.get("state")}`);
+    check("qbo callback: someone else's cookie ⇒ refused", (await qbo.handleCallback(kenv, cb2, "https://app.example", b.nonce)).error === ob.BINDING_MISMATCH && tokenCalls === 0);
+
+    const url3 = new URL(await qbo.buildConnectUrl(kenv, "tenant-A", "https://app.example", a.hash));
+    const cb3 = new URL(`https://app.example/api/qbo/callback?code=c&realmId=r&state=${url3.searchParams.get("state")}`);
+    const own = await qbo.handleCallback(kenv, cb3, "https://app.example", a.nonce);
+    check("qbo callback: the starting browser's cookie ⇒ goes on to the code exchange", tokenCalls === 1 && own.error === "token exchange 400");
+
+    kv.set("qbostate:legacy", "tenant-A");
+    check("qbo callback: a legacy unbound state (bare user id) is refused",
+      (await qbo.handleCallback(kenv, new URL("https://app.example/api/qbo/callback?code=c&realmId=r&state=legacy"), "https://app.example", a.nonce)).error === ob.BINDING_MISMATCH);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+
+  // Bank feed: same rule through takeConnectState (and the Fiskil session-id fallback).
+  const bs = await bank.putConnectState(kenv, "tenant-A", 600, a.hash);
+  check("bank: wrong / missing cookie ⇒ null, and the state is consumed", (await bank.takeConnectState(kenv, bs, null)) === null && (await bank.takeConnectState(kenv, bs, a.nonce)) === null);
+  const bs2 = await bank.putConnectState(kenv, "tenant-A", 600, a.hash);
+  check("bank: the starting browser's cookie ⇒ the tenant", (await bank.takeConnectState(kenv, bs2, a.nonce)) === "tenant-A");
+  kv.set("bankstate:legacy", "tenant-A");
+  check("bank: a legacy unbound state is refused", (await bank.takeConnectState(kenv, "legacy", a.nonce)) === null);
+
+  // The connect routes set the cookie and store the matching hash.
+  const { handleApi } = await import("../src/api");
+  const qres = await handleApi(new Request("https://app.example/api/qbo/connect"), kenv, { userId: "tenant-A", email: null } as never, {} as never);
+  const qCookie = qres.headers.get("set-cookie") ?? "";
+  const qNonce = /^quillo_qbo_bind=([^;]+);/.exec(qCookie)?.[1] ?? "";
+  const qState = new URL(((await qres.json()) as { url: string }).url).searchParams.get("state");
+  const qStored = ob.decodeBoundState(kv.get(`qbostate:${qState}`) ?? null);
+  check("GET /api/qbo/connect: sets the HttpOnly binding cookie whose hash is stored with the state",
+    qres.status === 200 && /HttpOnly; Secure; SameSite=Lax/.test(qCookie) && qStored?.userId === "tenant-A" && (await ob.bindingMatches(qNonce, qStored?.bindHash)));
+  let seenHash = "";
+  const bstub = { bankConnectUrl: async (_u: string, _a: string, _o: string, h: string) => { seenHash = h; return { url: "https://consent.example/x", stateTtlSeconds: 1800 }; } };
+  const bres = await handleApi(new Request("https://app.example/api/bank/connect"), kenv, { userId: "tenant-A", email: null } as never, bstub as never);
+  const bCookie = bres.headers.get("set-cookie") ?? "";
+  const bNonce = /^quillo_bank_bind=([^;]+);/.exec(bCookie)?.[1] ?? "";
+  check("GET /api/bank/connect: cookie TTL follows the provider's state TTL; its hash is what the DO stored",
+    bres.status === 200 && bCookie.includes("Path=/api/bank/callback; Max-Age=1800;") && (await ob.bindingMatches(bNonce, seenHash))
+      && JSON.stringify(await bres.json()) === JSON.stringify({ url: "https://consent.example/x" }));
+
+  const idx712 = fs.readFileSync(path.join(process.cwd(), "src/index.ts"), "utf8");
+  check("callbacks: both read the binding cookie and clear it on every redirect",
+    /handleCallback\(env, url, url\.origin, readCookie\(req, QBO_BINDING\.name\)\)/.test(idx712)
+      && /takeConnectState\(env, state, readCookie\(req, BANK_BINDING\.name\)\)/.test(idx712)
+      && (idx712.match(/redirectClearingBinding\(/g) ?? []).length === 3
+      && !/Response\.redirect\(`\$\{url\.origin\}\/(quickbooks|accounts)\?/.test(idx712));
+}
+
 // ── Transfer detection: conservative (never drop a real expense) ─────────────
 console.log("isTransferLike");
 {
@@ -6288,11 +6388,13 @@ console.log("bank feed — provider seam + Fiskil adapter");
   {
     const kv = new Map<string, string>();
     const kenv = { RULES: { put: async (k: string, v: string) => { kv.set(k, v); }, get: async (k: string) => kv.get(k) ?? null, delete: async (k: string) => { kv.delete(k); } } } as unknown as Env;
-    const st = await putConnectState(kenv, "tenant-1", 1800);
+    const { mintBinding: mint6291 } = await import("../src/lib/oauth-binding");
+    const b6291 = await mint6291();
+    const st = await putConnectState(kenv, "tenant-1", 1800, b6291.hash);
     await putConnectSession(kenv, "sess-9", st, 1800);
     const viaSession = await stateForSession(kenv, "sess-9");
-    check("session fallback: sess_id resolves to the state, then the state to the tenant", viaSession === st && (await takeConnectState(kenv, viaSession)) === "tenant-1");
-    check("session fallback: single-use (both handles consumed)", (await stateForSession(kenv, "sess-9")) === null && (await takeConnectState(kenv, st)) === null);
+    check("session fallback: sess_id resolves to the state, then the state to the tenant", viaSession === st && (await takeConnectState(kenv, viaSession, b6291.nonce)) === "tenant-1");
+    check("session fallback: single-use (both handles consumed)", (await stateForSession(kenv, "sess-9")) === null && (await takeConnectState(kenv, st, b6291.nonce)) === null);
     check("safeCallbackParam: ids/codes only, bounded, no free text", safeCallbackParam("CONSENT_ENDUSER_DENIED") === "CONSENT_ENDUSER_DENIED"
       && safeCallbackParam("<script>alert(1)</script>") === "scriptalert1script" && (safeCallbackParam("x".repeat(500)) ?? "").length === 64 && safeCallbackParam(null) === null);
   }

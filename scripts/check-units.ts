@@ -7532,6 +7532,32 @@ console.log("A6 CDR data controls (#639)");
   check(`no model call skips the budget gate (ungated: ${ungated.join(", ") || "none"})`, ungated.length === 0);
 }
 
+// ── #697 cut 1: the legacy "By label" review is hidden (flag hide_by_label_review) ─────────────────────────
+// Every #697 cut is UI-only: the flag is registered, ON in prod, read by NO server module (so personas and
+// the AU snapshot can't move), and the surface it names is hidden in the SPA source when ON.
+{
+  console.log("\n#697 cut: legacy By label review");
+  const { FEATURE_KEYS: FK697 } = await import("../src/lib/features");
+  const prod697 = (/^FEATURES\s*=\s*"([^"]*)"/m.exec(fs.readFileSync("wrangler.toml", "utf8"))?.[1] ?? "").split(",").map((s) => s.trim());
+  const cuts697 = ["hide_by_label_review", "hide_savings", "hide_extras", "hide_quickbooks_nav", "hide_partner_nav", "hide_reports_wfh_car", "hide_dashboard_claims", "hide_cgt_property_kind"];
+  check("every #697 cut flag is registered in FEATURE_KEYS", cuts697.every((k) => (FK697 as readonly string[]).includes(k)));
+  check("every #697 cut flag is ON in wrangler.toml FEATURES", cuts697.every((k) => prod697.includes(k)));
+  const srcFiles697 = (dir: string): string[] => fs.readdirSync(dir, { withFileTypes: true }).flatMap((d) => (d.isDirectory() ? srcFiles697(path.join(dir, d.name)) : d.name.endsWith(".ts") ? [path.join(dir, d.name)] : []));
+  const serverReaders = srcFiles697(path.join(process.cwd(), "src")).filter((f) => !f.endsWith(path.join("lib", "features.ts")) && cuts697.some((k) => fs.readFileSync(f, "utf8").includes(`"${k}"`)));
+  check(`no server module reads a #697 cut flag — the cuts are UI-only (readers: ${serverReaders.map((f) => path.relative(process.cwd(), f)).join(",") || "none"})`, serverReaders.length === 0);
+  const web697 = (f: string) => fs.readFileSync(path.join(process.cwd(), "web", "src", f), "utf8");
+  const app697 = web697("App.tsx");
+  check("By label: the legacy nav's Review item carries hideFlag hide_by_label_review, and the nav filter honours hideFlag",
+    /to: "\/review", label: "Review"[^}]*hideFlag: "hide_by_label_review"/.test(app697) && /\(!it\.hideFlag \|\| !has\(it\.hideFlag\)\)/.test(app697));
+  check("By label: /review in the legacy shell redirects to the Needs-review tab when ON",
+    /has\("hide_by_label_review"\)\) return <Navigate to="\/transactions\?view=review" replace \/>/.test(web697("pages/Steps.tsx")));
+  const rq697 = web697("pages/ReviewQueue.tsx");
+  check("By label: the ft Review queue drops the By label tab (and ignores ?view=labels) when ON",
+    /!labelsHidden && params\.get\("view"\) === "labels"/.test(rq697) && /if \(labelsHidden\) return <QueueBody \/>;/.test(rq697));
+  check("By label: the page and its API stay (engine kept) — pages/Review.tsx still exports Review",
+    /export function Review\(\)/.test(web697("pages/Review.tsx")) && /reviewSummary:/.test(web697("api.ts")));
+}
+
 // ── #698: Explain tips — why/ato/related copy is general information, links are official, keys resolve ──
 {
   console.log("\nExplain tips (#698)");

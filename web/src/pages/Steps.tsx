@@ -136,6 +136,9 @@ export function ReviewStep() {
   const { has, loaded } = useFeatures();
   const { pathname, search } = useLocation();
   const picker = pathname === MATCH_PICKER_ROUTE;
+  // #697 cut (hide_by_label_review): the legacy "By label" page is retired from the OFF shell, so /review
+  // lands on the Needs-review tab, whose claim picker replaces it. The page component itself stays.
+  if (loaded && !has("ft_journey") && !picker && has("hide_by_label_review")) return <Navigate to="/transactions?view=review" replace />;
   if (!loaded || !has("ft_journey")) return picker ? (loaded ? <Navigate to={`/reconcile${search}`} replace /> : null) : <Review />;
   return (
     <StepPage step="review">

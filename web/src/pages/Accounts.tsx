@@ -9,6 +9,7 @@ import { Button, Card, Spinner, money, InfoTip, parseMoneyToCents, parseDecimal 
 import type { Account, StatementInfo, StatementParse } from "../types";
 import { NoticedPanel } from "../components/NoticedPanel";
 import { CdrPolicyNote } from "../components/CdrPolicyLink";
+import { useQboLinked } from "../lib/cuts";
 
 const SOURCE_LABEL: Record<string, string> = {
   cdr_feed: "Bank feed",
@@ -64,6 +65,9 @@ export function Accounts({ embedded = false }: { embedded?: boolean } = {}) {
   });
   // Bulk-confirm every parsed-but-not-imported statement in one click (flag `bulk_import`).
   const { has } = useFeatures();
+  // #697 cut (hide_quickbooks_nav): "Sync from QuickBooks" fails for anyone without a connection, so it shows
+  // only once QBO is connected. OFF ⇒ always true (no extra request), so the button renders as before.
+  const showQboSync = useQboLinked() === true;
   const navigate = useNavigate();
   const parsedCount = (statements ?? []).filter((s) => s.status === "parsed").length;
   const bulkImport = useMutation({
@@ -109,9 +113,11 @@ export function Accounts({ embedded = false }: { embedded?: boolean } = {}) {
       {!embedded && has("wages_payer") && <NoticedPanel />}
 
       <div className="flex items-center gap-3">
-        <Button variant="ghost" onClick={() => sync.mutate()} disabled={sync.isPending}>
-          {sync.isPending ? "Syncing…" : "↻ Sync accounts from QuickBooks"}
-        </Button>
+        {showQboSync && (
+          <Button variant="ghost" onClick={() => sync.mutate()} disabled={sync.isPending}>
+            {sync.isPending ? "Syncing…" : "↻ Sync accounts from QuickBooks"}
+          </Button>
+        )}
         {sync.isSuccess && <span className="text-sm text-muted">Added {sync.data.synced} feed account(s).</span>}
         {sync.isError && <span className="text-sm text-danger">{(sync.error as Error).message}</span>}
         {has("bulk_import") && parsedCount > 0 && (
@@ -123,8 +129,14 @@ export function Accounts({ embedded = false }: { embedded?: boolean } = {}) {
 
       {accounts.length === 0 ? (
         <Card className="p-8 text-center text-sm text-muted">
-          No accounts yet. Add each bank/card/investment account above, then upload its statement (CSV/PDF) — or sync your
-          QuickBooks feed accounts.
+          {showQboSync ? (
+            <>
+              No accounts yet. Add each bank/card/investment account above, then upload its statement (CSV/PDF) — or sync your
+              QuickBooks feed accounts.
+            </>
+          ) : (
+            "No accounts yet. Add each bank/card/investment account above, then upload its statement (CSV/PDF)."
+          )}
         </Card>
       ) : (
         <ul className="space-y-3">

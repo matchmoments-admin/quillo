@@ -4,6 +4,7 @@ import { useActiveFy } from "../lib/activeFy";
 import { useJourney } from "../lib/journey";
 import { useHashScroll } from "../lib/useHashScroll";
 import { GROW_BLURB, GROW_LABEL, GROW_LEGACY_ROUTE, isGrowKey, useSetGrowLayer } from "../lib/grow";
+import { useGrowLayerCut } from "../lib/cuts";
 import { FtButton, FtCard, FtLink, GeneralInfoNote } from "../components/ft";
 import { LoanInterestCard } from "../components/LoanInterestCard";
 import { CapitalEquity } from "../components/income/CapitalEquity";
@@ -95,11 +96,18 @@ export function GrowRoute() {
   const { fy: fyStart } = useActiveFy();
   const journey = useJourney();
   const set = useSetGrowLayer();
+  const cut = useGrowLayerCut();
   useHashScroll(loaded && has("ft_journey"));
   if (!loaded) return null;
   if (!isGrowKey(layer)) return <Navigate to="/" replace />;
   if (!has("ft_journey")) return <Navigate to={GROW_LEGACY_ROUTE[layer]} replace />;
   const view = journey.data?.grow.layers.find((l) => l.key === layer);
+  // #697 cuts: a hidden layer's URL lands Home (Integrations: on Connect, and only once the journey says this
+  // user has no QuickBooks connection, so a connected user keeps the page).
+  if (cut(layer, view?.has_data)) {
+    if (layer === "integrations" && !journey.data) return null;
+    return <Navigate to={layer === "integrations" ? "/connect" : "/"} replace />;
+  }
   const hidden = view?.state === "off" && view.switchable;
   return (
     <div className="space-y-6">

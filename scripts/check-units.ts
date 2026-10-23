@@ -6011,6 +6011,48 @@ import {
     (await growPayload(genv(), OWNER, 2025, { isPartner: false, pack: undefined })).layers.filter((l) => l.reason !== "none").every((l) => l.reason === "data"));
 }
 
+// ── #697 cuts 2–5: Savings, Extras, QuickBooks in the nav, /partner (UI-only; flags pinned in the cut-1 block) ──
+{
+  console.log("\n#697 cuts: Savings, Extras, QuickBooks nav, partner portal");
+  const prod697g = (/^FEATURES\s*=\s*"([^"]*)"/m.exec(fs.readFileSync("wrangler.toml", "utf8"))?.[1] ?? "").split(",").map((s) => s.trim());
+  const { FEATURE_KEYS: FK697g } = await import("../src/lib/features");
+  const w = (f: string) => fs.readFileSync(path.join(process.cwd(), "web", "src", f), "utf8");
+  const app = w("App.tsx"), main = w("main.tsx"), cuts = w("lib/cuts.tsx"), shell = w("components/FtShell.tsx"), grow = w("pages/Grow.tsx");
+  for (const k of ["hide_savings", "hide_extras", "hide_quickbooks_nav", "hide_partner_nav"])
+    check(`${k}: registered and ON in wrangler.toml`, (FK697g as readonly string[]).includes(k) && prod697g.includes(k));
+  check("Savings: nav item hidden, run-rate strip hidden, /savings → Home when ON",
+    /to: "\/savings"[^}]*hideFlag: "hide_savings"/.test(app) &&
+    /has\("advisory_layer"\) && !has\("hide_savings"\) && <RunRateStrip/.test(w("pages/Dashboard.tsx")) &&
+    /path: "savings", element: <FtRedirect><CutRoute flag="hide_savings" to="\/">/.test(main));
+  check("Extras: nav item hidden, /extras → Home when ON; the set-up hospital-cover question is not an Extras surface",
+    /to: "\/extras"[^}]*hideFlag: "hide_extras"/.test(app) &&
+    /path: "extras", element: <FtRedirect><CutRoute flag="hide_extras" to="\/">/.test(main) &&
+    /private_hospital_cover/.test(w("content/aboutYou.ts")) && !/hide_extras|Extras/.test(w("pages/AboutYou.tsx")));
+  check("Grow (ft): Savings / Extras always cut; Integrations cut only without a QuickBooks connection (has_data)",
+    /layer === "savings" && has\("hide_savings"\)/.test(cuts) && /layer === "extras" && has\("hide_extras"\)/.test(cuts) &&
+    /layer === "integrations" && has\("hide_quickbooks_nav"\) && !hasData/.test(cuts) &&
+    (shell.match(/!cut\(l\.key, l\.has_data\)/g) ?? []).length === 2 && /if \(cut\(layer, view\?\.has_data\)\)/.test(grow));
+  check("QuickBooks: out of the default nav; /quickbooks needs a connection (or an OAuth return) else → Accounts",
+    /to: "\/quickbooks"[^}]*hideFlag: "hide_quickbooks_nav"/.test(app) &&
+    /<QuickBooksRoute><QuickBooks \/><\/QuickBooksRoute>/.test(main) &&
+    /flag="hide_quickbooks_nav" to="\/accounts" allow=\{returning \|\| linked\}/.test(cuts));
+  check("QuickBooks: Accounts' Sync button shows only when connected; a connected user reaches it from Settings",
+    /\{showQboSync && \(\s*<Button[^>]*onClick=\{\(\) => sync\.mutate\(\)\}/.test(w("pages/Accounts.tsx")) &&
+    (w("pages/Settings.tsx").match(/<QuickBooksSettingsLink to="/g) ?? []).length === 2 &&
+    /if \(!has\("hide_quickbooks_nav"\) \|\| linked !== true\) return null;/.test(cuts));
+  check("QuickBooks: flag OFF ⇒ useQboLinked is true without a request (the Sync button renders as before)",
+    /enabled: on \}\);\s*if \(!on\) return true;/.test(cuts));
+  check("Partner: still partner-role only in both navs, labelled 'Referral partners' when ON; a non-partner on /partner goes Home",
+    /to: "\/partner"[^}]*partner: true/.test(app) && /it\.to === "\/partner" && partnerRenamed \? PARTNER_NAV_LABEL/.test(app) &&
+    /show: isPartner && !growListsAdvisers/.test(shell) && /PARTNER_NAV_LABEL = "Referral partners"/.test(cuts) &&
+    /<PartnerRoute><Partner \/><\/PartnerRoute>/.test(main) && /flag="hide_partner_nav" to="\/" allow=\{loaded \? isPartner : null\}/.test(cuts));
+  check("CutRoute: OFF or still loading ⇒ the page itself (byte-identical); ON ⇒ redirect unless allowed",
+    /if \(!loaded \|\| !has\(flag\) \|\| allow === true\) return <>\{children\}<\/>;/.test(cuts));
+  check("engines kept: Savings / Extras / QuickBooks / Partner pages and advisory_layer + phi_extras_tracker stay",
+    ["pages/Savings.tsx", "pages/Extras.tsx", "pages/QuickBooks.tsx", "pages/Partner.tsx"].every((f) => fs.existsSync(path.join(process.cwd(), "web", "src", f))) &&
+    prod697g.includes("advisory_layer") && prod697g.includes("phi_extras_tracker"));
+}
+
 // ── #587 Claims step: grouping + the asks before a confirm (web/src/lib/claims.ts) ──
 import { groupWorthALook, isPendingCard, merchantGroupKey, parseWorkUsePct, confirmedByLabel, summariseConfirm } from "../web/src/lib/claims";
 import type { RelevanceCard } from "../web/src/types";

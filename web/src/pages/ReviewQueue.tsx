@@ -90,7 +90,10 @@ type Tab = "queue" | "labels";
 
 export function ReviewQueue() {
   const [params, setParams] = useSearchParams();
-  const tab: Tab = params.get("view") === "labels" ? "labels" : "queue";
+  // #697 cut (hide_by_label_review): the "By label" tab is retired — the queue is the one review list, and
+  // an old ?view=labels link just opens it. OFF ⇒ both tabs exactly as before.
+  const labelsHidden = useFeatures().has("hide_by_label_review");
+  const tab: Tab = !labelsHidden && params.get("view") === "labels" ? "labels" : "queue";
   const setTab = (t: Tab) =>
     setParams(
       (p) => {
@@ -101,6 +104,7 @@ export function ReviewQueue() {
       },
       { replace: true },
     );
+  if (labelsHidden) return <QueueBody />;
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap gap-2" role="group" aria-label="Review view">

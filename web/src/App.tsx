@@ -16,7 +16,8 @@ import { FloatingChat } from "./components/chat/FloatingChat";
 import { useThemeSync } from "./lib/appearance";
 import { FtShell } from "./components/FtShell";
 
-type NavItem = { to: string; label: string; icon: IconName; end?: boolean; badge?: boolean; flag?: string; admin?: boolean; partner?: boolean; expressHidden?: boolean };
+// `hideFlag`: a #697 cut — the item is hidden while that flag is ON (OFF ⇒ shown exactly as before).
+type NavItem = { to: string; label: string; icon: IconName; end?: boolean; badge?: boolean; flag?: string; hideFlag?: string; admin?: boolean; partner?: boolean; expressHidden?: boolean };
 type NavGroup = { label: string; items: NavItem[] };
 
 // Grouped destinations — the forest sidebar, ordered as the six-stop work spine
@@ -52,7 +53,7 @@ const GROUPS: NavGroup[] = [
     label: "3 · Check",
     items: [
       { to: "/reconcile", label: "Reconcile", icon: "swap" },
-      { to: "/review", label: "Review", icon: "check", flag: "deductibility_review" },
+      { to: "/review", label: "Review", icon: "check", flag: "deductibility_review", hideFlag: "hide_by_label_review" },
     ],
   },
   {
@@ -257,7 +258,7 @@ function Sidebar({ needsReview, open }: { needsReview: number; open: boolean }) 
   // One group → its nav block (or null when every item is gated off). Shared by the flat list and the
   // "More" disclosure so both render identically.
   const groupNode = (g: NavGroup) => {
-    const items = g.items.filter((it) => (!it.flag || has(it.flag)) && (!it.admin || isAdmin) && (!it.partner || isPartner) && (!it.expressHidden || !paygExpress));
+    const items = g.items.filter((it) => (!it.flag || has(it.flag)) && (!it.hideFlag || !has(it.hideFlag)) && (!it.admin || isAdmin) && (!it.partner || isPartner) && (!it.expressHidden || !paygExpress));
     if (!items.length) return null;
     return (
       <div key={g.label || "home"} className="mt-5 first:mt-1">

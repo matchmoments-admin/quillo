@@ -23,8 +23,8 @@ import { deriveWfhHours, generateWfhDiary, type WfhLeaveRange } from "./lib/work
 import { applyUserRules, RULE_CREDIT_BUCKETS } from "./lib/rules";
 import { sha256hex, sha256hexBytes } from "./lib/base64";
 import { CAPITAL_ROWS_MISSING_MESSAGE, STATEMENT_LINES_MISSING_MESSAGE, keyStillReferenced, maybeCompressImage, objectExists, putCompressed, putJson, putStatementOriginal, readStoredJson, statementFileKey } from "./lib/r2-store";
-import { getLLM, assertDataResidency, resolveProvider, type LLM } from "./llm";
-import { aiCall, recordInference, requireXborderConsent, type AiCallDeps } from "./lib/ai-call";
+import { getLLM, assertDataResidency, type LLM } from "./llm";
+import { aiCall, requireXborderConsent, type AiCallDeps } from "./lib/ai-call";
 import { extractReceipt, extractReceipts, extractFromText, extractColumnMap, extractCapitalColumnMap, extractStatement, extractBatch, extractSituationDraft, extractOccupationRules, extractGuide, extractAnswer, classifyDocument, extractPayslip, extractIncomeStatement, extractNoticeOfAssessment, extractAgentStatement, extractDepreciationSchedule, extractDividend, extractHealthClaim, batchParams, parseBatchMessage, mapBatchItems, ALLOWED_NAV_ROUTES, type Extracted, type ExtractedStatement, type SituationDraft, type OccupationRulesDraft, type AnswerResult } from "./extract";
 import { mapIncomeStatementToRows } from "./lib/income-statement";
 import { fyForDate, buildReport, useStatusDeniedExpr, propertyUndeterminedGatedExpr, resolveRulePack } from "./lib/report";
@@ -405,62 +405,62 @@ export class TaxAgent extends Agent<Env> {
     // every other anthropic model path. Bedrock/AU residency does not. Gate BEFORE storing the
     // file or any work (mirrors the receipt/inbox paths) so a refusal leaves nothing orphaned in
     // R2; the API layer maps consent_required to a 403.
+    //
+    // aiCall also runs the daily AI-budget gate BEFORE storing the file or making the column-map /
+    // extraction calls — a statement parse is one or more model calls (a multi-page PDF fans out per
+    // chunk), so refuse cleanly when the per-user or global cap is hit instead of spending past it (C9).
+    // txnId is null (no row to mark yet); the API layer maps ai_budget_reached to a 429.
     const profile = await this.requireProfile(userId);
-    const provider = resolveProvider(this.env, profile);
-    if (provider === "anthropic" && profile.consent_xborder !== 1) throw new Error("consent_required");
-
-    // Daily AI-budget gate BEFORE storing the file or making the column-map / extraction calls — a
-    // statement parse is one or more model calls (a multi-page PDF fans out per chunk), so refuse
-    // cleanly when the per-user or global cap is hit instead of spending past it (C9). txnId is null
-    // (no row to mark yet); the API layer maps this message to a 429.
-    if (!(await this.withinBudget(userId, null))) throw new Error("ai_budget_reached");
-
-    const fileHash = await sha256hexBytes(bytes);
-    const existing = await this.env.DB.prepare(`SELECT id, file_key, status FROM statements WHERE user_id = ? AND file_hash = ?`)
-      .bind(userId, fileHash)
-      .first<{ id: string; file_key: string | null; status: string }>();
-    if (existing) {
-      if (existing.status === "parsed" && (!existing.file_key || !(await objectExists(this.env.RECEIPTS, `${existing.file_key}.lines`)))) {
-        // A never-imported statement whose parsed lines are no longer stored can't be confirmed, and the
-        // short-circuit below would block the re-upload forever. Drop the stale record (nothing was imported
-        // from it) and parse this upload fresh.
-        await this.deleteStatement(userId, existing.id);
-      } else {
+    let fileHash = "";
+    return aiCall<Awaited<ReturnType<TaxAgent["parseStatement"]>>>(this.aiDeps, {
+      userId, purpose: "parse_statement", profile,
+      // The exact re-upload short-circuit needs no model call, so it ends here: no client, no audit.
+      afterGates: async () => {
+        fileHash = await sha256hexBytes(bytes);
+        const existing = await this.env.DB.prepare(`SELECT id, file_key, status FROM statements WHERE user_id = ? AND file_hash = ?`)
+          .bind(userId, fileHash)
+          .first<{ id: string; file_key: string | null; status: string }>();
+        if (!existing) return;
+        if (existing.status === "parsed" && (!existing.file_key || !(await objectExists(this.env.RECEIPTS, `${existing.file_key}.lines`)))) {
+          // A never-imported statement whose parsed lines are no longer stored can't be confirmed, and the
+          // short-circuit below would block the re-upload forever. Drop the stale record (nothing was imported
+          // from it) and parse this upload fresh.
+          await this.deleteStatement(userId, existing.id);
+          return;
+        }
         // Exact re-upload short-circuit (unchanged). If the original was cleared from storage, this upload
         // is the same bytes — put it back so the statement has its evidence again. No model call.
         if (existing.file_key && !(await objectExists(this.env.RECEIPTS, existing.file_key))) {
           await putStatementOriginal(this.env.RECEIPTS, existing.file_key, bytes, format);
           await this.audit(userId, "statement_original_restored", JSON.stringify({ statementId: existing.id }));
         }
-        return { statementId: existing.id, columnMap: null, preview: [], rowCount: 0, duplicate: true };
+        return { result: { statementId: existing.id, columnMap: null, preview: [], rowCount: 0, duplicate: true } };
+      },
+    }, async (llm, { provider }) => {
+      // aiCall resolved the LLM (validating the inference provider + any required secrets) BEFORE we write
+      // the file to R2 — a misconfigured Bedrock tenant throws there, so a config error leaves nothing
+      // orphaned in R2 (S3). Anthropic path is a cheap client construct, no I/O.
+      const statementId = crypto.randomUUID();
+      // Content-addressed: a retried upload of the same file overwrites ONE object instead of leaving a
+      // uuid-keyed copy per attempt (the real bucket held 8 such orphaned duplicate PDFs).
+      const fileKey = statementFileKey(userId, fileHash);
+      // PDFs are stored byte-for-byte (evidence integrity); CSVs are gzipped (readStored decompresses).
+      // `wrote` = this request created the object. A concurrent retry of the same file (a long PDF parse can
+      // outlive a gateway 502) shares the key, so only the request that created it may clean it up, and the
+      // survivor re-checks the original right before inserting its row (parseStoredStatement).
+      const wrote = !(await objectExists(this.env.RECEIPTS, fileKey));
+      await putStatementOriginal(this.env.RECEIPTS, fileKey, bytes, format);
+      try {
+        return await this.parseStoredStatement(userId, accountId, filename, bytes, format, { statementId, fileKey, fileHash, llm, provider, isLiability });
+      } catch (e) {
+        // The parse failed after the put: don't leave the original orphaned (no statements row points at it).
+        const owner = await this.env.DB.prepare(`SELECT 1 AS x FROM statements WHERE user_id = ? AND file_key = ? LIMIT 1`)
+          .bind(userId, fileKey)
+          .first<{ x: number }>();
+        if (wrote && !owner) await this.env.RECEIPTS.delete(fileKey).catch(() => {});
+        throw e;
       }
-    }
-
-    const statementId = crypto.randomUUID();
-    // Content-addressed: a retried upload of the same file overwrites ONE object instead of leaving a
-    // uuid-keyed copy per attempt (the real bucket held 8 such orphaned duplicate PDFs).
-    const fileKey = statementFileKey(userId, fileHash);
-
-    // Resolve the LLM (validates the inference provider + any required secrets) BEFORE writing the
-    // file to R2 — a misconfigured Bedrock tenant throws here, and doing it first means a config
-    // error leaves nothing orphaned in R2 (S3). Anthropic path is a cheap client construct, no I/O.
-    const llm = await getLLM(this.env, profile, { userId });
-    // PDFs are stored byte-for-byte (evidence integrity); CSVs are gzipped (readStored decompresses).
-    // `wrote` = this request created the object. A concurrent retry of the same file (a long PDF parse can
-    // outlive a gateway 502) shares the key, so only the request that created it may clean it up, and the
-    // survivor re-checks the original right before inserting its row (parseStoredStatement).
-    const wrote = !(await objectExists(this.env.RECEIPTS, fileKey));
-    await putStatementOriginal(this.env.RECEIPTS, fileKey, bytes, format);
-    try {
-      return await this.parseStoredStatement(userId, accountId, filename, bytes, format, { statementId, fileKey, fileHash, llm, provider, isLiability });
-    } catch (e) {
-      // The parse failed after the put: don't leave the original orphaned (no statements row points at it).
-      const owner = await this.env.DB.prepare(`SELECT 1 AS x FROM statements WHERE user_id = ? AND file_key = ? LIMIT 1`)
-        .bind(userId, fileKey)
-        .first<{ x: number }>();
-      if (wrote && !owner) await this.env.RECEIPTS.delete(fileKey).catch(() => {});
-      throw e;
-    }
+    });
   }
 
   private async parseStoredStatement(
@@ -471,8 +471,8 @@ export class TaxAgent extends Agent<Env> {
     format: string,
     c: { statementId: string; fileKey: string; fileHash: string; llm: LLM; provider: string; isLiability: boolean },
   ): Promise<{ statementId: string; columnMap: ColumnMap | null; preview: unknown[]; rowCount: number; duplicate: boolean; reconciliation?: Reconciliation }> {
+    // The parse_statement inference audit is recorded by aiCall (parseStatement) before this runs.
     const { statementId, fileKey, fileHash, llm, provider, isLiability } = c;
-    await this.auditXborderInference(userId, provider, "parse_statement", llm.modelId);
 
     let lines: StatementLine[];
     let columnMap: ColumnMap | null = null;
@@ -847,64 +847,65 @@ export class TaxAgent extends Agent<Env> {
     // inference call unless the tenant is on Bedrock/AU. Same ordering as parseStatement so a refusal
     // leaves nothing orphaned in R2.
     const profile = await this.requireProfile(userId);
-    const provider = resolveProvider(this.env, profile);
-    if (provider === "anthropic" && profile.consent_xborder !== 1) throw new Error("consent_required");
-    if (!(await this.withinBudget(userId, null))) throw new Error("ai_budget_reached");
-
-    const fileHash = await sha256hexBytes(bytes);
-    const existing = await this.env.DB.prepare(
-      `SELECT id, file_key, status FROM capital_imports WHERE user_id = ? AND file_hash = ? AND status != 'discarded'`,
-    ).bind(userId, fileHash).first<{ id: string; file_key: string; status: string }>();
-    if (existing) {
-      if (existing.status === "parsed" && !(await objectExists(this.env.RECEIPTS, `${existing.file_key}.rows`))) {
-        // A parsed-but-uncommitted import whose extracted rows are no longer stored can never be confirmed;
-        // discard it so this re-upload parses fresh instead of being short-circuited onto a dead preview.
-        await this.env.DB.prepare(`UPDATE capital_imports SET status = 'discarded' WHERE id = ? AND user_id = ? AND status = 'parsed'`)
-          .bind(existing.id, userId).run();
-      } else {
-        if (!(await objectExists(this.env.RECEIPTS, existing.file_key))) {
-          await putCompressed(this.env.RECEIPTS, existing.file_key, bytes, "text/csv"); // restore the cleared original
+    let fileHash = "";
+    let rows: string[][] = [];
+    return aiCall<Awaited<ReturnType<TaxAgent["parseCapitalImport"]>>>(this.aiDeps, {
+      userId, purpose: "parse_capital_import", profile,
+      // The duplicate short-circuit and the empty-file refusal need no model call: no client, no audit.
+      afterGates: async () => {
+        fileHash = await sha256hexBytes(bytes);
+        const existing = await this.env.DB.prepare(
+          `SELECT id, file_key, status FROM capital_imports WHERE user_id = ? AND file_hash = ? AND status != 'discarded'`,
+        ).bind(userId, fileHash).first<{ id: string; file_key: string; status: string }>();
+        if (existing) {
+          if (existing.status === "parsed" && !(await objectExists(this.env.RECEIPTS, `${existing.file_key}.rows`))) {
+            // A parsed-but-uncommitted import whose extracted rows are no longer stored can never be confirmed;
+            // discard it so this re-upload parses fresh instead of being short-circuited onto a dead preview.
+            await this.env.DB.prepare(`UPDATE capital_imports SET status = 'discarded' WHERE id = ? AND user_id = ? AND status = 'parsed'`)
+              .bind(existing.id, userId).run();
+          } else {
+            if (!(await objectExists(this.env.RECEIPTS, existing.file_key))) {
+              await putCompressed(this.env.RECEIPTS, existing.file_key, bytes, "text/csv"); // restore the cleared original
+            }
+            return { result: { importId: existing.id, columnMap: null, preview: null, duplicate: true } };
+          }
         }
-        return { importId: existing.id, columnMap: null, preview: null, duplicate: true };
+        const text = new TextDecoder().decode(bytes);
+        rows = parseCsv(text);
+        if (!rows.length) throw new Error("That file has no rows I could read. Export it as CSV and try again.");
+      },
+    }, async (llm) => {
+      const importId = crypto.randomUUID();
+      const fileKey = `${userId}/capital-imports/${importId}`;
+      await putCompressed(this.env.RECEIPTS, fileKey, bytes, "text/csv");
+
+      let columnMap: CapitalColumnMap;
+      try {
+        columnMap = await extractCapitalColumnMap(llm, rows);
+      } catch (e) {
+        await this.env.RECEIPTS.delete(fileKey).catch(() => {}); // no row will point at it — don't orphan it
+        throw e;
       }
-    }
+      // day_first comes from the TENANT'S JURISDICTION, never from the model and never assumed: 03/04 is
+      // 3 April here and 4 March in the US, and guessing wrong silently moves a disposal across a FY
+      // boundary (and across the 12-month discount threshold).
+      const jur = await resolveJurisdictionForUser(this.env, userId);
+      columnMap.day_first = jur.code !== "US";
+      const preview = applyCapitalColumnMap(rows, columnMap);
 
-    const text = new TextDecoder().decode(bytes);
-    const rows = parseCsv(text);
-    if (!rows.length) throw new Error("That file has no rows I could read. Export it as CSV and try again.");
+      if (!preview.rows.length) {
+        await this.env.RECEIPTS.delete(fileKey);
+        throw new Error("I couldn't find any holdings or trades in that file. Check it's the trade/holdings export rather than a summary.");
+      }
 
-    const importId = crypto.randomUUID();
-    const fileKey = `${userId}/capital-imports/${importId}`;
-    const llm = await getLLM(this.env, profile, { userId });
-    await putCompressed(this.env.RECEIPTS, fileKey, bytes, "text/csv");
-    await this.auditXborderInference(userId, provider, "parse_capital_import", llm.modelId);
-
-    let columnMap: CapitalColumnMap;
-    try {
-      columnMap = await extractCapitalColumnMap(llm, rows);
-    } catch (e) {
-      await this.env.RECEIPTS.delete(fileKey).catch(() => {}); // no row will point at it — don't orphan it
-      throw e;
-    }
-    // day_first comes from the TENANT'S JURISDICTION, never from the model and never assumed: 03/04 is
-    // 3 April here and 4 March in the US, and guessing wrong silently moves a disposal across a FY
-    // boundary (and across the 12-month discount threshold).
-    const jur = await resolveJurisdictionForUser(this.env, userId);
-    columnMap.day_first = jur.code !== "US";
-    const preview = applyCapitalColumnMap(rows, columnMap);
-
-    if (!preview.rows.length) {
-      await this.env.RECEIPTS.delete(fileKey);
-      throw new Error("I couldn't find any holdings or trades in that file. Check it's the trade/holdings export rather than a summary.");
-    }
-
-    await putJson(this.env.RECEIPTS, `${fileKey}.rows`, preview.rows);
-    await this.env.DB.prepare(
-      `INSERT INTO capital_imports (id, user_id, filename, file_hash, file_key, status, column_map, row_count)
-       VALUES (?, ?, ?, ?, ?, 'parsed', ?, ?)`,
-    ).bind(importId, userId, filename, fileHash, fileKey, JSON.stringify(columnMap), preview.rows.length).run();
-    await this.audit(userId, "capital_import_parsed", JSON.stringify({ importId, rows: preview.rows.length, problems: preview.problems }));
-    return { importId, columnMap, preview, duplicate: false };
+      await putJson(this.env.RECEIPTS, `${fileKey}.rows`, preview.rows);
+      await this.env.DB.prepare(
+        `INSERT INTO capital_imports (id, user_id, filename, file_hash, file_key, status, column_map, row_count)
+         VALUES (?, ?, ?, ?, ?, 'parsed', ?, ?)`,
+      ).bind(importId, userId, filename, fileHash, fileKey, JSON.stringify(columnMap), preview.rows.length).run();
+      await this.audit(userId, "capital_import_parsed", JSON.stringify({ importId, rows: preview.rows.length, problems: preview.problems }));
+      return { importId, columnMap, preview, duplicate: false };
+    });
   }
 
   /**
@@ -1213,92 +1214,95 @@ export class TaxAgent extends Agent<Env> {
     if (!items.length) return { categorised: 0 };
 
     const profile = await this.requireProfile(userId);
-    const provider = resolveProvider(this.env, profile);
-    if (provider === "anthropic" && profile.consent_xborder !== 1) return { categorised: 0 }; // consent gate
-    const rulePack = await this.loadRulePack(profile.rule_pack_ver);
-    const situation = await getSituation(this.env, userId, profile);
-    const system = this.buildSystemPrompt(rulePack, profile, situation, null);
-    const llm = await getLLM(this.env, profile, { userId });
-    await this.auditXborderInference(userId, provider, "categorise_statement", llm.modelId);
+    // No consent ⇒ 0 categorised (lines stay needs_review). The budget is checked by this method itself:
+    // once before a batch submit, and before every live chunk (stopping part-way keeps what was done).
+    return aiCall(this.aiDeps, {
+      userId, purpose: "categorise_statement", profile, budget: "caller",
+      onConsentRequired: () => ({ categorised: 0 }),
+    }, async (llm, { provider }) => {
+      const rulePack = await this.loadRulePack(profile.rule_pack_ver);
+      const situation = await getSituation(this.env, userId, profile);
+      const system = this.buildSystemPrompt(rulePack, profile, situation, null);
 
-    // Route between synchronous "live" and the async Batch API. Per-tenant `categorise_mode` (or the
-    // CATEGORISE_MODE env default) can force either path so we can A/B the UX and compare measured
-    // cost; `auto` keeps the size-based default. Forced `live` does ONE sequential ~5-15s Claude call
-    // per 40-line chunk inside a single DO request, so two cases fall back to the async batch path to
-    // avoid exhausting the DO mid-run: (1) an oversized single upload (>LIVE_MAX_LINES), and (2) the
-    // bulk re-categorisation backfill (recategorise loops this over many statements in one request —
-    // many sub-cap statements still sum to thousands of lines). Bulk recategorisation IS what batch is
-    // for, so it stays quiet; only the interactive oversized upload tells the user why.
-    // Bedrock has no Anthropic Batch API — those tenants always categorise live (sequential
-    // per-chunk), regardless of size/mode. Resolve this FIRST so the user-facing copy below tells
-    // the truth: a Bedrock tenant must not be told their oversized import "ran in the cheaper batch"
-    // when it actually ran live at full price (S2).
-    const canBatch = provider !== "bedrock";
-    const mode = categoriseMode(this.env, profile);
-    let useBatch = canBatch && (mode === "batch" || (mode === "auto" && items.length > BATCH_THRESHOLD));
-    if (mode === "live" && (opts?.bulk || items.length > LIVE_MAX_LINES)) {
-      useBatch = canBatch;
-      if (!opts?.bulk) {
-        await this.audit(userId, "categorise_mode_fallback", JSON.stringify({ statementId, lines: items.length, from: "live", to: useBatch ? "batch" : "live_chunked", limit: LIVE_MAX_LINES }));
-        await this.notify(
-          userId,
-          useBatch
-            ? `That import (${items.length} lines) is too large to categorise live, so it ran in the cheaper background batch instead — results will fill in shortly.`
-            : `That import (${items.length} lines) is large, so it's categorising in the background — results will fill in shortly.`,
-          null,
-        );
+      // Route between synchronous "live" and the async Batch API. Per-tenant `categorise_mode` (or the
+      // CATEGORISE_MODE env default) can force either path so we can A/B the UX and compare measured
+      // cost; `auto` keeps the size-based default. Forced `live` does ONE sequential ~5-15s Claude call
+      // per 40-line chunk inside a single DO request, so two cases fall back to the async batch path to
+      // avoid exhausting the DO mid-run: (1) an oversized single upload (>LIVE_MAX_LINES), and (2) the
+      // bulk re-categorisation backfill (recategorise loops this over many statements in one request —
+      // many sub-cap statements still sum to thousands of lines). Bulk recategorisation IS what batch is
+      // for, so it stays quiet; only the interactive oversized upload tells the user why.
+      // Bedrock has no Anthropic Batch API — those tenants always categorise live (sequential
+      // per-chunk), regardless of size/mode. Resolve this FIRST so the user-facing copy below tells
+      // the truth: a Bedrock tenant must not be told their oversized import "ran in the cheaper batch"
+      // when it actually ran live at full price (S2).
+      const canBatch = provider !== "bedrock";
+      const mode = categoriseMode(this.env, profile);
+      let useBatch = canBatch && (mode === "batch" || (mode === "auto" && items.length > BATCH_THRESHOLD));
+      if (mode === "live" && (opts?.bulk || items.length > LIVE_MAX_LINES)) {
+        useBatch = canBatch;
+        if (!opts?.bulk) {
+          await this.audit(userId, "categorise_mode_fallback", JSON.stringify({ statementId, lines: items.length, from: "live", to: useBatch ? "batch" : "live_chunked", limit: LIVE_MAX_LINES }));
+          await this.notify(
+            userId,
+            useBatch
+              ? `That import (${items.length} lines) is too large to categorise live, so it ran in the cheaper background batch instead — results will fill in shortly.`
+              : `That import (${items.length} lines) is large, so it's categorising in the background — results will fill in shortly.`,
+            null,
+          );
+        }
       }
-    }
-    if (useBatch) {
-      // Budget gate guards the async path too — Anthropic bills the Batch API at SUBMISSION, so an
-      // un-gated submit spends real money even though results land later. Over budget, leave the
-      // lines needs_review; the next run (after the daily reset) re-queues them. This is also what
-      // makes the cron-driven recategorise backfill budget-aware (it loops this per statement).
-      if (!(await this.withinBudget(userId, null))) {
-        await this.audit(userId, "categorise_skipped_budget", JSON.stringify({ statementId, lines: items.length }));
+      if (useBatch) {
+        // Budget gate guards the async path too — Anthropic bills the Batch API at SUBMISSION, so an
+        // un-gated submit spends real money even though results land later. Over budget, leave the
+        // lines needs_review; the next run (after the daily reset) re-queues them. This is also what
+        // makes the cron-driven recategorise backfill budget-aware (it loops this per statement).
+        if (!(await this.withinBudget(userId, null))) {
+          await this.audit(userId, "categorise_skipped_budget", JSON.stringify({ statementId, lines: items.length }));
+          return { categorised: 0 };
+        }
+        await this.submitBatchCategorisation(userId, statementId, items, system, llm);
         return { categorised: 0 };
       }
-      await this.submitBatchCategorisation(userId, statementId, items, system, llm);
-      return { categorised: 0 };
-    }
 
-    let categorised = 0;
-    const chunks: (typeof items)[] = [];
-    for (let i = 0; i < items.length; i += 40) chunks.push(items.slice(i, i + 40));
-    // Bedrock can't hand a large import to the async Batch API, so the whole import runs live inside
-    // this request. Sequential 5-15s calls on a 500-line statement approach the ~90s that already
-    // produced a Cloudflare 502 (see parseStatement), so on that path run a few chunks at a time.
-    // Kept small: the `au.` profile's on-demand quota applies, and invokeBedrock retries a 429.
-    // The Anthropic live path (only ever ≤ LIVE_MAX_LINES) stays sequential, byte-identical.
-    const concurrency = canBatch ? 1 : LIVE_BEDROCK_CONCURRENCY;
-    for (let i = 0; i < chunks.length; i += concurrency) {
-      // Stop categorising once the daily $ budget is hit; the rest stays needs_review.
-      if (!(await this.withinBudget(userId, null))) break;
-      const round = chunks.slice(i, i + concurrency);
-      const results = await Promise.all(round.map((chunk) => extractBatch(
-        llm,
-        system,
-        chunk.map((c) => ({ merchant: c.merchant ?? "", amount_cents: c.amount_cents ?? 0, date: c.txn_date, direction: c.direction as "debit" | "credit" | null })),
-      )));
-      const updates: D1PreparedStatement[] = [];
-      round.forEach((chunk, k) => {
-        for (const { id, item } of mapBatchItems(chunk.map((c) => c.id), results[k]!)) {
-          updates.push(
-            this.env.DB.prepare(
-              `UPDATE transactions SET status='extracted', bucket=?, ato_label=?, confidence=?, reasoning=? WHERE id=? AND user_id=?`,
-            ).bind(item.bucket, item.ato_label, item.confidence, item.reasoning, id, userId),
-          );
-          categorised++;
-        }
-      });
-      if (updates.length) await this.env.DB.batch(updates);
-    }
-    await this.audit(userId, "statement_categorised", JSON.stringify({ statementId, categorised }));
-    // Deny-by-default deductibility on the freshly-categorised payg lines (statement spend is where
-    // the founder's private living costs land in bulk). Scans this tenant's still-undetermined payg.
-    await this.stampDeductibility(userId);
-    await this.afterIngestStamped(userId);
-    return { categorised };
+      let categorised = 0;
+      const chunks: (typeof items)[] = [];
+      for (let i = 0; i < items.length; i += 40) chunks.push(items.slice(i, i + 40));
+      // Bedrock can't hand a large import to the async Batch API, so the whole import runs live inside
+      // this request. Sequential 5-15s calls on a 500-line statement approach the ~90s that already
+      // produced a Cloudflare 502 (see parseStatement), so on that path run a few chunks at a time.
+      // Kept small: the `au.` profile's on-demand quota applies, and invokeBedrock retries a 429.
+      // The Anthropic live path (only ever ≤ LIVE_MAX_LINES) stays sequential, byte-identical.
+      const concurrency = canBatch ? 1 : LIVE_BEDROCK_CONCURRENCY;
+      for (let i = 0; i < chunks.length; i += concurrency) {
+        // Stop categorising once the daily $ budget is hit; the rest stays needs_review.
+        if (!(await this.withinBudget(userId, null))) break;
+        const round = chunks.slice(i, i + concurrency);
+        const results = await Promise.all(round.map((chunk) => extractBatch(
+          llm,
+          system,
+          chunk.map((c) => ({ merchant: c.merchant ?? "", amount_cents: c.amount_cents ?? 0, date: c.txn_date, direction: c.direction as "debit" | "credit" | null })),
+        )));
+        const updates: D1PreparedStatement[] = [];
+        round.forEach((chunk, k) => {
+          for (const { id, item } of mapBatchItems(chunk.map((c) => c.id), results[k]!)) {
+            updates.push(
+              this.env.DB.prepare(
+                `UPDATE transactions SET status='extracted', bucket=?, ato_label=?, confidence=?, reasoning=? WHERE id=? AND user_id=?`,
+              ).bind(item.bucket, item.ato_label, item.confidence, item.reasoning, id, userId),
+            );
+            categorised++;
+          }
+        });
+        if (updates.length) await this.env.DB.batch(updates);
+      }
+      await this.audit(userId, "statement_categorised", JSON.stringify({ statementId, categorised }));
+      // Deny-by-default deductibility on the freshly-categorised payg lines (statement spend is where
+      // the founder's private living costs land in bulk). Scans this tenant's still-undetermined payg.
+      await this.stampDeductibility(userId);
+      await this.afterIngestStamped(userId);
+      return { categorised };
+    });
   }
 
   /**
@@ -2545,49 +2549,52 @@ export class TaxAgent extends Agent<Env> {
     if (!items.length) return { categorised: 0 };
 
     const profile = await this.requireProfile(userId);
-    const provider = resolveProvider(this.env, profile);
-    if (provider === "anthropic" && profile.consent_xborder !== 1) return { categorised: 0 }; // APP-8 gate
 
     // NOTE: the PS8 assert that used to live here has moved into getLLM (see migration 0077). It
     // counted `bank_connections` rows, so PR5's disconnect would have silently re-opened US
     // inference over CDR lines still in the ledger — and it guarded only this one function while
     // the Ask/chat digest read the same rows unguarded. The gate is now a property of the tenant,
     // checked at the single seam every model call passes through.
-    const rulePack = await this.loadRulePack(profile.rule_pack_ver);
-    const situation = await getSituation(this.env, userId, profile);
-    const system = this.buildSystemPrompt(rulePack, profile, situation, null);
-    const llm = await getLLM(this.env, profile, { userId }, await this.jurisdictionFor(userId));
-    await this.auditXborderInference(userId, provider, "categorise_feed", llm.modelId);
+    // APP-8: no consent ⇒ 0 categorised. Budget is checked before every chunk below (budget: "caller").
+    return aiCall(this.aiDeps, {
+      userId, purpose: "categorise_feed", profile, budget: "caller",
+      descriptor: () => this.jurisdictionFor(userId),
+      onConsentRequired: () => ({ categorised: 0 }),
+    }, async (llm) => {
+      const rulePack = await this.loadRulePack(profile.rule_pack_ver);
+      const situation = await getSituation(this.env, userId, profile);
+      const system = this.buildSystemPrompt(rulePack, profile, situation, null);
 
-    let categorised = 0;
-    for (let i = 0; i < items.length; i += 40) {
-      const chunk = items.slice(i, i + 40);
-      if (!(await this.withinBudget(userId, null))) break;
-      const results = await extractBatch(
-        llm,
-        system,
-        chunk.map((c) => ({
-          merchant: redact(c.merchant ?? ""), // S8 — never send raw bank text to a model
-          amount_cents: c.amount_cents ?? 0,
-          date: c.txn_date,
-          direction: c.direction as "debit" | "credit" | null,
-        })),
-      );
-      const updates: D1PreparedStatement[] = [];
-      for (const { id, item } of mapBatchItems(chunk.map((c) => c.id), results)) {
-        updates.push(
-          this.env.DB.prepare(
-            `UPDATE transactions SET status='extracted', bucket=?, ato_label=?, confidence=?, reasoning=? WHERE id=? AND user_id=? AND status='needs_review'`,
-          ).bind(item.bucket, item.ato_label, item.confidence, item.reasoning, id, userId),
+      let categorised = 0;
+      for (let i = 0; i < items.length; i += 40) {
+        const chunk = items.slice(i, i + 40);
+        if (!(await this.withinBudget(userId, null))) break;
+        const results = await extractBatch(
+          llm,
+          system,
+          chunk.map((c) => ({
+            merchant: redact(c.merchant ?? ""), // S8 — never send raw bank text to a model
+            amount_cents: c.amount_cents ?? 0,
+            date: c.txn_date,
+            direction: c.direction as "debit" | "credit" | null,
+          })),
         );
-        categorised++;
+        const updates: D1PreparedStatement[] = [];
+        for (const { id, item } of mapBatchItems(chunk.map((c) => c.id), results)) {
+          updates.push(
+            this.env.DB.prepare(
+              `UPDATE transactions SET status='extracted', bucket=?, ato_label=?, confidence=?, reasoning=? WHERE id=? AND user_id=? AND status='needs_review'`,
+            ).bind(item.bucket, item.ato_label, item.confidence, item.reasoning, id, userId),
+          );
+          categorised++;
+        }
+        if (updates.length) await this.env.DB.batch(updates);
       }
-      if (updates.length) await this.env.DB.batch(updates);
-    }
-    await this.audit(userId, "bank_feed_categorised", JSON.stringify({ categorised }));
-    await this.stampDeductibility(userId);
-    await this.afterIngestStamped(userId);
-    return { categorised };
+      await this.audit(userId, "bank_feed_categorised", JSON.stringify({ categorised }));
+      await this.stampDeductibility(userId);
+      await this.afterIngestStamped(userId);
+      return { categorised };
+    });
   }
 
   /**
@@ -2758,27 +2765,29 @@ export class TaxAgent extends Agent<Env> {
   ): Promise<{ llm: LLM; system: string; situation: Situation } | null> {
     const profile = await this.requireProfile(userId);
 
-    const provider = resolveProvider(this.env, profile);
-    if (provider === "anthropic" && profile.consent_xborder !== 1) {
-      await this.markStatus(txnId, "blocked_consent");
-      await this.notify(
-        userId,
-        "Cross-border processing consent (APP 8) is required before this receipt can be read by the US inference API. Record consent to proceed.",
-        txnId,
-      );
-      return null;
-    }
-
-    // Per-user daily $ budget — credit insurance, measured (not a count guess). The metered
-    // LLM seam keeps cost:<userId>:<day> in KV; over budget → degrade to needs_review.
-    if (!(await this.withinBudget(userId, txnId))) return null;
-
-    const rulePack = await this.loadRulePack(profile.rule_pack_ver);
-    const situation = await getSituation(this.env, userId, profile);
-    const system = this.buildSystemPrompt(rulePack, profile, situation, bucketHint);
-    const llm = await getLLM(this.env, profile, { userId });
-    await this.auditXborderInference(userId, provider, "categorise", llm.modelId);
-    return { llm, system, situation };
+    // The callback hands the client back to the caller, which makes the model call right after.
+    return aiCall<{ llm: LLM; system: string; situation: Situation } | null>(this.aiDeps, {
+      userId, purpose: "categorise", profile,
+      // Per-user daily $ budget — credit insurance, measured (not a count guess). The metered
+      // LLM seam keeps cost:<userId>:<day> in KV; over budget → withinBudget marks the txn
+      // needs_review (that is why txnId is passed) and we degrade.
+      txnId,
+      onConsentRequired: async () => {
+        await this.markStatus(txnId, "blocked_consent");
+        await this.notify(
+          userId,
+          "Cross-border processing consent (APP 8) is required before this receipt can be read by the US inference API. Record consent to proceed.",
+          txnId,
+        );
+        return null;
+      },
+      onBudgetReached: () => null,
+    }, async (llm) => {
+      const rulePack = await this.loadRulePack(profile.rule_pack_ver);
+      const situation = await getSituation(this.env, userId, profile);
+      const system = this.buildSystemPrompt(rulePack, profile, situation, bucketHint);
+      return { llm, system, situation };
+    });
   }
 
   /**
@@ -3691,144 +3700,145 @@ export class TaxAgent extends Agent<Env> {
     await this.env.RECEIPTS.put(r2key, storedDoc.bytes, { httpMetadata: { contentType: storedDoc.mime } });
 
     const profile = await this.requireProfile(userId);
-    const provider = resolveProvider(this.env, profile);
-    if (provider === "anthropic" && profile.consent_xborder !== 1) {
-      await this.fileDocument(userId, { id: docId, doc_type: "unknown", r2_key: r2key, image_hash: imageHash, needs_review: 1 });
-      await this.notify(userId, "Cross-border processing consent (APP 8) is required before the US inference API can read this document. Record consent to proceed.", null);
-      return { docId, doc_type: "unknown", routed: false };
-    }
-    if (!(await this.withinBudget(userId, null))) {
-      await this.fileDocument(userId, { id: docId, doc_type: "unknown", r2_key: r2key, image_hash: imageHash, needs_review: 1 });
-      return { docId, doc_type: "unknown", routed: false };
-    }
+    // Refused (no consent / over budget) ⇒ the stored original is filed as an unknown document for review.
+    return aiCall<{ docId: string; doc_type: string; routed: boolean }>(this.aiDeps, {
+      userId, purpose: "classify_document", profile,
+      onConsentRequired: async () => {
+        await this.fileDocument(userId, { id: docId, doc_type: "unknown", r2_key: r2key, image_hash: imageHash, needs_review: 1 });
+        await this.notify(userId, "Cross-border processing consent (APP 8) is required before the US inference API can read this document. Record consent to proceed.", null);
+        return { docId, doc_type: "unknown", routed: false };
+      },
+      onBudgetReached: async () => {
+        await this.fileDocument(userId, { id: docId, doc_type: "unknown", r2_key: r2key, image_hash: imageHash, needs_review: 1 });
+        return { docId, doc_type: "unknown", routed: false };
+      },
+    }, async (llm) => {
+      const cls = await classifyDocument(llm, bytes, mime);
+      const propertyId = await this.resolvePropertyByHint(userId, cls.likely_property_hint);
+      const lowConf = cls.confidence < 0.6;
+      await this.fileDocument(userId, {
+        id: docId,
+        doc_type: cls.doc_type,
+        r2_key: r2key,
+        image_hash: imageHash,
+        property_id: propertyId,
+        fy: fyForDate(cls.doc_date ?? null, await this.jurisdictionFor(userId)),
+        issuer: cls.issuer,
+        doc_date: cls.doc_date,
+        extracted_json: JSON.stringify(cls),
+        classification_confidence: cls.confidence,
+        needs_review: lowConf ? 1 : 0,
+      });
+      await this.audit(userId, "classify", JSON.stringify({ docId, doc_type: cls.doc_type, confidence: cls.confidence }));
 
-    const llm = await getLLM(this.env, profile, { userId });
-    await this.auditXborderInference(userId, provider, "classify_document", llm.modelId);
-    const cls = await classifyDocument(llm, bytes, mime);
-    const propertyId = await this.resolvePropertyByHint(userId, cls.likely_property_hint);
-    const lowConf = cls.confidence < 0.6;
-    await this.fileDocument(userId, {
-      id: docId,
-      doc_type: cls.doc_type,
-      r2_key: r2key,
-      image_hash: imageHash,
-      property_id: propertyId,
-      fy: fyForDate(cls.doc_date ?? null, await this.jurisdictionFor(userId)),
-      issuer: cls.issuer,
-      doc_date: cls.doc_date,
-      extracted_json: JSON.stringify(cls),
-      classification_confidence: cls.confidence,
-      needs_review: lowConf ? 1 : 0,
-    });
-    await this.audit(userId, "classify", JSON.stringify({ docId, doc_type: cls.doc_type, confidence: cls.confidence }));
-
-    // <0.6 → hold entirely for human confirm (defence-in-depth against ~2% misroute).
-    if (lowConf) {
-      await this.notify(userId, `Filed a document I wasn't sure about (${cls.doc_type}, ${(cls.confidence * 100).toFixed(0)}%). Review it in Documents.`, null);
-      return { docId, doc_type: cls.doc_type, routed: false };
-    }
-
-    // The typed extractors below make a SECOND model call; re-check the daily budget so the cap
-    // isn't bypassed (the receipt/invoice branch self-guards via extractAndCategorise).
-    if (cls.doc_type !== "receipt" && cls.doc_type !== "invoice" && !(await this.withinBudget(userId, null))) {
-      await this.notify(userId, `Filed a ${cls.doc_type} to Documents — daily AI budget reached, it'll extract after the reset.`, null);
-      return { docId, doc_type: cls.doc_type, routed: false };
-    }
-
-    // Dispatch by type. Unhandled types are filed to the shelf for review.
-    switch (cls.doc_type) {
-      case "receipt":
-      case "invoice": {
-        // Route through the existing receipt extractor as a transaction linked to this document.
-        const txnId = crypto.randomUUID();
-        await this.env.DB.prepare(
-          `INSERT INTO transactions (id, user_id, source, status, receipt_key, image_hash, document_id)
-           VALUES (?, ?, ?, 'needs_extraction', ?, ?, ?)`,
-        ).bind(txnId, userId, source, r2key, imageHash, docId).run();
-        await this.extractAndCategorise(userId, txnId, bytes, mime, null);
-        return { docId, doc_type: cls.doc_type, routed: true };
+      // <0.6 → hold entirely for human confirm (defence-in-depth against ~2% misroute).
+      if (lowConf) {
+        await this.notify(userId, `Filed a document I wasn't sure about (${cls.doc_type}, ${(cls.confidence * 100).toFixed(0)}%). Review it in Documents.`, null);
+        return { docId, doc_type: cls.doc_type, routed: false };
       }
-      case "payslip": {
-        // A1 #304: a multi-employer ATO "Income statements" page classifies as 'payslip' too. When the
-        // engine flag is ON, decompose it (all employers, lump sums, supersede guard); OFF ⇒ today's
-        // single-employer path verbatim (byte-identical; the shipped upload button is unaffected).
-        if (featureOn(this.env, "income_statement_multi")) {
-          await this.decomposeIncomeStatement(userId, docId, bytes, mime, llm);
+
+      // The typed extractors below make a SECOND model call; re-check the daily budget so the cap
+      // isn't bypassed (the receipt/invoice branch self-guards via extractAndCategorise).
+      if (cls.doc_type !== "receipt" && cls.doc_type !== "invoice" && !(await this.withinBudget(userId, null))) {
+        await this.notify(userId, `Filed a ${cls.doc_type} to Documents — daily AI budget reached, it'll extract after the reset.`, null);
+        return { docId, doc_type: cls.doc_type, routed: false };
+      }
+
+      // Dispatch by type. Unhandled types are filed to the shelf for review.
+      switch (cls.doc_type) {
+        case "receipt":
+        case "invoice": {
+          // Route through the existing receipt extractor as a transaction linked to this document.
+          const txnId = crypto.randomUUID();
+          await this.env.DB.prepare(
+            `INSERT INTO transactions (id, user_id, source, status, receipt_key, image_hash, document_id)
+             VALUES (?, ?, ?, 'needs_extraction', ?, ?, ?)`,
+          ).bind(txnId, userId, source, r2key, imageHash, docId).run();
+          await this.extractAndCategorise(userId, txnId, bytes, mime, null);
           return { docId, doc_type: cls.doc_type, routed: true };
         }
-        const p = await extractPayslip(llm, bytes, mime);
-        await this.recordIncome(userId, {
-          entity_id: null,
-          income_type: "salary_payg",
-          ato_label: "1-salary",
-          gross_cents: p.gross_cents,
-          withholding_cents: p.tax_withheld_cents,
-          net_cents: p.gross_cents - p.tax_withheld_cents,
-          currency: p.currency,
-          txn_date: p.pay_date,
-          source_doc_id: docId,
-          detail_json: JSON.stringify({ employer: p.employer, super_cents: p.super_cents, rfba_cents: p.rfba_cents }),
-          needs_review: p.confidence < CONFIDENCE_THRESHOLD ? 1 : 0,
-        });
-        await this.notify(userId, `Payslip from ${p.employer}: gross $${(p.gross_cents / 100).toFixed(2)}, PAYG withheld $${(p.tax_withheld_cents / 100).toFixed(2)}.${p.rfba_cents ? " RFBA captured (reportable fringe benefit)." : ""}`, null);
-        return { docId, doc_type: cls.doc_type, routed: true };
-      }
-      case "agent_rental_summary": {
-        await this.decomposeAgentStatement(userId, docId, propertyId, bytes, mime, llm);
-        return { docId, doc_type: cls.doc_type, routed: true };
-      }
-      case "depreciation_schedule": {
-        await this.importDepreciationSchedule(userId, docId, bytes, mime);
-        return { docId, doc_type: cls.doc_type, routed: true };
-      }
-      case "dividend_statement": {
-        const dv = await extractDividend(llm, bytes, mime);
-        const gross = dv.franked_cents + dv.unfranked_cents;
-        await this.recordIncome(userId, {
-          income_type: "dividend",
-          ato_label: "11-dividends",
-          gross_cents: gross,
-          franking_credit_cents: dv.franking_credit_cents,
-          currency: dv.currency,
-          txn_date: dv.payment_date,
-          source_doc_id: docId,
-          detail_json: JSON.stringify({ payer: dv.payer, franked_cents: dv.franked_cents, unfranked_cents: dv.unfranked_cents }),
-          needs_review: dv.confidence < CONFIDENCE_THRESHOLD ? 1 : 0,
-        });
-        await this.notify(userId, `Dividend from ${dv.payer ?? "issuer"}: $${(gross / 100).toFixed(2)}${dv.franking_credit_cents ? `, franking credit $${(dv.franking_credit_cents / 100).toFixed(2)}` : ""}.`, null);
-        return { docId, doc_type: cls.doc_type, routed: true };
-      }
-      case "notice_of_assessment": {
-        // B1 (noa_capture): read the NOA into a DRAFT carry-over the user confirms in File — nothing is
-        // written to the position here. OFF ⇒ fall through to file-for-review (no NOA is otherwise touched).
-        if (featureOn(this.env, "noa_capture")) {
-          const noa = await extractNoticeOfAssessment(llm, bytes, mime);
-          await captureNoaDraft(this.env, userId, docId, noa);
+        case "payslip": {
+          // A1 #304: a multi-employer ATO "Income statements" page classifies as 'payslip' too. When the
+          // engine flag is ON, decompose it (all employers, lump sums, supersede guard); OFF ⇒ today's
+          // single-employer path verbatim (byte-identical; the shipped upload button is unaffected).
+          if (featureOn(this.env, "income_statement_multi")) {
+            await this.decomposeIncomeStatement(userId, docId, bytes, mime, llm);
+            return { docId, doc_type: cls.doc_type, routed: true };
+          }
+          const p = await extractPayslip(llm, bytes, mime);
+          await this.recordIncome(userId, {
+            entity_id: null,
+            income_type: "salary_payg",
+            ato_label: "1-salary",
+            gross_cents: p.gross_cents,
+            withholding_cents: p.tax_withheld_cents,
+            net_cents: p.gross_cents - p.tax_withheld_cents,
+            currency: p.currency,
+            txn_date: p.pay_date,
+            source_doc_id: docId,
+            detail_json: JSON.stringify({ employer: p.employer, super_cents: p.super_cents, rfba_cents: p.rfba_cents }),
+            needs_review: p.confidence < CONFIDENCE_THRESHOLD ? 1 : 0,
+          });
+          await this.notify(userId, `Payslip from ${p.employer}: gross $${(p.gross_cents / 100).toFixed(2)}, PAYG withheld $${(p.tax_withheld_cents / 100).toFixed(2)}.${p.rfba_cents ? " RFBA captured (reportable fringe benefit)." : ""}`, null);
+          return { docId, doc_type: cls.doc_type, routed: true };
+        }
+        case "agent_rental_summary": {
+          await this.decomposeAgentStatement(userId, docId, propertyId, bytes, mime, llm);
+          return { docId, doc_type: cls.doc_type, routed: true };
+        }
+        case "depreciation_schedule": {
+          await this.importDepreciationSchedule(userId, docId, bytes, mime);
+          return { docId, doc_type: cls.doc_type, routed: true };
+        }
+        case "dividend_statement": {
+          const dv = await extractDividend(llm, bytes, mime);
+          const gross = dv.franked_cents + dv.unfranked_cents;
+          await this.recordIncome(userId, {
+            income_type: "dividend",
+            ato_label: "11-dividends",
+            gross_cents: gross,
+            franking_credit_cents: dv.franking_credit_cents,
+            currency: dv.currency,
+            txn_date: dv.payment_date,
+            source_doc_id: docId,
+            detail_json: JSON.stringify({ payer: dv.payer, franked_cents: dv.franked_cents, unfranked_cents: dv.unfranked_cents }),
+            needs_review: dv.confidence < CONFIDENCE_THRESHOLD ? 1 : 0,
+          });
+          await this.notify(userId, `Dividend from ${dv.payer ?? "issuer"}: $${(gross / 100).toFixed(2)}${dv.franking_credit_cents ? `, franking credit $${(dv.franking_credit_cents / 100).toFixed(2)}` : ""}.`, null);
+          return { docId, doc_type: cls.doc_type, routed: true };
+        }
+        case "notice_of_assessment": {
+          // B1 (noa_capture): read the NOA into a DRAFT carry-over the user confirms in File — nothing is
+          // written to the position here. OFF ⇒ fall through to file-for-review (no NOA is otherwise touched).
+          if (featureOn(this.env, "noa_capture")) {
+            const noa = await extractNoticeOfAssessment(llm, bytes, mime);
+            await captureNoaDraft(this.env, userId, docId, noa);
+            await this.notify(
+              userId,
+              `Read your ${fyLabel(noa.assessed_fy)} Notice of Assessment — open File (switch to ${fyLabel(noa.assessed_fy)}) to review the carry-overs and close the year. General information only.`,
+              null,
+            );
+            return { docId, doc_type: cls.doc_type, routed: true };
+          }
+          const na = cls.doc_type.replace(/_/g, " ");
+          await this.notify(userId, `Filed your ${na} to Documents for your records — enter any figures manually if they belong in this year's return.`, null);
+          return { docId, doc_type: cls.doc_type, routed: true };
+        }
+        default: {
+          // We recognise these types (super_statement, managed_fund_amma, loan_statement, bank_statement)
+          // but have no extractor yet, so their figures do NOT enter the return. Be honest about that rather
+          // than implying capture — a reassuring "filed!" toast was making users believe income/interest was
+          // captured when it wasn't (#66). Extractors are tracked as the Phase-2 follow-up.
+          const friendly = cls.doc_type.replace(/_/g, " ");
           await this.notify(
             userId,
-            `Read your ${fyLabel(noa.assessed_fy)} Notice of Assessment — open File (switch to ${fyLabel(noa.assessed_fy)}) to review the carry-overs and close the year. General information only.`,
+            `Filed your ${friendly} to Documents for your records — I haven't read its figures into your return yet. Enter them manually if they belong in this year's return.`,
             null,
           );
           return { docId, doc_type: cls.doc_type, routed: true };
         }
-        const na = cls.doc_type.replace(/_/g, " ");
-        await this.notify(userId, `Filed your ${na} to Documents for your records — enter any figures manually if they belong in this year's return.`, null);
-        return { docId, doc_type: cls.doc_type, routed: true };
       }
-      default: {
-        // We recognise these types (super_statement, managed_fund_amma, loan_statement, bank_statement)
-        // but have no extractor yet, so their figures do NOT enter the return. Be honest about that rather
-        // than implying capture — a reassuring "filed!" toast was making users believe income/interest was
-        // captured when it wasn't (#66). Extractors are tracked as the Phase-2 follow-up.
-        const friendly = cls.doc_type.replace(/_/g, " ");
-        await this.notify(
-          userId,
-          `Filed your ${friendly} to Documents for your records — I haven't read its figures into your return yet. Enter them manually if they belong in this year's return.`,
-          null,
-        );
-        return { docId, doc_type: cls.doc_type, routed: true };
-      }
-    }
+    });
   }
 
   /**
@@ -4310,36 +4320,33 @@ export class TaxAgent extends Agent<Env> {
   /** Parse a quantity-surveyor depreciation schedule (PDF) → bulk-create assets + first schedules. */
   async importDepreciationSchedule(userId: string, docId: string, bytes: ArrayBuffer, mime: string): Promise<{ created: number }> {
     const profile = await this.requireProfile(userId);
-    const provider = resolveProvider(this.env, profile);
-    if (provider === "anthropic" && profile.consent_xborder !== 1) throw new Error("consent_required");
-    // Cost caps + wallet gate, like every other model call (it was missing here: #721).
-    if (!(await this.withinBudget(userId, null))) throw new Error("ai_budget_reached");
-    const llm = await getLLM(this.env, profile, { userId });
-    await this.auditXborderInference(userId, provider, "import_depreciation_schedule", llm.modelId);
-    const doc = await this.env.DB.prepare(`SELECT property_id FROM documents WHERE id = ? AND user_id = ?`)
-      .bind(docId, userId)
-      .first<{ property_id: string | null }>();
-    const ext = await extractDepreciationSchedule(llm, bytes, mime);
-    let created = 0;
-    for (const a of ext.assets) {
-      await this.createAsset(userId, {
-        label: a.label,
-        asset_class: a.asset_class,
-        cost_cents: a.cost_cents,
-        acquired_date: a.acquired_date,
-        property_id: doc?.property_id ?? null,
-        effective_life_years: a.effective_life_years,
-        method: a.method,
-        div43_rate: a.div43_rate,
-        is_second_hand: a.is_second_hand,
-        source_doc_id: docId,
-        needs_review: ext.confidence < CONFIDENCE_THRESHOLD ? 1 : 0,
-      });
-      created++;
-    }
-    await this.audit(userId, "depreciation_schedule_imported", JSON.stringify({ docId, created }));
-    await this.notify(userId, `Imported ${created} asset(s) from the depreciation schedule — decline-in-value will appear in your report.`, null);
-    return { created };
+    // Consent, then the cost caps + wallet gate, like every other model call (the budget was missing here: #721).
+    return aiCall(this.aiDeps, { userId, purpose: "import_depreciation_schedule", profile }, async (llm) => {
+      const doc = await this.env.DB.prepare(`SELECT property_id FROM documents WHERE id = ? AND user_id = ?`)
+        .bind(docId, userId)
+        .first<{ property_id: string | null }>();
+      const ext = await extractDepreciationSchedule(llm, bytes, mime);
+      let created = 0;
+      for (const a of ext.assets) {
+        await this.createAsset(userId, {
+          label: a.label,
+          asset_class: a.asset_class,
+          cost_cents: a.cost_cents,
+          acquired_date: a.acquired_date,
+          property_id: doc?.property_id ?? null,
+          effective_life_years: a.effective_life_years,
+          method: a.method,
+          div43_rate: a.div43_rate,
+          is_second_hand: a.is_second_hand,
+          source_doc_id: docId,
+          needs_review: ext.confidence < CONFIDENCE_THRESHOLD ? 1 : 0,
+        });
+        created++;
+      }
+      await this.audit(userId, "depreciation_schedule_imported", JSON.stringify({ docId, created }));
+      await this.notify(userId, `Imported ${created} asset(s) from the depreciation schedule — decline-in-value will appear in your report.`, null);
+      return { created };
+    });
   }
 
   /** Dispose of an asset: record the termination value + a balancing adjustment vs adjustable value. */
@@ -4682,16 +4689,11 @@ export class TaxAgent extends Agent<Env> {
    */
   async draftOccupationRules(userId: string, occupation: string): Promise<OccupationRulesDraft> {
     const profile = await this.requireProfile(userId);
-    const provider = resolveProvider(this.env, profile);
-    if (provider === "anthropic" && profile.consent_xborder !== 1) {
-      throw new Error("consent_required");
-    }
-    if (!(await this.withinBudget(userId, null))) throw new Error("ai_budget_reached");
-    const llm = await getLLM(this.env, profile, { userId });
-    await this.auditXborderInference(userId, provider, "claim_review_draft", llm.modelId);
-    const draft = await extractOccupationRules(llm, occupation.slice(0, 200));
-    await this.audit(userId, "claim_review_draft", JSON.stringify({ occupation, rules: draft.rules.length }));
-    return draft;
+    return aiCall(this.aiDeps, { userId, purpose: "claim_review_draft", profile }, async (llm) => {
+      const draft = await extractOccupationRules(llm, occupation.slice(0, 200));
+      await this.audit(userId, "claim_review_draft", JSON.stringify({ occupation, rules: draft.rules.length }));
+      return draft;
+    });
   }
 
   /**
@@ -7032,32 +7034,28 @@ export class TaxAgent extends Agent<Env> {
   ): Promise<{ receipt_key: string; provider: string | null; category: string | null; amount_cents: number | null; used_on: string | null; confidence: number }> {
     await this.requireHealthConsent(userId);
     const profile = await this.requireProfile(userId);
-    const provider = resolveProvider(this.env, profile);
-    if (provider === "anthropic" && profile.consent_xborder !== 1) throw new Error("consent_required");
-    if (!(await this.withinBudget(userId, null))) throw new Error("ai_budget_reached");
+    return aiCall(this.aiDeps, { userId, purpose: "phi_claim", profile }, async (llm) => {
+      const claim = await extractHealthClaim(llm, bytes, mime);
 
-    const llm = await getLLM(this.env, profile, { userId });
-    await this.auditXborderInference(userId, provider, "phi_claim", llm.modelId);
-    const claim = await extractHealthClaim(llm, bytes, mime);
+      // Store the image only AFTER a successful read — a failed OCR (bad photo) leaves no orphan bytes.
+      const receiptId = crypto.randomUUID();
+      const key = `${userId}/phi/${receiptId}`;
+      const storedPhi = await maybeCompressImage(this.env, bytes, mime);
+      await this.env.RECEIPTS.put(key, storedPhi.bytes, { httpMetadata: { contentType: storedPhi.mime } });
+      await this.audit(userId, "phi_receipt_scanned", JSON.stringify({ receiptId, category: claim.category_guess, confidence: claim.confidence }));
 
-    // Store the image only AFTER a successful read — a failed OCR (bad photo) leaves no orphan bytes.
-    const receiptId = crypto.randomUUID();
-    const key = `${userId}/phi/${receiptId}`;
-    const storedPhi = await maybeCompressImage(this.env, bytes, mime);
-    await this.env.RECEIPTS.put(key, storedPhi.bytes, { httpMetadata: { contentType: storedPhi.mime } });
-    await this.audit(userId, "phi_receipt_scanned", JSON.stringify({ receiptId, category: claim.category_guess, confidence: claim.confidence }));
-
-    // Prefer the fund rebate (what counts against the limit); fall back to the charged total. The user
-    // confirms/edits before logging — the receipt's fee is not always the benefit the fund paid.
-    const amount = claim.benefit_paid_cents ?? claim.amount_charged_cents ?? null;
-    return {
-      receipt_key: key,
-      provider: claim.provider_name,
-      category: claim.category_guess,
-      amount_cents: amount != null ? Math.max(0, Math.round(amount)) : null,
-      used_on: claim.service_date,
-      confidence: claim.confidence,
-    };
+      // Prefer the fund rebate (what counts against the limit); fall back to the charged total. The user
+      // confirms/edits before logging — the receipt's fee is not always the benefit the fund paid.
+      const amount = claim.benefit_paid_cents ?? claim.amount_charged_cents ?? null;
+      return {
+        receipt_key: key,
+        provider: claim.provider_name,
+        category: claim.category_guess,
+        amount_cents: amount != null ? Math.max(0, Math.round(amount)) : null,
+        used_on: claim.service_date,
+        confidence: claim.confidence,
+      };
+    });
   }
 
   /**
@@ -7332,20 +7330,10 @@ export class TaxAgent extends Agent<Env> {
   }
 
   /**
-   * Record that a cross-border (US/Anthropic) inference disclosure occurred — once per operation,
-   * with the feature + model id, NEVER any payload. No-op on the AU/Bedrock path (no disclosure to
-   * audit). Keeps the hash-chained audit_log as the APP-8 disclosure record. Called inside the DO so
-   * appends stay serialized.
+   * What aiCall (src/lib/ai-call.ts) needs from the DO: its env, budget gate and audit log. aiCall
+   * records the xborder_inference / au_inference row (feature + model id, never any payload) through
+   * this.audit, so appends to the hash-chained log stay serialised inside the DO.
    */
-  private async auditXborderInference(userId: string, provider: string, feature: string, model: string): Promise<void> {
-    // The AU/Bedrock path used to be a silent no-op — no disclosure, nothing to record. That is no
-    // longer sufficient: CDR requires a positive record of every USE of CDR data, not just of
-    // cross-border disclosures, so an in-Australia inference must leave its own breadcrumb in the
-    // hash-chained log. Same shape, never any payload. The shape lives in src/lib/ai-call.ts.
-    await recordInference((u, e, d) => this.audit(u, e, d), userId, provider, feature, model);
-  }
-
-  /** What aiCall (src/lib/ai-call.ts) needs from the DO: its env, budget gate and serialised audit log. */
   private get aiDeps(): AiCallDeps {
     return {
       env: this.env,

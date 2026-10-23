@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
+import { useFeatures } from "../lib/features";
 import type { BulkDone } from "./BulkBar";
 
 // Outcome note + ~10s Undo for a bulk action. Lives at PAGE level (not inside BulkBar, which unmounts
@@ -10,6 +11,7 @@ import type { BulkDone } from "./BulkBar";
 // page) so whichever page is showing refreshes after an Undo.
 export function UndoToast({ flash, onClose }: { flash: BulkDone; onClose: () => void }) {
   const qc = useQueryClient();
+  const { has } = useFeatures();
   const [remembered, setRemembered] = useState(false);
   const undo = useMutation({
     mutationFn: (batchId: string) => api.undoBatch(batchId),
@@ -39,11 +41,17 @@ export function UndoToast({ flash, onClose }: { flash: BulkDone; onClose: () => 
   }, [flash, onClose]);
   const offer = flash.remember;
   return (
-    <div className="sticky bottom-3 z-10 mx-auto flex w-full max-w-2xl items-center justify-between gap-3 rounded-xl border border-line bg-ink px-3 py-2 text-sm text-white shadow-lg">
-      <span>
+    // Same clearance as BulkBar: below lg the bottom tab bar (z-30) covered this toast, and with it the
+    // only Undo, on a phone (#696).
+    <div className={`sticky ${has("mobile_bottom_tabs") ? "bottom-20 lg:bottom-3" : "bottom-3"} z-40 mx-auto flex w-full max-w-2xl items-center justify-between gap-3 rounded-xl border border-line bg-ink px-3 py-2 text-sm text-white shadow-lg`}>
+      <span role="status">
         {undo.isPending
           ? "Undoing…"
-          : remembered
+          : undo.isError
+            ? `Couldn't undo: ${(undo.error as Error).message}. Your change is still in place.`
+            : remember.isError
+              ? `Couldn't save the rule: ${(remember.error as Error).message}.`
+              : remembered
             ? `Remembered ✓ — future ${offer?.label} will file here.`
             : flash.message}
       </span>

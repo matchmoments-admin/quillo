@@ -133,7 +133,9 @@ export function usageStatements(
   // Usage-based billing (flag `billing`): debit the user's wallet for this call's cost + margin, in the
   // SAME atomic batch as the cost tally so a crash can't meter-without-debiting. OFF ⇒ no debit added.
   if (featureOn(env, "billing")) {
-    const debit = billableE4(toE4(cents), billingPolicy(env).markupPct);
+    // `cents` is USD at the rate card; the wallet is AUD (Stripe top-ups), so convert before the margin.
+    const policy = billingPolicy(env);
+    const debit = billableE4(toE4(cents) * policy.fxRate, policy.markupPct);
     if (debit > 0) {
       stmts.push(env.DB.prepare(`UPDATE profiles SET credit_balance_e4 = credit_balance_e4 - ? WHERE user_id = ?`).bind(debit, userId));
     }

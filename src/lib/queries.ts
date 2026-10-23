@@ -646,7 +646,7 @@ export async function usageSummary(env: Env, userId: string) {
     fy: `${r.fy_start}-${String((r.fy_start + 1) % 100).padStart(2, "0")}`, // e.g. "2025-26"
     calls: r.calls,
     cost_cents: r.cost_cents,
-    billable_cents: billableCents(r.cost_cents, policy.markupPct, policy.appFeeCents),
+    billable_cents: billableCents(r.cost_cents * policy.fxRate, policy.markupPct, policy.appFeeCents), // AUD, like the wallet
   }));
   return {
     today_cents: totals?.today_cents ?? 0,

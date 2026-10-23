@@ -40,7 +40,7 @@ export function Billing() {
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <KpiCard variant="feature" label="AI credit balance" value={dollars(d.balance_e4)} foot={low ? "Running low — top up below" : "Drawn down as you use AI features"} tone={low ? "warn" : undefined} />
-        <KpiCard label="Service margin" value={`${d.markup_pct}%`} foot="Added over the measured AI cost" />
+        <KpiCard label="Service margin" value={`${d.markup_pct}%`} foot="Added over the measured AI cost, converted to AUD" />
         <KpiCard label="Free allowance" value={dollars(d.free_grant_e4)} foot="One-off, on signup — no card needed to start" />
       </div>
 

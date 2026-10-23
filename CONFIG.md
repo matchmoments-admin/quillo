@@ -57,9 +57,11 @@ Snap → share → email a receipt; it lands in your inbox, no app needed.
 
 ---
 
-## 3. Bedrock AU data residency — keep Claude until this is set up
+## 3. Bedrock AU data residency (the default since 2026-10-24)
 
-Today inference runs on **Claude (US Anthropic)** with your recorded APP-8 consent. Bedrock
+**Since 2026-10-24 the default is Bedrock** (`DEFAULT_INFERENCE_PROVIDER = "bedrock"`, map #692): every
+tenant without an explicit override runs on the `au.` profile in ap-southeast-2, with no cross-border
+consent. Rollback: set it back to `"anthropic"` and deploy. The history below is kept for setup. Bedrock
 gives genuine AU residency (Sydney). **The seam is now fully built** (WebCrypto SigV4 in
 `src/llm.ts` + `src/lib/sigv4.ts`, no `@aws-sdk/*`) and is **flag-gated/inert**: it stays off
 until a tenant (or `DEFAULT_INFERENCE_PROVIDER`) is set to `bedrock` AND the AWS secrets below are set. Claude (US) remains the

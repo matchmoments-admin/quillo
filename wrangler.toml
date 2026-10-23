@@ -169,10 +169,11 @@ CLERK_FOUNDER_SUB = "user_3EX9q24hvBuYNz3Hk6Pg6O5FfBq"
 # tenant). For production set these to your Access application's values:
 # CF_ACCESS_TEAM_DOMAIN = "https://yourteam.cloudflareaccess.com"
 # CF_ACCESS_AUD = "<access application AUD tag>"
-# Inference provider seam (finding: easy model switch). 'anthropic' now (US, +APP-8 consent);
-# flip a tenant's profiles.inference_provider to 'bedrock' for in-jurisdiction residency.
-# This var is only the default for tenants with no explicit provider set.
-DEFAULT_INFERENCE_PROVIDER = "anthropic"
+# Inference provider seam. Default 'bedrock' (2026-10-24, map #692): every tenant's AI runs in its
+# locale (AU ⇒ the au. profile in ap-southeast-2), so no cross-border APP-8 consent is needed and
+# CDR data never leaves Australia. A tenant's profiles.inference_provider still overrides this.
+# Rollback: set it back to "anthropic" and deploy (US inference, the consent gate returns).
+DEFAULT_INFERENCE_PROVIDER = "bedrock"
 # DEFAULT_INFERENCE_REGION is deliberately UNSET: the region comes from the jurisdiction descriptor
 # getLLM is given (AU ⇒ ap-southeast-2, UK ⇒ eu-west-2), so one locale's default can't be applied to
 # another. Today every call site passes AU; a second locale must thread its own descriptor through.

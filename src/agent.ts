@@ -24,6 +24,7 @@ import { applyUserRules, RULE_CREDIT_BUCKETS } from "./lib/rules";
 import { sha256hex, sha256hexBytes } from "./lib/base64";
 import { CAPITAL_ROWS_MISSING_MESSAGE, STATEMENT_LINES_MISSING_MESSAGE, keyStillReferenced, maybeCompressImage, objectExists, putCompressed, putJson, putStatementOriginal, readStoredJson, statementFileKey } from "./lib/r2-store";
 import { getLLM, assertDataResidency, resolveProvider, type LLM } from "./llm";
+import { aiCall, recordInference, requireXborderConsent, type AiCallDeps } from "./lib/ai-call";
 import { extractReceipt, extractReceipts, extractFromText, extractColumnMap, extractCapitalColumnMap, extractStatement, extractBatch, extractSituationDraft, extractOccupationRules, extractGuide, extractAnswer, classifyDocument, extractPayslip, extractIncomeStatement, extractNoticeOfAssessment, extractAgentStatement, extractDepreciationSchedule, extractDividend, extractHealthClaim, batchParams, parseBatchMessage, mapBatchItems, ALLOWED_NAV_ROUTES, type Extracted, type ExtractedStatement, type SituationDraft, type OccupationRulesDraft, type AnswerResult } from "./extract";
 import { mapIncomeStatementToRows } from "./lib/income-statement";
 import { fyForDate, buildReport, useStatusDeniedExpr, propertyUndeterminedGatedExpr, resolveRulePack } from "./lib/report";
@@ -7337,15 +7338,20 @@ export class TaxAgent extends Agent<Env> {
    * appends stay serialized.
    */
   private async auditXborderInference(userId: string, provider: string, feature: string, model: string): Promise<void> {
-    if (provider === "anthropic") {
-      await this.audit(userId, "xborder_inference", JSON.stringify({ feature, model }));
-      return;
-    }
     // The AU/Bedrock path used to be a silent no-op — no disclosure, nothing to record. That is no
     // longer sufficient: CDR requires a positive record of every USE of CDR data, not just of
     // cross-border disclosures, so an in-Australia inference must leave its own breadcrumb in the
-    // hash-chained log. Same shape, never any payload.
-    await this.audit(userId, "au_inference", JSON.stringify({ provider, feature, model }));
+    // hash-chained log. Same shape, never any payload. The shape lives in src/lib/ai-call.ts.
+    await recordInference((u, e, d) => this.audit(u, e, d), userId, provider, feature, model);
+  }
+
+  /** What aiCall (src/lib/ai-call.ts) needs from the DO: its env, budget gate and serialised audit log. */
+  private get aiDeps(): AiCallDeps {
+    return {
+      env: this.env,
+      withinBudget: (userId, txnId) => this.withinBudget(userId, txnId),
+      audit: (userId, event, detail) => this.audit(userId, event, detail),
+    };
   }
 
   // ── ledger push (idempotent, egress-aware) ─────────────────────────────────
@@ -7413,21 +7419,16 @@ export class TaxAgent extends Agent<Env> {
    */
   async draftSituation(userId: string, message: string): Promise<SituationDraft> {
     const profile = await this.requireProfile(userId);
-    const provider = resolveProvider(this.env, profile);
-    if (provider === "anthropic" && profile.consent_xborder !== 1) {
-      throw new Error("consent_required");
-    }
-    // Budget gate (per-tenant + global) — this free-text LLM call could otherwise be spammed.
-    if (!(await this.withinBudget(userId, null))) throw new Error("ai_budget_reached");
-    const llm = await getLLM(this.env, profile, { userId });
-    await this.auditXborderInference(userId, provider, "onboarding_draft", llm.modelId);
-    const draft = await extractSituationDraft(llm, message.slice(0, 4000));
-    await this.audit(
-      userId,
-      "onboarding_draft",
-      JSON.stringify({ entities: draft.entities.length, properties: draft.properties.length, rules: draft.rules.length }),
-    );
-    return draft;
+    // aiCall: consent, then the budget gate (per-tenant + global — this free-text call could otherwise be spammed).
+    return aiCall(this.aiDeps, { userId, purpose: "onboarding_draft", profile }, async (llm) => {
+      const draft = await extractSituationDraft(llm, message.slice(0, 4000));
+      await this.audit(
+        userId,
+        "onboarding_draft",
+        JSON.stringify({ entities: draft.entities.length, properties: draft.properties.length, rules: draft.rules.length }),
+      );
+      return draft;
+    });
   }
 
   /**
@@ -7446,37 +7447,38 @@ export class TaxAgent extends Agent<Env> {
     const q = (question ?? "").trim();
     if (!q) throw new Error("empty question");
     const profile = await this.requireProfile(userId);
-    const provider = resolveProvider(this.env, profile);
-    if (provider === "anthropic" && profile.consent_xborder !== 1) throw new Error("consent_required");
-    if (!(await this.withinBudget(userId, null))) throw new Error("ai_budget_reached");
-    // #591: the Why? drawer makes /api/ask a one-tap call, so a Why? question shares the chat's
-    // per-tenant burst/day limiter. Plain /api/ask (no context) keeps its pre-#591 behaviour.
-    if (context && !(await this.chatRateOk(userId))) throw new Error("chat_rate_limited");
-    const llm = await getLLM(this.env, profile, { userId });
-    await this.auditXborderInference(userId, provider, "ask", llm.modelId);
-    // C3 (flag ask_actions): also fetch the FY transaction digest so the model can PROPOSE one-click
-    // fixes by T-code alias. Merchants in the digest are the same data category statement categorisation
-    // already sends to the model, so the existing consent gate above covers it. Flag off ⇒ undefined ⇒
-    // buildAskSystem/extractAnswer take their pre-C3 paths byte-identically.
-    const wantActions = featureOn(this.env, "ask_actions");
-    // #591 Why? drawer: `context` arrives only when api.ts validated it under ft_journey. The item is a
-    // tenant-scoped read (user_id bound) AFTER the consent + budget gates; absent ⇒ no read, no block.
-    const [situation, report, digestRows, askItem] = await Promise.all([
-      getSituation(this.env, userId, profile),
-      buildReport(this.env, userId, fy),
-      wantActions ? fetchAskDigestRows(this.env, userId, fy) : Promise.resolve(undefined),
-      context?.item_id ? fetchAskItem(this.env, userId, context.item_id) : Promise.resolve(null),
-    ]);
-    const digest = digestRows ? renderTxnDigest(digestRows.rows, digestRows.total) : undefined;
-    // The question is free text → redact (TFN/card/BSB) BEFORE it reaches the model (APP-8), THEN cap —
-    // redact-then-slice so a truncated token can't defeat the regex. The position is a curated summary
-    // of aggregates (no PII digit strings), so it is NOT redacted (redact would mangle the *_cents the
-    // answer must cite). The situation text can carry names, so it stays redacted.
-    const baseSystem = buildAskSystem(redact(renderSituation(situation)), summariseReportForAsk(report), digest?.text);
-    const system = context ? baseSystem + renderAskContext(context, askItem) : baseSystem;
-    const result = await extractAnswer(llm, system, [{ role: "user", content: redact(q).slice(0, 600) }], digest && { aliasToId: digest.aliasToId, propertyIds: new Set(situation.properties.map((p) => p.id)) });
-    await this.audit(userId, "ask", JSON.stringify(context ? { q_len: q.length, fy, proposals: result.proposed_actions?.length ?? 0, why_step: context.step, why_item: !!askItem } : { q_len: q.length, fy, proposals: result.proposed_actions?.length ?? 0 }));
-    return result;
+    return aiCall(this.aiDeps, {
+      userId, purpose: "ask", profile,
+      // #591: the Why? drawer makes /api/ask a one-tap call, so a Why? question shares the chat's
+      // per-tenant burst/day limiter. Plain /api/ask (no context) keeps its pre-#591 behaviour.
+      afterGates: async () => {
+        if (context && !(await this.chatRateOk(userId))) throw new Error("chat_rate_limited");
+      },
+    }, async (llm) => {
+      // C3 (flag ask_actions): also fetch the FY transaction digest so the model can PROPOSE one-click
+      // fixes by T-code alias. Merchants in the digest are the same data category statement categorisation
+      // already sends to the model, so the existing consent gate above covers it. Flag off ⇒ undefined ⇒
+      // buildAskSystem/extractAnswer take their pre-C3 paths byte-identically.
+      const wantActions = featureOn(this.env, "ask_actions");
+      // #591 Why? drawer: `context` arrives only when api.ts validated it under ft_journey. The item is a
+      // tenant-scoped read (user_id bound) AFTER the consent + budget gates; absent ⇒ no read, no block.
+      const [situation, report, digestRows, askItem] = await Promise.all([
+        getSituation(this.env, userId, profile),
+        buildReport(this.env, userId, fy),
+        wantActions ? fetchAskDigestRows(this.env, userId, fy) : Promise.resolve(undefined),
+        context?.item_id ? fetchAskItem(this.env, userId, context.item_id) : Promise.resolve(null),
+      ]);
+      const digest = digestRows ? renderTxnDigest(digestRows.rows, digestRows.total) : undefined;
+      // The question is free text → redact (TFN/card/BSB) BEFORE it reaches the model (APP-8), THEN cap —
+      // redact-then-slice so a truncated token can't defeat the regex. The position is a curated summary
+      // of aggregates (no PII digit strings), so it is NOT redacted (redact would mangle the *_cents the
+      // answer must cite). The situation text can carry names, so it stays redacted.
+      const baseSystem = buildAskSystem(redact(renderSituation(situation)), summariseReportForAsk(report), digest?.text);
+      const system = context ? baseSystem + renderAskContext(context, askItem) : baseSystem;
+      const result = await extractAnswer(llm, system, [{ role: "user", content: redact(q).slice(0, 600) }], digest && { aliasToId: digest.aliasToId, propertyIds: new Set(situation.properties.map((p) => p.id)) });
+      await this.audit(userId, "ask", JSON.stringify(context ? { q_len: q.length, fy, proposals: result.proposed_actions?.length ?? 0, why_step: context.step, why_item: !!askItem } : { q_len: q.length, fy, proposals: result.proposed_actions?.length ?? 0 }));
+      return result;
+    });
   }
 
   /**
@@ -7493,66 +7495,68 @@ export class TaxAgent extends Agent<Env> {
     const maxChars = Number(this.env.CHAT_MAX_MESSAGE_CHARS ?? 0);
     if (maxChars > 0 && text.length > maxChars) throw new Error("chat_message_too_long");
     const profile = await this.requireProfile(userId);
-    const provider = resolveProvider(this.env, profile);
-    if (provider === "anthropic" && profile.consent_xborder !== 1) throw new Error("consent_required");
-    if (!(await this.withinBudget(userId, null))) throw new Error("ai_budget_reached");
-    // Per-tenant rate limit (burst + daily turn count) — a fast backstop so a bad actor can't hammer
-    // /api/chat and rack up spend before the daily $ budget trips. Counters live in KV; safe because the
-    // DO serialises a tenant's turns (this is the only writer), so the read-increment-write is race-free.
-    if (!(await this.chatRateOk(userId))) throw new Error("chat_rate_limited");
-
-    // Resolve / create the session (validate ownership). The session PINS its grounding FY for the whole
-    // conversation — so switching the global FY mid-chat can't silently mix two years' figures.
     let sid = sessionId ?? "";
     let sessionFy = fy;
-    if (sid) {
-      const own = await this.env.DB.prepare(`SELECT fy FROM chat_sessions WHERE id = ? AND user_id = ?`).bind(sid, userId).first<{ fy: number | null }>();
-      if (!own) sid = "";
-      else if (own.fy != null) sessionFy = own.fy;
-    }
-    if (!sid) {
-      sid = crypto.randomUUID();
-      await this.env.DB.prepare(`INSERT INTO chat_sessions (id, user_id, fy) VALUES (?, ?, ?)`).bind(sid, userId, sessionFy).run();
-    }
+    let history: { role: "user" | "assistant"; content: string }[] = [];
+    return aiCall(this.aiDeps, {
+      userId, purpose: "ask", profile,
+      // Runs after consent + budget and before the client is built, in the order it always has.
+      afterGates: async () => {
+        // Per-tenant rate limit (burst + daily turn count) — a fast backstop so a bad actor can't hammer
+        // /api/chat and rack up spend before the daily $ budget trips. Counters live in KV; safe because the
+        // DO serialises a tenant's turns (this is the only writer), so the read-increment-write is race-free.
+        if (!(await this.chatRateOk(userId))) throw new Error("chat_rate_limited");
 
-    // Prior turns (cap to the last 20 to bound tokens), oldest first. Tiebreak role ASC within a second
-    // (assistant<user) so after reversing, the user turn precedes its assistant reply.
-    const prior = await this.env.DB.prepare(
-      `SELECT role, content FROM chat_messages WHERE user_id = ? AND session_id = ? ORDER BY created_at DESC, role ASC LIMIT 20`,
-    ).bind(userId, sid).all<{ role: string; content: string }>();
-    const history = (prior.results ?? []).reverse().map((m) => ({ role: m.role === "assistant" ? ("assistant" as const) : ("user" as const), content: m.content }));
-    // The Anthropic messages[] must start with a user turn — drop any leading assistant turns the
-    // 20-row window or an orphaned half-pair might begin with.
-    while (history[0]?.role === "assistant") history.shift();
+        // Resolve / create the session (validate ownership). The session PINS its grounding FY for the whole
+        // conversation — so switching the global FY mid-chat can't silently mix two years' figures.
+        if (sid) {
+          const own = await this.env.DB.prepare(`SELECT fy FROM chat_sessions WHERE id = ? AND user_id = ?`).bind(sid, userId).first<{ fy: number | null }>();
+          if (!own) sid = "";
+          else if (own.fy != null) sessionFy = own.fy;
+        }
+        if (!sid) {
+          sid = crypto.randomUUID();
+          await this.env.DB.prepare(`INSERT INTO chat_sessions (id, user_id, fy) VALUES (?, ?, ?)`).bind(sid, userId, sessionFy).run();
+        }
 
-    const llm = await getLLM(this.env, profile, { userId });
-    await this.auditXborderInference(userId, provider, "ask", llm.modelId);
-    // C3 (flag ask_actions): same digest as askQuestion, pinned to the session FY. Aliases are rebuilt
-    // per turn (deterministic ORDER BY keeps them stable unless data changes mid-chat); proposals are
-    // ephemeral per-turn — like suggested_rule, they are NOT persisted into chat_messages.
-    const wantActions = featureOn(this.env, "ask_actions");
-    // Phase 2 (chat_nav): only honour a client-supplied page route from the allowlist, so a crafted
-    // request can't smuggle arbitrary text into the system prompt. Off ⇒ no nav, no page line.
-    const wantNav = featureOn(this.env, "chat_nav");
-    const wantEntityActions = featureOn(this.env, "ask_actions_v2");
-    const pageRouteOk = wantNav && pageRoute && (ALLOWED_NAV_ROUTES as readonly string[]).includes(pageRoute) ? pageRoute : undefined;
-    const [situation, report, digestRows] = await Promise.all([
-      getSituation(this.env, userId, profile),
-      buildReport(this.env, userId, sessionFy),
-      wantActions ? fetchAskDigestRows(this.env, userId, sessionFy) : Promise.resolve(undefined),
-    ]);
-    const digest = digestRows ? renderTxnDigest(digestRows.rows, digestRows.total) : undefined;
-    const system = buildAskSystem(redact(renderSituation(situation)), summariseReportForAsk(report), digest?.text, { pageRoute: pageRouteOk, nav: wantNav, entityWrites: wantEntityActions });
-    const userMsg = redact(text).slice(0, 600);
-    const result = await extractAnswer(llm, system, [...history, { role: "user", content: userMsg }], digest && { aliasToId: digest.aliasToId, propertyIds: new Set(situation.properties.map((p) => p.id)) }, wantNav, wantEntityActions);
+        // Prior turns (cap to the last 20 to bound tokens), oldest first. Tiebreak role ASC within a second
+        // (assistant<user) so after reversing, the user turn precedes its assistant reply.
+        const prior = await this.env.DB.prepare(
+          `SELECT role, content FROM chat_messages WHERE user_id = ? AND session_id = ? ORDER BY created_at DESC, role ASC LIMIT 20`,
+        ).bind(userId, sid).all<{ role: string; content: string }>();
+        history = (prior.results ?? []).reverse().map((m) => ({ role: m.role === "assistant" ? ("assistant" as const) : ("user" as const), content: m.content }));
+        // The Anthropic messages[] must start with a user turn — drop any leading assistant turns the
+        // 20-row window or an orphaned half-pair might begin with.
+        while (history[0]?.role === "assistant") history.shift();
+      },
+    }, async (llm) => {
+      // C3 (flag ask_actions): same digest as askQuestion, pinned to the session FY. Aliases are rebuilt
+      // per turn (deterministic ORDER BY keeps them stable unless data changes mid-chat); proposals are
+      // ephemeral per-turn — like suggested_rule, they are NOT persisted into chat_messages.
+      const wantActions = featureOn(this.env, "ask_actions");
+      // Phase 2 (chat_nav): only honour a client-supplied page route from the allowlist, so a crafted
+      // request can't smuggle arbitrary text into the system prompt. Off ⇒ no nav, no page line.
+      const wantNav = featureOn(this.env, "chat_nav");
+      const wantEntityActions = featureOn(this.env, "ask_actions_v2");
+      const pageRouteOk = wantNav && pageRoute && (ALLOWED_NAV_ROUTES as readonly string[]).includes(pageRoute) ? pageRoute : undefined;
+      const [situation, report, digestRows] = await Promise.all([
+        getSituation(this.env, userId, profile),
+        buildReport(this.env, userId, sessionFy),
+        wantActions ? fetchAskDigestRows(this.env, userId, sessionFy) : Promise.resolve(undefined),
+      ]);
+      const digest = digestRows ? renderTxnDigest(digestRows.rows, digestRows.total) : undefined;
+      const system = buildAskSystem(redact(renderSituation(situation)), summariseReportForAsk(report), digest?.text, { pageRoute: pageRouteOk, nav: wantNav, entityWrites: wantEntityActions });
+      const userMsg = redact(text).slice(0, 600);
+      const result = await extractAnswer(llm, system, [...history, { role: "user", content: userMsg }], digest && { aliasToId: digest.aliasToId, propertyIds: new Set(situation.properties.map((p) => p.id)) }, wantNav, wantEntityActions);
 
-    // Persist both turns (the redacted question + the answer — no PII in storage).
-    await this.env.DB.batch([
-      this.env.DB.prepare(`INSERT INTO chat_messages (id, user_id, session_id, role, content) VALUES (?, ?, ?, 'user', ?)`).bind(crypto.randomUUID(), userId, sid, userMsg),
-      this.env.DB.prepare(`INSERT INTO chat_messages (id, user_id, session_id, role, content) VALUES (?, ?, ?, 'assistant', ?)`).bind(crypto.randomUUID(), userId, sid, result.answer),
-    ]);
-    await this.audit(userId, "chat_turn", JSON.stringify({ session: sid, fy: sessionFy, turns: history.length / 2 + 1, proposals: result.proposed_actions?.length ?? 0 }));
-    return { session_id: sid, ...result };
+      // Persist both turns (the redacted question + the answer — no PII in storage).
+      await this.env.DB.batch([
+        this.env.DB.prepare(`INSERT INTO chat_messages (id, user_id, session_id, role, content) VALUES (?, ?, ?, 'user', ?)`).bind(crypto.randomUUID(), userId, sid, userMsg),
+        this.env.DB.prepare(`INSERT INTO chat_messages (id, user_id, session_id, role, content) VALUES (?, ?, ?, 'assistant', ?)`).bind(crypto.randomUUID(), userId, sid, result.answer),
+      ]);
+      await this.audit(userId, "chat_turn", JSON.stringify({ session: sid, fy: sessionFy, turns: history.length / 2 + 1, proposals: result.proposed_actions?.length ?? 0 }));
+      return { session_id: sid, ...result };
+    });
   }
 
   /** Load a chat session's messages (oldest first) to hydrate the UI. */
@@ -7565,8 +7569,10 @@ export class TaxAgent extends Agent<Env> {
 
   async guideMe(userId: string, tab: string): Promise<{ headline: string; steps: string[] }> {
     const profile = await this.requireProfile(userId);
-    const provider = resolveProvider(this.env, profile);
-    if (provider === "anthropic" && profile.consent_xborder !== 1) throw new Error("consent_required");
+    // Consent before the cache read (as before); the budget is checked only on a cache miss, inside
+    // aiCall, so re-clicking an unchanged screen is free even at the cap. aiCall re-runs the pure
+    // consent check, which cannot change between the two.
+    requireXborderConsent(this.env, profile);
 
     const progress = await getProgress(this.env, userId);
     // Signature = the progress numbers that change the advice; re-clicking an unchanged screen is free.
@@ -7575,15 +7581,14 @@ export class TaxAgent extends Agent<Env> {
     const cached = await this.env.RULES.get(cacheKey, "json");
     if (cached) return cached as { headline: string; steps: string[] };
 
-    if (!(await this.withinBudget(userId, null))) throw new Error("ai_budget_reached");
-    const llm = await getLLM(this.env, profile, { userId });
-    await this.auditXborderInference(userId, provider, "guide_me", llm.modelId);
-    const situation = await getSituation(this.env, userId, profile);
-    const { system, user } = buildGuidePrompt(tab, progress, redact(renderSituation(situation)), { journey: featureOn(this.env, "ft_journey") });
-    const result = await extractGuide(llm, system, user);
-    await this.env.RULES.put(cacheKey, JSON.stringify(result), { expirationTtl: 60 * 30 });
-    await this.audit(userId, "guide_me", JSON.stringify({ tab, steps: result.steps.length }));
-    return result;
+    return aiCall(this.aiDeps, { userId, purpose: "guide_me", profile }, async (llm) => {
+      const situation = await getSituation(this.env, userId, profile);
+      const { system, user } = buildGuidePrompt(tab, progress, redact(renderSituation(situation)), { journey: featureOn(this.env, "ft_journey") });
+      const result = await extractGuide(llm, system, user);
+      await this.env.RULES.put(cacheKey, JSON.stringify(result), { expirationTtl: 60 * 30 });
+      await this.audit(userId, "guide_me", JSON.stringify({ tab, steps: result.steps.length }));
+      return result;
+    });
   }
 
   private async loadRulePack(ver: string): Promise<typeof DEFAULT_RULE_PACK> {

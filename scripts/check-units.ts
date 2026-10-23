@@ -2733,9 +2733,14 @@ console.log("Bedrock MVP readiness — per-locale region, retry, geo pricing, wi
   // `?? "anthropic"`: with the env var unset the gate saw undefined, skipped consent, and getLLM
   // still called the US API — failing OPEN.
   const agentSrc = fs.readFileSync(path.join(process.cwd(), "src", "agent.ts"), "utf8");
+  // #721: most gates now live in aiCall (src/lib/ai-call.ts), which resolves the provider the same way.
+  const aiCallSrc = fs.readFileSync(path.join(process.cwd(), "src", "lib", "ai-call.ts"), "utf8");
   check("consent gates resolve the provider via resolveProvider (no inline env fallback)",
     !/inference_provider \?\? this\.env\.DEFAULT_INFERENCE_PROVIDER/.test(agentSrc) &&
-      (agentSrc.match(/const provider = resolveProvider\(this\.env, profile\);/g) ?? []).length >= 13);
+      !/inference_provider \?\?/.test(aiCallSrc) &&
+      /const provider = resolveProvider\(env, req\.profile\);/.test(aiCallSrc) &&
+      (agentSrc.match(/const provider = resolveProvider\(this\.env, profile\);/g) ?? []).length +
+        (agentSrc.match(/aiCall\(this\.aiDeps,/g) ?? []).length >= 13);
   check("with DEFAULT_INFERENCE_PROVIDER unset, an untouched tenant resolves to anthropic (so consent is required)",
     resolveProvider({} as unknown as Env, { inference_provider: null, inference_region: null }) === "anthropic");
   const apiSrc = fs.readFileSync(path.join(process.cwd(), "src", "api.ts"), "utf8");
@@ -4802,10 +4807,13 @@ console.log("golden rules + Why? drawer + education cards (#591)");
   check("api: /api/education 404s when ft_journey is OFF", /resource === "education" && m === "GET"\) \{\s*if \(!featureOn\(env, "ft_journey"\)\) return json\(\{ error: "not available" \}, 404\);/.test(apiSrc));
   const agentSrc = fs.readFileSync(path.join(process.cwd(), "src/agent.ts"), "utf8");
   const askFn = agentSrc.slice(agentSrc.indexOf("async askQuestion("), agentSrc.indexOf("async chatTurn("));
+  // #721: the consent + budget gates and getLLM are aiCall's; the item read sits inside its model callback
+  // (which aiCall runs only after all three), and the rate limiter in afterGates (before the client is built).
+  const askCb = askFn.indexOf("}, async (llm) => {");
   check("agent: Why? context is read AFTER the consent + budget gates and getLLM, and appended (never replaces) the system prompt",
-    askFn.indexOf('throw new Error("consent_required")') < askFn.indexOf("fetchAskItem(") && askFn.indexOf("withinBudget(") < askFn.indexOf("fetchAskItem(") && askFn.indexOf("getLLM(") < askFn.indexOf("fetchAskItem(") && /context \? baseSystem \+ renderAskContext\(context, askItem\) : baseSystem/.test(askFn));
+    askFn.indexOf("aiCall(this.aiDeps,") >= 0 && askCb > 0 && askCb < askFn.indexOf("fetchAskItem(") && /context \? baseSystem \+ renderAskContext\(context, askItem\) : baseSystem/.test(askFn));
   check("agent: a Why? question shares the chat rate limiter before any model call (plain /api/ask unchanged)",
-    /if \(context && !\(await this\.chatRateOk\(userId\)\)\) throw new Error\("chat_rate_limited"\)/.test(askFn) && askFn.indexOf("chatRateOk(") < askFn.indexOf("getLLM(") && /msg === "chat_rate_limited"\) return json\(\{ error: "You're asking questions too quickly/.test(apiSrc));
+    /if \(context && !\(await this\.chatRateOk\(userId\)\)\) throw new Error\("chat_rate_limited"\)/.test(askFn) && askFn.indexOf("afterGates:") < askFn.indexOf("chatRateOk(") && askFn.indexOf("chatRateOk(") < askCb && /msg === "chat_rate_limited"\) return json\(\{ error: "You're asking questions too quickly/.test(apiSrc));
   const webApi = fs.readFileSync(path.join(process.cwd(), "web/src/api.ts"), "utf8");
   check("web api: ask() without context sends exactly the old body", /context \? \{ question, fy, context \} : \{ question, fy \}/.test(webApi));
   const drawer = stripComments(fs.readFileSync(path.join(process.cwd(), "web/src/components/ft/WhyDrawer.tsx"), "utf8"));
@@ -7702,6 +7710,113 @@ console.log("A6 CDR data controls (#639)");
     .map((m) => m.replace(/^(?:private |public )?(?:async )?/, "").split("(")[0]!)
     .filter((name) => !EXEMPT_721.has(name));
   check(`no model call skips the budget gate (ungated: ${ungated.join(", ") || "none"})`, ungated.length === 0);
+}
+
+// ── #721: aiCall is the one gate in front of every model call (APP-8 consent + budget + inference audit) ──
+{
+  console.log("\naiCall gate (#721)");
+  const { aiCall, aiErrorResponse, AI_PURPOSES, CONSENT_REQUIRED, AI_BUDGET_REACHED } = await import("../src/lib/ai-call");
+  const anthropicEnv = { ANTHROPIC_API_KEY: "x", FEATURES: "" } as unknown as Env;
+  const bedrockEnv = { DEFAULT_INFERENCE_PROVIDER: "bedrock", AWS_ACCESS_KEY_ID: "a", AWS_SECRET_ACCESS_KEY: "s", FEATURES: "" } as unknown as Env;
+  const prof = (consent: number) => ({ inference_provider: null, inference_region: null, consent_xborder: consent });
+  // A fake DO: records every budget check and audit append, answers the budget gate with `budgetOk`.
+  const fakeDeps = (env: Env, budgetOk: boolean) => {
+    const budgetCalls: (string | null)[] = [];
+    const audits: { event: string; detail: Record<string, unknown> }[] = [];
+    return {
+      deps: {
+        env,
+        withinBudget: async (_u: string, txnId: string | null) => { budgetCalls.push(txnId); return budgetOk; },
+        audit: async (_u: string, event: string, detail: string) => { audits.push({ event, detail: JSON.parse(detail) }); },
+      },
+      budgetCalls,
+      audits,
+    };
+  };
+  const run = async <T,>(f: () => Promise<T>): Promise<{ value?: T; error?: string }> => {
+    try { return { value: await f() }; } catch (e) { return { error: (e as Error).message }; }
+  };
+
+  const rows: string[] = [];
+  for (const purpose of AI_PURPOSES) {
+    // 1. US provider, no recorded consent ⇒ consent_required, and nothing else happens.
+    {
+      const f = fakeDeps(anthropicEnv, true);
+      let invoked = false;
+      const r = await run(() => aiCall(f.deps, { userId: "u", purpose, profile: prof(0) }, async () => { invoked = true; return 1; }));
+      if (r.error !== CONSENT_REQUIRED || invoked || f.budgetCalls.length || f.audits.length) rows.push(`${purpose}: no-consent`);
+    }
+    // 2. Consented but over budget ⇒ ai_budget_reached, callback never invoked, no inference audited.
+    {
+      const f = fakeDeps(anthropicEnv, false);
+      let invoked = false;
+      const r = await run(() => aiCall(f.deps, { userId: "u", purpose, profile: prof(1) }, async () => { invoked = true; return 1; }));
+      if (r.error !== AI_BUDGET_REACHED || invoked || f.budgetCalls.length !== 1 || f.audits.length) rows.push(`${purpose}: over-budget`);
+    }
+    // 3. Bedrock (the default AU path) ⇒ no consent needed; one au_inference breadcrumb tagged with the purpose.
+    {
+      const f = fakeDeps(bedrockEnv, true);
+      let invoked = false;
+      const r = await run(() => aiCall(f.deps, { userId: "u", purpose, profile: prof(0) }, async (llm, ctx) => { invoked = !!llm.modelId && ctx.provider === "bedrock"; return 7; }));
+      if (r.value !== 7 || !invoked || f.audits.length !== 1 || f.audits[0]!.event !== "au_inference" || f.audits[0]!.detail.feature !== purpose) rows.push(`${purpose}: bedrock`);
+    }
+    // 4. US provider with consent ⇒ runs, and the cross-border disclosure is recorded before the callback.
+    {
+      const f = fakeDeps(anthropicEnv, true);
+      let auditedFirst = false;
+      const r = await run(() => aiCall(f.deps, { userId: "u", purpose, profile: prof(1) }, async () => { auditedFirst = f.audits.length === 1; return 7; }));
+      if (r.value !== 7 || !auditedFirst || f.audits[0]!.event !== "xborder_inference" || f.audits[0]!.detail.feature !== purpose) rows.push(`${purpose}: consented`);
+    }
+  }
+  check(`every purpose: no consent / over budget never reach the model; Bedrock needs no consent (failing: ${rows.join(", ") || "none"})`, rows.length === 0 && AI_PURPOSES.length >= 12);
+
+  // The degrade options run INSTEAD of throwing, and only for a gate refusal.
+  {
+    const f = fakeDeps(anthropicEnv, true);
+    let invoked = false;
+    const r = await run(() => aiCall(f.deps, { userId: "u", purpose: "categorise", profile: prof(0), onConsentRequired: () => "blocked" }, async () => { invoked = true; return "ran"; }));
+    check("onConsentRequired returns its fallback and never invokes the model", r.value === "blocked" && !invoked && f.audits.length === 0);
+  }
+  {
+    const f = fakeDeps(anthropicEnv, false);
+    let invoked = false;
+    const r = await run(() => aiCall(f.deps, { userId: "u", purpose: "categorise", profile: prof(1), txnId: "t1", onBudgetReached: () => null }, async () => { invoked = true; return "ran"; }));
+    check("onBudgetReached returns its fallback; the txnId reaches withinBudget (it marks the row)", r.value === null && !invoked && f.budgetCalls[0] === "t1");
+  }
+  {
+    const f = fakeDeps(anthropicEnv, true);
+    const r = await run(() => aiCall(f.deps, { userId: "u", purpose: "ask", profile: prof(1) }, async () => { throw new Error(CONSENT_REQUIRED); }));
+    check("an error the callback throws is never swallowed by the degrade options", r.error === CONSENT_REQUIRED);
+  }
+  {
+    const f = fakeDeps(anthropicEnv, false);
+    const r = await run(() => aiCall(f.deps, { userId: "u", purpose: "categorise_statement", profile: prof(1), budget: "caller" }, async () => 3));
+    check("budget: 'caller' skips the up-front check (the loop checks per chunk)", r.value === 3 && f.budgetCalls.length === 0);
+  }
+  {
+    const f = fakeDeps(anthropicEnv, false);
+    let after = false;
+    await run(() => aiCall(f.deps, { userId: "u", purpose: "ask", profile: prof(1), afterGates: async () => { after = true; } }, async () => 1));
+    check("afterGates never runs when a gate refuses", !after);
+    const g = fakeDeps(anthropicEnv, true);
+    let invoked = false;
+    const r = await run(() => aiCall(g.deps, { userId: "u", purpose: "parse_statement", profile: prof(1), afterGates: async () => ({ result: "dup" }) }, async () => { invoked = true; return "ran"; }));
+    check("afterGates can short-circuit: no client, no inference audit, no model call", r.value === "dup" && !invoked && g.audits.length === 0 && g.budgetCalls.length === 1);
+    const h = fakeDeps(anthropicEnv, true);
+    const r2 = await run(() => aiCall(h.deps, { userId: "u", purpose: "ask", profile: prof(1), afterGates: async () => { throw new Error("chat_rate_limited"); } }, async () => 1));
+    check("an afterGates refusal (rate limit) records no inference", r2.error === "chat_rate_limited" && h.audits.length === 0);
+  }
+
+  // aiErrorResponse: the one 403/429 mapping src/api.ts uses.
+  const r403 = await aiErrorResponse(new Error(CONSENT_REQUIRED), anthropicEnv, "u");
+  check("aiErrorResponse: consent_required ⇒ 403 { error: consent_required }", r403?.status === 403 && (await r403.json() as { error: string }).error === CONSENT_REQUIRED);
+  const r429 = await aiErrorResponse(new Error(AI_BUDGET_REACHED), anthropicEnv, "u");
+  check("aiErrorResponse: ai_budget_reached ⇒ 429 with the refusal reason", r429?.status === 429 && (await r429.json() as { error: string }).error === DAILY_PAUSE_MESSAGE);
+  const r429b = await aiErrorResponse(new Error(AI_BUDGET_REACHED), anthropicEnv, "u", { budgetMessage: (m) => `${m.replace(/\.$/, "")}, or fill the form in manually.` });
+  check("aiErrorResponse: the onboarding draft keeps its manual-form suffix", (await r429b!.json() as { error: string }).error === "AI is paused for today (daily limit reached) — try again after the reset, or fill the form in manually.");
+  check("aiErrorResponse: any other error ⇒ null (the route handles it)", (await aiErrorResponse(new Error("boom"), anthropicEnv, "u")) === null);
+  const api721 = fs.readFileSync(path.join(process.cwd(), "src/api.ts"), "utf8");
+  check("api.ts maps consent_required / ai_budget_reached only through aiErrorResponse", !/msg === "consent_required"/.test(api721) && !/msg === "ai_budget_reached"/.test(api721));
 }
 
 // ── #697 cut 1: the legacy "By label" review is hidden (flag hide_by_label_review) ─────────────────────────

@@ -97,7 +97,7 @@ import { buildAccountantSchedule, scheduleToCsv, scheduleToXlsx } from "./lib/ac
 import { mytaxWorksheetResponse } from "./lib/mytax-worksheet";
 import { getProgress } from "./lib/progress";
 import { featureOn } from "./lib/features";
-import { budgetRefusal } from "./lib/billing";
+import { aiErrorResponse } from "./lib/ai-call";
 import { handleAdminSecurity } from "./lib/security-dashboard";
 import { adminMfaBlock } from "./lib/access-control";
 import { latestSyncRuns } from "./lib/bank-sync";
@@ -370,9 +370,8 @@ export async function handleApi(
     try {
       return json(await stub.draftSituation(uid, message));
     } catch (e) {
-      const msg = (e as Error).message;
-      if (msg === "consent_required") return json({ error: "consent_required" }, 403);
-      if (msg === "ai_budget_reached") return json({ error: `${(await budgetRefusal(env, uid)).replace(/\.$/, "")}, or fill the form in manually.` }, 429);
+      const refused = await aiErrorResponse(e, env, uid, { budgetMessage: (m) => `${m.replace(/\.$/, "")}, or fill the form in manually.` });
+      if (refused) return refused;
       throw e;
     }
   }
@@ -385,9 +384,8 @@ export async function handleApi(
     try {
       return json(await stub.guideMe(uid, tab));
     } catch (e) {
-      const msg = (e as Error).message;
-      if (msg === "consent_required") return json({ error: "consent_required" }, 403);
-      if (msg === "ai_budget_reached") return json({ error: await budgetRefusal(env, uid) }, 429);
+      const refused = await aiErrorResponse(e, env, uid);
+      if (refused) return refused;
       throw e;
     }
   }
@@ -405,8 +403,8 @@ export async function handleApi(
       return json(askCtx ? await stub.askQuestion(uid, question, askFy, askCtx) : await stub.askQuestion(uid, question, askFy));
     } catch (e) {
       const msg = (e as Error).message;
-      if (msg === "consent_required") return json({ error: "consent_required" }, 403);
-      if (msg === "ai_budget_reached") return json({ error: await budgetRefusal(env, uid) }, 429);
+      const refused = await aiErrorResponse(e, env, uid);
+      if (refused) return refused;
       if (msg === "chat_rate_limited") return json({ error: "You're asking questions too quickly — give it a moment and try again." }, 429);
       throw e;
     }
@@ -423,8 +421,8 @@ export async function handleApi(
         return json(await stub.chatTurn(uid, session_id ?? null, message, Math.trunc(Number(fy)) || defaultFy(), typeof page === "string" ? page : undefined));
       } catch (e) {
         const msg = (e as Error).message;
-        if (msg === "consent_required") return json({ error: "consent_required" }, 403);
-        if (msg === "ai_budget_reached") return json({ error: await budgetRefusal(env, uid) }, 429);
+        const refused = await aiErrorResponse(e, env, uid);
+        if (refused) return refused;
         if (msg === "chat_rate_limited") return json({ error: "You're sending messages too quickly — give it a moment and try again." }, 429);
         if (msg === "chat_message_too_long") return json({ error: "That message is too long — please shorten it and try again." }, 400);
         throw e;
@@ -1062,8 +1060,8 @@ export async function handleApi(
         return json(await stub.parseCapitalImport(uid, filename, bytes));
       } catch (e) {
         const msg = (e as Error).message;
-        if (msg === "consent_required") return json({ error: "consent_required" }, 403);
-        if (msg === "ai_budget_reached") return json({ error: await budgetRefusal(env, uid) }, 429);
+        const refused = await aiErrorResponse(e, env, uid);
+        if (refused) return refused;
         return json({ error: msg }, 422);
       }
     }
@@ -1114,8 +1112,8 @@ export async function handleApi(
         return json(await stub.parseStatement(uid, accEntry, filename, bytes, format));
       } catch (e) {
         const msg = (e as Error).message;
-        if (msg === "consent_required") return json({ error: "consent_required" }, 403);
-        if (msg === "ai_budget_reached") return json({ error: await budgetRefusal(env, uid) }, 429);
+        const refused = await aiErrorResponse(e, env, uid);
+        if (refused) return refused;
         return json({ error: msg }, 422); // unreadable statement / extraction failure — show the reason
       }
     }
@@ -1916,9 +1914,8 @@ export async function handleApi(
       try {
         return json(await stub.draftOccupationRules(uid, occupation));
       } catch (e) {
-        const msg = (e as Error).message;
-        if (msg === "consent_required") return json({ error: "consent_required" }, 403);
-        if (msg === "ai_budget_reached") return json({ error: await budgetRefusal(env, uid) }, 429);
+        const refused = await aiErrorResponse(e, env, uid);
+        if (refused) return refused;
         throw e;
       }
     }

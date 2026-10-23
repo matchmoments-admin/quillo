@@ -1,5 +1,6 @@
 import type { Env } from "../env";
 import { splitAttribution } from "./attribution";
+import { assertOwns } from "./situation-write";
 
 // ── Attribution writer (Phase B / G2) ─────────────────────────────────────────
 // Writes transaction_attributions (who-claims-what) + the payer fields on a transaction. The split
@@ -107,6 +108,16 @@ export async function setAttributions(
   );
   const prepared = prepareAttributions(txn.amount ?? 0, body.attributions ?? [], { isCompany: (eid) => companyIds.has(eid) });
   if (prepared.error) return { ok: false, error: prepared.error };
+  // Cross-tenant FK guard (security sweep #694): every entity / income activity must be THIS tenant's. The
+  // accountant schedule joins both by id alone, so a foreign id would surface another tenant's entity name.
+  try {
+    await assertOwns(env, userId, prepared.rows.flatMap((r) => [
+      { table: "entities", id: r.entity_id, label: "entity" },
+      { table: "income_activities", id: r.income_activity_id, label: "income activity" },
+    ]));
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
   // Partial update: only touch a payer field when its key is present in the body (so an edit that
   // only adjusts the split doesn't silently null a previously-saved payer — review #2), and only
   // replace the attribution set when `attributions` was provided.

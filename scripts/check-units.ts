@@ -6921,6 +6921,54 @@ console.log("access control: admin MFA + API rate limiting + Clerk cutover seams
 // ── #581 bank_minimisation: SHRINKABLE_WHERE never matches a credit, a linked line, a relevant / worth-a-look /
 //    unsorted line, a loan account or a non-payg bucket; a feed re-sync honours tombstones only with the flag ON.
 import { SHRINKABLE_WHERE } from "../src/lib/minimise";
+console.log("security sweep #694: cross-tenant foreign ids are refused on write");
+{
+  const { setAttributions } = await import("../src/lib/attribution-write");
+  class FStmt {
+    private params: unknown[] = [];
+    constructor(private db: DatabaseSync, private sql: string) {}
+    bind(...args: unknown[]) { this.params = args.map((a) => (a === undefined ? null : a)); return this; }
+    async all<T = unknown>() { return { results: this.db.prepare(this.sql).all(...(this.params as never[])) as T[], success: true, meta: {} }; }
+    async first<T = unknown>() { return (this.db.prepare(this.sql).get(...(this.params as never[])) as T) ?? null; }
+    async run() { const r = this.db.prepare(this.sql).run(...(this.params as never[])); return { success: true, meta: { changes: Number(r.changes ?? 0) } }; }
+    async settle() { return /^\s*(select|with)/i.test(this.sql) ? this.all() : this.run(); }
+  }
+  class FD1 {
+    constructor(private db: DatabaseSync) {}
+    prepare(sql: string) { return new FStmt(this.db, sql); }
+    async batch(stmts: FStmt[]) {
+      this.db.exec("BEGIN");
+      try { const out = []; for (const s of stmts) out.push(await s.settle()); this.db.exec("COMMIT"); return out; }
+      catch (e) { this.db.exec("ROLLBACK"); throw e; }
+    }
+  }
+  const fdb = new DatabaseSync(":memory:");
+  for (const f of fs.readdirSync(path.join(process.cwd(), "migrations")).filter((f) => f.endsWith(".sql")).sort()) {
+    fdb.exec(fs.readFileSync(path.join(process.cwd(), "migrations", f), "utf8"));
+  }
+  const fenv = { DB: new FD1(fdb) } as unknown as Env;
+  const ins = (sql: string, ...p: unknown[]) => fdb.prepare(sql).run(...(p as never[]));
+  ins(`INSERT INTO entities (id, user_id, kind, name) VALUES ('ent_a', 'ua', 'individual', 'A self'), ('ent_b', 'ub', 'company', 'B Pty Ltd')`);
+  ins(`INSERT INTO income_activities (id, user_id, activity_type, entity_id) VALUES ('ia_a', 'ua', 'business', 'ent_a'), ('ia_b', 'ub', 'business', 'ent_b')`);
+  ins(`INSERT INTO transactions (id, user_id, source, amount_cents) VALUES ('t_a', 'ua', 'upload', 10000)`);
+  const nAttr = () => (fdb.prepare(`SELECT COUNT(*) AS n FROM transaction_attributions WHERE user_id = 'ua'`).get() as { n: number }).n;
+  const own = await setAttributions(fenv, "ua", "t_a", { attributions: [{ entity_id: "ent_a", income_activity_id: "ia_a", attributed_pct: 100 }] });
+  check("attributions: the tenant's own entity + activity are accepted", own.ok === true && nAttr() === 1);
+  const foreignEnt = await setAttributions(fenv, "ua", "t_a", { attributions: [{ entity_id: "ent_b", attributed_pct: 100 }] });
+  check("attributions: ANOTHER tenant's entity id is refused, nothing written", foreignEnt.ok === false && /entity not found/.test((foreignEnt as { error: string }).error) && nAttr() === 1);
+  const foreignAct = await setAttributions(fenv, "ua", "t_a", { attributions: [{ entity_id: "ent_a", income_activity_id: "ia_b", attributed_pct: 100 }] });
+  check("attributions: ANOTHER tenant's income activity is refused", foreignAct.ok === false && /income activity not found/.test((foreignAct as { error: string }).error));
+  check("attributions: clearing the set still works", (await setAttributions(fenv, "ua", "t_a", { attributions: [] })).ok === true && nAttr() === 0);
+  // The DO write paths (no DO harness here): pin that each guard is wired to the right table.
+  const agentSrc694 = fs.readFileSync(path.join(process.cwd(), "src/agent.ts"), "utf8");
+  check("applyCorrection: a non-empty property_id must be the tenant's property",
+    /if \(field === "property_id" && newValue\) \{\s*await assertOwns\(this\.env, userId, \[\{ table: "properties", id: newValue/.test(agentSrc694));
+  check("applyCorrectionBatch: a batch property_id must be the tenant's property",
+    /if \(pidEdit\?\.value\) await assertOwns\(this\.env, userId, \[\{ table: "properties", id: pidEdit\.value/.test(agentSrc694));
+  check("trust + partnership distributions: the entity must be the tenant's",
+    /\{ table: "entities", id: d\.trust_entity_id, label: "trust" \}/.test(agentSrc694) && /\{ table: "entities", id: d\.partnership_entity_id, label: "partnership" \}/.test(agentSrc694));
+}
+
 console.log("bank minimisation — SHRINKABLE_WHERE + feed tombstones (#581)");
 {
   const sq = new DatabaseSync(":memory:");

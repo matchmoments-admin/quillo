@@ -20,6 +20,7 @@ import {
   residencyProblem,
   residencyValuesFromAnswers,
   residencyValuesInFy,
+  jobUntickClearsOccupation,
   setOccupation,
   spouseProblem,
   toggleTick,
@@ -172,6 +173,9 @@ function FirstRun({
   const [a, setA] = useState<AboutAnswers>(() => answersFromPeriods(situation.profile_periods ?? [], personId, bounds));
   const [occText, setOccText] = useState(() => (a.occupation && a.occupation !== "none" ? occupationLabel(a.occupation) : ""));
   const [showFullConsent, setShowFullConsent] = useState(false);
+  // F11: unticking 'A job' would replace the typed occupation with "not working yet" — ask first.
+  const [confirmUntickJob, setConfirmUntickJob] = useState(false);
+  const jobLabel = a.occupation && a.occupation !== "none" ? `A job (${occText.trim() || occupationLabel(a.occupation)})` : "A job";
   const edu = useEducation();
   const states = edu.data?.state_education?.states ?? [];
 
@@ -432,13 +436,39 @@ function FirstRun({
           <div className="space-y-4">
             <ChipGroup
               label={<span className="sr-only">What applies</span>}
-              options={TICK_CHOICES}
+              options={TICK_CHOICES.map((t) => (t.key === "job" ? { ...t, label: jobLabel } : t))}
               selected={a.ticks}
               onToggle={(k) => {
+                if (k === "job" && jobUntickClearsOccupation(a)) {
+                  setConfirmUntickJob(true);
+                  return;
+                }
                 if (k === "job") setOccText((t) => (a.ticks.includes("job") ? "" : t));
                 setA(toggleTick(a, k));
               }}
             />
+            {confirmUntickJob && (
+              <div role="alertdialog" aria-labelledby="untick-job-q" className="space-y-2 rounded-2xl border border-line bg-card p-3 text-sm">
+                <p id="untick-job-q" className="text-ink">
+                  Remove your job? Your occupation ({occText.trim() || occupationLabel(a.occupation)}) will change to “Not working yet”.
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <FtButton variant="secondary" onClick={() => setConfirmUntickJob(false)}>
+                    Keep my job
+                  </FtButton>
+                  <FtButton
+                    variant="ghost"
+                    onClick={() => {
+                      setConfirmUntickJob(false);
+                      setOccText("");
+                      setA(toggleTick(a, "job"));
+                    }}
+                  >
+                    Yes, I'm not working
+                  </FtButton>
+                </div>
+              </div>
+            )}
             {a.ticks.includes("job") && !a.occupation && (
               <p className="text-sm text-muted">
                 Add your occupation on the previous question so Quillo can point you to the right ATO guide.

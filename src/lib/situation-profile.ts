@@ -314,7 +314,20 @@ async function personsAndProfiles(env: Env, userId: string, startYear: number, d
   ]);
   const bounds = fyBounds(startYear, descriptor);
   const rows = persons.results ?? [];
-  return { persons: rows, profiles: rows.map((p) => buildProfile(p.id, periods, startYear, bounds)) };
+  const profiles = rows.map((p) => buildProfile(p.id, periods, startYear, bounds));
+  return { persons: rows, profiles, notWorking: notWorkingPersonIds(profiles, periods, bounds) };
+}
+
+/**
+ * People who answered "not working yet" for the FY: at least one employment period overlapping it, and every
+ * one of them 'none' (the profile's jobs exclude 'none', so no jobs + a 'none' period). That is an answered
+ * occupation question — persons.occupation stays NULL by design (computeMirrors) — so the occupation nudge
+ * must not fire for them (design audit F13). Pure.
+ */
+export function notWorkingPersonIds(profiles: ReadonlyArray<SituationProfile>, periods: ReadonlyArray<SituationPeriod>, bounds: { start: string; end: string }): string[] {
+  return profiles
+    .filter((pr) => pr.jobs.length === 0 && periods.some((p) => p.subject_id === pr.person_id && p.fact === "employment" && p.value === "none" && rangesOverlap(p.starts_on, p.ends_on, bounds.start, bounds.end)))
+    .map((pr) => pr.person_id);
 }
 
 /** One profile per person for the FY (persons in getSituation order: self first). */
@@ -409,6 +422,7 @@ export interface SituationProfileSignals {
   situationProfiles?: SituationProfile[];
   situationPersonNames?: Record<string, string>;
   situationResidencyUnsureValue?: string | null;
+  situationNotWorkingPersonIds?: string[]; // answered "not working yet" for the FY (F13): the occupation is answered
 }
 
 /**
@@ -417,11 +431,12 @@ export interface SituationProfileSignals {
  */
 export async function situationProfileSignals(env: Env, userId: string, startYear: number, descriptor: JurisdictionDescriptor = AU_DESCRIPTOR): Promise<SituationProfileSignals> {
   if (!featureOn(env, "situation_profile")) return {};
-  const { persons, profiles } = await personsAndProfiles(env, userId, startYear, descriptor);
+  const { persons, profiles, notWorking } = await personsAndProfiles(env, userId, startYear, descriptor);
   return {
     situationProfileEnabled: true,
     situationProfiles: profiles,
     situationPersonNames: Object.fromEntries(persons.map((n) => [n.id, n.role === "self" ? "" : n.display_name])),
     situationResidencyUnsureValue: situationFacts().residency?.unsure_value ?? null,
+    situationNotWorkingPersonIds: notWorking,
   };
 }

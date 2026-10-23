@@ -2450,6 +2450,32 @@ async function main() {
         (db.prepare(`SELECT private_health FROM profiles WHERE user_id = ?`).get(u2) as { private_health: number }).private_health === 1);
       check("pft7b (OFF): no residency_unsure (byte-identical)", !(await assessSp(env, u2)).ready.findings.some((x) => SP_IDS.includes(x.id)));
 
+      // pft7n — F13 (design audit #696): "Not working yet" (employment = 'none') is an ANSWER. It leaves
+      // persons.occupation NULL by design, so occupation_missing must not nag; with no answer it still fires;
+      // flag OFF keeps the legacy nag (byte-identical). No figure moves.
+      {
+        const un = "pft7n";
+        const meN = `person_self_${un}`;
+        seedTenant(un, "FT not working yet");
+        run(`INSERT INTO profiles (user_id) VALUES (?)`, un);
+        inc("pft7nSal", un, "salary_payg", 300000);
+        const sitN = { ...ftSituation(un), persons: [{ ...ftSituation(un).persons[0]!, occupation: null }] } as Situation;
+        const assessN = async (e: Env) => {
+          const report = await buildReport(e, un, 2025);
+          const sig = { ...ftBaseSignals(), ...(await firstTimerIncomeSignals(e, un, 2025)), ...(await situationProfileSignals(e, un, 2025)) };
+          return { report, ready: assessReadiness({ report, situation: sitN, claimMatches: [], signals: sig, generatedAt: "2026-10-03T00:00:00Z", auditFindingsV2: true }) };
+        };
+        const hasOcc = (r: Awaited<ReturnType<typeof assessN>>) => r.ready.findings.some((x) => x.id === "occupation_missing");
+        const unanswered = await assessN(SP_ENV_ON);
+        check("pft7n: no occupation and no answer ⇒ occupation_missing still fires", hasOcc(unanswered));
+        await upsertSituationPeriod(SP_ENV_ON, un, { person_id: meN, fact: "employment", value: "none", source: "onboarding" }, W);
+        const answered = await assessN(SP_ENV_ON);
+        check("pft7n: 'Not working yet' answered ⇒ occupation_missing clears; persons.occupation stays NULL",
+          !hasOcc(answered) && personRow(un).occupation === null && (await situationProfileSignals(SP_ENV_ON, un, 2025)).situationNotWorkingPersonIds?.join() === meN);
+        check("pft7n (OFF): the legacy nag is unchanged (no situation signals)", hasOcc(await assessN(env)));
+        check("pft7n: taxable_position_cents unchanged by the answer", answered.report.taxable_position_cents === unanswered.report.taxable_position_cents);
+      }
+
       // pft7c — review fixes: a mistaken 'foreign' that is deleted reverts the mirror (the CGT reader must not stay
       // on 'foreign'); a deleted person's periods are hidden, not destroyed, so an undo restores them; detail
       // carries only the pack's boolean flags; a null body is a 400, not a 500.

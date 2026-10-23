@@ -112,6 +112,7 @@ export interface FilingReadinessSignals {
   situationProfiles?: SituationProfile[]; // one per person for this FY
   situationPersonNames?: Record<string, string>; // person id → display name ('' for the self person)
   situationResidencyUnsureValue?: string | null; // the pack's "not sure" residency value
+  situationNotWorkingPersonIds?: string[]; // people who answered "not working yet" for the FY (F13)
   // wages_payer (#577) — populated ONLY when the flag is on (payrollEmployerSignals in src/lib/noticed-signals.ts),
   // so OFF ⇒ findings byte-identical. Employers the user marked from bank pay ("this is my wages"), whether an
   // income statement naming each is recorded, and the stamped personal-income credits (so the generic
@@ -586,7 +587,11 @@ export function assessReadiness(input: {
       }
     }
     const self = situation.persons.find((p) => p.role === "self");
-    if (self && !self.occupation) {
+    // F13: "Not working yet" in Get set up is an answer (an employment period of 'none'), not a gap — it
+    // leaves persons.occupation NULL by design, so without this the nudge never cleared while the journey
+    // called set-up Done. The signal exists only with situation_profile ON ⇒ OFF byte-identical.
+    const answeredNotWorking = !!self && (signals.situationNotWorkingPersonIds ?? []).includes(self.id);
+    if (self && !self.occupation && !answeredNotWorking) {
       findings.push(f("occupation_missing", "completeness", "review", "Your occupation isn't set",
         `Your occupation tailors which work-related deductions apply — without it, Quillo can't suggest the deductions specific to your job, and your agent lacks context. Add it in ${journeyHomes?.aboutYou ? "Get set up" : "Settings"} before you hand off.`, false, []));
     }

@@ -7,7 +7,7 @@ import { useFeatures } from "../lib/features";
 import { Card, Spinner, money, BUCKET_LABEL, InfoTip } from "../components/ui";
 import { ScanFindings } from "../components/ScanFindings";
 import { WorkMethodsCard } from "../components/WorkMethodsCard";
-import { CarMethodsCard } from "../components/CarMethodsCard";
+import { CarMethodsCard, NovatedLeaseCarNote } from "../components/CarMethodsCard";
 
 export function Reports() {
   // Driven by the global active-FY switcher (in the app header); change the year there.
@@ -278,6 +278,7 @@ export function Reports() {
                 Your position uses the cents-per-km figure. The logbook comparison is informational — switching
                 methods is a decision for your registered tax agent (both figures appear in your accountant pack).
               </p>
+              <NovatedLeaseCarNote className="mx-4 mb-3" />
             </Card>
           )}
 

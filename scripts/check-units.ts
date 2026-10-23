@@ -7707,5 +7707,19 @@ console.log("A6 CDR data controls (#639)");
   check("no prototype code ships", !fs.existsSync(path.join(process.cwd(), "web/src/components/ExplainTip.prototype.tsx")) && !/tipVariant|ExplainTip\.prototype/.test(ui698));
 }
 
+// ── F14 (design audit #696): novated lease ⇒ the car card warns about claiming leased running costs again ──
+{
+  console.log("\nNovated lease car warning (F14)");
+  const { NOVATED_LEASE_CAR_NOTE } = await import("../web/src/content/car");
+  const { denylistHits: dhCar } = await import("../src/lib/copy-denylist");
+  const carCopy = Object.values(NOVATED_LEASE_CAR_NOTE).join(" ");
+  check("novated-lease car note: general information, defers to a registered tax agent, no figure, passes the denylist",
+    dhCar(carCopy).length === 0 && /registered tax agent/.test(carCopy) && /General information only/.test(carCopy) && !/\$\s?\d|\d%/.test(carCopy));
+  const carSrc = fs.readFileSync(path.join(process.cwd(), "web/src/components/CarMethodsCard.tsx"), "utf8");
+  const repSrc = fs.readFileSync(path.join(process.cwd(), "web/src/pages/Reports.tsx"), "utf8");
+  check("novated-lease car note: renders only for a novated_lease entity, explains the term, and sits on the car card + the Reports method comparison",
+    /e\.kind === "novated_lease"/.test(carSrc) && /<Term k="novated_lease">/.test(carSrc) && /<NovatedLeaseCarNote \/>/.test(carSrc) && /<NovatedLeaseCarNote /.test(repSrc));
+}
+
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);
 process.exit(fail === 0 ? 0 : 1);

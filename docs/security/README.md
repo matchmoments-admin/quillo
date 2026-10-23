@@ -14,6 +14,7 @@ everything else.
 | [access-control-standard.md](access-control-standard.md) | MFA, least privilege, JIT admin, quarterly review, joiners/leavers (control requirement 1) |
 | [clerk-production-cutover.md](clerk-production-cutover.md) | Owner runbook: Clerk development → production instance, DNS, keys, admin MFA, test plan, rollback (#638) |
 | [vulnerability-management.md](vulnerability-management.md) | Scanners, patch SLAs, triage, secure SDLC (A7, #640), plus the controls assessment program and independence gap (cl 1.6) |
+| [sweep-2026-10.md](sweep-2026-10.md) | October 2026 vulnerability sweep (#694): 21 ranked findings, each fixed, ticketed or accepted with a reason (4(c), cl 1.6) |
 | [secrets-and-encryption.md](secrets-and-encryption.md) | QBO token encryption, CDR credential posture, secrets inventory (A4, #637) |
 | [data-handling.md](data-handling.md) | Classification, minimisation, retention, deletion, non-production (control requirement 3) |
 | [backup-dr.md](backup-dr.md) | Backups and DR: daily D1 export, RPO/RTO, restore runbook, restore test record (#635) |

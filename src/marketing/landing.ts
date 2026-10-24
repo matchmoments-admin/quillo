@@ -324,6 +324,7 @@ const HTML = /* html */ `<!doctype html>
   <nav class="nav-pill">
     <a href="#top" class="on">Home</a>
     <a href="#claim">How it works</a>
+    <a href="/blog">Blog</a>
     <a href="#movement">Join</a>
   </nav>
   <div class="nav-right">
@@ -473,6 +474,7 @@ const HTML = /* html */ `<!doctype html>
       <h4>Explore</h4>
       <ul>
         <li><a href="#claim">How it works</a></li>
+        <li><a href="/blog">Blog</a></li>
         <li><a href="${APP_URL}">Sign in</a></li>
         <li><a href="${APP_URL}">Get started</a></li>
         <li><a href="/privacy">Privacy</a></li>
@@ -493,6 +495,7 @@ const HTML = /* html */ `<!doctype html>
   <div class="move-foot">
     <span class="ff">General information only — not tax advice. Quillo is not a registered tax or BAS agent, does not lodge returns, and never holds or moves your money. Confirm your situation with a registered tax/BAS agent. © 2026 Quillo.</span>
     <span class="ff-links">
+      <a href="/blog">Blog</a>
       <a href="/privacy">Privacy</a>
       <a href="/terms">Terms</a>
     </span>

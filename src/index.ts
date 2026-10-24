@@ -14,6 +14,7 @@ import { readCookie, redirectClearingBinding, QBO_BINDING, BANK_BINDING } from "
 import { verifyStripeWebhook } from "./lib/stripe";
 import { marketingResponse } from "./marketing/landing";
 import { legalResponse } from "./marketing/legal";
+import { blogResponse } from "./marketing/blog";
 import { handleWaitlist } from "./marketing/waitlist";
 import { spentTodayGlobalCents } from "./lib/usage";
 import { featureOn } from "./lib/features";
@@ -100,8 +101,13 @@ const handler = {
       // Public legal pages (required by Intuit for production QuickBooks keys, good practice generally).
       if (url.pathname === "/terms" && req.method === "GET") return legalResponse("terms");
       if (url.pathname === "/privacy" && req.method === "GET") return legalResponse("privacy");
+      if ((url.pathname === "/blog" || url.pathname.startsWith("/blog/")) && req.method === "GET") return blogResponse(url.pathname);
       // Keep the apex tiny — anything else belongs to the app.
       return Response.redirect("https://app.quillo.au" + url.pathname + url.search, 302);
+    }
+    // The blog is apex-only; a /blog link that lands on the app host goes to the canonical page.
+    if (host === "app.quillo.au" && (url.pathname === "/blog" || url.pathname.startsWith("/blog/"))) {
+      return Response.redirect("https://quillo.au" + url.pathname, 301);
     }
 
     // (a) Web upload + (c) iOS Shortcut + (d) Android app all POST signed bytes here.

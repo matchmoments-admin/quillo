@@ -79,7 +79,7 @@ not_found_handling = "single-page-application"
 # "/" and "/waitlist" are listed so the Worker runs first for the apex marketing page
 # and waitlist POST (run_worker_first matches PATH, not host — the in-code Host branch
 # decides what each host returns; on the app host "/" is handed back to ASSETS).
-run_worker_first = ["/", "/waitlist", "/terms", "/privacy", "/api/*", "/ingest", "/correct", "/consent", "/healthz", "/csp-report", "/agents/*"]
+run_worker_first = ["/", "/waitlist", "/terms", "/privacy", "/blog", "/blog/*", "/api/*", "/ingest", "/correct", "/consent", "/healthz", "/csp-report", "/agents/*"]
 
 # --- General API rate limiting (#638, ADR-0003 S6) ---
 # Workers Rate Limiting bindings. INERT until the `api_rate_limit` flag is ON (the code never calls

@@ -366,6 +366,34 @@ export async function firstTimerJourney(ctx: Ctx, server: QaServer, answers: Set
     return /myTax/i.test(t) && /worksheet|copy|type in|Personalise/i.test(t) ? null : "no worksheet content on /lodge";
   });
 
+  // #790 the myTax mirror: one card per myTax screen, Copy gives visible feedback, a tick survives a reload.
+  await step(ctx, suite, "Lodge: myTax mirror — screens, Copy feedback, tick persists", { flags: ["mytax_worksheet", "ft_journey"] }, async () => {
+    const p = await visit(page, probe, ctx.base, "/lodge", ctx.vp);
+    if (p) return p;
+    const main = page.locator("main");
+    if (!/myTax screens done/.test(await main.innerText())) return "no 'myTax screens done' progress on /lodge";
+    if (!(await page.getByRole("heading", { name: "Contact details" }).first().isVisible().catch(() => false))) return "no Contact details screen card";
+    const copy = page.getByRole("button", { name: /^Copy .*figure$/ }).first();
+    if (await copy.isVisible().catch(() => false)) {
+      await copy.click();
+      const fed = await page.getByText(/^Copied$|Couldn't copy/).first().waitFor({ timeout: 3000 }).then(() => true, () => false);
+      if (!fed) return "Copy gave no visible feedback";
+    }
+    const box = page.getByLabel("Done this screen in myTax").first();
+    if (!(await box.isVisible().catch(() => false))) return "no screen tick on a notes-only screen";
+    const was = await box.isChecked();
+    const saved = page.waitForResponse((r) => r.url().includes("/api/ui-state") && r.request().method() === "PATCH", { timeout: 8000 });
+    await box.click();
+    await saved.catch(() => null);
+    await page.reload({ waitUntil: "networkidle" });
+    const after = page.getByLabel("Done this screen in myTax").first();
+    await after.waitFor({ timeout: 8000 }).catch(() => null);
+    const now = await after.isChecked().catch(() => was);
+    if (now === was) return "the screen tick didn't survive a reload";
+    await after.click(); // leave the tenant as it was
+    return null;
+  });
+
   await step(ctx, suite, "API /api/mytax-worksheet answers 200", { flags: ["mytax_worksheet"] }, async () => {
     const r = await api("GET", "/api/mytax-worksheet?fy=2025");
     return r.status === 200 ? null : `HTTP ${r.status}: ${JSON.stringify(r.data).slice(0, 160)}`;

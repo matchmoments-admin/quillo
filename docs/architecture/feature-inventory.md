@@ -173,7 +173,7 @@ Column key: **Stop** is the journey stop. **Route** is the SPA route (pages are 
 | 84 | Accountant schedule CSV + xlsx | File | `/filing`, `/reports` | `GET /api/report?format=csv`, `?format=xlsx` | `accountant_schedule` ON, `accountant_schedule_v2` ON, `accountant_xlsx` ON | All | `src/lib/accountant-schedule.ts`, `src/lib/xlsx.ts` |
 | 85 | FY sign-off | File | `/filing`, `/lodge` | `GET/POST/DELETE /api/signoff` | none | All | `src/lib/fy-signoff.ts` |
 | 86 | Mark as lodged | File | `/lodge` | `GET/POST/DELETE /api/lodged` | `situation_profile` OFF | FT1–FT4 | `src/lib/lodging-year.ts`, migration `0087` |
-| 87 | myTax worksheet + print | File | `/lodge` (`ShipIt.tsx`), `/lodge/print` (`ShipItPrint.tsx`) | `GET /api/mytax-worksheet` | `mytax_worksheet` OFF, `ft_journey` OFF | FT1–FT4, P1, P7 | `src/lib/mytax-worksheet.ts`, rule pack `mytax_sections` |
+| 87 | myTax worksheet + print (+ the myTax mirror, #790, `mytax_mirror`) | File | `/lodge` (`ShipIt.tsx`, `MytaxMirror.tsx`), `/lodge/print` (`ShipItPrint.tsx`) | `GET /api/mytax-worksheet` | `mytax_worksheet` OFF, `ft_journey` OFF | FT1–FT4, P1, P7 | `src/lib/mytax-worksheet.ts`, rule pack `mytax_sections` |
 | 88 | NOA capture + carry-forward losses | File | `/filing` NoaCloseOff, `/lodge` | `GET /api/noa`, `POST/DELETE /api/noa/:id` | `noa_capture` ON, `carryforward_position` ON | All (P2, P6, P10 carry losses) | `src/lib/noa.ts`, `src/lib/noa-store.ts` |
 | 89 | Bank-data minimisation + retention summary | Settings-Privacy | Settings data-retention note | `GET /api/data-retention` | `bank_minimisation` OFF | All | `src/lib/minimise.ts`, `src/lib/retention-schedule.ts` |
 

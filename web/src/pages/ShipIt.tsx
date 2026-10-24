@@ -10,6 +10,7 @@ import { useWorksheetTicks } from "../lib/useWorksheetTicks";
 import { isTickable, tickId, tickProgress } from "../lib/worksheetTicks";
 import { Badge, EmptyState, ErrorState, FtButton, FtCard, FtCheckbox, FtLink, GeneralInfoNote, Skeleton, WorksheetLine } from "../components/ft";
 import { NoaCloseOff } from "./Filing";
+import { MytaxMirror } from "./MytaxMirror";
 import { INPUT_CLASS, InfoTip, Term } from "../components/ui";
 import type { AnyGlossaryKey } from "../content/glossary";
 
@@ -67,6 +68,8 @@ export function ShipIt() {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const worksheetOn = has("mytax_worksheet");
+  // #790: the myTax mirror (one card per myTax screen). OFF ⇒ the section cards below, byte-identical.
+  const mirrorOn = has("mytax_mirror");
   const lodgedOn = has("situation_profile");
   const noaOn = has("noa_capture");
 
@@ -165,7 +168,7 @@ export function ShipIt() {
       ) : ws.error ? (
         <ErrorState what="your myTax worksheet" error={ws.error} onRetry={() => ws.refetch()} />
       ) : ws.data ? (
-        <Worksheet ws={ws.data} ticks={ticks} progress={progress} />
+        <Worksheet ws={ws.data} ticks={ticks} progress={progress} mirror={mirrorOn} fy={fy} />
       ) : null}
 
       <FtCard className="space-y-3 p-5">
@@ -226,10 +229,14 @@ function Worksheet({
   ws,
   ticks,
   progress,
+  mirror,
+  fy,
 }: {
   ws: MytaxWorksheet;
   ticks: ReturnType<typeof useWorksheetTicks>;
   progress: { done: number; total: number } | null;
+  mirror: boolean;
+  fy: number;
 }) {
   if (!ws.sections.length) {
     return (
@@ -267,7 +274,7 @@ function Worksheet({
       )}
 
       <div className="flex flex-wrap items-center justify-between gap-3">
-        {progress && progress.total > 0 && (
+        {!mirror && progress && progress.total > 0 && (
           <p className="text-sm text-muted" aria-live="polite">
             <span className="font-semibold text-ink tnum">
               {progress.done} of {progress.total}
@@ -280,9 +287,11 @@ function Worksheet({
         </FtLink>
       </div>
 
-      {ws.sections.map((s) => (
-        <WorksheetSectionCard key={s.key} section={s} ticks={ticks} />
-      ))}
+      {mirror ? (
+        <MytaxMirror ws={ws} ticks={ticks} fy={fy} />
+      ) : (
+        ws.sections.map((s) => <WorksheetSectionCard key={s.key} section={s} ticks={ticks} />)
+      )}
     </div>
   );
 }

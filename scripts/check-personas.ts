@@ -31,6 +31,7 @@ import { capitalReadinessSignals } from "../src/lib/capital-signals";
 import { firstTimerIncomeSignals } from "../src/lib/first-timer-signals";
 import { buildMytaxWorksheet, mytaxWorksheetSignals, mytaxWorksheetResponse, type MytaxWorksheet } from "../src/lib/mytax-worksheet";
 import { assessReadiness, type FilingReadinessSignals } from "../src/lib/readiness";
+import { buildMirror } from "../web/src/lib/mytaxMirror";
 import { computeFilingReadiness } from "../src/lib/filing-readiness";
 import { getSituation, type Situation, type Profile } from "../src/lib/db";
 import { upsertSituationPeriod, fillSituationPeriod, deleteSituationPeriod, SituationPeriodError, clearSignOffFy } from "../src/lib/situation-write";
@@ -2692,6 +2693,36 @@ async function main() {
       check("pft12 (#590): a managed fund distribution is a CHECK line (prefilled), never typed in; still ties back",
         lineOf(ws4, "income_check", "managed_fund_distribution")?.kind === "check" && lineOf(ws4, "income_check", "managed_fund_distribution")?.amount_cents === 15000
           && !lineOf(ws4, "income_type_in", "managed_fund_distribution") && !!lineOf(ws4, "personalise", "tick:managed_funds") && ws4.tie_back.ok && ws4.tie_back.income_ok);
+    }
+
+    // ── pmirror1 — the myTax mirror (#790, flag mytax_mirror; presentation only). P1 Maya (p1maya: $80k salary,
+    //    a $150 keyboard + $80 cable, 400 WFH hours): the mirror is the worksheet re-cut by myTax screen, so its
+    //    figures must tie back to the readiness POSITION lines — income screens == the income lines, deduction
+    //    screens + the unlabelled amount == the deduction + decline-in-value lines — and carry no refund field.
+    {
+      const u = "p1maya";
+      const rep = await buildReport(WS_ENV_ON, u, 2025);
+      const ws = await buildMytaxWorksheet(WS_ENV_ON, u, 2025, { report: rep });
+      const ready = assessReadiness({ report: rep, situation: wsSituation(u), claimMatches: [], signals: { ...wsSignals(), ...(await mytaxWorksheetSignals(WS_ENV_ON, u, 2025, rep)) }, generatedAt: "2026-10-03T00:00:00Z" });
+      const mirror = buildMirror(ws.sections);
+      const sumScreens = (pred: (k: string) => boolean) => mirror.filter((s) => pred(s.key)).flatMap((s) => s.lines).reduce((a, l) => a + (l.line.amount_cents ?? 0), 0);
+      const INCOME_SCREENS = new Set(["salary", "government", "interest", "dividends", "rent", "managed_funds", "business", "foreign", "other_income"]);
+      const posSum = (groups: string[]) => ready.position.lines.filter((l) => groups.includes(l.group)).reduce((a, l) => a + l.amount_cents, 0);
+      const salaryLine = ready.position.lines.find((l) => l.group === "income" && l.label === "salary_payg");
+      check(`pmirror1 (P1 Maya): screens in myTax order (${mirror.map((s) => s.key).join(" → ")})`,
+        JSON.stringify(mirror.map((s) => s.key)) === JSON.stringify(["contact", "bank", "personalise", "salary", "work_expenses", "medicare", "spouse_tests"]));
+      check("pmirror1: the salary screen's figure is the position's salary line ($80,000)",
+        salaryLine?.amount_cents === 8000000 && mirror.find((s) => s.key === "salary")?.lines.some((l) => l.line.amount_cents === salaryLine.amount_cents) === true);
+      check(`pmirror1: income screens == the position's income lines (${sumScreens((k) => INCOME_SCREENS.has(k))} vs ${posSum(["income"])})`,
+        sumScreens((k) => INCOME_SCREENS.has(k)) === posSum(["income"]) && posSum(["income"]) === rep.total_income_cents);
+      const dedScreens = sumScreens((k) => k === "work_expenses" || k.startsWith("deduction:"));
+      check(`pmirror1: deduction screens + unlabelled == the position's deduction + decline-in-value lines (${dedScreens} + ${ws.unlabelled.cents} vs ${posSum(["deduction", "depreciation"])})`,
+        dedScreens + ws.unlabelled.cents === posSum(["deduction", "depreciation"]) && posSum(["deduction", "depreciation"]) === rep.total_deductions_cents + rep.depreciation_cents && ws.tie_back.ok);
+      check("pmirror1: WFH at the fixed rate lands on Work-related expenses (D5) with its Explain tip",
+        mirror.find((s) => s.key === "work_expenses")?.lines.some((l) => l.line.label === "D5" && (l.line.amount_cents ?? 0) >= 28000 && l.term === "wfh_fixed_rate") === true);
+      check("pmirror1: no refund / tax-payable field or wording anywhere in the mirror",
+        noRefundField(mirror) && !/refund|tax payable|marginal rate/i.test(JSON.stringify(mirror)));
+      check("pmirror1: the mirror never moves the position (presentation only)", ready.position.indicative_taxable_position_cents === (await wsReady(env, u)).position.indicative_taxable_position_cents);
     }
 
     // #590: a WHM who became a resident, with a spouse, a study loan and hospital cover (situation_profile ON).

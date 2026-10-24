@@ -22,6 +22,7 @@
 
 import type { Env } from "../env";
 import { fyBoundsFor, fyStartYearForDate, AU_DESCRIPTOR, type JurisdictionDescriptor } from "./jurisdiction";
+import { csvCell } from "./csv-cell";
 
 export const DAY_REASONS = ["office", "leave", "sick", "public_holiday", "other"] as const;
 export type DayReason = (typeof DAY_REASONS)[number];
@@ -416,12 +417,7 @@ export function preDiarySourceLabel(source: LateSource | null): string {
 }
 
 // ── The record the user keeps: one CSV row per day ────────────────────────────────────────────────
-const csvCell = (v: string | number | null | undefined): string => {
-  const s = v == null ? "" : String(v);
-  // Neutralise spreadsheet formula injection, then quote.
-  const safe = /^[=+\-@\t\r]/.test(s) ? `'${s}` : s;
-  return /[",\n]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
-};
+// Cells go through the shared writer (formula-injection guard + RFC 4180 quoting), the same one the accountant pack uses.
 
 /** Day-by-day CSV of the FY's diary: what, when recorded, on time or late, and whether it counts. */
 export function diaryCsv(view: Pick<DiaryView, "bounds" | "weeks" | "totals"> & Partial<Pick<DiaryView, "pre_diary" | "fy_hours">>): string {

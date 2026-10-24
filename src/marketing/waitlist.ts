@@ -1,3 +1,4 @@
+import { readTextCapped } from "../lib/upload-limits";
 import type { Env } from "../env";
 import { sha256hex } from "../lib/base64";
 
@@ -27,15 +28,15 @@ async function overLimit(env: Env, key: string, limit: number, ttl: number): Pro
 export async function handleWaitlist(req: Request, env: Env): Promise<Response> {
   if (req.method !== "POST") return json(405, { ok: false, error: "method_not_allowed" });
 
-  // Cap the body before reading it (cheap header check, then a hard slice on parse).
-  const declared = Number(req.headers.get("content-length") ?? 0);
-  if (declared > MAX_BODY_BYTES) return json(413, { ok: false, error: "too_large" });
+  // Bounded read (review F8): a declared Content-Length over the cap is refused unread, and a body without
+  // one is streamed and cut off at the cap (req.text() would buffer all of it first).
+  const capped = await readTextCapped(req, MAX_BODY_BYTES, () => json(413, { ok: false, error: "too_large" }));
+  if (!capped.ok) return capped.response;
 
   let email: string;
   let source: string | null = null;
   try {
-    const raw = await req.text();
-    if (raw.length > MAX_BODY_BYTES) return json(413, { ok: false, error: "too_large" });
+    const raw = capped.text;
     const parsed = JSON.parse(raw) as { email?: unknown; source?: unknown };
     email = String(parsed.email ?? "").trim().toLowerCase();
     if (typeof parsed.source === "string") source = parsed.source.slice(0, 40);

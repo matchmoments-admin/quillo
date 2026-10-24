@@ -106,7 +106,7 @@ import { latestSyncRuns } from "./lib/bank-sync";
 import { incomeStatementWait } from "./lib/income-statement-wait";
 import { holdingPosition } from "./lib/capital";
 import { groupKey } from "./lib/clarify";
-import { declaredTooLarge, fileTooLarge, tooLargeResponse } from "./lib/upload-limits";
+import { declaredTooLarge, fileTooLarge, tooLargeResponse, readFormCapped } from "./lib/upload-limits";
 
 const json = (data: unknown, status = 200) =>
   new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json" } });
@@ -165,6 +165,17 @@ async function routedEntityDelete(
  * Cloudflare Access) and scoped to `user.userId`. Reads hit D1; audited writes go
  * through the Durable Object `stub`.
  */
+/**
+ * The status for an applyCorrection error the caller caused (review: 500 -> 400): a not-found / foreign id
+ * (assertOwns, a refund target) is 404; a bad field or value is 400. null = a real fault (rethrow ⇒ 500).
+ */
+export function correctionErrorStatus(message: string | null | undefined): 400 | 404 | null {
+  const m = String(message ?? "");
+  if (/\bnot found$/.test(m)) return 404;
+  if (/^(field not correctable|invalid bucket|invalid ato_label|a refund (can't|must))/.test(m)) return 400;
+  return null;
+}
+
 export async function handleApi(
   req: Request,
   env: Env,
@@ -302,8 +313,11 @@ export async function handleApi(
   // only for the unauthenticated device endpoint /ingest. ingest() awaits extraction, so
   // the response returns once the receipt is categorised.
   if (resource === "upload" && m === "POST") {
-    if (declaredTooLarge(req, "receiptTotal")) return tooLargeResponse("receiptTotal"); // before buffering (#713)
-    const form = await req.formData();
+    // Bounded read BEFORE the multipart parse (#713, review F8): refused unread over a declared ceiling, and
+    // cut off at it when the body has no Content-Length.
+    const parsed = await readFormCapped(req, "receiptTotal");
+    if (!parsed.ok) return parsed.response;
+    const form = parsed.form;
     // One or more `file` parts (multi-screenshot = one receipt). workers-types under-types
     // FormData, so cast the entries through Blob and drop any stray text fields.
     const blobs = (form.getAll("file") as unknown as Array<Blob | string>).filter(
@@ -629,7 +643,9 @@ export async function handleApi(
     if (id === "usage" && sub === "scan" && m === "POST") {
       if (declaredTooLarge(req, "receipt")) return tooLargeResponse("receipt"); // before the cap, so a refused file doesn't use a scan
       if (!(await withinPhiScanCap(env, uid))) return json({ error: "Daily receipt-scan limit reached — type the claim in, or try again tomorrow." }, 429);
-      const form = await req.formData();
+      const parsed = await readFormCapped(req, "receipt"); // bounded read before the parse (review F8)
+      if (!parsed.ok) return parsed.response;
+      const form = parsed.form;
       const blob = (form.getAll("file") as unknown as Array<Blob | string>).find((f): f is Blob => typeof f !== "string");
       if (!blob) return json({ error: "no file" }, 400);
       if (fileTooLarge(blob.size, "receipt")) return tooLargeResponse("receipt");
@@ -736,7 +752,15 @@ export async function handleApi(
   // POST /api/correct  { txnId, field, value } — audited write via the DO.
   if (resource === "correct" && !id && m === "POST") {
     const { txnId, field, value } = (await req.json()) as { txnId: string; field: string; value: string };
-    await stub.applyCorrection(uid, txnId, field, value);
+    try {
+      await stub.applyCorrection(uid, txnId, field, value);
+    } catch (e) {
+      // A foreign / unknown id (assertOwns: "<label> not found") is the caller's error, not a 500, and
+      // so is a bad field or value; the batch route answers these the same way. Anything else rethrows.
+      const status = correctionErrorStatus((e as Error).message);
+      if (status) return json({ error: (e as Error).message }, status);
+      throw e;
+    }
     return json({ ok: true });
   }
 
@@ -1050,8 +1074,9 @@ export async function handleApi(
     // POST /api/capital-imports (multipart: file) → extract + preview. NOTHING is written to
     // cgt_assets/cgt_events here; that needs the explicit confirm below.
     if (m === "POST" && !id) {
-      if (declaredTooLarge(req, "capital")) return tooLargeResponse("capital");
-      const form = await req.formData();
+      const parsed = await readFormCapped(req, "capital"); // bounded read before the parse (#713, review F8)
+      if (!parsed.ok) return parsed.response;
+      const form = parsed.form;
       const entry = form.get("file");
       if (entry == null || typeof entry === "string") return json({ error: "no file" }, 400);
       if (fileTooLarge((entry as unknown as Blob).size, "capital")) return tooLargeResponse("capital");
@@ -1096,8 +1121,9 @@ export async function handleApi(
   if (resource === "statements") {
     // POST /api/statements (multipart: file + account_id) → parse + preview (no commit yet)
     if (m === "POST" && !id) {
-      if (declaredTooLarge(req, "statement")) return tooLargeResponse("statement");
-      const form = await req.formData();
+      const parsed = await readFormCapped(req, "statement"); // bounded read before the parse (#713, review F8)
+      if (!parsed.ok) return parsed.response;
+      const form = parsed.form;
       const entry = form.get("file");
       const accEntry = form.get("account_id");
       if (entry == null || typeof entry === "string") return json({ error: "no file" }, 400);
@@ -1513,8 +1539,9 @@ export async function handleApi(
     }
     // POST /api/documents/upload (multipart: file) → classify + route via the Smart Inbox.
     if (m === "POST" && id === "upload") {
-      if (declaredTooLarge(req, "document")) return tooLargeResponse("document");
-      const form = await req.formData();
+      const parsed = await readFormCapped(req, "document"); // bounded read before the parse (#713, review F8)
+      if (!parsed.ok) return parsed.response;
+      const form = parsed.form;
       const entry = form.get("file");
       if (entry == null || typeof entry === "string") return json({ error: "no file" }, 400);
       const file = entry as unknown as Blob;

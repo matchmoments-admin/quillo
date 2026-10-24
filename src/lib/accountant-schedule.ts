@@ -20,11 +20,12 @@ import { deductibleInterestCents } from "./loan-interest";
 import { classifyAttribution, splitAttribution } from "./attribution";
 import { exclusionReason } from "./readiness";
 import { featureOn } from "./features";
-import { SITUATIONS, loadSituations, situationSections, type LoadedSituation, type ReportContext } from "./situations";
+import { SITUATIONS, loadSituationsSettled, situationSections, type LoadedSituation, type ReportContext } from "./situations";
 import { parseCostBaseElements, costBaseBreakdownRows, holdingPosition } from "./capital";
 import { generateWfhDiary, WFH_WEEKDAY_NAMES } from "./work-use";
 import { diaryView as wfhDiaryView, addDaysIso as wfhAddDays, preDiarySourceLabel as wfhPreDiarySourceLabel } from "./wfh-diary";
 import { buildXlsx, type XlsxCell, type XlsxSheet } from "./xlsx";
+import { csvCell, neutraliseFormula } from "./csv-cell";
 
 // ── The itemised accountant deliverable (#179 + #181, EPIC #178) ─────────────
 // A persona-aware, multi-section schedule an accountant can audit: per-transaction lines with
@@ -71,27 +72,10 @@ export const MAX_SECTION_ROWS = 5000;
 
 // ── Pure helpers (unit-tested in scripts/check-units.ts) ──────────────────────
 
-/**
- * RFC-4180 CSV escaping + formula-injection neutralisation. Merchant / raw_description strings come
- * from uploaded statements (attacker-influenceable), so a leading = + - @ is prefixed with ' to stop
- * spreadsheet formula execution. Numbers pass through untouched; null → empty.
- */
-/**
- * Neutralise spreadsheet formula injection: a string starting with = + - @ (attacker-influenceable
- * merchant/description text from uploaded statements) is prefixed with ' so a spreadsheet renders it
- * as a literal rather than evaluating it. Shared by the CSV and xlsx emitters so the two never drift.
- */
-export function neutraliseFormula(s: string): string {
-  return /^[=+\-@]/.test(s) ? `'${s}` : s;
-}
-
-export function csvCell(v: Cell): string {
-  if (v == null) return "";
-  if (typeof v === "number") return String(v);
-  let s = neutraliseFormula(v);
-  if (/[",\r\n]/.test(s)) s = `"${s.replace(/"/g, '""')}"`;
-  return s;
-}
+// RFC-4180 CSV escaping + formula-injection neutralisation (the OWASP = + - @ TAB CR set) live in ONE
+// shared module (src/lib/csv-cell.ts), used by this pack's CSV and xlsx emitters and by the WFH diary CSV,
+// so they never drift. Re-exported here for existing importers.
+export { csvCell, neutraliseFormula };
 
 export type Substantiation = "receipt" | "document" | "receipt_linked" | "bank_line_only";
 
@@ -572,14 +556,16 @@ async function scheduleCore(
   // ADR-0004: the registry's pack sections. Only modules that are ON and have a `schedule` load (their
   // reader runs over the SAME context buildReport used); none enabled ⇒ no read at all ⇒ byte-identical.
   const scheduleModules = SITUATIONS.filter((m) => m.schedule && featureOn(env, m.flag));
-  const situationsP: Promise<{ ctx: ReportContext; loaded: LoadedSituation[] } | null> = detailOnly || !scheduleModules.length
+  // Each module loads SETTLED (the safeAll pattern): one module's error drops only its section, and the pack
+  // says so in a note, instead of the whole pack failing.
+  const situationsP: Promise<{ ctx: ReportContext; loaded: LoadedSituation[]; failed: string[] } | null> = detailOnly || !scheduleModules.length
     ? Promise.resolve(null)
     : (async () => {
         const ctx: ReportContext = {
           env, scope: { userId, personId: null }, startYear, fy, bounds: { start, end },
           jurisdiction, rulePack: await resolveRulePack(env, userId, jurisdiction), separateIds, currency: cur,
         };
-        return { ctx, loaded: await loadSituations(ctx, scheduleModules) };
+        return { ctx, ...(await loadSituationsSettled(ctx, scheduleModules)) };
       })();
   const [items, incomeRows, depRows, depDenied, attrRows, cgtEvents, essGrants, trustRows, basRows, paygRows, holdingRows, holdingDisposals, situationsLoaded] =
     await Promise.all([itemsP, incomeRowsP, depRowsP, depDeniedP, attrRowsP, cgtEventsP, essGrantsP, trustRowsP, basRowsP, paygRowsP, holdingsP, holdingDisposalsP, situationsP]);
@@ -823,6 +809,16 @@ async function scheduleCore(
     for (const sec of situationSections(situationsLoaded.loaded, situationsLoaded.ctx)) {
       const notes = sec.notes ?? [];
       sections.push({ ...sec, rows: capped(sec.rows, notes), notes });
+    }
+    // A module that failed to load is named, never silently missing (only present on a failure).
+    if (situationsLoaded.failed.length) {
+      sections.push({
+        key: "situations_unavailable",
+        title: "Sections that could not be loaded",
+        columns: ["Section"],
+        rows: situationsLoaded.failed.map((k) => [k]),
+        notes: ["These sections could not be read when this pack was built, so they are missing above. Rebuild the pack, or review them in the app."],
+      });
     }
   }
 

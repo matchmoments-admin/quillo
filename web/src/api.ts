@@ -4,7 +4,7 @@ import type { AskContext, EducationData, RelevanceView, RelevanceConfirmResult }
 import { compressImageForUpload, compressImagesForUpload, prepareImageUpload, setClientCompression } from "./lib/compress-image";
 import { assertUploadSize } from "./lib/upload-limits";
 import type { SecurityDashboard } from "./types";
-import type { WfhDiaryView, WfhDiaryWeek, WfhDiaryDay, WfhLateSource } from "./types";
+import type { WfhDiaryView, WfhDiaryWeek, WfhDiaryDay, WfhLateSource, WfhPreDiary } from "./types";
 
 // Clerk session token getter, wired from <TokenBridge> inside ClerkProvider (main.tsx).
 // Clerk tokens are short-lived, so we fetch a fresh one per request (getToken caches/refreshes).
@@ -531,6 +531,8 @@ export const api = {
   wfhDiarySetPattern: (hours: number[]) => send<{ pattern: number[] }>("PUT", `/api/wfh-diary/pattern`, { hours }),
   wfhDiarySaveWeek: (body: { week_start: string; days?: WfhDiaryDay[]; source?: WfhLateSource; note?: string }) =>
     post<{ ok: true; week: WfhDiaryWeek }>(`/api/wfh-diary/weeks`, body),
+  wfhDiarySetPreDiary: (body: { fy: number; hours: number; source: WfhLateSource }) =>
+    send<{ ok: true; pre_diary: WfhPreDiary }>("PUT", `/api/wfh-diary/pre-diary`, body),
   wfhDiaryDeleteWeek: (weekStart: string) => send<{ ok: boolean }>("DELETE", `/api/wfh-diary/weeks/${encodeURIComponent(weekStart)}`),
   wfhDiaryCsv: async (fy: number): Promise<{ blob: Blob; filename: string }> => {
     const res = await fetch(`/api/wfh-diary/export?fy=${fy}`, { credentials: "include", headers: await authHeaders() });

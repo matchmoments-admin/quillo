@@ -3763,6 +3763,42 @@ async function main() {
     check("P1 diary pack (flag OFF): no diary section (byte-identical legacy pack)", !sOff.sections.some((s) => s.key === "wfh_diary"));
   }
 
+  // ── P1 Maya: typed timesheet hours, THEN the weekly diary (F6, flag wfh_weekly_diary) ──
+  // Maya typed 600 hours from her timesheets for July–December, then started the diary in January. Before F6
+  // her first confirmed 16h week replaced the 600 (16h × 70c = $11.20), and deleting it wrote NULL. Now the
+  // 600 is kept as "before the diary" and the year's hours are 600 + diary.
+  {
+    const u = "p1mayapre";
+    seedTenant(u, "P1 Maya (timesheet hours, then the diary)");
+    inc("p1mpSal", u, "salary_payg", 8000000);
+    run(`INSERT INTO work_use_inputs (user_id, fy, wfh_hours) VALUES (?, 2025, 600)`, u);
+    const DIARY_ON = { ...env, FEATURES: `${(env as unknown as { FEATURES: string }).FEATURES},wfh_weekly_diary` } as unknown as Env;
+    const D = await import("../src/lib/wfh-diary");
+    const at = (iso: string) => new Date(`${iso}T08:00:00Z`);
+    const rBefore = await buildReport(env, u, 2025);
+    check("P1 pre-diary (flag OFF baseline): 600 typed hours × 70c = $420", rBefore.work_method?.wfh_hours === 600 && rBefore.work_method?.wfh_cents === 42000);
+
+    await D.setPattern(DIARY_ON, u, [8, 8, 0, 0, 0, 0, 0]);
+    await D.saveWeek(DIARY_ON, u, { week_start: "2026-01-05" }, at("2026-01-09"));
+    const rOn = await buildReport(DIARY_ON, u, 2025);
+    check("P1 pre-diary: 600 typed + one 16h diary week = 616h × 70c = $431.20 (was 16h = $11.20)", rOn.work_method?.wfh_hours === 616 && rOn.work_method?.wfh_cents === 43120);
+    await D.setPreDiary(DIARY_ON, u, { fy: 2025, hours: 600, source: "timesheet" });
+    const view = await D.diaryView(DIARY_ON, u, 2025, at("2026-01-09"));
+    check("P1 pre-diary: the view shows 'before the diary 600h (timesheet) + diary 16h = 616h'",
+      view.pre_diary?.hours === 600 && view.pre_diary.source === "timesheet" && view.pre_diary.counts && view.totals.counted_hours === 16 && view.fy_hours === 616);
+    const sOn = await buildAccountantSchedule(DIARY_ON, u, 2025, { report: rOn });
+    const sec = sOn.sections.find((s) => s.key === "wfh_diary");
+    check("P1 pre-diary pack: the week's 7 rows + diary total + 'before the diary' + year total, no mismatch note, ties back",
+      sec?.rows.length === 7 + 1 + 2 && sec.rows.some((r) => r[0] === "Hours recorded before the diary (Timesheet)" && r[2] === 600) &&
+      !sec.notes?.some((n) => /review so they agree/.test(n)) && tieBackChecks(sOn).every((t) => t.ok));
+
+    await D.deleteWeek(DIARY_ON, u, "2026-01-05");
+    const rDel = await buildReport(DIARY_ON, u, 2025);
+    check("P1 pre-diary: deleting the only diary week restores 600h ($420), never NULL", rDel.work_method?.wfh_hours === 600 && rDel.work_method?.wfh_cents === 42000);
+    const rOff = await buildReport(env, u, 2025);
+    check("P1 pre-diary (flag OFF): the position reads only wfh_hours, so it matches the baseline", rOff.work_method?.wfh_cents === rBefore.work_method?.wfh_cents && rOff.taxable_position_cents === rBefore.taxable_position_cents);
+  }
+
   console.log(`\n=== personas: ${pass} passed, ${fail} failed ===`);
   if (fail > 0) process.exit(1);
 }

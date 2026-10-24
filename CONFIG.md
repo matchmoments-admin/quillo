@@ -216,6 +216,16 @@ Rolling forward again later is the step 7 flip; the pinned rows keep `bedrock` e
 > AUD, so the invoice reads about 1.5× the dashboard figure. The user's wallet is AUD too, so each debit
 > converts first: cost × `USD_TO_AUD_RATE` (1.55, wrangler.toml) × (1 + `COST_MARKUP_PCT`/100). The rate
 > is fixed; update it if AUD/USD moves about 5% or more.
+>
+> **Spend caps, in both currencies** (wrangler.toml; approximate AUD = cap × `USD_TO_AUD_RATE` 1.55):
+>
+> | Cap | Value | USD meaning | ≈ AUD on the AWS invoice |
+> |---|---|---|---|
+> | `MAX_DAILY_COST_CENTS` (per user, per day) | 500 | US$5/day | A$7.75/day |
+> | `MAX_DAILY_COST_CENTS_GLOBAL` (all tenants, per day) | 2500 | US$25/day | A$38.75/day |
+> | `MAX_MONTHLY_COST_CENTS_GLOBAL` (all tenants, per month) | 20000 | US$200/month | A$310/month |
+>
+> Compare an AUD budget (such as AWS credits) with the AUD column, not the USD one.
 
 > **Note:** Bedrock has no Anthropic Batch API, so Bedrock tenants always categorise in **live**
 > mode (sequential per-chunk) — large imports run synchronously rather than via the async batch.

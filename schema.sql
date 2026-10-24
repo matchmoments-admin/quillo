@@ -1013,6 +1013,9 @@ CREATE TABLE IF NOT EXISTS work_use_inputs (
   wfh_weekdays       TEXT,                       -- JSON int[] 0=Mon..6=Sun: days normally worked from home
   wfh_leave_ranges   TEXT,                       -- JSON [{start,end,label?}]: inclusive ranges NOT worked from home
   wfh_generate_diary INTEGER DEFAULT 0,          -- 1 = emit the generated diary in the hand-off CSV
+  -- 0089 (wfh_weekly_diary): hours recorded before the weekly diary started; the FY total = this + diary.
+  wfh_hours_pre_diary        REAL,
+  wfh_hours_pre_diary_source TEXT,               -- calendar | timesheet | roster | system_log | memory (NULL = carried over, unlabelled)
   updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (user_id, fy)
 );

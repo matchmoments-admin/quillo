@@ -41,8 +41,9 @@ export function WorkMethodsCard({ fyNum, diaryCollapsed = false }: { fyNum: numb
   const diaryEnabled = has("wfh_generate_diary") && !weeklyDiary;
   const { data } = useQuery({ queryKey: ["work-use", fyNum], queryFn: () => api.workUse(fyNum) });
   const { data: weekly } = useQuery({ queryKey: ["wfh-diary", fyNum], queryFn: () => api.wfhDiary(fyNum), enabled: weeklyDiary });
-  // Once the weekly diary has a week for this FY, its counted total IS the hours figure (the server enforces it).
-  const weeklyHours = weeklyDiary && weekly && weekly.in_use ? weekly.totals.counted_hours : null;
+  // Once the weekly diary has a week for this FY it sets the hours figure: the hours kept from before the
+  // diary + the counted diary hours (F6; the server enforces it).
+  const weeklyHours = weeklyDiary && weekly && weekly.in_use ? weekly.fy_hours : null;
   const [days, setDays] = useState<string>("");
   const [weeks, setWeeks] = useState<string>("");
   const [hours, setHours] = useState<string>("");
@@ -160,7 +161,7 @@ export function WorkMethodsCard({ fyNum, diaryCollapsed = false }: { fyNum: numb
         <span className="mt-0.5 block text-xs text-muted" id={weeklyHours != null ? "wfh-hours-from-diary" : undefined}>
           ≈ {money(estWfh)} at 70c/hr
           {weeklyHours != null
-            ? " · set by your hours diary below (the weeks you've confirmed). Change a week to change it."
+            ? " · set by your hours diary below (any hours from before the diary plus the weeks you've confirmed). Change them there."
             : diaryActive && !hoursTouched
             ? ` · from your diary (≈ ${weekdays.length} day(s)/week — exact hours generated in your hand-off)`
             : hoursTouched || hours.trim() !== "" ? "" : " · enter your hours, or estimate them below"}

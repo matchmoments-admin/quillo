@@ -14,6 +14,9 @@
 //   • Timestamps come from the server clock (callers pass `now`); the client can't backdate a week.
 //   • The FY's counted total is written into work_use_inputs.wfh_hours, so report.ts's fixed-rate maths is
 //     untouched (hours × the FY rate).
+//   • F6: hours already recorded for the FY when the diary STARTS are kept in wfh_hours_pre_diary (0089) and
+//     the FY's hours are pre-diary + counted diary hours. Neither a confirmed week nor a deleted one ever
+//     overwrites that figure; only the user's own edit (which needs a source) changes it.
 // GENERAL INFO ONLY: this records hours; it never says what is deductible.
 
 import type { Env } from "../env";
@@ -149,6 +152,24 @@ export function diaryTotals(weeks: DiaryWeek[], bounds: { start: string; end: st
   return t;
 }
 
+// ── Hours recorded before the diary (F6, migration 0089) ─────────────────────────────────────────
+/** Hours a user recorded for the FY before the diary started (e.g. from a timesheet), and what they came from. */
+export interface PreDiary { hours: number; source: LateSource | null; counts: boolean }
+/** Hours in a year (366 × 24): the most a pre-diary figure can be. */
+export const MAX_PRE_DIARY_HOURS = 8784;
+/**
+ * A pre-diary figure counts unless it was rebuilt from memory (an estimate, like a memory-sourced week).
+ * No source yet = carried over from the typed hours field, which counted before the diary started, so it
+ * still counts (the card asks the user to say where it came from).
+ */
+export function preDiaryCounts(p: { hours: number | null; source: LateSource | null }): boolean {
+  return p.hours != null && p.hours > 0 && p.source !== "memory";
+}
+/** The FY's hours figure: counted pre-diary hours + counted diary hours. */
+export function fyHoursTotal(pre: { hours: number | null; source: LateSource | null } | null, diaryCounted: number): number {
+  return round2((pre && preDiaryCounts(pre) ? pre.hours! : 0) + diaryCounted);
+}
+
 // ── D1 reads/writes ──────────────────────────────────────────────────────────────────────────────
 type WeekRow = { week_start: string; days_json: string; entry: string; source: string | null; note: string | null; recorded_at: string; updated_at: string };
 const parseDays = (s: string): DiaryDay[] => {
@@ -197,26 +218,95 @@ export function diaryInUse(weeks: DiaryWeek[], bounds: { start: string; end: str
   return weeks.some((w) => w.week_start >= bounds.start || w.days.some((d, i) => d.h > 0 && addDaysIso(w.week_start, i) >= bounds.start));
 }
 
-/** The counted diary total for an FY, or null when the FY has no diary weeks (the diary isn't in use). */
+/** The hours recorded before the diary for an FY (null when none were kept). */
+export async function getPreDiary(env: Env, userId: string, fyStartYear: number): Promise<PreDiary | null> {
+  const r = await env.DB.prepare(`SELECT wfh_hours_pre_diary AS h, wfh_hours_pre_diary_source AS s FROM work_use_inputs WHERE user_id = ? AND fy = ?`)
+    .bind(userId, fyStartYear).first<{ h: number | null; s: string | null }>();
+  if (!r || r.h == null) return null;
+  const source = LATE_SOURCES.includes(r.s as LateSource) ? (r.s as LateSource) : null;
+  return { hours: round2(r.h), source, counts: preDiaryCounts({ hours: r.h, source }) };
+}
+
+/**
+ * The FY's hours while the diary is in use (pre-diary + counted diary hours), or null when the FY has no
+ * diary weeks (the diary isn't in use, so the typed figure stands).
+ */
 export async function diaryHoursForFy(env: Env, userId: string, fyStartYear: number, descriptor: JurisdictionDescriptor = AU_DESCRIPTOR): Promise<number | null> {
   const bounds = fyBoundsFor(descriptor, fyStartYear);
   const weeks = await listWeeksForFy(env, userId, bounds);
-  return diaryInUse(weeks, bounds) ? diaryTotals(weeks, bounds).counted_hours : null;
+  if (!diaryInUse(weeks, bounds)) return null;
+  return fyHoursTotal(await getPreDiary(env, userId, fyStartYear), diaryTotals(weeks, bounds).counted_hours);
 }
 
-/** Re-write work_use_inputs.wfh_hours for every FY the week touches (null when the FY has no weeks left). */
-async function syncHours(env: Env, userId: string, weekStart: string, descriptor: JurisdictionDescriptor): Promise<void> {
-  const own = fyStartYearForDate(descriptor, weekStart);
-  const fys = new Set([own, fyStartYearForDate(descriptor, addDaysIso(weekStart, 6))]);
-  for (const fy of fys) {
-    const hours = await diaryHoursForFy(env, userId, fy, descriptor);
-    // The next FY only gets written once the diary is in use there (never null-out a figure typed for it).
-    if (hours == null && fy !== own) continue;
+/** The FYs a week's days fall in (two when it straddles the FY end). */
+function fysOfWeek(weekStart: string, descriptor: JurisdictionDescriptor): number[] {
+  return [...new Set([fyStartYearForDate(descriptor, weekStart), fyStartYearForDate(descriptor, addDaysIso(weekStart, 6))])];
+}
+
+/**
+ * Re-write work_use_inputs.wfh_hours for one FY. `capture` = the diary has just started for this FY, so the
+ * figure already in wfh_hours (typed or estimated) is kept as the pre-diary hours first. With the diary in
+ * use the FY's hours are pre-diary + diary. With no weeks left they fall back to the kept pre-diary figure
+ * as entered; with none kept, the week's own FY is cleared (as before) and an FY it spills into untouched.
+ */
+async function syncFy(env: Env, userId: string, fy: number, descriptor: JurisdictionDescriptor, opts: { capture: boolean; own: boolean }): Promise<void> {
+  const bounds = fyBoundsFor(descriptor, fy);
+  const weeks = await listWeeksForFy(env, userId, bounds);
+  const inUse = diaryInUse(weeks, bounds);
+  if (opts.capture && inUse) {
+    // SET expressions read the OLD row, so the source survives only when the kept figure is unchanged.
     await env.DB.prepare(
-      `INSERT INTO work_use_inputs (user_id, fy, wfh_hours, updated_at) VALUES (?, ?, ?, datetime('now'))
-       ON CONFLICT(user_id, fy) DO UPDATE SET wfh_hours = excluded.wfh_hours, updated_at = datetime('now')`,
-    ).bind(userId, fy, hours).run();
+      `UPDATE work_use_inputs SET wfh_hours_pre_diary = wfh_hours,
+              wfh_hours_pre_diary_source = CASE WHEN wfh_hours_pre_diary = wfh_hours THEN wfh_hours_pre_diary_source ELSE NULL END
+        WHERE user_id = ? AND fy = ?`,
+    ).bind(userId, fy).run();
   }
+  const pre = await getPreDiary(env, userId, fy);
+  const hours = inUse ? fyHoursTotal(pre, diaryTotals(weeks, bounds).counted_hours) : pre ? pre.hours : null;
+  // An FY the week only spills into is written only when there is something to write (never null-out a
+  // figure typed for it).
+  if (hours == null && !opts.own) return;
+  await env.DB.prepare(
+    `INSERT INTO work_use_inputs (user_id, fy, wfh_hours, updated_at) VALUES (?, ?, ?, datetime('now'))
+     ON CONFLICT(user_id, fy) DO UPDATE SET wfh_hours = excluded.wfh_hours, updated_at = datetime('now')`,
+  ).bind(userId, fy, hours).run();
+}
+
+/** Re-write the hours for every FY the week touches. `started` = FYs where this save starts the diary. */
+async function syncHours(env: Env, userId: string, weekStart: string, descriptor: JurisdictionDescriptor, started: Set<number> = new Set()): Promise<void> {
+  const own = fyStartYearForDate(descriptor, weekStart);
+  for (const fy of fysOfWeek(weekStart, descriptor)) await syncFy(env, userId, fy, descriptor, { capture: started.has(fy), own: fy === own });
+}
+
+/** FYs the week touches where the diary isn't in use yet (so saving this week may start it there). */
+async function notYetInUse(env: Env, userId: string, weekStart: string, descriptor: JurisdictionDescriptor): Promise<Set<number>> {
+  const out = new Set<number>();
+  for (const fy of fysOfWeek(weekStart, descriptor)) {
+    const bounds = fyBoundsFor(descriptor, fy);
+    if (!diaryInUse(await listWeeksForFy(env, userId, bounds), bounds)) out.add(fy);
+  }
+  return out;
+}
+
+export interface SetPreDiaryInput { fy: unknown; hours: unknown; source: unknown }
+/**
+ * The user edits the hours recorded before the diary. It needs a source (the same list as a late week), and
+ * only applies once the diary is in use for the FY: before that, the typed hours field is the figure.
+ */
+export async function setPreDiary(env: Env, userId: string, input: SetPreDiaryInput, descriptor: JurisdictionDescriptor = AU_DESCRIPTOR): Promise<PreDiary> {
+  const fy = Number(input.fy);
+  if (!Number.isInteger(fy) || fy < 1900 || fy > 2200) throw new DiaryError("bad fy");
+  const n = Number(input.hours);
+  if (input.hours == null || input.hours === "" || !Number.isFinite(n) || n < 0 || n > MAX_PRE_DIARY_HOURS) throw new DiaryError(`hours must be a number from 0 to ${MAX_PRE_DIARY_HOURS}`);
+  if (!LATE_SOURCES.includes(input.source as LateSource)) throw new DiaryError("Say what these hours come from (calendar, timesheet, roster, system logs or memory)");
+  const bounds = fyBoundsFor(descriptor, fy);
+  if (!diaryInUse(await listWeeksForFy(env, userId, bounds), bounds)) throw new DiaryError("Confirm a week in your hours diary first. Until then, type your hours in the hours field.");
+  await env.DB.prepare(
+    `INSERT INTO work_use_inputs (user_id, fy, wfh_hours_pre_diary, wfh_hours_pre_diary_source, updated_at) VALUES (?, ?, ?, ?, datetime('now'))
+     ON CONFLICT(user_id, fy) DO UPDATE SET wfh_hours_pre_diary = excluded.wfh_hours_pre_diary, wfh_hours_pre_diary_source = excluded.wfh_hours_pre_diary_source, updated_at = datetime('now')`,
+  ).bind(userId, fy, round2(n), input.source as string).run();
+  await syncFy(env, userId, fy, descriptor, { capture: false, own: true });
+  return (await getPreDiary(env, userId, fy))!;
 }
 
 export interface SaveWeekInput { week_start: string; days?: unknown; source?: unknown; note?: unknown }
@@ -238,11 +328,12 @@ export async function saveWeek(env: Env, userId: string, input: SaveWeekInput, n
   if (entry === "late" && !source) throw new DiaryError("This week is being recorded late: say what you're working from (calendar, timesheet, roster, system logs or memory)");
   const note = typeof input.note === "string" && input.note.trim() ? input.note.trim().slice(0, 200) : null;
   const stamp = now.toISOString();
+  const started = await notYetInUse(env, userId, ws, descriptor);
   await env.DB.prepare(
     `INSERT INTO wfh_diary_weeks (user_id, week_start, days_json, entry, source, note, recorded_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(user_id, week_start) DO UPDATE SET days_json = excluded.days_json, entry = excluded.entry, source = excluded.source, note = excluded.note, updated_at = excluded.updated_at`,
   ).bind(userId, ws, JSON.stringify(days), entry, source, note, stamp, stamp).run();
-  await syncHours(env, userId, ws, descriptor);
+  await syncHours(env, userId, ws, descriptor, started);
   const row = await env.DB.prepare(`SELECT week_start, days_json, entry, source, note, recorded_at, updated_at FROM wfh_diary_weeks WHERE user_id = ? AND week_start = ?`)
     .bind(userId, ws).first<WeekRow>();
   return toWeek(row!);
@@ -268,12 +359,17 @@ export interface DiaryView {
   /** The newest week that can be confirmed now (null when none in this FY). */
   current: string | null;
   totals: DiaryTotals;
+  /** F6: hours recorded before the diary started (null when none were kept). */
+  pre_diary: PreDiary | null;
+  /** The FY's hours while the diary is in use: counted pre-diary hours + counted diary hours. */
+  fy_hours: number;
   rules: { confirm_opens_after_days: number; on_time_days: number };
 }
 
 export async function diaryView(env: Env, userId: string, fyStartYear: number, now: Date, descriptor: JurisdictionDescriptor = AU_DESCRIPTOR): Promise<DiaryView> {
   const bounds = fyBoundsFor(descriptor, fyStartYear);
-  const [pattern, weeks] = await Promise.all([getPattern(env, userId), listWeeksForFy(env, userId, bounds)]);
+  const [pattern, weeks, pre] = await Promise.all([getPattern(env, userId), listWeeksForFy(env, userId, bounds), getPreDiary(env, userId, fyStartYear)]);
+  const totals = diaryTotals(weeks, bounds);
   const today = todayIso(now);
   const have = new Set(weeks.map((w) => w.week_start));
   // Latest confirmable Monday = the Monday of (today − CONFIRM_OPENS_AFTER_DAYS).
@@ -296,9 +392,16 @@ export async function diaryView(env: Env, userId: string, fyStartYear: number, n
     weeks: weeks.map((w) => ({ ...w, counts: weekCounts(w), hours_in_fy: inFyHours(w) })).reverse(),
     missing,
     current,
-    totals: diaryTotals(weeks, bounds),
+    totals,
+    pre_diary: pre,
+    fy_hours: fyHoursTotal(pre, totals.counted_hours),
     rules: { confirm_opens_after_days: CONFIRM_OPENS_AFTER_DAYS, on_time_days: ON_TIME_DAYS },
   };
+}
+
+/** Where the pre-diary hours came from, for the CSV and the accountant pack. */
+export function preDiarySourceLabel(source: LateSource | null): string {
+  return source ? SOURCE_LABEL[source] : "source not given yet";
 }
 
 // ── The record the user keeps: one CSV row per day ────────────────────────────────────────────────
@@ -310,7 +413,7 @@ const csvCell = (v: string | number | null | undefined): string => {
 };
 
 /** Day-by-day CSV of the FY's diary: what, when recorded, on time or late, and whether it counts. */
-export function diaryCsv(view: Pick<DiaryView, "bounds" | "weeks" | "totals">): string {
+export function diaryCsv(view: Pick<DiaryView, "bounds" | "weeks" | "totals"> & Partial<Pick<DiaryView, "pre_diary" | "fy_hours">>): string {
   const lines: string[] = [];
   lines.push(csvCell("Work-from-home hours diary") + "," + csvCell(`${view.bounds.start} to ${view.bounds.end}`));
   lines.push(csvCell("General information only. Keep this record with your tax records. Weeks marked 'recorded late' were entered after the week; keep the source record named for those weeks."));
@@ -333,5 +436,10 @@ export function diaryCsv(view: Pick<DiaryView, "bounds" | "weeks" | "totals">): 
   lines.push(["Hours recorded late from a record made at the time", view.totals.late_counted_hours].map(csvCell).join(","));
   lines.push(["Hours recorded late from memory (not counted)", view.totals.not_counted_hours].map(csvCell).join(","));
   lines.push(["Total hours counted", view.totals.counted_hours].map(csvCell).join(","));
+  if (view.pre_diary) {
+    // F6: hours recorded before the diary started, and the year's figure (only when some were kept).
+    lines.push([`Hours recorded before the diary (${preDiarySourceLabel(view.pre_diary.source)})`, view.pre_diary.hours].map(csvCell).join(","));
+    lines.push(["Total hours for the year (before the diary + diary)", view.fy_hours ?? fyHoursTotal(view.pre_diary, view.totals.counted_hours)].map(csvCell).join(","));
+  }
   return lines.join("\n") + "\n";
 }

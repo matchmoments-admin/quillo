@@ -190,6 +190,7 @@ export interface TaxAgentRpc {
   wfhDiarySetPattern(userId: string, hours: unknown): Promise<{ pattern: number[] }>; // #787
   wfhDiarySaveWeek(userId: string, input: import("./lib/wfh-diary").SaveWeekInput): Promise<{ ok: true; week: import("./lib/wfh-diary").DiaryWeek } | { ok: false; error: string }>; // #787
   wfhDiaryDeleteWeek(userId: string, weekStart: string): Promise<{ ok: boolean; error?: string }>; // #787
+  wfhDiarySetPreDiary(userId: string, input: import("./lib/wfh-diary").SetPreDiaryInput): Promise<{ ok: true; pre_diary: import("./lib/wfh-diary").PreDiary } | { ok: false; error: string }>; // F6
   scanTransactions(userId: string, startYear: number): Promise<import("./lib/scan").ScanResult>; // #256
   assessFilingReadiness(userId: string, startYear: number): Promise<import("./lib/readiness").FilingReadiness>;
   journey(userId: string, startYear: number): Promise<import("./lib/journey").Journey>; // #582 (ft_journey)

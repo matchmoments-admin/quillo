@@ -1274,6 +1274,8 @@ export interface WfhDiaryWeek {
   counts: boolean;
   hours_in_fy: number;
 }
+/** source null = carried over from the typed hours field and not labelled yet; memory = kept, not counted. */
+export interface WfhPreDiary { hours: number; source: WfhLateSource | null; counts: boolean }
 export interface WfhDiaryView {
   fy: number;
   bounds: { start: string; end: string };
@@ -1285,6 +1287,10 @@ export interface WfhDiaryView {
   missing: string[];
   current: string | null;
   totals: { counted_hours: number; on_time_hours: number; late_counted_hours: number; not_counted_hours: number; weeks_on_time: number; weeks_late: number };
+  /** F6: hours recorded before the diary started (kept when the diary began; null when none). */
+  pre_diary: WfhPreDiary | null;
+  /** The year's hours while the diary is in use: counted pre-diary hours + counted diary hours. */
+  fy_hours: number;
   rules: { confirm_opens_after_days: number; on_time_days: number };
 }
 

@@ -1406,6 +1406,7 @@ export async function handleApi(
   // PUT    /api/wfh-diary/pattern           { hours: number[7] } → set the typical week.
   // POST   /api/wfh-diary/weeks             { week_start, days?, source?, note? } → confirm / change a week
   //        (omit days = "same as usual"; the server clock decides on time vs late).
+  // PUT    /api/wfh-diary/pre-diary        { fy, hours, source } → hours recorded before the diary (F6; source required).
   // DELETE /api/wfh-diary/weeks/:week_start → remove a week.
   // Reads go straight to D1; writes go through the DO (audited). The FY total feeds work_use_inputs.wfh_hours.
   if (resource === "wfh-diary") {
@@ -1427,6 +1428,11 @@ export async function handleApi(
     if (m === "POST" && id === "weeks" && !sub) {
       const body = (await req.json().catch(() => ({}))) as { week_start?: unknown; days?: unknown; source?: unknown; note?: unknown };
       const r = await stub.wfhDiarySaveWeek(uid, { week_start: String(body.week_start ?? ""), days: body.days, source: body.source, note: body.note });
+      return json(r, r.ok ? 200 : 400);
+    }
+    if (m === "PUT" && id === "pre-diary") {
+      const body = (await req.json().catch(() => ({}))) as { fy?: unknown; hours?: unknown; source?: unknown };
+      const r = await stub.wfhDiarySetPreDiary(uid, { fy: body.fy, hours: body.hours, source: body.source });
       return json(r, r.ok ? 200 : 400);
     }
     if (m === "DELETE" && id === "weeks" && sub) {

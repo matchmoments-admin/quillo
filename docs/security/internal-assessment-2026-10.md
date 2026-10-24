@@ -93,10 +93,10 @@ same PR as this document.
 
 | ID | Severity | Finding | Where | Status |
 |---|---|---|---|---|
-| R-01 | MEDIUM | Unbounded body reads on public (pre-auth) routes when `Content-Length` is absent. The #713 caps check the declared length before buffering, so a chunked request with no `Content-Length` is read in full (for example `/csp-report` reads the whole body before slicing to 8 KB). A memory-amplification risk within one isolate, not a data exposure | `src/index.ts` public POST routes | Fix in progress: PR #TBD |
-| R-02 | LOW | CSV formula-guard mismatch. The WFH diary export neutralises a leading `= + - @ \t \r`, but the shared `neutraliseFormula` used by the accountant schedule (CSV and xlsx) covers only `= + - @` | `src/lib/accountant-schedule.ts` `neutraliseFormula`; `src/lib/wfh-diary.ts` | Fix in progress: PR #TBD |
-| R-03 | LOW | The OAuth binding cookies (`quillo_qbo_bind`, `quillo_bank_bind`) don't use the `__Host-` prefix, so a sibling subdomain could in principle set or shadow them. They carry no identity, and the nonce is useless without its server-side state | `src/lib/oauth-binding.ts` | Fix in progress: PR #TBD |
-| R-04 | LOW | The `/api` error scrub (`scrubApiErrorResponse`) only rewrites responses with status 400 or higher, so an internal message inside a 200 response's `errors[]` array (a partial-success batch) reaches the client unredacted | `src/lib/security-headers.ts` | Fix in progress: PR #TBD |
+| R-01 | MEDIUM | Unbounded body reads on public (pre-auth) routes when `Content-Length` is absent. The #713 caps check the declared length before buffering, so a chunked request with no `Content-Length` is read in full (for example `/csp-report` reads the whole body before slicing to 8 KB). A memory-amplification risk within one isolate, not a data exposure | `src/index.ts` public POST routes | **Fixed** in PR #799, deployed `e0790b0` (2026-10-24); verified live: oversize chunked bodies to `/csp-report` and the Stripe webhook return 413 |
+| R-02 | LOW | CSV formula-guard mismatch. The WFH diary export neutralises a leading `= + - @ \t \r`, but the shared `neutraliseFormula` used by the accountant schedule (CSV and xlsx) covers only `= + - @` | `src/lib/accountant-schedule.ts` `neutraliseFormula`; `src/lib/wfh-diary.ts` | **Fixed** in PR #799, deployed `e0790b0` (2026-10-24) |
+| R-03 | LOW | The OAuth binding cookies (`quillo_qbo_bind`, `quillo_bank_bind`) don't use the `__Host-` prefix, so a sibling subdomain could in principle set or shadow them. They carry no identity, and the nonce is useless without its server-side state | `src/lib/oauth-binding.ts` | **Fixed** in PR #799, deployed `e0790b0` (2026-10-24) |
+| R-04 | LOW | The `/api` error scrub (`scrubApiErrorResponse`) only rewrites responses with status 400 or higher, so an internal message inside a 200 response's `errors[]` array (a partial-success batch) reaches the client unredacted | `src/lib/security-headers.ts` | **Fixed** in PR #799, deployed `e0790b0` (2026-10-24) |
 
 ## Evidence 3: live header and CSP verification
 
@@ -164,8 +164,32 @@ missing until the lockfile is fixed and the suites re-run on `main`.
 | Item | Owner | Ticket |
 |---|---|---|
 | External penetration test by an independent tester (Schedule 2) | Owner (RFQ) | [#703](https://github.com/matchmoments-admin/quillo/issues/703), [pen-test-scope.md](pen-test-scope.md) |
-| R-01 to R-04 fixes merged and deployed | Engineering | PR #TBD |
-| CI `npm ci` lockfile failure fixed; suites re-run on `main` | Engineering | PR #TBD |
+| R-01 to R-04 fixes merged and deployed | Engineering | **Done**: PR #799 (deploy `e0790b0`) |
+| CI `npm ci` lockfile failure fixed; suites re-run on `main` | Engineering | **Done**: PR #796; tests, browser QA, CodeQL and audit all green in CI |
 | Clerk production cutover and admin MFA (`admin_mfa_required`) | Owner | [#519](https://github.com/matchmoments-admin/quillo/issues/519), [owner-tasks.md](owner-tasks.md) |
 | Confirm the leaked setup IAM key is deleted | Owner | [#518](https://github.com/matchmoments-admin/quillo/issues/518) |
 | Triage the 7 CodeQL alerts in test tooling | Engineering | none yet |
+
+## Addendum: post-fix verification (2026-10-24)
+
+The fixes above were applied together with the review's other findings. The combined `main` was then re-verified.
+
+**Re-verification of the combined `main`:**
+
+| Check | Result |
+|---|---|
+| `npm test` units | 2552 passed |
+| Persona golden checks | 630, all passing |
+| AU report snapshot | Byte-identical |
+| Browser QA suite (`qa:browser`), every journey at 1280px and 390px, all personas, the 1,500-line background import | **452 / 452** |
+| Read-only production smoke (`qa:smoke-prod`) | Passed on deploy `b375eda1` |
+| Dependabot open alerts | 0 |
+
+**Related fixes shipped in the same pass:**
+- The WFH diary uses the tenant's local date (#794).
+- The diary no longer discards hours recorded before it (#797, migration 0089).
+- Large statement imports finish on a background continuation instead of inside the upload request (#798).
+- Every deploy is tagged with its commit (#800).
+
+This remains an internal assessment, not a penetration test. The independent external test scoped in `pen-test-scope.md` is still required.
+

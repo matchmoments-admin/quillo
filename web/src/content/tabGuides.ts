@@ -72,7 +72,7 @@ const items = (n: number) => `${n} ${n === 1 ? "item" : "items"}`;
  * The guide copy for a tab given the current progress (may be undefined while it loads). The
  * Transactions page hosts the review queue as its "Needs review" tab, so its guide describes both tabs.
  */
-export function tabGuide(tab: TabKey, p?: Progress): GuideCopy {
+export function tabGuide(tab: TabKey, p?: Progress, opts?: { mailboxRetired?: boolean }): GuideCopy {
   const hasData = !!p && p.imported.transactions > 0;
   const needs = p?.needs_review ?? 0;
   const undated = p?.undated ?? 0;
@@ -154,7 +154,7 @@ export function tabGuide(tab: TabKey, p?: Progress): GuideCopy {
       if (!p || p.unreconciled_receipts === 0)
         return {
           title: "Optional: match receipts",
-          body: "This matches receipts against bank lines for evidence. If you only import statements, you can skip this entirely. Add receipts (snap or email them) if you want proof attached to a deduction.",
+          body: `This matches receipts against bank lines for evidence. If you only import statements, you can skip this entirely. Add receipts ${opts?.mailboxRetired ? "(snap or upload them)" : "(snap or email them)"} if you want proof attached to a deduction.`,
         };
       return {
         title: "Match receipts to bank lines",

@@ -22,7 +22,8 @@ export function TabGuide({ pathname }: { pathname: string }) {
   const guideAI = useMutation({ mutationFn: () => api.guideMe(tab as string) });
 
   if (!tab) return null;
-  const guide = tabGuide(tab, data);
+  // mailbox_retired (map #692): no "email them" copy once the receipt mailbox is retired. OFF ⇒ unchanged.
+  const guide = tabGuide(tab, data, { mailboxRetired: has("mailbox_retired") });
   const ai = guideAI.data;
   const aiErr = guideAI.error ? friendlyGuideError((guideAI.error as Error).message) : null;
   const close = () => { setOpen(false); guideAI.reset(); };

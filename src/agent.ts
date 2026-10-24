@@ -2869,7 +2869,10 @@ export class TaxAgent extends Agent<Env> {
     if (final.bucket === "company" && final.confidence >= CONFIDENCE_THRESHOLD) {
       await this.notify(
         userId,
-        `Company expense captured: "${final.merchant}" ($${(final.amount_cents / 100).toFixed(2)}, ${final.ato_label}) — will reconcile against your QuickBooks bank feed. Receipt attached. Review at /api/qbo/reconcile.`,
+        // qbo_retired (map #692): the note stops pointing at QuickBooks. OFF ⇒ unchanged.
+        featureOn(this.env, "qbo_retired")
+          ? `Company expense captured: "${final.merchant}" ($${(final.amount_cents / 100).toFixed(2)}, ${final.ato_label}). Receipt attached.`
+          : `Company expense captured: "${final.merchant}" ($${(final.amount_cents / 100).toFixed(2)}, ${final.ato_label}) — will reconcile against your QuickBooks bank feed. Receipt attached. Review at /api/qbo/reconcile.`,
         txnId,
       );
     } else if (final.confidence < CONFIDENCE_THRESHOLD) {
@@ -6648,7 +6651,10 @@ export class TaxAgent extends Agent<Env> {
       .first<{ g: number; n: number }>();
     if (gst && gst.g > 0) {
       suggestions.push(
-        `You've captured ${money(gst.g)} in GST credits across ${gst.n} company expense(s) this FY — reconcile them in QuickBooks to claim.`,
+        // qbo_retired (map #692): no QuickBooks pointer in the weekly suggestion. OFF ⇒ unchanged.
+        featureOn(this.env, "qbo_retired")
+          ? `You've captured ${money(gst.g)} in GST credits across ${gst.n} company expense(s) this FY — keep the receipts for your BAS.`
+          : `You've captured ${money(gst.g)} in GST credits across ${gst.n} company expense(s) this FY — reconcile them in QuickBooks to claim.`,
       );
     }
 

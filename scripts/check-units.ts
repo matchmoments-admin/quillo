@@ -6082,7 +6082,7 @@ import {
     /private_hospital_cover/.test(w("content/aboutYou.ts")) && !/hide_extras|Extras/.test(w("pages/AboutYou.tsx")));
   check("Grow (ft): Savings / Extras always cut; Integrations cut only without a QuickBooks connection (has_data)",
     /layer === "savings" && has\("hide_savings"\)/.test(cuts) && /layer === "extras" && has\("hide_extras"\)/.test(cuts) &&
-    /layer === "integrations" && has\("hide_quickbooks_nav"\) && !hasData/.test(cuts) &&
+    /layer === "integrations" && \(has\("qbo_retired"\) \|\| \(has\("hide_quickbooks_nav"\) && !hasData\)\)/.test(cuts) &&
     (shell.match(/!cut\(l\.key, l\.has_data\)/g) ?? []).length === 2 && /if \(cut\(layer, view\?\.has_data\)\)/.test(grow));
   check("QuickBooks: out of the default nav; /quickbooks needs a connection (or an OAuth return) else → Accounts",
     /to: "\/quickbooks"[^}]*hideFlag: "hide_quickbooks_nav"/.test(app) &&
@@ -6093,7 +6093,7 @@ import {
     (w("pages/Settings.tsx").match(/<QuickBooksSettingsLink to="/g) ?? []).length === 2 &&
     /if \(!has\("hide_quickbooks_nav"\) \|\| linked !== true\) return null;/.test(cuts));
   check("QuickBooks: flag OFF ⇒ useQboLinked is true without a request (the Sync button renders as before)",
-    /enabled: on \}\);\s*if \(!on\) return true;/.test(cuts));
+    /enabled: on && !retired \}\);\s*if \(retired\) return false;[^\n]*\n\s*if \(!on\) return true;/.test(cuts));
   check("Partner: still partner-role only in both navs, labelled 'Referral partners' when ON; a non-partner on /partner goes Home",
     /to: "\/partner"[^}]*partner: true/.test(app) && /it\.to === "\/partner" && partnerRenamed \? PARTNER_NAV_LABEL/.test(app) &&
     /show: isPartner && !growListsAdvisers/.test(shell) && /PARTNER_NAV_LABEL = "Referral partners"/.test(cuts) &&
@@ -8171,7 +8171,7 @@ console.log("entity role duplicate guard (#699)");
   check("SPA copy: OFF keeps 'snap or email them'; ON says 'snap or upload them' and never mentions email",
     /\(snap or email them\)/.test(recOff) && /\(snap or upload them\)/.test(recOn) && !/email/i.test(recOn) && recOff.replace("email", "upload") === recOn);
   check("SPA: TabGuide passes the flag to the copy",
-    /tabGuide\(tab, data, \{ mailboxRetired: has\("mailbox_retired"\) \}\)/.test(fs.readFileSync(path.join(process.cwd(), "web/src/components/TabGuide.tsx"), "utf8")));
+    /tabGuide\(tab, data, \{[^}]*mailboxRetired: has\("mailbox_retired"\)[^}]*\}\)/.test(fs.readFileSync(path.join(process.cwd(), "web/src/components/TabGuide.tsx"), "utf8")));
   const webSrcMb = (dir: string): string[] =>
     fs.readdirSync(dir, { withFileTypes: true }).flatMap((d) => (d.isDirectory() ? webSrcMb(path.join(dir, d.name)) : /\.tsx?$/.test(d.name) ? [path.join(dir, d.name)] : []));
   const mailboxCopy = webSrcMb(path.join(process.cwd(), "web", "src")).filter((f) =>
@@ -8179,6 +8179,93 @@ console.log("entity role duplicate guard (#699)");
       .filter((l) => !/mailbox_retired|mailboxRetired/.test(l)) // the retirement wiring itself
       .some((l) => /receipts\+|\bmailbox\b|email (them|it|your receipts?)|forward (your )?receipts?/i.test(l)));
   check(`SPA: no other mailbox surface: address, set-up steps, "email your receipts" copy (found: ${mailboxCopy.map((f) => path.relative(process.cwd(), f)).join(",") || "none"})`, mailboxCopy.length === 0);
+}
+
+// ── Map #692: QuickBooks is retired (flag qbo_retired) ─────────────────────────────────────────────────────
+// ON ⇒ every /api/qbo/* route (and the public OAuth callback) is a 404 before Intuit, KV or the tokens are
+// touched; every SPA QuickBooks surface is hidden for everyone; no cron calls Intuit. OFF ⇒ unchanged.
+{
+  console.log("\nqbo_retired: QuickBooks is retired");
+  const { FEATURE_KEYS: FKq } = await import("../src/lib/features");
+  const { qboRetired, qboRetiredResponse, QBO_RETIRED_MESSAGE } = await import("../src/lib/qbo-retired");
+  const prodQ = (/^FEATURES\s*=\s*"([^"]*)"/m.exec(fs.readFileSync("wrangler.toml", "utf8"))?.[1] ?? "").split(",").map((s) => s.trim());
+  check("qbo_retired: registered in FEATURE_KEYS and ON in wrangler.toml", (FKq as readonly string[]).includes("qbo_retired") && prodQ.includes("qbo_retired"));
+  const r404 = qboRetiredResponse();
+  const b404 = (await r404.json()) as { error?: string; code?: string };
+  check("the refusal is a 404 { error: \"QuickBooks isn't available.\", code: qbo_unavailable }",
+    r404.status === 404 && b404.error === QBO_RETIRED_MESSAGE && b404.code === "qbo_unavailable" && qboRetired({ FEATURES: "qbo_retired" } as unknown as Env) && !qboRetired({ FEATURES: "" } as unknown as Env));
+
+  // End to end through handleApi: every authed /api/qbo/* route refuses, and neither the DO nor any
+  // qbo_connections SQL is reached.
+  const { handleApi: handleApiQ } = await import("../src/api");
+  const sqlSeen: string[] = [];
+  const stmtQ = { bind: () => stmtQ, first: async () => null, all: async () => ({ results: [] }), run: async () => ({ meta: {} }) };
+  const dbQ = { prepare: (sql: string) => { sqlSeen.push(sql); return stmtQ; }, batch: async () => [] };
+  let stubCalls = 0;
+  const stubQ = new Proxy({}, { get: () => async () => { stubCalls++; return {}; } });
+  const envQ = (flags: string) => ({ FEATURES: flags, DB: dbQ, RULES: { get: async () => null, put: async () => {} }, QBO_CLIENT_ID: "x" }) as unknown as Env;
+  const qboRoutes: Array<[string, string]> = [
+    ["GET", "/api/qbo/status"], ["GET", "/api/qbo/connect"], ["POST", "/api/qbo/sync-accounts"], ["POST", "/api/qbo/push/t1"],
+    ["GET", "/api/qbo/reconcile"], ["POST", "/api/qbo/disconnect"],
+  ];
+  for (const [method, p] of qboRoutes) {
+    sqlSeen.length = 0;
+    stubCalls = 0;
+    const res = await handleApiQ(new Request(`https://app.example${p}`, { method }), envQ("qbo_retired"), { userId: "uq", email: null } as never, stubQ as never)
+      .catch((e) => new Response(String(e), { status: 599 }));
+    const body = res.status === 404 ? ((await res.json()) as { code?: string }) : {};
+    check(`ON: ${method} ${p} ⇒ 404 qbo_unavailable; no DO call, no qbo_connections SQL`,
+      res.status === 404 && body.code === "qbo_unavailable" && stubCalls === 0 && !sqlSeen.some((s) => /qbo_connections/.test(s)));
+  }
+  {
+    stubCalls = 0;
+    const res = await handleApiQ(new Request("https://app.example/api/qbo/sync-accounts", { method: "POST" }), envQ(""), { userId: "uq", email: null } as never, stubQ as never)
+      .catch((e) => new Response(String(e), { status: 599 }));
+    check("OFF: POST /api/qbo/sync-accounts still reaches the DO (route unchanged)", res.status === 200 && stubCalls === 1);
+  }
+  // src/index.ts can't load under node, so the public callback's guard is checked by source.
+  const idxQ = fs.readFileSync(path.join(process.cwd(), "src/index.ts"), "utf8");
+  check("index.ts: /api/qbo/callback refuses while retired BEFORE handleCallback reads the state nonce",
+    /url\.pathname === "\/api\/qbo\/callback" && req\.method === "GET"\) \{\s*\/\/[^\n]*\n\s*if \(qboRetired\(env\)\) return qboRetiredResponse\(\);\s*const r = await handleCallback\(/.test(idxQ));
+  const schedQ = idxQ.slice(idxQ.indexOf("async scheduled("));
+  check("no cron touches QuickBooks (the scheduled handler names no qbo/QuickBooks/ledger call)", !/qbo|QuickBooks|getLedger|pushToLedger/i.test(schedQ));
+  const agentQ = fs.readFileSync(path.join(process.cwd(), "src/agent.ts"), "utf8");
+  check("DO copy: the company-expense note and the weekly GST suggestion drop QuickBooks while ON (OFF copy kept)",
+    (agentQ.match(/featureOn\(this\.env, "qbo_retired"\)/g) ?? []).length === 2 &&
+    /Receipt attached\.`\s*:\s*`Company expense captured:[^`]*QuickBooks bank feed/.test(agentQ) && /keep the receipts for your BAS\.`\s*:\s*`[^`]*reconcile them in QuickBooks to claim/.test(agentQ));
+  check("kept: tokens + data — the routes, the adapter, the token backfill and account-erasure revoke are all still there",
+    fs.existsSync("src/ledger/qbo.ts") && fs.existsSync("src/lib/qbo-oauth.ts") && /revokeAndDisconnect/.test(agentQ) && /qbo_connections/.test(fs.readFileSync("schema.sql", "utf8")));
+
+  // SPA (by source, like the #697 cut checks).
+  const wq = (f: string) => fs.readFileSync(path.join(process.cwd(), "web", "src", f), "utf8");
+  const cutsQ = wq("lib/cuts.tsx"), appQ = wq("App.tsx");
+  check("SPA nav: the QuickBooks item carries retiredFlag qbo_retired and the nav filter honours it",
+    /to: "\/quickbooks"[^}]*retiredFlag: "qbo_retired"/.test(appQ) && /\(!it\.retiredFlag \|\| !has\(it\.retiredFlag\)\)/.test(appQ));
+  check("SPA /quickbooks: lands on Accounts for everyone while ON (outside the connected-user allowance)",
+    /<CutRoute flag="qbo_retired" to="\/accounts">\s*<CutRoute flag="hide_quickbooks_nav"/.test(cutsQ));
+  check("SPA: useQboLinked is false while ON with no /api/qbo request ⇒ Accounts' Sync button + Settings card hidden",
+    /enabled: on && !retired \}\);\s*if \(retired\) return false;/.test(cutsQ) && /const showQboSync = useQboLinked\(\) === true;/.test(wq("pages/Accounts.tsx")) &&
+    /const linked = useQboLinked\(\);[^\n]*\n\s*if \(!has\("hide_quickbooks_nav"\) \|\| linked !== true\) return null;/.test(cutsQ));
+  check("SPA Grow: Integrations is cut for everyone while ON", /layer === "integrations" && \(has\("qbo_retired"\) \|\|/.test(cutsQ));
+  check("SPA: the QuickBooks page asks nothing of /api/qbo until the flags say it isn't retired",
+    /enabled: loaded && !has\("qbo_retired"\)/.test(wq("pages/QuickBooks.tsx")));
+  check("SPA TxnDetail: no QuickBooks push card while ON", /const qboSection = txn\.bucket === "company" && !has\("qbo_retired"\) \? \(/.test(wq("pages/TxnDetail.tsx")));
+  check("SPA Accounts: no 'QuickBooks feed' source choice while ON unless the account is already on it",
+    /const showQboFeed = !has\("qbo_retired"\) \|\| account\.source === "qbo_feed";/.test(wq("pages/Accounts.tsx")) &&
+    /\{showQboFeed && <option value="qbo_feed">/.test(wq("pages/Accounts.tsx")));
+  const { tabGuide: tgQ } = await import("../web/src/content/tabGuides");
+  const guideKeys = ["accounts", "txn"] as const;
+  check("SPA guide copy: OFF still names QuickBooks; ON names it nowhere",
+    guideKeys.every((k) => /QuickBooks/.test(tgQ(k, undefined).body) && !/QuickBooks/.test(tgQ(k, undefined, { qboRetired: true }).body)) &&
+    /tabGuide\(tab, data, \{[^}]*qboRetired: has\("qbo_retired"\)[^}]*\}\)/.test(wq("components/TabGuide.tsx")));
+  const glQ = await import("../web/src/content/glossary");
+  const qboKeys = Object.entries(glQ.ANY_GLOSSARY).filter(([, v]) => /QuickBooks/i.test(v.short)).map(([k]) => k);
+  check(`SPA glossary: every tip that names QuickBooks has a retired variant (${qboKeys.join(",")}); OFF ⇒ the original`,
+    qboKeys.length > 0 && qboKeys.every((k) => {
+      const orig = glQ.ANY_GLOSSARY[k as keyof typeof glQ.ANY_GLOSSARY].short;
+      return !/QuickBooks/i.test(glQ.glossaryShort(k, orig, true)) && glQ.glossaryShort(k, orig, false) === orig;
+    }) && /glossaryShort\(k, ANY_GLOSSARY\[k\]\.short\)/.test(wq("components/ui.tsx")) && /useQboRetiredGlossarySync\(\);/.test(appQ) &&
+    /glossaryShort\(key, v\.short, qboRetired\)/.test(wq("pages/Glossary.tsx")));
 }
 
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);

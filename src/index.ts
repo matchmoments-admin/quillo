@@ -8,6 +8,7 @@ import { requireClerk } from "./auth/clerk";
 import { handleApi } from "./api";
 import { DeleteBlockedError } from "./lib/situation-write";
 import { handleCallback } from "./lib/qbo-oauth";
+import { qboRetired, qboRetiredResponse } from "./lib/qbo-retired";
 import { takeConnectState, stateForSession } from "./lib/bank-connect";
 import { readCookie, redirectClearingBinding, QBO_BINDING, BANK_BINDING } from "./lib/oauth-binding";
 import { verifyStripeWebhook } from "./lib/stripe";
@@ -182,6 +183,8 @@ const handler = {
     // via the `state` nonce (KV → userId), set when the SPA initiated connect, not the app
     // session — the standard OAuth CSRF protection. Must be matched BEFORE the /api/ gate.
     if (url.pathname === "/api/qbo/callback" && req.method === "GET") {
+      // qbo_retired (map #692): 404 before the state nonce is read or any token is exchanged. OFF ⇒ unchanged.
+      if (qboRetired(env)) return qboRetiredResponse();
       const r = await handleCallback(env, url, url.origin, readCookie(req, QBO_BINDING.name));
       // Surface the failure reason to the UI (and logs) so a failed callback isn't a silent
       // connected=0. Note: the "redirect_uri invalid" error happens on Intuit's authorize

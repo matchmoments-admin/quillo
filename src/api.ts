@@ -88,6 +88,7 @@ import { buildConnectUrl, qboStatus, QBO_STATE_TTL_SECONDS } from "./lib/qbo-oau
 import { mintBinding, bindingSetCookie, QBO_BINDING, BANK_BINDING } from "./lib/oauth-binding";
 import { tokenStorageBlocked, TOKEN_STORAGE_BLOCKED_MESSAGE } from "./lib/token-crypto";
 import { backfillQboTokens } from "./lib/qbo-token-backfill";
+import { qboRetired, qboRetiredResponse } from "./lib/qbo-retired";
 import { QuickBooksAdapter } from "./ledger/qbo";
 import { LedgerReauthError } from "./ledger";
 import { buildReport, reportToCsv, currentFyStartYear, workUseRatesForUserFy, resolveRulePack } from "./lib/report";
@@ -1670,6 +1671,9 @@ export async function handleApi(
 
   // ── QuickBooks (Phase 4) ──────────────────────────────────────────────────
   if (resource === "qbo") {
+    // qbo_retired (map #692): QuickBooks isn't available, so no route here runs (no Intuit call, no token
+    // read or write). OFF ⇒ unchanged.
+    if (qboRetired(env)) return qboRetiredResponse();
     if (id === "status" && m === "GET") return json(await qboStatus(env, uid));
     // POST /api/qbo/sync-accounts — register QBO bank/card accounts as source='qbo_feed'
     // (activates the feed-vs-statement dedup guard).

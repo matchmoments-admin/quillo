@@ -1,9 +1,16 @@
 # Secrets and token encryption (security A4, #637)
 
 Evidence for CDR Rules Schedule 2 (cryptographic key management, encryption of data at rest) and for
-the privacy policy's §6 Security claim. Last checked 2026-10-08.
+the privacy policy's §6 Security claim. Last checked 2026-10-24 (secret names re-listed read-only with
+`npx wrangler secret list`).
 
 ## 1. QuickBooks token encryption
+
+> **QuickBooks is retired (2026-10-24, map #692).** Flag `qbo_retired` is ON in prod (PR #791): every
+> `/api/qbo/*` route, including the OAuth callback, answers 404 before touching Intuit, the KV state or
+> the stored tokens, so no new QuickBooks token can be written. Prod `qbo_connections` still has 0 rows.
+> The sealing code below stays in place and the activation order only matters if QuickBooks is ever
+> un-retired (take `qbo_retired` out of `FEATURES`): do steps 1-3 **before** that redeploy.
 
 QuickBooks OAuth tokens (`qbo_connections.access_token` / `refresh_token`) are the only third-party
 credentials stored per user. Cloudflare encrypts D1 at rest. On top of that, `src/lib/token-crypto.ts`
@@ -20,8 +27,10 @@ fresh 12-byte IV, stored as `base64(iv ++ ciphertext+tag)`. `enc_ver` on the row
 | Tokens never leave the server | `qboStatus` returns no tokens; data export redacts them (`SECRET_COLUMNS` in `src/lib/retention.ts`); tokens are never logged | existing `redactSecrets` unit test |
 | Disconnect deletes and revokes | `revokeAndDisconnect` in `src/lib/qbo-oauth.ts` | — |
 
-**State on 2026-10-08:** `QBO_TOKEN_KEY` is **not set** in production, and prod `qbo_connections` has
-**0 rows** (read-only query). Nothing is stored in plaintext today, but the next QuickBooks connect would be.
+**State on 2026-10-24:** `QBO_TOKEN_KEY` is **not set** in production, and prod `qbo_connections` has
+**0 rows**. Nothing is stored in plaintext, and with `qbo_retired` ON no connect can happen, so no token
+can be written in plaintext either. (On 2026-10-08, before the retirement, the next connect would have
+been stored in plaintext.)
 
 ### Activation order (coordinator runs these; this order matters)
 
@@ -70,26 +79,26 @@ Confirmed from the code on 2026-10-08:
 ## 3. Secrets inventory
 
 Sources: `src/env.ts` and its uses in `src/`, the `wrangler.toml` secrets comment, and
-`npx wrangler secret list` (read-only, run 2026-10-08).
+`npx wrangler secret list` (read-only, run 2026-10-24).
 
 | Secret | Read in code | In wrangler.toml notes | Set in prod | Action |
 |---|---|---|---|---|
-| ANTHROPIC_API_KEY | `src/llm.ts` | yes | yes | keep |
-| AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY | `src/llm.ts` | yes | yes | keep |
-| AWS_*_AU / AWS_*_UK | `src/llm.ts` (per-jurisdiction override) | AU added | no | optional; unsuffixed pair is the fallback |
-| QBO_CLIENT_ID / QBO_CLIENT_SECRET | `src/lib/qbo-oauth.ts`, `src/ledger/qbo.ts` | yes | yes | keep |
-| **QBO_TOKEN_KEY** | `src/lib/token-crypto.ts` | added | **no** | **set it** (§1) |
+| ANTHROPIC_API_KEY | `src/llm.ts` | yes | yes | keep: only a tenant with an explicit `inference_provider='anthropic'` (and US consent) uses it since Bedrock became the default (2026-10-24, #745) |
+| AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY | `src/llm.ts` | yes | yes | keep: this pair now carries **every** default tenant's inference (Bedrock `au.`, `DEFAULT_INFERENCE_PROVIDER = "bedrock"`), scoped by `QuilloBedrockAuInvoke` to ap-southeast-2/-4 |
+| AWS_*_AU / AWS_*_UK | `src/llm.ts` (per-jurisdiction override) | AU added | no | optional while AU is the only jurisdiction; the unsuffixed pair is the fallback. Set the suffixed pair before a second jurisdiction goes live |
+| QBO_CLIENT_ID / QBO_CLIENT_SECRET | `src/lib/qbo-oauth.ts`, `src/ledger/qbo.ts` | yes | yes | keep while the code is kept; unused while `qbo_retired` is ON (every `/api/qbo/*` route 404s). Delete with the QuickBooks code-deletion ticket |
+| QBO_TOKEN_KEY | `src/lib/token-crypto.ts` | added | no | only needed if QuickBooks is un-retired: set it before that redeploy (§1) |
 | STRIPE_SECRET_KEY / STRIPE_WEBHOOK_SECRET | `src/lib/stripe.ts`, `src/index.ts` | yes | yes | keep |
 | GOOGLE_PLACES_KEY | `src/lib/phi-providers.ts` | added | yes | keep |
 | MAPS_EMBED_KEY | `src/api.ts` (public by design) | added | yes | keep; restrict by HTTP referrer |
 | FISKIL_CLIENT_ID / FISKIL_CLIENT_SECRET | `src/lib/fiskil.ts` | yes | no | set when going live with Fiskil |
 | BASIQ_API_KEY | `src/lib/basiq.ts` (adapter kept, provider declined) | yes | yes | delete once the Basiq adapter is removed, or now if no Basiq sandbox use is planned |
-| **GEOAPIFY_KEY** | **nothing** (declaration removed in #637) | no | yes | **delete** |
+| GEOAPIFY_KEY | nothing (declaration removed in #637) | no | no (deleted; absent from the 2026-10-24 list) | none |
+| D1_EXPORT_TOKEN | `src/lib/backups.ts` (flag `d1_backups`) | yes | no | set it, then turn on `d1_backups` ([backup-dr.md](backup-dr.md)) |
 
 Commands for the coordinator (not run by the agent):
 
 ```sh
-npx wrangler secret delete GEOAPIFY_KEY
 # optional, only once Basiq is definitely abandoned (code still reads it; the bank-feed route stays dark without it):
 # npx wrangler secret delete BASIQ_API_KEY
 ```

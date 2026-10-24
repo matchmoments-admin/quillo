@@ -43,12 +43,12 @@ The code is public at <https://github.com/matchmoments-admin/quillo>, so the tes
 | T1 | SPA and API | `https://app.quillo.au/` (or the test host in §5); about 88 `/api/<resource>` groups in `src/api.ts` and 9 Worker routes in `src/index.ts` | OWASP Top 10 and API Top 10 across every authenticated route. Mass assignment, IDOR on every id-taking route, input validation, and error responses (S-06 made these generic) |
 | T2 | Clerk authentication | Sign-up, sign-in, sign-out, session refresh; JWT verification in `src/auth/clerk.ts` (JWKS, issuer, `azp`, `exp`/`nbf`) | Token forgery, `alg` confusion, replay of an expired or signed-out token, `azp` and origin handling (S-12), account enumeration, the open-signup path (`CLERK_ALLOWED_USERS=""`) |
 | T3 | Tenant isolation | Two test tenants, A and B (§6) | From A, read, change or delete B's transactions, receipts, documents, statements, properties, entities, reports and exports, using every id-taking route. Tenant selection from any header, query or body field. The sweep found none ("Checked and clean"), and this target is the one Fiskil cares about most |
-| T4 | Uploads and R2 originals | `POST /api/upload`, `POST /api/documents/upload`, `POST /api/statements`, `GET /api/receipt/:txnId`, `GET /api/documents/:id/download` | Content-type and polyglot tricks against the serve-point allowlist (S-01, PR #706). Path or key manipulation in R2 keys (`${userId}/…`). Oversized bodies (known, #713). PDF, CSV and image parser abuse. CSV formula injection in exports |
-| T5 | Receipt email inbound | Worker `email()` handler, Cloudflare Email Routing, `tenants.email_localpart` | Forged sender, slug guessing, oversized and malformed MIME. The missing sender check is known (#711), so test **around** it: header injection, attachment types, cost exhaustion |
+| T4 | Uploads and R2 originals | `POST /api/upload`, `POST /api/documents/upload`, `POST /api/statements`, `GET /api/receipt/:txnId`, `GET /api/documents/:id/download` | Content-type and polyglot tricks against the serve-point allowlist (S-01, PR #706). Path or key manipulation in R2 keys (`${userId}/…`). Oversized bodies against the pre-read size caps (#713, PR #728; CSV statements capped at 5 MB, #769). PDF, CSV and image parser abuse. CSV formula injection in exports |
+| T5 | Receipt email inbound (**retired**) | Worker `email()` handler, Cloudflare Email Routing, `tenants.email_localpart` | **Verify the retirement holds.** The mailbox is retired behind `mailbox_retired` (ON in prod, PR #789; #711 closed as not planned). Every inbound message must be bounced before the MIME parse, the tenant lookup or any R2/D1/DO write (`src/lib/mailbox-retired.ts`). Confirm forged senders, guessed slugs and oversized or malformed MIME are all refused with the same bounce, nothing reaches a tenant's ledger or AI budget, and the feature can't be re-enabled without a `FEATURES` change and redeploy |
 | T6 | Stripe webhook | `POST /api/stripe/webhook` | Signature bypass, replay, timestamp tolerance (PR #707), a forged `checkout.session.completed`, double credit, metadata that points at another tenant |
-| T7 | Bank feed (Fiskil) callback | `GET /api/bank/connect`, `GET /api/bank/callback`, `GET /api/bank/connections` (flag `bank_feed_cdr`, Fiskil sandbox) | State forgery, reuse and expiry. Callback for another tenant's state. The missing browser binding is known (#712). **There are no Fiskil or Basiq webhooks**: the callback is the only inbound entry from the aggregator |
-| T8 | QuickBooks OAuth | `GET /api/qbo/connect`, `GET /api/qbo/callback` | The same tests as T7, plus open redirect and token storage. Browser binding is known (#712) |
-| T9 | Admin endpoints | `/api/admin/*` (spend, tenant roles, referrals, QBO token backfill, the Security & compliance page) | Reaching admin as a normal tenant. Role self-assignment through `PUT /api/admin/tenants/:id/roles`. The MFA gate with `admin_mfa_required` ON (S-05). Whether a 403/404 leaks that the admin surface exists |
+| T7 | Bank feed (Fiskil) callback | `GET /api/bank/connect`, `GET /api/bank/callback`, `GET /api/bank/connections` (flag `bank_feed_cdr`, Fiskil sandbox) | State forgery, reuse and expiry. Callback for another tenant's state. State is now bound to the browser that started the connect (#712, PR #733): try replaying another browser's state. **There are no Fiskil or Basiq webhooks**: the callback is the only inbound entry from the aggregator |
+| T8 | QuickBooks OAuth (**retired**) | `GET /api/qbo/connect`, `GET /api/qbo/callback` and every other `/api/qbo/*` route | **Verify the retirement holds.** QuickBooks is retired for everyone behind `qbo_retired` (ON in prod, PR #791). Every `/api/qbo/*` route, including the public OAuth callback, must answer 404 before touching Intuit, the KV state nonce or the stored tokens (`src/lib/qbo-retired.ts`). Confirm no route, method or path variant reaches the old handlers, and that nothing short of a `FEATURES` change and redeploy re-enables them |
+| T9 | Admin endpoints | `/api/admin/*` (spend, tenant roles, referrals, the QBO token backfill, the Security & compliance page) | Reaching admin as a normal tenant. Role self-assignment through `PUT /api/admin/tenants/:id/roles`. The MFA gate with `admin_mfa_required` ON (S-05). Whether a 403/404 leaks that the admin surface exists |
 | T10 | Rate limits and cost caps | `API_IP_RATE_LIMITER` (600/min), `API_USER_RATE_LIMITER` (300/min), the per-tenant and global AI spend caps (`MAX_DAILY_COST_CENTS`, `MAX_DAILY_COST_CENTS_GLOBAL`, `MAX_MONTHLY_COST_CENTS_GLOBAL`) | Whether the limits can be bypassed (IP rotation, header spoofing, parallel tenants), and whether one tenant can burn the global AI budget. Prove each limit with a short burst, not a flood (see §4) |
 | T11 | Bedrock inference and prompt injection | Every model call: extraction, categorisation, document classification, chat/Ask (`src/llm.ts`, `src/extract.ts`) | Instructions planted in receipts, PDFs, statement lines and emails that try to change the tool call, write to the wrong record, leak another tenant's data or the system prompt, or get a chat `proposed_action` applied that the user didn't confirm. Every call is pinned to one record-only tool, and actions are checked against the tenant's own ids. Try to break that. Also test the residency gate: can a CDR-tainted tenant reach a non-Bedrock provider? |
 | T12 | Headers and CSP | Live response headers, `src/lib/security-headers.ts`, `web/public/_headers` | CSP bypasses (`script-src` has no `'unsafe-inline'` and no `*.quillo.au` since #714), clickjacking, CORS on `/api/*`, HSTS, cache headers on authenticated responses |
@@ -103,8 +103,8 @@ they didn't, so the report can be read as evidence.
 - **No production customer data.** Prod has exactly one real tenant, which is the owner's own tax
   return (property, income and receipts). No CDR data exists anywhere yet (`bank_feed_cdr` is OFF in
   prod, and Fiskil is in sandbox). The tester must never read, change or try to reach that tenant.
-- **Sandbox integrations only:** Stripe test mode, Fiskil sandbox (data holder 88888), and the
-  QuickBooks sandbox.
+- **Sandbox integrations only:** Stripe test mode and the Fiskil sandbox (data holder 88888).
+  QuickBooks is retired (T8), so no Intuit sandbox is needed.
 - **Data handling:** the tester holds test data and evidence encrypted, deletes it 90 days after the
   retest, and doesn't keep or reuse any credentials.
 - **Disclosure:** the report is confidential. The owner may share it with Fiskil, regulators and
@@ -118,7 +118,7 @@ they didn't, so the report can be read as evidence.
 | Owner's real data | **Physically separate.** A successful cross-tenant or admin exploit reaches synthetic data only | **Same D1 and R2 as the owner's tax data.** A successful cross-tenant exploit (T3) or admin exploit (T9) exposes the owner's real return. That's the exact thing the test is looking for |
 | What it proves | The code at the tested commit, with the flags the tester needs (e.g. `bank_feed_cdr` and `admin_mfa_required` ON) | The exact prod config: custom domain, zone settings, live `_headers`, prod secrets and the real Clerk instance |
 | Destructive tests | Safe: deleting, bulk-importing, cost-cap and rate-limit bursts, purge | Risky: every write lands in prod D1, every model call is real spend, and a rate-limit burst can block the owner |
-| Email inbound (T5) | Needs an Email Routing rule that sends a test address on `quillo.au` to the preview Worker | Works as is (no mailbox has been issued yet) |
+| Email inbound (T5) | Needs an Email Routing rule that sends a test address on `quillo.au` to the preview Worker, to prove it bounces | Works as is: every message to the mailbox bounces |
 | Fiskil sandbox (T7) | Works. The non-production guard (`isNonProductionDeployment`, `src/lib/bank-feed-core.ts`) permits only the sandbox data holder | Needs `bank_feed_cdr` ON in prod, which is gated on the consent dashboard and Fiskil approval |
 | Drift risk | The preview must match prod. Deploy the same commit and copy `FEATURES` from `wrangler.toml` | None |
 
@@ -138,9 +138,9 @@ Two details for option A:
   (`src/auth/clerk.ts:66-76`), so real Clerk auth stays on, while the CDR non-production guard treats
   the deployment as non-prod and refuses anything except sandbox banks.
 
-**Timing:** ideally after the Clerk production cutover (#519) and the fixes for #711–#714, so the
-report shows what Fiskil will actually assess. If the owner wants the report sooner, test now and list
-those items as known (§8).
+**Timing:** ideally after the Clerk production cutover (#519), so the report shows what Fiskil will
+actually assess. #712, #713 and #714 are fixed, and #711 is moot because the mailbox is retired. If the
+owner wants the report sooner, test now and list the cutover items as known (§8).
 
 ## 6. Test-account setup (owner checklist)
 
@@ -157,20 +157,21 @@ Agent tasks are marked *(agent)*. Everything else needs the owner's own accounts
 4. Create a **separate Clerk development instance** for the pentest host. Set `CLERK_ISSUER` and
    `CLERK_AUTHORIZED_PARTIES=https://<pentest-host>` on the preview Worker.
 5. Set the preview secrets: `DEV_AUTH_BYPASS=1` (secret, see §5), Stripe **test-mode** keys and a
-   test webhook secret, Fiskil **sandbox** keys (`BANK_FEED_PROVIDER=fiskil`), QBO sandbox keys, and a
+   test webhook secret, Fiskil **sandbox** keys (`BANK_FEED_PROVIDER=fiskil`), and a
    Bedrock key. Prefer a **separate IAM user** with the same `QuilloBedrockAuInvoke` policy, so the
    tester's traffic is separable in CloudTrail and the key can be deleted afterwards. Set low AI spend
    caps (for example `MAX_DAILY_COST_CENTS_GLOBAL` at A$10 a day).
 6. Deploy the commit being tested: `npm run web:build && npx wrangler deploy --env pentest`. Record
    the commit SHA for the report.
-7. Add an Email Routing rule that sends `pentest-*@quillo.au` to the preview Worker (T5).
+7. Add an Email Routing rule that sends `pentest-*@quillo.au` to the preview Worker, so T5 can confirm it bounces.
 8. Create three Clerk accounts on the preview, using email addresses the tester controls:
    - **Tenant A** and **Tenant B**: ordinary users. Load each with synthetic data from a persona
      fixture (e.g. P6 Susan & Greg for A, P8 James for B), so every id-taking route has rows to aim at.
-     Give each a mailbox slug.
+     Give each a mailbox slug, so T5 can confirm a known slug still bounces.
    - **Admin**: assign the `admin` role (`PUT /api/admin/tenants/:id/roles`) and enrol TOTP, so the
      MFA gate can be tested both ways.
-9. Connect Tenant A to the Fiskil sandbox and the QBO sandbox, so T7 and T8 have live connections.
+9. Connect Tenant A to the Fiskil sandbox, so T7 has a live connection. T8 needs no QuickBooks
+   connection: it only checks that every `/api/qbo/*` route 404s.
 10. Send the tester: the host, the three logins (through a password manager share, never email), this
     document, [sweep-2026-10.md](sweep-2026-10.md) and the repo link.
 11. After the retest: delete the three Clerk users, the IAM user and its key, and the preview Worker
@@ -204,10 +205,10 @@ spend time proving them again.
 
 | Ref | Issue | State |
 |---|---|---|
-| [#711](https://github.com/matchmoments-admin/quillo/issues/711) (S-03) | Receipt mailbox accepts mail from any sender, no rate limit | Open. Inert in prod (0 mailboxes issued) |
-| [#712](https://github.com/matchmoments-admin/quillo/issues/712) (S-04) | OAuth `state` not bound to the starting browser (QBO and bank callbacks) | Open |
-| [#713](https://github.com/matchmoments-admin/quillo/issues/713) (S-08) | No server-side upload size cap | Open |
-| [#714](https://github.com/matchmoments-admin/quillo/issues/714) (S-09) | CSP `script-src` allows `'unsafe-inline'` and `*.quillo.au` | Fixed by the #714 PR: hash-only inline script enforced, exact Clerk FAPI hosts |
+| [#711](https://github.com/matchmoments-admin/quillo/issues/711) (S-03) | Receipt mailbox accepts mail from any sender, no rate limit | Closed as not planned: the mailbox is retired (`mailbox_retired` ON, PR #789), so every message bounces. T5 checks the retirement holds |
+| [#712](https://github.com/matchmoments-admin/quillo/issues/712) (S-04) | OAuth `state` not bound to the starting browser (QBO and bank callbacks) | Fixed: [PR #733](https://github.com/matchmoments-admin/quillo/pull/733) binds state to the starting browser. QuickBooks is also retired (`qbo_retired`, PR #791) |
+| [#713](https://github.com/matchmoments-admin/quillo/issues/713) (S-08) | No server-side upload size cap | Fixed: [PR #728](https://github.com/matchmoments-admin/quillo/pull/728) caps uploads before the body is read; CSV statements capped at 5 MB (#769) |
+| [#714](https://github.com/matchmoments-admin/quillo/issues/714) (S-09) | CSP `script-src` allows `'unsafe-inline'` and `*.quillo.au` | Fixed: [PR #737](https://github.com/matchmoments-admin/quillo/pull/737), hash-only inline script enforced, exact Clerk FAPI hosts |
 | S-02, [#518](https://github.com/matchmoments-admin/quillo/issues/518) | Partly exposed `quillo-setup` IAM key | Owner action |
 | S-05, [#519](https://github.com/matchmoments-admin/quillo/issues/519) | Admin routes gated by role only while `admin_mfa_required` is OFF in prod; prod on the Clerk development instance | Owner switch (ON in the preview, so it can be tested) |
 | S-12, [#519](https://github.com/matchmoments-admin/quillo/issues/519) | `CLERK_AUTHORIZED_PARTIES` unset in prod, `localhost` in the default list, token without `azp` accepted | Fixed by the cutover runbook |
@@ -248,9 +249,9 @@ S-11 (PR #705).
 > - Clerk auth flows;
 > - tenant isolation, with two test tenants;
 > - uploads and stored files;
-> - inbound receipt email;
+> - inbound receipt email (retired: confirm it stays refused);
 > - the Stripe webhook;
-> - the QuickBooks and bank OAuth callbacks;
+> - the bank OAuth callback, and that the retired QuickBooks routes stay closed;
 > - admin endpoints;
 > - rate limits;
 > - prompt injection from uploaded documents into the model's tool calls;

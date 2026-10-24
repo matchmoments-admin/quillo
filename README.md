@@ -1,9 +1,14 @@
 # tax-agent
 
-Self-Improving Tax Agent — a Cloudflare Worker that ingests receipts (email / web /
+Self-Improving Tax Agent — a Cloudflare Worker that ingests receipts (web /
 mobile), extracts + categorises them with Claude vision into PAYG / company /
-property buckets, writes the company bucket to a swappable ledger (QuickBooks), and
-logs every correction for a self-improvement loop.
+property buckets, and logs every correction for a self-improvement loop.
+
+> **Current state (2026-10-24, map #692).** Inference runs on **Bedrock AU** (`au.` profile,
+> ap-southeast-2) by default for every tenant. The **receipt mailbox** (`mailbox_retired`) and
+> **QuickBooks** (`qbo_retired`) are **retired** behind flags: inbound email bounces and every
+> `/api/qbo/*` route returns 404. The QuickBooks and email sections below are history. See
+> [CONFIG.md](CONFIG.md).
 
 > **General information only — not tax, financial, or legal advice.** Confirm all
 > BAS/company tax treatment and deductibility with a registered tax/BAS agent.
@@ -11,7 +16,9 @@ logs every correction for a self-improvement loop.
 Full design + the critique that shaped this build live in
 `../agent-fleet/docs/tax-agent-build-plan.md`.
 
-## QuickBooks integration: reader/reconciler (NOT writer)
+## QuickBooks integration: reader/reconciler (NOT writer) — retired
+
+> **Retired 2026-10-24** (flag `qbo_retired`, PR #791). Kept as history; undoing it is one flag.
 
 The agent captures and categorises company expenses but **does not auto-create Purchase
 objects in QuickBooks Online**. Bank feeds are the source of truth in QBO: if the agent
@@ -31,15 +38,17 @@ same transaction. Instead:
 | Deployment | **Separate Worker** (own trust model + residency story) |
 | Runtime | Cloudflare **Agents SDK** (`agents` pkg) — one `TaxAgent` Durable Object per tenant |
 | Store | D1 (relational system-of-record) + R2 (receipts) + KV (nonces, caches, rule packs) |
-| Inference | **US Anthropic now**, behind the `getLLM()` seam → flip to **Bedrock Sydney** later per-tenant |
+| Inference | **Bedrock Sydney (`au.`) by default since 2026-10-24**, behind the `getLLM()` seam; US Anthropic remains selectable per tenant (with APP-8 consent) |
 | Tenancy | **Multi-tenant-shaped**; per-tenant ingest key derives identity (you = tenant #1) |
-| Ledger | Direct **QuickBooks REST** adapter (not MCP), behind `LedgerAdapter` |
+| Ledger | Direct **QuickBooks REST** adapter (not MCP), behind `LedgerAdapter` (retired 2026-10-24, `qbo_retired`) |
 
 ## The three seams that make "start simple, switch later" cheap
 
 1. **`src/llm.ts` — inference factory.** Every Claude call goes through `getLLM(profile)`.
    Switching to AU-resident Bedrock is config only: a tenant's `inference_provider`, or
-   `DEFAULT_INFERENCE_PROVIDER` for everyone (see CONFIG.md §3). No call-site changes.
+   `DEFAULT_INFERENCE_PROVIDER` for everyone (`bedrock` since 2026-10-24; see CONFIG.md §3 before
+   changing it back). No call-site changes. Every model call is fronted by `aiCall`
+   (`src/lib/ai-call.ts`), which enforces APP-8 consent and the AI budget in one place.
 2. **`src/ingest/auth.ts` — per-tenant keyed HMAC.** Identity is derived from the key
    that verifies the signature, never a client header. One tenant now; add a row + key later.
 3. **`src/ledger/*` — `LedgerAdapter`.** Agent logic only calls `pushExpense`/`resolveAccount`.
@@ -107,8 +116,8 @@ node scripts/seed-tenant.mjs me me web
 # 5) Deploy
 wrangler deploy
 
-# 6) Record cross-border consent (US inference path), signed like /ingest — or set
-#    profiles.inference_provider='bedrock' to avoid US processing entirely.
+# 6) Bedrock AU is the default, so no cross-border consent is needed. Only a tenant moved to the
+#    US provider must record APP-8 consent first, signed like /ingest.
 
 # 7) Test the ingest → extract loop with a real receipt
 node scripts/upload.mjs https://tax-agent.<you>.workers.dev/ingest <keyId> <secret> receipt.jpg image/jpeg
@@ -117,8 +126,8 @@ wrangler d1 execute tax-agent-db --command \
   "SELECT merchant, amount_cents, bucket, ato_label, confidence, status FROM transactions ORDER BY created_at DESC LIMIT 5"
 ```
 
-Email ingest: enable Cloudflare Email Routing on your domain and route
-`receipts+me@<yourdomain>` to this Worker (see build plan §4a).
+Email ingest is **retired** (`mailbox_retired`, PR #789): the Worker bounces inbound mail. Historically
+you enabled Cloudflare Email Routing and routed `receipts+me@<yourdomain>` to this Worker.
 
 ## Feeding expenses in bulk (testing)
 
@@ -172,7 +181,7 @@ hash-chain and feeds the self-improvement loop.
   `audit_log` breadcrumb.
 - **Dates / tax year.** AU FY (Jul–Jun) is derived from `txn_date`; undated receipts are
   surfaced (never silently dropped) and the date is editable so they land in an FY.
-- **QuickBooks (reader/reconciler).** Company expenses on a **connected** account are
+- **QuickBooks (reader/reconciler, retired 2026-10-24).** Company expenses on a **connected** account were
   reconciled against the bank feed (never auto-posted — avoids duplicates). For a **non-feed**
   expense (cash, an Amex not in QBO), `POST /api/qbo/push/:txnId` posts a Purchase
   (user-triggered, idempotent, AUD). Connect first via `/api/qbo/connect`.

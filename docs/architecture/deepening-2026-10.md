@@ -17,13 +17,18 @@ Each opportunity gives:
 - the **test** the module makes possible;
 - the **migration path**.
 
-Every migration path is additive, flag-gated where it touches money, and keeps the 10 contract
-personas (578 goldens) and the AU snapshot green.
+Every migration path is additive, flag-gated where it touches money, and keeps every contract
+persona (578 goldens at the audit; P11 has since been added, #756) and the AU snapshot green.
+
+> **Dispositions refreshed 2026-10-24 (later the same day).** #721 (the `aiCall` gate, PRs #778 and
+> #780), #724 (`runBackfillOnce`, PR #785) and ADR-0004 step 1 (the `SituationModule` registry, PR
+> #749) have shipped and are deployed. #716 and #718 are merged and deployed.
 
 **Rank** weighs benefit (simplicity, testability, scale, ease of adding life situations) against risk
 (money output, blast radius). **Disposition** is one of:
 
-- **shipped**: a PR is open;
+- **shipped**: a PR has merged (at the original audit, "shipped" meant a PR was open; every PR named here
+  has since merged and deployed);
 - **ticketed**: there is a GitHub issue labelled `area:architecture`;
 - **accepted**: recorded here, and no action is planned.
 
@@ -31,23 +36,27 @@ personas (578 goldens) and the AU snapshot green.
 
 | # | Opportunity | Benefit | Risk | Disposition |
 |---|---|---|---|---|
-| 1 | One `aiCall` gate for every model call (APP-8 consent + budget + xborder audit) | High: a non-negotiable invariant enforced in one place; one bug found | Medium: every model path | **Ticketed #721** (the budget-gate bug ships first) |
-| 2 | The life-situation seam: `composePosition` now, a `SituationModule` registry next | High: a new situation touches 1–3 files instead of 6–17 | Low (step 1) / medium (registry) | **Step 1 shipped: PR #716.** Registry: **#147** (re-scoped) + proposed ADR-0004 |
+| 1 | One `aiCall` gate for every model call (APP-8 consent + budget + xborder audit) | High: a non-negotiable invariant enforced in one place; one bug found | Medium: every model path | **Shipped: #721 closed.** Budget-gate fix #731; `aiCall` for the 4 AI front doors (PR #778) and the remaining 9 callers plus a raw `getLLM(` source guard (PR #780) |
+| 2 | The life-situation seam: `composePosition` now, a `SituationModule` registry next | High: a new situation touches 1–3 files instead of 6–17 | Low (step 1) / medium (registry) | **Step 1 shipped: PR #716.** ADR-0004 accepted (#732) and its registry step 1 shipped (PR #749, reportable amounts as the first module, byte-identical). Moving the remaining summands: **#147** (re-scoped)-0004 |
 | 3 | A person-scoped report (`ReportScope.personId`) | High: unblocks partner/MLS; removes a correctness trap | Medium: changes money output for any tenant with 2 earners | **Ticketed #722** (needs-decision) |
 | 4 | One classified income ledger shared by the report and the accountant pack | Medium-high: kills a second income pipeline | Low-medium | **Ticketed #723** |
-| 5a | One-time backfills scan every tenant on every 10-minute cron tick | High at scale: about 3N KV reads + 2 full scans every 10 min | Low | **Ticketed #724** |
+| 5a | One-time backfills scan every tenant on every 10-minute cron tick | High at scale: about 3N KV reads + 2 full scans every 10 min | Low | **Shipped: #724 closed** (PR #785: `runBackfillOnce`, a global marker and paging; all three markers set in prod on the first tick) |
 | 5b | `buildReport` fan-out: about 47 sequential queries; `/api/journey` about 70+ | Medium-high: latency and D1 load | Low (read reordering) | **Ticketed #146** (updated) |
 | 6 | One server-side review-queue module behind the 5 review surfaces | Medium: one grouping, one payload | Medium: UX coupling | **Ticketed #725** (after the #696 cut list) |
 | 7 | Decompose `src/agent.ts` (7,962 lines) cluster by cluster | Medium per cluster, high cumulatively | Low per PR | **Ticketed #726** (umbrella) |
 | 8 | One RFBA/RESC per-employer fold for the report and the pack | Medium: removes drift between payload and pack; the novated-lease seam | Low (pure) | **Shipped: PR #718** |
 | 9 | Share taxonomy, FY-label and money helpers between web and Worker | Low-medium | Low | **Ticketed #727** |
 | 10 | Property use periods: move the gate from a SQL 0/1 marker to a per-property fraction | Unblocks change of use | Medium (money; needs-decision) | **Seam note on #492** |
-| 11 | Three AI helper endpoints (`/api/chat`, `/api/ask`, `/api/guide`) | Low until the cut list decides which survive | Low | **Accepted.** Folded into #721 (the shared gate) and the #696 cut list |
+| 11 | Three AI helper endpoints (`/api/chat`, `/api/ask`, `/api/guide`) | Low until the cut list decides which survive | Low | **Accepted.** The shared gate shipped with #721; which helpers survive stays with the cut list (#697) |
 | 12 | Per-DO SQLite stays unused for tenant data (ADR-0001) | n/a | n/a | **Accepted.** No change; shard-by-tenant stays the documented escape hatch |
 
 ---
 
-### 1. One `aiCall` gate for every model call (#721)
+### 1. One `aiCall` gate for every model call (#721, shipped)
+
+> **Shipped.** `src/lib/ai-call.ts` is live: consent, budget, `getLLM`, audit, then the callback. The
+> budget fix landed in #731, the front doors in PR #778, the other 9 callers and the source guard (a raw
+> `getLLM(` in `agent.ts` fails `check-units`) in PR #780. The text below is the original analysis.
 
 - **Current shape.** Every model call in the DO hand-writes the same sequence: provider, APP-8 consent
   check, `withinBudget`, `getLLM`, `auditXborderInference`, extractor, `audit`.
@@ -75,7 +84,7 @@ personas (578 goldens) and the AU snapshot green.
 
   No money output changes.
 
-### 2. The life-situation seam (PR #716 shipped; #147)
+### 2. The life-situation seam (PR #716 and ADR-0004 step 1 shipped; #147)
 
 Covered in full in [the seam section below](#life-situation-seam). Summary:
 
@@ -87,7 +96,8 @@ Covered in full in [the seam section below](#life-situation-seam). Summary:
   - Both endpoints share one `PositionSummands` object.
   - Byte-identical (AU snapshot and 578 goldens). 6 new units, including confirmed ≥ tracked and a
     guard against an inline copy.
-- **Next (#147).** A `SituationModule` registry, after ADR-0004.
+- **Shipped next (PR #749).** ADR-0004 was accepted (#732) and the `SituationModule` registry landed,
+  with reportable amounts as its first module (byte-identical). Moving the other summands onto it is #147.
 
 ### 3. A person-scoped report (#722)
 
@@ -126,7 +136,10 @@ Covered in full in [the seam section below](#life-situation-seam). Summary:
 
   This must land before #722, so the person scope goes in one place.
 
-### 5a. Cron fan-out (#724)
+### 5a. Cron fan-out (#724, shipped)
+
+> **Shipped (PR #785).** `runBackfillOnce` wraps the three backfills with a global completion marker and
+> paging; once done, a tick costs one KV read. All three markers were set in prod on the first tick.
 
 - **Current shape.** The `*/10` cron (src/index.ts ~439–491) runs 3 **one-time** backfills on every
   tick, with no end date.
@@ -326,6 +339,8 @@ interface ReportContext { env; scope: ReportScope; startYear; bounds; jurisdicti
   person scope are context, not modules.
 - **Step 1 is shipped (#716).** `PositionSummands` and `composePosition` already make the formula a
   single point. A new summand added today goes into one field and both endpoints pick it up.
+- **The registry's step 1 is shipped too (PR #749),** under ADR-0004: new life situations are
+  `src/lib/situations/<key>.ts` modules and money combines only in `composePosition`.
 - **Ordering trap to keep.** All money values are integer cents, so the sum is order-independent.
   `composePosition` keeps the historical order anyway. If a fractional value ever entered a summand,
   the order would matter for byte-identity. `composePosition` should round at its input if that
@@ -343,8 +358,11 @@ summand moves.** It meets all three parts of the bar:
   to settle whether readiness findings belong to the module or stay central in `assessReadiness`.
 
 The ADR should also record the boundary: what is a situation module and what is a core ledger fold
-or context. #147 carries the work. The ADR needs the owner's acceptance; it is proposed here, not
-accepted.
+or context. #147 carries the work.
+
+**Outcome:** ADR-0004 was written and accepted (#732,
+[`docs/adr-0004-life-situation-modules.md`](../adr-0004-life-situation-modules.md)); step 1 shipped in
+PR #749.
 
 ## What shipped from this ticket
 
@@ -353,7 +371,8 @@ accepted.
 | #716 | `arch/compose-position` | `src/lib/position.ts`: one position formula for the tracked and confirmed endpoints | typecheck, web tsc + lint, `npm test` green; personas 578/0; AU snapshot byte-identical; +6 units |
 | #718 | `arch/reportable-amounts` | `src/lib/reportable-amounts.ts`: one RFBA/RESC fold for the report and the pack | same gates; RA flag-ON goldens unchanged; +8 units |
 
-Neither PR is merged or deployed. Neither changes money or tax output.
+Both PRs have since merged and deployed. Neither changes money or tax output. Later PRs from the
+ranked list: #731 and #778/#780 (#721), #785 (#724), #749 (ADR-0004 step 1).
 
 _Related: [`feature-inventory.md`](feature-inventory.md) (life-situation matrix, observations 2, 4, 10, 11),
 [`journeys.html`](journeys.html), ADR-0001, ADR-0002, issues #146, #147, #492, #721–#727._

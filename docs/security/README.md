@@ -15,6 +15,7 @@ everything else.
 | [clerk-production-cutover.md](clerk-production-cutover.md) | Owner runbook: Clerk development → production instance, DNS, keys, admin MFA, test plan, rollback (#638) |
 | [vulnerability-management.md](vulnerability-management.md) | Scanners, patch SLAs, triage, secure SDLC (A7, #640), plus the controls assessment program and independence gap (cl 1.6) |
 | [sweep-2026-10.md](sweep-2026-10.md) | October 2026 vulnerability sweep (#694): 21 ranked findings, each fixed, ticketed or accepted with a reason (4(c), cl 1.6) |
+| [internal-assessment-2026-10.md](internal-assessment-2026-10.md) | Internal security assessment, October 2026 (**not** a penetration test): sweep + six-lens review findings with status, live header/CSP checks, dependency audit, automated controls, residency evidence, methodology and limitations |
 | [pen-test-scope.md](pen-test-scope.md) | External penetration test scope, rules of engagement, test-account setup, deliverables, RFQ email and tester shortlist (4(c), cl 1.6(4), #703) |
 | [secrets-and-encryption.md](secrets-and-encryption.md) | QBO token encryption, CDR credential posture, secrets inventory (A4, #637) |
 | [data-handling.md](data-handling.md) | Classification, minimisation, retention, deletion, non-production (control requirement 3) |

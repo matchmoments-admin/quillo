@@ -3,6 +3,12 @@
 > Wayfinder ticket #695 on map #692 (*Enterprise-ready for new users*). Audited 2026-10-24 against
 > `main` at `37117ab`. Read-only: nothing here changes behaviour. Later audits (#696 design audit,
 > #699, #700) build on it. The diagram is [`journeys.html`](journeys.html).
+>
+> **Refreshed 2026-10-24 against `main` at `0c42248`** for the flag states, the provider default and
+> the retirements that shipped later the same day: seven journey flags turned ON (#770–#776), Bedrock
+> `au.` became the default provider (#745), the eight `hide_*` cuts (#697), `mailbox_retired` (#789),
+> `qbo_retired` (#791), `mytax_mirror` (#790), `wfh_weekly_diary` (#787) and persona P11 (#756). Line
+> numbers in `Key files` are from the original audit and may have drifted.
 
 **How to read the flag column.** "Prod" means the `FEATURES` list in `wrangler.toml` on `main`,
 because `npm run deploy` ships that file. A deploy from a branch could differ, so confirm against the
@@ -10,10 +16,11 @@ live Worker before you rely on a single flag. The registry is `FEATURE_KEYS` in
 `src/lib/features.ts`. The SPA sees the enabled subset through `GET /api/dashboard → features`
 (`web/src/lib/features.ts:useFeatures`).
 
-**Personas.** P1 to P10 are the contract personas in [`docs/personas.md`](../personas.md):
+**Personas.** P1 to P11 are the contract personas in [`docs/personas.md`](../personas.md):
 P1 Maya (PAYG renter), P2 Daniel (PAYG plus investments), P3 Lukas (tradie), P4 Priya (rideshare),
 P5 Tom (freelancer), P6 Susan & Greg (co-owned landlords), P7 Nadia (multi-employer nurse),
-P8 James (company plus trust), P9 Aisha (founder, ESS), P10 Margaret (SMSF plus crypto).
+P8 James (company plus trust), P9 Aisha (founder, ESS), P10 Margaret (SMSF plus crypto),
+P11 Chris (PAYG employee with a novated lease; added for ADR-0004, #756).
 FT1 to FT4 are the first-timer cohort in [`docs/first-timer/personas-coverage.md`](../first-timer/personas-coverage.md):
 FT1 Jess (first job), FT2 Mia (student), FT3 Sam (PAYG plus gig), FT4 Lena (newcomer on a WHM visa).
 "All" means every persona passes through the feature.
@@ -26,16 +33,21 @@ FT1 Jess (first job), FT2 Mia (student), FT3 Sam (PAYG plus gig), FT4 Lena (newc
 | SPA routes | **40**: 28 protected app routes, `/start`, sign-in, sign-up, 7 old-step redirects, `/grow/:layer` (8 layers) and `/glossary` | `web/src/main.tsx` |
 | SPA pages (`web/src/pages/*.tsx`) | 30 | |
 | API resource groups (`/api/<resource>`) | **88** in `src/api.ts`, plus 9 Worker-level routes in `src/index.ts` | |
-| Feature flags | **105** registered; **89 ON** and **16 OFF** in prod | `src/lib/features.ts`, `wrangler.toml` |
+| Feature flags | **117** registered; **108 ON** and **9 OFF** in prod | `src/lib/features.ts`, `wrangler.toml` |
 | Cron schedules | 3 | `wrangler.toml [triggers]`, `src/index.ts:scheduled` |
 | External integrations | 10 | see [Integrations](#integrations) |
-| D1 migrations / tables | 87 migrations (`0001`–`0087`), ~80 `CREATE TABLE` in `schema.sql` | |
+| D1 migrations / tables | 88 migrations (`0001`–`0088`), ~80 `CREATE TABLE` in `schema.sql` | |
 
-**The 16 OFF flags:** `ft_journey`, `situation_profile`, `relevance_scan`, `wages_payer`,
-`reconcile_proposals`, `mytax_worksheet`, `residency_assessability`, `bank_minimisation` (the eight
-first-timer journey flags), `bank_feed_cdr`, `d1_backups`, `security_monitoring`,
+**The 9 OFF flags:** `bank_minimisation` (the one first-timer journey flag still OFF, until a FY is
+marked lodged and the notice copy is reviewed), `bank_feed_cdr`, `d1_backups`, `security_monitoring`,
 `admin_mfa_required`, `qbo_token_fail_closed`, `receipt_image_compression`, `partnership_losses`,
 `phi_tax_inputs`.
+
+**Since the original audit (105 / 89 / 16):** seven journey flags turned ON in spec §A15 order
+(`situation_profile`, `wages_payer`, `relevance_scan`, `reconcile_proposals`, `mytax_worksheet`,
+`residency_assessability`, then `ft_journey`; #770–#776), and twelve new flags were registered, all ON:
+the eight `hide_*` cuts (#697), `mailbox_retired` (#789), `qbo_retired` (#791), `mytax_mirror` (#790)
+and `wfh_weekly_diary` (#787).
 
 ## Architecture in one paragraph
 
@@ -49,9 +61,12 @@ coordinator**. Its SQLite is unused; D1 `tax-agent-db` is the store and the scal
 (`src/lib/queries.ts`), and the position is computed by pure libs (`src/lib/report.ts:buildReport` →
 `src/lib/ledger-totals.ts` → the engines). Receipts and statements live in R2 `tax-agent-receipts`
 (through `src/lib/r2-store.ts`). The rule pack, nonces, cron cursors and cost counters live in KV `RULES`.
-The model call goes through `src/llm.ts:getLLM`. The APP-8 consent gate applies to Anthropic (US).
+Every model call goes through `src/lib/ai-call.ts:aiCall` (consent, budget, `getLLM`, audit; #721).
+The default provider is Bedrock `au.` (`DEFAULT_INFERENCE_PROVIDER=bedrock` since 2026-10-24, #745), so
+the APP-8 consent gate only bites for a tenant explicitly set to Anthropic (US).
 `assertDataResidency` applies to CDR data and requires Bedrock `au.`. The Worker also has
-`email()` (Email Routing) and `scheduled()` (crons) handlers.
+`email()` (Email Routing; retired by `mailbox_retired`, so every message bounces) and `scheduled()`
+(crons) handlers.
 
 ## Feature table
 
@@ -64,16 +79,16 @@ Column key: **Stop** is the journey stop. **Route** is the SPA route (pages are 
 |---|---|---|---|---|---|---|---|
 | 1 | Sign up / sign in (Clerk) | Set up | `/sign-in`, `/sign-up` (Clerk widgets in `main.tsx`) | Clerk-hosted; every `/api/*` verifies the JWT | none (open signup: `CLERK_ALLOWED_USERS=""`) | All | `web/src/main.tsx`, `src/auth/clerk.ts` |
 | 2 | Tenant bootstrap | Set up | (implicit, first `/api` call) | any `/api/*` → `ensureTenant` | none | All | `src/lib/situation-write.ts:ensureTenant`, KV `tenant:init:<uid>` |
-| 3 | First-run gate | Set up | every protected route (`App.tsx:FirstRunGate`) | `GET /api/situation` | `ft_journey` OFF (OFF ⇒ `/onboarding`, ON ⇒ `/setup`) | All | `web/src/App.tsx` |
-| 4 | Public "Before you start" | Set up | `/start` (`BeforeYouStart.tsx`, public) | `GET /api/public/before-you-start` (`index.ts`) | `ft_journey` OFF ⇒ 404 | FT1–FT4 | `src/lib/before-you-start.ts`, `web/src/content/beforeYouStart.ts` |
+| 3 | First-run gate | Set up | every protected route (`App.tsx:FirstRunGate`) | `GET /api/situation` | `ft_journey` ON (OFF ⇒ `/onboarding`, ON ⇒ `/setup`) | All | `web/src/App.tsx` |
+| 4 | Public "Before you start" | Set up | `/start` (`BeforeYouStart.tsx`, public) | `GET /api/public/before-you-start` (`index.ts`) | `ft_journey` ON (OFF ⇒ 404) | FT1–FT4 | `src/lib/before-you-start.ts`, `web/src/content/beforeYouStart.ts` |
 | 5 | Onboarding wizard (legacy) | Set up | `/onboarding` (`Onboarding.tsx`) | `situation`, `situation/draft`, `consent`, `entities`, `persons`, `properties`, `rules`, `work-use`, `progress` | none; `ft_journey` ON redirects to `/setup` | All | `web/src/pages/Onboarding.tsx` |
 | 6 | APP-8 cross-border AI consent | Set up / Privacy | Onboarding, AboutYou, Settings `#privacy` | `POST /api/consent`, `POST /api/consent/withdraw`; plus legacy `POST /consent` (`index.ts`) | none; it is the `profiles.consent_xborder` column, checked in the DO before every Anthropic call | All | `src/agent.ts:recordConsent/withdrawConsent`, `src/llm.ts` |
-| 7 | Get set up step (About you) | Set up | `/setup` (`Steps.tsx:SetupStep` → `AboutYou.tsx`) | `situation`, `situation-periods`, `income-activities`, `capital-losses`, `opening-depreciation`, `noa`, `education`, `ui-state` | `ft_journey` OFF, `situation_profile` OFF | FT1–FT4, P1, P7 | `web/src/pages/AboutYou.tsx`, `web/src/components/ft/*`, `src/lib/situation-profile.ts` |
-| 8 | Situation profile (dated periods: residency, spouse, jobs, ABN, study loan) | Set up | `/setup` | `GET/POST /api/situation-periods`, `PATCH/DELETE /api/situation-periods/:id` | `situation_profile` OFF | FT2, FT4, P6 | `src/lib/situation-profile.ts`, migration `0078` |
+| 7 | Get set up step (About you) | Set up | `/setup` (`Steps.tsx:SetupStep` → `AboutYou.tsx`) | `situation`, `situation-periods`, `income-activities`, `capital-losses`, `opening-depreciation`, `noa`, `education`, `ui-state` | `ft_journey` ON, `situation_profile` ON | FT1–FT4, P1, P7 | `web/src/pages/AboutYou.tsx`, `web/src/components/ft/*`, `src/lib/situation-profile.ts` |
+| 8 | Situation profile (dated periods: residency, spouse, jobs, ABN, study loan) | Set up | `/setup` | `GET/POST /api/situation-periods`, `PATCH/DELETE /api/situation-periods/:id` | `situation_profile` ON | FT2, FT4, P6 | `src/lib/situation-profile.ts`, migration `0078` |
 | 9 | People, properties, entities, rules (situation CRUD) | Set up | `/settings` (OFF) or Grow layers (ON) | `persons`, `properties`, `entities`, `entity-roles`, `property-owners`, `loans-properties`, `rules`, `income-activities` | none | All | `src/lib/situation-write.ts`, `web/src/pages/Settings.tsx` |
 | 10 | Occupation content | Set up | Onboarding, AboutYou | via `situation`; `POST /api/guide` | none | P3, P7, FT1 | `src/lib/occupations.ts`, `web/src/content/occupations.ts` |
 | 11 | Carry-ins (prior capital losses, opening depreciation) | Set up | Settings / AboutYou `ProfileSections` | `capital-losses`, `opening-depreciation` | none | P2, P6, P10 | `src/lib/situation-write.ts` |
-| 12 | Journey read model (Home, step dots) | Set up | `/` → `Home.tsx` (ON) | `GET /api/journey` | `ft_journey` OFF | FT1–FT4 | `src/lib/journey-read.ts`, `src/lib/journey.ts` |
+| 12 | Journey read model (Home, step dots) | Set up | `/` → `Home.tsx` (ON) | `GET /api/journey` | `ft_journey` ON | FT1–FT4 | `src/lib/journey-read.ts`, `src/lib/journey.ts` |
 | 13 | Glossary | Ask-Guide | `/glossary` | none | `ft_journey` (switches content set) | All | `web/src/content/glossary.ts` |
 
 ### Bring in
@@ -90,14 +105,14 @@ Column key: **Stop** is the journey stop. **Route** is the SPA route (pages are 
 | 21 | Consent expiry + inactive end-user deletion | Settings-Privacy | (cron, weekly) | — | `cdr_expiry_delete` ON, `cdr_inactive_user_delete` ON (both only act under `bank_feed_cdr`, OFF) | — | `src/index.ts:scheduled`, `src/lib/bank-consent.ts` |
 | 22 | Receipt photo upload | Bring in | Transactions / Review / TxnDetail | `POST /api/upload`, `GET /api/receipt/:txnId` | `receipt_client_compression` ON, `receipt_image_compression` OFF | All | `src/agent.ts:ingest/ingestImages/extractAndCategorise`, `web/src/lib/compress-image.ts`, `src/lib/r2-store.ts` |
 | 23 | Smart document upload (classify and route) | Bring in | `/documents` | `GET /api/documents`, `POST /api/documents/upload`, `GET …/:id/download`, `DELETE …/:id` | none | All | `src/agent.ts:classifyAndRoute/fileDocument`, `src/extract.ts:classifyDocument` |
-| 24 | Email forwarding ingest | Bring in | Settings shows the mailbox | Worker `email()` handler | none | All | `src/index.ts:email`, `src/lib/email.ts`, `src/lib/db.ts:userIdFromLocalpart` |
+| 24 | Email forwarding ingest | Bring in | Settings shows the mailbox | Worker `email()` handler | `mailbox_retired` ON: **retired** (#789; every message bounces with an "upload it in the app" reason before any parse or write; ingest code and stored rows kept) | none | `src/index.ts:email`, `src/lib/email.ts`, `src/lib/db.ts:userIdFromLocalpart` |
 | 25 | Signed device ingest + correction (HMAC keys) | Bring in | Settings `#devices` | `POST /ingest`, `POST /correct` (`index.ts`); `GET/POST /api/keys`, `POST /api/keys/:id/revoke` | none | power users | `src/ingest/auth.ts:verifyIngest`, `android/` |
 | 26 | Income records (manual + match to bank credits) | Bring in | `/income` (`Income.tsx`); `/connect#income` (ON) | `GET/POST /api/income`, `DELETE /api/income/:id`, `income/matches`, `income/link`, `income/unlink` | `income_dedupe` ON, `refund_netting` ON | All | `src/lib/queries.ts:listIncome`, `src/agent.ts:recordIncome` |
 | 27 | Income statement upload (single + multi-employer) | Bring in | `/income`, `/connect` | `POST /api/documents/upload`; `GET /api/income-statements` | `income_statement_upload` ON, `income_statement_multi` ON | P1, P3, P7, FT1–FT3 | `src/lib/income-statement.ts`, `src/lib/income-statement-wait.ts` |
 | 28 | Reportable amounts (RFBA / RESC passthrough) | Position | `/reports` line | via `/api/report` | `reportable_amounts` ON | P7, P2 | `src/lib/report.ts`, `src/lib/accountant-schedule.ts` |
 | 29 | First-timer income completeness | Check | readiness findings | via `filing-readiness` | `first_timer_income` ON | FT1–FT4, P1, P3, P7 | `src/lib/first-timer-signals.ts` |
-| 30 | Wages / credit triage ("We noticed") | Sort | `/accounts` `NoticedPanel`, `/review` | `GET /api/noticed`, `POST /api/noticed/:id/confirm/dismiss` | `wages_payer` OFF | FT1–FT4 | `src/lib/credit-triage.ts`, `src/lib/noticed-signals.ts`, migration `0079` |
-| 31 | Connect step (ft shell) | Bring in | `/connect` (`components/connect/ConnectPage.tsx`, embeds Accounts + Income) | accounts, statements, `bank/*`, `income-statements` | `ft_journey` OFF | FT1–FT4 | `web/src/components/connect/ConnectPage.tsx` |
+| 30 | Wages / credit triage ("We noticed") | Sort | `/accounts` `NoticedPanel`, `/review` | `GET /api/noticed`, `POST /api/noticed/:id/confirm/dismiss` | `wages_payer` ON | FT1–FT4 | `src/lib/credit-triage.ts`, `src/lib/noticed-signals.ts`, migration `0079` |
+| 31 | Connect step (ft shell) | Bring in | `/connect` (`components/connect/ConnectPage.tsx`, embeds Accounts + Income) | accounts, statements, `bank/*`, `income-statements` | `ft_journey` ON | FT1–FT4 | `web/src/components/connect/ConnectPage.tsx` |
 | 32 | Non-cash business income | Bring in | `/income` | `/api/income` | `non_cash_income` ON | P4, P5 | `src/lib/ledger-totals.ts` |
 
 ### Sort
@@ -116,8 +131,8 @@ Column key: **Stop** is the journey stop. **Route** is the SPA route (pages are 
 | 42 | Rules engine (merchant → category) | Sort | Settings rules / ReviewQueue RulesSettings | `GET/POST /api/rules`, `PUT/DELETE /api/rules/:id` | none | All | `src/lib/rules.ts`, `src/lib/token-match.ts` |
 | 43 | Clarify questions (merchant groups) | Sort | ClarifyCard | `GET /api/clarify`, `POST /api/clarify/scan`, `…/:id/answer`, `…/:id/dismiss` | `accountant_pass` ON, `clarify_direction_guard` ON | All | `src/lib/clarify.ts`, `web/src/components/ClarifyCard.tsx` |
 | 44 | AI accountant pass + suggested deductions | Sort | `AccountantPassCard` | `POST /api/accountant/run`, `GET …/suggestions`, `POST …/confirm` | `accountant_pass` ON, `grouped_deductions` ON | All | `src/agent.ts:runAccountantPass`, `src/lib/queries.ts:listSuggestedDeductions` |
-| 45 | Deductibility review "By label" | Check | `/review` (OFF), `/review?view=labels` (ON) | `GET /api/review/summary`, `POST /api/deductibility` | `deductibility_review` ON | All | `web/src/pages/Review.tsx`, `src/lib/deductibility.ts` |
-| 46 | Relevance scan on bank lines | Sort | `/review` WorthALookCard | `GET /api/relevance`, `POST /api/relevance/confirm` | `relevance_scan` OFF | FT1–FT4 | `src/lib/relevance-scan.ts`, `relevance-scan-run.ts` |
+| 45 | Deductibility review "By label" | Check | `/review` (OFF), `/review?view=labels` (ON) | `GET /api/review/summary`, `POST /api/deductibility` | `deductibility_review` ON; the "By label" surface is cut by `hide_by_label_review` ON (#697) | All | `web/src/pages/Review.tsx`, `src/lib/deductibility.ts` |
+| 46 | Relevance scan on bank lines | Sort | `/review` WorthALookCard | `GET /api/relevance`, `POST /api/relevance/confirm` | `relevance_scan` ON | FT1–FT4 | `src/lib/relevance-scan.ts`, `relevance-scan-run.ts` |
 | 47 | Personal-transfer sweep | Sort | `MovementSweepCard` | `GET /api/movements/sweep`, `POST /api/movements/apply` | none | All | `web/src/components/MovementSweepCard.tsx` |
 | 48 | Record a rent credit as income | Sort | TxnDetail | `POST /api/transactions/:id/record-income` | `record_credit_income` ON | P6 | `src/agent.ts:recordTxnAsIncome` |
 | 49 | Attribution (payer ≠ claimant, ownership split, activity) | Sort | TxnDetail `AttributionPanel` | `GET/PUT/DELETE /api/transactions/:id/attributions`, `income-activities` | `attribution_engine` ON, `attribution_labels` ON | P4, P5, P6, P8 | `src/lib/attribution.ts`, `attribution-write.ts`, `web/src/components/AttributionPanel.tsx` |
@@ -128,13 +143,13 @@ Column key: **Stop** is the journey stop. **Route** is the SPA route (pages are 
 | # | Feature | Stop | Route / page | API | Flags (prod) | Personas | Key files |
 |---|---|---|---|---|---|---|---|
 | 51 | Reconcile receipts ↔ bank lines (manual) | Check | `/reconcile`; `/review/match` (ON) | `GET /api/reconcile`, `POST /api/match/link`, `POST /api/match/unlink` | none | All | `web/src/pages/Reconcile.tsx`, `src/lib/queries.ts:reconcilePairs` |
-| 52 | Reconcile proposer (confidence-gated matches) | Check | `/review` (ReviewQueue) | `GET /api/reconcile/proposals`, `…/dismiss`, `GET /api/reconcile/linked`, `…/linked/undo` | `reconcile_proposals` OFF | All | `src/lib/reconcile-proposer.ts`, `src/lib/receipt-link.ts` |
-| 53 | Records (substantiation) + exceptions | Check | `/review` RecordCards | `GET /api/records`, `POST /api/records/exception` | `ft_journey` OFF | All | `src/lib/records.ts`, migration `0084` |
+| 52 | Reconcile proposer (confidence-gated matches) | Check | `/review` (ReviewQueue) | `GET /api/reconcile/proposals`, `…/dismiss`, `GET /api/reconcile/linked`, `…/linked/undo` | `reconcile_proposals` ON | All | `src/lib/reconcile-proposer.ts`, `src/lib/receipt-link.ts` |
+| 53 | Records (substantiation) + exceptions | Check | `/review` RecordCards | `GET /api/records`, `POST /api/records/exception` | `ft_journey` ON | All | `src/lib/records.ts`, migration `0084` |
 | 54 | Claim review (find-and-attach evidence) | Check | `/filing`, Dashboard `FindAndAttachSheet` | `GET /api/claim-review`, `…/match`, `…/attach`, `…/detach`, `…/draft`, `…/rules` | `claim_review` ON | All | `src/lib/claim-match.ts`, `src/lib/claimability.ts` |
 | 55 | Double-check scan (over-claim / missed deductions) | Check | `/reports` ScanFindings | `GET /api/scan` | `txn_scan` ON, `txn_scan_v2` ON | All | `src/lib/scan.ts`, `web/src/components/ScanFindings.tsx` |
-| 56 | Review queue (ft step 3) | Check | `/review` (`ReviewQueue.tsx`) | `review/summary`, `records`, `relevance`, `noticed`, `reconcile/proposals`, `education` | `ft_journey` OFF (+ the flags of each card type) | FT1–FT4 | `web/src/pages/ReviewQueue.tsx` |
+| 56 | Review queue (ft step 3) | Check | `/review` (`ReviewQueue.tsx`) | `review/summary`, `records`, `relevance`, `noticed`, `reconcile/proposals`, `education` | `ft_journey` ON (+ the flags of each card type; `relevance_scan` and `reconcile_proposals` ON) | FT1–FT4 | `web/src/pages/ReviewQueue.tsx` |
 | 57 | Filing readiness (findings + blockers) | Check / File | `/filing`, `/lodge` | `GET /api/filing-readiness` | `readiness_audit_v2` ON, `integrity_nudges` ON | All | `src/lib/filing-readiness.ts`, `src/lib/readiness.ts` |
-| 58 | Checklist + claims (dashboard cards) | Check | `/` Dashboard (OFF) | `GET /api/checklist`, `POST …/generate`, `PATCH …/:id`, `GET /api/claims`, `PATCH /api/claims/:id` | none | All | `src/lib/queries.ts:listChecklist/listClaims` |
+| 58 | Checklist + claims (dashboard cards) | Check | `/` Dashboard (OFF) | `GET /api/checklist`, `POST …/generate`, `PATCH …/:id`, `GET /api/claims`, `PATCH /api/claims/:id` | `hide_dashboard_claims` ON (#697: the claims card moves to Filing) | All | `src/lib/queries.ts:listChecklist/listClaims` |
 | 59 | Progress / journey spine | Check | `JourneySpine` (legacy shell) | `GET /api/progress` | `nav_progress_strip` ON | All | `src/lib/progress.ts`, `web/src/components/JourneySpine.tsx` |
 
 ### Position
@@ -142,7 +157,7 @@ Column key: **Stop** is the journey stop. **Route** is the SPA route (pages are 
 | # | Feature | Stop | Route / page | API | Flags (prod) | Personas | Key files |
 |---|---|---|---|---|---|---|---|
 | 60 | Tax position report (indicative, never a refund) | Position | `/reports`, `/` Dashboard | `GET /api/report?fy=`, `GET /api/dashboard` | `position_confirmed_range` ON, `position_excludes_nondeductible` ON, `position_excludes_property_undetermined` ON | All | `src/lib/report.ts:buildReport`, `src/lib/ledger-totals.ts` |
-| 61 | WFH fixed-rate method + generated diary | Position | `WorkMethodsCard` (Dashboard, Reports, RecordCards) | `GET/POST /api/work-use` | `wfh_car_methods` ON, `wfh_generate_diary` ON | P1, P5, P7, FT1 | `src/lib/work-use.ts`, `web/src/components/WorkMethodsCard.tsx` |
+| 61 | WFH fixed-rate method + weekly diary (#787) / generated diary | Position | `WorkMethodsCard` (Dashboard, Reports, RecordCards) | `GET/POST /api/work-use`, the weekly-diary routes (`src/lib/wfh-diary.ts`, migration `0088`) | `wfh_car_methods` ON, `wfh_weekly_diary` ON (its FY total writes `work_use_inputs.wfh_hours`; on the card it replaces the whole-year generator), `wfh_generate_diary` ON | P1, P5, P7, FT1 | `src/lib/work-use.ts`, `web/src/components/WorkMethodsCard.tsx` |
 | 62 | Car cents-per-km + logbook (informational) | Position | `CarMethodsCard` | `GET/POST /api/car-use`, `GET/POST/DELETE /api/vehicle-logbooks` | `car_methods` ON, `car_logbook` ON | P3, P4, P5, P7 | `src/lib/car-logbook.ts`, migration `0040` |
 | 63 | Property net + negative gearing + use status | Position | Settings `PropertySettings`; `/grow/property` | `properties`, `property-owners`, `loans-properties`, `GET /api/properties/:id/cgt` | `property_capital_detail` ON, `position_excludes_property_undetermined` ON | P6, P2 | `src/lib/report.ts`, `src/lib/cgt.ts` |
 | 64 | Loan interest (evidence-first, per property) | Position | Accounts, `LoanInterestCard`, `/grow/property` | `GET /api/loans/interest`, `POST /api/loans/:accountId/interest` | `loan_interest_v2` ON | P6 | `src/lib/loan-interest.ts` |
@@ -161,7 +176,7 @@ Column key: **Stop** is the journey stop. **Route** is the SPA route (pages are 
 | 77 | Sole-trader activities (ABN, PSI status) | Position | Settings BusinessSettings | `GET/POST /api/income-activities` | `attribution_engine` ON | P4, P5, FT3 | `src/lib/situation-write.ts`, migration `0033` |
 | 78 | GST registration + indicative BAS + PAYG instalments | Position | BusinessSettings | `PUT /api/gst-registered`, `/api/bas-periods`, `/api/payg-instalments` | `gst_bas` ON | P4, P5, P8 | `src/lib/gst.ts`, migration `0039` |
 | 79 | Trading stock (s 70-35) | Position | Income → Trading stock card | `GET/POST /api/trading-stock` | `trading_stock` ON | Erin (TS), P5 | `src/lib/report.ts:tradingStockAdjustment`, migration `0068` |
-| 80 | Residency-aware assessability | Position | AboutYou periods | (inside `report`) | `residency_assessability` OFF | FT4 | `src/lib/residency-assessability.ts` |
+| 80 | Residency-aware assessability | Position | AboutYou periods | (inside `report`) | `residency_assessability` ON | FT4 | `src/lib/residency-assessability.ts` |
 | 81 | Single-PAYG express surface | Position | nav hides Assets | via `situation` | `payg_express` ON | P1, FT1 | `src/lib/db.ts:getSituation` |
 | 82 | Jurisdiction / currency seam | Position | (server) | — | `jurisdiction_period` ON, `currency_base` ON | — (AU only) | `src/lib/jurisdiction.ts`, `src/lib/fx.ts` |
 
@@ -169,11 +184,11 @@ Column key: **Stop** is the journey stop. **Route** is the SPA route (pages are 
 
 | # | Feature | Stop | Route / page | API | Flags (prod) | Personas | Key files |
 |---|---|---|---|---|---|---|---|
-| 83 | Filing page (legacy hand-off) | File | `/filing` (`Filing.tsx`) | `filing-readiness`, `claim-review`, `signoff`, `lodged`, `noa`, `report?format=csv/xlsx` | `ft_journey` OFF (ON ⇒ `/lodge`) | All | `web/src/pages/Filing.tsx` |
+| 83 | Filing page (legacy hand-off) | File | `/filing` (`Filing.tsx`) | `filing-readiness`, `claim-review`, `signoff`, `lodged`, `noa`, `report?format=csv/xlsx` | `ft_journey` ON (so `/filing` ⇒ `/lodge`) | All | `web/src/pages/Filing.tsx` |
 | 84 | Accountant schedule CSV + xlsx | File | `/filing`, `/reports` | `GET /api/report?format=csv`, `?format=xlsx` | `accountant_schedule` ON, `accountant_schedule_v2` ON, `accountant_xlsx` ON | All | `src/lib/accountant-schedule.ts`, `src/lib/xlsx.ts` |
 | 85 | FY sign-off | File | `/filing`, `/lodge` | `GET/POST/DELETE /api/signoff` | none | All | `src/lib/fy-signoff.ts` |
-| 86 | Mark as lodged | File | `/lodge` | `GET/POST/DELETE /api/lodged` | `situation_profile` OFF | FT1–FT4 | `src/lib/lodging-year.ts`, migration `0087` |
-| 87 | myTax worksheet + print (+ the myTax mirror, #790, `mytax_mirror`) | File | `/lodge` (`ShipIt.tsx`, `MytaxMirror.tsx`), `/lodge/print` (`ShipItPrint.tsx`) | `GET /api/mytax-worksheet` | `mytax_worksheet` OFF, `ft_journey` OFF | FT1–FT4, P1, P7 | `src/lib/mytax-worksheet.ts`, rule pack `mytax_sections` |
+| 86 | Mark as lodged | File | `/lodge` | `GET/POST/DELETE /api/lodged` | `situation_profile` ON | FT1–FT4 | `src/lib/lodging-year.ts`, migration `0087` |
+| 87 | myTax worksheet + print (+ the myTax mirror, #790, `mytax_mirror`) | File | `/lodge` (`ShipIt.tsx`, `MytaxMirror.tsx`), `/lodge/print` (`ShipItPrint.tsx`) | `GET /api/mytax-worksheet` | `mytax_worksheet` ON, `mytax_mirror` ON, `ft_journey` ON | FT1–FT4, P1, P7 | `src/lib/mytax-worksheet.ts`, rule pack `mytax_sections` |
 | 88 | NOA capture + carry-forward losses | File | `/filing` NoaCloseOff, `/lodge` | `GET /api/noa`, `POST/DELETE /api/noa/:id` | `noa_capture` ON, `carryforward_position` ON | All (P2, P6, P10 carry losses) | `src/lib/noa.ts`, `src/lib/noa-store.ts` |
 | 89 | Bank-data minimisation + retention summary | Settings-Privacy | Settings data-retention note | `GET /api/data-retention` | `bank_minimisation` OFF | All | `src/lib/minimise.ts`, `src/lib/retention-schedule.ts` |
 
@@ -182,15 +197,16 @@ Column key: **Stop** is the journey stop. **Route** is the SPA route (pages are 
 | # | Feature | Stop | Route / page | API | Flags (prod) | Personas | Key files |
 |---|---|---|---|---|---|---|---|
 | 90 | Ask Quillo chat (floating) + proposed actions + navigate + AI-edits feed | Ask-Guide | `FloatingChat` (legacy shell only); Settings AI changes | `POST /api/chat`, `GET /api/chat/:session`, `GET /api/ai-edits`, `POST /api/ai-edits/apply`, `…/undo` | `ask_quillo` ON, `ask_actions` ON, `ask_actions_v2` ON, `chat_nav` ON, `ai_edit_feed` ON | All | `src/agent.ts:chatTurn`, `web/src/components/chat/*` |
-| 91 | Ask (single-turn) and Why? drawer, Guide me, education | Ask-Guide | ft `WhyDrawer`; `TabGuide` | `POST /api/ask`, `POST /api/guide`, `GET /api/education` | `ask_quillo` ON, `guide_me` ON, `ft_journey` OFF (education) | All | `src/agent.ts:askQuestion/guideMe`, `src/lib/guide.ts`, `src/lib/education.ts` |
+| 91 | Ask (single-turn) and Why? drawer, Guide me, education | Ask-Guide | ft `WhyDrawer`; `TabGuide` | `POST /api/ask`, `POST /api/guide`, `GET /api/education` | `ask_quillo` ON, `guide_me` ON, `ft_journey` ON (education) | All | `src/agent.ts:askQuestion/guideMe`, `src/lib/guide.ts`, `src/lib/education.ts` |
 | 92 | Usage-based wallet billing (free grant, Stripe top-up, debit per call, D10 fee deduction) | Billing | `/billing` (`Billing.tsx`) | `GET /api/billing`, `POST /api/billing/topup`, `POST /api/stripe/webhook` (`index.ts`), `GET /api/usage` | `billing` ON, `quillo_fee_deduction` ON | All | `src/lib/billing.ts`, `src/lib/stripe.ts`, `src/lib/usage.ts` |
 | 93 | Settings, privacy, export, delete account, UI state | Settings-Privacy | `/settings` (account-only when `ft_journey` ON) | `POST /api/consent/withdraw`, `GET /api/account/export`, `DELETE /api/account/data`, `PATCH /api/ui-state` | none | All | `src/lib/retention.ts:exportTenant/purgeTenant/PURGE_TABLES` |
 | 94 | Admin (tenants, roles, spend, referrals, QBO backfill) + Security & compliance | Admin | `/admin`, `/admin/security` | `GET /api/admin/overview`, `…/tenants`, `…/spend`, `PUT …/tenants/:id/roles`, `…/referrals`, `…/qbo-token-backfill`, `GET /api/admin/security`, `POST …/security/check` | `admin_mfa_required` OFF, `security_monitoring` OFF | owner | `src/lib/roles.ts`, `src/lib/access-control.ts`, `src/lib/security-dashboard.ts` |
-| 95 | Grow layers (property, investments, business, assets, integrations, extras, savings, advisers) | Grow | `/grow/:layer` (`Grow.tsx`) | `PUT /api/grow-layers` + each layer's own | `ft_journey` OFF | P2–P10 | `web/src/lib/growRoutes.ts`, `src/lib/grow.ts`, migration `0083` |
-| 96 | Savings & opportunities, PHI extras, partner portal, QuickBooks | Grow | `/savings`, `/extras`, `/partner`, `/quickbooks` | `savings`, `savings/scan`, `opportunities`, `recurring-bills`, `referrals`, `phi/*` (13 routes), `partner/overview`, `qbo/*` | `advisory_layer` ON, `advisory_partners_energy` ON, `phi_extras_tracker` ON, `phi_provider_directory` ON, `phi_tax_inputs` OFF, `qbo_token_fail_closed` OFF | All (savings, PHI); P5, P8 (QBO) | `src/lib/advisory.ts`, `partners.ts`, `phi-providers.ts`, `qbo-oauth.ts`, `src/ledger/qbo.ts` |
+| 95 | Grow layers (property, investments, business, assets, integrations, extras, savings, advisers) | Grow | `/grow/:layer` (`Grow.tsx`) | `PUT /api/grow-layers` + each layer's own | `ft_journey` ON | P2–P10 | `web/src/lib/growRoutes.ts`, `src/lib/grow.ts`, migration `0083` |
+| 96 | Savings & opportunities, PHI extras, partner portal, QuickBooks | Grow | `/savings`, `/extras`, `/partner`, `/quickbooks` | `savings`, `savings/scan`, `opportunities`, `recurring-bills`, `referrals`, `phi/*` (13 routes), `partner/overview`, `qbo/*` | `advisory_layer` ON, `advisory_partners_energy` ON, `phi_extras_tracker` ON, `phi_provider_directory` ON, `phi_tax_inputs` OFF, `qbo_token_fail_closed` OFF; cuts (#697) `hide_savings`, `hide_extras`, `hide_quickbooks_nav`, `hide_partner_nav` ON; `qbo_retired` ON (#791: every `/api/qbo/*` route 404s, every QuickBooks surface hidden) | All (savings, PHI); P5, P8 (QBO) | `src/lib/advisory.ts`, `partners.ts`, `phi-providers.ts`, `qbo-oauth.ts`, `src/ledger/qbo.ts` |
 
 Row 96 bundles four "grow" surfaces that sit outside the tax journey. Each is broken out in
-[Integrations](#integrations) and the power-user traces.
+[Integrations](#integrations) and the power-user traces. Since the refresh, Savings, Extras and the
+partner portal are cut from the nav (engines and data kept), and QuickBooks is retired for everyone.
 
 ## Coverage cross-checks
 
@@ -243,9 +259,25 @@ mounted (`src/index.ts`, review CRITICAL), although `/agents/*` is still listed 
 
 ### Every feature flag
 
-All 105 keys map to at least one row. Flags not named in a row above, all ON: `claim_review` (54),
-`deductibility_review` (45), `guide_me` (91), `mobile_bottom_tabs` and `nav_disclosure` (legacy nav in
-`App.tsx`), `api_rate_limit` (Worker gate, see Integrations), `redact_statement_lines` (15).
+All 117 keys map to at least one row or to the cut table below. Flags not named in a row above, all ON:
+`claim_review` (54), `deductibility_review` (45), `guide_me` (91), `mobile_bottom_tabs` and
+`nav_disclosure` (legacy nav in `App.tsx`), `api_rate_limit` (Worker gate, see Integrations),
+`redact_statement_lines` (15).
+
+**Cut and retirement flags (all ON, each reversible; engines and data untouched):**
+
+| Flag | What it hides or retires | Ticket |
+|---|---|---|
+| `hide_by_label_review` | The legacy "By label" year-end review (nav item, `/review` in the legacy shell, the ft Review queue's "By label" tab) | #697 |
+| `hide_savings` | Savings page and calculator, the Dashboard run-rate strip, `/savings` and `/grow/savings`; `advisory_layer` stays ON | #697 |
+| `hide_extras` | Extras (PHI extras tracker) nav and routes; `phi_extras_tracker` stays ON and data is kept | #697 |
+| `hide_quickbooks_nav` | QuickBooks out of the default nav and the Grow rail | #697 |
+| `hide_partner_nav` | `/partner` relabelled "Referral partners" in the role-gated nav; non-partners are sent Home | #697 |
+| `hide_reports_wfh_car` | Reports' duplicate WFH and car editors become a pointer to the Dashboard editors | #697 |
+| `hide_dashboard_claims` | The Dashboard "Claim guidance" card; the one claims list lives on Filing | #697 |
+| `hide_cgt_property_kind` | The "Property" option in the add-CGT-asset form (a rental's cost base lives on the property) | #697 |
+| `mailbox_retired` | The `receipts+<tenant>@` mailbox: `email()` bounces every message before the MIME parse, tenant lookup or any write (`src/lib/mailbox-retired.ts`) | #789 (#711 closed not planned) |
+| `qbo_retired` | Every `/api/qbo/*` route, including the public OAuth callback, answers 404 before touching Intuit, KV or stored tokens (`src/lib/qbo-retired.ts`); every QuickBooks surface is hidden | #791 |
 `phi_tax_inputs` (row 96) is OFF **and has no runtime reader**. Only `scripts/check-personas.ts`
 mentions it.
 
@@ -263,11 +295,11 @@ mentions it.
 |---|---|---|---|---|
 | **Clerk** (US) | SPA sign-in; JWT verify on every `/api/*`; admin second-factor check | SPA ↔ Clerk; Worker → JWKS | open signup (`CLERK_ALLOWED_USERS=""` means open; non-empty is a kill-switch); still on the **DEV** instance (`CLERK_ISSUER=*.clerk.accounts.dev`); `admin_mfa_required` OFF | `src/auth/clerk.ts`, `docs/security/clerk-production-cutover.md` |
 | **Stripe** (US) | Wallet top-up checkout; webhook credits the wallet | Worker → Checkout; Stripe → `POST /api/stripe/webhook` | `billing` ON | `src/lib/stripe.ts`, `src/lib/billing.ts` |
-| **Anthropic** (US) | Default inference (`DEFAULT_INFERENCE_PROVIDER=anthropic`): extraction, categorisation, Batch API, chat | DO → API | APP-8 `consent_xborder=1`; spend caps (`MAX_DAILY_COST_CENTS*`, `MAX_MONTHLY_COST_CENTS_GLOBAL`); wallet balance when `billing` is ON | `src/llm.ts`, `src/extract.ts`, `src/lib/batch.ts` |
-| **AWS Bedrock** (`ap-southeast-2`, `au.` profile) | Per-tenant AU-resident inference (`profiles.inference_provider='bedrock'`); required for CDR data | DO → Bedrock (SigV4) | `assertDataResidency` fails closed; no consent needed | `src/llm.ts`, `src/lib/sigv4.ts` |
+| **Anthropic** (US) | Inference only for a tenant explicitly set to `anthropic` (it was the default until 2026-10-24): extraction, categorisation, Batch API, chat | DO → API | APP-8 `consent_xborder=1` (enforced in `aiCall`); spend caps (`MAX_DAILY_COST_CENTS*`, `MAX_MONTHLY_COST_CENTS_GLOBAL`); wallet balance when `billing` is ON | `src/llm.ts`, `src/extract.ts`, `src/lib/batch.ts` |
+| **AWS Bedrock** (`ap-southeast-2`, `au.` profile) | **Default inference** since 2026-10-24 (`DEFAULT_INFERENCE_PROVIDER=bedrock`, #745); `profiles.inference_provider` still overrides per tenant; required for CDR data | DO → Bedrock (SigV4) | `assertDataResidency` fails closed; no consent needed | `src/llm.ts`, `src/lib/sigv4.ts` |
 | **Fiskil / Basiq** (CDR) | Bank feeds | DO → aggregator; aggregator → `GET /api/bank/callback` | `bank_feed_cdr` OFF; `BANK_FEED_PROVIDER` unset ⇒ `basiq`; both in sandbox | `src/lib/bank-provider.ts`, `fiskil.ts`, `basiq.ts`, `docs/bank-feed-golive-checklist.md` |
-| **QuickBooks Online** (Intuit) | Reader / reconciler, push a txn, sync accounts | OAuth `GET /api/qbo/connect` → `GET /api/qbo/callback`; DO → QBO API | no flag; `qbo_token_fail_closed` OFF (plaintext fallback if `QBO_TOKEN_KEY` is unset) | `src/lib/qbo-oauth.ts`, `src/ledger/qbo.ts`, `src/lib/token-crypto.ts` |
-| **Cloudflare Email Routing** | Forwarded receipts, payslips and statements | Email → Worker `email()` | mailbox localpart → `tenants.email_localpart` | `src/index.ts:email`, `src/lib/email.ts` |
+| **QuickBooks Online** (Intuit) | Reader / reconciler, push a txn, sync accounts | OAuth `GET /api/qbo/connect` → `GET /api/qbo/callback`; DO → QBO API | **retired**: `qbo_retired` ON (every route 404s); `qbo_token_fail_closed` OFF (plaintext fallback if `QBO_TOKEN_KEY` is unset) | `src/lib/qbo-oauth.ts`, `src/ledger/qbo.ts`, `src/lib/token-crypto.ts` |
+| **Cloudflare Email Routing** | Forwarded receipts, payslips and statements | Email → Worker `email()` | **retired**: `mailbox_retired` ON (every message bounces); mailbox localpart → `tenants.email_localpart` | `src/index.ts:email`, `src/lib/email.ts` |
 | **R2** | `RECEIPTS` (`tax-agent-receipts`): originals, statement sidecars (gzipped), documents. `BACKUPS` (`tax-agent-backups`): D1 exports. Cloudflare Images binding (`IMAGES`) for server-side compression | DO / Worker | `receipt_image_compression` OFF, `d1_backups` OFF | `src/lib/r2-store.ts`, `src/lib/backups.ts` |
 | **KV `RULES`** | Rule pack `rulepack:au-v1` (wins key by key over the bundle), tenant-init markers, `/ingest` nonces, cron cursor, cost counters, chat rate counters, bank connect state, security source records | Worker / DO | push with `npm run rulepack:push` | `src/lib/rulepack.ts`, `src/rulepacks/au-v1.json` |
 | **D1 backup** (Cloudflare D1 REST export) | Daily export | cron → D1 API → R2 | `d1_backups` OFF | `src/lib/backups.ts`, `docs/security/backup-dr.md` |
@@ -285,19 +317,20 @@ unless they are marked **(OFF)**.
    (JWKS, `azp`, allow-list empty so access is open; the founder sub maps to tenant `me`) → `userRateLimit`
    → `stubFor(userId)`.
 3. `handleApi` → `ensureTenant` → D1 `profiles` and `persons` (self) → KV `tenant:init:<uid>`.
-4. `App.tsx:FirstRunGate` reads `GET /api/situation`. A tenant with no consent and no entities goes to
-   `/onboarding` (OFF) or `/setup` (ON).
-5. **Legacy (prod today):** the `/onboarding` wizard runs `POST /api/situation/draft` (AI drafting of
+4. `App.tsx:FirstRunGate` reads `GET /api/situation`. A tenant that hasn't done set-up (`needsFirstRun`,
+   `web/src/lib/firstRun.ts`; never the provider or consent, #765) goes to `/onboarding` (OFF) or
+   `/setup` (ON, prod).
+5. **Legacy (flag OFF):** the `/onboarding` wizard runs `POST /api/situation/draft` (AI drafting of
    entities), then `POST /api/consent` → `TaxAgent.recordConsent` (`profiles.consent_xborder=1`,
    `audit_log`), then people, properties, rules and work-use → the Dashboard at `/`.
-6. **(OFF) `ft_journey`:** `/start` (public `BeforeYouStart`) → sign-up → `/setup` (`AboutYou`: myTax
+6. **`ft_journey` (ON in prod since #776):** `/start` (public `BeforeYouStart`) → sign-up → `/setup` (`AboutYou`: myTax
    access check, consent, employers, situation periods under `situation_profile`) → `/connect`
    (statement or bank feed, income statement shown as waiting) → `/review` (one card queue) →
    `/lodge` (myTax worksheet, mark lodged). Home (`/`) reads `GET /api/journey`
    (`journey-read.ts:readJourney`).
-7. The flags turn on one per PR, in spec §A15 order: `ft_journey`, `situation_profile`,
-   `relevance_scan`, `wages_payer`, `reconcile_proposals`, `mytax_worksheet`,
-   `residency_assessability`, `bank_minimisation`.
+7. The flags turned on one per PR, in spec §A15 order (#770–#776): `situation_profile`, `wages_payer`,
+   `relevance_scan`, `reconcile_proposals`, `mytax_worksheet`, `residency_assessability`, then
+   `ft_journey`. `bank_minimisation` stays OFF.
 
 ### J2a. Import by statement upload
 
@@ -322,8 +355,8 @@ unless they are marked **(OFF)**.
 3. `POST /api/bank/accounts` → `bankSelectAccounts` → `assertCanonicalSource(…, "cdr_feed")`.
 4. `POST /api/bank/sync` → `bank-sync.ts` resumable runs (`bank_sync_runs`) → `fetchTransactionPage` →
    `categoriseFeedLines`. **`assertDataResidency` requires Bedrock `au.` for production CDR data.**
-5. After import, `afterLinesImported` runs credit triage (`wages_payer`, OFF) and the relevance scan
-   (`relevance_scan`, OFF).
+5. After import, `afterLinesImported` runs credit triage (`wages_payer`, ON) and the relevance scan
+   (`relevance_scan`, ON).
 6. The weekly cron runs the consent lifecycle (expiry ⇒ PS12 delete with `cdr_expiry_delete`) and
    deletes inactive end users.
 
@@ -338,10 +371,12 @@ unless they are marked **(OFF)**.
 4. Documents path: `POST /api/documents/upload` → `classifyAndRoute` → `classifyDocument`, then route
    by type: receipt or invoice ⇒ transaction; income statement ⇒ `decomposeIncomeStatement`; payslip
    ⇒ `recordIncome`; NOA ⇒ draft `fy_carryovers`.
-5. Matching to a bank line: manual `/reconcile` → `POST /api/match/link`; proposer (OFF:
-   `reconcile_proposals`).
+5. Matching to a bank line: manual `/reconcile` → `POST /api/match/link`; proposer (`reconcile_proposals`, ON).
 
-### J2d. Import by email forwarding
+### J2d. Import by email forwarding (retired)
+
+**Retired by `mailbox_retired` (ON, #789):** `email()` now bounces every message before step 2. The
+trace below is what runs with the flag OFF.
 
 1. The user forwards to their Quillo mailbox → Cloudflare Email Routing → `index.ts:email()`.
 2. `parseEmail` → `userIdFromLocalpart` (strips `receipts+`, looks up `tenants.email_localpart`).
@@ -362,16 +397,17 @@ unless they are marked **(OFF)**.
 5. Position: `GET /api/report?fy=` → `report.ts:buildReport` → `ledger-totals.ts` engines → indicative
    `taxable_position_cents` as a confirmed→tracked range. No refund figure, GENERAL-INFO framing.
 6. Readiness: `GET /api/filing-readiness` → `computeFilingReadiness`.
-7. File (legacy, prod): `/filing` → claim review → sign-off (`POST /api/signoff`) → download the
+7. File (legacy shell, flag OFF): `/filing` → claim review → sign-off (`POST /api/signoff`) → download the
    accountant schedule (`report?format=csv` or `xlsx`) → NOA upload closes the year (`noa_capture`) →
    carry-forward losses (`carryforward_position`).
-8. **(OFF)** `/lodge`: Tax-ready gate → `GET /api/mytax-worksheet` (sections in myTax order) →
+8. **(prod)** `/lodge`: Tax-ready gate → `GET /api/mytax-worksheet` (sections in myTax order) → the myTax
+   mirror (`mytax_mirror`, #790: one card per myTax screen with copy buttons, prefill checks and ticks) →
    `/lodge/print` → `POST /api/lodged` (`fy_signoff.lodged_at`, `situation_profile`) → the 5-year
    retention clock starts from the lodge date.
 
 ### J4. Ask / Guide
 
-1. Legacy shell: `FloatingChat` → `POST /api/chat` → `TaxAgent.chatTurn`. ft shell **(OFF)**: `WhyDrawer`
+1. Legacy shell: `FloatingChat` → `POST /api/chat` → `TaxAgent.chatTurn`. ft shell (prod): `WhyDrawer`
    → `POST /api/ask` → `askQuestion` with `{step, item_id}` context.
 2. `TabGuide` → `POST /api/guide` → `guideMe` → `buildGuidePrompt` → `extractGuide`.
 3. Gates in order: Worker rate limit → `chatRateOk` (12 per minute, 300 per day, KV) → `withinBudget`
@@ -399,7 +435,8 @@ unless they are marked **(OFF)**.
 ### J6. Settings, privacy, consent, delete account
 
 1. `/settings#privacy` → `POST /api/consent/withdraw` → `withdrawConsent` (`consent_xborder=0`,
-   audit). Further Anthropic calls throw `consent_required`. Bedrock tenants are unaffected.
+   audit). Further Anthropic calls throw `consent_required`. Bedrock tenants, which now means every
+   tenant on the default, are unaffected.
 2. Export → `GET /api/account/export` → `retention.ts:exportTenant` (secrets redacted) → JSON download.
 3. Delete → `DELETE /api/account/data` → `purgeTenant`, in order: aggregator `deleteUser` (fail-closed)
    → QBO revoke (best-effort) → R2 `<uid>/` prefix → KV tenant keys and cost keys → one D1 batch over
@@ -421,7 +458,7 @@ unless they are marked **(OFF)**.
 | **Depreciation / assets** | `/assets` → `POST /api/assets` (class defaults, effective life, method locked once used) → `…/schedule` → `depreciation.ts` → `depreciation_schedule`; weekly cron `rollForward`; opening WDV carry-ins via `opening-depreciation`. |
 | **Car logbook** | `CarMethodsCard` → `POST /api/car-use` (km) / `vehicle-logbooks` → cents-per-km in the position; the logbook result is informational only (#494). |
 | **BAS / GST** | `PUT /api/gst-registered` → `bas-periods`, `payg-instalments` → `gstTotals` / `basPositionFrom` → indicative BAS shown separately (never in income tax). |
-| **QBO** | `/quickbooks` → `GET /api/qbo/connect` → Intuit OAuth → `GET /api/qbo/callback` (`index.ts`) → tokens (encrypted if `QBO_TOKEN_KEY` set) → `GET /api/qbo/status`, `qbo/reconcile`, `POST /api/qbo/sync-accounts`, `POST /api/qbo/push/:txnId` (never auto-posts what a feed provides). |
+| **QBO** (retired: `qbo_retired` ON, every route 404s; this trace is flag OFF) | `/quickbooks` → `GET /api/qbo/connect` → Intuit OAuth → `GET /api/qbo/callback` (`index.ts`) → tokens (encrypted if `QBO_TOKEN_KEY` set) → `GET /api/qbo/status`, `qbo/reconcile`, `POST /api/qbo/sync-accounts`, `POST /api/qbo/push/:txnId` (never auto-posts what a feed provides). |
 | **ESS** | `/income` EssGrants → `POST /api/ess-grants` → `essTotals` / `ess.ts` (taxed-upfront vs deferral; startup concession defers to CGT) → position. |
 | **NOA / carry-forward** | `/filing` NoaCloseOff → `POST /api/documents/upload` → `classifyAndRoute` → `extractNoticeOfAssessment` → draft `fy_carryovers` → user confirms `POST /api/noa/:id` → `carryforward_position` applies prior-year losses; HELP balance captured. |
 
@@ -441,33 +478,32 @@ flagged call-site change.
 
 | Life situation | Data model today | Engine | UI | Gap | Additive? (seam) |
 |---|---|---|---|---|---|
-| **Simple PAYG** (P1, P3, P7, FT1) | `income` `salary_payg` (`withholding_cents`, `detail_json` employer/RFBA/RESC); `entities.kind='employment'`; `persons.occupation`; `transactions` buckets | `incomeTotals`; deny-by-default deductions (`report.ts:deductionGroupForRow`); `income-statement.ts`; rule pack `occupations`, `payg_deductibility` | Income, Transactions/Review, Reports, Filing | Position only: no tax payable, LITO or Medicare (by design: no refund figure). Wages detection (`wages_payer`) and the myTax worksheet are OFF | **Yes.** A flagged tax-calc lib reading new `thresholds_by_fy` keys, if the owner ever wants it |
-| **Multiple jobs** (P7, FT2) | Many `salary_payg` rows + `employment` entities; `situation_periods` `employment` (`multi`, `ref_id`) | `incomeTotals` sums; `salaryPayerCount` → `tax_free_threshold_two_payers` note (`readiness.ts:954`); `income_statement_multi` | Income (statement upload), Settings entities; AboutYou jobs (OFF) | No per-job occupation scoping (`income_activities.occupation_scope` has no UI, #156); no per-job deduction split or under-withholding hint | **Yes.** `occupation_scope` column + `employment` period `ref_id` |
+| **Simple PAYG** (P1, P3, P7, FT1) | `income` `salary_payg` (`withholding_cents`, `detail_json` employer/RFBA/RESC); `entities.kind='employment'`; `persons.occupation`; `transactions` buckets | `incomeTotals`; deny-by-default deductions (`report.ts:deductionGroupForRow`); `income-statement.ts`; rule pack `occupations`, `payg_deductibility` | Income, Transactions/Review, Reports, Filing | Position only: no tax payable, LITO or Medicare (by design: no refund figure). Wages detection (`wages_payer`) and the myTax worksheet are now ON | **Yes.** A flagged tax-calc lib reading new `thresholds_by_fy` keys, if the owner ever wants it |
+| **Multiple jobs** (P7, FT2) | Many `salary_payg` rows + `employment` entities; `situation_periods` `employment` (`multi`, `ref_id`) | `incomeTotals` sums; `salaryPayerCount` → `tax_free_threshold_two_payers` note (`readiness.ts:954`); `income_statement_multi` | Income (statement upload), Settings entities; AboutYou jobs | No per-job occupation scoping (`income_activities.occupation_scope` has no UI, #156); no per-job deduction split or under-withholding hint | **Yes.** `occupation_scope` column + `employment` period `ref_id` |
 | **Renter WFH** (P1) | `work_use_inputs` (hours, days, weeks, dedicated office, diary); rent paid as a `renting_*` property, held and never counted | `work-use.ts:computeWorkMethodDeductions` (`report.ts:805`, `wfh_car_methods`); rule pack `wfh_fixed_rate_cents_per_hour` | `WorkMethodsCard` (Dashboard, Reports); diary in the CSV | Fixed-rate method only; no actual-cost method | **Yes.** New `work_use_inputs` columns + a sibling summand |
 | **Investment property** incl. co-owned, rent-free family use, change of use (P6, P2) | `properties` (`use_status`, `ownership_pct`, cost base, disposal fields, `main_residence_flag`); `property_owners`; `income` `rent` + `property_id`; `loans_properties`; `assets`/`depreciation_schedule` | `report.ts:661-756` per-property net; rent-free / renovating denied (`report.ts:269`); co-ownership through `transaction_attributions` (`attribution.ts:splitAttribution`); `loan-interest.ts`; `cgt.ts` property path | Settings `PropertySettings` (`property_capital_detail`), Assets, `LoanInterestCard`, `AttributionPanel` | `use_status` is a single value, so a **change of use within the year has no dates and no day apportionment**. Partial (below market) family rent is not modelled. **`property_owners` is written but never read by report/attribution.** No main-residence partial exemption or 6-year rule | **Yes.** `situation_periods` with `subject_kind='property'`, `fact='use_status'` (reserved), read by a day-weighted use-status gate behind a flag; make `splitAttribution` default from `property_owners` |
 | **Shares / crypto** (P2, P10, P9, P8) | `cgt_assets` (kind, units, entity, cost-base elements, `txn_id`); `cgt_events` (parcel method); `income` dividend / `managed_fund_distribution` + `cgt_asset_id`; `capital_imports`; `ess_grants` | `cgtTotals`, `cgt.ts`, `capital.ts`, `capital-signals.ts`; `essTotals`; franking (`report.ts:863`); all `capital_*` ON | Income CapitalEquity, CapitalImport, EssGrants | No DRP parcels (#455), no AMIT cost-base adjustment (#454); no exchange/wallet import; no crypto-specific rules (personal-use asset, staking income) | **Yes.** `income.cgt_asset_id` already links income to holdings; new `income_type` (e.g. `crypto_staking`) / `asset_kind` |
-| **Novated lease / salary packaging (FBT, RFBA, ECM)** (no contract persona) | `entities.kind='novated_lease'` (`detail_json` provider, vehicle, pre_tax, fbt_method; `schema.sql:443`, `taxonomy.ts:152`); `rfba_cents`/`resc_cents` in `income.detail_json`. **No table for salary sacrifice, packaging caps or ECM** | `reportable_amounts` (ON) surfaces RFBA/RESC per employer (max, never summed, never in the position; `report.ts:920`, `readiness.ts:856`, `accountant-schedule.ts:805`); rule `au-novated-car` marks novated car costs not deductible and defers to an agent | Settings entities (novated lease), Onboarding drafting, Reports reportable-amounts line | **No FBT or ECM calculation**, no pre/post-tax split, no salary-sacrificed super link to `super_contributions`, no packaging caps (PBI / health exempt), RFBA feeds no income test (no MLS/HELP/Div 293 engine). The novated-lease entity feeds no money figure | **Yes.** A new `salary_packaging` table keyed `(user_id, fy, entity_id)` + rule-pack thresholds; RFBA is already captured for downstream income tests. Needs a persona first (none of P1–P10 has one) |
+| **Novated lease / salary packaging (FBT, RFBA, ECM)** (P11, added #756) | `entities.kind='novated_lease'` (`detail_json` provider, vehicle, pre_tax, fbt_method; `schema.sql:443`, `taxonomy.ts:152`); `rfba_cents`/`resc_cents` in `income.detail_json`. **No table for salary sacrifice, packaging caps or ECM** | `reportable_amounts` (ON) surfaces RFBA/RESC per employer (max, never summed, never in the position; `report.ts:920`, `readiness.ts:856`, `accountant-schedule.ts:805`); rule `au-novated-car` marks novated car costs not deductible and defers to an agent | Settings entities (novated lease), Onboarding drafting, Reports reportable-amounts line | **No FBT or ECM calculation**, no pre/post-tax split, no salary-sacrificed super link to `super_contributions`, no packaging caps (PBI / health exempt), RFBA feeds no income test (no MLS/HELP/Div 293 engine). The novated-lease entity feeds no money figure | **Yes.** A new `salary_packaging` table keyed `(user_id, fy, entity_id)` + rule-pack thresholds; RFBA is already captured for downstream income tests. P11 now pins today's behaviour (#756); a cents-per-km double-claim warning is live (#752), and the money fix is #754 (needs-decision) |
 | **Sole trader / gig** (P4, P5, P3, FT3, Erin) | `income_type` business / `non_cash_business` / `foreign_business`; `income_activities` (`activity_type='business'`, `psi_status`); `transaction_attributions`; GST columns; `bas_periods`, `payg_instalments`, `vehicle_logbooks`, `car_inputs`, `trading_stock`; `abn_activity` periods (OFF) | `incomeTotals`; `attributionTotals`; `gst.ts`/`basPositionFrom` (separate); `paygInstalmentsTotal`; `carLogbookPosition`; `tradingStockAdjustment`; PSI and Div 35 are nudges only; platform-payout detection in `credit-triage.ts` (OFF) | Settings BusinessSettings (activities, GST, BAS, instalments), `CarMethodsCard`, Income → Trading stock | No PSI results test / Div 86 split; no Div 35 application; no small-business simplified depreciation pool; no platform statement ingest (G7/G8) | **Yes.** `income_activities.psi_status` drives a flagged Div 86 summand |
 | **Company director with a Pty Ltd** (P8, P9, P2) | `entities` company (`base_rate_entity`, GST); `entity_roles` (director/shareholder, %, dates); legacy `company_tax_positions` (no writer); `rd_claims` (no writer); `transaction_attributions.creates_shareholder_loan` (`shareholder_loan_id` reserved, table dropped in 0052) | `companyPositions` (`ledger-totals.ts:461`): company income, deductions, loss carry-forward, person→company loan balance; kept out of the headline (`separateTaxpayerPredicate`) | Settings entities, `AttributionPanel`, Reports "Detailed tax positions"; **entity-roles UI client methods are never called** | **No Div 7A model** (company→person loans; `div7a_benchmark_rate_pct` unused); director fees not distinguished; no company tax payable, franking account or dividend flow to the individual; no R&D capture | **Yes.** New `div7a_loans` table `(user_id, entity_id, person_id, fy)`, `income_type='director_fee'`, existing `entity_roles.role='director'` |
 | **Trust** (P8) | `entities` trust; `trust_distributions` (beneficiary, share, amount, character, franking, `resolution_dated_before_30jun`, `upe_present`, `source_kind`) | `trustTotals` → `summariseTrustDistributions` (`report.ts:848`); `partnershipTotals`; s100A / UPE defer | Settings Trust and Partnership distributions | Beneficiary side only: no trustee-side net income (s95), s99A, or streamed capital-gain character into CGT | **Yes.** A trust-position reader like `companyPositions`, keyed by entity + FY, using `separateTaxpayerPredicate` |
 | **SMSF** (P10) | `entities.entity_type='smsf'`; `smsf_members` (phase, balances); `super_contributions`; fund `income.entity_id`; `super_pension` capture-only | `smsfFundPositions` → `smsf.ts` ECPI (separate taxpayer); `superConcessionalDeduction` | Settings SMSF members, Super contributions | No segregated method / actuarial certificate; no contributions tax, Div 293 calc (nudge only), cap checks or transfer-balance-cap tracking | **Yes.** New `smsf_members` / `super_contributions` columns + rule-pack thresholds |
-| **First-time lodger / student (HELP)** (FT2, FT1; no contract persona) | `situation_periods` facts `study`, `study_loan`; `fy_carryovers.hecs_balance_cents` from the NOA; `income_type='government_payment'` | `study_loan_passthrough` info finding (`readiness.ts:1013`, under `situation_profile` OFF); worksheet study-loan line (`mytax-worksheet.ts:632`) | AboutYou (OFF), Income (government payments) | No repayment-income figure (RFBA/RESC captured but not combined); no repayment bands in the pack; most of the journey is behind OFF flags | **Yes.** `thresholds_by_fy` repayment bands + an info-only report field (never in the position) |
-| **Moving in or out of AU (residency)** (FT4, FT2v; P10 only if foreign) | `situation_periods` `fact='residency'` (resident / temporary / foreign / whm / unsure, dated); `persons.tax_residency` mirror; foreign `income_type`s | `residency-assessability.ts` + `ledger-totals.ts:139` `residencyIncomeSplit` exclude foreign-sourced income in non-resident periods (OFF); `foreign_income_undated_part_year` finding | AboutYou `PeriodEditor` (OFF) | No part-year tax-free threshold amount (worksheet note only, `mytax-worksheet.ts:647`); non-resident and WHM rates, the departing-resident CGT event (I1) and FITO limits not modelled; nudges not per person | **Yes.** Rule-pack `residency_assessability.rules` + `thresholds_by_fy` read by a flagged lib |
-| **Partner / spouse (MLS, PHI)** (P6, P2; golden `pft12p`) | `persons.role='spouse'`; periods `spouse`, `private_hospital_cover`; `profiles.private_health`; PHI tables (`phi_policy`, `phi_limit`, `phi_benefit_usage`, `phi_statement`) display-only; `income.person_id` | **None for money.** `mls_single_threshold_cents` unused; worksheet spouse and Medicare lines are text; PHI tracker never feeds `report.ts`; `phi_tax_inputs` has no reader | Settings People, AboutYou (OFF), Extras (PHI). `/partner` is the **commercial** partner portal, not a spouse page | No MLS / rebate tier; no spouse-income or family-income capture; no dependants table; income not person-scoped (cross-cutting gap) | **Yes.** Pass `personId` to `incomeTotals` behind a flag; spouse income in a new `(user_id, fy)` table or the spouse period's `detail_json`; MLS bands in `thresholds_by_fy` as an info-only field |
+| **First-time lodger / student (HELP)** (FT2, FT1; no contract persona) | `situation_periods` facts `study`, `study_loan`; `fy_carryovers.hecs_balance_cents` from the NOA; `income_type='government_payment'` | `study_loan_passthrough` info finding (`readiness.ts:1013`, under `situation_profile`, now ON); worksheet study-loan line (`mytax-worksheet.ts:632`) | AboutYou, Income (government payments) | No repayment-income figure (RFBA/RESC captured but not combined); no repayment bands in the pack | **Yes.** `thresholds_by_fy` repayment bands + an info-only report field (never in the position) |
+| **Moving in or out of AU (residency)** (FT4, FT2v; P10 only if foreign) | `situation_periods` `fact='residency'` (resident / temporary / foreign / whm / unsure, dated); `persons.tax_residency` mirror; foreign `income_type`s | `residency-assessability.ts` + `ledger-totals.ts:139` `residencyIncomeSplit` exclude foreign-sourced income in non-resident periods (`residency_assessability`, now ON); `foreign_income_undated_part_year` finding | AboutYou `PeriodEditor` | No part-year tax-free threshold amount (worksheet note only, `mytax-worksheet.ts:647`); non-resident and WHM rates, the departing-resident CGT event (I1) and FITO limits not modelled; nudges not per person | **Yes.** Rule-pack `residency_assessability.rules` + `thresholds_by_fy` read by a flagged lib |
+| **Partner / spouse (MLS, PHI)** (P6, P2; golden `pft12p`) | `persons.role='spouse'`; periods `spouse`, `private_hospital_cover`; `profiles.private_health`; PHI tables (`phi_policy`, `phi_limit`, `phi_benefit_usage`, `phi_statement`) display-only; `income.person_id` | **None for money.** `mls_single_threshold_cents` unused; worksheet spouse and Medicare lines are text; PHI tracker never feeds `report.ts`; `phi_tax_inputs` has no reader | Settings People, AboutYou, Extras (PHI; nav cut by `hide_extras`). `/partner` is the **commercial** partner portal, not a spouse page | No MLS / rebate tier; no spouse-income or family-income capture; no dependants table; income not person-scoped (cross-cutting gap) | **Yes.** Pass `personId` to `incomeTotals` behind a flag; spouse income in a new `(user_id, fy)` table or the spouse period's `detail_json`; MLS bands in `thresholds_by_fy` as an info-only field |
 
 **Verdict.** All 13 situations can be extended additively. None needs a destructive migration or a
 rewrite of the position pipeline. The three weakest are **novated lease / salary packaging** (an
-entity with no money path, no persona), **spouse/MLS** (no engine, and the tenant-wide income sum is a
+entity with no money path; P11 now covers it, #756), **spouse/MLS** (no engine, and the tenant-wide income sum is a
 correctness trap once a second person has income), and **change of use** for property (a scalar
 `use_status` where the domain needs dated periods; the seam is already reserved).
 
 ## Observations (candidates for later audits, not fixed here)
 
-1. **The first-timer journey is fully dark in prod.** All eight journey flags are OFF, so new users
-   get the legacy six-group sidebar, `/onboarding` and `/filing`. `/start`, `/setup`, `/connect`,
-   `/lodge`, `/api/journey`, `/api/education`, `/api/mytax-worksheet` and `/api/lodged` are 404 or
-   redirect.
-2. **Five review surfaces.** `/transactions?view=review` (ReviewView), `/review` "By label",
+1. ~~**The first-timer journey is fully dark in prod.**~~ **Resolved:** seven of the eight journey
+   flags are ON (#770–#776, `ft_journey` last), so new users get `/setup`, `/connect`, `/review`,
+   `/lodge` and Home. `bank_minimisation` stays OFF.
+2. **Five review surfaces** (the "By label" one is now cut by `hide_by_label_review`, #697). `/transactions?view=review` (ReviewView), `/review` "By label",
    ReviewQueue, ReviewQueue `?view=labels` (embeds "By label" again), and the `/inbox` alias. `/review`
    means a different page depending on `ft_journey`.
 3. **Nav numbering disagrees with itself.** `App.tsx` GROUPS reads "1 Bring in … 5 Save, 6 File" with
@@ -478,15 +514,16 @@ correctness trap once a second person has income), and **change of use** for pro
    (`/api/ask`) and `TabGuide` (`/api/guide`). With `ft_journey` ON the floating chat is not mounted.
 5. **Position shown in three places**: Dashboard, Home and Reports. With `ft_journey` ON, `/reports`
    and `/transactions` have no nav entry.
-6. **Duplicate filing surfaces.** Filing and ShipIt both do sign-off, the lodged mark, NOA and the CSV.
+6. **Duplicate filing surfaces** (the duplicate WFH/car editors and claims card are now cut by
+   `hide_reports_wfh_car` and `hide_dashboard_claims`, #697). Filing and ShipIt both do sign-off, the lodged mark, NOA and the CSV.
    Onboarding and AboutYou both do consent, people and employers. ConnectPage embeds all of Accounts
    and Income. Loan interest lives in Accounts, `LoanInterestCard` and Settings loans.
    `WorkMethodsCard`/`CarMethodsCard` render on Dashboard, Reports and RecordCards.
-7. **Security flags that read as "shipped" are OFF**: `d1_backups` (the daily export cron no-ops, so no
+7. **Security flags that read as "shipped" are OFF** (still true at the refresh): `d1_backups` (the daily export cron no-ops, so no
    automated backups run), `security_monitoring`, `admin_mfa_required`, `qbo_token_fail_closed`.
    Clerk is still on the DEV instance with open signup. These matter for the Fiskil submission (#633).
 8. **Dead or near-dead flags.** `phi_tax_inputs` is OFF and has **no runtime reader**.
-   `partnership_losses` is OFF pending a decision. 89 ON flags are mostly permanent now. Several
+   `partnership_losses` is OFF pending a decision. 108 ON flags are mostly permanent now. Several
    registry comments still say "OFF in prod until validated" for flags that are ON (`cgt_engine`,
    `ess_engine`, `gst_bas`, `trust_distributions`, `smsf_engine`, `attribution_engine`,
    `accountant_schedule`, `apply_to_siblings`, `loan_interest_v2`). See
@@ -501,9 +538,10 @@ correctness trap once a second person has income), and **change of use** for pro
 11. **`property_owners` is written but never read** by report or attribution, so co-ownership depends
     on per-transaction attribution.
 12. **Settings has no Appearance UI.** `components/AppearanceSwitch.tsx` is never rendered.
-13. **Naming clash.** `api.reconcile` calls `/api/qbo/reconcile`, while `reconcilePairs` calls
+13. **Naming clash** (the QBO half is moot while `qbo_retired` is ON). `api.reconcile` calls `/api/qbo/reconcile`, while `reconcilePairs` calls
     `/api/reconcile`. `/partner` is the commercial partner portal but reads as "spouse" in a tax app.
-14. **Default inference is Anthropic (US)** (`DEFAULT_INFERENCE_PROVIDER=anthropic`). Every new user
-    hits the APP-8 consent step, and CDR data would need Bedrock per tenant (#641 tracks the flip).
+14. ~~**Default inference is Anthropic (US).**~~ **Resolved 2026-10-24:** `DEFAULT_INFERENCE_PROVIDER`
+    is `bedrock` (#745), so new users skip the APP-8 consent step and run on the `au.` profile. Rolling
+    back needs the pinning steps in [`CONFIG.md` §3](../../CONFIG.md), not only the var.
 15. **`/agents/*` is in `run_worker_first`** although the transport is deliberately unmounted. It is
     harmless (it falls through to ASSETS), but it reads like an exposed route.

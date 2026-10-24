@@ -23,7 +23,7 @@ import { featureOn } from "./features";
 import { SITUATIONS, loadSituations, situationSections, type LoadedSituation, type ReportContext } from "./situations";
 import { parseCostBaseElements, costBaseBreakdownRows, holdingPosition } from "./capital";
 import { generateWfhDiary, WFH_WEEKDAY_NAMES } from "./work-use";
-import { diaryView as wfhDiaryView, addDaysIso as wfhAddDays } from "./wfh-diary";
+import { diaryView as wfhDiaryView, addDaysIso as wfhAddDays, preDiarySourceLabel as wfhPreDiarySourceLabel } from "./wfh-diary";
 import { buildXlsx, type XlsxCell, type XlsxSheet } from "./xlsx";
 
 // ── The itemised accountant deliverable (#179 + #181, EPIC #178) ─────────────
@@ -883,9 +883,14 @@ async function scheduleCore(
       ]);
       rows.push(["Total hours counted", null, view.totals.counted_hours, null, null, null]);
       if (view.totals.not_counted_hours > 0) rows.push(["Hours rebuilt from memory (not counted)", null, view.totals.not_counted_hours, null, null, null]);
+      // F6: hours recorded before the diary started are part of the year's figure (rows only when kept).
+      if (view.pre_diary) {
+        rows.push([`Hours recorded before the diary (${wfhPreDiarySourceLabel(view.pre_diary.source)})`, null, view.pre_diary.hours, null, null, view.pre_diary.counts ? "yes" : "no"]);
+        rows.push(["Total hours for the year (before the diary + diary)", null, view.fy_hours, null, null, null]);
+      }
       const wmHours = report.work_method?.wfh_hours ?? null;
-      if (wmHours != null && Math.round(wmHours * 100) !== Math.round(view.totals.counted_hours * 100)) {
-        notes.push(`This diary counts ${view.totals.counted_hours} hours, but the fixed-rate WFH figure above uses ${wmHours} hours — review so they agree.`);
+      if (wmHours != null && Math.round(wmHours * 100) !== Math.round(view.fy_hours * 100)) {
+        notes.push(`This diary counts ${view.fy_hours} hours, but the fixed-rate WFH figure above uses ${wmHours} hours — review so they agree.`);
       }
       notes.push(
         "Your weekly record of hours worked from home: each week was confirmed or adjusted by you, and the time it was recorded is shown. Weeks recorded late were entered after the week; hours rebuilt from memory are an estimate and are not counted.",

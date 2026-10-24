@@ -20,7 +20,7 @@ import { billerNormalize, detectRecurrence, classifyBiller, paymentsPerYear, rec
 import { findPhisProduct } from "./lib/phis-seed";
 import { matchEnergyOffer, getOfferById, buildReferralUrl, opportunityTakesEnergyCta, type PartnerDB } from "./lib/partners";
 import { deriveWfhHours, generateWfhDiary, type WfhLeaveRange } from "./lib/work-use";
-import { diaryHoursForFy, setPattern as setWfhDiaryPattern, saveWeek as saveWfhDiaryWeek, deleteWeek as deleteWfhDiaryWeek, DiaryError, type DiaryWeek, type SaveWeekInput } from "./lib/wfh-diary";
+import { diaryHoursForFy, setPattern as setWfhDiaryPattern, saveWeek as saveWfhDiaryWeek, deleteWeek as deleteWfhDiaryWeek, setPreDiary as setWfhPreDiary, DiaryError, type DiaryWeek, type SaveWeekInput, type SetPreDiaryInput, type PreDiary } from "./lib/wfh-diary";
 import { applyUserRules, RULE_CREDIT_BUCKETS } from "./lib/rules";
 import { sha256hex, sha256hexBytes } from "./lib/base64";
 import { CAPITAL_ROWS_MISSING_MESSAGE, STATEMENT_LINES_MISSING_MESSAGE, keyStillReferenced, maybeCompressImage, objectExists, putCompressed, putJson, putStatementOriginal, readStoredJson, statementFileKey } from "./lib/r2-store";
@@ -4909,8 +4909,9 @@ export class TaxAgent extends Agent<Env> {
     // the user isn't supplying their own record, the diary's total_hours becomes the figure; else fall
     // back to the days/week derivation. Keeps the legacy days/week path byte-identical when diary is off.
     let hours = input.wfh_hours != null ? input.wfh_hours : null;
-    // #787 (wfh_weekly_diary): once the weekly diary has weeks for this FY it IS the hours figure — a stale
-    // typed value or the whole-year generator must never overwrite it. Flag OFF ⇒ this read never runs.
+    // #787 (wfh_weekly_diary): once the weekly diary has weeks for this FY it sets the hours figure (F6: the
+    // hours kept from before the diary + the counted diary hours) — a stale typed value or the whole-year
+    // generator must never overwrite it. Flag OFF ⇒ this read never runs.
     const weekly = featureOn(this.env, "wfh_weekly_diary") ? await diaryHoursForFy(this.env, userId, input.fy, await this.jurisdictionFor(userId)) : null;
     if (weekly != null) hours = weekly;
     else if (hours == null && generateDiary && !record && weekdays.length > 0 && !featureOn(this.env, "wfh_weekly_diary")) {
@@ -4953,6 +4954,22 @@ export class TaxAgent extends Agent<Env> {
       const week = await saveWfhDiaryWeek(this.env, userId, input, new Date(), await this.jurisdictionFor(userId));
       await this.audit(userId, "wfh_diary_week", JSON.stringify({ week_start: week.week_start, entry: week.entry, source: week.source, hours: week.days.map((d) => d.h) }));
       return { ok: true, week };
+    } catch (e) {
+      if (e instanceof DiaryError) return { ok: false, error: e.message };
+      throw e;
+    }
+  }
+
+  /**
+   * F6: edit the hours recorded before the diary started for an FY (needs a source; the diary must be in
+   * use). The FY total becomes this figure + the counted diary hours.
+   */
+  async wfhDiarySetPreDiary(userId: string, input: SetPreDiaryInput): Promise<{ ok: true; pre_diary: PreDiary } | { ok: false; error: string }> {
+    await this.requireProfile(userId);
+    try {
+      const pre = await setWfhPreDiary(this.env, userId, input, await this.jurisdictionFor(userId));
+      await this.audit(userId, "wfh_diary_pre_diary", JSON.stringify({ fy: Number(input.fy), hours: pre.hours, source: pre.source }));
+      return { ok: true, pre_diary: pre };
     } catch (e) {
       if (e instanceof DiaryError) return { ok: false, error: e.message };
       throw e;

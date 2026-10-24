@@ -33,6 +33,10 @@ export function WfhDiary({ fyNum, typedHours, hint }: { fyNum: number; typedHour
   const [dayDraft, setDayDraft] = useState<{ h: string; why: "" | WfhDayReason }[]>([]);
   const [source, setSource] = useState<"" | WfhLateSource>("");
   const [removing, setRemoving] = useState<string | null>(null);
+  // F6: editing the hours recorded before the diary (needs a source, like a late week).
+  const [editingPre, setEditingPre] = useState(false);
+  const [preHours, setPreHours] = useState("");
+  const [preSource, setPreSource] = useState<"" | WfhLateSource>("");
 
   const refresh = () => {
     for (const k of [["wfh-diary", fyNum], ["work-use", fyNum], ["records", fyNum], ["journey", fyNum], ["filing-readiness"], ["report"], ["dashboard"]])
@@ -58,6 +62,11 @@ export function WfhDiary({ fyNum, typedHours, hint }: { fyNum: number; typedHour
     onSuccess: () => { setRemoving(null); refresh(); toast.success("Week removed."); },
     onError: (e) => toast.error("Couldn't remove that week", { description: (e as Error).message }),
   });
+  const savePre = useMutation({
+    mutationFn: (body: { hours: number; source: WfhLateSource }) => api.wfhDiarySetPreDiary({ fy: fyNum, ...body }),
+    onSuccess: () => { setEditingPre(false); refresh(); toast.success("Saved your hours from before the diary."); },
+    onError: (e) => toast.error("Couldn't save those hours", { description: (e as Error).message }),
+  });
   const download = useMutation({
     mutationFn: () => api.wfhDiaryCsv(fyNum),
     onSuccess: ({ blob, filename }) => saveBlob(blob, filename),
@@ -67,6 +76,20 @@ export function WfhDiary({ fyNum, typedHours, hint }: { fyNum: number; typedHour
   if (isError) return <p className="text-xs text-warn">Your hours diary couldn't load. Refresh the page to try again.</p>;
   if (!view) return <p className="text-xs text-muted">Loading your hours diary…</p>;
 
+  const pre = view.pre_diary;
+  const preFrom = (s: WfhLateSource | null) =>
+    s === "memory" ? "from memory, not counted" : s ? `from your ${WFH_LATE_SOURCES.find((x) => x.v === s)?.label ?? s}` : C.preDiaryNoSource;
+  const startPre = () => {
+    setPreHours(pre ? String(pre.hours) : "");
+    setPreSource(pre?.source ?? "");
+    setEditingPre(true);
+  };
+  const submitPre = () => {
+    const n = Number(preHours);
+    if (preHours.trim() === "" || !Number.isFinite(n) || n < 0) { toast.error("Enter the hours, 0 or more"); return; }
+    if (!preSource) { toast.error("Choose what these hours come from first"); return; }
+    savePre.mutate({ hours: n, source: preSource });
+  };
   const pattern = view.pattern;
   const usualTotal = pattern ? sum(pattern) : 0;
   const byWeek = new Map(view.weeks.map((w) => [w.week_start, w]));
@@ -146,10 +169,41 @@ export function WfhDiary({ fyNum, typedHours, hint }: { fyNum: number; typedHour
         <div className="text-sm font-semibold"><Term k="wfh_diary">{C.title}</Term></div>
         <div className="text-xs text-muted">{C.intro}</div>
         <div className="mt-1 text-xs font-medium text-ink">
-          {fmtHours(view.totals.counted_hours)} counted for this year · {view.totals.weeks_on_time + view.totals.weeks_late} week(s) recorded
+          {pre
+            ? `${C.preDiaryTitle}: ${fmtHours(pre.hours)} (${preFrom(pre.source)}) + diary: ${fmtHours(view.totals.counted_hours)} = ${fmtHours(view.fy_hours)} for this year`
+            : `${fmtHours(view.totals.counted_hours)} counted for this year`}
+          {" · "}{view.totals.weeks_on_time + view.totals.weeks_late} week(s) recorded
           {view.totals.not_counted_hours > 0 ? ` · ${fmtHours(view.totals.not_counted_hours)} from memory, not counted` : ""}
         </div>
         {!view.in_use && (typedHours ?? 0) > 0 && <p className="mt-1 text-xs text-warn">{C.replacesTyped}</p>}
+        {pre && !pre.source && !editingPre && <p className="mt-1 text-xs text-warn">{C.preDiaryTitle}: {C.preDiaryNoSource}.</p>}
+        {view.in_use && !editingPre && (
+          <button type="button" className="mt-1 min-h-[32px] text-xs font-medium text-forest underline" onClick={startPre}>
+            {pre ? `${C.preDiaryEdit} hours from before the diary` : C.preDiaryAdd}
+          </button>
+        )}
+        {view.in_use && editingPre && (
+          <div className="mt-2 space-y-2 rounded-lg border border-line bg-surface p-2">
+            <div className="text-xs font-medium uppercase tracking-wide text-muted">{C.preDiaryTitle}</div>
+            <p className="text-xs text-muted">{C.preDiaryHelp}</p>
+            <div className="flex flex-wrap items-center gap-2 text-sm">
+              <Input type="number" min="0" step="0.25" value={preHours} aria-label="Hours from before the diary" placeholder="0"
+                onChange={(e) => setPreHours(e.target.value)} className="w-28" />
+              <span>h</span>
+            </div>
+            <label className="flex flex-wrap items-center gap-2 text-sm">
+              <span>{C.preDiarySourceLabel}</span>
+              <select value={preSource} onChange={(e) => setPreSource(e.target.value as "" | WfhLateSource)} className="min-h-[40px] rounded-lg border border-line bg-card px-2 text-sm" aria-label="What the hours from before the diary come from">
+                <option value="">choose…</option>
+                {WFH_LATE_SOURCES.map((s) => <option key={s.v} value={s.v}>{s.label}</option>)}
+              </select>
+            </label>
+            <div className="flex flex-wrap gap-2">
+              <Button onClick={submitPre} disabled={savePre.isPending}>{C.preDiarySave}</Button>
+              <Button variant="ghost" onClick={() => setEditingPre(false)}>Cancel</Button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* 1. The usual week — set once. */}

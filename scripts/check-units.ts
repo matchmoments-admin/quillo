@@ -8402,5 +8402,109 @@ console.log("weekly WFH diary (#787)");
   check("WorkMethodsCard: the 'Generate a diary' generator is hidden when the weekly diary is ON", /const diaryEnabled = has\("wfh_generate_diary"\) && !weeklyDiary;/.test(card787));
 }
 
+// ── F6: the weekly diary keeps the hours recorded before it started (migration 0089) ─────────────────
+// Before: one confirmed 16h week replaced 600 typed timesheet hours with 16, and deleting that week wrote
+// NULL, losing the 600 for good. Now the typed figure is kept as "before the diary" and the FY = it + diary.
+console.log("WFH diary keeps hours recorded before it (F6)");
+{
+  const W = await import("../src/lib/wfh-diary");
+  const sqlite = new DatabaseSync(":memory:");
+  const migDir = nodePath.join(process.cwd(), "migrations");
+  for (const f of nodeFs.readdirSync(migDir).filter((f) => f.endsWith(".sql")).sort()) sqlite.exec(nodeFs.readFileSync(nodePath.join(migDir, f), "utf8"));
+  class FStmt {
+    private params: unknown[] = [];
+    constructor(private sql: string) {}
+    bind(...a: unknown[]) { this.params = a.map((x) => (x === undefined ? null : x)); return this; }
+    async all<T>() { return { results: sqlite.prepare(this.sql).all(...(this.params as never[])) as T[], success: true, meta: {} }; }
+    async first<T>() { return (sqlite.prepare(this.sql).get(...(this.params as never[])) as T) ?? null; }
+    async run() { const r = sqlite.prepare(this.sql).run(...(this.params as never[])); return { success: true, meta: { changes: Number(r.changes ?? 0) } }; }
+  }
+  const fenv = { DB: { prepare: (sql: string) => new FStmt(sql) }, FEATURES: "wfh_weekly_diary" } as never;
+  const at = (iso: string) => new Date(`${iso}T09:00:00Z`);
+  const zero5 = [0, 0, 0, 0, 0].map((h) => ({ h }));
+  const row = (u: string) => sqlite.prepare(`SELECT wfh_hours AS h, wfh_hours_pre_diary AS pre, wfh_hours_pre_diary_source AS src FROM work_use_inputs WHERE user_id = ? AND fy = 2025`).get(u) as { h: number | null; pre: number | null; src: string | null } | undefined;
+  const throwsD = async (f: () => Promise<unknown>) => { try { await f(); return false; } catch (e) { return e instanceof W.DiaryError; } };
+
+  check("fyHoursTotal: pre-diary + diary; memory pre-diary hours never count; no pre ⇒ the diary alone",
+    W.fyHoursTotal({ hours: 600, source: null }, 16) === 616 && W.fyHoursTotal({ hours: 600, source: "timesheet" }, 16) === 616 &&
+    W.fyHoursTotal({ hours: 600, source: "memory" }, 16) === 16 && W.fyHoursTotal(null, 16) === 16);
+
+  // 600 typed timesheet hours for Jul–Dec, then the diary starts with one 16h week in January.
+  const U = "f6_typed";
+  sqlite.prepare(`INSERT INTO work_use_inputs (user_id, fy, wfh_hours) VALUES (?, 2025, 600)`).run(U);
+  await W.setPattern(fenv, U, [8, 8, 0, 0, 0, 0, 0]);
+  await W.saveWeek(fenv, U, { week_start: "2026-01-05" }, at("2026-01-09"));
+  check("F6: 600 typed hours + one confirmed 16h diary week = 616 (was 16)", row(U)?.h === 616 && row(U)?.pre === 600 && row(U)?.src === null);
+  check("F6: diaryHoursForFy and the view report 616, with the 600 shown as before the diary",
+    (await W.diaryHoursForFy(fenv, U, 2025)) === 616 && (await W.diaryView(fenv, U, 2025, at("2026-01-09"))).fy_hours === 616 &&
+    (await W.diaryView(fenv, U, 2025, at("2026-01-09"))).pre_diary?.hours === 600);
+  await W.saveWeek(fenv, U, { week_start: "2026-01-12", days: [{ h: 8 }, { h: 0, why: "office" }, ...zero5] }, at("2026-01-16"));
+  check("F6: a second week adds to the total and never re-captures the pre-diary figure", row(U)?.h === 624 && row(U)?.pre === 600);
+  check("F6: editing the pre-diary hours needs a source", await throwsD(() => W.setPreDiary(fenv, U, { fy: 2025, hours: 610, source: undefined })));
+  const p = await W.setPreDiary(fenv, U, { fy: 2025, hours: 610, source: "timesheet" });
+  check("F6: an edit with a source updates the figure and the FY total", p.hours === 610 && p.source === "timesheet" && p.counts && row(U)?.h === 634);
+  await W.deleteWeek(fenv, U, "2026-01-12");
+  await W.deleteWeek(fenv, U, "2026-01-05");
+  check("F6: deleting every diary week falls back to the pre-diary hours (610, not NULL) and keeps them", row(U)?.h === 610 && row(U)?.pre === 610 && row(U)?.src === "timesheet");
+  await W.saveWeek(fenv, U, { week_start: "2026-01-05", source: "calendar" }, at("2026-02-02"));
+  check("F6: restarting the diary keeps the same figure and its source", row(U)?.h === 626 && row(U)?.pre === 610 && row(U)?.src === "timesheet");
+  await W.setPreDiary(fenv, U, { fy: 2025, hours: 610, source: "memory" });
+  check("F6: pre-diary hours from memory are kept but not counted", row(U)?.h === 16 && row(U)?.pre === 610);
+  const csv = W.diaryCsv(await W.diaryView(fenv, U, 2025, at("2026-02-02")));
+  check("F6: the CSV record shows the hours before the diary and the year's total", csv.includes("Hours recorded before the diary (Memory (not counted)),610") && csv.includes("Total hours for the year (before the diary + diary),16"));
+
+  // The exact delete-week scenario from the bug: 600 + 16 → 616, delete the week → back to 600.
+  const U2 = "f6_delete";
+  sqlite.prepare(`INSERT INTO work_use_inputs (user_id, fy, wfh_hours) VALUES (?, 2025, 600)`).run(U2);
+  await W.setPattern(fenv, U2, [8, 8, 0, 0, 0, 0, 0]);
+  await W.saveWeek(fenv, U2, { week_start: "2026-01-05" }, at("2026-01-09"));
+  const after = row(U2)?.h;
+  await W.deleteWeek(fenv, U2, "2026-01-05");
+  check("F6: 600 + 16 = 616, then deleting that week restores 600 (was NULL, losing the 600)", after === 616 && row(U2)?.h === 600 && row(U2)?.pre === 600);
+
+  // No typed hours: unchanged behaviour (the diary alone; deleting its only week clears the figure).
+  const U3 = "f6_none";
+  await W.setPattern(fenv, U3, [8, 8, 0, 0, 0, 0, 0]);
+  await W.saveWeek(fenv, U3, { week_start: "2026-01-05" }, at("2026-01-09"));
+  const n1 = row(U3);
+  await W.deleteWeek(fenv, U3, "2026-01-05");
+  check("F6: with no typed hours the diary alone sets the figure, and deleting its only week clears it (as before)",
+    n1?.h === 16 && n1?.pre === null && row(U3)?.h === null && (await W.diaryView(fenv, U3, 2025, at("2026-01-09"))).pre_diary === null);
+  check("F6: the pre-diary hours can't be set before the diary is in use", await throwsD(() => W.setPreDiary(fenv, U3, { fy: 2025, hours: 100, source: "timesheet" })));
+
+  // Wiring: the migration is additive, schema.sql is in lockstep, the route exists, the card shows it.
+  const mig = nodeFs.readFileSync(nodePath.join(process.cwd(), "migrations/0089_wfh_hours_pre_diary.sql"), "utf8");
+  check("0089: additive only (ALTER TABLE ADD COLUMN), schema.sql carries both columns",
+    !/\b(DROP|RENAME|DELETE|UPDATE)\b/i.test(mig.replace(/--.*$/gm, "")) && /ADD COLUMN wfh_hours_pre_diary REAL/.test(mig) &&
+    /wfh_hours_pre_diary\s+REAL/.test(nodeFs.readFileSync("schema.sql", "utf8")) && /wfh_hours_pre_diary_source TEXT/.test(nodeFs.readFileSync("schema.sql", "utf8")));
+  check("api: PUT /api/wfh-diary/pre-diary sits inside the flag-gated wfh-diary block",
+    /resource === "wfh-diary"\) \{[\s\S]*?id === "pre-diary"[\s\S]*?wfhDiarySetPreDiary/.test(nodeFs.readFileSync("src/api.ts", "utf8")));
+  const card = nodeFs.readFileSync("web/src/components/WfhDiary.tsx", "utf8");
+  check("WfhDiary card: 'Before the diary: N h (from your …) + diary: M h' and a source picker for the edit",
+    /\$\{C\.preDiaryTitle\}: \$\{fmtHours\(pre\.hours\)\} \(\$\{preFrom\(pre\.source\)\}\) \+ diary: \$\{fmtHours\(view\.totals\.counted_hours\)\}/.test(card) && /if \(!preSource\)/.test(card));
+  check("WorkMethodsCard: the hours field shows the year's figure (pre-diary + diary)", /weekly\.in_use \? weekly\.fy_hours : null/.test(nodeFs.readFileSync("web/src/components/WorkMethodsCard.tsx", "utf8")));
+}
+
+// ── F1: the AI spend caps state their USD meaning AND the AUD equivalent (AWS bills Bedrock in AUD) ──
+console.log("spend caps state USD + AUD (F1)");
+{
+  const toml = nodeFs.readFileSync("wrangler.toml", "utf8");
+  const cfg = nodeFs.readFileSync("CONFIG.md", "utf8");
+  const val = (k: string) => Number((toml.match(new RegExp(`^${k} = "([0-9.]+)"`, "m")) ?? [])[1]);
+  const rate = val("USD_TO_AUD_RATE");
+  const fmt = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(2));
+  check("F1: USD_TO_AUD_RATE is read from wrangler.toml", rate === 1.55);
+  check("F1: wrangler.toml no longer calls the USD cap '≈ the AWS credit budget'", !/≈ the AWS credit budget/.test(toml));
+  for (const k of ["MAX_DAILY_COST_CENTS", "MAX_DAILY_COST_CENTS_GLOBAL", "MAX_MONTHLY_COST_CENTS_GLOBAL"]) {
+    const cents = val(k);
+    const usd = fmt(cents / 100), aud = fmt(Math.round(cents * rate) / 100);
+    // The comment block right above the key must state both figures for the CURRENT value.
+    const block = toml.slice(Math.max(0, toml.search(new RegExp(`^${k} = `, "m")) - 600), toml.search(new RegExp(`^${k} = `, "m")));
+    const lastComment = block.split("\n").filter((l) => l.startsWith("#")).slice(-4).join("\n");
+    check(`F1: ${k} comment states ${cents} = US$${usd} ≈ A$${aud}`, lastComment.includes(`${cents} = US$${usd}`) && lastComment.includes(`A$${aud}`));
+    check(`F1: CONFIG.md states ${k} as US$${usd} ≈ A$${aud}`, new RegExp(`\`${k}\`[^\\n]*\\| ${cents} \\| US\\$${usd.replace(".", "\\.")}[^\\n]*\\| A\\$${aud.replace(".", "\\.")}`).test(cfg));
+  }
+}
+
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);
 process.exit(fail === 0 ? 0 : 1);

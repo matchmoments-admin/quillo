@@ -20,7 +20,15 @@ export const WFH_DIARY_COPY = {
   confirmedAt: "Confirmed",
   notYetOpen: "You can confirm a week from its Friday, once the days have happened.",
   replacesTyped:
-    "Once you confirm a week, the diary sets your work-from-home hours for this year in place of the figure typed above.",
+    "Once you confirm a week, the hours typed above are kept as your hours from before the diary, and the diary adds each confirmed week to them.",
+  preDiaryTitle: "Before the diary",
+  preDiaryHelp:
+    "Hours you worked from home this year before you started the diary, from a record made at the time (a timesheet, work calendar, roster or system log). Say what they come from. Hours from memory are an estimate, so they're kept but not counted.",
+  preDiaryNoSource: "say where these came from",
+  preDiaryAdd: "Add hours from before the diary",
+  preDiaryEdit: "Change",
+  preDiarySave: "Save",
+  preDiarySourceLabel: "They come from my",
   catchUpTitle: "Weeks not recorded yet",
   catchUpHelp:
     "A week entered more than a week after it ended is marked recorded late, with today's date. Say what you're working from. Hours rebuilt from a record made at the time (a work calendar, timesheet, roster or system log) are counted; keep that record too. Hours from memory are an estimate, so they're kept here but not counted.",

@@ -39,6 +39,7 @@ Legend — **engine**: backend computes it (✓ live behind flag); **UI**: a web
 | Capability | Engine | UI in | Display | Flag | Personas |
 |---|:---:|:---:|:---:|---|---|
 | PAYG salary + WFH + deductions | ✓ | ✓ | ✓ | (live) | 1,3,7 |
+| Weekly WFH hours diary (#787, 0088): usual week set once, each week confirmed in one tap or adjusted (sick / leave / office / public holiday), server-timestamped; a save more than a week after the week ends is **late** and needs a source — from a calendar / timesheet / roster / system log it counts, from memory it's kept but never counted (PCG 2023/1 para 58). The FY's counted total writes `work_use_inputs.wfh_hours`, so the fixed-rate maths is unchanged; replaces the whole-year "Generate a diary" generator on the card; day-by-day CSV export + a "your weekly record" accountant-pack section | ✓ (`p1mayadiary`) | ✓ WorkMethodsCard hours diary | ✓ hours figure set by the diary, CSV, pack section | `wfh_weekly_diary` | 1 |
 | Negative-gearing rentals + Div 40/43 | ✓ | ✓ | ✓ | (live) | 6 |
 | Multi-income aggregation | ✓ | ✓ | ✓ | (live) | all |
 | Sole-trader `business` income | ✓ | ◑ income only | ✓ | — (additive) | 4,5 |

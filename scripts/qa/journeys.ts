@@ -5,7 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { Page } from "playwright";
 import { apiCall, feedback, openPage, pageInvariants, settle, type Ctx } from "./harness";
-import { QA_DIR, ROOT, defaultProvider, type QaServer } from "./server";
+import { QA_DIR, ROOT, defaultProvider, prodFeatures, type QaServer } from "./server";
 
 export const FIXTURE_CSV = path.join(ROOT, "evals", "statements", "westpac-sample.csv");
 
@@ -343,6 +343,62 @@ export async function firstTimerJourney(ctx: Ctx, server: QaServer, answers: Set
   });
 
   await step(ctx, suite, "Check (/review/match) renders", { flags: ["reconcile_proposals"] }, async () => visit(page, probe, ctx.base, "/review/match", ctx.vp));
+
+  // ── WFH hours diary (#787, wfh_weekly_diary). Only when the flag is in the build's FEATURES. ──
+  if (prodFeatures().includes("wfh_weekly_diary")) {
+    let uiRan = false;
+    await step(ctx, suite, "WFH diary (UI): set the usual week, then record a week in one tap", {}, async () => {
+      const p = await visit(page, probe, ctx.base, "/review", ctx.vp);
+      if (p) return p;
+      const main = page.locator("main");
+      if (!(await main.getByText("Your hours diary").count())) {
+        // Only a tenant who ticked "Worked from home" gets the WFH hours card.
+        return answers.ticks.includes("Worked from home") ? "no hours diary on the WFH record card" : null;
+      }
+      uiRan = true;
+      // The WFH fact card sits open in the queue, or collapsed under "Done" once hours are stated: open what's shut.
+      const mon = main.locator('input[aria-label="Usual hours from home on Mon"]:visible');
+      if (!(await mon.count())) {
+        const done = main.locator("details > summary", { hasText: /^Done/ }).first();
+        if (await done.count()) await done.click();
+        const fact = main.locator("details > summary", { hasText: "Hours you worked from home" }).first();
+        if (await fact.count()) await fact.click();
+      }
+      if (!(await mon.count())) return "the hours diary's usual-week editor isn't reachable on /review";
+      await mon.fill("7.6");
+      await main.locator('input[aria-label="Usual hours from home on Tue"]:visible').fill("7.6");
+      probe.reset();
+      await main.getByRole("button", { name: /^Save my usual week/ }).first().click();
+      if (!(await feedback(page, { text: /usual week/i, timeout: 6000 }))) return "no feedback after saving the usual week";
+      await settle(page);
+      // FY 2025-26 is over, so its last week is a late save: the card asks what it's rebuilt from.
+      await main.locator(`select[aria-label="What you're working from"]:visible`).first().selectOption("timesheet");
+      await main.getByRole("button", { name: /^Same as usual/ }).first().click();
+      const fb = await feedback(page, { text: /Week of [^\n]* recorded: [^\n]*/i, timeout: 6000 });
+      await settle(page);
+      if (probe.problems().length) return probe.problems().join("; ");
+      if (!fb) return "no 'recorded' feedback after one tap";
+      if (!/\(recorded late\)/i.test(fb)) return `a late week's feedback doesn't say it was recorded late (${fb})`;
+      return /set by your hours diary/i.test(await main.innerText()) ? null : "hours figure not shown as set by the diary";
+    });
+    await step(ctx, suite, "WFH diary (API): a late week needs a source; the counted total is the WFH hours figure; CSV export", {}, async () => {
+      if (!uiRan) {
+        const p = await api("PUT", "/api/wfh-diary/pattern", { hours: [7.6, 7.6, 0, 0, 0, 0, 0] });
+        if (p.status !== 200) return `pattern HTTP ${p.status}`;
+      }
+      const noSource = await api("POST", "/api/wfh-diary/weeks", { week_start: "2025-07-07" });
+      if (noSource.status !== 400) return `a late week with no source should be refused, got HTTP ${noSource.status}`;
+      const w = await api("POST", "/api/wfh-diary/weeks", { week_start: "2025-07-07", source: "calendar" });
+      if (w.status !== 200) return `save HTTP ${w.status}: ${JSON.stringify(w.data).slice(0, 160)}`;
+      const d = await api<{ totals: { counted_hours: number } }>("GET", "/api/wfh-diary?fy=2025");
+      const wu = await api<{ work_use: { wfh_hours: number | null } }>("GET", "/api/work-use?fy=2025");
+      const want = uiRan ? 30.4 : 15.2;
+      if (d.data.totals?.counted_hours !== want || wu.data.work_use?.wfh_hours !== want) return `diary ${d.data.totals?.counted_hours} / work-use ${wu.data.work_use?.wfh_hours}, expected ${want}`;
+      const csv = await fetch(`${ctx.base}/api/wfh-diary/export?fy=2025`);
+      const body = await csv.text();
+      return csv.status === 200 && /Recorded late/.test(body) && body.includes(`Total hours counted,${want}`) ? null : `export HTTP ${csv.status}: ${body.slice(0, 120)}`;
+    });
+  }
 
   // ── Position ──
   await step(ctx, suite, "Position (/reports) renders, general-info framed, no refund figure", { flags: ["residency_assessability"] }, async () => {

@@ -3702,6 +3702,67 @@ async function main() {
       tieBackChecks(await buildAccountantSchedule(NL_ON, u, 2025, { report: rKm })).every((t) => t.ok));
   }
 
+  // ── P1 Maya + the weekly WFH diary (#787, flag wfh_weekly_diary) ──
+  // Maya works from home Mon + Tue. She sets that usual week once, confirms most weeks in one tap, adjusts
+  // the odd one (sick, office), and catches up two missed weeks: one from her work calendar (counted, marked
+  // late) and one from memory (kept, not counted — an estimate under PCG 2023/1 para 58). The diary's total
+  // lands in work_use_inputs.wfh_hours, so the unchanged fixed-rate maths prices it (hours × 70c).
+  {
+    const u = "p1mayadiary";
+    seedTenant(u, "P1 Maya (weekly WFH diary)");
+    inc("p1mdSal", u, "salary_payg", 8000000);
+    const DIARY_ON = { ...env, FEATURES: `${(env as unknown as { FEATURES: string }).FEATURES},wfh_weekly_diary` } as unknown as Env;
+    const D = await import("../src/lib/wfh-diary");
+    const at = (iso: string) => new Date(`${iso}T08:00:00Z`);
+    const zero = [0, 0, 0, 0, 0].map((h) => ({ h }));
+    const throwsDiary = async (f: () => Promise<unknown>) => { try { await f(); return false; } catch (e) { return e instanceof D.DiaryError; } };
+
+    await D.setPattern(DIARY_ON, u, [7.6, 7.6, 0, 0, 0, 0, 0]);
+    check("P1 diary: a usual week alone records no hours (nothing confirmed yet)", (await D.diaryHoursForFy(DIARY_ON, u, 2025)) === null);
+    check("P1 diary: a week can't be confirmed in advance", await throwsDiary(() => D.saveWeek(DIARY_ON, u, { week_start: "2025-07-07" }, at("2025-07-08"))));
+    const w1 = await D.saveWeek(DIARY_ON, u, { week_start: "2025-07-07" }, at("2025-07-11")); // Fri: "same as usual"
+    check("P1 diary: one tap on Friday = the usual week, on time, stamped by the server clock",
+      w1.entry === "on_time" && w1.days[0].h === 7.6 && w1.days[1].h === 7.6 && w1.recorded_at === "2025-07-11T08:00:00.000Z");
+    await D.saveWeek(DIARY_ON, u, { week_start: "2025-07-14", days: [{ h: 7.6, why: "sick" }, { h: 7.6 }, ...zero] }, at("2025-07-20")); // sick Monday
+    await D.saveWeek(DIARY_ON, u, { week_start: "2025-07-21", days: [{ h: 0, why: "office" }, { h: 0, why: "office" }, ...zero] }, at("2025-07-25"));
+    check("P1 diary: catching up a missed week needs a source", await throwsDiary(() => D.saveWeek(DIARY_ON, u, { week_start: "2025-07-28" }, at("2025-09-01"))));
+    const late = await D.saveWeek(DIARY_ON, u, { week_start: "2025-07-28", source: "calendar" }, at("2025-09-01"));
+    const mem = await D.saveWeek(DIARY_ON, u, { week_start: "2025-08-04", source: "memory" }, at("2025-09-01"));
+    check("P1 diary: catch-ups are labelled late with their own timestamp; from calendar counts, from memory doesn't",
+      late.entry === "late" && late.source === "calendar" && late.recorded_at === "2025-09-01T08:00:00.000Z" && D.weekCounts(late) && mem.entry === "late" && !D.weekCounts(mem));
+
+    const wu = db.prepare(`SELECT wfh_hours FROM work_use_inputs WHERE user_id = ? AND fy = 2025`).get(u) as { wfh_hours: number } | undefined;
+    check("P1 diary: counted hours (15.2 + 7.6 + 0 + 15.2 = 38) feed work_use_inputs.wfh_hours", wu?.wfh_hours === 38);
+    const rD = await buildReport(DIARY_ON, u, 2025);
+    check("P1 diary: the unchanged fixed-rate maths prices the diary total (38h × 70c = $26.60)", rD.work_method?.wfh_hours === 38 && rD.work_method?.wfh_cents === 2660);
+    const rOff = await buildReport(env, u, 2025);
+    check("P1 diary: the position reads only wfh_hours, so it's the same with the flag OFF", rOff.work_method?.wfh_cents === 2660 && rOff.taxable_position_cents === rD.taxable_position_cents);
+
+    // A change to an old week is a late save: it needs a source and the week is re-labelled late.
+    check("P1 diary: changing a week weeks later needs a source", await throwsDiary(() => D.saveWeek(DIARY_ON, u, { week_start: "2025-07-07", days: [{ h: 9 }, { h: 9 }, ...zero] }, at("2025-10-01"))));
+    const amended = await D.saveWeek(DIARY_ON, u, { week_start: "2025-07-07", days: [{ h: 9 }, { h: 9 }, ...zero], source: "timesheet" }, at("2025-10-01"));
+    check("P1 diary: a late change keeps the first recorded_at, moves updated_at, and is labelled late",
+      amended.entry === "late" && amended.recorded_at === "2025-07-11T08:00:00.000Z" && amended.updated_at === "2025-10-01T08:00:00.000Z");
+    check("P1 diary: removing a week takes its hours out of the total", (await D.deleteWeek(DIARY_ON, u, "2025-07-21")) && (await D.diaryHoursForFy(DIARY_ON, u, 2025)) === 18 + 7.6 + 15.2);
+
+    const view = await D.diaryView(DIARY_ON, u, 2025, at("2025-10-01"));
+    check("P1 diary: the view lists missed weeks to catch up (newest first) and the current week",
+      view.current === "2025-09-22" && view.missing[0] === "2025-09-22" && view.missing.includes("2025-07-21") && !view.missing.includes("2025-07-07"));
+    const csv = D.diaryCsv(view);
+    check("P1 diary: the CSV record has a row per day with when it was recorded, and the counted total",
+      csv.includes("2025-07-07,Mon,9,,2025-07-07,Recorded late,2025-07-11T08:00:00.000Z,2025-10-01T08:00:00.000Z,Timesheet,Yes") && csv.includes("Total hours counted,40.8") && csv.includes("Memory (not counted)"));
+
+    // Accountant pack: the weekly record replaces the generated diary section, and the pack still ties back.
+    const rD2 = await buildReport(DIARY_ON, u, 2025);
+    const sD = await buildAccountantSchedule(DIARY_ON, u, 2025, { report: rD2 });
+    const diarySec = sD.sections.find((s) => s.key === "wfh_diary");
+    check("P1 diary pack: a 'your weekly record' section, one row per recorded day + totals, no hours-mismatch note",
+      diarySec?.title === "Work-from-home diary (your weekly record)" && diarySec.rows.length === 4 * 7 + 2 && !diarySec.notes?.some((n) => /review so they agree/.test(n)));
+    check("P1 diary pack: every section ties back to the report", tieBackChecks(sD).every((t) => t.ok));
+    const sOff = await buildAccountantSchedule(env, u, 2025, { report: rOff });
+    check("P1 diary pack (flag OFF): no diary section (byte-identical legacy pack)", !sOff.sections.some((s) => s.key === "wfh_diary"));
+  }
+
   console.log(`\n=== personas: ${pass} passed, ${fail} failed ===`);
   if (fail > 0) process.exit(1);
 }

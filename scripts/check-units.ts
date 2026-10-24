@@ -4131,7 +4131,8 @@ console.log("first-timer copy denylist (#584)");
   }
   scanText("pages/BeforeYouStart.tsx", stripComments(fs.readFileSync(path.join(process.cwd(), "web/src/pages/BeforeYouStart.tsx"), "utf8")));
   // #587: the Review step's copy (step 3: queue + its claim / record cards) is first-timer copy too.
-  for (const f of ["pages/ReviewQueue.tsx", "components/review/WorthALookCard.tsx", "components/review/RecordCards.tsx", "lib/reviewQueue.ts"])
+  // #787: the weekly WFH diary component (its copy file, content/wfhDiary.ts, is covered by the content scan).
+  for (const f of ["pages/ReviewQueue.tsx", "components/review/WorthALookCard.tsx", "components/review/RecordCards.tsx", "lib/reviewQueue.ts", "components/WfhDiary.tsx"])
     scanText(f, stripComments(fs.readFileSync(path.join(process.cwd(), "web/src", f), "utf8")));
   scanText("lib/claims.ts", stripComments(fs.readFileSync(path.join(process.cwd(), "web/src/lib/claims.ts"), "utf8")));
   for (const [k, v] of Object.entries(FT_GLOSSARY)) scanText(`FT_GLOSSARY.${k}`, `${v.term}\n${v.short}`);
@@ -8352,6 +8353,53 @@ console.log("entity role duplicate guard (#699)");
       return !/QuickBooks/i.test(glQ.glossaryShort(k, orig, true)) && glQ.glossaryShort(k, orig, false) === orig;
     }) && /glossaryShort\(k, ANY_GLOSSARY\[k\]\.short\)/.test(wq("components/ui.tsx")) && /useQboRetiredGlossarySync\(\);/.test(appQ) &&
     /glossaryShort\(key, v\.short, qboRetired\)/.test(wq("pages/Glossary.tsx")));
+}
+
+// ── #787: weekly WFH diary rules (src/lib/wfh-diary.ts) ─────────────────────────────────────────────
+console.log("weekly WFH diary (#787)");
+{
+  const W = await import("../src/lib/wfh-diary");
+  const at = (iso: string) => new Date(`${iso}T09:00:00Z`);
+  check("isMonday: 2025-07-07 yes, 2025-07-08 no, junk no", W.isMonday("2025-07-07") && !W.isMonday("2025-07-08") && !W.isMonday("2025-02-30") && !W.isMonday("x"));
+  check("mondayOf: a Sunday maps back to its Monday", W.mondayOf("2025-07-13") === "2025-07-07" && W.mondayOf("2025-07-07") === "2025-07-07");
+  check("canConfirm: not before the week's Thursday UTC (Friday AU), never in advance",
+    !W.canConfirm("2025-07-07", at("2025-07-09")) && W.canConfirm("2025-07-07", at("2025-07-10")) && !W.canConfirm("2025-07-14", at("2025-07-10")));
+  check("entryFor: on time up to the Sunday after the week ends, late from the Monday after that",
+    W.entryFor("2025-07-07", at("2025-07-20")) === "on_time" && W.entryFor("2025-07-07", at("2025-07-21")) === "late");
+  check("weekCounts: on time counts; late from calendar counts; late from memory doesn't",
+    W.weekCounts({ entry: "on_time", source: null }) && W.weekCounts({ entry: "late", source: "calendar" }) && !W.weekCounts({ entry: "late", source: "memory" }) && !W.weekCounts({ entry: "late", source: null }));
+  const pat = W.normalisePattern([7.6, 7.6, 0, 0, 0, -3, 99, 5]);
+  check("normalisePattern: 7 values, clamped to 0..24", pat.length === 7 && pat[5] === 0 && pat[6] === 24 && pat[0] === 7.6);
+  check("normaliseDays: omitted ⇒ the usual week", JSON.stringify(W.normaliseDays(undefined, [7.6, 0, 0, 0, 0, 0, 0])) === JSON.stringify([{ h: 7.6 }, { h: 0 }, { h: 0 }, { h: 0 }, { h: 0 }, { h: 0 }, { h: 0 }]));
+  const nd = W.normaliseDays([{ h: 7.6, why: "sick" }, { h: 4 }, { h: 3, why: "other" }, { why: "bogus", h: 2 }], [0, 0, 0, 0, 0, 0, 0]);
+  check("normaliseDays: a sick/leave/office/holiday day is 0h; 'other' keeps hours; an unknown reason is dropped",
+    nd[0].h === 0 && nd[0].why === "sick" && nd[1].h === 4 && nd[2].h === 3 && nd[2].why === "other" && nd[3].h === 2 && nd[3].why === undefined && nd.length === 7);
+  // A week straddling 30 June: each DAY goes to its own FY.
+  const mk = (ws: string, h: number[], entry: "on_time" | "late", source: "calendar" | "memory" | null = null) =>
+    ({ week_start: ws, days: h.map((x) => ({ h: x })), entry, source, note: null, recorded_at: "", updated_at: "" });
+  const straddle = mk("2026-06-29", [8, 8, 8, 0, 0, 0, 0], "on_time"); // Mon 29 Jun, Tue 30 Jun | Wed 1 Jul
+  const t25 = W.diaryTotals([straddle], { start: "2025-07-01", end: "2026-06-30" });
+  const t26 = W.diaryTotals([straddle], { start: "2026-07-01", end: "2027-06-30" });
+  check("diaryTotals: a week across 30 June splits by day (16h to FY25, 8h to FY26)", t25.counted_hours === 16 && t26.counted_hours === 8);
+  const fy26 = { start: "2026-07-01", end: "2027-06-30" };
+  check("diaryInUse: a straddling week only puts the diary in use for the next FY if it has hours on that FY's days",
+    W.diaryInUse([straddle], fy26) && !W.diaryInUse([mk("2026-06-29", [8, 8, 0, 0, 0, 0, 0], "on_time")], fy26) && W.diaryInUse([mk("2026-07-06", [0, 0, 0, 0, 0, 0, 0], "on_time")], fy26));
+  const t = W.diaryTotals([mk("2025-07-07", [7.6, 7.6, 0, 0, 0, 0, 0], "on_time"), mk("2025-07-14", [7.6, 0, 0, 0, 0, 0, 0], "late", "calendar"), mk("2025-07-21", [7.6, 7.6, 0, 0, 0, 0, 0], "late", "memory")], { start: "2025-07-01", end: "2026-06-30" });
+  check("diaryTotals: memory hours are kept apart and never counted",
+    t.on_time_hours === 15.2 && t.late_counted_hours === 7.6 && t.not_counted_hours === 15.2 && t.counted_hours === 22.8 && t.weeks_on_time === 1 && t.weeks_late === 2);
+  const csv = W.diaryCsv({ bounds: { start: "2025-07-01", end: "2026-06-30" }, totals: t, weeks: [{ ...mk("2025-07-07", [7.6, 0, 0, 0, 0, 0, 0], "on_time"), note: "=HYPERLINK(1)", recorded_at: "2025-07-11T06:00:00.000Z", updated_at: "2025-07-11T06:00:00.000Z" }] });
+  check("diaryCsv: one row per FY day, records when it was recorded, neutralises a formula in the note",
+    csv.split("\n").filter((l) => /^2025-07-(0[7-9]|1[0-3]),/.test(l)).length === 7 && csv.includes("2025-07-11T06:00:00.000Z") && csv.includes("'=HYPERLINK") && csv.includes("Total hours counted,22.8"));
+  check("diaryCsv: general-information framing + no tax-advice wording", /General information only/.test(csv) && denylistHits(csv).length === 0);
+  // Wiring: flag-gated routes, purge coverage, the generator stands down when the weekly diary is ON.
+  const api787 = fs.readFileSync(path.join(process.cwd(), "src/api.ts"), "utf8");
+  check("api: /api/wfh-diary 404s unless wfh_weekly_diary is ON", /resource === "wfh-diary"\) \{\s*if \(!featureOn\(env, "wfh_weekly_diary"\)\) return json\(\{ error: "not found" \}, 404\);/.test(api787));
+  check("PURGE_TABLES covers both diary tables", PURGE_TABLES.includes("wfh_diary_pattern" as never) && PURGE_TABLES.includes("wfh_diary_weeks" as never));
+  const agent787 = fs.readFileSync(path.join(process.cwd(), "src/agent.ts"), "utf8");
+  check("setWorkUseInputs: with the weekly diary ON its FY total wins and the generator never derives hours",
+    /featureOn\(this\.env, "wfh_weekly_diary"\) \? await diaryHoursForFy/.test(agent787) && /generateDiary && !record && weekdays\.length > 0 && !featureOn\(this\.env, "wfh_weekly_diary"\)/.test(agent787));
+  const card787 = fs.readFileSync(path.join(process.cwd(), "web/src/components/WorkMethodsCard.tsx"), "utf8");
+  check("WorkMethodsCard: the 'Generate a diary' generator is hidden when the weekly diary is ON", /const diaryEnabled = has\("wfh_generate_diary"\) && !weeklyDiary;/.test(card787));
 }
 
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);

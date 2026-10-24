@@ -23,6 +23,7 @@ import { featureOn } from "./features";
 import { SITUATIONS, loadSituations, situationSections, type LoadedSituation, type ReportContext } from "./situations";
 import { parseCostBaseElements, costBaseBreakdownRows, holdingPosition } from "./capital";
 import { generateWfhDiary, WFH_WEEKDAY_NAMES } from "./work-use";
+import { diaryView as wfhDiaryView, addDaysIso as wfhAddDays } from "./wfh-diary";
 import { buildXlsx, type XlsxCell, type XlsxSheet } from "./xlsx";
 
 // ── The itemised accountant deliverable (#179 + #181, EPIC #178) ─────────────
@@ -868,7 +869,31 @@ async function scheduleCore(
   // wfh_generate_diary flag is on, the user asked for a generated diary, and they're NOT supplying their
   // own record (wfh_has_record) — a generated diary would then be misleading/duplicative. Gating on the
   // flag first keeps the flag-OFF CSV byte-identical (the diary read never runs).
-  if (featureOn(env, "wfh_generate_diary")) {
+  // #787: the weekly diary (wfh_weekly_diary) supersedes the generator — a whole-year diary built from
+  // declared weekdays is an estimate (PCG 2023/1 para 58), so with the weekly diary ON the section lists
+  // the user's CONFIRMED weeks instead, each with when it was recorded.
+  if (featureOn(env, "wfh_weekly_diary")) {
+    const view = await wfhDiaryView(env, userId, startYear, new Date(), jurisdiction);
+    if (view.weeks.length > 0) {
+      const notes: string[] = [];
+      const days = [...view.weeks].sort((a, b) => a.week_start.localeCompare(b.week_start)).flatMap((w) =>
+        w.days.map((d, i) => ({ w, d, i, iso: wfhAddDays(w.week_start, i) })).filter((x) => x.iso >= view.bounds.start && x.iso <= view.bounds.end));
+      const rows: Cell[][] = capped(days, notes).map(({ w, d, i, iso }) => [
+        iso, WFH_WEEKDAY_NAMES[i] ?? "", d.h, w.entry === "on_time" ? "on time" : `recorded late (${w.source ?? "no source"})`, w.recorded_at, w.counts ? "yes" : "no",
+      ]);
+      rows.push(["Total hours counted", null, view.totals.counted_hours, null, null, null]);
+      if (view.totals.not_counted_hours > 0) rows.push(["Hours rebuilt from memory (not counted)", null, view.totals.not_counted_hours, null, null, null]);
+      const wmHours = report.work_method?.wfh_hours ?? null;
+      if (wmHours != null && Math.round(wmHours * 100) !== Math.round(view.totals.counted_hours * 100)) {
+        notes.push(`This diary counts ${view.totals.counted_hours} hours, but the fixed-rate WFH figure above uses ${wmHours} hours — review so they agree.`);
+      }
+      notes.push(
+        "Your weekly record of hours worked from home: each week was confirmed or adjusted by you, and the time it was recorded is shown. Weeks recorded late were entered after the week; hours rebuilt from memory are an estimate and are not counted.",
+        "General information only — not tax advice. Confirm your method and hours with a registered tax agent.",
+      );
+      sections.push({ key: "wfh_diary", title: "Work-from-home diary (your weekly record)", columns: ["Date", "Weekday", "Hours worked from home", "Recorded", "Recorded at", "Counted"], rows, notes });
+    }
+  } else if (featureOn(env, "wfh_generate_diary")) {
     const di = await env.DB.prepare(
       `SELECT wfh_weekdays, wfh_leave_ranges, wfh_generate_diary, wfh_has_record FROM work_use_inputs WHERE user_id = ? AND fy = ?`,
     )

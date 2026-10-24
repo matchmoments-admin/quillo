@@ -64,6 +64,8 @@ export const PURGE_TABLES = [
   "vehicle_logbooks",        // 0040 (#142)
   "trading_stock",           // 0068 (audit wave 4)
   "car_inputs",              // 0061 (#245)
+  "wfh_diary_pattern",       // 0088 (#787) — typical work-from-home week
+  "wfh_diary_weeks",         // 0088 (#787) — confirmed weeks (the WFH hours record)
   "trust_distributions",     // 0041 (#139)
   "smsf_members",            // 0042 (#140)
   "super_contributions",     // 0042 (#140)

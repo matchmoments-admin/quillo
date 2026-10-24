@@ -1259,6 +1259,35 @@ export interface WorkUse {
   fill_only?: boolean;
 }
 
+// #787 (wfh_weekly_diary): the weekly work-from-home diary (src/lib/wfh-diary.ts).
+export type WfhDayReason = "office" | "leave" | "sick" | "public_holiday" | "other";
+export type WfhLateSource = "calendar" | "timesheet" | "roster" | "system_log" | "memory";
+export interface WfhDiaryDay { h: number; why?: WfhDayReason }
+export interface WfhDiaryWeek {
+  week_start: string;
+  days: WfhDiaryDay[];
+  entry: "on_time" | "late";
+  source: WfhLateSource | null;
+  note: string | null;
+  recorded_at: string;
+  updated_at: string;
+  counts: boolean;
+  hours_in_fy: number;
+}
+export interface WfhDiaryView {
+  fy: number;
+  bounds: { start: string; end: string };
+  today: string;
+  pattern: number[] | null;
+  /** The diary has a week for this FY, so its counted total is the FY's WFH hours figure. */
+  in_use: boolean;
+  weeks: WfhDiaryWeek[];
+  missing: string[];
+  current: string | null;
+  totals: { counted_hours: number; on_time_hours: number; late_counted_hours: number; not_counted_hours: number; weeks_on_time: number; weeks_late: number };
+  rules: { confirm_opens_after_days: number; on_time_days: number };
+}
+
 // C6 (capital_statement_ingest): the preview returned by a capital CSV upload. Nothing in the register has
 // changed at this point — these are DRAFT rows awaiting the taxpayer's explicit confirm.
 export interface CapitalDraftRow {

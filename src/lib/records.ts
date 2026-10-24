@@ -282,7 +282,8 @@ export async function recordFacts(
     weekdays = Array.isArray(w) ? w.length : 0;
   } catch { /* malformed ⇒ none */ }
   // Same rule as the accountant hand-off's diary (accountant-schedule.ts): only when the diary feature is on.
-  const diaryDrives = featureOn(env, "wfh_generate_diary") && !hours && wu?.wfh_generate_diary === 1 && !wu?.wfh_has_record && weekdays > 0;
+  // #787: the weekly diary writes wfh_hours itself, so with it ON the generator never "drives" the figure.
+  const diaryDrives = featureOn(env, "wfh_generate_diary") && !featureOn(env, "wfh_weekly_diary") && !hours && wu?.wfh_generate_diary === 1 && !wu?.wfh_has_record && weekdays > 0;
   const rates = workUseRatesForFy((pack as { thresholds_by_fy?: Record<string, { wfh_fixed_rate_cents_per_hour?: number }> } | null)?.thresholds_by_fy?.[fy]);
   return {
     wfh,

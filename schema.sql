@@ -1461,3 +1461,23 @@ CREATE TABLE IF NOT EXISTS bank_line_tombstones (
 );
 CREATE INDEX IF NOT EXISTS idx_bank_tomb_fp ON bank_line_tombstones(user_id, line_fingerprint);
 CREATE INDEX IF NOT EXISTS idx_bank_tomb_stmt ON bank_line_tombstones(user_id, statement_id);
+
+-- 0088 (wfh_weekly_diary, #787): weekly work-from-home diary. A typical week set once, confirmed or adjusted
+-- each week; each confirmation is timestamped server-side. The FY total feeds work_use_inputs.wfh_hours.
+-- See migrations/0088_wfh_diary.sql + docs/research/wfh-records.md.
+CREATE TABLE IF NOT EXISTS wfh_diary_pattern (
+  user_id     TEXT PRIMARY KEY,
+  hours_json  TEXT NOT NULL,               -- JSON number[7], Mon..Sun
+  updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS wfh_diary_weeks (
+  user_id      TEXT NOT NULL,
+  week_start   TEXT NOT NULL,              -- ISO Monday
+  days_json    TEXT NOT NULL,              -- JSON [{ h, why? }] × 7
+  entry        TEXT NOT NULL,              -- on_time | late
+  source       TEXT,                       -- late only: calendar | timesheet | roster | system_log | memory
+  note         TEXT,
+  recorded_at  TEXT NOT NULL,
+  updated_at   TEXT NOT NULL,
+  PRIMARY KEY (user_id, week_start)
+);

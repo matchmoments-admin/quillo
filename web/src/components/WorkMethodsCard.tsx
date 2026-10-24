@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { api } from "../api";
 import { useFeatures } from "../lib/features";
 import { Card, Button, Input, Term, money } from "./ui";
+import { WfhDiary } from "./WfhDiary";
 
 // Working-from-home (fixed-rate) + car (cents-per-km) inputs. WFH is captured in DAYS PER WEEK — the
 // way people actually think about it — and the annual hours are derived transparently (≈ days × 7.6h ×
@@ -25,6 +26,9 @@ const defaultWeekdays = (daysPerWeek: string | number | null | undefined): numbe
   return [0, 1, 2, 3, 4, 5, 6].slice(0, n);
 };
 type LeaveRange = { start: string; end: string; label?: string };
+// #787: pre-fill the weekly diary's usual week from the generator's saved weekdays (7.6h each), if any.
+const weeklyHint = (weekdays: number[] | null | undefined): number[] | undefined =>
+  Array.isArray(weekdays) && weekdays.length ? [0, 1, 2, 3, 4, 5, 6].map((d) => (weekdays.includes(d) ? HOURS_PER_DAY : 0)) : undefined;
 
 /**
  * `diaryCollapsed` (Records step, #588 / ft_journey): put the optional diary behind a disclosure so the card
@@ -33,8 +37,12 @@ type LeaveRange = { start: string; end: string; label?: string };
 export function WorkMethodsCard({ fyNum, diaryCollapsed = false }: { fyNum: number; diaryCollapsed?: boolean }) {
   const qc = useQueryClient();
   const { has } = useFeatures();
-  const diaryEnabled = has("wfh_generate_diary");
+  const weeklyDiary = has("wfh_weekly_diary"); // #787: the weekly diary replaces the whole-year generator
+  const diaryEnabled = has("wfh_generate_diary") && !weeklyDiary;
   const { data } = useQuery({ queryKey: ["work-use", fyNum], queryFn: () => api.workUse(fyNum) });
+  const { data: weekly } = useQuery({ queryKey: ["wfh-diary", fyNum], queryFn: () => api.wfhDiary(fyNum), enabled: weeklyDiary });
+  // Once the weekly diary has a week for this FY, its counted total IS the hours figure (the server enforces it).
+  const weeklyHours = weeklyDiary && weekly && weekly.in_use ? weekly.totals.counted_hours : null;
   const [days, setDays] = useState<string>("");
   const [weeks, setWeeks] = useState<string>("");
   const [hours, setHours] = useState<string>("");
@@ -115,7 +123,7 @@ export function WorkMethodsCard({ fyNum, diaryCollapsed = false }: { fyNum: numb
   // When the diary drives hours, echo the approximate figure from the ticked weekday count (the exact,
   // leave-adjusted total is generated in the hand-off CSV). Otherwise use the editable hours field.
   const diaryApproxHours = deriveHours(weekdays.length, Number(weeks) || DEFAULT_WEEKS);
-  const effectiveHours = diaryActive && !hoursTouched ? diaryApproxHours : Number(hours) || 0;
+  const effectiveHours = weeklyHours != null ? weeklyHours : diaryActive && !hoursTouched ? diaryApproxHours : Number(hours) || 0;
   const estWfh = Math.round(effectiveHours * 70);
 
   return (
@@ -124,6 +132,14 @@ export function WorkMethodsCard({ fyNum, diaryCollapsed = false }: { fyNum: numb
         <div className="text-sm font-semibold">
           Working from home (<Term k="wfh_fixed_rate">fixed-rate method</Term>)
         </div>
+        {weeklyDiary ? (
+        <div className="text-xs text-muted">
+          <span className="font-medium text-ink">Why this matters:</span> for the fixed-rate method the ATO needs a record of
+          the <span className="font-medium">actual hours</span> you worked from home for the whole year, kept as you go. An
+          estimate isn't accepted. The rate per hour covers electricity, internet, phone and stationery. General information
+          only — confirm with a registered tax agent.
+        </div>
+        ) : (
         <div className="text-xs text-muted">
           <span className="font-medium text-ink">Why this matters:</span> from 1 July 2024 the ATO needs a record of your{" "}
           <span className="font-medium">actual hours</span> worked from home for the whole year — a blanket "I worked X days"
@@ -131,18 +147,26 @@ export function WorkMethodsCard({ fyNum, diaryCollapsed = false }: { fyNum: numb
           electricity, internet, phone &amp; stationery) is the by-product. General information only — confirm with a
           registered tax agent.
         </div>
+        )}
       </div>
       {/* Slice 10: one authoritative "hours" field; days×weeks demoted to a one-way estimator helper. */}
       <label className="block text-sm">
         <span className="text-xs font-medium uppercase tracking-wide text-muted">Hours worked from home this year</span>
+        {weeklyHours != null ? (
+          <Input type="number" value={String(weeklyHours)} readOnly disabled aria-describedby="wfh-hours-from-diary" />
+        ) : (
         <Input type="number" min="0" value={hours} onChange={(e) => onHours(e.target.value)} placeholder="e.g. 730" />
-        <span className="mt-0.5 block text-xs text-muted">
+        )}
+        <span className="mt-0.5 block text-xs text-muted" id={weeklyHours != null ? "wfh-hours-from-diary" : undefined}>
           ≈ {money(estWfh)} at 70c/hr
-          {diaryActive && !hoursTouched
+          {weeklyHours != null
+            ? " · set by your hours diary below (the weeks you've confirmed). Change a week to change it."
+            : diaryActive && !hoursTouched
             ? ` · from your diary (≈ ${weekdays.length} day(s)/week — exact hours generated in your hand-off)`
             : hoursTouched || hours.trim() !== "" ? "" : " · enter your hours, or estimate them below"}
         </span>
       </label>
+      {!weeklyDiary && (
       <details className="rounded-lg border border-line bg-surface px-3 py-2">
         <summary className="cursor-pointer text-xs font-medium text-muted">Not sure of your hours? Estimate from days × weeks</summary>
         <div className="mt-2 grid gap-3 sm:grid-cols-2">
@@ -157,6 +181,7 @@ export function WorkMethodsCard({ fyNum, diaryCollapsed = false }: { fyNum: numb
         </div>
         <Button variant="ghost" onClick={applyEstimate} className="mt-2 text-sm">Estimate ≈ {money(Math.round(deriveHours(Number(days) || 0, Number(weeks) || DEFAULT_WEEKS) * 70))} → fill the hours above</Button>
       </details>
+      )}
       <div className="space-y-2 border-t border-line pt-3">
         <label className="flex items-start gap-2 text-sm">
           <input type="checkbox" checked={office} onChange={(e) => setOffice(e.target.checked)} className="mt-0.5 h-4 w-4 flex-none accent-forest" />
@@ -166,7 +191,13 @@ export function WorkMethodsCard({ fyNum, diaryCollapsed = false }: { fyNum: numb
           <input type="checkbox" checked={hasRecord} onChange={(e) => setHasRecord(e.target.checked)} className="mt-0.5 h-4 w-4 flex-none accent-forest" />
           <span>I keep a <span className="font-medium">record of my actual hours</span> worked from home</span>
         </label>
-        {!hasRecord && (
+        {!hasRecord && weeklyDiary && weeklyHours == null && (
+          <p className="text-xs text-warn">
+            For the fixed-rate method the ATO needs a record of your <span className="font-medium">actual</span> hours, kept as you go.
+            An estimate isn't accepted. Start your hours diary below: set your usual week once, then confirm each week.
+          </p>
+        )}
+        {!hasRecord && !weeklyDiary && (
           <p className="text-xs text-warn">
             Since 1 July 2024 the ATO needs a record of your <span className="font-medium">actual</span> hours for the whole year — a 4-week
             estimate isn't accepted for the fixed-rate method. Start a simple log (a diary or timesheet) now.
@@ -179,6 +210,16 @@ export function WorkMethodsCard({ fyNum, diaryCollapsed = false }: { fyNum: numb
           </p>
         )}
       </div>
+
+      {weeklyDiary &&
+        (diaryCollapsed ? (
+          <details className="border-t border-line pt-3" open>
+            <summary className="cursor-pointer text-sm font-medium text-muted">Your hours diary</summary>
+            <WfhDiary fyNum={fyNum} typedHours={data?.wfh_hours ?? null} hint={weeklyHint(data?.wfh_weekdays)} />
+          </details>
+        ) : (
+          <WfhDiary fyNum={fyNum} typedHours={data?.wfh_hours ?? null} hint={weeklyHint(data?.wfh_weekdays)} />
+        ))}
 
       {diaryEnabled &&
         (diaryCollapsed ? (

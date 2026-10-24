@@ -455,6 +455,14 @@ export const FT_GLOSSARY = {
     ato: ATO.wfhFixedRate,
     related: ["home_office", "golden_rules", "record_keeping_exception"],
   },
+  wfh_diary: {
+    term: "Work-from-home diary",
+    short:
+      "A record of the hours you worked from home, kept as you go: a diary, timesheet, roster, calendar or app. In Quillo you set your usual week once, then confirm or adjust each week.",
+    why: "For the fixed-rate method the ATO looks for a record of your actual hours for the whole year, made at the time. A usual week applied to the year without checking it is an estimate, which isn't accepted.",
+    ato: ATO.wfhFixedRate,
+    related: ["wfh_fixed_rate"],
+  },
   cost_base: {
     term: "Cost base",
     short:

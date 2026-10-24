@@ -187,6 +187,9 @@ export interface TaxAgentRpc {
   generateChecklist(userId: string, fy?: string): Promise<{ items: number }>;
   setWorkUseInputs(userId: string, input: { fy: number; wfh_hours: number | null; car_work_km: number | null; wfh_days_per_week?: number | null; wfh_weeks?: number | null; has_dedicated_home_office?: boolean; wfh_has_record?: boolean; wfh_weekdays?: number[] | null; wfh_leave_ranges?: { start: string; end: string; label?: string }[] | null; wfh_generate_diary?: boolean; fill_only?: boolean }): Promise<{ ok: true }>;
   setCarInputs(userId: string, input: { fy: number; work_km: number | null }): Promise<{ ok: true }>; // #245
+  wfhDiarySetPattern(userId: string, hours: unknown): Promise<{ pattern: number[] }>; // #787
+  wfhDiarySaveWeek(userId: string, input: import("./lib/wfh-diary").SaveWeekInput): Promise<{ ok: true; week: import("./lib/wfh-diary").DiaryWeek } | { ok: false; error: string }>; // #787
+  wfhDiaryDeleteWeek(userId: string, weekStart: string): Promise<{ ok: boolean; error?: string }>; // #787
   scanTransactions(userId: string, startYear: number): Promise<import("./lib/scan").ScanResult>; // #256
   assessFilingReadiness(userId: string, startYear: number): Promise<import("./lib/readiness").FilingReadiness>;
   journey(userId: string, startYear: number): Promise<import("./lib/journey").Journey>; // #582 (ft_journey)

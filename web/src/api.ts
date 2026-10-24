@@ -4,6 +4,7 @@ import type { AskContext, EducationData, RelevanceView, RelevanceConfirmResult }
 import { compressImageForUpload, compressImagesForUpload, prepareImageUpload, setClientCompression } from "./lib/compress-image";
 import { assertUploadSize } from "./lib/upload-limits";
 import type { SecurityDashboard } from "./types";
+import type { WfhDiaryView, WfhDiaryWeek, WfhDiaryDay, WfhLateSource } from "./types";
 
 // Clerk session token getter, wired from <TokenBridge> inside ClerkProvider (main.tsx).
 // Clerk tokens are short-lived, so we fetch a fresh one per request (getToken caches/refreshes).
@@ -525,6 +526,18 @@ export const api = {
   // Work-use inputs (computed WFH fixed-rate deduction). fy = FY start year.
   workUse: (fy: number) => get<{ work_use: WorkUse }>(`/api/work-use?fy=${fy}`).then((r) => r.work_use),
   setWorkUse: (fy: number, body: WorkUse) => post<{ ok: true }>(`/api/work-use?fy=${fy}`, body),
+  // #787 (wfh_weekly_diary): weekly WFH diary. 404 when the flag is OFF.
+  wfhDiary: (fy: number) => get<WfhDiaryView>(`/api/wfh-diary?fy=${fy}`),
+  wfhDiarySetPattern: (hours: number[]) => send<{ pattern: number[] }>("PUT", `/api/wfh-diary/pattern`, { hours }),
+  wfhDiarySaveWeek: (body: { week_start: string; days?: WfhDiaryDay[]; source?: WfhLateSource; note?: string }) =>
+    post<{ ok: true; week: WfhDiaryWeek }>(`/api/wfh-diary/weeks`, body),
+  wfhDiaryDeleteWeek: (weekStart: string) => send<{ ok: boolean }>("DELETE", `/api/wfh-diary/weeks/${encodeURIComponent(weekStart)}`),
+  wfhDiaryCsv: async (fy: number): Promise<{ blob: Blob; filename: string }> => {
+    const res = await fetch(`/api/wfh-diary/export?fy=${fy}`, { credentials: "include", headers: await authHeaders() });
+    if (!res.ok) throw await errFrom(res);
+    const m = /filename=([^;]+)/.exec(res.headers.get("content-disposition") ?? "");
+    return { blob: await res.blob(), filename: m ? m[1].trim().replace(/^"|"$/g, "") : `quillo-wfh-diary-${fy}.csv` };
+  },
   // Car cents-per-km input (#245) — separate from WFH (its own car_inputs table). fy = FY start year.
   carUse: (fy: number) => get<{ car_use: CarUse; rates?: CarUseRates | null }>(`/api/car-use?fy=${fy}`),
   // Trading stock (audit wave 4, flag trading_stock). fy = FY label '2025-26'.

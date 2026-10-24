@@ -98,6 +98,7 @@ import { buildAccountantSchedule, scheduleToCsv, scheduleToXlsx } from "./lib/ac
 import { mytaxWorksheetResponse } from "./lib/mytax-worksheet";
 import { getProgress } from "./lib/progress";
 import { featureOn } from "./lib/features";
+import { diaryView as wfhDiaryView, diaryCsv as wfhDiaryCsv } from "./lib/wfh-diary";
 import { aiErrorResponse } from "./lib/ai-call";
 import { handleAdminSecurity } from "./lib/security-dashboard";
 import { adminMfaBlock } from "./lib/access-control";
@@ -1396,6 +1397,41 @@ export async function handleApi(
       const body = (await req.json().catch(() => ({}))) as { wfh_hours?: number | null; car_work_km?: number | null; wfh_days_per_week?: number | null; wfh_weeks?: number | null; has_dedicated_home_office?: boolean; wfh_has_record?: boolean; wfh_weekdays?: number[] | null; wfh_leave_ranges?: { start: string; end: string; label?: string }[] | null; wfh_generate_diary?: boolean; fill_only?: boolean };
       const num = (v: unknown): number | null => (v === null || v === undefined || v === "" || !Number.isFinite(Number(v)) ? null : Math.max(0, Number(v)));
       return json(await stub.setWorkUseInputs(uid, { fy, wfh_hours: num(body.wfh_hours), car_work_km: num(body.car_work_km), wfh_days_per_week: num(body.wfh_days_per_week), wfh_weeks: num(body.wfh_weeks), has_dedicated_home_office: !!body.has_dedicated_home_office, wfh_has_record: !!body.wfh_has_record, wfh_weekdays: Array.isArray(body.wfh_weekdays) ? body.wfh_weekdays : [], wfh_leave_ranges: Array.isArray(body.wfh_leave_ranges) ? body.wfh_leave_ranges : [], wfh_generate_diary: !!body.wfh_generate_diary, fill_only: body.fill_only === true }));
+    }
+  }
+
+  // ── Weekly work-from-home diary (#787, flag wfh_weekly_diary) — 404 when off ──
+  // GET    /api/wfh-diary?fy=               → typical week, the FY's weeks, weeks still to confirm, totals.
+  // GET    /api/wfh-diary/export?fy=        → the day-by-day CSV record the user keeps.
+  // PUT    /api/wfh-diary/pattern           { hours: number[7] } → set the typical week.
+  // POST   /api/wfh-diary/weeks             { week_start, days?, source?, note? } → confirm / change a week
+  //        (omit days = "same as usual"; the server clock decides on time vs late).
+  // DELETE /api/wfh-diary/weeks/:week_start → remove a week.
+  // Reads go straight to D1; writes go through the DO (audited). The FY total feeds work_use_inputs.wfh_hours.
+  if (resource === "wfh-diary") {
+    if (!featureOn(env, "wfh_weekly_diary")) return json({ error: "not found" }, 404);
+    if (m === "GET" && (!id || id === "export")) {
+      const fy = Number(url.searchParams.get("fy")) || defaultFy();
+      if (!Number.isInteger(fy) || fy < 1900 || fy > 2200) return json({ error: "bad fy" }, 400);
+      const view = await wfhDiaryView(env, uid, fy, new Date(), jur);
+      if (!id) return json(view);
+      return new Response(wfhDiaryCsv(view), {
+        headers: { "content-type": "text/csv", "content-disposition": `attachment; filename=quillo-wfh-diary-${view.bounds.start}-to-${view.bounds.end}.csv` },
+      });
+    }
+    if (m === "PUT" && id === "pattern") {
+      const body = (await req.json().catch(() => ({}))) as { hours?: unknown };
+      if (!Array.isArray(body.hours)) return json({ error: "hours must be an array of 7 numbers (Mon..Sun)" }, 400);
+      return json(await stub.wfhDiarySetPattern(uid, body.hours));
+    }
+    if (m === "POST" && id === "weeks" && !sub) {
+      const body = (await req.json().catch(() => ({}))) as { week_start?: unknown; days?: unknown; source?: unknown; note?: unknown };
+      const r = await stub.wfhDiarySaveWeek(uid, { week_start: String(body.week_start ?? ""), days: body.days, source: body.source, note: body.note });
+      return json(r, r.ok ? 200 : 400);
+    }
+    if (m === "DELETE" && id === "weeks" && sub) {
+      const r = await stub.wfhDiaryDeleteWeek(uid, sub);
+      return json(r, r.ok ? 200 : r.error ? 400 : 404);
     }
   }
 

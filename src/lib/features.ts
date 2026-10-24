@@ -28,6 +28,7 @@ export const FEATURE_KEYS = [
   "accountant_pass",
   "wfh_car_methods",
   "car_methods", // #245 (Wave 3): source car cents-per-km km from the dedicated car_inputs table (split out of work_use_inputs) so WFH and car are separate typed units. OFF ⇒ car km read from the legacy work_use_inputs.car_work_km column ⇒ byte-identical. The 0061 backfill seeds car_inputs from the legacy column so flag-ON is identical for existing data.
+  "wfh_weekly_diary",    // 0088 (#787): the weekly WFH diary — a typical week set once, confirmed or adjusted each week (server-timestamped, honest late catch-up, CSV export). Its FY total writes work_use_inputs.wfh_hours so the fixed-rate maths is unchanged; on the card it replaces the whole-year "Generate a diary" generator (an estimate under PCG 2023/1 para 58). OFF ⇒ routes 404, no UI, the generator paths unchanged ⇒ byte-identical.
   "wfh_generate_diary",  // 0059 (Part 1): emit a generated WFH diary section in the accountant CSV. OFF by default — flag-OFF + own-record paths keep the legacy CSV byte-identical.
   "attribution_engine", // 0032-0034: sum transaction_attributions for the position (payer≠claimant, ownership split). OFF in prod until validated.
   "cgt_engine",         // 0037 (#138): add net capital gain (shares/crypto/property disposals; 50% discount; loss offset) to the position. OFF in prod until validated.

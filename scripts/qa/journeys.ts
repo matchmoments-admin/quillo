@@ -200,6 +200,16 @@ export async function firstTimerJourney(ctx: Ctx, server: QaServer, answers: Set
     return `a brand-new tenant landed on ${at}, not Get set up (Home ${cta ? "does" : "does NOT"} offer a way into it)`;
   });
 
+  await step(ctx, suite, "leaving Get set up isn't bounced back (redirect fires once per session)", { flags: ["ft_journey"] }, async () => {
+    if (new URL(page.url()).pathname !== "/setup") return "not on /setup after the first-run redirect";
+    // Client-side navigation (no reload), so the redirect would re-fire off the cached situation if it were stale.
+    await page.evaluate(() => { window.history.pushState({}, "", "/"); window.dispatchEvent(new PopStateEvent("popstate")); });
+    await settle(page);
+    await page.waitForTimeout(1000);
+    const at = new URL(page.url()).pathname;
+    return at === "/" ? null : `left /setup for Home but was sent back to ${at}`;
+  });
+
   let seen: string[] = [];
   await step(ctx, suite, "Get set up: walk intro → consent → questions → save", { flags: ["ft_journey", "situation_profile"] }, async () => {
     probe.reset();

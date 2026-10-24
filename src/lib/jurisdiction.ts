@@ -75,6 +75,9 @@ export interface JurisdictionDescriptor {
   rulePackId: string; // 'au-v1' | 'uk-2025' — RESERVED (mirrors profiles.rule_pack_ver, for later stops)
   consumptionTax: ConsumptionTax; // INERT this stop (structural metadata; rate lives in the rule pack)
   residency: DataResidency; // where inference may run — see assertDataResidency (src/llm.ts)
+  /** IANA time zone the tenant's "today" is read in (date-only rules such as the WFH diary's windows).
+   *  Optional: a descriptor without one falls back to Australia/Sydney (see localDateIso in wfh-diary.ts). */
+  timeZone?: string;
 }
 
 export const AU_DESCRIPTOR: JurisdictionDescriptor = {
@@ -83,6 +86,7 @@ export const AU_DESCRIPTOR: JurisdictionDescriptor = {
   baseCurrency: "AUD",
   rulePackId: "au-v1",
   consumptionTax: { kind: "input-credit", label: "GST" },
+  timeZone: "Australia/Sydney",
   // Regions verified live: `aws bedrock get-inference-profile
   // --inference-profile-identifier au.anthropic.claude-haiku-4-5-20251001-v1:0` returns
   // "Routes requests to Claude Haiku 4.5 in ap-southeast-2, ap-southeast-4" — Sydney and
@@ -102,6 +106,7 @@ export const UK_DESCRIPTOR: JurisdictionDescriptor = {
   baseCurrency: "GBP",
   rulePackId: "uk-2025",
   consumptionTax: { kind: "input-credit", label: "VAT" },
+  timeZone: "Europe/London",
   // DECLARED BUT INERT — no UK tenant exists. Present so the residency mechanism is exercised by
   // more than one jurisdiction in the goldens (a one-entry map proves nothing about generality).
   // Confirm the profile id and its exact region list against the live account before a UK launch,

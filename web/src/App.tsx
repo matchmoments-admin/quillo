@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
+import type { Situation } from "./types";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { UserButton } from "@clerk/clerk-react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Toaster } from "sonner";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import { api } from "./api";
@@ -16,7 +17,7 @@ import { FloatingChat } from "./components/chat/FloatingChat";
 import { useThemeSync } from "./lib/appearance";
 import { FtShell } from "./components/FtShell";
 import { PARTNER_NAV_LABEL, useQboRetiredGlossarySync } from "./lib/cuts";
-import { needsFirstRun } from "./lib/firstRun";
+import { needsFirstRun, withSetupStarted } from "./lib/firstRun";
 
 // `hideFlag`: a #697 cut — the item is hidden while that flag is ON (OFF ⇒ shown exactly as before).
 // `retiredFlag`: a retired integration (map #692) — hidden for everyone while that flag is ON.
@@ -100,8 +101,13 @@ const GROUPS: NavGroup[] = [
 // wizard once. We don't redirect once either is satisfied, so users can always navigate away.
 // Reuses the shared ["situation"] query (no extra fetch). `to` is the first-run page: /onboarding,
 // or About you (/about) in the ft_journey shell.
+// Session-level guard: the first-run redirect fires at most once per page session, even if the gate remounts
+// (the legacy layout and FtShell each mount their own) or the situation query is refetched before the PATCH lands.
+let firstRunRedirected = false;
+
 function FirstRunGate({ to = "/onboarding" }: { to?: string }) {
   const navigate = useNavigate();
+  const qc = useQueryClient();
   const { pathname } = useLocation();
   const { fy } = useActiveFy();
   const sit = useQuery({ queryKey: ["situation"], queryFn: () => api.situation() });
@@ -109,7 +115,7 @@ function FirstRunGate({ to = "/onboarding" }: { to?: string }) {
   const ft = to === "/setup";
   const journey = useQuery({ queryKey: ["journey", fy], queryFn: () => api.journey(fy), enabled: ft });
   useEffect(() => {
-    if (sit.isLoading || !sit.data || pathname === to) return;
+    if (firstRunRedirected || sit.isLoading || !sit.data || pathname === to) return;
     if (ft && journey.isLoading) return;
     const p = sit.data;
     const go = needsFirstRun({
@@ -119,10 +125,17 @@ function FirstRunGate({ to = "/onboarding" }: { to?: string }) {
       setupStatus: ft ? journey.data?.steps.find((s) => s.key === "setup")?.status : undefined,
     });
     if (!go) return;
-    // Redirect ONCE: record it, so a user who leaves set-up isn't bounced back on every load.
-    void api.setUiState({ setup_started: true }).catch(() => {});
+    // Redirect ONCE: record it, so a user who leaves set-up isn't bounced back on every load. The cached
+    // situation is updated straight away too (it would otherwise still say "not started" until a refetch, and
+    // leaving /setup would bounce the user straight back), then re-read once the server has the marker.
+    firstRunRedirected = true;
+    qc.setQueryData<Situation>(["situation"], (old) =>
+      old?.profile ? { ...old, profile: { ...old.profile, ui_state: withSetupStarted(old.profile.ui_state) } } : old);
+    void api.setUiState({ setup_started: true })
+      .then(() => qc.invalidateQueries({ queryKey: ["situation"] }))
+      .catch(() => {});
     navigate(to, { replace: true });
-  }, [sit.isLoading, sit.data, ft, journey.isLoading, journey.data, pathname, navigate, to]);
+  }, [sit.isLoading, sit.data, ft, journey.isLoading, journey.data, pathname, navigate, to, qc]);
   return null;
 }
 

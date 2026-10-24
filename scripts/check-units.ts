@@ -8362,8 +8362,8 @@ console.log("weekly WFH diary (#787)");
   const at = (iso: string) => new Date(`${iso}T09:00:00Z`);
   check("isMonday: 2025-07-07 yes, 2025-07-08 no, junk no", W.isMonday("2025-07-07") && !W.isMonday("2025-07-08") && !W.isMonday("2025-02-30") && !W.isMonday("x"));
   check("mondayOf: a Sunday maps back to its Monday", W.mondayOf("2025-07-13") === "2025-07-07" && W.mondayOf("2025-07-07") === "2025-07-07");
-  check("canConfirm: not before the week's Thursday UTC (Friday AU), never in advance",
-    !W.canConfirm("2025-07-07", at("2025-07-09")) && W.canConfirm("2025-07-07", at("2025-07-10")) && !W.canConfirm("2025-07-14", at("2025-07-10")));
+  check("canConfirm: not before the week's local Friday (Sydney), never in advance",
+    !W.canConfirm("2025-07-07", at("2025-07-10")) && W.canConfirm("2025-07-07", at("2025-07-11")) && !W.canConfirm("2025-07-14", at("2025-07-11")));
   check("entryFor: on time up to the Sunday after the week ends, late from the Monday after that",
     W.entryFor("2025-07-07", at("2025-07-20")) === "on_time" && W.entryFor("2025-07-07", at("2025-07-21")) === "late");
   check("weekCounts: on time counts; late from calendar counts; late from memory doesn't",
@@ -8528,6 +8528,64 @@ console.log("deploy + CI wiring (review F11/F12, QA CI)");
   const pw = lock.packages["node_modules/playwright"]?.version;
   check("@playwright/test: a direct devDependency pinned exactly to the installed playwright version",
     !!pw && pkg.devDependencies["@playwright/test"] === pw && lock.packages["node_modules/@playwright/test"]?.version === pw);
+}
+
+// ── review F5: the WFH diary's windows run on the tenant's LOCAL date (src/lib/wfh-diary.ts) ─────────
+console.log("WFH diary local-date windows (review F5)");
+{
+  const W = await import("../src/lib/wfh-diary");
+  const J = await import("../src/lib/jurisdiction");
+  const z = (iso: string) => new Date(iso);
+  check("localDateIso: 00:00Z Thursday is Thursday 10:00 in Sydney (AEST); 14:00Z is already Friday",
+    W.localDateIso(z("2025-07-10T00:00:00Z")) === "2025-07-10" && W.localDateIso(z("2025-07-10T14:00:00Z")) === "2025-07-11");
+  check("localDateIso: AEDT is UTC+11 (13:00Z rolls the date), and another zone reads its own date",
+    W.localDateIso(z("2026-01-08T13:00:00Z")) === "2026-01-09" && W.localDateIso(z("2026-01-08T12:59:00Z")) === "2026-01-08"
+      && W.localDateIso(z("2026-01-08T13:00:00Z"), "Europe/London") === "2026-01-08");
+  check("timeZoneOf: AU descriptor is Australia/Sydney; a descriptor without a tz defaults to Sydney",
+    W.timeZoneOf(J.AU_DESCRIPTOR) === "Australia/Sydney" && W.timeZoneOf({ ...J.AU_DESCRIPTOR, timeZone: undefined }) === "Australia/Sydney" && W.timeZoneOf(J.UK_DESCRIPTOR) === "Europe/London");
+  // AEST (UTC+10): week of Mon 7 Jul 2025. Friday 00:00 AEST = Thu 14:00Z; on time through Sun 20 Jul local.
+  check("AEST: a week can't be confirmed on Thursday 10:00 Sydney (the old UTC bug), only from local Friday 00:00",
+    !W.canConfirm("2025-07-07", z("2025-07-10T00:00:00Z")) && !W.canConfirm("2025-07-07", z("2025-07-10T13:59:00Z")) && W.canConfirm("2025-07-07", z("2025-07-10T14:00:00Z")));
+  check("AEST: on time until local Sunday 20 Jul ends (Sun 13:59Z), late from local Monday 00:00 (Sun 14:00Z)",
+    W.entryFor("2025-07-07", z("2025-07-20T13:59:00Z")) === "on_time" && W.entryFor("2025-07-07", z("2025-07-20T14:00:00Z")) === "late");
+  // AEDT (UTC+11): week of Mon 5 Jan 2026. Friday 00:00 AEDT = Thu 13:00Z.
+  check("AEDT: confirmable from local Friday 00:00 (Thu 13:00Z), not a minute before",
+    !W.canConfirm("2026-01-05", z("2026-01-08T12:59:00Z")) && W.canConfirm("2026-01-05", z("2026-01-08T13:00:00Z")));
+  check("AEDT: late from local Monday 19 Jan 00:00 (Sun 13:00Z)",
+    W.entryFor("2026-01-05", z("2026-01-18T12:59:00Z")) === "on_time" && W.entryFor("2026-01-05", z("2026-01-18T13:00:00Z")) === "late");
+  // DST starts Sun 5 Oct 2025: the week of 29 Sep opens in AEST, its cut-off falls in AEDT.
+  check("DST start: week of 29 Sep 2025 opens Fri 3 Oct 00:00 AEST (2 Oct 14:00Z)",
+    !W.canConfirm("2025-09-29", z("2025-10-02T13:59:00Z")) && W.canConfirm("2025-09-29", z("2025-10-02T14:00:00Z")));
+  check("DST start: its on-time cut-off moves with the clocks (late from Mon 13 Oct 00:00 AEDT = 12 Oct 13:00Z)",
+    W.entryFor("2025-09-29", z("2025-10-12T12:59:00Z")) === "on_time" && W.entryFor("2025-09-29", z("2025-10-12T13:00:00Z")) === "late");
+  // DST ends Sun 5 Apr 2026: the week of 30 Mar opens in AEDT, its cut-off falls in AEST.
+  check("DST end: week of 30 Mar 2026 opens Fri 3 Apr 00:00 AEDT (2 Apr 13:00Z), late from Mon 13 Apr 00:00 AEST (12 Apr 14:00Z)",
+    !W.canConfirm("2026-03-30", z("2026-04-02T12:59:00Z")) && W.canConfirm("2026-03-30", z("2026-04-02T13:00:00Z"))
+      && W.entryFor("2026-03-30", z("2026-04-12T13:59:00Z")) === "on_time" && W.entryFor("2026-03-30", z("2026-04-12T14:00:00Z")) === "late");
+  check("weekWindow: opens on the week's Friday, on time through the following Sunday",
+    JSON.stringify(W.weekWindow("2025-07-07")) === JSON.stringify({ opens: "2025-07-11", on_time_until: "2025-07-20", week_end: "2025-07-13" }));
+  const src = fs.readFileSync(path.join(process.cwd(), "src/lib/wfh-diary.ts"), "utf8");
+  check("saveWeek + diaryView read today in the descriptor's zone (no UTC slice of now)",
+    /canConfirm\(ws, now, tz\)/.test(src) && /entryFor\(ws, now, tz\)/.test(src) && /todayIso\(now, timeZoneOf\(descriptor\)\)/.test(src) && !/now\.toISOString\(\)\.slice\(0, 10\)/.test(src));
+}
+
+// ── review F7: the first-run redirect updates the cached situation and fires once per session ──────
+console.log("first-run gate cache + once-per-session (review F7)");
+{
+  const { withSetupStarted, needsFirstRun } = await import("../web/src/lib/firstRun");
+  const merged = withSetupStarted(JSON.stringify({ tour_seen: true, active_fy: 2025 }));
+  check("withSetupStarted: sets the marker and keeps the other ui_state keys",
+    JSON.stringify(JSON.parse(merged)) === JSON.stringify({ tour_seen: true, active_fy: 2025, setup_started: true }));
+  check("withSetupStarted: null / garbage / an array ui_state => just the marker",
+    withSetupStarted(null) === '{"setup_started":true}' && withSetupStarted("{nope") === '{"setup_started":true}' && withSetupStarted("[1]") === '{"setup_started":true}');
+  check("after the cache update needsFirstRun is false, so leaving /setup doesn't bounce back",
+    !needsFirstRun({ consentXborder: 0, entityCount: 0, uiState: withSetupStarted(null) }));
+  const app = fs.readFileSync(path.join(process.cwd(), "web/src/App.tsx"), "utf8");
+  const gate = app.slice(app.indexOf("let firstRunRedirected"), app.indexOf("export function App()"));
+  check("FirstRunGate: a module-level session guard short-circuits the effect and is set before navigating",
+    /let firstRunRedirected = false;/.test(gate) && /if \(firstRunRedirected \|\|/.test(gate) && gate.indexOf("firstRunRedirected = true") < gate.indexOf("navigate(to, { replace: true })"));
+  check("FirstRunGate: merges ui_state into the situation cache and re-reads it once the PATCH lands",
+    /qc\.setQueryData<Situation>\(\["situation"\]/.test(gate) && /withSetupStarted\(old\.profile\.ui_state\)/.test(gate) && /invalidateQueries\(\{ queryKey: \["situation"\] \}\)/.test(gate));
 }
 
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);

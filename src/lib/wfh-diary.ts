@@ -6,9 +6,10 @@
 // pre-fills the form: a week's hours count only once that week is confirmed.
 //
 // The rules this module owns (one place, so the API, the CSV and the goldens can't disagree):
-//   • A week can be confirmed from its Friday (CONFIRM_OPENS_AFTER_DAYS), never in advance.
-//   • A save is ON TIME when it happens no later than 7 days after the week ends (ON_TIME_DAYS); any later
-//     save (a first catch-up OR a change to an older week) makes the week LATE and needs a `source`.
+//   • "Today" is the tenant's LOCAL date (the jurisdiction's time zone, Australia/Sydney for AU), never UTC.
+//   • A week can be confirmed from its local Friday (CONFIRM_OPENS_AFTER_DAYS), never in advance.
+//   • A save is ON TIME when it happens no later than 7 local days after the week's Sunday (ON_TIME_DAYS); any
+//     later save (a first catch-up OR a change to an older week) makes the week LATE and needs a `source`.
 //   • A late week counts only when it was rebuilt from a record made at the time (calendar, timesheet,
 //     roster, employer system logs). Rebuilt from memory = an estimate ⇒ kept, shown, never counted.
 //   • Timestamps come from the server clock (callers pass `now`); the client can't backdate a week.
@@ -39,9 +40,9 @@ export interface DiaryWeek {
   updated_at: string;
 }
 
-/** Days after the week's Monday before it can be confirmed (3 ⇒ Thursday UTC, i.e. Friday morning in AU). */
-export const CONFIRM_OPENS_AFTER_DAYS = 3;
-/** A save is on time up to and including week_start + 13 (the Sunday after the week ends). */
+/** Days after the week's Monday before it can be confirmed (4 ⇒ the week's Friday, in the tenant's local date). */
+export const CONFIRM_OPENS_AFTER_DAYS = 4;
+/** A save is on time up to and including week_start + 13 (7 local days after the week's Sunday). */
 export const ON_TIME_DAYS = 13;
 export const MAX_HOURS_PER_DAY = 24;
 const EARLIEST_WEEK = "2020-01-06";
@@ -77,17 +78,26 @@ export function mondayOf(iso: string): string {
   const d = new Date(`${iso}T00:00:00Z`);
   return addDaysIso(iso, -((d.getUTCDay() + 6) % 7));
 }
-const todayIso = (now: Date) => now.toISOString().slice(0, 10);
+/** The fallback when a jurisdiction descriptor carries no time zone. */
+export const DEFAULT_TIME_ZONE = "Australia/Sydney";
+export const timeZoneOf = (descriptor: JurisdictionDescriptor): string => descriptor.timeZone || DEFAULT_TIME_ZONE;
+/** The calendar date (YYYY-MM-DD) `now` falls on in `timeZone` — DST-aware via Intl. */
+export function localDateIso(now: Date, timeZone: string = DEFAULT_TIME_ZONE): string {
+  const parts = new Intl.DateTimeFormat("en-AU", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(now);
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "";
+  return `${get("year")}-${get("month")}-${get("day")}`;
+}
+const todayIso = (now: Date, timeZone: string) => localDateIso(now, timeZone);
 
 /** When a week can be confirmed, and the last day a save still counts as on time. */
 export function weekWindow(weekStart: string): { opens: string; on_time_until: string; week_end: string } {
   return { opens: addDaysIso(weekStart, CONFIRM_OPENS_AFTER_DAYS), on_time_until: addDaysIso(weekStart, ON_TIME_DAYS), week_end: addDaysIso(weekStart, 6) };
 }
-export function entryFor(weekStart: string, now: Date): DiaryEntry {
-  return todayIso(now) <= weekWindow(weekStart).on_time_until ? "on_time" : "late";
+export function entryFor(weekStart: string, now: Date, timeZone: string = DEFAULT_TIME_ZONE): DiaryEntry {
+  return todayIso(now, timeZone) <= weekWindow(weekStart).on_time_until ? "on_time" : "late";
 }
-export function canConfirm(weekStart: string, now: Date): boolean {
-  return todayIso(now) >= weekWindow(weekStart).opens;
+export function canConfirm(weekStart: string, now: Date, timeZone: string = DEFAULT_TIME_ZONE): boolean {
+  return todayIso(now, timeZone) >= weekWindow(weekStart).opens;
 }
 /** A week's hours count when it was recorded on time, or caught up from a record made at the time. */
 export function weekCounts(w: Pick<DiaryWeek, "entry" | "source">): boolean {
@@ -320,10 +330,11 @@ export class DiaryError extends Error { constructor(message: string, readonly st
 export async function saveWeek(env: Env, userId: string, input: SaveWeekInput, now: Date, descriptor: JurisdictionDescriptor = AU_DESCRIPTOR): Promise<DiaryWeek> {
   const ws = String(input.week_start ?? "");
   if (!isMonday(ws) || ws < EARLIEST_WEEK) throw new DiaryError("week_start must be a Monday (YYYY-MM-DD)");
-  if (!canConfirm(ws, now)) throw new DiaryError("This week can be confirmed from its Friday, once the days have happened");
+  const tz = timeZoneOf(descriptor);
+  if (!canConfirm(ws, now, tz)) throw new DiaryError("This week can be confirmed from its Friday, once the days have happened");
   const pattern = (await getPattern(env, userId)) ?? [0, 0, 0, 0, 0, 0, 0];
   const days = normaliseDays(input.days, pattern);
-  const entry = entryFor(ws, now);
+  const entry = entryFor(ws, now, tz);
   const source = entry === "late" && LATE_SOURCES.includes(input.source as LateSource) ? (input.source as LateSource) : null;
   if (entry === "late" && !source) throw new DiaryError("This week is being recorded late: say what you're working from (calendar, timesheet, roster, system logs or memory)");
   const note = typeof input.note === "string" && input.note.trim() ? input.note.trim().slice(0, 200) : null;
@@ -370,7 +381,7 @@ export async function diaryView(env: Env, userId: string, fyStartYear: number, n
   const bounds = fyBoundsFor(descriptor, fyStartYear);
   const [pattern, weeks, pre] = await Promise.all([getPattern(env, userId), listWeeksForFy(env, userId, bounds), getPreDiary(env, userId, fyStartYear)]);
   const totals = diaryTotals(weeks, bounds);
-  const today = todayIso(now);
+  const today = todayIso(now, timeZoneOf(descriptor));
   const have = new Set(weeks.map((w) => w.week_start));
   // Latest confirmable Monday = the Monday of (today − CONFIRM_OPENS_AFTER_DAYS).
   const latest = mondayOf(addDaysIso(today, -CONFIRM_OPENS_AFTER_DAYS));

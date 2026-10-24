@@ -27,3 +27,15 @@ export function needsFirstRun(i: FirstRunInputs): boolean {
   if (i.setupStatus && i.setupStatus !== "not_started") return false;
   return true;
 }
+
+/** ui_state with the one-redirect marker set, keeping every other key (the cache mirror of PATCH /api/ui-state). */
+export function withSetupStarted(uiState: string | null | undefined): string {
+  let cur: Record<string, unknown> = {};
+  try {
+    const parsed = uiState ? (JSON.parse(uiState) as unknown) : {};
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) cur = parsed as Record<string, unknown>;
+  } catch {
+    /* garbage ⇒ start fresh */
+  }
+  return JSON.stringify({ ...cur, setup_started: true });
+}

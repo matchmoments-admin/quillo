@@ -830,6 +830,9 @@ function EditAccount({
   // (retiring the per-line split). Scoped to the active FY; prefills from any recorded summary.
   const { has } = useFeatures();
   const { fy } = useActiveFy();
+  // qbo_retired (map #692): no "QuickBooks feed" choice for a new source; an account already on it keeps
+  // its value (and the note) so the select never shows a blank. OFF ⇒ unchanged.
+  const showQboFeed = !has("qbo_retired") || account.source === "qbo_feed";
   const v2 = type === "loan" && has("loan_interest_v2");
   const qc = useQueryClient();
   const liQ = useQuery({ queryKey: ["loan-interest", fy], queryFn: () => api.loanInterest(fy), enabled: v2 });
@@ -958,10 +961,10 @@ function EditAccount({
             className="rounded-lg border border-line bg-card px-3 py-1.5"
           >
             <option value="statement">Statement upload</option>
-            <option value="qbo_feed">QuickBooks feed</option>
+            {showQboFeed && <option value="qbo_feed">QuickBooks feed</option>}
             <option value="manual">Manual</option>
           </select>
-          <span className="text-xs text-muted">A QuickBooks-feed account won't accept statement uploads (avoids double-counting).</span>
+          {showQboFeed && <span className="text-xs text-muted">A QuickBooks-feed account won't accept statement uploads (avoids double-counting).</span>}
         </label>
         <button onClick={onDelete} disabled={deletePending} className="text-sm text-danger hover:underline">
           {deletePending ? "Deleting…" : "Delete account"}

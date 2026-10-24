@@ -268,7 +268,8 @@ export function TxnDetail() {
   const attributionCard = has("attribution_engine") ? (
     <AttributionPanel key={id} txnId={id} txnAmountCents={txn.amount_aud_cents ?? txn.amount_cents ?? 0} entities={sitQ.data?.entities ?? []} persons={sitQ.data?.persons ?? []} />
   ) : null;
-  const qboSection = txn.bucket === "company" ? (
+  // qbo_retired (map #692): no QuickBooks push / posted-to note for anyone while ON. OFF ⇒ unchanged.
+  const qboSection = txn.bucket === "company" && !has("qbo_retired") ? (
     <Card className="space-y-2 p-4 text-sm">
       <div className="text-xs font-medium uppercase tracking-wide text-muted">QuickBooks</div>
       {txn.ledger_ref ? (

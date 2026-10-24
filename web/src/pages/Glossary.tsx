@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { ANY_GLOSSARY, GLOSSARY } from "../content/glossary";
+import { ANY_GLOSSARY, GLOSSARY, glossaryShort } from "../content/glossary";
 import { useFeatures } from "../lib/features";
 import { Card, Input } from "../components/ui";
 
@@ -11,14 +11,16 @@ export function Glossary() {
   // ft_journey (#584): the first-timer terms join the list only when ON — OFF lists GLOSSARY alone.
   const { has } = useFeatures();
   const source = has("ft_journey") ? ANY_GLOSSARY : GLOSSARY;
+  // qbo_retired (map #692): the QuickBooks-free copy for the entries that named it. OFF ⇒ unchanged.
+  const qboRetired = has("qbo_retired");
   const entries = useMemo(() => {
-    const all = Object.entries(source).map(([key, v]) => ({ key, ...v }));
+    const all = Object.entries(source).map(([key, v]) => ({ key, ...v, short: glossaryShort(key, v.short, qboRetired) }));
     const needle = q.trim().toLowerCase();
     if (!needle) return all.sort((a, b) => a.term.localeCompare(b.term));
     return all
       .filter((e) => e.term.toLowerCase().includes(needle) || e.short.toLowerCase().includes(needle))
       .sort((a, b) => a.term.localeCompare(b.term));
-  }, [q, source]);
+  }, [q, source, qboRetired]);
 
   return (
     <div className="mx-auto max-w-2xl space-y-6">

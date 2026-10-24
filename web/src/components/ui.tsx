@@ -3,7 +3,7 @@ import { useState, useSyncExternalStore } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import * as Popover from "@radix-ui/react-popover";
 import * as Tooltip from "@radix-ui/react-tooltip";
-import { ANY_GLOSSARY, type AnyGlossaryKey } from "../content/glossary";
+import { ANY_GLOSSARY, glossaryShort, type AnyGlossaryKey } from "../content/glossary";
 import { currencySymbol, currencyLocale } from "../lib/currency";
 
 // UK epic stop 2 — base-currency-aware money(). The SPA is single-tenant-per-session, so the base
@@ -271,7 +271,7 @@ export function Meter({ frac, className = "bg-green" }: { frac: number; classNam
 
 /** Resolve a tip body from an explicit node or a glossary key. */
 function tipBody(k?: AnyGlossaryKey, tip?: ReactNode): ReactNode | null {
-  return tip ?? (k ? ANY_GLOSSARY[k].short : null);
+  return tip ?? (k ? glossaryShort(k, ANY_GLOSSARY[k].short) : null); // qbo_retired-aware; OFF ⇒ .short
 }
 
 // Explain tips (#698, map #692; owner decision 2026-10-24). One trigger, two presentations:

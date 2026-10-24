@@ -72,7 +72,9 @@ const items = (n: number) => `${n} ${n === 1 ? "item" : "items"}`;
  * The guide copy for a tab given the current progress (may be undefined while it loads). The
  * Transactions page hosts the review queue as its "Needs review" tab, so its guide describes both tabs.
  */
-export function tabGuide(tab: TabKey, p?: Progress, opts?: { mailboxRetired?: boolean }): GuideCopy {
+// `opts.qboRetired` (flag qbo_retired, map #692): the copy stops naming QuickBooks. Absent ⇒ unchanged.
+export function tabGuide(tab: TabKey, p?: Progress, opts?: { mailboxRetired?: boolean; qboRetired?: boolean }): GuideCopy {
+  const qboRetired = opts?.qboRetired === true;
   const hasData = !!p && p.imported.transactions > 0;
   const needs = p?.needs_review ?? 0;
   const undated = p?.undated ?? 0;
@@ -143,7 +145,9 @@ export function tabGuide(tab: TabKey, p?: Progress, opts?: { mailboxRetired?: bo
       if (!p || p.imported.statements === 0)
         return {
           title: "Start here",
-          body: "Add an account, then upload a CSV or PDF statement — Quillo reads and categorises every line automatically. A QuickBooks-synced account shouldn't get statement uploads (it would double-count).",
+          body: qboRetired
+            ? "Add an account, then upload a CSV or PDF statement — Quillo reads and categorises every line automatically."
+            : "Add an account, then upload a CSV or PDF statement — Quillo reads and categorises every line automatically. A QuickBooks-synced account shouldn't get statement uploads (it would double-count).",
         };
       return {
         title: "Your statements are in",
@@ -196,7 +200,9 @@ export function tabGuide(tab: TabKey, p?: Progress, opts?: { mailboxRetired?: bo
     case "txn":
       return {
         title: "Confirm one item",
-        body: "Check Quillo's category and confirm or change it — your correction teaches it for next time. If the date's missing, set it so the item lands in a financial year. A company expense not on a bank feed can be pushed to QuickBooks.",
+        body: qboRetired
+          ? "Check Quillo's category and confirm or change it — your correction teaches it for next time. If the date's missing, set it so the item lands in a financial year."
+          : "Check Quillo's category and confirm or change it — your correction teaches it for next time. If the date's missing, set it so the item lands in a financial year. A company expense not on a bank feed can be pushed to QuickBooks.",
       };
 
     case "quickbooks":

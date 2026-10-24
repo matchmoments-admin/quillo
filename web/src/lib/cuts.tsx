@@ -1,9 +1,10 @@
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 import { Link, Navigate, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../api";
 import { Card } from "../components/ui";
 import { useFeatures, usePartnerAccess } from "./features";
+import { setGlossaryQboRetired } from "../content/glossary";
 import type { GrowLayerKey } from "../types";
 
 // #697 cut list (design audit docs/ux/design-audit-2026-10.md): surfaces hidden behind one `hide_*` flag each.
@@ -29,7 +30,9 @@ export function CutRoute({ flag, to, allow, children }: { flag: string; to: stri
 export function useQboLinked(): boolean | null {
   const { has } = useFeatures();
   const on = has("hide_quickbooks_nav");
-  const q = useQuery({ queryKey: ["qbo-status"], queryFn: () => api.qboStatus(), enabled: on });
+  const retired = has("qbo_retired");
+  const q = useQuery({ queryKey: ["qbo-status"], queryFn: () => api.qboStatus(), enabled: on && !retired });
+  if (retired) return false; // qbo_retired: hidden for everyone, connected or not, and no /api/qbo request
   if (!on) return true;
   if (q.isLoading) return null;
   if (q.isError) return false;
@@ -42,11 +45,30 @@ export function QuickBooksRoute({ children }: { children: ReactNode }) {
   const [params] = useSearchParams();
   // Coming back from Intuit's OAuth (?connected=1|0) always shows the page, so the result is never swallowed.
   const returning = params.has("connected");
+  // qbo_retired (map #692): QuickBooks is gone for everyone, so the page always lands on Accounts.
   return (
-    <CutRoute flag="hide_quickbooks_nav" to="/accounts" allow={returning || linked}>
-      {children}
+    <CutRoute flag="qbo_retired" to="/accounts">
+      <CutRoute flag="hide_quickbooks_nav" to="/accounts" allow={returning || linked}>
+        {children}
+      </CutRoute>
     </CutRoute>
   );
+}
+
+/**
+ * qbo_retired (map #692, owner 2026-10-24): QuickBooks connect isn't needed now, so every QuickBooks surface
+ * is hidden for everyone, including a user who has connected it (their stored tokens and data are kept).
+ * OFF (or while the flag set loads) ⇒ false, so each surface renders as before.
+ */
+export function useQboRetired(): boolean {
+  const { has } = useFeatures();
+  return has("qbo_retired");
+}
+
+/** Keeps the glossary's QuickBooks-free tips in step with the flag (call once from the app shell). */
+export function useQboRetiredGlossarySync(): void {
+  const retired = useQboRetired();
+  useEffect(() => setGlossaryQboRetired(retired), [retired]);
 }
 
 /** /partner (the referral portal): a non-partner is sent Home instead of reading a bare "Not available.". */
@@ -71,13 +93,13 @@ export function useGrowLayerCut(): (layer: GrowLayerKey, hasData?: boolean) => b
   return (layer, hasData) =>
     (layer === "savings" && has("hide_savings")) ||
     (layer === "extras" && has("hide_extras")) ||
-    (layer === "integrations" && has("hide_quickbooks_nav") && !hasData);
+    (layer === "integrations" && (has("qbo_retired") || (has("hide_quickbooks_nav") && !hasData)));
 }
 
 /** Settings: the way back to QuickBooks for a user who has connected it, once it's out of the default nav. */
 export function QuickBooksSettingsLink({ to }: { to: string }) {
   const { has } = useFeatures();
-  const linked = useQboLinked();
+  const linked = useQboLinked(); // qbo_retired ⇒ false, so the card never shows
   if (!has("hide_quickbooks_nav") || linked !== true) return null;
   return (
     <Card className="flex flex-wrap items-center justify-between gap-3 p-4 text-sm">

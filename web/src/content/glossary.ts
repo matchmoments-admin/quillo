@@ -311,6 +311,24 @@ export function tipFor(key: GlossaryKey): string {
   return GLOSSARY[key].short;
 }
 
+// ── qbo_retired (map #692, owner 2026-10-24): QuickBooks is hidden for everyone ─────────────────
+// These tips stop naming QuickBooks while the flag is ON. Module-level state set once from the app shell
+// (useQboRetiredGlossarySync in lib/cuts.tsx), the same pattern as money()'s base currency: every tip and
+// related-term hop reads through glossaryShort, so no call site changes. OFF ⇒ the GLOSSARY copy verbatim.
+export const QBO_RETIRED_SHORT: Partial<Record<GlossaryKey, string>> = {
+  account_source:
+    "Where this account's data comes from: a connected bank feed, or statements you upload. Each account uses exactly one source, so nothing is counted twice.",
+  paid_via: "Which card or account paid for this. It helps match receipts to your bank statement.",
+};
+let _qboRetired = false;
+export function setGlossaryQboRetired(on: boolean): void {
+  _qboRetired = on;
+}
+/** A glossary entry's short copy, honouring qbo_retired (pass `qboRetired` to override the session state). */
+export function glossaryShort(key: string, short: string, qboRetired: boolean = _qboRetired): string {
+  return (qboRetired && QBO_RETIRED_SHORT[key as GlossaryKey]) || short;
+}
+
 // ── First-timer terms (spec docs/first-timer/spec.md A10, #584; flag ft_journey) ─────────────
 // Kept in a SEPARATE map so the /glossary page lists them only when ft_journey is ON (flag OFF ⇒
 // the page renders exactly the entries above, byte-identical). <Term>/<InfoTip> resolve keys from

@@ -2,13 +2,17 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { api } from "../api";
+import { useFeatures } from "../lib/features";
 import { Card, Spinner, Button, money } from "../components/ui";
 
 export function QuickBooks() {
   const [params] = useSearchParams();
   const qc = useQueryClient();
   const justConnected = params.get("connected");
-  const status = useQuery({ queryKey: ["qbo-status"], queryFn: () => api.qboStatus() });
+  // qbo_retired (map #692): QuickBooksRoute sends this page to Accounts; until the flag set is known it asks
+  // nothing of /api/qbo (which is 404 while retired). OFF ⇒ the same request once the flags are in.
+  const { has, loaded } = useFeatures();
+  const status = useQuery({ queryKey: ["qbo-status"], queryFn: () => api.qboStatus(), enabled: loaded && !has("qbo_retired") });
   const recon = useQuery({ queryKey: ["qbo-reconcile"], queryFn: () => api.reconcile(), enabled: status.data?.connected === true });
   // Fetch the Intuit authorize URL (Bearer-authed), then hand the browser to Intuit.
   const connect = useMutation({
@@ -33,7 +37,7 @@ export function QuickBooks() {
     }
   };
 
-  if (status.isLoading) return <Spinner />;
+  if (!loaded || status.isLoading) return <Spinner />;
   const needsReconnect = status.data?.needs_reconnect || recon.data?.needsReconnect;
   const connected = status.data?.connected && !needsReconnect;
   // A dead-but-stored connection (refresh token expired) can still be cleared/revoked.

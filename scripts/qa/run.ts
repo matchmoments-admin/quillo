@@ -5,6 +5,7 @@
 // DEV_AUTH_BYPASS tenant, the QA inference stub, every first-timer journey flag ON), at 1280px and 390px:
 //   1. first-timer journey — Before you start → Get set up → Connect (zero-credit, bad-file and oversize
 //      error paths, then the CSV happy path) → Review → Check → Position → Lodge (+ mark lodged) → Ask;
+//   1b. a 1,500-line statement import that finishes on the DO-alarm continuation (import_continuation, F2);
 //   2. billing (no Stripe call) and Settings → Privacy (consent, export, delete-account dry path);
 //   3. a route sweep of every inventory route, empty and seeded, with the journey flags ON, and again with
 //      production's flag set (the legacy pages);
@@ -22,7 +23,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { loadChromium, Recorder, type Ctx, type Result, type ViewportName } from "./harness";
-import { accountJourneys, firstTimerJourney, flagTags, routeSweep, writeFixtures, type SetupAnswers } from "./journeys";
+import { accountJourneys, firstTimerJourney, flagTags, largeImportJourney, routeSweep, writeFixtures, type SetupAnswers } from "./journeys";
 import { PERSONAS, personaRun } from "./personas";
 import { JOURNEY_FLAGS, QA_DIR, ROOT, prodFeatures, startServer } from "./server";
 
@@ -73,6 +74,7 @@ try {
         if (only.has("routes")) await routeSweep(ctx, "empty", { flags: ["ft_journey"] });
         if (only.has("journeys")) {
           await firstTimerJourney(ctx, server, ANSWERS[vp], fx);
+          await largeImportJourney(ctx, fx);
           await accountJourneys(ctx);
         }
         if (only.has("routes")) await routeSweep(ctx, "seeded", { flags: ["ft_journey"] });

@@ -244,6 +244,8 @@ export interface TaxAgentRpc {
   setUiState(userId: string, patch: Record<string, unknown>): Promise<Record<string, unknown>>;
   categoriseStatement(userId: string, statementId: string): Promise<{ categorised: number }>;
   pollBatchJobs(userId: string): Promise<{ applied: number }>;
+  // Review F2 (import_continuation): one hop of a statement categorisation chain; the cron re-delivers a stale one.
+  categoriseContinue(payload: import("./lib/categorise-continuation").HopPayload): Promise<void>;
   recategorise(userId: string): Promise<{ requeued: number; statements: number }>;
   linkReceipt(userId: string, receiptId: string, lineId: string): Promise<boolean>;
   dismissReconcileProposal(userId: string, receiptId: string, lineId: string): Promise<boolean>;

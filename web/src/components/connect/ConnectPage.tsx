@@ -477,7 +477,8 @@ function Statements() {
   const confirm = useMutation({
     mutationFn: ({ id, force }: { id: string; force: boolean }) => api.confirmImport(id, force),
     onSuccess: (r) => {
-      toast.success(`Imported ${linesLabel(r.imported)}`, { description: r.skipped ? `${r.skipped} were already on file.` : "Sorting them now. You can keep going." });
+      const later = r.categorising ? ` Sorting ${linesLabel(r.categorising)} in the background; the list below shows how far it's got.` : "";
+      toast.success(`Imported ${linesLabel(r.imported)}`, { description: r.skipped ? `${r.skipped} were already on file.${later}` : later ? later.trim() : "Sorting them now. You can keep going." });
       for (const key of ["statements", "accounts", "transactions", "journey", "progress", "dashboard"]) qc.invalidateQueries({ queryKey: [key] });
     },
     onError: (e: Error) => toast.error("Import didn't go through", { description: e.message }),

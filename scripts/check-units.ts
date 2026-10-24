@@ -8739,5 +8739,253 @@ console.log("review hardening (F8, CSV, backfill, 500→400, scrub, cookies, pac
     /loadSituationsSettled\(ctx, scheduleModules\)/.test(asSrc) && !/await loadSituations\(/.test(asSrc) && /key: "situations_unavailable"/.test(asSrc));
 }
 
+// ── Review F2: statement categorisation continues on DO alarms (import_continuation). Drives
+// src/lib/categorise-continuation.ts against an in-memory D1 (node:sqlite, every migration applied) with a
+// FAKE model, a FAKE budget gate and a FAKE alarm queue (the scheduler) — no DO, no network.
+import * as CC from "../src/lib/categorise-continuation";
+console.log("import continuation — statement categorisation on DO alarms (F2)");
+{
+  const { DatabaseSync: SqliteF2 } = await import("node:sqlite");
+  type SqlDb = InstanceType<typeof SqliteF2>;
+  class StmtF2 {
+    private params: unknown[] = [];
+    constructor(private db: SqlDb, private sql: string) {}
+    bind(...a: unknown[]) { this.params = a.map((x) => (x === undefined ? null : x)); return this; }
+    async all<T>() { return { results: this.db.prepare(this.sql).all(...(this.params as never[])) as T[], success: true, meta: {} }; }
+    async first<T>() { return (this.db.prepare(this.sql).get(...(this.params as never[])) as T) ?? null; }
+    async run() { const r = this.db.prepare(this.sql).run(...(this.params as never[])); return { success: true, meta: { changes: Number(r.changes ?? 0) } }; }
+    async settle() { return /^\s*(select|with)/i.test(this.sql) ? this.all() : this.run(); }
+  }
+  const sq = new SqliteF2(":memory:");
+  const migDirF2 = path.join(process.cwd(), "migrations");
+  for (const f of fs.readdirSync(migDirF2).filter((f) => f.endsWith(".sql")).sort()) sq.exec(fs.readFileSync(path.join(migDirF2, f), "utf8"));
+  const db = {
+    prepare: (sql: string) => new StmtF2(sq, sql),
+    batch: async (s: StmtF2[]) => { const out = []; for (const x of s) out.push(await x.settle()); return out; },
+  } as unknown as D1Database;
+  const one = <T>(sql: string, ...p: unknown[]) => sq.prepare(sql).get(...(p as never[])) as T;
+  const U = "uF2";
+
+  /** A statement with `n` uncategorised bank lines (ids sort in insertion order). */
+  const seed = (sid: string, n: number) => {
+    sq.prepare(`INSERT INTO statements (id, user_id, account_id, filename, status, row_count, imported_count) VALUES (?, ?, 'acc1', 'big.csv', 'imported', ?, ?)`).run(sid, U, n, n);
+    const ins = sq.prepare(
+      `INSERT INTO transactions (id, user_id, source, status, kind, account_id, statement_id, line_fingerprint, merchant, amount_cents, amount_aud_cents, txn_date, direction)
+       VALUES (?, ?, 'statement', 'needs_review', 'bank_line', 'acc1', ?, ?, ?, ?, ?, '2026-08-01', 'debit')`,
+    );
+    for (let i = 0; i < n; i++) {
+      const id = `${sid}-${String(i).padStart(5, "0")}`;
+      ins.run(id, U, sid, `fp-${id}`, `SHOP ${i}`, 100 + i, 100 + i);
+    }
+  };
+  const statusCount = (sid: string, status: string) => one<{ n: number }>(`SELECT COUNT(*) AS n FROM transactions WHERE user_id = ? AND statement_id = ? AND status = ?`, U, sid, status).n;
+
+  /** Fakes: the model answers every line (or drops some), records what it was sent; an alarm queue. */
+  const harness = (o: { budgetCalls?: number; drop?: (id: string) => boolean; throwOnCall?: number } = {}) => {
+    const sent = new Map<string, number>();
+    const queue: { delay: number; payload: CC.HopPayload }[] = [];
+    const notices: string[] = [];
+    const audits: string[] = [];
+    let budgetChecks = 0;
+    let calls = 0;
+    let finalised = 0;
+    const deps: CC.ChainDeps = {
+      db, userId: U,
+      withinBudget: async () => { budgetChecks++; return o.budgetCalls == null || budgetChecks <= o.budgetCalls; },
+      extract: async (chunk) => {
+        calls++;
+        if (o.throwOnCall != null && calls === o.throwOnCall) throw new Error("model 503");
+        for (const c of chunk) sent.set(c.id, (sent.get(c.id) ?? 0) + 1);
+        return chunk.map((c, i) => ({ line: i + 1, bucket: "payg", ato_label: "D5", confidence: 0.9, reasoning: "fake" }))
+          .filter((_, i) => !o.drop?.(chunk[i]!.id));
+      },
+      schedule: async (delay, payload) => { queue.push({ delay, payload }); },
+      notify: async (b) => { notices.push(b); },
+      audit: async (e) => { audits.push(e); },
+      finalise: async () => { finalised++; },
+      budgetReason: async () => "you've used today's AI allowance",
+    };
+    /** Fire every queued alarm in order (each may queue the next), like the SDK draining due schedules. */
+    const drain = async (max = 1000) => {
+      const outcomes: CC.HopOutcome[] = [];
+      while (queue.length && outcomes.length < max) outcomes.push(await CC.runHop(deps, queue.shift()!.payload));
+      return outcomes;
+    };
+    return { deps, sent, queue, notices, audits, drain, get calls() { return calls; }, get finalised() { return finalised; } };
+  };
+
+  // ── Routing: OFF is the old decision exactly; ON only changes the non-batching (Bedrock) live path ──
+  {
+    const legacy = (canBatch: boolean, mode: "auto" | "live" | "batch", lines: number, bulk: boolean) => {
+      let useBatch = canBatch && (mode === "batch" || (mode === "auto" && lines > CC.BATCH_THRESHOLD));
+      if (mode === "live" && (bulk || lines > CC.LIVE_MAX_LINES)) useBatch = canBatch;
+      return useBatch ? "batch" : "live";
+    };
+    let offSame = true, anthropicSame = true, bedrockOn = true;
+    for (const canBatch of [true, false]) for (const mode of ["auto", "live", "batch"] as const) for (const lines of [1, 60, 61, 200, 201, 2000]) for (const bulk of [false, true]) {
+      const off = CC.categoriseRoute({ canBatch, mode, lines, bulk, continuation: false });
+      const on = CC.categoriseRoute({ canBatch, mode, lines, bulk, continuation: true });
+      if (off.route !== legacy(canBatch, mode, lines, bulk)) offSame = false;
+      if (canBatch && (on.route !== off.route || on.fallback !== off.fallback)) anthropicSame = false;
+      if (!canBatch && on.route !== "continuation") bedrockOn = false;
+    }
+    check("F2 route: flag OFF reproduces the old batch/live decision for every mode, size and bulk", offSame);
+    check("F2 route: an Anthropic tenant (can batch) routes identically with the flag ON", anthropicSame);
+    check("F2 route: a Bedrock tenant goes to the continuation with the flag ON, whatever the mode", bedrockOn);
+  }
+
+  // ── A 2,000-line import finishes across continuations, every line categorised exactly once ──
+  {
+    seed("s2000", 2000);
+    const h = harness();
+    const start = await CC.startCategorisation(h.deps, { statementId: "s2000" });
+    check("F2 2,000 lines: the upload request categorises only the bounded first slice (12 chunks = 480)",
+      start.categorised === CC.INLINE_MAX_CHUNKS * CC.CHUNK_LINES && start.background === 2000 - 480 && !!start.jobId);
+    check("F2 2,000 lines: the statement reads 'categorising' (the SPA's 'Sorting X of N' progress) with 480 done",
+      one<{ status: string }>(`SELECT status FROM statements WHERE id = 's2000'`).status === "categorising" && statusCount("s2000", "extracted") === 480);
+    check("F2 2,000 lines: hop 1 is scheduled on an alarm, the payload carries only ids + hop",
+      h.queue.length === 1 && h.queue[0]!.payload.hop === 1 && h.queue[0]!.payload.jobId === start.jobId && Object.keys(h.queue[0]!.payload).sort().join() === "hop,jobId,userId");
+    const outcomes = await h.drain();
+    const hops = Math.ceil((2000 - 480) / (CC.HOP_MAX_CHUNKS * CC.CHUNK_LINES));
+    check(`F2 2,000 lines: the chain ends after ${hops} hops (${outcomes.join(",")})`, outcomes.length === hops && outcomes[outcomes.length - 1] === "done" && outcomes.slice(0, -1).every((x) => x === "scheduled"));
+    check("F2 2,000 lines: every line categorised, none left needs_review", statusCount("s2000", "extracted") === 2000 && statusCount("s2000", "needs_review") === 0);
+    check("F2 2,000 lines: every line was sent to the model exactly once", h.sent.size === 2000 && [...h.sent.values()].every((n) => n === 1));
+    const job = one<{ status: string; chunk_map: string }>(`SELECT status, chunk_map FROM batch_jobs WHERE id = ?`, start.jobId);
+    check("F2 2,000 lines: the job is 'applied' with the chain's total, the statement back to 'imported'",
+      job.status === "applied" && JSON.parse(job.chunk_map).categorised === 2000 && one<{ status: string }>(`SELECT status FROM statements WHERE id = 's2000'`).status === "imported");
+    check("F2 2,000 lines: the post-categorisation pipeline runs once, and the user is told it finished",
+      h.finalised === 1 && /Finished categorising 2,000 transactions/.test(h.notices[h.notices.length - 1] ?? ""));
+    check("F2 2,000 lines: the Anthropic batch poller never sees a 'continuing' job (it reads 'submitted' only)",
+      one<{ n: number }>(`SELECT COUNT(*) AS n FROM batch_jobs WHERE status = 'submitted'`).n === 0);
+  }
+
+  // ── A duplicate continuation is a no-op; so is a stale one ──
+  {
+    seed("sdup", 800);
+    const h = harness();
+    const start = await CC.startCategorisation(h.deps, { statementId: "sdup" });
+    const hop1 = h.queue.shift()!.payload;
+    const first = await CC.runHop(h.deps, hop1);
+    const callsAfterFirst = h.calls;
+    const dup = await CC.runHop(h.deps, { ...hop1 });
+    check("F2 duplicate: the same hop delivered twice runs once (second is a no-op, no model call, nothing scheduled)",
+      first === "scheduled" && dup === "noop" && h.calls === callsAfterFirst && h.queue.length === 1);
+    const stale = await CC.runHop(h.deps, { userId: U, jobId: start.jobId!, hop: 5 });
+    check("F2 duplicate: a hop from the future (not the next one) is a no-op", stale === "noop" && h.calls === callsAfterFirst);
+    await h.drain();
+    const late = await CC.runHop(h.deps, hop1);
+    check("F2 duplicate: a hop replayed after the job finished is a no-op, every line still sent once",
+      late === "noop" && statusCount("sdup", "extracted") === 800 && [...h.sent.values()].every((n) => n === 1));
+    const again = await CC.startCategorisation(h.deps, { statementId: "sdup" });
+    check("F2 duplicate: re-starting a finished statement finds nothing to do (no job, no model call)", again.jobId === null && again.categorised === 0 && again.background === 0);
+  }
+
+  // ── A hop that dies mid-way (model error / eviction) re-runs from its cursor without re-sending done lines ──
+  {
+    seed("sdie", 900);
+    const h = harness({ throwOnCall: 13 + 3 }); // inline uses calls 1-12; hop 1's 2nd round (call 16) throws
+    await CC.startCategorisation(h.deps, { statementId: "sdie" });
+    const outcomes = await h.drain();
+    check("F2 retry: a failed hop is retried (same hop), and the chain still finishes", outcomes[0] === "retry" && outcomes[outcomes.length - 1] === "done");
+    check("F2 retry: every line categorised once — lines written before the error are not sent again",
+      statusCount("sdie", "extracted") === 900 && [...h.sent.values()].every((n) => n === 1) && h.sent.size === 900);
+    check("F2 retry: the retry waits (RETRY_DELAY_SECONDS) and counts its attempt", h.audits.includes("categorise_continuation_retry"));
+  }
+
+  // ── A budget stop mid-way leaves the rest uncategorised and tells the user ──
+  {
+    seed("sbud", 2000);
+    // Inline: 4 rounds (4 budget checks). Hop 1: 2 rounds. Hop 2: the first check refuses.
+    const h = harness({ budgetCalls: 6 });
+    await CC.startCategorisation(h.deps, { statementId: "sbud" });
+    const outcomes = await h.drain();
+    const done = statusCount("sbud", "extracted");
+    check("F2 budget: the chain stops on the refusal and schedules nothing more", outcomes.join(",") === "scheduled,stopped_budget" && h.queue.length === 0);
+    check("F2 budget: what was done stays done, the rest stays needs_review", done === 480 + 240 && statusCount("sbud", "needs_review") === 2000 - done);
+    const job = one<{ status: string }>(`SELECT status FROM batch_jobs WHERE statement_id = 'sbud'`);
+    check("F2 budget: the job is 'stopped' and the statement is released to 'imported' (not stuck 'categorising')",
+      job.status === "stopped" && one<{ status: string }>(`SELECT status FROM statements WHERE id = 'sbud'`).status === "imported");
+    const msg = h.notices[h.notices.length - 1] ?? "";
+    check("F2 budget: the user is told how many were done, why it stopped, and that the rest wait in Review",
+      /Categorised 720 transactions/.test(msg) && /today's AI allowance/.test(msg) && /1,280 transactions are imported and waiting in Review/.test(msg));
+    check("F2 budget: the stop is audited and the lines already categorised still get the post-pipeline",
+      h.audits.includes("categorise_stopped_budget") && h.finalised === 1);
+    // A refusal in the upload request itself: no job opened, the user is told.
+    seed("sbud0", 100);
+    const h0 = harness({ budgetCalls: 0 });
+    const s0 = await CC.startCategorisation(h0.deps, { statementId: "sbud0" });
+    check("F2 budget: refused before the first round ⇒ nothing categorised, no job, notified",
+      s0.budgetStopped && s0.categorised === 0 && s0.jobId === null && h0.calls === 0 && h0.notices.length === 1 && statusCount("sbud0", "needs_review") === 100);
+  }
+
+  // ── Lines the model leaves out don't loop the chain forever ──
+  {
+    seed("sdrop", 700);
+    const h = harness({ drop: (id) => id.endsWith("7") });
+    await CC.startCategorisation(h.deps, { statementId: "sdrop" });
+    const outcomes = await h.drain(50);
+    check("F2 dropped lines: the chain still terminates, the model's omissions stay needs_review for the user",
+      outcomes[outcomes.length - 1] === "done" && statusCount("sdrop", "needs_review") === 70 && [...h.sent.values()].every((n) => n === 1));
+    check("F2 dropped lines: the finish notice says how many are left in Review", /70 transactions are left for you in Review/.test(h.notices[h.notices.length - 1] ?? ""));
+  }
+
+  // ── Bulk (recategorise / multi-statement import): no model work in the request, straight to the chain ──
+  {
+    seed("sbulk", 300);
+    const h = harness();
+    const s = await CC.startCategorisation(h.deps, { statementId: "sbulk", inlineChunks: 0 });
+    check("F2 bulk: inlineChunks 0 ⇒ no model call in the request, a job + hop 1 scheduled", h.calls === 0 && s.background === 300 && h.queue.length === 1);
+    const second = await CC.startCategorisation(h.deps, { statementId: "sbulk", inlineChunks: 0 });
+    check("F2 bulk: a second start while the chain runs does not fork it", second.jobId === null && h.queue.length === 1);
+    await h.drain();
+    check("F2 bulk: the chain categorises the whole statement", statusCount("sbulk", "extracted") === 300);
+  }
+
+  // ── Stopping a job (flag turned off / consent withdrawn mid-chain) ──
+  {
+    seed("sstop", 600);
+    const h = harness();
+    const s = await CC.startCategorisation(h.deps, { statementId: "sstop" });
+    const stopped = await CC.stopJob(h.deps, s.jobId!, "flag_off", null);
+    const after = await h.drain();
+    check("F2 stop: a stopped job releases the statement and its queued hop becomes a no-op",
+      stopped && after.join() === "noop" && one<{ status: string }>(`SELECT status FROM statements WHERE id = 'sstop'`).status === "imported" && statusCount("sstop", "needs_review") === 120);
+  }
+
+  // ── A chain whose alarm was lost is re-delivered by the cron's stale sweep ──
+  {
+    seed("slost", 700);
+    const h = harness();
+    const s = await CC.startCategorisation(h.deps, { statementId: "slost" });
+    h.queue.length = 0; // the alarm never fires
+    const fresh = await CC.staleJobs(db, Date.now());
+    const later = await CC.staleJobs(db, Date.now() + CC.CONTINUATION_STALE_MS + 1000);
+    const mine = later.filter((p) => p.jobId === s.jobId);
+    check("F2 heal: a quiet job is not stale until CONTINUATION_STALE_MS, then its NEXT hop is offered",
+      !fresh.some((p) => p.jobId === s.jobId) && mine.length === 1 && mine[0]!.hop === 1 && mine[0]!.userId === U);
+    const outcome = await CC.runHop(h.deps, mine[0]!);
+    await h.drain();
+    check("F2 heal: the re-delivered hop resumes the chain to the end, every line once",
+      outcome === "done" && statusCount("slost", "extracted") === 700 && [...h.sent.values()].every((n) => n === 1));
+    check("F2 heal: finished jobs are never offered again", !(await CC.staleJobs(db, Date.now() + CC.CONTINUATION_STALE_MS * 10)).some((p) => p.jobId === s.jobId));
+  }
+
+  // ── Wiring in the DO (source checks: the DO itself needs the Workers runtime) ──
+  {
+    const agentF2 = fs.readFileSync(path.join(process.cwd(), "src/agent.ts"), "utf8");
+    check("F2 wiring: categoriseStatement routes through categoriseRoute with the import_continuation flag",
+      /categoriseRoute\(\{\s*canBatch, mode, lines: items\.length, bulk: !!opts\?\.bulk, continuation: featureOn\(this\.env, "import_continuation"\),?\s*\}\)/.test(agentF2));
+    check("F2 wiring: the Anthropic batch submit is unchanged (still gated on the budget, still submitBatchCategorisation)",
+      /if \(useBatch\) \{[\s\S]{0,900}?withinBudget\(userId, null\)[\s\S]{0,400}?submitBatchCategorisation\(userId, statementId, items, system, llm\)/.test(agentF2));
+    check("F2 wiring: the alarm hop checks the flag (kill switch) and goes through aiCall before any model call",
+      /async categoriseContinue\(payload: HopPayload\)[\s\S]{0,1500}?featureOn\(this\.env, "import_continuation"\)[\s\S]{0,800}?aiCall<void>\(this\.aiDeps, \{[\s\S]{0,300}?purpose: "categorise_statement"/.test(agentF2));
+    check("F2 wiring: recategorise skips a statement whose continuation is still running",
+      /b\.status IN \('submitted', 'continuing'\)/.test(agentF2));
+    check("F2 wiring: no raw getLLM in the continuation module", !/getLLM\(/.test(fs.readFileSync(path.join(process.cwd(), "src/lib/categorise-continuation.ts"), "utf8")));
+    const indexF2 = fs.readFileSync(path.join(process.cwd(), "src/index.ts"), "utf8");
+    check("F2 wiring: the Anthropic poller still only drains 'submitted' jobs", /FROM batch_jobs WHERE status = 'submitted'/.test(indexF2));
+  }
+}
+
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);
 process.exit(fail === 0 ? 0 : 1);

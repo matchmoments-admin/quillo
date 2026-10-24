@@ -40,6 +40,11 @@ every read and write goes to the **single shared D1** binding `this.env.DB` (`ta
    on the run row; (c) the SDK can run due callbacks inside `blockConcurrencyWhile` (30 s) on a cold
    start, so a callback must stay short (8 provider pages per hop).
 
+   **Amendment (review F2, `import_continuation`):** statement categorisation uses the same pattern.
+   `categoriseContinue` triggers carry only `{ userId, jobId, hop }`; the cursor and progress live in D1
+   (`batch_jobs` status `continuing`, `statements.status = 'categorising'`). A hop is 6 model chunks,
+   inside the 30 s limit above.
+
 ## Consequences / future path
 
 - If D1 write throughput ever bites, the existing DO boundary makes a **shard-by-tenant** migration

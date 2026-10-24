@@ -20,6 +20,7 @@ import { billerNormalize, detectRecurrence, classifyBiller, paymentsPerYear, rec
 import { findPhisProduct } from "./lib/phis-seed";
 import { matchEnergyOffer, getOfferById, buildReferralUrl, opportunityTakesEnergyCta, type PartnerDB } from "./lib/partners";
 import { deriveWfhHours, generateWfhDiary, type WfhLeaveRange } from "./lib/work-use";
+import { publicErrorMessage } from "./lib/security-headers";
 import { diaryHoursForFy, setPattern as setWfhDiaryPattern, saveWeek as saveWfhDiaryWeek, deleteWeek as deleteWfhDiaryWeek, setPreDiary as setWfhPreDiary, DiaryError, type DiaryWeek, type SaveWeekInput, type SetPreDiaryInput, type PreDiary } from "./lib/wfh-diary";
 import { applyUserRules, RULE_CREDIT_BUCKETS } from "./lib/rules";
 import { sha256hex, sha256hexBytes } from "./lib/base64";
@@ -1012,7 +1013,8 @@ export class TaxAgent extends Agent<Env> {
         skipped += r.skipped;
         statements++;
       } catch (e) {
-        errors.push({ statementId: sid, error: (e as Error).message });
+        // Returned in a 200 body, so the /api error scrub never sees it: scrub here (no D1/SQL text, no ARNs).
+        errors.push({ statementId: sid, error: publicErrorMessage((e as Error).message) });
       }
     }
     await this.audit(userId, "statement_imported_bulk", JSON.stringify({ statements, imported, skipped, errors: errors.length }));

@@ -10,7 +10,7 @@
 //
 // Strings are written as inline strings (`t="inlineStr"`) to avoid a sharedStrings table. Callers
 // MUST neutralise spreadsheet formula injection on attacker-influenceable text BEFORE handing it
-// here (see csvCell's leading =,+,-,@ guard) — this writer does not interpret cell content, but it
+// here (see csvCell's leading = + - @ TAB CR guard, src/lib/csv-cell.ts) — this writer does not interpret cell content, but it
 // also does not add the guard.
 
 import { zipSync, strToU8 } from "fflate";

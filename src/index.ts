@@ -2,7 +2,7 @@ import type { Env, TaxAgentRpc } from "./env";
 import { verifyIngest } from "./ingest/auth";
 import { parseEmail } from "./lib/email";
 import { refuseRetiredMailbox } from "./lib/mailbox-retired";
-import { declaredTooLarge, fileTooLarge, tooLargeMessage, UPLOAD_LIMITS } from "./lib/upload-limits";
+import { declaredTooLarge, fileTooLarge, tooLargeMessage, UPLOAD_LIMITS, readBodyCapped, readTextCapped, PUBLIC_BODY_LIMITS } from "./lib/upload-limits";
 import { userIdFromLocalpart } from "./lib/db";
 import { requireClerk } from "./auth/clerk";
 import { handleApi } from "./api";
@@ -65,12 +65,15 @@ const handler = {
     // CSP violation sink (public — browsers POST reports with no auth header, so this must sit
     // before the /api Clerk gate). We only log: a violation here means either a misconfigured
     // allowlist (tighten the policy) or an unexpected outbound call from a bundled dep (investigate).
-    // Bounded body read so a spammed report can't be a memory amplifier. Logs ONLY the directive +
+    // Bounded body read (streamed, 8 KB; a bigger report is refused 413 unread) so a spammed report can't
+    // be a memory amplifier. Logs ONLY the directive +
     // the blocked ORIGIN (or keyword) — never the raw report, whose document-uri / blocked-uri /
     // script-sample carry full URLs, query strings and page content (#634 log hygiene).
     if (url.pathname === "/csp-report" && req.method === "POST") {
       try {
-        const raw = (await req.text()).slice(0, 8192);
+        const r = await readTextCapped(req, PUBLIC_BODY_LIMITS.cspReport);
+        if (!r.ok) return r.response;
+        const raw = r.text;
         for (const line of summariseCspReport(raw)) console.warn(`csp-report: ${line}`);
       } catch {
         /* ignore malformed reports */
@@ -103,10 +106,12 @@ const handler = {
     // (a) Web upload + (c) iOS Shortcut + (d) Android app all POST signed bytes here.
     // Tenant identity is DERIVED from the verifying key — never a client header (B1).
     if (url.pathname === "/ingest" && req.method === "POST") {
-      // Size ceiling BEFORE buffering (#713): a raw image/PDF/text body, so no multipart allowance.
+      // Size ceiling (#713, review F8): a raw image/PDF/text body, so no multipart allowance. A declared
+      // Content-Length over it is refused unread; otherwise the body is streamed and cut off at the ceiling.
       if (declaredTooLarge(req, "receipt", false)) return new Response(tooLargeMessage("receipt"), { status: 413 });
-      const body = await req.arrayBuffer(); // read ONCE (fixes §3 clone/re-read bug)
-      if (fileTooLarge(body.byteLength, "receipt")) return new Response(tooLargeMessage("receipt"), { status: 413 });
+      const capped = await readBodyCapped(req, UPLOAD_LIMITS.receipt, () => new Response(tooLargeMessage("receipt"), { status: 413 }));
+      if (!capped.ok) return capped.response;
+      const body = capped.bytes; // read ONCE (fixes §3 clone/re-read bug)
       const verified = await verifyIngest(env, req, body, Date.now());
       if (!verified) return new Response("unauthorized", { status: 401 });
 
@@ -133,7 +138,9 @@ const handler = {
 
     // Correction endpoint (web UI / chat) — same signed-request auth.
     if (url.pathname === "/correct" && req.method === "POST") {
-      const body = await req.arrayBuffer();
+      const capped = await readBodyCapped(req, PUBLIC_BODY_LIMITS.correct);
+      if (!capped.ok) return capped.response;
+      const body = capped.bytes;
       const verified = await verifyIngest(env, req, body, Date.now());
       if (!verified) return new Response("unauthorized", { status: 401 });
 
@@ -150,7 +157,9 @@ const handler = {
     // server-to-server, verified by the webhook signing secret. Credits the user's wallet on a paid
     // checkout. Inert (503) until STRIPE_WEBHOOK_SECRET is set; idempotent on the session id.
     if (url.pathname === "/api/stripe/webhook" && req.method === "POST") {
-      const payload = await req.text();
+      const capped = await readTextCapped(req, PUBLIC_BODY_LIMITS.stripeWebhook); // bounded before the signature check
+      if (!capped.ok) return capped.response;
+      const payload = capped.text;
       const event = await verifyStripeWebhook(env, payload, req.headers.get("stripe-signature"));
       if (!event) return new Response(env.STRIPE_WEBHOOK_SECRET ? "bad signature" : "billing not configured", { status: env.STRIPE_WEBHOOK_SECRET ? 400 : 503 });
       if (event.type === "checkout.session.completed") {
@@ -166,7 +175,9 @@ const handler = {
 
     // Record explicit APP-8 cross-border consent (fix H7).
     if (url.pathname === "/consent" && req.method === "POST") {
-      const body = await req.arrayBuffer();
+      const capped = await readBodyCapped(req, PUBLIC_BODY_LIMITS.consent);
+      if (!capped.ok) return capped.response;
+      const body = capped.bytes;
       const verified = await verifyIngest(env, req, body, Date.now());
       if (!verified) return new Response("unauthorized", { status: 401 });
 

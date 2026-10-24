@@ -8,11 +8,14 @@
 // approved, V's QuickBooks tokens (or bank consent) would be stored under A's tenant (account-linking CSRF).
 //
 // THE FIX. When the connect starts, the Worker mints a random nonce, stores only its SHA-256 with the state,
-// and sets the nonce in a short-lived cookie scoped to the one callback path:
+// and sets the nonce in a short-lived `__Host-` cookie:
+//   __Host- prefix      the browser only accepts it when Secure, Path=/ and with NO Domain, so a sibling
+//                       subdomain (or an http:// page) can't plant or overwrite the binding (cookie tossing)
 //   HttpOnly            the SPA's scripts can't read it
 //   Secure              never sent over plain HTTP (localhost counts as secure in browsers, so wrangler dev works)
 //   SameSite=Lax        sent on the provider's top-level GET redirect back to us; never on a cross-site subrequest
-//   Path=<callback>     sent only to /api/qbo/callback or /api/bank/callback, nowhere else in the app
+//   Path=/              required by __Host-. It is therefore sent with every same-site request to the app,
+//                       but only the callback (`callback` below) ever reads it, and it carries no identity
 //   Max-Age=<state TTL> gone when the state is
 // The callback requires the cookie's hash to equal the stored hash. V's browser never received A's cookie, so
 // the forwarded link is refused. The app otherwise uses Bearer tokens, so these are its only cookies, and
@@ -22,11 +25,14 @@
 
 export interface BindingCookie {
   name: string;
-  path: string;
+  /** Cookie Path: always "/" (the __Host- prefix requires it). */
+  path: "/";
+  /** The one route that reads the cookie (documentation; not a cookie attribute). */
+  callback: string;
 }
 
-export const QBO_BINDING: BindingCookie = { name: "quillo_qbo_bind", path: "/api/qbo/callback" };
-export const BANK_BINDING: BindingCookie = { name: "quillo_bank_bind", path: "/api/bank/callback" };
+export const QBO_BINDING: BindingCookie = { name: "__Host-quillo_qbo_bind", path: "/", callback: "/api/qbo/callback" };
+export const BANK_BINDING: BindingCookie = { name: "__Host-quillo_bank_bind", path: "/", callback: "/api/bank/callback" };
 
 /** What the callback says when the binding is missing or wrong (shown on the page the user lands on). */
 export const BINDING_MISMATCH = "this connection was started in a different browser, or has expired. Start it again from Quillo in this browser";

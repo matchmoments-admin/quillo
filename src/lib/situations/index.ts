@@ -32,6 +32,29 @@ export async function loadSituations(ctx: ReportContext, registry: readonly AnyS
   return out;
 }
 
+/**
+ * As loadSituations, but SETTLED: a module whose reader throws is dropped and its key returned in `failed`,
+ * so one broken module can't fail a whole deliverable (the accountant pack; the safeAll pattern its other
+ * readers use). buildReport keeps the strict loadSituations: a position must never silently lose a field.
+ */
+export async function loadSituationsSettled(
+  ctx: ReportContext,
+  registry: readonly AnySituationModule[] = SITUATIONS,
+): Promise<{ loaded: LoadedSituation[]; failed: string[] }> {
+  const enabled = registry.filter((m) => featureOn(ctx.env, m.flag));
+  const results = await Promise.allSettled(enabled.map((m) => m.load(ctx)));
+  const loaded: LoadedSituation[] = [];
+  const failed: string[] = [];
+  enabled.forEach((module, i) => {
+    const r = results[i]!;
+    if (r.status === "rejected") {
+      failed.push(String(module.key));
+      console.error(`situation module ${String(module.key)} failed to load: ${(r.reason as Error)?.message ?? String(r.reason)}`);
+    } else if (r.value != null) loaded.push({ module, result: r.value });
+  });
+  return { loaded, failed };
+}
+
 /** The Report fields the loaded modules own. A disabled or empty module contributes no key at all. */
 export function situationFields(loaded: LoadedSituation[]): Partial<Report> {
   const fields: Record<string, unknown> = {};

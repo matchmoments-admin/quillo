@@ -7,11 +7,15 @@
 //   - one GLOBAL completion marker per backfill (KV `backfill:<key>:done`): once set, a tick costs one
 //     KV read and no D1 scan;
 //   - KV-cursor paging over `profiles` (the weekly-scan pattern, #79), at most `pageSize` tenants a tick.
-// The marker is set only after a full pass in which every tenant finished. A tenant that throws or has
-// given up (attempts exhausted) leaves the pass "dirty", so the next tick starts a fresh pass and
-// retries it; tenants already done cost one KV read each on that pass.
+// The marker is set only after a full pass in which every tenant finished. A tenant that throws leaves the
+// pass "dirty", so the next tick starts a fresh pass and retries it; tenants already done cost one KV read
+// each on that pass. A tenant that has GIVEN UP (attempts exhausted) is finished for the pass: it will
+// never run again, so counting it as dirty would block the marker forever and rescan every tenant every
+// tick. It is logged (as a hashed tag, never the raw id) so it can be investigated.
 // New tenants never need these backfills (they write the fixed shapes from day one), so a tenant
 // created after the marker is set is correctly skipped.
+
+import { logTag } from "./security-headers";
 
 /** The slice of KV this module uses (Cloudflare's KVNamespace satisfies it; tests pass a Map fake). */
 export interface BackfillKv {
@@ -127,10 +131,11 @@ export async function runBackfillOnce(
   for (const t of page) {
     try {
       const outcome = await runOnceGuarded(kv, opts.tenantFlag(t.user_id), opts.maxAttempts ?? 3, () => perTenant(t.user_id));
-      if (outcome === "gave_up") failures++;
+      // Gave up = finished for this pass (it never runs again), so it doesn't make the pass dirty.
+      if (outcome === "gave_up") console.warn(`${label} backfill gave up for tenant tag=${await logTag(t.user_id)} (attempts exhausted); skipped`);
     } catch (e) {
       failures++;
-      console.error(`${label} backfill failed for ${t.user_id}: ${(e as Error).message}`);
+      console.error(`${label} backfill failed for tenant tag=${await logTag(t.user_id)}: ${(e as Error).message}`);
     }
   }
   const dirty = cursor.dirty || failures > 0;

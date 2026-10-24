@@ -139,21 +139,23 @@ console.log("security sweep #694 (#713): uploads over the size ceiling are refus
     check(`${p}: a declared 60 MB body ⇒ 413 "${kind}" message, body never parsed`,
       res.status === 413 && body.error === srv.tooLargeMessage(kind as keyof typeof srv.UPLOAD_LIMITS) && !parsed);
   }
-  // A body sent WITHOUT Content-Length is still bounded per file after the parse.
+  // A body sent WITHOUT Content-Length (streamed) is bounded by the capped read before the parse (review F8).
   {
     const big = new File([new Uint8Array(srv.UPLOAD_LIMITS.document + 1)], "scan.pdf", { type: "application/pdf" });
     const fd = new FormData();
     fd.append("file", big);
-    const req = new Request("https://app.example/api/documents/upload", { method: "POST" });
-    Object.defineProperty(req, "formData", { value: async () => fd });
+    const enc = new Response(fd);
+    const bytes = new Uint8Array(await enc.arrayBuffer());
+    const stream = new ReadableStream<Uint8Array>({ start(c) { for (let i = 0; i < bytes.length; i += 1 << 20) c.enqueue(bytes.slice(i, i + (1 << 20))); c.close(); } });
+    const req = new Request("https://app.example/api/documents/upload", { method: "POST", body: stream, headers: { "content-type": enc.headers.get("content-type") ?? "" }, duplex: "half" } as RequestInit);
     const res = await handleApi(req, env713, { userId: "u713", email: null } as never, { classifyAndRoute: async () => { throw new Error("must not reach the model"); } } as never)
       .catch((e) => new Response(String(e), { status: 599 }));
-    check("/api/documents/upload: no Content-Length but a 25 MB + 1 part ⇒ 413, never reaches the DO", res.status === 413);
+    check("/api/documents/upload: no Content-Length but a 25 MB + 1 part ⇒ 413, never reaches the DO", res.status === 413 && !req.headers.has("content-length"));
   }
 
   const indexSrc713 = fs.readFileSync(path.join(process.cwd(), "src/index.ts"), "utf8");
-  check("/ingest: Content-Length is checked before the body is buffered",
-    /declaredTooLarge\(req, "receipt", false\)[\s\S]{0,200}await req\.arrayBuffer\(\)/.test(indexSrc713));
+  check("/ingest: Content-Length is checked, then the body is read capped at the receipt ceiling",
+    /declaredTooLarge\(req, "receipt", false\)[\s\S]{0,300}readBodyCapped\(req, UPLOAD_LIMITS\.receipt,/.test(indexSrc713));
   // src/index.ts can't load under node (cloudflare: imports), so the email handler is checked by source.
   check("email: an over-size message is bounced (setReject) BEFORE parseEmail reads the raw MIME",
     /fileTooLarge\(message\.rawSize, "emailRaw"\)\) \{\s*message\.setReject\(tooLargeMessage\("emailRaw"\)\);\s*return;\s*\}\s*const parsed = await parseEmail\(message\)/.test(indexSrc713));
@@ -246,13 +248,13 @@ console.log("security sweep #694 (#712): QuickBooks + bank callbacks only honour
     (await ob.bindingMatches(a.nonce, a.hash)) && !(await ob.bindingMatches(b.nonce, a.hash)) && !(await ob.bindingMatches(null, a.hash))
       && !(await ob.bindingMatches(a.nonce, null)) && !(await ob.bindingMatches("x;y", a.hash)));
   const setC = ob.bindingSetCookie(ob.QBO_BINDING, a.nonce, 600);
-  check("cookie: HttpOnly, Secure, SameSite=Lax, scoped to the callback path, TTL of the state",
-    setC === `quillo_qbo_bind=${a.nonce}; Path=/api/qbo/callback; Max-Age=600; HttpOnly; Secure; SameSite=Lax`
-      && ob.bindingSetCookie(ob.BANK_BINDING, a.nonce, 99999).includes("Path=/api/bank/callback; Max-Age=3600;"));
-  check("cookie: clear is Max-Age=0 on the same path", ob.bindingClearCookie(ob.BANK_BINDING) === "quillo_bank_bind=; Path=/api/bank/callback; Max-Age=0; HttpOnly; Secure; SameSite=Lax");
-  const cookieReq = new Request("https://app.example/x", { headers: { cookie: `other=1; quillo_qbo_bind=${a.nonce}; z=2` } });
+  check("cookie: __Host- prefixed, HttpOnly, Secure, SameSite=Lax, Path=/ (no Domain), TTL of the state",
+    setC === `__Host-quillo_qbo_bind=${a.nonce}; Path=/; Max-Age=600; HttpOnly; Secure; SameSite=Lax`
+      && ob.bindingSetCookie(ob.BANK_BINDING, a.nonce, 99999).startsWith("__Host-quillo_bank_bind=") && ob.bindingSetCookie(ob.BANK_BINDING, a.nonce, 99999).includes("Path=/; Max-Age=3600;"));
+  check("cookie: clear is Max-Age=0 on the same path", ob.bindingClearCookie(ob.BANK_BINDING) === "__Host-quillo_bank_bind=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax");
+  const cookieReq = new Request("https://app.example/x", { headers: { cookie: `other=1; __Host-quillo_qbo_bind=${a.nonce}; z=2` } });
   check("readCookie: finds the named cookie among others; absent ⇒ null",
-    ob.readCookie(cookieReq, "quillo_qbo_bind") === a.nonce && ob.readCookie(cookieReq, "quillo_bank_bind") === null && ob.readCookie(new Request("https://app.example/"), "x") === null);
+    ob.readCookie(cookieReq, "__Host-quillo_qbo_bind") === a.nonce && ob.readCookie(cookieReq, "__Host-quillo_bank_bind") === null && ob.readCookie(new Request("https://app.example/"), "x") === null);
 
   // QuickBooks: the attack (A's authorize link completed in V's browser) is refused BEFORE the code exchange.
   const realFetch = globalThis.fetch;
@@ -298,7 +300,7 @@ console.log("security sweep #694 (#712): QuickBooks + bank callbacks only honour
   const { handleApi } = await import("../src/api");
   const qres = await handleApi(new Request("https://app.example/api/qbo/connect"), kenv, { userId: "tenant-A", email: null } as never, {} as never);
   const qCookie = qres.headers.get("set-cookie") ?? "";
-  const qNonce = /^quillo_qbo_bind=([^;]+);/.exec(qCookie)?.[1] ?? "";
+  const qNonce = /^__Host-quillo_qbo_bind=([^;]+);/.exec(qCookie)?.[1] ?? "";
   const qState = new URL(((await qres.json()) as { url: string }).url).searchParams.get("state");
   const qStored = ob.decodeBoundState(kv.get(`qbostate:${qState}`) ?? null);
   check("GET /api/qbo/connect: sets the HttpOnly binding cookie whose hash is stored with the state",
@@ -307,9 +309,9 @@ console.log("security sweep #694 (#712): QuickBooks + bank callbacks only honour
   const bstub = { bankConnectUrl: async (_u: string, _a: string, _o: string, h: string) => { seenHash = h; return { url: "https://consent.example/x", stateTtlSeconds: 1800 }; } };
   const bres = await handleApi(new Request("https://app.example/api/bank/connect"), kenv, { userId: "tenant-A", email: null } as never, bstub as never);
   const bCookie = bres.headers.get("set-cookie") ?? "";
-  const bNonce = /^quillo_bank_bind=([^;]+);/.exec(bCookie)?.[1] ?? "";
+  const bNonce = /^__Host-quillo_bank_bind=([^;]+);/.exec(bCookie)?.[1] ?? "";
   check("GET /api/bank/connect: cookie TTL follows the provider's state TTL; its hash is what the DO stored",
-    bres.status === 200 && bCookie.includes("Path=/api/bank/callback; Max-Age=1800;") && (await ob.bindingMatches(bNonce, seenHash))
+    bres.status === 200 && bCookie.includes("Path=/; Max-Age=1800;") && (await ob.bindingMatches(bNonce, seenHash))
       && JSON.stringify(await bres.json()) === JSON.stringify({ url: "https://consent.example/x" }));
 
   const idx712 = fs.readFileSync(path.join(process.cwd(), "src/index.ts"), "utf8");
@@ -8195,12 +8197,15 @@ console.log("entity role duplicate guard (#699)");
   const d4 = await runBackfillOnce(d.env, "t", async () => {}, { tenantFlag: flag, pageSize: 2 });
   check("... the fresh pass retries tenant a and the marker is set at its end", d3.state === "paged" && d4.state === "completed" && d.kv.get(flag("a")) === "done");
 
-  // A tenant whose attempts are exhausted never lets the marker be set.
+  // A tenant whose attempts are exhausted is finished for the pass (review: Backfill); see the review block at the end.
   const x = mk(["a"]);
   x.kv.set(flag("a"), "attempt:3");
   let xran = false;
+  const origWarn = console.warn;
+  console.warn = () => {};
   const xr = await runBackfillOnce(x.env, "t", async () => { xran = true; }, { tenantFlag: flag });
-  check("gave-up tenant: not re-run, and the global marker stays unset", !xran && xr.state === "retry" && !x.kv.has(backfillDoneKey("t")));
+  console.warn = origWarn;
+  check("gave-up tenant: not re-run, and the pass still completes (marker set)", !xran && xr.state === "completed" && x.kv.get(backfillDoneKey("t")) === "done");
 
   // The gate (AI ceiling) skips before any D1 scan.
   const y = mk(["a"]);
@@ -8586,6 +8591,152 @@ console.log("first-run gate cache + once-per-session (review F7)");
     /let firstRunRedirected = false;/.test(gate) && /if \(firstRunRedirected \|\|/.test(gate) && gate.indexOf("firstRunRedirected = true") < gate.indexOf("navigate(to, { replace: true })"));
   check("FirstRunGate: merges ui_state into the situation cache and re-reads it once the PATCH lands",
     /qc\.setQueryData<Situation>\(\["situation"\]/.test(gate) && /withSetupStarted\(old\.profile\.ui_state\)/.test(gate) && /invalidateQueries\(\{ queryKey: \["situation"\] \}\)/.test(gate));
+}
+
+// ── review hardening: capped body reads, one csvCell, backfill gave-up, correct 4xx, scrubs, cookies ──
+console.log("review hardening (F8, CSV, backfill, 500→400, scrub, cookies, pack)");
+{
+  const UL = await import("../src/lib/upload-limits");
+  const streamReq = (total: number, chunk = 4096, headers: Record<string, string> = {}) => {
+    let pulled = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(c) { if (pulled >= total) { c.close(); return; } const n = Math.min(chunk, total - pulled); pulled += n; c.enqueue(new Uint8Array(n).fill(65)); },
+    });
+    const req = new Request("https://app.example/x", { method: "POST", body, headers, duplex: "half" } as RequestInit);
+    return { req, pulled: () => pulled };
+  };
+  // readBodyCapped: streamed, no Content-Length.
+  const under = streamReq(10_000);
+  const ru = await UL.readBodyCapped(under.req, 10_000);
+  check("readBodyCapped: a streamed body at the limit is read whole", ru.ok && ru.bytes.byteLength === 10_000);
+  const over = streamReq(1_000_000);
+  const ro = await UL.readBodyCapped(over.req, 8 * 1024);
+  check("readBodyCapped: no Content-Length, past the limit ⇒ 413 and the stream is cut off near the limit (not read to the end)",
+    !ro.ok && ro.response.status === 413 && over.pulled() < 64 * 1024);
+  const declared = streamReq(1_000_000, 4096, { "content-length": "1000000" });
+  const rd = await UL.readBodyCapped(declared.req, 8 * 1024);
+  check("readBodyCapped: a declared Content-Length over the limit ⇒ 413 before reading the body", !rd.ok && rd.response.status === 413 && declared.pulled() <= 4096);
+  const lying = streamReq(100_000, 4096, { "content-length": "10" });
+  const rl = await UL.readBodyCapped(lying.req, 8 * 1024);
+  check("readBodyCapped: an under-declared Content-Length doesn't bypass the streamed cap", !rl.ok && rl.response.status === 413);
+  const rn = await UL.readBodyCapped(new Request("https://app.example/x", { method: "POST" }), 10);
+  check("readBodyCapped: no body ⇒ an empty buffer", rn.ok && rn.bytes.byteLength === 0);
+  const rt = await UL.readTextCapped(new Request("https://app.example/x", { method: "POST", body: '{"a":1}' }), 100);
+  check("readTextCapped: decodes a small body", rt.ok && rt.text === '{"a":1}');
+  const rc = await UL.readBodyCapped(streamReq(20_000).req, 100, () => new Response("custom", { status: 413 }));
+  check("readBodyCapped: the caller's refusal is used", !rc.ok && (await rc.response.text()) === "custom");
+  // readFormCapped: parses a normal form; refuses an oversized streamed one with the kind's JSON 413.
+  const fdOk = new FormData();
+  fdOk.append("file", new File([new Uint8Array(1234)], "r.pdf", { type: "application/pdf" }));
+  fdOk.append("bucket", "work");
+  const encOk = new Response(fdOk);
+  const fOk = await UL.readFormCapped(new Request("https://app.example/api/upload", { method: "POST", body: await encOk.arrayBuffer(), headers: { "content-type": encOk.headers.get("content-type") ?? "" } }), "receipt");
+  check("readFormCapped: a normal multipart form parses (file + text field)",
+    fOk.ok && (fOk.form.get("file") as unknown as Blob).size === 1234 && fOk.form.get("bucket") === "work");
+  const bigForm = streamReq(UL.UPLOAD_LIMITS.capital + UL.MULTIPART_OVERHEAD + 1, 1 << 20, { "content-type": "multipart/form-data; boundary=x" });
+  const fBig = await UL.readFormCapped(bigForm.req, "capital");
+  check("readFormCapped: no Content-Length past the kind's ceiling + overhead ⇒ the kind's JSON 413",
+    !fBig.ok && fBig.response.status === 413 && ((await fBig.response.json()) as { error?: string }).error === UL.tooLargeMessage("capital"));
+  check("public caps: csp 8 KB, Stripe webhook 64 KB, /correct and /consent small",
+    UL.PUBLIC_BODY_LIMITS.cspReport === 8192 && UL.PUBLIC_BODY_LIMITS.stripeWebhook === 65536 && UL.PUBLIC_BODY_LIMITS.correct <= 64 * 1024 && UL.PUBLIC_BODY_LIMITS.consent <= 64 * 1024);
+  // Wiring (index.ts can't load under node): every public route reads through the capped helpers.
+  const idx = fs.readFileSync(path.join(process.cwd(), "src/index.ts"), "utf8");
+  const route = (p: string) => idx.slice(idx.indexOf(`url.pathname === "${p}"`), idx.indexOf(`url.pathname === "${p}"`) + 900);
+  check("index.ts: no whole-body req.text()/arrayBuffer()/formData()/json() reads remain", !/await req\.(text|arrayBuffer|formData|json)\(\)/.test(idx));
+  check("/csp-report reads ≤ 8 KB (readTextCapped)", /readTextCapped\(req, PUBLIC_BODY_LIMITS\.cspReport\)/.test(route("/csp-report")));
+  check("/correct and /consent read capped", /readBodyCapped\(req, PUBLIC_BODY_LIMITS\.correct\)/.test(route("/correct")) && /readBodyCapped\(req, PUBLIC_BODY_LIMITS\.consent\)/.test(route("/consent")));
+  check("Stripe webhook reads ≤ 64 KB before the signature check",
+    /readTextCapped\(req, PUBLIC_BODY_LIMITS\.stripeWebhook\)[\s\S]{0,200}verifyStripeWebhook/.test(route("/api/stripe/webhook")));
+  const wl = fs.readFileSync(path.join(process.cwd(), "src/marketing/waitlist.ts"), "utf8");
+  check("/waitlist reads capped too", /readTextCapped\(req, MAX_BODY_BYTES,/.test(wl) && !/await req\.text\(\)/.test(wl));
+  const apiSrc = fs.readFileSync(path.join(process.cwd(), "src/api.ts"), "utf8");
+  check("api.ts: every multipart upload is cap-read before the parse (no req.formData() left)",
+    !/req\.formData\(\)/.test(apiSrc) && (apiSrc.match(/readFormCapped\(req, "(receiptTotal|receipt|capital|statement|document)"\)/g) ?? []).length === 5);
+  const ulSrc = fs.readFileSync(path.join(process.cwd(), "src/lib/upload-limits.ts"), "utf8");
+  check("upload-limits: the misleading 'still bounded per file' comment is gone", !/still bounded per file/.test(ulSrc));
+
+  // CSV: one shared cell writer with the full OWASP set, for both exports.
+  const CC = await import("../src/lib/csv-cell");
+  const AS = await import("../src/lib/accountant-schedule");
+  check("csvCell: = + - @ TAB CR are all neutralised",
+    ["=1", "+1", "-1", "@x", "\tx", "\rx"].every((v) => CC.csvCell(v).replace(/^"/, "").startsWith("'")));
+  check("csvCell: quotes on \" , CR LF; a CR-led cell is prefixed AND quoted",
+    CC.csvCell("a\rb") === '"a\rb"' && CC.csvCell("\rx") === `"'\rx"` && CC.csvCell("a,b") === '"a,b"' && CC.csvCell('a"b') === '"a""b"' && CC.csvCell("a\nb") === '"a\nb"');
+  check("csvCell: numbers / null / plain text untouched", CC.csvCell(-12.5) === "-12.5" && CC.csvCell(null) === "" && CC.csvCell(undefined) === "" && CC.csvCell("rent") === "rent");
+  check("accountant pack re-exports the SAME csvCell / neutraliseFormula", AS.csvCell === CC.csvCell && AS.neutraliseFormula === CC.neutraliseFormula);
+  check("neutraliseFormula (xlsx path) covers TAB and CR too", AS.neutraliseFormula("\tx") === "'\tx" && AS.neutraliseFormula("\rx") === "'\rx");
+  const wfhSrc = fs.readFileSync(path.join(process.cwd(), "src/lib/wfh-diary.ts"), "utf8");
+  const asSrc = fs.readFileSync(path.join(process.cwd(), "src/lib/accountant-schedule.ts"), "utf8");
+  check("the WFH diary and the pack import csvCell from csv-cell.ts (no local copies)",
+    /import \{ csvCell \} from "\.\/csv-cell"/.test(wfhSrc) && !/const csvCell =/.test(wfhSrc) && !/export function (csvCell|neutraliseFormula)/.test(asSrc));
+  const WD = await import("../src/lib/wfh-diary");
+  const dcsv = WD.diaryCsv({ bounds: { start: "2025-07-01", end: "2026-06-30" }, totals: { counted_hours: 0, on_time_hours: 0, late_counted_hours: 0, not_counted_hours: 0, weeks_on_time: 1, weeks_late: 0 },
+    weeks: [{ week_start: "2025-07-07", days: [{ h: 0 }, { h: 0 }, { h: 0 }, { h: 0 }, { h: 0 }, { h: 0 }, { h: 0 }], entry: "on_time", source: null, note: "\tcmd\rx", recorded_at: "t", updated_at: "t", counts: true, hours_in_fy: 0 }] });
+  check("diaryCsv: a TAB-led note with a CR is neutralised and quoted", dcsv.includes(`"'\tcmd\rx"`));
+
+  // Backfill: a gave-up tenant is finished for the pass; logged as a tag, never the raw id.
+  const { runBackfillOnce, backfillDoneKey } = await import("../src/lib/backfill");
+  const { logTag } = await import("../src/lib/security-headers");
+  const kv = new Map<string, string>([["bf:user_secret_1", "attempt:3"]]);
+  const benv = {
+    RULES: { get: async (k: string) => kv.get(k) ?? null, put: async (k: string, v: string) => { kv.set(k, v); }, delete: async (k: string) => { kv.delete(k); } },
+    DB: { prepare: () => ({ bind: (after: unknown) => ({ all: async <T,>() => ({ results: ["user_secret_1", "user_ok_2"].filter((u) => u > String(after)).map((user_id) => ({ user_id })) as T[] }) }) }) },
+  };
+  const warned: string[] = [];
+  const ow = console.warn;
+  console.warn = (m: string) => { warned.push(String(m)); };
+  const ran: string[] = [];
+  const br = await runBackfillOnce(benv, "rv", async (u) => { ran.push(u); }, { tenantFlag: (u) => `bf:${u}` });
+  console.warn = ow;
+  check("backfill: a gave-up tenant doesn't block the marker; the others still run", br.state === "completed" && kv.get(backfillDoneKey("rv")) === "done" && ran.join(",") === "user_ok_2");
+  const tag = await logTag("user_secret_1");
+  check("backfill: the gave-up tenant is logged by logTag(), never by raw id", warned.some((w) => w.includes(`tag=${tag}`)) && !warned.some((w) => w.includes("user_secret_1")));
+  const bfSrc = fs.readFileSync(path.join(process.cwd(), "src/lib/backfill.ts"), "utf8");
+  check("backfill: no raw user id interpolated into a log line", !/console\.(error|warn|log)\([^)]*\$\{t\.user_id\}/.test(bfSrc));
+
+  // 500 → 4xx: a single correction with a foreign property id.
+  const { correctionErrorStatus } = await import("../src/api");
+  check("correctionErrorStatus: assertOwns 'property not found' ⇒ 404; bad field/value ⇒ 400; a real fault ⇒ null (500)",
+    correctionErrorStatus("property not found") === 404 && correctionErrorStatus("refund target expense not found") === 404
+      && correctionErrorStatus("field not correctable: x") === 400 && correctionErrorStatus("invalid bucket: zz") === 400
+      && correctionErrorStatus("D1_ERROR: disk I/O") === null);
+  {
+    const { handleApi } = await import("../src/api");
+    const st = { bind: () => st, first: async () => null, all: async () => ({ results: [] }), run: async () => ({ meta: {} }) };
+    const envRv = { FEATURES: "", DB: { prepare: () => st, batch: async () => [] }, RULES: { get: async () => null, put: async () => {} } } as unknown as Env;
+    const stub = { applyCorrection: async () => { throw new Error("property not found"); } };
+    const res = await handleApi(new Request("https://app.example/api/correct", { method: "POST", body: JSON.stringify({ txnId: "t1", field: "property_id", value: "someone-elses" }) }),
+      envRv, { userId: "u-rv", email: null } as never, stub as never).catch((e) => new Response(String(e), { status: 599 }));
+    check("POST /api/correct with a foreign property id ⇒ 404 with the message, not a 500",
+      res.status === 404 && ((await res.json()) as { error?: string }).error === "property not found");
+  }
+
+  // Error scrub: confirm-batch errors come back in a 200, so the DO scrubs them.
+  const agentSrc = fs.readFileSync(path.join(process.cwd(), "src/agent.ts"), "utf8");
+  const { publicErrorMessage, INTERNAL_ERROR_MESSAGE } = await import("../src/lib/security-headers");
+  check("confirm-batch: errors[].error goes through publicErrorMessage",
+    /errors\.push\(\{ statementId: sid, error: publicErrorMessage\(\(e as Error\)\.message\) \}\)/.test(agentSrc)
+      && publicErrorMessage("D1_ERROR: no such column: foo") === INTERNAL_ERROR_MESSAGE);
+
+  // OAuth binding cookies: __Host- prefix ⇒ Secure, Path=/, no Domain.
+  const ob = await import("../src/lib/oauth-binding");
+  const setQ = ob.bindingSetCookie(ob.QBO_BINDING, "n".repeat(43), 600);
+  check("binding cookies are __Host- prefixed with Path=/ and no Domain",
+    ob.QBO_BINDING.name === "__Host-quillo_qbo_bind" && ob.BANK_BINDING.name === "__Host-quillo_bank_bind"
+      && [setQ, ob.bindingClearCookie(ob.BANK_BINDING)].every((c) => /; Path=\/;/.test(c) && /; Secure;/.test(c) && !/Domain=/i.test(c)));
+
+  // Accountant pack: one situation module's error drops only that module.
+  const SI = await import("../src/lib/situations");
+  const good = { key: "reportable_amounts", flag: "reportable_amounts", load: async () => ({ ok: 1 }), field: () => ({}) };
+  const bad = { key: "boom_module", flag: "reportable_amounts", load: async () => { throw new Error("no such table: x"); }, field: () => ({}) };
+  const oe = console.error;
+  console.error = () => {};
+  const settled = await SI.loadSituationsSettled({ env: { FEATURES: "reportable_amounts" } } as never, [bad, good] as never);
+  console.error = oe;
+  check("loadSituationsSettled: a throwing module is reported in failed; the rest still load",
+    settled.failed.join(",") === "boom_module" && settled.loaded.length === 1 && settled.loaded[0]!.module.key === "reportable_amounts");
+  check("accountant pack loads situations SETTLED and names a failed module in a note section",
+    /loadSituationsSettled\(ctx, scheduleModules\)/.test(asSrc) && !/await loadSituations\(/.test(asSrc) && /key: "situations_unavailable"/.test(asSrc));
 }
 
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);

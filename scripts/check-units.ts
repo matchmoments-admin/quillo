@@ -5819,6 +5819,92 @@ console.log("ship it: worksheet ticks + routes (#590)");
   check(`ship: Ship it copy passes the tax-advice denylist (offenders: ${offenders.join(" | ") || "none"})`, offenders.length === 0);
 }
 
+// ── #790 the myTax mirror (web/src/lib/mytaxMirror.ts, flag mytax_mirror): screen order + labels, ticks, copy ──
+import { buildMirror, mirrorProgress, screenDone, screenKeyFor, SCREEN_ORDER } from "../web/src/lib/mytaxMirror";
+import { MIRROR_SCREENS, deductionScreenCopy } from "../web/src/content/mytaxMirror";
+import auV1PackForMirror from "../src/rulepacks/au-v1.json";
+import { FEATURE_KEYS as FEATURE_KEYS_FOR_MIRROR } from "../src/lib/features";
+console.log("mytax mirror (#790)");
+{
+  type L = import("../web/src/types").MytaxWorksheetLine;
+  const ln = (key: string, label: string, amount_cents: number | null, kind: L["kind"] = "type_in", name = key, note?: string): L => ({ key, label, name, amount_cents, kind, record_href: null, ...(note ? { note } : {}) });
+  // A worksheet in the server's section order, with every kind of line the builder emits.
+  const sections = [
+    { key: "contact_bank", title: "", lines: [ln("contact_details", "", null, "answer"), ln("bank_details", "", null, "answer")] },
+    { key: "personalise", title: "", lines: [ln("residency", "", null, "answer"), ln("spouse", "", null, "answer"), ln("tick:salary", "", null, "answer"), ln("pre_ticked", "", null, "note")] },
+    { key: "income_check", title: "", lines: [ln("occupation", "1", null, "answer"), ln("salary:big", "1", 4500000, "check"), ln("salary:cafe", "1", null, "check"), ln("interest", "10", 1200, "check"), ln("dividend", "11", 5000, "check"), ln("government_payment", "5/6", 30000, "check"), ln("managed_fund_distribution", "13", 700, "check")] },
+    { key: "income_type_in", title: "", lines: [ln("foreign_employment", "20", 9000), ln("other", "24", 100), ln("rent_unlinked", "21", 500), ln("business", "P8", 2000)] },
+    { key: "rental", title: "", lines: [ln("rent:p1", "21", 2000000), ln("rental_dep:p1", "21", 30000)] },
+    { key: "business", title: "", lines: [ln("expenses:a1", "P8", 4000)] },
+    { key: "deductions", title: "", lines: [ln("D10", "D10", 2000, "type_in", "Cost of managing tax affairs"), ln("D1/D5", "D1/D5", 300), ln("D3", "D3", 25000), ln("D5", "D5", 40000, "type_in", "Other", "Includes working from home at the fixed rate"), ln("D9", "D9", 5000, "type_in", "Gifts or donations"), ln("decline_in_value", "D5", 900)] },
+    { key: "adjustments", title: "", lines: [ln("part_year_threshold", "", null, "note")] },
+    { key: "medicare", title: "", lines: [ln("dependants", "", null, "answer"), ln("private_hospital_cover", "M2", null, "answer")] },
+    { key: "spouse_income_tests", title: "", lines: [ln("income_tests", "", null, "note")] },
+  ];
+  const screens = buildMirror(sections);
+  const keys = screens.map((s) => s.key);
+  const scr = (k: string) => screens.find((s) => s.key === k);
+  check(`mirror: one card per myTax screen, in myTax order (${keys.join(" → ")})`,
+    JSON.stringify(keys) === JSON.stringify(["contact", "bank", "personalise", "salary", "government", "interest", "dividends", "rent", "managed_funds", "business", "foreign", "other_income", "work_expenses", "deduction:D9", "deduction:D10", "adjustments", "medicare", "spouse_tests"]));
+  check("mirror: screens carry myTax's own labels (contact → bank → Personalise return → Income banners → Work-related expenses → Medicare/PHI)",
+    screens[0]!.title === "Contact details" && screens[1]!.title === "Financial institution details" && screens[2]!.title === "Personalise return"
+      && scr("salary")?.title === "Salary, wages, allowances, tips, bonuses etc." && scr("interest")?.title === "Interest"
+      && scr("dividends")?.title === "Dividends" && scr("work_expenses")?.title === "Work-related expenses"
+      && scr("deduction:D9")?.title === "Gifts or donations" && scr("medicare")?.title === "Medicare and private health insurance");
+  const packItems = (auV1PackForMirror as unknown as { mytax_income_items: Record<string, { name: string }> }).mytax_income_items;
+  check("mirror: income titles match the rule pack's mytax_income_items names (one source for banner names)",
+    ([["salary_payg", "salary"], ["government_payment", "government"], ["interest", "interest"], ["dividend", "dividends"], ["rent", "rent"], ["managed_fund_distribution", "managed_funds"], ["other", "other_income"]] as const)
+      .every(([t, k]) => packItems[t]?.name === MIRROR_SCREENS[k].title));
+  const allIn = sections.flatMap((s) => s.lines.map((l) => `${s.key}:${l.key}`)).sort();
+  const allOut = screens.flatMap((s) => s.lines.map((l) => l.tickId)).sort();
+  check("mirror: every worksheet line lands on exactly one screen, figure unchanged (so the worksheet tie-back holds)",
+    JSON.stringify(allIn) === JSON.stringify(allOut) && screens.flatMap((s) => s.lines).every((m) => !!sections.find((x) => x.key === m.sectionKey)?.lines.includes(m.line)));
+  check("mirror: D1–D5 (and a D1/D5 split, and decline in value at D5) share Work-related expenses; D6+ each get their own screen in label order",
+    JSON.stringify(scr("work_expenses")?.lines.map((l) => l.line.key)) === JSON.stringify(["D1/D5", "D3", "D5", "decline_in_value"])
+      && screenKeyFor("deductions", { key: "x", label: "D12" }) === "deduction:D12" && screenKeyFor("income_check", { key: "x", label: "99" }) === "other_income");
+  check("mirror: rent per property and unlinked rent sit on Rent; foreign business income stays in business",
+    JSON.stringify(scr("rent")?.lines.map((l) => l.line.key)) === JSON.stringify(["rent_unlinked", "rent:p1", "rental_dep:p1"]) && screenKeyFor("income_type_in", { key: "foreign_business", label: "P8" }) === "business");
+  check("mirror: every card has a 'check this matches' line + what to do if it differs, and a where-in-myTax",
+    screens.every((s) => s.check.length > 20 && s.ifDiffers.length > 20 && /Personalise|Prepare return/.test(s.where)));
+  check("mirror: Explain tips on labels where a glossary key exists (residency, MLS, decline in value, WFH, dividends→franking)",
+    scr("personalise")?.lines.find((l) => l.line.key === "residency")?.term === "tax_residency"
+      && scr("medicare")?.lines.find((l) => l.line.key === "private_hospital_cover")?.term === "mls"
+      && scr("rent")?.lines.find((l) => l.line.key === "rental_dep:p1")?.term === "depreciation"
+      && scr("work_expenses")?.lines.find((l) => l.line.key === "D5")?.term === "wfh_fixed_rate"
+      && scr("dividends")?.term === "franking_credit"
+      && screens.every((s) => !s.term || s.term in ANY_GLOSSARY) && screens.flatMap((s) => s.lines).every((l) => !l.term || l.term in ANY_GLOSSARY));
+  // Ticks: the mirror reuses the worksheet's ids, so ticks persist per FY across the switch; a notes-only screen gets one screen tick.
+  check("mirror: a screen with nothing tickable (Adjustments note, income tests note) carries a screen tick; others don't",
+    scr("adjustments")?.screenTickId === "mirror:adjustments" && scr("spouse_tests")?.screenTickId === "mirror:spouse_tests" && scr("salary")?.screenTickId === null);
+  const sal = scr("salary")!;
+  let t = withTick({}, 2025, "income_check:occupation", { amountCents: null });
+  t = withTick(t, 2025, "income_check:salary:big", { amountCents: 4500000 });
+  check("mirror: a screen is done when every tickable line is ticked (a 'not entered' employer doesn't block it); per FY", screenDone(sal, t, 2025) && !screenDone(sal, t, 2024));
+  const tStale = withTick(t, 2025, "income_check:salary:big", { amountCents: 4400000 });
+  check("mirror: a tick on a figure that changed since is stale, so the screen isn't done", !screenDone(sal, tStale, 2025));
+  const round = parseTicks(JSON.stringify({ worksheet_ticks: withTick(t, 2025, "mirror:adjustments", { amountCents: null }) }));
+  const pr = mirrorProgress(screens, round, 2025);
+  check(`mirror: ticks persist per FY through ui_state, screen tick included; progress counts screens (${pr.done} of ${pr.total}, next ${pr.next?.key})`,
+    pr.done === 2 && pr.total === screens.length && pr.next?.key === "contact" && mirrorProgress(screens, round, 2024).done === 0);
+  check("mirror: worksheet ticks made before the mirror still count on it (same ids)",
+    screenDone(sal, parseTicks('{"worksheet_ticks":{"2025":{"income_check:occupation":null,"income_check:salary:big":4500000}}}'), 2025));
+  check("mirror: SCREEN_ORDER has no duplicates and every key has copy", new Set(SCREEN_ORDER).size === SCREEN_ORDER.length && SCREEN_ORDER.every((k) => k in MIRROR_SCREENS));
+  // No refund / tax payable figure anywhere; the mirror's copy passes the tax-advice denylist.
+  const mirrorCopy = [...Object.values(MIRROR_SCREENS).flatMap((c) => [c.title, c.where, c.check, c.ifDiffers]), ...["D7", "D9", "D15"].flatMap((d) => { const c = deductionScreenCopy(d, "x"); return [c.check, c.ifDiffers]; })];
+  check(`mirror: copy passes the tax-advice denylist (${mirrorCopy.flatMap(denylistHits).join(",") || "clean"})`, mirrorCopy.every((x) => denylistHits(x).length === 0));
+  const mirrorOffenders: string[] = [];
+  for (const f of ["web/src/pages/MytaxMirror.tsx", "web/src/lib/mytaxMirror.ts", "web/src/content/mytaxMirror.ts"]) {
+    stripComments(fs.readFileSync(path.join(process.cwd(), f), "utf8")).split("\n").forEach((line, i) => {
+      if (denylistHits(line).length || /tax_payable|refund_cents/i.test(line)) mirrorOffenders.push(`${f}:${i + 1}`);
+    });
+  }
+  check(`mirror: page + lib copy pass the denylist and name no refund / tax-payable field (offenders: ${mirrorOffenders.join(" | ") || "none"})`, mirrorOffenders.length === 0);
+  const shipSrc790 = fs.readFileSync(path.join(process.cwd(), "web/src/pages/ShipIt.tsx"), "utf8");
+  check("mirror: gated by mytax_mirror inside the worksheet (OFF ⇒ the section cards, unchanged); FEATURE_KEYS registers it",
+    /const mirrorOn = has\("mytax_mirror"\)/.test(shipSrc790) && /mirror \? \(\s*<MytaxMirror/.test(shipSrc790) && /ws\.sections\.map\(\(s\) => <WorksheetSectionCard/.test(shipSrc790)
+      && (FEATURE_KEYS_FOR_MIRROR as readonly string[]).includes("mytax_mirror"));
+}
+
 // ── #586 Connect step (flag ft_journey): import progress, account toggles, income statement waiting ──
 import * as connectModel from "../web/src/components/connect/model";
 import { firstDayAfterFy, foldEmployers, incomeStatementTiming, incomeStatementWait } from "../src/lib/income-statement-wait";

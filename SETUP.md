@@ -18,14 +18,16 @@ only for a specific track.
   ```
 - Apply the schema: `npm run schema` (or `npm run schema:local` for the local dev DB).
 
-## 3. Inference credentials [now — pick one]
-- **US Anthropic (simplest):** `wrangler secret put ANTHROPIC_API_KEY`. Requires an APP-8
-  cross-border consent record per tenant before the first receipt is read (see step 5).
-- **AU-resident (Bedrock Sydney):** add AWS creds (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`).
-  Then either set a tenant's `inference_provider='bedrock'`, or set `DEFAULT_INFERENCE_PROVIDER="bedrock"`
-  for everyone. The Bedrock branch in `src/llm.ts` is built. The model's Marketplace agreement must
-  be accepted first: see CONFIG.md §3, and prove it with `npm run probe:bedrock`. Required for any
-  CDR-sourced data (Privacy Safeguard 8).
+## 3. Inference credentials [now]
+- **AU-resident (Bedrock Sydney) — the default since 2026-10-24:** `wrangler.toml` sets
+  `DEFAULT_INFERENCE_PROVIDER="bedrock"`. Add the per-jurisdiction AWS creds
+  (`AWS_ACCESS_KEY_ID_AU`, `AWS_SECRET_ACCESS_KEY_AU`), or the unsuffixed `AWS_ACCESS_KEY_ID` /
+  `AWS_SECRET_ACCESS_KEY` fallback for a single-jurisdiction deployment (production uses the fallback
+  pair today). The model's Marketplace agreement must be accepted first: see CONFIG.md §3, and prove it
+  with `npm run probe:bedrock`. Required for any CDR-sourced data (Privacy Safeguard 8).
+- **US Anthropic (per tenant only):** `wrangler secret put ANTHROPIC_API_KEY` (also used by the eval
+  CI). A tenant moved to `inference_provider='anthropic'` needs an APP-8 cross-border consent record
+  before its first AI call (see step 5). Don't flip the default back without CONFIG.md §3's rollback.
 
 ## 4. Onboard yourself (register your situation) [now]
 - Copy `situation.example.json`, edit it for your real employment / novated lease / company
@@ -35,7 +37,7 @@ only for a specific track.
   ```
 - Save the printed `KEY_ID` / `SECRET` — they go into the Android app and `scripts/upload.mjs`.
 
-## 5. Consent (US inference path) [now, unless using Bedrock]
+## 5. Consent (US inference path) [only for a tenant on the US provider]
 - Record APP-8 cross-border consent (signed like `/ingest`):
   `POST /consent {"text":"<what you consented to>","method":"web"}`. Until then, receipts
   are held with status `blocked_consent`.
@@ -44,7 +46,9 @@ only for a specific track.
 - `npm run deploy`. Smoke-test: `node scripts/upload.mjs https://<worker>/ingest <KEY_ID> <SECRET> receipt.jpg`,
   then check the `transactions` table.
 
-## 7. Email Routing [now-ish]
+## 7. Email Routing [retired]
+> **Retired 2026-10-24** (flag `mailbox_retired`, PR #789): the Worker bounces every inbound message.
+> Skip this step. Historical setup, for undoing the retirement only after the #711 sender check exists:
 - Cloudflare dashboard → Email → Email Routing → enable on your domain → route
   `receipts+<localpart>@yourdomain` to the `tax-agent` Worker. The `<localpart>` must match
   your tenant's `email_localpart`.
@@ -68,7 +72,9 @@ Gate it with **Cloudflare Access** (Zero Trust → Access → Applications → S
   ```
 - Requires **wrangler v4.20+** (already pinned in package.json) for the `run_worker_first` asset routing.
 
-## 8. QuickBooks (company-bucket track) [later]
+## 8. QuickBooks (company-bucket track) [retired]
+> **Retired 2026-10-24** (flag `qbo_retired`, PR #791): every `/api/qbo/*` route returns 404 and the
+> SPA hides QuickBooks. Skip this step. Historical setup:
 - A **QuickBooks Online subscription** (Simple Start now; $5 Ledger later via an accountant).
 - A free **Intuit Developer** account → create an app → copy **Client ID / Secret**:
   `wrangler secret put QBO_CLIENT_ID` / `QBO_CLIENT_SECRET`. Build against the **sandbox** base

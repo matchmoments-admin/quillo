@@ -3,11 +3,21 @@
 The code for these three integrations is **done and deployed**. Each needs an external
 account + a few config values you provide. Do them in any order.
 
+> **Status (2026-10-24, map #692):** QuickBooks (§1) and the email mailbox (§2) are **retired** behind
+> the `qbo_retired` and `mailbox_retired` flags, and Bedrock AU (§3) is the **default** provider. §1 and §2
+> are kept for history and for undoing a retirement.
+
 > General information only — not tax/financial/legal advice.
 
 ---
 
 ## 1. QuickBooks (reconcile + push) — Stage 5
+
+> **Retired 2026-10-24** (flag `qbo_retired`, PR #791, map #692). Every `/api/qbo/*` route, including
+> the public OAuth callback, answers 404 before touching Intuit, KV state or stored tokens, and the SPA
+> hides every QuickBooks surface. Stored `qbo_connections`, `qbo_feed` accounts and ledger refs are kept,
+> and account erasure still revokes. Undo: remove `qbo_retired` from `FEATURES` and deploy. The steps
+> below only apply if that is ever done.
 
 The agent is a **reader/reconciler**: company expenses reconcile against your QBO bank
 feed; only *non-feed* expenses (cash, an Amex not in QBO) are pushed (user-triggered).
@@ -40,6 +50,12 @@ feed; only *non-feed* expenses (cash, an Amex not in QBO) are pushed (user-trigg
 
 ## 2. Email-forward ingestion — forward a receipt by email
 
+> **Retired 2026-10-24** (flag `mailbox_retired`, PR #789, map #692; the sender-check issue #711 closed as
+> not planned). The Worker's `email()` handler bounces every message ("upload receipts and documents in
+> the Quillo app instead") before the MIME parse, the tenant lookup or any write, logging only the byte
+> size (`src/lib/mailbox-retired.ts`). The ingest code and `tenants.email_localpart` are kept. Undo:
+> remove `mailbox_retired` from `FEATURES` and deploy, but only after the #711 sender check is built.
+
 Snap → share → email a receipt; it lands in your inbox, no app needed.
 
 1. **Enable Cloudflare Email Routing** on `quillo.au` (Cloudflare dashboard → the
@@ -59,13 +75,16 @@ Snap → share → email a receipt; it lands in your inbox, no app needed.
 
 ## 3. Bedrock AU data residency (the default since 2026-10-24)
 
-**Since 2026-10-24 the default is Bedrock** (`DEFAULT_INFERENCE_PROVIDER = "bedrock"`, map #692): every
-tenant without an explicit override runs on the `au.` profile in ap-southeast-2, with no cross-border
-consent. Rollback: set it back to `"anthropic"` and deploy. The history below is kept for setup. Bedrock
-gives genuine AU residency (Sydney). **The seam is now fully built** (WebCrypto SigV4 in
-`src/llm.ts` + `src/lib/sigv4.ts`, no `@aws-sdk/*`) and is **flag-gated/inert**: it stays off
-until a tenant (or `DEFAULT_INFERENCE_PROVIDER`) is set to `bedrock` AND the AWS secrets below are set. Claude (US) remains the
-default; flipping a tenant without secrets fails loudly (it won't silently use the US provider).
+**Since 2026-10-24 the default is Bedrock** (`DEFAULT_INFERENCE_PROVIDER = "bedrock"`, map #692, PR #745):
+every tenant without an explicit override runs on the `au.` profile in ap-southeast-2, with no cross-border
+consent. **Do not roll back by just setting the var to `"anthropic"`**: follow
+[Rolling back to Anthropic (US)](#rolling-back-to-anthropic-us) below.
+
+**History.** Bedrock gives genuine AU residency (Sydney). The seam (WebCrypto SigV4 in `src/llm.ts` +
+`src/lib/sigv4.ts`, no `@aws-sdk/*`) was first built inert: until 2026-10-24 Claude (US) was the default
+and a tenant only moved to Bedrock when its row (or the var) said `bedrock` and the AWS secrets below
+were set. A tenant on Bedrock without secrets fails loudly (it never silently uses the US provider). The
+setup steps below are kept for a fresh account or a new jurisdiction.
 
 1. **AWS account** with **Amazon Bedrock** access. Request **Claude Haiku 4.5** under Model access
    in **both `ap-southeast-2` (Sydney) and `ap-southeast-4` (Melbourne)** — the `au.` profile routes
@@ -105,6 +124,10 @@ default; flipping a tenant without secrets fails loudly (it won't silently use t
    npx wrangler secret put AWS_ACCESS_KEY_ID_AU
    npx wrangler secret put AWS_SECRET_ACCESS_KEY_AU
    ```
+   Production today has only the unsuffixed fallback pair (`AWS_ACCESS_KEY_ID` /
+   `AWS_SECRET_ACCESS_KEY`, checked 2026-10-24), which is fine while AU is the only jurisdiction; set
+   the suffixed pair before adding a second one.
+
    **Why per jurisdiction:** each key's policy denies Bedrock outside its own regions, so an
    application bug cannot route one country's data into another's Bedrock. A single key allowed in
    every supported region would make IAM permit both, leaving the guarantee resting entirely on
@@ -129,23 +152,57 @@ default; flipping a tenant without secrets fails loudly (it won't silently use t
 
    First run on 2026-10-22: probe 5/5, and the eval scored 9/12 on Bedrock and on Anthropic with the
    same three failures.
-6. **Flip per tenant** (keeps the default Claude for everyone else):
+6. **Flip per tenant** (historical: how the owner tenant moved before the default flipped):
    ```sql
    UPDATE profiles SET inference_provider='bedrock', inference_region='ap-southeast-2'
     WHERE user_id='me';
    ```
-   With Bedrock, cross-border (US) consent is no longer required for that tenant (the consent gate
-   already exempts the bedrock path), and Settings shows "Processed in Australia 🇦🇺".
-7. **Or flip the default:** `DEFAULT_INFERENCE_PROVIDER = "bedrock"` in `wrangler.toml`, then deploy.
-   Every tenant without an explicit override moves to Bedrock. Today every `getLLM` call site passes
-   the AU descriptor, so that means the `au.` profile. `/api/situation` sends the *resolved* provider,
-   so the SPA skips the US-consent step without writing the column.
-   - **Before flipping**, check `SELECT COUNT(*) FROM batch_jobs WHERE status='submitted'` is 0. An
-     in-flight Anthropic batch can't be polled through a Bedrock client and would end up `failed` after 24h.
-   - **To revert**, first pin the tenants who never gave US consent, so they don't hit a consent wall
-     (or, if CDR-tainted, a residency refusal):
-     `UPDATE profiles SET inference_provider='bedrock' WHERE inference_provider IS NULL AND (cdr_tainted=1 OR consent_xborder IS NOT 1);`
-     Then set the var back to `anthropic` and run `npm run deploy`. A dashboard edit is overwritten by the next deploy.
+   With Bedrock, cross-border (US) consent is not required for that tenant (the consent gate in
+   `aiCall`, `src/lib/ai-call.ts`, only applies to the `anthropic` provider), and Settings shows
+   "Processed in Australia". The owner row `me` still carries this explicit value today.
+7. **Flip the default** (done 2026-10-24): `DEFAULT_INFERENCE_PROVIDER = "bedrock"` in `wrangler.toml`,
+   then deploy. Every tenant without an explicit `profiles.inference_provider` moves to Bedrock. Today
+   every `getLLM` call site passes the AU descriptor, so that means the `au.` profile. `/api/situation`
+   sends the *resolved* provider, so the SPA skips the US-consent step without writing the column.
+   Before flipping, `SELECT COUNT(*) FROM batch_jobs WHERE status='submitted'` must be 0: an in-flight
+   Anthropic batch can't be polled through a Bedrock client and would end up `failed` after 24h.
+
+### Rolling back to Anthropic (US)
+
+This is the only supported rollback. Setting the var back on its own is **unsafe**:
+
+- Every tenant who signed up after the flip has `inference_provider IS NULL` and
+  `consent_xborder = 0` (they were never asked). With the default back on `anthropic`, `aiCall` would put
+  the US-consent wall in front of every one of them on their next AI action.
+- A CDR-tainted tenant (`profiles.cdr_tainted = 1`, one-way) resolving to `anthropic` is refused by
+  `getLLM` (Privacy Safeguard 8), so their AI would stop working rather than fall back.
+- The owner tenant has an explicit `inference_provider = 'bedrock'` (step 6), and `resolveProvider`
+  lets the row beat the var, so the var change would not move it at all.
+
+Steps, in order:
+
+1. **Pin the tenants who never consented** to Bedrock, so they keep working with no consent wall:
+   ```sql
+   UPDATE profiles SET inference_provider='bedrock'
+    WHERE COALESCE(consent_xborder,0)=0 AND inference_provider IS NULL;
+   ```
+2. **Keep CDR-tainted tenants on Bedrock**, including any that did give US consent:
+   ```sql
+   UPDATE profiles SET inference_provider='bedrock'
+    WHERE cdr_tainted=1 AND inference_provider IS NULL;
+   ```
+   Check none is explicitly on the US path: `SELECT COUNT(*) FROM profiles WHERE cdr_tainted=1 AND
+   inference_provider='anthropic'` must be 0.
+3. **Flip the var**: set `DEFAULT_INFERENCE_PROVIDER = "anthropic"` in `wrangler.toml` and run
+   `npm run deploy`. A dashboard edit is overwritten by the next deploy. Only tenants left with a NULL
+   provider (those who had recorded US consent and hold no CDR data) move to the US.
+4. **The owner row** stays on Bedrock because of its explicit value. To move it too, the owner must
+   have recorded US consent first; then `UPDATE profiles SET inference_provider=NULL WHERE user_id='me'`
+   (or `'anthropic'`).
+5. Verify: `SELECT inference_provider, COALESCE(consent_xborder,0) c, cdr_tainted, COUNT(*) FROM profiles
+   GROUP BY 1,2,3`: no row may resolve to `anthropic` with `c = 0` or `cdr_tainted = 1`.
+
+Rolling forward again later is the step 7 flip; the pinned rows keep `bedrock` either way.
 
 > **Retries:** Bedrock calls retry 429/500/502/503/504 up to twice, with jittered backoff, on the
 > **same** region and profile; they never reroute. Each retry logs `bedrock_retry` to Workers Logs. Each

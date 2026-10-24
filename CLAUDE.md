@@ -18,14 +18,15 @@ a tax-position report. **General information only — never tax advice.**
 - `npm run typecheck` — server (tsc). `npm --prefix web exec tsc -- --noEmit` — SPA.
 - `npm test` — full suite: unit goldens (`scripts/check-units.ts`), mobile shell, raw-colour guard (`scripts/check-no-raw-colors.ts` — SPA colours only via `design/tokens.mjs` roles), theme token test (`scripts/check-theme-contrast.ts` — every theme maps every role, legacy pinned for flag-OFF parity, WCAG AA in the Direction A themes), persona goldens, e2e journey, first-timer e2e (`scripts/e2e-first-timer.ts` — the 4-step journey with every journey flag ON + a byte-identical flag-OFF baseline; `UPDATE_SNAPSHOT=1` re-captures it), AU snapshot, statement reconciliation, schema drift. `npm run test:units` for just units.
 - `npm run eval` / `npm run eval:gate` — promptfoo categorisation eval (what `.github/workflows/evals.yml` runs).
+- `npm run qa:browser` — new-user browser QA (Chromium vs a local `wrangler dev` at 1280px + 390px, journey flags ON, AI stubbed, scratch D1; `--only=journeys,routes,legacy,personas`; what `.github/workflows/qa.yml` runs). Known defects live in `scripts/qa/known.ts`. `npm run qa:smoke-prod` — read-only (GET-only) smoke of `app.quillo.au`.
 - `npm run web:build` — build the SPA. `npm run deploy` (`wrangler deploy && npm run rulepack:push`) — deploy the Worker + push the rule pack.
 - Migrations: `npx wrangler d1 execute tax-agent-db --remote --file=migrations/NNNN_x.sql` (in order).
 - `npm run rulepack:push` — push `src/rulepacks/au-v1.json` to KV `rulepack:au-v1` (**do this whenever the rule pack changes** — KV wins key-by-key over the bundled default). A stale KV copy no longer hides new top-level sections: `src/lib/rulepack.ts` fills missing keys from the bundle and logs `rulepack:au-v1 KV copy is stale…`, so local dev needs no `wrangler kv key put --local` — but an EDITED existing key still needs a push (`--local` for `wrangler dev`).
 
 ## Non-negotiable invariants
-- **Multi-tenant**: every table has `user_id`; identity is derived server-side (verified HMAC key / Clerk / mailbox), **never** a client header.
+- **Multi-tenant**: every table has `user_id`; identity is derived server-side (verified HMAC key / Clerk; the receipt mailbox is retired behind `mailbox_retired`), **never** a client header.
 - **One canonical money source per account** (`cdr_feed` XOR `statement` XOR `qbo_feed`) — never double-count. Enforced in ONE place, `assertCanonicalSource` (`src/lib/queries.ts`), which every writer must call: the rule previously lived half in each of two functions and a bank feed plus a statement upload on the same account counted every overlapping dollar twice (they fingerprint differently, so no downstream dedup catches it). QBO is reader/reconciler; never auto-post what a feed already provides.
-- **APP-8 consent gate**: any US/`anthropic` inference on personal data needs recorded consent; the gate runs **before** any model call. Bedrock/AU is the residency path.
+- **APP-8 consent gate**: any US/`anthropic` inference on personal data needs recorded consent; the gate runs **before** any model call. It is enforced in ONE place, `aiCall` (`src/lib/ai-call.ts`: consent → budget → getLLM → audit), which every model call must go through (a raw `getLLM(` in agent.ts fails check-units). Bedrock/AU is the residency path and the default since 2026-10-24; rolling the default back needs CONFIG.md §3's procedure, not a one-line var edit.
 - **Migrations are additive + apply-once**: `CREATE TABLE/INDEX IF NOT EXISTS`, `ALTER TABLE ADD COLUMN`, idempotent backfills (`INSERT OR IGNORE`, guarded `UPDATE`). New migrations continue the `00NN_` sequence; keep `schema.sql` in lockstep. New tenant tables MUST be added to `PURGE_TABLES` (`src/lib/retention.ts`).
 - **Persona coverage is a contract**: the 11 taxpayer personas ([`docs/personas.md`](docs/personas.md), P11 novated lease added 2026-10-24) are the coverage lens. **Any change to the data model, the money/tax-position pipeline (`report.ts`/`ledger-totals.ts`), or the user workflow MUST keep `npm run test:personas` green for every persona** and update `docs/personas.md` if coverage changes. A new tax feature lands **additive + feature-flag-gated** (flag OFF ⇒ byte-identical) and **adds or flips a persona golden in the same PR**. Shipping an engine is not "done" until the front end lets the relevant persona enter the data and see the result (engine ✓ + UI ✓ + display ✓) — track the UI/API gap if you defer it, don't silently call it complete.
 - **GENERAL-INFO framing** on every suggestion; `defer_to_agent` rules say "confirm with a registered tax agent"; never predict a refund amount.
@@ -53,7 +54,7 @@ babysit branching. Do the due diligence below, then ship.
 9. **Deploy** — `npm run web:build && npm run deploy` (the deploy script also pushes the rule pack to KV); `curl -s https://app.quillo.au/healthz` and smoke-test the touched surface.
 10. **Report** — a tight summary: what shipped, what's live (note the single-user Clerk gate + APP-8 consent), migrations applied, review findings fixed/deferred, and any follow-ups.
 
-CI runs three PR workflows: `tests.yml` (typecheck + full `npm test`; skipped for docs-only PRs), `web-lint.yml` (SPA typecheck + hooks lint on `web/` changes), and `evals.yml` (categorisation eval when the rule pack / prompt / eval files change). The eval is a signal, not a deploy gate (deploys are manual via wrangler) — don't block a merge on an unrelated pre-existing eval drift; flag it instead.
+CI runs four PR workflows: `tests.yml` (typecheck + full `npm test`; skipped for docs-only PRs), `web-lint.yml` (SPA typecheck + hooks lint on `web/` changes), `evals.yml` (categorisation eval when the rule pack / prompt / eval files change), and `qa.yml` (`npm run qa:browser` on `src/`, `web/`, migration or config changes; only NEW failures go red). CodeQL and the weekly ZAP baseline run separately. The eval is a signal, not a deploy gate (deploys are manual via wrangler) — don't block a merge on an unrelated pre-existing eval drift; flag it instead.
 
 ### Issue hygiene (keep the backlog honest)
 The backlog lives in **GitHub Issues** (`gh` CLI); epics are tracking issues labelled `epic`, with
@@ -92,7 +93,7 @@ The canonical roles map onto this repo's existing taxonomy (`ready-for-human` �
 `needs-decision`). See `docs/agents/triage-labels.md`.
 
 ### Domain docs
-Single-context: `CONTEXT.md` at root (lazily created) + ADRs flat as `docs/adr-NNNN-*.md`.
+Single-context: `GLOSSARY.md` at root (lazily created; renamed from `CONTEXT.md` upstream) + ADRs flat as `docs/adr-NNNN-*.md`.
 See `docs/agents/domain.md`.
 
 ## Memory

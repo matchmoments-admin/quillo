@@ -20,7 +20,10 @@
 > Planned work is 🟡 or ⬜ with its ticket. Last full review: **2026-10-17**, every row re-checked
 > against `main` (a5f1af0) and the deployed Worker (version `39c7df14`), the live response headers,
 > `wrangler.toml` `FEATURES`, the prod secret list and the GitHub security settings. Previous review:
-> 2026-10-08 (initial draft, #642).
+> 2026-10-08 (initial draft, #642). Partial update **2026-10-24** (map #692 review fixes): the switch
+> list, 2(a), 4(b), 4(c) and 5(b) re-checked against `wrangler.toml` `FEATURES` and the prod secret list
+> after the mailbox and QuickBooks retirements, the Bedrock default and the sweep fixes. Row counts
+> unchanged.
 >
 > **Format contract:** the admin Security & compliance page (#636) parses this file at deploy
 > (`npm run security:push-docs`). Keep each control table's header as `| ID | Control | … | Status | …`,
@@ -52,23 +55,32 @@ was 5 / 41 / 9 on 2026-10-08. The old summary table said 5 / 40 / 10, which was 
   (PR #665) in 1.6(2); Dependabot, CodeQL, secret scanning with push protection, weekly ZAP and 0 open
   alerts (PRs #644, #670, #671, #677) in 1.6(1), 4(a), 4(c); the no-CDR-in-non-prod guard (PR #679)
   in 3(b); PS12 deletion on withdrawal (#576); the Fiskil adapter's `error_id` / `session_id` logging
-  (PR #631).
+  (PR #631); consent-expiry deletion, inactive end-user deletion and S8b statement redaction
+  (`cdr_expiry_delete`, `cdr_inactive_user_delete`, `redact_statement_lines` ON, PR #686) in 3(c), PS12;
+  the October sweep fixes, including OAuth state bound to the starting browser (PR #733), upload size
+  caps before the body is read (PR #728) and a hash-only CSP `script-src` (PR #737), in 4(c); one
+  `aiCall` gate (`src/lib/ai-call.ts`, #721) that enforces APP-8 consent and the budget before every
+  model call, with Bedrock `au.` the default provider since 2026-10-24 (#745), in PS8.
+- **Retired surfaces** (smaller attack surface, each one flag away from undone): the receipt mailbox
+  (`mailbox_retired` ON, PR #789: every inbound message bounces before parsing; #711 closed as not
+  planned) in 5(b), and QuickBooks (`qbo_retired` ON, PR #791: every `/api/qbo/*` route returns 404)
+  in 2(a).
 
 **Built, needs a switch** (code is on `main` and deployed; it does nothing until this is set):
 
 - Secret `D1_EXPORT_TOKEN` (Account · D1 · Read), then flag `d1_backups`: daily D1 export to
   `tax-agent-backups` (PR #674; the bucket exists, both restore tests passed). Rows 2(a), 3(c).
-- Secret `QBO_TOKEN_KEY`, then `POST /api/admin/qbo-token-backfill`, then flag
-  `qbo_token_fail_closed` (PR #643; order in [secrets-and-encryption.md](secrets-and-encryption.md)).
-  Row 2(a).
+- QuickBooks token sealing (PR #643): **not needed while `qbo_retired` is ON**, since no route can
+  store a token and prod has 0 `qbo_connections` rows. Only if QuickBooks is un-retired: secret
+  `QBO_TOKEN_KEY`, then `POST /api/admin/qbo-token-backfill`, then flag `qbo_token_fail_closed`, all
+  before that redeploy (order in [secrets-and-encryption.md](secrets-and-encryption.md)). Row 2(a).
 - Flag `admin_mfa_required`, only after the owner has enrolled TOTP (PR #673). Rows 1(a), 1(b).
-- Flags `bank_minimisation`, `cdr_expiry_delete`, `cdr_inactive_user_delete` (PR #679): retention
-  cron, consent-expiry deletion, inactive end-user deletion. Rows 1.5(1)(b), 3(c), PS12. Also
-  `redact_statement_lines` (S8b statement redaction, PR #679; ADR-0003, no row of its own).
+- Flag `bank_minimisation` (PR #679): the retention and minimisation cron. Stays OFF until a FY is
+  marked lodged and the notice copy is reviewed. Rows 1.5(1)(b), 3(c), PS12. (`cdr_expiry_delete`,
+  `cdr_inactive_user_delete` and `redact_statement_lines` are ON since PR #686.)
 - Flag `security_monitoring`: live checks on the Security & compliance page (PR #665). Row 1.6(2).
 - Flag `bank_feed_cdr`, last, after Fiskil approval and production `FISKIL_CLIENT_ID/SECRET`. Row 2(e).
-- Clean-up: `GEOAPIFY_KEY` is still set in prod though nothing reads it
-  (`npx wrangler secret delete GEOAPIFY_KEY`).
+- (The `GEOAPIFY_KEY` clean-up is finished: it is absent from the 2026-10-24 prod secret list.)
 
 **Owner action** (not code; [owner-tasks.md](owner-tasks.md)):
 
@@ -147,7 +159,7 @@ review, tabletop test, annual review) has not yet run.
 
 | ID | Control | Quillo's control | Evidence | Status | Owner / ticket |
 |---|---|---|---|---|---|
-| 2(a) | Encryption: Encrypt CDR data at rest (file systems, devices, portable media, backups); keys secured; access to keys authenticated | D1 and R2 are encrypted at rest by Cloudflare (AES-256). QuickBooks tokens additionally sealed with AES-256-GCM (`QBO_TOKEN_KEY`). Laptop: FileVault. Backups: daily D1 export to the private R2 bucket `tax-agent-backups` (encrypted at rest) | [`src/lib/token-crypto.ts`](../../src/lib/token-crypto.ts), [secrets-and-encryption.md](secrets-and-encryption.md), [backup-dr.md](backup-dr.md) | 🟡 fail-closed sealing + backfill built (PR #643); switch: secret `QBO_TOKEN_KEY`, run the backfill, then flag `qbo_token_fail_closed` (0 QBO rows, so nothing is stored in plaintext today). Backups built and restore-tested twice (PR #674); switch: secret `D1_EXPORT_TOKEN` + flag `d1_backups` (bucket `tax-agent-backups` exists). Owner action: confirm FileVault (C2) | 👤 set secrets · flip flags · C2 |
+| 2(a) | Encryption: Encrypt CDR data at rest (file systems, devices, portable media, backups); keys secured; access to keys authenticated | D1 and R2 are encrypted at rest by Cloudflare (AES-256). No per-user third-party credentials are stored: QuickBooks is retired (`qbo_retired` ON, PR #791, every `/api/qbo/*` route 404s before touching tokens) and prod has 0 `qbo_connections` rows; the AES-256-GCM sealing (`QBO_TOKEN_KEY`, PR #643) stays built for an un-retire. CDR feeds store no tokens. Laptop: FileVault. Backups: daily D1 export to the private R2 bucket `tax-agent-backups` (encrypted at rest) | [`src/lib/token-crypto.ts`](../../src/lib/token-crypto.ts), [`src/lib/qbo-retired.ts`](../../src/lib/qbo-retired.ts), [secrets-and-encryption.md](secrets-and-encryption.md), [backup-dr.md](backup-dr.md) | 🟡 at-rest encryption inherited and no stored tokens (QuickBooks retired, 0 rows); `QBO_TOKEN_KEY` + `qbo_token_fail_closed` only needed before any QuickBooks un-retire. Backups built and restore-tested twice (PR #674); switch: secret `D1_EXPORT_TOKEN` + flag `d1_backups` (bucket `tax-agent-backups` exists). Owner action: confirm FileVault (C2) | 👤 set secret · flip flag · C2 |
 | 2(b) | Firewalls: Limit traffic from untrusted sources; deny unnecessary traffic; restrict and review firewall configuration | No servers or open ports: the Worker only answers HTTPS at Cloudflare's edge (DDoS protection, TLS termination). D1, R2, KV and the Durable Object are not internet-reachable except through the Worker bindings or the authenticated Cloudflare API. Laptop: macOS firewall on | [cdr-data-environment.md §5](cdr-data-environment.md#5-network-boundary), [endpoint-standard.md](endpoint-standard.md) | 🟡 edge in place by design; owner action: laptop firewall (C2) | 👤 C2 |
 | 2(c) | Server hardening: Harden servers, databases and OSes to industry standards | Serverless: Cloudflare runs and hardens the runtime (V8 isolates); we manage no OS or database server. Our part: minimal bindings, pinned `compatibility_date`, secrets only via `wrangler secret` | [`wrangler.toml`](../../wrangler.toml), [osp-register.md](osp-register.md) | ✅ by architecture (Cloudflare attestations to be filed, C9) | — |
 | 2(d) | End-user devices: End-user devices (including BYOD) hardened to industry standards | Endpoint standard (FileVault, auto-updates, firewall, screen lock, standard account, password manager, XProtect) | [endpoint-standard.md](endpoint-standard.md) | ⬜ owner to apply and record | 👤 C2 |
@@ -166,15 +178,15 @@ review, tabletop test, annual review) has not yet run.
 | ID | Control | Quillo's control | Evidence | Status | Owner / ticket |
 |---|---|---|---|---|---|
 | 4(a) | Security patching: Identify, risk-assess and apply security patches to applications and OSes as soon as practicable | Patch SLAs (critical 48h, high 7 days, medium 30 days); Dependabot for npm (root + `web/`); macOS automatic updates; runtime patched by Cloudflare | [vulnerability-management.md](vulnerability-management.md#patch-slas), [`.github/dependabot.yml`](../../.github/dependabot.yml) | 🟡 SLAs + Dependabot live (PR #644; runtime alerts cleared in PRs #671, #677; 0 open alerts 2026-10-17); owner action: confirm laptop auto-updates (C2) | 👤 C2 |
-| 4(b) | Secure coding: Changes designed and developed to secure-coding practice and tested before production | Ship workflow: branch → typecheck + SPA tsc + hooks lint + `npm test` (units, 10 personas, e2e, schema drift) → review proportional to risk (adversarial multi-agent review for auth/data/ingest) → PR → CI → merge → deploy. Invariants: tenant isolation, one canonical money source, consent gate before any model call | [CLAUDE.md](../../CLAUDE.md) "Ship workflow", [`.github/workflows/tests.yml`](../../.github/workflows/tests.yml), [`.github/workflows/web-lint.yml`](../../.github/workflows/web-lint.yml), [vulnerability-management.md](vulnerability-management.md#secure-sdlc), [`.github/workflows/codeql.yml`](../../.github/workflows/codeql.yml) | ✅ CI gates, `npm audit` gate and CodeQL SAST live (PR #644); 0 open CodeQL alerts 2026-10-17 | — |
-| 4(c) | Vulnerability management: Formal program with regular vulnerability scanning **and penetration testing** | Weekly OWASP ZAP baseline scan against app.quillo.au, CodeQL, Dependabot alerts, secret scanning with push protection, `npm audit --audit-level=high` in CI. **No penetration test yet. The rule text requires one** ("regular vulnerability scanning and penetration testing"; Fiskil requirements research #693), so it is not optional. Internal sweep done 2026-10-24 (no CRITICAL/HIGH; [sweep-2026-10.md](sweep-2026-10.md)); scope + RFQ in #703 | [vulnerability-management.md](vulnerability-management.md#scanners), [`.github/workflows/zap-baseline.yml`](../../.github/workflows/zap-baseline.yml), [`.github/workflows/codeql.yml`](../../.github/workflows/codeql.yml); secret scanning + push protection on in the repo settings | 🟡 scanning live (PRs #644, #670); 0 open Dependabot alerts after the zod 4 bump (#719, 2026-10-24); internal sweep fixes live (#705–#708, #710) | 👤 buy the pen test (#703) |
+| 4(b) | Secure coding: Changes designed and developed to secure-coding practice and tested before production | Ship workflow: branch → typecheck + SPA tsc + hooks lint + `npm test` (units, all 11 personas incl. P11 novated lease, e2e, first-timer e2e, schema drift) → automated browser QA (`npm run qa:browser`: Chromium against local `wrangler dev`, 1280 and 390 px, journey flags ON, AI stubbed; run in CI by `qa.yml`) → review proportional to risk (adversarial multi-agent review for auth/data/ingest) → PR → CI → merge → deploy → read-only prod smoke (`npm run qa:smoke-prod`). Invariants: tenant isolation, one canonical money source, APP-8 consent gate before any model call, enforced in one place (`aiCall`, `src/lib/ai-call.ts`, #721; a raw `getLLM(` fails check-units) | [CLAUDE.md](../../CLAUDE.md) "Ship workflow", [`.github/workflows/tests.yml`](../../.github/workflows/tests.yml), [`.github/workflows/web-lint.yml`](../../.github/workflows/web-lint.yml), [`.github/workflows/qa.yml`](../../.github/workflows/qa.yml), [`docs/personas.md`](../personas.md), [vulnerability-management.md](vulnerability-management.md#secure-sdlc), [`.github/workflows/codeql.yml`](../../.github/workflows/codeql.yml) | ✅ CI gates, `npm audit` gate and CodeQL SAST live (PR #644); browser QA suite and prod smoke live (#699, PR #767; `qa.yml`); 0 open CodeQL alerts 2026-10-17 | — |
+| 4(c) | Vulnerability management: Formal program with regular vulnerability scanning **and penetration testing** | Weekly OWASP ZAP baseline scan against app.quillo.au, CodeQL, Dependabot alerts, secret scanning with push protection, `npm audit --audit-level=high` in CI. **No penetration test yet. The rule text requires one** ("regular vulnerability scanning and penetration testing"; Fiskil requirements research #693), so it is not optional. Internal sweep done 2026-10-24 (no CRITICAL/HIGH; [sweep-2026-10.md](sweep-2026-10.md)); scope + RFQ in #703 | [vulnerability-management.md](vulnerability-management.md#scanners), [`.github/workflows/zap-baseline.yml`](../../.github/workflows/zap-baseline.yml), [`.github/workflows/codeql.yml`](../../.github/workflows/codeql.yml); secret scanning + push protection on in the repo settings | 🟡 scanning live (PRs #644, #670); 0 open Dependabot alerts after the zod 4, body-parser, undici and fast-uri fixes (#719, #781, #783, 2026-10-24); internal sweep fixes live (#705–#708, #710, #728, #733, #737; #711 moot, mailbox retired) | 👤 buy the pen test (#703) |
 
 ### Control requirement 5 — prevent, detect and remove malware
 
 | ID | Control | Quillo's control | Evidence | Status | Owner / ticket |
 |---|---|---|---|---|---|
 | 5(a) | Anti-malware / anti-virus: AV/anti-malware on endpoints and servers, kept current; compliance reported and actioned | Laptop: macOS XProtect + XProtect Remediator (auto-updating), Gatekeeper, optional Malwarebytes. Servers: none we operate (serverless). Uploaded receipts are stored as bytes in R2 and only ever read by the model or rendered as images; never executed | [endpoint-standard.md](endpoint-standard.md) | ⬜ owner to confirm and record | 👤 C2 |
-| 5(b) | Web and email content filtering: Identify, quarantine and block suspicious content from email and the web | Owner mailbox: Gmail spam/phishing filtering (brendan@quillo.au forwards via Cloudflare Email Routing). Browser: Safe Browsing. App inbound email (receipt forwarding) is parsed as data, never executed. CSP restricts what the SPA loads | [endpoint-standard.md](endpoint-standard.md), [`src/lib/email.ts`](../../src/lib/email.ts) | 🟡 app side live (CSP enforcing, PR #666); owner action: confirm mailbox and browser filtering (C2) | 👤 C2 |
+| 5(b) | Web and email content filtering: Identify, quarantine and block suspicious content from email and the web | Owner mailbox: Gmail spam/phishing filtering (brendan@quillo.au forwards via Cloudflare Email Routing). Browser: Safe Browsing. App inbound email: the receipt mailbox is **retired** (`mailbox_retired` ON, PR #789; #711 closed as not planned), so the Worker's `email()` handler bounces every message before the MIME parse, the tenant lookup or any R2/D1/DO write, logging only the byte size. Uploaded originals are served only as an allowlisted content type (PR #706). The enforcing CSP restricts what the SPA loads, with a hash-only `script-src` (no `'unsafe-inline'`, no `*.quillo.au`; PR #737) | [endpoint-standard.md](endpoint-standard.md), [`src/lib/mailbox-retired.ts`](../../src/lib/mailbox-retired.ts), [`src/lib/security-headers.ts`](../../src/lib/security-headers.ts) | 🟡 app side live (mailbox bounces, PR #789; CSP enforcing and hash-only, PRs #666, #737); owner action: confirm mailbox and browser filtering (C2) | 👤 C2 |
 | 5(c) | Application whitelisting: Only authorised software installed or executed on infrastructure and end-user devices | Laptop: Gatekeeper set to App Store and identified developers; daily work in a **standard (non-admin)** account so installs need the admin password. No infrastructure hosts to install on | [endpoint-standard.md](endpoint-standard.md) | ⬜ owner to apply | 👤 C2 |
 
 ### Control requirement 6 — security training and awareness
@@ -205,9 +217,9 @@ review, tabletop test, annual review) has not yet run.
 | [#634] A1 · closed | HSTS, enforcing CSP, no PII in logs. PR #666 (live), header check blocking PR #670 | 1(i) (now live), 1(c) partly, 3(a) partly, 5(b) partly |
 | [#635] A2 · closed | Daily D1 export, restore runbook, two passing restore tests. PR #674; waits on `D1_EXPORT_TOKEN` + `d1_backups` | 2(a) backups, 3(c) backups |
 | [#636] A3 · closed | Admin Security & compliance dashboard, flag-gated health checks. PR #665 (live); live checks wait on `security_monitoring` | 1.6(2), 1.7(1), 1(c) review |
-| [#637] A4 · closed | `QBO_TOKEN_KEY` fail-closed + re-encrypt, secrets inventory ([secrets-and-encryption.md](secrets-and-encryption.md)). PR #643; waits on `QBO_TOKEN_KEY` + `qbo_token_fail_closed` | 2(a) |
+| [#637] A4 · closed | `QBO_TOKEN_KEY` fail-closed + re-encrypt, secrets inventory ([secrets-and-encryption.md](secrets-and-encryption.md)). PR #643; not needed while QuickBooks is retired (`qbo_retired`, PR #791), only before an un-retire | 2(a) |
 | [#638] A5 · closed | Admin MFA gate, API rate limiting, JIT rule, Clerk cutover runbook. PRs #673, #678 (rate limiting live); MFA waits on `admin_mfa_required`; Clerk production cutover is the owner's | 1(a), 1(b), 1(f), 1(h) |
-| [#639] A6 · closed | Retention cron, expiry and inactive end-user deletion, S8b redaction, no CDR in non-prod. PR #679; waits on `bank_minimisation`, `cdr_expiry_delete`, `cdr_inactive_user_delete`, `redact_statement_lines` | 2(e), 3(b), 3(c), PS12 |
+| [#639] A6 · closed | Retention cron, expiry and inactive end-user deletion, S8b redaction, no CDR in non-prod. PR #679; expiry, inactive and redaction flags ON (PR #686); waits on `bank_minimisation` | 2(e), 3(b), 3(c), PS12 |
 | [#640] A7 · closed | Dependabot, CodeQL, secret scanning + push protection, npm audit, weekly ZAP. PRs #644, #670, #671, #677 (live, 0 open alerts) | 1.6(1), 4(a), 4(b), 4(c) |
 | [#641] A8 · evidence in | Bedrock `au.` live 2026-10-22: `npm run probe:bedrock` 5/5 (receipt image, statement PDF, Ask, prompt cache, CDR-tainted refusal) on `au.anthropic.claude-haiku-4-5-20251001-v1:0` in ap-southeast-2. Close once posted on #641 | PS8 |
 | [#642] B · closed | This pack + Fiskil CDR policy link. PR #667 | Part 1 documents, 6(b), r7.2(8) |

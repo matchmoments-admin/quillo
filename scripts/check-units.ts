@@ -6926,6 +6926,28 @@ console.log("security & compliance dashboard (#636)");
     inline.length === 1 && inline[0] === LANDING_INLINE_SCRIPT_HASH);
   check("web/public/_headers is generated from the module (no drift between Worker + asset-served headers)",
     fs.readFileSync(path.join(process.cwd(), "web", "public", "_headers"), "utf8") === renderHeadersFile());
+  {
+    // Blog (quillo.au/blog): same copy discipline as the landing page, and no <script> so the enforced CSP holds.
+    const { POSTS, DISCLAIMER, blogResponse } = await import("../src/marketing/blog");
+    const idx = await blogResponse("/blog").text();
+    const posts = await Promise.all(POSTS.map(async (p) => ({ p, res: blogResponse(`/blog/${p.slug}`) })));
+    check("blog: index lists every post and links each one", POSTS.every((p) => idx.includes(`href="/blog/${p.slug}"`)));
+    check("blog: every post renders 200 with the landing footer disclaimer verbatim",
+      posts.every(({ res }) => res.status === 200) && landingHtml.includes(DISCLAIMER) && idx.includes(DISCLAIMER) &&
+      (await Promise.all(posts.map(({ res }) => res.clone().text()))).every((h) => h.includes(DISCLAIMER)));
+    const all = [idx, ...(await Promise.all(posts.map(({ res }) => res.text())))];
+    check("blog: no <script> on any blog page (CSP allows inline scripts only by hash)", all.every((h) => !/<script/i.test(h)));
+    check("blog: no dollar figures (never predict a refund or quote savings)", POSTS.every((p) => !/\$\s?\d/.test(p.body + p.summary + p.title)));
+    check("blog: never claims Quillo lodges or is a registered agent",
+      POSTS.every((p) => !/\b(we|Quillo) (will )?lodges?\b|registered tax agent\s*\(us\)|we are a registered/i.test(p.body)));
+    check("blog: every hero image exists in web/public and has alt text",
+      POSTS.every((p) => fs.existsSync(path.join(process.cwd(), "web", "public", p.hero.src)) && p.hero.alt.length > 20));
+    check("blog: unknown or malformed slug ⇒ 404", blogResponse("/blog/nope").status === 404 && blogResponse("/blog/../etc").status === 404);
+    check("blog: trailing slash serves the index", (await blogResponse("/blog/").text()) === idx);
+    check("blog: landing nav + footer link to /blog", (landingHtml.match(/href="\/blog"/g) ?? []).length >= 2);
+    check("wrangler.toml routes /blog and /blog/* through the Worker (else the SPA fallback serves them)",
+      /run_worker_first[^\n]*"\/blog", "\/blog\/\*"/.test(fs.readFileSync("wrangler.toml", "utf8")));
+  }
   check("wrangler.toml still routes /csp-report through the Worker", /run_worker_first[^\n]*"\/csp-report"/.test(fs.readFileSync("wrangler.toml", "utf8")));
 
   const html = withSecurityHeaders(new Response("<p>x</p>", { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "public, max-age=300" } }));

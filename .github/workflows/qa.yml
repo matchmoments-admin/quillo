@@ -18,6 +18,11 @@ on:
       - "package.json"
       - ".github/workflows/qa.yml"
 
+# One QA run per PR branch: a new push cancels the run it supersedes (each run boots wrangler several times).
+concurrency:
+  group: qa-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   browser-qa:
     runs-on: ubuntu-latest
@@ -30,8 +35,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm --prefix web ci
-      # playwright is a transitive dependency (promptfoo → playwright-extra); install the browser for
-      # exactly that version.
+      # @playwright/test is a direct devDependency, pinned to the playwright version promptfoo also pulls in,
+      # so the browser installed here matches the library the QA scripts load.
       - name: Install Chromium
         run: npx --no-install playwright install --with-deps chromium
       - name: Browser QA (npm run qa:browser)

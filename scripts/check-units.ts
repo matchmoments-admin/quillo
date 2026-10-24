@@ -8506,5 +8506,29 @@ console.log("spend caps state USD + AUD (F1)");
   }
 }
 
+// ── review F11/F12 + QA CI: deploy tags the commit, evals skip without a key, QA pins playwright ──────
+console.log("deploy + CI wiring (review F11/F12, QA CI)");
+{
+  const pkg = JSON.parse(fs.readFileSync(path.join(process.cwd(), "package.json"), "utf8")) as { scripts: Record<string, string>; devDependencies: Record<string, string> };
+  const dep = pkg.scripts.deploy ?? "";
+  check("deploy: builds the SPA first, tags the version with the short commit, then pushes the rule pack + security docs",
+    dep.startsWith("npm run web:build && ") && dep.includes('wrangler deploy --message "$(git rev-parse --short HEAD)"')
+      && dep.indexOf("web:build") < dep.indexOf("wrangler deploy") && dep.indexOf("wrangler deploy") < dep.indexOf("rulepack:push") && dep.endsWith("npm run security:push-docs"));
+  const claude = fs.readFileSync(path.join(process.cwd(), "CLAUDE.md"), "utf8");
+  check("CLAUDE.md step 9 matches the deploy script (no separate web:build, mentions the commit tag)",
+    /9\. \*\*Deploy\*\* — `npm run deploy`/.test(claude) && /git rev-parse --short HEAD/.test(claude) && !/9\. \*\*Deploy\*\* — `npm run web:build && npm run deploy`/.test(claude));
+  const evals = fs.readFileSync(path.join(process.cwd(), ".github/workflows/evals.yml"), "utf8");
+  check("evals.yml: a key-check step exposes the secret's presence via env, with a ::notice when absent",
+    /HAS_KEY: \$\{\{ secrets\.ANTHROPIC_API_KEY != '' \}\}/.test(evals) && /::notice title=Categorisation eval skipped::/.test(evals));
+  check("evals.yml: npm ci, the eval and the gate all skip when the key is absent",
+    (evals.match(/if: steps\.key\.outputs\.present == 'true'/g) ?? []).length === 3);
+  const qa = fs.readFileSync(path.join(process.cwd(), ".github/workflows/qa.yml"), "utf8");
+  check("qa.yml: a per-PR concurrency group cancels superseded runs", /concurrency:\s*\n\s*group: qa-\$\{\{ github\.workflow \}\}-/.test(qa) && /cancel-in-progress: true/.test(qa));
+  const lock = JSON.parse(fs.readFileSync(path.join(process.cwd(), "package-lock.json"), "utf8")) as { packages: Record<string, { version?: string }> };
+  const pw = lock.packages["node_modules/playwright"]?.version;
+  check("@playwright/test: a direct devDependency pinned exactly to the installed playwright version",
+    !!pw && pkg.devDependencies["@playwright/test"] === pw && lock.packages["node_modules/@playwright/test"]?.version === pw);
+}
+
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);
 process.exit(fail === 0 ? 0 : 1);

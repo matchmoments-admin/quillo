@@ -20,12 +20,28 @@ jobs:
           # 22: promptfoo >= 0.124 (bumped in #640 for audit fixes) requires node >= 22.22.
           node-version: "22"
           cache: "npm"
+      # Secrets can't be read in a step `if:` directly, so expose a boolean via env. A fork PR, or a repo
+      # without the key, gets a notice and a clean skip instead of a red eval that failed for want of a key.
+      - name: Check for the eval API key
+        id: key
+        env:
+          HAS_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+        run: |
+          if [ "$HAS_KEY" = "true" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Categorisation eval skipped::ANTHROPIC_API_KEY secret is not set for this run, so the promptfoo eval and its baseline gate were skipped."
+          fi
       - run: npm ci
+        if: steps.key.outputs.present == 'true'
       - name: Run promptfoo eval
+        if: steps.key.outputs.present == 'true'
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           # Absolute floor in addition to the baseline-regression check below.
           PROMPTFOO_PASS_RATE_THRESHOLD: "70"
         run: npm run eval
       - name: Regression gate vs baseline
+        if: steps.key.outputs.present == 'true'
         run: npm run eval:gate

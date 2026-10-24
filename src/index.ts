@@ -1,6 +1,7 @@
 import type { Env, TaxAgentRpc } from "./env";
 import { verifyIngest } from "./ingest/auth";
 import { parseEmail } from "./lib/email";
+import { refuseRetiredMailbox } from "./lib/mailbox-retired";
 import { declaredTooLarge, fileTooLarge, tooLargeMessage, UPLOAD_LIMITS } from "./lib/upload-limits";
 import { userIdFromLocalpart } from "./lib/db";
 import { requireClerk } from "./auth/clerk";
@@ -282,6 +283,8 @@ const handler = {
   // (b) EMAIL ingest — Cloudflare Email Routing delivers here. Tenant is derived
   // server-side from the verified recipient mailbox, not from any client input.
   async email(message: ForwardableEmailMessage, env: Env, _ctx: ExecutionContext): Promise<void> {
+    // mailbox_retired (map #692): bounce before anything is parsed, resolved or stored. OFF ⇒ unchanged.
+    if (refuseRetiredMailbox(env, message)) return;
     // Size ceiling before the MIME parse buffers it (#713). Bounce rather than drop, so a genuine sender
     // learns the message wasn't filed.
     if (fileTooLarge(message.rawSize, "emailRaw")) {

@@ -8131,5 +8131,55 @@ console.log("entity role duplicate guard (#699)");
   );
 }
 
+// ── Map #692: the receipt mailbox is retired (flag mailbox_retired) ─────────────────────────────────────────
+// ON ⇒ email() bounces every message before the MIME parse, the tenant lookup or any DO/R2/D1 write; the SPA's
+// "email them" copy goes. OFF ⇒ the handler and the copy are unchanged. Ingest code and tables are kept.
+{
+  console.log("\nmailbox_retired: the receipt mailbox is retired");
+  const { FEATURE_KEYS: FKmb } = await import("../src/lib/features");
+  const { refuseRetiredMailbox, MAILBOX_RETIRED_REJECT } = await import("../src/lib/mailbox-retired");
+  const prodMb = (/^FEATURES\s*=\s*"([^"]*)"/m.exec(fs.readFileSync("wrangler.toml", "utf8"))?.[1] ?? "").split(",").map((s) => s.trim());
+  check("mailbox_retired: registered in FEATURE_KEYS and ON in wrangler.toml", (FKmb as readonly string[]).includes("mailbox_retired") && prodMb.includes("mailbox_retired"));
+
+  const fakeMsg = () => {
+    const m = { rawSize: 1234, rejected: null as string | null, setReject(r: string) { m.rejected = r; } };
+    return m;
+  };
+  const logs: string[] = [];
+  const origLog = console.log;
+  console.log = (...a: unknown[]) => { logs.push(a.map(String).join(" ")); };
+  const on = fakeMsg(), off = fakeMsg();
+  const refusedOn = refuseRetiredMailbox({ FEATURES: "mailbox_retired" } as unknown as Env, on);
+  const refusedOff = refuseRetiredMailbox({ FEATURES: "" } as unknown as Env, off);
+  console.log = origLog;
+  check("ON ⇒ the message is refused (setReject with the upload-in-app bounce)", refusedOn && on.rejected === MAILBOX_RETIRED_REJECT && /Upload receipts/.test(MAILBOX_RETIRED_REJECT));
+  check("OFF ⇒ not refused, no reject, no extra log (the handler runs as before)", !refusedOff && off.rejected === null && logs.length === 1);
+  check("the log line is one short non-PII line (byte size only, no address)", logs[0] === "email refused: mailbox retired (bytes=1234)" && !/@/.test(logs[0] ?? "@"));
+
+  // src/index.ts can't load under node (cloudflare: imports), so the wiring is checked by source.
+  const idxMb = fs.readFileSync(path.join(process.cwd(), "src/index.ts"), "utf8");
+  const emailBody = idxMb.slice(idxMb.indexOf("async email(message"), idxMb.indexOf("async scheduled("));
+  const guardAt = emailBody.indexOf("if (refuseRetiredMailbox(env, message)) return;");
+  check("email(): the retirement guard is the FIRST statement, before the size check, parseEmail, the tenant lookup and any DO stub",
+    guardAt > 0 && ["fileTooLarge(", "parseEmail(", "userIdFromLocalpart(", "stubFor(", "ingestText(", "classifyAndRoute("].every((t) => emailBody.indexOf(t) > guardAt));
+  check("kept: the ingest path (parseEmail + classifyAndRoute) and tenants.email_localpart stay",
+    /parseEmail\(message\)/.test(emailBody) && /classifyAndRoute\(userId, "email"/.test(emailBody) && /email_localpart/.test(fs.readFileSync("schema.sql", "utf8")));
+
+  const { tabGuide: tabGuideMb } = await import("../web/src/content/tabGuides");
+  const recOff = tabGuideMb("reconcile", undefined).body;
+  const recOn = tabGuideMb("reconcile", undefined, { mailboxRetired: true }).body;
+  check("SPA copy: OFF keeps 'snap or email them'; ON says 'snap or upload them' and never mentions email",
+    /\(snap or email them\)/.test(recOff) && /\(snap or upload them\)/.test(recOn) && !/email/i.test(recOn) && recOff.replace("email", "upload") === recOn);
+  check("SPA: TabGuide passes the flag to the copy",
+    /tabGuide\(tab, data, \{ mailboxRetired: has\("mailbox_retired"\) \}\)/.test(fs.readFileSync(path.join(process.cwd(), "web/src/components/TabGuide.tsx"), "utf8")));
+  const webSrcMb = (dir: string): string[] =>
+    fs.readdirSync(dir, { withFileTypes: true }).flatMap((d) => (d.isDirectory() ? webSrcMb(path.join(dir, d.name)) : /\.tsx?$/.test(d.name) ? [path.join(dir, d.name)] : []));
+  const mailboxCopy = webSrcMb(path.join(process.cwd(), "web", "src")).filter((f) =>
+    fs.readFileSync(f, "utf8").split("\n")
+      .filter((l) => !/mailbox_retired|mailboxRetired/.test(l)) // the retirement wiring itself
+      .some((l) => /receipts\+|\bmailbox\b|email (them|it|your receipts?)|forward (your )?receipts?/i.test(l)));
+  check(`SPA: no other mailbox surface: address, set-up steps, "email your receipts" copy (found: ${mailboxCopy.map((f) => path.relative(process.cwd(), f)).join(",") || "none"})`, mailboxCopy.length === 0);
+}
+
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);
 process.exit(fail === 0 ? 0 : 1);

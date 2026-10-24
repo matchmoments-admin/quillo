@@ -156,13 +156,35 @@ export function writeFixtures(): Record<string, string> {
     second: path.join(dir, "westpac-next-fortnight.csv"),
     bad: path.join(dir, "not-a-statement.csv"),
     oversize: path.join(dir, "oversize-statement.csv"),
+    large: path.join(dir, "large-statement-1500.csv"),
   };
   fs.writeFileSync(f.second, shiftedCsv(14));
   fs.writeFileSync(f.bad, "\u0000\u0001PK\u0003\u0004 this is not a bank statement ÿþ\n");
   // ~12 MB of plausible rows — bigger than any real personal statement export.
   const row = "02/05/2026,OFFICEWORKS 2099 SYDNEY PADDING PADDING PADDING PADDING,45.00,,955.00\n";
   fs.writeFileSync(f.oversize, "Date,Description,Debit,Credit,Balance\n" + row.repeat(Math.ceil((12 * 1024 * 1024) / row.length)));
+  fs.writeFileSync(f.large, largeCsv(LARGE_LINES));
   return f;
+}
+
+/** Lines in the large-import fixture: 38 chunks, so it cannot finish inside the upload request (12). */
+export const LARGE_LINES = 1500;
+
+/**
+ * A plausible 1,500-line statement in FY2026-27 (Jul-Oct 2026, after the journey's lodged year), every
+ * line a distinct debit with a running balance that reconciles, so none is deduplicated or ruled away.
+ */
+function largeCsv(n: number): string {
+  const out = ["Date,Description,Debit,Credit,Balance"];
+  let bal = 500_000_00;
+  for (let i = 0; i < n; i++) {
+    const dt = new Date(Date.UTC(2026, 6, 1 + Math.floor(i / 13)));
+    const amt = 1_00 + ((i * 37) % 9_000);
+    bal -= amt;
+    const d = `${String(dt.getUTCDate()).padStart(2, "0")}/${String(dt.getUTCMonth() + 1).padStart(2, "0")}/${dt.getUTCFullYear()}`;
+    out.push(`${d},CORNER CAFE ${1000 + i} SURRY HILLS,${(amt / 100).toFixed(2)},,${(bal / 100).toFixed(2)}`);
+  }
+  return out.join("\n") + "\n";
 }
 
 async function uploadStatement(page: Page, file: string, bankName?: string) {
@@ -507,6 +529,82 @@ export async function firstTimerJourney(ctx: Ctx, server: QaServer, answers: Set
 
   await context.close();
   return seen;
+}
+
+/**
+ * Review F2 (import_continuation): a statement too big to categorise inside the upload request. Upload a
+ * 1,500-line CSV on Connect, import it, and see the import return straight away with the rest sorting in
+ * the background, the statement show "Sorting X of N" progress, and the DO-alarm chain finish every line.
+ */
+export async function largeImportJourney(ctx: Ctx, fx: Record<string, string>) {
+  const suite = "large-import";
+  const { context, page, probe } = await openPage(ctx);
+  const api = <T = unknown>(m: string, p: string, b?: unknown) => apiCall<T>(ctx.base, m, p, b);
+  type Stmt = { id: string; filename?: string; status: string; total_lines?: number; categorised_count?: number };
+  const mine = async () => {
+    const st = await api<{ statements?: Stmt[] } | Stmt[]>("GET", "/api/statements");
+    const list = Array.isArray(st.data) ? st.data : st.data.statements ?? [];
+    return list.find((s) => /large-statement-1500/.test(s.filename ?? "")) ?? null;
+  };
+
+  await step(ctx, suite, "upload a 1,500-line CSV → 'Read' feedback", { flags: ["ft_journey"] }, async () => {
+    const p = await visit(page, probe, ctx.base, "/connect", ctx.vp);
+    if (p) return p;
+    await uploadStatement(page, fx.large!, "QA Big Bank");
+    const msg = await feedback(page, { text: /Read\. Check it below|already uploaded|couldn't read/i, timeout: 60_000 });
+    if (!msg) return "no feedback";
+    return /couldn't read/i.test(msg) ? `upload failed: ${msg}` : null;
+  });
+
+  await step(ctx, suite, "Import returns quickly and says the rest is sorting in the background", { flags: ["ft_journey"] }, async () => {
+    probe.reset();
+    const btn = page.getByRole("button", { name: /^Import( anyway)?$/ }).first();
+    await btn.waitFor({ timeout: 15_000 });
+    const t0 = Date.now();
+    await btn.click();
+    const msg = await feedback(page, { text: /Imported|didn't go through/i, timeout: 60_000 });
+    const secs = Math.round((Date.now() - t0) / 1000);
+    if (!msg) return "no feedback";
+    if (/didn't go through/i.test(msg)) return msg;
+    if (probe.serverErrors.length) return `5xx: ${probe.serverErrors.join(", ")}`;
+    const toast = await feedback(page, { text: /in the background/i, timeout: 5_000 });
+    return toast ? null : `the import toast didn't say the rest is sorting in the background: "${msg}" (${secs}s)`;
+  });
+
+  await step(ctx, suite, "the statement shows background progress (status 'categorising', part done)", { flags: ["ft_journey"] }, async () => {
+    const s = await mine();
+    if (!s) return "large statement not listed";
+    if (s.status === "imported" && s.categorised_count === s.total_lines) return null; // the chain already finished (fast stub)
+    if (s.status !== "categorising") return `status ${s.status}, expected categorising`;
+    const ui = await feedback(page, { text: /Sorting [\d,]+ of [\d,]+/i, timeout: 10_000 });
+    return ui ? null : `API says categorising ${s.categorised_count}/${s.total_lines} but the page shows no 'Sorting X of N'`;
+  });
+
+  await step(ctx, suite, "the background chain finishes: every line categorised, statement 'imported'", { flags: ["ft_journey"] }, async () => {
+    const deadline = Date.now() + 180_000;
+    let s: Stmt | null = null;
+    while (Date.now() < deadline) {
+      s = await mine();
+      if (s && s.status === "imported" && (s.total_lines ?? 0) >= LARGE_LINES && s.categorised_count === s.total_lines) break;
+      await page.waitForTimeout(2000);
+    }
+    if (!s) return "large statement not listed";
+    if (s.status !== "imported" || s.categorised_count !== s.total_lines || (s.total_lines ?? 0) < LARGE_LINES) {
+      return `after 180s: status ${s.status}, ${s.categorised_count}/${s.total_lines} categorised`;
+    }
+    return null;
+  });
+
+  await step(ctx, suite, "Connect shows the finished import, and a notification says it finished", { flags: ["ft_journey"] }, async () => {
+    const p = await visit(page, probe, ctx.base, "/connect", ctx.vp);
+    if (p) return p;
+    const badge = await feedback(page, { text: /Imported: 1,500 transactions/i, timeout: 10_000 });
+    if (!badge) return "no 'Imported: 1,500 transactions' on Connect";
+    const n = await api<{ notifications?: { body: string }[] } | { body: string }[]>("GET", "/api/notifications");
+    const list = Array.isArray(n.data) ? n.data : n.data.notifications ?? [];
+    return list.some((x) => /Finished categorising 1,[0-9]{3} transactions/.test(x.body)) ? null : "no 'Finished categorising' notification";
+  });
+  await context.close();
 }
 
 /** Billing: renders the wallet, no Stripe call; Settings → Privacy: consent, export, delete-account dry path. */

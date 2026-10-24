@@ -24,6 +24,7 @@ import { withSecurityHeaders, summariseCspReport, logTag, publicErrorMessage, sc
 import { ipRateLimit, userRateLimit, publishAccessSource } from "./lib/access-control";
 import { BACKUP_CRON, runD1Backup } from "./lib/backups";
 import { runBackfillOnce } from "./lib/backfill";
+import { staleJobs } from "./lib/categorise-continuation";
 
 // The DO class must be exported from the Worker's main module for the binding.
 export { TaxAgent } from "./agent";
@@ -439,6 +440,13 @@ const handler = {
     // polling/applying just accounts for it and unblocks the user (so it runs unconditionally).
     const pending = await env.DB.prepare(`SELECT DISTINCT user_id FROM batch_jobs WHERE status = 'submitted'`).all<{ user_id: string }>();
     for (const u of pending.results) await stubFor(env, u.user_id).pollBatchJobs(u.user_id);
+    // import_continuation (F2): a live categorisation chain whose alarm went quiet gets its next hop
+    // re-delivered (idempotent: a hop is due only if nothing committed it). Cheap: one indexed query.
+    if (featureOn(env, "import_continuation")) {
+      for (const p of await staleJobs(env.DB, Date.now())) {
+        await stubFor(env, p.userId).categoriseContinue(p).catch((e) => console.error(`categorise continuation heal failed: ${(e as Error).name}`));
+      }
+    }
 
     // One-time backfills (#724): each runs through runBackfillOnce — a global KV marker
     // (`backfill:<key>:done`) so a finished backfill costs ONE KV read a tick and no D1 scan, KV-cursor

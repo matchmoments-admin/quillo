@@ -294,7 +294,8 @@ export const api = {
     return res.json();
   },
   confirmImport: (statementId: string, force?: boolean, columnMap?: unknown) =>
-    post<{ imported: number; skipped: number }>(`/api/statements/${statementId}/confirm`, { columnMap, force }),
+    // `categorising` (import_continuation): lines left to the background chain; absent when none were.
+    post<{ imported: number; skipped: number; categorising?: number }>(`/api/statements/${statementId}/confirm`, { columnMap, force }),
   confirmImportBulk: (opts?: { statementIds?: string[]; force?: boolean }) =>
     post<{ statements: number; imported: number; skipped: number; errors: { statementId: string; error: string }[] }>(
       "/api/statements/confirm-batch",

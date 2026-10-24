@@ -70,7 +70,12 @@ import {
 import { bankUpstream, cdrAudit, cdrHistory, consentLifecycle, disconnectBankConnection, inactiveEndUserSweep, type DisconnectResult, type InactiveEndUserState, type LifecycleResult } from "./lib/bank-consent";
 import { toBaseCurrency } from "./lib/fx";
 import { spentTodayCents, spentTodayGlobalCents, spentThisMonthGlobalCents, noteMeteringError, usageStatements } from "./lib/usage";
-import { billingPolicy, freeCreditGrantE4 } from "./lib/billing";
+import { billingPolicy, freeCreditGrantE4, budgetRefusal } from "./lib/billing";
+import {
+  categoriseRoute, startCategorisation, runHop, loadJob, hopIsDue, stopJob,
+  BATCH_THRESHOLD, LIVE_MAX_LINES, INLINE_MAX_CHUNKS, MAX_HOP_RETRIES, RETRY_DELAY_SECONDS,
+  type ChainDeps, type HopPayload,
+} from "./lib/categorise-continuation";
 import { parseTransactionAlert } from "./lib/bank-parsers";
 import auV1RulePack from "./rulepacks/au-v1.json";
 import { readRulePackOverride } from "./lib/rulepack";
@@ -83,14 +88,9 @@ const CONFIDENCE_THRESHOLD = 0.85;
 // Backstop on bank-sync alarm continuations (#511). MAX_PAGES_PER_RUN normally ends a run first;
 // this only stops a pathological chain from rescheduling forever.
 const BANK_SYNC_MAX_HOPS = 200;
-// Above this many to-categorise lines, route to the async Message Batches API (~50% cheaper);
-// at or below, categorise synchronously so normal imports stay instant. Used in `auto` mode.
-const BATCH_THRESHOLD = 60;
-// Safety ceiling for forced `live` mode: a synchronous run does one ~5–15s Claude call per 40-line
-// chunk, sequentially, inside a single DO request. Past this many lines that risks DO CPU/time/
-// subrequest limits (e.g. a 1,500-line backfill ≈ 38 calls), so we fall back to batch and record the
-// override rather than time out mid-run. Not a silent cap — the fallback is audited + notified.
-const LIVE_MAX_LINES = 200;
+// BATCH_THRESHOLD (above it, `auto` mode routes to the async Message Batches API, ~50% cheaper) and
+// LIVE_MAX_LINES (the safety ceiling for forced `live` mode: past it the run falls back to batch, audited +
+// notified, rather than time out mid-run) live in src/lib/categorise-continuation.ts with the route decision.
 // Chunks categorised in parallel on the live path when the Batch API is unavailable (Bedrock).
 const LIVE_BEDROCK_CONCURRENCY = 3;
 
@@ -616,7 +616,7 @@ export class TaxAgent extends Agent<Env> {
     }
   }
 
-  async confirmImport(userId: string, statementId: string, _columnMapOverride?: ColumnMap, force?: boolean, quiet?: boolean): Promise<{ imported: number; skipped: number }> {
+  async confirmImport(userId: string, statementId: string, _columnMapOverride?: ColumnMap, force?: boolean, quiet?: boolean): Promise<{ imported: number; skipped: number; categorising?: number }> {
     // LEFT JOIN (not INNER) so a statement whose account was later deleted is still found — the
     // null account_type just falls through to the asset reconcile sign via isLiabilityAccount.
     const stmt = await this.env.DB.prepare(
@@ -736,7 +736,9 @@ export class TaxAgent extends Agent<Env> {
     await this.audit(userId, "statement_imported", JSON.stringify({ statementId, imported, skipped, posted }));
 
     // Batch-categorise the lines that the deterministic pass (rules+hints) didn't cover.
-    const cat = await this.categoriseStatement(userId, statementId);
+    // import_continuation: the multi-statement bulk import (quiet) defers every statement's model work to
+    // the alarm chain, so N statements never stack N inline slices in one request. OFF => the same call.
+    const cat = await this.categoriseStatement(userId, statementId, quiet && featureOn(this.env, "import_continuation") ? { defer: true } : undefined);
     await this.afterLinesImported(userId, { accountId: stmt.account_id, accountType: stmt.account_type });
 
     if (!quiet) {
@@ -746,11 +748,13 @@ export class TaxAgent extends Agent<Env> {
       await this.autoAccountantPassAfterImport(userId, [statementId]);
       await this.notify(
         userId,
-        `Imported ${imported} transaction(s)${skipped ? ` (${skipped} already on file)` : ""}${cat.categorised ? `, categorised ${cat.categorised} with Claude` : ""}.`,
+        `Imported ${imported} transaction(s)${skipped ? ` (${skipped} already on file)` : ""}${cat.categorised ? `, categorised ${cat.categorised} with Claude` : ""}${cat.background ? `; categorising ${cat.background} more in the background` : ""}.`,
         null,
       );
     }
-    return { imported, skipped };
+    // `categorising` only appears when a continuation took lines on (import_continuation), so OFF the
+    // response is byte-identical.
+    return cat.background ? { imported, skipped, categorising: cat.background } : { imported, skipped };
   }
 
   /**
@@ -1201,8 +1205,13 @@ export class TaxAgent extends Agent<Env> {
    * Batch-categorise statement bank lines the deterministic pass left as needs_review.
    * One Claude call per ~40 lines (not per line); budget-aware (stops at MAX_DAILY_COST_CENTS
    * via withinBudget) — over budget the remainder stays needs_review. Bulk jobs go async (Batch API).
+   *
+   * import_continuation (review F2): a tenant who cannot batch (Bedrock) categorises a bounded first
+   * slice here and the rest on a DO-alarm chain (`categoriseContinue`, src/lib/categorise-continuation.ts);
+   * `background` is how many lines that chain took on. `defer` (the multi-statement bulk import) and
+   * `bulk` (the recategorise backfill) do no model work in the request at all. OFF ⇒ unchanged.
    */
-  async categoriseStatement(userId: string, statementId: string, opts?: { bulk?: boolean }): Promise<{ categorised: number }> {
+  async categoriseStatement(userId: string, statementId: string, opts?: { bulk?: boolean; defer?: boolean }): Promise<{ categorised: number; background?: number }> {
     const rows = await this.env.DB.prepare(
       `SELECT id, merchant, amount_cents, txn_date, direction FROM transactions
         WHERE user_id = ? AND statement_id = ? AND kind = 'bank_line' AND status = 'needs_review'`,
@@ -1239,13 +1248,19 @@ export class TaxAgent extends Agent<Env> {
       // per-chunk), regardless of size/mode. Resolve this FIRST so the user-facing copy below tells
       // the truth: a Bedrock tenant must not be told their oversized import "ran in the cheaper batch"
       // when it actually ran live at full price (S2).
+      // The routing itself is categoriseRoute (pure, unit-tested): with import_continuation OFF it is the
+      // exact decision this method always made; ON, a non-batching tenant gets the alarm continuation
+      // instead of the in-request loop. An Anthropic tenant routes the same either way.
       const canBatch = provider !== "bedrock";
       const mode = categoriseMode(this.env, profile);
-      let useBatch = canBatch && (mode === "batch" || (mode === "auto" && items.length > BATCH_THRESHOLD));
-      if (mode === "live" && (opts?.bulk || items.length > LIVE_MAX_LINES)) {
-        useBatch = canBatch;
-        if (!opts?.bulk) {
-          await this.audit(userId, "categorise_mode_fallback", JSON.stringify({ statementId, lines: items.length, from: "live", to: useBatch ? "batch" : "live_chunked", limit: LIVE_MAX_LINES }));
+      const { route, fallback } = categoriseRoute({
+        canBatch, mode, lines: items.length, bulk: !!opts?.bulk, continuation: featureOn(this.env, "import_continuation"),
+      });
+      const useBatch = route === "batch";
+      if (fallback && !opts?.bulk) {
+        await this.audit(userId, "categorise_mode_fallback", JSON.stringify({ statementId, lines: items.length, from: "live", to: useBatch ? "batch" : route === "continuation" ? "continuation" : "live_chunked", limit: LIVE_MAX_LINES }));
+        // The continuation tells the user itself, with the real count, only if lines are actually left over.
+        if (route !== "continuation") {
           await this.notify(
             userId,
             useBatch
@@ -1254,6 +1269,18 @@ export class TaxAgent extends Agent<Env> {
             null,
           );
         }
+      }
+      if (route === "continuation") {
+        const res = await startCategorisation(this.categoriseChainDeps(userId, llm, system, () => this.withinBudget(userId, null)), {
+          statementId,
+          inlineChunks: opts?.bulk || opts?.defer ? 0 : INLINE_MAX_CHUNKS,
+        });
+        if (res.jobId) return { categorised: res.categorised, background: res.background };
+        // Finished inside the request (or stopped on budget): the same tail as the in-request loop.
+        await this.audit(userId, "statement_categorised", JSON.stringify({ statementId, categorised: res.categorised }));
+        await this.stampDeductibility(userId);
+        await this.afterIngestStamped(userId);
+        return { categorised: res.categorised };
       }
       if (useBatch) {
         // Budget gate guards the async path too — Anthropic bills the Batch API at SUBMISSION, so an
@@ -1309,6 +1336,90 @@ export class TaxAgent extends Agent<Env> {
   }
 
   /**
+   * The I/O the categorisation continuation runs on (src/lib/categorise-continuation.ts), bound to this
+   * tenant. The budget gate is passed in by each caller (aiCall runs with budget: "caller"), so every
+   * member that calls the model visibly supplies it (check-units #721).
+   */
+  private categoriseChainDeps(userId: string, llm: LLM, system: string, withinBudget: () => Promise<boolean>): ChainDeps {
+    return {
+      db: this.env.DB,
+      userId,
+      withinBudget,
+      extract: (chunk) => extractBatch(
+        llm,
+        system,
+        chunk.map((c) => ({ merchant: c.merchant ?? "", amount_cents: c.amount_cents ?? 0, date: c.txn_date, direction: c.direction as "debit" | "credit" | null })),
+      ),
+      // S8b redaction on every slice, exactly as the in-request path applies it (rows keep their ids).
+      prepare: (rows) => statementLinesForModel(rows, featureOn(this.env, "redact_statement_lines")),
+      schedule: (delaySeconds, payload) => this.scheduleFor(userId, delaySeconds, "categoriseContinue", payload),
+      notify: (body) => this.notify(userId, body, null),
+      audit: (event, detail) => this.audit(userId, event, detail),
+      // The chain's lines missed the upload request's post-import pipeline, so it runs here once the
+      // chain ends: asset links, deny-by-default deductibility, and the Sort queues for the FYs touched.
+      finalise: async (statementId) => {
+        await this.linkAssetsForUser(userId);
+        await this.stampDeductibility(userId);
+        await this.afterIngestStamped(userId);
+        await this.autoAccountantPassAfterImport(userId, [statementId]).catch(() => {});
+      },
+      budgetReason: () => budgetRefusal(this.env, userId),
+    };
+  }
+
+  /** Serialises continuation hops per job within this DO instance (an alarm retry racing a duplicate). */
+  private categoriseHopsRunning = new Set<string>();
+
+  /**
+   * DO-alarm hop of a statement categorisation (import_continuation, review F2). Scheduled by
+   * categoriseStatement and by itself; the work and the exactly-once rules are runHop's. A duplicate or
+   * stale hop is a no-op (checked BEFORE the gate, so it records no inference). Never throws: the
+   * Agents scheduler swallows callback errors, so a failure here releases the job and tells the user.
+   */
+  async categoriseContinue(payload: HopPayload): Promise<void> {
+    const userId = payload?.userId;
+    const jobId = payload?.jobId;
+    if (!userId || typeof jobId !== "string" || !Number.isInteger(payload?.hop)) return;
+    if (this.categoriseHopsRunning.has(jobId)) return;
+    this.categoriseHopsRunning.add(jobId);
+    const base = { db: this.env.DB, userId, audit: (e: string, d: string) => this.audit(userId, e, d), notify: (b: string) => this.notify(userId, b, null) };
+    try {
+      if (!hopIsDue(await loadJob(this.env.DB, userId, jobId), payload)) return;
+      // The flag is the kill switch: off mid-chain stops it, and the rest stays needs_review.
+      if (!featureOn(this.env, "import_continuation")) {
+        await stopJob(base, jobId, "flag_off", null);
+        return;
+      }
+      const profile = await this.requireProfile(userId);
+      await aiCall<void>(this.aiDeps, {
+        userId, purpose: "categorise_statement", profile, budget: "caller",
+        onConsentRequired: async () => {
+          await stopJob(base, jobId, "consent_required", "Background categorisation stopped: cross-border processing needs your consent. The rest of the statement is imported and waiting in Review.");
+        },
+      }, async (llm) => {
+        const rulePack = await this.loadRulePack(profile.rule_pack_ver);
+        const situation = await getSituation(this.env, userId, profile);
+        const system = this.buildSystemPrompt(rulePack, profile, situation, null);
+        // Budget checked by runHop before every round; a refusal stops the chain and tells the user.
+        await runHop(this.categoriseChainDeps(userId, llm, system, () => this.withinBudget(userId, null)), payload);
+      });
+    } catch (e) {
+      // Setup failed (profile, rule pack, the residency guard in getLLM). Retry the same hop a couple
+      // of times, then release the job so the statement never reads 'categorising' forever.
+      const error = String((e as Error)?.message ?? e).slice(0, 200);
+      const attempt = payload.attempt ?? 0;
+      if (attempt < MAX_HOP_RETRIES) {
+        await this.audit(userId, "categorise_continuation_retry", JSON.stringify({ jobId, hop: payload.hop, attempt: attempt + 1, error })).catch(() => {});
+        await this.scheduleFor(userId, RETRY_DELAY_SECONDS, "categoriseContinue", { ...payload, attempt: attempt + 1 }).catch(() => {});
+      } else {
+        await stopJob(base, jobId, `error: ${error}`, "Background categorisation stopped. The rest of the statement is imported and waiting in Review.").catch(() => {});
+      }
+    } finally {
+      this.categoriseHopsRunning.delete(jobId);
+    }
+  }
+
+  /**
    * Backfill: re-categorise bank lines imported under OLDER rules so the new buckets (income_*,
    * refund, asset) apply. Only the clearly-mishandled rows are re-queued — credits stranded with
    * no bucket (they were invisible) and 'unknown' lines — then the normal per-statement pipeline
@@ -1336,20 +1447,23 @@ export class TaxAgent extends Agent<Env> {
     // Skip statements that already have an in-flight batch (status 'submitted'): re-submitting their
     // lines would create a SECOND batch and Anthropic bills per submission, so the same work is paid
     // for twice (C6). The pending batch will categorise these lines; a later backfill tick re-queues
-    // anything it leaves behind once the job has been applied/failed.
+    // anything it leaves behind once the job has been applied/failed. A running live continuation
+    // ('continuing', import_continuation) is skipped for the same reason: its chain covers those lines.
     const stmts = await this.env.DB.prepare(
       `SELECT DISTINCT t.statement_id FROM transactions t
         WHERE t.user_id = ? AND t.kind = 'bank_line' AND t.status = 'needs_review' AND t.statement_id IS NOT NULL
           AND NOT EXISTS (
             SELECT 1 FROM batch_jobs b
-             WHERE b.user_id = t.user_id AND b.statement_id = t.statement_id AND b.status = 'submitted'
+             WHERE b.user_id = t.user_id AND b.statement_id = t.statement_id AND b.status IN ('submitted', 'continuing')
           )`,
     )
       .bind(userId)
       .all<{ statement_id: string }>();
     let count = 0;
     for (const s of stmts.results ?? []) {
-      await this.categoriseStatement(userId, s.statement_id, { bulk: true }); // bulk → batch (never long sync runs)
+      // bulk → the Anthropic batch, or (import_continuation, Bedrock) the DO-alarm continuation: never a
+      // long in-request run. Without the flag a Bedrock tenant still runs live here (the old F2 gap).
+      await this.categoriseStatement(userId, s.statement_id, { bulk: true });
       count++;
     }
     await this.linkAssetsForUser(userId); // link any capital purchases the sync path just bucketed

@@ -208,9 +208,18 @@ Rolling forward again later is the step 7 flip; the pinned rows keep `bedrock` e
 > **same** region and profile; they never reroute. Each retry logs `bedrock_retry` to Workers Logs. Each
 > attempt has a 300s timeout, and a timeout is not retried (the first request may still be billing).
 >
-> **Large imports:** with no Batch API, a Bedrock statement import categorises live in the upload
-> request, three 40-line chunks at a time. Moving very large imports (1,000+ lines) onto a DO-alarm
-> continuation is tracked separately.
+> **Large imports:** with no Batch API, a Bedrock statement import categorises live, three 40-line
+> chunks at a time. With `import_continuation` ON, the upload request does at most 12 chunks (480 lines,
+> or 25 s) and returns "categorising N more in the background"; the rest runs on a DO-alarm chain
+> (`TaxAgent.categoriseContinue`, `src/lib/categorise-continuation.ts`), 6 chunks per hop. The state is in
+> D1: a `batch_jobs` row with status `continuing` holds the cursor, and the statement reads `categorising`,
+> so Connect and Accounts show "Sorting X of N" until it flips back to `imported`. Each hop checks the
+> budget before every round; a refusal stops the chain, leaves the rest `needs_review` and notifies the
+> user. Hops are idempotent (a duplicate or stale alarm does nothing) and each line is categorised once.
+> The */10 cron re-delivers a chain with no progress for 15 minutes. The recategorise backfill and the
+> multi-statement bulk import use the same chain, with no model work in the request. Anthropic tenants are
+> unchanged (batch above 60 lines). With the flag OFF, a Bedrock import runs in the request as before and
+> a 2,000-line import can pass the ~100 s edge timeout.
 >
 > **Currency:** the spend caps and `daily_cost` are in USD at the rate card, but AWS invoices Bedrock in
 > AUD, so the invoice reads about 1.5× the dashboard figure. The user's wallet is AUD too, so each debit
@@ -228,7 +237,8 @@ Rolling forward again later is the step 7 flip; the pinned rows keep `bedrock` e
 > Compare an AUD budget (such as AWS credits) with the AUD column, not the USD one.
 
 > **Note:** Bedrock has no Anthropic Batch API, so Bedrock tenants always categorise in **live**
-> mode (sequential per-chunk) — large imports run synchronously rather than via the async batch.
+> mode, never via the async batch. Large imports finish on the DO-alarm continuation (see
+> "Large imports" above).
 
 ---
 

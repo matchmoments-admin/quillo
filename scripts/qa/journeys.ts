@@ -411,7 +411,10 @@ export async function firstTimerJourney(ctx: Ctx, server: QaServer, answers: Set
       if (probe.problems().length) return probe.problems().join("; ");
       if (!fb) return "no 'recorded' feedback after one tap";
       if (!/\(recorded late\)/i.test(fb)) return `a late week's feedback doesn't say it was recorded late (${fb})`;
-      return /set by your hours diary/i.test(await main.innerText()) ? null : "hours figure not shown as set by the diary";
+      // The figure re-renders when the diary query refetches after the save, which is slower on a CI runner:
+      // wait for it rather than reading the page once.
+      const set = await main.getByText(/set by your hours diary/i).first().waitFor({ state: "visible", timeout: 8000 }).then(() => true, () => false);
+      return set ? null : "hours figure not shown as set by the diary";
     });
     await step(ctx, suite, "WFH diary (API): a late week needs a source; the counted total is the WFH hours figure; CSV export", {}, async () => {
       if (!uiRan) {

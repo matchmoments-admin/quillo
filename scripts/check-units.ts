@@ -8990,6 +8990,13 @@ console.log("tenantDb: the tenant is spliced in by the handle, never bound by th
   check("plan: multi-row INSERT finds the slot in every tuple", JSON.stringify(tenantPlan(`INSERT INTO t (user_id, id) VALUES (?, ?), (?, ?)`).tenant) === "[0,2]");
   check("plan: a ? inside a string literal or comment is not a placeholder", tenantPlan(`SELECT '?' AS q FROM t WHERE user_id = ? -- why?\n AND k = ?`).total === 2);
   check("plan: user_id IN (?) is NOT a tenant predicate", tenantPlan(`SELECT 1 FROM t WHERE user_id IN (?)`).tenant.length === 0);
+  // Review hardening: a comment inside a VALUES tuple must not shift the tenant slot (it would write the
+  // tenant id into another column), and a negated predicate is not a scope.
+  check("plan: a /* comment */ with commas inside a VALUES tuple doesn't shift the user_id slot",
+    JSON.stringify(tenantPlan(`INSERT INTO t (a, b, user_id) VALUES (? /* a, b */, ?, ?)`).tenant) === "[2]");
+  check("plan: a -- comment with an apostrophe inside VALUES doesn't derail the tuple parse",
+    JSON.stringify(tenantPlan(`INSERT INTO t (a, user_id) VALUES (? -- don't\n, ?)`).tenant) === "[1]");
+  check("plan: NOT user_id = ? is refused (it reads every other tenant)", (() => { try { tenantPlan(`SELECT 1 FROM t WHERE NOT user_id = ?`); return false; } catch (e) { return e instanceof TenantScopeError; } })());
 
   const d = schemaDb();
   const env = { DB: d } as unknown as Env;

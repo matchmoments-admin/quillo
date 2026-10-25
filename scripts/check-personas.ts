@@ -6,7 +6,7 @@
 // can't run workerd, so this is the closest we get to a live report without prod/a browser session).
 //
 // Run: npx tsx scripts/check-personas.ts
-import { DatabaseSync } from "node:sqlite";
+import { migratedDb } from "./lib/d1-sqlite";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -53,31 +53,12 @@ import { statementLinesForModel } from "../src/lib/redact";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
 
-// ── Minimal D1 shim over node:sqlite (async surface buildReport uses) ──
-class D1Stmt {
-  private params: unknown[] = [];
-  constructor(private db: DatabaseSync, private sql: string) {}
-  bind(...args: unknown[]) { this.params = args.map((a) => (a === undefined ? null : a)); return this; }
-  async all<T = unknown>() { return { results: this.db.prepare(this.sql).all(...(this.params as never[])) as T[], success: true, meta: {} }; }
-  async first<T = unknown>() { return (this.db.prepare(this.sql).get(...(this.params as never[])) as T) ?? null; }
-  async run() { const r = this.db.prepare(this.sql).run(...(this.params as never[])); return { success: true, meta: { changes: Number(r.changes ?? 0) } }; }
-  // Real D1 .batch() returns each statement's full result (SELECTs carry `.results`); mirror that so
-  // batched SELECTs (e.g. the delete-integrity guard) resolve correctly under the shim.
-  async settle() { return /^\s*(select|with)/i.test(this.sql) ? this.all() : this.run(); }
-}
-class D1 {
-  constructor(private db: DatabaseSync) {}
-  prepare(sql: string) { return new D1Stmt(this.db, sql); }
-  async batch(stmts: D1Stmt[]) { const out = []; for (const s of stmts) out.push(await s.settle()); return out; }
-}
 
-const db = new DatabaseSync(":memory:");
-// Apply every migration in lexical order (same chain the drift guard validates).
-for (const f of fs.readdirSync(path.join(root, "migrations")).filter((f) => f.endsWith(".sql")).sort()) {
-  db.exec(fs.readFileSync(path.join(root, "migrations", f), "utf8"));
-}
+// Every migration in lexical order (the chain the drift guard validates), behind the shared D1 adapter.
+const d1 = migratedDb();
+const db = d1.sqlite;
 
-const env = { DB: new D1(db), FEATURES: "attribution_engine,position_excludes_nondeductible,wfh_car_methods,car_methods,refund_netting,income_dedupe,cgt_engine,ess_engine,gst_bas,car_logbook,trust_distributions,partnership_distributions,smsf_engine,accountant_schedule,jurisdiction_period,currency_base,position_confirmed_range" } as unknown as Env;
+const env = { DB: d1, FEATURES: "attribution_engine,position_excludes_nondeductible,wfh_car_methods,car_methods,refund_netting,income_dedupe,cgt_engine,ess_engine,gst_bas,car_logbook,trust_distributions,partnership_distributions,smsf_engine,accountant_schedule,jurisdiction_period,currency_base,position_confirmed_range" } as unknown as Env;
 
 // tiny seed helper
 const run = (sql: string, ...p: unknown[]) => db.prepare(sql).run(...(p as never[]));

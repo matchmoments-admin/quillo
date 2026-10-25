@@ -3103,6 +3103,7 @@ console.log("token-crypto (QBO envelope encryption)");
 import { sealTokenPair, tokenStorageBlocked, TokenKeyMissingError, isPlaintextEncVer, looksSealedWith, TOKEN_STORAGE_BLOCKED_MESSAGE } from "../src/lib/token-crypto";
 import { backfillQboTokens } from "../src/lib/qbo-token-backfill";
 import { DatabaseSync } from "node:sqlite";
+import { SqliteD1, migratedDb, schemaDb } from "./lib/d1-sqlite";
 
 console.log("token-crypto fail-closed + QBO token backfill (#637)");
 {
@@ -3152,15 +3153,7 @@ console.log("token-crypto fail-closed + QBO token backfill (#637)");
   db.exec(`CREATE TABLE qbo_connections (user_id TEXT PRIMARY KEY, realm_id TEXT NOT NULL, access_token TEXT,
     access_expires_at TEXT, refresh_token TEXT NOT NULL, refresh_expires_at TEXT, updated_at TEXT NOT NULL DEFAULT (datetime('now')));`);
   db.exec(fs.readFileSync(path.join(process.cwd(), "migrations", "0014_qbo_token_enc.sql"), "utf8"));
-  class Stmt {
-    private p: unknown[] = [];
-    constructor(private sql: string) {}
-    bind(...a: unknown[]) { this.p = a.map((x) => (x === undefined ? null : x)); return this; }
-    async all<T>() { return { results: db.prepare(this.sql).all(...(this.p as never[])) as T[] }; }
-    async first<T>() { return (db.prepare(this.sql).get(...(this.p as never[])) as T) ?? null; }
-    async run() { const r = db.prepare(this.sql).run(...(this.p as never[])); return { meta: { changes: Number(r.changes) } }; }
-  }
-  const DB = { prepare: (s: string) => new Stmt(s) } as unknown as D1Database;
+  const DB = new SqliteD1(db) as unknown as D1Database;
   const ins = (u: string, a: string | null, r: string, v: number) =>
     db.prepare(`INSERT INTO qbo_connections (user_id, realm_id, access_token, refresh_token, enc_ver) VALUES (?, 'realm', ?, ?, ?)`).run(u, a, r, v);
   ins("plain-1", "acc-1", "ref-1", 0);
@@ -3210,7 +3203,7 @@ console.log("token-crypto fail-closed + QBO token backfill (#637)");
   const racyDB = {
     prepare: (s: string) => {
       if (/^\s*UPDATE/i.test(s)) db.prepare(`UPDATE qbo_connections SET refresh_token = 'rotated' WHERE user_id = 'racy'`).run();
-      return new Stmt(s);
+      return (DB as unknown as SqliteD1).prepare(s);
     },
   } as unknown as D1Database;
   const run3 = await backfillQboTokens({ ...keyed, DB: racyDB }, { dryRun: false });
@@ -4273,23 +4266,9 @@ console.log("bank feed — bounded resumable sync (#511)");
   check("syncWindow: ordinary wall unchanged", syncWindow("2024-07-01", "2025-06-30", "2026-08-05")?.from === "2024-08-05");
 
   // ── In-memory D1 shim (same shape as scripts/e2e-journey.ts).
-  class Stmt {
-    private params: unknown[] = [];
-    constructor(private db: DatabaseSync, private sql: string) {}
-    bind(...a: unknown[]) { this.params = a.map((x) => (x === undefined ? null : x)); return this; }
-    async all<T>() { return { results: this.db.prepare(this.sql).all(...(this.params as never[])) as T[], success: true, meta: {} }; }
-    async first<T>() { return (this.db.prepare(this.sql).get(...(this.params as never[])) as T) ?? null; }
-    async run() { const r = this.db.prepare(this.sql).run(...(this.params as never[])); return { success: true, meta: { changes: Number(r.changes ?? 0) } }; }
-    async settle() { return /^\s*(select|with)/i.test(this.sql) ? this.all() : this.run(); }
-  }
-  const sqlite = new DatabaseSync(":memory:");
-  const migDir = nodePath.join(process.cwd(), "migrations");
-  for (const f of nodeFs.readdirSync(migDir).filter((f) => f.endsWith(".sql")).sort()) sqlite.exec(nodeFs.readFileSync(nodePath.join(migDir, f), "utf8"));
-  let batches = 0;
-  const db = {
-    prepare: (sql: string) => new Stmt(sqlite, sql),
-    batch: async (s: Stmt[]) => { batches++; const out = []; for (const x of s) out.push(await x.settle()); return out; },
-  } as unknown as D1Database;
+  const d1Feed = migratedDb();
+  const sqlite = d1Feed.sqlite;
+  const db = d1Feed as unknown as D1Database;
   const q = <T>(sql: string, ...p: unknown[]) => sqlite.prepare(sql).all(...(p as never[])) as T[];
   const U = "u511";
   sqlite.prepare(`INSERT INTO bank_connections (id, user_id, provider_connection_id, status) VALUES ('c1', ?, 'pc1', 'active')`).run(U);
@@ -4414,9 +4393,9 @@ console.log("bank feed — bounded resumable sync (#511)");
   // ── Per-step D1 work is bounded: one batch per ≤50-row chunk per page, so a 500-row page is 10.
   {
     const big = Array.from({ length: 500 }, (_, i) => txn(`big-${i}`, `MERCHANT ${i}`, 100 + i));
-    const b0 = batches;
+    const b0 = d1Feed.batches;
     const s8 = await syncRunStep(deps(fakeTransport({ start: page(big, null) })), run8!, 20);
-    check("a 500-row page costs 10 D1 batches (bounded, not one per row)", batches - b0 === 10 && s8.importedThisStep === 500);
+    check("a 500-row page costs 10 D1 batches (bounded, not one per row)", d1Feed.batches - b0 === 10 && s8.importedThisStep === 500);
     await finishRun(db, U, run8!, { status: "ok", error: null, correlationId: null });
   }
 
@@ -4844,32 +4823,11 @@ import { purgeTenant as purgeTenantForBank } from "../src/lib/retention";
 import { deleteBasiqConnection } from "../src/lib/basiq";
 console.log("bank consent lifecycle (#576)");
 {
-  class BStmt {
-    private params: unknown[] = [];
-    constructor(private db: DatabaseSync, private sql: string) {}
-    bind(...args: unknown[]) { this.params = args.map((a) => (a === undefined ? null : a)); return this; }
-    async all<T = unknown>() { return { results: this.db.prepare(this.sql).all(...(this.params as never[])) as T[], success: true, meta: {} }; }
-    async first<T = unknown>() { return (this.db.prepare(this.sql).get(...(this.params as never[])) as T) ?? null; }
-    async run() { const r = this.db.prepare(this.sql).run(...(this.params as never[])); return { success: true, meta: { changes: Number(r.changes ?? 0) } }; }
-    async settle() { return /^\s*(select|with)/i.test(this.sql) ? this.all() : this.run(); }
-  }
-  class BD1 {
-    constructor(private db: DatabaseSync) {}
-    prepare(sql: string) { return new BStmt(this.db, sql); }
-    // Atomic like D1's batch: one failure rolls the whole batch back.
-    async batch(stmts: BStmt[]) {
-      this.db.exec("BEGIN");
-      try { const out = []; for (const s of stmts) out.push(await s.settle()); this.db.exec("COMMIT"); return out; }
-      catch (e) { this.db.exec("ROLLBACK"); throw e; }
-    }
-  }
-  const bdb = new DatabaseSync(":memory:");
-  for (const f of fs.readdirSync(path.join(process.cwd(), "migrations")).filter((f) => f.endsWith(".sql")).sort()) {
-    bdb.exec(fs.readFileSync(path.join(process.cwd(), "migrations", f), "utf8"));
-  }
+  const bD1 = migratedDb();
+  const bdb = bD1.sqlite;
   const fakeR2 = { list: async () => ({ objects: [], truncated: false }), delete: async () => {} };
   const fakeKv = { delete: async () => {}, list: async () => ({ keys: [], list_complete: true }), get: async () => null, put: async () => {} };
-  const benv = { DB: new BD1(bdb), RECEIPTS: fakeR2, RULES: fakeKv } as unknown as Env;
+  const benv = { DB: bD1, RECEIPTS: fakeR2, RULES: fakeKv } as unknown as Env;
   const q = <T,>(sql: string, ...p: unknown[]) => bdb.prepare(sql).get(...(p as never[])) as T;
   const n = (sql: string, ...p: unknown[]) => (q<{ n: number }>(sql, ...p)).n;
   const ins = (sql: string, ...p: unknown[]) => bdb.prepare(sql).run(...(p as never[]));
@@ -5979,17 +5937,7 @@ import { latestSyncRuns } from "../src/lib/bank-sync";
     const sq = new DatabaseSync(":memory:");
     const mig = nodePath.join(process.cwd(), "migrations");
     for (const fn of nodeFs.readdirSync(mig).filter((x) => x.endsWith(".sql")).sort()) sq.exec(nodeFs.readFileSync(nodePath.join(mig, fn), "utf8"));
-    const mk = (sql: string) => {
-      let ps: unknown[] = [];
-      const st = {
-        bind: (...a: unknown[]) => { ps = a.map((x) => (x === undefined ? null : x)); return st; },
-        all: async () => ({ results: sq.prepare(sql).all(...(ps as never[])), success: true, meta: {} }),
-        first: async () => sq.prepare(sql).get(...(ps as never[])) ?? null,
-        run: async () => ({ success: true, meta: { changes: Number(sq.prepare(sql).run(...(ps as never[])).changes ?? 0) } }),
-      };
-      return st;
-    };
-    const cdb = { prepare: mk } as unknown as D1Database;
+    const cdb = new SqliteD1(sq) as unknown as D1Database;
     const ins = (sql: string, ...a: unknown[]) => sq.prepare(sql).run(...(a as never[]));
     ins(`INSERT INTO bank_connections (id, user_id, provider_connection_id, status, institution) VALUES ('k1','u586','p1','active','Hooli'), ('k2','u586','p2','revoked','Gone'), ('k3','other','p3','active','Theirs'), ('k4','u586','p4','active','Slow')`);
     ins(`INSERT INTO bank_sync_runs (id, user_id, connection_id, status, imported, created_at) VALUES ('r1','u586','k1','failed',0,'2026-10-01 00:00:00'), ('r2','u586','k1','ok',156,'2026-10-02 00:00:00'), ('r3','u586','k2','ok',9,'2026-10-02 00:00:00'), ('r4','other','k3','running',1,datetime('now'))`);
@@ -6098,15 +6046,7 @@ import {
   const sqlite = new DatabaseSync(":memory:");
   const migDir = nodePath.join(process.cwd(), "migrations");
   for (const f of nodeFs.readdirSync(migDir).filter((f) => f.endsWith(".sql")).sort()) sqlite.exec(nodeFs.readFileSync(nodePath.join(migDir, f), "utf8"));
-  class GStmt {
-    private params: unknown[] = [];
-    constructor(private sql: string) {}
-    bind(...a: unknown[]) { this.params = a.map((x) => (x === undefined ? null : x)); return this; }
-    async all<T>() { return { results: sqlite.prepare(this.sql).all(...(this.params as never[])) as T[], success: true, meta: {} }; }
-    async first<T>() { return (sqlite.prepare(this.sql).get(...(this.params as never[])) as T) ?? null; }
-    async run() { const r = sqlite.prepare(this.sql).run(...(this.params as never[])); return { success: true, meta: { changes: Number(r.changes ?? 0) } }; }
-  }
-  const genv = (features = "ft_journey") => ({ DB: { prepare: (sql: string) => new GStmt(sql) }, FEATURES: features }) as never;
+  const genv = (features = "ft_journey") => ({ DB: new SqliteD1(sqlite), FEATURES: features }) as never;
   const OWNER = "u_owner", NEW = "u_new";
   for (const [i, label] of ["Rental A", "Rental B", "Dad's place"].entries()) sqlite.prepare(`INSERT INTO properties (id, user_id, label) VALUES (?, ?, ?)`).run(`p${i}`, OWNER, label);
   sqlite.prepare(`INSERT INTO assets (id, user_id, label, asset_class, cost_cents, acquired_date) VALUES ('a1', ?, 'Oven', 'div40_plant', 100000, '2024-08-01')`).run(OWNER);
@@ -6680,18 +6620,9 @@ console.log("bank feed — provider seam + Fiskil adapter");
   // transport, into an in-memory D1 with every migration. Two pages, checkpoint, resume, re-sync.
   _resetFiskilTokenCache();
   {
-    class S {
-      private params: unknown[] = [];
-      constructor(private db: DatabaseSync, private sql: string) {}
-      bind(...a: unknown[]) { this.params = a.map((x) => (x === undefined ? null : x)); return this; }
-      async all<T>() { return { results: this.db.prepare(this.sql).all(...(this.params as never[])) as T[], success: true, meta: {} }; }
-      async first<T>() { return (this.db.prepare(this.sql).get(...(this.params as never[])) as T) ?? null; }
-      async run() { const r = this.db.prepare(this.sql).run(...(this.params as never[])); return { success: true, meta: { changes: Number(r.changes ?? 0) } }; }
-      async settle() { return /^\s*(select|with)/i.test(this.sql) ? this.all() : this.run(); }
-    }
     const sq = new DatabaseSync(":memory:");
     for (const f of fs.readdirSync(path.join(process.cwd(), "migrations")).filter((f) => f.endsWith(".sql")).sort()) sq.exec(fs.readFileSync(path.join(process.cwd(), "migrations", f), "utf8"));
-    const db = { prepare: (sql: string) => new S(sq, sql), batch: async (s: S[]) => { const out = []; for (const x of s) out.push(await x.settle()); return out; } } as unknown as D1Database;
+    const db = new SqliteD1(sq) as unknown as D1Database;
     const UF = "u-fiskil";
     sq.prepare(`INSERT INTO bank_connections (id, user_id, provider, provider_user_id, provider_connection_id, institution_id, status) VALUES ('fc1', ?, 'fiskil', 'eu1', 'arr_live', '88888', 'active')`).run(UF);
     sq.prepare(`INSERT INTO bank_connection_accounts (id, user_id, connection_id, provider_account_id, account_id, selected) VALUES ('fb1', ?, 'fc1', 'acc-1', 'accF', 1)`).run(UF);
@@ -6745,14 +6676,6 @@ import {
 } from "../src/lib/security-dashboard";
 console.log("security & compliance dashboard (#636)");
 {
-  class Stmt {
-    private params: unknown[] = [];
-    constructor(private db: DatabaseSync, private sql: string) {}
-    bind(...a: unknown[]) { this.params = a.map((x) => (x === undefined ? null : x)); return this; }
-    async all<T>() { return { results: this.db.prepare(this.sql).all(...(this.params as never[])) as T[], success: true, meta: {} }; }
-    async first<T>() { return (this.db.prepare(this.sql).get(...(this.params as never[])) as T) ?? null; }
-    async run() { const r = this.db.prepare(this.sql).run(...(this.params as never[])); return { success: true, meta: { changes: Number(r.changes ?? 0) } }; }
-  }
   const sq = new DatabaseSync(":memory:");
   const migDir = nodePath.join(process.cwd(), "migrations");
   for (const f of nodeFs.readdirSync(migDir).filter((f) => f.endsWith(".sql")).sort()) sq.exec(nodeFs.readFileSync(nodePath.join(migDir, f), "utf8"));
@@ -6765,7 +6688,7 @@ console.log("security & compliance dashboard (#636)");
   sq.prepare(`INSERT INTO cdr_audit_log (id, user_id, connection_id, event, detail) VALUES ('a1', 'u1', 'c1', 'consent_granted', '{"note":"SECRET DETAIL"}')`).run();
   sq.prepare(`INSERT INTO cdr_audit_log (id, user_id, connection_id, event) VALUES ('a2', 'u1', 'c1', 'consent_withdrawn')`).run();
   sq.prepare(`INSERT INTO bank_sync_runs (id, user_id, connection_id, status, error) VALUES ('r1', 'u1', 'c1', 'failed', 'SECRET SYNC ERROR')`).run();
-  const db = { prepare: (sql: string) => new Stmt(sq, sql) } as unknown as D1Database;
+  const db = new SqliteD1(sq) as unknown as D1Database;
   const kvStore = new Map<string, string>();
   let kvOps = 0;
   const kv = {
@@ -7285,20 +7208,12 @@ console.log("access control: admin MFA + API rate limiting + Clerk cutover seams
   check("mfa gate: flag ON + no mfa ⇒ 403 with code + clear message", blk?.status === 403 && blkBody?.code === "admin_mfa_required" && blkBody.error === ADMIN_MFA_MESSAGE);
 
   // ── The seam in handleApi: every /api/admin/* route, after isAdmin ──
-  class Stmt {
-    private params: unknown[] = [];
-    constructor(private db: DatabaseSync, private sql: string) {}
-    bind(...a: unknown[]) { this.params = a.map((x) => (x === undefined ? null : x)); return this; }
-    async all<T>() { return { results: this.db.prepare(this.sql).all(...(this.params as never[])) as T[], success: true, meta: {} }; }
-    async first<T>() { return (this.db.prepare(this.sql).get(...(this.params as never[])) as T) ?? null; }
-    async run() { const r = this.db.prepare(this.sql).run(...(this.params as never[])); return { success: true, meta: { changes: Number(r.changes ?? 0) } }; }
-  }
   const sq = new DatabaseSync(":memory:");
   const migDir = nodePath.join(process.cwd(), "migrations");
   for (const f of nodeFs.readdirSync(migDir).filter((f) => f.endsWith(".sql")).sort()) sq.exec(nodeFs.readFileSync(nodePath.join(migDir, f), "utf8"));
   sq.prepare(`INSERT INTO profiles (user_id, roles, email) VALUES ('adm1', '["individual","admin"]', 'founder@example.com')`).run();
   sq.prepare(`INSERT INTO profiles (user_id, roles, email) VALUES ('u1', '["individual"]', 'secret.person@example.com')`).run();
-  const db = { prepare: (sql: string) => new Stmt(sq, sql), batch: async (s: Stmt[]) => Promise.all(s.map((x) => x.run())) } as unknown as D1Database;
+  const db = new SqliteD1(sq) as unknown as D1Database;
   const kvStore = new Map<string, string>();
   const kv = {
     get: async (k: string) => kvStore.get(k) ?? null,
@@ -7369,29 +7284,9 @@ import { SHRINKABLE_WHERE } from "../src/lib/minimise";
 console.log("security sweep #694: cross-tenant foreign ids are refused on write");
 {
   const { setAttributions } = await import("../src/lib/attribution-write");
-  class FStmt {
-    private params: unknown[] = [];
-    constructor(private db: DatabaseSync, private sql: string) {}
-    bind(...args: unknown[]) { this.params = args.map((a) => (a === undefined ? null : a)); return this; }
-    async all<T = unknown>() { return { results: this.db.prepare(this.sql).all(...(this.params as never[])) as T[], success: true, meta: {} }; }
-    async first<T = unknown>() { return (this.db.prepare(this.sql).get(...(this.params as never[])) as T) ?? null; }
-    async run() { const r = this.db.prepare(this.sql).run(...(this.params as never[])); return { success: true, meta: { changes: Number(r.changes ?? 0) } }; }
-    async settle() { return /^\s*(select|with)/i.test(this.sql) ? this.all() : this.run(); }
-  }
-  class FD1 {
-    constructor(private db: DatabaseSync) {}
-    prepare(sql: string) { return new FStmt(this.db, sql); }
-    async batch(stmts: FStmt[]) {
-      this.db.exec("BEGIN");
-      try { const out = []; for (const s of stmts) out.push(await s.settle()); this.db.exec("COMMIT"); return out; }
-      catch (e) { this.db.exec("ROLLBACK"); throw e; }
-    }
-  }
-  const fdb = new DatabaseSync(":memory:");
-  for (const f of fs.readdirSync(path.join(process.cwd(), "migrations")).filter((f) => f.endsWith(".sql")).sort()) {
-    fdb.exec(fs.readFileSync(path.join(process.cwd(), "migrations", f), "utf8"));
-  }
-  const fenv = { DB: new FD1(fdb) } as unknown as Env;
+  const fD1 = migratedDb();
+  const fdb = fD1.sqlite;
+  const fenv = { DB: fD1 } as unknown as Env;
   const ins = (sql: string, ...p: unknown[]) => fdb.prepare(sql).run(...(p as never[]));
   ins(`INSERT INTO entities (id, user_id, kind, name) VALUES ('ent_a', 'ua', 'individual', 'A self'), ('ent_b', 'ub', 'company', 'B Pty Ltd')`);
   ins(`INSERT INTO income_activities (id, user_id, activity_type, entity_id) VALUES ('ia_a', 'ua', 'business', 'ent_a'), ('ia_b', 'ub', 'business', 'ent_b')`);
@@ -7485,16 +7380,7 @@ console.log("bank minimisation — SHRINKABLE_WHERE + feed tombstones (#581)");
   for (const [why, link] of linked) { const id = line(); link(id); check(`SHRINKABLE never matches a line with ${why}`, !matches(id)); }
 
   // Feed re-sync: a tombstoned provider transaction is skipped only with honourTombstones (flag ON).
-  class Stmt2 {
-    private params: unknown[] = [];
-    constructor(private sql: string) {}
-    bind(...a: unknown[]) { this.params = a.map((x) => (x === undefined ? null : x)); return this; }
-    async all<T>() { return { results: sq.prepare(this.sql).all(...(this.params as never[])) as T[], success: true, meta: {} }; }
-    async first<T>() { return (sq.prepare(this.sql).get(...(this.params as never[])) as T) ?? null; }
-    async run() { const r = sq.prepare(this.sql).run(...(this.params as never[])); return { success: true, meta: { changes: Number(r.changes ?? 0) } }; }
-    async settle() { return /^\s*(select|with)/i.test(this.sql) ? this.all() : this.run(); }
-  }
-  const fdb = { prepare: (s: string) => new Stmt2(s), batch: async (s: Stmt2[]) => { const o = []; for (const x of s) o.push(await x.settle()); return o; } } as unknown as D1Database;
+  const fdb = new SqliteD1(sq) as unknown as D1Database;
   sq.prepare(`INSERT INTO bank_connections (id, user_id, provider_connection_id, status) VALUES ('c', ?, 'pc', 'active')`).run(U);
   const tFp = await feedFingerprint("shrunk-1");
   sq.prepare(`INSERT INTO bank_line_tombstones (user_id, account_id, line_fingerprint, fy) VALUES (?, 'a', ?, '2025-26')`).run(U, tFp);
@@ -8438,15 +8324,7 @@ console.log("WFH diary keeps hours recorded before it (F6)");
   const sqlite = new DatabaseSync(":memory:");
   const migDir = nodePath.join(process.cwd(), "migrations");
   for (const f of nodeFs.readdirSync(migDir).filter((f) => f.endsWith(".sql")).sort()) sqlite.exec(nodeFs.readFileSync(nodePath.join(migDir, f), "utf8"));
-  class FStmt {
-    private params: unknown[] = [];
-    constructor(private sql: string) {}
-    bind(...a: unknown[]) { this.params = a.map((x) => (x === undefined ? null : x)); return this; }
-    async all<T>() { return { results: sqlite.prepare(this.sql).all(...(this.params as never[])) as T[], success: true, meta: {} }; }
-    async first<T>() { return (sqlite.prepare(this.sql).get(...(this.params as never[])) as T) ?? null; }
-    async run() { const r = sqlite.prepare(this.sql).run(...(this.params as never[])); return { success: true, meta: { changes: Number(r.changes ?? 0) } }; }
-  }
-  const fenv = { DB: { prepare: (sql: string) => new FStmt(sql) }, FEATURES: "wfh_weekly_diary" } as never;
+  const fenv = { DB: new SqliteD1(sqlite), FEATURES: "wfh_weekly_diary" } as never;
   const at = (iso: string) => new Date(`${iso}T09:00:00Z`);
   const zero5 = [0, 0, 0, 0, 0].map((h) => ({ h }));
   const row = (u: string) => sqlite.prepare(`SELECT wfh_hours AS h, wfh_hours_pre_diary AS pre, wfh_hours_pre_diary_source AS src FROM work_use_inputs WHERE user_id = ? AND fy = 2025`).get(u) as { h: number | null; pre: number | null; src: string | null } | undefined;
@@ -8769,22 +8647,10 @@ console.log("import continuation — statement categorisation on DO alarms (F2)"
 {
   const { DatabaseSync: SqliteF2 } = await import("node:sqlite");
   type SqlDb = InstanceType<typeof SqliteF2>;
-  class StmtF2 {
-    private params: unknown[] = [];
-    constructor(private db: SqlDb, private sql: string) {}
-    bind(...a: unknown[]) { this.params = a.map((x) => (x === undefined ? null : x)); return this; }
-    async all<T>() { return { results: this.db.prepare(this.sql).all(...(this.params as never[])) as T[], success: true, meta: {} }; }
-    async first<T>() { return (this.db.prepare(this.sql).get(...(this.params as never[])) as T) ?? null; }
-    async run() { const r = this.db.prepare(this.sql).run(...(this.params as never[])); return { success: true, meta: { changes: Number(r.changes ?? 0) } }; }
-    async settle() { return /^\s*(select|with)/i.test(this.sql) ? this.all() : this.run(); }
-  }
   const sq = new SqliteF2(":memory:");
   const migDirF2 = path.join(process.cwd(), "migrations");
   for (const f of fs.readdirSync(migDirF2).filter((f) => f.endsWith(".sql")).sort()) sq.exec(fs.readFileSync(path.join(migDirF2, f), "utf8"));
-  const db = {
-    prepare: (sql: string) => new StmtF2(sq, sql),
-    batch: async (s: StmtF2[]) => { const out = []; for (const x of s) out.push(await x.settle()); return out; },
-  } as unknown as D1Database;
+  const db = new SqliteD1(sq) as unknown as D1Database;
   const one = <T>(sql: string, ...p: unknown[]) => sq.prepare(sql).get(...(p as never[])) as T;
   const U = "uF2";
 
@@ -9085,6 +8951,31 @@ console.log("weekly sweep continuation (A3)");
     const ix = fs.readFileSync(path.join(process.cwd(), "src/index.ts"), "utf8");
     check("A3: the */10 tick continues an in-progress sweep", /if \(await weeklySweepInProgress\(env\)\) \{\s*await runWeeklySlice\(env, stubFor\)/.test(ix));
   }
+}
+
+// ── Scale review B: the shared D1 test adapter is faithful where shims used to lie ────────────────
+console.log("shared D1 adapter (scripts/lib/d1-sqlite.ts)");
+{
+  const a = schemaDb();
+  a.sqlite.exec(`INSERT INTO profiles (user_id) VALUES ('ua')`);
+  let threw = false;
+  try {
+    await a.batch([
+      a.prepare(`INSERT INTO properties (id, user_id, label) VALUES ('p1', 'ua', 'A')`),
+      a.prepare(`INSERT INTO properties (id, user_id, label) VALUES ('p1', 'ua', 'dup')`), // PK clash
+    ]);
+  } catch { threw = true; }
+  check("adapter: a failing batch throws AND rolls back every statement (D1 batches are atomic)",
+    threw && (a.sqlite.prepare(`SELECT COUNT(*) AS n FROM properties`).get() as { n: number }).n === 0);
+  let capped = false;
+  try { a.prepare(`SELECT 1`).bind(...Array.from({ length: 101 }, (_, i) => i)); } catch (e) { capped = /too many SQL variables/.test((e as Error).message); }
+  check("adapter: more than 100 binds throws, like D1 (chunk with chunkIds)", capped);
+  check("adapter: first(col) returns one column", (await a.prepare(`SELECT user_id FROM profiles`).first<string>("user_id")) === "ua");
+  check("adapter: run() reports meta.changes", (await a.prepare(`UPDATE profiles SET email = 'x' WHERE user_id = ?`).bind("ua").run()).meta.changes === 1);
+  const scripts = ["check-personas", "check-au-snapshot", "e2e-journey", "e2e-first-timer", "check-receipt-storage", "check-units"]
+    .map((n) => fs.readFileSync(path.join(process.cwd(), "scripts", `${n}.ts`), "utf8"));
+  check("adapter: no script hand-rolls its own D1 statement shim any more",
+    scripts.every((src) => !/class \w*Stmt\w* \{\s*\n\s*private (params|p): unknown\[\]/.test(src)));
 }
 
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);

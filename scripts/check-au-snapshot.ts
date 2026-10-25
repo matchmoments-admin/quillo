@@ -21,7 +21,7 @@
 //
 // Run:    npx tsx scripts/check-au-snapshot.ts          (diff current vs committed fixture; FAIL on drift)
 // Update: UPDATE_SNAPSHOT=1 npx tsx scripts/check-au-snapshot.ts   (re-capture the fixture from current main)
-import { DatabaseSync } from "node:sqlite";
+import { migratedDb } from "./lib/d1-sqlite";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -32,29 +32,13 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
 const FIXTURE = path.join(__dirname, "fixtures", "au-report-snapshot.json");
 
-// ── Minimal D1 shim over node:sqlite (async surface buildReport uses) — same shim as check-personas. ──
-class D1Stmt {
-  private params: unknown[] = [];
-  constructor(private db: DatabaseSync, private sql: string) {}
-  bind(...args: unknown[]) { this.params = args.map((a) => (a === undefined ? null : a)); return this; }
-  async all<T = unknown>() { return { results: this.db.prepare(this.sql).all(...(this.params as never[])) as T[], success: true, meta: {} }; }
-  async first<T = unknown>() { return (this.db.prepare(this.sql).get(...(this.params as never[])) as T) ?? null; }
-  async run() { const r = this.db.prepare(this.sql).run(...(this.params as never[])); return { success: true, meta: { changes: Number(r.changes ?? 0) } }; }
-  async settle() { return /^\s*(select|with)/i.test(this.sql) ? this.all() : this.run(); }
-}
-class D1 {
-  constructor(private db: DatabaseSync) {}
-  prepare(sql: string) { return new D1Stmt(this.db, sql); }
-  async batch(stmts: D1Stmt[]) { const out = []; for (const s of stmts) out.push(await s.settle()); return out; }
-}
 
-const db = new DatabaseSync(":memory:");
-for (const f of fs.readdirSync(path.join(root, "migrations")).filter((f) => f.endsWith(".sql")).sort()) {
-  db.exec(fs.readFileSync(path.join(root, "migrations", f), "utf8"));
-}
+// Every migration in lexical order (the chain the drift guard validates), behind the shared D1 adapter.
+const d1 = migratedDb();
+const db = d1.sqlite;
 
 // Same feature set the persona harness builds under — this is the real shipped AU report shape.
-const env = { DB: new D1(db), FEATURES: "attribution_engine,position_excludes_nondeductible,wfh_car_methods,refund_netting,income_dedupe,cgt_engine,ess_engine,gst_bas,car_logbook,trust_distributions,partnership_distributions,smsf_engine,accountant_schedule,jurisdiction_period" } as unknown as Env;
+const env = { DB: d1, FEATURES: "attribution_engine,position_excludes_nondeductible,wfh_car_methods,refund_netting,income_dedupe,cgt_engine,ess_engine,gst_bas,car_logbook,trust_distributions,partnership_distributions,smsf_engine,accountant_schedule,jurisdiction_period" } as unknown as Env;
 
 const run = (sql: string, ...p: unknown[]) => db.prepare(sql).run(...(p as never[]));
 const FY_DATE = "2025-09-01"; // inside FY 2025-26

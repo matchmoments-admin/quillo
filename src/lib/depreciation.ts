@@ -6,6 +6,7 @@
 
 import type { AssetClass } from "./taxonomy";
 import { fyStartYearForDate, AU_DESCRIPTOR, type JurisdictionDescriptor } from "./jurisdiction";
+import { fyLabel } from "./fy";
 
 export interface DepAsset {
   asset_class: AssetClass;
@@ -35,14 +36,7 @@ export interface ScheduleRow {
   method_applied: string;
 }
 
-/**
- * FY label for a start year, e.g. 2025 -> '2025-26'. The straddle-label form is jurisdiction-INVARIANT
- * (UK Apr 6 2025–Apr 5 2026 is also '2025-26'), so this stays local to keep the engine I/O-free; it
- * mirrors ledger-totals.fyLabel by construction (golden-locked in check-units.ts).
- */
-export function fyLabel(startYear: number): string {
-  return `${startYear}-${String((startYear + 1) % 100).padStart(2, "0")}`;
-}
+export { fyLabel };
 
 export function isLeapYear(year: number): boolean {
   return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;

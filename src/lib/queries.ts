@@ -3,7 +3,7 @@ import { enabledFeatures, featureOn } from "./features";
 import { billingPolicy, billableCents } from "./billing";
 import { getProfile } from "./db";
 import { isAdmin, isPartner } from "./roles";
-import { fyBounds, normaliseFyLabel } from "./ledger-totals";
+import { fyBounds, fyLabel, normaliseFyLabel } from "./ledger-totals";
 import { resolveJurisdictionForUser, fyStartYearSqlExpr } from "./jurisdiction";
 import {
   annualiseSpendCents, runRateCopy, ADVISORY_DISCLAIMER,
@@ -644,7 +644,7 @@ export async function usageSummary(env: Env, userId: string) {
     .bind()
     .all<{ fy_start: number; calls: number; cost_cents: number }>();
   const by_fy = (byFyRows.results ?? []).map((r) => ({
-    fy: `${r.fy_start}-${String((r.fy_start + 1) % 100).padStart(2, "0")}`, // e.g. "2025-26"
+    fy: fyLabel(r.fy_start), // e.g. "2025-26"
     calls: r.calls,
     cost_cents: r.cost_cents,
     billable_cents: billableCents(r.cost_cents * policy.fxRate, policy.markupPct, policy.appFeeCents), // AUD, like the wallet

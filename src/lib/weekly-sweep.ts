@@ -1,21 +1,25 @@
 import type { Env, TaxAgentRpc } from "../env";
 import { featureOn } from "./features";
-import { emptyTally, publishLifecycleRecord } from "./retention-schedule";
+import { AU_DESCRIPTOR, fyStartYearForDate } from "./jurisdiction";
+import { emptyTally, publishLifecycleRecord, type LifecycleTally } from "./retention-schedule";
 import { platformDb } from "./tenant-db";
 
 /**
  * The weekly per-tenant maintenance sweep (proactive scan, depreciation roll-forward, retention flagging,
  * advisory, CDR consent lifecycle, data lifecycle). It is paged: each call processes ONE bounded slice of
- * tenants after the KV cursor and advances it. The Monday cron starts a sweep; while the cursor is
- * non-empty, every 10-minute tick continues it, so a sweep of N tenants finishes in ceil(N / SLICE) ticks
- * the same day (~57k tenants/day at 400 a tick) instead of one slice a week. A lease key stops two ticks
- * running the same slice when one overruns. A Queue consumer is the next step if per-tenant retries or
- * more throughput are needed; the per-tenant unit of work is already isolated for it.
+ * tenants after the cursor and advances it. The Monday cron STARTS a sweep; while one is in progress, every
+ * 10-minute tick runs the next slice, so N tenants finish in ceil(N / SLICE) ticks the same day (~57k
+ * tenants/day at 400 a tick). A Queue consumer is the next step if per-tenant retries or more throughput are
+ * needed; the per-tenant unit of work is already isolated for it.
+ *
+ * State lives in ONE D1 row (cron_sweeps, migration 0091), not KV: D1 is strongly consistent, so the lease
+ * is a conditional UPDATE that exactly one tick can win (two ticks can never run the same slice), the
+ * cursor can't be read stale, and the lifecycle tally accumulates across slices and is published per sweep.
+ * cursor NULL = idle; a string (possibly '') = in progress.
  */
 export const WEEKLY_SLICE = 400;
-export const WEEKLY_CURSOR_KEY = "cron:weekly:cursor";
-export const WEEKLY_LEASE_KEY = "cron:weekly:lease";
-const LEASE_TTL_S = 900; // longer than a slice can run; KV's minimum TTL is 60s
+export const WEEKLY_SWEEP = "weekly";
+const LEASE_S = 900; // longer than a slice can run
 
 /** Run `fn` over `items` with at most `concurrency` in flight. fn must not throw (callers catch
  *  per-item) — a rejection would abort the worker and starve the rest of the slice. */
@@ -27,26 +31,49 @@ export async function runPooled<T>(items: T[], concurrency: number, fn: (item: T
   await Promise.all(workers);
 }
 
-/** True while a sweep is part-way through (the 10-minute tick continues it). One KV read. */
-export async function weeklySweepInProgress(env: Env): Promise<boolean> {
-  return !!(await env.RULES.get(WEEKLY_CURSOR_KEY));
+/** The Monday tick: start a sweep unless one is already in progress. Independent of the lease, so a slice
+ *  that is still running at 08:00 can't swallow the week's start. */
+export async function startWeeklySweep(env: Env): Promise<boolean> {
+  const r = await platformDb(env).prepare(
+    `INSERT INTO cron_sweeps (name, cursor, tally_json, started_at) VALUES (?, '', NULL, datetime('now'))
+     ON CONFLICT(name) DO UPDATE SET cursor = '', tally_json = NULL, started_at = datetime('now') WHERE cron_sweeps.cursor IS NULL`,
+  ).bind(WEEKLY_SWEEP).run();
+  return Number(r.meta?.changes ?? 0) === 1;
 }
 
-export type WeeklySliceResult = { swept: number; done: boolean } | { skipped: "leased" };
+/** True while a sweep is part-way through (the 10-minute tick continues it). One indexed D1 read. */
+export async function weeklySweepInProgress(env: Env): Promise<boolean> {
+  const row = await platformDb(env).prepare(`SELECT cursor FROM cron_sweeps WHERE name = ?`).bind(WEEKLY_SWEEP).first<{ cursor: string | null }>();
+  return row != null && row.cursor != null;
+}
+
+/** Take the slice lease atomically: exactly one caller's conditional UPDATE changes the row. */
+async function acquireLease(env: Env, holder: string): Promise<boolean> {
+  const r = await platformDb(env).prepare(
+    `UPDATE cron_sweeps SET lease_holder = ?, lease_until = datetime('now', ?)
+      WHERE name = ? AND cursor IS NOT NULL AND (lease_until IS NULL OR lease_until < datetime('now'))`,
+  ).bind(holder, `+${LEASE_S} seconds`, WEEKLY_SWEEP).run();
+  return Number(r.meta?.changes ?? 0) === 1;
+}
+
+const addTally = (a: LifecycleTally, b: LifecycleTally): LifecycleTally =>
+  Object.fromEntries(Object.keys(a).map((k) => [k, a[k as keyof LifecycleTally] + (b[k as keyof LifecycleTally] ?? 0)])) as unknown as LifecycleTally;
+
+export type WeeklySliceResult = { swept: number; done: boolean } | { skipped: "leased" | "idle" };
 
 export async function runWeeklySlice(env: Env, stubFor: (env: Env, userId: string) => TaxAgentRpc): Promise<WeeklySliceResult> {
-  if (await env.RULES.get(WEEKLY_LEASE_KEY)) return { skipped: "leased" };
-  await env.RULES.put(WEEKLY_LEASE_KEY, new Date().toISOString(), { expirationTtl: LEASE_TTL_S });
+  if (!(await weeklySweepInProgress(env))) return { skipped: "idle" };
+  const holder = crypto.randomUUID();
+  if (!(await acquireLease(env, holder))) return { skipped: "leased" };
   try {
-    // Current AU FY start year (Jul–Jun) for the depreciation roll-forward.
-    const now = new Date();
-    const fyStart = now.getUTCMonth() >= 6 ? now.getUTCFullYear() : now.getUTCFullYear() - 1;
+    // Current FY start year for the depreciation roll-forward (the sweep is AU-only today).
+    const fyStart = fyStartYearForDate(AU_DESCRIPTOR, new Date().toISOString().slice(0, 10));
     // Paged (#79) so a large tenant set can't blow one tick's wall-clock and drop the tail: a bounded,
     // ordered slice (round-robin by user_id) with bounded concurrency, then the cursor advances.
     const SLICE = WEEKLY_SLICE;
     const CONCURRENCY = 6;
-    const cursorKey = WEEKLY_CURSOR_KEY;
-    const cursor = (await env.RULES.get(cursorKey)) ?? "";
+    const state = await platformDb(env).prepare(`SELECT cursor, tally_json FROM cron_sweeps WHERE name = ?`).bind(WEEKLY_SWEEP).first<{ cursor: string | null; tally_json: string | null }>();
+    const cursor = state?.cursor ?? "";
     const users = await platformDb(env).prepare(`SELECT user_id FROM profiles WHERE user_id > ? ORDER BY user_id LIMIT ?`)
       .bind(cursor, SLICE)
       .all<{ user_id: string }>();
@@ -103,18 +130,20 @@ export async function runWeeklySlice(env: Env, stubFor: (env: Env, userId: strin
         }
       }
     });
-    await publishLifecycleRecord(env, tally, new Date(), { partial: batch.length === SLICE || cursor !== "" });
-    // A full slice means more tenants remain → resume after the last id next tick. A short slice
-    // means we reached the end → clear the cursor so the next run round-robins from the start.
-    if (batch.length === SLICE) {
-      await env.RULES.put(cursorKey, batch[batch.length - 1]!.user_id);
-      console.log(`weekly sweep: swept ${batch.length} tenants from cursor "${cursor}"; more remain — continuing next tick`);
-      return { swept: batch.length, done: false };
-    }
-    if (cursor !== "") await env.RULES.delete(cursorKey);
-    console.log(`weekly sweep: swept ${batch.length} tenants (sweep complete)`);
-    return { swept: batch.length, done: true };
+    // The tally accumulates across the sweep's slices; the dashboard record always shows the WHOLE sweep so far.
+    let sofar = emptyTally();
+    try { if (state?.tally_json) sofar = { ...sofar, ...(JSON.parse(state.tally_json) as LifecycleTally) }; } catch { /* corrupt ⇒ restart the tally */ }
+    const total = addTally(sofar, tally);
+    // A full slice means more tenants remain → resume after the last id next tick. A short slice means we
+    // reached the end → cursor NULL (idle) until next Monday.
+    const done = batch.length < SLICE;
+    await platformDb(env).prepare(`UPDATE cron_sweeps SET cursor = ?, tally_json = ? WHERE name = ?`)
+      .bind(done ? null : batch[batch.length - 1]!.user_id, JSON.stringify(total), WEEKLY_SWEEP).run();
+    await publishLifecycleRecord(env, total, new Date(), { partial: !done });
+    console.log(`weekly sweep: swept ${batch.length} tenants from cursor "${cursor}"${done ? " (sweep complete)" : "; continuing next tick"}`);
+    return { swept: batch.length, done };
   } finally {
-    await env.RULES.delete(WEEKLY_LEASE_KEY).catch(() => {});
+    await platformDb(env).prepare(`UPDATE cron_sweeps SET lease_holder = NULL, lease_until = NULL WHERE name = ? AND lease_holder = ?`)
+      .bind(WEEKLY_SWEEP, holder).run().catch(() => {});
   }
 }

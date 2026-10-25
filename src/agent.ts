@@ -2053,7 +2053,7 @@ export class TaxAgent extends Agent<Env> {
                name = excluded.name,
                type = excluded.type,
                currency = excluded.currency`,
-          ).bind(crypto.randomUUID(), userId, a.id, a.last4, a.name, a.type, a.currency, provider.id, conn.connectionId),
+          ).bind(crypto.randomUUID(), a.id, a.last4, a.name, a.type, a.currency, provider.id, conn.connectionId),
         );
       }
     }

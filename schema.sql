@@ -1486,3 +1486,14 @@ CREATE TABLE IF NOT EXISTS wfh_diary_weeks (
   updated_at   TEXT NOT NULL,
   PRIMARY KEY (user_id, week_start)
 );
+
+-- 0091: the weekly sweep's state (cursor, accumulated lifecycle tally, an atomic slice lease). Platform
+-- state, no user_id. See src/lib/weekly-sweep.ts.
+CREATE TABLE IF NOT EXISTS cron_sweeps (
+  name         TEXT PRIMARY KEY,
+  cursor       TEXT,
+  tally_json   TEXT,
+  started_at   TEXT,
+  lease_holder TEXT,
+  lease_until  TEXT
+);

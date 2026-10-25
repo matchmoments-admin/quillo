@@ -16,7 +16,7 @@
  *
  * check-units also fails when a schema.sql table is missing here, so a new table can't skip the decision.
  */
-export type Retention = "ledger" | "keep" | { log: number };
+export type Retention = "ledger" | "keep" | { log: number; only?: string };
 export interface TableSpec {
   tenant: "user_id" | "scope" | "none";
   purge: boolean;
@@ -37,7 +37,7 @@ export const TABLES = {
   ai_edits: { tenant: "user_id", purge: true, retention: { log: 730 } }, // 0057: AI-driven/manual entity-write undo log
   traces: { tenant: "user_id", purge: true, retention: { log: 90 } },
   eval_cases: { tenant: "user_id", purge: true, retention: { log: 90 }, dark: "retired: written from corrections, never read (eval_cases_retired stops the write)" },
-  notifications: { tenant: "user_id", purge: true, retention: { log: 365 } },
+  notifications: { tenant: "user_id", purge: true, retention: { log: 365, only: "read_at IS NOT NULL" } }, // unread rows are the nudge dedup marker (hasPendingNudge) — only READ ones age out
   qbo_connections: { tenant: "user_id", purge: true, retention: "ledger", secretCols: ["access_token", "refresh_token"] },
   persons: { tenant: "user_id", purge: true, retention: "ledger" },
   property_owners: { tenant: "user_id", purge: true, retention: "ledger" },
@@ -82,7 +82,7 @@ export const TABLES = {
   super_contributions: { tenant: "user_id", purge: true, retention: "ledger" }, // 0042 (#140)
   loan_interest_summaries: { tenant: "user_id", purge: true, retention: "ledger" }, // 0045 (#157 S4)
   chat_sessions: { tenant: "user_id", purge: true, retention: "ledger" }, // 0046 (#173 C2)
-  chat_messages: { tenant: "user_id", purge: true, retention: { log: 730 } }, // 0046 (#173 C2)
+  chat_messages: { tenant: "user_id", purge: true, retention: "ledger" }, // 0046 (#173 C2)
   recurring_bills: { tenant: "user_id", purge: true, retention: "ledger" }, // 0047 (advisory)
   opportunities: { tenant: "user_id", purge: true, retention: "ledger" }, // 0047 (advisory)
   partner_members: { tenant: "user_id", purge: true, retention: "ledger", dark: "advisory phase-2 scaffold; no writer yet" }, // 0049 (advisory phase 2 scaffold) — staff↔org link
@@ -108,6 +108,7 @@ export const TABLES = {
   partners: { tenant: "none", purge: false, retention: "keep", dark: "seeded by hand (wrangler); no in-app writer" },
   partner_offers: { tenant: "none", purge: false, retention: "keep", dark: "seeded by hand (wrangler); no in-app writer" },
   cdr_audit_log: { tenant: "user_id", purge: false, retention: "keep" },
+  cron_sweeps: { tenant: "none", purge: false, retention: "keep" }, // 0091: weekly sweep cursor + tally + lease (platform state)
 } as const satisfies Record<string, TableSpec>;
 
 export type TableName = keyof typeof TABLES;
@@ -118,7 +119,7 @@ const entries = Object.entries(TABLES) as [TableName, TableSpec][];
 export const PURGE_TABLES = entries.filter(([, s]) => s.purge && s.tenant === "user_id").map(([t]) => t);
 
 /** Tables the daily log prune may delete from, with their age limit in days. */
-export const LOG_TABLES = entries.flatMap(([t, s]) => (typeof s.retention === "object" ? [{ table: t, days: s.retention.log }] : []));
+export const LOG_TABLES = entries.flatMap(([t, s]) => (typeof s.retention === "object" ? [{ table: t, days: s.retention.log, only: s.retention.only }] : []));
 
 export function secretColumns(table: string): readonly string[] {
   return (TABLES as Record<string, TableSpec>)[table]?.secretCols ?? [];

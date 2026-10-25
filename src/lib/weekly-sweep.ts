@@ -1,6 +1,7 @@
 import type { Env, TaxAgentRpc } from "../env";
 import { featureOn } from "./features";
 import { emptyTally, publishLifecycleRecord } from "./retention-schedule";
+import { platformDb } from "./tenant-db";
 
 /**
  * The weekly per-tenant maintenance sweep (proactive scan, depreciation roll-forward, retention flagging,
@@ -46,7 +47,7 @@ export async function runWeeklySlice(env: Env, stubFor: (env: Env, userId: strin
     const CONCURRENCY = 6;
     const cursorKey = WEEKLY_CURSOR_KEY;
     const cursor = (await env.RULES.get(cursorKey)) ?? "";
-    const users = await env.DB.prepare(`SELECT user_id FROM profiles WHERE user_id > ? ORDER BY user_id LIMIT ?`)
+    const users = await platformDb(env).prepare(`SELECT user_id FROM profiles WHERE user_id > ? ORDER BY user_id LIMIT ?`)
       .bind(cursor, SLICE)
       .all<{ user_id: string }>();
     const batch = users.results ?? [];

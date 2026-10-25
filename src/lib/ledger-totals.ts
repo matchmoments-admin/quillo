@@ -10,6 +10,7 @@ import { featureOn } from "./features";
 import { classifyIncomeRow, excludableIncomeTypes, hasNonResidentPeriod, NON_RESIDENT_FOREIGN, type ResidencyAssessabilityContext } from "./residency-assessability";
 import { ecpiExemptFraction, computeSmsfPosition, type SmsfPosition } from "./smsf";
 import { fyBoundsFor, fyStartYearSqlExpr, AU_DESCRIPTOR, type JurisdictionDescriptor } from "./jurisdiction";
+import { tenantDb } from "./tenant-db";
 // Rule-pack thresholds are RESOLVED by the caller (buildReport → resolveRulePack, keyed by
 // profiles.rule_pack_ver with a KV override) and threaded in — never statically imported here, so a
 // per-tenant / per-jurisdiction pack is actually honoured by the report engines.
@@ -274,12 +275,12 @@ export async function deductionTotalForProperty(
   descriptor: JurisdictionDescriptor = AU_DESCRIPTOR,
 ): Promise<number> {
   const { start, end } = fyBounds(startYear, descriptor);
-  const row = await env.DB.prepare(
+  const row = await tenantDb(env, userId).prepare(
     `SELECT COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS total_cents
        FROM transactions
       WHERE user_id = ? AND property_id = ? AND txn_date >= ? AND txn_date <= ? AND ${COUNTABLE}`,
   )
-    .bind(userId, propertyId, start, end)
+    .bind(propertyId, start, end)
     .first<{ total_cents: number }>();
   return row?.total_cents ?? 0;
 }
@@ -292,7 +293,7 @@ export async function depreciationTotals(
 ): Promise<{ total_cents: number; by_property: { property_id: string | null; deduction_cents: number }[] }> {
   const fy = fyLabel(startYear);
   try {
-    const res = await env.DB.prepare(
+    const res = await tenantDb(env, userId).prepare(
       `SELECT a.property_id AS property_id, COALESCE(SUM(d.deduction_cents),0) AS deduction_cents
          FROM depreciation_schedule d JOIN assets a ON a.id = d.asset_id
         WHERE d.user_id = ? AND d.fy = ?
@@ -303,7 +304,7 @@ export async function depreciationTotals(
                             AND pp.use_status IN ('private_use_rent_free','under_renovation_not_available'))
         GROUP BY a.property_id`,
     )
-      .bind(userId, fy)
+      .bind(fy)
       .all<{ property_id: string | null; deduction_cents: number }>();
     const rows = res.results ?? [];
     return { total_cents: rows.reduce((s, r) => s + r.deduction_cents, 0), by_property: rows };
@@ -363,7 +364,7 @@ export async function attributionTotals(
   // Mirror deductionGroupForRow's flag gate: not-deductible only drops once the headline excludes it.
   const excludeNonDeductible = featureOn(env, "position_excludes_nondeductible");
   try {
-    const res = await env.DB.prepare(
+    const res = await tenantDb(env, userId).prepare(
       `SELECT ta.attributed_amount_cents AS attributed_amount_cents, ta.attributed_pct AS attributed_pct,
               ta.work_use_pct AS work_use_pct, COALESCE(t.amount_aud_cents, t.amount_cents) AS txn_amount,
               COALESCE(t.deductibility,'undetermined') AS deductibility,
@@ -383,7 +384,7 @@ export async function attributionTotals(
           AND NOT EXISTS (SELECT 1 FROM properties pp WHERE pp.id = ia.property_id
                             AND pp.use_status IN ('private_use_rent_free','under_renovation_not_available'))`,
     )
-      .bind(userId, start, end)
+      .bind(start, end)
       .all<{ attributed_amount_cents: number | null; attributed_pct: number | null; work_use_pct: number | null; txn_amount: number | null; deductibility: string | null; entity_type: string | null; activity_type: string | null; property_id: string | null; deduction_provision: string | null }>();
     let individual = 0;
     let individualBusiness = 0;
@@ -463,28 +464,28 @@ export async function companyPositions(env: Env, userId: string, startYear: numb
   const { start, end } = fyBounds(startYear, descriptor);
   const empty: CompanyPositionsResult = { positions: [], unattributed_cents: 0, unattributed_n: 0 };
   try {
-    const companies = (await env.DB.prepare(`SELECT id, name, COALESCE(base_rate_entity,0) AS base_rate_entity FROM entities WHERE user_id = ? AND (kind = 'company' OR entity_type = 'company')`).bind(userId).all<{ id: string; name: string | null; base_rate_entity: number }>()).results ?? [];
+    const companies = (await tenantDb(env, userId).prepare(`SELECT id, name, COALESCE(base_rate_entity,0) AS base_rate_entity FROM entities WHERE user_id = ? AND (kind = 'company' OR entity_type = 'company')`).bind().all<{ id: string; name: string | null; base_rate_entity: number }>()).results ?? [];
     if (!companies.length) return empty;
     const tFilter = COUNTABLE.replace(/\b(status|kind|matched_txn_id|direction|currency|amount_aud_cents)\b/g, "t.$1");
     // Per-company attributed deductions THIS FY (the loss is a per-FY flow).
-    const attrRows = (await env.DB.prepare(
+    const attrRows = (await tenantDb(env, userId).prepare(
       `SELECT ta.entity_id AS entity_id, COALESCE(SUM(ta.attributed_amount_cents),0) AS ded
          FROM transaction_attributions ta
          JOIN transactions t ON t.id = ta.transaction_id AND t.user_id = ta.user_id
         WHERE ta.user_id = ? AND t.txn_date >= ? AND t.txn_date <= ? AND COALESCE(t.reimbursed,0) = 0 AND ${tFilter}
         GROUP BY ta.entity_id`,
-    ).bind(userId, start, end).all<{ entity_id: string; ded: number }>()).results ?? [];
+    ).bind(start, end).all<{ entity_id: string; ded: number }>()).results ?? [];
     const attrBy = new Map(attrRows.map((r) => [r.entity_id, r]));
     // Shareholder-loan balance is a CUMULATIVE stock (across all FYs), so it's computed all-time from
     // the attribution rows here (countable, reimbursed-excluded). This is the SOLE source — the old
     // shareholder_loans persistence was dark and was dropped in 0052.
-    const loanRows = (await env.DB.prepare(
+    const loanRows = (await tenantDb(env, userId).prepare(
       `SELECT ta.entity_id AS entity_id, COALESCE(SUM(ta.attributed_amount_cents),0) AS loan
          FROM transaction_attributions ta
          JOIN transactions t ON t.id = ta.transaction_id AND t.user_id = ta.user_id
         WHERE ta.user_id = ? AND ta.creates_shareholder_loan = 1 AND COALESCE(t.reimbursed,0) = 0 AND ${tFilter}
         GROUP BY ta.entity_id`,
-    ).bind(userId).all<{ entity_id: string; loan: number }>()).results ?? [];
+    ).bind().all<{ entity_id: string; loan: number }>()).results ?? [];
     const loanBy = new Map(loanRows.map((r) => [r.entity_id, r.loan]));
     // Raw company-bucket spend (paid from the company's own account), excluding attributed txns
     // (already in `ded`) and reimbursed spend (0030). With ONE company it unambiguously belongs to it.
@@ -492,13 +493,13 @@ export async function companyPositions(env: Env, userId: string, startYear: numb
     // company — previously it was silently dropped (every multi-company position under-stated). Now we
     // surface it as a review item (unattributed_*) instead of dropping it or guessing companies[0].
     const single = companies.length === 1;
-    const rawAgg = await env.DB.prepare(`SELECT COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS total, COUNT(*) AS n FROM transactions WHERE user_id = ? AND bucket = 'company' AND txn_date >= ? AND txn_date <= ? AND COALESCE(reimbursed,0) = 0 AND ${COUNTABLE} AND NOT EXISTS (SELECT 1 FROM transaction_attributions ta WHERE ta.user_id = transactions.user_id AND ta.transaction_id = transactions.id)`).bind(userId, start, end).first<{ total: number; n: number }>();
+    const rawAgg = await tenantDb(env, userId).prepare(`SELECT COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS total, COUNT(*) AS n FROM transactions WHERE user_id = ? AND bucket = 'company' AND txn_date >= ? AND txn_date <= ? AND COALESCE(reimbursed,0) = 0 AND ${COUNTABLE} AND NOT EXISTS (SELECT 1 FROM transaction_attributions ta WHERE ta.user_id = transactions.user_id AND ta.transaction_id = transactions.id)`).bind(start, end).first<{ total: number; n: number }>();
     const rawTotal = rawAgg?.total ?? 0;
     const rawN = rawAgg?.n ?? 0;
     const rawCompany = single ? rawTotal : 0;
-    const incomeRows = (await env.DB.prepare(`SELECT entity_id, COALESCE(SUM(COALESCE(amount_aud_cents, gross_cents)),0) AS inc FROM income WHERE user_id = ? AND fy = ? AND entity_id IS NOT NULL AND ${FX_CONVERTED} GROUP BY entity_id`).bind(userId, fy).all<{ entity_id: string; inc: number }>()).results ?? [];
+    const incomeRows = (await tenantDb(env, userId).prepare(`SELECT entity_id, COALESCE(SUM(COALESCE(amount_aud_cents, gross_cents)),0) AS inc FROM income WHERE user_id = ? AND fy = ? AND entity_id IS NOT NULL AND ${FX_CONVERTED} GROUP BY entity_id`).bind(fy).all<{ entity_id: string; inc: number }>()).results ?? [];
     const incomeBy = new Map(incomeRows.map((r) => [r.entity_id, r.inc]));
-    const rdRows = (await env.DB.prepare(`SELECT entity_id, eligible_expenditure_cents, aggregated_turnover_cents, registered_with_ausindustry FROM rd_claims WHERE user_id = ? AND fy = ?`).bind(userId, fy).all<{ entity_id: string; eligible_expenditure_cents: number; aggregated_turnover_cents: number; registered_with_ausindustry: number }>()).results ?? [];
+    const rdRows = (await tenantDb(env, userId).prepare(`SELECT entity_id, eligible_expenditure_cents, aggregated_turnover_cents, registered_with_ausindustry FROM rd_claims WHERE user_id = ? AND fy = ?`).bind(fy).all<{ entity_id: string; eligible_expenditure_cents: number; aggregated_turnover_cents: number; registered_with_ausindustry: number }>()).results ?? [];
     const rdBy = new Map(rdRows.map((r) => [r.entity_id, r]));
     const rdCap = (thresholdsForFy(rulePack, fy)?.rd_refundable_turnover_cap_cents) ?? Number.MAX_SAFE_INTEGER;
     // Prior-year carried-forward losses.
@@ -516,31 +517,31 @@ export async function companyPositions(env: Env, userId: string, startYear: numb
       // Jurisdiction-neutral FY bucketing via the sanctioned helper (parameter-free SQL expression —
       // no boundary string, no bind-order trap; correct for straddle AND calendar periods).
       const fyStartExpr = fyStartYearSqlExpr(descriptor, "t.txn_date");
-      const priorAttr = (await env.DB.prepare(
+      const priorAttr = (await tenantDb(env, userId).prepare(
         `SELECT ta.entity_id AS entity_id, ${fyStartExpr} AS fy_start, COALESCE(SUM(ta.attributed_amount_cents),0) AS ded
            FROM transaction_attributions ta
            JOIN transactions t ON t.id = ta.transaction_id AND t.user_id = ta.user_id
           WHERE ta.user_id = ? AND t.txn_date < ? AND COALESCE(t.reimbursed,0) = 0 AND ${tFilter}
           GROUP BY ta.entity_id, fy_start`,
-      ).bind(userId, start).all<{ entity_id: string; fy_start: number; ded: number }>()).results ?? [];
+      ).bind(start).all<{ entity_id: string; fy_start: number; ded: number }>()).results ?? [];
       // Raw company-bucket spend in prior FYs — same single-company rule as the current FY (with 2+
       // companies it can't be pinned, so it never enters any company's history either).
       const priorRaw = single
-        ? (await env.DB.prepare(
+        ? (await tenantDb(env, userId).prepare(
             `SELECT ${fyStartExpr} AS fy_start, COALESCE(SUM(COALESCE(t.amount_aud_cents, t.amount_cents)),0) AS ded
                FROM transactions t
               WHERE t.user_id = ? AND t.bucket = 'company' AND t.txn_date < ? AND COALESCE(t.reimbursed,0) = 0 AND ${tFilter}
                 AND NOT EXISTS (SELECT 1 FROM transaction_attributions ta WHERE ta.user_id = t.user_id AND ta.transaction_id = t.id)
               GROUP BY fy_start`,
-          ).bind(userId, start).all<{ fy_start: number; ded: number }>()).results ?? []
+          ).bind(start).all<{ fy_start: number; ded: number }>()).results ?? []
         : [];
       // Income is keyed by fy LABEL — parse to a start year in JS (parseFyStartYear handles every stored
       // form; NaN rows are skipped) rather than lexicographic-comparing labels in SQL.
-      const priorInc = (await env.DB.prepare(
+      const priorInc = (await tenantDb(env, userId).prepare(
         `SELECT entity_id, fy, COALESCE(SUM(COALESCE(amount_aud_cents, gross_cents)),0) AS inc
            FROM income WHERE user_id = ? AND entity_id IS NOT NULL AND ${FX_CONVERTED}
           GROUP BY entity_id, fy`,
-      ).bind(userId).all<{ entity_id: string; fy: string; inc: number }>()).results ?? [];
+      ).bind().all<{ entity_id: string; fy: string; inc: number }>()).results ?? [];
       const flows = new Map<string, Map<number, { ded: number; inc: number }>>();
       const flowFor = (entityId: string, year: number) => {
         const byYear = flows.get(entityId) ?? new Map<number, { ded: number; inc: number }>();
@@ -568,7 +569,7 @@ export async function companyPositions(env: Env, userId: string, startYear: numb
         return [c.id, balance] as const;
       }));
     } else {
-      const priorRows = (await env.DB.prepare(`SELECT entity_id, COALESCE(SUM(current_year_loss_cents),0) AS prior FROM company_tax_positions WHERE user_id = ? AND fy < ? AND cot_satisfied = 1 GROUP BY entity_id`).bind(userId, fy).all<{ entity_id: string; prior: number }>()).results ?? [];
+      const priorRows = (await tenantDb(env, userId).prepare(`SELECT entity_id, COALESCE(SUM(current_year_loss_cents),0) AS prior FROM company_tax_positions WHERE user_id = ? AND fy < ? AND cot_satisfied = 1 GROUP BY entity_id`).bind(fy).all<{ entity_id: string; prior: number }>()).results ?? [];
       priorBy = new Map(priorRows.map((r) => [r.entity_id, r.prior]));
     }
 
@@ -650,12 +651,12 @@ async function distributionTotals(env: Env, userId: string, startYear: number, s
   const fy = fyLabel(startYear);
   const zero: TrustTotals = { assessable_cents: 0, franking_credit_cents: 0, by_character: {} };
   try {
-    const rows = (await env.DB.prepare(
+    const rows = (await tenantDb(env, userId).prepare(
       `SELECT character, amount_cents, franking_credit_cents
          FROM trust_distributions
         WHERE user_id = ? AND fy = ? AND beneficiary_person_id IS NOT NULL
           AND COALESCE(source_kind,'trust') = ?`,
-    ).bind(userId, fy, sourceKind).all<{ character: string; amount_cents: number; franking_credit_cents: number }>()).results ?? [];
+    ).bind(fy, sourceKind).all<{ character: string; amount_cents: number; franking_credit_cents: number }>()).results ?? [];
     if (!rows.length) return zero;
     // A partnership loss share flows through to the partner (Div 35 aside); a trust loss is trapped.
     // Gated so OFF keeps today's floor-at-0 for both ⇒ byte-identical.
@@ -682,12 +683,12 @@ export interface SmsfFundPosition extends SmsfPosition {
 export async function smsfFundPositions(env: Env, userId: string, startYear: number): Promise<SmsfFundPosition[]> {
   const fy = fyLabel(startYear);
   try {
-    const funds = (await env.DB.prepare(`SELECT id, name FROM entities WHERE user_id = ? AND entity_type = 'smsf'`).bind(userId).all<{ id: string; name: string | null }>()).results ?? [];
+    const funds = (await tenantDb(env, userId).prepare(`SELECT id, name FROM entities WHERE user_id = ? AND entity_type = 'smsf'`).bind().all<{ id: string; name: string | null }>()).results ?? [];
     if (!funds.length) return [];
     const out: SmsfFundPosition[] = [];
     for (const f of funds) {
-      const members = (await env.DB.prepare(`SELECT pension_balance_cents, accumulation_balance_cents FROM smsf_members WHERE user_id = ? AND smsf_entity_id = ?`).bind(userId, f.id).all<{ pension_balance_cents: number; accumulation_balance_cents: number }>()).results ?? [];
-      const assessable = (await env.DB.prepare(`SELECT COALESCE(SUM(COALESCE(amount_aud_cents, gross_cents)),0) AS inc FROM income WHERE user_id = ? AND fy = ? AND entity_id = ? AND ${FX_CONVERTED}`).bind(userId, fy, f.id).first<{ inc: number }>())?.inc ?? 0;
+      const members = (await tenantDb(env, userId).prepare(`SELECT pension_balance_cents, accumulation_balance_cents FROM smsf_members WHERE user_id = ? AND smsf_entity_id = ?`).bind(f.id).all<{ pension_balance_cents: number; accumulation_balance_cents: number }>()).results ?? [];
+      const assessable = (await tenantDb(env, userId).prepare(`SELECT COALESCE(SUM(COALESCE(amount_aud_cents, gross_cents)),0) AS inc FROM income WHERE user_id = ? AND fy = ? AND entity_id = ? AND ${FX_CONVERTED}`).bind(fy, f.id).first<{ inc: number }>())?.inc ?? 0;
       const pos = computeSmsfPosition(assessable, ecpiExemptFraction(members));
       out.push({ entity_id: f.id, name: f.name, ...pos });
     }
@@ -701,7 +702,7 @@ export async function smsfFundPositions(env: Env, userId: string, startYear: num
 /** SMSF entity ids for a tenant (to exclude fund income from the personal headline). [] when none/pre-0032. */
 export async function smsfEntityIds(env: Env, userId: string): Promise<string[]> {
   try {
-    const rows = (await env.DB.prepare(`SELECT id FROM entities WHERE user_id = ? AND entity_type = 'smsf'`).bind(userId).all<{ id: string }>()).results ?? [];
+    const rows = (await tenantDb(env, userId).prepare(`SELECT id FROM entities WHERE user_id = ? AND entity_type = 'smsf'`).bind().all<{ id: string }>()).results ?? [];
     return rows.map((r) => r.id);
   } catch (e) {
     if (/no such table|no such column/i.test((e as Error).message)) return [];
@@ -775,8 +776,8 @@ export function cgtPersonalScopeExpr(env: Env, alias = "a"): string {
  */
 export async function carWorkKmFor(env: Env, userId: string, startYear: number, fallbackKm: number | null): Promise<number | null> {
   try {
-    const row = await env.DB.prepare(`SELECT work_km FROM car_inputs WHERE user_id = ? AND fy = ?`)
-      .bind(userId, startYear)
+    const row = await tenantDb(env, userId).prepare(`SELECT work_km FROM car_inputs WHERE user_id = ? AND fy = ?`)
+      .bind(startYear)
       .first<{ work_km: number | null }>();
     return row?.work_km ?? fallbackKm;
   } catch (e) {
@@ -804,13 +805,13 @@ export interface CarLogbookPosition {
 export async function carLogbookPosition(env: Env, userId: string, startYear: number, centsPerKmCents: number): Promise<CarLogbookPosition | null> {
   const fy = fyLabel(startYear);
   try {
-    const lb = await env.DB.prepare(`SELECT asset_id, business_km, total_km, running_costs_cents, business_use_pct FROM vehicle_logbooks WHERE user_id = ? AND fy = ? LIMIT 1`)
-      .bind(userId, fy)
+    const lb = await tenantDb(env, userId).prepare(`SELECT asset_id, business_km, total_km, running_costs_cents, business_use_pct FROM vehicle_logbooks WHERE user_id = ? AND fy = ? LIMIT 1`)
+      .bind(fy)
       .first<{ asset_id: string | null; business_km: number | null; total_km: number | null; running_costs_cents: number; business_use_pct: number | null }>();
     if (!lb) return null;
     const pct = lb.business_use_pct != null ? lb.business_use_pct : businessUsePct(lb.business_km, lb.total_km);
     const carDep = lb.asset_id
-      ? (await env.DB.prepare(`SELECT COALESCE(SUM(deduction_cents),0) AS d FROM depreciation_schedule WHERE user_id = ? AND fy = ? AND asset_id = ?`).bind(userId, fy, lb.asset_id).first<{ d: number }>())?.d ?? 0
+      ? (await tenantDb(env, userId).prepare(`SELECT COALESCE(SUM(deduction_cents),0) AS d FROM depreciation_schedule WHERE user_id = ? AND fy = ? AND asset_id = ?`).bind(fy, lb.asset_id).first<{ d: number }>())?.d ?? 0
       : 0;
     const logbookCents = logbookDeductionCents(lb.running_costs_cents, carDep, pct);
     const choice = chooseCarMethod(logbookCents, centsPerKmCents);
@@ -842,23 +843,23 @@ export async function gstTotals(env: Env, userId: string, startYear: number, des
   const notRegistered: GstPosition = { registered: false, output_gst_cents: 0, input_gst_cents: 0, net_gst_cents: 0 };
   try {
     // Registered if any entity is flagged, or the tenant default profile flag is set.
-    const entReg = (await env.DB.prepare(`SELECT COUNT(*) AS n FROM entities WHERE user_id = ? AND COALESCE(gst_registered,0) = 1`).bind(userId).first<{ n: number }>())?.n ?? 0;
-    const profReg = (await env.DB.prepare(`SELECT COALESCE(gst_registered,0) AS g FROM profiles WHERE user_id = ?`).bind(userId).first<{ g: number }>())?.g ?? 0;
+    const entReg = (await tenantDb(env, userId).prepare(`SELECT COUNT(*) AS n FROM entities WHERE user_id = ? AND COALESCE(gst_registered,0) = 1`).bind().first<{ n: number }>())?.n ?? 0;
+    const profReg = (await tenantDb(env, userId).prepare(`SELECT COALESCE(gst_registered,0) AS g FROM profiles WHERE user_id = ?`).bind().first<{ g: number }>())?.g ?? 0;
     if (entReg === 0 && profReg === 0) return notRegistered;
     // Taxable supplies: sole-trader / business income for the FY (GST-inclusive).
     // DELIBERATE narrowness (audit wave 4 review): only cash 'business' sales feed the indicative
     // output-GST estimate. Barter (non_cash_business) IS a taxable supply for a registered business,
     // but auto-adding 1/11th of a user-estimated market value to an indicative BAS is a money-output
     // judgement — defer nudges cover it; widen only with an owner-signed golden.
-    const sales = (await env.DB.prepare(`SELECT COALESCE(SUM(COALESCE(amount_aud_cents, gross_cents)),0) AS s FROM income WHERE user_id = ? AND fy = ? AND income_type = 'business' AND ${FX_CONVERTED}`).bind(userId, fy).first<{ s: number }>())?.s ?? 0;
+    const sales = (await tenantDb(env, userId).prepare(`SELECT COALESCE(SUM(COALESCE(amount_aud_cents, gross_cents)),0) AS s FROM income WHERE user_id = ? AND fy = ? AND income_type = 'business' AND ${FX_CONVERTED}`).bind(fy).first<{ s: number }>())?.s ?? 0;
     // Input credits: GST captured on countable business inputs this FY. Reimbursed acquisitions carry no
     // claimable ITC (you didn't bear the cost), so exclude them — mirrors the headline reimbursed gate (0030).
-    const inputs = (await env.DB.prepare(`SELECT COALESCE(SUM(gst_cents),0) AS g FROM transactions WHERE user_id = ? AND txn_date >= ? AND txn_date <= ? AND bucket IN ('company','payg') AND COALESCE(reimbursed,0) = 0 AND ${COUNTABLE}`).bind(userId, start, end).first<{ g: number }>())?.g ?? 0;
+    const inputs = (await tenantDb(env, userId).prepare(`SELECT COALESCE(SUM(gst_cents),0) AS g FROM transactions WHERE user_id = ? AND txn_date >= ? AND txn_date <= ? AND bucket IN ('company','payg') AND COALESCE(reimbursed,0) = 0 AND ${COUNTABLE}`).bind(start, end).first<{ g: number }>())?.g ?? 0;
     // User-entered BAS periods for the FY WIN over the ledger estimate (the actual lodged/draft figures).
-    const recorded = await env.DB.prepare(
+    const recorded = await tenantDb(env, userId).prepare(
       `SELECT COUNT(*) AS n, COALESCE(SUM(output_gst_cents),0) AS output_gst_cents, COALESCE(SUM(input_gst_cents),0) AS input_gst_cents
          FROM bas_periods WHERE user_id = ? AND period_start >= ? AND period_end <= ?`,
-    ).bind(userId, start, end).first<{ n: number; output_gst_cents: number; input_gst_cents: number }>();
+    ).bind(start, end).first<{ n: number; output_gst_cents: number; input_gst_cents: number }>();
     return { registered: true, ...basPositionFrom(recorded, computeBasNet(sales, inputs)) };
   } catch (e) {
     if (/no such table|no such column/i.test((e as Error).message)) return notRegistered;
@@ -874,7 +875,7 @@ export async function gstTotals(env: Env, userId: string, startYear: number, des
 export async function paygInstalmentsTotal(env: Env, userId: string, startYear: number): Promise<number> {
   const fy = fyLabel(startYear);
   try {
-    return (await env.DB.prepare(`SELECT COALESCE(SUM(instalment_cents),0) AS c FROM payg_instalments WHERE user_id = ? AND fy = ?`).bind(userId, fy).first<{ c: number }>())?.c ?? 0;
+    return (await tenantDb(env, userId).prepare(`SELECT COALESCE(SUM(instalment_cents),0) AS c FROM payg_instalments WHERE user_id = ? AND fy = ?`).bind(fy).first<{ c: number }>())?.c ?? 0;
   } catch (e) {
     if (/no such table|no such column/i.test((e as Error).message)) return 0;
     throw e;
@@ -902,9 +903,9 @@ export async function superConcessionalDeduction(env: Env, userId: string, start
   const fy = fyLabel(startYear);
   let contributed = 0;
   try {
-    contributed = (await env.DB.prepare(
+    contributed = (await tenantDb(env, userId).prepare(
       `SELECT COALESCE(SUM(amount_cents),0) AS c FROM super_contributions WHERE user_id = ? AND fy = ? AND type = 'personal_deductible'`,
-    ).bind(userId, fy).first<{ c: number }>())?.c ?? 0;
+    ).bind(fy).first<{ c: number }>())?.c ?? 0;
   } catch (e) {
     if (!/no such table|no such column/i.test((e as Error).message)) throw e;
   }
@@ -927,9 +928,9 @@ export interface TradingStock {
 export async function tradingStockAdjustment(env: Env, userId: string, startYear: number): Promise<TradingStock | null> {
   const fy = fyLabel(startYear);
   try {
-    const row = await env.DB.prepare(
+    const row = await tenantDb(env, userId).prepare(
       `SELECT opening_cents, closing_cents, valuation_basis FROM trading_stock WHERE user_id = ? AND fy = ? AND entity_id IS NULL`,
-    ).bind(userId, fy).first<{ opening_cents: number; closing_cents: number; valuation_basis: string | null }>();
+    ).bind(fy).first<{ opening_cents: number; closing_cents: number; valuation_basis: string | null }>();
     if (!row) return null;
     return {
       opening_cents: row.opening_cents,
@@ -952,11 +953,11 @@ export async function essTotals(env: Env, userId: string, startYear: number, des
   const { start, end } = fyBounds(startYear, descriptor);
   const zero: EssAssessable = { assessable_discount_cents: 0, startup_deferred_to_cgt_cents: 0, ineligible_startup_flag: false };
   try {
-    const grants = (await env.DB.prepare(
+    const grants = (await tenantDb(env, userId).prepare(
       `SELECT scheme_type, discount_cents, ownership_gt_10pct
          FROM ess_grants
         WHERE user_id = ? AND COALESCE(taxing_point_date, grant_date) >= ? AND COALESCE(taxing_point_date, grant_date) <= ?`,
-    ).bind(userId, start, end).all<{ scheme_type: string; discount_cents: number; ownership_gt_10pct: number }>()).results ?? [];
+    ).bind(start, end).all<{ scheme_type: string; discount_cents: number; ownership_gt_10pct: number }>()).results ?? [];
     if (!grants.length) return zero;
     return essAssessable(grants.map((g) => ({ scheme_type: g.scheme_type, discount_cents: g.discount_cents, ownership_gt_10pct: g.ownership_gt_10pct === 1 })));
   } catch (e) {
@@ -976,17 +977,17 @@ export async function cgtTotals(env: Env, userId: string, startYear: number, rul
   const fy = fyLabel(startYear);
   const zero: CgtPortfolioResult = { gross_capital_gains_cents: 0, capital_losses_cents: 0, discount_applied_cents: 0, net_capital_gain_cents: 0, loss_carried_forward_cents: 0 };
   try {
-    const events = (await env.DB.prepare(
+    const events = (await tenantDb(env, userId).prepare(
       `SELECT ev.proceeds_cents AS proceeds_cents, ev.cost_base_used_cents AS cost_base_used_cents,
               ev.discount_eligible AS discount_eligible, ev.event_date AS event_date,
               a.acquired_date AS acquired_date
          FROM cgt_events ev JOIN cgt_assets a ON a.id = ev.cgt_asset_id AND a.user_id = ev.user_id
         WHERE ev.user_id = ? AND ev.fy = ? AND ${cgtPersonalScopeExpr(env)}`,
-    ).bind(userId, fy).all<{ proceeds_cents: number; cost_base_used_cents: number; discount_eligible: number | null; event_date: string | null; acquired_date: string | null }>()).results ?? [];
+    ).bind(fy).all<{ proceeds_cents: number; cost_base_used_cents: number; discount_eligible: number | null; event_date: string | null; acquired_date: string | null }>()).results ?? [];
     if (!events.length) return zero;
     // Carried-forward capital losses from prior FYs (capital_loss_carryins is capture-only set-up data).
     const priorFy = startYear; // carry-ins use the prior FY *start year* (integer)
-    const prior = (await env.DB.prepare(`SELECT COALESCE(SUM(loss_cents),0) AS loss FROM capital_loss_carryins WHERE user_id = ? AND prior_fy < ?`).bind(userId, priorFy).first<{ loss: number }>())?.loss ?? 0;
+    const prior = (await tenantDb(env, userId).prepare(`SELECT COALESCE(SUM(loss_cents),0) AS loss FROM capital_loss_carryins WHERE user_id = ? AND prior_fy < ?`).bind(priorFy).first<{ loss: number }>())?.loss ?? 0;
     const rules = cgtRulesForFy(thresholdsForFy(rulePack, fy) as { cgt_discount_keep_fraction?: number } | undefined);
     return computeNetCapitalGain(
       events.map((e) => ({
@@ -1014,11 +1015,11 @@ export async function cgtTotals(env: Env, userId: string, startYear: number, rul
 // self-correcting choice. One NOA per target_fy (B1 supersedes same-year re-uploads), so never a sum.
 export async function carriedTaxLossCents(env: Env, userId: string, startYear: number): Promise<number> {
   try {
-    const row = await env.DB.prepare(
+    const row = await tenantDb(env, userId).prepare(
       `SELECT prior_year_tax_losses_cf_cents AS loss FROM fy_carryovers
          WHERE user_id = ? AND status = 'confirmed' AND target_fy = ?
          ORDER BY created_at DESC LIMIT 1`,
-    ).bind(userId, startYear).first<{ loss: number }>();
+    ).bind(startYear).first<{ loss: number }>();
     return Math.max(0, row?.loss ?? 0);
   } catch (e) {
     if (/no such table|no such column/i.test((e as Error).message)) return 0;

@@ -1,4 +1,5 @@
 import type { Env } from "../env";
+import { platformDb } from "./tenant-db";
 
 // Advisory Phase 2 — partner platform, Slice 1 (identity + isolation scaffold).
 // docs/advisory-phase2-partners.md §1. This module is the ONLY sanctioned read path into partner-scoped
@@ -257,11 +258,11 @@ export async function partnerPortalData(env: Env, staffUserId: string): Promise<
   if (!partnerId) return EMPTY_PORTAL;
 
   const [orgRes, funnelRes, leadsRes, offersRes] = await Promise.all([
-    env.DB.prepare(`SELECT id, name, vertical, status FROM partners WHERE id = ?`).bind(partnerId).first<{ id: string; name: string; vertical: string; status: string }>(),
-    env.DB.prepare(`SELECT status, COUNT(*) AS n, COALESCE(SUM(revenue_cents),0) AS revenue_cents FROM referrals WHERE partner_id = ? GROUP BY status`).bind(partnerId).all<{ status: string; n: number; revenue_cents: number }>(),
+    platformDb(env).prepare(`SELECT id, name, vertical, status FROM partners WHERE id = ?`).bind(partnerId).first<{ id: string; name: string; vertical: string; status: string }>(),
+    platformDb(env).prepare(`SELECT status, COUNT(*) AS n, COALESCE(SUM(revenue_cents),0) AS revenue_cents FROM referrals WHERE partner_id = ? GROUP BY status`).bind(partnerId).all<{ status: string; n: number; revenue_cents: number }>(),
     // Leads: NO user_id / opportunity_id — the consumer's identity never reaches the partner.
-    env.DB.prepare(`SELECT referral_token, status, revenue_cents, created_at, updated_at FROM referrals WHERE partner_id = ? ORDER BY created_at DESC LIMIT 200`).bind(partnerId).all<PartnerLead>(),
-    env.DB.prepare(`SELECT id, vertical, title, target_url, active, created_at FROM partner_offers WHERE partner_id = ? ORDER BY created_at DESC`).bind(partnerId).all<PartnerPortalOffer>(),
+    platformDb(env).prepare(`SELECT referral_token, status, revenue_cents, created_at, updated_at FROM referrals WHERE partner_id = ? ORDER BY created_at DESC LIMIT 200`).bind(partnerId).all<PartnerLead>(),
+    platformDb(env).prepare(`SELECT id, vertical, title, target_url, active, created_at FROM partner_offers WHERE partner_id = ? ORDER BY created_at DESC`).bind(partnerId).all<PartnerPortalOffer>(),
   ]);
 
   const funnel = funnelRes.results ?? [];

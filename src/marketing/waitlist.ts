@@ -1,6 +1,7 @@
 import { readTextCapped } from "../lib/upload-limits";
 import type { Env } from "../env";
 import { sha256hex } from "../lib/base64";
+import { platformDb } from "../lib/tenant-db";
 
 // Public, un-gated waitlist capture for the marketing apex (quillo.au). This is the
 // landing page's secondary CTA. It never touches tenant data: one row per email in the
@@ -62,7 +63,7 @@ export async function handleWaitlist(req: Request, env: Env): Promise<Response> 
 
   // DB-level dedupe via UNIQUE(email). We do NOT reveal whether the email already
   // existed (uniform success response prevents enumeration).
-  await env.DB.prepare(
+  await platformDb(env).prepare(
     `INSERT INTO waitlist (id, email, source, ip_hash, user_agent)
      VALUES (?, ?, ?, ?, ?)
      ON CONFLICT(email) DO NOTHING`,

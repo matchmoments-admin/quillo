@@ -6,6 +6,7 @@ import { bankProvider } from "./bank-provider";
 import { resolveRulePack } from "./report";
 import { fyStartYearForDate, resolveJurisdictionForUser, type JurisdictionDescriptor } from "./jurisdiction";
 import { lodgementTiming, retentionLodgedOn, type FySignoffState, type LodgementTiming } from "./lodging-year";
+import { platformDb, tenantDb } from "./tenant-db";
 
 // APP 11.2 / APP 12 / APP 13 support: export a tenant's data, purge it across every store, and a
 // weekly FLAG sweep for records past the retention window (never auto-deletes — surfaces a nudge).
@@ -164,8 +165,8 @@ export async function purgeTenant(env: Env, userId: string, deps: { bankUpstream
   // A tenant who never connected a bank has no id => no call, no row, no new result field.
   let bankRevoked: boolean | undefined;
   let bankProviderId = "basiq";
-  const bankUser = await env.DB.prepare(`SELECT bank_provider_user_id AS id, bank_provider AS provider FROM profiles WHERE user_id = ?`)
-    .bind(userId)
+  const bankUser = await tenantDb(env, userId).prepare(`SELECT bank_provider_user_id AS id, bank_provider AS provider FROM profiles WHERE user_id = ?`)
+    .bind()
     .first<{ id: string | null; provider: string | null }>();
   if (bankUser?.id) {
     bankProviderId = bankUser.provider ?? "basiq";
@@ -246,15 +247,15 @@ export async function purgeTenant(env: Env, userId: string, deps: { bankUpstream
   // INSERT OR IGNORE keeps a re-run on an already-purged tenant from hitting a PRIMARY KEY conflict.
   const deletes = [
     ...PURGE_TABLES.map((t) => env.DB.prepare(`DELETE FROM ${t} WHERE user_id = ?`).bind(userId)),
-    env.DB.prepare(`DELETE FROM daily_cost WHERE scope = ?`).bind(userId),
+    platformDb(env).prepare(`DELETE FROM daily_cost WHERE scope = ?`).bind(userId),
   ];
   const results = await env.DB.batch([
     ...deletes,
-    env.DB.prepare(`INSERT OR IGNORE INTO profiles (user_id) VALUES (?)`).bind(userId),
+    tenantDb(env, userId).prepare(`INSERT OR IGNORE INTO profiles (user_id) VALUES (?)`).bind(),
     // Reseat the self person too (same id shape as ensureTenant's selfPersonId — inlined to avoid an
     // import cycle through situation-write → report). Without it the tenant had a profile but no "You",
     // and the Get set up page sat on "Your profile isn't ready yet" forever after a purge.
-    env.DB.prepare(`INSERT OR IGNORE INTO persons (id, user_id, display_name, role) VALUES (?, ?, 'You', 'self')`).bind(`person_self_${userId}`, userId),
+    tenantDb(env, userId).prepare(`INSERT OR IGNORE INTO persons (id, user_id, display_name, role) VALUES (?, ?, 'You', 'self')`).bind(`person_self_${userId}`),
   ]);
   // Count only the DELETE results (exclude the trailing reseat INSERTs) so rowsDeleted stays truthful.
   const rowsDeleted = results.slice(0, deletes.length).reduce((n, r) => n + (r.meta?.changes ?? 0), 0);
@@ -295,13 +296,13 @@ export async function exportTenant(env: Env, userId: string): Promise<Record<str
   const tables: Record<string, unknown[]> = Object.fromEntries(entries);
   // daily_cost is scope-keyed (not user_id); audit_log is kept rather than purged but is the tenant's
   // record. Both are part of a complete access request.
-  tables.daily_cost = ((await env.DB.prepare(`SELECT * FROM daily_cost WHERE scope = ?`).bind(userId).all()).results ?? []);
-  tables.audit_log = ((await env.DB.prepare(`SELECT * FROM audit_log WHERE user_id = ?`).bind(userId).all()).results ?? []);
+  tables.daily_cost = ((await platformDb(env).prepare(`SELECT * FROM daily_cost WHERE scope = ?`).bind(userId).all()).results ?? []);
+  tables.audit_log = ((await tenantDb(env, userId).prepare(`SELECT * FROM audit_log WHERE user_id = ?`).bind().all()).results ?? []);
   // 0085: the CDR consent/collection/deletion record — kept through a purge like audit_log, and part of
   // the consumer's access request. Included only when non-empty (a tenant who never connected a bank
   // gets a byte-identical export), and read defensively so an export never fails on it.
   try {
-    const cdr = (await env.DB.prepare(`SELECT * FROM cdr_audit_log WHERE user_id = ?`).bind(userId).all()).results ?? [];
+    const cdr = (await tenantDb(env, userId).prepare(`SELECT * FROM cdr_audit_log WHERE user_id = ?`).bind().all()).results ?? [];
     if (cdr.length) tables.cdr_audit_log = cdr;
   } catch {
     /* table absent (migration not yet applied) — omit rather than fail the export */
@@ -325,15 +326,15 @@ export async function exportTenant(env: Env, userId: string): Promise<Record<str
  */
 export async function hasPendingNudge(env: Env, userId: string, bodyPattern: string, opts: { withinDays?: number } = {}): Promise<boolean> {
   const existing = opts.withinDays != null
-    ? await env.DB.prepare(
+    ? await tenantDb(env, userId).prepare(
         `SELECT 1 FROM notifications WHERE user_id = ? AND body LIKE ? AND created_at > datetime('now', ?) LIMIT 1`,
       )
-        .bind(userId, bodyPattern, `-${opts.withinDays} days`)
+        .bind(bodyPattern, `-${opts.withinDays} days`)
         .first()
-    : await env.DB.prepare(
+    : await tenantDb(env, userId).prepare(
         `SELECT 1 FROM notifications WHERE user_id = ? AND read_at IS NULL AND body LIKE ? LIMIT 1`,
       )
-        .bind(userId, bodyPattern)
+        .bind(bodyPattern)
         .first();
   return existing != null;
 }
@@ -374,11 +375,11 @@ export function recordRetentionEndsOn(
 export async function flagOldData(env: Env, userId: string, now = new Date()): Promise<boolean> {
   const profile = await getProfile(env, userId);
   const years = profile?.retention_years ?? 5;
-  const oldest = await env.DB.prepare(
+  const oldest = await tenantDb(env, userId).prepare(
     `SELECT MIN(txn_date) AS d FROM transactions
       WHERE user_id = ? AND txn_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'`,
   )
-    .bind(userId)
+    .bind()
     .first<{ d: string | null }>();
   if (!oldest?.d) return false;
   const descriptor = await resolveJurisdictionForUser(env, userId);
@@ -386,8 +387,8 @@ export async function flagOldData(env: Env, userId: string, now = new Date()): P
   const fy = fyStartYearForDate(descriptor, oldest.d);
   let signoff: FySignoffState | null = null;
   try {
-    signoff = await env.DB.prepare(`SELECT lodged_at, status, signed_off_at FROM fy_signoff WHERE user_id = ? AND fy = ?`)
-      .bind(userId, fy)
+    signoff = await tenantDb(env, userId).prepare(`SELECT lodged_at, status, signed_off_at FROM fy_signoff WHERE user_id = ? AND fy = ?`)
+      .bind(fy)
       .first<FySignoffState>();
   } catch {
     /* lodged_at not migrated (0087) — fall back to the backstop date, the latest presumed lodge day */
@@ -396,21 +397,18 @@ export async function flagOldData(env: Env, userId: string, now = new Date()): P
   if (!endsOn || now.toISOString().slice(0, 10) <= endsOn) return false;
 
   // Don't pile up nudges — skip if an unread retention notice already exists.
-  const existing = await env.DB.prepare(
+  const existing = await tenantDb(env, userId).prepare(
     `SELECT 1 FROM notifications WHERE user_id = ? AND read_at IS NULL AND body LIKE '%retention%' LIMIT 1`,
   )
-    .bind(userId)
+    .bind()
     .first();
   if (existing) return false;
 
-  await env.DB.prepare(
+  await tenantDb(env, userId).prepare(
     `INSERT INTO notifications (id, user_id, body, created_at)
      VALUES (?, ?, ?, datetime('now'))`,
   )
-    .bind(
-      crypto.randomUUID(),
-      userId,
-      `Some of your records are now past your ${years}-year retention window (counted from when you lodged that year's return). They're kept until you choose to delete them — you can export or delete your data anytime in Settings → Privacy. (General information only.)`,
+    .bind(crypto.randomUUID(), `Some of your records are now past your ${years}-year retention window (counted from when you lodged that year's return). They're kept until you choose to delete them — you can export or delete your data anytime in Settings → Privacy. (General information only.)`
     )
     .run();
   return true;

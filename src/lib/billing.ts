@@ -1,5 +1,6 @@
 import type { Env } from "../env";
 import { featureOn } from "./features";
+import { tenantDb } from "./tenant-db";
 
 // Pricing policy lives here and nowhere else. Today this only powers a DISPLAY figure ("what this
 // tenant's AI usage would cost them"): we measure real inference cost per tenant in llm_usage
@@ -79,6 +80,6 @@ export function budgetRefusalMessage(billingOn: boolean, balanceE4: number | nul
 /** The refusal text for `ai_budget_reached`, read after the refusal (one indexed read; billing OFF ⇒ no read). */
 export async function budgetRefusal(env: Env, userId: string): Promise<string> {
   if (!featureOn(env, "billing")) return DAILY_PAUSE_MESSAGE;
-  const row = await env.DB.prepare(`SELECT credit_balance_e4 AS b FROM profiles WHERE user_id = ?`).bind(userId).first<{ b: number | null }>();
+  const row = await tenantDb(env, userId).prepare(`SELECT credit_balance_e4 AS b FROM profiles WHERE user_id = ?`).bind().first<{ b: number | null }>();
   return budgetRefusalMessage(true, row?.b ?? 0);
 }

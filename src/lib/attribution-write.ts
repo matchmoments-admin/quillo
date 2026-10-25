@@ -1,6 +1,7 @@
 import type { Env } from "../env";
 import { splitAttribution } from "./attribution";
 import { assertOwns } from "./situation-write";
+import { tenantDb } from "./tenant-db";
 
 // ── Attribution writer (Phase B / G2) ─────────────────────────────────────────
 // Writes transaction_attributions (who-claims-what) + the payer fields on a transaction. The split
@@ -75,15 +76,15 @@ export function prepareAttributions(
 
 /** Read a transaction's attributions + payer fields (for the UI panel). */
 export async function getAttributions(env: Env, userId: string, txnId: string) {
-  const payer = await env.DB.prepare(`SELECT payer_person_id, paid_via_account_id FROM transactions WHERE id = ? AND user_id = ?`)
-    .bind(txnId, userId)
+  const payer = await tenantDb(env, userId).prepare(`SELECT payer_person_id, paid_via_account_id FROM transactions WHERE id = ? AND user_id = ?`)
+    .bind(txnId)
     .first<{ payer_person_id: string | null; paid_via_account_id: string | null }>();
-  const rows = await env.DB.prepare(
+  const rows = await tenantDb(env, userId).prepare(
     `SELECT id, entity_id, income_activity_id, attributed_pct, attributed_amount_cents, work_use_pct,
             deduction_provision, creates_shareholder_loan, shareholder_loan_id
        FROM transaction_attributions WHERE user_id = ? AND transaction_id = ? ORDER BY created_at`,
   )
-    .bind(userId, txnId)
+    .bind(txnId)
     .all();
   return { payer_person_id: payer?.payer_person_id ?? null, paid_via_account_id: payer?.paid_via_account_id ?? null, attributions: rows.results ?? [] };
 }
@@ -99,12 +100,12 @@ export async function setAttributions(
   txnId: string,
   body: { payer_person_id?: string | null; paid_via_account_id?: string | null; attributions?: AttributionInput[] },
 ): Promise<{ ok: true; rows: PreparedAttribution[] } | { ok: false; error: string }> {
-  const txn = await env.DB.prepare(`SELECT COALESCE(amount_aud_cents, amount_cents) AS amount FROM transactions WHERE id = ? AND user_id = ?`)
-    .bind(txnId, userId)
+  const txn = await tenantDb(env, userId).prepare(`SELECT COALESCE(amount_aud_cents, amount_cents) AS amount FROM transactions WHERE id = ? AND user_id = ?`)
+    .bind(txnId)
     .first<{ amount: number | null }>();
   if (!txn) return { ok: false, error: "transaction not found" };
   const companyIds = new Set(
-    ((await env.DB.prepare(`SELECT id FROM entities WHERE user_id = ? AND (kind = 'company' OR entity_type = 'company')`).bind(userId).all<{ id: string }>()).results ?? []).map((r) => r.id),
+    ((await tenantDb(env, userId).prepare(`SELECT id FROM entities WHERE user_id = ? AND (kind = 'company' OR entity_type = 'company')`).bind().all<{ id: string }>()).results ?? []).map((r) => r.id),
   );
   const prepared = prepareAttributions(txn.amount ?? 0, body.attributions ?? [], { isCompany: (eid) => companyIds.has(eid) });
   if (prepared.error) return { ok: false, error: prepared.error };
@@ -122,17 +123,17 @@ export async function setAttributions(
   // only adjusts the split doesn't silently null a previously-saved payer — review #2), and only
   // replace the attribution set when `attributions` was provided.
   const stmts = [];
-  if ("payer_person_id" in body) stmts.push(env.DB.prepare(`UPDATE transactions SET payer_person_id = ? WHERE id = ? AND user_id = ?`).bind(body.payer_person_id ?? null, txnId, userId));
-  if ("paid_via_account_id" in body) stmts.push(env.DB.prepare(`UPDATE transactions SET paid_via_account_id = ? WHERE id = ? AND user_id = ?`).bind(body.paid_via_account_id ?? null, txnId, userId));
+  if ("payer_person_id" in body) stmts.push(tenantDb(env, userId).prepare(`UPDATE transactions SET payer_person_id = ? WHERE id = ? AND user_id = ?`).bind(body.payer_person_id ?? null, txnId));
+  if ("paid_via_account_id" in body) stmts.push(tenantDb(env, userId).prepare(`UPDATE transactions SET paid_via_account_id = ? WHERE id = ? AND user_id = ?`).bind(body.paid_via_account_id ?? null, txnId));
   if (body.attributions !== undefined) {
-    stmts.push(env.DB.prepare(`DELETE FROM transaction_attributions WHERE user_id = ? AND transaction_id = ?`).bind(userId, txnId));
+    stmts.push(tenantDb(env, userId).prepare(`DELETE FROM transaction_attributions WHERE user_id = ? AND transaction_id = ?`).bind(txnId));
     for (const r of prepared.rows) {
       stmts.push(
-        env.DB.prepare(
+        tenantDb(env, userId).prepare(
           `INSERT INTO transaction_attributions (id, user_id, transaction_id, entity_id, income_activity_id,
              attributed_pct, attributed_amount_cents, work_use_pct, deduction_provision, creates_shareholder_loan)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        ).bind(crypto.randomUUID(), userId, txnId, r.entity_id, r.income_activity_id, r.attributed_pct, r.attributed_amount_cents, r.work_use_pct, r.deduction_provision, r.creates_shareholder_loan),
+        ).bind(crypto.randomUUID(), txnId, r.entity_id, r.income_activity_id, r.attributed_pct, r.attributed_amount_cents, r.work_use_pct, r.deduction_provision, r.creates_shareholder_loan),
       );
     }
   }
@@ -143,8 +144,8 @@ export async function setAttributions(
 /** Clear all attributions for a transaction (and its payer fields). */
 export async function clearAttributions(env: Env, userId: string, txnId: string): Promise<void> {
   await env.DB.batch([
-    env.DB.prepare(`DELETE FROM transaction_attributions WHERE user_id = ? AND transaction_id = ?`).bind(userId, txnId),
-    env.DB.prepare(`UPDATE transactions SET payer_person_id = NULL, paid_via_account_id = NULL WHERE id = ? AND user_id = ?`).bind(txnId, userId),
+    tenantDb(env, userId).prepare(`DELETE FROM transaction_attributions WHERE user_id = ? AND transaction_id = ?`).bind(txnId),
+    tenantDb(env, userId).prepare(`UPDATE transactions SET payer_person_id = NULL, paid_via_account_id = NULL WHERE id = ? AND user_id = ?`).bind(txnId),
   ]);
 }
 // NOTE: the person→company shareholder-loan balance is computed on-demand from transaction_attributions

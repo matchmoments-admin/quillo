@@ -1,6 +1,7 @@
 import type { Env } from "../env";
 import { readToken, sealTokenPair, tokenStorageBlocked, TOKEN_STORAGE_BLOCKED_MESSAGE } from "./token-crypto";
 import { bindingMatches, decodeBoundState, encodeBoundState, BINDING_MISMATCH } from "./oauth-binding";
+import { tenantDb } from "./tenant-db";
 
 // QuickBooks OAuth2 connect flow (Phase 4). Tokens land in qbo_connections; the
 // QuickBooksAdapter refreshes + rotates them from there. The agent is a reader/
@@ -134,11 +135,11 @@ export async function handleCallback(env: Env, url: URL, origin: string, bindNon
   // the legacy plaintext fallback (enc_ver=0). The pre-exchange check above makes the refusal
   // here unreachable in practice; it stays as the backstop. Tokens are never logged.
   const stored = await sealTokenPair(env, tok.access_token, tok.refresh_token);
-  await env.DB.prepare(
+  await tenantDb(env, userId).prepare(
     `INSERT OR REPLACE INTO qbo_connections (user_id, realm_id, access_token, access_expires_at, refresh_token, refresh_expires_at, enc_ver, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
   )
-    .bind(userId, realmId, stored.access, accessExp, stored.refresh, refreshExp, stored.encVer)
+    .bind(realmId, stored.access, accessExp, stored.refresh, refreshExp, stored.encVer)
     .run();
   return { ok: true };
 }
@@ -149,8 +150,8 @@ export async function handleCallback(env: Env, url: URL, origin: string, bindNon
  * revoke fails — the user asked to disconnect. Never logs token values.
  */
 export async function revokeAndDisconnect(env: Env, userId: string): Promise<{ ok: boolean; revoked: boolean }> {
-  const row = await env.DB.prepare(`SELECT refresh_token, enc_ver FROM qbo_connections WHERE user_id = ?`)
-    .bind(userId)
+  const row = await tenantDb(env, userId).prepare(`SELECT refresh_token, enc_ver FROM qbo_connections WHERE user_id = ?`)
+    .bind()
     .first<{ refresh_token: string | null; enc_ver: number | null }>();
   let revoked = false;
   if (row?.refresh_token) {
@@ -172,7 +173,7 @@ export async function revokeAndDisconnect(env: Env, userId: string): Promise<{ o
       console.warn(`qbo revoke error: ${(e as Error).message}`);
     }
   }
-  await env.DB.prepare(`DELETE FROM qbo_connections WHERE user_id = ?`).bind(userId).run();
+  await tenantDb(env, userId).prepare(`DELETE FROM qbo_connections WHERE user_id = ?`).bind().run();
   await env.RULES.delete(`accounts:${userId}`);
   return { ok: true, revoked };
 }
@@ -181,8 +182,8 @@ export async function qboStatus(
   env: Env,
   userId: string,
 ): Promise<{ connected: boolean; realm_id: string | null; updated_at: string | null; needs_reconnect: boolean }> {
-  const row = await env.DB.prepare(`SELECT realm_id, updated_at, refresh_expires_at FROM qbo_connections WHERE user_id = ?`)
-    .bind(userId)
+  const row = await tenantDb(env, userId).prepare(`SELECT realm_id, updated_at, refresh_expires_at FROM qbo_connections WHERE user_id = ?`)
+    .bind()
     .first<{ realm_id: string; updated_at: string; refresh_expires_at: string | null }>();
   if (!row) return { connected: false, realm_id: null, updated_at: null, needs_reconnect: false };
   // A stored row whose refresh token has expired (QBO refresh tokens last ~100 days) is dead:

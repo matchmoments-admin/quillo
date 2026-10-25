@@ -8,6 +8,7 @@ import { featureOn } from "./features";
 import { rescanAfterSituationChange } from "./relevance-scan-run";
 import { fyBounds } from "./ledger-totals";
 import { AU_DESCRIPTOR, currentFyStartYearFor, type JurisdictionDescriptor } from "./jurisdiction";
+import { tenantDb } from "./tenant-db";
 import {
   computeMirrors,
   listSituationPeriods,
@@ -40,14 +41,14 @@ const selfPersonId = (userId: string) => `person_self_${userId}`;
 export async function ensureTenant(env: Env, userId: string, email?: string): Promise<void> {
   const flag = `tenant:init:${userId}`;
   if (await env.RULES.get(flag)) return;
-  await env.DB.prepare(`INSERT OR IGNORE INTO profiles (user_id) VALUES (?)`).bind(userId).run();
-  await env.DB.prepare(
+  await tenantDb(env, userId).prepare(`INSERT OR IGNORE INTO profiles (user_id) VALUES (?)`).bind().run();
+  await tenantDb(env, userId).prepare(
     `INSERT OR IGNORE INTO persons (id, user_id, display_name, role) VALUES (?, ?, 'You', 'self')`,
   )
-    .bind(selfPersonId(userId), userId)
+    .bind(selfPersonId(userId))
     .run();
   // Record the signup email (from the Clerk JWT) once, so the admin signups list can show who joined.
-  if (email) await env.DB.prepare(`UPDATE profiles SET email = ? WHERE user_id = ? AND email IS NULL`).bind(email, userId).run();
+  if (email) await tenantDb(env, userId).prepare(`UPDATE profiles SET email = ? WHERE user_id = ? AND email IS NULL`).bind(email).run();
   await env.RULES.put(flag, "1");
 }
 
@@ -57,11 +58,11 @@ export async function addPerson(
   p: { display_name: string; role?: string; occupation?: string; tax_residency?: string; tfn_last4?: string },
 ): Promise<string> {
   const id = uid();
-  await env.DB.prepare(
+  await tenantDb(env, userId).prepare(
     `INSERT INTO persons (id, user_id, display_name, role, occupation, tax_residency, tfn_last4)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
   )
-    .bind(id, userId, p.display_name, p.role ?? "other", p.occupation ?? null, p.tax_residency ?? "AU", p.tfn_last4 ?? null)
+    .bind(id, p.display_name, p.role ?? "other", p.occupation ?? null, p.tax_residency ?? "AU", p.tfn_last4 ?? null)
     .run();
   return id;
 }
@@ -72,12 +73,12 @@ export async function updatePerson(
   id: string,
   p: { display_name?: string; role?: string; occupation?: string; tax_residency?: string; tfn_last4?: string },
 ): Promise<void> {
-  await env.DB.prepare(
+  await tenantDb(env, userId).prepare(
     `UPDATE persons SET display_name = COALESCE(?, display_name), role = COALESCE(?, role),
             occupation = COALESCE(?, occupation), tax_residency = COALESCE(?, tax_residency),
             tfn_last4 = COALESCE(?, tfn_last4) WHERE id = ? AND user_id = ?`,
   )
-    .bind(p.display_name ?? null, p.role ?? null, p.occupation ?? null, p.tax_residency ?? null, p.tfn_last4 ?? null, id, userId)
+    .bind(p.display_name ?? null, p.role ?? null, p.occupation ?? null, p.tax_residency ?? null, p.tfn_last4 ?? null, id)
     .run();
   // #578: an occupation edit moves which lines are worth a look (flag relevance_scan; OFF ⇒ no-op).
   if (p.occupation != null) await rescanAfterSituationChange(env, userId);
@@ -91,11 +92,11 @@ export async function addProperty(
   // Validate only an explicitly-supplied owner; the default (selfPersonId) is always this tenant's own.
   await assertOwns(env, userId, [{ table: "persons", id: p.person_id, label: "person" }]);
   const id = uid();
-  await env.DB.prepare(
+  await tenantDb(env, userId).prepare(
     `INSERT INTO properties (id, user_id, label, address, status, use_status, ownership_pct, acquired_date, notes, person_id)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
-    .bind(id, userId, p.label, p.address ?? null, p.status ?? "rented", p.use_status ?? null, p.ownership_pct ?? 100, p.acquired_date ?? null, p.notes ?? null, p.person_id ?? selfPersonId(userId))
+    .bind(id, p.label, p.address ?? null, p.status ?? "rented", p.use_status ?? null, p.ownership_pct ?? 100, p.acquired_date ?? null, p.notes ?? null, p.person_id ?? selfPersonId(userId))
     .run();
   // 0033: seed a rental income_activity ONLY for a genuine rental — never for an owner-occupied or
   // main-residence property (that would offer a target that routes private home costs into the
@@ -103,8 +104,8 @@ export async function addProperty(
   const status = p.status ?? "rented";
   const isRental = status !== "owner_occupied" && (p.use_status ?? status) !== "owner_occupied";
   if (isRental) {
-    await env.DB.prepare(`INSERT OR IGNORE INTO income_activities (id, user_id, activity_type, property_id, label) VALUES (?, ?, 'rental_property', ?, ?)`)
-      .bind("iact_prop_" + id, userId, id, p.label)
+    await tenantDb(env, userId).prepare(`INSERT OR IGNORE INTO income_activities (id, user_id, activity_type, property_id, label) VALUES (?, ?, 'rental_property', ?, ?)`)
+      .bind("iact_prop_" + id, id, p.label)
       .run();
   }
   return id;
@@ -127,7 +128,7 @@ export async function updateProperty(
     main_residence_flag?: number;
   },
 ): Promise<void> {
-  await env.DB.prepare(
+  await tenantDb(env, userId).prepare(
     `UPDATE properties SET label = COALESCE(?, label), status = COALESCE(?, status),
             use_status = COALESCE(?, use_status),
             ownership_pct = COALESCE(?, ownership_pct), jurisdiction = COALESCE(?, jurisdiction),
@@ -136,10 +137,7 @@ export async function updateProperty(
             main_residence_flag = COALESCE(?, main_residence_flag)
       WHERE id = ? AND user_id = ?`,
   )
-    .bind(
-      p.label ?? null, p.status ?? null, p.use_status ?? null, p.ownership_pct ?? null, p.jurisdiction ?? null,
-      p.cost_base_cents ?? null, p.disposal_proceeds_cents ?? null, p.disposal_date ?? null,
-      p.acquired_date ?? null, p.main_residence_flag ?? null, id, userId,
+    .bind(p.label ?? null, p.status ?? null, p.use_status ?? null, p.ownership_pct ?? null, p.jurisdiction ?? null, p.cost_base_cents ?? null, p.disposal_proceeds_cents ?? null, p.disposal_date ?? null, p.acquired_date ?? null, p.main_residence_flag ?? null, id
     )
     .run();
   // Slice F: keep the property's CGT materialisation in sync with its disposal fields.
@@ -158,17 +156,17 @@ export async function syncPropertyDisposalToCgt(env: Env, userId: string, proper
     // Rebuild-from-scratch: drop any prior property-sourced asset/events, then (when applicable) recreate
     // exactly one asset + event. The mutations run as a single atomic batch() so two concurrent rebuilds of
     // the same property can't interleave into "both delete, only one inserts → zero rows".
-    const delEvents = env.DB.prepare(
+    const delEvents = tenantDb(env, userId).prepare(
       `DELETE FROM cgt_events WHERE user_id = ? AND cgt_asset_id IN (SELECT id FROM cgt_assets WHERE user_id = ? AND property_id = ?)`,
-    ).bind(userId, userId, propertyId);
-    const delAssets = env.DB.prepare(`DELETE FROM cgt_assets WHERE user_id = ? AND property_id = ?`).bind(userId, propertyId);
+    ).bind(propertyId);
+    const delAssets = tenantDb(env, userId).prepare(`DELETE FROM cgt_assets WHERE user_id = ? AND property_id = ?`).bind(propertyId);
 
-    const prop = await env.DB.prepare(
+    const prop = await tenantDb(env, userId).prepare(
       `SELECT p.label, p.cost_base_cents, p.disposal_proceeds_cents, p.disposal_date, p.acquired_date,
               p.ownership_pct, p.main_residence_flag, p.person_id, COALESCE(pe.tax_residency, 'AU') AS tax_residency
          FROM properties p LEFT JOIN persons pe ON pe.id = p.person_id
         WHERE p.id = ? AND p.user_id = ?`,
-    ).bind(propertyId, userId).first<{
+    ).bind(propertyId).first<{
       label: string; cost_base_cents: number | null; disposal_proceeds_cents: number | null;
       disposal_date: string | null; acquired_date: string | null; ownership_pct: number | null;
       main_residence_flag: number; person_id: string | null; tax_residency: string;
@@ -181,11 +179,11 @@ export async function syncPropertyDisposalToCgt(env: Env, userId: string, proper
     }
 
     // Div 43 capital-works deductions claimed against this property reduce its cost base.
-    const div43 = await env.DB.prepare(
+    const div43 = await tenantDb(env, userId).prepare(
       `SELECT COALESCE(SUM(d.deduction_cents),0) AS total FROM depreciation_schedule d
          JOIN assets a ON a.id = d.asset_id
         WHERE d.user_id = ? AND a.property_id = ? AND d.method_applied = 'div43'`,
-    ).bind(userId, propertyId).first<{ total: number }>();
+    ).bind(propertyId).first<{ total: number }>();
 
     const synth = propertyToCgtInputs({
       cost_base_cents: prop.cost_base_cents,
@@ -206,14 +204,14 @@ export async function syncPropertyDisposalToCgt(env: Env, userId: string, proper
 
     const assetId = uid();
     const fy = fyForDate(prop.disposal_date, await resolveJurisdictionForUser(env, userId));
-    const insAsset = env.DB.prepare(
+    const insAsset = tenantDb(env, userId).prepare(
       `INSERT INTO cgt_assets (id, user_id, person_id, asset_kind, label, acquired_date, cost_base_cents, main_residence_exempt, status, property_id)
        VALUES (?, ?, ?, 'property', ?, ?, ?, 0, 'disposed', ?)`,
-    ).bind(assetId, userId, prop.person_id ?? selfPersonId(userId), prop.label, synth.asset.acquired_date, synth.asset.cost_base_cents, propertyId);
-    const insEvent = env.DB.prepare(
+    ).bind(assetId, prop.person_id ?? selfPersonId(userId), prop.label, synth.asset.acquired_date, synth.asset.cost_base_cents, propertyId);
+    const insEvent = tenantDb(env, userId).prepare(
       `INSERT INTO cgt_events (id, user_id, cgt_asset_id, fy, event_type, event_date, proceeds_cents, cost_base_used_cents, discount_eligible)
        VALUES (?, ?, ?, ?, 'disposal', ?, ?, ?, ?)`,
-    ).bind(uid(), userId, assetId, fy, synth.event.event_date, synth.event.proceeds_cents, synth.event.cost_base_used_cents, synth.event.discount_eligible ? 1 : 0);
+    ).bind(uid(), assetId, fy, synth.event.event_date, synth.event.proceeds_cents, synth.event.cost_base_used_cents, synth.event.discount_eligible ? 1 : 0);
     // Atomic rebuild: delete-then-insert in one batch.
     await env.DB.batch([delEvents, delAssets, insAsset, insEvent]);
   } catch (e) {
@@ -252,10 +250,10 @@ export async function syncIncomeCgtFromComponents(
     // cgt_events.event_date is NOT NULL; use the distribution date, falling back to the FY end ("2025-26" →
     // "2026-06-30"). The discount is set explicitly, so event_date is a record only, not used in the calc.
     const evDate = eventDate ?? `${Number(fy.slice(0, 4)) + 1}-06-30`;
-    const delEvents = env.DB.prepare(
+    const delEvents = tenantDb(env, userId).prepare(
       `DELETE FROM cgt_events WHERE user_id = ? AND cgt_asset_id IN (SELECT id FROM cgt_assets WHERE user_id = ? AND income_id = ?)`,
-    ).bind(userId, userId, incomeId);
-    const delAssets = env.DB.prepare(`DELETE FROM cgt_assets WHERE user_id = ? AND income_id = ?`).bind(userId, incomeId);
+    ).bind(incomeId);
+    const delAssets = tenantDb(env, userId).prepare(`DELETE FROM cgt_assets WHERE user_id = ? AND income_id = ?`).bind(incomeId);
 
     const cgEvents = ammaToCgtEvents(components);
     if (!cgEvents.length) {
@@ -275,10 +273,10 @@ export async function syncIncomeCgtFromComponents(
        VALUES (?, ?, ?, 'managed_fund', ?, 0, 0, 'disposed', ?${entityScope ? ", ?" : ""})`,
     ).bind(assetId, userId, personId ?? selfPersonId(userId), `${label ?? "Managed fund"} (AMMA distributed capital gain)`, incomeId, ...(entityScope ? [entityId ?? null] : []));
     const insEvents = cgEvents.map((ev) =>
-      env.DB.prepare(
+      tenantDb(env, userId).prepare(
         `INSERT INTO cgt_events (id, user_id, cgt_asset_id, fy, event_type, event_date, proceeds_cents, cost_base_used_cents, discount_eligible)
          VALUES (?, ?, ?, ?, 'distribution', ?, ?, ?, ?)`,
-      ).bind(uid(), userId, assetId, fy, evDate, ev.proceeds_cents, ev.cost_base_used_cents, ev.discount_eligible ? 1 : 0),
+      ).bind(uid(), assetId, fy, evDate, ev.proceeds_cents, ev.cost_base_used_cents, ev.discount_eligible ? 1 : 0),
     );
     // Atomic rebuild: delete-then-insert in one batch.
     await env.DB.batch([delEvents, delAssets, insAsset, ...insEvents]);
@@ -312,19 +310,14 @@ export async function syncTxnCgtHolding(
   personId: string | null,
 ): Promise<void> {
   try {
-    const delEvents = env.DB.prepare(
+    const delEvents = tenantDb(env, userId).prepare(
       `DELETE FROM cgt_events WHERE user_id = ? AND cgt_asset_id IN (SELECT id FROM cgt_assets WHERE user_id = ? AND txn_id = ?)`,
-    ).bind(userId, userId, txnId);
-    const delAssets = env.DB.prepare(`DELETE FROM cgt_assets WHERE user_id = ? AND txn_id = ?`).bind(userId, txnId);
-    const insAsset = env.DB.prepare(
+    ).bind(txnId);
+    const delAssets = tenantDb(env, userId).prepare(`DELETE FROM cgt_assets WHERE user_id = ? AND txn_id = ?`).bind(txnId);
+    const insAsset = tenantDb(env, userId).prepare(
       `INSERT INTO cgt_assets (id, user_id, person_id, asset_kind, code, label, units, acquired_date, cost_base_cents, main_residence_exempt, status, txn_id)
        VALUES (?, ?, ?, 'shares', ?, ?, ?, ?, ?, 0, 'held', ?)`,
-    ).bind(
-      uid(), userId, personId ?? selfPersonId(userId), draft.code,
-      // The label states the provenance in plain English so the evidence pack never implies we knew more
-      // than the bank line said.
-      `${draft.code ?? "Investment"} deposit — confirm units and cost base`,
-      draft.units ?? null, draft.acquired_date, draft.cost_base_cents, txnId,
+    ).bind(uid(), personId ?? selfPersonId(userId), draft.code, `${draft.code ?? "Investment"} deposit — confirm units and cost base`, draft.units ?? null, draft.acquired_date, draft.cost_base_cents, txnId
     );
     await env.DB.batch([delEvents, delAssets, insAsset]);
   } catch (e) {
@@ -342,10 +335,10 @@ export async function syncTxnCgtHolding(
  */
 export async function clearTxnCgt(env: Env, userId: string, txnId: string): Promise<void> {
   try {
-    const delEvents = env.DB.prepare(
+    const delEvents = tenantDb(env, userId).prepare(
       `DELETE FROM cgt_events WHERE user_id = ? AND cgt_asset_id IN (SELECT id FROM cgt_assets WHERE user_id = ? AND txn_id = ?)`,
-    ).bind(userId, userId, txnId);
-    const delAssets = env.DB.prepare(`DELETE FROM cgt_assets WHERE user_id = ? AND txn_id = ?`).bind(userId, txnId);
+    ).bind(txnId);
+    const delAssets = tenantDb(env, userId).prepare(`DELETE FROM cgt_assets WHERE user_id = ? AND txn_id = ?`).bind(txnId);
     await env.DB.batch([delEvents, delAssets]);
   } catch (e) {
     if (/no such table|no such column/i.test((e as Error).message)) return;
@@ -381,10 +374,10 @@ export async function clearOrphanedTxnCgt(env: Env, userId: string): Promise<voi
  *  so its capital gain doesn't orphan into the position). Atomic; safe pre-0055. */
 export async function clearIncomeCgt(env: Env, userId: string, incomeId: string): Promise<void> {
   try {
-    const delEvents = env.DB.prepare(
+    const delEvents = tenantDb(env, userId).prepare(
       `DELETE FROM cgt_events WHERE user_id = ? AND cgt_asset_id IN (SELECT id FROM cgt_assets WHERE user_id = ? AND income_id = ?)`,
-    ).bind(userId, userId, incomeId);
-    const delAssets = env.DB.prepare(`DELETE FROM cgt_assets WHERE user_id = ? AND income_id = ?`).bind(userId, incomeId);
+    ).bind(incomeId);
+    const delAssets = tenantDb(env, userId).prepare(`DELETE FROM cgt_assets WHERE user_id = ? AND income_id = ?`).bind(incomeId);
     await env.DB.batch([delEvents, delAssets]);
   } catch (e) {
     if (/no such table|no such column/i.test((e as Error).message)) return;
@@ -414,19 +407,19 @@ export async function addEntity(env: Env, userId: string, e: { kind: string; nam
   // Most small trading companies are base-rate entities (25% — turnover < $50m, ≤80% passive income),
   // so default a company to 1 (the user can change it). Non-companies: 0 (irrelevant).
   const baseRate = e.kind === "company" ? 1 : 0;
-  await env.DB.prepare(`INSERT INTO entities (id, user_id, kind, name, detail_json, person_id, entity_type, base_rate_entity) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-    .bind(id, userId, e.kind, e.name ?? null, JSON.stringify(e.detail ?? {}), personId, entityType, baseRate)
+  await tenantDb(env, userId).prepare(`INSERT INTO entities (id, user_id, kind, name, detail_json, person_id, entity_type, base_rate_entity) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    .bind(id, e.kind, e.name ?? null, JSON.stringify(e.detail ?? {}), personId, entityType, baseRate)
     .run();
   // 0032: seed a self->entity role so the join mirrors the scalar from the start (employment->employee,
   // company->director, else co_owner). 0033: seed the matching income_activity so attributions/UI have
   // a target. INSERT OR IGNORE keeps both idempotent against the migration backfill.
   const role = e.kind === "employment" ? "employee" : e.kind === "company" ? "director" : e.kind === "individual" ? "individual_taxpayer" : "co_owner";
-  await env.DB.prepare(`INSERT OR IGNORE INTO entity_roles (id, user_id, person_id, entity_id, role, ownership_pct) VALUES (?, ?, ?, ?, ?, 100.0)`)
-    .bind("erole_" + id, userId, personId, id, role)
+  await tenantDb(env, userId).prepare(`INSERT OR IGNORE INTO entity_roles (id, user_id, person_id, entity_id, role, ownership_pct) VALUES (?, ?, ?, ?, ?, 100.0)`)
+    .bind("erole_" + id, personId, id, role)
     .run();
   if (e.kind === "company" || e.kind === "employment") {
-    await env.DB.prepare(`INSERT OR IGNORE INTO income_activities (id, user_id, entity_id, activity_type, label) VALUES (?, ?, ?, ?, ?)`)
-      .bind((e.kind === "company" ? "iact_co_" : "iact_sal_") + id, userId, id, e.kind === "company" ? "business" : "salary_wages", e.name ?? null)
+    await tenantDb(env, userId).prepare(`INSERT OR IGNORE INTO income_activities (id, user_id, entity_id, activity_type, label) VALUES (?, ?, ?, ?, ?)`)
+      .bind((e.kind === "company" ? "iact_co_" : "iact_sal_") + id, id, e.kind === "company" ? "business" : "salary_wages", e.name ?? null)
       .run();
   }
   return id;
@@ -445,11 +438,11 @@ export async function addRule(
   // A property-scoped rule must reference a property this tenant owns (optional; skipped when absent).
   await assertOwns(env, userId, [{ table: "properties", id: r.property_id, label: "property" }]);
   const id = uid();
-  await env.DB.prepare(
+  await tenantDb(env, userId).prepare(
     `INSERT INTO user_rules (id, user_id, match_type, pattern, bucket, ato_label, property_id, priority)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   )
-    .bind(id, userId, r.match_type ?? "merchant_contains", r.pattern, r.bucket, r.ato_label, r.property_id ?? null, r.priority ?? 100)
+    .bind(id, r.match_type ?? "merchant_contains", r.pattern, r.bucket, r.ato_label, r.property_id ?? null, r.priority ?? 100)
     .run();
   return id;
 }
@@ -462,12 +455,12 @@ export async function updateEntity(
 ): Promise<void> {
   // detail_json is replaced wholesale when `detail` is supplied (the edit form always sends the full
   // kind-aware detail); kind/name COALESCE so a partial patch leaves the rest intact. Scoped + active.
-  await env.DB.prepare(
+  await tenantDb(env, userId).prepare(
     `UPDATE entities SET kind = COALESCE(?, kind), name = COALESCE(?, name),
             detail_json = COALESCE(?, detail_json)
       WHERE id = ? AND user_id = ? AND active = 1`,
   )
-    .bind(e.kind ?? null, e.name ?? null, e.detail !== undefined ? JSON.stringify(e.detail) : null, id, userId)
+    .bind(e.kind ?? null, e.name ?? null, e.detail !== undefined ? JSON.stringify(e.detail) : null, id)
     .run();
 }
 
@@ -504,11 +497,11 @@ export async function addAccount(
   a: { institution?: string; name: string; last4?: string; type?: string; source?: string; qbo_account_id?: string },
 ): Promise<string> {
   const id = uid();
-  await env.DB.prepare(
+  await tenantDb(env, userId).prepare(
     `INSERT INTO accounts (id, user_id, institution, name, last4, type, source, qbo_account_id)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   )
-    .bind(id, userId, a.institution ?? null, a.name, a.last4 ?? null, a.type ?? "transaction", a.source ?? "statement", a.qbo_account_id ?? null)
+    .bind(id, a.institution ?? null, a.name, a.last4 ?? null, a.type ?? "transaction", a.source ?? "statement", a.qbo_account_id ?? null)
     .run();
   return id;
 }
@@ -525,18 +518,14 @@ export async function updateAccount(
   // is clamped to a sane 0–100; a negative/garbage balance is dropped to NULL rather than stored.
   const rate = a.interest_rate_pct === undefined ? undefined : a.interest_rate_pct === null || !Number.isFinite(a.interest_rate_pct) ? null : Math.max(0, Math.min(100, a.interest_rate_pct));
   const bal = a.balance_cents === undefined ? undefined : a.balance_cents === null || !Number.isFinite(a.balance_cents) || a.balance_cents < 0 ? null : Math.round(a.balance_cents);
-  await env.DB.prepare(
+  await tenantDb(env, userId).prepare(
     `UPDATE accounts SET institution = COALESCE(?, institution), name = COALESCE(?, name),
             last4 = COALESCE(?, last4), type = COALESCE(?, type), source = COALESCE(?, source),
             interest_rate_pct = CASE WHEN ? = 1 THEN ? ELSE interest_rate_pct END,
             balance_cents     = CASE WHEN ? = 1 THEN ? ELSE balance_cents END
       WHERE id = ? AND user_id = ?`,
   )
-    .bind(
-      a.institution ?? null, a.name ?? null, a.last4 ?? null, a.type ?? null, a.source ?? null,
-      rate === undefined ? 0 : 1, rate ?? null,
-      bal === undefined ? 0 : 1, bal ?? null,
-      id, userId,
+    .bind(a.institution ?? null, a.name ?? null, a.last4 ?? null, a.type ?? null, a.source ?? null, rate === undefined ? 0 : 1, rate ?? null, bal === undefined ? 0 : 1, bal ?? null, id
     )
     .run();
 }
@@ -559,11 +548,11 @@ export async function addLoanProperty(
   ]);
   const id = uid();
   // INSERT OR IGNORE on the UNIQUE(user_id, loan_account_id, property_id) so re-linking is idempotent.
-  await env.DB.prepare(
+  await tenantDb(env, userId).prepare(
     `INSERT OR IGNORE INTO loans_properties (id, user_id, loan_account_id, property_id, deductible_interest_pct)
      VALUES (?, ?, ?, ?, ?)`,
   )
-    .bind(id, userId, lp.loan_account_id, lp.property_id, clampPct(lp.deductible_interest_pct))
+    .bind(id, lp.loan_account_id, lp.property_id, clampPct(lp.deductible_interest_pct))
     .run();
   return id;
 }
@@ -574,10 +563,10 @@ export async function updateLoanProperty(
   id: string,
   lp: { deductible_interest_pct?: number },
 ): Promise<void> {
-  await env.DB.prepare(
+  await tenantDb(env, userId).prepare(
     `UPDATE loans_properties SET deductible_interest_pct = COALESCE(?, deductible_interest_pct) WHERE id = ? AND user_id = ?`,
   )
-    .bind(lp.deductible_interest_pct === undefined ? null : clampPct(lp.deductible_interest_pct), id, userId)
+    .bind(lp.deductible_interest_pct === undefined ? null : clampPct(lp.deductible_interest_pct), id)
     .run();
 }
 
@@ -588,19 +577,19 @@ export async function addCapitalLoss(
   c: { prior_fy: number; loss_cents: number; asset_id?: string; notes?: string },
 ): Promise<string> {
   const id = uid();
-  await env.DB.prepare(
+  await tenantDb(env, userId).prepare(
     `INSERT INTO capital_loss_carryins (id, user_id, prior_fy, loss_cents, asset_id, notes) VALUES (?, ?, ?, ?, ?, ?)`,
   )
-    .bind(id, userId, c.prior_fy, Math.max(0, Math.round(c.loss_cents)), c.asset_id ?? null, c.notes ?? null)
+    .bind(id, c.prior_fy, Math.max(0, Math.round(c.loss_cents)), c.asset_id ?? null, c.notes ?? null)
     .run();
   return id;
 }
 
 export async function listCapitalLosses(env: Env, userId: string) {
-  const res = await env.DB.prepare(
+  const res = await tenantDb(env, userId).prepare(
     `SELECT id, prior_fy, loss_cents, asset_id, notes FROM capital_loss_carryins WHERE user_id = ? ORDER BY prior_fy DESC, created_at`,
   )
-    .bind(userId)
+    .bind()
     .all();
   return res.results ?? [];
 }
@@ -611,30 +600,30 @@ export async function addDepreciationOpening(
   d: { fy: number; opening_adjustable_value_cents: number; asset_id?: string; notes?: string },
 ): Promise<string> {
   const id = uid();
-  await env.DB.prepare(
+  await tenantDb(env, userId).prepare(
     `INSERT INTO depreciation_opening_balances (id, user_id, fy, asset_id, opening_adjustable_value_cents, notes) VALUES (?, ?, ?, ?, ?, ?)`,
   )
-    .bind(id, userId, d.fy, d.asset_id ?? null, Math.max(0, Math.round(d.opening_adjustable_value_cents)), d.notes ?? null)
+    .bind(id, d.fy, d.asset_id ?? null, Math.max(0, Math.round(d.opening_adjustable_value_cents)), d.notes ?? null)
     .run();
   return id;
 }
 
 export async function listDepreciationOpenings(env: Env, userId: string) {
-  const res = await env.DB.prepare(
+  const res = await tenantDb(env, userId).prepare(
     `SELECT id, fy, asset_id, opening_adjustable_value_cents, notes FROM depreciation_opening_balances WHERE user_id = ? ORDER BY fy DESC, created_at`,
   )
-    .bind(userId)
+    .bind()
     .all();
   return res.results ?? [];
 }
 
 // ── Soft per-FY sign-off (the user's own "ready to hand off" attestation; re-openable) ──
 export async function signOffFy(env: Env, userId: string, fy: number): Promise<void> {
-  await env.DB.prepare(
+  await tenantDb(env, userId).prepare(
     `INSERT INTO fy_signoff (user_id, fy, signed_off_at) VALUES (?, ?, datetime('now'))
      ON CONFLICT(user_id, fy) DO UPDATE SET signed_off_at = datetime('now')`,
   )
-    .bind(userId, fy)
+    .bind(fy)
     .run();
 }
 
@@ -643,15 +632,15 @@ export async function clearSignOffFy(env: Env, userId: string, fy: number): Prom
   // lodged mark first (DELETE /api/lodged). OFF this is the old delete and never references lodged_at, so the
   // flag-OFF path is safe before 0087 is applied. The lodged readers/writers live in fy-signoff.ts.
   if (featureOn(env, "situation_profile")) {
-    await env.DB.prepare(`DELETE FROM fy_signoff WHERE user_id = ? AND fy = ? AND lodged_at IS NULL`).bind(userId, fy).run();
+    await tenantDb(env, userId).prepare(`DELETE FROM fy_signoff WHERE user_id = ? AND fy = ? AND lodged_at IS NULL`).bind(fy).run();
     return;
   }
-  await env.DB.prepare(`DELETE FROM fy_signoff WHERE user_id = ? AND fy = ?`).bind(userId, fy).run();
+  await tenantDb(env, userId).prepare(`DELETE FROM fy_signoff WHERE user_id = ? AND fy = ?`).bind(fy).run();
 }
 
 export async function getFySignoff(env: Env, userId: string, fy: number): Promise<{ signed_off_at: string } | null> {
-  return await env.DB.prepare(`SELECT signed_off_at FROM fy_signoff WHERE user_id = ? AND fy = ?`)
-    .bind(userId, fy)
+  return await tenantDb(env, userId).prepare(`SELECT signed_off_at FROM fy_signoff WHERE user_id = ? AND fy = ?`)
+    .bind(fy)
     .first<{ signed_off_at: string }>();
 }
 
@@ -833,14 +822,14 @@ export async function addPropertyOwner(env: Env, userId: string, o: { property_i
     { table: "persons", id: o.person_id, label: "person" },
   ]);
   const id = uid();
-  await env.DB.prepare(`INSERT INTO property_owners (id, user_id, property_id, person_id, ownership_pct) VALUES (?, ?, ?, ?, ?)`)
-    .bind(id, userId, o.property_id, o.person_id, o.ownership_pct ?? 100)
+  await tenantDb(env, userId).prepare(`INSERT INTO property_owners (id, user_id, property_id, person_id, ownership_pct) VALUES (?, ?, ?, ?, ?)`)
+    .bind(id, o.property_id, o.person_id, o.ownership_pct ?? 100)
     .run();
   return id;
 }
 
 export async function listPropertyOwners(env: Env, userId: string) {
-  return (await env.DB.prepare(`SELECT id, property_id, person_id, ownership_pct FROM property_owners WHERE user_id = ? ORDER BY created_at`).bind(userId).all()).results ?? [];
+  return (await tenantDb(env, userId).prepare(`SELECT id, property_id, person_id, ownership_pct FROM property_owners WHERE user_id = ? ORDER BY created_at`).bind().all()).results ?? [];
 }
 
 export async function addEntityRole(env: Env, userId: string, r: { person_id: string; entity_id: string; role: string; ownership_pct?: number; start_date?: string; end_date?: string }): Promise<string> {
@@ -849,8 +838,8 @@ export async function addEntityRole(env: Env, userId: string, r: { person_id: st
     { table: "entities", id: r.entity_id, label: "entity" },
   ]);
   const id = uid();
-  await env.DB.prepare(`INSERT INTO entity_roles (id, user_id, person_id, entity_id, role, ownership_pct, start_date, end_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-    .bind(id, userId, r.person_id, r.entity_id, r.role, r.ownership_pct ?? null, r.start_date ?? null, r.end_date ?? null)
+  await tenantDb(env, userId).prepare(`INSERT INTO entity_roles (id, user_id, person_id, entity_id, role, ownership_pct, start_date, end_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    .bind(id, r.person_id, r.entity_id, r.role, r.ownership_pct ?? null, r.start_date ?? null, r.end_date ?? null)
     .run();
   return id;
 }
@@ -862,18 +851,18 @@ export async function addEntityRole(env: Env, userId: string, r: { person_id: st
  */
 export async function entityRoleExists(env: Env, userId: string, r: { person_id?: unknown; entity_id?: unknown; role?: unknown }): Promise<boolean> {
   if (typeof r.person_id !== "string" || typeof r.entity_id !== "string" || typeof r.role !== "string") return false;
-  const row = await env.DB.prepare(`SELECT 1 AS x FROM entity_roles WHERE user_id = ? AND person_id = ? AND entity_id = ? AND role = ? LIMIT 1`)
-    .bind(userId, r.person_id, r.entity_id, r.role)
+  const row = await tenantDb(env, userId).prepare(`SELECT 1 AS x FROM entity_roles WHERE user_id = ? AND person_id = ? AND entity_id = ? AND role = ? LIMIT 1`)
+    .bind(r.person_id, r.entity_id, r.role)
     .first<{ x: number }>();
   return !!row;
 }
 
 export async function listEntityRoles(env: Env, userId: string) {
-  return (await env.DB.prepare(`SELECT id, person_id, entity_id, role, ownership_pct, start_date, end_date FROM entity_roles WHERE user_id = ? ORDER BY created_at`).bind(userId).all()).results ?? [];
+  return (await tenantDb(env, userId).prepare(`SELECT id, person_id, entity_id, role, ownership_pct, start_date, end_date FROM entity_roles WHERE user_id = ? ORDER BY created_at`).bind().all()).results ?? [];
 }
 
 export async function listIncomeActivities(env: Env, userId: string) {
-  return (await env.DB.prepare(`SELECT id, entity_id, activity_type, property_id, occupation_scope, label, fy, psi_status FROM income_activities WHERE user_id = ? ORDER BY activity_type, label`).bind(userId).all()).results ?? [];
+  return (await tenantDb(env, userId).prepare(`SELECT id, entity_id, activity_type, property_id, occupation_scope, label, fy, psi_status FROM income_activities WHERE user_id = ? ORDER BY activity_type, label`).bind().all()).results ?? [];
 }
 
 // S2: valid self-declared PSI/Div 86 statuses on a business activity. NULL (absent) = not assessed.
@@ -888,8 +877,8 @@ function normPsiStatus(v: unknown): string | null {
  * assessed). Scoped to the tenant.
  */
 export async function updateIncomeActivityPsiStatus(env: Env, userId: string, id: string, psi_status: unknown): Promise<void> {
-  await env.DB.prepare(`UPDATE income_activities SET psi_status = ? WHERE id = ? AND user_id = ?`)
-    .bind(normPsiStatus(psi_status), id, userId)
+  await tenantDb(env, userId).prepare(`UPDATE income_activities SET psi_status = ? WHERE id = ? AND user_id = ?`)
+    .bind(normPsiStatus(psi_status), id)
     .run();
 }
 
@@ -912,20 +901,20 @@ export async function addIncomeActivity(
   const id = uid();
   const ACTIVITY_TYPES = ["salary_wages", "rental_property", "business", "investment", "private"];
   const activityType = a.activity_type && ACTIVITY_TYPES.includes(a.activity_type) ? a.activity_type : "business";
-  await env.DB.prepare(
+  await tenantDb(env, userId).prepare(
     `INSERT INTO income_activities (id, user_id, entity_id, activity_type, property_id, occupation_scope, fy, label, psi_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
-    .bind(id, userId, a.entity_id ?? null, activityType, a.property_id ?? null, a.occupation_scope ?? null, a.fy ?? null, a.label ?? null, normPsiStatus(a.psi_status))
+    .bind(id, a.entity_id ?? null, activityType, a.property_id ?? null, a.occupation_scope ?? null, a.fy ?? null, a.label ?? null, normPsiStatus(a.psi_status))
     .run();
   return id;
 }
 
 // ── Ingest keys (devices) ──────────────────────────────────────────────────
 export async function listKeys(env: Env, userId: string) {
-  const res = await env.DB.prepare(
+  const res = await tenantDb(env, userId).prepare(
     `SELECT key_id, label, created_at, revoked_at FROM tenant_keys WHERE user_id = ? ORDER BY created_at DESC`,
   )
-    .bind(userId)
+    .bind()
     .all();
   return res.results ?? [];
 }
@@ -934,15 +923,15 @@ export async function listKeys(env: Env, userId: string) {
 export async function mintKey(env: Env, userId: string, label: string): Promise<{ keyId: string; secret: string }> {
   const keyId = `k_${[...crypto.getRandomValues(new Uint8Array(6))].map((b) => b.toString(16).padStart(2, "0")).join("")}`;
   const secret = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32)))).replace(/[+/=]/g, "").slice(0, 43);
-  await env.DB.prepare(`INSERT INTO tenant_keys (key_id, user_id, secret, label) VALUES (?, ?, ?, ?)`)
-    .bind(keyId, userId, secret, label || "web")
+  await tenantDb(env, userId).prepare(`INSERT INTO tenant_keys (key_id, user_id, secret, label) VALUES (?, ?, ?, ?)`)
+    .bind(keyId, secret, label || "web")
     .run();
   return { keyId, secret };
 }
 
 export async function revokeKey(env: Env, userId: string, keyId: string): Promise<void> {
-  await env.DB.prepare(`UPDATE tenant_keys SET revoked_at = datetime('now') WHERE key_id = ? AND user_id = ?`)
-    .bind(keyId, userId)
+  await tenantDb(env, userId).prepare(`UPDATE tenant_keys SET revoked_at = datetime('now') WHERE key_id = ? AND user_id = ?`)
+    .bind(keyId)
     .run();
 }
 
@@ -981,8 +970,8 @@ const PERIOD_SOURCES = new Set(["user", "onboarding", "noticed"]);
 const optStr = (v: unknown): string | null => (typeof v === "string" && v.trim() !== "" ? v.trim().slice(0, 200) : null);
 
 async function personRow(env: Env, userId: string, personId: string): Promise<{ id: string; role: string; occupation: string | null; tax_residency: string | null }> {
-  const p = await env.DB.prepare(`SELECT id, role, occupation, tax_residency FROM persons WHERE id = ? AND user_id = ?`)
-    .bind(personId, userId)
+  const p = await tenantDb(env, userId).prepare(`SELECT id, role, occupation, tax_residency FROM persons WHERE id = ? AND user_id = ?`)
+    .bind(personId)
     .first<{ id: string; role: string; occupation: string | null; tax_residency: string | null }>();
   if (!p) throw new SituationPeriodError("person not found", 404);
   return p;
@@ -1000,18 +989,18 @@ async function assertPeriodRef(env: Env, userId: string, ref: SituationFactSpec[
 
 function mirrorStatements(env: Env, userId: string, person: { id: string; role: string }, m: SituationMirrors) {
   const out = [];
-  if (m.occupation !== undefined) out.push(env.DB.prepare(`UPDATE persons SET occupation = ? WHERE id = ? AND user_id = ?`).bind(m.occupation, person.id, userId));
-  if (m.tax_residency !== undefined) out.push(env.DB.prepare(`UPDATE persons SET tax_residency = ? WHERE id = ? AND user_id = ?`).bind(m.tax_residency, person.id, userId));
+  if (m.occupation !== undefined) out.push(tenantDb(env, userId).prepare(`UPDATE persons SET occupation = ? WHERE id = ? AND user_id = ?`).bind(m.occupation, person.id));
+  if (m.tax_residency !== undefined) out.push(tenantDb(env, userId).prepare(`UPDATE persons SET tax_residency = ? WHERE id = ? AND user_id = ?`).bind(m.tax_residency, person.id));
   // profiles.private_health is tenant-level: only the primary taxpayer's answer mirrors into it.
-  if (m.private_health !== undefined && person.role === "self") out.push(env.DB.prepare(`UPDATE profiles SET private_health = ? WHERE user_id = ?`).bind(m.private_health, userId));
+  if (m.private_health !== undefined && person.role === "self") out.push(tenantDb(env, userId).prepare(`UPDATE profiles SET private_health = ? WHERE user_id = ?`).bind(m.private_health));
   return out;
 }
 
 async function getPeriod(env: Env, userId: string, id: string): Promise<SituationPeriod> {
-  const row = await env.DB.prepare(
+  const row = await tenantDb(env, userId).prepare(
     `SELECT id, user_id, subject_kind, subject_id, fact, value, ref_id, starts_on, ends_on, source, detail_json, created_at, updated_at
        FROM situation_periods WHERE id = ? AND user_id = ?`,
-  ).bind(id, userId).first<SituationPeriod>();
+  ).bind(id).first<SituationPeriod>();
   if (!row) throw new SituationPeriodError("situation period not found", 404);
   return row;
 }
@@ -1128,10 +1117,10 @@ async function writeSituationPeriod(
   if (!prior || has("ref_id")) await assertPeriodRef(env, userId, facts[next.fact]?.ref, next.ref_id);
 
   const stmt = prior
-    ? env.DB.prepare(`UPDATE situation_periods SET value = ?, ref_id = ?, starts_on = ?, ends_on = ?, detail_json = ?, updated_at = datetime('now') WHERE id = ? AND user_id = ?`)
-        .bind(next.value, next.ref_id, next.starts_on, next.ends_on, next.detail_json, next.id, userId)
-    : env.DB.prepare(`INSERT INTO situation_periods (id, user_id, subject_kind, subject_id, fact, value, ref_id, starts_on, ends_on, source, detail_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .bind(next.id, userId, next.subject_kind, next.subject_id, next.fact, next.value, next.ref_id, next.starts_on, next.ends_on, next.source, next.detail_json);
+    ? tenantDb(env, userId).prepare(`UPDATE situation_periods SET value = ?, ref_id = ?, starts_on = ?, ends_on = ?, detail_json = ?, updated_at = datetime('now') WHERE id = ? AND user_id = ?`)
+        .bind(next.value, next.ref_id, next.starts_on, next.ends_on, next.detail_json, next.id)
+    : tenantDb(env, userId).prepare(`INSERT INTO situation_periods (id, user_id, subject_kind, subject_id, fact, value, ref_id, starts_on, ends_on, source, detail_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .bind(next.id, next.subject_kind, next.subject_id, next.fact, next.value, next.ref_id, next.starts_on, next.ends_on, next.source, next.detail_json);
 
   // Mirrors from the POST-write state of this person's periods (computed in memory so the batch is atomic).
   const postWrite = subjectPeriods.filter((p) => p.id !== next.id).concat(next);
@@ -1155,7 +1144,7 @@ export async function deleteSituationPeriod(
 ): Promise<void> {
   const descriptor = opts.descriptor ?? AU_DESCRIPTOR;
   const prior = await getPeriod(env, userId, id);
-  const del = env.DB.prepare(`DELETE FROM situation_periods WHERE id = ? AND user_id = ?`).bind(id, userId);
+  const del = tenantDb(env, userId).prepare(`DELETE FROM situation_periods WHERE id = ? AND user_id = ?`).bind(id);
   let person: Awaited<ReturnType<typeof personRow>> | null = null;
   if (prior.subject_kind === "person") person = await personRow(env, userId, prior.subject_id).catch(() => null);
   if (!person) {

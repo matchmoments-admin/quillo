@@ -14,6 +14,7 @@ import { groupKey } from "./clarify";
 import { parseLinkSnapshot } from "./receipt-link";
 import { reconcileScore, proposeMatches, RECONCILE_WINDOW_DAYS, type ReconcileConfig, type MatchProposal } from "./reconcile-proposer";
 import type { JurisdictionDescriptor } from "./jurisdiction";
+import { platformDb, tenantDb } from "./tenant-db";
 
 // Read-side queries for the web API. Reads hit D1 directly from the Worker; audited
 // writes (corrections, consent) go through the Durable Object RPC instead.
@@ -57,8 +58,8 @@ export async function assertCanonicalSource(
   accountId: string,
   incoming: "cdr_feed" | "statement" | "qbo_feed",
 ): Promise<void> {
-  const account = await env.DB.prepare(`SELECT name, source FROM accounts WHERE id = ? AND user_id = ?`)
-    .bind(accountId, userId)
+  const account = await tenantDb(env, userId).prepare(`SELECT name, source FROM accounts WHERE id = ? AND user_id = ?`)
+    .bind(accountId)
     .first<{ name: string; source: string }>();
   if (!account) throw new Error("account not found");
   if (account.source === incoming) return;
@@ -76,9 +77,9 @@ export async function assertCanonicalSource(
   // untouched account can still be claimed by a feed. Count what is actually there rather than
   // trusting the column, so a source flipped by hand can't smuggle a double-import through.
   if (FEED_SOURCES.has(incoming)) {
-    const used = await env.DB.prepare(
+    const used = await tenantDb(env, userId).prepare(
       `SELECT COUNT(*) AS n FROM transactions WHERE user_id = ? AND account_id = ? AND source <> ?`,
-    ).bind(userId, accountId, incoming).first<{ n: number }>();
+    ).bind(accountId, incoming).first<{ n: number }>();
     if ((used?.n ?? 0) > 0) {
       throw new Error(
         `${account.name} already has ${used?.n} imported ${label(account.source)} line(s). One canonical source per account — remove those first, or use a different account.`,
@@ -426,8 +427,8 @@ export async function reconcilePairs(
   // The picked receipt (a tenant-scoped read, so another tenant's id simply orders nothing). It may sit
   // outside the 500 loaded receipts, so it is read on its own.
   const picked = opts.forReceipt
-    ? await env.DB.prepare(`SELECT amount_cents, amount_aud_cents, txn_date, direction FROM transactions WHERE id = ? AND user_id = ? AND kind = 'receipt'`)
-        .bind(opts.forReceipt, userId)
+    ? await tenantDb(env, userId).prepare(`SELECT amount_cents, amount_aud_cents, txn_date, direction FROM transactions WHERE id = ? AND user_id = ? AND kind = 'receipt'`)
+        .bind(opts.forReceipt)
         .first<{ amount_cents: number | null; amount_aud_cents: number | null; txn_date: string | null; direction: string | null }>()
     : null;
   const scored = scanned.map((l) => {
@@ -513,9 +514,9 @@ export async function reconcileProposals(env: Env, userId: string, fy: number, c
   if (receipts.length > PROPOSER_RECEIPT_CAP || lines.length > PROPOSER_LINE_CAP) {
     return { fy, proposals: [], ambiguous: [], no_line: [], truncated: true };
   }
-  const dismissals = (await env.DB.prepare(
+  const dismissals = (await tenantDb(env, userId).prepare(
     `SELECT receipt_id, line_id FROM reconcile_dismissals WHERE user_id = ?`,
-  ).bind(userId).all<{ receipt_id: string; line_id: string }>()).results ?? [];
+  ).bind().all<{ receipt_id: string; line_id: string }>()).results ?? [];
   const toRow = (t: ProposalRow) => ({ id: t.id, cents: Math.abs(t.amount_aud_cents ?? t.amount_cents ?? 0), date: t.txn_date, direction: t.direction });
   const out = proposeMatches(receipts.map(toRow), lines.map(toRow), dismissals, cfg, bounds);
   const rById = new Map(receipts.map((r) => [r.id, r]));
@@ -568,40 +569,40 @@ export async function reconcileLinkedPairs(env: Env, userId: string, fy: number,
 }
 
 export async function getTransaction(env: Env, userId: string, id: string) {
-  const txn = await env.DB.prepare(
+  const txn = await tenantDb(env, userId).prepare(
     `SELECT ${TXN_COLS}, receipt_key
        FROM transactions WHERE id = ? AND user_id = ?`,
   )
-    .bind(id, userId)
+    .bind(id)
     .first<TxnRow & { receipt_key: string | null }>();
   if (!txn) return null;
-  const corr = await env.DB.prepare(
+  const corr = await tenantDb(env, userId).prepare(
     `SELECT field, old_value, new_value, created_at FROM corrections
       WHERE txn_id = ? AND user_id = ? ORDER BY created_at DESC`,
   )
-    .bind(id, userId)
+    .bind(id)
     .all();
   return { ...txn, corrections: corr.results ?? [] };
 }
 
 /** Look up the R2 key for a transaction, scoped to the user (prevents cross-tenant reads). */
 export async function receiptKeyFor(env: Env, userId: string, txnId: string): Promise<string | null> {
-  const row = await env.DB.prepare(
+  const row = await tenantDb(env, userId).prepare(
     `SELECT receipt_key FROM transactions WHERE id = ? AND user_id = ?`,
   )
-    .bind(txnId, userId)
+    .bind(txnId)
     .first<{ receipt_key: string | null }>();
   return row?.receipt_key ?? null;
 }
 
 export async function listAccounts(env: Env, userId: string) {
-  const res = await env.DB.prepare(
+  const res = await tenantDb(env, userId).prepare(
     `SELECT a.id, a.institution, a.name, a.last4, a.type, a.source, a.qbo_account_id, a.created_at,
             a.interest_rate_pct, a.balance_cents,
             (SELECT COUNT(*) FROM transactions t WHERE t.account_id = a.id AND t.kind='bank_line') AS line_count
        FROM accounts a WHERE a.user_id = ? AND a.active = 1 ORDER BY a.created_at`,
   )
-    .bind(userId)
+    .bind()
     .all();
   return res.results ?? [];
 }
@@ -609,7 +610,7 @@ export async function listAccounts(env: Env, userId: string) {
 export async function usageSummary(env: Env, userId: string) {
   const today = new Date().toISOString().slice(0, 10);
   const month = today.slice(0, 7);
-  const totals = await env.DB.prepare(
+  const totals = await tenantDb(env, userId).prepare(
     // cost_e4 is the exact integer cost (1e-4 cent units); SUM integers, divide to cents once.
     `SELECT
        COALESCE(SUM(CASE WHEN substr(created_at,1,10) = ? THEN cost_e4 END),0)/10000.0 AS today_cents,
@@ -617,14 +618,14 @@ export async function usageSummary(env: Env, userId: string) {
        COUNT(*) AS calls
      FROM llm_usage WHERE user_id = ?`,
   )
-    .bind(today, month, userId)
+    .bind(today, month)
     .first<{ today_cents: number; month_cents: number; calls: number }>();
-  const byFeature = await env.DB.prepare(
+  const byFeature = await tenantDb(env, userId).prepare(
     `SELECT feature, COUNT(*) AS calls, COALESCE(SUM(cost_e4),0)/10000.0 AS cost_cents
        FROM llm_usage WHERE user_id = ? AND substr(created_at,1,7) = ?
       GROUP BY feature ORDER BY cost_cents DESC`,
   )
-    .bind(userId, month)
+    .bind(month)
     .all();
   // Per Australian financial year (1 Jul–30 Jun): a row's FY-start year is its calendar year, minus
   // one if the month is Jan–Jun. Grouped here for the tax-time billing rollup (uses the existing
@@ -634,13 +635,13 @@ export async function usageSummary(env: Env, userId: string) {
   // display rollup, but apply a proper AU-local offset before this drives a real charge.
   const policy = billingPolicy(env);
   const fyStartExpr = fyStartYearSqlExpr(await resolveJurisdictionForUser(env, userId), "created_at");
-  const byFyRows = await env.DB.prepare(
+  const byFyRows = await tenantDb(env, userId).prepare(
     `SELECT ${fyStartExpr} AS fy_start,
             COUNT(*) AS calls, COALESCE(SUM(cost_e4),0)/10000.0 AS cost_cents
        FROM llm_usage WHERE user_id = ?
       GROUP BY fy_start ORDER BY fy_start DESC`,
   )
-    .bind(userId)
+    .bind()
     .all<{ fy_start: number; calls: number; cost_cents: number }>();
   const by_fy = (byFyRows.results ?? []).map((r) => ({
     fy: `${r.fy_start}-${String((r.fy_start + 1) % 100).padStart(2, "0")}`, // e.g. "2025-26"
@@ -730,7 +731,7 @@ export async function listDocuments(env: Env, userId: string, opts: { type?: str
   // view — an FY or property filter would otherwise leak unrelated receipts under the wrong scope.
   const includeLegacy = (!opts.type || opts.type === "receipt") && !opts.fy && !opts.propertyId;
   const legacy = includeLegacy
-    ? await env.DB.prepare(
+    ? await tenantDb(env, userId).prepare(
         `SELECT id, 'receipt' AS doc_type, NULL AS fy, property_id, NULL AS entity_id, merchant AS issuer,
                 txn_date AS doc_date, confidence AS classification_confidence, 0 AS needs_review,
                 created_at, receipt_key AS r2_key
@@ -738,7 +739,7 @@ export async function listDocuments(env: Env, userId: string, opts: { type?: str
           WHERE user_id = ? AND kind = 'receipt' AND receipt_key IS NOT NULL AND document_id IS NULL
           ORDER BY created_at DESC LIMIT 200`,
       )
-        .bind(userId)
+        .bind()
         .all()
     : { results: [] };
   return [...(docs.results ?? []), ...(legacy.results ?? [])];
@@ -746,25 +747,25 @@ export async function listDocuments(env: Env, userId: string, opts: { type?: str
 
 /** Assets with this-FY decline-in-value joined from the schedule (for the Assets page). */
 export async function listAssets(env: Env, userId: string, fy?: string) {
-  const res = await env.DB.prepare(
+  const res = await tenantDb(env, userId).prepare(
     `SELECT a.id, a.label, a.asset_class, a.cost_cents, a.acquired_date, a.method, a.effective_life_years,
             a.property_id, a.entity_id, a.is_second_hand, a.is_car, a.status, a.needs_review,
             (SELECT deduction_cents FROM depreciation_schedule d WHERE d.asset_id = a.id AND d.fy = COALESCE(?, d.fy) ORDER BY d.fy DESC LIMIT 1) AS this_fy_deduction_cents,
             (SELECT closing_adjustable_value_cents FROM depreciation_schedule d WHERE d.asset_id = a.id ORDER BY d.fy DESC LIMIT 1) AS adjustable_value_cents
        FROM assets a WHERE a.user_id = ? ORDER BY a.created_at DESC LIMIT 500`,
   )
-    .bind(fy ?? null, userId)
+    .bind(fy ?? null)
     .all();
   return res.results ?? [];
 }
 
 /** The full multi-FY schedule for one asset (for the asset detail view). */
 export async function listDepreciation(env: Env, userId: string, assetId: string) {
-  const res = await env.DB.prepare(
+  const res = await tenantDb(env, userId).prepare(
     `SELECT fy, opening_adjustable_value_cents, days_held, deduction_cents, closing_adjustable_value_cents, method_applied
        FROM depreciation_schedule WHERE user_id = ? AND asset_id = ? ORDER BY fy`,
   )
-    .bind(userId, assetId)
+    .bind(assetId)
     .all();
   return res.results ?? [];
 }
@@ -788,14 +789,14 @@ export async function listChecklist(env: Env, userId: string, fy?: string) {
 /** Transactions positively SUGGESTED as deductible (Stage D) — confirm-required, FY-scoped. */
 export async function listSuggestedDeductions(env: Env, userId: string, startYear: number) {
   const { start, end } = fyBounds(startYear, await resolveJurisdictionForUser(env, userId));
-  const res = await env.DB.prepare(
+  const res = await tenantDb(env, userId).prepare(
     `SELECT id, merchant, raw_description, ato_label, amount_cents, amount_aud_cents, txn_date
        FROM transactions
       WHERE user_id = ? AND deductibility = 'suggested_deductible' AND ${COUNTABLE}
         AND txn_date >= ? AND txn_date <= ?
       ORDER BY COALESCE(amount_aud_cents, amount_cents) DESC LIMIT 200`,
   )
-    .bind(userId, start, end)
+    .bind(start, end)
     .all<{ id: string; merchant: string | null; raw_description: string | null; ato_label: string | null; amount_cents: number | null; amount_aud_cents: number | null; txn_date: string | null }>();
   return res.results ?? [];
 }
@@ -804,21 +805,21 @@ export async function listSuggestedDeductions(env: Env, userId: string, startYea
  *  cards (source relevance_scan, #578 — only written with that flag ON) are served by GET /api/relevance instead,
  *  so a year of fuel lines can't flood this list. */
 export async function listClaims(env: Env, userId: string) {
-  const res = await env.DB.prepare(
+  const res = await tenantDb(env, userId).prepare(
     `SELECT id, txn_id, asset_id, rule_id, suggestion, claim_type, estimated_deduction_cents, status, created_at
        FROM claim_suggestions WHERE user_id = ? AND source != 'relevance_scan' ORDER BY (status='suggested') DESC, created_at DESC LIMIT 100`,
   )
-    .bind(userId)
+    .bind()
     .all();
   return res.results ?? [];
 }
 
 export async function listNotifications(env: Env, userId: string) {
-  const res = await env.DB.prepare(
+  const res = await tenantDb(env, userId).prepare(
     `SELECT id, body, txn_id, read_at, created_at FROM notifications
       WHERE user_id = ? ORDER BY created_at DESC LIMIT 100`,
   )
-    .bind(userId)
+    .bind()
     .all();
   return res.results ?? [];
 }
@@ -839,15 +840,15 @@ export async function dashboard(env: Env, userId: string, startYear: number) {
   const [byBucket, byProperty, incomeByBucket, needsReview, undated, profile] = await Promise.all([
     // Totals use the AUD value (falling back to the original when it's already AUD / pre-migration),
     // so mixed-currency receipts never sum incorrectly. Duplicates are excluded.
-    env.DB.prepare(
+    tenantDb(env, userId).prepare(
       `SELECT bucket, COUNT(*) AS n, COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS total_cents
          FROM transactions WHERE user_id = ? AND bucket IS NOT NULL AND ${COUNTABLE}
           AND txn_date >= ? AND txn_date <= ?
         GROUP BY bucket ORDER BY total_cents DESC`,
     )
-      .bind(userId, start, end)
+      .bind(start, end)
       .all(),
-    env.DB.prepare(
+    tenantDb(env, userId).prepare(
       `SELECT t.property_id, p.label, COUNT(*) AS n,
               COALESCE(SUM(COALESCE(t.amount_aud_cents, t.amount_cents)),0) AS total_cents
          FROM transactions t LEFT JOIN properties p ON p.id = t.property_id
@@ -855,23 +856,23 @@ export async function dashboard(env: Env, userId: string, startYear: number) {
           AND t.txn_date >= ? AND t.txn_date <= ?
         GROUP BY t.property_id`,
     )
-      .bind(userId, start, end)
+      .bind(start, end)
       .all(),
     // Income from bank credits, grouped by income bucket (separate from the document-sourced
     // `income` table — see COUNTABLE_INCOME). 'refund' is excluded: it nets against spend.
     // NOTE: dedupe (matched_income_id) is intentionally NOT applied here — the dashboard shows this
     // credit glance WITHOUT the income table beside it, so hiding matched credits would make income
     // look like it vanished. De-dup is applied in the formal Report, where both sections coexist.
-    env.DB.prepare(
+    tenantDb(env, userId).prepare(
       `SELECT bucket, COUNT(*) AS n, COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS total_cents
          FROM transactions WHERE user_id = ? AND bucket IN ('income_business','income_property','income_personal') AND ${COUNTABLE_INCOME}
           AND txn_date >= ? AND txn_date <= ?
         GROUP BY bucket ORDER BY total_cents DESC`,
     )
-      .bind(userId, start, end)
+      .bind(start, end)
       .all(),
-    env.DB.prepare(`SELECT COUNT(*) AS n FROM transactions WHERE user_id = ? AND ${NEEDS_REVIEW}`)
-      .bind(userId)
+    tenantDb(env, userId).prepare(`SELECT COUNT(*) AS n FROM transactions WHERE user_id = ? AND ${NEEDS_REVIEW}`)
+      .bind()
       .first<{ n: number }>(),
     // Undated countable spend (belongs to no FY) — surfaced as an actionable chip so the FY totals
     // above can be trusted as complete-for-the-year. Same predicate as the report's `undated` section.
@@ -908,14 +909,14 @@ export async function spendRunRate(env: Env, userId: string, startYear: number) 
   const today = new Date().toISOString().slice(0, 10);
   const asOf = today < start ? start : today > end ? end : today;
   const [head, top] = await Promise.all([
-    env.DB.prepare(
+    tenantDb(env, userId).prepare(
       `SELECT COUNT(*) AS n, COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS total_cents
          FROM transactions WHERE user_id = ? AND ${COUNTABLE} AND txn_date >= ? AND txn_date <= ?`,
     )
-      .bind(userId, start, end)
+      .bind(start, end)
       .first<{ n: number; total_cents: number }>(),
     // Top spenders grouped by stable biller_key when present, else the cleaned merchant/description.
-    env.DB.prepare(
+    tenantDb(env, userId).prepare(
       `SELECT COALESCE(NULLIF(biller_key,''), lower(COALESCE(merchant, raw_description, ''))) AS k,
               COALESCE(MAX(merchant), MAX(raw_description)) AS label,
               COUNT(*) AS n,
@@ -925,7 +926,7 @@ export async function spendRunRate(env: Env, userId: string, startYear: number) 
           AND COALESCE(NULLIF(biller_key,''), merchant, raw_description) IS NOT NULL
         GROUP BY k HAVING k <> '' ORDER BY total_cents DESC LIMIT 8`,
     )
-      .bind(userId, start, end)
+      .bind(start, end)
       .all<{ k: string; label: string | null; n: number; total_cents: number }>(),
   ]);
   const spent = head?.total_cents ?? 0;
@@ -948,7 +949,7 @@ export async function spendRunRate(env: Env, userId: string, startYear: number) 
 
 /** Detected recurring bills + subscriptions (newest activity first), confirmed/early only. */
 export async function listRecurringBills(env: Env, userId: string) {
-  const res = await env.DB.prepare(
+  const res = await tenantDb(env, userId).prepare(
     `SELECT id, biller_key, label, category, cadence, typical_amount_cents, amount_variance_cents,
             annual_amount_cents, is_subscription, is_essential, occurrences, first_seen_date,
             last_seen_date, next_expected_date, status, COALESCE(pinned,0) AS pinned
@@ -956,7 +957,7 @@ export async function listRecurringBills(env: Env, userId: string) {
       WHERE user_id = ? AND status NOT IN ('dismissed','ended')
       ORDER BY pinned DESC, annual_amount_cents DESC, typical_amount_cents DESC LIMIT 100`,
   )
-    .bind(userId)
+    .bind()
     .all();
   return res.results ?? [];
 }
@@ -970,18 +971,18 @@ export async function phiExtrasOverview(env: Env, userId: string) {
   const now = new Date();
   const [profile, policiesRes, limitsRes, usageRes] = await Promise.all([
     getProfile(env, userId),
-    env.DB.prepare(
+    tenantDb(env, userId).prepare(
       `SELECT id, person_id, insurer, cover_type, reset_basis, reset_date, source
          FROM phi_policy WHERE user_id = ? ORDER BY created_at ASC`,
-    ).bind(userId).all<Record<string, unknown>>(),
-    env.DB.prepare(
+    ).bind().all<Record<string, unknown>>(),
+    tenantDb(env, userId).prepare(
       `SELECT id, policy_id, category, annual_limit_cents, period, combined_group, source, verified FROM phi_limit WHERE user_id = ?`,
-    ).bind(userId).all<Record<string, unknown>>(),
+    ).bind().all<Record<string, unknown>>(),
     // Individual usage rows (not just the sum) so the UI can list + delete a single mis-entry.
-    env.DB.prepare(
+    tenantDb(env, userId).prepare(
       `SELECT id, policy_id, category, amount_used_cents, used_on
          FROM phi_benefit_usage WHERE user_id = ? ORDER BY COALESCE(used_on, created_at) DESC, created_at DESC`,
-    ).bind(userId).all<Record<string, unknown>>(),
+    ).bind().all<Record<string, unknown>>(),
   ]);
 
   const limits = limitsRes.results ?? [];
@@ -1066,7 +1067,7 @@ export async function phiExtrasOverview(env: Env, userId: string) {
   // Quick-log (Path A): recent allied-health debits we've detected (ato_label='health:allied') that
   // haven't been logged against a limit yet — one tap to record, no typing/AI. Excludes premiums
   // (health:private-insurance) and anything already linked to a usage row.
-  const loggableRes = await env.DB.prepare(
+  const loggableRes = await tenantDb(env, userId).prepare(
     `SELECT id, COALESCE(merchant, raw_description) AS merchant,
             COALESCE(amount_aud_cents, amount_cents) AS amount_cents, txn_date
        FROM transactions
@@ -1074,7 +1075,7 @@ export async function phiExtrasOverview(env: Env, userId: string) {
         AND status NOT IN ('duplicate','ignored')
         AND id NOT IN (SELECT txn_id FROM phi_benefit_usage WHERE user_id = ? AND txn_id IS NOT NULL)
       ORDER BY txn_date DESC LIMIT 10`,
-  ).bind(userId, userId).all<{ id: string; merchant: string | null; amount_cents: number; txn_date: string }>();
+  ).bind().all<{ id: string; merchant: string | null; amount_cents: number; txn_date: string }>();
   const loggable = (loggableRes.results ?? []).map((t) => ({
     txn_id: t.id,
     merchant: t.merchant ?? "Health expense",
@@ -1099,11 +1100,11 @@ export async function spendYoy(env: Env, userId: string, startYear: number) {
   const cur = fyBounds(startYear, jur);
   const prev = fyBounds(startYear - 1, jur);
   const sumFy = (b: { start: string; end: string }) =>
-    env.DB.prepare(
+    tenantDb(env, userId).prepare(
       `SELECT COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS total_cents
          FROM transactions WHERE user_id = ? AND ${COUNTABLE} AND txn_date >= ? AND txn_date <= ?`,
     )
-      .bind(userId, b.start, b.end)
+      .bind(b.start, b.end)
       .first<{ total_cents: number }>();
   const [thisFy, priorFy] = await Promise.all([sumFy(cur), sumFy(prev)]);
   const this_cents = thisFy?.total_cents ?? 0;
@@ -1115,14 +1116,14 @@ export async function spendYoy(env: Env, userId: string, startYear: number) {
 
 /** Open opportunities (factual nudges), biggest figure first. */
 export async function listOpportunities(env: Env, userId: string) {
-  const res = await env.DB.prepare(
+  const res = await tenantDb(env, userId).prepare(
     `SELECT id, opportunity_type, subject_key, fy, recurring_bill_id, category, title, body,
             amount_cents, signpost_label, signpost_url, status, created_at
        FROM opportunities
       WHERE user_id = ? AND status = 'open'
       ORDER BY amount_cents DESC, created_at DESC LIMIT 50`,
   )
-    .bind(userId)
+    .bind()
     .all();
   return res.results ?? [];
 }
@@ -1164,7 +1165,7 @@ async function withEnergyCtas(env: Env, opportunities: Record<string, unknown>[]
 
 /** Cross-tenant admin: every tenant with signup + activity + AI-spend summary (newest first). */
 export async function listTenantsAdmin(env: Env) {
-  const res = await env.DB.prepare(
+  const res = await platformDb(env).prepare(
     `SELECT p.user_id, p.email, p.roles, p.created_at,
             (SELECT COUNT(*) FROM transactions t WHERE t.user_id = p.user_id) AS txn_count,
             (SELECT COALESCE(SUM(cost_e4),0)/10000.0 FROM llm_usage u WHERE u.user_id = p.user_id) AS cost_cents,
@@ -1180,11 +1181,11 @@ export async function listTenantsAdmin(env: Env) {
  */
 export async function referralFunnelAdmin(env: Env) {
   const [funnelRes, recentRes] = await Promise.all([
-    env.DB.prepare(
+    platformDb(env).prepare(
       `SELECT r.status, COUNT(*) AS n, COALESCE(SUM(r.revenue_cents),0) AS revenue_cents
          FROM referrals r GROUP BY r.status`,
     ).all<{ status: string; n: number; revenue_cents: number }>(),
-    env.DB.prepare(
+    platformDb(env).prepare(
       `SELECT r.referral_token, r.status, r.revenue_cents, r.created_at, r.updated_at, p.name AS partner_name
          FROM referrals r LEFT JOIN partners p ON p.id = r.partner_id
         ORDER BY r.created_at DESC LIMIT 100`,
@@ -1206,7 +1207,7 @@ export async function platformOverview(env: Env) {
   // Half-open created_at ranges (not substr(created_at,…) = ?) so idx_usage_created answers them.
   const nextDay = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1)).toISOString().slice(0, 10);
   const nextMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)).toISOString().slice(0, 7);
-  const m = await env.DB.prepare(
+  const m = await platformDb(env).prepare(
     `SELECT
        (SELECT COUNT(*) FROM profiles) AS tenants,
        (SELECT COUNT(*) FROM profiles WHERE created_at >= datetime('now','-7 days')) AS signups_7d,
@@ -1240,7 +1241,7 @@ export async function platformSpend(env: Env) {
   const day = new Date().toISOString().slice(0, 10);
   const perTenantCap = Number(env.MAX_DAILY_COST_CENTS ?? 0);
   const globalCeiling = Number(env.MAX_DAILY_COST_CENTS_GLOBAL ?? 0);
-  const rows = await env.DB.prepare(
+  const rows = await platformDb(env).prepare(
     `SELECT user_id,
        COALESCE(SUM(CASE WHEN substr(created_at,1,10) = ? THEN cost_e4 ELSE 0 END),0)/10000.0 AS today_cents,
        COALESCE(SUM(cost_e4),0)/10000.0 AS week_cents,
@@ -1254,7 +1255,7 @@ export async function platformSpend(env: Env) {
   )
     .bind(day, day, day)
     .all<{ user_id: string; today_cents: number; week_cents: number; ask_today_cents: number; calls_today: number }>();
-  const spendToday = (await env.DB.prepare(`SELECT cents_e4 FROM daily_cost WHERE scope = 'global' AND day = ?`).bind(day).first<{ cents_e4: number }>())?.cents_e4 ?? 0;
+  const spendToday = (await platformDb(env).prepare(`SELECT cents_e4 FROM daily_cost WHERE scope = 'global' AND day = ?`).bind(day).first<{ cents_e4: number }>())?.cents_e4 ?? 0;
   const tenants = (rows.results ?? []).map((r) => ({
     ...r,
     hit_cap_today: perTenantCap > 0 && r.today_cents >= perTenantCap,

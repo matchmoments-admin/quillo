@@ -15,6 +15,7 @@
 
 import type { Env } from "../env";
 import { featureOn } from "./features";
+import { tenantDb } from "./tenant-db";
 
 /** A tax period that straddles two calendar years, starting on startMonth/startDay (AU 7/1; UK 4/6). */
 export interface StraddleTaxPeriod {
@@ -221,7 +222,7 @@ export function currentFyStartYearFor(descriptor: JurisdictionDescriptor, now = 
 export async function resolveJurisdictionForUser(env: Env, userId: string): Promise<JurisdictionDescriptor> {
   if (!featureOn(env, "jurisdiction_period")) return AU_DESCRIPTOR;
   try {
-    const p = await env.DB.prepare(`SELECT jurisdiction FROM profiles WHERE user_id = ?`).bind(userId).first<{ jurisdiction: string | null }>();
+    const p = await tenantDb(env, userId).prepare(`SELECT jurisdiction FROM profiles WHERE user_id = ?`).bind().first<{ jurisdiction: string | null }>();
     return resolveJurisdiction(p?.jurisdiction);
   } catch {
     return AU_DESCRIPTOR;

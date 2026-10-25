@@ -4,6 +4,7 @@ import { resolveJurisdiction, baseCurrencyOf, AU_DESCRIPTOR } from "./jurisdicti
 import { listSituationPeriods, type SituationPeriod } from "./situation-profile";
 import { lodgingFy } from "./lodging-year";
 import { listLodgedFys } from "./fy-signoff";
+import { tenantDb } from "./tenant-db";
 
 export interface Profile {
   user_id: string;
@@ -32,14 +33,14 @@ export interface Profile {
 
 /** Load a tenant profile; returns null if the tenant has no profile row yet. */
 export async function getProfile(env: Env, userId: string): Promise<Profile | null> {
-  return env.DB.prepare(
+  return tenantDb(env, userId).prepare(
     `SELECT user_id, jurisdiction, rule_pack_ver, gst_registered, private_health, buckets,
             ledger_provider, inference_provider, inference_region, categorise_mode,
             consent_xborder, consent_xborder_at, consent_xborder_method, consent_xborder_text,
             retention_years, ui_state, roles, email, health_extras_consent_at, cdr_tainted
        FROM profiles WHERE user_id = ?`
   )
-    .bind(userId)
+    .bind()
     .first<Profile>();
 }
 
@@ -152,25 +153,25 @@ export function paygExpressEligible(input: {
 /** Load everything the categoriser needs to know about who this tenant is. */
 export async function getSituation(env: Env, userId: string, profile: Profile): Promise<Situation> {
   const [persons, props, ents, rules, loansProps, profile_periods, lodgedFys] = await Promise.all([
-    env.DB.prepare(
+    tenantDb(env, userId).prepare(
       `SELECT id, user_id, display_name, role, occupation, tax_residency FROM persons WHERE user_id = ? ORDER BY role = 'self' DESC, created_at`,
-    ).bind(userId).all<Person>(),
-    env.DB.prepare(
+    ).bind().all<Person>(),
+    tenantDb(env, userId).prepare(
       `SELECT id, user_id, label, address, status, use_status, ownership_pct, person_id,
               acquired_date, cost_base_cents, COALESCE(main_residence_flag, 0) AS main_residence_flag
          FROM properties WHERE user_id = ?`,
-    ).bind(userId).all<Property>(),
-    env.DB.prepare(
+    ).bind().all<Property>(),
+    tenantDb(env, userId).prepare(
       `SELECT id, user_id, kind, name, detail_json FROM entities WHERE user_id = ? AND active = 1`,
-    ).bind(userId).all<Entity>(),
-    env.DB.prepare(
+    ).bind().all<Entity>(),
+    tenantDb(env, userId).prepare(
       `SELECT id, user_id, match_type, pattern, bucket, ato_label, property_id, priority
          FROM user_rules WHERE user_id = ? AND active = 1 ORDER BY priority DESC`,
-    ).bind(userId).all<UserRule>(),
-    env.DB.prepare(
+    ).bind().all<UserRule>(),
+    tenantDb(env, userId).prepare(
       `SELECT id, user_id, loan_account_id, property_id, deductible_interest_pct
          FROM loans_properties WHERE user_id = ? ORDER BY created_at`,
-    ).bind(userId).all<LoanProperty>(),
+    ).bind().all<LoanProperty>(),
     // situation_profile: fetched in parallel, and only when the flag is on (field omitted when off).
     featureOn(env, "situation_profile") ? listSituationPeriods(env, userId) : Promise.resolve(undefined),
     // #572: the lodged years, only when the flag is on (fy-signoff.ts imports only Env, so db.ts stays out of
@@ -193,8 +194,8 @@ export async function getSituation(env: Env, userId: string, profile: Profile): 
     let cgtAssetN = 0;
     try {
       const [acts, cgt] = await Promise.all([
-        env.DB.prepare(`SELECT COUNT(*) AS n FROM income_activities WHERE user_id = ? AND activity_type IN ('business','rental_property')`).bind(userId).first<{ n: number }>(),
-        env.DB.prepare(`SELECT COUNT(*) AS n FROM cgt_assets WHERE user_id = ?`).bind(userId).first<{ n: number }>(),
+        tenantDb(env, userId).prepare(`SELECT COUNT(*) AS n FROM income_activities WHERE user_id = ? AND activity_type IN ('business','rental_property')`).bind().first<{ n: number }>(),
+        tenantDb(env, userId).prepare(`SELECT COUNT(*) AS n FROM cgt_assets WHERE user_id = ?`).bind().first<{ n: number }>(),
       ]);
       businessOrRentalActivityN = acts?.n ?? 0;
       cgtAssetN = cgt?.n ?? 0;

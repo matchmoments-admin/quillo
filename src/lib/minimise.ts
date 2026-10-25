@@ -31,6 +31,7 @@ import { fyLabel } from "./ledger-totals";
 import { fyBoundsFor, fyStartYearForDate, resolveJurisdictionForUser, type JurisdictionDescriptor } from "./jurisdiction";
 import { isFyLodgedForRetention, lodgementTiming, type FySignoffState } from "./lodging-year";
 import { isLiabilityAccount } from "./statements";
+import { tenantDb } from "./tenant-db";
 
 /** Days an irrelevant debit is held after it lands before it may shrink (the "~60 days" of #534). */
 export const MIN_HOLD_DAYS = 60;
@@ -140,16 +141,16 @@ export async function minimiseTenant(
 
   // Candidate FYs = the FYs of the dates that actually carry shrinkable rows (bounded by the data, and correct
   // for a tax period that doesn't start on the 1st — UK 6 April — which a month-level scan would get wrong).
-  const dates = await env.DB.prepare(
+  const dates = await tenantDb(env, userId).prepare(
     `SELECT DISTINCT t.txn_date AS d FROM transactions t
       WHERE t.user_id = ? AND datetime(t.created_at) <= datetime(?) AND ${SHRINKABLE_WHERE}`,
-  ).bind(userId, cutoff).all<{ d: string }>();
+  ).bind(cutoff).all<{ d: string }>();
   const fys = [...new Set((dates.results ?? []).map((r) => fyStartYearForDate(descriptor, r.d)).filter((y) => Number.isFinite(y)))].sort((a, b) => a - b);
 
   const signoffs = new Map<number, FySignoffState>();
   if (fys.length) {
-    const rows = await env.DB.prepare(`SELECT fy, lodged_at, status, signed_off_at FROM fy_signoff WHERE user_id = ?`)
-      .bind(userId)
+    const rows = await tenantDb(env, userId).prepare(`SELECT fy, lodged_at, status, signed_off_at FROM fy_signoff WHERE user_id = ?`)
+      .bind()
       .all<FySignoffState & { fy: number }>();
     for (const r of rows.results ?? []) signoffs.set(Number(r.fy), r);
   }
@@ -298,9 +299,9 @@ export interface TidiedSummary {
 /** Settings › Your data: how many everyday lines have been tidied. null when the flag is OFF (nothing read). */
 export async function tidiedSummary(env: Env, userId: string): Promise<TidiedSummary | null> {
   if (!featureOn(env, "bank_minimisation")) return null;
-  const r = await env.DB.prepare(
+  const r = await tenantDb(env, userId).prepare(
     `SELECT fy, COALESCE(SUM(n), 0) AS n FROM bank_line_rollups WHERE user_id = ? GROUP BY fy ORDER BY fy`,
-  ).bind(userId).all<{ fy: string; n: number }>();
+  ).bind().all<{ fy: string; n: number }>();
   const rows = (r.results ?? []).filter((x) => Number(x.n) > 0);
   return { tidied: rows.reduce((t, x) => t + Number(x.n), 0), fys: rows.map((x) => x.fy) };
 }
@@ -312,8 +313,8 @@ export async function tidiedSummary(env: Env, userId: string): Promise<TidiedSum
  */
 export async function tombstonedFingerprints(env: Env, userId: string, accountId: string): Promise<string[]> {
   if (!featureOn(env, "bank_minimisation")) return [];
-  const r = await env.DB.prepare(`SELECT line_fingerprint FROM bank_line_tombstones WHERE user_id = ? AND account_id = ?`)
-    .bind(userId, accountId)
+  const r = await tenantDb(env, userId).prepare(`SELECT line_fingerprint FROM bank_line_tombstones WHERE user_id = ? AND account_id = ?`)
+    .bind(accountId)
     .all<{ line_fingerprint: string }>();
   return (r.results ?? []).map((x) => x.line_fingerprint);
 }
@@ -327,8 +328,8 @@ export async function tombstonedFingerprints(env: Env, userId: string, accountId
 export async function forgetStatementMinimisation(env: Env, userId: string, statementId: string): Promise<void> {
   if (!featureOn(env, "bank_minimisation")) return;
   await env.DB.batch([
-    env.DB.prepare(`DELETE FROM bank_line_rollups WHERE user_id = ? AND statement_id = ?`).bind(userId, statementId),
-    env.DB.prepare(`DELETE FROM bank_line_tombstones WHERE user_id = ? AND statement_id = ?`).bind(userId, statementId),
+    tenantDb(env, userId).prepare(`DELETE FROM bank_line_rollups WHERE user_id = ? AND statement_id = ?`).bind(statementId),
+    tenantDb(env, userId).prepare(`DELETE FROM bank_line_tombstones WHERE user_id = ? AND statement_id = ?`).bind(statementId),
   ]);
 }
 
@@ -339,8 +340,8 @@ export async function forgetStatementMinimisation(env: Env, userId: string, stat
  */
 export async function rolledUpLineCount(env: Env, userId: string, statementId: string): Promise<number> {
   if (!featureOn(env, "bank_minimisation")) return 0;
-  const r = await env.DB.prepare(`SELECT COALESCE(SUM(n), 0) AS n FROM bank_line_rollups WHERE user_id = ? AND statement_id = ?`)
-    .bind(userId, statementId)
+  const r = await tenantDb(env, userId).prepare(`SELECT COALESCE(SUM(n), 0) AS n FROM bank_line_rollups WHERE user_id = ? AND statement_id = ?`)
+    .bind(statementId)
     .first<{ n: number }>();
   return Number(r?.n ?? 0);
 }
@@ -364,25 +365,25 @@ export interface StatementLedgerTieOut {
  * when the statement carries no balances. Rollups are included only with the flag ON.
  */
 export async function statementLedgerTieOut(env: Env, userId: string, statementId: string): Promise<StatementLedgerTieOut | null> {
-  const s = await env.DB.prepare(
+  const s = await tenantDb(env, userId).prepare(
     `SELECT s.opening_cents, s.closing_cents, a.type AS account_type
        FROM statements s LEFT JOIN accounts a ON a.id = s.account_id AND a.user_id = s.user_id
       WHERE s.id = ? AND s.user_id = ?`,
-  ).bind(statementId, userId).first<{ opening_cents: number | null; closing_cents: number | null; account_type: string | null }>();
+  ).bind(statementId).first<{ opening_cents: number | null; closing_cents: number | null; account_type: string | null }>();
   if (!s) return null;
-  const live = await env.DB.prepare(
+  const live = await tenantDb(env, userId).prepare(
     `SELECT COUNT(*) AS n,
             COALESCE(SUM(CASE WHEN direction = 'credit' THEN amount_cents ELSE -amount_cents END), 0) AS signed
        FROM transactions WHERE user_id = ? AND statement_id = ? AND kind = 'bank_line'`,
-  ).bind(userId, statementId).first<{ n: number; signed: number }>();
+  ).bind(statementId).first<{ n: number; signed: number }>();
   let rolled = 0;
   let rolledSigned = 0;
   if (featureOn(env, "bank_minimisation")) {
-    const r = await env.DB.prepare(
+    const r = await tenantDb(env, userId).prepare(
       `SELECT COALESCE(SUM(n), 0) AS n,
               COALESCE(SUM(CASE WHEN direction = 'credit' THEN total_cents ELSE -total_cents END), 0) AS signed
          FROM bank_line_rollups WHERE user_id = ? AND statement_id = ?`,
-    ).bind(userId, statementId).first<{ n: number; signed: number }>();
+    ).bind(statementId).first<{ n: number; signed: number }>();
     rolled = Number(r?.n ?? 0);
     rolledSigned = Number(r?.signed ?? 0);
   }

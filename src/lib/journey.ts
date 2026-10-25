@@ -30,6 +30,7 @@ import { listSituationPeriods, situationFacts } from "./situation-profile";
 import { AU_DESCRIPTOR, type JurisdictionDescriptor } from "./jurisdiction";
 import { chunkIds } from "./d1-limits";
 import type { GrowPayload } from "./grow";
+import { tenantDb } from "./tenant-db";
 
 export const JOURNEY_STEPS = ["setup", "connect", "review", "lodge"] as const;
 export type JourneyStepKey = (typeof JOURNEY_STEPS)[number];
@@ -208,7 +209,7 @@ export function coldJourney(startYear: number, lodgingFyDefault: number): Journe
 /** FYs that count as lodged, for #572's lodging-year default. Same flag split as journeySignals' Lodge read. */
 export async function journeyLodgedFys(env: Env, userId: string): Promise<number[]> {
   if (featureOn(env, "situation_profile")) return listLodgedFys(env, userId);
-  const res = await env.DB.prepare(`SELECT fy FROM fy_signoff WHERE user_id = ? AND status = 'closed_with_noa' ORDER BY fy`).bind(userId).all<{ fy: number }>();
+  const res = await tenantDb(env, userId).prepare(`SELECT fy FROM fy_signoff WHERE user_id = ? AND status = 'closed_with_noa' ORDER BY fy`).bind().all<{ fy: number }>();
   return (res.results ?? []).map((r) => Number(r.fy));
 }
 
@@ -293,7 +294,7 @@ export async function journeySignals(
   // OFF, only a NOA close counts — the same rule minus the user's own mark, which OFF can't record.
   const signoff = featureOn(env, "situation_profile")
     ? await getFyLodged(env, userId, startYear)
-    : await env.DB.prepare(`SELECT status FROM fy_signoff WHERE user_id = ? AND fy = ?`).bind(userId, startYear).first<{ status: string | null }>()
+    : await tenantDb(env, userId).prepare(`SELECT status FROM fy_signoff WHERE user_id = ? AND fy = ?`).bind(startYear).first<{ status: string | null }>()
         .then((r) => (r ? { lodged_at: null, status: r.status } : null));
   // Reconcile proposals (A8) are counted by the caller (it owns the pack-resolved thresholds).
   return {

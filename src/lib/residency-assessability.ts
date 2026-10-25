@@ -23,6 +23,7 @@ import auV1RulePack from "../rulepacks/au-v1.json";
 import { featureOn } from "./features";
 import { AU_DESCRIPTOR, type JurisdictionDescriptor } from "./jurisdiction";
 import { isIsoDate, profileForFy, residencyOn, residencyPeriodsForFy, type SituationProfile } from "./situation-profile";
+import { tenantDb } from "./tenant-db";
 
 /** excluded_by_type reason for income left out because it was earned while not an Australian resident. */
 export const NON_RESIDENT_FOREIGN = "non_resident_foreign";
@@ -170,7 +171,7 @@ export async function residencyAssessabilityContext(
   try {
     [profiles, self] = await Promise.all([
       profileForFy(env, userId, startYear, opts.descriptor ?? AU_DESCRIPTOR),
-      env.DB.prepare(`SELECT id FROM persons WHERE user_id = ? AND role = 'self' ORDER BY created_at LIMIT 1`).bind(userId).first<{ id: string }>(),
+      tenantDb(env, userId).prepare(`SELECT id FROM persons WHERE user_id = ? AND role = 'self' ORDER BY created_at LIMIT 1`).bind().first<{ id: string }>(),
     ]);
   } catch (e) {
     // e.g. migration 0078 not applied while the flag is ON: fall back to the legacy path (all income kept) rather

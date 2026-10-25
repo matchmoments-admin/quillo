@@ -25,6 +25,7 @@ import { addEntity, addIncomeActivity, upsertSituationPeriod } from "./situation
 import { listSituationPeriods, rangesOverlap, situationFacts } from "./situation-profile";
 import { payerKey } from "./first-timer-signals";
 import { FX_CONVERTED, COUNTABLE_INCOME } from "./queries";
+import { tenantDb } from "./tenant-db";
 
 /** The copy every wages confirm shows (#554). General information; no figure. */
 export const INCOME_STATEMENT_PROMPT =
@@ -147,8 +148,8 @@ export async function noticeSignals(env: Env, userId: string, descriptor: Jurisd
   // Payroll payers already confirmed (per FY + key → employer entity): every NEW deposit from the same payer stem
   // is stamped with the employer too — whether or not the triage still emits the signal (a bonus outside the
   // amount band must not leave next month's pay unstamped and recordable as income). Records nothing.
-  const confirmed = (await env.DB.prepare(`SELECT fy, signal_key, ref_id FROM noticed_signals WHERE user_id = ? AND kind = 'payroll' AND status = 'confirmed' AND ref_id IS NOT NULL`)
-    .bind(userId)
+  const confirmed = (await tenantDb(env, userId).prepare(`SELECT fy, signal_key, ref_id FROM noticed_signals WHERE user_id = ? AND kind = 'payroll' AND status = 'confirmed' AND ref_id IS NOT NULL`)
+    .bind()
     .all<{ fy: string; signal_key: string; ref_id: string }>()).results ?? [];
   for (const c of confirmed) {
     const ids = (byFy.get(c.fy) ?? []).filter((r) => !r.payer_entity_id && stemOf.get(r.id) === c.signal_key).map((r) => r.id);
@@ -160,11 +161,11 @@ export async function noticeSignals(env: Env, userId: string, descriptor: Jurisd
       upserted++;
       // A decided row is never touched; an open row only when its evidence actually changed.
       stmts.push(
-        env.DB.prepare(
+        tenantDb(env, userId).prepare(
           `INSERT INTO noticed_signals (id, user_id, fy, kind, signal_key, status, evidence_json) VALUES (?, ?, ?, ?, ?, 'open', ?)
            ON CONFLICT(user_id, fy, kind, signal_key) DO UPDATE SET evidence_json = excluded.evidence_json
            WHERE noticed_signals.status = 'open' AND noticed_signals.evidence_json <> excluded.evidence_json`,
-        ).bind(crypto.randomUUID(), userId, fy, s.kind, s.signal_key, JSON.stringify(s.evidence)),
+        ).bind(crypto.randomUUID(), fy, s.kind, s.signal_key, JSON.stringify(s.evidence)),
       );
     }
   }
@@ -193,11 +194,11 @@ function stampStatements(env: Env, userId: string, entityId: string, ids: string
  */
 async function stampPayer(env: Env, userId: string, fy: string, stem: string, entityId: string, lists: CreditSignalLists, descriptor: JurisdictionDescriptor): Promise<{ stamped: number; previously_recorded: number }> {
   const { start, end } = fyBounds(parseFyStartYear(fy), descriptor);
-  const rows = (await env.DB.prepare(
+  const rows = (await tenantDb(env, userId).prepare(
     `SELECT t.id, t.raw_description, t.merchant, t.payer_entity_id, i.income_type AS recorded_type FROM transactions t
        LEFT JOIN income i ON i.id = t.matched_income_id AND i.user_id = t.user_id
       WHERE t.user_id = ? AND t.kind = 'bank_line' AND t.direction = 'credit' AND t.status <> 'duplicate' AND t.txn_date >= ? AND t.txn_date <= ?`,
-  ).bind(userId, start, end).all<{ id: string; raw_description: string | null; merchant: string | null; payer_entity_id: string | null; recorded_type: string | null }>()).results ?? [];
+  ).bind(start, end).all<{ id: string; raw_description: string | null; merchant: string | null; payer_entity_id: string | null; recorded_type: string | null }>()).results ?? [];
   const mine = rows.filter((r) => payerStem(r.raw_description ?? r.merchant, lists) === stem);
   // Only live, unlinked credits are stamped (the same set the triage reads).
   const live = new Set((await creditsBetween(env, userId, start, end)).map((r) => r.id));
@@ -210,19 +211,19 @@ async function stampPayer(env: Env, userId: string, fy: string, stem: string, en
 
 /** Open signals for one FY (start year), payroll first then biggest total. */
 export async function listNoticed(env: Env, userId: string, startYear: number): Promise<NoticedSignal[]> {
-  const rows = (await env.DB.prepare(
+  const rows = (await tenantDb(env, userId).prepare(
     `SELECT id, fy, kind, signal_key, status, evidence_json, ref_id, created_at, decided_at
        FROM noticed_signals WHERE user_id = ? AND fy = ? AND status = 'open'
       ORDER BY CASE kind WHEN 'payroll' THEN 0 WHEN 'platform' THEN 1 WHEN 'government' THEN 2 WHEN 'interest' THEN 3 WHEN 'foreign' THEN 4 ELSE 5 END,
                json_extract(evidence_json, '$.total_cents') DESC, signal_key`,
-  ).bind(userId, fyLabel(startYear)).all<SignalRow>()).results ?? [];
+  ).bind(fyLabel(startYear)).all<SignalRow>()).results ?? [];
   return rows.map(toSignal);
 }
 
 async function getSignal(env: Env, userId: string, id: string): Promise<NoticedSignal> {
-  const r = await env.DB.prepare(
+  const r = await tenantDb(env, userId).prepare(
     `SELECT id, fy, kind, signal_key, status, evidence_json, ref_id, created_at, decided_at FROM noticed_signals WHERE id = ? AND user_id = ?`,
-  ).bind(id, userId).first<SignalRow>();
+  ).bind(id).first<SignalRow>();
   if (!r) throw new NoticedError("signal not found", 404);
   return toSignal(r);
 }
@@ -231,8 +232,8 @@ async function getSignal(env: Env, userId: string, id: string): Promise<NoticedS
 export async function dismissNoticed(env: Env, userId: string, id: string): Promise<{ ok: true; status: string }> {
   const s = await getSignal(env, userId, id);
   if (s.status === "confirmed") throw new NoticedError("This one is already confirmed.", 409);
-  await env.DB.prepare(`UPDATE noticed_signals SET status = 'dismissed', decided_at = datetime('now') WHERE id = ? AND user_id = ? AND status = 'open'`)
-    .bind(id, userId)
+  await tenantDb(env, userId).prepare(`UPDATE noticed_signals SET status = 'dismissed', decided_at = datetime('now') WHERE id = ? AND user_id = ? AND status = 'open'`)
+    .bind(id)
     .run();
   return { ok: true, status: "dismissed" };
 }
@@ -305,19 +306,19 @@ export async function confirmNoticed(env: Env, userId: string, id: string, rawBo
   const s = await getSignal(env, userId, id);
   if (s.status === "confirmed") return confirmedAgain(env, userId, s, descriptor);
   const personId = optStr(body.person_id, 200) ?? selfPersonId(userId);
-  const person = await env.DB.prepare(`SELECT id, occupation FROM persons WHERE id = ? AND user_id = ?`).bind(personId, userId).first<{ id: string; occupation: string | null }>();
+  const person = await tenantDb(env, userId).prepare(`SELECT id, occupation FROM persons WHERE id = ? AND user_id = ?`).bind(personId).first<{ id: string; occupation: string | null }>();
   if (!person) throw new NoticedError("person not found", 404);
 
-  const claim = await env.DB.prepare(
+  const claim = await tenantDb(env, userId).prepare(
     `UPDATE noticed_signals SET status = 'confirmed', decided_at = datetime('now') WHERE id = ? AND user_id = ? AND status IN ('open','dismissed')`,
-  ).bind(id, userId).run();
+  ).bind(id).run();
   if (!(claim.meta?.changes ?? 0)) return confirmedAgain(env, userId, await getSignal(env, userId, id), descriptor);
   try {
     const result = await applyConfirm(env, userId, s, body, person, deps, descriptor);
-    if (result.ref) await env.DB.prepare(`UPDATE noticed_signals SET ref_id = ? WHERE id = ? AND user_id = ?`).bind(result.ref, id, userId).run();
+    if (result.ref) await tenantDb(env, userId).prepare(`UPDATE noticed_signals SET ref_id = ? WHERE id = ? AND user_id = ?`).bind(result.ref, id).run();
     return result.out;
   } catch (e) {
-    await env.DB.prepare(`UPDATE noticed_signals SET status = ?, decided_at = ? WHERE id = ? AND user_id = ?`).bind(s.status, s.decided_at, id, userId).run();
+    await tenantDb(env, userId).prepare(`UPDATE noticed_signals SET status = ?, decided_at = ? WHERE id = ? AND user_id = ?`).bind(s.status, s.decided_at, id).run();
     throw e;
   }
 }
@@ -353,7 +354,7 @@ async function applyConfirm(
     const name = optStr(body.employer_name) ?? (optStr(s.evidence.label) || s.signal_key);
     // Fill-gaps match on kind + name, so a second confirm (or next year's) reuses the same employer.
     // Scoped to this person (a spouse's employer is not this person's job).
-    const jobs = (await env.DB.prepare(`SELECT id, name FROM entities WHERE user_id = ? AND kind = 'employment' AND (person_id IS NULL OR person_id = ?)`).bind(userId, person.id).all<{ id: string; name: string | null }>()).results ?? [];
+    const jobs = (await tenantDb(env, userId).prepare(`SELECT id, name FROM entities WHERE user_id = ? AND kind = 'employment' AND (person_id IS NULL OR person_id = ?)`).bind(person.id).all<{ id: string; name: string | null }>()).results ?? [];
     const entityId = jobs.find((j) => employerMatches(j.name, name))?.id ?? (await addEntity(env, userId, { kind: "employment", name, person_id: person.id }));
 
     let periodId: string | null = null;
@@ -384,7 +385,7 @@ async function applyConfirm(
 
   if (s.kind === "platform") {
     const label = optStr(s.evidence.label) ?? s.signal_key;
-    const acts = (await env.DB.prepare(`SELECT id, label FROM income_activities WHERE user_id = ? AND activity_type = 'business'`).bind(userId).all<{ id: string; label: string | null }>()).results ?? [];
+    const acts = (await tenantDb(env, userId).prepare(`SELECT id, label FROM income_activities WHERE user_id = ? AND activity_type = 'business'`).bind().all<{ id: string; label: string | null }>()).results ?? [];
     const activityId = acts.find((a) => (a.label ?? "").toLowerCase() === label.toLowerCase())?.id ?? (await addIncomeActivity(env, userId, { activity_type: "business", label }));
     let periodId: string | null = null;
     if (profileOn) {
@@ -427,11 +428,11 @@ async function applyConfirm(
  */
 export async function ensurePayrollSignal(env: Env, userId: string, startYear: number, stem: string, evidence: SignalEvidence): Promise<string> {
   const fy = fyLabel(startYear);
-  await env.DB.prepare(
+  await tenantDb(env, userId).prepare(
     `INSERT INTO noticed_signals (id, user_id, fy, kind, signal_key, status, evidence_json) VALUES (?, ?, ?, 'payroll', ?, 'open', ?)
      ON CONFLICT(user_id, fy, kind, signal_key) DO NOTHING`,
-  ).bind(crypto.randomUUID(), userId, fy, stem, JSON.stringify(evidence)).run();
-  const r = await env.DB.prepare(`SELECT id FROM noticed_signals WHERE user_id = ? AND fy = ? AND kind = 'payroll' AND signal_key = ?`).bind(userId, fy, stem).first<{ id: string }>();
+  ).bind(crypto.randomUUID(), fy, stem, JSON.stringify(evidence)).run();
+  const r = await tenantDb(env, userId).prepare(`SELECT id FROM noticed_signals WHERE user_id = ? AND fy = ? AND kind = 'payroll' AND signal_key = ?`).bind(fy, stem).first<{ id: string }>();
   if (!r) throw new NoticedError("could not record the employer", 409);
   return r.id;
 }
@@ -439,10 +440,10 @@ export async function ensurePayrollSignal(env: Env, userId: string, startYear: n
 /** Confirmed government / interest signals for an FY — the worksheet's "check this matches" lines. */
 export async function confirmedPrefillSignals(env: Env, userId: string, startYear: number): Promise<{ kind: string; label: string; income_type: string }[]> {
   if (!featureOn(env, "wages_payer")) return [];
-  const rows = (await env.DB.prepare(
+  const rows = (await tenantDb(env, userId).prepare(
     `SELECT id, fy, kind, signal_key, status, evidence_json, ref_id, created_at, decided_at FROM noticed_signals
       WHERE user_id = ? AND fy = ? AND status = 'confirmed' AND kind IN ('government','interest') ORDER BY kind, signal_key`,
-  ).bind(userId, fyLabel(startYear)).all<SignalRow>()).results ?? [];
+  ).bind(fyLabel(startYear)).all<SignalRow>()).results ?? [];
   return rows.map(toSignal).map((s) => ({ kind: s.kind, label: s.evidence.label ?? s.signal_key, income_type: s.evidence.income_type ?? (s.kind === "government" ? "government_payment" : "interest") }));
 }
 
@@ -470,15 +471,15 @@ export async function payrollEmployerSignals(
   const { start, end } = fyBounds(startYear, descriptor);
   const dedupe = featureOn(env, "income_dedupe") ? " AND matched_income_id IS NULL" : "";
   const [emp, sal, stamped] = await Promise.all([
-    env.DB.prepare(
+    tenantDb(env, userId).prepare(
       `SELECT e.id AS entity_id, e.name AS name, COUNT(t.id) AS n FROM transactions t
          JOIN entities e ON e.id = t.payer_entity_id AND e.user_id = t.user_id
         WHERE t.user_id = ? AND t.payer_entity_id IS NOT NULL AND t.direction = 'credit' AND t.status NOT IN ('duplicate')
           AND t.txn_date >= ? AND t.txn_date <= ?
         GROUP BY e.id, e.name ORDER BY e.name`,
-    ).bind(userId, start, end).all<{ entity_id: string; name: string | null; n: number }>(),
-    env.DB.prepare(`SELECT detail_json FROM income WHERE user_id = ? AND fy = ? AND income_type = 'salary_payg' AND entity_id IS NULL AND ${FX_CONVERTED}`)
-      .bind(userId, fyLabel(startYear))
+    ).bind(start, end).all<{ entity_id: string; name: string | null; n: number }>(),
+    tenantDb(env, userId).prepare(`SELECT detail_json FROM income WHERE user_id = ? AND fy = ? AND income_type = 'salary_payg' AND entity_id IS NULL AND ${FX_CONVERTED}`)
+      .bind(fyLabel(startYear))
       .all<{ detail_json: string | null }>(),
     // Same row set and sum as report.income_by_bucket's income_personal row, restricted to stamped credits.
     env.DB.prepare(

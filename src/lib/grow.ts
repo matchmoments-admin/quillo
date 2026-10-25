@@ -25,6 +25,7 @@ import { fyBounds } from "./ledger-totals";
 import { brokerCodeFor, isRentLikeStem } from "./clarify";
 import { AU_DESCRIPTOR, type JurisdictionDescriptor } from "./jurisdiction";
 import auV1RulePack from "../rulepacks/au-v1.json";
+import { tenantDb } from "./tenant-db";
 
 export const GROW_LAYERS = ["property", "investments", "business", "assets", "integrations", "extras", "savings", "advisers"] as const;
 export type GrowLayerKey = (typeof GROW_LAYERS)[number];
@@ -250,7 +251,7 @@ export function detectFromLines(
 // ── D1 reads ──────────────────────────────────────────────────────────────────────────────────────────
 
 export async function growStored(env: Env, userId: string): Promise<GrowLayerRow[]> {
-  return (await env.DB.prepare(`SELECT layer, state, source, dismissed_fy FROM grow_layers WHERE user_id = ?`).bind(userId).all<GrowLayerRow>()).results ?? [];
+  return (await tenantDb(env, userId).prepare(`SELECT layer, state, source, dismissed_fy FROM grow_layers WHERE user_id = ?`).bind().all<GrowLayerRow>()).results ?? [];
 }
 
 /**
@@ -316,10 +317,10 @@ export async function growDetections(
   ).bind(userId, start, end).all<DetectLine>()).results ?? [];
   // An ABN activity ticked in About you (situation_periods, A1) overlapping the FY.
   const abnTick = candidates.includes("business")
-    ? ((await env.DB.prepare(
+    ? ((await tenantDb(env, userId).prepare(
         `SELECT COUNT(*) AS n FROM situation_periods WHERE user_id = ? AND fact = 'abn_activity'
             AND (starts_on IS NULL OR starts_on <= ?) AND (ends_on IS NULL OR ends_on >= ?)`,
-      ).bind(userId, end, start).first<{ n: number }>())?.n ?? 0) > 0
+      ).bind(end, start).first<{ n: number }>())?.n ?? 0) > 0
     : false;
   return detectFromLines(rows, candidates, growDetectionConfig(pack), abnTick);
 }
@@ -361,10 +362,10 @@ export async function setGrowLayer(
     if (!Number.isInteger(fy) || fy < 1900 || fy > 2200) return "fy is required to decline a suggestion";
     dismissedFy = fy;
   }
-  await env.DB.prepare(
+  await tenantDb(env, userId).prepare(
     `INSERT INTO grow_layers (user_id, layer, state, source, dismissed_fy, updated_at) VALUES (?, ?, ?, ?, ?, datetime('now'))
      ON CONFLICT (user_id, layer) DO UPDATE SET state = excluded.state, source = excluded.source,
        dismissed_fy = excluded.dismissed_fy, updated_at = excluded.updated_at`,
-  ).bind(userId, layer, state, source, dismissedFy).run();
+  ).bind(layer, state, source, dismissedFy).run();
   return null;
 }

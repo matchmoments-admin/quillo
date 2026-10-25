@@ -19,6 +19,7 @@ import { fyLabel } from "./ledger-totals";
 import { FX_CONVERTED } from "./queries";
 import { payerKey } from "./first-timer-signals";
 import { employerMatches, payrollEmployerSignals } from "./noticed-signals";
+import { tenantDb } from "./tenant-db";
 
 export interface IncomeStatementTiming {
   /** Display: the date employers must finalise by (AU "14 July"). */
@@ -99,12 +100,12 @@ export async function incomeStatementWait(
 ): Promise<IncomeStatementWait> {
   const fy = fyLabel(startYear);
   const [entities, salary, payroll] = await Promise.all([
-    env.DB.prepare(
+    tenantDb(env, userId).prepare(
       `SELECT name FROM entities WHERE user_id = ? AND (kind = 'employment' OR entity_type = 'payg_employment') AND name IS NOT NULL ORDER BY created_at`,
-    ).bind(userId).all<{ name: string }>(),
-    env.DB.prepare(
+    ).bind().all<{ name: string }>(),
+    tenantDb(env, userId).prepare(
       `SELECT detail_json FROM income WHERE user_id = ? AND fy = ? AND income_type = 'salary_payg' AND entity_id IS NULL AND ${FX_CONVERTED}`,
-    ).bind(userId, fy).all<{ detail_json: string | null }>(),
+    ).bind(fy).all<{ detail_json: string | null }>(),
     payrollEmployerSignals(env, userId, startYear, descriptor), // {} with wages_payer OFF
   ]);
   const salaryEmployers = (salary.results ?? []).map((r) => {

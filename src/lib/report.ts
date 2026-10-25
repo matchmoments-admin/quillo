@@ -15,6 +15,7 @@ import { fyBounds, fyLabel as fyLabelOf } from "./ledger-totals";
 import { composePosition, type PositionSummands } from "./position";
 import { loadSituations, situationFields, type ReportContext } from "./situations";
 import { resolveJurisdictionForUser, currentFyStartYearFor, fyStartYearForDate, baseCurrencyOf, AU_DESCRIPTOR, type JurisdictionDescriptor } from "./jurisdiction";
+import { tenantDb } from "./tenant-db";
 
 // Tax period is jurisdiction-driven (jurisdiction.ts). The optional descriptor defaults to AU so every
 // existing caller stays byte-identical (AU = Jul 1 .. Jun 30); pass a resolved descriptor for a UK tenant.
@@ -332,19 +333,19 @@ export async function loanInterestV2Context(env: Env, userId: string, startYear:
   const supersededLoanIds: string[] = [];
   const loans: LoanInterestV2Context["loans"] = [];
   if (!featureOn(env, "loan_interest_v2")) return { byProp, total_cents, supersededLoanIds, loans };
-  const links = await env.DB.prepare(
+  const links = await tenantDb(env, userId).prepare(
     `SELECT lp.loan_account_id, lp.property_id, lp.deductible_interest_pct, a.interest_rate_pct, a.balance_cents
        FROM loans_properties lp
        JOIN accounts a   ON a.id = lp.loan_account_id AND a.user_id = lp.user_id
        JOIN properties p ON p.id = lp.property_id     AND p.user_id = lp.user_id
       WHERE lp.user_id = ? AND p.status IN ('rented','vacant')`,
   )
-    .bind(userId)
+    .bind()
     .all<{ loan_account_id: string; property_id: string; deductible_interest_pct: number; interest_rate_pct: number | null; balance_cents: number | null }>();
-  const sumsRes = await env.DB.prepare(
+  const sumsRes = await tenantDb(env, userId).prepare(
     `SELECT loan_account_id, interest_cents, source FROM loan_interest_summaries WHERE user_id = ? AND fy = ?`,
   )
-    .bind(userId, fyStartYearStr(startYear))
+    .bind(fyStartYearStr(startYear))
     .all<{ loan_account_id: string; interest_cents: number; source: string }>();
   const sumByLoan = new Map((sumsRes.results ?? []).map((s) => [s.loan_account_id, { interest_cents: s.interest_cents, source: s.source as LoanInterestSource }]));
   for (const link of links.results ?? []) {
@@ -376,7 +377,7 @@ export async function resolveRulePack(env: Env, userId: string, descriptor: Juri
   // jurisdiction's pack), so a UK tenant whose column was never updated still gets uk-2025, not au-v1.
   let ver = descriptor.rulePackId || "au-v1";
   try {
-    const p = await env.DB.prepare(`SELECT rule_pack_ver FROM profiles WHERE user_id = ?`).bind(userId).first<{ rule_pack_ver: string | null }>();
+    const p = await tenantDb(env, userId).prepare(`SELECT rule_pack_ver FROM profiles WHERE user_id = ?`).bind().first<{ rule_pack_ver: string | null }>();
     if (p?.rule_pack_ver && p.rule_pack_ver !== "au-v1") ver = p.rule_pack_ver;
   } catch { /* no profile (test env) → jurisdiction default */ }
   // KV override merged over the bundle (src/lib/rulepack.ts): a stale KV copy can no longer hide newer
@@ -551,13 +552,13 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
 
   // Receipts with no (or unparseable) date can't be assigned to any FY — surface them
   // explicitly instead of letting the date filter silently drop them from every report.
-  const undatedQ = env.DB.prepare(
+  const undatedQ = tenantDb(env, userId).prepare(
     `SELECT COUNT(*) AS n, COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS total_cents
        FROM transactions
       WHERE user_id = ? AND ${COUNTABLE}
         AND (txn_date IS NULL OR txn_date NOT GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]')`,
   )
-    .bind(userId);
+    .bind();
 
   // BAS quarters for the company bucket.
   const quarters = [
@@ -567,29 +568,29 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
     { quarter: "Q4 Apr–Jun", s: `${startYear + 1}-04-01`, e: `${startYear + 1}-06-30` },
   ];
   const quarterQs = quarters.map((q) =>
-    env.DB.prepare(
+    tenantDb(env, userId).prepare(
       `SELECT COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS total_cents,
               COALESCE(SUM(gst_cents),0) AS gst_cents
          FROM transactions WHERE user_id = ? AND bucket = 'company' AND ${COUNTABLE}
            AND COALESCE(reimbursed,0) = 0
            AND txn_date >= ? AND txn_date <= ?`,
-    ).bind(userId, q.s, q.e),
+    ).bind(q.s, q.e),
   );
 
   // Company ABN for the accountant header (from the company entity's detail_json).
-  const companyEntityQ = env.DB.prepare(
+  const companyEntityQ = tenantDb(env, userId).prepare(
     `SELECT detail_json FROM entities WHERE user_id = ? AND kind = 'company' AND active = 1 LIMIT 1`,
   )
-    .bind(userId);
+    .bind();
 
   // The undated receipts themselves (so they can be dated, not just counted).
-  const undatedDetailQ = env.DB.prepare(
+  const undatedDetailQ = tenantDb(env, userId).prepare(
     `SELECT merchant, COALESCE(amount_aud_cents, amount_cents) AS total_cents FROM transactions
       WHERE user_id = ? AND ${COUNTABLE}
         AND (txn_date IS NULL OR txn_date NOT GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]')
       ORDER BY created_at LIMIT 50`,
   )
-    .bind(userId);
+    .bind();
 
   // The FY's independent ledger reads above run as ONE D1 batch: one round trip instead of eleven, over
   // one consistent snapshot. SQL text and binds are unchanged; `.first()` reads become `results[0] ?? null`.
@@ -734,12 +735,12 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   const depByProp = new Map(dep.by_property.filter((d) => d.property_id).map((d) => [d.property_id as string, d.deduction_cents]));
   const rentByProp = new Map<string, number>();
   // Rental income per property (rent + foreign_rent attributed to a property this FY).
-  const rentRows = await env.DB.prepare(
+  const rentRows = await tenantDb(env, userId).prepare(
     `SELECT property_id, COALESCE(SUM(COALESCE(amount_aud_cents, gross_cents)),0) AS gross_cents
        FROM income WHERE user_id = ? AND fy = ? AND property_id IS NOT NULL
         AND income_type IN ('rent','foreign_rent') GROUP BY property_id`,
   )
-    .bind(userId, `${startYear}-${String((startYear + 1) % 100).padStart(2, "0")}`)
+    .bind(`${startYear}-${String((startYear + 1) % 100).padStart(2, "0")}`)
     .all<{ property_id: string; gross_cents: number }>();
   for (const r of rentRows.results ?? []) rentByProp.set(r.property_id, r.gross_cents);
   // A13: foreign rent a non-resident period left out of income is left out of that property's rent too, so the
@@ -752,7 +753,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   }
 
   // Property labels + status for ids that have income/depreciation but no expense transactions this FY.
-  const labelRows = await env.DB.prepare(`SELECT id, label, status FROM properties WHERE user_id = ?`).bind(userId).all<{ id: string; label: string | null; status: string | null }>();
+  const labelRows = await tenantDb(env, userId).prepare(`SELECT id, label, status FROM properties WHERE user_id = ?`).bind().all<{ id: string; label: string | null; status: string | null }>();
   const labelMap = new Map((labelRows.results ?? []).map((r) => [r.id, r.label]));
   // Tenant ("renting_*") properties don't own a negative-gearing position — the user rents them, so
   // they have no rent received, no cost base and no CGT. Any business-premises rent still counts in
@@ -824,8 +825,8 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   let work_method: WorkMethodDeductions | undefined;
   let work_method_rates_unavailable = false; // WFH/car inputs exist but the FY has no configured rate (prior year)
   if (featureOn(env, "wfh_car_methods")) {
-    const wu = await env.DB.prepare(`SELECT wfh_hours, car_work_km FROM work_use_inputs WHERE user_id = ? AND fy = ?`)
-      .bind(userId, startYear)
+    const wu = await tenantDb(env, userId).prepare(`SELECT wfh_hours, car_work_km FROM work_use_inputs WHERE user_id = ? AND fy = ?`)
+      .bind(startYear)
       .first<{ wfh_hours: number | null; car_work_km: number | null }>();
     // #245 Slice 1: car cents-per-km km now lives in its own car_inputs table. When car_methods is on,
     // source it there (falling back to the legacy work_use_inputs.car_work_km read above when there's no

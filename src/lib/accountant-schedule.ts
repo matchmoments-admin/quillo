@@ -26,6 +26,7 @@ import { generateWfhDiary, WFH_WEEKDAY_NAMES } from "./work-use";
 import { diaryView as wfhDiaryView, addDaysIso as wfhAddDays, preDiarySourceLabel as wfhPreDiarySourceLabel } from "./wfh-diary";
 import { buildXlsx, type XlsxCell, type XlsxSheet } from "./xlsx";
 import { csvCell, neutraliseFormula } from "./csv-cell";
+import { tenantDb } from "./tenant-db";
 
 // ── The itemised accountant deliverable (#179 + #181, EPIC #178) ─────────────
 // A persona-aware, multi-section schedule an accountant can audit: per-transaction lines with
@@ -361,25 +362,25 @@ async function scheduleCore(
     reimbursed: number;
   }
   const depRowsP = detailOnly ? Promise.resolve([] as DepRow[]) : safeAll<DepRow>(
-    env.DB.prepare(
+    tenantDb(env, userId).prepare(
       `SELECT ${depCols}
          FROM depreciation_schedule d JOIN assets a ON a.id = d.asset_id LEFT JOIN properties p ON p.id = a.property_id
         WHERE d.user_id = ? AND d.fy = ?
           AND COALESCE(a.owned_by,'self') <> 'employer' AND COALESCE(a.reimbursed,0) = 0 AND NOT ${rentFreeAsset}
         ORDER BY a.created_at`,
     )
-      .bind(userId, fy)
+      .bind(fy)
       .all<DepRow>(),
   );
   const depDeniedP = detailOnly ? Promise.resolve([] as (DepRow & { use_status_denied: number })[]) : safeAll<DepRow & { use_status_denied: number }>(
-    env.DB.prepare(
+    tenantDb(env, userId).prepare(
       `SELECT ${depCols}, (CASE WHEN ${rentFreeAsset} THEN 1 ELSE 0 END) AS use_status_denied
          FROM depreciation_schedule d JOIN assets a ON a.id = d.asset_id LEFT JOIN properties p ON p.id = a.property_id
         WHERE d.user_id = ? AND d.fy = ?
           AND (COALESCE(a.owned_by,'self') = 'employer' OR COALESCE(a.reimbursed,0) = 1 OR ${rentFreeAsset})
         ORDER BY a.created_at`,
     )
-      .bind(userId, fy)
+      .bind(fy)
       .all<DepRow & { use_status_denied: number }>(),
   );
 
@@ -407,7 +408,7 @@ async function scheduleCore(
   const tFilter = COUNTABLE.replace(/\b(status|kind|matched_txn_id|direction|currency|amount_aud_cents)\b/g, "t.$1");
   const attrRowsP = useAttributions
     ? safeAll<AttrRow>(
-        env.DB.prepare(
+        tenantDb(env, userId).prepare(
           `SELECT t.txn_date AS txn_date, t.merchant AS merchant,
                   ta.attributed_amount_cents AS attributed_amount_cents, ta.attributed_pct AS attributed_pct,
                   ta.work_use_pct AS work_use_pct, COALESCE(t.amount_aud_cents, t.amount_cents) AS txn_amount,
@@ -427,7 +428,7 @@ async function scheduleCore(
                                 AND pp.use_status IN ('private_use_rent_free','under_renovation_not_available'))
             ORDER BY t.txn_date, t.created_at`,
         )
-          .bind(userId, start, end)
+          .bind(start, end)
           .all<AttrRow>(),
       )
     : Promise.resolve([] as AttrRow[]);
@@ -479,40 +480,40 @@ async function scheduleCore(
         discount_cents: number;
         ownership_gt_10pct: number;
       }>(
-        env.DB.prepare(
+        tenantDb(env, userId).prepare(
           `SELECT scheme_type, grant_date, taxing_point_date, shares_or_options, units, discount_cents, ownership_gt_10pct
              FROM ess_grants
             WHERE user_id = ? AND COALESCE(taxing_point_date, grant_date) >= ? AND COALESCE(taxing_point_date, grant_date) <= ?
             ORDER BY COALESCE(taxing_point_date, grant_date)`,
         )
-          .bind(userId, start, end)
+          .bind(start, end)
           .all(),
       )
     : Promise.resolve([]);
   const trustRowsP = !detailOnly && report.trust
     ? safeAll<{ trust_name: string | null; character: string; share_pct: number | null; amount_cents: number; franking_credit_cents: number }>(
-        env.DB.prepare(
+        tenantDb(env, userId).prepare(
           `SELECT e.name AS trust_name, td.character, td.share_pct, td.amount_cents, td.franking_credit_cents
              FROM trust_distributions td LEFT JOIN entities e ON e.id = td.trust_entity_id
             WHERE td.user_id = ? AND td.fy = ? AND td.beneficiary_person_id IS NOT NULL ORDER BY td.created_at`,
         )
-          .bind(userId, fy)
+          .bind(fy)
           .all(),
       )
     : Promise.resolve([]);
   const basRowsP = !detailOnly && report.gst
     ? safeAll<{ period_start: string; period_end: string; output_gst_cents: number; input_gst_cents: number; payg_instalment_cents: number; status: string }>(
-        env.DB.prepare(
+        tenantDb(env, userId).prepare(
           `SELECT period_start, period_end, output_gst_cents, input_gst_cents, payg_instalment_cents, status
              FROM bas_periods WHERE user_id = ? AND period_start >= ? AND period_end <= ? ORDER BY period_start`,
         )
-          .bind(userId, start, end)
+          .bind(start, end)
           .all(),
       )
     : Promise.resolve([]);
   const paygRowsP = !detailOnly && report.payg_instalments_cents
     ? safeAll<{ quarter: number | null; instalment_cents: number; basis: string | null }>(
-        env.DB.prepare(`SELECT quarter, instalment_cents, basis FROM payg_instalments WHERE user_id = ? AND fy = ? ORDER BY quarter`).bind(userId, fy).all(),
+        tenantDb(env, userId).prepare(`SELECT quarter, instalment_cents, basis FROM payg_instalments WHERE user_id = ? AND fy = ? ORDER BY quarter`).bind(fy).all(),
       )
     : Promise.resolve([]);
 
@@ -535,22 +536,22 @@ async function scheduleCore(
   // as-at test; acquisitions after year end are likewise not yet holdings.
   const holdingsP = !detailOnly && positionOn
     ? safeAll<{ id: string; code: string | null; label: string | null; asset_kind: string; acquired_date: string | null; units: number | null; cost_base_cents: number }>(
-        env.DB.prepare(
+        tenantDb(env, userId).prepare(
           `SELECT a.id AS id, a.code AS code, a.label AS label, a.asset_kind AS asset_kind,
                   a.acquired_date AS acquired_date, a.units AS units, a.cost_base_cents AS cost_base_cents
              FROM cgt_assets a
             WHERE a.user_id = ? AND a.property_id IS NULL AND a.income_id IS NULL AND ${cgtPersonalScopeExpr(env)}
               AND (a.acquired_date IS NULL OR a.acquired_date <= ?)
             ORDER BY COALESCE(a.code, a.label, a.asset_kind), a.acquired_date`,
-        ).bind(userId, end).all(),
+        ).bind(end).all(),
       )
     : Promise.resolve([]);
   const holdingDisposalsP = !detailOnly && positionOn
     ? safeAll<{ cgt_asset_id: string; units_disposed: number | null; cost_base_used_cents: number | null }>(
-        env.DB.prepare(
+        tenantDb(env, userId).prepare(
           `SELECT ev.cgt_asset_id AS cgt_asset_id, ev.units_disposed AS units_disposed, ev.cost_base_used_cents AS cost_base_used_cents
              FROM cgt_events ev WHERE ev.user_id = ? AND ev.fy <= ?`,
-        ).bind(userId, fy).all(),
+        ).bind(fy).all(),
       )
     : Promise.resolve([]);
   // ADR-0004: the registry's pack sections. Only modules that are ON and have a `schedule` load (their
@@ -895,10 +896,10 @@ async function scheduleCore(
       sections.push({ key: "wfh_diary", title: "Work-from-home diary (your weekly record)", columns: ["Date", "Weekday", "Hours worked from home", "Recorded", "Recorded at", "Counted"], rows, notes });
     }
   } else if (featureOn(env, "wfh_generate_diary")) {
-    const di = await env.DB.prepare(
+    const di = await tenantDb(env, userId).prepare(
       `SELECT wfh_weekdays, wfh_leave_ranges, wfh_generate_diary, wfh_has_record FROM work_use_inputs WHERE user_id = ? AND fy = ?`,
     )
-      .bind(userId, startYear)
+      .bind(startYear)
       .first<{ wfh_weekdays: string | null; wfh_leave_ranges: string | null; wfh_generate_diary: number | null; wfh_has_record: number | null }>();
     const parse = <T>(s: string | null | undefined, f: T): T => { try { return s ? (JSON.parse(s) as T) : f; } catch { return f; } };
     const weekdays = parse<number[]>(di?.wfh_weekdays, []);
@@ -1301,7 +1302,7 @@ async function scheduleCore(
   //    tie-back). OFF ⇒ the schedule is byte-identical.
   if (featureOn(env, "accountant_schedule_v2")) {
     const loanRows = await safeAll<{ account: string; balance_cents: number | null; interest_rate_pct: number | null; loan_account_id: string; property_id: string; deductible_interest_pct: number; property_label: string | null; interest_cents: number | null; source: string | null; document_id: string | null }>(
-      env.DB.prepare(
+      tenantDb(env, userId).prepare(
         `SELECT a.name AS account, a.balance_cents, a.interest_rate_pct, lp.loan_account_id,
                 lp.property_id, lp.deductible_interest_pct,
                 (SELECT label FROM properties WHERE id = lp.property_id AND user_id = lp.user_id) AS property_label,
@@ -1311,7 +1312,7 @@ async function scheduleCore(
            LEFT JOIN loan_interest_summaries lis ON lis.loan_account_id = lp.loan_account_id AND lis.user_id = lp.user_id AND lis.fy = ?
           WHERE lp.user_id = ?
           ORDER BY a.name, property_label`,
-      ).bind(String(startYear), userId).all(),
+      ).bind(String(startYear)).all(),
     );
     if (loanRows.length) {
       const loanNotes: string[] = [];
@@ -1352,10 +1353,10 @@ async function scheduleCore(
 
     const [fxTxns, fxIncome] = await Promise.all([
       safeAll<{ txn_date: string | null; merchant: string | null; amount_cents: number | null; currency: string | null; fx_rate: number | null }>(
-        env.DB.prepare(`SELECT txn_date, merchant, amount_cents, currency, fx_rate FROM transactions WHERE user_id = ? AND txn_date >= ? AND txn_date <= ? AND COALESCE(currency,'AUD') <> 'AUD' AND amount_aud_cents IS NULL ORDER BY txn_date`).bind(userId, start, end).all(),
+        tenantDb(env, userId).prepare(`SELECT txn_date, merchant, amount_cents, currency, fx_rate FROM transactions WHERE user_id = ? AND txn_date >= ? AND txn_date <= ? AND COALESCE(currency,'AUD') <> 'AUD' AND amount_aud_cents IS NULL ORDER BY txn_date`).bind(start, end).all(),
       ),
       safeAll<{ txn_date: string | null; income_type: string; gross_cents: number; currency: string | null; fx_rate: number | null }>(
-        env.DB.prepare(`SELECT txn_date, income_type, gross_cents, currency, fx_rate FROM income WHERE user_id = ? AND fy = ? AND COALESCE(currency,'AUD') <> 'AUD' AND amount_aud_cents IS NULL ORDER BY txn_date`).bind(userId, fy).all(),
+        tenantDb(env, userId).prepare(`SELECT txn_date, income_type, gross_cents, currency, fx_rate FROM income WHERE user_id = ? AND fy = ? AND COALESCE(currency,'AUD') <> 'AUD' AND amount_aud_cents IS NULL ORDER BY txn_date`).bind(fy).all(),
       ),
     ]);
     if (fxTxns.length || fxIncome.length) {

@@ -20,7 +20,7 @@ import { spentTodayGlobalCents } from "./lib/usage";
 import { featureOn } from "./lib/features";
 import { handleBeforeYouStart } from "./lib/before-you-start";
 import { runScheduledSecurityChecks } from "./lib/security-dashboard";
-import { runWeeklySlice, weeklySweepInProgress } from "./lib/weekly-sweep";
+import { runWeeklySlice, startWeeklySweep, weeklySweepInProgress } from "./lib/weekly-sweep";
 import { withSecurityHeaders, summariseCspReport, logTag, publicErrorMessage, scrubApiErrorResponse } from "./lib/security-headers";
 import { ipRateLimit, userRateLimit, publishAccessSource } from "./lib/access-control";
 import { BACKUP_CRON, runD1Backup } from "./lib/backups";
@@ -336,12 +336,16 @@ const handler = {
       const r = await runD1Backup(env);
       if (r.status !== "flag_off") console.log(`d1 backup: ${r.status}`);
       // Log retention runs AFTER the export, so the night's backup still holds what it deletes.
-      const pr = await pruneLogs(env).catch((e) => (console.error(`log prune failed: ${(e as Error).name}`), null));
+      // Only after a good export: a failed or disabled backup means nothing would hold the deleted rows.
+      const pr = r.status === "ok" || r.status === "skipped"
+        ? await pruneLogs(env).catch((e) => (console.error(`log prune failed: ${(e as Error).name}`), null))
+        : null;
       if (pr?.status === "ok") console.log(`log prune: ${JSON.stringify(pr.deleted)}`);
       return;
     }
     if (evt.cron === "0 8 * * 1") {
-      // Starts a sweep; the */10 tick below continues it while the cursor is set (src/lib/weekly-sweep.ts).
+      // Starts a sweep and runs its first slice; the */10 tick below continues it (src/lib/weekly-sweep.ts).
+      await startWeeklySweep(env);
       await runWeeklySlice(env, stubFor);
       return;
     }

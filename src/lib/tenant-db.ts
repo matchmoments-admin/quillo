@@ -98,43 +98,103 @@ function topLevelItems(sql: string, open: number): { ranges: [number, number][];
 const bareParam = (item: string) => item.replace(/\/\*[\s\S]*?\*\//g, "").replace(/--[^\n]*/g, "").trim() === "?";
 
 const PREDICATE = /(?:\b[A-Za-z_][A-Za-z0-9_]*\.)?\buser_id\s*=\s*$/i;
-const NEGATED = /\bNOT\s*\(?\s*(?:[A-Za-z_][A-Za-z0-9_]*\.)?user_id\s*=\s*$/i;
-const INSERT_HEAD = /^\s*INSERT\s+(?:OR\s+\w+\s+)?INTO\s+[A-Za-z_][A-Za-z0-9_]*\s*\(([^)]*)\)\s*VALUES\s*/i;
+// What must precede `[alias.]user_id = ?` for it to RESTRICT the statement: a WHERE / AND / ON conjunction
+// (optionally after an opening paren), or the one shared-or-tenant form `user_id IS NULL OR user_id = ?`
+// (global rule-pack overrides plus this tenant's own rows). Anything else — `SET user_id = ?` (moves a row
+// into this tenant), a bare `OR user_id = ?`, a select-list comparison — is not a scope and throws.
+const CONJUNCTIVE = /(?:\bWHERE|\bAND|\bON)\s*(?:\(\s*)*(?:\b[A-Za-z_][A-Za-z0-9_]*\.)?user_id\s*=\s*$/i;
+const SHARED_OR_TENANT = /\buser_id\s+IS\s+NULL\s+OR\s+(?:\b[A-Za-z_][A-Za-z0-9_]*\.)?user_id\s*=\s*$/i;
+const INSERT_HEAD = /^\s*INSERT\s+(?:OR\s+\w+\s+)?INTO\s+[A-Za-z_][A-Za-z0-9_]*\s*\(([^)]*)\)\s*(VALUES|SELECT)\s*/i;
 
-/** Which placeholder indexes are the tenant. Exported for the goldens. */
+/** The open-paren offsets enclosing `at` (quotes and comments skipped), innermost last. */
+function enclosingParens(sql: string, at: number): number[] {
+  const stack: number[] = [];
+  for (let i = 0; i < at; i++) {
+    const skip = skipQuotedOrComment(sql, i);
+    if (skip !== i) {
+      i = skip - 1;
+      continue;
+    }
+    if (sql[i] === "(") stack.push(i);
+    else if (sql[i] === ")") stack.pop();
+  }
+  return stack;
+}
+
+/** The top-level items of a SELECT list starting at `start`, up to the first top-level FROM / WHERE. */
+function selectListItems(sql: string, start: number): [number, number][] {
+  const ranges: [number, number][] = [];
+  let depth = 0;
+  let from = start;
+  for (let i = start; i < sql.length; i++) {
+    const skip = skipQuotedOrComment(sql, i);
+    if (skip !== i) {
+      i = skip - 1;
+      continue;
+    }
+    const c = sql[i]!;
+    if (c === "(") depth++;
+    else if (c === ")") depth--;
+    else if (depth === 0 && c === ",") {
+      ranges.push([from, i]);
+      from = i + 1;
+    } else if (depth === 0 && /\s/.test(c) && /^\s+(FROM|WHERE)\b/i.test(sql.slice(i))) break;
+  }
+  ranges.push([from, sql.length]);
+  return ranges;
+}
+
+/** Which placeholder indexes are the tenant. Throws TenantScopeError on a tenant predicate that doesn't scope. */
 export function tenantPlan(sql: string): Plan {
   const cached = planCache.get(sql);
-  if (cached) return cached;
+  if (cached) {
+    // LRU: a hit moves to the back, so the hot statements survive eviction.
+    planCache.delete(sql);
+    planCache.set(sql, cached);
+    return cached;
+  }
   const offs = placeholderOffsets(sql);
   const tenant = new Set<number>();
-  offs.forEach((o, idx) => {
-    const before = sql.slice(Math.max(0, o - 64), o);
-    if (!PREDICATE.test(before)) return;
-    // `NOT user_id = ?` reads every OTHER tenant's rows: refuse it rather than count it as a scope.
-    if (NEGATED.test(before)) throw new TenantScopeError("a negated tenant predicate (NOT user_id = ?) is not a tenant scope");
-    tenant.add(idx);
-  });
+  // INSERT value slots first: the user_id column's `?` in each VALUES tuple, or in the SELECT list.
+  const valueSlots = new Set<number>();
   const ins = INSERT_HEAD.exec(sql);
   if (ins) {
     const col = ins[1]!.split(",").map((c) => c.trim().toLowerCase()).indexOf("user_id");
     if (col >= 0) {
-      // Each VALUES tuple: when the user_id slot is a bare `?`, that placeholder is the tenant.
-      let p = ins[0].length;
-      while (sql[p] === "(") {
-        const items = topLevelItems(sql, p);
-        if (!items) break;
-        const slot = items.ranges[col];
-        if (slot && bareParam(sql.slice(slot[0], slot[1]))) {
-          const idx = offs.findIndex((o) => o >= slot[0] && o < slot[1]);
-          if (idx >= 0) tenant.add(idx);
+      const take = (slot: [number, number] | undefined) => {
+        if (!slot || !bareParam(sql.slice(slot[0], slot[1]))) return;
+        const idx = offs.findIndex((o) => o >= slot[0] && o < slot[1]);
+        if (idx >= 0) valueSlots.add(idx);
+      };
+      if (ins[2]!.toUpperCase() === "SELECT") take(selectListItems(sql, ins[0].length)[col]);
+      else {
+        let p = ins[0].length;
+        while (sql[p] === "(") {
+          const items = topLevelItems(sql, p);
+          if (!items) break;
+          take(items.ranges[col]);
+          p = items.end + 1;
+          while (/[\s,]/.test(sql[p] ?? "")) p++;
         }
-        p = items.end + 1;
-        while (/[\s,]/.test(sql[p] ?? "")) p++;
       }
     }
   }
+  offs.forEach((o, idx) => {
+    if (valueSlots.has(idx)) return tenant.add(idx);
+    const before = sql.slice(Math.max(0, o - 64), o);
+    if (!PREDICATE.test(before)) return;
+    if (!CONJUNCTIVE.test(before) && !SHARED_OR_TENANT.test(before)) {
+      throw new TenantScopeError(`a user_id = ? that doesn't restrict the statement (needs WHERE/AND/ON): …${before.replace(/\s+/g, " ").slice(-40)}`);
+    }
+    // Inside any NOT ( … ) group the predicate is inverted — it would read every OTHER tenant's rows.
+    for (const open of enclosingParens(sql, o)) {
+      if (/\bNOT\s*$/i.test(sql.slice(Math.max(0, open - 8), open))) throw new TenantScopeError("a tenant predicate inside NOT ( … ) is not a tenant scope");
+    }
+    if (/\bNOT\s*\(?\s*(?:[A-Za-z_][A-Za-z0-9_]*\.)?user_id\s*=\s*$/i.test(before)) throw new TenantScopeError("a negated tenant predicate (NOT user_id = ?) is not a tenant scope");
+    tenant.add(idx);
+  });
   const plan = { total: offs.length, tenant: [...tenant].sort((a, b) => a - b) };
-  if (planCache.size >= PLAN_CACHE_MAX) planCache.clear();
+  if (planCache.size >= PLAN_CACHE_MAX) planCache.delete(planCache.keys().next().value!);
   planCache.set(sql, plan);
   return plan;
 }

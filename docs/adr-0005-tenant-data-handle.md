@@ -24,11 +24,16 @@ sites.
    tenant into every `user_id = ?` placeholder, and into the `user_id` slot of an
    `INSERT … (cols) VALUES (…)`. It returns a real `D1PreparedStatement`, so `.first/.all/.run` and
    `batch` are unchanged.
-2. **It throws before anything reaches D1** in two cases:
+2. **It throws before anything reaches D1** in three cases:
    - the SQL has no tenant placeholder (an unscoped statement on the tenant handle);
+   - a `user_id = ?` doesn't restrict the statement. A tenant placeholder must sit in a WHERE / AND / ON
+     conjunction or in an INSERT value slot (`VALUES` or `SELECT`), or take the one shared-or-tenant form
+     `user_id IS NULL OR user_id = ?`. So `SET user_id = ?`, a bare `OR user_id = ?`, a select-list
+     comparison and any predicate inside `NOT ( … )` all throw;
    - the argument count is wrong.
 
-   Failing loudly is the safe default for tenant isolation.
+   Failing loudly is the safe default for tenant isolation. check-units also plans every `tenantDb` call
+   site statically, so a bad predicate or a misbind fails the build rather than throwing at runtime.
 3. **Cross-tenant code uses `platformDb(env)`.** This covers founder admin, partner and referral data, the
    waitlist, the global spend rollup, the security dashboard and cron sweeps. Each use is an explicit,
    greppable exception.
@@ -57,8 +62,8 @@ They move by hand, a file at a time.
 
 ## Consequences
 
-- An unscoped tenant statement can no longer be written through the handle. A statement on the handle
-  whose tenant predicate covers only a subquery still passes. The guard is a strong default, not a proof.
+- An unscoped tenant statement can no longer be written through the handle. One case still passes: a tenant
+  predicate that only scopes a subquery. The guard is a strong default, not a proof.
 - Sharding means changing `databaseFor`, plus the reviewed `platformDb` callers, which need a fan-out
   query or a roll-up database.
 - The placeholder scan runs once per distinct SQL string (cached), which is negligible next to a D1 round

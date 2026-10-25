@@ -7550,7 +7550,7 @@ console.log("A6 CDR data controls (#639)");
   const indexSrc639 = fs.readFileSync(path.join(process.cwd(), "src/lib/weekly-sweep.ts"), "utf8"); // the sweep body moved out of index.ts (A3)
   check("weekly cron: minimisation, inactive end users and the record are wired, each behind its flag",
     /if \(featureOn\(env, "bank_minimisation"\)\) \{/.test(indexSrc639) && /if \(featureOn\(env, "cdr_inactive_user_delete"\)\) \{/.test(indexSrc639) &&
-    /await publishLifecycleRecord\(env, tally,/.test(indexSrc639));
+    /await publishLifecycleRecord\(env, total,/.test(indexSrc639));
 }
 
 // ── position.ts: the ONE position formula (shared by the tracked and confirmed endpoints) ──
@@ -8917,40 +8917,46 @@ console.log("D1 bind cap + tenant predicates + scale indexes (A4/A5)");
   check("A5: platformOverview no longer filters llm_usage by substr(created_at…)", !/FROM llm_usage WHERE substr\(created_at/.test(q));
 }
 
-// ── Scale review A3: the weekly sweep continues on the 10-minute tick until every tenant is done ──
-import { runWeeklySlice, weeklySweepInProgress, WEEKLY_CURSOR_KEY, WEEKLY_LEASE_KEY, WEEKLY_SLICE } from "../src/lib/weekly-sweep";
+// ── Scale review A3 (+ review fixes): the weekly sweep — D1 state, atomic lease, start, cumulative tally ──
+import { runWeeklySlice, startWeeklySweep, weeklySweepInProgress, WEEKLY_SLICE } from "../src/lib/weekly-sweep";
 import type { TaxAgentRpc } from "../src/env";
 
 console.log("weekly sweep continuation (A3)");
 {
+  const sw = schemaDb();
   const kv = new Map<string, string>();
   const RULES = { get: async (k: string) => kv.get(k) ?? null, put: async (k: string, v: string) => { kv.set(k, v); }, delete: async (k: string) => { kv.delete(k); } };
-  const users = Array.from({ length: 1000 }, (_, i) => `user_${String(i).padStart(4, "0")}`);
-  const DB = { prepare: (_sql: string) => ({ bind: (cursor: string, limit: number) => ({
-    all: async () => ({ results: users.filter((u) => u > cursor).slice(0, limit).map((user_id) => ({ user_id })) }),
-    first: async () => ({ n: 0 }),
-  }) }) };
-  const env = { RULES, DB, FEATURES: "" } as unknown as Env;
+  const ins = sw.sqlite.prepare(`INSERT INTO profiles (user_id) VALUES (?)`);
+  for (let i = 0; i < 1000; i++) ins.run(`user_${String(i).padStart(4, "0")}`);
+  const env = { RULES, DB: sw, FEATURES: "" } as unknown as Env;
   const seen = new Map<string, number>();
   const stub = (_e: Env, uid: string) => ({
     runProactiveScan: async () => { seen.set(uid, (seen.get(uid) ?? 0) + 1); },
-    rollForward: async () => {}, flagOldData: async () => ({ flagged: false }),
+    rollForward: async () => {}, flagOldData: async () => ({ flagged: uid.endsWith("7") }),
   }) as unknown as TaxAgentRpc;
-  {
-    const r1 = await runWeeklySlice(env, stub); // the Monday tick
-    check("A3: the first slice sweeps WEEKLY_SLICE tenants and leaves the cursor set", "swept" in r1 && r1.swept === WEEKLY_SLICE && !r1.done && await weeklySweepInProgress(env));
-    let ticks = 1;
-    while (await weeklySweepInProgress(env) && ticks < 10) { await runWeeklySlice(env, stub); ticks++; }
-    check("A3: 1,000 tenants finish in 3 ticks (same day), and the cursor clears", ticks === 3 && !kv.has(WEEKLY_CURSOR_KEY));
-    check("A3: every tenant swept exactly once", seen.size === 1000 && [...seen.values()].every((n) => n === 1));
-    check("A3: the lease is released after each slice", !kv.has(WEEKLY_LEASE_KEY));
-    kv.set(WEEKLY_LEASE_KEY, "x");
-    const leased = await runWeeklySlice(env, stub);
-    check("A3: a held lease skips the tick (no double-run of an overrunning slice)", "skipped" in leased && seen.size === 1000 && [...seen.values()].every((n) => n === 1));
-    kv.delete(WEEKLY_LEASE_KEY);
-    const ix = fs.readFileSync(path.join(process.cwd(), "src/index.ts"), "utf8");
-    check("A3: the */10 tick continues an in-progress sweep", /if \(await weeklySweepInProgress\(env\)\) \{\s*await runWeeklySlice\(env, stubFor\)/.test(ix));
-  }
+  check("A3: idle ⇒ the 10-minute tick does nothing", !(await weeklySweepInProgress(env)) && "skipped" in (await runWeeklySlice(env, stub)) && seen.size === 0);
+  check("A3: Monday starts a sweep; starting again while in progress is a no-op", (await startWeeklySweep(env)) && !(await startWeeklySweep(env)) && (await weeklySweepInProgress(env)));
+  const r1 = await runWeeklySlice(env, stub);
+  check("A3: the first slice sweeps WEEKLY_SLICE tenants and the sweep stays in progress", "swept" in r1 && r1.swept === WEEKLY_SLICE && !r1.done && (await weeklySweepInProgress(env)));
+  // Lease contention: a held, unexpired lease makes a concurrent tick skip, and runs nothing twice.
+  sw.sqlite.exec(`UPDATE cron_sweeps SET lease_holder = 'other', lease_until = datetime('now','+600 seconds') WHERE name = 'weekly'`);
+  const leased = await runWeeklySlice(env, stub);
+  check("A3: a held lease skips the tick (atomic, D1 — no double-run of a slice)", "skipped" in leased && leased.skipped === "leased" && seen.size === WEEKLY_SLICE);
+  sw.sqlite.exec(`UPDATE cron_sweeps SET lease_until = datetime('now','-1 seconds') WHERE name = 'weekly'`);
+  let ticks = 1;
+  while ((await weeklySweepInProgress(env)) && ticks < 10) { await runWeeklySlice(env, stub); ticks++; }
+  check("A3: an expired lease is taken over; 1,000 tenants finish in 3 slices and the sweep goes idle", ticks === 3 && !(await weeklySweepInProgress(env)));
+  check("A3: every tenant swept exactly once", seen.size === 1000 && [...seen.values()].every((n) => n === 1));
+  const rec = JSON.parse(kv.get(SECURITY_KV.source("retention")) ?? "{}") as { metrics?: Record<string, number> };
+  check("A3: the lifecycle record shows the WHOLE sweep (tally accumulated across slices, not the last slice)",
+    rec.metrics?.tenants === 1000 && rec.metrics?.flagged === 100);
+  check("A3: the lease is released after the last slice", (sw.sqlite.prepare(`SELECT lease_holder FROM cron_sweeps WHERE name = 'weekly'`).get() as { lease_holder: string | null }).lease_holder === null);
+  // A slice still holding the lease at Monday 08:00 must not swallow the week's start.
+  sw.sqlite.exec(`UPDATE cron_sweeps SET lease_holder = 'stuck', lease_until = datetime('now','+600 seconds') WHERE name = 'weekly'`);
+  check("A3: Monday start succeeds even while a lease is held (the week can't be skipped)", (await startWeeklySweep(env)) && (await weeklySweepInProgress(env)));
+  const ix = fs.readFileSync(path.join(process.cwd(), "src/index.ts"), "utf8");
+  check("A3: Monday starts then runs a slice; the */10 tick continues an in-progress sweep",
+    /await startWeeklySweep\(env\);\s*await runWeeklySlice\(env, stubFor\)/.test(ix) && /if \(await weeklySweepInProgress\(env\)\) \{\s*await runWeeklySlice\(env, stubFor\)/.test(ix));
 }
 
 // ── Scale review B: the shared D1 test adapter is faithful where shims used to lie ────────────────
@@ -8996,6 +9002,14 @@ console.log("tenantDb: the tenant is spliced in by the handle, never bound by th
     JSON.stringify(tenantPlan(`INSERT INTO t (a, b, user_id) VALUES (? /* a, b */, ?, ?)`).tenant) === "[2]");
   check("plan: a -- comment with an apostrophe inside VALUES doesn't derail the tuple parse",
     JSON.stringify(tenantPlan(`INSERT INTO t (a, user_id) VALUES (? -- don't\n, ?)`).tenant) === "[1]");
+  const refuses = (sql: string) => { try { tenantPlan(sql); return false; } catch (e) { return e instanceof TenantScopeError; } };
+  check("plan: SET user_id = ? is refused (it would move another tenant's row into this one)", refuses(`UPDATE transactions SET user_id = ? WHERE id = ?`));
+  check("plan: a bare OR user_id = ? is refused (it returns any tenant's row)", refuses(`SELECT * FROM transactions WHERE id = ? OR user_id = ?`));
+  check("plan: a predicate inside NOT ( … ) is refused", refuses(`SELECT * FROM t WHERE NOT (status = 'x' AND user_id = ?)`));
+  check("plan: a select-list comparison is refused", refuses(`SELECT (user_id = ?) AS mine FROM t WHERE id = ?`));
+  check("plan: the shared-or-tenant form (user_id IS NULL OR user_id = ?) is allowed", JSON.stringify(tenantPlan(`SELECT 1 FROM r WHERE v = ? AND (user_id IS NULL OR user_id = ?)`).tenant) === "[1]");
+  check("plan: INSERT … SELECT fills the user_id select-list slot AND the WHERE predicate",
+    JSON.stringify(tenantPlan(`INSERT INTO a (id, user_id, conn) SELECT ?, ?, bc.id FROM bc WHERE bc.user_id = ? AND bc.k = ?`).tenant) === "[1,2]");
   check("plan: NOT user_id = ? is refused (it reads every other tenant)", (() => { try { tenantPlan(`SELECT 1 FROM t WHERE NOT user_id = ?`); return false; } catch (e) { return e instanceof TenantScopeError; } })());
 
   const d = schemaDb();
@@ -9055,7 +9069,7 @@ console.log("table manifest + log retention (E)");
   check("manifest: audit_log and cdr_audit_log are kept, never purged, never pruned",
     !TABLES.audit_log.purge && !TABLES.cdr_audit_log.purge && TABLES.audit_log.retention === "keep" && TABLES.cdr_audit_log.retention === "keep");
   check("manifest: billing tables are never pruned", TABLES.llm_usage.retention === "keep" && TABLES.credit_ledger.retention === "keep");
-  check("manifest: only operational logs are prunable", LOG_TABLES.map((l) => l.table).sort().join(",") === "ai_edits,chat_messages,eval_cases,notifications,traces");
+  check("manifest: only operational logs are prunable (chat history is user content — kept)", LOG_TABLES.map((l) => l.table).sort().join(",") === "ai_edits,eval_cases,notifications,traces");
   // Dark labels stay honest: a table with no static writer or reader in src must say why, and a table that
   // says it's dark must really lack one (dynamic-table writers are listed by name in DYNAMIC_WRITERS).
   const srcE: string[] = [];
@@ -9075,16 +9089,19 @@ console.log("table manifest + log retention (E)");
   const penv = (f: string) => ({ DB: pd, FEATURES: f }) as unknown as Env;
   pd.sqlite.exec(`INSERT INTO traces (id, user_id, created_at) VALUES ('old1','u',datetime('now','-200 days')), ('old2','u',datetime('now','-91 days')), ('new1','u',datetime('now','-10 days'))`);
   pd.sqlite.exec(`INSERT INTO notifications (id, user_id, body, created_at) VALUES ('n1','u','x',datetime('now','-30 days'))`);
+  pd.sqlite.exec(`INSERT INTO notifications (id, user_id, body, read_at, created_at) VALUES ('n-old-read','u','x',datetime('now'),datetime('now','-400 days')), ('n-old-unread','u','nudge',NULL,datetime('now','-400 days'))`);
   pd.sqlite.exec(`INSERT INTO transactions (id, user_id, source, created_at) VALUES ('t-ancient','u','upload',datetime('now','-4000 days'))`);
   const off = await pruneLogs(penv(""));
   check("prune: flag OFF ⇒ returns flag_off and deletes nothing", off.status === "flag_off" && (pd.sqlite.prepare(`SELECT COUNT(*) AS n FROM traces`).get() as { n: number }).n === 3);
   const on = await pruneLogs(penv("log_retention"), { batch: 1 });
   const left = (pd.sqlite.prepare(`SELECT id FROM traces ORDER BY id`).all() as { id: string }[]).map((r) => r.id).join(",");
   check("prune: ON deletes only traces older than 90 days (batched, batch=1 still drains)", on.status === "ok" && left === "new1" && on.deleted.traces === 2);
-  check("prune: young notifications stay; ledger rows are never touched however old",
-    (pd.sqlite.prepare(`SELECT COUNT(*) AS n FROM notifications`).get() as { n: number }).n === 1 && (pd.sqlite.prepare(`SELECT COUNT(*) AS n FROM transactions`).get() as { n: number }).n === 1);
+  const notes = (pd.sqlite.prepare(`SELECT id FROM notifications ORDER BY id`).all() as { id: string }[]).map((r) => r.id).join(",");
+  check("prune: old READ notifications go; old UNREAD ones (the nudge dedup marker) and young ones stay", notes === "n-old-unread,n1");
+  check("prune: ledger rows are never touched however old", (pd.sqlite.prepare(`SELECT COUNT(*) AS n FROM transactions`).get() as { n: number }).n === 1);
   const idxE = fs.readFileSync(path.join(process.cwd(), "src/index.ts"), "utf8");
-  check("prune runs on the daily tick AFTER the D1 export", idxE.indexOf("await runD1Backup(env)") > 0 && idxE.indexOf("pruneLogs(env)") > idxE.indexOf("await runD1Backup(env)"));
+  check("prune runs on the daily tick AFTER the D1 export, and only when the export succeeded",
+    idxE.indexOf("await runD1Backup(env)") > 0 && idxE.indexOf("pruneLogs(env)") > idxE.indexOf("await runD1Backup(env)") && /r\.status === "ok" \|\| r\.status === "skipped"\s*\?\s*await pruneLogs\(env\)/.test(idxE));
   const agE = fs.readFileSync(path.join(process.cwd(), "src/agent.ts"), "utf8");
   check("eval_cases write is skipped when eval_cases_retired is ON", /if \(!featureOn\(this\.env, "eval_cases_retired"\)\) await tenantDb\(this\.env, userId\)\.prepare\(\s*`INSERT INTO eval_cases/.test(agE));
 }
@@ -9118,6 +9135,50 @@ console.log("ledger filter (D)");
   const walkD = (d: string) => { for (const f of fs.readdirSync(d, { withFileTypes: true })) { const p = path.join(d, f.name); if (f.isDirectory()) walkD(p); else if (p.endsWith(".ts") && /\.replace\(\/\\b\(status\|kind/.test(fs.readFileSync(p, "utf8"))) rewrites.push(path.relative(process.cwd(), p)); } };
   walkD(path.join(process.cwd(), "src"));
   check(`ledger-filter: no regex alias rewrite of the filter left in src${rewrites.length ? ` (${rewrites.join(", ")})` : ""}`, rewrites.length === 0);
+}
+
+// ── Review fix: every tenantDb call site plans cleanly and binds the right number of args (static) ──
+import ts from "typescript";
+
+console.log("tenantDb static audit (every call site)");
+{
+  const problems: string[] = [];
+  let sites = 0;
+  const walkT = (d: string) => {
+    for (const f of fs.readdirSync(d, { withFileTypes: true })) {
+      const p = path.join(d, f.name);
+      if (f.isDirectory()) { walkT(p); continue; }
+      if (!p.endsWith(".ts")) continue;
+      const src = fs.readFileSync(p, "utf8");
+      if (!src.includes("tenantDb(")) continue;
+      const sf = ts.createSourceFile(p, src, ts.ScriptTarget.Latest, true);
+      const visit = (node: ts.Node) => {
+        if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "prepare" && /^tenantDb\(/.test(node.expression.expression.getText(sf))) {
+          sites++;
+          const a = node.arguments[0];
+          const loc = `${path.relative(process.cwd(), p)}:${sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1}`;
+          let text: string | null = null;
+          // Interpolations are the reviewed placeholder-free fragments (scripts/codemods/safe-spans.txt).
+          if (a && (ts.isStringLiteral(a) || ts.isNoSubstitutionTemplateLiteral(a))) text = a.text;
+          else if (a && ts.isTemplateExpression(a)) { text = a.head.text; for (const sp of a.templateSpans) text += " " + sp.literal.text; }
+          if (text != null) {
+            try {
+              const plan = tenantPlan(text);
+              const par = node.parent;
+              if (ts.isPropertyAccessExpression(par) && par.name.text === "bind" && ts.isCallExpression(par.parent)) {
+                const args = par.parent.arguments;
+                if (!args.some((x) => ts.isSpreadElement(x)) && args.length !== plan.total - plan.tenant.length) problems.push(`${loc} binds ${args.length}, plan wants ${plan.total - plan.tenant.length}`);
+              }
+            } catch (e) { problems.push(`${loc} ${(e as Error).message.slice(0, 90)}`); }
+          }
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(sf);
+    }
+  };
+  walkT(path.join(process.cwd(), "src"));
+  check(`tenantDb audit: ${sites} call sites plan without a scope error and bind the right arg count${problems.length ? `: ${problems.slice(0, 5).join(" | ")}` : ""}`, sites > 600 && problems.length === 0);
 }
 
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);

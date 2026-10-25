@@ -89,6 +89,10 @@ export const propertyUndeterminedGatedExpr = (env: Env, bucketCol: string, idCol
 // `alias` is the surrounding query's transactions alias (or the bare table name); no extra bind. The
 // probe pins ta.user_id to the outer row's tenant so it seeks idx_txn_attr_txn (user_id, transaction_id)
 // instead of scanning every tenant's attributions per line. Same rows: attributions are same-tenant.
+// A row's amount in the base currency: the FX-converted AUD figure, else the original (already AUD, or
+// pre-FX rows). `p` is the alias prefix ('' or 't.'). The ONE spelling — the money files never open-code it.
+export const audAmount = (p = "") => `COALESCE(${p}amount_aud_cents, ${p}amount_cents)`;
+
 export const notAttributedExpr = (alias: string, on: boolean) =>
   on ? ` AND NOT EXISTS (SELECT 1 FROM transaction_attributions ta WHERE ta.user_id = ${alias}.user_id AND ta.transaction_id = ${alias}.id)` : "";
 

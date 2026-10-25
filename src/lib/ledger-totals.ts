@@ -27,7 +27,7 @@ export interface RulePackThresholds {
 // ── FY representation seam: src/lib/fy.ts (re-exported here so existing imports keep working) ──
 export { fyLabel, fyStartYearStr, parseFyStartYear, normaliseFyLabel } from "./fy";
 import { fyLabel, parseFyStartYear } from "./fy";
-import { countable } from "./ledger-filter";
+import { audAmount, countable, notAttributedExpr } from "./ledger-filter";
 
 /**
  * Calendar bounds of an FY start year. Period maths live in jurisdiction.ts; the optional descriptor
@@ -245,7 +245,7 @@ export async function deductionTotalForProperty(
 ): Promise<number> {
   const { start, end } = fyBounds(startYear, descriptor);
   const row = await tenantDb(env, userId).prepare(
-    `SELECT COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS total_cents
+    `SELECT COALESCE(SUM(${audAmount()}),0) AS total_cents
        FROM transactions
       WHERE user_id = ? AND property_id = ? AND txn_date >= ? AND txn_date <= ? AND ${COUNTABLE}`,
   )
@@ -335,7 +335,7 @@ export async function attributionTotals(
   try {
     const res = await tenantDb(env, userId).prepare(
       `SELECT ta.attributed_amount_cents AS attributed_amount_cents, ta.attributed_pct AS attributed_pct,
-              ta.work_use_pct AS work_use_pct, COALESCE(t.amount_aud_cents, t.amount_cents) AS txn_amount,
+              ta.work_use_pct AS work_use_pct, ${audAmount("t.")} AS txn_amount,
               COALESCE(t.deductibility,'undetermined') AS deductibility,
               -- entity_type is set by 0032's backfill, but a NEW entity (situation-write) may not set it;
               -- fall back to kind so a freshly-created company still routes to the company track.
@@ -462,7 +462,7 @@ export async function companyPositions(env: Env, userId: string, startYear: numb
     // company — previously it was silently dropped (every multi-company position under-stated). Now we
     // surface it as a review item (unattributed_*) instead of dropping it or guessing companies[0].
     const single = companies.length === 1;
-    const rawAgg = await tenantDb(env, userId).prepare(`SELECT COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS total, COUNT(*) AS n FROM transactions WHERE user_id = ? AND bucket = 'company' AND txn_date >= ? AND txn_date <= ? AND COALESCE(reimbursed,0) = 0 AND ${COUNTABLE} AND NOT EXISTS (SELECT 1 FROM transaction_attributions ta WHERE ta.user_id = transactions.user_id AND ta.transaction_id = transactions.id)`).bind(start, end).first<{ total: number; n: number }>();
+    const rawAgg = await tenantDb(env, userId).prepare(`SELECT COALESCE(SUM(${audAmount()}),0) AS total, COUNT(*) AS n FROM transactions WHERE user_id = ? AND bucket = 'company' AND txn_date >= ? AND txn_date <= ? AND COALESCE(reimbursed,0) = 0 AND ${COUNTABLE}${notAttributedExpr("transactions", true)}`).bind(start, end).first<{ total: number; n: number }>();
     const rawTotal = rawAgg?.total ?? 0;
     const rawN = rawAgg?.n ?? 0;
     const rawCompany = single ? rawTotal : 0;
@@ -497,10 +497,9 @@ export async function companyPositions(env: Env, userId: string, startYear: numb
       // companies it can't be pinned, so it never enters any company's history either).
       const priorRaw = single
         ? (await tenantDb(env, userId).prepare(
-            `SELECT ${fyStartExpr} AS fy_start, COALESCE(SUM(COALESCE(t.amount_aud_cents, t.amount_cents)),0) AS ded
+            `SELECT ${fyStartExpr} AS fy_start, COALESCE(SUM(${audAmount("t.")}),0) AS ded
                FROM transactions t
-              WHERE t.user_id = ? AND t.bucket = 'company' AND t.txn_date < ? AND COALESCE(t.reimbursed,0) = 0 AND ${tFilter}
-                AND NOT EXISTS (SELECT 1 FROM transaction_attributions ta WHERE ta.user_id = t.user_id AND ta.transaction_id = t.id)
+              WHERE t.user_id = ? AND t.bucket = 'company' AND t.txn_date < ? AND COALESCE(t.reimbursed,0) = 0 AND ${tFilter}${notAttributedExpr("t", true)}
               GROUP BY fy_start`,
           ).bind(start).all<{ fy_start: number; ded: number }>()).results ?? []
         : [];
@@ -699,9 +698,9 @@ export const separateTaxpayerPredicate = (alias: string): string =>
 
 export async function separateTaxpayerEntityIds(env: Env, userId: string): Promise<string[]> {
   try {
-    const rows = (await env.DB.prepare(
+    const rows = (await tenantDb(env, userId).prepare(
       `SELECT e.id FROM entities e WHERE e.user_id = ? AND ${separateTaxpayerPredicate("e")}`,
-    ).bind(userId).all<{ id: string }>()).results ?? [];
+    ).bind().all<{ id: string }>()).results ?? [];
     return rows.map((r) => r.id);
   } catch (e) {
     if (/no such table|no such column/i.test((e as Error).message)) return [];

@@ -27,7 +27,7 @@ import { diaryView as wfhDiaryView, addDaysIso as wfhAddDays, preDiarySourceLabe
 import { buildXlsx, type XlsxCell, type XlsxSheet } from "./xlsx";
 import { csvCell, neutraliseFormula } from "./csv-cell";
 import { tenantDb } from "./tenant-db";
-import { countable } from "./ledger-filter";
+import { audAmount, countable } from "./ledger-filter";
 
 // ── The itemised accountant deliverable (#179 + #181, EPIC #178) ─────────────
 // A persona-aware, multi-section schedule an accountant can audit: per-transaction lines with
@@ -289,13 +289,13 @@ async function scheduleCore(
 
   // (1) Itemised spend — byBucket (report.ts) ungrouped, identical WHERE + amount expression.
   const itemsP = safeAll<ItemRow>(
-    env.DB.prepare(
+    tenantDb(env, userId).prepare(
       `SELECT id, txn_date, merchant, bucket, ato_label,
               COALESCE(deductibility,'undetermined') AS deductibility,
               COALESCE(reimbursed,0) AS reimbursed,
               ${useStatusDeniedExpr("transactions.property_id")} AS use_status_denied,
               ${propertyUndeterminedGatedExpr(env, "bucket", "transactions.property_id")} AS property_undetermined,
-              COALESCE(amount_aud_cents, amount_cents) AS gross_cents,
+              ${audAmount()} AS gross_cents,
               ${amtExpr} AS counted_cents,
               deductible_amount_cents, gst_cents, property_id, kind, receipt_key, document_id,
               (SELECT COUNT(*) FROM transactions r
@@ -304,7 +304,7 @@ async function scheduleCore(
         WHERE user_id = ? AND txn_date >= ? AND txn_date <= ? AND bucket IS NOT NULL AND ${COUNTABLE}${notAttributedExpr("transactions", useAttributions)}${excludeSplitInterestExpr("", loanCtx.supersededLoanIds)}
         ORDER BY bucket, txn_date, created_at`,
     )
-      .bind(userId, start, end, ...loanCtx.supersededLoanIds)
+      .bind(start, end, ...loanCtx.supersededLoanIds)
       .all<ItemRow>(),
   );
 
@@ -325,7 +325,7 @@ async function scheduleCore(
     detail_json: string | null;
     fx_unconverted: number;
   }>(
-    env.DB.prepare(
+    tenantDb(env, userId).prepare(
       `SELECT txn_date, person_id, income_type, ato_label, property_id,
               COALESCE(amount_aud_cents, gross_cents) AS gross_cents,
               COALESCE(withholding_cents,0) AS withholding_cents,
@@ -336,7 +336,7 @@ async function scheduleCore(
          FROM income WHERE user_id = ? AND fy = ?${entityClause}
         ORDER BY income_type, txn_date, created_at`,
     )
-      .bind(userId, fy, ...separateIds)
+      .bind(fy, ...separateIds)
       .all(),
   );
 
@@ -412,7 +412,7 @@ async function scheduleCore(
         tenantDb(env, userId).prepare(
           `SELECT t.txn_date AS txn_date, t.merchant AS merchant,
                   ta.attributed_amount_cents AS attributed_amount_cents, ta.attributed_pct AS attributed_pct,
-                  ta.work_use_pct AS work_use_pct, COALESCE(t.amount_aud_cents, t.amount_cents) AS txn_amount,
+                  ta.work_use_pct AS work_use_pct, ${audAmount("t.")} AS txn_amount,
                   COALESCE(e.entity_type, e.kind) AS entity_type, e.name AS entity_name,
                   ia.activity_type AS activity_type, ia.property_id AS property_id,
                   ta.deduction_provision AS deduction_provision,
@@ -457,7 +457,7 @@ async function scheduleCore(
         method?: string | null;
         detail_json?: string | null;
       }>(
-        env.DB.prepare(
+        tenantDb(env, userId).prepare(
           // capital_entity_scope (C-E): the SAME predicate cgtTotals applies, from the SAME shared
           // expression. The tie_back below asserts this section's per-disposal gains sum to
           // report.gross_capital_gains_cents — so if the report excluded a separate taxpayer's event and
@@ -467,7 +467,7 @@ async function scheduleCore(
              FROM cgt_events ev JOIN cgt_assets a ON a.id = ev.cgt_asset_id AND a.user_id = ev.user_id
             WHERE ev.user_id = ? AND ev.fy = ? AND ${cgtPersonalScopeExpr(env)} ORDER BY ev.event_date`,
         )
-          .bind(userId, fy)
+          .bind(fy)
           .all(),
       )
     : Promise.resolve([]);

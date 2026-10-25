@@ -20,7 +20,7 @@ import { spentTodayGlobalCents } from "./lib/usage";
 import { featureOn } from "./lib/features";
 import { handleBeforeYouStart } from "./lib/before-you-start";
 import { runScheduledSecurityChecks } from "./lib/security-dashboard";
-import { runWeeklySlice, startWeeklySweep, weeklySweepInProgress } from "./lib/weekly-sweep";
+import { runWeeklySlice, startWeeklySweep } from "./lib/weekly-sweep";
 import { withSecurityHeaders, summariseCspReport, logTag, publicErrorMessage, scrubApiErrorResponse } from "./lib/security-headers";
 import { ipRateLimit, userRateLimit, publishAccessSource } from "./lib/access-control";
 import { BACKUP_CRON, runD1Backup } from "./lib/backups";
@@ -367,11 +367,6 @@ const handler = {
     // polling/applying just accounts for it and unblocks the user (so it runs unconditionally).
     const pending = await env.DB.prepare(`SELECT DISTINCT user_id FROM batch_jobs WHERE status = 'submitted'`).all<{ user_id: string }>();
     for (const u of pending.results) await stubFor(env, u.user_id).pollBatchJobs(u.user_id);
-    // Weekly sweep continuation: the Monday tick starts it; each tick runs the next slice until the cursor
-    // clears (one KV read a tick when idle). Isolated so a failing slice can't stop the backfills below.
-    if (await weeklySweepInProgress(env)) {
-      await runWeeklySlice(env, stubFor).catch((e) => console.error(`weekly sweep continuation failed: ${(e as Error).name}`));
-    }
     // import_continuation (F2): a live categorisation chain whose alarm went quiet gets its next hop
     // re-delivered (idempotent: a hop is due only if nothing committed it). Cheap: one indexed query.
     if (featureOn(env, "import_continuation")) {
@@ -427,6 +422,11 @@ const handler = {
       gate: withinGlobalCeiling,
       label: "statement repair",
     });
+
+    // Weekly sweep continuation: the Monday tick starts it; each tick runs the next time-boxed slice until
+    // the cursor clears (one indexed D1 read a tick when idle). LAST, so a slice can never delay the import
+    // heal or the backfills above; isolated so a failing slice can't fail the tick.
+    await runWeeklySlice(env, stubFor).catch((e) => console.error(`weekly sweep continuation failed: ${(e as Error).name}`));
   },
 } satisfies ExportedHandler<Env>;
 

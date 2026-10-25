@@ -44,7 +44,7 @@ import { noticeSignals, confirmNoticed, dismissNoticed, ensurePayrollSignal, inc
 import { creditSignalLists, payerStem, payerLabel } from "./lib/credit-triage";
 import { upsertSituationPeriod, fillSituationPeriod, deleteSituationPeriod, SituationPeriodError, type SituationPeriodInput } from "./lib/situation-write";
 import { applyCapitalColumnMap, type CapitalColumnMap, type CapitalDraftRow, type CapitalImportPreview } from "./lib/capital-import";
-import { resolveJurisdictionForUser, currentFyStartYearFor, baseCurrencyOf, AU_DESCRIPTOR, type JurisdictionDescriptor } from "./lib/jurisdiction";
+import { resolveJurisdictionForUser, currentFyStartYearFor, fyStartYearForDate, baseCurrencyOf, AU_DESCRIPTOR, type JurisdictionDescriptor } from "./lib/jurisdiction";
 import type { FilingReadiness } from "./lib/readiness";
 import { computeFilingReadiness as computeFilingReadinessFor, loadClaimRules as loadClaimRulesFor } from "./lib/filing-readiness";
 import { readJourney } from "./lib/journey-read";
@@ -592,22 +592,28 @@ export class TaxAgent extends Agent<Env> {
     if (!statementIds.length || !featureOn(this.env, "accountant_pass")) return;
     // Chunked: a bulk import can carry more statement ids than D1's 100-bind cap.
     const range: { lo: string | null; hi: string | null } = { lo: null, hi: null };
-    for (const chunk of chunkIds(statementIds)) {
-      const r = await this.env.DB.prepare(
-        `SELECT MIN(txn_date) AS lo, MAX(txn_date) AS hi
-           FROM transactions WHERE user_id = ? AND statement_id IN (${chunk.map(() => "?").join(",")}) AND kind = 'bank_line' AND txn_date IS NOT NULL`,
-      )
-        .bind(userId, ...chunk)
-        .first<{ lo: string | null; hi: string | null }>();
-      if (r?.lo && (!range.lo || r.lo < range.lo)) range.lo = r.lo;
-      if (r?.hi && (!range.hi || r.hi > range.hi)) range.hi = r.hi;
+    // Best-effort like the pass itself: a failed range read (a D1 timeout on a big bulk import) must not
+    // throw past the caller's "Imported N…" notification.
+    try {
+      for (const chunk of chunkIds(statementIds)) {
+        const r = await tenantDb(this.env, userId).prepare(
+          `SELECT MIN(txn_date) AS lo, MAX(txn_date) AS hi
+             FROM transactions WHERE user_id = ? AND statement_id IN (${chunk.map(() => "?").join(",")}) AND kind = 'bank_line' AND txn_date IS NOT NULL`,
+        )
+          .bind(...chunk)
+          .first<{ lo: string | null; hi: string | null }>();
+        if (r?.lo && (!range.lo || r.lo < range.lo)) range.lo = r.lo;
+        if (r?.hi && (!range.hi || r.hi > range.hi)) range.hi = r.hi;
+      }
+    } catch (e) {
+      console.error(`auto accountant pass skipped: ${(e as Error).name}`);
+      return;
     }
     if (!range.lo || !range.hi) return;
-    const fyStart = (d: string) => (Number(d.slice(5, 7)) >= 7 ? Number(d.slice(0, 4)) : Number(d.slice(0, 4)) - 1);
+    const fyStart = (d: string) => fyStartYearForDate(AU_DESCRIPTOR, d.slice(0, 10));
     // Clamp the FY window so a single mis-parsed date (e.g. an OCR'd 01/01/9999) can't blow the loop into
     // thousands of full-tenant passes and hang the DO: end no later than NEXT FY, span at most 8 FYs.
-    const now = new Date();
-    const curFy = now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear() - 1; // getMonth: Jul = 6 = FY start
+    const curFy = currentFyStartYearFor(AU_DESCRIPTOR);
     const hiY = Math.min(fyStart(range.hi), curFy + 1);
     const loY = Math.max(fyStart(range.lo), hiY - 7);
     for (let y = loY; y <= hiY; y++) {
@@ -773,7 +779,7 @@ export class TaxAgent extends Agent<Env> {
     )
       .bind(accountId)
       .all<{ raw_description: string | null; merchant: string | null; txn_date: string; direction: string | null; amount_cents: number | null; amount_aud_cents: number | null }>();
-    const fyStart = (d: string) => (Number(d.slice(5, 7)) >= 7 ? Number(d.slice(0, 4)) : Number(d.slice(0, 4)) - 1);
+    const fyStart = (d: string) => fyStartYearForDate(AU_DESCRIPTOR, d.slice(0, 10));
     const byFy = new Map<number, number>();
     for (const r of res.results ?? []) {
       // Only interest CHARGED (a debit on the loan) — never an interest credit/reversal/adjustment,
@@ -6744,7 +6750,7 @@ export class TaxAgent extends Agent<Env> {
     const money = (c: number) => `$${(c / 100).toFixed(2)}`;
     // Current AU financial year (Jul–Jun) bounds for the FY-scoped nudges.
     const now = new Date();
-    const fyStart = now.getUTCMonth() >= 6 ? now.getUTCFullYear() : now.getUTCFullYear() - 1;
+    const fyStart = currentFyStartYearFor(AU_DESCRIPTOR, now);
     const fyStartDate = `${fyStart}-07-01`;
     const fyEndDate = `${fyStart + 1}-06-30`;
 
@@ -6879,7 +6885,7 @@ export class TaxAgent extends Agent<Env> {
 
     // (3) Opportunities — FACTUAL only. Current AU FY (Jul–Jun).
     const now = new Date();
-    const fyStart = now.getUTCMonth() >= 6 ? now.getUTCFullYear() : now.getUTCFullYear() - 1;
+    const fyStart = currentFyStartYearFor(AU_DESCRIPTOR, now);
     const fyLbl = String(fyStart);
     const runRate = await spendRunRate(this.env, userId, fyStart);
     const oppUpserts = [];

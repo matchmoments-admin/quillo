@@ -16,7 +16,7 @@ import { composePosition, type PositionSummands } from "./position";
 import { loadSituations, situationFields, type ReportContext } from "./situations";
 import { resolveJurisdictionForUser, currentFyStartYearFor, fyStartYearForDate, baseCurrencyOf, AU_DESCRIPTOR, type JurisdictionDescriptor } from "./jurisdiction";
 import { tenantDb } from "./tenant-db";
-import { countable, countableIncome, claimExpr, useStatusDeniedExpr, propertyUndeterminedExpr, propertyUndeterminedGatedExpr, notAttributedExpr, excludeSplitInterestExpr } from "./ledger-filter";
+import { audAmount, countable, countableIncome, claimExpr, useStatusDeniedExpr, propertyUndeterminedExpr, propertyUndeterminedGatedExpr, notAttributedExpr, excludeSplitInterestExpr } from "./ledger-filter";
 // The row-filter fragments moved to ledger-filter.ts; re-exported so existing imports keep working.
 export { claimExpr, useStatusDeniedExpr, propertyUndeterminedExpr, propertyUndeterminedGatedExpr, notAttributedExpr, excludeSplitInterestExpr } from "./ledger-filter";
 
@@ -372,8 +372,8 @@ export async function refundNetting(
   // deduction (personal/non-deductible), is POSITION-NEUTRAL — a flatmate reimbursement or a personal
   // return must not reduce unrelated work/property deductions. Reuses deductionGroupForRow (same
   // use_status/property gates, alias 'e') so "deductible" means EXACTLY what the headline counts.
-  const refundRows = await env.DB.prepare(
-    `SELECT COALESCE(r.amount_aud_cents, r.amount_cents) AS refund_cents,
+  const refundRows = await tenantDb(env, userId).prepare(
+    `SELECT ${audAmount("r.")} AS refund_cents,
             r.refund_for_txn_id AS matched_id,
             e.bucket AS e_bucket, COALESCE(e.deductibility,'undetermined') AS e_deductibility,
             COALESCE(e.reimbursed,0) AS e_reimbursed,
@@ -385,7 +385,7 @@ export async function refundNetting(
       WHERE r.user_id = ? AND r.txn_date >= ? AND r.txn_date <= ? AND r.bucket = 'refund'
         AND ${countableIncome("r.")}`,
   )
-    .bind(userId, start, end)
+    .bind(start, end)
     .all<{ refund_cents: number; matched_id: string | null; e_bucket: string | null; e_deductibility: string; e_reimbursed: number; e_use_status_denied: number; e_property_undetermined: number; e_cents: number | null }>();
   // Cap netting PER matched expense at the amount that expense actually contributed to deductions
   // (e_cents is the claim-aware amount — apportioned via claimExpr — so a
@@ -445,7 +445,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   // AUD totals (fall back to original when already AUD / pre-migration). Exclude duplicates.
   // Grouped by (bucket, ato_label, deductibility) so the deductibility-aware position can filter per
   // row; the legacy `by_bucket` shape is rebuilt by collapsing the deductibility dimension below.
-  const byBucketQ = env.DB.prepare(
+  const byBucketQ = tenantDb(env, userId).prepare(
     `SELECT bucket, ato_label, COALESCE(deductibility,'undetermined') AS deductibility,
             COALESCE(reimbursed,0) AS reimbursed, ${useStatusDenied("transactions.property_id")} AS use_status_denied,
             ${propUndetermined("bucket", "transactions.property_id")} AS property_undetermined,
@@ -456,7 +456,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
       WHERE user_id = ? AND txn_date >= ? AND txn_date <= ? AND bucket IS NOT NULL AND ${COUNTABLE}${notAttributed("transactions")}${excludeSplitInterest("")}
       GROUP BY bucket, ato_label, deductibility, reimbursed, use_status_denied, property_undetermined ORDER BY bucket, total_cents DESC`,
   )
-    .bind(userId, start, end, ...supersededLoanIds);
+    .bind(start, end, ...supersededLoanIds);
 
   // Income captured from bank credits this FY, grouped by income bucket. Shown as its own
   // section — NOT folded into total_income_cents (it would double-count a salary that also
@@ -464,18 +464,18 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   // credits the user has confirmed duplicate a documented income row (matched_income_id set) are
   // excluded here so the pair is counted once (via the income table).
   const dedupeClause = featureOn(env, "income_dedupe") ? " AND matched_income_id IS NULL" : "";
-  const incomeByBucketQ = env.DB.prepare(
+  const incomeByBucketQ = tenantDb(env, userId).prepare(
     `SELECT bucket, ato_label, COUNT(*) AS n,
-            COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS total_cents,
+            COALESCE(SUM(${audAmount()}),0) AS total_cents,
             COALESCE(SUM(gst_cents),0) AS gst_cents
        FROM transactions
       WHERE user_id = ? AND txn_date >= ? AND txn_date <= ?
         AND bucket IN ('income_business','income_property','income_personal') AND ${COUNTABLE_INCOME}${dedupeClause}
       GROUP BY bucket, ato_label ORDER BY bucket, total_cents DESC`,
   )
-    .bind(userId, start, end);
+    .bind(start, end);
 
-  const byPropertyRawQ = env.DB.prepare(
+  const byPropertyRawQ = tenantDb(env, userId).prepare(
     `SELECT t.property_id, p.label, COALESCE(t.deductibility,'undetermined') AS deductibility,
             COALESCE(t.reimbursed,0) AS reimbursed, ${useStatusDenied("t.property_id")} AS use_status_denied,
             ${propUndetermined("t.bucket", "t.property_id")} AS property_undetermined,
@@ -485,25 +485,25 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
       WHERE t.user_id = ? AND t.txn_date >= ? AND t.txn_date <= ? AND t.property_id IS NOT NULL AND ${countable("t.")}${notAttributed("t")}${excludeSplitInterest("t.")}
       GROUP BY t.property_id, deductibility, reimbursed, use_status_denied, property_undetermined`,
   )
-    .bind(userId, start, end, ...supersededLoanIds);
+    .bind(start, end, ...supersededLoanIds);
 
   // Rental-bucketed spend with NO property: it counts at the headline (byBucket has no property filter)
   // but is absent from every per-property schedule (byPropertyRaw filters property_id IS NOT NULL), so a
   // property's negative-gearing position is silently short. Surfaced as a readiness 'review' nudge —
   // mirrors company_unattributed. Same filter set as byBucket so the count is exactly the headline rows.
-  const propertyUnattributedQ = env.DB.prepare(
+  const propertyUnattributedQ = tenantDb(env, userId).prepare(
     `SELECT COUNT(*) AS n, COALESCE(SUM(${amtExpr}),0) AS total_cents
        FROM transactions
       WHERE user_id = ? AND txn_date >= ? AND txn_date <= ?
         AND bucket IN ('property_rented','property_vacant') AND property_id IS NULL
         AND ${COUNTABLE}${notAttributed("transactions")}${excludeSplitInterest("")}`,
   )
-    .bind(userId, start, end, ...supersededLoanIds);
+    .bind(start, end, ...supersededLoanIds);
 
   // Receipts with no (or unparseable) date can't be assigned to any FY — surface them
   // explicitly instead of letting the date filter silently drop them from every report.
   const undatedQ = tenantDb(env, userId).prepare(
-    `SELECT COUNT(*) AS n, COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS total_cents
+    `SELECT COUNT(*) AS n, COALESCE(SUM(${audAmount()}),0) AS total_cents
        FROM transactions
       WHERE user_id = ? AND ${COUNTABLE}
         AND (txn_date IS NULL OR txn_date NOT GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]')`,
@@ -519,7 +519,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   ];
   const quarterQs = quarters.map((q) =>
     tenantDb(env, userId).prepare(
-      `SELECT COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS total_cents,
+      `SELECT COALESCE(SUM(${audAmount()}),0) AS total_cents,
               COALESCE(SUM(gst_cents),0) AS gst_cents
          FROM transactions WHERE user_id = ? AND bucket = 'company' AND ${COUNTABLE}
            AND COALESCE(reimbursed,0) = 0
@@ -535,7 +535,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
 
   // The undated receipts themselves (so they can be dated, not just counted).
   const undatedDetailQ = tenantDb(env, userId).prepare(
-    `SELECT merchant, COALESCE(amount_aud_cents, amount_cents) AS total_cents FROM transactions
+    `SELECT merchant, ${audAmount()} AS total_cents FROM transactions
       WHERE user_id = ? AND ${COUNTABLE}
         AND (txn_date IS NULL OR txn_date NOT GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]')
       ORDER BY created_at LIMIT 50`,
@@ -544,7 +544,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
 
   // The FY's independent ledger reads above run as ONE D1 batch: one round trip instead of eleven, over
   // one consistent snapshot. SQL text and binds are unchanged; `.first()` reads become `results[0] ?? null`.
-  const reads = await env.DB.batch<unknown>([byBucketQ, incomeByBucketQ, byPropertyRawQ, propertyUnattributedQ, undatedQ, companyEntityQ, undatedDetailQ, ...quarterQs]);
+  const reads = await tenantDb(env, userId).batch<unknown>([byBucketQ, incomeByBucketQ, byPropertyRawQ, propertyUnattributedQ, undatedQ, companyEntityQ, undatedDetailQ, ...quarterQs]);
   const firstOf = <T,>(i: number): T | null => ((reads[i]?.results ?? []) as T[])[0] ?? null;
   const byBucket = reads[0] as D1Result<ReportRow>;
   const incomeByBucket = reads[1] as D1Result<ReportRow>;
@@ -908,7 +908,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   // Resolved-deductible: only spend a year-end review has CONFIRMED deductible (deductibility set
   // to a resolved state, with the apportioned amount when present). ~$0 until a review runs — by
   // design: mid-year we capture, we don't claim.
-  const resolved = await env.DB.prepare(
+  const resolved = await tenantDb(env, userId).prepare(
     `SELECT COALESCE(SUM(COALESCE(deductible_amount_cents, amount_aud_cents, amount_cents)),0) AS total
        FROM transactions
       WHERE user_id = ? AND txn_date >= ? AND txn_date <= ? AND ${COUNTABLE}
@@ -920,7 +920,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
         -- row replaced by an evidenced v2 figure must NOT be summed here too, or resolved double-counts it.
         AND ${useStatusDenied("transactions.property_id")} = 0${notAttributed("transactions")}${excludeSplitInterest("")}`,
   )
-    .bind(userId, start, end, ...supersededLoanIds)
+    .bind(start, end, ...supersededLoanIds)
     .first<{ total: number }>();
   // Attributions are an explicit user decision (who claims what), so the attributed personal deductions
   // (individual + rental-property) count as resolved-deductible — keeping this figure in step with the

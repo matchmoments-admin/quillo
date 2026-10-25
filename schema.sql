@@ -1495,5 +1495,6 @@ CREATE TABLE IF NOT EXISTS cron_sweeps (
   tally_json   TEXT,
   started_at   TEXT,
   lease_holder TEXT,
-  lease_until  TEXT
+  lease_until  TEXT,
+  attempts     INTEGER NOT NULL DEFAULT 0  -- 0092: lease takeovers since the last checkpoint
 );

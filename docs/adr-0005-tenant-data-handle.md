@@ -29,7 +29,11 @@ sites.
    - a `user_id = ?` doesn't restrict the statement. A tenant placeholder must sit in a WHERE / AND / ON
      conjunction or in an INSERT value slot (`VALUES` or `SELECT`), or take the one shared-or-tenant form
      `user_id IS NULL OR user_id = ?`. So `SET user_id = ?`, a bare `OR user_id = ?`, a select-list
-     comparison and any predicate inside `NOT ( … )` all throw;
+     comparison and any predicate inside `NOT ( … )` all throw. So does a predicate with any other OR in
+     its own WHERE / ON clause at the same paren level (`WHERE user_id = ? OR id = ?`; AND binds tighter,
+     so `… OR k = 'x' AND user_id = ?` too), and a statement whose only tenant predicates sit inside
+     filter or scalar subqueries while it has a table of its own (a derived table or CTE body counts as
+     the statement's rows);
    - the argument count is wrong.
 
    Failing loudly is the safe default for tenant isolation. check-units also plans every `tenantDb` call
@@ -62,8 +66,10 @@ They move by hand, a file at a time.
 
 ## Consequences
 
-- An unscoped tenant statement can no longer be written through the handle. One case still passes: a tenant
-  predicate that only scopes a subquery. The guard is a strong default, not a proof.
+- An unscoped tenant statement can no longer be written through the handle. The guard is a strong default,
+  not a proof: it reads the SQL's shape, not its meaning.
+- `platformDb(` calls count in the raw-D1 ratchet, so a new cross-tenant use shows up as a baseline bump in
+  the PR diff.
 - Sharding means changing `databaseFor`, plus the reviewed `platformDb` callers, which need a fan-out
   query or a roll-up database.
 - The placeholder scan runs once per distinct SQL string (cached), which is negligible next to a D1 round

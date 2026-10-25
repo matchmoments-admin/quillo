@@ -9104,5 +9104,21 @@ console.log("fy module (F)");
   check(`fy: no open-coded FY label outside src/lib/fy.ts${openCoded.length ? ` (${openCoded.join(", ")})` : ""}`, openCoded.length === 0);
 }
 
+// ── Scale review D: one ledger filter ────────────────────────────────────────────────────────────
+import * as LF from "../src/lib/ledger-filter";
+
+console.log("ledger filter (D)");
+{
+  const RX = /\b(status|kind|matched_txn_id|direction|currency|amount_aud_cents)\b/g;
+  check("ledger-filter: countable('t.') is byte-identical to the old regex alias rewrite", LF.countable("t.") === LF.COUNTABLE.replace(RX, "t.$1"));
+  check("ledger-filter: countableIncome('r.') is byte-identical to the old regex alias rewrite", LF.countableIncome("r.") === LF.COUNTABLE_INCOME.replace(RX, "r.$1"));
+  check("ledger-filter: the unprefixed constants are unchanged", LF.COUNTABLE === "status NOT IN ('duplicate','ignored') AND (kind = 'bank_line' OR (kind = 'receipt' AND matched_txn_id IS NULL)) AND COALESCE(direction,'debit') = 'debit' AND NOT (COALESCE(currency,'AUD') <> 'AUD' AND amount_aud_cents IS NULL)");
+  check("ledger-filter: no fragment carries a placeholder (the tenant handle relies on it)", ![LF.countable("t."), LF.countableIncome(), LF.claimExpr("t."), LF.useStatusDeniedExpr("x"), LF.propertyUndeterminedExpr("b", "x"), LF.notAttributedExpr("t", true)].some((f) => f.includes("?")));
+  const rewrites: string[] = [];
+  const walkD = (d: string) => { for (const f of fs.readdirSync(d, { withFileTypes: true })) { const p = path.join(d, f.name); if (f.isDirectory()) walkD(p); else if (p.endsWith(".ts") && /\.replace\(\/\\b\(status\|kind/.test(fs.readFileSync(p, "utf8"))) rewrites.push(path.relative(process.cwd(), p)); } };
+  walkD(path.join(process.cwd(), "src"));
+  check(`ledger-filter: no regex alias rewrite of the filter left in src${rewrites.length ? ` (${rewrites.join(", ")})` : ""}`, rewrites.length === 0);
+}
+
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);
 process.exit(fail === 0 ? 0 : 1);

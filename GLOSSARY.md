@@ -13,6 +13,12 @@ Domain and architecture terms for Quillo. One line each. Link the ADR or module 
   rows live in. Today that is always `env.DB`.
 - **Raw-D1 ratchet**: the check-units golden that fails when any file gains a raw `DB.prepare(`. The baseline is
   `scripts/raw-db-baseline.json`.
+- **Table manifest**: `src/lib/table-manifest.ts`, one entry per schema table recording its tenant key, whether it's
+  purged and exported, its retention class, its secret columns, and why it's dark. `PURGE_TABLES` is derived from it.
+- **Retention class**: `ledger` (tax records: flagged after the window, never auto-deleted), `keep` (audit, billing,
+  compliance) or `{ log: days }` (operational logs the daily prune deletes; flag `log_retention`).
+- **Dark table**: a table with no live writer or no live reader. The manifest must say why, and check-units derives
+  the set from `src/` so the label can't drift.
 - **Weekly sweep**: the per-tenant maintenance pass (proactive scan, roll-forward, retention flagging, consent
   lifecycle). The Monday cron starts it and the 10-minute tick continues it until done
   (`src/lib/weekly-sweep.ts`).

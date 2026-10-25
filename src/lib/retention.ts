@@ -7,118 +7,20 @@ import { resolveRulePack } from "./report";
 import { fyStartYearForDate, resolveJurisdictionForUser, type JurisdictionDescriptor } from "./jurisdiction";
 import { lodgementTiming, retentionLodgedOn, type FySignoffState, type LodgementTiming } from "./lodging-year";
 import { platformDb, tenantDb } from "./tenant-db";
+import { PURGE_TABLES, secretColumns } from "./table-manifest";
 
 // APP 11.2 / APP 12 / APP 13 support: export a tenant's data, purge it across every store, and a
 // weekly FLAG sweep for records past the retention window (never auto-deletes — surfaces a nudge).
 
-// Every table carrying user_id EXCEPT audit_log — the hash-chained log is intentionally kept as the
-// deletion breadcrumb (APP allows a minimal record of the erasure). This list is asserted complete
-// against schema.sql by a unit test, so a new tenant table can't silently escape the purge.
-export const PURGE_TABLES = [
-  "tenants",
-  "tenant_keys",
-  "profiles",
-  "transactions",
-  "accounts",
-  "statements",
-  "capital_imports",       // 0074: staged capital CSV imports (C6) — tenant rows, must purge
-  "corrections",
-  "ai_edits",                // 0057: AI-driven/manual entity-write undo log
-  "traces",
-  "eval_cases",
-  "notifications",
-  "qbo_connections",
-  "persons",
-  "property_owners",
-  "properties",
-  "entities",
-  "user_rules",
-  "llm_usage",
-  "batch_jobs",
-  "income",
-  "documents",
-  "assets",
-  "depreciation_schedule",
-  "fy_checklist",
-  "claim_suggestions",
-  "claimability_rules", // only per-tenant rows: DELETE WHERE user_id=? leaves global (NULL) pack overrides intact
-  "clarify_questions",
-  "claim_links",
-  "accountant_runs",
-  "work_use_inputs",
-  "loans_properties",
-  "fy_signoff",
-  "fy_carryovers",           // 0067 (noa_capture) — NOA-derived carry-over facts
-  "capital_loss_carryins",
-  "depreciation_opening_balances",
-  "entity_roles",            // 0032
-  "income_activities",       // 0033
-  "transaction_attributions",// 0034
-  "company_tax_positions",   // 0035
-  // blackhole_costs + shareholder_loans dropped in 0052 (dark tables — no live read path)
-  "rd_claims",               // 0035
-  "cgt_assets",              // 0037 (#138)
-  "cgt_events",              // 0037 (#138)
-  "ess_grants",              // 0038 (#141)
-  "bas_periods",             // 0039 (#137)
-  "payg_instalments",        // 0039 (#137)
-  "vehicle_logbooks",        // 0040 (#142)
-  "trading_stock",           // 0068 (audit wave 4)
-  "car_inputs",              // 0061 (#245)
-  "wfh_diary_pattern",       // 0088 (#787) — typical work-from-home week
-  "wfh_diary_weeks",         // 0088 (#787) — confirmed weeks (the WFH hours record)
-  "trust_distributions",     // 0041 (#139)
-  "smsf_members",            // 0042 (#140)
-  "super_contributions",     // 0042 (#140)
-  "loan_interest_summaries", // 0045 (#157 S4)
-  "chat_sessions",           // 0046 (#173 C2)
-  "chat_messages",           // 0046 (#173 C2)
-  "recurring_bills",         // 0047 (advisory)
-  "opportunities",           // 0047 (advisory)
-  "partner_members",         // 0049 (advisory phase 2 scaffold) — staff↔org link
-  "referrals",               // 0049 — consumer referrals (user_id = the consumer)
-  "referral_consents",       // 0049 — Tier-2 consent (created now, used in Phase 3)
-  "phi_policy",              // 0062 (PHI extras tracker) — policy + reset basis
-  "phi_limit",              // 0062 — per-category annual extras limit
-  "phi_benefit_usage",      // 0062 — benefit recorded against a limit
-  "phi_statement",          // 0062 — PHI annual tax statement (rebate/MLS inputs)
-  "credit_ledger",          // 0065 — usage-billing grants + Stripe top-ups
-  // 0075 — bank feeds. For access_type='cdr' rows these are CDR data, so purge is a Privacy
-  // Safeguard 12 obligation with a regulator attached, not just the APP-11.2 house rule.
-  //
-  // Deleting these rows does not by itself revoke anything at the aggregator, so purgeTenant first
-  // deletes the upstream consumer (deleteBasiqUser, #576) and ABORTS the purge if that fails — the
-  // consumer id lives only in `profiles`, so wiping D1 first would orphan CDR data at Basiq forever.
-  //
-  // cdr_audit_log (0085) is deliberately NOT here, like audit_log: the record that a consumer's CDR
-  // data was deleted must outlive the data, and it carries no CDR content itself.
-  "bank_connections",
-  "bank_connection_accounts",
-  "bank_sync_runs",
-  "reconcile_dismissals",    // 0082 (A8, #574) — receipt ↔ bank-line proposals the user rejected
-  // 0078 (situation_profile, first-timer A1): dated situation periods per person (residency, jobs,
-  // study loan, private hospital cover…) — personal data, so purged and exported with the tenant.
-  "situation_periods",
-  // 0079 (wages_payer, first-timer A3 #577): "We noticed…" credit-triage signals and the user's decision.
-  "noticed_signals",
-  "grow_layers",             // 0083 (ft_journey, A11b #592) — the user's Grow layer on/off choices
-  // 0081 (bank_minimisation, first-timer A5 #581): the per-account totals irrelevant debits shrink into, and
-  // the fingerprint tombstones that stop re-imports reviving them — tenant data, purged + exported.
-  "bank_line_rollups",
-  "bank_line_tombstones",
-] as const;
-
-// Columns that must NEVER leave the system in an APP-12 export, even though the row belongs to the
-// tenant: the HMAC ingest secret and the live QuickBooks OAuth tokens. Everything else in those
-// tables (key_id, label, realm_id, expiries…) is fine to return.
-const SECRET_COLUMNS: Record<string, readonly string[]> = {
-  tenant_keys: ["secret"],
-  qbo_connections: ["access_token", "refresh_token"],
-};
+// Which tables purgeTenant erases (and exportTenant returns), in purge order, and which columns never leave in
+// an export, both come from the table manifest (src/lib/table-manifest.ts). check-units asserts it covers
+// every schema.sql table, so a new tenant table can't silently escape the purge. audit_log and cdr_audit_log
+// are deliberately kept as the deletion breadcrumbs.
+export { PURGE_TABLES } from "./table-manifest";
 
 /** Strip the secret columns (if any) from a table's rows before they leave the system in an export. */
 export function redactSecrets(table: string, rows: Record<string, unknown>[]): Record<string, unknown>[] {
-  const secrets = SECRET_COLUMNS[table];
+  const secrets = secretColumns(table);
   if (!secrets?.length) return rows;
   return rows.map((row) => {
     const copy = { ...row };

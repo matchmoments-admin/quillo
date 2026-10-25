@@ -9032,5 +9032,55 @@ console.log("raw D1 ratchet (tenantDb / platformDb, ADR-0005)");
   check(`ratchet: the baseline is current (lock in the gain: UPDATE_DB_BASELINE=1 npm run test:units)${fell.length ? `: ${fell.map(([f]) => f).join(", ")}` : ""}`, fell.length === 0);
 }
 
+// ── Scale review E: the table manifest + the log prune ───────────────────────────────────────────
+import { TABLES, LOG_TABLES, PURGE_TABLES as MANIFEST_PURGE } from "../src/lib/table-manifest";
+import { pruneLogs } from "../src/lib/log-retention";
+
+console.log("table manifest + log retention (E)");
+{
+  const schemaE = fs.readFileSync(path.join(process.cwd(), "schema.sql"), "utf8");
+  const schemaTables = [...schemaE.matchAll(/CREATE TABLE IF NOT EXISTS (\w+)\s*\(/g)].map((m) => m[1]!);
+  const manifest = Object.keys(TABLES);
+  check(`manifest: every schema.sql table has an entry${schemaTables.filter((t) => !manifest.includes(t)).join(", ") ? ` (missing: ${schemaTables.filter((t) => !manifest.includes(t)).join(", ")})` : ""}`, schemaTables.every((t) => manifest.includes(t)));
+  check("manifest: no entry for a table schema.sql doesn't create", manifest.every((t) => schemaTables.includes(t)));
+  check("manifest: PURGE_TABLES derived from it is exactly the pre-manifest list, same order (purge batch unchanged)",
+    MANIFEST_PURGE.join(",") === "tenants,tenant_keys,profiles,transactions,accounts,statements,capital_imports,corrections,ai_edits,traces,eval_cases,notifications,qbo_connections,persons,property_owners,properties,entities,user_rules,llm_usage,batch_jobs,income,documents,assets,depreciation_schedule,fy_checklist,claim_suggestions,claimability_rules,clarify_questions,claim_links,accountant_runs,work_use_inputs,loans_properties,fy_signoff,fy_carryovers,capital_loss_carryins,depreciation_opening_balances,entity_roles,income_activities,transaction_attributions,company_tax_positions,rd_claims,cgt_assets,cgt_events,ess_grants,bas_periods,payg_instalments,vehicle_logbooks,trading_stock,car_inputs,wfh_diary_pattern,wfh_diary_weeks,trust_distributions,smsf_members,super_contributions,loan_interest_summaries,chat_sessions,chat_messages,recurring_bills,opportunities,partner_members,referrals,referral_consents,phi_policy,phi_limit,phi_benefit_usage,phi_statement,credit_ledger,bank_connections,bank_connection_accounts,bank_sync_runs,reconcile_dismissals,situation_periods,noticed_signals,grow_layers,bank_line_rollups,bank_line_tombstones");
+  check("manifest: audit_log and cdr_audit_log are kept, never purged, never pruned",
+    !TABLES.audit_log.purge && !TABLES.cdr_audit_log.purge && TABLES.audit_log.retention === "keep" && TABLES.cdr_audit_log.retention === "keep");
+  check("manifest: billing tables are never pruned", TABLES.llm_usage.retention === "keep" && TABLES.credit_ledger.retention === "keep");
+  check("manifest: only operational logs are prunable", LOG_TABLES.map((l) => l.table).sort().join(",") === "ai_edits,chat_messages,eval_cases,notifications,traces");
+  // Dark labels stay honest: a table with no static writer or reader in src must say why, and a table that
+  // says it's dark must really lack one (dynamic-table writers are listed by name in DYNAMIC_WRITERS).
+  const srcE: string[] = [];
+  const walkE = (d: string) => { for (const f of fs.readdirSync(d, { withFileTypes: true })) { const p = path.join(d, f.name); if (f.isDirectory()) walkE(p); else if (p.endsWith(".ts") && !/table-manifest\.ts$|retention\.ts$/.test(p)) srcE.push(fs.readFileSync(p, "utf8")); } };
+  walkE(path.join(process.cwd(), "src"));
+  const allSrc = srcE.join("\n");
+  const dark = Object.entries(TABLES).filter(([t]) => {
+    const w = new RegExp(`(INSERT(?:\\s+OR\\s+\\w+)?\\s+INTO\\s+${t}\\b|UPDATE\\s+${t}\\b)`).test(allSrc);
+    const r = new RegExp(`(FROM|JOIN)\\s+${t}\\b`).test(allSrc);
+    return !w || !r;
+  }).map(([t]) => t).sort();
+  const labelled = Object.entries(TABLES).filter(([, s]) => "dark" in s).map(([t]) => t).sort();
+  check(`manifest: dark labels match the code (derived: ${dark.join(",")} | labelled: ${labelled.join(",")})`, dark.join(",") === labelled.join(","));
+
+  // The prune: flag OFF ⇒ nothing; ON ⇒ only rows past the age limit, only in log tables.
+  const pd = schemaDb();
+  const penv = (f: string) => ({ DB: pd, FEATURES: f }) as unknown as Env;
+  pd.sqlite.exec(`INSERT INTO traces (id, user_id, created_at) VALUES ('old1','u',datetime('now','-200 days')), ('old2','u',datetime('now','-91 days')), ('new1','u',datetime('now','-10 days'))`);
+  pd.sqlite.exec(`INSERT INTO notifications (id, user_id, body, created_at) VALUES ('n1','u','x',datetime('now','-30 days'))`);
+  pd.sqlite.exec(`INSERT INTO transactions (id, user_id, source, created_at) VALUES ('t-ancient','u','upload',datetime('now','-4000 days'))`);
+  const off = await pruneLogs(penv(""));
+  check("prune: flag OFF ⇒ returns flag_off and deletes nothing", off.status === "flag_off" && (pd.sqlite.prepare(`SELECT COUNT(*) AS n FROM traces`).get() as { n: number }).n === 3);
+  const on = await pruneLogs(penv("log_retention"), { batch: 1 });
+  const left = (pd.sqlite.prepare(`SELECT id FROM traces ORDER BY id`).all() as { id: string }[]).map((r) => r.id).join(",");
+  check("prune: ON deletes only traces older than 90 days (batched, batch=1 still drains)", on.status === "ok" && left === "new1" && on.deleted.traces === 2);
+  check("prune: young notifications stay; ledger rows are never touched however old",
+    (pd.sqlite.prepare(`SELECT COUNT(*) AS n FROM notifications`).get() as { n: number }).n === 1 && (pd.sqlite.prepare(`SELECT COUNT(*) AS n FROM transactions`).get() as { n: number }).n === 1);
+  const idxE = fs.readFileSync(path.join(process.cwd(), "src/index.ts"), "utf8");
+  check("prune runs on the daily tick AFTER the D1 export", idxE.indexOf("await runD1Backup(env)") > 0 && idxE.indexOf("pruneLogs(env)") > idxE.indexOf("await runD1Backup(env)"));
+  const agE = fs.readFileSync(path.join(process.cwd(), "src/agent.ts"), "utf8");
+  check("eval_cases write is skipped when eval_cases_retired is ON", /if \(!featureOn\(this\.env, "eval_cases_retired"\)\) await tenantDb\(this\.env, userId\)\.prepare\(\s*`INSERT INTO eval_cases/.test(agE));
+}
+
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);
 process.exit(fail === 0 ? 0 : 1);

@@ -7972,15 +7972,17 @@ export class TaxAgent extends Agent<Env> {
       .first<{ n: number }>();
     if (!count || count.n < 2) return;
 
-    const txn = await this.env.DB.prepare(
+    const txn = await tenantDb(this.env, userId).prepare(
       `SELECT merchant, amount_cents, gst_cents, bucket, ato_label, property_id, rule_pack_ver
-         FROM transactions JOIN profiles USING (user_id) WHERE transactions.id = ?`,
+         FROM transactions JOIN profiles USING (user_id) WHERE transactions.id = ? AND transactions.user_id = ?`,
     )
       .bind(txnId)
       .first<{ merchant: string; amount_cents: number; gst_cents: number | null; bucket: string; ato_label: string; property_id: string | null; rule_pack_ver: string }>();
     if (!txn) return;
 
-    await tenantDb(this.env, userId).prepare(
+    // eval_cases is never read (the promptfoo eval uses evals/), so with eval_cases_retired ON the row isn't
+    // written at all; the table stays in the manifest as dark until it is dropped.
+    if (!featureOn(this.env, "eval_cases_retired")) await tenantDb(this.env, userId).prepare(
       `INSERT INTO eval_cases (id, user_id, input_json, expected_bucket, expected_label, rule_pack_ver)
        VALUES (?, ?, ?, ?, ?, ?)`,
     )

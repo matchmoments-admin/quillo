@@ -24,6 +24,7 @@ import { runWeeklySlice, weeklySweepInProgress } from "./lib/weekly-sweep";
 import { withSecurityHeaders, summariseCspReport, logTag, publicErrorMessage, scrubApiErrorResponse } from "./lib/security-headers";
 import { ipRateLimit, userRateLimit, publishAccessSource } from "./lib/access-control";
 import { BACKUP_CRON, runD1Backup } from "./lib/backups";
+import { pruneLogs } from "./lib/log-retention";
 import { runBackfillOnce } from "./lib/backfill";
 import { staleJobs } from "./lib/categorise-continuation";
 
@@ -334,6 +335,9 @@ const handler = {
     if (evt.cron === BACKUP_CRON) {
       const r = await runD1Backup(env);
       if (r.status !== "flag_off") console.log(`d1 backup: ${r.status}`);
+      // Log retention runs AFTER the export, so the night's backup still holds what it deletes.
+      const pr = await pruneLogs(env).catch((e) => (console.error(`log prune failed: ${(e as Error).name}`), null));
+      if (pr?.status === "ok") console.log(`log prune: ${JSON.stringify(pr.deleted)}`);
       return;
     }
     if (evt.cron === "0 8 * * 1") {

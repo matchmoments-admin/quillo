@@ -630,10 +630,10 @@ export const api = {
   adminTenants: async () => {
     const all: AdminTenant[] = [];
     let before: string | null = null;
-    for (let page = 0; page < 20; page++) {
+    for (;;) {
       const r: { tenants: AdminTenant[]; next?: string | null } = await get(`/api/admin/tenants${before ? `?before=${encodeURIComponent(before)}` : ""}`);
       all.push(...r.tenants);
-      if (!r.next) break;
+      if (!r.next || r.next === before) break; // the keyset cursor only moves forward; a repeat would loop
       before = r.next;
     }
     return all;

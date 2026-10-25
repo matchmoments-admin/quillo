@@ -8934,7 +8934,11 @@ console.log("D1 bind cap + tenant predicates + scale indexes (A4/A5)");
   check("A5: the admin tenant list pages by keyset — 1,100 tenants in 3 pages, none lost or repeated",
     pages === 3 && got.length === 1100 && new Set(got).size === 1100);
   adb.sqlite.exec(`INSERT INTO daily_cost (scope, day, cents_e4) VALUES ('global','2026-10-01', 50000), ('global','2026-10-02', 25000), ('u1','2026-10-02', 99999)`);
-  check("A5: all-time spend reads the global daily_cost rows (no llm_usage scan)", (await platformOverview(aenv)).spend_all_cents === 7.5);
+  const today = new Date().toISOString().slice(0, 10);
+  adb.sqlite.prepare(`INSERT INTO daily_cost (scope, day, cents_e4) VALUES ('global', ?, 10000)`).run(today);
+  const ov = await platformOverview(aenv);
+  check("A5: today / month / all-time spend all read the global daily_cost rows (one source; no llm_usage scan)",
+    ov.spend_all_cents === 8.5 && ov.spend_today_cents === 1 && ov.spend_month_cents >= ov.spend_today_cents && ov.spend_all_cents >= ov.spend_month_cents);
 }
 
 // ── Scale review A3 (+ review fixes): the weekly sweep — D1 state, atomic lease, start, cumulative tally ──
@@ -9011,6 +9015,32 @@ console.log("weekly sweep continuation (A3)");
   check("A3+: a lost lease stops the slice after one chunk and leaves the cursor to the new holder",
     "swept" in stolen && stolen.swept === WEEKLY_CHUNK && !stolen.done
       && (sw.sqlite.prepare(`SELECT cursor FROM cron_sweeps WHERE name = 'weekly'`).get() as { cursor: string }).cursor === "");
+  check("A3+: a lost lease publishes no lifecycle record (the new holder's record counts)", (() => {
+    const r = JSON.parse(kv.get(SECURITY_KV.source("retention")) ?? "{}") as { metrics?: Record<string, number> };
+    return r.metrics?.tenants !== WEEKLY_CHUNK;
+  })());
+  // Tenant count an exact multiple of the slice: the last slice is empty and must still idle the sweep.
+  {
+    const ex = schemaDb();
+    const insE = ex.sqlite.prepare(`INSERT INTO profiles (user_id) VALUES (?)`);
+    for (let k = 0; k < WEEKLY_SLICE * 2; k++) insE.run(`e_${String(k).padStart(4, "0")}`);
+    const exEnv = { RULES, DB: ex, FEATURES: "" } as unknown as Env;
+    await startWeeklySweep(exEnv);
+    let n = 0;
+    while ((await weeklySweepInProgress(exEnv)) && n < 6) { await runWeeklySlice(exEnv, stub); n++; }
+    check("A3+: an exact multiple of WEEKLY_SLICE goes idle on the empty last slice (3 ticks, attempts 0)",
+      n === 3 && (ex.sqlite.prepare(`SELECT attempts FROM cron_sweeps WHERE name = 'weekly'`).get() as { attempts: number }).attempts === 0);
+  }
+  // A stale restart drops the lease: the old slice's next checkpoint fails instead of overwriting the new sweep.
+  reset();
+  await startWeeklySweep(env);
+  sw.sqlite.exec(`UPDATE cron_sweeps SET started_at = datetime('now','-7 days') WHERE name = 'weekly'`);
+  const racer = (_e: Env, uid: string) => ({ ...stub(_e, uid), runProactiveScan: async () => {
+    if (uid === "user_0000") await startWeeklySweep(env); // Monday restarts mid-chunk
+  } }) as unknown as TaxAgentRpc;
+  await runWeeklySlice(env, racer);
+  check("A3+: a stale restart mid-slice isn't overwritten by the old slice's checkpoint",
+    (sw.sqlite.prepare(`SELECT cursor FROM cron_sweeps WHERE name = 'weekly'`).get() as { cursor: string }).cursor === "");
   // A sweep stuck in progress for days no longer blocks Monday's start.
   sw.sqlite.exec(`UPDATE cron_sweeps SET cursor = 'user_0100', lease_holder = NULL, lease_until = NULL, started_at = datetime('now','-7 days') WHERE name = 'weekly'`);
   check("A3+: a sweep stuck for 7 days is restarted by Monday's start", (await startWeeklySweep(env))
@@ -9080,8 +9110,19 @@ console.log("tenantDb: the tenant is spliced in by the handle, never bound by th
   check("plan: … OR … AND user_id = ? is refused (AND binds tighter than OR)", refuses(`SELECT * FROM t WHERE id = ? OR status = 'x' AND user_id = ?`));
   check("plan: an OR in ANOTHER clause or a nested group doesn't refuse", tenantPlan(`SELECT CASE WHEN a = 1 OR b = 2 THEN 1 END FROM t WHERE user_id = ? AND (k = ? OR k = ?)`).tenant.join() === "0");
   check("plan: scoped only inside a subquery is refused (the outer table reads every tenant)", refuses(`SELECT * FROM transactions WHERE id IN (SELECT txn_id FROM traces WHERE user_id = ?)`));
-  check("plan: a derived table / CTE body scopes the statement", tenantPlan(`SELECT n FROM (SELECT COUNT(*) n FROM t WHERE user_id = ?)`).tenant.join() === "0"
-    && tenantPlan(`WITH c AS (SELECT id FROM t WHERE user_id = ?) SELECT id FROM c`).tenant.join() === "0");
+  check("plan: a derived table scopes the statement (FROM, JOIN, comma join, across a newline)",
+    tenantPlan(`SELECT n FROM (SELECT COUNT(*) n FROM t WHERE user_id = ?)`).tenant.join() === "0"
+      && tenantPlan(`SELECT * FROM a, (SELECT id FROM b WHERE user_id = ?) x WHERE x.id = a.id`).tenant.join() === "0"
+      && tenantPlan(`SELECT * FROM\n          (SELECT id FROM b WHERE user_id = ?) x`).tenant.join() === "0"
+      && tenantPlan(`SELECT * FROM a JOIN\n            (SELECT id FROM b WHERE user_id = ?) x ON x.id = a.id`).tenant.join() === "0");
+  check("plan: an OR in a parenthesised group around the predicate is refused",
+    refuses(`SELECT * FROM t WHERE a = 1 AND (user_id = ? OR id = ?)`) && refuses(`SELECT * FROM t WHERE (user_id = ? AND a = 1) OR id = ?`)
+      && refuses(`SELECT * FROM t WHERE (user_id IS NULL OR user_id = ? OR id = ?)`));
+  check("plan: an OR inside a CASE in the WHERE doesn't refuse", tenantPlan(`SELECT * FROM t WHERE user_id = ? AND CASE WHEN a = 1 OR b = 2 THEN 1 ELSE 0 END = 1`).tenant.join() === "0");
+  check("plan: a CTE or one scoped UNION branch doesn't excuse an unscoped table",
+    refuses(`WITH c AS (SELECT id FROM b WHERE user_id = ?) DELETE FROM t WHERE id IN (SELECT id FROM c)`)
+      && refuses(`SELECT id FROM t WHERE user_id = ? UNION ALL SELECT id FROM u WHERE id IN (SELECT id FROM v WHERE user_id = ?)`)
+      && tenantPlan(`SELECT id FROM t WHERE user_id = ? UNION ALL SELECT id FROM u WHERE user_id = ?`).tenant.join() === "0,1");
   check("plan: a FROM-less SELECT of scoped scalar subqueries is allowed", tenantPlan(`SELECT (SELECT SUM(x) FROM a WHERE user_id=? AND p=?) AS s`).tenant.join() === "0");
   check("plan: NOT user_id = ? is refused (it reads every other tenant)", (() => { try { tenantPlan(`SELECT 1 FROM t WHERE NOT user_id = ?`); return false; } catch (e) { return e instanceof TenantScopeError; } })());
 

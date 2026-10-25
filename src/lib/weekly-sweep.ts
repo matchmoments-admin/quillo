@@ -43,11 +43,14 @@ export async function runPooled<T>(items: T[], concurrency: number, fn: (item: T
 }
 
 /** The Monday tick: start a sweep unless one is already in progress (or stuck for STALE_DAYS). Independent of
- *  the lease, so a slice that is still running at 08:00 can't swallow the week's start. */
+ *  the lease, so a slice that is still running at 08:00 can't swallow the week's start. A restart also drops
+ *  the lease, so a stale slice still running fails its next checkpoint instead of writing last week's cursor
+ *  and tally over the new sweep. */
 export async function startWeeklySweep(env: Env): Promise<boolean> {
   const r = await platformDb(env).prepare(
     `INSERT INTO cron_sweeps (name, cursor, tally_json, started_at) VALUES (?, '', NULL, datetime('now'))
-     ON CONFLICT(name) DO UPDATE SET cursor = '', tally_json = NULL, started_at = datetime('now'), attempts = 0
+     ON CONFLICT(name) DO UPDATE SET cursor = '', tally_json = NULL, started_at = datetime('now'), attempts = 0,
+       lease_holder = NULL, lease_until = NULL
        WHERE cron_sweeps.cursor IS NULL OR cron_sweeps.started_at < datetime('now', ?)`,
   ).bind(WEEKLY_SWEEP, `-${STALE_DAYS} days`).run();
   return Number(r.meta?.changes ?? 0) === 1;
@@ -133,9 +136,17 @@ export async function runWeeklySlice(
       total = addTally(total, tally);
       if (!(await checkpoint(env, holder, cursorAfter(i), total))) { lost = true; break; }
     }
-    const done = !lost && i === batch.length && batch.length < SLICE;
+    // No chunk ran (the previous slice ended exactly on the last tenant, so this one is empty): still save,
+    // so the cursor goes NULL and the sweep goes idle rather than retaking the lease every tick.
+    if (!lost && i === first && !(await checkpoint(env, holder, cursorAfter(i), total))) lost = true;
+    // A lost lease means another tick owns the sweep now: its record is the one that counts, so publish nothing.
+    if (lost) {
+      console.warn(`weekly sweep: lease lost after ${i} tenants from cursor "${startCursor}"; the new holder continues`);
+      return { swept: i, done: false };
+    }
+    const done = i === batch.length && batch.length < SLICE;
     await publishLifecycleRecord(env, total, new Date(), { partial: !done });
-    console.log(`weekly sweep: swept ${i} tenants from cursor "${startCursor}"${done ? " (sweep complete)" : lost ? "; lease lost" : "; continuing next tick"}`);
+    console.log(`weekly sweep: swept ${i} tenants from cursor "${startCursor}"${done ? " (sweep complete)" : "; continuing next tick"}`);
     return { swept: i, done };
   } finally {
     await platformDb(env).prepare(`UPDATE cron_sweeps SET lease_holder = NULL, lease_until = NULL WHERE name = ? AND lease_holder = ?`)

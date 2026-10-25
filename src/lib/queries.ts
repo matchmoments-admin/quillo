@@ -1196,20 +1196,19 @@ export async function platformOverview(env: Env) {
   const now = new Date();
   const day = now.toISOString().slice(0, 10);
   const month = day.slice(0, 7);
-  // Half-open created_at ranges (not substr(created_at,…) = ?) so idx_usage_created answers them.
-  const nextDay = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1)).toISOString().slice(0, 10);
+  // Every spend figure reads the budget gate's per-day global counter (daily_cost, one row a day), so today,
+  // month and all-time come from ONE source and stay consistent — never a scan of every llm_usage row.
   const nextMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)).toISOString().slice(0, 7);
   const m = await platformDb(env).prepare(
     `SELECT
        (SELECT COUNT(*) FROM profiles) AS tenants,
        (SELECT COUNT(*) FROM profiles WHERE created_at >= datetime('now','-7 days')) AS signups_7d,
        (SELECT COUNT(*) FROM profiles WHERE created_at >= datetime('now','-30 days')) AS signups_30d,
-       (SELECT COALESCE(SUM(cost_e4),0)/10000.0 FROM llm_usage WHERE created_at >= ? AND created_at < ?) AS spend_today_cents,
-       (SELECT COALESCE(SUM(cost_e4),0)/10000.0 FROM llm_usage WHERE created_at >= ? AND created_at < ?) AS spend_month_cents,
-       -- All-time from the budget gate's per-day global counter (one row a day), not a scan of every usage row.
+       (SELECT COALESCE(SUM(cents_e4),0)/10000.0 FROM daily_cost WHERE scope = 'global' AND day = ?) AS spend_today_cents,
+       (SELECT COALESCE(SUM(cents_e4),0)/10000.0 FROM daily_cost WHERE scope = 'global' AND day >= ? AND day < ?) AS spend_month_cents,
        (SELECT COALESCE(SUM(cents_e4),0)/10000.0 FROM daily_cost WHERE scope = 'global') AS spend_all_cents`,
   )
-    .bind(day, nextDay, month, nextMonth)
+    .bind(day, `${month}-01`, `${nextMonth}-01`)
     .first<{ tenants: number; signups_7d: number; signups_30d: number; spend_today_cents: number; spend_month_cents: number; spend_all_cents: number }>();
   return {
     tenants: m?.tenants ?? 0,

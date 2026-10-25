@@ -20,7 +20,7 @@ import { spentTodayGlobalCents } from "./lib/usage";
 import { featureOn } from "./lib/features";
 import { handleBeforeYouStart } from "./lib/before-you-start";
 import { runScheduledSecurityChecks } from "./lib/security-dashboard";
-import { emptyTally, publishLifecycleRecord } from "./lib/retention-schedule";
+import { runWeeklySlice, weeklySweepInProgress } from "./lib/weekly-sweep";
 import { withSecurityHeaders, summariseCspReport, logTag, publicErrorMessage, scrubApiErrorResponse } from "./lib/security-headers";
 import { ipRateLimit, userRateLimit, publishAccessSource } from "./lib/access-control";
 import { BACKUP_CRON, runD1Backup } from "./lib/backups";
@@ -38,16 +38,6 @@ function stubFor(env: Env, userId: string): TaxAgentRpc {
   const id = env.TaxAgent.idFromName(userId);
   const stub = env.TaxAgent.get(id, { locationHint: LOCATION_HINT });
   return stub as unknown as TaxAgentRpc;
-}
-
-/** Run `fn` over `items` with at most `concurrency` in flight. fn must not throw (callers catch
- *  per-item) — a rejection would abort the worker and starve the rest of the slice. */
-async function runPooled<T>(items: T[], concurrency: number, fn: (item: T) => Promise<void>): Promise<void> {
-  let next = 0;
-  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
-    while (next < items.length) await fn(items[next++]!);
-  });
-  await Promise.all(workers);
 }
 
 const handler = {
@@ -347,85 +337,8 @@ const handler = {
       return;
     }
     if (evt.cron === "0 8 * * 1") {
-      // Current AU FY start year (Jul–Jun) for the depreciation roll-forward.
-      const now = new Date();
-      const fyStart = now.getUTCMonth() >= 6 ? now.getUTCFullYear() : now.getUTCFullYear() - 1;
-      // Page the weekly sweep across ticks with a KV cursor so a large tenant set can't blow the 300s
-      // wall-clock and silently drop the tail (#79). Each tick processes a bounded, ordered slice
-      // (round-robin by user_id) and advances the cursor; bounded concurrency keeps the slice well
-      // within budget. NB: rollForward/flagOldData/proactiveScan are maintenance, not time-critical —
-      // weekly-paged delivery is fine. When tenant count outgrows one weekly slice, move this onto a
-      // Queue consumer (the per-tenant unit of work is already isolated for that).
-      const SLICE = 400;
-      const CONCURRENCY = 6;
-      const cursorKey = "cron:weekly:cursor";
-      const cursor = (await env.RULES.get(cursorKey)) ?? "";
-      const users = await env.DB.prepare(`SELECT user_id FROM profiles WHERE user_id > ? ORDER BY user_id LIMIT ?`)
-        .bind(cursor, SLICE)
-        .all<{ user_id: string }>();
-      const batch = users.results ?? [];
-      // #639: what the data-lifecycle steps did this run — counts only — published for the admin dashboard.
-      const tally = emptyTally();
-      tally.tenants = batch.length;
-      await runPooled(batch, CONCURRENCY, async (u) => {
-        // Isolate per-tenant failures — one tenant's bad asset/data must not abort the sweep for all.
-        try {
-          const stub = stubFor(env, u.user_id);
-          await stub.runProactiveScan(u.user_id);
-          // Keep each tenant's depreciation_schedule materialised through the current FY (carry-forward).
-          await stub.rollForward(u.user_id, fyStart);
-          // Retention: flag (never delete) records past the tenant's window (5 years from the lodge date).
-          if ((await stub.flagOldData(u.user_id)).flagged) tally.flagged++;
-          // Savings & Opportunities: deterministic recurring-bill detection + factual opportunities
-          // (no LLM → no AI-spend interaction). Flag-gated so OFF ⇒ no read/write path, byte-identical.
-          if (featureOn(env, "advisory_layer")) await stub.detectAdvisory(u.user_id);
-          // PHI Extras Tracker: deterministic (no-LLM) setup nudge + reset reminder. Writes only to
-          // opportunities + notifications. Flag-gated ⇒ OFF means no read/write path, byte-identical.
-          if (featureOn(env, "phi_extras_tracker")) await stub.detectBenefitsReset(u.user_id);
-          // Bank-feed consents (#576, ADR-0003 §6.4): mark expired, remind before expiry, retry failed
-          // upstream revokes. Flag-gated ⇒ OFF means no read/write path, byte-identical.
-          if (featureOn(env, "bank_feed_cdr")) {
-            const lc = await stub.bankConsentLifecycle(u.user_id);
-            tally.expired_consents_deleted += lc.expiredDeleted ?? 0;
-            tally.expiry_lines_deleted += lc.expiredLinesDeleted ?? 0;
-          }
-        } catch (e) {
-          tally.failures++;
-          console.error(`weekly cron failed for ${u.user_id}: ${(e as Error).message}`);
-        }
-        // Data lifecycle (#594 / #639), each step isolated so one failing can't skip the others. Each is
-        // flag-gated here AND inside (OFF ⇒ no DO call, no read, no write — byte-identical).
-        // Retention schedule: irrelevant debits of a lodged FY (or due date + 60 days) shrink to per-account totals.
-        if (featureOn(env, "bank_minimisation")) {
-          try {
-            tally.shrunk += (await stubFor(env, u.user_id).minimiseBankLines(u.user_id))?.shrunk ?? 0;
-          } catch (e) {
-            tally.failures++;
-            console.error(`bank minimisation failed for ${u.user_id}: ${(e as Error).name}`);
-          }
-        }
-        // Inactive end users: 30 days with no live consent ⇒ delete the aggregator end user.
-        if (featureOn(env, "cdr_inactive_user_delete")) {
-          try {
-            const r = await stubFor(env, u.user_id).bankInactiveEndUser(u.user_id);
-            if (r.state === "deleted") tally.end_users_deleted++;
-            if (r.state === "failed") tally.failures++;
-          } catch (e) {
-            tally.failures++;
-            console.error(`inactive end-user sweep failed for ${u.user_id}: ${(e as Error).name}`);
-          }
-        }
-      });
-      await publishLifecycleRecord(env, tally, new Date(), { partial: batch.length === SLICE || cursor !== "" });
-      // A full slice means more tenants remain → resume after the last id next tick. A short slice
-      // means we reached the end → clear the cursor so the next run round-robins from the start.
-      if (batch.length === SLICE) {
-        await env.RULES.put(cursorKey, batch[batch.length - 1]!.user_id);
-        console.warn(`weekly cron: swept ${batch.length} tenants from cursor "${cursor}"; more remain — resuming next tick`);
-      } else {
-        if (cursor !== "") await env.RULES.delete(cursorKey);
-        console.log(`weekly cron: swept ${batch.length} tenants (slice complete)`);
-      }
+      // Starts a sweep; the */10 tick below continues it while the cursor is set (src/lib/weekly-sweep.ts).
+      await runWeeklySlice(env, stubFor);
       return;
     }
     // Security & compliance checks (#636): flag-gated — OFF ⇒ returns before touching KV or the network.
@@ -446,6 +359,11 @@ const handler = {
     // polling/applying just accounts for it and unblocks the user (so it runs unconditionally).
     const pending = await env.DB.prepare(`SELECT DISTINCT user_id FROM batch_jobs WHERE status = 'submitted'`).all<{ user_id: string }>();
     for (const u of pending.results) await stubFor(env, u.user_id).pollBatchJobs(u.user_id);
+    // Weekly sweep continuation: the Monday tick starts it; each tick runs the next slice until the cursor
+    // clears (one KV read a tick when idle). Isolated so a failing slice can't stop the backfills below.
+    if (await weeklySweepInProgress(env)) {
+      await runWeeklySlice(env, stubFor).catch((e) => console.error(`weekly sweep continuation failed: ${(e as Error).name}`));
+    }
     // import_continuation (F2): a live categorisation chain whose alarm went quiet gets its next hop
     // re-delivered (idempotent: a hop is due only if nothing committed it). Cheap: one indexed query.
     if (featureOn(env, "import_continuation")) {

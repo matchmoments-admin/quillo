@@ -8,6 +8,7 @@
 // stops counting separately and the bank line — the authoritative AUD — counts once. The receipt donates
 // its GST / bucket / ATO label to the line where the line lacks them.
 import type { Env } from "../env";
+import { tenantDb } from "./tenant-db";
 
 export interface ReceiptDonor {
   gst_cents: number | null;
@@ -88,11 +89,11 @@ export async function applyReceiptLink(
 ): Promise<LinkSnapshot | null> {
   let snap: LinkSnapshot | null = null;
   if (opts.snapshot) {
-    const line = await env.DB.prepare(`SELECT gst_cents, bucket, ato_label, status FROM transactions WHERE id = ? AND user_id = ?`)
-      .bind(lineId, userId)
+    const line = await tenantDb(env, userId).prepare(`SELECT gst_cents, bucket, ato_label, status FROM transactions WHERE id = ? AND user_id = ?`)
+      .bind(lineId)
       .first<{ gst_cents: number | null; bucket: string | null; ato_label: string | null; status: string | null }>();
-    const rec = await env.DB.prepare(`SELECT status FROM transactions WHERE id = ? AND user_id = ? AND kind = 'receipt'`)
-      .bind(receiptId, userId)
+    const rec = await tenantDb(env, userId).prepare(`SELECT status FROM transactions WHERE id = ? AND user_id = ? AND kind = 'receipt'`)
+      .bind(receiptId)
       .first<{ status: string | null }>();
     const filled: LinkSnapshot["filled"] = {};
     if (line && donor) {
@@ -103,22 +104,22 @@ export async function applyReceiptLink(
     snap = { line_id: lineId, auto: !!opts.auto, filled, line_status: line?.status ?? null, receipt_status: rec?.status ?? null };
   }
   if (snap) {
-    await env.DB.prepare(`UPDATE transactions SET matched_txn_id = ?, status = 'matched_receipt', link_snapshot = ? WHERE id = ? AND user_id = ? AND kind = 'receipt'`)
-      .bind(lineId, JSON.stringify(snap), receiptId, userId)
+    await tenantDb(env, userId).prepare(`UPDATE transactions SET matched_txn_id = ?, status = 'matched_receipt', link_snapshot = ? WHERE id = ? AND user_id = ? AND kind = 'receipt'`)
+      .bind(lineId, JSON.stringify(snap), receiptId)
       .run();
   } else {
-    await env.DB.prepare(`UPDATE transactions SET matched_txn_id = ?, status = 'matched_receipt' WHERE id = ? AND user_id = ? AND kind = 'receipt'`)
-      .bind(lineId, receiptId, userId)
+    await tenantDb(env, userId).prepare(`UPDATE transactions SET matched_txn_id = ?, status = 'matched_receipt' WHERE id = ? AND user_id = ? AND kind = 'receipt'`)
+      .bind(lineId, receiptId)
       .run();
   }
   // The line is authoritative AUD; take the receipt's GST/bucket where the line lacked them.
   if (donor) {
-    await env.DB.prepare(
+    await tenantDb(env, userId).prepare(
       `UPDATE transactions SET gst_cents = COALESCE(gst_cents, ?), bucket = COALESCE(bucket, ?),
               ato_label = COALESCE(ato_label, ?), status = CASE WHEN bucket IS NULL THEN 'extracted' ELSE status END
         WHERE id = ? AND user_id = ?`,
     )
-      .bind(donor.gst_cents, donor.bucket, donor.ato_label, lineId, userId)
+      .bind(donor.gst_cents, donor.bucket, donor.ato_label, lineId)
       .run();
   }
   return snap;
@@ -138,9 +139,9 @@ export async function applyReceiptLink(
  */
 export async function undoReceiptLink(env: Env, userId: string, receiptId: string): Promise<string | null> {
   if (!receiptId) return null;
-  const row = await env.DB.prepare(
+  const row = await tenantDb(env, userId).prepare(
     `SELECT matched_txn_id, link_snapshot FROM transactions WHERE id = ? AND user_id = ? AND kind = 'receipt' AND matched_txn_id IS NOT NULL`,
-  ).bind(receiptId, userId).first<{ matched_txn_id: string; link_snapshot: string | null }>();
+  ).bind(receiptId).first<{ matched_txn_id: string; link_snapshot: string | null }>();
   if (!row) return null;
   const lineId = row.matched_txn_id;
   const snap = parseLinkSnapshot(row.link_snapshot, lineId);
@@ -150,8 +151,8 @@ export async function undoReceiptLink(env: Env, userId: string, receiptId: strin
   // is never undone); the follow-on writes only land if the receipt is now unlinked.
   const unlinkedGuard = `EXISTS (SELECT 1 FROM transactions WHERE id = ? AND user_id = ? AND kind = 'receipt' AND matched_txn_id IS NULL)`;
   const stmts = [
-    env.DB.prepare(`UPDATE transactions SET matched_txn_id = NULL, status = ?, link_snapshot = NULL WHERE id = ? AND user_id = ? AND kind = 'receipt' AND matched_txn_id = ?`)
-      .bind(receiptStatus, receiptId, userId, lineId),
+    tenantDb(env, userId).prepare(`UPDATE transactions SET matched_txn_id = NULL, status = ?, link_snapshot = NULL WHERE id = ? AND user_id = ? AND kind = 'receipt' AND matched_txn_id = ?`)
+      .bind(receiptStatus, receiptId, lineId),
     env.DB.prepare(`INSERT OR IGNORE INTO reconcile_dismissals (user_id, receipt_id, line_id) SELECT ?, ?, ? WHERE ${unlinkedGuard}`)
       .bind(userId, receiptId, lineId, receiptId, userId),
   ];

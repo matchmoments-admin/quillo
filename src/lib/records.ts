@@ -27,6 +27,7 @@ import { profileForFy } from "./situation-profile";
 import { workUseRatesForFy } from "./work-use";
 import { AU_DESCRIPTOR, type JurisdictionDescriptor } from "./jurisdiction";
 import type { JourneyRecords } from "./journey";
+import { tenantDb } from "./tenant-db";
 
 // ── Pack config ──────────────────────────────────────────────────────────────────────────────────
 
@@ -259,19 +260,19 @@ export async function recordFacts(
     }
   }
   const [wu, carRow, logbooks, platformRows, payoutRows] = await Promise.all([
-    env.DB.prepare(`SELECT wfh_hours, car_work_km, wfh_generate_diary, wfh_has_record, wfh_weekdays FROM work_use_inputs WHERE user_id = ? AND fy = ?`)
-      .bind(userId, startYear)
+    tenantDb(env, userId).prepare(`SELECT wfh_hours, car_work_km, wfh_generate_diary, wfh_has_record, wfh_weekdays FROM work_use_inputs WHERE user_id = ? AND fy = ?`)
+      .bind(startYear)
       .first<{ wfh_hours: number | null; car_work_km: number | null; wfh_generate_diary: number | null; wfh_has_record: number | null; wfh_weekdays: string | null }>(),
-    env.DB.prepare(`SELECT work_km FROM car_inputs WHERE user_id = ? AND fy = ?`).bind(userId, startYear).first<{ work_km: number | null }>(),
-    env.DB.prepare(`SELECT COUNT(*) AS n FROM vehicle_logbooks WHERE user_id = ? AND fy = ?`).bind(userId, fy).first<{ n: number }>(),
-    env.DB.prepare(`SELECT COUNT(*) AS n FROM income WHERE user_id = ? AND fy = ? AND income_type = 'business' AND json_extract(detail_json, '$.platform_fees_cents') IS NOT NULL`)
-      .bind(userId, fy)
+    tenantDb(env, userId).prepare(`SELECT work_km FROM car_inputs WHERE user_id = ? AND fy = ?`).bind(startYear).first<{ work_km: number | null }>(),
+    tenantDb(env, userId).prepare(`SELECT COUNT(*) AS n FROM vehicle_logbooks WHERE user_id = ? AND fy = ?`).bind(fy).first<{ n: number }>(),
+    tenantDb(env, userId).prepare(`SELECT COUNT(*) AS n FROM income WHERE user_id = ? AND fy = ? AND income_type = 'business' AND json_extract(detail_json, '$.platform_fees_cents') IS NOT NULL`)
+      .bind(fy)
       .first<{ n: number }>(),
-    env.DB.prepare(
+    tenantDb(env, userId).prepare(
       `SELECT COUNT(*) AS n FROM income i WHERE i.user_id = ? AND i.fy = ? AND i.income_type = 'business'
           AND EXISTS (SELECT 1 FROM transactions t WHERE t.user_id = i.user_id AND t.matched_income_id = i.id AND t.direction = 'credit')`,
     )
-      .bind(userId, fy)
+      .bind(fy)
       .first<{ n: number }>(),
   ]);
   const payouts = Number(payoutRows?.n) || 0;
@@ -308,13 +309,13 @@ export interface PlatformEntry {
 
 /** Platform income rows the person entered through the Records prompt (business income carrying platform_fees_cents). */
 export async function platformEntries(env: Env, userId: string, startYear: number): Promise<PlatformEntry[]> {
-  const res = await env.DB.prepare(
+  const res = await tenantDb(env, userId).prepare(
     `SELECT id, json_extract(detail_json, '$.platform') AS label, gross_cents,
             json_extract(detail_json, '$.platform_fees_cents') AS fees_cents, txn_date
        FROM income WHERE user_id = ? AND fy = ? AND income_type = 'business' AND json_extract(detail_json, '$.platform_fees_cents') IS NOT NULL
       ORDER BY created_at, id`,
   )
-    .bind(userId, fyLabel(startYear))
+    .bind(fyLabel(startYear))
     .all<PlatformEntry>();
   return (res.results ?? []).map((r) => ({ ...r, gross_cents: Number(r.gross_cents) || 0, fees_cents: Number(r.fees_cents) || 0 }));
 }
@@ -391,6 +392,6 @@ export async function applyRecordException(
 ): Promise<string | null> {
   const err = exceptionWriteError(await recordsView(env, userId, startYear, pack, descriptor), txnId, kind);
   if (err) return err;
-  await env.DB.prepare(`UPDATE transactions SET record_exception = ? WHERE id = ? AND user_id = ?`).bind(kind, txnId, userId).run();
+  await tenantDb(env, userId).prepare(`UPDATE transactions SET record_exception = ? WHERE id = ? AND user_id = ?`).bind(kind, txnId).run();
   return null;
 }

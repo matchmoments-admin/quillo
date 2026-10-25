@@ -1,0 +1,33 @@
+COUNTABLE
+FX_CONVERTED
+COUNTABLE_INCOME
+SELECT_COLS
+CONN_COLS
+TXN_COLS
+CLARIFY_LEFTOVER_WHERE
+USER_MANAGED
+SHRINKABLE_WHERE
+NEEDS_REVIEW
+PROPOSAL_ROW_COLS
+RECONCILE_WINDOW_DAYS
+fxUnconvertedPredicate
+amtExpr
+amtExprT
+tFilter
+fyStartExpr
+rentFreeAsset
+depCols
+COUNTABLE.replace(/\b(status|kind|matched_txn_id|direction|currency|amount_aud_cents)\b/g, "t.$1")
+notAttributed("transactions")
+notAttributed("t")
+notAttributedExpr("transactions", useAttributions)
+useStatusDenied("transactions.property_id")
+useStatusDenied("t.property_id")
+propUndetermined("bucket", "transactions.property_id")
+propUndetermined("t.bucket", "t.property_id")
+useStatusDeniedExpr("property_id")
+useStatusDeniedExpr("transactions.property_id")
+propertyUndeterminedGatedExpr(this.env, "bucket", "property_id")
+propertyUndeterminedGatedExpr(env, "bucket", "transactions.property_id")
+cgtPersonalScopeExpr(env)
+deadStatusesSql(env)

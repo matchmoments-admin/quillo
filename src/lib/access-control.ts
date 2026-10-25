@@ -3,6 +3,7 @@ import type { AuthedUser } from "../auth/access";
 import { featureOn } from "./features";
 import { logTag } from "./security-headers";
 import { SECURITY_KV, repoLink, type SecuritySourceRecord } from "./security-dashboard";
+import { platformDb } from "./tenant-db";
 
 // ── Access control (#638, A5 of epic #633) ───────────────────────────────────────────────────────
 //
@@ -167,7 +168,7 @@ const REFRESH_MS = 24 * 60 * 60 * 1000;
 export async function publishAccessSource(env: Env, now = new Date()): Promise<"written" | "unchanged"> {
   let admins = 0;
   try {
-    const r = await env.DB.prepare(`SELECT COUNT(*) AS n FROM profiles WHERE roles LIKE '%"admin"%'`).first<{ n: number }>();
+    const r = await platformDb(env).prepare(`SELECT COUNT(*) AS n FROM profiles WHERE roles LIKE '%"admin"%'`).first<{ n: number }>();
     admins = Number(r?.n ?? 0);
   } catch { /* leave 0 */ }
   const rec = accessSourceRecord(env, admins, now.toISOString());

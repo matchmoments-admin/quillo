@@ -1,6 +1,7 @@
 import type { Env } from "../env";
 import { featureOn } from "./features";
 import { billingPolicy, billableE4 } from "./billing";
+import { platformDb, tenantDb } from "./tenant-db";
 
 // Inference cost accounting. Every Claude call (via the metered LLM seam in llm.ts) records
 // its real token usage + computed cost here, so spend is MEASURED, not estimated — and the
@@ -81,7 +82,7 @@ export const centsFromE4 = (units: number): number => units / MONEY_E4;
 function bumpDailyCost(env: Env, scope: string, day: string, cents: number) {
   // SQLite (D1) serialises writes, so `x = x + excluded.x` can't lose a concurrent increment — this is
   // what makes the GLOBAL tally (written by every tenant's DO) safe. cents_e4 is the exact integer tally.
-  return env.DB.prepare(
+  return platformDb(env).prepare(
     `INSERT INTO daily_cost (scope, day, cents, cents_e4) VALUES (?, ?, ?, ?)
      ON CONFLICT(scope, day) DO UPDATE SET cents = cents + excluded.cents, cents_e4 = cents_e4 + excluded.cents_e4, updated_at = datetime('now')`,
   ).bind(scope, day, cents, toE4(cents));
@@ -115,19 +116,10 @@ export function usageStatements(
   const stmts = [
     bumpDailyCost(env, userId, day, cents),
     bumpDailyCost(env, "global", day, cents),
-    env.DB.prepare(
+    tenantDb(env, userId).prepare(
       `INSERT INTO llm_usage (id, user_id, feature, model, input_tokens, output_tokens, cache_read_tokens, cost_cents, cost_e4)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).bind(
-      crypto.randomUUID(),
-      userId,
-      feature,
-      model,
-      usage.input_tokens ?? 0,
-      usage.output_tokens ?? 0,
-      usage.cache_read_input_tokens ?? 0,
-      cents,
-      toE4(cents),
+    ).bind(crypto.randomUUID(), feature, model, usage.input_tokens ?? 0, usage.output_tokens ?? 0, usage.cache_read_input_tokens ?? 0, cents, toE4(cents)
     ),
   ];
   // Usage-based billing (flag `billing`): debit the user's wallet for this call's cost + margin, in the
@@ -137,7 +129,7 @@ export function usageStatements(
     const policy = billingPolicy(env);
     const debit = billableE4(toE4(cents) * policy.fxRate, policy.markupPct);
     if (debit > 0) {
-      stmts.push(env.DB.prepare(`UPDATE profiles SET credit_balance_e4 = credit_balance_e4 - ? WHERE user_id = ?`).bind(debit, userId));
+      stmts.push(tenantDb(env, userId).prepare(`UPDATE profiles SET credit_balance_e4 = credit_balance_e4 - ? WHERE user_id = ?`).bind(debit));
     }
   }
   return { cents, stmts };
@@ -173,7 +165,7 @@ export async function spentTodayGlobalCents(env: Env): Promise<number> {
  *  bound on AI spend beyond the daily cap). Sums the exact integer daily tallies for scope='global'. */
 export async function spentThisMonthGlobalCents(env: Env): Promise<number> {
   const month = new Date().toISOString().slice(0, 7); // YYYY-MM
-  const row = await env.DB.prepare(
+  const row = await platformDb(env).prepare(
     `SELECT COALESCE(SUM(cents_e4), 0) AS s FROM daily_cost WHERE scope = 'global' AND day LIKE ?`,
   ).bind(`${month}-%`).first<{ s: number }>();
   return Number(row?.s ?? 0) / MONEY_E4;
@@ -182,7 +174,7 @@ export async function spentThisMonthGlobalCents(env: Env): Promise<number> {
 async function spentToday(env: Env, scope: string): Promise<number> {
   const day = new Date().toISOString().slice(0, 10);
   // Read the exact integer tally and divide to cents ONCE (no float accumulation drift).
-  const row = await env.DB.prepare(`SELECT cents_e4 FROM daily_cost WHERE scope = ? AND day = ?`)
+  const row = await platformDb(env).prepare(`SELECT cents_e4 FROM daily_cost WHERE scope = ? AND day = ?`)
     .bind(scope, day)
     .first<{ cents_e4: number }>();
   return Number(row?.cents_e4 ?? 0) / MONEY_E4;

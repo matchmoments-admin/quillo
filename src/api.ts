@@ -107,6 +107,7 @@ import { incomeStatementWait } from "./lib/income-statement-wait";
 import { holdingPosition } from "./lib/capital";
 import { groupKey } from "./lib/clarify";
 import { declaredTooLarge, fileTooLarge, tooLargeResponse, readFormCapped } from "./lib/upload-limits";
+import { platformDb, tenantDb } from "./lib/tenant-db";
 
 const json = (data: unknown, status = 200) =>
   new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json" } });
@@ -297,7 +298,7 @@ export async function handleApi(
   if (resource === "transactions" && id && sub === "flags" && m === "PATCH") {
     const body = (await req.json().catch(() => ({}))) as { reimbursed?: unknown };
     if (typeof body.reimbursed !== "boolean") return json({ error: "reimbursed must be a boolean" }, 400);
-    await env.DB.prepare(`UPDATE transactions SET reimbursed = ? WHERE id = ? AND user_id = ?`).bind(body.reimbursed ? 1 : 0, id, uid).run();
+    await tenantDb(env, uid).prepare(`UPDATE transactions SET reimbursed = ? WHERE id = ? AND user_id = ?`).bind(body.reimbursed ? 1 : 0, id).run();
     return json({ ok: true, reimbursed: body.reimbursed });
   }
 
@@ -360,8 +361,8 @@ export async function handleApi(
   if (resource === "notifications") {
     if (m === "GET") return json({ notifications: await listNotifications(env, uid) });
     if (m === "POST" && id && sub === "read") {
-      await env.DB.prepare(`UPDATE notifications SET read_at = datetime('now') WHERE id = ? AND user_id = ?`)
-        .bind(id, uid)
+      await tenantDb(env, uid).prepare(`UPDATE notifications SET read_at = datetime('now') WHERE id = ? AND user_id = ?`)
+        .bind(id)
         .run();
       return json({ ok: true });
     }
@@ -787,7 +788,7 @@ export async function handleApi(
       const body = (await req.json()) as { role?: string } & Record<string, unknown>;
       // Don't let an edit reassign the 'self' role (would orphan the anchor or create two selves).
       if (body.role !== undefined) {
-        const cur = await env.DB.prepare(`SELECT role FROM persons WHERE id = ? AND user_id = ?`).bind(id, uid).first<{ role: string }>();
+        const cur = await tenantDb(env, uid).prepare(`SELECT role FROM persons WHERE id = ? AND user_id = ?`).bind(id).first<{ role: string }>();
         if ((cur?.role === "self") !== (body.role === "self")) return json({ error: "the primary taxpayer role can't be reassigned" }, 409);
       }
       return routedEntityWrite(env, stub, uid, "person", "update", id, body, () => updatePerson(env, uid, id, body));
@@ -795,7 +796,7 @@ export async function handleApi(
     if (m === "DELETE" && id) {
       // The 'self' person anchors entities/properties/income (person_id FK) — never delete it,
       // even via a direct API call (the UI already hides the button).
-      const p = await env.DB.prepare(`SELECT role FROM persons WHERE id = ? AND user_id = ?`).bind(id, uid).first<{ role: string }>();
+      const p = await tenantDb(env, uid).prepare(`SELECT role FROM persons WHERE id = ? AND user_id = ?`).bind(id).first<{ role: string }>();
       if (p?.role === "self") return json({ error: "the primary taxpayer can't be deleted" }, 409);
       // A deleted person's situation periods are deliberately KEPT (hidden by listSituationPeriods) so an
       // ai_edit_feed undo of this delete restores them; the tenant purge removes them.
@@ -1103,15 +1104,15 @@ export async function handleApi(
     }
     // GET /api/capital-imports → the history, so a parsed-but-uncommitted upload is findable later.
     if (m === "GET" && !id) {
-      const rows = (await env.DB.prepare(
+      const rows = (await tenantDb(env, uid).prepare(
         `SELECT id, filename, status, row_count, imported_count, created_at, imported_at FROM capital_imports
           WHERE user_id = ? ORDER BY created_at DESC LIMIT 50`,
-      ).bind(uid).all()).results ?? [];
+      ).bind().all()).results ?? [];
       return json({ capital_imports: rows });
     }
     // DELETE /api/capital-imports/:id → discard a parsed import the user doesn't want to commit.
     if (m === "DELETE" && id) {
-      await env.DB.prepare(`UPDATE capital_imports SET status = 'discarded' WHERE id = ? AND user_id = ? AND status = 'parsed'`).bind(id, uid).run();
+      await tenantDb(env, uid).prepare(`UPDATE capital_imports SET status = 'discarded' WHERE id = ? AND user_id = ? AND status = 'parsed'`).bind(id).run();
       return json({ ok: true });
     }
     return json({ error: "not found" }, 404);
@@ -1219,8 +1220,8 @@ export async function handleApi(
     if (m === "DELETE" && id) {
       // Clear any credit linked to this income row first, or it would stay excluded from income
       // forever with no row left to unlink it (silent under-count).
-      await env.DB.prepare(`UPDATE transactions SET matched_income_id = NULL WHERE user_id = ? AND matched_income_id = ?`)
-        .bind(uid, id)
+      await tenantDb(env, uid).prepare(`UPDATE transactions SET matched_income_id = NULL WHERE user_id = ? AND matched_income_id = ?`)
+        .bind(id)
         .run();
       // Slice B: drop any AMMA capital-gain rows materialised from this distribution, or its gain would
       // orphan into the position with no income row left to remove it (silent over-count).
@@ -1259,9 +1260,9 @@ export async function handleApi(
       // drift. cgt_assets.status is dead (insert-time literal, never updated); `position.status` supersedes
       // it. One extra query for the whole list, grouped in JS — no N+1.
       if (featureOn(env, "capital_position") && assets.length) {
-        const evs = (await env.DB.prepare(
+        const evs = (await tenantDb(env, uid).prepare(
           `SELECT cgt_asset_id, units_disposed, cost_base_used_cents FROM cgt_events WHERE user_id = ?`,
-        ).bind(uid).all<{ cgt_asset_id: string; units_disposed: number | null; cost_base_used_cents: number | null }>()).results ?? [];
+        ).bind().all<{ cgt_asset_id: string; units_disposed: number | null; cost_base_used_cents: number | null }>()).results ?? [];
         const byAsset = new Map<string, { units_disposed: number | null; cost_base_used_cents: number | null }[]>();
         for (const e of evs) {
           const list = byAsset.get(e.cgt_asset_id) ?? [];
@@ -1312,52 +1313,52 @@ export async function handleApi(
 
   // ── ESS grants (#141) ─────────────────────────────────────────────────────
   if (resource === "ess-grants") {
-    if (m === "GET" && !id) return json({ ess_grants: (await env.DB.prepare(`SELECT id, employer_entity_id, scheme_type, grant_date, taxing_point_date, discount_cents, market_value_cents, ownership_gt_10pct FROM ess_grants WHERE user_id = ? ORDER BY COALESCE(taxing_point_date, grant_date) DESC`).bind(uid).all()).results ?? [] });
+    if (m === "GET" && !id) return json({ ess_grants: (await tenantDb(env, uid).prepare(`SELECT id, employer_entity_id, scheme_type, grant_date, taxing_point_date, discount_cents, market_value_cents, ownership_gt_10pct FROM ess_grants WHERE user_id = ? ORDER BY COALESCE(taxing_point_date, grant_date) DESC`).bind().all()).results ?? [] });
     if (m === "POST" && !id) return json({ id: await stub.recordEssGrant(uid, await req.json()) });
     if (m === "DELETE" && id) { await deleteRow(env, uid, "ess_grants", id); return json({ ok: true }); }
   }
 
   // ── Vehicle logbooks (#142) ───────────────────────────────────────────────
   if (resource === "vehicle-logbooks") {
-    if (m === "GET" && !id) return json({ vehicle_logbooks: (await env.DB.prepare(`SELECT id, asset_id, fy, business_km, total_km, running_costs_cents, business_use_pct FROM vehicle_logbooks WHERE user_id = ? ORDER BY fy DESC`).bind(uid).all()).results ?? [] });
+    if (m === "GET" && !id) return json({ vehicle_logbooks: (await tenantDb(env, uid).prepare(`SELECT id, asset_id, fy, business_km, total_km, running_costs_cents, business_use_pct FROM vehicle_logbooks WHERE user_id = ? ORDER BY fy DESC`).bind().all()).results ?? [] });
     if (m === "POST" && !id) return json({ id: await stub.recordVehicleLogbook(uid, await req.json()) });
     if (m === "DELETE" && id) { await deleteRow(env, uid, "vehicle_logbooks", id); return json({ ok: true }); }
   }
 
   // ── Trust distributions (#139) ────────────────────────────────────────────
   if (resource === "trust-distributions") {
-    if (m === "GET" && !id) return json({ trust_distributions: (await env.DB.prepare(`SELECT id, trust_entity_id, fy, beneficiary_person_id, share_pct, amount_cents, character, franking_credit_cents FROM trust_distributions WHERE user_id = ? AND COALESCE(source_kind,'trust') = 'trust' ORDER BY fy DESC`).bind(uid).all()).results ?? [] });
+    if (m === "GET" && !id) return json({ trust_distributions: (await tenantDb(env, uid).prepare(`SELECT id, trust_entity_id, fy, beneficiary_person_id, share_pct, amount_cents, character, franking_credit_cents FROM trust_distributions WHERE user_id = ? AND COALESCE(source_kind,'trust') = 'trust' ORDER BY fy DESC`).bind().all()).results ?? [] });
     if (m === "POST" && !id) return json({ id: await stub.recordTrustDistribution(uid, await req.json()) });
     if (m === "DELETE" && id) { await deleteRow(env, uid, "trust_distributions", id); return json({ ok: true }); }
   }
   // Slice E: partnership distributions share the trust_distributions table (source_kind='partnership').
   if (resource === "partnership-distributions") {
-    if (m === "GET" && !id) return json({ partnership_distributions: (await env.DB.prepare(`SELECT id, trust_entity_id AS partnership_entity_id, fy, beneficiary_person_id, share_pct, amount_cents, character, franking_credit_cents FROM trust_distributions WHERE user_id = ? AND source_kind = 'partnership' ORDER BY fy DESC`).bind(uid).all()).results ?? [] });
+    if (m === "GET" && !id) return json({ partnership_distributions: (await tenantDb(env, uid).prepare(`SELECT id, trust_entity_id AS partnership_entity_id, fy, beneficiary_person_id, share_pct, amount_cents, character, franking_credit_cents FROM trust_distributions WHERE user_id = ? AND source_kind = 'partnership' ORDER BY fy DESC`).bind().all()).results ?? [] });
     if (m === "POST" && !id) return json({ id: await stub.recordPartnershipDistribution(uid, await req.json()) });
     if (m === "DELETE" && id) { await deleteRow(env, uid, "trust_distributions", id); return json({ ok: true }); }
   }
 
   // ── SMSF members + super contributions (#140) ─────────────────────────────
   if (resource === "smsf-members") {
-    if (m === "GET" && !id) return json({ smsf_members: (await env.DB.prepare(`SELECT id, smsf_entity_id, person_id, phase, pension_balance_cents, accumulation_balance_cents, transfer_balance_cents FROM smsf_members WHERE user_id = ? ORDER BY created_at DESC`).bind(uid).all()).results ?? [] });
+    if (m === "GET" && !id) return json({ smsf_members: (await tenantDb(env, uid).prepare(`SELECT id, smsf_entity_id, person_id, phase, pension_balance_cents, accumulation_balance_cents, transfer_balance_cents FROM smsf_members WHERE user_id = ? ORDER BY created_at DESC`).bind().all()).results ?? [] });
     if (m === "POST" && !id) return json({ id: await stub.recordSmsfMember(uid, await req.json()) });
     if (m === "DELETE" && id) { await deleteRow(env, uid, "smsf_members", id); return json({ ok: true }); }
   }
   if (resource === "super-contributions") {
-    if (m === "GET" && !id) return json({ super_contributions: (await env.DB.prepare(`SELECT id, person_id, fy, type, amount_cents FROM super_contributions WHERE user_id = ? ORDER BY fy DESC`).bind(uid).all()).results ?? [] });
+    if (m === "GET" && !id) return json({ super_contributions: (await tenantDb(env, uid).prepare(`SELECT id, person_id, fy, type, amount_cents FROM super_contributions WHERE user_id = ? ORDER BY fy DESC`).bind().all()).results ?? [] });
     if (m === "POST" && !id) return json({ id: await stub.recordSuperContribution(uid, await req.json()) });
     if (m === "DELETE" && id) { await deleteRow(env, uid, "super_contributions", id); return json({ ok: true }); }
   }
   // ── BAS periods + PAYG instalments (#174) — gst_bas gated ──────────────────
   if (resource === "bas-periods") {
     if (!featureOn(env, "gst_bas")) return json({ error: "not available" }, 404);
-    if (m === "GET" && !id) return json({ bas_periods: (await env.DB.prepare(`SELECT id, entity_id, period_start, period_end, output_gst_cents, input_gst_cents, payg_withholding_cents, payg_instalment_cents, status FROM bas_periods WHERE user_id = ? ORDER BY period_start DESC`).bind(uid).all()).results ?? [] });
+    if (m === "GET" && !id) return json({ bas_periods: (await tenantDb(env, uid).prepare(`SELECT id, entity_id, period_start, period_end, output_gst_cents, input_gst_cents, payg_withholding_cents, payg_instalment_cents, status FROM bas_periods WHERE user_id = ? ORDER BY period_start DESC`).bind().all()).results ?? [] });
     if (m === "POST" && !id) { try { return json({ id: await stub.recordBasPeriod(uid, await req.json()) }); } catch (e) { return json({ error: (e as Error).message }, 400); } }
     if (m === "DELETE" && id) { await deleteRow(env, uid, "bas_periods", id); return json({ ok: true }); }
   }
   if (resource === "payg-instalments") {
     if (!featureOn(env, "gst_bas")) return json({ error: "not available" }, 404);
-    if (m === "GET" && !id) return json({ payg_instalments: (await env.DB.prepare(`SELECT id, entity_id, fy, quarter, instalment_cents, basis FROM payg_instalments WHERE user_id = ? ORDER BY fy DESC, quarter`).bind(uid).all()).results ?? [] });
+    if (m === "GET" && !id) return json({ payg_instalments: (await tenantDb(env, uid).prepare(`SELECT id, entity_id, fy, quarter, instalment_cents, basis FROM payg_instalments WHERE user_id = ? ORDER BY fy DESC, quarter`).bind().all()).results ?? [] });
     if (m === "POST" && !id) return json({ id: await stub.recordPaygInstalment(uid, await req.json()) });
     if (m === "DELETE" && id) { await deleteRow(env, uid, "payg_instalments", id); return json({ ok: true }); }
   }
@@ -1409,8 +1410,8 @@ export async function handleApi(
   if (resource === "work-use") {
     const fy = Number(url.searchParams.get("fy")) || defaultFy();
     if (m === "GET") {
-      const row = await env.DB.prepare(`SELECT wfh_hours, car_work_km, wfh_days_per_week, wfh_weeks, has_dedicated_home_office, wfh_has_record, wfh_weekdays, wfh_leave_ranges, wfh_generate_diary FROM work_use_inputs WHERE user_id = ? AND fy = ?`)
-        .bind(uid, fy)
+      const row = await tenantDb(env, uid).prepare(`SELECT wfh_hours, car_work_km, wfh_days_per_week, wfh_weeks, has_dedicated_home_office, wfh_has_record, wfh_weekdays, wfh_leave_ranges, wfh_generate_diary FROM work_use_inputs WHERE user_id = ? AND fy = ?`)
+        .bind(fy)
         .first<{ wfh_hours: number | null; car_work_km: number | null; wfh_days_per_week: number | null; wfh_weeks: number | null; has_dedicated_home_office: number | null; wfh_has_record: number | null; wfh_weekdays: string | null; wfh_leave_ranges: string | null; wfh_generate_diary: number | null }>();
       // Diary columns are stored as JSON text; parse them back to arrays for the SPA (tolerant of nulls).
       const parseJson = <T>(s: string | null, fallback: T): T => { try { return s ? (JSON.parse(s) as T) : fallback; } catch { return fallback; } };
@@ -1488,8 +1489,8 @@ export async function handleApi(
   if (resource === "car-use") {
     const fy = Number(url.searchParams.get("fy")) || defaultFy();
     if (m === "GET") {
-      const row = await env.DB.prepare(`SELECT work_km FROM car_inputs WHERE user_id = ? AND fy = ?`)
-        .bind(uid, fy)
+      const row = await tenantDb(env, uid).prepare(`SELECT work_km FROM car_inputs WHERE user_id = ? AND fy = ?`)
+        .bind(fy)
         .first<{ work_km: number | null }>();
       // Per-FY rate for the SPA's inline estimate — same pack seam as the report engine, so the
       // on-screen cents/km can never disagree with the computed position. null ⇒ FY unconfigured.
@@ -1554,8 +1555,8 @@ export async function handleApi(
     }
     // GET /api/documents/:id/download — stream the R2 object (scoped to the tenant).
     if (m === "GET" && id && sub === "download") {
-      const row = await env.DB.prepare(`SELECT r2_key FROM documents WHERE id = ? AND user_id = ?`)
-        .bind(id, uid)
+      const row = await tenantDb(env, uid).prepare(`SELECT r2_key FROM documents WHERE id = ? AND user_id = ?`)
+        .bind(id)
         .first<{ r2_key: string | null }>();
       if (!row?.r2_key) return json({ error: "not found" }, 404);
       return originalResponse(env.RECEIPTS, row.r2_key); // 410 with a clear message when the object is gone
@@ -2145,7 +2146,7 @@ export async function handleApi(
     if (m === "POST" && id === "referrals" && sub && parts[3] === "advance") {
       const { status, revenue_cents } = (await req.json().catch(() => ({}))) as { status?: unknown; revenue_cents?: unknown };
       if (typeof status !== "string" || !(REFERRAL_STATUSES as readonly string[]).includes(status)) return json({ error: "valid status required" }, 400);
-      const cur = await env.DB.prepare(`SELECT status FROM referrals WHERE referral_token = ?`).bind(sub).first<{ status: string }>();
+      const cur = await platformDb(env).prepare(`SELECT status FROM referrals WHERE referral_token = ?`).bind(sub).first<{ status: string }>();
       if (!cur) return json({ error: "referral not found" }, 404);
       if (!canAdvanceReferral(cur.status, status)) return json({ error: `can't move ${cur.status} → ${status}` }, 409);
       // Revenue is only earned at convert/pay; a clawback REVERSES it (→0); other transitions leave it.

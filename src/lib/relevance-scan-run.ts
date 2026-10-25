@@ -23,6 +23,7 @@ import { buildProfile, listSituationPeriods, type SituationPeriod, type Situatio
 import { ruleKey, type ClaimRule } from "./claimability";
 import type { DeductibilitySection } from "./deductibility";
 import { canonicalOccupationScope, occupationGuide } from "./occupations";
+import { tenantDb } from "./tenant-db";
 import {
   confirmNeedsAsset,
   coveredByWfhFixedRate,
@@ -83,13 +84,13 @@ async function loadContext(env: Env, userId: string, descriptor?: JurisdictionDe
     payg_deductibility?: DeductibilitySection;
     thresholds_by_fy?: ScanContext["thresholds"];
   };
-  const ver = (await env.DB.prepare(`SELECT rule_pack_ver FROM profiles WHERE user_id = ?`).bind(userId).first<{ rule_pack_ver: string | null }>())?.rule_pack_ver ?? d.rulePackId ?? "au-v1";
+  const ver = (await tenantDb(env, userId).prepare(`SELECT rule_pack_ver FROM profiles WHERE user_id = ?`).bind().first<{ rule_pack_ver: string | null }>())?.rule_pack_ver ?? d.rulePackId ?? "au-v1";
   // Same tenant scope as the DO's loadClaimRules: global overrides (user_id IS NULL) + this tenant's own rows.
   const d1 = (
-    await env.DB.prepare(
+    await tenantDb(env, userId).prepare(
       `SELECT id, scope_type, scope_value, merchant_hint, ato_label, claim_type, default_method, general_info_note, defer_to_agent
          FROM claimability_rules WHERE rule_pack_ver = ? AND (user_id IS NULL OR user_id = ?)`,
-    ).bind(ver, userId).all<ClaimRule>()
+    ).bind(ver).all<ClaimRule>()
   ).results ?? [];
   return { descriptor: d, rules: [...(pack.claimability ?? []), ...d1], section: pack.payg_deductibility ?? null, floor: relevanceFloorCents(pack), thresholds: pack.thresholds_by_fy ?? {}, pack };
 }
@@ -150,23 +151,23 @@ export async function runRelevanceScan(env: Env, userId: string, opts: { descrip
   // Bounded to the two latest FYs the tenant has bank lines in (the one usually being lodged + the current
   // one) — anchored on the data, not the clock, so it is deterministic. Older lines keep whatever they had;
   // the position never reads relevance anyway.
-  const latest = (await env.DB.prepare(`SELECT MAX(txn_date) AS d FROM transactions WHERE user_id = ? AND kind = 'bank_line' AND txn_date <= date('now', '+31 days')`).bind(userId).first<{ d: string | null }>())?.d ?? null;
+  const latest = (await tenantDb(env, userId).prepare(`SELECT MAX(txn_date) AS d FROM transactions WHERE user_id = ? AND kind = 'bank_line' AND txn_date <= date('now', '+31 days')`).bind().first<{ d: string | null }>())?.d ?? null;
   const latestFy = fyStartYearForDate(ctx.descriptor, latest);
   if (Number.isNaN(latestFy)) return { scanned: 0, changed: 0, suggested: 0, removed: 0, truncated: false };
   const windowStart = fyBoundsFor(ctx.descriptor, latestFy - 1).start;
   const [lineRes, personRes, entityRes, periods, existingRes] = await Promise.all([
-    env.DB.prepare(
+    tenantDb(env, userId).prepare(
       `SELECT id, bucket, ato_label, merchant, raw_description, COALESCE(amount_aud_cents, amount_cents) AS amount_cents,
               deductibility, reimbursed, txn_date, direction, status, relevance, relevance_rule_id
          FROM transactions
         WHERE user_id = ? AND kind = 'bank_line' AND txn_date >= ?
           AND ((COALESCE(direction,'debit') = 'debit' AND status NOT IN ('duplicate','ignored') AND (bucket IS NULL OR bucket IN ('payg','unknown')))
                OR relevance IS NOT NULL)`,
-    ).bind(userId, windowStart).all<LineRow>(),
-    env.DB.prepare(`SELECT id, role, occupation FROM persons WHERE user_id = ? ORDER BY role = 'self' DESC, created_at, id`).bind(userId).all<{ id: string; role: string; occupation: string | null }>(),
-    env.DB.prepare(`SELECT DISTINCT kind FROM entities WHERE user_id = ?`).bind(userId).all<{ kind: string }>(),
+    ).bind(windowStart).all<LineRow>(),
+    tenantDb(env, userId).prepare(`SELECT id, role, occupation FROM persons WHERE user_id = ? ORDER BY role = 'self' DESC, created_at, id`).bind().all<{ id: string; role: string; occupation: string | null }>(),
+    tenantDb(env, userId).prepare(`SELECT DISTINCT kind FROM entities WHERE user_id = ?`).bind().all<{ kind: string }>(),
     featureOn(env, "situation_profile") ? listSituationPeriods(env, userId) : Promise.resolve([] as SituationPeriod[]),
-    env.DB.prepare(`SELECT id, txn_id, rule_id, status FROM claim_suggestions WHERE user_id = ? AND source = ?`).bind(userId, SOURCE).all<{ id: string; txn_id: string | null; rule_id: string | null; status: string | null }>(),
+    tenantDb(env, userId).prepare(`SELECT id, txn_id, rule_id, status FROM claim_suggestions WHERE user_id = ? AND source = ?`).bind(SOURCE).all<{ id: string; txn_id: string | null; rule_id: string | null; status: string | null }>(),
   ]);
   const rows = lineRes.results ?? [];
   const profileFor = profileBuilder(env, personRes.results ?? [], periods, (entityRes.results ?? []).map((e) => e.kind), ctx.descriptor);
@@ -204,7 +205,7 @@ export async function runRelevanceScan(env: Env, userId: string, opts: { descrip
     const rel = t?.relevance ?? null;
     const rid = t?.rule_id ?? null;
     if (rel === r.relevance && rid === r.relevance_rule_id) continue;
-    stmts.push(env.DB.prepare(`UPDATE transactions SET relevance = ?, relevance_rule_id = ? WHERE id = ? AND user_id = ?`).bind(rel, rid, r.id, userId));
+    stmts.push(tenantDb(env, userId).prepare(`UPDATE transactions SET relevance = ?, relevance_rule_id = ? WHERE id = ? AND user_id = ?`).bind(rel, rid, r.id));
   }
   const changed = stmts.length;
 
@@ -220,17 +221,17 @@ export async function runRelevanceScan(env: Env, userId: string, opts: { descrip
     if (have.has(key)) continue;
     const label = occupationGuide(t.occupation)?.label ?? t.occupation ?? null;
     stmts.push(
-      env.DB.prepare(
+      tenantDb(env, userId).prepare(
         `INSERT OR IGNORE INTO claim_suggestions (id, user_id, person_id, txn_id, rule_id, suggestion, claim_type, estimated_deduction_cents, status, source)
          VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 'suggested', ?)`,
-      ).bind(crypto.randomUUID(), userId, t.person_id ?? `person_self_${userId}`, t.id, t.rule_id, worthALookText(t.rule!, label), t.rule!.claim_type, SOURCE),
+      ).bind(crypto.randomUUID(), t.person_id ?? `person_self_${userId}`, t.id, t.rule_id, worthALookText(t.rule!, label), t.rule!.claim_type, SOURCE),
     );
     suggested++;
   }
   let removed = 0;
   for (const e of existing) {
     if (e.status !== "suggested" || desired.has(`${e.txn_id}|${e.rule_id}`)) continue;
-    stmts.push(env.DB.prepare(`DELETE FROM claim_suggestions WHERE id = ? AND user_id = ? AND source = ? AND status = 'suggested'`).bind(e.id, userId, SOURCE));
+    stmts.push(tenantDb(env, userId).prepare(`DELETE FROM claim_suggestions WHERE id = ? AND user_id = ? AND source = ? AND status = 'suggested'`).bind(e.id, SOURCE));
     removed++;
   }
   // Capped per run so a first scan over a large tenant can't exhaust one request; the writes are diffed, so the
@@ -296,11 +297,11 @@ export interface WorthALookConfirmResult {
  */
 export async function confirmWorthALook(env: Env, userId: string, txnId: string, input: WorthALookConfirmInput = {}): Promise<WorthALookConfirmResult | null> {
   if (!featureOn(env, "relevance_scan")) return null;
-  const row = await env.DB.prepare(
+  const row = await tenantDb(env, userId).prepare(
     `SELECT id, bucket, ato_label, merchant, raw_description, COALESCE(amount_aud_cents, amount_cents) AS amount_cents,
             deductibility, reimbursed, txn_date, direction, status, relevance, relevance_rule_id
        FROM transactions WHERE id = ? AND user_id = ? AND kind = 'bank_line'`,
-  ).bind(txnId, userId).first<LineRow>();
+  ).bind(txnId).first<LineRow>();
   if (!row || row.relevance !== "worth_a_look") return null;
   if (row.deductibility === "confirmed_deductible" || row.deductibility === "confirmed_not") return { ok: false };
   const pct = input.workUsePct ?? null;
@@ -309,8 +310,8 @@ export async function confirmWorthALook(env: Env, userId: string, txnId: string,
   const fy = fyStartYearForDate(ctx.descriptor, row.txn_date);
   if (!inScope(row) || Number.isNaN(fy)) return { ok: false };
   const [personRes, entityRes, periods] = await Promise.all([
-    env.DB.prepare(`SELECT id, role, occupation FROM persons WHERE user_id = ? ORDER BY role = 'self' DESC, created_at, id`).bind(userId).all<{ id: string; role: string; occupation: string | null }>(),
-    env.DB.prepare(`SELECT DISTINCT kind FROM entities WHERE user_id = ?`).bind(userId).all<{ kind: string }>(),
+    tenantDb(env, userId).prepare(`SELECT id, role, occupation FROM persons WHERE user_id = ? ORDER BY role = 'self' DESC, created_at, id`).bind().all<{ id: string; role: string; occupation: string | null }>(),
+    tenantDb(env, userId).prepare(`SELECT DISTINCT kind FROM entities WHERE user_id = ?`).bind().all<{ kind: string }>(),
     featureOn(env, "situation_profile") ? listSituationPeriods(env, userId) : Promise.resolve([] as SituationPeriod[]),
   ]);
   const profile = profileBuilder(env, personRes.results ?? [], periods, (entityRes.results ?? []).map((e) => e.kind), ctx.descriptor)(fy);
@@ -329,7 +330,7 @@ export async function confirmWorthALook(env: Env, userId: string, txnId: string,
   // #587: with WFH hours stated, the fixed rate per hour already includes energy / internet / phone /
   // stationery (the report counts it under work_method), so a line for one of those is not claimed again.
   if (featureOn(env, "wfh_car_methods") && coveredByWfhFixedRate(row.merchant ?? row.raw_description, wfhFixedRateCovers(ctx.pack))) {
-    const wu = await env.DB.prepare(`SELECT wfh_hours FROM work_use_inputs WHERE user_id = ? AND fy = ?`).bind(userId, fy).first<{ wfh_hours: number | null }>();
+    const wu = await tenantDb(env, userId).prepare(`SELECT wfh_hours FROM work_use_inputs WHERE user_id = ? AND fy = ?`).bind(fy).first<{ wfh_hours: number | null }>();
     if (Number(wu?.wfh_hours) > 0) return { ok: false, covered_by_wfh_rate: true };
   }
   // A confirm without a share counts the WHOLE line, so it is only for an 'immediate' rule on a line nobody has
@@ -341,19 +342,19 @@ export async function confirmWorthALook(env: Env, userId: string, txnId: string,
   // written only when the rule names one (COALESCE keeps the line's own label otherwise).
   const res2 = await env.DB.batch([
     pct != null
-      ? env.DB.prepare(
+      ? tenantDb(env, userId).prepare(
           `UPDATE transactions SET deductibility = 'confirmed_deductible', ato_label = COALESCE(?, ato_label),
                   deductible_amount_cents = CAST(ROUND(COALESCE(amount_aud_cents, amount_cents) * ? / 100.0) AS INTEGER)
             WHERE id = ? AND user_id = ? AND relevance = 'worth_a_look' AND COALESCE(deductibility, 'undetermined') = ?`,
-        ).bind(label.label, pct, txnId, userId, row.deductibility ?? "undetermined")
-      : env.DB.prepare(
+        ).bind(label.label, pct, txnId, row.deductibility ?? "undetermined")
+      : tenantDb(env, userId).prepare(
           `UPDATE transactions SET deductibility = 'confirmed_deductible', ato_label = COALESCE(?, ato_label),
                   deductible_amount_cents = CASE WHEN deductibility = 'likely_not' THEN NULL ELSE deductible_amount_cents END
             WHERE id = ? AND user_id = ? AND relevance = 'worth_a_look' AND COALESCE(deductibility, 'undetermined') = ?`,
-        ).bind(label.label, txnId, userId, row.deductibility ?? "undetermined"),
+        ).bind(label.label, txnId, row.deductibility ?? "undetermined"),
   ]);
   if (!(res2[0]?.meta as { changes?: number } | undefined)?.changes) return { ok: false };
-  await env.DB.prepare(`UPDATE claim_suggestions SET status = 'capturing' WHERE user_id = ? AND txn_id = ? AND source = ? AND status = 'suggested'`).bind(userId, txnId, SOURCE).run();
+  await tenantDb(env, userId).prepare(`UPDATE claim_suggestions SET status = 'capturing' WHERE user_id = ? AND txn_id = ? AND source = ? AND status = 'suggested'`).bind(txnId, SOURCE).run();
   return { ok: true };
 }
 
@@ -423,11 +424,11 @@ export async function relevanceView(env: Env, userId: string, startYear: number)
   const descriptor = await resolveJurisdictionForUser(env, userId);
   const { start, end } = fyBoundsFor(descriptor, startYear);
   const [countRes, cardRes, profiles, ctx] = await Promise.all([
-    env.DB.prepare(
+    tenantDb(env, userId).prepare(
       `SELECT COALESCE(relevance, 'unscanned') AS r, COUNT(*) AS n FROM transactions
         WHERE user_id = ? AND kind = 'bank_line' AND COALESCE(direction,'debit') = 'debit' AND status NOT IN ('duplicate','ignored')
           AND txn_date >= ? AND txn_date <= ? GROUP BY 1`,
-    ).bind(userId, start, end).all<{ r: string; n: number }>(),
+    ).bind(start, end).all<{ r: string; n: number }>(),
     env.DB.prepare(
       `SELECT t.id AS txn_id, t.merchant, t.txn_date, ABS(COALESCE(t.amount_aud_cents, t.amount_cents, 0)) AS amount_cents, t.relevance_rule_id AS rule_id,
               cs.id AS suggestion_id, cs.suggestion, cs.status, t.deductibility, t.ato_label, t.deductible_amount_cents,
@@ -441,7 +442,7 @@ export async function relevanceView(env: Env, userId: string, startYear: number)
     featureOn(env, "situation_profile")
       ? (async () => {
           const periods = await listSituationPeriods(env, userId);
-          const persons = (await env.DB.prepare(`SELECT id FROM persons WHERE user_id = ? ORDER BY role = 'self' DESC, created_at, id`).bind(userId).all<{ id: string }>()).results ?? [];
+          const persons = (await tenantDb(env, userId).prepare(`SELECT id FROM persons WHERE user_id = ? ORDER BY role = 'self' DESC, created_at, id`).bind().all<{ id: string }>()).results ?? [];
           return persons.map((p) => buildProfile(p.id, periods, startYear, { start, end }));
         })()
       : Promise.resolve([] as SituationProfile[]),

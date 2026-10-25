@@ -46,6 +46,7 @@ import type { Env } from "../env";
 import { type LedgerAdapter, type LedgerExpense, LedgerNotConnectedError, LedgerReauthError } from "./adapter";
 import { getEndpoints } from "../lib/qbo-oauth";
 import { readToken, sealTokenPair, tokenStorageBlocked, TokenKeyMissingError } from "../lib/token-crypto";
+import { tenantDb } from "../lib/tenant-db";
 
 interface QboConnection {
   user_id: string;
@@ -187,11 +188,11 @@ export class QuickBooksAdapter implements LedgerAdapter {
   // ── internals ───────────────────────────────────────────────────────────────
 
   private async connection(userId: string): Promise<QboConnection> {
-    const conn = await this.env.DB.prepare(
+    const conn = await tenantDb(this.env, userId).prepare(
       `SELECT user_id, realm_id, access_token, access_expires_at, refresh_token, refresh_expires_at, enc_ver
          FROM qbo_connections WHERE user_id = ?`,
     )
-      .bind(userId)
+      .bind()
       .first<QboConnection>();
     if (!conn) {
       throw new LedgerNotConnectedError(userId, "QuickBooks is not connected for this tenant");

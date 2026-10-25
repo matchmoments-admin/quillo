@@ -5,6 +5,7 @@ import { getProfile } from "./db";
 import { signBedrockInvoke } from "./sigv4";
 import { AU_DESCRIPTOR } from "./jurisdiction";
 import { awsCredentialsFor, bedrockModelIdFor, resolveProvider, resolveRegion } from "../llm";
+import { platformDb } from "./tenant-db";
 
 // ── Security & compliance dashboard (#636, A3 of epic #633) ──────────────────────────────────────
 //
@@ -603,7 +604,7 @@ export async function buildSecurityDashboard(env: Env, now: Date = new Date()): 
     const active = await n(env, `SELECT COUNT(*) AS n FROM bank_connections WHERE access_type = 'cdr' AND status = 'active'`);
     const lastEvent = await (async () => {
       try {
-        return (await env.DB.prepare(`SELECT MAX(created_at) AS t FROM cdr_audit_log`).first<{ t: string | null }>())?.t ?? null;
+        return (await platformDb(env).prepare(`SELECT MAX(created_at) AS t FROM cdr_audit_log`).first<{ t: string | null }>())?.t ?? null;
       } catch { return null; }
     })();
     panels.push({
@@ -628,7 +629,7 @@ export async function buildSecurityDashboard(env: Env, now: Date = new Date()): 
     const live = fromCheck(c?.bedrock);
     let tainted = 0, onAu = 0;
     try {
-      const rows = await env.DB.prepare(`SELECT inference_provider, inference_region FROM profiles WHERE cdr_tainted = 1`).all<{ inference_provider: string | null; inference_region: string | null }>();
+      const rows = await platformDb(env).prepare(`SELECT inference_provider, inference_region FROM profiles WHERE cdr_tainted = 1`).all<{ inference_provider: string | null; inference_region: string | null }>();
       for (const r of rows.results ?? []) {
         tainted++;
         const region = resolveRegion(env, r, AU_DESCRIPTOR);

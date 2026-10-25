@@ -35,6 +35,7 @@ import { confirmedPrefillSignals } from "./noticed-signals";
 import { READINESS_DISCLAIMER } from "./readiness";
 import { BUSINESS_INCOME_TYPES, RENT_INCOME_TYPES, isPropertyBucket } from "./taxonomy";
 import { NON_RESIDENT_FOREIGN, NON_RESIDENT_FOREIGN_NOTE } from "./residency-assessability";
+import { tenantDb } from "./tenant-db";
 
 export type WorksheetLineKind = "check" | "type_in" | "answer" | "note";
 
@@ -247,7 +248,7 @@ export async function buildMytaxWorksheet(env: Env, userId: string, startYear: n
 /** The self person's occupation + situation profile for the FY. The profile is read only with situation_profile ON. */
 async function personContext(env: Env, userId: string, startYear: number, descriptor: JurisdictionDescriptor): Promise<{ occupation: string | null; profile: SituationProfile | null }> {
   const [occ, profiles] = await Promise.all([
-    env.DB.prepare(`SELECT id, occupation FROM persons WHERE user_id = ? AND role = 'self' ORDER BY created_at LIMIT 1`).bind(userId).first<{ id: string; occupation: string | null }>()
+    tenantDb(env, userId).prepare(`SELECT id, occupation FROM persons WHERE user_id = ? AND role = 'self' ORDER BY created_at LIMIT 1`).bind().first<{ id: string; occupation: string | null }>()
       .catch((e: Error) => { if (/no such table|no such column/i.test(e.message)) return null; throw e; }),
     featureOn(env, "situation_profile") ? profileForFy(env, userId, startYear, descriptor) : Promise.resolve([] as SituationProfile[]),
   ]);
@@ -273,9 +274,9 @@ export function occupationDisplay(token: string | null, profile: SituationProfil
 /** Employer entities from About you / situation (kind 'employment'), so an employer with no income row yet still gets a line. */
 async function employmentEntityNames(env: Env, userId: string): Promise<string[]> {
   try {
-    const rows = (await env.DB.prepare(
+    const rows = (await tenantDb(env, userId).prepare(
       `SELECT name FROM entities WHERE user_id = ? AND (kind = 'employment' OR entity_type = 'payg_employment') AND name IS NOT NULL ORDER BY created_at`,
-    ).bind(userId).all<{ name: string }>()).results ?? [];
+    ).bind().all<{ name: string }>()).results ?? [];
     return rows.map((r) => r.name);
   } catch (e) {
     if (/no such table|no such column/i.test((e as Error).message)) return [];

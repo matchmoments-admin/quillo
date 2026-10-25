@@ -8978,5 +8978,59 @@ console.log("shared D1 adapter (scripts/lib/d1-sqlite.ts)");
     scripts.every((src) => !/class \w*Stmt\w* \{\s*\n\s*private (params|p): unknown\[\]/.test(src)));
 }
 
+// ── Scale review C: the tenant data handle (ADR-0005) ────────────────────────────────────────────
+import { tenantDb, tenantPlan, TenantScopeError } from "../src/lib/tenant-db";
+
+console.log("tenantDb: the tenant is spliced in by the handle, never bound by the caller");
+{
+  check("plan: WHERE id = ? AND user_id = ? ⇒ tenant is placeholder 1 of 2", JSON.stringify(tenantPlan(`SELECT * FROM t WHERE id = ? AND user_id = ?`)) === JSON.stringify({ total: 2, tenant: [1] }));
+  check("plan: alias-qualified + subquery predicates are all tenant", JSON.stringify(tenantPlan(`SELECT 1 FROM t x WHERE x.user_id = ? AND EXISTS (SELECT 1 FROM u WHERE u.user_id = ? AND u.k = ?)`).tenant) === "[0,1]");
+  check("plan: INSERT column slot (with nested parens in other values)",
+    JSON.stringify(tenantPlan(`INSERT OR IGNORE INTO t (id, amount, user_id, at) VALUES (?, COALESCE(?, 0), ?, datetime('now'))`)) === JSON.stringify({ total: 3, tenant: [2] }));
+  check("plan: multi-row INSERT finds the slot in every tuple", JSON.stringify(tenantPlan(`INSERT INTO t (user_id, id) VALUES (?, ?), (?, ?)`).tenant) === "[0,2]");
+  check("plan: a ? inside a string literal or comment is not a placeholder", tenantPlan(`SELECT '?' AS q FROM t WHERE user_id = ? -- why?\n AND k = ?`).total === 2);
+  check("plan: user_id IN (?) is NOT a tenant predicate", tenantPlan(`SELECT 1 FROM t WHERE user_id IN (?)`).tenant.length === 0);
+
+  const d = schemaDb();
+  const env = { DB: d } as unknown as Env;
+  d.sqlite.exec(`INSERT INTO properties (id, user_id, label) VALUES ('pa', 'ua', 'A'), ('pb', 'ub', 'B')`);
+  const ua = tenantDb(env, "ua");
+  check("bind: the caller passes only the non-tenant args", (await ua.prepare(`SELECT label FROM properties WHERE id = ? AND user_id = ?`).bind("pa").first<{ label: string }>())?.label === "A");
+  check("bind: another tenant's row is invisible through this handle", (await ua.prepare(`SELECT label FROM properties WHERE id = ? AND user_id = ?`).bind("pb").first()) === null);
+  check("no-arg statements bind the tenant implicitly", ((await ua.prepare(`SELECT COUNT(*) AS n FROM properties WHERE user_id = ?`).first<{ n: number }>())?.n) === 1);
+  await ua.batch([ua.prepare(`INSERT INTO properties (id, user_id, label) VALUES (?, ?, ?)`).bind("pc", "C")]);
+  check("INSERT: the tenant fills the user_id slot; batch works on handle statements",
+    (d.sqlite.prepare(`SELECT user_id FROM properties WHERE id = 'pc'`).get() as { user_id: string }).user_id === "ua");
+  const throwsScope = (f: () => unknown) => { try { f(); return false; } catch (e) { return e instanceof TenantScopeError; } };
+  check("an unscoped statement on the tenant handle throws before reaching D1", throwsScope(() => ua.prepare(`SELECT * FROM properties WHERE id = ?`)));
+  check("a wrong argument count throws (a misbind would shift every parameter)", throwsScope(() => ua.prepare(`SELECT * FROM properties WHERE id = ? AND user_id = ?`).bind("pa", "ua")));
+  check("an empty userId is refused", throwsScope(() => tenantDb(env, "")));
+}
+
+// ── Scale review C: the raw-D1 ratchet. Tenant code goes through tenantDb; the raw count only falls ──
+console.log("raw D1 ratchet (tenantDb / platformDb, ADR-0005)");
+{
+  const RAW = /\b\w*(?:DB|db)\.prepare\(/g;
+  const counts: Record<string, number> = {};
+  const walk = (d: string) => {
+    for (const f of fs.readdirSync(d, { withFileTypes: true })) {
+      const p = path.join(d, f.name);
+      if (f.isDirectory()) walk(p);
+      else if (p.endsWith(".ts") && !p.endsWith(path.join("lib", "tenant-db.ts"))) {
+        const n = (fs.readFileSync(p, "utf8").match(RAW) ?? []).length;
+        if (n) counts[path.relative(process.cwd(), p)] = n;
+      }
+    }
+  };
+  walk(path.join(process.cwd(), "src"));
+  const basePath = path.join(process.cwd(), "scripts", "raw-db-baseline.json");
+  if (process.env.UPDATE_DB_BASELINE === "1") fs.writeFileSync(basePath, JSON.stringify(Object.fromEntries(Object.entries(counts).sort()), null, 2) + "\n");
+  const base = JSON.parse(fs.readFileSync(basePath, "utf8")) as Record<string, number>;
+  const grew = Object.entries(counts).filter(([f, n]) => n > (base[f] ?? 0));
+  const fell = Object.entries(base).filter(([f, n]) => (counts[f] ?? 0) < n);
+  check(`ratchet: no file gained a raw DB.prepare( — use tenantDb(env, userId) (or platformDb for reviewed cross-tenant code)${grew.length ? `: ${grew.map(([f, n]) => `${f} ${base[f] ?? 0}→${n}`).join(", ")}` : ""}`, grew.length === 0);
+  check(`ratchet: the baseline is current (lock in the gain: UPDATE_DB_BASELINE=1 npm run test:units)${fell.length ? `: ${fell.map(([f]) => f).join(", ")}` : ""}`, fell.length === 0);
+}
+
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);
 process.exit(fail === 0 ? 0 : 1);

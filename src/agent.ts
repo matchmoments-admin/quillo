@@ -84,6 +84,7 @@ import { verdictForTxn } from "./lib/deductibility";
 import { featureOn, categoriseMode } from "./lib/features";
 import { chunkIds } from "./lib/d1-limits";
 import { runRelevanceScan, confirmWorthALook, type WorthALookConfirmInput } from "./lib/relevance-scan-run";
+import { tenantDb } from "./lib/tenant-db";
 
 const CONFIDENCE_THRESHOLD = 0.85;
 // Backstop on bank-sync alarm continuations (#511). MAX_PAGES_PER_RUN normally ends a run first;
@@ -299,11 +300,11 @@ export class TaxAgent extends Agent<Env> {
     // either hash. Tenant-scoped, so a bad value can only mis-dedupe the sender's own receipts.
     const bytesHash = await sha256hexBytes(bytes);
     const imageHash = validHash(originalHash) ?? bytesHash;
-    const prior = await this.env.DB.prepare(
+    const prior = await tenantDb(this.env, userId).prepare(
       `SELECT id, merchant, receipt_key FROM transactions
         WHERE user_id = ? AND image_hash IN (?, ?) AND status <> 'duplicate' ORDER BY created_at LIMIT 1`,
     )
-      .bind(userId, imageHash, bytesHash)
+      .bind(imageHash, bytesHash)
       .first<{ id: string; merchant: string | null; receipt_key: string | null }>();
     if (prior) {
       // Reuse the original's object instead of storing a second copy.
@@ -314,11 +315,11 @@ export class TaxAgent extends Agent<Env> {
         const stored = await maybeCompressImage(this.env, bytes, mime);
         await this.env.RECEIPTS.put(dupKey, stored.bytes, { httpMetadata: { contentType: stored.mime } });
       }
-      await this.env.DB.prepare(
+      await tenantDb(this.env, userId).prepare(
         `INSERT INTO transactions (id, user_id, source, status, receipt_key, image_hash, duplicate_of)
          VALUES (?, ?, ?, 'duplicate', ?, ?, ?)`,
       )
-        .bind(txnId, userId, source, dupKey, imageHash, prior.id)
+        .bind(txnId, source, dupKey, imageHash, prior.id)
         .run();
       await this.audit(userId, "ingest_duplicate", JSON.stringify({ txnId, duplicateOf: prior.id }));
       await this.notify(
@@ -331,11 +332,11 @@ export class TaxAgent extends Agent<Env> {
 
     const stored = await maybeCompressImage(this.env, bytes, mime);
     await this.env.RECEIPTS.put(key, stored.bytes, { httpMetadata: { contentType: stored.mime } });
-    await this.env.DB.prepare(
+    await tenantDb(this.env, userId).prepare(
       `INSERT INTO transactions (id, user_id, source, status, receipt_key, image_hash)
        VALUES (?, ?, ?, 'needs_extraction', ?, ?)`,
     )
-      .bind(txnId, userId, source, key, imageHash)
+      .bind(txnId, source, key, imageHash)
       .run();
     await this.audit(userId, "ingest", JSON.stringify({ txnId, source, bucketHint }));
 
@@ -367,11 +368,11 @@ export class TaxAgent extends Agent<Env> {
       keys.push(k);
     }
     const imageHash = await sha256hexBytes(first.bytes);
-    await this.env.DB.prepare(
+    await tenantDb(this.env, userId).prepare(
       `INSERT INTO transactions (id, user_id, source, status, receipt_key, receipt_keys, image_hash)
        VALUES (?, ?, ?, 'needs_extraction', ?, ?, ?)`,
     )
-      .bind(txnId, userId, source, keys[0] ?? null, JSON.stringify(keys), imageHash)
+      .bind(txnId, source, keys[0] ?? null, JSON.stringify(keys), imageHash)
       .run();
     await this.audit(userId, "ingest_multi", JSON.stringify({ txnId, source, count: images.length }));
 
@@ -394,8 +395,8 @@ export class TaxAgent extends Agent<Env> {
     bytes: ArrayBuffer,
     format: string,
   ): Promise<{ statementId: string; columnMap: ColumnMap | null; preview: unknown[]; rowCount: number; duplicate: boolean; reconciliation?: Reconciliation }> {
-    const account = await this.env.DB.prepare(`SELECT source, type FROM accounts WHERE id = ? AND user_id = ?`)
-      .bind(accountId, userId)
+    const account = await tenantDb(this.env, userId).prepare(`SELECT source, type FROM accounts WHERE id = ? AND user_id = ?`)
+      .bind(accountId)
       .first<{ source: string; type: string }>();
     if (!account) throw new Error("account not found");
     // ADR-0002, both directions. Previously this refused only 'qbo_feed', so a bank-feed account
@@ -420,8 +421,8 @@ export class TaxAgent extends Agent<Env> {
       // The exact re-upload short-circuit needs no model call, so it ends here: no client, no audit.
       afterGates: async () => {
         fileHash = await sha256hexBytes(bytes);
-        const existing = await this.env.DB.prepare(`SELECT id, file_key, status FROM statements WHERE user_id = ? AND file_hash = ?`)
-          .bind(userId, fileHash)
+        const existing = await tenantDb(this.env, userId).prepare(`SELECT id, file_key, status FROM statements WHERE user_id = ? AND file_hash = ?`)
+          .bind(fileHash)
           .first<{ id: string; file_key: string | null; status: string }>();
         if (!existing) return;
         if (existing.status === "parsed" && (!existing.file_key || !(await objectExists(this.env.RECEIPTS, `${existing.file_key}.lines`)))) {
@@ -457,8 +458,8 @@ export class TaxAgent extends Agent<Env> {
         return await this.parseStoredStatement(userId, accountId, filename, bytes, format, { statementId, fileKey, fileHash, llm, provider, isLiability });
       } catch (e) {
         // The parse failed after the put: don't leave the original orphaned (no statements row points at it).
-        const owner = await this.env.DB.prepare(`SELECT 1 AS x FROM statements WHERE user_id = ? AND file_key = ? LIMIT 1`)
-          .bind(userId, fileKey)
+        const owner = await tenantDb(this.env, userId).prepare(`SELECT 1 AS x FROM statements WHERE user_id = ? AND file_key = ? LIMIT 1`)
+          .bind(fileKey)
           .first<{ x: number }>();
         if (wrote && !owner) await this.env.RECEIPTS.delete(fileKey).catch(() => {});
         throw e;
@@ -561,14 +562,12 @@ export class TaxAgent extends Agent<Env> {
       await this.audit(userId, "statement_recon_fail", JSON.stringify({ statementId, diff: recon.diff_cents, bad: recon.first_bad_line }));
     }
 
-    await this.env.DB.prepare(
+    await tenantDb(this.env, userId).prepare(
       `INSERT INTO statements (id, user_id, account_id, filename, file_key, file_hash, format, column_map, row_count,
          opening_cents, closing_cents, reconciled, recon_diff_cents, status)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'parsed')`,
     )
-      .bind(
-        statementId, userId, accountId, filename, fileKey, fileHash, format, JSON.stringify(columnMap), lines.length,
-        recon.opening_cents, recon.closing_cents, recon.available ? (recon.ok ? 1 : 0) : null, recon.available ? recon.diff_cents : null,
+      .bind(statementId, accountId, filename, fileKey, fileHash, format, JSON.stringify(columnMap), lines.length, recon.opening_cents, recon.closing_cents, recon.available ? (recon.ok ? 1 : 0) : null, recon.available ? recon.diff_cents : null
       )
       .run();
     await this.audit(userId, "statement_parsed", JSON.stringify({ statementId, accountId, rows: lines.length, reconciled: recon.ok }));
@@ -625,12 +624,12 @@ export class TaxAgent extends Agent<Env> {
   async confirmImport(userId: string, statementId: string, _columnMapOverride?: ColumnMap, force?: boolean, quiet?: boolean): Promise<{ imported: number; skipped: number; categorising?: number }> {
     // LEFT JOIN (not INNER) so a statement whose account was later deleted is still found — the
     // null account_type just falls through to the asset reconcile sign via isLiabilityAccount.
-    const stmt = await this.env.DB.prepare(
+    const stmt = await tenantDb(this.env, userId).prepare(
       `SELECT s.account_id, s.file_key, s.opening_cents, s.closing_cents, a.type AS account_type
          FROM statements s LEFT JOIN accounts a ON a.id = s.account_id AND a.user_id = s.user_id
         WHERE s.id = ? AND s.user_id = ?`,
     )
-      .bind(statementId, userId)
+      .bind(statementId)
       .first<{ account_id: string; file_key: string; opening_cents: number | null; closing_cents: number | null; account_type: string | null }>();
     if (!stmt) throw new Error("statement not found");
 
@@ -656,10 +655,10 @@ export class TaxAgent extends Agent<Env> {
 
     // Existing fingerprints for this account → skip re-uploaded/overlapping lines.
     const seen = new Set<string>();
-    const prior = await this.env.DB.prepare(
+    const prior = await tenantDb(this.env, userId).prepare(
       `SELECT line_fingerprint FROM transactions WHERE user_id = ? AND account_id = ? AND line_fingerprint IS NOT NULL`,
     )
-      .bind(userId, stmt.account_id)
+      .bind(stmt.account_id)
       .all<{ line_fingerprint: string }>();
     for (const r of prior.results ?? []) seen.add(r.line_fingerprint);
     // bank_minimisation (#581): a line shrunk into a rollup left a tombstone — treat it as already on file so a
@@ -691,30 +690,13 @@ export class TaxAgent extends Agent<Env> {
         : this.deterministicCategorise(line.description, situation.rules, rulePack, { skipHints: line.direction === "credit", direction: line.direction, entityKinds: situation.entities.map((e) => e.kind) });
       const status = transfer ? "ignored" : cat ? "extracted" : "needs_review";
       inserts.push(
-        this.env.DB.prepare(
+        tenantDb(this.env, userId).prepare(
           `INSERT INTO transactions
              (id, user_id, source, status, kind, account_id, statement_id, line_fingerprint, raw_description,
               merchant, amount_cents, currency, amount_aud_cents, txn_date, direction, bucket, ato_label, confidence, property_id)
            VALUES (?, ?, 'statement', ?, 'bank_line', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(user_id, account_id, line_fingerprint) DO NOTHING`,
-        ).bind(
-          crypto.randomUUID(),
-          userId,
-          status,
-          stmt.account_id,
-          statementId,
-          fp,
-          line.raw_description,
-          line.description,
-          line.amount_cents,
-          baseCur,           // statement is denominated in the tenant's base currency (AU ⇒ 'AUD')
-          line.amount_cents, // base-currency statement = 1:1 (the amount IS in base)
-          line.date,
-          line.direction,
-          cat?.bucket ?? null,
-          cat?.ato_label ?? null,
-          cat ? cat.confidence : null,
-          cat?.property_id ?? null, // property-scoped rule re-attaches its property on import (M1)
+        ).bind(crypto.randomUUID(), status, stmt.account_id, statementId, fp, line.raw_description, line.description, line.amount_cents, baseCur, line.amount_cents, line.date, line.direction, cat?.bucket ?? null, cat?.ato_label ?? null, cat ? cat.confidence : null, cat?.property_id ?? null // property-scoped rule re-attaches its property on import (M1)
         ),
       );
     }
@@ -733,10 +715,10 @@ export class TaxAgent extends Agent<Env> {
     // a stale parse-time value.
     // Lines minimised into rollups (bank_minimisation, #581) still belong to the statement — counted so a shrunk
     // statement keeps its true posted count (OFF ⇒ + 0).
-    const posted = ((await this.env.DB.prepare(
+    const posted = ((await tenantDb(this.env, userId).prepare(
       `SELECT COUNT(*) AS n FROM transactions WHERE user_id = ? AND statement_id = ? AND kind = 'bank_line'`,
-    ).bind(userId, statementId).first<{ n: number }>())?.n ?? imported) + (await rolledUpLineCount(this.env, userId, statementId));
-    await this.env.DB.prepare(`UPDATE statements SET status='imported', imported_count=?, reconciled=?, recon_diff_cents=? WHERE id=?`)
+    ).bind(statementId).first<{ n: number }>())?.n ?? imported) + (await rolledUpLineCount(this.env, userId, statementId));
+    await tenantDb(this.env, userId).prepare(`UPDATE statements SET status='imported', imported_count=?, reconciled=?, recon_diff_cents=? WHERE id=? AND user_id=?`)
       .bind(posted, recon.available ? (recon.ok ? 1 : 0) : null, recon.available ? recon.diff_cents : null, statementId)
       .run();
     await this.audit(userId, "statement_imported", JSON.stringify({ statementId, imported, skipped, posted }));
@@ -776,20 +758,20 @@ export class TaxAgent extends Agent<Env> {
     // Only record a parsed summary for a loan that's actually tied to an income-producing property —
     // i.e. one that shows in the "Confirm loan interest" review (mirrors listLoanInterestReview's join).
     // A non-rental loan's interest isn't deductible, so don't write a figure for it.
-    const linked = await this.env.DB.prepare(
+    const linked = await tenantDb(this.env, userId).prepare(
       `SELECT 1 FROM loans_properties lp
          JOIN properties p ON p.id = lp.property_id AND p.user_id = lp.user_id
         WHERE lp.user_id = ? AND lp.loan_account_id = ? AND p.status IN ('rented','vacant') LIMIT 1`,
     )
-      .bind(userId, accountId)
+      .bind(accountId)
       .first();
     if (!linked) return;
-    const res = await this.env.DB.prepare(
+    const res = await tenantDb(this.env, userId).prepare(
       `SELECT raw_description, merchant, txn_date, direction, amount_cents, amount_aud_cents
          FROM transactions
         WHERE user_id = ? AND account_id = ? AND kind = 'bank_line' AND txn_date IS NOT NULL`,
     )
-      .bind(userId, accountId)
+      .bind(accountId)
       .all<{ raw_description: string | null; merchant: string | null; txn_date: string; direction: string | null; amount_cents: number | null; amount_aud_cents: number | null }>();
     const fyStart = (d: string) => (Number(d.slice(5, 7)) >= 7 ? Number(d.slice(0, 4)) : Number(d.slice(0, 4)) - 1);
     const byFy = new Map<number, number>();
@@ -805,10 +787,10 @@ export class TaxAgent extends Agent<Env> {
     }
     for (const [fy, cents] of byFy) {
       // Lender summary is the user's confirmed figure — never overwrite it with a parsed estimate.
-      const existing = await this.env.DB.prepare(
+      const existing = await tenantDb(this.env, userId).prepare(
         `SELECT source FROM loan_interest_summaries WHERE user_id = ? AND loan_account_id = ? AND fy = ?`,
       )
-        .bind(userId, accountId, String(fy))
+        .bind(accountId, String(fy))
         .first<{ source: string }>();
       if (existing?.source === "lender_summary") continue;
       await this.setLoanInterest(userId, accountId, fy, cents, "statement_parsed");
@@ -817,17 +799,17 @@ export class TaxAgent extends Agent<Env> {
     // interest lines on this account, so any statement_parsed row for an FY no longer present (the user
     // deleted/corrected the lines) is orphaned and must not keep feeding the position. Never touches a
     // user lender_summary or a stored estimate.
-    const parsed = await this.env.DB.prepare(
+    const parsed = await tenantDb(this.env, userId).prepare(
       `SELECT fy FROM loan_interest_summaries WHERE user_id = ? AND loan_account_id = ? AND source = 'statement_parsed'`,
     )
-      .bind(userId, accountId)
+      .bind(accountId)
       .all<{ fy: string }>();
     for (const row of parsed.results ?? []) {
       if (byFy.has(parseFyStartYear(row.fy))) continue;
-      await this.env.DB.prepare(
+      await tenantDb(this.env, userId).prepare(
         `DELETE FROM loan_interest_summaries WHERE user_id = ? AND loan_account_id = ? AND fy = ? AND source = 'statement_parsed'`,
       )
-        .bind(userId, accountId, row.fy)
+        .bind(accountId, row.fy)
         .run();
     }
   }
@@ -866,15 +848,15 @@ export class TaxAgent extends Agent<Env> {
       // The duplicate short-circuit and the empty-file refusal need no model call: no client, no audit.
       afterGates: async () => {
         fileHash = await sha256hexBytes(bytes);
-        const existing = await this.env.DB.prepare(
+        const existing = await tenantDb(this.env, userId).prepare(
           `SELECT id, file_key, status FROM capital_imports WHERE user_id = ? AND file_hash = ? AND status != 'discarded'`,
-        ).bind(userId, fileHash).first<{ id: string; file_key: string; status: string }>();
+        ).bind(fileHash).first<{ id: string; file_key: string; status: string }>();
         if (existing) {
           if (existing.status === "parsed" && !(await objectExists(this.env.RECEIPTS, `${existing.file_key}.rows`))) {
             // A parsed-but-uncommitted import whose extracted rows are no longer stored can never be confirmed;
             // discard it so this re-upload parses fresh instead of being short-circuited onto a dead preview.
-            await this.env.DB.prepare(`UPDATE capital_imports SET status = 'discarded' WHERE id = ? AND user_id = ? AND status = 'parsed'`)
-              .bind(existing.id, userId).run();
+            await tenantDb(this.env, userId).prepare(`UPDATE capital_imports SET status = 'discarded' WHERE id = ? AND user_id = ? AND status = 'parsed'`)
+              .bind(existing.id).run();
           } else {
             if (!(await objectExists(this.env.RECEIPTS, existing.file_key))) {
               await putCompressed(this.env.RECEIPTS, existing.file_key, bytes, "text/csv"); // restore the cleared original
@@ -911,10 +893,10 @@ export class TaxAgent extends Agent<Env> {
       }
 
       await putJson(this.env.RECEIPTS, `${fileKey}.rows`, preview.rows);
-      await this.env.DB.prepare(
+      await tenantDb(this.env, userId).prepare(
         `INSERT INTO capital_imports (id, user_id, filename, file_hash, file_key, status, column_map, row_count)
          VALUES (?, ?, ?, ?, ?, 'parsed', ?, ?)`,
-      ).bind(importId, userId, filename, fileHash, fileKey, JSON.stringify(columnMap), preview.rows.length).run();
+      ).bind(importId, filename, fileHash, fileKey, JSON.stringify(columnMap), preview.rows.length).run();
       await this.audit(userId, "capital_import_parsed", JSON.stringify({ importId, rows: preview.rows.length, problems: preview.problems }));
       return { importId, columnMap, preview, duplicate: false };
     });
@@ -935,9 +917,9 @@ export class TaxAgent extends Agent<Env> {
     selectedRows?: number[] | null,
   ): Promise<{ holdings: number; disposals: number; unmatched: { source_row: number; code: string | null }[] }> {
     if (!featureOn(this.env, "capital_statement_ingest")) throw new Error("not_enabled");
-    const imp = await this.env.DB.prepare(
+    const imp = await tenantDb(this.env, userId).prepare(
       `SELECT id, file_key, status FROM capital_imports WHERE id = ? AND user_id = ?`,
-    ).bind(importId, userId).first<{ id: string; file_key: string; status: string }>();
+    ).bind(importId).first<{ id: string; file_key: string; status: string }>();
     if (!imp) throw new Error("import not found");
     if (imp.status === "imported") throw new Error("That import has already been committed.");
 
@@ -974,10 +956,10 @@ export class TaxAgent extends Agent<Env> {
     const unmatched: { source_row: number; code: string | null }[] = [];
     let disposalCount = 0;
     for (const r of disposals) {
-      const match = await this.env.DB.prepare(
+      const match = await tenantDb(this.env, userId).prepare(
         `SELECT id FROM cgt_assets WHERE user_id = ? AND asset_kind = ? AND COALESCE(code,'') = COALESCE(?,'')
            AND property_id IS NULL AND income_id IS NULL ORDER BY acquired_date LIMIT 1`,
-      ).bind(userId, r.asset_kind, r.code).first<{ id: string }>();
+      ).bind(r.asset_kind, r.code).first<{ id: string }>();
       if (!match) { unmatched.push({ source_row: r.source_row, code: r.code }); continue; }
       await this.recordCgtEvent(userId, {
         cgt_asset_id: match.id,
@@ -992,9 +974,9 @@ export class TaxAgent extends Agent<Env> {
       disposalCount++;
     }
 
-    await this.env.DB.prepare(
+    await tenantDb(this.env, userId).prepare(
       `UPDATE capital_imports SET status = 'imported', imported_count = ?, imported_at = datetime('now') WHERE id = ? AND user_id = ?`,
-    ).bind(holdings + disposalCount, importId, userId).run();
+    ).bind(holdings + disposalCount, importId).run();
     await this.audit(userId, "capital_import_confirmed", JSON.stringify({ importId, holdings, disposals: disposalCount, unmatched: unmatched.length }));
     return { holdings, disposals: disposalCount, unmatched };
   }
@@ -1005,10 +987,10 @@ export class TaxAgent extends Agent<Env> {
   ): Promise<{ statements: number; imported: number; skipped: number; errors: { statementId: string; error: string }[] }> {
     let ids = opts?.statementIds ?? [];
     if (!ids.length) {
-      const pending = await this.env.DB.prepare(
+      const pending = await tenantDb(this.env, userId).prepare(
         `SELECT id FROM statements WHERE user_id = ? AND status = 'parsed' ORDER BY created_at`,
       )
-        .bind(userId)
+        .bind()
         .all<{ id: string }>();
       ids = (pending.results ?? []).map((r) => r.id);
     }
@@ -1050,8 +1032,8 @@ export class TaxAgent extends Agent<Env> {
    * re-importing re-runs categorisation and loses manual corrections on those lines. Audited.
    */
   async deleteStatement(userId: string, statementId: string, purge = false): Promise<{ deleted: boolean; linesRemoved: number }> {
-    const stmt = await this.env.DB.prepare(`SELECT file_key, status FROM statements WHERE id = ? AND user_id = ?`)
-      .bind(statementId, userId)
+    const stmt = await tenantDb(this.env, userId).prepare(`SELECT file_key, status FROM statements WHERE id = ? AND user_id = ?`)
+      .bind(statementId)
       .first<{ file_key: string | null; status: string }>();
     if (!stmt) return { deleted: false, linesRemoved: 0 };
     const imported = stmt.status !== "parsed" && stmt.status !== "failed";
@@ -1065,17 +1047,17 @@ export class TaxAgent extends Agent<Env> {
     if (purge) {
       // Un-match receipts attached to these lines so they don't dangle (restore them to extracted),
       // then delete the bank_lines. Done before the row delete so the ids are still resolvable.
-      await this.env.DB.prepare(
+      await tenantDb(this.env, userId).prepare(
         `UPDATE transactions SET matched_txn_id = NULL, status = 'extracted'
           WHERE user_id = ? AND kind = 'receipt' AND matched_txn_id IN
             (SELECT id FROM transactions WHERE user_id = ? AND statement_id = ? AND kind = 'bank_line')`,
       )
-        .bind(userId, userId, statementId)
+        .bind(statementId)
         .run();
-      const del = await this.env.DB.prepare(
+      const del = await tenantDb(this.env, userId).prepare(
         `DELETE FROM transactions WHERE user_id = ? AND statement_id = ? AND kind = 'bank_line'`,
       )
-        .bind(userId, statementId)
+        .bind(statementId)
         .run();
       linesRemoved = del.meta?.changes ?? 0;
       // bank_minimisation (#581): the statement's rollups + tombstones go with it, so a re-upload restores those
@@ -1092,7 +1074,7 @@ export class TaxAgent extends Agent<Env> {
       await this.env.RECEIPTS.delete(stmt.file_key).catch(() => {});
       await this.env.RECEIPTS.delete(`${stmt.file_key}.lines`).catch(() => {});
     }
-    await this.env.DB.prepare(`DELETE FROM statements WHERE id = ? AND user_id = ?`).bind(statementId, userId).run();
+    await tenantDb(this.env, userId).prepare(`DELETE FROM statements WHERE id = ? AND user_id = ?`).bind(statementId).run();
     await this.audit(userId, "statement_deleted", JSON.stringify({ statementId, status: stmt.status, purge, linesRemoved }));
     return { deleted: true, linesRemoved };
   }
@@ -1130,13 +1112,13 @@ export class TaxAgent extends Agent<Env> {
    * Idempotent: once actual == row_count and flags are set, a re-run changes nothing.
    */
   async repairStatements(userId: string): Promise<{ statements: number; recovered: number; flagsFixed: number }> {
-    const stmts = await this.env.DB.prepare(
+    const stmts = await tenantDb(this.env, userId).prepare(
       `SELECT s.id, s.file_key, s.row_count, s.imported_count, s.reconciled, s.opening_cents, s.closing_cents,
               a.type AS account_type
          FROM statements s LEFT JOIN accounts a ON a.id = s.account_id AND a.user_id = s.user_id
         WHERE s.user_id = ? AND s.status = 'imported'`,
     )
-      .bind(userId)
+      .bind()
       .all<{ id: string; file_key: string | null; row_count: number; imported_count: number | null; reconciled: number | null; opening_cents: number | null; closing_cents: number | null; account_type: string | null }>();
     let statements = 0;
     let recovered = 0;
@@ -1145,9 +1127,9 @@ export class TaxAgent extends Agent<Env> {
     for (const s of stmts.results ?? []) {
       // + lines minimised into rollups (#581): a shrunk statement is NOT missing lines — without this the repair
       // would purge and re-import it (losing every correction) on each run. OFF ⇒ + 0.
-      const actual = ((await this.env.DB.prepare(
+      const actual = ((await tenantDb(this.env, userId).prepare(
         `SELECT COUNT(*) AS n FROM transactions WHERE user_id = ? AND statement_id = ? AND kind = 'bank_line'`,
-      ).bind(userId, s.id).first<{ n: number }>())?.n ?? 0) + (await rolledUpLineCount(this.env, userId, s.id));
+      ).bind(s.id).first<{ n: number }>())?.n ?? 0) + (await rolledUpLineCount(this.env, userId, s.id));
 
       // Read + validate the sidecar ONCE, up front. Purging before confirming the sidecar is
       // readable/parseable would risk an empty statement if the re-read later failed — so the gap
@@ -1165,17 +1147,17 @@ export class TaxAgent extends Agent<Env> {
       if (sidecarLines && sidecarLines.length && actual < s.row_count) {
         // Dropped lines → re-import from the sidecar with the fixed fingerprint. Purge existing lines
         // (un-matching any receipts first) but KEEP the record + sidecar, then confirmImport re-reads it.
-        await this.env.DB.prepare(
+        await tenantDb(this.env, userId).prepare(
           `UPDATE transactions SET matched_txn_id = NULL, status = 'extracted'
             WHERE user_id = ? AND kind = 'receipt' AND matched_txn_id IN
               (SELECT id FROM transactions WHERE user_id = ? AND statement_id = ? AND kind = 'bank_line')`,
         )
-          .bind(userId, userId, s.id)
+          .bind(s.id)
           .run();
-        await this.env.DB.prepare(
+        await tenantDb(this.env, userId).prepare(
           `DELETE FROM transactions WHERE user_id = ? AND statement_id = ? AND kind = 'bank_line'`,
         )
-          .bind(userId, s.id)
+          .bind(s.id)
           .run();
         // C1: the re-imported lines get NEW ids, so any holding seeded from an old line is genuinely
         // orphaned — drop it rather than silently re-point it at a different transaction.
@@ -1188,13 +1170,13 @@ export class TaxAgent extends Agent<Env> {
         // No missing lines (or no sidecar to recover from) — correct stale counters/flags in place.
         let fixed = false;
         if ((s.imported_count ?? -1) !== actual) {
-          await this.env.DB.prepare(`UPDATE statements SET imported_count = ? WHERE id = ? AND user_id = ?`).bind(actual, s.id, userId).run();
+          await tenantDb(this.env, userId).prepare(`UPDATE statements SET imported_count = ? WHERE id = ? AND user_id = ?`).bind(actual, s.id).run();
           fixed = true;
         }
         if (s.reconciled !== 1 && sidecarLines) {
           const recon = reconcileStatement(sidecarLines, s.opening_cents, s.closing_cents, isLiabilityAccount(s.account_type));
-          await this.env.DB.prepare(`UPDATE statements SET reconciled = ?, recon_diff_cents = ? WHERE id = ? AND user_id = ?`)
-            .bind(recon.available ? (recon.ok ? 1 : 0) : null, recon.available ? recon.diff_cents : null, s.id, userId)
+          await tenantDb(this.env, userId).prepare(`UPDATE statements SET reconciled = ?, recon_diff_cents = ? WHERE id = ? AND user_id = ?`)
+            .bind(recon.available ? (recon.ok ? 1 : 0) : null, recon.available ? recon.diff_cents : null, s.id)
             .run();
           fixed = true;
         }
@@ -1218,11 +1200,11 @@ export class TaxAgent extends Agent<Env> {
    * `bulk` (the recategorise backfill) do no model work in the request at all. OFF ⇒ unchanged.
    */
   async categoriseStatement(userId: string, statementId: string, opts?: { bulk?: boolean; defer?: boolean }): Promise<{ categorised: number; background?: number }> {
-    const rows = await this.env.DB.prepare(
+    const rows = await tenantDb(this.env, userId).prepare(
       `SELECT id, merchant, amount_cents, txn_date, direction FROM transactions
         WHERE user_id = ? AND statement_id = ? AND kind = 'bank_line' AND status = 'needs_review'`,
     )
-      .bind(userId, statementId)
+      .bind(statementId)
       .all<{ id: string; merchant: string | null; amount_cents: number | null; txn_date: string | null; direction: string | null }>();
     // S8b (#639, flag redact_statement_lines): account / card / BSB-shaped text is redacted from the merchant
     // BEFORE it reaches the model, on both the live and the batch path below (redactStatementLine is narrow —
@@ -1323,9 +1305,9 @@ export class TaxAgent extends Agent<Env> {
         round.forEach((chunk, k) => {
           for (const { id, item } of mapBatchItems(chunk.map((c) => c.id), results[k]!)) {
             updates.push(
-              this.env.DB.prepare(
+              tenantDb(this.env, userId).prepare(
                 `UPDATE transactions SET status='extracted', bucket=?, ato_label=?, confidence=?, reasoning=? WHERE id=? AND user_id=?`,
-              ).bind(item.bucket, item.ato_label, item.confidence, item.reasoning, id, userId),
+              ).bind(item.bucket, item.ato_label, item.confidence, item.reasoning, id),
             );
             categorised++;
           }
@@ -1434,13 +1416,13 @@ export class TaxAgent extends Agent<Env> {
    * Idempotent enough to re-run (it just re-queues anything still credit-null / unknown).
    */
   async recategorise(userId: string): Promise<{ requeued: number; statements: number }> {
-    const requeue = await this.env.DB.prepare(
+    const requeue = await tenantDb(this.env, userId).prepare(
       `UPDATE transactions SET status = 'needs_review'
         WHERE user_id = ? AND kind = 'bank_line'
           AND status NOT IN ('ignored','duplicate','matched_receipt')
           AND ((direction = 'credit' AND bucket IS NULL) OR bucket = 'unknown')`,
     )
-      .bind(userId)
+      .bind()
       .run();
     const requeued = requeue.meta?.changes ?? 0;
     if (!requeued) {
@@ -1455,7 +1437,7 @@ export class TaxAgent extends Agent<Env> {
     // for twice (C6). The pending batch will categorise these lines; a later backfill tick re-queues
     // anything it leaves behind once the job has been applied/failed. A running live continuation
     // ('continuing', import_continuation) is skipped for the same reason: its chain covers those lines.
-    const stmts = await this.env.DB.prepare(
+    const stmts = await tenantDb(this.env, userId).prepare(
       `SELECT DISTINCT t.statement_id FROM transactions t
         WHERE t.user_id = ? AND t.kind = 'bank_line' AND t.status = 'needs_review' AND t.statement_id IS NOT NULL
           AND NOT EXISTS (
@@ -1463,7 +1445,7 @@ export class TaxAgent extends Agent<Env> {
              WHERE b.user_id = t.user_id AND b.statement_id = t.statement_id AND b.status IN ('submitted', 'continuing')
           )`,
     )
-      .bind(userId)
+      .bind()
       .all<{ statement_id: string }>();
     let count = 0;
     for (const s of stmts.results ?? []) {
@@ -1501,22 +1483,22 @@ export class TaxAgent extends Agent<Env> {
       });
     }
     const batch = await llm.client.messages.batches.create({ requests });
-    await this.env.DB.prepare(
+    await tenantDb(this.env, userId).prepare(
       `INSERT INTO batch_jobs (id, user_id, statement_id, batch_id, status, chunk_map) VALUES (?, ?, ?, ?, 'submitted', ?)`,
     )
-      .bind(crypto.randomUUID(), userId, statementId, batch.id, JSON.stringify(chunkMap))
+      .bind(crypto.randomUUID(), statementId, batch.id, JSON.stringify(chunkMap))
       .run();
-    await this.env.DB.prepare(`UPDATE statements SET status='categorising' WHERE id=?`).bind(statementId).run();
+    await tenantDb(this.env, userId).prepare(`UPDATE statements SET status='categorising' WHERE id=? AND user_id=?`).bind(statementId).run();
     await this.audit(userId, "batch_submitted", JSON.stringify({ statementId, batchId: batch.id, chunks: requests.length }));
     await this.notify(userId, `Categorising ${items.length} transactions in the background (cheaper batch mode) — they'll fill in shortly.`, null);
   }
 
   /** Poll this user's submitted batch jobs; apply finished ones (metered at the half rate). */
   async pollBatchJobs(userId: string): Promise<{ applied: number }> {
-    const jobs = await this.env.DB.prepare(
+    const jobs = await tenantDb(this.env, userId).prepare(
       `SELECT id, statement_id, batch_id, chunk_map, created_at FROM batch_jobs WHERE user_id = ? AND status = 'submitted'`,
     )
-      .bind(userId)
+      .bind()
       .all<{ id: string; statement_id: string; batch_id: string; chunk_map: string; created_at: string }>();
     if (!(jobs.results ?? []).length) return { applied: 0 };
 
@@ -1524,8 +1506,8 @@ export class TaxAgent extends Agent<Env> {
     const llm = await getLLM(this.env, profile, { userId });
     let appliedTotal = 0;
     const failJob = async (job: { id: string; statement_id: string }, why: string) => {
-      await this.env.DB.prepare(`UPDATE batch_jobs SET status='failed' WHERE id=?`).bind(job.id).run();
-      await this.env.DB.prepare(`UPDATE statements SET status='failed' WHERE id=?`).bind(job.statement_id).run();
+      await tenantDb(this.env, userId).prepare(`UPDATE batch_jobs SET status='failed' WHERE id=? AND user_id=?`).bind(job.id).run();
+      await tenantDb(this.env, userId).prepare(`UPDATE statements SET status='failed' WHERE id=? AND user_id=?`).bind(job.statement_id).run();
       await this.audit(userId, "batch_failed", JSON.stringify({ jobId: job.id, why }));
       await this.notify(userId, `Background categorisation didn't finish (${why}). The lines are imported — review/categorise them manually.`, null);
     };
@@ -1566,10 +1548,10 @@ export class TaxAgent extends Agent<Env> {
           const updates: D1PreparedStatement[] = [];
           for (const { id, item } of mapBatchItems(lineIds, parseBatchMessage(msg))) {
             updates.push(
-              this.env.DB.prepare(
+              tenantDb(this.env, userId).prepare(
                 // only touch still-pending lines (a receipt-matched line is already categorised)
                 `UPDATE transactions SET status='extracted', bucket=?, ato_label=?, confidence=?, reasoning=? WHERE id=? AND user_id=? AND status='needs_review'`,
-              ).bind(item.bucket, item.ato_label, item.confidence, item.reasoning, id, userId),
+              ).bind(item.bucket, item.ato_label, item.confidence, item.reasoning, id),
             );
             applied++;
           }
@@ -1584,10 +1566,10 @@ export class TaxAgent extends Agent<Env> {
         try {
           await this.env.DB.batch([
             ...(cents > 0 ? stmts : []),
-            this.env.DB.prepare(`UPDATE batch_jobs SET status='applied' WHERE id=?`).bind(job.id),
+            tenantDb(this.env, userId).prepare(`UPDATE batch_jobs SET status='applied' WHERE id=? AND user_id=?`).bind(job.id),
             // If every chunk errored and nothing applied, the import succeeded but categorisation
             // failed — mark the statement so the lines don't look stuck 'categorising'.
-            this.env.DB.prepare(`UPDATE statements SET status=? WHERE id=?`).bind(batchStatementStatus(applied, errored), job.statement_id),
+            tenantDb(this.env, userId).prepare(`UPDATE statements SET status=? WHERE id=? AND user_id=?`).bind(batchStatementStatus(applied, errored), job.statement_id),
           ]);
         } catch (e) {
           await noteMeteringError(this.env, userId, e);
@@ -1698,8 +1680,8 @@ export class TaxAgent extends Agent<Env> {
    *  Only the tenant's own receipt + bank line can be dismissed; idempotent. Changes suggestions only. */
   async dismissReconcileProposal(userId: string, receiptId: string, lineId: string): Promise<boolean> {
     if (!(await receiptLinkTargets(this.env, userId, receiptId, lineId))) return false;
-    await this.env.DB.prepare(`INSERT OR IGNORE INTO reconcile_dismissals (user_id, receipt_id, line_id) VALUES (?, ?, ?)`)
-      .bind(userId, receiptId, lineId)
+    await tenantDb(this.env, userId).prepare(`INSERT OR IGNORE INTO reconcile_dismissals (user_id, receipt_id, line_id) VALUES (?, ?, ?)`)
+      .bind(receiptId, lineId)
       .run();
     await this.audit(userId, "reconcile_dismiss", JSON.stringify({ receiptId, lineId }));
     return true;
@@ -1761,11 +1743,11 @@ export class TaxAgent extends Agent<Env> {
   }
 
   private async matchReceiptsForUser(userId: string): Promise<void> {
-    const rows = await this.env.DB.prepare(
+    const rows = await tenantDb(this.env, userId).prepare(
       `SELECT id, amount_aud_cents, amount_cents, txn_date, merchant, gst_cents, bucket, ato_label FROM transactions
         WHERE user_id = ? AND kind = 'receipt' AND status NOT IN ('duplicate') AND matched_txn_id IS NULL AND txn_date IS NOT NULL`,
     )
-      .bind(userId)
+      .bind()
       .all<{ id: string; amount_aud_cents: number | null; amount_cents: number | null; txn_date: string | null; merchant: string | null; gst_cents: number | null; bucket: string | null; ato_label: string | null }>();
     for (const r of rows.results ?? []) await this.matchReceipt(userId, r);
   }
@@ -1832,8 +1814,8 @@ export class TaxAgent extends Agent<Env> {
     const accounts = await new QuickBooksAdapter(this.env).listBankAccounts(userId);
     let synced = 0;
     for (const a of accounts) {
-      const exists = await this.env.DB.prepare(`SELECT id FROM accounts WHERE user_id = ? AND qbo_account_id = ?`)
-        .bind(userId, a.Id)
+      const exists = await tenantDb(this.env, userId).prepare(`SELECT id FROM accounts WHERE user_id = ? AND qbo_account_id = ?`)
+        .bind(a.Id)
         .first<{ id: string }>();
       if (exists) continue;
       await addAccount(this.env, userId, {
@@ -1885,15 +1867,15 @@ export class TaxAgent extends Agent<Env> {
    * retained CDR log for manual deletion — the same fallback purgeTenant uses), then mint the new one.
    */
   private async bankUserFor(userId: string, provider: BankFeedProvider): Promise<string> {
-    const row = await this.env.DB.prepare(
+    const row = await tenantDb(this.env, userId).prepare(
       `SELECT bank_provider_user_id AS id, bank_provider AS provider FROM profiles WHERE user_id = ?`,
-    ).bind(userId).first<{ id: string | null; provider: string | null }>();
+    ).bind().first<{ id: string | null; provider: string | null }>();
     if (row?.id) {
       const owner = row.provider ?? "basiq";
       if (owner === provider.id) return row.id;
-      const live = await this.env.DB.prepare(
+      const live = await tenantDb(this.env, userId).prepare(
         `SELECT COUNT(*) AS n FROM bank_connections WHERE user_id = ? AND provider_user_id = ? AND status <> 'revoked'`,
-      ).bind(userId, row.id).first<{ n: number }>();
+      ).bind(row.id).first<{ n: number }>();
       if ((live?.n ?? 0) > 0) {
         throw new Error("You already have a bank connection through another provider — withdraw it in Settings → Bank connections first.");
       }
@@ -1921,9 +1903,9 @@ export class TaxAgent extends Agent<Env> {
     // so a deterministic per-tenant address is used — it identifies, it does not receive mail.
     const email = `tenant-${userId}@users.quillo.au`;
     const id = await provider.createUser({ email });
-    await this.env.DB.prepare(
+    await tenantDb(this.env, userId).prepare(
       `UPDATE profiles SET bank_provider_user_id = ?, bank_provider = ? WHERE user_id = ?`,
-    ).bind(id, provider.id, userId).run();
+    ).bind(id, provider.id).run();
     // The provider's consumer id is a support identifier (Fiskil go-live: log end_user_id) — not CDR data.
     await this.audit(userId, "bank_provider_user_created", JSON.stringify({ provider: provider.id, provider_user_id: id }));
     return id;
@@ -1931,9 +1913,9 @@ export class TaxAgent extends Agent<Env> {
 
   /** The provider that holds this tenant's consumer (profiles.bank_provider), else the configured default. */
   private async bankProviderForTenant(userId: string): Promise<{ provider: BankFeedProvider; providerUserId: string | null }> {
-    const row = await this.env.DB.prepare(
+    const row = await tenantDb(this.env, userId).prepare(
       `SELECT bank_provider_user_id AS id, bank_provider AS provider FROM profiles WHERE user_id = ?`,
-    ).bind(userId).first<{ id: string | null; provider: string | null }>();
+    ).bind().first<{ id: string | null; provider: string | null }>();
     if (row?.id) return { provider: bankProvider(this.env, row.provider ?? "basiq"), providerUserId: row.id };
     return { provider: bankProvider(this.env), providerUserId: null };
   }
@@ -2024,9 +2006,9 @@ export class TaxAgent extends Agent<Env> {
     // Snapshot BEFORE the upsert, so the CDR record logs a grant only for a new connection or a
     // changed consent — not for every connection the aggregator re-lists on each callback.
     const before = new Map(
-      ((await this.env.DB.prepare(
+      ((await tenantDb(this.env, userId).prepare(
         `SELECT provider_connection_id, status, consent_id, consent_expires_at FROM bank_connections WHERE user_id = ? AND provider = ?`,
-      ).bind(userId, provider.id).all<{ provider_connection_id: string; status: string; consent_id: string | null; consent_expires_at: string | null }>()).results ?? [])
+      ).bind(provider.id).all<{ provider_connection_id: string; status: string; consent_id: string | null; consent_expires_at: string | null }>()).results ?? [])
         .map((r) => [r.provider_connection_id, r]),
     );
 
@@ -2039,7 +2021,7 @@ export class TaxAgent extends Agent<Env> {
       // A re-consented EXPIRED row clears data_deleted_at (#639): its old lines were deleted at expiry, and the
       // lines collected under the new consent must be deleted again on a later withdrawal / expiry.
       stmts.push(
-        this.env.DB.prepare(
+        tenantDb(this.env, userId).prepare(
           `INSERT INTO bank_connections
              (id, user_id, provider, access_type, provider_user_id, provider_connection_id,
               institution_id, institution, status, consent_id, consent_scope, consent_granted_at, consent_expires_at)
@@ -2055,26 +2037,12 @@ export class TaxAgent extends Agent<Env> {
              data_deleted_at = CASE WHEN bank_connections.status = 'expired' THEN NULL ELSE bank_connections.data_deleted_at END,
              last_error = NULL
            WHERE bank_connections.status <> 'revoked'`,
-        ).bind(
-          crypto.randomUUID(),
-          userId,
-          provider.id,
-          // Sandbox institutions are synthetic, but the row still records 'cdr' — the STRICT
-          // default. requiresAuResidency() is what distinguishes sandbox from production, not this.
-          "cdr",
-          providerUserId,
-          conn.connectionId,
-          conn.institutionId,
-          conn.institutionName,
-          consent?.id ?? null,
-          consent ? JSON.stringify(consent.permissions) : null,
-          consent?.created ?? null,
-          consent?.expiryDate ?? null,
+        ).bind(crypto.randomUUID(), provider.id, "cdr", providerUserId, conn.connectionId, conn.institutionId, conn.institutionName, consent?.id ?? null, consent ? JSON.stringify(consent.permissions) : null, consent?.created ?? null, consent?.expiryDate ?? null
         ),
       );
       for (const a of conn.accounts) {
         stmts.push(
-          this.env.DB.prepare(
+          tenantDb(this.env, userId).prepare(
             `INSERT INTO bank_connection_accounts
                (id, user_id, connection_id, provider_account_id, masked_number, name, type, currency, selected)
              SELECT ?, ?, bc.id, ?, ?, ?, ?, ?, 0 FROM bank_connections bc
@@ -2085,7 +2053,7 @@ export class TaxAgent extends Agent<Env> {
                name = excluded.name,
                type = excluded.type,
                currency = excluded.currency`,
-          ).bind(crypto.randomUUID(), userId, a.id, a.last4, a.name, a.type, a.currency, userId, provider.id, conn.connectionId),
+          ).bind(crypto.randomUUID(), userId, a.id, a.last4, a.name, a.type, a.currency, provider.id, conn.connectionId),
         );
       }
     }
@@ -2094,10 +2062,10 @@ export class TaxAgent extends Agent<Env> {
     // CDR record (0085): one consent_granted row per live connection this callback touched.
     if (conns.length) {
       const byId = new Map(conns.map((c) => [c.connectionId, c]));
-      const touched = await this.env.DB.prepare(
+      const touched = await tenantDb(this.env, userId).prepare(
         `SELECT id, provider, access_type, provider_connection_id FROM bank_connections
           WHERE user_id = ? AND status = 'active' AND provider = ?`,
-      ).bind(userId, provider.id).all<{ id: string; provider: string; access_type: string; provider_connection_id: string }>();
+      ).bind(provider.id).all<{ id: string; provider: string; access_type: string; provider_connection_id: string }>();
       for (const c of touched.results ?? []) {
         const pc = byId.get(c.provider_connection_id);
         if (!pc) continue;
@@ -2133,11 +2101,11 @@ export class TaxAgent extends Agent<Env> {
     // bounded sync starts. Best-effort: the connection is already recorded, so a failure here must
     // not turn a successful consent into an error page — the picker remains as the fallback.
     try {
-      const unmapped = await this.env.DB.prepare(
+      const unmapped = await tenantDb(this.env, userId).prepare(
         `SELECT a.provider_account_id FROM bank_connection_accounts a
            JOIN bank_connections c ON c.id = a.connection_id AND c.user_id = a.user_id
           WHERE a.user_id = ? AND a.account_id IS NULL AND c.status = 'active'`,
-      ).bind(userId).all<{ provider_account_id: string }>();
+      ).bind().all<{ provider_account_id: string }>();
       const sel = (unmapped.results ?? []).map((r) => ({ providerAccountId: r.provider_account_id, selected: true, accountId: "new" as string | null }));
       if (sel.length) await this.bankSelectAccounts(userId, sel);
       if (sel.length) await this.bankSync(userId);
@@ -2149,20 +2117,20 @@ export class TaxAgent extends Agent<Env> {
 
   /** Connections + their accounts, for the picker and the consent dashboard. */
   async bankConnections(userId: string): Promise<{ connections: unknown[] }> {
-    const conns = await this.env.DB.prepare(
+    const conns = await tenantDb(this.env, userId).prepare(
       `SELECT id, provider, access_type, institution, institution_id, status, consent_id,
               consent_scope, consent_granted_at, consent_expires_at, last_sync_at, last_error, created_at,
               revoked_at, upstream_revoked_at, data_deleted_at
          FROM bank_connections WHERE user_id = ? ORDER BY created_at DESC`,
-    ).bind(userId).all<Record<string, unknown>>();
+    ).bind().all<Record<string, unknown>>();
 
-    const accts = await this.env.DB.prepare(
+    const accts = await tenantDb(this.env, userId).prepare(
       `SELECT a.id, a.connection_id, a.provider_account_id, a.account_id, a.masked_number,
               a.name, a.type, a.currency, a.selected, acc.name AS mapped_account_name, acc.source AS mapped_account_source
          FROM bank_connection_accounts a
          LEFT JOIN accounts acc ON acc.id = a.account_id AND acc.user_id = a.user_id
         WHERE a.user_id = ? ORDER BY a.name`,
-    ).bind(userId).all<Record<string, unknown>>();
+    ).bind().all<Record<string, unknown>>();
 
     const byConn = new Map<string, Record<string, unknown>[]>();
     for (const a of accts.results ?? []) {
@@ -2202,11 +2170,11 @@ export class TaxAgent extends Agent<Env> {
       // lines, no other feed and no statements, so the remap / shared / canonical guards below can't
       // trip for it — it is created with source 'cdr_feed' directly.
       if (s.selected && s.accountId === "new") {
-        const src = await this.env.DB.prepare(
+        const src = await tenantDb(this.env, userId).prepare(
           `SELECT a.name, a.masked_number, a.type, a.account_id, c.institution, c.institution_id
              FROM bank_connection_accounts a JOIN bank_connections c ON c.id = a.connection_id AND c.user_id = a.user_id
             WHERE a.user_id = ? AND a.provider_account_id = ? AND c.status <> 'revoked' LIMIT 1`,
-        ).bind(userId, s.providerAccountId).first<{ name: string | null; masked_number: string | null; type: string | null; account_id: string | null; institution: string | null; institution_id: string | null }>();
+        ).bind(s.providerAccountId).first<{ name: string | null; masked_number: string | null; type: string | null; account_id: string | null; institution: string | null; institution_id: string | null }>();
         if (!src) { conflicts.push("That bank account is no longer connected."); continue; }
         if (src.account_id) {
           // Already mapped: keep the existing mapping rather than creating a duplicate account.
@@ -2215,16 +2183,16 @@ export class TaxAgent extends Agent<Env> {
           const id = crypto.randomUUID();
           const type = src.type === "credit-card" ? "credit_card" : src.type === "loan" || src.type === "mortgage" ? "loan" : "transaction";
           stmts.push(
-            this.env.DB.prepare(
+            tenantDb(this.env, userId).prepare(
               `INSERT INTO accounts (id, user_id, institution, name, last4, type, source) VALUES (?, ?, ?, ?, ?, ?, 'cdr_feed')`,
-            ).bind(id, userId, src.institution ?? src.institution_id, (src.name ?? "Bank account").slice(0, 80), src.masked_number, type),
+            ).bind(id, src.institution ?? src.institution_id, (src.name ?? "Bank account").slice(0, 80), src.masked_number, type),
           );
           stmts.push(
-            this.env.DB.prepare(
+            tenantDb(this.env, userId).prepare(
               `UPDATE bank_connection_accounts SET selected = 1, account_id = ?
                 WHERE user_id = ? AND provider_account_id = ?
                   AND connection_id IN (SELECT id FROM bank_connections WHERE user_id = ? AND status <> 'revoked')`,
-            ).bind(id, userId, s.providerAccountId, userId),
+            ).bind(id, s.providerAccountId),
           );
           continue;
         }
@@ -2235,14 +2203,14 @@ export class TaxAgent extends Agent<Env> {
         // both copies counting (the unique index includes account_id). The importer now dedups
         // across accounts, so a remap can no longer double-count — but it would still split the
         // account's history across two ledgers, so it is refused while the old one holds fed lines.
-        const prior = await this.env.DB.prepare(
+        const prior = await tenantDb(this.env, userId).prepare(
           `SELECT acc.name FROM bank_connection_accounts a
              LEFT JOIN accounts acc ON acc.id = a.account_id AND acc.user_id = a.user_id
             WHERE a.user_id = ? AND a.provider_account_id = ? AND a.account_id IS NOT NULL AND a.account_id != ?
               AND EXISTS (SELECT 1 FROM transactions t
                            WHERE t.user_id = a.user_id AND t.account_id = a.account_id AND t.source = 'cdr_feed')
             LIMIT 1`,
-        ).bind(userId, s.providerAccountId, s.accountId).first<{ name: string | null }>();
+        ).bind(s.providerAccountId, s.accountId).first<{ name: string | null }>();
         if (prior) {
           conflicts.push(
             `Lines from this bank account were already imported into "${prior.name ?? "another account"}", so it can't be re-pointed at a different account (its history would split). Keep the current mapping.`,
@@ -2252,12 +2220,12 @@ export class TaxAgent extends Agent<Env> {
         // One feed account per Quillo account (#576). Fed lines carry no connection id, so two
         // connections feeding one account could not be told apart — withdrawing one would delete the
         // other's lines and the user's work on them.
-        const shared = await this.env.DB.prepare(
+        const shared = await tenantDb(this.env, userId).prepare(
           `SELECT 1 FROM bank_connection_accounts a
              JOIN bank_connections c ON c.id = a.connection_id AND c.user_id = a.user_id
             WHERE a.user_id = ? AND a.account_id = ? AND a.selected = 1 AND a.provider_account_id <> ?
               AND c.status <> 'revoked' LIMIT 1`,
-        ).bind(userId, s.accountId, s.providerAccountId).first();
+        ).bind(s.accountId, s.providerAccountId).first();
         if (shared) {
           conflicts.push("That Quillo account is already fed by another bank account. Map each bank account to its own Quillo account.");
           continue;
@@ -2270,11 +2238,11 @@ export class TaxAgent extends Agent<Env> {
           continue;
         }
         stmts.push(
-          this.env.DB.prepare(`UPDATE accounts SET source = 'cdr_feed' WHERE id = ? AND user_id = ?`).bind(s.accountId, userId),
+          tenantDb(this.env, userId).prepare(`UPDATE accounts SET source = 'cdr_feed' WHERE id = ? AND user_id = ?`).bind(s.accountId),
         );
       }
       stmts.push(
-        this.env.DB.prepare(
+        tenantDb(this.env, userId).prepare(
           // Deselecting clears `selected` but KEEPS the mapping (#576): lines already collected onto
           // that account must stay findable by the withdraw-time PS12 delete. Sync reads selected = 1.
           // Never touches a withdrawn connection's rows.
@@ -2282,7 +2250,7 @@ export class TaxAgent extends Agent<Env> {
               SET selected = ?, account_id = CASE WHEN ? = 1 THEN ? ELSE account_id END
             WHERE user_id = ? AND provider_account_id = ?
               AND connection_id IN (SELECT id FROM bank_connections WHERE user_id = ? AND status <> 'revoked')`,
-        ).bind(s.selected ? 1 : 0, s.selected ? 1 : 0, s.accountId ?? null, userId, s.providerAccountId, userId),
+        ).bind(s.selected ? 1 : 0, s.selected ? 1 : 0, s.accountId ?? null, s.providerAccountId),
       );
     }
     if (stmts.length) await this.env.DB.batch(stmts);
@@ -2339,10 +2307,10 @@ export class TaxAgent extends Agent<Env> {
     // NOTHING, and no code ever sets status='expired' — so a year on, the row still said 'active'
     // and the sync kept pulling. Collecting outside a live consent is the failure with a regulator
     // attached, so the expiry is enforced at the puller rather than waiting on a lifecycle sweep.
-    const conns = await this.env.DB.prepare(
+    const conns = await tenantDb(this.env, userId).prepare(
       `SELECT c.id, c.provider, c.access_type, (c.consent_expires_at IS NOT NULL AND c.consent_expires_at <= datetime('now')) AS expired
          FROM bank_connections c WHERE c.user_id = ? AND c.status = 'active'`,
-    ).bind(userId).all<{ id: string; provider: string; access_type: string; expired: number }>();
+    ).bind().all<{ id: string; provider: string; access_type: string; expired: number }>();
 
     // An interrupted run (its alarm chain died) must neither block this sync nor keep reading as
     // live. Lines it already wrote are real and stay; re-pulling them is a deduplicated no-op.
@@ -2357,12 +2325,12 @@ export class TaxAgent extends Agent<Env> {
         // Recorded as its own run status rather than skipped silently: an expired consent that
         // imports nothing is otherwise indistinguishable from a genuinely quiet month, which is
         // exactly the silent-undercount a tax position must never have.
-        await this.env.DB.prepare(
+        await tenantDb(this.env, userId).prepare(
           `INSERT INTO bank_sync_runs (id, user_id, connection_id, from_date, to_date, status, error, updated_at, finished_at)
            VALUES (?, ?, ?, ?, ?, 'failed', 'consent expired — reconnect this bank to keep importing', datetime('now'), datetime('now'))`,
-        ).bind(crypto.randomUUID(), userId, conn.id, from, to).run();
-        await this.env.DB.prepare(`UPDATE bank_connections SET status = 'expired' WHERE id = ? AND user_id = ? AND status = 'active'`)
-          .bind(conn.id, userId).run();
+        ).bind(crypto.randomUUID(), conn.id, from, to).run();
+        await tenantDb(this.env, userId).prepare(`UPDATE bank_connections SET status = 'expired' WHERE id = ? AND user_id = ? AND status = 'active'`)
+          .bind(conn.id).run();
         await cdrAudit(this.env, userId, { event: "consent_expired", connectionId: conn.id, provider: conn.provider, accessType: conn.access_type });
         errors.push("A bank consent has expired — reconnect it to keep importing.");
         runs++;
@@ -2372,11 +2340,11 @@ export class TaxAgent extends Agent<Env> {
       // data minimisation is an obligation, so this filter is the enforcement point (re-checked per
       // page by the step, so a mid-run deselect stops collection too). Ordered so the snapshot the
       // run resumes from is deterministic.
-      const selected = await this.env.DB.prepare(
+      const selected = await tenantDb(this.env, userId).prepare(
         `SELECT provider_account_id, account_id FROM bank_connection_accounts
           WHERE user_id = ? AND connection_id = ? AND selected = 1 AND account_id IS NOT NULL
           ORDER BY provider_account_id`,
-      ).bind(userId, conn.id).all<{ provider_account_id: string; account_id: string }>();
+      ).bind(conn.id).all<{ provider_account_id: string; account_id: string }>();
       const picked = selected.results ?? [];
       if (!picked.length) continue;
 
@@ -2435,10 +2403,10 @@ export class TaxAgent extends Agent<Env> {
     if (this.feedPostImportRunning) return;
     this.feedPostImportRunning = true;
     try {
-      const due = await this.env.DB.prepare(
+      const due = await tenantDb(this.env, userId).prepare(
         `SELECT id FROM bank_sync_runs
           WHERE user_id = ? AND status != 'running' AND imported > 0 AND post_import_at IS NULL`,
-      ).bind(userId).all<{ id: string }>();
+      ).bind().all<{ id: string }>();
       const ids = (due.results ?? []).map((r) => r.id);
       if (!ids.length) return;
       await this.afterLinesImported(userId);
@@ -2489,10 +2457,10 @@ export class TaxAgent extends Agent<Env> {
     } catch (e) {
       const msg = (e as Error).message || "sync continuation failed";
       for (const id of runIds) {
-        await this.env.DB.prepare(
+        await tenantDb(this.env, userId).prepare(
           `UPDATE bank_sync_runs SET status = 'failed', error = ?, cursor = NULL, finished_at = datetime('now'), updated_at = datetime('now')
             WHERE id = ? AND user_id = ? AND status = 'running'`,
-        ).bind(msg, id, userId).run().catch(() => {});
+        ).bind(msg, id).run().catch(() => {});
       }
       await this.audit(userId, "bank_sync_continue_failed", JSON.stringify({ error: msg })).catch(() => {});
       // Lines earlier hops wrote still need the post-import pipeline; failed runs stay eligible
@@ -2632,7 +2600,7 @@ export class TaxAgent extends Agent<Env> {
 
   /** One-way CDR taint (migration 0077). Audited only on the transition, not on every sync. */
   private async markCdrTainted(userId: string): Promise<void> {
-    const r = await this.env.DB.prepare(`UPDATE profiles SET cdr_tainted = 1 WHERE user_id = ? AND cdr_tainted = 0`).bind(userId).run();
+    const r = await tenantDb(this.env, userId).prepare(`UPDATE profiles SET cdr_tainted = 1 WHERE user_id = ? AND cdr_tainted = 0`).bind().run();
     if (Number(r.meta?.changes ?? 0) > 0) {
       await this.audit(userId, "cdr_taint_set", JSON.stringify({ reason: "production CDR lines imported" }));
     }
@@ -2658,7 +2626,7 @@ export class TaxAgent extends Agent<Env> {
    * `redactStatementLine` instead (S8b, flag redact_statement_lines — see categoriseStatement).
    */
   async categoriseFeedLines(userId: string): Promise<{ categorised: number }> {
-    const rows = await this.env.DB.prepare(
+    const rows = await tenantDb(this.env, userId).prepare(
       // FX_CONVERTED matters here: bankSync deliberately parks unconverted foreign lines in
       // needs_review so the excluded money stays VISIBLE. Without this clause categorisation would
       // flip them to 'extracted' — a healthy-looking row contributing nothing to the position,
@@ -2667,7 +2635,7 @@ export class TaxAgent extends Agent<Env> {
         WHERE user_id = ? AND source = 'cdr_feed' AND kind = 'bank_line' AND status = 'needs_review'
           AND ${FX_CONVERTED}
         LIMIT ?`,
-    ).bind(userId, LIVE_MAX_LINES).all<{ id: string; merchant: string | null; amount_cents: number | null; txn_date: string | null; direction: string | null }>();
+    ).bind(LIVE_MAX_LINES).all<{ id: string; merchant: string | null; amount_cents: number | null; txn_date: string | null; direction: string | null }>();
     const items = rows.results ?? [];
     if (!items.length) return { categorised: 0 };
 
@@ -2705,9 +2673,9 @@ export class TaxAgent extends Agent<Env> {
         const updates: D1PreparedStatement[] = [];
         for (const { id, item } of mapBatchItems(chunk.map((c) => c.id), results)) {
           updates.push(
-            this.env.DB.prepare(
+            tenantDb(this.env, userId).prepare(
               `UPDATE transactions SET status='extracted', bucket=?, ato_label=?, confidence=?, reasoning=? WHERE id=? AND user_id=? AND status='needs_review'`,
-            ).bind(item.bucket, item.ato_label, item.confidence, item.reasoning, id, userId),
+            ).bind(item.bucket, item.ato_label, item.confidence, item.reasoning, id),
           );
           categorised++;
         }
@@ -2783,7 +2751,7 @@ export class TaxAgent extends Agent<Env> {
 
   /** Set an account's canonical money source (qbo_feed | statement | manual). */
   async setAccountSource(userId: string, accountId: string, source: string): Promise<void> {
-    await this.env.DB.prepare(`UPDATE accounts SET source = ? WHERE id = ? AND user_id = ?`).bind(source, accountId, userId).run();
+    await tenantDb(this.env, userId).prepare(`UPDATE accounts SET source = ? WHERE id = ? AND user_id = ?`).bind(source, accountId).run();
     await this.audit(userId, "account_source", JSON.stringify({ accountId, source }));
   }
 
@@ -2808,11 +2776,11 @@ export class TaxAgent extends Agent<Env> {
     if (parsed) {
       // Store structured fields; mark as 'extracted' but flag for human review — the
       // parser is heuristic and the bucket cannot be determined from the alert alone.
-      await this.env.DB.prepare(
+      await tenantDb(this.env, userId).prepare(
         `INSERT INTO transactions (id, user_id, source, status, merchant, amount_cents, txn_date)
          VALUES (?, ?, ?, 'needs_review', ?, ?, ?)`,
       )
-        .bind(txnId, userId, source, parsed.merchant, parsed.amount_cents, parsed.txn_date)
+        .bind(txnId, source, parsed.merchant, parsed.amount_cents, parsed.txn_date)
         .run();
       await this.audit(userId, "ingest_text_parsed", JSON.stringify({ txnId, source, merchant: parsed.merchant, amount_cents: parsed.amount_cents }));
       await this.notify(
@@ -2822,10 +2790,10 @@ export class TaxAgent extends Agent<Env> {
       );
     } else {
       // No known pattern — store as unstructured and ask for manual review.
-      await this.env.DB.prepare(
+      await tenantDb(this.env, userId).prepare(
         `INSERT INTO transactions (id, user_id, source, status) VALUES (?, ?, ?, 'needs_review')`,
       )
-        .bind(txnId, userId, source)
+        .bind(txnId, source)
         .run();
       await this.audit(userId, "ingest_text", JSON.stringify({ txnId, source }));
       await this.notify(userId, "Received an email with no receipt attachment — left for manual review.", txnId);
@@ -2846,10 +2814,10 @@ export class TaxAgent extends Agent<Env> {
   ): Promise<string> {
     const txnId = crypto.randomUUID();
     const safe = redact(text); // strip PII before it reaches the model or logs
-    await this.env.DB.prepare(
+    await tenantDb(this.env, userId).prepare(
       `INSERT INTO transactions (id, user_id, source, status) VALUES (?, ?, ?, 'needs_extraction')`,
     )
-      .bind(txnId, userId, source)
+      .bind(txnId, source)
       .run();
     await this.audit(userId, "ingest_text_categorise", JSON.stringify({ txnId, source }));
 
@@ -2955,30 +2923,12 @@ export class TaxAgent extends Agent<Env> {
     const fxUnconverted = currency !== base && fx.fx_rate == null;
     const status = fxUnconverted ? "needs_review" : "extracted";
 
-    await this.env.DB.prepare(
+    await tenantDb(this.env, userId).prepare(
       `UPDATE transactions SET status=?, merchant=?, amount_cents=?, currency=?,
               amount_aud_cents=?, fx_rate=?, fx_date=?, gst_cents=?, txn_date=?, bucket=?,
               ato_label=?, property_id=?, paid_account=?, confidence=?, reasoning=? WHERE id=? AND user_id=?`,
     )
-      .bind(
-        status,
-        final.merchant,
-        final.amount_cents,
-        currency,
-        fx.amount_aud_cents,
-        fx.fx_rate,
-        fx.fx_date,
-        gstCents,
-        final.txn_date,
-        final.bucket,
-        final.ato_label,
-        final.property_id,
-        final.paid_account ?? null,
-        final.confidence,
-        // Teaching moment: the one-line "why" (note when a deterministic user rule decided it).
-        rule ? `Matched your saved rule for "${final.merchant}". ${final.reasoning}` : final.reasoning,
-        txnId,
-        userId,
+      .bind(status, final.merchant, final.amount_cents, currency, fx.amount_aud_cents, fx.fx_rate, fx.fx_date, gstCents, final.txn_date, final.bucket, final.ato_label, final.property_id, final.paid_account ?? null, final.confidence, rule ? `Matched your saved rule for "${final.merchant}". ${final.reasoning}` : final.reasoning, txnId
       )
       .run();
 
@@ -3210,11 +3160,11 @@ export class TaxAgent extends Agent<Env> {
     // cgt_parcel_method: record-keeping only (NULL = specific identification). Whitelisted — the
     // engine never reads it, but the evidence trail shouldn't carry junk.
     const method = e.method && ["specific_id", "fifo"].includes(e.method) ? e.method : null;
-    await this.env.DB.prepare(
+    await tenantDb(this.env, userId).prepare(
       `INSERT INTO cgt_events (id, user_id, cgt_asset_id, fy, event_type, event_date, proceeds_cents, cost_base_used_cents, units_disposed, discount_eligible, method)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-      .bind(id, userId, e.cgt_asset_id, fy, e.event_type ?? "disposal", e.event_date, e.proceeds_cents ?? 0, e.cost_base_used_cents ?? 0, cgtUnits(e.units_disposed), e.discount_eligible == null ? null : e.discount_eligible ? 1 : 0, method)
+      .bind(id, e.cgt_asset_id, fy, e.event_type ?? "disposal", e.event_date, e.proceeds_cents ?? 0, e.cost_base_used_cents ?? 0, cgtUnits(e.units_disposed), e.discount_eligible == null ? null : e.discount_eligible ? 1 : 0, method)
       .run();
     await this.audit(userId, "cgt_event_recorded", JSON.stringify({ id, asset: e.cgt_asset_id, fy }));
     return id;
@@ -3231,11 +3181,11 @@ export class TaxAgent extends Agent<Env> {
       { table: "entities", id: g.employer_entity_id, label: "employer entity" },
     ]);
     const id = crypto.randomUUID();
-    await this.env.DB.prepare(
+    await tenantDb(this.env, userId).prepare(
       `INSERT INTO ess_grants (id, user_id, person_id, employer_entity_id, scheme_type, grant_date, taxing_point_date, shares_or_options, units, discount_cents, market_value_cents, ownership_gt_10pct)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-      .bind(id, userId, g.person_id ?? `person_self_${userId}`, g.employer_entity_id ?? null, g.scheme_type, g.grant_date ?? null, g.taxing_point_date ?? null, g.shares_or_options ?? null, g.units ?? null, g.discount_cents ?? 0, g.market_value_cents ?? null, g.ownership_gt_10pct ?? 0)
+      .bind(id, g.person_id ?? `person_self_${userId}`, g.employer_entity_id ?? null, g.scheme_type, g.grant_date ?? null, g.taxing_point_date ?? null, g.shares_or_options ?? null, g.units ?? null, g.discount_cents ?? 0, g.market_value_cents ?? null, g.ownership_gt_10pct ?? 0)
       .run();
     await this.audit(userId, "ess_grant_recorded", JSON.stringify({ id, scheme: g.scheme_type }));
     return id;
@@ -3248,11 +3198,11 @@ export class TaxAgent extends Agent<Env> {
   ): Promise<string> {
     const id = crypto.randomUUID();
     const fy = lb.fy ?? this.currentFyLabel(await this.jurisdictionFor(userId));
-    await this.env.DB.prepare(
+    await tenantDb(this.env, userId).prepare(
       `INSERT INTO vehicle_logbooks (id, user_id, person_id, asset_id, fy, start_date, end_date, business_km, total_km, running_costs_cents, business_use_pct)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-      .bind(id, userId, lb.person_id ?? `person_self_${userId}`, lb.asset_id ?? null, fy, lb.start_date ?? null, lb.end_date ?? null, lb.business_km ?? null, lb.total_km ?? null, lb.running_costs_cents ?? 0, lb.business_use_pct ?? null)
+      .bind(id, lb.person_id ?? `person_self_${userId}`, lb.asset_id ?? null, fy, lb.start_date ?? null, lb.end_date ?? null, lb.business_km ?? null, lb.total_km ?? null, lb.running_costs_cents ?? 0, lb.business_use_pct ?? null)
       .run();
     await this.audit(userId, "vehicle_logbook_recorded", JSON.stringify({ id, fy }));
     return id;
@@ -3271,11 +3221,11 @@ export class TaxAgent extends Agent<Env> {
     ]);
     const id = crypto.randomUUID();
     const fy = d.fy ?? this.currentFyLabel(await this.jurisdictionFor(userId));
-    await this.env.DB.prepare(
+    await tenantDb(this.env, userId).prepare(
       `INSERT INTO trust_distributions (id, user_id, trust_entity_id, fy, beneficiary_person_id, beneficiary_entity_id, share_pct, amount_cents, character, franking_credit_cents)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-      .bind(id, userId, d.trust_entity_id, fy, d.beneficiary_person_id ?? `person_self_${userId}`, d.beneficiary_entity_id ?? null, d.share_pct ?? null, d.amount_cents ?? 0, d.character ?? "ordinary", d.franking_credit_cents ?? 0)
+      .bind(id, d.trust_entity_id, fy, d.beneficiary_person_id ?? `person_self_${userId}`, d.beneficiary_entity_id ?? null, d.share_pct ?? null, d.amount_cents ?? 0, d.character ?? "ordinary", d.franking_credit_cents ?? 0)
       .run();
     await this.audit(userId, "trust_distribution_recorded", JSON.stringify({ id, trust: d.trust_entity_id, fy }));
     return id;
@@ -3290,11 +3240,11 @@ export class TaxAgent extends Agent<Env> {
     await assertOwns(this.env, userId, [{ table: "entities", id: d.partnership_entity_id, label: "partnership" }]); // sweep #694
     const id = crypto.randomUUID();
     const fy = d.fy ?? this.currentFyLabel(await this.jurisdictionFor(userId));
-    await this.env.DB.prepare(
+    await tenantDb(this.env, userId).prepare(
       `INSERT INTO trust_distributions (id, user_id, trust_entity_id, fy, beneficiary_person_id, share_pct, amount_cents, character, franking_credit_cents, source_kind)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'partnership')`,
     )
-      .bind(id, userId, d.partnership_entity_id, fy, d.beneficiary_person_id ?? `person_self_${userId}`, d.share_pct ?? null, d.amount_cents ?? 0, d.character ?? "ordinary", d.franking_credit_cents ?? 0)
+      .bind(id, d.partnership_entity_id, fy, d.beneficiary_person_id ?? `person_self_${userId}`, d.share_pct ?? null, d.amount_cents ?? 0, d.character ?? "ordinary", d.franking_credit_cents ?? 0)
       .run();
     await this.audit(userId, "partnership_distribution_recorded", JSON.stringify({ id, partnership: d.partnership_entity_id, fy }));
     return id;
@@ -3306,11 +3256,11 @@ export class TaxAgent extends Agent<Env> {
     m: { smsf_entity_id: string; person_id?: string | null; phase?: string | null; pension_balance_cents?: number; accumulation_balance_cents?: number; transfer_balance_cents?: number },
   ): Promise<string> {
     const id = crypto.randomUUID();
-    await this.env.DB.prepare(
+    await tenantDb(this.env, userId).prepare(
       `INSERT INTO smsf_members (id, user_id, smsf_entity_id, person_id, phase, pension_balance_cents, accumulation_balance_cents, transfer_balance_cents)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-      .bind(id, userId, m.smsf_entity_id, m.person_id ?? `person_self_${userId}`, m.phase ?? "accumulation", m.pension_balance_cents ?? 0, m.accumulation_balance_cents ?? 0, m.transfer_balance_cents ?? 0)
+      .bind(id, m.smsf_entity_id, m.person_id ?? `person_self_${userId}`, m.phase ?? "accumulation", m.pension_balance_cents ?? 0, m.accumulation_balance_cents ?? 0, m.transfer_balance_cents ?? 0)
       .run();
     await this.audit(userId, "smsf_member_recorded", JSON.stringify({ id, smsf: m.smsf_entity_id, phase: m.phase }));
     return id;
@@ -3322,10 +3272,10 @@ export class TaxAgent extends Agent<Env> {
   ): Promise<string> {
     const id = crypto.randomUUID();
     const fy = c.fy ?? this.currentFyLabel(await this.jurisdictionFor(userId));
-    await this.env.DB.prepare(
+    await tenantDb(this.env, userId).prepare(
       `INSERT INTO super_contributions (id, user_id, person_id, fy, type, amount_cents) VALUES (?, ?, ?, ?, ?, ?)`,
     )
-      .bind(id, userId, c.person_id ?? `person_self_${userId}`, fy, c.type ?? "concessional", c.amount_cents ?? 0)
+      .bind(id, c.person_id ?? `person_self_${userId}`, fy, c.type ?? "concessional", c.amount_cents ?? 0)
       .run();
     await this.audit(userId, "super_contribution_recorded", JSON.stringify({ id, type: c.type, fy }));
     return id;
@@ -3339,11 +3289,11 @@ export class TaxAgent extends Agent<Env> {
   ): Promise<string> {
     if (!b.period_start || !b.period_end) throw new Error("period_start and period_end are required");
     const id = crypto.randomUUID();
-    await this.env.DB.prepare(
+    await tenantDb(this.env, userId).prepare(
       `INSERT INTO bas_periods (id, user_id, entity_id, period_start, period_end, output_gst_cents, input_gst_cents, payg_withholding_cents, payg_instalment_cents, status)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-      .bind(id, userId, b.entity_id ?? null, b.period_start, b.period_end, b.output_gst_cents ?? 0, b.input_gst_cents ?? 0, b.payg_withholding_cents ?? 0, b.payg_instalment_cents ?? 0, b.status === "finalised" ? "finalised" : "draft")
+      .bind(id, b.entity_id ?? null, b.period_start, b.period_end, b.output_gst_cents ?? 0, b.input_gst_cents ?? 0, b.payg_withholding_cents ?? 0, b.payg_instalment_cents ?? 0, b.status === "finalised" ? "finalised" : "draft")
       .run();
     await this.audit(userId, "bas_period_recorded", JSON.stringify({ id, period_start: b.period_start, period_end: b.period_end }));
     return id;
@@ -3356,10 +3306,10 @@ export class TaxAgent extends Agent<Env> {
   ): Promise<string> {
     const id = crypto.randomUUID();
     const fy = p.fy ?? this.currentFyLabel(await this.jurisdictionFor(userId));
-    await this.env.DB.prepare(
+    await tenantDb(this.env, userId).prepare(
       `INSERT INTO payg_instalments (id, user_id, entity_id, fy, quarter, instalment_cents, basis) VALUES (?, ?, ?, ?, ?, ?, ?)`,
     )
-      .bind(id, userId, p.entity_id ?? null, fy, p.quarter ?? null, p.instalment_cents ?? 0, p.basis ?? "ato_amount")
+      .bind(id, p.entity_id ?? null, fy, p.quarter ?? null, p.instalment_cents ?? 0, p.basis ?? "ato_amount")
       .run();
     await this.audit(userId, "payg_instalment_recorded", JSON.stringify({ id, fy, quarter: p.quarter }));
     return id;
@@ -3376,20 +3326,20 @@ export class TaxAgent extends Agent<Env> {
     suggestions: { txn_id: string; merchant: string | null; txn_amount_cents: number; txn_date: string | null; bucket: string | null; income_id: string; income_type: string; income_gross_cents: number; income_net_cents: number | null; income_date: string | null }[];
     matched: { txn_id: string; merchant: string | null; txn_amount_cents: number; txn_date: string | null; income_id: string; income_type: string; income_gross_cents: number }[];
   }> {
-    const credits = await this.env.DB.prepare(
+    const credits = await tenantDb(this.env, userId).prepare(
       `SELECT id, merchant, COALESCE(amount_aud_cents, amount_cents) AS amt, txn_date, bucket, matched_income_id
          FROM transactions
         WHERE user_id = ? AND kind = 'bank_line' AND direction = 'credit'
           AND bucket IN ('income_business','income_property','income_personal')
           AND status NOT IN ('duplicate','ignored')`,
     )
-      .bind(userId)
+      .bind()
       .all<{ id: string; merchant: string | null; amt: number | null; txn_date: string | null; bucket: string | null; matched_income_id: string | null }>();
-    const incomes = await this.env.DB.prepare(
+    const incomes = await tenantDb(this.env, userId).prepare(
       `SELECT id, income_type, gross_cents, net_cents, COALESCE(amount_aud_cents, gross_cents) AS gross_aud, txn_date, fy
          FROM income WHERE user_id = ?`,
     )
-      .bind(userId)
+      .bind()
       .all<{ id: string; income_type: string; gross_cents: number; net_cents: number | null; gross_aud: number; txn_date: string | null; fy: string }>();
     const incomeRows = incomes.results ?? [];
     const incomeById = new Map(incomeRows.map((r) => [r.id, r]));
@@ -3437,34 +3387,34 @@ export class TaxAgent extends Agent<Env> {
 
   /** Confirm a credit bank-line duplicates a documented income row → count the pair once. Audited. */
   async linkIncome(userId: string, txnId: string, incomeId: string): Promise<void> {
-    const inc = await this.env.DB.prepare(`SELECT id, fy FROM income WHERE id = ? AND user_id = ?`).bind(incomeId, userId).first<{ id: string; fy: string }>();
+    const inc = await tenantDb(this.env, userId).prepare(`SELECT id, fy FROM income WHERE id = ? AND user_id = ?`).bind(incomeId).first<{ id: string; fy: string }>();
     if (!inc) throw new Error("income row not found");
     // One income row → one credit (else two credits both excluded but one row counted = under-count).
-    const taken = await this.env.DB.prepare(
+    const taken = await tenantDb(this.env, userId).prepare(
       `SELECT id FROM transactions WHERE user_id = ? AND matched_income_id = ? AND id != ?`,
     )
-      .bind(userId, incomeId, txnId)
+      .bind(incomeId, txnId)
       .first<{ id: string }>();
     if (taken) throw new Error("that income row is already linked to another transaction");
     // Scope to an income-bucket credit in the SAME financial year as the income row.
-    const txn = await this.env.DB.prepare(
+    const txn = await tenantDb(this.env, userId).prepare(
       `SELECT txn_date FROM transactions WHERE id = ? AND user_id = ? AND kind = 'bank_line' AND direction = 'credit'
          AND bucket IN ('income_business','income_property','income_personal')`,
     )
-      .bind(txnId, userId)
+      .bind(txnId)
       .first<{ txn_date: string | null }>();
     if (!txn) throw new Error("income credit not found");
     if (fyForDate(txn.txn_date, await this.jurisdictionFor(userId)) !== inc.fy) throw new Error("the credit and the income row are in different financial years");
-    await this.env.DB.prepare(`UPDATE transactions SET matched_income_id = ? WHERE id = ? AND user_id = ?`)
-      .bind(incomeId, txnId, userId)
+    await tenantDb(this.env, userId).prepare(`UPDATE transactions SET matched_income_id = ? WHERE id = ? AND user_id = ?`)
+      .bind(incomeId, txnId)
       .run();
     await this.audit(userId, "income_linked", JSON.stringify({ txnId, incomeId }));
   }
 
   /** Undo an income match (the credit counts on its own again). Audited. */
   async unlinkIncome(userId: string, txnId: string): Promise<void> {
-    await this.env.DB.prepare(`UPDATE transactions SET matched_income_id = NULL WHERE id = ? AND user_id = ?`)
-      .bind(txnId, userId)
+    await tenantDb(this.env, userId).prepare(`UPDATE transactions SET matched_income_id = NULL WHERE id = ? AND user_id = ?`)
+      .bind(txnId)
       .run();
     await this.audit(userId, "income_unlinked", JSON.stringify({ txnId }));
   }
@@ -3493,7 +3443,7 @@ export class TaxAgent extends Agent<Env> {
     fy?: string,
   ): Promise<{ fy: string; rows: { bucket: string; ato_label: string | null; deductibility: string; n: number; total_cents: number; resolved_cents: number }[] }> {
     const { fy: label, start, end } = this.fyBoundsFor(fy, await this.jurisdictionFor(userId));
-    const rows = await this.env.DB.prepare(
+    const rows = await tenantDb(this.env, userId).prepare(
       `SELECT bucket, ato_label, COALESCE(deductibility,'undetermined') AS deductibility,
               COUNT(*) AS n,
               COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS total_cents,
@@ -3504,7 +3454,7 @@ export class TaxAgent extends Agent<Env> {
         GROUP BY bucket, ato_label, deductibility
         ORDER BY bucket, total_cents DESC`,
     )
-      .bind(userId, start, end)
+      .bind(start, end)
       .all<{ bucket: string; ato_label: string | null; deductibility: string; n: number; total_cents: number; resolved_cents: number }>();
     return { fy: label, rows: rows.results ?? [] };
   }
@@ -3523,11 +3473,11 @@ export class TaxAgent extends Agent<Env> {
     const amt = deductibleAmountCents ?? null;
     const stmts = txnIds.map((id) =>
       pct != null
-        ? this.env.DB.prepare(
+        ? tenantDb(this.env, userId).prepare(
             `UPDATE transactions SET deductibility = ?, deductible_amount_cents = CAST(ROUND(COALESCE(amount_aud_cents, amount_cents) * ? / 100.0) AS INTEGER) WHERE id = ? AND user_id = ?`,
-          ).bind(state, pct, id, userId)
-        : this.env.DB.prepare(`UPDATE transactions SET deductibility = ?, deductible_amount_cents = ? WHERE id = ? AND user_id = ?`)
-            .bind(state, amt, id, userId),
+          ).bind(state, pct, id)
+        : tenantDb(this.env, userId).prepare(`UPDATE transactions SET deductibility = ?, deductible_amount_cents = ? WHERE id = ? AND user_id = ?`)
+            .bind(state, amt, id),
     );
     let updated = 0;
     for (let i = 0; i < stmts.length; i += 50) {
@@ -3550,7 +3500,7 @@ export class TaxAgent extends Agent<Env> {
     if (!TaxAgent.DEDUCTIBILITY_STATES.has(opts.state)) throw new Error(`invalid deductibility state: ${opts.state}`);
     const { start, end } = this.fyBoundsFor(opts.fy, await this.jurisdictionFor(userId));
     const pct = opts.businessUsePct == null ? null : Math.max(0, Math.min(100, opts.businessUsePct));
-    const res = await this.env.DB.prepare(
+    const res = await tenantDb(this.env, userId).prepare(
       `UPDATE transactions
           SET deductibility = ?,
               deductible_amount_cents = CASE WHEN ? IS NULL THEN NULL
@@ -3558,7 +3508,7 @@ export class TaxAgent extends Agent<Env> {
         WHERE user_id = ? AND txn_date >= ? AND txn_date <= ? AND ${COUNTABLE}
           AND bucket = ? AND COALESCE(ato_label,'') = COALESCE(?,'')`,
     )
-      .bind(opts.state, pct, pct, userId, start, end, opts.bucket, opts.atoLabel ?? null)
+      .bind(opts.state, pct, pct, start, end, opts.bucket, opts.atoLabel ?? null)
       .run();
     const updated = res.meta?.changes ?? 0;
     await this.audit(userId, "deductibility_resolved", JSON.stringify({ bucket: opts.bucket, atoLabel: opts.atoLabel ?? null, state: opts.state, businessUsePct: pct, updated }));
@@ -3625,8 +3575,8 @@ export class TaxAgent extends Agent<Env> {
         // report falls back to the full amount for a 100%-deductible label (matches resolveByLabel).
         const amt = v.deductibility === "likely_not" ? 0 : null;
         updates.push(
-          this.env.DB.prepare(`UPDATE transactions SET deductibility = ?, deductible_amount_cents = ? WHERE id = ? AND user_id = ?`)
-            .bind(v.deductibility, amt, r.id, userId),
+          tenantDb(this.env, userId).prepare(`UPDATE transactions SET deductibility = ?, deductible_amount_cents = ? WHERE id = ? AND user_id = ?`)
+            .bind(v.deductibility, amt, r.id),
         );
       }
       for (let i = 0; i < updates.length; i += 50) await this.env.DB.batch(updates.slice(i, i + 50));
@@ -3697,15 +3647,12 @@ export class TaxAgent extends Agent<Env> {
       needs_review?: number;
     },
   ): Promise<void> {
-    await this.env.DB.prepare(
+    await tenantDb(this.env, userId).prepare(
       `INSERT INTO documents (id, user_id, person_id, doc_type, fy, property_id, entity_id, r2_key,
          image_hash, issuer, doc_date, extracted_json, classification_confidence, needs_review)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-      .bind(
-        doc.id, userId, doc.person_id ?? null, doc.doc_type, doc.fy ?? null, doc.property_id ?? null,
-        doc.entity_id ?? null, doc.r2_key, doc.image_hash ?? null, doc.issuer ?? null, doc.doc_date ?? null,
-        doc.extracted_json ?? null, doc.classification_confidence ?? null, doc.needs_review ?? 0,
+      .bind(doc.id, doc.person_id ?? null, doc.doc_type, doc.fy ?? null, doc.property_id ?? null, doc.entity_id ?? null, doc.r2_key, doc.image_hash ?? null, doc.issuer ?? null, doc.doc_date ?? null, doc.extracted_json ?? null, doc.classification_confidence ?? null, doc.needs_review ?? 0
       )
       .run();
   }
@@ -3764,8 +3711,8 @@ export class TaxAgent extends Agent<Env> {
     const hintNames = TaxAgent.nameWords(hintTokens);
     if (!hintNames.size) return null; // nothing but numbers/street-types — too weak to resolve
 
-    const rows = await this.env.DB.prepare(`SELECT id, label, address FROM properties WHERE user_id = ?`)
-      .bind(userId)
+    const rows = await tenantDb(this.env, userId).prepare(`SELECT id, label, address FROM properties WHERE user_id = ?`)
+      .bind()
       .all<{ id: string; label: string | null; address: string | null }>();
 
     const scored: { id: string; score: number }[] = [];
@@ -3806,8 +3753,8 @@ export class TaxAgent extends Agent<Env> {
     // Exact-duplicate guard: identical bytes ⇒ same document. Without this, a re-sent email
     // (reply-all, re-delivery) would double-count income/expenses AND re-bill the model call —
     // the old ingest() path deduped on image_hash and this path must too.
-    const dupDoc = await this.env.DB.prepare(`SELECT id, doc_type, r2_key FROM documents WHERE user_id = ? AND image_hash IN (?, ?) LIMIT 1`)
-      .bind(userId, imageHash, bytesHash)
+    const dupDoc = await tenantDb(this.env, userId).prepare(`SELECT id, doc_type, r2_key FROM documents WHERE user_id = ? AND image_hash IN (?, ?) LIMIT 1`)
+      .bind(imageHash, bytesHash)
       .first<{ id: string; doc_type: string; r2_key: string | null }>();
     if (dupDoc) {
       // Same bytes as a document whose original was cleared from storage: put this copy back (no model call).
@@ -3876,10 +3823,10 @@ export class TaxAgent extends Agent<Env> {
         case "invoice": {
           // Route through the existing receipt extractor as a transaction linked to this document.
           const txnId = crypto.randomUUID();
-          await this.env.DB.prepare(
+          await tenantDb(this.env, userId).prepare(
             `INSERT INTO transactions (id, user_id, source, status, receipt_key, image_hash, document_id)
              VALUES (?, ?, ?, 'needs_extraction', ?, ?, ?)`,
-          ).bind(txnId, userId, source, r2key, imageHash, docId).run();
+          ).bind(txnId, source, r2key, imageHash, docId).run();
           await this.extractAndCategorise(userId, txnId, bytes, mime, null);
           return { docId, doc_type: cls.doc_type, routed: true };
         }
@@ -3979,12 +3926,12 @@ export class TaxAgent extends Agent<Env> {
    * bank-line transactions it created (document_id), the R2 object, then the document record. Audited.
    */
   async deleteDocument(userId: string, docId: string): Promise<{ deleted: boolean; income_removed: number; txns_removed: number }> {
-    const doc = await this.env.DB.prepare(`SELECT r2_key FROM documents WHERE id = ? AND user_id = ?`).bind(docId, userId).first<{ r2_key: string | null }>();
+    const doc = await tenantDb(this.env, userId).prepare(`SELECT r2_key FROM documents WHERE id = ? AND user_id = ?`).bind(docId).first<{ r2_key: string | null }>();
     if (!doc) return { deleted: false, income_removed: 0, txns_removed: 0 };
-    const inc = await this.env.DB.prepare(`DELETE FROM income WHERE user_id = ? AND source_doc_id = ?`).bind(userId, docId).run();
-    const txn = await this.env.DB.prepare(`DELETE FROM transactions WHERE user_id = ? AND document_id = ?`).bind(userId, docId).run();
+    const inc = await tenantDb(this.env, userId).prepare(`DELETE FROM income WHERE user_id = ? AND source_doc_id = ?`).bind(docId).run();
+    const txn = await tenantDb(this.env, userId).prepare(`DELETE FROM transactions WHERE user_id = ? AND document_id = ?`).bind(docId).run();
     await clearOrphanedTxnCgt(this.env, userId); // C1: no parcel may outlive the transaction that evidenced it
-    await this.env.DB.prepare(`DELETE FROM documents WHERE id = ? AND user_id = ?`).bind(docId, userId).run();
+    await tenantDb(this.env, userId).prepare(`DELETE FROM documents WHERE id = ? AND user_id = ?`).bind(docId).run();
     // Keep the object if a transaction outside this document still points at it (a duplicate receipt row
     // reuses its original's object); an already-missing object deletes as a no-op.
     if (doc.r2_key && !(await keyStillReferenced(this.env.DB, userId, doc.r2_key, { includeDocuments: false }))) {
@@ -4030,14 +3977,14 @@ export class TaxAgent extends Agent<Env> {
           // (this statement records the tenant's OWN salary — never touch a spouse's or an entity's same-name
           // row) and to OTHER documents (`source_doc_id IS NOT` this docId, null-safe so manual rows still
           // match) so two blocks for the same employer in ONE statement coexist and re-uploads still supersede.
-          const priors = await this.env.DB.prepare(
+          const priors = await tenantDb(this.env, userId).prepare(
             `SELECT id FROM income WHERE user_id = ? AND income_type = 'salary_payg' AND fy = ?
                AND person_id IS NULL AND entity_id IS NULL AND source_doc_id IS NOT ?
                AND lower(json_extract(detail_json, '$.employer')) = lower(?)`,
-          ).bind(userId, fy, docId, employer).all<{ id: string }>();
+          ).bind(fy, docId, employer).all<{ id: string }>();
           const ids = (priors.results ?? []).map((p) => p.id);
           for (const id of ids) {
-            await this.env.DB.prepare(`DELETE FROM income WHERE id = ? AND user_id = ?`).bind(id, userId).run();
+            await tenantDb(this.env, userId).prepare(`DELETE FROM income WHERE id = ? AND user_id = ?`).bind(id).run();
             superseded++;
           }
           if (ids.length) await this.audit(userId, "income_superseded", JSON.stringify({ employer, fy, replaced: ids.length, docId }));
@@ -4103,16 +4050,12 @@ export class TaxAgent extends Agent<Env> {
 
     // Each agent-deducted expense becomes a property_rented transaction (evidence + deduction).
     for (const e of ext.expense_lines) {
-      await this.env.DB.prepare(
+      await tenantDb(this.env, userId).prepare(
         `INSERT INTO transactions (id, user_id, source, status, kind, merchant, amount_cents, currency,
            amount_aud_cents, txn_date, bucket, ato_label, property_id, document_id, confidence, reasoning, is_capital)
          VALUES (?, ?, 'agent_statement', ?, 'receipt', ?, ?, ?, ?, ?, 'property_rented', ?, ?, ?, ?, ?, 0)`,
       )
-        .bind(
-          crypto.randomUUID(), userId, needsReview ? "needs_review" : "extracted", e.description,
-          Math.abs(e.amount_cents), baseCur, Math.abs(e.amount_cents), e.date ?? ext.period_end ?? null,
-          `rental:${e.category ?? "expense"}`, propertyId, docId, ext.confidence,
-          `From agent statement (${ext.agent_name ?? "agent"}).`,
+        .bind(crypto.randomUUID(), needsReview ? "needs_review" : "extracted", e.description, Math.abs(e.amount_cents), baseCur, Math.abs(e.amount_cents), e.date ?? ext.period_end ?? null, `rental:${e.category ?? "expense"}`, propertyId, docId, ext.confidence, `From agent statement (${ext.agent_name ?? "agent"}).`
         )
         .run();
     }
@@ -4160,17 +4103,13 @@ export class TaxAgent extends Agent<Env> {
       const rulePack = await this.loadRulePack(profile.rule_pack_ver);
       effectiveLife = resolveDiv40Life(a.asset_class, null, this.assetDefaultsFor(a.label, rulePack).effective_life_years);
     }
-    await this.env.DB.prepare(
+    await tenantDb(this.env, userId).prepare(
       `INSERT INTO assets (id, user_id, person_id, property_id, entity_id, label, asset_class, cost_cents,
          acquired_date, effective_life_years, method, dv_rate_pct, div43_rate, is_second_hand, business_use_pct,
          source_doc_id, status, needs_review, owned_by, reimbursed, is_car)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`,
     )
-      .bind(
-        id, userId, `person_self_${userId}`, a.property_id ?? null, a.entity_id ?? null, a.label, a.asset_class,
-        a.cost_cents, a.acquired_date, effectiveLife, a.method ?? null, a.dv_rate_pct ?? 200, a.div43_rate ?? null,
-        a.is_second_hand ? 1 : 0, a.business_use_pct ?? 100, a.source_doc_id ?? null, a.needs_review ?? 0,
-        a.owned_by ?? "self", a.reimbursed ?? 0, a.is_car ?? 0,
+      .bind(id, `person_self_${userId}`, a.property_id ?? null, a.entity_id ?? null, a.label, a.asset_class, a.cost_cents, a.acquired_date, effectiveLife, a.method ?? null, a.dv_rate_pct ?? 200, a.div43_rate ?? null, a.is_second_hand ? 1 : 0, a.business_use_pct ?? 100, a.source_doc_id ?? null, a.needs_review ?? 0, a.owned_by ?? "self", a.reimbursed ?? 0, a.is_car ?? 0
       )
       .run();
     await this.audit(userId, "asset_created", JSON.stringify({ id, class: a.asset_class, cost: a.cost_cents }));
@@ -4187,7 +4126,7 @@ export class TaxAgent extends Agent<Env> {
    * categorise / batch-apply / correction. Skips undated or zero-cost lines (can't depreciate).
    */
   private async linkAssetsForUser(userId: string): Promise<void> {
-    const rows = await this.env.DB.prepare(
+    const rows = await tenantDb(this.env, userId).prepare(
       `SELECT id, merchant, COALESCE(amount_aud_cents, amount_cents) AS cost, txn_date, property_id
          FROM transactions
         WHERE user_id = ? AND bucket = 'asset' AND asset_id IS NULL AND status NOT IN ('duplicate','ignored')
@@ -4195,7 +4134,7 @@ export class TaxAgent extends Agent<Env> {
           AND COALESCE(reimbursed,0) = 0             -- 0030: reimbursed spend isn't the taxpayer's cost — never a depreciating asset
           AND txn_date IS NOT NULL AND COALESCE(amount_aud_cents, amount_cents) > 0`,
     )
-      .bind(userId)
+      .bind()
       .all<{ id: string; merchant: string | null; cost: number; txn_date: string; property_id: string | null }>();
     if (!rows.results?.length) return;
     // `asset_defaults` flag: classify the capital purchase by merchant against the rule pack's
@@ -4209,9 +4148,9 @@ export class TaxAgent extends Agent<Env> {
       // A person-to-person transfer isn't a capital asset — don't depreciate it. Send it back to
       // 'unknown' + needs_review so the user categorises it properly (this is the user's call, not ours).
       if (looksLikePersonalTransfer(r.merchant)) {
-        await this.env.DB.prepare(
+        await tenantDb(this.env, userId).prepare(
           `UPDATE transactions SET bucket = 'unknown', status = 'needs_review' WHERE id = ? AND user_id = ?`,
-        ).bind(r.id, userId).run();
+        ).bind(r.id).run();
         await this.audit(userId, "asset_skipped_transfer", JSON.stringify({ txnId: r.id, merchant: r.merchant }));
         continue;
       }
@@ -4233,10 +4172,10 @@ export class TaxAgent extends Agent<Env> {
         needs_review: 1,
       });
       const capitalClass = asset_class === "div43_capital_works" ? "div43" : "div40";
-      await this.env.DB.prepare(
+      await tenantDb(this.env, userId).prepare(
         `UPDATE transactions SET asset_id = ?, is_capital = 1, capital_class = ? WHERE id = ? AND user_id = ?`,
       )
-        .bind(assetId, capitalClass, r.id, userId)
+        .bind(assetId, capitalClass, r.id)
         .run();
       await this.audit(userId, "asset_linked", JSON.stringify({ txnId: r.id, assetId, cost: r.cost, asset_class }));
     }
@@ -4252,11 +4191,11 @@ export class TaxAgent extends Agent<Env> {
    */
   async reclassMisbucketedAssets(userId: string): Promise<{ removed: number; reclassed: number }> {
     const rows = (
-      await this.env.DB.prepare(
+      await tenantDb(this.env, userId).prepare(
         `SELECT a.id, a.cost_cents, a.acquired_date, a.asset_class, t.id AS txn_id, t.merchant
            FROM assets a LEFT JOIN transactions t ON t.asset_id = a.id AND t.user_id = a.user_id
           WHERE a.user_id = ? AND a.needs_review = 1`,
-      ).bind(userId).all<{ id: string; cost_cents: number; acquired_date: string; asset_class: string; txn_id: string | null; merchant: string | null }>()
+      ).bind().all<{ id: string; cost_cents: number; acquired_date: string; asset_class: string; txn_id: string | null; merchant: string | null }>()
     ).results ?? [];
     let removed = 0;
     let reclassed = 0;
@@ -4264,10 +4203,10 @@ export class TaxAgent extends Agent<Env> {
       if (looksLikePersonalTransfer(r.merchant)) {
         // Not a capital asset — unwind it and send the txn back to review.
         await this.env.DB.batch([
-          this.env.DB.prepare(`DELETE FROM depreciation_schedule WHERE asset_id = ? AND user_id = ?`).bind(r.id, userId),
-          this.env.DB.prepare(`DELETE FROM assets WHERE id = ? AND user_id = ?`).bind(r.id, userId),
+          tenantDb(this.env, userId).prepare(`DELETE FROM depreciation_schedule WHERE asset_id = ? AND user_id = ?`).bind(r.id),
+          tenantDb(this.env, userId).prepare(`DELETE FROM assets WHERE id = ? AND user_id = ?`).bind(r.id),
           ...(r.txn_id
-            ? [this.env.DB.prepare(`UPDATE transactions SET asset_id = NULL, is_capital = 0, capital_class = NULL, bucket = 'unknown', status = 'needs_review' WHERE id = ? AND user_id = ?`).bind(r.txn_id, userId)]
+            ? [tenantDb(this.env, userId).prepare(`UPDATE transactions SET asset_id = NULL, is_capital = 0, capital_class = NULL, bucket = 'unknown', status = 'needs_review' WHERE id = ? AND user_id = ?`).bind(r.txn_id)]
             : []),
         ]);
         await this.audit(userId, "asset_backfill_removed", JSON.stringify({ assetId: r.id, txnId: r.txn_id, merchant: r.merchant }));
@@ -4279,8 +4218,8 @@ export class TaxAgent extends Agent<Env> {
         // Low-cost → immediate write-off. Reclass, drop the old multi-year schedule, then recompute
         // via the engine (computeDepreciation upserts but won't delete now-orphaned future-FY rows).
         await this.env.DB.batch([
-          this.env.DB.prepare(`UPDATE assets SET asset_class = 'immediate', method = NULL, effective_life_years = NULL WHERE id = ? AND user_id = ?`).bind(r.id, userId),
-          this.env.DB.prepare(`DELETE FROM depreciation_schedule WHERE asset_id = ? AND user_id = ?`).bind(r.id, userId),
+          tenantDb(this.env, userId).prepare(`UPDATE assets SET asset_class = 'immediate', method = NULL, effective_life_years = NULL WHERE id = ? AND user_id = ?`).bind(r.id),
+          tenantDb(this.env, userId).prepare(`DELETE FROM depreciation_schedule WHERE asset_id = ? AND user_id = ?`).bind(r.id),
         ]);
         await this.computeDepreciation(userId, r.id);
         await this.audit(userId, "asset_backfill_reclassed", JSON.stringify({ assetId: r.id, cost: r.cost_cents }));
@@ -4355,11 +4294,11 @@ export class TaxAgent extends Agent<Env> {
    * current FY). Deterministic — re-running yields identical rows (UNIQUE(asset_id, fy) upsert).
    */
   async computeDepreciation(userId: string, assetId: string, toStartYear?: number, opts?: { overrideMethodLock?: boolean }): Promise<{ rows: number }> {
-    const row = await this.env.DB.prepare(
+    const row = await tenantDb(this.env, userId).prepare(
       `SELECT asset_class, cost_cents, acquired_date, effective_life_years, method, dv_rate_pct, div43_rate,
               is_second_hand, business_use_pct, disposed_date, owned_by, reimbursed FROM assets WHERE id = ? AND user_id = ?`,
     )
-      .bind(assetId, userId)
+      .bind(assetId)
       .first<{ asset_class: string; cost_cents: number; acquired_date: string; effective_life_years: number | null; method: string | null; dv_rate_pct: number | null; div43_rate: number | null; is_second_hand: number; business_use_pct: number | null; disposed_date: string | null; owned_by: string | null; reimbursed: number | null }>();
     if (!row) throw new Error("asset not found");
 
@@ -4369,7 +4308,7 @@ export class TaxAgent extends Agent<Env> {
     // without its own guard. Runs BEFORE the method lock — this branch deletes rows, it never re-rolls
     // elected history, so the lock must not block the cleanup.
     if (!assetDepreciatesForTaxpayer(row)) {
-      await this.env.DB.prepare(`DELETE FROM depreciation_schedule WHERE asset_id = ? AND user_id = ?`).bind(assetId, userId).run();
+      await tenantDb(this.env, userId).prepare(`DELETE FROM depreciation_schedule WHERE asset_id = ? AND user_id = ?`).bind(assetId).run();
       await this.audit(userId, "depreciation_skipped_not_owned", JSON.stringify({ assetId, owned_by: row.owned_by, reimbursed: row.reimbursed }));
       return { rows: 0 };
     }
@@ -4390,7 +4329,7 @@ export class TaxAgent extends Agent<Env> {
     const target = toStartYear ?? Number(this.currentFyLabel().slice(0, 4));
     const schedule = rollSchedule(this.toDepAsset(row), target);
     const stmts = schedule.map((s) =>
-      this.env.DB.prepare(
+      tenantDb(this.env, userId).prepare(
         `INSERT INTO depreciation_schedule (id, user_id, asset_id, fy, opening_adjustable_value_cents,
            days_held, deduction_cents, closing_adjustable_value_cents, method_applied)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -4399,7 +4338,7 @@ export class TaxAgent extends Agent<Env> {
            days_held=excluded.days_held, deduction_cents=excluded.deduction_cents,
            closing_adjustable_value_cents=excluded.closing_adjustable_value_cents,
            method_applied=excluded.method_applied, computed_at=datetime('now')`,
-      ).bind(crypto.randomUUID(), userId, assetId, s.fy, s.opening_adjustable_value_cents, s.days_held, s.deduction_cents, s.closing_adjustable_value_cents, s.method_applied),
+      ).bind(crypto.randomUUID(), assetId, s.fy, s.opening_adjustable_value_cents, s.days_held, s.deduction_cents, s.closing_adjustable_value_cents, s.method_applied),
     );
     for (let i = 0; i < stmts.length; i += 50) await this.env.DB.batch(stmts.slice(i, i + 50));
     // The override audit records a COMPLETED re-roll, so it must follow the batch (a failed batch must
@@ -4416,16 +4355,16 @@ export class TaxAgent extends Agent<Env> {
    */
   private async depMethodLockState(userId: string, assetId: string, assetMethod: string | null): Promise<{ conflict: boolean; from: string | null }> {
     if (!featureOn(this.env, "dep_method_lock")) return { conflict: false, from: null };
-    const first = await this.env.DB.prepare(
+    const first = await tenantDb(this.env, userId).prepare(
       `SELECT method_applied FROM depreciation_schedule WHERE asset_id = ? AND user_id = ? ORDER BY fy LIMIT 1`,
-    ).bind(assetId, userId).first<{ method_applied: string | null }>();
+    ).bind(assetId).first<{ method_applied: string | null }>();
     return { conflict: depMethodConflict(first?.method_applied, assetMethod), from: first?.method_applied ?? null };
   }
 
   /** Batch: roll every active asset's schedule into a new FY (called by the FY-rollover cron). */
   async rollForward(userId: string, toStartYear: number): Promise<{ assets: number }> {
-    const assets = await this.env.DB.prepare(`SELECT id FROM assets WHERE user_id = ? AND status = 'active'`)
-      .bind(userId)
+    const assets = await tenantDb(this.env, userId).prepare(`SELECT id FROM assets WHERE user_id = ? AND status = 'active'`)
+      .bind()
       .all<{ id: string }>();
     let n = 0;
     for (const a of assets.results ?? []) {
@@ -4448,8 +4387,8 @@ export class TaxAgent extends Agent<Env> {
     const profile = await this.requireProfile(userId);
     // Consent, then the cost caps + wallet gate, like every other model call (the budget was missing here: #721).
     return aiCall(this.aiDeps, { userId, purpose: "import_depreciation_schedule", profile }, async (llm) => {
-      const doc = await this.env.DB.prepare(`SELECT property_id FROM documents WHERE id = ? AND user_id = ?`)
-        .bind(docId, userId)
+      const doc = await tenantDb(this.env, userId).prepare(`SELECT property_id FROM documents WHERE id = ? AND user_id = ?`)
+        .bind(docId)
         .first<{ property_id: string | null }>();
       const ext = await extractDepreciationSchedule(llm, bytes, mime);
       let created = 0;
@@ -4480,7 +4419,7 @@ export class TaxAgent extends Agent<Env> {
     // dep_method_lock: check BEFORE any state write — otherwise a conflicted asset would be marked
     // disposed and then fail the recompute below, wedging it half-disposed (stale adjustable value,
     // no balancing adjustment, and no retry path). Resolve the method first, then dispose.
-    const methodRow = await this.env.DB.prepare(`SELECT method FROM assets WHERE id = ? AND user_id = ?`).bind(assetId, userId).first<{ method: string | null }>();
+    const methodRow = await tenantDb(this.env, userId).prepare(`SELECT method FROM assets WHERE id = ? AND user_id = ?`).bind(assetId).first<{ method: string | null }>();
     const lock = await this.depMethodLockState(userId, assetId, methodRow?.method ?? null);
     if (lock.conflict) {
       throw new Error("method_locked: this asset's depreciation method conflicts with its existing schedule — Div 40 allows one choice (diminishing value or prime cost) per asset. Resolve the method (or recompute with an explicit override) before disposing.");
@@ -4488,17 +4427,17 @@ export class TaxAgent extends Agent<Env> {
     // Set the disposal first so the engine caps days-held in the disposal FY, then materialise the
     // schedule THROUGH that FY — otherwise the adjustable value omits the disposal-year decline and
     // the balancing adjustment is computed against a stale (too-high) value.
-    await this.env.DB.prepare(
+    await tenantDb(this.env, userId).prepare(
       `UPDATE assets SET status='disposed', disposed_date=?, disposal_value_cents=? WHERE id=? AND user_id=?`,
     )
-      .bind(disposedDate, disposalValueCents, assetId, userId)
+      .bind(disposedDate, disposalValueCents, assetId)
       .run();
     const dyStart = fyStartYearOf(disposedDate);
     await this.computeDepreciation(userId, assetId, dyStart);
-    const last = await this.env.DB.prepare(
+    const last = await tenantDb(this.env, userId).prepare(
       `SELECT closing_adjustable_value_cents FROM depreciation_schedule WHERE asset_id = ? AND user_id = ? AND fy = ?`,
     )
-      .bind(assetId, userId, fyLabel(dyStart))
+      .bind(assetId, fyLabel(dyStart))
       .first<{ closing_adjustable_value_cents: number }>();
     const adjustable = last?.closing_adjustable_value_cents ?? 0;
     const bal = balancingAdjustment(adjustable, disposalValueCents);
@@ -4520,25 +4459,25 @@ export class TaxAgent extends Agent<Env> {
    */
   async computeCgt(userId: string, propertyId: string): Promise<import("./lib/cgt").CgtResult & { property_id: string }> {
     const { computeCapitalGain } = await import("./lib/cgt");
-    const prop = await this.env.DB.prepare(
+    const prop = await tenantDb(this.env, userId).prepare(
       `SELECT p.cost_base_cents, p.disposal_proceeds_cents, p.disposal_date, p.acquired_date,
               p.main_residence_flag, COALESCE(pe.tax_residency, 'AU') AS tax_residency
          FROM properties p LEFT JOIN persons pe ON pe.id = p.person_id
         WHERE p.id = ? AND p.user_id = ?`,
     )
-      .bind(propertyId, userId)
+      .bind(propertyId)
       .first<{ cost_base_cents: number | null; disposal_proceeds_cents: number | null; disposal_date: string | null; acquired_date: string | null; main_residence_flag: number; tax_residency: string }>();
     if (!prop) throw new Error("property not found");
     if (prop.cost_base_cents == null || prop.disposal_proceeds_cents == null || !prop.disposal_date || !prop.acquired_date) {
       throw new Error("property is missing cost base, proceeds, acquired or disposal date");
     }
     // Div 43 capital-works deductions claimed against this property reduce the cost base.
-    const div43 = await this.env.DB.prepare(
+    const div43 = await tenantDb(this.env, userId).prepare(
       `SELECT COALESCE(SUM(d.deduction_cents),0) AS total FROM depreciation_schedule d
          JOIN assets a ON a.id = d.asset_id
         WHERE d.user_id = ? AND a.property_id = ? AND d.method_applied = 'div43'`,
     )
-      .bind(userId, propertyId)
+      .bind(propertyId)
       .first<{ total: number }>();
     const result = computeCapitalGain({
       cost_base_cents: prop.cost_base_cents,
@@ -4580,27 +4519,27 @@ export class TaxAgent extends Agent<Env> {
    * confirmed. Never writes deductibility or a dollar figure.
    */
   async matchClaim(userId: string, claimId: string): Promise<{ claim_id: string; rule_id: string | null; candidates: ScoredTxn[]; linked: string[] }> {
-    const claim = await this.env.DB.prepare(
+    const claim = await tenantDb(this.env, userId).prepare(
       `SELECT id, rule_id FROM claim_suggestions WHERE id = ? AND user_id = ?`,
     )
-      .bind(claimId, userId)
+      .bind(claimId)
       .first<{ id: string; rule_id: string | null }>();
     if (!claim) throw new Error("claim not found");
     const profile = await this.requireProfile(userId);
     const rules = await this.loadClaimRules(userId, profile.rule_pack_ver);
     const rule = rules.find((r) => ruleKey(r) === claim.rule_id) ?? null;
-    const linkedRows = await this.env.DB.prepare(`SELECT txn_id FROM claim_links WHERE user_id = ? AND claim_id = ?`).bind(userId, claimId).all<{ txn_id: string }>();
+    const linkedRows = await tenantDb(this.env, userId).prepare(`SELECT txn_id FROM claim_links WHERE user_id = ? AND claim_id = ?`).bind(claimId).all<{ txn_id: string }>();
     const linked = (linkedRows.results ?? []).map((r) => r.txn_id);
     if (!rule) return { claim_id: claimId, rule_id: claim.rule_id, candidates: [], linked };
     // Candidate pool: the tenant's debit transactions (spend) not already excluded; cap for safety.
-    const txnsRes = await this.env.DB.prepare(
+    const txnsRes = await tenantDb(this.env, userId).prepare(
       `SELECT id, merchant, bucket, ato_label, direction, amount_cents, amount_aud_cents, txn_date
          FROM transactions
         WHERE user_id = ? AND COALESCE(direction,'debit') = 'debit'
           AND status NOT IN ('duplicate','ignored','matched_receipt')
         ORDER BY txn_date DESC LIMIT 1000`,
     )
-      .bind(userId)
+      .bind()
       .all<{ id: string; merchant: string | null; bucket: string | null; ato_label: string | null; direction: string | null; amount_cents: number | null; amount_aud_cents: number | null; txn_date: string | null }>();
     const linkedSet = new Set(linked);
     const candidates = scoreClaimMatches(rule, txnsRes.results ?? []).filter((c) => !linkedSet.has(c.id)).slice(0, 50);
@@ -4609,29 +4548,29 @@ export class TaxAgent extends Agent<Env> {
 
   /** Attach a transaction as evidence for a claim → claim_links (idempotent) + claim moves to 'capturing'. */
   async attachClaim(userId: string, claimId: string, txnId: string): Promise<{ ok: boolean; status: string }> {
-    const claim = await this.env.DB.prepare(`SELECT status FROM claim_suggestions WHERE id = ? AND user_id = ?`).bind(claimId, userId).first<{ status: string }>();
+    const claim = await tenantDb(this.env, userId).prepare(`SELECT status FROM claim_suggestions WHERE id = ? AND user_id = ?`).bind(claimId).first<{ status: string }>();
     if (!claim) throw new Error("claim not found");
-    const txn = await this.env.DB.prepare(`SELECT id FROM transactions WHERE id = ? AND user_id = ?`).bind(txnId, userId).first<{ id: string }>();
+    const txn = await tenantDb(this.env, userId).prepare(`SELECT id FROM transactions WHERE id = ? AND user_id = ?`).bind(txnId).first<{ id: string }>();
     if (!txn) throw new Error("transaction not found");
-    await this.env.DB.prepare(
+    await tenantDb(this.env, userId).prepare(
       `INSERT OR IGNORE INTO claim_links (id, user_id, claim_id, txn_id) VALUES (?, ?, ?, ?)`,
     )
-      .bind(crypto.randomUUID(), userId, claimId, txnId)
+      .bind(crypto.randomUUID(), claimId, txnId)
       .run();
     // Move to 'capturing' unless the user dismissed it (don't resurrect a dismissed claim).
     const nextStatus = claim.status === "dismissed" ? claim.status : "capturing";
-    if (nextStatus !== claim.status) await this.env.DB.prepare(`UPDATE claim_suggestions SET status = 'capturing' WHERE id = ? AND user_id = ?`).bind(claimId, userId).run();
+    if (nextStatus !== claim.status) await tenantDb(this.env, userId).prepare(`UPDATE claim_suggestions SET status = 'capturing' WHERE id = ? AND user_id = ?`).bind(claimId).run();
     await this.audit(userId, "claim_attach", JSON.stringify({ claimId, txnId }));
     return { ok: true, status: nextStatus };
   }
 
   /** Detach evidence; if a claim has no links left, revert 'capturing' → 'suggested'. */
   async detachClaim(userId: string, claimId: string, txnId: string): Promise<{ ok: boolean; status: string }> {
-    await this.env.DB.prepare(`DELETE FROM claim_links WHERE user_id = ? AND claim_id = ? AND txn_id = ?`).bind(userId, claimId, txnId).run();
-    const remaining = await this.env.DB.prepare(`SELECT COUNT(*) AS n FROM claim_links WHERE user_id = ? AND claim_id = ?`).bind(userId, claimId).first<{ n: number }>();
+    await tenantDb(this.env, userId).prepare(`DELETE FROM claim_links WHERE user_id = ? AND claim_id = ? AND txn_id = ?`).bind(claimId, txnId).run();
+    const remaining = await tenantDb(this.env, userId).prepare(`SELECT COUNT(*) AS n FROM claim_links WHERE user_id = ? AND claim_id = ?`).bind(claimId).first<{ n: number }>();
     let status = "capturing";
     if ((remaining?.n ?? 0) === 0) {
-      await this.env.DB.prepare(`UPDATE claim_suggestions SET status = 'suggested' WHERE id = ? AND user_id = ? AND status = 'capturing'`).bind(claimId, userId).run();
+      await tenantDb(this.env, userId).prepare(`UPDATE claim_suggestions SET status = 'suggested' WHERE id = ? AND user_id = ? AND status = 'capturing'`).bind(claimId).run();
       status = "suggested";
     }
     await this.audit(userId, "claim_detach", JSON.stringify({ claimId, txnId }));
@@ -4640,12 +4579,12 @@ export class TaxAgent extends Agent<Env> {
 
   /** The transactions attached to a claim (for the evidence panel). */
   async listClaimLinks(userId: string, claimId: string): Promise<{ txn_id: string; merchant: string | null; amount_cents: number | null; txn_date: string | null }[]> {
-    const res = await this.env.DB.prepare(
+    const res = await tenantDb(this.env, userId).prepare(
       `SELECT cl.txn_id, t.merchant, t.amount_cents, t.txn_date
          FROM claim_links cl JOIN transactions t ON t.id = cl.txn_id AND t.user_id = cl.user_id
         WHERE cl.user_id = ? AND cl.claim_id = ? ORDER BY t.txn_date DESC`,
     )
-      .bind(userId, claimId)
+      .bind(claimId)
       .all<{ txn_id: string; merchant: string | null; amount_cents: number | null; txn_date: string | null }>();
     return res.results ?? [];
   }
@@ -4659,13 +4598,11 @@ export class TaxAgent extends Agent<Env> {
     const matched = matchClaimRules(await this.loadClaimRules(userId, profile.rule_pack_ver), ctx);
     let n = 0;
     for (const r of matched) {
-      await this.env.DB.prepare(
+      await tenantDb(this.env, userId).prepare(
         `INSERT INTO claim_suggestions (id, user_id, person_id, txn_id, asset_id, rule_id, suggestion, claim_type, estimated_deduction_cents)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-        .bind(
-          crypto.randomUUID(), userId, `person_self_${userId}`, refs.txnId ?? null, refs.assetId ?? null,
-          r.id ?? `${r.scope_type}:${r.scope_value}`, suggestionText(r), r.claim_type, refs.estimatedDeductionCents ?? null,
+        .bind(crypto.randomUUID(), `person_self_${userId}`, refs.txnId ?? null, refs.assetId ?? null, r.id ?? `${r.scope_type}:${r.scope_value}`, suggestionText(r), r.claim_type, refs.estimatedDeductionCents ?? null
         )
         .run();
       n++;
@@ -4725,9 +4662,9 @@ export class TaxAgent extends Agent<Env> {
     // was added), or items would silently migrate from "worth checking" to "already capturing" on re-run.
     const bucketsWithSpend = new Set(report.by_bucket.filter((b) => b.total_cents > 0).map((b) => b.bucket));
     const suggestionRows = (
-      await this.env.DB.prepare(
+      await tenantDb(this.env, userId).prepare(
         `SELECT rule_id, status, source FROM claim_suggestions WHERE user_id = ?`,
-      ).bind(userId).all<{ rule_id: string | null; status: string | null; source: string | null }>()
+      ).bind().all<{ rule_id: string | null; status: string | null; source: string | null }>()
     ).results ?? [];
     // #578: per-LINE 'worth a look' cards (source relevance_scan) are not rule-level evidence or rule-level
     // dismissals — dismissing one line's card must not hide the rule from the sweep. (Those rows only exist with
@@ -4789,11 +4726,11 @@ export class TaxAgent extends Agent<Env> {
     let inserted = 0;
     for (const item of check) {
       if (reviewSourced.has(item.rule_id)) continue;
-      await this.env.DB.prepare(
+      await tenantDb(this.env, userId).prepare(
         `INSERT INTO claim_suggestions (id, user_id, person_id, rule_id, suggestion, claim_type, estimated_deduction_cents, status, source)
          VALUES (?, ?, ?, ?, ?, ?, NULL, 'suggested', 'review')`,
       )
-        .bind(crypto.randomUUID(), userId, `person_self_${userId}`, item.rule_id, item.suggestion, item.claim_type)
+        .bind(crypto.randomUUID(), `person_self_${userId}`, item.rule_id, item.suggestion, item.claim_type)
         .run();
       inserted++;
     }
@@ -4836,22 +4773,11 @@ export class TaxAgent extends Agent<Env> {
     const ids: string[] = [];
     for (const r of rules ?? []) {
       const id = crypto.randomUUID();
-      await this.env.DB.prepare(
+      await tenantDb(this.env, userId).prepare(
         `INSERT INTO claimability_rules (id, rule_pack_ver, jurisdiction, scope_type, scope_value, merchant_hint, ato_label, claim_type, default_method, general_info_note, defer_to_agent, user_id)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
       )
-        .bind(
-          id,
-          profile.rule_pack_ver,
-          profile.jurisdiction ?? "AU",
-          r.scope_type,
-          r.scope_value,
-          r.merchant_hint ?? null,
-          r.ato_label ?? null,
-          r.claim_type,
-          r.default_method ?? null,
-          r.general_info_note,
-          userId, // tenant-private — never a global override
+        .bind(id, profile.rule_pack_ver, profile.jurisdiction ?? "AU", r.scope_type, r.scope_value, r.merchant_hint ?? null, r.ato_label ?? null, r.claim_type, r.default_method ?? null, r.general_info_note // tenant-private — never a global override
         )
         .run();
       ids.push(id);
@@ -4871,7 +4797,7 @@ export class TaxAgent extends Agent<Env> {
     const { start, end } = fyBounds(startYear, await this.jurisdictionFor(userId));
     const [report, pack] = await Promise.all([buildReport(this.env, userId, startYear), this.loadRulePack(profile.rule_pack_ver)]);
     // Same column expressions the report uses, so "is this row counting?" matches the headline exactly.
-    const rows = (await this.env.DB.prepare(
+    const rows = (await tenantDb(this.env, userId).prepare(
       `SELECT id, txn_date, merchant, ato_label, bucket, deductibility,
               COALESCE(amount_aud_cents, amount_cents) AS amount_cents,
               COALESCE(reimbursed,0) AS reimbursed,
@@ -4881,7 +4807,7 @@ export class TaxAgent extends Agent<Env> {
         WHERE user_id = ? AND txn_date >= ? AND txn_date <= ? AND ${COUNTABLE}
         ORDER BY COALESCE(amount_aud_cents, amount_cents) DESC
         LIMIT 500`,
-    ).bind(userId, start, end).all<ScanTxn>()).results ?? [];
+    ).bind(start, end).all<ScanTxn>()).results ?? [];
     const section = (pack as { payg_deductibility?: import("./lib/deductibility").DeductibilitySection }).payg_deductibility;
     // txn_scan_v2 (audit #387/#288): pattern-aware facts — salary vs near-zero deductions with
     // proactive occupation prompts, WFH-hours completeness, per-rental completeness. OFF ⇒ facts
@@ -4890,12 +4816,12 @@ export class TaxAgent extends Agent<Env> {
     if (featureOn(this.env, "txn_scan_v2")) {
       const fy = fyLabel(startYear);
       const [wfh, occRows, loanLinks, loanSummaries] = await Promise.all([
-        this.env.DB.prepare(`SELECT COUNT(*) AS n FROM work_use_inputs WHERE user_id = ? AND fy = ? AND COALESCE(wfh_hours,0) > 0`).bind(userId, startYear).first<{ n: number }>(),
-        this.env.DB.prepare(`SELECT DISTINCT occupation FROM persons WHERE user_id = ? AND occupation IS NOT NULL`).bind(userId).all<{ occupation: string }>(),
-        this.env.DB.prepare(`SELECT DISTINCT property_id FROM loans_properties WHERE user_id = ?`).bind(userId).all<{ property_id: string }>(),
-        this.env.DB.prepare(
+        tenantDb(this.env, userId).prepare(`SELECT COUNT(*) AS n FROM work_use_inputs WHERE user_id = ? AND fy = ? AND COALESCE(wfh_hours,0) > 0`).bind(startYear).first<{ n: number }>(),
+        tenantDb(this.env, userId).prepare(`SELECT DISTINCT occupation FROM persons WHERE user_id = ? AND occupation IS NOT NULL`).bind().all<{ occupation: string }>(),
+        tenantDb(this.env, userId).prepare(`SELECT DISTINCT property_id FROM loans_properties WHERE user_id = ?`).bind().all<{ property_id: string }>(),
+        tenantDb(this.env, userId).prepare(
           `SELECT DISTINCT lp.property_id FROM loan_interest_summaries lis JOIN loans_properties lp ON lp.loan_account_id = lis.loan_account_id AND lp.user_id = lis.user_id WHERE lis.user_id = ? AND lis.fy = ?`,
-        ).bind(userId, String(startYear)).all<{ property_id: string }>(),
+        ).bind(String(startYear)).all<{ property_id: string }>(),
       ]);
       const loanProps = new Set((loanLinks.results ?? []).map((r) => r.property_id));
       const interestProps = new Set((loanSummaries.results ?? []).map((r) => r.property_id));
@@ -5001,7 +4927,7 @@ export class TaxAgent extends Agent<Env> {
 
   /** Update a claim suggestion's status (suggested|accepted|dismissed). */
   async setClaimStatus(userId: string, id: string, status: string): Promise<void> {
-    await this.env.DB.prepare(`UPDATE claim_suggestions SET status = ? WHERE id = ? AND user_id = ?`).bind(status, id, userId).run();
+    await tenantDb(this.env, userId).prepare(`UPDATE claim_suggestions SET status = ? WHERE id = ? AND user_id = ?`).bind(status, id).run();
     await this.audit(userId, "claim_status", JSON.stringify({ id, status }));
   }
 
@@ -5117,11 +5043,11 @@ export class TaxAgent extends Agent<Env> {
    */
   async setCarInputs(userId: string, input: { fy: number; work_km: number | null }): Promise<{ ok: true }> {
     await this.requireProfile(userId);
-    await this.env.DB.prepare(
+    await tenantDb(this.env, userId).prepare(
       `INSERT INTO car_inputs (user_id, fy, work_km, updated_at) VALUES (?, ?, ?, datetime('now'))
        ON CONFLICT(user_id, fy) DO UPDATE SET work_km = excluded.work_km, updated_at = datetime('now')`,
     )
-      .bind(userId, input.fy, input.work_km)
+      .bind(input.fy, input.work_km)
       .run();
     await this.audit(userId, "car_use_set", JSON.stringify(input));
     return { ok: true };
@@ -5144,23 +5070,23 @@ export class TaxAgent extends Agent<Env> {
     const opening = toCents(b.opening_cents);
     const closing = toCents(b.closing_cents);
     const basis = b.valuation_basis && ["cost", "market_selling_value", "replacement"].includes(b.valuation_basis) ? b.valuation_basis : null;
-    const upd = await this.env.DB.prepare(
+    const upd = await tenantDb(this.env, userId).prepare(
       `UPDATE trading_stock SET opening_cents = ?, closing_cents = ?, valuation_basis = ?, updated_at = datetime('now')
         WHERE user_id = ? AND fy = ? AND COALESCE(entity_id, '') = COALESCE(?, '')`,
-    ).bind(opening, closing, basis, userId, fy, entityId).run();
+    ).bind(opening, closing, basis, fy, entityId).run();
     if ((upd.meta?.changes ?? 0) === 0) {
       try {
-        await this.env.DB.prepare(
+        await tenantDb(this.env, userId).prepare(
           `INSERT INTO trading_stock (id, user_id, entity_id, fy, opening_cents, closing_cents, valuation_basis) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        ).bind(crypto.randomUUID(), userId, entityId, fy, opening, closing, basis).run();
+        ).bind(crypto.randomUUID(), entityId, fy, opening, closing, basis).run();
       } catch (e) {
         // Concurrent first-save race (D1 awaits leave the DO input gate open): the loser re-runs the
         // UPDATE instead of surfacing a spurious UNIQUE-constraint 500 on the happy path.
         if (!/UNIQUE constraint/i.test((e as Error).message)) throw e;
-        await this.env.DB.prepare(
+        await tenantDb(this.env, userId).prepare(
           `UPDATE trading_stock SET opening_cents = ?, closing_cents = ?, valuation_basis = ?, updated_at = datetime('now')
             WHERE user_id = ? AND fy = ? AND COALESCE(entity_id, '') = COALESCE(?, '')`,
-        ).bind(opening, closing, basis, userId, fy, entityId).run();
+        ).bind(opening, closing, basis, fy, entityId).run();
       }
     }
     await this.audit(userId, "trading_stock_set", JSON.stringify({ fy, entity_id: entityId, opening_cents: opening, closing_cents: closing, valuation_basis: basis }));
@@ -5222,7 +5148,7 @@ export class TaxAgent extends Agent<Env> {
       const dedupe = featureOn(this.env, "income_dedupe") ? " AND matched_income_id IS NULL" : "";
       const [wageRows, anyIncome, personalCredits] = await Promise.all([
         this.env.DB.prepare(`SELECT COUNT(*) AS n FROM income WHERE user_id = ? AND fy = ? AND income_type IN (${wageTypes.map(() => "?").join(",")})`).bind(userId, targetFy, ...wageTypes).first<{ n: number }>(),
-        this.env.DB.prepare(`SELECT COUNT(*) AS n FROM income WHERE user_id = ? AND fy = ?`).bind(userId, targetFy).first<{ n: number }>(),
+        tenantDb(this.env, userId).prepare(`SELECT COUNT(*) AS n FROM income WHERE user_id = ? AND fy = ?`).bind(targetFy).first<{ n: number }>(),
         this.env.DB.prepare(`SELECT COUNT(*) AS n FROM transactions WHERE user_id = ? AND txn_date >= ? AND txn_date <= ? AND bucket = 'income_personal' AND ${COUNTABLE_INCOME}${dedupe}`).bind(userId, start, end).first<{ n: number }>(),
       ]);
       if (wantsIncomeStatementItem({ hasEmployment, wageRows: wageRows?.n ?? 0, anyIncomeRows: anyIncome?.n ?? 0, personalCredits: personalCredits?.n ?? 0 })) {
@@ -5233,12 +5159,12 @@ export class TaxAgent extends Agent<Env> {
 
     let n = 0;
     for (const it of items) {
-      const res = await this.env.DB.prepare(
+      const res = await tenantDb(this.env, userId).prepare(
         `INSERT INTO fy_checklist (id, user_id, person_id, fy, item_key, title, rationale, trigger_bucket, due_hint)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(user_id, person_id, fy, item_key) DO NOTHING`,
       )
-        .bind(crypto.randomUUID(), userId, personId, targetFy, it.item_key, it.title, it.rationale, it.trigger_bucket, it.due_hint)
+        .bind(crypto.randomUUID(), personId, targetFy, it.item_key, it.title, it.rationale, it.trigger_bucket, it.due_hint)
         .run();
       n += res.meta?.changes ?? 0;
     }
@@ -5248,7 +5174,7 @@ export class TaxAgent extends Agent<Env> {
 
   /** Update a checklist item's status (open|done|dismissed|not_applicable). */
   async setChecklistStatus(userId: string, id: string, status: string): Promise<void> {
-    await this.env.DB.prepare(`UPDATE fy_checklist SET status = ? WHERE id = ? AND user_id = ?`).bind(status, id, userId).run();
+    await tenantDb(this.env, userId).prepare(`UPDATE fy_checklist SET status = ? WHERE id = ? AND user_id = ?`).bind(status, id).run();
     await this.audit(userId, "checklist_status", JSON.stringify({ id, status }));
   }
 
@@ -5271,7 +5197,7 @@ export class TaxAgent extends Agent<Env> {
     // guard (#231): it must be THIS user's transaction, an expense (debit), and not the refund itself.
     if (field === "refund_for_txn_id" && newValue) {
       if (newValue === txnId) throw new Error("a refund can't link to itself");
-      const ref = await this.env.DB.prepare(`SELECT COALESCE(direction,'debit') AS direction FROM transactions WHERE id = ? AND user_id = ?`).bind(newValue, userId).first<{ direction: string }>();
+      const ref = await tenantDb(this.env, userId).prepare(`SELECT COALESCE(direction,'debit') AS direction FROM transactions WHERE id = ? AND user_id = ?`).bind(newValue).first<{ direction: string }>();
       if (!ref) throw new Error("refund target expense not found");
       if (ref.direction !== "debit") throw new Error("a refund must link to an expense (a debit), not another credit");
     }
@@ -5299,11 +5225,11 @@ export class TaxAgent extends Agent<Env> {
     )
       .bind(bound, txnId, userId)
       .run();
-    await this.env.DB.prepare(
+    await tenantDb(this.env, userId).prepare(
       `INSERT INTO corrections (id, user_id, txn_id, field, old_value, new_value)
        VALUES (?, ?, ?, ?, ?, ?)`,
     )
-      .bind(crypto.randomUUID(), userId, txnId, field, row.old, bound)
+      .bind(crypto.randomUUID(), txnId, field, row.old, bound)
       .run();
 
     // If the user re-bucketed a line to 'asset', create + link its depreciating asset now.
@@ -5403,9 +5329,9 @@ export class TaxAgent extends Agent<Env> {
       ];
       for (const n of norm) {
         group.push(
-          this.env.DB.prepare(
+          tenantDb(this.env, userId).prepare(
             `INSERT INTO corrections (id, user_id, txn_id, field, old_value, new_value, batch_id) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-          ).bind(crypto.randomUUID(), userId, txnId, n.field, row[n.column] ?? null, bindVal(n), batchId),
+          ).bind(crypto.randomUUID(), txnId, n.field, row[n.column] ?? null, bindVal(n), batchId),
         );
         if (n.field === "bucket" && n.value === "asset") anyAsset = true;
         if (n.field === "bucket" || n.field === "ato_label" || n.field === "merchant") reStampNeeded = true;
@@ -5439,8 +5365,8 @@ export class TaxAgent extends Agent<Env> {
       const propertyId = norm.find((n) => n.field === "property_id")?.value || undefined;
       const stems = new Set<string>();
       for (const txnId of changedIds) {
-        const r = await this.env.DB.prepare(`SELECT raw_description, merchant FROM transactions WHERE id = ? AND user_id = ?`)
-          .bind(txnId, userId)
+        const r = await tenantDb(this.env, userId).prepare(`SELECT raw_description, merchant FROM transactions WHERE id = ? AND user_id = ?`)
+          .bind(txnId)
           .first<{ raw_description: string | null; merchant: string | null }>();
         const stem = groupKey(r?.raw_description ?? r?.merchant ?? "");
         if (stem) stems.add(stem);
@@ -5483,7 +5409,7 @@ export class TaxAgent extends Agent<Env> {
       }
     };
     for (const txnId of ids) {
-      const row = await this.env.DB.prepare(`SELECT bucket FROM transactions WHERE id = ? AND user_id = ?`).bind(txnId, userId).first<{ bucket: string | null }>();
+      const row = await tenantDb(this.env, userId).prepare(`SELECT bucket FROM transactions WHERE id = ? AND user_id = ?`).bind(txnId).first<{ bucket: string | null }>();
       if (!row) {
         failures.push({ txnId, error: "not found" });
         continue;
@@ -5493,7 +5419,7 @@ export class TaxAgent extends Agent<Env> {
         continue;
       }
       pending.push(
-        this.env.DB.prepare(`UPDATE transactions SET status='corrected', confidence=1.0 WHERE id = ? AND user_id = ?`).bind(txnId, userId),
+        tenantDb(this.env, userId).prepare(`UPDATE transactions SET status='corrected', confidence=1.0 WHERE id = ? AND user_id = ?`).bind(txnId),
       );
       changedIds.push(txnId);
       if (pending.length >= 80) await flush();
@@ -5526,7 +5452,7 @@ export class TaxAgent extends Agent<Env> {
       }
     };
     for (const txnId of ids) {
-      const row = await this.env.DB.prepare(`SELECT status FROM transactions WHERE id = ? AND user_id = ?`).bind(txnId, userId).first<{ status: string | null }>();
+      const row = await tenantDb(this.env, userId).prepare(`SELECT status FROM transactions WHERE id = ? AND user_id = ?`).bind(txnId).first<{ status: string | null }>();
       if (!row) {
         failures.push({ txnId, error: "not found" });
         continue;
@@ -5536,8 +5462,8 @@ export class TaxAgent extends Agent<Env> {
         continue;
       }
       pending.push(
-        this.env.DB.prepare(`UPDATE transactions SET status='ignored' WHERE id = ? AND user_id = ?`).bind(txnId, userId),
-        this.env.DB.prepare(`INSERT INTO corrections (id, user_id, txn_id, field, old_value, new_value, batch_id) VALUES (?, ?, ?, 'status', ?, 'ignored', ?)`).bind(crypto.randomUUID(), userId, txnId, row.status, batchId),
+        tenantDb(this.env, userId).prepare(`UPDATE transactions SET status='ignored' WHERE id = ? AND user_id = ?`).bind(txnId),
+        tenantDb(this.env, userId).prepare(`INSERT INTO corrections (id, user_id, txn_id, field, old_value, new_value, batch_id) VALUES (?, ?, ?, 'status', ?, 'ignored', ?)`).bind(crypto.randomUUID(), txnId, row.status, batchId),
       );
       changedIds.push(txnId);
       if (pending.length >= 80) await flush();
@@ -5554,11 +5480,11 @@ export class TaxAgent extends Agent<Env> {
    */
   async undoCorrectionBatch(userId: string, batchId: string): Promise<{ reverted: number }> {
     if (!batchId) return { reverted: 0 };
-    const corr = await this.env.DB.prepare(
+    const corr = await tenantDb(this.env, userId).prepare(
       `SELECT id, txn_id, field, old_value, new_value FROM corrections
         WHERE user_id = ? AND batch_id = ? AND reverted_at IS NULL ORDER BY created_at DESC`,
     )
-      .bind(userId, batchId)
+      .bind(batchId)
       .all<{ id: string; txn_id: string; field: string; old_value: string | null; new_value: string | null }>();
     const rows = corr.results ?? [];
     if (!rows.length) return { reverted: 0 };
@@ -5574,7 +5500,7 @@ export class TaxAgent extends Agent<Env> {
       // If a later correction overwrote it, undoing this batch must not clobber that newer value.
       stmts.push(
         this.env.DB.prepare(`UPDATE transactions SET ${column} = ? WHERE id = ? AND user_id = ? AND COALESCE(${column},'') = COALESCE(?,'')`).bind(c.old_value, c.txn_id, userId, c.new_value),
-        this.env.DB.prepare(`UPDATE corrections SET reverted_at = datetime('now') WHERE id = ? AND user_id = ?`).bind(c.id, userId),
+        tenantDb(this.env, userId).prepare(`UPDATE corrections SET reverted_at = datetime('now') WHERE id = ? AND user_id = ?`).bind(c.id),
       );
       changed.add(c.txn_id);
     }
@@ -5649,7 +5575,7 @@ export class TaxAgent extends Agent<Env> {
     const actionId = spec.actionId || crypto.randomUUID();
     const source = spec.source ?? "ai_confirmed";
     if (spec.actionId) {
-      const existing = await this.env.DB.prepare(`SELECT entity_id FROM ai_edits WHERE user_id = ? AND action_id = ? AND reverted_at IS NULL ORDER BY created_at DESC LIMIT 1`).bind(userId, spec.actionId).first<{ entity_id: string }>();
+      const existing = await tenantDb(this.env, userId).prepare(`SELECT entity_id FROM ai_edits WHERE user_id = ? AND action_id = ? AND reverted_at IS NULL ORDER BY created_at DESC LIMIT 1`).bind(spec.actionId).first<{ entity_id: string }>();
       if (existing) return { id: existing.entity_id, action_id: actionId, deduped: true };
     }
     let entityId: string;
@@ -5665,10 +5591,10 @@ export class TaxAgent extends Agent<Env> {
       entityId = await this.applyEntityWrite(userId, spec.kind, "create", null, spec.data);
     }
     const newRow = await this.aiEntitySnapshot(userId, m.table, entityId);
-    await this.env.DB.prepare(
+    await tenantDb(this.env, userId).prepare(
       `INSERT INTO ai_edits (id, user_id, batch_id, action_id, entity_type, entity_id, op, old_json, new_json, source, session_id)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).bind(crypto.randomUUID(), userId, spec.batchId ?? null, actionId, spec.kind, entityId, spec.op, oldJson, newRow ? JSON.stringify(newRow) : null, source, spec.sessionId ?? null).run();
+    ).bind(crypto.randomUUID(), spec.batchId ?? null, actionId, spec.kind, entityId, spec.op, oldJson, newRow ? JSON.stringify(newRow) : null, source, spec.sessionId ?? null).run();
     await this.audit(userId, `ai_edit_${spec.op}`, JSON.stringify({ kind: spec.kind, entity_id: entityId, action_id: actionId, source }));
     return { id: entityId, action_id: actionId };
   }
@@ -5691,7 +5617,7 @@ export class TaxAgent extends Agent<Env> {
     if (spec.actionId) {
       // Match aiWriteEntity: only a still-applied delete dedupes. A reverted (undone) delete must be
       // allowed to re-run, so the row gets deleted again rather than falsely reported as a no-op.
-      const existing = await this.env.DB.prepare(`SELECT id FROM ai_edits WHERE user_id = ? AND action_id = ? AND op = 'delete' AND reverted_at IS NULL LIMIT 1`).bind(userId, spec.actionId).first<{ id: string }>();
+      const existing = await tenantDb(this.env, userId).prepare(`SELECT id FROM ai_edits WHERE user_id = ? AND action_id = ? AND op = 'delete' AND reverted_at IS NULL LIMIT 1`).bind(spec.actionId).first<{ id: string }>();
       if (existing) return { ok: true, action_id: actionId, deduped: true };
     }
     const old = await this.aiEntitySnapshot(userId, m.table, spec.id);
@@ -5702,10 +5628,10 @@ export class TaxAgent extends Agent<Env> {
       if (e instanceof DeleteBlockedError) return { blocked: true, parentTable: e.parentTable, blockers: e.blockers, archivable: e.archivable, message: e.message };
       throw e;
     }
-    await this.env.DB.prepare(
+    await tenantDb(this.env, userId).prepare(
       `INSERT INTO ai_edits (id, user_id, batch_id, action_id, entity_type, entity_id, op, old_json, new_json, source, session_id)
        VALUES (?, ?, ?, ?, ?, ?, 'delete', ?, NULL, ?, ?)`,
-    ).bind(crypto.randomUUID(), userId, null, actionId, spec.kind, spec.id, JSON.stringify(old), source, spec.sessionId ?? null).run();
+    ).bind(crypto.randomUUID(), null, actionId, spec.kind, spec.id, JSON.stringify(old), source, spec.sessionId ?? null).run();
     await this.audit(userId, "ai_edit_delete", JSON.stringify({ kind: spec.kind, entity_id: spec.id, action_id: actionId, source }));
     return { ok: true, action_id: actionId };
   }
@@ -5736,7 +5662,7 @@ export class TaxAgent extends Agent<Env> {
    *  update→restore old_json. Idempotent (skips already-reverted); a blocked delete is left applied. */
   async undoAiEdit(userId: string, actionId: string): Promise<{ reverted: number }> {
     if (!actionId) return { reverted: 0 };
-    const rows = (await this.env.DB.prepare(`SELECT id, entity_type, entity_id, op, old_json FROM ai_edits WHERE user_id = ? AND action_id = ? AND reverted_at IS NULL ORDER BY created_at DESC`).bind(userId, actionId).all<{ id: string; entity_type: string; entity_id: string; op: string; old_json: string | null }>()).results ?? [];
+    const rows = (await tenantDb(this.env, userId).prepare(`SELECT id, entity_type, entity_id, op, old_json FROM ai_edits WHERE user_id = ? AND action_id = ? AND reverted_at IS NULL ORDER BY created_at DESC`).bind(actionId).all<{ id: string; entity_type: string; entity_id: string; op: string; old_json: string | null }>()).results ?? [];
     let reverted = 0;
     for (const r of rows) {
       if (await this.revertOneAiEdit(userId, r)) reverted++;
@@ -5748,7 +5674,7 @@ export class TaxAgent extends Agent<Env> {
   /** Undo a whole batch (multi-action AI change) atomically-ish, newest first. */
   async undoAiEditBatch(userId: string, batchId: string): Promise<{ reverted: number }> {
     if (!batchId) return { reverted: 0 };
-    const rows = (await this.env.DB.prepare(`SELECT id, entity_type, entity_id, op, old_json FROM ai_edits WHERE user_id = ? AND batch_id = ? AND reverted_at IS NULL ORDER BY created_at DESC`).bind(userId, batchId).all<{ id: string; entity_type: string; entity_id: string; op: string; old_json: string | null }>()).results ?? [];
+    const rows = (await tenantDb(this.env, userId).prepare(`SELECT id, entity_type, entity_id, op, old_json FROM ai_edits WHERE user_id = ? AND batch_id = ? AND reverted_at IS NULL ORDER BY created_at DESC`).bind(batchId).all<{ id: string; entity_type: string; entity_id: string; op: string; old_json: string | null }>()).results ?? [];
     let reverted = 0;
     for (const r of rows) {
       if (await this.revertOneAiEdit(userId, r)) reverted++;
@@ -5809,7 +5735,7 @@ export class TaxAgent extends Agent<Env> {
       // projection (e.g. a property's disposal → synthetic CGT rows). Idempotent; safe in every direction.
       const hook = TaxAgent.RESTORE_HOOKS[r.entity_type];
       if (hook) await hook(this.env, userId, r.entity_id);
-      await this.env.DB.prepare(`UPDATE ai_edits SET reverted_at = datetime('now') WHERE id = ? AND user_id = ?`).bind(r.id, userId).run();
+      await tenantDb(this.env, userId).prepare(`UPDATE ai_edits SET reverted_at = datetime('now') WHERE id = ? AND user_id = ?`).bind(r.id).run();
       return true;
     } catch {
       return false; // e.g. a blocked delete — leave the edit applied; the caller reports the count
@@ -5818,10 +5744,10 @@ export class TaxAgent extends Agent<Env> {
 
   /** Recent entity edits for the "AI changes — undo" feed. Newest first, still-applied flagged. */
   async listAiEdits(userId: string, limit = 30): Promise<{ edits: { action_id: string; entity_type: string; entity_id: string; op: string; source: string; created_at: string; reverted_at: string | null; summary: string }[] }> {
-    const rows = (await this.env.DB.prepare(
+    const rows = (await tenantDb(this.env, userId).prepare(
       `SELECT action_id, entity_type, entity_id, op, source, new_json, old_json, created_at, reverted_at
          FROM ai_edits WHERE user_id = ? ORDER BY created_at DESC LIMIT ?`,
-    ).bind(userId, Math.min(Math.max(1, limit), 100)).all<{ action_id: string; entity_type: string; entity_id: string; op: string; source: string; new_json: string | null; old_json: string | null; created_at: string; reverted_at: string | null }>()).results ?? [];
+    ).bind(Math.min(Math.max(1, limit), 100)).all<{ action_id: string; entity_type: string; entity_id: string; op: string; source: string; new_json: string | null; old_json: string | null; created_at: string; reverted_at: string | null }>()).results ?? [];
     const label = (json: string | null): string => {
       if (!json) return "";
       try {
@@ -5870,14 +5796,14 @@ export class TaxAgent extends Agent<Env> {
   async sweepMovements(userId: string): Promise<MovementSweep> {
     // Candidates: captured bank lines not already excluded/confirmed, still uncategorised or
     // low-confidence — so a row the user has confirmed (corrected / high-confidence) is never reclassified.
-    const rows = await this.env.DB.prepare(
+    const rows = await tenantDb(this.env, userId).prepare(
       `SELECT id, merchant, raw_description, amount_cents, amount_aud_cents, direction, txn_date, account_id
          FROM transactions
         WHERE user_id = ? AND kind = 'bank_line'
           AND status NOT IN ('ignored','duplicate','matched_receipt','corrected')
           AND (bucket IS NULL OR bucket = 'unknown' OR confidence IS NULL OR confidence < 0.85)`,
     )
-      .bind(userId)
+      .bind()
       .all<{ id: string; merchant: string | null; raw_description: string | null; amount_cents: number | null; amount_aud_cents: number | null; direction: string | null; txn_date: string | null; account_id: string | null }>();
     const ignorable: MovementCandidate[] = [];
     const property_loan_review: MovementCandidate[] = [];
@@ -5917,10 +5843,10 @@ export class TaxAgent extends Agent<Env> {
     let skipped = 0;
     const stmts: D1PreparedStatement[] = [];
     for (const txnId of ids) {
-      const row = await this.env.DB.prepare(
+      const row = await tenantDb(this.env, userId).prepare(
         `SELECT raw_description, merchant, status, direction FROM transactions WHERE id = ? AND user_id = ?`,
       )
-        .bind(txnId, userId)
+        .bind(txnId)
         .first<{ raw_description: string | null; merchant: string | null; status: string; direction: string | null }>();
       if (!row) {
         skipped++;
@@ -5939,10 +5865,10 @@ export class TaxAgent extends Agent<Env> {
         continue;
       }
       stmts.push(
-        this.env.DB.prepare(`UPDATE transactions SET status='ignored' WHERE id = ? AND user_id = ?`).bind(txnId, userId),
-        this.env.DB.prepare(
+        tenantDb(this.env, userId).prepare(`UPDATE transactions SET status='ignored' WHERE id = ? AND user_id = ?`).bind(txnId),
+        tenantDb(this.env, userId).prepare(
           `INSERT INTO corrections (id, user_id, txn_id, field, old_value, new_value) VALUES (?, ?, ?, 'status', ?, 'ignored')`,
-        ).bind(crypto.randomUUID(), userId, txnId, row.status),
+        ).bind(crypto.randomUUID(), txnId, row.status),
       );
       ignored++;
     }
@@ -5990,7 +5916,7 @@ export class TaxAgent extends Agent<Env> {
       // recategorise, so re-asking would be noise. A MIXED group is NOT skipped: a debit expense
       // rule must not suppress asking about the credit side (and vice-versa).
       if (g.direction !== "mixed" && applyUserRules(g.group_key, situation.rules, g.direction)) continue;
-      const res = await this.env.DB.prepare(
+      const res = await tenantDb(this.env, userId).prepare(
         `INSERT INTO clarify_questions (id, user_id, fy, group_key, sample_desc, direction, n, total_cents, suggested_json, status)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')
          ON CONFLICT(user_id, fy, group_key) DO UPDATE SET
@@ -5998,7 +5924,7 @@ export class TaxAgent extends Agent<Env> {
            direction = excluded.direction, suggested_json = excluded.suggested_json
          WHERE clarify_questions.status = 'open'`,
       )
-        .bind(crypto.randomUUID(), userId, fyStartYearStr(startYear), g.group_key, g.sample_desc, g.direction, g.n, g.total_cents, JSON.stringify(g.suggestions))
+        .bind(crypto.randomUUID(), fyStartYearStr(startYear), g.group_key, g.sample_desc, g.direction, g.n, g.total_cents, JSON.stringify(g.suggestions))
         .run();
       questions += res.meta?.changes ?? 0;
     }
@@ -6038,7 +5964,7 @@ export class TaxAgent extends Agent<Env> {
 
   /** Dismiss a clarify question (the user judges the pattern not worth answering). Terminal. */
   async dismissClarify(userId: string, questionId: string): Promise<{ ok: boolean }> {
-    await this.env.DB.prepare(`UPDATE clarify_questions SET status = 'dismissed' WHERE id = ? AND user_id = ? AND status = 'open'`).bind(questionId, userId).run();
+    await tenantDb(this.env, userId).prepare(`UPDATE clarify_questions SET status = 'dismissed' WHERE id = ? AND user_id = ? AND status = 'open'`).bind(questionId).run();
     return { ok: true };
   }
 
@@ -6071,7 +5997,7 @@ export class TaxAgent extends Agent<Env> {
       txn_date: r.txn_date,
       fy: opts.fy,
     });
-    await this.env.DB.prepare(`UPDATE transactions SET matched_income_id = ?, status = 'ignored' WHERE id = ? AND user_id = ?`).bind(incomeId, r.id, userId).run();
+    await tenantDb(this.env, userId).prepare(`UPDATE transactions SET matched_income_id = ?, status = 'ignored' WHERE id = ? AND user_id = ?`).bind(incomeId, r.id).run();
     return incomeId;
   }
 
@@ -6172,10 +6098,10 @@ export class TaxAgent extends Agent<Env> {
   }
 
   async answerClarify(userId: string, questionId: string, answer: ClarifyAnswer): Promise<{ applied: number; income_recorded: number }> {
-    const q = await this.env.DB.prepare(
+    const q = await tenantDb(this.env, userId).prepare(
       `SELECT id, fy, group_key, status FROM clarify_questions WHERE id = ? AND user_id = ?`,
     )
-      .bind(questionId, userId)
+      .bind(questionId)
       .first<{ id: string; fy: string; group_key: string; status: string }>();
     if (!q) throw new Error("clarify question not found");
     if (q.status !== "open") return { applied: 0, income_recorded: 0 }; // idempotent: already answered/dismissed
@@ -6191,10 +6117,10 @@ export class TaxAgent extends Agent<Env> {
       if (RULE_CREDIT_BUCKETS.has(answer.bucket)) throw new Error(`use an income answer kind, not bucket='${answer.bucket}'`);
     }
     // Claim it, guarded on status='open' so only one writer proceeds.
-    const claim = await this.env.DB.prepare(
+    const claim = await tenantDb(this.env, userId).prepare(
       `UPDATE clarify_questions SET status = 'answered', answer_json = ? WHERE id = ? AND user_id = ? AND status = 'open'`,
     )
-      .bind(JSON.stringify(answer), questionId, userId)
+      .bind(JSON.stringify(answer), questionId)
       .run();
     if (!(claim.meta?.changes ?? 0)) return { applied: 0, income_recorded: 0 };
 
@@ -6222,7 +6148,7 @@ export class TaxAgent extends Agent<Env> {
     const directionGuard = featureOn(this.env, "clarify_direction_guard");
     // Put the question back to 'open' when an answer is refused after the claim, so it isn't dead-ended.
     const unclaim = () =>
-      this.env.DB.prepare(`UPDATE clarify_questions SET status = 'open', answer_json = NULL WHERE id = ? AND user_id = ? AND status = 'answered'`).bind(questionId, userId).run();
+      tenantDb(this.env, userId).prepare(`UPDATE clarify_questions SET status = 'open', answer_json = NULL WHERE id = ? AND user_id = ? AND status = 'answered'`).bind(questionId).run();
 
     if (answer.kind === "wages_payer") {
       // #554 / #577: mark the payer as an EMPLOYER and record NOTHING — through the SAME payroll confirm as the
@@ -6293,8 +6219,8 @@ export class TaxAgent extends Agent<Env> {
       const stmts: D1PreparedStatement[] = [];
       for (const r of targets) {
         stmts.push(
-          this.env.DB.prepare(`UPDATE transactions SET status = 'ignored' WHERE id = ? AND user_id = ?`).bind(r.id, userId),
-          this.env.DB.prepare(`INSERT INTO corrections (id, user_id, txn_id, field, old_value, new_value) VALUES (?, ?, ?, 'status', 'clarify', 'ignored')`).bind(crypto.randomUUID(), userId, r.id),
+          tenantDb(this.env, userId).prepare(`UPDATE transactions SET status = 'ignored' WHERE id = ? AND user_id = ?`).bind(r.id),
+          tenantDb(this.env, userId).prepare(`INSERT INTO corrections (id, user_id, txn_id, field, old_value, new_value) VALUES (?, ?, ?, 'status', 'clarify', 'ignored')`).bind(crypto.randomUUID(), r.id),
         );
       }
       for (let i = 0; i < stmts.length; i += 80) await this.env.DB.batch(stmts.slice(i, i + 80));
@@ -6317,8 +6243,8 @@ export class TaxAgent extends Agent<Env> {
       const stmts: D1PreparedStatement[] = [];
       for (const r of debits) {
         stmts.push(
-          this.env.DB.prepare(`UPDATE transactions SET status = 'ignored', ato_label = 'capital:investment' WHERE id = ? AND user_id = ?`).bind(r.id, userId),
-          this.env.DB.prepare(`INSERT INTO corrections (id, user_id, txn_id, field, old_value, new_value) VALUES (?, ?, ?, 'capital', 'clarify', 'capital:investment')`).bind(crypto.randomUUID(), userId, r.id),
+          tenantDb(this.env, userId).prepare(`UPDATE transactions SET status = 'ignored', ato_label = 'capital:investment' WHERE id = ? AND user_id = ?`).bind(r.id),
+          tenantDb(this.env, userId).prepare(`INSERT INTO corrections (id, user_id, txn_id, field, old_value, new_value) VALUES (?, ?, ?, 'capital', 'clarify', 'capital:investment')`).bind(crypto.randomUUID(), r.id),
         );
       }
       for (let i = 0; i < stmts.length; i += 80) await this.env.DB.batch(stmts.slice(i, i + 80));
@@ -6395,12 +6321,12 @@ export class TaxAgent extends Agent<Env> {
   ): Promise<{ key: string | null; rows: { id: string; amount_cents: number | null; amount_aud_cents: number | null }[] }> {
     const key = groupKey(seed.raw_description ?? seed.merchant ?? "");
     if (!key) return { key: null, rows: [] };
-    const res = await this.env.DB.prepare(
+    const res = await tenantDb(this.env, userId).prepare(
       `SELECT id, raw_description, merchant, direction, amount_cents, amount_aud_cents
          FROM transactions
         WHERE user_id = ? AND kind = 'bank_line' AND ${CLARIFY_LEFTOVER_WHERE}`,
     )
-      .bind(userId)
+      .bind()
       .all<{ id: string; raw_description: string | null; merchant: string | null; direction: string | null; amount_cents: number | null; amount_aud_cents: number | null }>();
     const rows = (res.results ?? []).filter(
       (r) =>
@@ -6414,10 +6340,10 @@ export class TaxAgent extends Agent<Env> {
 
   /** Count + total of a seed's still-to-review look-alikes, for the "Apply to N look-alikes" prompt. */
   async previewSiblings(userId: string, seedTxnId: string): Promise<{ n: number; total_cents: number; group_key: string | null }> {
-    const seed = await this.env.DB.prepare(
+    const seed = await tenantDb(this.env, userId).prepare(
       `SELECT id, raw_description, merchant, direction FROM transactions WHERE id = ? AND user_id = ?`,
     )
-      .bind(seedTxnId, userId)
+      .bind(seedTxnId)
       .first<{ id: string; raw_description: string | null; merchant: string | null; direction: string | null }>();
     if (!seed) throw new Error("transaction not found");
     const { key, rows } = await this.resolveSiblingLeftovers(userId, seed);
@@ -6439,10 +6365,10 @@ export class TaxAgent extends Agent<Env> {
     edit: { bucket?: string; ato_label?: string; property_id?: string },
     opts: { learnRule?: boolean } = {},
   ): Promise<{ applied: number; batch_id: string; rule_created: boolean; group_key: string | null }> {
-    const seed = await this.env.DB.prepare(
+    const seed = await tenantDb(this.env, userId).prepare(
       `SELECT id, raw_description, merchant, direction FROM transactions WHERE id = ? AND user_id = ?`,
     )
-      .bind(seedTxnId, userId)
+      .bind(seedTxnId)
       .first<{ id: string; raw_description: string | null; merchant: string | null; direction: string | null }>();
     if (!seed) throw new Error("transaction not found");
     if (edit.bucket) {
@@ -6489,20 +6415,20 @@ export class TaxAgent extends Agent<Env> {
     source = "lender_summary",
     documentId?: string,
   ): Promise<{ ok: true; interest_cents: number; source: string }> {
-    const acct = await this.env.DB.prepare(`SELECT type FROM accounts WHERE id = ? AND user_id = ?`)
-      .bind(loanAccountId, userId)
+    const acct = await tenantDb(this.env, userId).prepare(`SELECT type FROM accounts WHERE id = ? AND user_id = ?`)
+      .bind(loanAccountId)
       .first<{ type: string }>();
     if (!acct) throw new Error("loan account not found");
     if (acct.type !== "loan") throw new Error("interest can only be recorded against a loan account");
     const cents = Math.max(0, Math.round(Number.isFinite(interestCents) ? interestCents : 0));
     const src = ["lender_summary", "statement_parsed", "estimate"].includes(source) ? source : "lender_summary";
-    await this.env.DB.prepare(
+    await tenantDb(this.env, userId).prepare(
       `INSERT INTO loan_interest_summaries (id, user_id, loan_account_id, fy, interest_cents, source, document_id)
        VALUES (?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(user_id, loan_account_id, fy) DO UPDATE SET
          interest_cents = excluded.interest_cents, source = excluded.source, document_id = excluded.document_id`,
     )
-      .bind(crypto.randomUUID(), userId, loanAccountId, String(fy), cents, src, documentId ?? null)
+      .bind(crypto.randomUUID(), loanAccountId, String(fy), cents, src, documentId ?? null)
       .run();
     await this.audit(userId, "loan_interest_set", JSON.stringify({ loanAccountId, fy, cents, source: src }));
     return { ok: true, interest_cents: cents, source: src };
@@ -6519,7 +6445,7 @@ export class TaxAgent extends Agent<Env> {
     userId: string,
     fy: number,
   ): Promise<{ loan_account_id: string; loan_name: string; properties: { id: string; label: string | null }[]; recorded_cents: number | null; source: string | null; estimate_cents: number | null }[]> {
-    const res = await this.env.DB.prepare(
+    const res = await tenantDb(this.env, userId).prepare(
       `SELECT a.id AS loan_account_id, a.name AS loan_name, a.interest_rate_pct, a.balance_cents,
               p.id AS property_id, p.label AS property_label,
               lis.interest_cents AS recorded_cents, lis.source AS source
@@ -6530,7 +6456,7 @@ export class TaxAgent extends Agent<Env> {
         WHERE lp.user_id = ?
         ORDER BY a.name`,
     )
-      .bind(String(fy), userId)
+      .bind(String(fy))
       .all<{ loan_account_id: string; loan_name: string; interest_rate_pct: number | null; balance_cents: number | null; property_id: string; property_label: string | null; recorded_cents: number | null; source: string | null }>();
     const byLoan = new Map<string, { loan_account_id: string; loan_name: string; properties: { id: string; label: string | null }[]; recorded_cents: number | null; source: string | null; estimate_cents: number | null }>();
     for (const r of res.results ?? []) {
@@ -6575,15 +6501,15 @@ export class TaxAgent extends Agent<Env> {
     const fy = fyStartYearStr(startYear); // accountant_runs.fy is the start-year string ('2025')
     // In-flight lock (B2): refuse to start a second pass for the same (user, fy). A 'running' row
     // older than 15 min is treated as STALE (a crashed/evicted run) so the lock can't wedge forever.
-    const active = await this.env.DB.prepare(
+    const active = await tenantDb(this.env, userId).prepare(
       `SELECT id FROM accountant_runs WHERE user_id = ? AND fy = ? AND status = 'running' AND started_at > datetime('now','-15 minutes')`,
-    ).bind(userId, fy).first<{ id: string }>();
+    ).bind(fy).first<{ id: string }>();
     if (active) throw new Error("a pass is already running for this year");
     // Mark any stale running rows for this (user, fy) as errored so they don't accumulate.
-    await this.env.DB.prepare(`UPDATE accountant_runs SET status = 'error', finished_at = datetime('now') WHERE user_id = ? AND fy = ? AND status = 'running'`).bind(userId, fy).run();
+    await tenantDb(this.env, userId).prepare(`UPDATE accountant_runs SET status = 'error', finished_at = datetime('now') WHERE user_id = ? AND fy = ? AND status = 'running'`).bind(fy).run();
     const runId = crypto.randomUUID();
-    await this.env.DB.prepare(`INSERT INTO accountant_runs (id, user_id, fy, stage, status) VALUES (?, ?, ?, 'cleanup', 'running')`).bind(runId, userId, fy).run();
-    const setStage = (stage: string) => this.env.DB.prepare(`UPDATE accountant_runs SET stage = ? WHERE id = ? AND user_id = ?`).bind(stage, runId, userId).run();
+    await tenantDb(this.env, userId).prepare(`INSERT INTO accountant_runs (id, user_id, fy, stage, status) VALUES (?, ?, ?, 'cleanup', 'running')`).bind(runId, fy).run();
+    const setStage = (stage: string) => tenantDb(this.env, userId).prepare(`UPDATE accountant_runs SET stage = ? WHERE id = ? AND user_id = ?`).bind(stage, runId).run();
     try {
       const { start, end } = fyBounds(startYear, await this.jurisdictionFor(userId));
       // Stage A — surface non-spend movements (NOT auto-applied; the user confirms, B3).
@@ -6592,18 +6518,18 @@ export class TaxAgent extends Agent<Env> {
       // matcher's own prior auto-verdicts; user-confirmed states are preserved).
       await setStage("deductibility");
       const stamped = await this.stampDeductibility(userId, { reResolve: true });
-      const suggestions = (await this.env.DB.prepare(
+      const suggestions = (await tenantDb(this.env, userId).prepare(
         `SELECT COUNT(*) AS n FROM transactions WHERE user_id = ? AND deductibility = 'suggested_deductible' AND txn_date >= ? AND txn_date <= ?`,
-      ).bind(userId, start, end).first<{ n: number }>())?.n ?? 0;
+      ).bind(start, end).first<{ n: number }>())?.n ?? 0;
       // Stage B — group leftovers into one-question-per-pattern.
       await setStage("clarify");
       const clarify = await this.runClarifyScan(userId, startYear);
       // Stage E — claim discovery sweep (persists claim_suggestions; auto-match attaches evidence).
       await setStage("claims");
       await this.reviewClaims(userId, startYear);
-      const claimItems = (await this.env.DB.prepare(
+      const claimItems = (await tenantDb(this.env, userId).prepare(
         `SELECT COUNT(*) AS n FROM claim_suggestions WHERE user_id = ? AND status IN ('suggested','capturing') AND source != 'relevance_scan'`,
-      ).bind(userId).first<{ n: number }>())?.n ?? 0;
+      ).bind().first<{ n: number }>())?.n ?? 0;
 
       const summary: AccountantSummary = {
         run_id: runId,
@@ -6615,11 +6541,11 @@ export class TaxAgent extends Agent<Env> {
         clarify_questions: clarify.questions,
         claim_items: claimItems,
       };
-      await this.env.DB.prepare(`UPDATE accountant_runs SET status = 'done', stage = 'done', summary_json = ?, finished_at = datetime('now') WHERE id = ? AND user_id = ?`).bind(JSON.stringify(summary), runId, userId).run();
+      await tenantDb(this.env, userId).prepare(`UPDATE accountant_runs SET status = 'done', stage = 'done', summary_json = ?, finished_at = datetime('now') WHERE id = ? AND user_id = ?`).bind(JSON.stringify(summary), runId).run();
       await this.audit(userId, "accountant_pass", JSON.stringify(summary));
       return summary;
     } catch (e) {
-      await this.env.DB.prepare(`UPDATE accountant_runs SET status = 'error', summary_json = ?, finished_at = datetime('now') WHERE id = ? AND user_id = ?`).bind(JSON.stringify({ error: (e as Error).message }), runId, userId).run();
+      await tenantDb(this.env, userId).prepare(`UPDATE accountant_runs SET status = 'error', summary_json = ?, finished_at = datetime('now') WHERE id = ? AND user_id = ?`).bind(JSON.stringify({ error: (e as Error).message }), runId).run();
       throw e;
     }
   }
@@ -6630,9 +6556,9 @@ export class TaxAgent extends Agent<Env> {
     txnId: string,
     input: WorthALookConfirmInput = {},
   ): Promise<{ ok: boolean; denied?: boolean; needs_apportionment?: boolean; needs_label?: boolean; label_options?: string[]; needs_asset?: boolean }> {
-    const row = await this.env.DB
+    const row = await tenantDb(this.env, userId)
       .prepare(`SELECT deductibility, bucket, ato_label, merchant FROM transactions WHERE id = ? AND user_id = ?`)
-      .bind(txnId, userId)
+      .bind(txnId)
       .first<{ deductibility: string | null; bucket: string | null; ato_label: string | null; merchant: string | null }>();
     if (!row) throw new Error("transaction not found");
     // #578/#587 (relevance_scan): a 'worth a look' line (an occupation rule matched a payg line) confirms through
@@ -6659,17 +6585,17 @@ export class TaxAgent extends Agent<Env> {
     if (verdict.deductibility === "likely_not" || verdict.deductibility === "needs_apportionment") {
       // deductible amount is 0 for a denied row, NULL for needs-apportionment (mirrors stampDeductibility).
       const amt = verdict.deductibility === "likely_not" ? 0 : null;
-      await this.env.DB
+      await tenantDb(this.env, userId)
         .prepare(`UPDATE transactions SET deductibility = ?, deductible_amount_cents = ? WHERE id = ? AND user_id = ?`)
-        .bind(verdict.deductibility, amt, txnId, userId)
+        .bind(verdict.deductibility, amt, txnId)
         .run();
       await this.audit(userId, "suggestion_denied_on_confirm", JSON.stringify({ txnId, verdict: verdict.deductibility }));
       return { ok: false, denied: true };
     }
-    await this.env.DB.prepare(`UPDATE transactions SET deductibility = 'confirmed_deductible' WHERE id = ? AND user_id = ?`).bind(txnId, userId).run();
+    await tenantDb(this.env, userId).prepare(`UPDATE transactions SET deductibility = 'confirmed_deductible' WHERE id = ? AND user_id = ?`).bind(txnId).run();
     // #578: a 'worth a look' card on this line now has its evidence (the line itself) — keep it as history.
     if (featureOn(this.env, "relevance_scan")) {
-      await this.env.DB.prepare(`UPDATE claim_suggestions SET status = 'capturing' WHERE user_id = ? AND txn_id = ? AND source = 'relevance_scan' AND status = 'suggested'`).bind(userId, txnId).run();
+      await tenantDb(this.env, userId).prepare(`UPDATE claim_suggestions SET status = 'capturing' WHERE user_id = ? AND txn_id = ? AND source = 'relevance_scan' AND status = 'suggested'`).bind(txnId).run();
     }
     await this.audit(userId, "confirm_deduction", JSON.stringify({ txnId }));
     return { ok: true };
@@ -6681,11 +6607,11 @@ export class TaxAgent extends Agent<Env> {
    * deleted even though the data is gone (honours "deleted means deleted").
    */
   async deleteTransaction(userId: string, txnId: string): Promise<void> {
-    const row = await this.env.DB.prepare(
+    const row = await tenantDb(this.env, userId).prepare(
       `SELECT merchant, amount_cents, currency, receipt_key, receipt_keys
          FROM transactions WHERE id = ? AND user_id = ?`,
     )
-      .bind(txnId, userId)
+      .bind(txnId)
       .first<{
         merchant: string | null;
         amount_cents: number | null;
@@ -6714,25 +6640,25 @@ export class TaxAgent extends Agent<Env> {
       }
     }
 
-    await this.env.DB.prepare(`DELETE FROM corrections WHERE txn_id = ? AND user_id = ?`).bind(txnId, userId).run();
+    await tenantDb(this.env, userId).prepare(`DELETE FROM corrections WHERE txn_id = ? AND user_id = ?`).bind(txnId).run();
     // Remove any claim evidence pointing at this txn (else reviewClaims folds stale links into 'capturing').
-    await this.env.DB.prepare(`DELETE FROM claim_links WHERE txn_id = ? AND user_id = ?`).bind(txnId, userId).run();
+    await tenantDb(this.env, userId).prepare(`DELETE FROM claim_links WHERE txn_id = ? AND user_id = ?`).bind(txnId).run();
     // Reverse-orphan cleanup (no FK cascade): if this row was a bank_line, any receipt matched to it
     // would dangle AND stay excluded from the position forever (COUNTABLE counts a receipt only when
     // matched_txn_id IS NULL) — un-match them back to countable, mirroring deleteStatement's purge.
     // Also drop attribution rows keyed to this txn so they don't sum against a deleted transaction.
-    await this.env.DB.prepare(
+    await tenantDb(this.env, userId).prepare(
       `UPDATE transactions SET matched_txn_id = NULL, status = 'extracted' WHERE user_id = ? AND matched_txn_id = ?`,
     )
-      .bind(userId, txnId)
+      .bind(txnId)
       .run();
-    await this.env.DB.prepare(`DELETE FROM transaction_attributions WHERE transaction_id = ? AND user_id = ?`).bind(txnId, userId).run();
+    await tenantDb(this.env, userId).prepare(`DELETE FROM transaction_attributions WHERE transaction_id = ? AND user_id = ?`).bind(txnId).run();
     // C1: drop any holding seeded from this line's 'capital' clarify answer. Without this the parcel would
     // claim to be evidenced by a transaction that no longer exists — and (once a disposal is recorded
     // against it) would keep feeding the position with nothing left to remove it. Mirrors clearIncomeCgt on
     // the income DELETE route.
     await clearTxnCgt(this.env, userId, txnId);
-    await this.env.DB.prepare(`DELETE FROM transactions WHERE id = ? AND user_id = ?`).bind(txnId, userId).run();
+    await tenantDb(this.env, userId).prepare(`DELETE FROM transactions WHERE id = ? AND user_id = ?`).bind(txnId).run();
     await this.audit(
       userId,
       "delete",
@@ -6748,11 +6674,11 @@ export class TaxAgent extends Agent<Env> {
    * the AUD amount (`amount_aud_cents`), matching QBO's home currency.
    */
   async pushToQuickBooks(userId: string, txnId: string): Promise<{ ok: boolean; ledgerRef?: string; error?: string }> {
-    const row = await this.env.DB.prepare(
+    const row = await tenantDb(this.env, userId).prepare(
       `SELECT merchant, amount_cents, amount_aud_cents, gst_cents, txn_date, ato_label, bucket, ledger_ref
          FROM transactions WHERE id = ? AND user_id = ?`,
     )
-      .bind(txnId, userId)
+      .bind(txnId)
       .first<{
         merchant: string | null;
         amount_cents: number | null;
@@ -6778,7 +6704,7 @@ export class TaxAgent extends Agent<Env> {
     } as Extracted;
     await this.pushToLedger(userId, txnId, parsed);
 
-    const after = await this.env.DB.prepare(`SELECT ledger_ref FROM transactions WHERE id = ?`)
+    const after = await tenantDb(this.env, userId).prepare(`SELECT ledger_ref FROM transactions WHERE id = ? AND user_id = ?`)
       .bind(txnId)
       .first<{ ledger_ref: string | null }>();
     if (after?.ledger_ref) {
@@ -6792,22 +6718,22 @@ export class TaxAgent extends Agent<Env> {
   async runProactiveScan(userId: string): Promise<void> {
     const suggestions: string[] = [];
 
-    const uncategorised = await this.env.DB.prepare(
+    const uncategorised = await tenantDb(this.env, userId).prepare(
       // Parenthesise the OR so BOTH clauses are scoped to this user (prior precedence bug
       // leaked other tenants' needs_review rows). Duplicates excluded.
       `SELECT COUNT(*) AS n FROM transactions
         WHERE user_id = ? AND status NOT IN ('duplicate','ignored','matched_receipt') AND (bucket = 'unknown' OR status = 'needs_review')`,
     )
-      .bind(userId)
+      .bind()
       .first<{ n: number }>();
     if (uncategorised && uncategorised.n > 0) {
       suggestions.push(`${uncategorised.n} transaction(s) still need categorising.`);
     }
 
-    const vacant = await this.env.DB.prepare(
+    const vacant = await tenantDb(this.env, userId).prepare(
       `SELECT COUNT(*) AS n FROM transactions WHERE user_id = ? AND bucket = 'property_vacant' AND ${COUNTABLE}`,
     )
-      .bind(userId)
+      .bind()
       .first<{ n: number }>();
     if (vacant && vacant.n > 0) {
       suggestions.push(
@@ -6823,12 +6749,12 @@ export class TaxAgent extends Agent<Env> {
     const fyEndDate = `${fyStart + 1}-06-30`;
 
     // GST credits captured on company expenses this FY (the BAS / reconcile angle).
-    const gst = await this.env.DB.prepare(
+    const gst = await tenantDb(this.env, userId).prepare(
       `SELECT COALESCE(SUM(gst_cents),0) AS g, COUNT(*) AS n FROM transactions
         WHERE user_id = ? AND bucket = 'company' AND ${COUNTABLE}
           AND txn_date >= ? AND txn_date <= ?`,
     )
-      .bind(userId, fyStartDate, fyEndDate)
+      .bind(fyStartDate, fyEndDate)
       .first<{ g: number; n: number }>();
     if (gst && gst.g > 0) {
       suggestions.push(
@@ -6840,7 +6766,7 @@ export class TaxAgent extends Agent<Env> {
     }
 
     // Vehicle/fuel spend → logbook reminder (the logbook method needs a valid 12-week log).
-    const car = await this.env.DB.prepare(
+    const car = await tenantDb(this.env, userId).prepare(
       `SELECT COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS t FROM transactions
         WHERE user_id = ? AND ${COUNTABLE}
           AND (lower(ato_label) LIKE '%car%' OR lower(ato_label) LIKE '%vehicle%'
@@ -6848,7 +6774,7 @@ export class TaxAgent extends Agent<Env> {
                OR lower(merchant) LIKE '%caltex%' OR lower(merchant) LIKE '%shell%'
                OR lower(merchant) LIKE '%ampol%')`,
     )
-      .bind(userId)
+      .bind()
       .first<{ t: number }>();
     if (car && car.t > 30000) {
       suggestions.push(
@@ -6857,11 +6783,11 @@ export class TaxAgent extends Agent<Env> {
     }
 
     // Low-confidence categorisations — a quick review both fixes them and trains Quillo.
-    const lowConf = await this.env.DB.prepare(
+    const lowConf = await tenantDb(this.env, userId).prepare(
       `SELECT COUNT(*) AS n FROM transactions
         WHERE user_id = ? AND status NOT IN ('duplicate','ignored','matched_receipt') AND confidence IS NOT NULL AND confidence < ?`,
     )
-      .bind(userId, CONFIDENCE_THRESHOLD)
+      .bind(CONFIDENCE_THRESHOLD)
       .first<{ n: number }>();
     if (lowConf && lowConf.n > 0) {
       suggestions.push(
@@ -6886,22 +6812,22 @@ export class TaxAgent extends Agent<Env> {
   async detectAdvisory(userId: string): Promise<{ recurring: number; opportunities: number }> {
     // (1) Backfill biller_key on a bounded slice (idempotent: WHERE biller_key IS NULL → naturally
     // re-runnable; subsequent ticks pick up the rest). No model call.
-    const unkeyed = await this.env.DB.prepare(
+    const unkeyed = await tenantDb(this.env, userId).prepare(
       `SELECT id, merchant, raw_description FROM transactions
         WHERE user_id = ? AND biller_key IS NULL AND kind IN ('bank_line','receipt') LIMIT 2000`,
     )
-      .bind(userId)
+      .bind()
       .all<{ id: string; merchant: string | null; raw_description: string | null }>();
     const updates = (unkeyed.results ?? [])
       .map((r) => ({ id: r.id, key: billerNormalize(r.merchant, r.raw_description) ?? "" }))
       .map((u) =>
-        this.env.DB.prepare(`UPDATE transactions SET biller_key = ? WHERE user_id = ? AND id = ?`).bind(u.key, userId, u.id),
+        tenantDb(this.env, userId).prepare(`UPDATE transactions SET biller_key = ? WHERE user_id = ? AND id = ?`).bind(u.key, u.id),
       );
     await this.batchChunked(updates);
 
     // (2) Detect recurring streams over the last ~18 months of countable debits with a biller_key.
     const since = new Date(Date.now() - 540 * 86_400_000).toISOString().slice(0, 10);
-    const rows = await this.env.DB.prepare(
+    const rows = await tenantDb(this.env, userId).prepare(
       `SELECT biller_key, txn_date, COALESCE(amount_aud_cents, amount_cents) AS amt,
               COALESCE(merchant, raw_description) AS label
          FROM transactions
@@ -6909,7 +6835,7 @@ export class TaxAgent extends Agent<Env> {
           AND txn_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' AND txn_date >= ?
         ORDER BY biller_key, txn_date LIMIT 6000`,
     )
-      .bind(userId, since)
+      .bind(since)
       .all<{ biller_key: string; txn_date: string; amt: number | null; label: string | null }>();
 
     const byBiller = new Map<string, { occ: RecurringOccurrence[]; label: string }>();
@@ -6930,7 +6856,7 @@ export class TaxAgent extends Agent<Env> {
       const annual = paymentsPerYear(det.cadence) * det.typical_amount_cents;
       detected.push({ biller_key, label: g.label, category, det, essential });
       billUpserts.push(
-        this.env.DB.prepare(
+        tenantDb(this.env, userId).prepare(
           `INSERT INTO recurring_bills
              (id,user_id,biller_key,label,category,cadence,typical_amount_cents,amount_variance_cents,
               annual_amount_cents,is_subscription,is_essential,occurrences,first_seen_date,last_seen_date,
@@ -6945,10 +6871,7 @@ export class TaxAgent extends Agent<Env> {
              next_expected_date=excluded.next_expected_date,
              status=CASE WHEN recurring_bills.status IN ('dismissed','ended') OR recurring_bills.pinned = 1 THEN recurring_bills.status ELSE excluded.status END,
              updated_at=datetime('now')`,
-        ).bind(
-          crypto.randomUUID(), userId, biller_key, g.label.slice(0, 64), category, det.cadence,
-          det.typical_amount_cents, det.amount_variance_cents, annual, det.is_subscription ? 1 : 0,
-          essential ? 1 : 0, det.occurrences, det.first_seen, det.last_seen, det.next_expected, det.status,
+        ).bind(crypto.randomUUID(), biller_key, g.label.slice(0, 64), category, det.cadence, det.typical_amount_cents, det.amount_variance_cents, annual, det.is_subscription ? 1 : 0, essential ? 1 : 0, det.occurrences, det.first_seen, det.last_seen, det.next_expected, det.status
         ),
       );
     }
@@ -7012,7 +6935,7 @@ export class TaxAgent extends Agent<Env> {
     subjectKey: string,
     o: { fy: string | null; category: string | null; title: string; body: string; amount_cents: number; signpost: { label: string; url: string } | null; recurringBillId: string | null },
   ) {
-    return this.env.DB.prepare(
+    return tenantDb(this.env, userId).prepare(
       `INSERT INTO opportunities
          (id,user_id,opportunity_type,subject_key,fy,recurring_bill_id,category,title,body,amount_cents,
           signpost_label,signpost_url,status,updated_at)
@@ -7023,38 +6946,36 @@ export class TaxAgent extends Agent<Env> {
          recurring_bill_id=excluded.recurring_bill_id,
          status=CASE WHEN opportunities.status IN ('dismissed','actioned') THEN opportunities.status ELSE 'open' END,
          updated_at=datetime('now')`,
-    ).bind(
-      crypto.randomUUID(), userId, type, subjectKey, o.fy, o.recurringBillId, o.category,
-      o.title, o.body, o.amount_cents, o.signpost?.label ?? null, o.signpost?.url ?? null,
+    ).bind(crypto.randomUUID(), type, subjectKey, o.fy, o.recurringBillId, o.category, o.title, o.body, o.amount_cents, o.signpost?.label ?? null, o.signpost?.url ?? null
     );
   }
 
   /** Dismiss an opportunity (user action — sets terminal status so the detector won't reopen it). */
   async dismissOpportunity(userId: string, id: string): Promise<{ ok: boolean }> {
-    await this.env.DB.prepare(
+    await tenantDb(this.env, userId).prepare(
       `UPDATE opportunities SET status='dismissed', updated_at=datetime('now') WHERE user_id = ? AND id = ?`,
     )
-      .bind(userId, id)
+      .bind(id)
       .run();
     return { ok: true };
   }
 
   /** Dismiss a detected recurring bill (won't be resurrected by re-detection). */
   async dismissRecurringBill(userId: string, id: string): Promise<{ ok: boolean }> {
-    await this.env.DB.prepare(
+    await tenantDb(this.env, userId).prepare(
       `UPDATE recurring_bills SET status='dismissed', updated_at=datetime('now') WHERE user_id = ? AND id = ?`,
     )
-      .bind(userId, id)
+      .bind(id)
       .run();
     return { ok: true };
   }
 
   /** Confirm a detected recurring bill (user feedback): pin it sticky so re-detection won't downgrade it. */
   async confirmRecurringBill(userId: string, id: string): Promise<{ ok: boolean }> {
-    await this.env.DB.prepare(
+    await tenantDb(this.env, userId).prepare(
       `UPDATE recurring_bills SET pinned=1, status='confirmed', updated_at=datetime('now') WHERE user_id = ? AND id = ?`,
     )
-      .bind(userId, id)
+      .bind(id)
       .run();
     return { ok: true };
   }
@@ -7067,18 +6988,18 @@ export class TaxAgent extends Agent<Env> {
 
   /** Record (or re-affirm) the separate health-data consent that unlocks the PHI writes. */
   async recordHealthExtrasConsent(userId: string, text: string, method: string): Promise<{ ok: true; consented_at: string }> {
-    await this.env.DB.prepare(
+    await tenantDb(this.env, userId).prepare(
       `UPDATE profiles SET health_extras_consent_at = datetime('now') WHERE user_id = ?`,
-    ).bind(userId).run();
-    const row = await this.env.DB.prepare(`SELECT health_extras_consent_at AS at FROM profiles WHERE user_id = ?`)
-      .bind(userId).first<{ at: string }>();
+    ).bind().run();
+    const row = await tenantDb(this.env, userId).prepare(`SELECT health_extras_consent_at AS at FROM profiles WHERE user_id = ?`)
+      .bind().first<{ at: string }>();
     await this.audit(userId, "consent_health_extras", JSON.stringify({ method, text: text.slice(0, 200) }));
     return { ok: true, consented_at: row?.at ?? "" };
   }
 
   /** Withdraw the health-data consent (clears the marker ⇒ PHI writes blocked again). Data is kept. */
   async withdrawHealthExtrasConsent(userId: string): Promise<{ ok: true }> {
-    await this.env.DB.prepare(`UPDATE profiles SET health_extras_consent_at = NULL WHERE user_id = ?`).bind(userId).run();
+    await tenantDb(this.env, userId).prepare(`UPDATE profiles SET health_extras_consent_at = NULL WHERE user_id = ?`).bind().run();
     await this.audit(userId, "consent_health_extras_withdrawn", "{}");
     return { ok: true };
   }
@@ -7086,20 +7007,20 @@ export class TaxAgent extends Agent<Env> {
   /** Set whether the tenant holds private HOSPITAL cover (the MLS pivot; analogous to gst_registered). */
   async setPrivateHealth(userId: string, holds: boolean): Promise<{ ok: true; private_health: number }> {
     const v = holds ? 1 : 0;
-    await this.env.DB.prepare(`UPDATE profiles SET private_health = ? WHERE user_id = ?`).bind(v, userId).run();
+    await tenantDb(this.env, userId).prepare(`UPDATE profiles SET private_health = ? WHERE user_id = ?`).bind(v).run();
     await this.audit(userId, "private_health_set", JSON.stringify({ private_health: v }));
     return { ok: true, private_health: v };
   }
 
   private async requireHealthConsent(userId: string): Promise<void> {
-    const row = await this.env.DB.prepare(`SELECT health_extras_consent_at AS at FROM profiles WHERE user_id = ?`)
-      .bind(userId).first<{ at: string | null }>();
+    const row = await tenantDb(this.env, userId).prepare(`SELECT health_extras_consent_at AS at FROM profiles WHERE user_id = ?`)
+      .bind().first<{ at: string | null }>();
     if (!row?.at) throw new Error("Health-data consent required");
   }
 
   private async assertOwnsPolicy(userId: string, policyId: string): Promise<void> {
-    const row = await this.env.DB.prepare(`SELECT 1 AS ok FROM phi_policy WHERE id = ? AND user_id = ?`)
-      .bind(policyId, userId).first<{ ok: number }>();
+    const row = await tenantDb(this.env, userId).prepare(`SELECT 1 AS ok FROM phi_policy WHERE id = ? AND user_id = ?`)
+      .bind(policyId).first<{ ok: number }>();
     if (!row) throw new Error("policy not found");
   }
 
@@ -7117,20 +7038,20 @@ export class TaxAgent extends Agent<Env> {
       : null) as ResetBasis | null;
     if (p.id) {
       await this.assertOwnsPolicy(userId, p.id);
-      await this.env.DB.prepare(
+      await tenantDb(this.env, userId).prepare(
         `UPDATE phi_policy SET person_id=?, insurer=?, cover_type=?,
                 reset_basis=COALESCE(?, reset_basis), reset_date=COALESCE(?, reset_date), updated_at=datetime('now')
           WHERE id = ? AND user_id = ?`,
-      ).bind(p.person_id ?? null, p.insurer ?? null, p.cover_type ?? null, provided, p.reset_date ?? null, p.id, userId).run();
+      ).bind(p.person_id ?? null, p.insurer ?? null, p.cover_type ?? null, provided, p.reset_date ?? null, p.id).run();
       await this.audit(userId, "phi_policy_updated", JSON.stringify({ id: p.id, insurer: p.insurer }));
       return { id: p.id };
     }
     const basis = provided ?? insurerResetBasis(p.insurer);
     const id = crypto.randomUUID();
-    await this.env.DB.prepare(
+    await tenantDb(this.env, userId).prepare(
       `INSERT INTO phi_policy (id, user_id, person_id, insurer, cover_type, reset_basis, reset_date, source)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).bind(id, userId, p.person_id ?? null, p.insurer ?? null, p.cover_type ?? null, basis, p.reset_date ?? null, p.source ?? "manual").run();
+    ).bind(id, p.person_id ?? null, p.insurer ?? null, p.cover_type ?? null, basis, p.reset_date ?? null, p.source ?? "manual").run();
     await this.audit(userId, "phi_policy_created", JSON.stringify({ id, insurer: p.insurer, source: p.source ?? "manual" }));
     return { id };
   }
@@ -7140,9 +7061,9 @@ export class TaxAgent extends Agent<Env> {
     await this.requireHealthConsent(userId);
     await this.assertOwnsPolicy(userId, id);
     await this.env.DB.batch([
-      this.env.DB.prepare(`DELETE FROM phi_benefit_usage WHERE user_id = ? AND policy_id = ?`).bind(userId, id),
-      this.env.DB.prepare(`DELETE FROM phi_limit WHERE user_id = ? AND policy_id = ?`).bind(userId, id),
-      this.env.DB.prepare(`DELETE FROM phi_policy WHERE user_id = ? AND id = ?`).bind(userId, id),
+      tenantDb(this.env, userId).prepare(`DELETE FROM phi_benefit_usage WHERE user_id = ? AND policy_id = ?`).bind(id),
+      tenantDb(this.env, userId).prepare(`DELETE FROM phi_limit WHERE user_id = ? AND policy_id = ?`).bind(id),
+      tenantDb(this.env, userId).prepare(`DELETE FROM phi_policy WHERE user_id = ? AND id = ?`).bind(id),
     ]);
     await this.audit(userId, "phi_policy_deleted", JSON.stringify({ id }));
     return { ok: true };
@@ -7161,20 +7082,20 @@ export class TaxAgent extends Agent<Env> {
     const source = ["manual", "sourced", "extracted"].includes(l.source ?? "") ? l.source! : "manual";
     // Manual entry is member-confirmed; sourced/extracted limits default to unverified until confirmed.
     const verified = l.verified != null ? (l.verified ? 1 : 0) : source === "manual" ? 1 : 0;
-    const existing = await this.env.DB.prepare(
+    const existing = await tenantDb(this.env, userId).prepare(
       `SELECT id FROM phi_limit WHERE user_id = ? AND policy_id = ? AND category = ?`,
-    ).bind(userId, l.policy_id, l.category).first<{ id: string }>();
+    ).bind(l.policy_id, l.category).first<{ id: string }>();
     if (existing) {
-      await this.env.DB.prepare(
+      await tenantDb(this.env, userId).prepare(
         `UPDATE phi_limit SET annual_limit_cents=?, period=?, combined_group=?, source=?, verified=?, updated_at=datetime('now') WHERE id = ? AND user_id = ?`,
-      ).bind(cents, l.period ?? "annual", group, source, verified, existing.id, userId).run();
+      ).bind(cents, l.period ?? "annual", group, source, verified, existing.id).run();
       await this.audit(userId, "phi_limit_updated", JSON.stringify({ id: existing.id, category: l.category, cents, source }));
       return { id: existing.id };
     }
     const id = crypto.randomUUID();
-    await this.env.DB.prepare(
+    await tenantDb(this.env, userId).prepare(
       `INSERT INTO phi_limit (id, user_id, policy_id, category, annual_limit_cents, period, combined_group, source, verified) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).bind(id, userId, l.policy_id, l.category, cents, l.period ?? "annual", group, source, verified).run();
+    ).bind(id, l.policy_id, l.category, cents, l.period ?? "annual", group, source, verified).run();
     await this.audit(userId, "phi_limit_created", JSON.stringify({ id, category: l.category, cents, source }));
     return { id };
   }
@@ -7182,7 +7103,7 @@ export class TaxAgent extends Agent<Env> {
   /** Delete a per-category limit (consent-gated). */
   async deletePhiLimit(userId: string, id: string): Promise<{ ok: true }> {
     await this.requireHealthConsent(userId);
-    await this.env.DB.prepare(`DELETE FROM phi_limit WHERE user_id = ? AND id = ?`).bind(userId, id).run();
+    await tenantDb(this.env, userId).prepare(`DELETE FROM phi_limit WHERE user_id = ? AND id = ?`).bind(id).run();
     await this.audit(userId, "phi_limit_deleted", JSON.stringify({ id }));
     return { ok: true };
   }
@@ -7199,10 +7120,10 @@ export class TaxAgent extends Agent<Env> {
     const cents = Math.max(0, Math.round(Number(u.amount_used_cents) || 0));
     // receipt_key is tenant-scoped (only accept our own ${userId}/phi/... keys — never trust a client path).
     const receiptKey = typeof u.receipt_key === "string" && u.receipt_key.startsWith(`${userId}/phi/`) ? u.receipt_key : null;
-    await this.env.DB.prepare(
+    await tenantDb(this.env, userId).prepare(
       `INSERT INTO phi_benefit_usage (id, user_id, policy_id, category, amount_used_cents, txn_id, used_on, receipt_key)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).bind(id, userId, u.policy_id, u.category, cents, u.txn_id ?? null, u.used_on ?? null, receiptKey).run();
+    ).bind(id, u.policy_id, u.category, cents, u.txn_id ?? null, u.used_on ?? null, receiptKey).run();
     await this.audit(userId, "phi_usage_recorded", JSON.stringify({ id, category: u.category, cents }));
     return { id };
   }
@@ -7273,9 +7194,9 @@ export class TaxAgent extends Agent<Env> {
   async confirmPhiPolicyLimits(userId: string, policyId: string): Promise<{ confirmed: number }> {
     await this.requireHealthConsent(userId);
     await this.assertOwnsPolicy(userId, policyId);
-    const r = await this.env.DB.prepare(
+    const r = await tenantDb(this.env, userId).prepare(
       `UPDATE phi_limit SET verified=1, updated_at=datetime('now') WHERE user_id = ? AND policy_id = ? AND verified = 0`,
-    ).bind(userId, policyId).run();
+    ).bind(policyId).run();
     const n = r.meta?.changes ?? 0;
     await this.audit(userId, "phi_limits_confirmed", JSON.stringify({ policyId, confirmed: n }));
     return { confirmed: n };
@@ -7285,7 +7206,7 @@ export class TaxAgent extends Agent<Env> {
    *  per-category balance reconciles with their fund's app — usage is otherwise append-only. */
   async deletePhiUsage(userId: string, id: string): Promise<{ ok: true }> {
     await this.requireHealthConsent(userId);
-    await this.env.DB.prepare(`DELETE FROM phi_benefit_usage WHERE user_id = ? AND id = ?`).bind(userId, id).run();
+    await tenantDb(this.env, userId).prepare(`DELETE FROM phi_benefit_usage WHERE user_id = ? AND id = ?`).bind(id).run();
     await this.audit(userId, "phi_usage_deleted", JSON.stringify({ id }));
     return { ok: true };
   }
@@ -7298,20 +7219,20 @@ export class TaxAgent extends Agent<Env> {
    */
   async detectBenefitsReset(userId: string): Promise<{ setups: number; resets: number }> {
     const now = new Date();
-    const policies = (await this.env.DB.prepare(
+    const policies = (await tenantDb(this.env, userId).prepare(
       `SELECT id, insurer, reset_basis, reset_date FROM phi_policy WHERE user_id = ?`,
-    ).bind(userId).all<{ id: string; insurer: string | null; reset_basis: string | null; reset_date: string | null }>()).results ?? [];
+    ).bind().all<{ id: string; insurer: string | null; reset_basis: string | null; reset_date: string | null }>()).results ?? [];
 
     const oppUpserts: D1PreparedStatement[] = [];
     let setups = 0;
 
     // (1) Setup nudge — only when NO policy is tracked yet (don't nag once they've set one up).
     if (policies.length === 0) {
-      const health = (await this.env.DB.prepare(
+      const health = (await tenantDb(this.env, userId).prepare(
         `SELECT biller_key, label FROM recurring_bills
           WHERE user_id = ? AND category = 'health' AND status NOT IN ('dismissed','ended')
           ORDER BY annual_amount_cents DESC LIMIT 3`,
-      ).bind(userId).all<{ biller_key: string; label: string | null }>()).results ?? [];
+      ).bind().all<{ biller_key: string; label: string | null }>()).results ?? [];
       for (const h of health) {
         const label = (h.label ?? h.biller_key).slice(0, 40);
         oppUpserts.push(this.upsertOpportunity(userId, "phi_extras", `setup:${h.biller_key}`, {
@@ -7330,10 +7251,10 @@ export class TaxAgent extends Agent<Env> {
       const basis = ((p.reset_basis as string) || "calendar") as ResetBasis;
       const resetIso = nextResetDate(basis, p.reset_date ?? null, now);
       const weeks = weeksUntil(resetIso, now);
-      const agg = await this.env.DB.prepare(
+      const agg = await tenantDb(this.env, userId).prepare(
         `SELECT COALESCE((SELECT SUM(annual_limit_cents) FROM phi_limit WHERE user_id=? AND policy_id=?),0) AS lim,
                 COALESCE((SELECT SUM(amount_used_cents) FROM phi_benefit_usage WHERE user_id=? AND policy_id=?),0) AS used`,
-      ).bind(userId, p.id, userId, p.id).first<{ lim: number; used: number }>();
+      ).bind(p.id, p.id).first<{ lim: number; used: number }>();
       const unused = Math.max(0, (agg?.lim ?? 0) - (agg?.used ?? 0));
       if (unused < THRESHOLD_CENTS) continue;
       // Always keep a standing dashboard/Save opportunity current (no notify spam).
@@ -7363,20 +7284,20 @@ export class TaxAgent extends Agent<Env> {
    */
   async createReferral(userId: string, opportunityId: string, offerId?: string): Promise<{ token: string; url: string; partner_name: string }> {
     const db = this.env.DB as unknown as PartnerDB;
-    const opp = await this.env.DB.prepare(
+    const opp = await tenantDb(this.env, userId).prepare(
       `SELECT id, opportunity_type, category, status FROM opportunities WHERE user_id = ? AND id = ?`,
     )
-      .bind(userId, opportunityId)
+      .bind(opportunityId)
       .first<{ id: string; opportunity_type: string; category: string | null; status: string }>();
     if (!opp || opp.status !== "open") throw new Error("opportunity not found");
     if (!opportunityTakesEnergyCta(opp)) throw new Error("not an energy opportunity");
 
     // Idempotent: a prior referral for this opportunity → re-return its token. Rebuild the URL from the
     // STORED offer (anyStatus) so a re-click is stable even if the active offer has since changed.
-    const existing = await this.env.DB.prepare(
+    const existing = await tenantDb(this.env, userId).prepare(
       `SELECT referral_token, partner_offer_id FROM referrals WHERE user_id = ? AND opportunity_id = ?`,
     )
-      .bind(userId, opportunityId)
+      .bind(opportunityId)
       .first<{ referral_token: string; partner_offer_id: string | null }>();
     if (existing) return this.referralResult(db, existing.referral_token, existing.partner_offer_id);
 
@@ -7388,19 +7309,19 @@ export class TaxAgent extends Agent<Env> {
     const id = crypto.randomUUID();
     const token = crypto.randomUUID();
     try {
-      await this.env.DB.prepare(
+      await tenantDb(this.env, userId).prepare(
         `INSERT INTO referrals (id, user_id, opportunity_id, partner_id, partner_offer_id, referral_token, status, consent_id, revenue_cents)
          VALUES (?, ?, ?, ?, ?, ?, 'clicked', NULL, 0)`,
       )
-        .bind(id, userId, opportunityId, offer.partner_id, offer.offer_id, token)
+        .bind(id, opportunityId, offer.partner_id, offer.offer_id, token)
         .run();
     } catch (e) {
       // Concurrent double-click: the UNIQUE(user_id, opportunity_id) lost the race. Re-read and return
       // the winner's token so the re-click is still a no-op (the idempotency guarantee holds under races).
-      const won = await this.env.DB.prepare(
+      const won = await tenantDb(this.env, userId).prepare(
         `SELECT referral_token, partner_offer_id FROM referrals WHERE user_id = ? AND opportunity_id = ?`,
       )
-        .bind(userId, opportunityId)
+        .bind(opportunityId)
         .first<{ referral_token: string; partner_offer_id: string | null }>();
       if (won) return this.referralResult(db, won.referral_token, won.partner_offer_id);
       throw e;
@@ -7434,11 +7355,11 @@ export class TaxAgent extends Agent<Env> {
 
   /** Record explicit, dated APP-8 cross-border consent (fix H7). */
   async recordConsent(userId: string, text: string, method: string): Promise<void> {
-    await this.env.DB.prepare(
+    await tenantDb(this.env, userId).prepare(
       `UPDATE profiles SET consent_xborder = 1, consent_xborder_at = datetime('now'),
               consent_xborder_method = ?, consent_xborder_text = ? WHERE user_id = ?`,
     )
-      .bind(method, text, userId)
+      .bind(method, text)
       .run();
     await this.audit(userId, "consent_xborder", JSON.stringify({ method }));
   }
@@ -7450,7 +7371,7 @@ export class TaxAgent extends Agent<Env> {
    */
   async setGstRegistered(userId: string, registered: boolean): Promise<{ ok: true; gst_registered: number }> {
     const v = registered ? 1 : 0;
-    await this.env.DB.prepare(`UPDATE profiles SET gst_registered = ? WHERE user_id = ?`).bind(v, userId).run();
+    await tenantDb(this.env, userId).prepare(`UPDATE profiles SET gst_registered = ? WHERE user_id = ?`).bind(v).run();
     await this.audit(userId, "gst_registered_set", JSON.stringify({ gst_registered: v }));
     return { ok: true, gst_registered: v };
   }
@@ -7461,7 +7382,7 @@ export class TaxAgent extends Agent<Env> {
    * previously agreed. Audited.
    */
   async withdrawConsent(userId: string): Promise<{ ok: boolean }> {
-    await this.env.DB.prepare(`UPDATE profiles SET consent_xborder = 0 WHERE user_id = ?`).bind(userId).run();
+    await tenantDb(this.env, userId).prepare(`UPDATE profiles SET consent_xborder = 0 WHERE user_id = ?`).bind().run();
     await this.audit(userId, "consent_withdrawn", JSON.stringify({ method: "web" }));
     return { ok: true };
   }
@@ -7496,8 +7417,8 @@ export class TaxAgent extends Agent<Env> {
    * the DO like every other profile mutation. Tolerates a malformed/empty existing value.
    */
   async setUiState(userId: string, patch: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const row = await this.env.DB.prepare(`SELECT ui_state FROM profiles WHERE user_id = ?`)
-      .bind(userId)
+    const row = await tenantDb(this.env, userId).prepare(`SELECT ui_state FROM profiles WHERE user_id = ?`)
+      .bind()
       .first<{ ui_state: string | null }>();
     let current: Record<string, unknown> = {};
     try {
@@ -7510,8 +7431,8 @@ export class TaxAgent extends Agent<Env> {
     // ui_state is for small UI flags only — cap it so a tenant can't bloat their own hot-path
     // profile row with an oversized PATCH.
     if (serialized.length > 8192) throw new Error("ui_state too large");
-    await this.env.DB.prepare(`UPDATE profiles SET ui_state = ? WHERE user_id = ?`)
-      .bind(serialized, userId)
+    await tenantDb(this.env, userId).prepare(`UPDATE profiles SET ui_state = ? WHERE user_id = ?`)
+      .bind(serialized)
       .run();
     return merged;
   }
@@ -7539,8 +7460,8 @@ export class TaxAgent extends Agent<Env> {
   // The reconcile READ path (QuickBooksAdapter.listRecentPurchases + GET /api/qbo/reconcile)
   // is the correct way to match captured receipts against QBO bank-feed purchases.
   private async pushToLedger(userId: string, txnId: string, parsed: Extracted): Promise<void> {
-    const existing = await this.env.DB.prepare(
-      `SELECT ledger_ref FROM transactions WHERE id = ?`,
+    const existing = await tenantDb(this.env, userId).prepare(
+      `SELECT ledger_ref FROM transactions WHERE id = ? AND user_id = ?`,
     )
       .bind(txnId)
       .first<{ ledger_ref: string | null }>();
@@ -7559,8 +7480,8 @@ export class TaxAgent extends Agent<Env> {
 
     try {
       const { ledgerRef } = await ledger.pushExpense(userId, expense);
-      await this.env.DB.prepare(`UPDATE transactions SET ledger_ref = ? WHERE id = ? AND user_id = ?`)
-        .bind(ledgerRef, txnId, userId)
+      await tenantDb(this.env, userId).prepare(`UPDATE transactions SET ledger_ref = ? WHERE id = ? AND user_id = ?`)
+        .bind(ledgerRef, txnId)
         .run();
       await this.audit(userId, "ledger_push", JSON.stringify({ txnId, ledgerRef }));
     } catch (err) {
@@ -7685,20 +7606,20 @@ export class TaxAgent extends Agent<Env> {
         // Resolve / create the session (validate ownership). The session PINS its grounding FY for the whole
         // conversation — so switching the global FY mid-chat can't silently mix two years' figures.
         if (sid) {
-          const own = await this.env.DB.prepare(`SELECT fy FROM chat_sessions WHERE id = ? AND user_id = ?`).bind(sid, userId).first<{ fy: number | null }>();
+          const own = await tenantDb(this.env, userId).prepare(`SELECT fy FROM chat_sessions WHERE id = ? AND user_id = ?`).bind(sid).first<{ fy: number | null }>();
           if (!own) sid = "";
           else if (own.fy != null) sessionFy = own.fy;
         }
         if (!sid) {
           sid = crypto.randomUUID();
-          await this.env.DB.prepare(`INSERT INTO chat_sessions (id, user_id, fy) VALUES (?, ?, ?)`).bind(sid, userId, sessionFy).run();
+          await tenantDb(this.env, userId).prepare(`INSERT INTO chat_sessions (id, user_id, fy) VALUES (?, ?, ?)`).bind(sid, sessionFy).run();
         }
 
         // Prior turns (cap to the last 20 to bound tokens), oldest first. Tiebreak role ASC within a second
         // (assistant<user) so after reversing, the user turn precedes its assistant reply.
-        const prior = await this.env.DB.prepare(
+        const prior = await tenantDb(this.env, userId).prepare(
           `SELECT role, content FROM chat_messages WHERE user_id = ? AND session_id = ? ORDER BY created_at DESC, role ASC LIMIT 20`,
-        ).bind(userId, sid).all<{ role: string; content: string }>();
+        ).bind(sid).all<{ role: string; content: string }>();
         history = (prior.results ?? []).reverse().map((m) => ({ role: m.role === "assistant" ? ("assistant" as const) : ("user" as const), content: m.content }));
         // The Anthropic messages[] must start with a user turn — drop any leading assistant turns the
         // 20-row window or an orphaned half-pair might begin with.
@@ -7726,8 +7647,8 @@ export class TaxAgent extends Agent<Env> {
 
       // Persist both turns (the redacted question + the answer — no PII in storage).
       await this.env.DB.batch([
-        this.env.DB.prepare(`INSERT INTO chat_messages (id, user_id, session_id, role, content) VALUES (?, ?, ?, 'user', ?)`).bind(crypto.randomUUID(), userId, sid, userMsg),
-        this.env.DB.prepare(`INSERT INTO chat_messages (id, user_id, session_id, role, content) VALUES (?, ?, ?, 'assistant', ?)`).bind(crypto.randomUUID(), userId, sid, result.answer),
+        tenantDb(this.env, userId).prepare(`INSERT INTO chat_messages (id, user_id, session_id, role, content) VALUES (?, ?, ?, 'user', ?)`).bind(crypto.randomUUID(), sid, userMsg),
+        tenantDb(this.env, userId).prepare(`INSERT INTO chat_messages (id, user_id, session_id, role, content) VALUES (?, ?, ?, 'assistant', ?)`).bind(crypto.randomUUID(), sid, result.answer),
       ]);
       await this.audit(userId, "chat_turn", JSON.stringify({ session: sid, fy: sessionFy, turns: history.length / 2 + 1, proposals: result.proposed_actions?.length ?? 0 }));
       return { session_id: sid, ...result };
@@ -7736,9 +7657,9 @@ export class TaxAgent extends Agent<Env> {
 
   /** Load a chat session's messages (oldest first) to hydrate the UI. */
   async chatHistory(userId: string, sessionId: string): Promise<{ messages: { role: string; content: string }[] }> {
-    const res = await this.env.DB.prepare(
+    const res = await tenantDb(this.env, userId).prepare(
       `SELECT role, content FROM chat_messages WHERE user_id = ? AND session_id = ? ORDER BY created_at, role DESC`,
-    ).bind(userId, sessionId).all<{ role: string; content: string }>();
+    ).bind(sessionId).all<{ role: string; content: string }>();
     return { messages: res.results ?? [] };
   }
 
@@ -7806,7 +7727,7 @@ export class TaxAgent extends Agent<Env> {
   }
 
   private async markStatus(userId: string, txnId: string, status: string): Promise<void> {
-    await this.env.DB.prepare(`UPDATE transactions SET status = ? WHERE id = ? AND user_id = ?`).bind(status, txnId, userId).run();
+    await tenantDb(this.env, userId).prepare(`UPDATE transactions SET status = ? WHERE id = ? AND user_id = ?`).bind(status, txnId).run();
   }
 
   /**
@@ -7820,11 +7741,11 @@ export class TaxAgent extends Agent<Env> {
     const grant = freeCreditGrantE4(this.env);
     if (grant <= 0) return { granted_e4: 0 };
     // Idempotent on the UNIQUE(user_id, ref) ledger constraint: a second concurrent grant INSERTs 0 rows.
-    const ins = await this.env.DB.prepare(
+    const ins = await tenantDb(this.env, userId).prepare(
       `INSERT OR IGNORE INTO credit_ledger (id, user_id, kind, amount_e4, ref) VALUES (?, ?, 'grant', ?, 'signup free allowance')`,
-    ).bind(crypto.randomUUID(), userId, grant).run();
+    ).bind(crypto.randomUUID(), grant).run();
     if ((ins.meta?.changes ?? 0) === 0) return { granted_e4: 0 }; // already granted
-    await this.env.DB.prepare(`UPDATE profiles SET credit_balance_e4 = credit_balance_e4 + ?, free_grant_at = datetime('now') WHERE user_id = ?`).bind(grant, userId).run();
+    await tenantDb(this.env, userId).prepare(`UPDATE profiles SET credit_balance_e4 = credit_balance_e4 + ?, free_grant_at = datetime('now') WHERE user_id = ?`).bind(grant).run();
     await this.audit(userId, "credit_granted", JSON.stringify({ amount_e4: grant }));
     return { granted_e4: grant };
   }
@@ -7834,11 +7755,11 @@ export class TaxAgent extends Agent<Env> {
   async creditWallet(userId: string, amountE4: number, kind: string, ref: string | null): Promise<{ balance_e4: number }> {
     const amt = Math.max(0, Math.round(amountE4 || 0));
     if (amt > 0) {
-      const ins = await this.env.DB.prepare(
+      const ins = await tenantDb(this.env, userId).prepare(
         `INSERT OR IGNORE INTO credit_ledger (id, user_id, kind, amount_e4, ref) VALUES (?, ?, ?, ?, ?)`,
-      ).bind(crypto.randomUUID(), userId, kind === "topup" ? "topup" : "grant", amt, ref).run();
+      ).bind(crypto.randomUUID(), kind === "topup" ? "topup" : "grant", amt, ref).run();
       if ((ins.meta?.changes ?? 0) > 0) {
-        await this.env.DB.prepare(`UPDATE profiles SET credit_balance_e4 = credit_balance_e4 + ? WHERE user_id = ?`).bind(amt, userId).run();
+        await tenantDb(this.env, userId).prepare(`UPDATE profiles SET credit_balance_e4 = credit_balance_e4 + ? WHERE user_id = ?`).bind(amt).run();
         await this.audit(userId, "credit_topup", JSON.stringify({ amount_e4: amt, kind, ref }));
         // A PAID top-up is itself a deductible expense for the customer — the fee they paid Quillo to
         // manage their tax affairs (s25-5, ATO label D10). Record it as their own claim, ONCE per Stripe
@@ -7856,7 +7777,7 @@ export class TaxAgent extends Agent<Env> {
         }
       }
     }
-    const b = await this.env.DB.prepare(`SELECT credit_balance_e4 AS b FROM profiles WHERE user_id = ?`).bind(userId).first<{ b: number }>();
+    const b = await tenantDb(this.env, userId).prepare(`SELECT credit_balance_e4 AS b FROM profiles WHERE user_id = ?`).bind().first<{ b: number }>();
     return { balance_e4: b?.b ?? 0 };
   }
 
@@ -7870,37 +7791,29 @@ export class TaxAgent extends Agent<Env> {
     // Self-idempotent: never write two fee rows for the same Stripe session (defensive — the caller
     // already guards on the once-per-session credit_ledger insert).
     if (ref) {
-      const existing = await this.env.DB.prepare(
+      const existing = await tenantDb(this.env, userId).prepare(
         `SELECT 1 FROM transactions WHERE user_id = ? AND ledger_ref = ? AND source = 'quillo' LIMIT 1`,
-      ).bind(userId, ref).first();
+      ).bind(ref).first();
       if (existing) return;
     }
     // Date the expense in Australian local time, not UTC: the financial-year boundary is 1 July local,
     // so a top-up just after midnight 1 July AEST must land in the new FY (UTC would back-date it to 30 June).
     const today = new Date().toLocaleDateString("en-CA", { timeZone: "Australia/Sydney" }); // YYYY-MM-DD
-    await this.env.DB.prepare(
+    await tenantDb(this.env, userId).prepare(
       `INSERT INTO transactions
          (id, user_id, source, status, kind, merchant, amount_cents, currency, amount_aud_cents, gst_cents,
           txn_date, bucket, ato_label, deductibility, deductible_amount_cents, direction, confidence, reasoning, ledger_ref)
        VALUES (?, ?, 'quillo', 'extracted', 'receipt', 'Quillo', ?, 'AUD', ?, NULL,
                ?, 'payg', 'D10', 'confirmed_deductible', ?, 'debit', 1.0, ?, ?)`,
-    ).bind(
-      crypto.randomUUID(),
-      userId,
-      amountCents,
-      amountCents,
-      today,
-      amountCents,
-      "Quillo subscription fee — cost of managing tax affairs (s25-5, label D10)",
-      ref,
+    ).bind(crypto.randomUUID(), amountCents, amountCents, today, amountCents, "Quillo subscription fee — cost of managing tax affairs (s25-5, label D10)", ref
     ).run();
     await this.audit(userId, "fee_deduction_recorded", JSON.stringify({ amount_cents: amountCents, ato_label: "D10", ref }));
   }
 
   /** Billing surface: balance, the markup %, and recent grants/top-ups. `configured` = Stripe wired. */
   async getBillingOverview(userId: string): Promise<{ configured: boolean; balance_e4: number; markup_pct: number; free_grant_e4: number; ledger: { kind: string; amount_e4: number; ref: string | null; created_at: string }[] }> {
-    const p = await this.env.DB.prepare(`SELECT credit_balance_e4 AS b FROM profiles WHERE user_id = ?`).bind(userId).first<{ b: number }>();
-    const led = await this.env.DB.prepare(`SELECT kind, amount_e4, ref, created_at FROM credit_ledger WHERE user_id = ? ORDER BY created_at DESC LIMIT 20`).bind(userId).all<{ kind: string; amount_e4: number; ref: string | null; created_at: string }>();
+    const p = await tenantDb(this.env, userId).prepare(`SELECT credit_balance_e4 AS b FROM profiles WHERE user_id = ?`).bind().first<{ b: number }>();
+    const led = await tenantDb(this.env, userId).prepare(`SELECT kind, amount_e4, ref, created_at FROM credit_ledger WHERE user_id = ? ORDER BY created_at DESC LIMIT 20`).bind().all<{ kind: string; amount_e4: number; ref: string | null; created_at: string }>();
     return {
       configured: !!this.env.STRIPE_SECRET_KEY,
       balance_e4: p?.b ?? 0,
@@ -7916,7 +7829,7 @@ export class TaxAgent extends Agent<Env> {
     // gate stops the NEXT call once credits hit zero. OFF ⇒ skipped entirely ⇒ byte-identical.
     if (featureOn(this.env, "billing")) {
       const readBalance = async () => Number(
-        (await this.env.DB.prepare(`SELECT credit_balance_e4 AS b FROM profiles WHERE user_id = ?`).bind(userId).first<{ b: number }>())?.b ?? 0,
+        (await tenantDb(this.env, userId).prepare(`SELECT credit_balance_e4 AS b FROM profiles WHERE user_id = ?`).bind().first<{ b: number }>())?.b ?? 0,
       );
       let bal = await readBalance();
       if (bal <= 0) {
@@ -8051,11 +7964,11 @@ export class TaxAgent extends Agent<Env> {
     // Count DISTINCT actions, not rows: a single batch correction shares one batch_id and a single
     // multi-field batch must NOT trip the "corrected twice → learn" moat from one click. Standalone
     // corrections (NULL batch_id) each count via their own id. Reverted corrections don't count.
-    const count = await this.env.DB.prepare(
+    const count = await tenantDb(this.env, userId).prepare(
       `SELECT COUNT(DISTINCT COALESCE(batch_id, id)) AS n FROM corrections
         WHERE user_id = ? AND txn_id = ? AND reverted_at IS NULL`,
     )
-      .bind(userId, txnId)
+      .bind(txnId)
       .first<{ n: number }>();
     if (!count || count.n < 2) return;
 
@@ -8067,17 +7980,11 @@ export class TaxAgent extends Agent<Env> {
       .first<{ merchant: string; amount_cents: number; gst_cents: number | null; bucket: string; ato_label: string; property_id: string | null; rule_pack_ver: string }>();
     if (!txn) return;
 
-    await this.env.DB.prepare(
+    await tenantDb(this.env, userId).prepare(
       `INSERT INTO eval_cases (id, user_id, input_json, expected_bucket, expected_label, rule_pack_ver)
        VALUES (?, ?, ?, ?, ?, ?)`,
     )
-      .bind(
-        crypto.randomUUID(),
-        userId,
-        JSON.stringify({ merchant: txn.merchant, amount_cents: txn.amount_cents, gst_cents: txn.gst_cents }),
-        txn.bucket,
-        txn.ato_label ?? "", // expected_label is NOT NULL — an uncategorised line re-bucketed without a label has none
-        txn.rule_pack_ver,
+      .bind(crypto.randomUUID(), JSON.stringify({ merchant: txn.merchant, amount_cents: txn.amount_cents, gst_cents: txn.gst_cents }), txn.bucket, txn.ato_label ?? "", txn.rule_pack_ver
       )
       .run();
 
@@ -8121,19 +8028,19 @@ export class TaxAgent extends Agent<Env> {
   }
 
   private async trace(userId: string, txnId: string, model: string, system: string, output: unknown): Promise<void> {
-    await this.env.DB.prepare(
+    await tenantDb(this.env, userId).prepare(
       `INSERT INTO traces (id, user_id, txn_id, model, prompt_hash, input_json, output_json)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
     )
-      .bind(crypto.randomUUID(), userId, txnId, model, await sha256hex(system), null, JSON.stringify(output))
+      .bind(crypto.randomUUID(), txnId, model, await sha256hex(system), null, JSON.stringify(output))
       .run();
   }
 
   private async notify(userId: string, body: string, txnId: string | null): Promise<void> {
-    await this.env.DB.prepare(
+    await tenantDb(this.env, userId).prepare(
       `INSERT INTO notifications (id, user_id, body, txn_id) VALUES (?, ?, ?, ?)`,
     )
-      .bind(crypto.randomUUID(), userId, body, txnId)
+      .bind(crypto.randomUUID(), body, txnId)
       .run();
     // Never log the body: notifications quote merchants, amounts and descriptions (#634 log hygiene).
     console.log(`[notify ${userId}] ${body.length} chars${txnId ? ` txn=${txnId}` : ""}`);
@@ -8141,19 +8048,19 @@ export class TaxAgent extends Agent<Env> {
 
   /** Append-only, per-tenant hash chain. Serialised by this DO, so race-free. */
   private async audit(userId: string, event: string, detail: string): Promise<void> {
-    const last = await this.env.DB.prepare(
+    const last = await tenantDb(this.env, userId).prepare(
       `SELECT this_hash FROM audit_log WHERE user_id = ? ORDER BY seq DESC LIMIT 1`,
     )
-      .bind(userId)
+      .bind()
       .first<{ this_hash: string }>();
     const prev = last?.this_hash ?? "";
     const createdAt = new Date().toISOString();
     const thisHash = await sha256hex(`${prev}|${userId}|${event}|${detail}|${createdAt}`);
-    await this.env.DB.prepare(
+    await tenantDb(this.env, userId).prepare(
       `INSERT INTO audit_log (user_id, event, detail, prev_hash, this_hash, created_at)
        VALUES (?, ?, ?, ?, ?, ?)`,
     )
-      .bind(userId, event, detail, prev || null, thisHash, createdAt)
+      .bind(event, detail, prev || null, thisHash, createdAt)
       .run();
   }
 }

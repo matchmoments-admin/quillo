@@ -15,6 +15,7 @@ import { attributionTotals, fyLabel } from "./ledger-totals";
 import { FX_CONVERTED } from "./queries";
 import { AU_DESCRIPTOR, type JurisdictionDescriptor } from "./jurisdiction";
 import type { FilingReadinessSignals } from "./readiness";
+import { tenantDb } from "./tenant-db";
 
 export type FirstTimerIncomeSignals = Pick<
   FilingReadinessSignals,
@@ -41,10 +42,10 @@ export function payerKey(employer: unknown): string {
  * sentence, while an under-count would hide the case entirely.
  */
 export async function salaryPayerCount(env: Env, userId: string, fy: string): Promise<number> {
-  const rows = (await env.DB.prepare(
+  const rows = (await tenantDb(env, userId).prepare(
     `SELECT COALESCE(person_id, 'self') AS person, detail_json FROM income
       WHERE user_id = ? AND fy = ? AND income_type = 'salary_payg' AND entity_id IS NULL AND ${FX_CONVERTED}`,
-  ).bind(userId, fy).all<{ person: string; detail_json: string | null }>()).results ?? [];
+  ).bind(fy).all<{ person: string; detail_json: string | null }>()).results ?? [];
   const byPerson = new Map<string, { named: Set<string>; unnamed: number }>();
   for (const r of rows) {
     // person_self_<uid> and a NULL person are the same taxpayer.
@@ -88,10 +89,10 @@ export async function firstTimerIncomeSignals(
   const payers = await salaryPayerCount(env, userId, fy);
   // Separate-taxpayer income types: income_by_bucket isn't entity-scoped, so a company's recorded sales must
   // count as covering its income_business credits (see the readiness completeness block).
-  const entityTypes = ((await env.DB.prepare(
+  const entityTypes = ((await tenantDb(env, userId).prepare(
     `SELECT DISTINCT income_type FROM income WHERE user_id = ? AND fy = ? AND entity_id IS NOT NULL
         AND entity_id IN (SELECT id FROM entities WHERE user_id = ? AND COALESCE(entity_type, kind) <> 'individual')`,
-  ).bind(userId, fy, userId).all<{ income_type: string }>()).results ?? []).map((r) => r.income_type);
+  ).bind(fy).all<{ income_type: string }>()).results ?? []).map((r) => r.income_type);
   // Sole-trader expenses reach the individual position only through the attribution engine (an individual
   // 'business' income activity). Engine off ⇒ none are counted ⇒ 0 ⇒ the Div 35 nudge can't fire on a loss
   // the position isn't actually showing.

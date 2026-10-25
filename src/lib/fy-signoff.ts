@@ -12,6 +12,7 @@
 // is applied, so flag-OFF code paths must never call into the lodged_at readers/writers below.
 
 import type { Env } from "../env";
+import { tenantDb } from "./tenant-db";
 
 /** The fy_signoff row as the lodged readers return it. lodged_at = the 'YYYY-MM-DD' day the user says they lodged. */
 export type FyLodgedRow = { fy: number; lodged_at: string | null; status: string | null; signed_off_at: string };
@@ -25,8 +26,8 @@ export function isFyMarkedLodged(row: Pick<FyLodgedRow, "lodged_at" | "status"> 
 }
 
 export async function getFyLodged(env: Env, userId: string, fy: number): Promise<FyLodgedRow | null> {
-  return await env.DB.prepare(`SELECT fy, lodged_at, status, signed_off_at FROM fy_signoff WHERE user_id = ? AND fy = ?`)
-    .bind(userId, fy)
+  return await tenantDb(env, userId).prepare(`SELECT fy, lodged_at, status, signed_off_at FROM fy_signoff WHERE user_id = ? AND fy = ?`)
+    .bind(fy)
     .first<FyLodgedRow>();
 }
 
@@ -44,11 +45,11 @@ export async function listLodgedFys(env: Env, userId: string): Promise<number[]>
  * set on a new one (lodging implies the attestation).
  */
 export async function markFyLodged(env: Env, userId: string, fy: number, lodgedOn: string): Promise<FyLodgedRow> {
-  await env.DB.prepare(
+  await tenantDb(env, userId).prepare(
     `INSERT INTO fy_signoff (user_id, fy, signed_off_at, status, lodged_at) VALUES (?, ?, datetime('now'), 'lodged', ?)
      ON CONFLICT(user_id, fy) DO UPDATE SET lodged_at = excluded.lodged_at,
        status = CASE WHEN fy_signoff.status = 'closed_with_noa' THEN 'closed_with_noa' ELSE 'lodged' END`,
-  ).bind(userId, fy, lodgedOn).run();
+  ).bind(fy, lodgedOn).run();
   return (await getFyLodged(env, userId, fy))!;
 }
 
@@ -57,8 +58,8 @@ export async function markFyLodged(env: Env, userId: string, fy: number, lodgedO
  * is kept: marking lodged implied the user's "ready" attestation, which they can re-open on Filing).
  */
 export async function unmarkFyLodged(env: Env, userId: string, fy: number): Promise<void> {
-  await env.DB.prepare(
+  await tenantDb(env, userId).prepare(
     `UPDATE fy_signoff SET lodged_at = NULL, status = CASE WHEN status = 'lodged' THEN NULL ELSE status END
       WHERE user_id = ? AND fy = ?`,
-  ).bind(userId, fy).run();
+  ).bind(fy).run();
 }

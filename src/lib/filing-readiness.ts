@@ -24,6 +24,7 @@ import { payrollEmployerSignals } from "./noticed-signals";
 import { featureOn } from "./features";
 import { resolveJurisdictionForUser } from "./jurisdiction";
 import { assessReadiness, type FilingReadiness, type FilingReadinessSignals } from "./readiness";
+import { tenantDb } from "./tenant-db";
 
 export interface FilingReadinessDeps {
   /** The tenant's rule pack by version (the DO's KV-first loader; the bundled pack when KV has none). */
@@ -48,10 +49,10 @@ export async function loadClaimRules(env: Env, userId: string, rulePackVer: stri
   const packRules = ((pack as { claimability?: ClaimRule[] }).claimability ?? []) as ClaimRule[];
   // NB: requires_entity_kind is a pack-only field (JSON rules); the claimability_rules table has no such column.
   const d1 = (
-    await env.DB.prepare(
+    await tenantDb(env, userId).prepare(
       `SELECT id, scope_type, scope_value, merchant_hint, ato_label, claim_type, default_method, general_info_note, defer_to_agent
          FROM claimability_rules WHERE rule_pack_ver = ? AND (user_id IS NULL OR user_id = ?)`,
-    ).bind(rulePackVer, userId).all<ClaimRule>()
+    ).bind(rulePackVer).all<ClaimRule>()
   ).results ?? [];
   return [...packRules, ...d1];
 }
@@ -91,14 +92,14 @@ export async function computeFilingReadiness(env: Env, userId: string, startYear
   // income rows + the dated transactions in this FY window.
   const fxUnconvertedPredicate = "COALESCE(currency,'AUD') <> 'AUD' AND amount_aud_cents IS NULL";
   const [needsIncome, needsAssets, lowConf, divDoc, agentSummaryProps, disposed, fxIncome, fxTxns] = await Promise.all([
-    env.DB.prepare(`SELECT COUNT(*) AS n FROM income WHERE user_id = ? AND fy = ? AND needs_review = 1`).bind(userId, fy).first<{ n: number }>(),
-    env.DB.prepare(`SELECT COUNT(*) AS n FROM assets WHERE user_id = ? AND needs_review = 1 AND status = 'active'`).bind(userId).first<{ n: number }>(),
-    env.DB.prepare(`SELECT COUNT(*) AS n FROM transactions WHERE user_id = ? AND confidence IS NOT NULL AND confidence < ? AND txn_date >= ? AND txn_date <= ? AND ${COUNTABLE}`).bind(userId, confidenceFloor, start, end).first<{ n: number }>(),
-    env.DB.prepare(`SELECT COUNT(*) AS n FROM documents WHERE user_id = ? AND doc_type IN ('dividend_statement','managed_fund_amma') AND (fy = ? OR fy IS NULL)`).bind(userId, fy).first<{ n: number }>(),
-    env.DB.prepare(`SELECT DISTINCT property_id FROM documents WHERE user_id = ? AND doc_type = 'agent_rental_summary' AND property_id IS NOT NULL`).bind(userId).all<{ property_id: string }>(),
-    env.DB.prepare(`SELECT COUNT(*) AS n FROM assets WHERE user_id = ? AND disposed_date IS NOT NULL AND disposed_date >= ? AND disposed_date <= ?`).bind(userId, start, end).first<{ n: number }>(),
-    env.DB.prepare(`SELECT COUNT(*) AS n FROM income WHERE user_id = ? AND fy = ? AND ${fxUnconvertedPredicate}`).bind(userId, fy).first<{ n: number }>(),
-    env.DB.prepare(`SELECT COUNT(*) AS n FROM transactions WHERE user_id = ? AND txn_date >= ? AND txn_date <= ? AND status NOT IN ('duplicate','ignored') AND ${fxUnconvertedPredicate}`).bind(userId, start, end).first<{ n: number }>(),
+    tenantDb(env, userId).prepare(`SELECT COUNT(*) AS n FROM income WHERE user_id = ? AND fy = ? AND needs_review = 1`).bind(fy).first<{ n: number }>(),
+    tenantDb(env, userId).prepare(`SELECT COUNT(*) AS n FROM assets WHERE user_id = ? AND needs_review = 1 AND status = 'active'`).bind().first<{ n: number }>(),
+    tenantDb(env, userId).prepare(`SELECT COUNT(*) AS n FROM transactions WHERE user_id = ? AND confidence IS NOT NULL AND confidence < ? AND txn_date >= ? AND txn_date <= ? AND ${COUNTABLE}`).bind(confidenceFloor, start, end).first<{ n: number }>(),
+    tenantDb(env, userId).prepare(`SELECT COUNT(*) AS n FROM documents WHERE user_id = ? AND doc_type IN ('dividend_statement','managed_fund_amma') AND (fy = ? OR fy IS NULL)`).bind(fy).first<{ n: number }>(),
+    tenantDb(env, userId).prepare(`SELECT DISTINCT property_id FROM documents WHERE user_id = ? AND doc_type = 'agent_rental_summary' AND property_id IS NOT NULL`).bind().all<{ property_id: string }>(),
+    tenantDb(env, userId).prepare(`SELECT COUNT(*) AS n FROM assets WHERE user_id = ? AND disposed_date IS NOT NULL AND disposed_date >= ? AND disposed_date <= ?`).bind(start, end).first<{ n: number }>(),
+    tenantDb(env, userId).prepare(`SELECT COUNT(*) AS n FROM income WHERE user_id = ? AND fy = ? AND ${fxUnconvertedPredicate}`).bind(fy).first<{ n: number }>(),
+    tenantDb(env, userId).prepare(`SELECT COUNT(*) AS n FROM transactions WHERE user_id = ? AND txn_date >= ? AND txn_date <= ? AND status NOT IN ('duplicate','ignored') AND ${fxUnconvertedPredicate}`).bind(start, end).first<{ n: number }>(),
   ]);
   const haveSummaryFor = new Set((agentSummaryProps.results ?? []).map((r) => r.property_id));
   const rentalPropsMissingSummary = report.per_property
@@ -108,20 +109,20 @@ export async function computeFilingReadiness(env: Env, userId: string, startYear
   const thresholds = (pack as { thresholds_by_fy?: Record<string, { instant_asset_write_off_cents?: number; div293_threshold_cents?: number; gst_registration_threshold_cents?: number }> }).thresholds_by_fy ?? {};
   // Prior-year capital losses are an all-time carry-forward (not FY-scoped) — sum them so readiness
   // can surface a defer finding (capture-only; never applied to the headline).
-  const capLoss = await env.DB.prepare(`SELECT COALESCE(SUM(loss_cents),0) AS total FROM capital_loss_carryins WHERE user_id = ?`).bind(userId).first<{ total: number }>();
+  const capLoss = await tenantDb(env, userId).prepare(`SELECT COALESCE(SUM(loss_cents),0) AS total FROM capital_loss_carryins WHERE user_id = ?`).bind().first<{ total: number }>();
   // F: properties flagged as a main residence and disposed in this FY — their gain is kept OUT of the
   // computed position (no auto-exemption), so readiness surfaces a defer nudge.
-  const mainResDisposal = await env.DB.prepare(
+  const mainResDisposal = await tenantDb(env, userId).prepare(
     `SELECT COUNT(*) AS n FROM properties WHERE user_id = ? AND main_residence_flag = 1
        AND disposal_date IS NOT NULL AND disposal_date >= ? AND disposal_date <= ?
        AND cost_base_cents IS NOT NULL AND disposal_proceeds_cents IS NOT NULL`,
-  ).bind(userId, start, end).first<{ n: number }>();
+  ).bind(start, end).first<{ n: number }>();
   // B: net AMIT cost-base amount across this FY's managed-fund distributions (capture-only; defer nudge).
   let mfCostBaseAdjustmentCents = 0;
   if (featureOn(env, "mf_components")) {
-    const mfRows = (await env.DB.prepare(
+    const mfRows = (await tenantDb(env, userId).prepare(
       `SELECT detail_json FROM income WHERE user_id = ? AND fy = ? AND income_type = 'managed_fund_distribution' AND detail_json IS NOT NULL`,
-    ).bind(userId, fy).all<{ detail_json: string | null }>()).results ?? [];
+    ).bind(fy).all<{ detail_json: string | null }>()).results ?? [];
     for (const r of mfRows) {
       const c = parseAmmaComponents(r.detail_json);
       if (c) mfCostBaseAdjustmentCents += c.amit_cost_base_net_amount_cents;
@@ -151,10 +152,10 @@ export async function computeFilingReadiness(env: Env, userId: string, startYear
   const payrollSignals = await payrollEmployerSignals(env, userId, startYear, readinessJur);
   // GST registration status for the turnover nudge — registered if the tenant default is set OR any
   // entity is flagged (mirrors gstTotals' registration test in ledger-totals.ts).
-  const entGstReg = (await env.DB.prepare(`SELECT COUNT(*) AS n FROM entities WHERE user_id = ? AND COALESCE(gst_registered,0) = 1`).bind(userId).first<{ n: number }>())?.n ?? 0;
+  const entGstReg = (await tenantDb(env, userId).prepare(`SELECT COUNT(*) AS n FROM entities WHERE user_id = ? AND COALESCE(gst_registered,0) = 1`).bind().first<{ n: number }>())?.n ?? 0;
   const isGstRegistered = (profile.gst_registered ?? 0) === 1 || entGstReg > 0;
   // S2: self-declared PSI status across the user's business activities → sharpen/suppress the PSI nudge.
-  const psiRows = (await env.DB.prepare(`SELECT psi_status FROM income_activities WHERE user_id = ? AND activity_type = 'business'`).bind(userId).all<{ psi_status: string | null }>()).results ?? [];
+  const psiRows = (await tenantDb(env, userId).prepare(`SELECT psi_status FROM income_activities WHERE user_id = ? AND activity_type = 'business'`).bind().all<{ psi_status: string | null }>()).results ?? [];
   const psiAppliesDeclared = psiRows.some((r) => r.psi_status === "psi_applies");
   const psiAllAssessed = psiRows.length > 0 && psiRows.every((r) => r.psi_status != null);
   // integrity_nudges (audit wave 1): populate the four extra signals ONLY when the flag is on, so
@@ -165,16 +166,16 @@ export async function computeFilingReadiness(env: Env, userId: string, startYear
   let nonConcessionalContributedCents = 0;
   if (integrityOn) {
     const RIDESHARE_HINTS = ["uber", "didi", "ola", "rideshare", "ride-share", "ride sourcing", "ride-sourcing", "taxi"];
-    const bizActivities = (await env.DB.prepare(
+    const bizActivities = (await tenantDb(env, userId).prepare(
       `SELECT occupation_scope, label FROM income_activities WHERE user_id = ? AND activity_type = 'business'`,
-    ).bind(userId).all<{ occupation_scope: string | null; label: string | null }>()).results ?? [];
+    ).bind().all<{ occupation_scope: string | null; label: string | null }>()).results ?? [];
     const looksRideshare = (s: string | null | undefined) => !!s && RIDESHARE_HINTS.some((h) => s.toLowerCase().includes(h));
     rideshareGstLikely = occupations.includes("driver")
       || bizActivities.some((a) => a.occupation_scope === "driver" || looksRideshare(a.label));
     try {
-      nonConcessionalContributedCents = (await env.DB.prepare(
+      nonConcessionalContributedCents = (await tenantDb(env, userId).prepare(
         `SELECT COALESCE(SUM(amount_cents),0) AS c FROM super_contributions WHERE user_id = ? AND fy = ? AND type = 'non_concessional'`,
-      ).bind(userId, fy).first<{ c: number }>())?.c ?? 0;
+      ).bind(fy).first<{ c: number }>())?.c ?? 0;
     } catch (e) {
       if (!/no such table|no such column/i.test((e as Error).message)) throw e;
     }

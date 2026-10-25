@@ -7,6 +7,7 @@ import type { Env } from "../env";
 import { addCapitalLoss, addDepreciationOpening } from "./situation-write";
 import { planNoaCarryovers, type NoaFacts } from "./noa";
 import { featureOn } from "./features";
+import { tenantDb } from "./tenant-db";
 
 export interface CarryoverRow {
   id: string;
@@ -41,20 +42,15 @@ const fyLabel = (start: number) => `${start}-${String((start + 1) % 100).padStar
 export async function captureNoaDraft(env: Env, userId: string, noaDocumentId: string, facts: NoaFacts): Promise<string> {
   const source_fy = facts.assessed_fy;
   const target_fy = source_fy + 1;
-  await env.DB.prepare(`DELETE FROM fy_carryovers WHERE user_id = ? AND source_fy = ? AND status = 'draft'`).bind(userId, source_fy).run();
+  await tenantDb(env, userId).prepare(`DELETE FROM fy_carryovers WHERE user_id = ? AND source_fy = ? AND status = 'draft'`).bind(source_fy).run();
   const id = crypto.randomUUID();
-  await env.DB.prepare(
+  await tenantDb(env, userId).prepare(
     `INSERT INTO fy_carryovers (id, user_id, source_fy, target_fy, noa_document_id, status,
        taxable_income_cents, tax_assessed_cents, net_capital_losses_cf_cents, prior_year_tax_losses_cf_cents,
        opening_depreciation_cents, hecs_balance_cents, mls_debt_cents, franking_refund_cents, confidence)
      VALUES (?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
-    .bind(
-      id, userId, source_fy, target_fy, noaDocumentId,
-      Math.max(0, Math.round(facts.taxable_income_cents)), Math.max(0, Math.round(facts.tax_assessed_cents)),
-      Math.max(0, Math.round(facts.net_capital_losses_cf_cents)), Math.max(0, Math.round(facts.prior_year_tax_losses_cf_cents)),
-      Math.max(0, Math.round(facts.opening_depreciation_cents)),
-      facts.hecs_balance_cents, facts.mls_debt_cents, facts.franking_refund_cents, facts.confidence,
+    .bind(id, source_fy, target_fy, noaDocumentId, Math.max(0, Math.round(facts.taxable_income_cents)), Math.max(0, Math.round(facts.tax_assessed_cents)), Math.max(0, Math.round(facts.net_capital_losses_cf_cents)), Math.max(0, Math.round(facts.prior_year_tax_losses_cf_cents)), Math.max(0, Math.round(facts.opening_depreciation_cents)), facts.hecs_balance_cents, facts.mls_debt_cents, facts.franking_refund_cents, facts.confidence
     )
     .run();
   return id;
@@ -63,8 +59,8 @@ export async function captureNoaDraft(env: Env, userId: string, noaDocumentId: s
 export async function listNoaCarryovers(env: Env, userId: string, sourceFy?: number): Promise<CarryoverRow[]> {
   const q =
     sourceFy != null
-      ? env.DB.prepare(`SELECT ${SELECT_COLS} FROM fy_carryovers WHERE user_id = ? AND source_fy = ? ORDER BY created_at DESC`).bind(userId, sourceFy)
-      : env.DB.prepare(`SELECT ${SELECT_COLS} FROM fy_carryovers WHERE user_id = ? ORDER BY source_fy DESC, created_at DESC`).bind(userId);
+      ? tenantDb(env, userId).prepare(`SELECT ${SELECT_COLS} FROM fy_carryovers WHERE user_id = ? AND source_fy = ? ORDER BY created_at DESC`).bind(sourceFy)
+      : tenantDb(env, userId).prepare(`SELECT ${SELECT_COLS} FROM fy_carryovers WHERE user_id = ? ORDER BY source_fy DESC, created_at DESC`).bind();
   const res = await q.all<CarryoverRow>();
   return res.results ?? [];
 }
@@ -90,21 +86,21 @@ function rowToFacts(row: CarryoverRow): NoaFacts {
 // reportFY (ledger-totals.ts). Only the LATEST-assessed confirmed NOA is authoritative: rebuild exactly
 // one cap-loss row from it and clear every other NOA-sourced one. Idempotent; order-independent.
 async function reconcileNoaCapitalLoss(env: Env, userId: string): Promise<void> {
-  const confirmed = (await env.DB.prepare(
+  const confirmed = (await tenantDb(env, userId).prepare(
     `SELECT id, source_fy, net_capital_losses_cf_cents, capital_loss_carryin_id FROM fy_carryovers
        WHERE user_id = ? AND status = 'confirmed' ORDER BY source_fy DESC`,
-  ).bind(userId).all<{ id: string; source_fy: number; net_capital_losses_cf_cents: number; capital_loss_carryin_id: string | null }>()).results ?? [];
+  ).bind().all<{ id: string; source_fy: number; net_capital_losses_cf_cents: number; capital_loss_carryin_id: string | null }>()).results ?? [];
   // Drop every existing NOA-sourced cap-loss row + its back-reference, then rewrite the single active one.
   for (const c of confirmed) {
     if (c.capital_loss_carryin_id) {
-      await env.DB.prepare(`DELETE FROM capital_loss_carryins WHERE id = ? AND user_id = ?`).bind(c.capital_loss_carryin_id, userId).run();
-      await env.DB.prepare(`UPDATE fy_carryovers SET capital_loss_carryin_id = NULL WHERE id = ? AND user_id = ?`).bind(c.id, userId).run();
+      await tenantDb(env, userId).prepare(`DELETE FROM capital_loss_carryins WHERE id = ? AND user_id = ?`).bind(c.capital_loss_carryin_id).run();
+      await tenantDb(env, userId).prepare(`UPDATE fy_carryovers SET capital_loss_carryin_id = NULL WHERE id = ? AND user_id = ?`).bind(c.id).run();
     }
   }
   const active = confirmed.find((c) => c.net_capital_losses_cf_cents > 0); // ORDER BY source_fy DESC ⇒ first is the latest assessed year
   if (active) {
     const capId = await addCapitalLoss(env, userId, { prior_fy: active.source_fy, loss_cents: active.net_capital_losses_cf_cents, notes: `From your ${fyLabel(active.source_fy)} Notice of Assessment (cumulative net capital losses carried forward)` });
-    await env.DB.prepare(`UPDATE fy_carryovers SET capital_loss_carryin_id = ? WHERE id = ? AND user_id = ?`).bind(capId, active.id, userId).run();
+    await tenantDb(env, userId).prepare(`UPDATE fy_carryovers SET capital_loss_carryin_id = ? WHERE id = ? AND user_id = ?`).bind(capId, active.id).run();
   }
 }
 
@@ -112,27 +108,27 @@ async function reconcileNoaCapitalLoss(env: Env, userId: string): Promise<void> 
 // NOT cumulative) → depreciation_opening_balances; the cumulative net capital loss is reconciled to a
 // single active row across all confirmed NOAs (see reconcileNoaCapitalLoss); FY sign-off → 'closed_with_noa'.
 export async function confirmNoaCarryover(env: Env, userId: string, id: string): Promise<CarryoverRow> {
-  const row = await env.DB.prepare(`SELECT ${SELECT_COLS} FROM fy_carryovers WHERE id = ? AND user_id = ?`).bind(id, userId).first<CarryoverRow>();
+  const row = await tenantDb(env, userId).prepare(`SELECT ${SELECT_COLS} FROM fy_carryovers WHERE id = ? AND user_id = ?`).bind(id).first<CarryoverRow>();
   if (!row) throw new Error("carry-over not found");
   if (row.status === "confirmed") return row;
 
   // Claim the draft atomically — only the first confirm flips draft→confirmed and proceeds to write, so a
   // double-tap / retry can't write the carry-ins twice (the loser sees changes=0 and returns the row).
-  const claim = await env.DB.prepare(`UPDATE fy_carryovers SET status = 'confirmed', confirmed_at = datetime('now') WHERE id = ? AND user_id = ? AND status = 'draft'`).bind(id, userId).run();
+  const claim = await tenantDb(env, userId).prepare(`UPDATE fy_carryovers SET status = 'confirmed', confirmed_at = datetime('now') WHERE id = ? AND user_id = ? AND status = 'draft'`).bind(id).run();
   if (!((claim.meta as { changes?: number })?.changes ?? 0)) {
-    const cur = await env.DB.prepare(`SELECT ${SELECT_COLS} FROM fy_carryovers WHERE id = ? AND user_id = ?`).bind(id, userId).first<CarryoverRow>();
+    const cur = await tenantDb(env, userId).prepare(`SELECT ${SELECT_COLS} FROM fy_carryovers WHERE id = ? AND user_id = ?`).bind(id).first<CarryoverRow>();
     if (cur) return cur;
     throw new Error("carry-over not found");
   }
 
   // A re-upload/correction for the SAME assessed year fully supersedes the prior confirmed record (its
   // year-specific opening-depreciation row too); its cap-loss row is handled by the reconcile below.
-  const sameYear = (await env.DB.prepare(
+  const sameYear = (await tenantDb(env, userId).prepare(
     `SELECT id, depreciation_opening_id FROM fy_carryovers WHERE user_id = ? AND status = 'confirmed' AND source_fy = ? AND id != ?`,
-  ).bind(userId, row.source_fy, id).all<{ id: string; depreciation_opening_id: string | null }>()).results ?? [];
+  ).bind(row.source_fy, id).all<{ id: string; depreciation_opening_id: string | null }>()).results ?? [];
   for (const s of sameYear) {
-    if (s.depreciation_opening_id) await env.DB.prepare(`DELETE FROM depreciation_opening_balances WHERE id = ? AND user_id = ?`).bind(s.depreciation_opening_id, userId).run();
-    await env.DB.prepare(`DELETE FROM fy_carryovers WHERE id = ? AND user_id = ?`).bind(s.id, userId).run();
+    if (s.depreciation_opening_id) await tenantDb(env, userId).prepare(`DELETE FROM depreciation_opening_balances WHERE id = ? AND user_id = ?`).bind(s.depreciation_opening_id).run();
+    await tenantDb(env, userId).prepare(`DELETE FROM fy_carryovers WHERE id = ? AND user_id = ?`).bind(s.id).run();
   }
 
   // Write THIS year's opening depreciation (year-specific), then reconcile the cumulative cap-loss.
@@ -141,32 +137,32 @@ export async function confirmNoaCarryover(env: Env, userId: string, id: string):
   if (plan.opening_depreciation) {
     depId = await addDepreciationOpening(env, userId, { fy: plan.opening_depreciation.fy, opening_adjustable_value_cents: plan.opening_depreciation.opening_adjustable_value_cents, notes: `From your ${fyLabel(row.source_fy)} Notice of Assessment` });
   }
-  await env.DB.prepare(`UPDATE fy_carryovers SET depreciation_opening_id = ? WHERE id = ? AND user_id = ?`).bind(depId, id, userId).run();
+  await tenantDb(env, userId).prepare(`UPDATE fy_carryovers SET depreciation_opening_id = ? WHERE id = ? AND user_id = ?`).bind(depId, id).run();
   await reconcileNoaCapitalLoss(env, userId);
 
   // Close the year off the NOA (upsert onto the soft sign-off row).
-  await env.DB.prepare(
+  await tenantDb(env, userId).prepare(
     `INSERT INTO fy_signoff (user_id, fy, signed_off_at, noa_document_id, status)
        VALUES (?, ?, datetime('now'), ?, 'closed_with_noa')
      ON CONFLICT(user_id, fy) DO UPDATE SET noa_document_id = excluded.noa_document_id, status = 'closed_with_noa', signed_off_at = datetime('now')`,
-  ).bind(userId, row.source_fy, row.noa_document_id).run();
+  ).bind(row.source_fy, row.noa_document_id).run();
 
-  return (await env.DB.prepare(`SELECT ${SELECT_COLS} FROM fy_carryovers WHERE id = ? AND user_id = ?`).bind(id, userId).first<CarryoverRow>())!;
+  return (await tenantDb(env, userId).prepare(`SELECT ${SELECT_COLS} FROM fy_carryovers WHERE id = ? AND user_id = ?`).bind(id).first<CarryoverRow>())!;
 }
 
 // Reverse path: drop the carry-over + its year-specific opening-depreciation row, re-derive the active
 // cap-loss from whatever confirmed NOAs remain, and (for a confirmed row) fully re-open the year.
 export async function deleteNoaCarryover(env: Env, userId: string, id: string): Promise<void> {
-  const row = await env.DB.prepare(`SELECT ${SELECT_COLS} FROM fy_carryovers WHERE id = ? AND user_id = ?`).bind(id, userId).first<CarryoverRow>();
+  const row = await tenantDb(env, userId).prepare(`SELECT ${SELECT_COLS} FROM fy_carryovers WHERE id = ? AND user_id = ?`).bind(id).first<CarryoverRow>();
   if (!row) return;
   if (row.depreciation_opening_id) {
-    await env.DB.prepare(`DELETE FROM depreciation_opening_balances WHERE id = ? AND user_id = ?`).bind(row.depreciation_opening_id, userId).run();
+    await tenantDb(env, userId).prepare(`DELETE FROM depreciation_opening_balances WHERE id = ? AND user_id = ?`).bind(row.depreciation_opening_id).run();
   }
   if (row.capital_loss_carryin_id) {
-    await env.DB.prepare(`DELETE FROM capital_loss_carryins WHERE id = ? AND user_id = ?`).bind(row.capital_loss_carryin_id, userId).run();
+    await tenantDb(env, userId).prepare(`DELETE FROM capital_loss_carryins WHERE id = ? AND user_id = ?`).bind(row.capital_loss_carryin_id).run();
   }
   const wasConfirmed = row.status === "confirmed";
-  await env.DB.prepare(`DELETE FROM fy_carryovers WHERE id = ? AND user_id = ?`).bind(id, userId).run();
+  await tenantDb(env, userId).prepare(`DELETE FROM fy_carryovers WHERE id = ? AND user_id = ?`).bind(id).run();
   if (wasConfirmed) {
     // The cumulative cap-loss may now belong to an earlier confirmed NOA — rebuild it from what remains.
     await reconcileNoaCapitalLoss(env, userId);
@@ -177,11 +173,11 @@ export async function deleteNoaCarryover(env: Env, userId: string, id: string): 
     // applied and is only ever written with the flag ON, so OFF this never runs and the delete below behaves
     // exactly as before.
     if (featureOn(env, "situation_profile")) {
-      await env.DB.prepare(
+      await tenantDb(env, userId).prepare(
         `UPDATE fy_signoff SET status = 'lodged', noa_document_id = NULL
           WHERE user_id = ? AND fy = ? AND status = 'closed_with_noa' AND lodged_at IS NOT NULL`,
-      ).bind(userId, row.source_fy).run();
+      ).bind(row.source_fy).run();
     }
-    await env.DB.prepare(`DELETE FROM fy_signoff WHERE user_id = ? AND fy = ? AND status = 'closed_with_noa'`).bind(userId, row.source_fy).run();
+    await tenantDb(env, userId).prepare(`DELETE FROM fy_signoff WHERE user_id = ? AND fy = ? AND status = 'closed_with_noa'`).bind(row.source_fy).run();
   }
 }

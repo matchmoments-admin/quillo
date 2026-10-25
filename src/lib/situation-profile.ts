@@ -26,6 +26,7 @@ import type { Env } from "../env";
 import auV1RulePack from "../rulepacks/au-v1.json";
 import { featureOn } from "./features";
 import { AU_DESCRIPTOR, fyBoundsFor, fyStartYearForDate, type JurisdictionDescriptor } from "./jurisdiction";
+import { tenantDb } from "./tenant-db";
 
 // Local FY helpers (same as ledger-totals) so this guidance module doesn't import the money pipeline.
 const fyBounds = (startYear: number, d: JurisdictionDescriptor = AU_DESCRIPTOR) => fyBoundsFor(d, startYear);
@@ -307,8 +308,8 @@ export async function listSituationPeriods(env: Env, userId: string, subjectId?:
 
 async function personsAndProfiles(env: Env, userId: string, startYear: number, descriptor: JurisdictionDescriptor) {
   const [persons, periods] = await Promise.all([
-    env.DB.prepare(`SELECT id, display_name, role FROM persons WHERE user_id = ? ORDER BY role = 'self' DESC, created_at`)
-      .bind(userId)
+    tenantDb(env, userId).prepare(`SELECT id, display_name, role FROM persons WHERE user_id = ? ORDER BY role = 'self' DESC, created_at`)
+      .bind()
       .all<{ id: string; display_name: string; role: string }>(),
     listSituationPeriods(env, userId),
   ]);

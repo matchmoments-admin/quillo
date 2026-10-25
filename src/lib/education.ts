@@ -17,6 +17,7 @@ import auV1RulePack from "../rulepacks/au-v1.json";
 import { loadPack } from "./before-you-start";
 import { occupationGuide } from "./occupations";
 import { redact } from "./redact";
+import { tenantDb } from "./tenant-db";
 
 // ── /api/education payload ───────────────────────────────────────────────────────
 
@@ -81,7 +82,7 @@ export function educationPayload(pack: unknown, occupations: (string | null | un
 export async function getEducation(env: Env, userId: string): Promise<EducationPayload> {
   const [pack, occ] = await Promise.all([
     loadPack(env),
-    env.DB.prepare(`SELECT DISTINCT occupation FROM persons WHERE user_id = ? AND occupation IS NOT NULL ORDER BY occupation`).bind(userId).all<{ occupation: string }>(),
+    tenantDb(env, userId).prepare(`SELECT DISTINCT occupation FROM persons WHERE user_id = ? AND occupation IS NOT NULL ORDER BY occupation`).bind().all<{ occupation: string }>(),
   ]);
   return educationPayload(pack, (occ.results ?? []).map((r) => r.occupation));
 }
@@ -130,10 +131,10 @@ export interface AskItemRow {
 }
 
 export async function fetchAskItem(env: Env, userId: string, itemId: string): Promise<AskItemRow | null> {
-  return env.DB.prepare(
+  return tenantDb(env, userId).prepare(
     `SELECT txn_date, merchant, COALESCE(amount_aud_cents, amount_cents) AS amount_cents, bucket, ato_label
        FROM transactions WHERE id = ? AND user_id = ?`,
-  ).bind(itemId, userId).first<AskItemRow>();
+  ).bind(itemId).first<AskItemRow>();
 }
 
 const dollars = (c: number) => `${c < 0 ? "-" : ""}$${(Math.abs(Math.round(c)) / 100).toFixed(2)}`;

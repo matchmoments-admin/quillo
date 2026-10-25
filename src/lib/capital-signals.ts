@@ -34,6 +34,7 @@ import type { Env } from "../env";
 import { featureOn } from "./features";
 import { cgtPersonalScopeExpr } from "./ledger-totals";
 import { holdingPosition } from "./capital";
+import { tenantDb } from "./tenant-db";
 
 export interface CapitalReadinessSignals {
   capitalHoldingsNeedingUnitsN: number;
@@ -107,9 +108,9 @@ export async function capitalReadinessSignals(env: Env, userId: string): Promise
            FROM cgt_assets a WHERE a.user_id = ? AND ${USER_MANAGED}`,
       ).bind(userId).all<{ id: string; units: number | null; cost_base_cents: number; is_personal: number }>()).results ?? [];
       if (assets.length) {
-        const evs = (await env.DB.prepare(
+        const evs = (await tenantDb(env, userId).prepare(
           `SELECT cgt_asset_id, units_disposed, cost_base_used_cents FROM cgt_events WHERE user_id = ?`,
-        ).bind(userId).all<{ cgt_asset_id: string; units_disposed: number | null; cost_base_used_cents: number | null }>()).results ?? [];
+        ).bind().all<{ cgt_asset_id: string; units_disposed: number | null; cost_base_used_cents: number | null }>()).results ?? [];
         const byAsset = new Map<string, { units_disposed: number | null; cost_base_used_cents: number | null }[]>();
         for (const e of evs) {
           const list = byAsset.get(e.cgt_asset_id) ?? [];

@@ -23,6 +23,7 @@
 import type { Env } from "../env";
 import { fyBoundsFor, fyStartYearForDate, AU_DESCRIPTOR, type JurisdictionDescriptor } from "./jurisdiction";
 import { csvCell } from "./csv-cell";
+import { tenantDb } from "./tenant-db";
 
 export const DAY_REASONS = ["office", "leave", "sick", "public_holiday", "other"] as const;
 export type DayReason = (typeof DAY_REASONS)[number];
@@ -197,26 +198,26 @@ const toWeek = (r: WeekRow): DiaryWeek => ({
 });
 
 export async function getPattern(env: Env, userId: string): Promise<number[] | null> {
-  const r = await env.DB.prepare(`SELECT hours_json FROM wfh_diary_pattern WHERE user_id = ?`).bind(userId).first<{ hours_json: string }>();
+  const r = await tenantDb(env, userId).prepare(`SELECT hours_json FROM wfh_diary_pattern WHERE user_id = ?`).bind().first<{ hours_json: string }>();
   if (!r) return null;
   try { return normalisePattern(JSON.parse(r.hours_json)); } catch { return null; }
 }
 
 export async function setPattern(env: Env, userId: string, hours: unknown): Promise<number[]> {
   const p = normalisePattern(hours);
-  await env.DB.prepare(
+  await tenantDb(env, userId).prepare(
     `INSERT INTO wfh_diary_pattern (user_id, hours_json, updated_at) VALUES (?, ?, datetime('now'))
      ON CONFLICT(user_id) DO UPDATE SET hours_json = excluded.hours_json, updated_at = datetime('now')`,
-  ).bind(userId, JSON.stringify(p)).run();
+  ).bind(JSON.stringify(p)).run();
   return p;
 }
 
 /** Weeks with at least one day inside the FY (the Monday can be up to 6 days before the FY starts). */
 export async function listWeeksForFy(env: Env, userId: string, bounds: { start: string; end: string }): Promise<DiaryWeek[]> {
-  const rows = await env.DB.prepare(
+  const rows = await tenantDb(env, userId).prepare(
     `SELECT week_start, days_json, entry, source, note, recorded_at, updated_at FROM wfh_diary_weeks
       WHERE user_id = ? AND week_start >= ? AND week_start <= ? ORDER BY week_start`,
-  ).bind(userId, addDaysIso(bounds.start, -6), bounds.end).all<WeekRow>();
+  ).bind(addDaysIso(bounds.start, -6), bounds.end).all<WeekRow>();
   return (rows.results ?? []).map(toWeek);
 }
 
@@ -231,8 +232,8 @@ export function diaryInUse(weeks: DiaryWeek[], bounds: { start: string; end: str
 
 /** The hours recorded before the diary for an FY (null when none were kept). */
 export async function getPreDiary(env: Env, userId: string, fyStartYear: number): Promise<PreDiary | null> {
-  const r = await env.DB.prepare(`SELECT wfh_hours_pre_diary AS h, wfh_hours_pre_diary_source AS s FROM work_use_inputs WHERE user_id = ? AND fy = ?`)
-    .bind(userId, fyStartYear).first<{ h: number | null; s: string | null }>();
+  const r = await tenantDb(env, userId).prepare(`SELECT wfh_hours_pre_diary AS h, wfh_hours_pre_diary_source AS s FROM work_use_inputs WHERE user_id = ? AND fy = ?`)
+    .bind(fyStartYear).first<{ h: number | null; s: string | null }>();
   if (!r || r.h == null) return null;
   const source = LATE_SOURCES.includes(r.s as LateSource) ? (r.s as LateSource) : null;
   return { hours: round2(r.h), source, counts: preDiaryCounts({ hours: r.h, source }) };
@@ -266,21 +267,21 @@ async function syncFy(env: Env, userId: string, fy: number, descriptor: Jurisdic
   const inUse = diaryInUse(weeks, bounds);
   if (opts.capture && inUse) {
     // SET expressions read the OLD row, so the source survives only when the kept figure is unchanged.
-    await env.DB.prepare(
+    await tenantDb(env, userId).prepare(
       `UPDATE work_use_inputs SET wfh_hours_pre_diary = wfh_hours,
               wfh_hours_pre_diary_source = CASE WHEN wfh_hours_pre_diary = wfh_hours THEN wfh_hours_pre_diary_source ELSE NULL END
         WHERE user_id = ? AND fy = ?`,
-    ).bind(userId, fy).run();
+    ).bind(fy).run();
   }
   const pre = await getPreDiary(env, userId, fy);
   const hours = inUse ? fyHoursTotal(pre, diaryTotals(weeks, bounds).counted_hours) : pre ? pre.hours : null;
   // An FY the week only spills into is written only when there is something to write (never null-out a
   // figure typed for it).
   if (hours == null && !opts.own) return;
-  await env.DB.prepare(
+  await tenantDb(env, userId).prepare(
     `INSERT INTO work_use_inputs (user_id, fy, wfh_hours, updated_at) VALUES (?, ?, ?, datetime('now'))
      ON CONFLICT(user_id, fy) DO UPDATE SET wfh_hours = excluded.wfh_hours, updated_at = datetime('now')`,
-  ).bind(userId, fy, hours).run();
+  ).bind(fy, hours).run();
 }
 
 /** Re-write the hours for every FY the week touches. `started` = FYs where this save starts the diary. */
@@ -312,10 +313,10 @@ export async function setPreDiary(env: Env, userId: string, input: SetPreDiaryIn
   if (!LATE_SOURCES.includes(input.source as LateSource)) throw new DiaryError("Say what these hours come from (calendar, timesheet, roster, system logs or memory)");
   const bounds = fyBoundsFor(descriptor, fy);
   if (!diaryInUse(await listWeeksForFy(env, userId, bounds), bounds)) throw new DiaryError("Confirm a week in your hours diary first. Until then, type your hours in the hours field.");
-  await env.DB.prepare(
+  await tenantDb(env, userId).prepare(
     `INSERT INTO work_use_inputs (user_id, fy, wfh_hours_pre_diary, wfh_hours_pre_diary_source, updated_at) VALUES (?, ?, ?, ?, datetime('now'))
      ON CONFLICT(user_id, fy) DO UPDATE SET wfh_hours_pre_diary = excluded.wfh_hours_pre_diary, wfh_hours_pre_diary_source = excluded.wfh_hours_pre_diary_source, updated_at = datetime('now')`,
-  ).bind(userId, fy, round2(n), input.source as string).run();
+  ).bind(fy, round2(n), input.source as string).run();
   await syncFy(env, userId, fy, descriptor, { capture: false, own: true });
   return (await getPreDiary(env, userId, fy))!;
 }
@@ -341,19 +342,19 @@ export async function saveWeek(env: Env, userId: string, input: SaveWeekInput, n
   const note = typeof input.note === "string" && input.note.trim() ? input.note.trim().slice(0, 200) : null;
   const stamp = now.toISOString();
   const started = await notYetInUse(env, userId, ws, descriptor);
-  await env.DB.prepare(
+  await tenantDb(env, userId).prepare(
     `INSERT INTO wfh_diary_weeks (user_id, week_start, days_json, entry, source, note, recorded_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(user_id, week_start) DO UPDATE SET days_json = excluded.days_json, entry = excluded.entry, source = excluded.source, note = excluded.note, updated_at = excluded.updated_at`,
-  ).bind(userId, ws, JSON.stringify(days), entry, source, note, stamp, stamp).run();
+  ).bind(ws, JSON.stringify(days), entry, source, note, stamp, stamp).run();
   await syncHours(env, userId, ws, descriptor, started);
-  const row = await env.DB.prepare(`SELECT week_start, days_json, entry, source, note, recorded_at, updated_at FROM wfh_diary_weeks WHERE user_id = ? AND week_start = ?`)
-    .bind(userId, ws).first<WeekRow>();
+  const row = await tenantDb(env, userId).prepare(`SELECT week_start, days_json, entry, source, note, recorded_at, updated_at FROM wfh_diary_weeks WHERE user_id = ? AND week_start = ?`)
+    .bind(ws).first<WeekRow>();
   return toWeek(row!);
 }
 
 export async function deleteWeek(env: Env, userId: string, weekStart: string, descriptor: JurisdictionDescriptor = AU_DESCRIPTOR): Promise<boolean> {
   if (!isMonday(weekStart)) throw new DiaryError("week_start must be a Monday (YYYY-MM-DD)");
-  const r = await env.DB.prepare(`DELETE FROM wfh_diary_weeks WHERE user_id = ? AND week_start = ?`).bind(userId, weekStart).run();
+  const r = await tenantDb(env, userId).prepare(`DELETE FROM wfh_diary_weeks WHERE user_id = ? AND week_start = ?`).bind(weekStart).run();
   const changed = Number((r as { meta?: { changes?: number } }).meta?.changes ?? 0) > 0;
   if (changed) await syncHours(env, userId, weekStart, descriptor);
   return changed;

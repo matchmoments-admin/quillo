@@ -8,6 +8,7 @@ import { addCapitalLoss, addDepreciationOpening } from "./situation-write";
 import { planNoaCarryovers, type NoaFacts } from "./noa";
 import { featureOn } from "./features";
 import { tenantDb } from "./tenant-db";
+import { fyLabel } from "./fy";
 
 export interface CarryoverRow {
   id: string;
@@ -35,7 +36,6 @@ const SELECT_COLS =
    hecs_balance_cents, mls_debt_cents, franking_refund_cents, capital_loss_carryin_id,
    depreciation_opening_id, confidence, confirmed_at`;
 
-const fyLabel = (start: number) => `${start}-${String((start + 1) % 100).padStart(2, "0")}`;
 
 // Insert a DRAFT carry-over from an extracted NOA, replacing any prior UNCONFIRMED draft for the same
 // source FY (re-uploading supersedes rather than piling up). Confirmed rows are left intact.

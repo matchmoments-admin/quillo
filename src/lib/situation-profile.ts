@@ -27,10 +27,10 @@ import auV1RulePack from "../rulepacks/au-v1.json";
 import { featureOn } from "./features";
 import { AU_DESCRIPTOR, fyBoundsFor, fyStartYearForDate, type JurisdictionDescriptor } from "./jurisdiction";
 import { tenantDb } from "./tenant-db";
+import { fyLabel } from "./fy";
 
 // Local FY helpers (same as ledger-totals) so this guidance module doesn't import the money pipeline.
 const fyBounds = (startYear: number, d: JurisdictionDescriptor = AU_DESCRIPTOR) => fyBoundsFor(d, startYear);
-const fyLabel = (startYear: number) => `${startYear}-${String((startYear + 1) % 100).padStart(2, "0")}`;
 
 // ── Pack ────────────────────────────────────────────────────────────────────────
 

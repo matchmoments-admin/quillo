@@ -24,6 +24,7 @@ import { ruleKey, type ClaimRule } from "./claimability";
 import type { DeductibilitySection } from "./deductibility";
 import { canonicalOccupationScope, occupationGuide } from "./occupations";
 import { tenantDb } from "./tenant-db";
+import { fyLabel } from "./fy";
 import {
   confirmNeedsAsset,
   coveredByWfhFixedRate,
@@ -46,7 +47,6 @@ export const RESCAN_FACTS = ["employment", "abn_activity", "wfh", "car_for_work"
 
 const SOURCE = "relevance_scan";
 /** "2025-26" for a 2025 start year — the key of the pack's thresholds_by_fy and the API's fy label. */
-const fyLabelOf = (startYear: number): string => `${startYear}-${String((startYear + 1) % 100).padStart(2, "0")}`;
 /** Upper bound on statements written by one scan run (see runRelevanceScan). */
 export const MAX_WRITES_PER_RUN = 2000;
 
@@ -325,7 +325,7 @@ export async function confirmWorthALook(env: Env, userId: string, txnId: string,
   );
   if (res?.relevance !== "worth_a_look" || !res.rule) return { ok: false };
   const rule = res.rule;
-  const threshold = ctx.thresholds[fyLabelOf(fy)]?.immediate_non_business_cents ?? null;
+  const threshold = ctx.thresholds[fyLabel(fy)]?.immediate_non_business_cents ?? null;
   if (confirmNeedsAsset(rule, amount, threshold)) return { ok: false, needs_asset: true };
   // #587: with WFH hours stated, the fixed rate per hour already includes energy / internet / phone /
   // stationery (the report counts it under work_method), so a line for one of those is not claimed again.
@@ -449,7 +449,7 @@ export async function relevanceView(env: Env, userId: string, startYear: number)
     loadContext(env, userId, descriptor),
   ]);
   const ruleById = new Map(ctx.rules.map((r) => [ruleKey(r), r] as const));
-  const threshold = ctx.thresholds[fyLabelOf(startYear)]?.immediate_non_business_cents ?? null;
+  const threshold = ctx.thresholds[fyLabel(startYear)]?.immediate_non_business_cents ?? null;
   const cards: RelevanceCard[] = (cardRes.results ?? []).map((c) => {
     const rule = c.rule_id ? ruleById.get(c.rule_id) : undefined;
     const guide = rule ? occupationGuide(rule.scope_value, ctx.pack) : null;
@@ -471,6 +471,6 @@ export async function relevanceView(env: Env, userId: string, startYear: number)
   const packNames = (ctx.pack as { mytax_deduction_labels?: Record<string, unknown> } | null)?.mytax_deduction_labels ?? {};
   const label_names: Record<string, string> = {};
   for (const c of cards) for (const l of c.label_options) if (typeof packNames[l] === "string") label_names[l] = packNames[l] as string;
-  return { fy: fyLabelOf(startYear), counts, worth_a_look: cards, label_names, prompts: scanPrompts(profiles) };
+  return { fy: fyLabel(startYear), counts, worth_a_look: cards, label_names, prompts: scanPrompts(profiles) };
 }
 

@@ -740,7 +740,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
        FROM income WHERE user_id = ? AND fy = ? AND property_id IS NOT NULL
         AND income_type IN ('rent','foreign_rent') GROUP BY property_id`,
   )
-    .bind(`${startYear}-${String((startYear + 1) % 100).padStart(2, "0")}`)
+    .bind(fyLabelOf(startYear))
     .all<{ property_id: string; gross_cents: number }>();
   for (const r of rentRows.results ?? []) rentByProp.set(r.property_id, r.gross_cents);
   // A13: foreign rent a non-resident period left out of income is left out of that property's rent too, so the
@@ -821,7 +821,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   // of tracked spend — they're calculated from the per-FY work_use_inputs and REPLACE the itemised
   // running costs they cover (those stay excluded as needs_apportionment, so no double-claim). Off by
   // default (flag) ⇒ work_method stays undefined and the totals below are byte-identical to before.
-  const fyLabel = `${startYear}-${String((startYear + 1) % 100).padStart(2, "0")}`;
+  const fyLabel = fyLabelOf(startYear);
   let work_method: WorkMethodDeductions | undefined;
   let work_method_rates_unavailable = false; // WFH/car inputs exist but the FY has no configured rate (prior year)
   if (featureOn(env, "wfh_car_methods")) {

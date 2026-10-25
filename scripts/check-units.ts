@@ -9082,5 +9082,20 @@ console.log("table manifest + log retention (E)");
   check("eval_cases write is skipped when eval_cases_retired is ON", /if \(!featureOn\(this\.env, "eval_cases_retired"\)\) await tenantDb\(this\.env, userId\)\.prepare\(\s*`INSERT INTO eval_cases/.test(agE));
 }
 
+// ── Scale review F: one FY module ────────────────────────────────────────────────────────────────
+import * as FY from "../src/lib/fy";
+
+console.log("fy module (F)");
+{
+  check("fy: every stored form round-trips to the start year (LABEL, STARTSTR, INTEGER)",
+    FY.parseFyStartYear(FY.fyLabel(2025)) === 2025 && FY.parseFyStartYear(FY.fyStartYearStr(2025)) === 2025 && FY.parseFyStartYear(2025) === 2025);
+  check("fy: century rollover label", FY.fyLabel(2099) === "2099-00" && FY.parseFyStartYear("2099-00") === 2099);
+  check("fy: normaliseFyLabel coerces every form to the LABEL", FY.normaliseFyLabel(2025) === "2025-26" && FY.normaliseFyLabel("2025") === "2025-26" && FY.normaliseFyLabel("2025-26") === "2025-26" && FY.normaliseFyLabel("") === null && FY.normaliseFyLabel("x") === null);
+  const openCoded: string[] = [];
+  const walkF = (d: string) => { for (const f of fs.readdirSync(d, { withFileTypes: true })) { const p = path.join(d, f.name); if (f.isDirectory()) walkF(p); else if (p.endsWith(".ts") && !p.endsWith(path.join("lib", "fy.ts")) && /% 100\)\.padStart\(2, "0"\)/.test(fs.readFileSync(p, "utf8"))) openCoded.push(path.relative(process.cwd(), p)); } };
+  walkF(path.join(process.cwd(), "src"));
+  check(`fy: no open-coded FY label outside src/lib/fy.ts${openCoded.length ? ` (${openCoded.join(", ")})` : ""}`, openCoded.length === 0);
+}
+
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);
 process.exit(fail === 0 ? 0 : 1);

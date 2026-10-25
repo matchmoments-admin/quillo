@@ -9009,5 +9009,47 @@ console.log("import continuation — statement categorisation on DO alarms (F2)"
   }
 }
 
+// ── Scale review A2: the "already attributed?" probe seeks the tenant index, never scans ─────────
+import { notAttributedExpr } from "../src/lib/report";
+
+console.log("notAttributedExpr is tenant-scoped (seeks idx_txn_attr_txn)");
+{
+  const qdb = new DatabaseSync(":memory:");
+  qdb.exec(fs.readFileSync(path.join(process.cwd(), "schema.sql"), "utf8"));
+  const sql = `SELECT COUNT(*) FROM transactions t WHERE t.user_id = 'u'${notAttributedExpr("t", true)}`;
+  const plan = (qdb.prepare(`EXPLAIN QUERY PLAN ${sql}`).all() as { detail: string }[]).map((r) => r.detail).join(" | ");
+  check("A2: the probe pins ta.user_id to the outer row's tenant", /ta\.user_id = t\.user_id AND ta\.transaction_id = t\.id/.test(notAttributedExpr("t", true)));
+  check("A2: EXPLAIN shows the probe using idx_txn_attr_txn (no full scan of transaction_attributions)",
+    /USING (COVERING )?INDEX idx_txn_attr_txn/.test(plan) && !/SCAN ta\b/.test(plan));
+  check("A2: flag off ⇒ empty clause (byte-identical legacy SQL)", notAttributedExpr("t", false) === "");
+  const lt = fs.readFileSync(path.join(process.cwd(), "src/lib/ledger-totals.ts"), "utf8");
+  check("A2: no unscoped transaction_attributions probe left in ledger-totals", !/FROM transaction_attributions ta WHERE ta\.transaction_id/.test(lt));
+}
+
+// ── Scale review A4/A5: chunked IN-lists, tenant predicates, index-friendly admin reads ───────────
+import { chunkIds, D1_MAX_BINDS } from "../src/lib/d1-limits";
+
+console.log("D1 bind cap + tenant predicates + scale indexes (A4/A5)");
+{
+  const ids = Array.from({ length: 150 }, (_, i) => `s${i}`);
+  const chunks = chunkIds(ids);
+  check("A4: 150 ids ⇒ chunks that each stay under the 100-bind cap with room for other binds",
+    chunks.length === 2 && chunks.every((c) => c.length + 1 < D1_MAX_BINDS) && chunks.flat().join() === ids.join());
+  check("A4: empty list ⇒ no chunks", chunkIds([]).length === 0);
+  const agentA = fs.readFileSync(path.join(process.cwd(), "src/agent.ts"), "utf8");
+  const auto = agentA.slice(agentA.indexOf("private async autoAccountantPassAfterImport"), agentA.indexOf("async confirmImport("));
+  check("A4: the post-import pass chunks its statement-id IN list", /for \(const chunk of chunkIds\(statementIds\)\)/.test(auto) && !/statementIds\.map\(\(\) => "\?"\)/.test(auto));
+  check("A5: markStatus is tenant-scoped", /UPDATE transactions SET status = \? WHERE id = \? AND user_id = \?/.test(agentA) && !/markStatus\(txnId,/.test(agentA));
+  check("A5: the ledger_ref write is tenant-scoped", /UPDATE transactions SET ledger_ref = \? WHERE id = \? AND user_id = \?/.test(agentA));
+  const idb = new DatabaseSync(":memory:");
+  idb.exec(fs.readFileSync(path.join(process.cwd(), "schema.sql"), "utf8"));
+  const planOf = (q: string) => (idb.prepare(`EXPLAIN QUERY PLAN ${q}`).all() as { detail: string }[]).map((r) => r.detail).join(" | ");
+  check("A5: per-txn trace deletes seek idx_traces_user_txn", /idx_traces_user_txn/.test(planOf(`DELETE FROM traces WHERE user_id = 'u' AND txn_id = 't'`)));
+  check("A5: admin spend-today range is answered by the covering idx_usage_created",
+    /COVERING INDEX idx_usage_created/.test(planOf(`SELECT SUM(cost_e4) FROM llm_usage WHERE created_at >= '2026-10-25' AND created_at < '2026-10-26'`)));
+  const q = fs.readFileSync(path.join(process.cwd(), "src/lib/queries.ts"), "utf8");
+  check("A5: platformOverview no longer filters llm_usage by substr(created_at…)", !/FROM llm_usage WHERE substr\(created_at/.test(q));
+}
+
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);
 process.exit(fail === 0 ? 0 : 1);

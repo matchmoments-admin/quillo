@@ -28,6 +28,7 @@ import { getFyLodged, isFyMarkedLodged, listLodgedFys } from "./fy-signoff";
 import { fyBounds, fyLabel } from "./ledger-totals";
 import { listSituationPeriods, situationFacts } from "./situation-profile";
 import { AU_DESCRIPTOR, type JurisdictionDescriptor } from "./jurisdiction";
+import { chunkIds } from "./d1-limits";
 import type { GrowPayload } from "./grow";
 
 export const JOURNEY_STEPS = ["setup", "connect", "review", "lodge"] as const;
@@ -233,8 +234,7 @@ export async function undecidedAmong(env: Env, userId: string, startYear: number
   if (!txnIds.length) return 0;
   const { start, end } = fyBounds(startYear, descriptor);
   let total = 0;
-  for (let i = 0; i < txnIds.length; i += 90) { // D1 caps bound parameters at 100 per statement
-    const chunk = txnIds.slice(i, i + 90);
+  for (const chunk of chunkIds(txnIds)) {
     const r = await env.DB.prepare(
       `SELECT COUNT(*) AS n FROM transactions WHERE user_id = ? AND txn_date >= ? AND txn_date <= ? AND ${undecidedWhere(env)}
          AND id IN (${chunk.map(() => "?").join(",")})`,

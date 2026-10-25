@@ -492,7 +492,7 @@ export async function companyPositions(env: Env, userId: string, startYear: numb
     // company — previously it was silently dropped (every multi-company position under-stated). Now we
     // surface it as a review item (unattributed_*) instead of dropping it or guessing companies[0].
     const single = companies.length === 1;
-    const rawAgg = await env.DB.prepare(`SELECT COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS total, COUNT(*) AS n FROM transactions WHERE user_id = ? AND bucket = 'company' AND txn_date >= ? AND txn_date <= ? AND COALESCE(reimbursed,0) = 0 AND ${COUNTABLE} AND NOT EXISTS (SELECT 1 FROM transaction_attributions ta WHERE ta.transaction_id = transactions.id)`).bind(userId, start, end).first<{ total: number; n: number }>();
+    const rawAgg = await env.DB.prepare(`SELECT COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS total, COUNT(*) AS n FROM transactions WHERE user_id = ? AND bucket = 'company' AND txn_date >= ? AND txn_date <= ? AND COALESCE(reimbursed,0) = 0 AND ${COUNTABLE} AND NOT EXISTS (SELECT 1 FROM transaction_attributions ta WHERE ta.user_id = transactions.user_id AND ta.transaction_id = transactions.id)`).bind(userId, start, end).first<{ total: number; n: number }>();
     const rawTotal = rawAgg?.total ?? 0;
     const rawN = rawAgg?.n ?? 0;
     const rawCompany = single ? rawTotal : 0;
@@ -530,7 +530,7 @@ export async function companyPositions(env: Env, userId: string, startYear: numb
             `SELECT ${fyStartExpr} AS fy_start, COALESCE(SUM(COALESCE(t.amount_aud_cents, t.amount_cents)),0) AS ded
                FROM transactions t
               WHERE t.user_id = ? AND t.bucket = 'company' AND t.txn_date < ? AND COALESCE(t.reimbursed,0) = 0 AND ${tFilter}
-                AND NOT EXISTS (SELECT 1 FROM transaction_attributions ta WHERE ta.transaction_id = t.id)
+                AND NOT EXISTS (SELECT 1 FROM transaction_attributions ta WHERE ta.user_id = t.user_id AND ta.transaction_id = t.id)
               GROUP BY fy_start`,
           ).bind(userId, start).all<{ fy_start: number; ded: number }>()).results ?? []
         : [];

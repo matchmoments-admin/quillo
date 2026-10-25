@@ -299,7 +299,7 @@ async function scheduleCore(
               (SELECT COUNT(*) FROM transactions r
                 WHERE r.user_id = transactions.user_id AND r.matched_txn_id = transactions.id AND r.kind = 'receipt') AS linked_receipts
          FROM transactions
-        WHERE user_id = ? AND txn_date >= ? AND txn_date <= ? AND bucket IS NOT NULL AND ${COUNTABLE}${notAttributedExpr("transactions.id", useAttributions)}${excludeSplitInterestExpr("", loanCtx.supersededLoanIds)}
+        WHERE user_id = ? AND txn_date >= ? AND txn_date <= ? AND bucket IS NOT NULL AND ${COUNTABLE}${notAttributedExpr("transactions", useAttributions)}${excludeSplitInterestExpr("", loanCtx.supersededLoanIds)}
         ORDER BY bucket, txn_date, created_at`,
     )
       .bind(userId, start, end, ...loanCtx.supersededLoanIds)

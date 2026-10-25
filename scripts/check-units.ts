@@ -3104,6 +3104,7 @@ import { sealTokenPair, tokenStorageBlocked, TokenKeyMissingError, isPlaintextEn
 import { backfillQboTokens } from "../src/lib/qbo-token-backfill";
 import { DatabaseSync } from "node:sqlite";
 import { SqliteD1, migratedDb, schemaDb } from "./lib/d1-sqlite";
+import { listTenantsAdmin, platformOverview } from "../src/lib/queries";
 
 console.log("token-crypto fail-closed + QBO token backfill (#637)");
 {
@@ -8915,10 +8916,29 @@ console.log("D1 bind cap + tenant predicates + scale indexes (A4/A5)");
     /COVERING INDEX idx_usage_created/.test(planOf(`SELECT SUM(cost_e4) FROM llm_usage WHERE created_at >= '2026-10-25' AND created_at < '2026-10-26'`)));
   const q = fs.readFileSync(path.join(process.cwd(), "src/lib/queries.ts"), "utf8");
   check("A5: platformOverview no longer filters llm_usage by substr(created_at…)", !/FROM llm_usage WHERE substr\(created_at/.test(q));
+  check("A5: platformSpend's cross-tenant day sums use half-open ranges, not substr(created_at…)", !/substr\(created_at,1,10\) = \? THEN cost_e4 ELSE 0/.test(q));
+  // Keyset paging: 1,100 tenants (some sharing a created_at) are all reachable, each exactly once.
+  const adb = schemaDb();
+  const insP = adb.sqlite.prepare(`INSERT INTO profiles (user_id, created_at) VALUES (?, ?)`);
+  for (let i = 0; i < 1100; i++) insP.run(`t_${String(i).padStart(4, "0")}`, `2026-10-${String(1 + (i % 20)).padStart(2, "0")} 00:00:00`);
+  const aenv = { DB: adb } as unknown as Env;
+  const got: string[] = [];
+  let before: string | null = null;
+  let pages = 0;
+  do {
+    const pg = await listTenantsAdmin(aenv, before);
+    got.push(...pg.tenants.map((t) => t.user_id));
+    before = pg.next;
+    pages++;
+  } while (before && pages < 10);
+  check("A5: the admin tenant list pages by keyset — 1,100 tenants in 3 pages, none lost or repeated",
+    pages === 3 && got.length === 1100 && new Set(got).size === 1100);
+  adb.sqlite.exec(`INSERT INTO daily_cost (scope, day, cents_e4) VALUES ('global','2026-10-01', 50000), ('global','2026-10-02', 25000), ('u1','2026-10-02', 99999)`);
+  check("A5: all-time spend reads the global daily_cost rows (no llm_usage scan)", (await platformOverview(aenv)).spend_all_cents === 7.5);
 }
 
 // ── Scale review A3 (+ review fixes): the weekly sweep — D1 state, atomic lease, start, cumulative tally ──
-import { runWeeklySlice, startWeeklySweep, weeklySweepInProgress, WEEKLY_SLICE } from "../src/lib/weekly-sweep";
+import { runWeeklySlice, startWeeklySweep, weeklySweepInProgress, WEEKLY_CHUNK, WEEKLY_SLICE } from "../src/lib/weekly-sweep";
 import type { TaxAgentRpc } from "../src/env";
 
 console.log("weekly sweep continuation (A3)");
@@ -8955,8 +8975,48 @@ console.log("weekly sweep continuation (A3)");
   sw.sqlite.exec(`UPDATE cron_sweeps SET lease_holder = 'stuck', lease_until = datetime('now','+600 seconds') WHERE name = 'weekly'`);
   check("A3: Monday start succeeds even while a lease is held (the week can't be skipped)", (await startWeeklySweep(env)) && (await weeklySweepInProgress(env)));
   const ix = fs.readFileSync(path.join(process.cwd(), "src/index.ts"), "utf8");
-  check("A3: Monday starts then runs a slice; the */10 tick continues an in-progress sweep",
-    /await startWeeklySweep\(env\);\s*await runWeeklySlice\(env, stubFor\)/.test(ix) && /if \(await weeklySweepInProgress\(env\)\) \{\s*await runWeeklySlice\(env, stubFor\)/.test(ix));
+  check("A3: Monday starts then runs a slice; the */10 tick continues it LAST (after the import heal + backfills)",
+    /await startWeeklySweep\(env\);\s*await runWeeklySlice\(env, stubFor\)/.test(ix)
+      && ix.lastIndexOf("await runWeeklySlice(env, stubFor).catch") > ix.lastIndexOf("statement repair")
+      && ix.indexOf("staleJobs(") < ix.lastIndexOf("await runWeeklySlice(env, stubFor).catch"));
+
+  // Review follow-ups: checkpointed chunks, a time budget, a poison-chunk skip and a stale-sweep restart.
+  const reset = () => { seen.clear(); sw.sqlite.exec(`UPDATE cron_sweeps SET cursor = NULL, tally_json = NULL, attempts = 0, lease_holder = NULL, lease_until = NULL WHERE name = 'weekly'`); };
+  reset();
+  await startWeeklySweep(env);
+  let clock = 0;
+  const slow = (_e: Env, uid: string) => ({ ...stub(_e, uid), runProactiveScan: async () => { seen.set(uid, (seen.get(uid) ?? 0) + 1); clock += 1000; } }) as unknown as TaxAgentRpc;
+  const budgeted = await runWeeklySlice(env, slow, { budgetMs: 30_000, now: () => clock });
+  const cur1 = (sw.sqlite.prepare(`SELECT cursor, attempts FROM cron_sweeps WHERE name = 'weekly'`).get() as { cursor: string; attempts: number });
+  check("A3+: the time budget stops a slice between chunks, checkpointed (cursor at the last tenant swept, attempts reset)",
+    "swept" in budgeted && budgeted.swept > 0 && budgeted.swept < WEEKLY_SLICE && budgeted.swept % WEEKLY_CHUNK === 0
+      && cur1.cursor === `user_${String(budgeted.swept - 1).padStart(4, "0")}` && cur1.attempts === 0);
+  await runWeeklySlice(env, stub);
+  check("A3+: the next tick resumes after the checkpoint — no tenant swept twice", [...seen.values()].every((n) => n === 1));
+  // A tick killed mid-chunk takes the lease and never checkpoints; model three such kills via attempts.
+  reset();
+  await startWeeklySweep(env);
+  sw.sqlite.exec(`UPDATE cron_sweeps SET attempts = 3 WHERE name = 'weekly'`); // three ticks died on this chunk
+  const poisoned = await runWeeklySlice(env, stub);
+  check("A3+: after MAX_ATTEMPTS killed ticks the poison chunk is skipped (logged as failures), not retried forever",
+    "swept" in poisoned && !seen.has("user_0000") && !seen.has(`user_${String(WEEKLY_CHUNK - 1).padStart(4, "0")}`) && seen.has(`user_${String(WEEKLY_CHUNK).padStart(4, "0")}`));
+  // A lost lease (another tick took it over) stops the slice at the next checkpoint without overwriting.
+  reset();
+  await startWeeklySweep(env);
+  const thief = (_e: Env, uid: string) => ({ ...stub(_e, uid), runProactiveScan: async () => {
+    seen.set(uid, (seen.get(uid) ?? 0) + 1);
+    sw.sqlite.exec(`UPDATE cron_sweeps SET lease_holder = 'thief' WHERE name = 'weekly'`);
+  } }) as unknown as TaxAgentRpc;
+  const stolen = await runWeeklySlice(env, thief);
+  check("A3+: a lost lease stops the slice after one chunk and leaves the cursor to the new holder",
+    "swept" in stolen && stolen.swept === WEEKLY_CHUNK && !stolen.done
+      && (sw.sqlite.prepare(`SELECT cursor FROM cron_sweeps WHERE name = 'weekly'`).get() as { cursor: string }).cursor === "");
+  // A sweep stuck in progress for days no longer blocks Monday's start.
+  sw.sqlite.exec(`UPDATE cron_sweeps SET cursor = 'user_0100', lease_holder = NULL, lease_until = NULL, started_at = datetime('now','-7 days') WHERE name = 'weekly'`);
+  check("A3+: a sweep stuck for 7 days is restarted by Monday's start", (await startWeeklySweep(env))
+    && (sw.sqlite.prepare(`SELECT cursor FROM cron_sweeps WHERE name = 'weekly'`).get() as { cursor: string }).cursor === "");
+  sw.sqlite.exec(`UPDATE cron_sweeps SET cursor = 'user_0100', started_at = datetime('now','-2 days') WHERE name = 'weekly'`);
+  check("A3+: a sweep in progress for 2 days is NOT restarted", !(await startWeeklySweep(env)));
 }
 
 // ── Scale review B: the shared D1 test adapter is faithful where shims used to lie ────────────────
@@ -8964,6 +9024,12 @@ console.log("shared D1 adapter (scripts/lib/d1-sqlite.ts)");
 {
   const a = schemaDb();
   a.sqlite.exec(`INSERT INTO profiles (user_id) VALUES ('ua')`);
+  // Concurrent batches serialise like D1's (no nested BEGIN), and a batched RETURNING carries its rows.
+  const conc = await Promise.all([0, 1, 2].map((k) => a.batch([a.prepare(`INSERT INTO properties (id, user_id, label) VALUES (?, 'ua', 'c') RETURNING id`).bind(`pc${k}`)])))
+    .then((r) => r, () => null);
+  check("adapter: concurrent batches don't nest transactions; INSERT … RETURNING returns its row",
+    conc !== null && conc.every((r, k) => (r[0] as { results?: { id: string }[] }).results?.[0]?.id === `pc${k}`));
+  a.sqlite.exec(`DELETE FROM properties WHERE id LIKE 'pc%'`);
   let threw = false;
   try {
     await a.batch([
@@ -9010,6 +9076,13 @@ console.log("tenantDb: the tenant is spliced in by the handle, never bound by th
   check("plan: the shared-or-tenant form (user_id IS NULL OR user_id = ?) is allowed", JSON.stringify(tenantPlan(`SELECT 1 FROM r WHERE v = ? AND (user_id IS NULL OR user_id = ?)`).tenant) === "[1]");
   check("plan: INSERT … SELECT fills the user_id select-list slot AND the WHERE predicate",
     JSON.stringify(tenantPlan(`INSERT INTO a (id, user_id, conn) SELECT ?, ?, bc.id FROM bc WHERE bc.user_id = ? AND bc.k = ?`).tenant) === "[1,2]");
+  check("plan: user_id = ? OR … is refused (an alternative, not a restriction)", refuses(`SELECT * FROM transactions WHERE user_id = ? OR id = ?`));
+  check("plan: … OR … AND user_id = ? is refused (AND binds tighter than OR)", refuses(`SELECT * FROM t WHERE id = ? OR status = 'x' AND user_id = ?`));
+  check("plan: an OR in ANOTHER clause or a nested group doesn't refuse", tenantPlan(`SELECT CASE WHEN a = 1 OR b = 2 THEN 1 END FROM t WHERE user_id = ? AND (k = ? OR k = ?)`).tenant.join() === "0");
+  check("plan: scoped only inside a subquery is refused (the outer table reads every tenant)", refuses(`SELECT * FROM transactions WHERE id IN (SELECT txn_id FROM traces WHERE user_id = ?)`));
+  check("plan: a derived table / CTE body scopes the statement", tenantPlan(`SELECT n FROM (SELECT COUNT(*) n FROM t WHERE user_id = ?)`).tenant.join() === "0"
+    && tenantPlan(`WITH c AS (SELECT id FROM t WHERE user_id = ?) SELECT id FROM c`).tenant.join() === "0");
+  check("plan: a FROM-less SELECT of scoped scalar subqueries is allowed", tenantPlan(`SELECT (SELECT SUM(x) FROM a WHERE user_id=? AND p=?) AS s`).tenant.join() === "0");
   check("plan: NOT user_id = ? is refused (it reads every other tenant)", (() => { try { tenantPlan(`SELECT 1 FROM t WHERE NOT user_id = ?`); return false; } catch (e) { return e instanceof TenantScopeError; } })());
 
   const d = schemaDb();
@@ -9031,7 +9104,9 @@ console.log("tenantDb: the tenant is spliced in by the handle, never bound by th
 // ── Scale review C: the raw-D1 ratchet. Tenant code goes through tenantDb; the raw count only falls ──
 console.log("raw D1 ratchet (tenantDb / platformDb, ADR-0005)");
 {
-  const RAW = /\b\w*(?:DB|db)\.prepare\(/g;
+  // Counts raw prepares AND every platformDb( call: the cross-tenant handle is the reviewed escape hatch, so
+  // a new use has to show up as a baseline bump in the PR diff instead of slipping past the gate.
+  const RAW = /\b\w*(?:DB|db)\.prepare\(|\bplatformDb\(/g;
   const counts: Record<string, number> = {};
   const walk = (d: string) => {
     for (const f of fs.readdirSync(d, { withFileTypes: true })) {
@@ -9049,7 +9124,7 @@ console.log("raw D1 ratchet (tenantDb / platformDb, ADR-0005)");
   const base = JSON.parse(fs.readFileSync(basePath, "utf8")) as Record<string, number>;
   const grew = Object.entries(counts).filter(([f, n]) => n > (base[f] ?? 0));
   const fell = Object.entries(base).filter(([f, n]) => (counts[f] ?? 0) < n);
-  check(`ratchet: no file gained a raw DB.prepare( — use tenantDb(env, userId) (or platformDb for reviewed cross-tenant code)${grew.length ? `: ${grew.map(([f, n]) => `${f} ${base[f] ?? 0}→${n}`).join(", ")}` : ""}`, grew.length === 0);
+  check(`ratchet: no file gained a raw DB.prepare( or platformDb( — use tenantDb(env, userId); a reviewed cross-tenant use bumps the baseline${grew.length ? `: ${grew.map(([f, n]) => `${f} ${base[f] ?? 0}→${n}`).join(", ")}` : ""}`, grew.length === 0);
   check(`ratchet: the baseline is current (lock in the gain: UPDATE_DB_BASELINE=1 npm run test:units)${fell.length ? `: ${fell.map(([f]) => f).join(", ")}` : ""}`, fell.length === 0);
 }
 
@@ -9119,6 +9194,17 @@ console.log("fy module (F)");
   const walkF = (d: string) => { for (const f of fs.readdirSync(d, { withFileTypes: true })) { const p = path.join(d, f.name); if (f.isDirectory()) walkF(p); else if (p.endsWith(".ts") && !p.endsWith(path.join("lib", "fy.ts")) && /% 100\)\.padStart\(2, "0"\)/.test(fs.readFileSync(p, "utf8"))) openCoded.push(path.relative(process.cwd(), p)); } };
   walkF(path.join(process.cwd(), "src"));
   check(`fy: no open-coded FY label outside src/lib/fy.ts${openCoded.length ? ` (${openCoded.join(", ")})` : ""}`, openCoded.length === 0);
+  // …nor open-coded July start-year arithmetic: fyStartYearForDate / currentFyStartYearFor take the descriptor.
+  const startCoded: string[] = [];
+  const walkS = (d: string) => { for (const f of fs.readdirSync(d, { withFileTypes: true })) { const p = path.join(d, f.name); if (f.isDirectory()) walkS(p); else if (p.endsWith(".ts") && !p.endsWith(path.join("lib", "jurisdiction.ts")) && /get(?:UTC)?Month\(\) >= 6 \?|slice\(5, 7\)\) >= 7 \?/.test(fs.readFileSync(p, "utf8"))) startCoded.push(path.relative(process.cwd(), p)); } };
+  walkS(path.join(process.cwd(), "src"));
+  // Review D follow-up: the money files spell the AUD amount and the attribution probe ONLY via ledger-filter.
+  for (const f of ["src/lib/report.ts", "src/lib/ledger-totals.ts", "src/lib/accountant-schedule.ts", "src/lib/queries.ts"]) {
+    const src = fs.readFileSync(path.join(process.cwd(), f), "utf8");
+    check(`ledger-filter: ${f} has no open-coded COALESCE(amount_aud_cents, amount_cents) or attribution probe`,
+      !/COALESCE\((?:\w+\.)?amount_aud_cents, (?:\w+\.)?amount_cents\)/.test(src) && !/FROM transaction_attributions ta WHERE ta\.user_id = \w+\.user_id AND ta\.transaction_id/.test(src));
+  }
+  check(`fy: no open-coded July FY start-year maths in src/${startCoded.length ? ` (${startCoded.join(", ")})` : ""}`, startCoded.length === 0);
 }
 
 // ── Scale review D: one ledger filter ────────────────────────────────────────────────────────────

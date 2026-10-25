@@ -15,7 +15,7 @@ import { parseLinkSnapshot } from "./receipt-link";
 import { reconcileScore, proposeMatches, RECONCILE_WINDOW_DAYS, type ReconcileConfig, type MatchProposal } from "./reconcile-proposer";
 import type { JurisdictionDescriptor } from "./jurisdiction";
 import { platformDb, tenantDb } from "./tenant-db";
-import { COUNTABLE, COUNTABLE_INCOME, FX_CONVERTED, countable } from "./ledger-filter";
+import { COUNTABLE, COUNTABLE_INCOME, FX_CONVERTED, audAmount, countable } from "./ledger-filter";
 // The "which rows count" predicates moved to ledger-filter.ts; re-exported so existing imports keep working.
 export { COUNTABLE, COUNTABLE_INCOME, FX_CONVERTED } from "./ledger-filter";
 
@@ -232,7 +232,7 @@ export async function listReviewGroups(
   const rel = [...new Set(filter?.relevance ?? [])].filter((r) => (RELEVANCE_FILTER_VALUES as readonly string[]).includes(r));
   const extra = filter && rel.length ? ` AND relevance IN (${rel.map(() => "?").join(",")}) AND txn_date >= ? AND txn_date <= ?` : "";
   const res = await env.DB.prepare(
-    `SELECT id, merchant, raw_description, COALESCE(amount_aud_cents, amount_cents) AS amount_cents
+    `SELECT id, merchant, raw_description, ${audAmount()} AS amount_cents
        FROM transactions WHERE user_id = ? AND (${NEEDS_REVIEW})${extra} LIMIT ${REVIEW_GROUP_SCAN + 1}`,
   )
     .bind(userId, ...(extra ? [...rel, filter!.fy.start, filter!.fy.end] : []))
@@ -278,7 +278,7 @@ export async function fetchAskDigestRows(
   const { start, end } = fyBounds(fyStartYear, await resolveJurisdictionForUser(env, userId));
   const where = `user_id = ? AND txn_date >= ? AND txn_date <= ? AND bucket IS NOT NULL AND ${COUNTABLE}`;
   const res = await env.DB.prepare(
-    `SELECT id, txn_date, merchant, COALESCE(amount_aud_cents, amount_cents) AS amount_aud_cents,
+    `SELECT id, txn_date, merchant, ${audAmount()} AS amount_aud_cents,
             bucket, ato_label, deductibility, property_id
        FROM transactions WHERE ${where}
       ORDER BY CASE COALESCE(deductibility,'undetermined')
@@ -287,7 +287,7 @@ export async function fetchAskDigestRows(
                  WHEN 'likely_not' THEN 2
                  ELSE 3 END,
                CASE WHEN status = 'needs_review' THEN 0 ELSE 1 END,
-               ABS(COALESCE(amount_aud_cents, amount_cents)) DESC
+               ABS(${audAmount()}) DESC
       LIMIT ?`,
   )
     .bind(userId, start, end, cap)
@@ -774,7 +774,7 @@ export async function listSuggestedDeductions(env: Env, userId: string, startYea
        FROM transactions
       WHERE user_id = ? AND deductibility = 'suggested_deductible' AND ${COUNTABLE}
         AND txn_date >= ? AND txn_date <= ?
-      ORDER BY COALESCE(amount_aud_cents, amount_cents) DESC LIMIT 200`,
+      ORDER BY ${audAmount()} DESC LIMIT 200`,
   )
     .bind(start, end)
     .all<{ id: string; merchant: string | null; raw_description: string | null; ato_label: string | null; amount_cents: number | null; amount_aud_cents: number | null; txn_date: string | null }>();
@@ -821,7 +821,7 @@ export async function dashboard(env: Env, userId: string, startYear: number) {
     // Totals use the AUD value (falling back to the original when it's already AUD / pre-migration),
     // so mixed-currency receipts never sum incorrectly. Duplicates are excluded.
     tenantDb(env, userId).prepare(
-      `SELECT bucket, COUNT(*) AS n, COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS total_cents
+      `SELECT bucket, COUNT(*) AS n, COALESCE(SUM(${audAmount()}),0) AS total_cents
          FROM transactions WHERE user_id = ? AND bucket IS NOT NULL AND ${COUNTABLE}
           AND txn_date >= ? AND txn_date <= ?
         GROUP BY bucket ORDER BY total_cents DESC`,
@@ -830,7 +830,7 @@ export async function dashboard(env: Env, userId: string, startYear: number) {
       .all(),
     tenantDb(env, userId).prepare(
       `SELECT t.property_id, p.label, COUNT(*) AS n,
-              COALESCE(SUM(COALESCE(t.amount_aud_cents, t.amount_cents)),0) AS total_cents
+              COALESCE(SUM(${audAmount("t.")}),0) AS total_cents
          FROM transactions t LEFT JOIN properties p ON p.id = t.property_id
         WHERE t.user_id = ? AND t.property_id IS NOT NULL AND ${countable("t.")}
           AND t.txn_date >= ? AND t.txn_date <= ?
@@ -844,7 +844,7 @@ export async function dashboard(env: Env, userId: string, startYear: number) {
     // credit glance WITHOUT the income table beside it, so hiding matched credits would make income
     // look like it vanished. De-dup is applied in the formal Report, where both sections coexist.
     tenantDb(env, userId).prepare(
-      `SELECT bucket, COUNT(*) AS n, COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS total_cents
+      `SELECT bucket, COUNT(*) AS n, COALESCE(SUM(${audAmount()}),0) AS total_cents
          FROM transactions WHERE user_id = ? AND bucket IN ('income_business','income_property','income_personal') AND ${COUNTABLE_INCOME}
           AND txn_date >= ? AND txn_date <= ?
         GROUP BY bucket ORDER BY total_cents DESC`,
@@ -857,7 +857,7 @@ export async function dashboard(env: Env, userId: string, startYear: number) {
     // Undated countable spend (belongs to no FY) — surfaced as an actionable chip so the FY totals
     // above can be trusted as complete-for-the-year. Same predicate as the report's `undated` section.
     env.DB.prepare(
-      `SELECT COUNT(*) AS n, COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS total_cents
+      `SELECT COUNT(*) AS n, COALESCE(SUM(${audAmount()}),0) AS total_cents
          FROM transactions WHERE user_id = ? AND ${COUNTABLE} AND ${UNDATED_CLAUSE}`,
     )
       .bind(userId)
@@ -890,7 +890,7 @@ export async function spendRunRate(env: Env, userId: string, startYear: number) 
   const asOf = today < start ? start : today > end ? end : today;
   const [head, top] = await Promise.all([
     tenantDb(env, userId).prepare(
-      `SELECT COUNT(*) AS n, COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS total_cents
+      `SELECT COUNT(*) AS n, COALESCE(SUM(${audAmount()}),0) AS total_cents
          FROM transactions WHERE user_id = ? AND ${COUNTABLE} AND txn_date >= ? AND txn_date <= ?`,
     )
       .bind(start, end)
@@ -900,7 +900,7 @@ export async function spendRunRate(env: Env, userId: string, startYear: number) 
       `SELECT COALESCE(NULLIF(biller_key,''), lower(COALESCE(merchant, raw_description, ''))) AS k,
               COALESCE(MAX(merchant), MAX(raw_description)) AS label,
               COUNT(*) AS n,
-              COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS total_cents
+              COALESCE(SUM(${audAmount()}),0) AS total_cents
          FROM transactions
         WHERE user_id = ? AND ${COUNTABLE} AND txn_date >= ? AND txn_date <= ?
           AND COALESCE(NULLIF(biller_key,''), merchant, raw_description) IS NOT NULL
@@ -1049,7 +1049,7 @@ export async function phiExtrasOverview(env: Env, userId: string) {
   // (health:private-insurance) and anything already linked to a usage row.
   const loggableRes = await tenantDb(env, userId).prepare(
     `SELECT id, COALESCE(merchant, raw_description) AS merchant,
-            COALESCE(amount_aud_cents, amount_cents) AS amount_cents, txn_date
+            ${audAmount()} AS amount_cents, txn_date
        FROM transactions
       WHERE user_id = ? AND direction = 'debit' AND ato_label = 'health:allied'
         AND status NOT IN ('duplicate','ignored')
@@ -1081,7 +1081,7 @@ export async function spendYoy(env: Env, userId: string, startYear: number) {
   const prev = fyBounds(startYear - 1, jur);
   const sumFy = (b: { start: string; end: string }) =>
     tenantDb(env, userId).prepare(
-      `SELECT COALESCE(SUM(COALESCE(amount_aud_cents, amount_cents)),0) AS total_cents
+      `SELECT COALESCE(SUM(${audAmount()}),0) AS total_cents
          FROM transactions WHERE user_id = ? AND ${COUNTABLE} AND txn_date >= ? AND txn_date <= ?`,
     )
       .bind(b.start, b.end)
@@ -1143,16 +1143,28 @@ async function withEnergyCtas(env: Env, opportunities: Record<string, unknown>[]
   );
 }
 
-/** Cross-tenant admin: every tenant with signup + activity + AI-spend summary (newest first). */
-export async function listTenantsAdmin(env: Env) {
+export const ADMIN_TENANT_PAGE = 500;
+
+/**
+ * Cross-tenant admin: tenants with signup + activity + AI-spend summary, newest first, one keyset page at a
+ * time. `before` is the previous page's `next` cursor ("created_at|user_id"), so every tenant is reachable
+ * past the first page and a page costs the same however deep it is (no OFFSET scan).
+ */
+export async function listTenantsAdmin(env: Env, before?: string | null) {
+  const sep = before ? before.indexOf("|") : -1;
+  const cursor = sep > 0 ? { at: before!.slice(0, sep), id: before!.slice(sep + 1) } : null;
   const res = await platformDb(env).prepare(
     `SELECT p.user_id, p.email, p.roles, p.created_at,
             (SELECT COUNT(*) FROM transactions t WHERE t.user_id = p.user_id) AS txn_count,
             (SELECT COALESCE(SUM(cost_e4),0)/10000.0 FROM llm_usage u WHERE u.user_id = p.user_id) AS cost_cents,
             (SELECT a.created_at FROM audit_log a WHERE a.user_id = p.user_id ORDER BY a.seq DESC LIMIT 1) AS last_activity
-       FROM profiles p ORDER BY p.created_at DESC LIMIT 500`,
-  ).all();
-  return res.results ?? [];
+       FROM profiles p
+      ${cursor ? "WHERE (p.created_at < ? OR (p.created_at = ? AND p.user_id < ?))" : ""}
+      ORDER BY p.created_at DESC, p.user_id DESC LIMIT ?`,
+  ).bind(...(cursor ? [cursor.at, cursor.at, cursor.id] : []), ADMIN_TENANT_PAGE).all<{ user_id: string; created_at: string }>();
+  const tenants = res.results ?? [];
+  const last = tenants[tenants.length - 1];
+  return { tenants, next: tenants.length === ADMIN_TENANT_PAGE && last ? `${last.created_at}|${last.user_id}` : null };
 }
 
 /**
@@ -1194,7 +1206,8 @@ export async function platformOverview(env: Env) {
        (SELECT COUNT(*) FROM profiles WHERE created_at >= datetime('now','-30 days')) AS signups_30d,
        (SELECT COALESCE(SUM(cost_e4),0)/10000.0 FROM llm_usage WHERE created_at >= ? AND created_at < ?) AS spend_today_cents,
        (SELECT COALESCE(SUM(cost_e4),0)/10000.0 FROM llm_usage WHERE created_at >= ? AND created_at < ?) AS spend_month_cents,
-       (SELECT COALESCE(SUM(cost_e4),0)/10000.0 FROM llm_usage) AS spend_all_cents`,
+       -- All-time from the budget gate's per-day global counter (one row a day), not a scan of every usage row.
+       (SELECT COALESCE(SUM(cents_e4),0)/10000.0 FROM daily_cost WHERE scope = 'global') AS spend_all_cents`,
   )
     .bind(day, nextDay, month, nextMonth)
     .first<{ tenants: number; signups_7d: number; signups_30d: number; spend_today_cents: number; spend_month_cents: number; spend_all_cents: number }>();
@@ -1218,22 +1231,24 @@ export async function platformOverview(env: Env) {
  * spend?" at a glance — complements the pre-call budget gate, it does not replace it.
  */
 export async function platformSpend(env: Env) {
-  const day = new Date().toISOString().slice(0, 10);
+  const now = new Date();
+  const day = now.toISOString().slice(0, 10);
+  const nextDay = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1)).toISOString().slice(0, 10);
   const perTenantCap = Number(env.MAX_DAILY_COST_CENTS ?? 0);
   const globalCeiling = Number(env.MAX_DAILY_COST_CENTS_GLOBAL ?? 0);
   const rows = await platformDb(env).prepare(
     `SELECT user_id,
-       COALESCE(SUM(CASE WHEN substr(created_at,1,10) = ? THEN cost_e4 ELSE 0 END),0)/10000.0 AS today_cents,
+       COALESCE(SUM(CASE WHEN created_at >= ?1 AND created_at < ?2 THEN cost_e4 ELSE 0 END),0)/10000.0 AS today_cents,
        COALESCE(SUM(cost_e4),0)/10000.0 AS week_cents,
-       COALESCE(SUM(CASE WHEN substr(created_at,1,10) = ? AND feature = 'ask' THEN cost_e4 ELSE 0 END),0)/10000.0 AS ask_today_cents,
-       SUM(CASE WHEN substr(created_at,1,10) = ? THEN 1 ELSE 0 END) AS calls_today
+       COALESCE(SUM(CASE WHEN created_at >= ?1 AND created_at < ?2 AND feature = 'ask' THEN cost_e4 ELSE 0 END),0)/10000.0 AS ask_today_cents,
+       SUM(CASE WHEN created_at >= ?1 AND created_at < ?2 THEN 1 ELSE 0 END) AS calls_today
        FROM llm_usage
       WHERE created_at >= datetime('now','-7 days')
       GROUP BY user_id
       ORDER BY week_cents DESC
       LIMIT 50`,
   )
-    .bind(day, day, day)
+    .bind(day, nextDay)
     .all<{ user_id: string; today_cents: number; week_cents: number; ask_today_cents: number; calls_today: number }>();
   const spendToday = (await platformDb(env).prepare(`SELECT cents_e4 FROM daily_cost WHERE scope = 'global' AND day = ?`).bind(day).first<{ cents_e4: number }>())?.cents_e4 ?? 0;
   const tenants = (rows.results ?? []).map((r) => ({

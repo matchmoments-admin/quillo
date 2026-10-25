@@ -5,7 +5,9 @@
  *
  * - batch() is atomic (BEGIN…COMMIT, ROLLBACK on any failure), as D1's is;
  * - more than D1_MAX_BINDS bound parameters throws, as D1 does (a 100+ id IN list must be chunked);
- * - undefined binds become NULL; run() reports meta.changes; first(col) returns one column.
+ * - undefined binds become NULL; run() reports meta.changes; first(col) returns one column;
+ * - a batch runs with no await inside its transaction, so a concurrent batch or write can't interleave
+ *   into it (D1 serialises them); a batched `INSERT … RETURNING` (or SQL behind a comment) returns rows.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -22,24 +24,31 @@ export class SqliteD1Stmt {
     this.params = args.map((a) => (a === undefined ? null : a));
     return this;
   }
-  async all<T = unknown>() {
+  allSync<T = unknown>() {
     return { results: this.sqlite.prepare(this.sql).all(...(this.params as never[])) as T[], success: true, meta: {} };
+  }
+  async all<T = unknown>() {
+    return this.allSync<T>();
   }
   async first<T = unknown>(col?: string): Promise<T | null> {
     const row = (this.sqlite.prepare(this.sql).get(...(this.params as never[])) as Record<string, unknown> | undefined) ?? null;
     if (row && col !== undefined) return (row[col] ?? null) as T;
     return row as T | null;
   }
-  async run() {
+  runSync() {
     const r = this.sqlite.prepare(this.sql).run(...(this.params as never[]));
     return { success: true, meta: { changes: Number(r.changes ?? 0), last_row_id: Number(r.lastInsertRowid ?? 0) } };
+  }
+  async run() {
+    return this.runSync();
   }
   async raw<T = unknown[]>() {
     return this.sqlite.prepare(this.sql).all(...(this.params as never[])).map((r) => Object.values(r as object)) as T[];
   }
-  /** What D1's batch returns per statement: SELECTs carry `.results`, writes carry `.meta`. */
-  async settle() {
-    return /^\s*(select|with)/i.test(this.sql) ? this.all() : this.run();
+  /** What D1's batch returns per statement: row-returning SQL carries `.results`, writes carry `.meta`. */
+  settleSync() {
+    const bare = this.sql.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/--[^\n]*/g, " ");
+    return /^\s*(select|with|values)\b/i.test(bare) || /\bRETURNING\b/i.test(bare) ? this.allSync() : this.runSync();
   }
 }
 
@@ -52,10 +61,12 @@ export class SqliteD1 {
   }
   async batch(stmts: SqliteD1Stmt[]) {
     this.batches++;
+    // Synchronous between BEGIN and COMMIT: an await here would let another batch's BEGIN (or a plain write
+    // that a failure then rolls back) land inside this transaction, which D1 never allows.
     this.sqlite.exec("BEGIN");
     try {
       const out = [];
-      for (const s of stmts) out.push(await s.settle());
+      for (const s of stmts) out.push(s.settleSync());
       this.sqlite.exec("COMMIT");
       return out;
     } catch (e) {

@@ -144,6 +144,57 @@ function selectListItems(sql: string, start: number): [number, number][] {
   return ranges;
 }
 
+/** The keywords at paren depth 0 of the group opening at `open` (-1 = the whole statement), with offsets. */
+function groupWords(sql: string, open: number): { w: string; at: number }[] {
+  const out: { w: string; at: number }[] = [];
+  let depth = 0;
+  for (let i = open + 1; i < sql.length; i++) {
+    const skip = skipQuotedOrComment(sql, i);
+    if (skip !== i) {
+      i = skip - 1;
+      continue;
+    }
+    const c = sql[i]!;
+    if (c === "(") depth++;
+    else if (c === ")") {
+      if (depth === 0) break;
+      depth--;
+    } else if (depth === 0 && /[A-Za-z_]/.test(c) && !/[A-Za-z0-9_.]/.test(sql[i - 1] ?? "")) {
+      const m = /^[A-Za-z_][A-Za-z0-9_]*/.exec(sql.slice(i))!;
+      out.push({ w: m[0].toUpperCase(), at: i });
+      i += m[0].length - 1;
+    }
+  }
+  return out;
+}
+
+const CLAUSE_START = new Set(["WHERE", "ON", "HAVING"]);
+const CLAUSE_END = new Set(["WHERE", "ON", "HAVING", "GROUP", "ORDER", "LIMIT", "RETURNING", "UNION", "EXCEPT", "INTERSECT", "JOIN", "LEFT", "INNER", "CROSS", "SET", "VALUES", "FROM", "WINDOW"]);
+
+/**
+ * An OR anywhere in the predicate's own WHERE/ON clause (same paren level) means `user_id = ?` is one
+ * alternative, not a restriction: `WHERE user_id = ? OR id = ?` reads any tenant's row by id, and AND binds
+ * tighter than OR, so `WHERE id = ? OR k = 'x' AND user_id = ?` is unscoped too. The one allowed OR is the
+ * shared-or-tenant form's own `user_id IS NULL OR user_id = ?`.
+ */
+function orInClause(sql: string, o: number, open: number): boolean {
+  const words = groupWords(sql, open);
+  let from = -1;
+  let to = sql.length;
+  for (const { w, at } of words) {
+    if (at < o && CLAUSE_START.has(w)) from = at;
+    if (at > o && CLAUSE_END.has(w)) { to = at; break; }
+  }
+  if (from < 0) return false;
+  return words.some(({ w, at }) => w === "OR" && at > from && at < to
+    && !(/\buser_id\s+IS\s+NULL\s+$/i.test(sql.slice(Math.max(0, at - 24), at)) && /^OR\s+(?:[A-Za-z_][A-Za-z0-9_]*\.)?user_id\s*=\s*\?/i.test(sql.slice(at))));
+}
+
+/** True when the paren at `open` starts a subquery, i.e. its rows are not the statement's own rows —
+ *  except a derived table or CTE body (after FROM / JOIN / AS), whose rows ARE what the statement reads. */
+const scalarOrFilterSubquery = (sql: string, open: number) =>
+  /^\(\s*(?:SELECT|WITH)\b/i.test(sql.slice(open, open + 16)) && !/\b(?:FROM|JOIN|AS)\s*$/i.test(sql.slice(Math.max(0, open - 8), open));
+
 /** Which placeholder indexes are the tenant. Throws TenantScopeError on a tenant predicate that doesn't scope. */
 export function tenantPlan(sql: string): Plan {
   const cached = planCache.get(sql);
@@ -179,6 +230,7 @@ export function tenantPlan(sql: string): Plan {
       }
     }
   }
+  let outer = false;
   offs.forEach((o, idx) => {
     if (valueSlots.has(idx)) return tenant.add(idx);
     const before = sql.slice(Math.max(0, o - 64), o);
@@ -191,8 +243,15 @@ export function tenantPlan(sql: string): Plan {
       if (/\bNOT\s*$/i.test(sql.slice(Math.max(0, open - 8), open))) throw new TenantScopeError("a tenant predicate inside NOT ( … ) is not a tenant scope");
     }
     if (/\bNOT\s*\(?\s*(?:[A-Za-z_][A-Za-z0-9_]*\.)?user_id\s*=\s*$/i.test(before)) throw new TenantScopeError("a negated tenant predicate (NOT user_id = ?) is not a tenant scope");
+    const parens = enclosingParens(sql, o);
+    if (orInClause(sql, o, parens.length ? parens[parens.length - 1]! : -1)) throw new TenantScopeError("a tenant predicate OR-ed with another condition is not a tenant scope");
+    if (!parens.some((open) => scalarOrFilterSubquery(sql, open))) outer = true;
     tenant.add(idx);
   });
+  // A statement scoped only inside a subquery (`WHERE id IN (SELECT … WHERE user_id = ?)`) still reads or
+  // writes its own table across every tenant: at least one predicate (or the INSERT slot) must be on it.
+  // (A FROM-less SELECT of scalar subqueries has no table of its own, so it's exempt.)
+  if (tenant.size && !outer && !valueSlots.size && groupWords(sql, -1).some(({ w }) => w === "FROM" || w === "UPDATE" || w === "INTO")) throw new TenantScopeError("the tenant predicate is only inside a subquery; the statement's own table is unscoped");
   const plan = { total: offs.length, tenant: [...tenant].sort((a, b) => a - b) };
   if (planCache.size >= PLAN_CACHE_MAX) planCache.delete(planCache.keys().next().value!);
   planCache.set(sql, plan);

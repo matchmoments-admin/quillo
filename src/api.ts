@@ -2113,7 +2113,7 @@ export async function handleApi(
   if (resource === "admin") {
     if (!isAdmin(await getProfile(env, uid))) return json({ error: "forbidden" }, 403);
     if (m === "GET" && id === "overview") return json(await platformOverview(env));
-    if (m === "GET" && id === "tenants") return json({ tenants: await listTenantsAdmin(env) });
+    if (m === "GET" && id === "tenants") return json(await listTenantsAdmin(env, url.searchParams.get("before")));
     // GET /api/admin/spend — cross-tenant AI-spend + abuse view (per-tenant today/7d, who hit the daily
     // cap, who's a large share of the global ceiling). Read-only; reads existing llm_usage/daily_cost.
     if (m === "GET" && id === "spend") return json(await platformSpend(env));

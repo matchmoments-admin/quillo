@@ -626,7 +626,18 @@ export const api = {
 
   // Admin (founder only — server enforces the 'admin' role)
   adminOverview: () => get<AdminOverview>("/api/admin/overview"),
-  adminTenants: () => get<{ tenants: AdminTenant[] }>("/api/admin/tenants").then((r) => r.tenants),
+  // Keyset-paged on the server (500 a page); follows `next` so the list isn't cut off at the first page.
+  adminTenants: async () => {
+    const all: AdminTenant[] = [];
+    let before: string | null = null;
+    for (let page = 0; page < 20; page++) {
+      const r: { tenants: AdminTenant[]; next?: string | null } = await get(`/api/admin/tenants${before ? `?before=${encodeURIComponent(before)}` : ""}`);
+      all.push(...r.tenants);
+      if (!r.next) break;
+      before = r.next;
+    }
+    return all;
+  },
   adminSpend: () => get<AdminSpend>("/api/admin/spend"),
   // Security & compliance (#636): 404 for non-admins; the check run needs the security_monitoring flag.
   adminSecurity: () => get<SecurityDashboard>("/api/admin/security"),

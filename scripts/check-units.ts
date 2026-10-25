@@ -7661,7 +7661,7 @@ console.log("A6 CDR data controls (#639)");
   const dash639 = await buildDash639(denv639, new Date("2026-10-12T09:00:00Z")).catch(() => null);
   const lp = dash639?.panels.find((p) => p.key === "lifecycle");
   check("lifecycle record: lights the Data lifecycle panel (no longer 'Not yet set up')", !!lp && lp.status === "ok" && lp.metrics.deletion_queue === 4);
-  const indexSrc639 = fs.readFileSync(path.join(process.cwd(), "src/index.ts"), "utf8");
+  const indexSrc639 = fs.readFileSync(path.join(process.cwd(), "src/lib/weekly-sweep.ts"), "utf8"); // the sweep body moved out of index.ts (A3)
   check("weekly cron: minimisation, inactive end users and the record are wired, each behind its flag",
     /if \(featureOn\(env, "bank_minimisation"\)\) \{/.test(indexSrc639) && /if \(featureOn\(env, "cdr_inactive_user_delete"\)\) \{/.test(indexSrc639) &&
     /await publishLifecycleRecord\(env, tally,/.test(indexSrc639));
@@ -9049,6 +9049,42 @@ console.log("D1 bind cap + tenant predicates + scale indexes (A4/A5)");
     /COVERING INDEX idx_usage_created/.test(planOf(`SELECT SUM(cost_e4) FROM llm_usage WHERE created_at >= '2026-10-25' AND created_at < '2026-10-26'`)));
   const q = fs.readFileSync(path.join(process.cwd(), "src/lib/queries.ts"), "utf8");
   check("A5: platformOverview no longer filters llm_usage by substr(created_at…)", !/FROM llm_usage WHERE substr\(created_at/.test(q));
+}
+
+// ── Scale review A3: the weekly sweep continues on the 10-minute tick until every tenant is done ──
+import { runWeeklySlice, weeklySweepInProgress, WEEKLY_CURSOR_KEY, WEEKLY_LEASE_KEY, WEEKLY_SLICE } from "../src/lib/weekly-sweep";
+import type { TaxAgentRpc } from "../src/env";
+
+console.log("weekly sweep continuation (A3)");
+{
+  const kv = new Map<string, string>();
+  const RULES = { get: async (k: string) => kv.get(k) ?? null, put: async (k: string, v: string) => { kv.set(k, v); }, delete: async (k: string) => { kv.delete(k); } };
+  const users = Array.from({ length: 1000 }, (_, i) => `user_${String(i).padStart(4, "0")}`);
+  const DB = { prepare: (_sql: string) => ({ bind: (cursor: string, limit: number) => ({
+    all: async () => ({ results: users.filter((u) => u > cursor).slice(0, limit).map((user_id) => ({ user_id })) }),
+    first: async () => ({ n: 0 }),
+  }) }) };
+  const env = { RULES, DB, FEATURES: "" } as unknown as Env;
+  const seen = new Map<string, number>();
+  const stub = (_e: Env, uid: string) => ({
+    runProactiveScan: async () => { seen.set(uid, (seen.get(uid) ?? 0) + 1); },
+    rollForward: async () => {}, flagOldData: async () => ({ flagged: false }),
+  }) as unknown as TaxAgentRpc;
+  {
+    const r1 = await runWeeklySlice(env, stub); // the Monday tick
+    check("A3: the first slice sweeps WEEKLY_SLICE tenants and leaves the cursor set", "swept" in r1 && r1.swept === WEEKLY_SLICE && !r1.done && await weeklySweepInProgress(env));
+    let ticks = 1;
+    while (await weeklySweepInProgress(env) && ticks < 10) { await runWeeklySlice(env, stub); ticks++; }
+    check("A3: 1,000 tenants finish in 3 ticks (same day), and the cursor clears", ticks === 3 && !kv.has(WEEKLY_CURSOR_KEY));
+    check("A3: every tenant swept exactly once", seen.size === 1000 && [...seen.values()].every((n) => n === 1));
+    check("A3: the lease is released after each slice", !kv.has(WEEKLY_LEASE_KEY));
+    kv.set(WEEKLY_LEASE_KEY, "x");
+    const leased = await runWeeklySlice(env, stub);
+    check("A3: a held lease skips the tick (no double-run of an overrunning slice)", "skipped" in leased && seen.size === 1000 && [...seen.values()].every((n) => n === 1));
+    kv.delete(WEEKLY_LEASE_KEY);
+    const ix = fs.readFileSync(path.join(process.cwd(), "src/index.ts"), "utf8");
+    check("A3: the */10 tick continues an in-progress sweep", /if \(await weeklySweepInProgress\(env\)\) \{\s*await runWeeklySlice\(env, stubFor\)/.test(ix));
+  }
 }
 
 console.log(`\n=== units: ${pass} passed, ${fail} failed ===`);

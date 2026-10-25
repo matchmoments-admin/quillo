@@ -92,6 +92,8 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "content-type: application/
   https://api.cloudflare.com/client/v4/accounts/192777a993ba94d262ede60d8f9a480c/d1/database/76e1c20a-efa2-4042-858a-7e24be4c14ce/export | head -c 300
 #    "success":true means good. HTTP 403 means re-issue the token with Account · D1 · Edit and note it here.
 npx wrangler secret put D1_EXPORT_TOKEN
+#    2026-10-26: stored from the owner's existing account token (it passed the export test above), NOT a
+#    D1-Read-only token: it also reaches Workers, R2 and DNS. Rotate to a quillo-d1-export token when convenient (#701).
 
 # 4. Turn it on: add d1_backups to FEATURES in wrangler.toml, then deploy
 npm run web:build && npm run deploy

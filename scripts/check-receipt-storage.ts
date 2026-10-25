@@ -14,6 +14,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { SqliteD1 } from "./lib/d1-sqlite";
 import { fileURLToPath } from "node:url";
 import type { Env } from "../src/env";
 import {
@@ -114,16 +115,7 @@ async function missingOriginals() {
   // list + delete, so missing objects are simply not listed — the purge completes and wipes D1.
   const db = new DatabaseSync(":memory:");
   for (const f of fs.readdirSync(path.join(root, "migrations")).filter((f) => f.endsWith(".sql")).sort()) db.exec(fs.readFileSync(path.join(root, "migrations", f), "utf8"));
-  class Stmt {
-    private params: unknown[] = [];
-    constructor(private sql: string) {}
-    bind(...a: unknown[]) { this.params = a.map((x) => (x === undefined ? null : x)); return this; }
-    async all<T>() { return { results: db.prepare(this.sql).all(...(this.params as never[])) as T[], success: true, meta: {} }; }
-    async first<T>() { return (db.prepare(this.sql).get(...(this.params as never[])) as T) ?? null; }
-    async run() { const r = db.prepare(this.sql).run(...(this.params as never[])); return { success: true, meta: { changes: Number(r.changes ?? 0) } }; }
-    async settle() { return /^\s*(select|with)/i.test(this.sql) ? this.all() : this.run(); }
-  }
-  const D1 = { prepare: (s: string) => new Stmt(s), batch: async (ss: Stmt[]) => { db.exec("BEGIN"); try { const o = []; for (const s of ss) o.push(await s.settle()); db.exec("COMMIT"); return o; } catch (e) { db.exec("ROLLBACK"); throw e; } } };
+  const D1 = new SqliteD1(db);
   const kv = { get: async () => null, put: async () => {}, delete: async () => {}, list: async () => ({ keys: [], list_complete: true }) };
   const env = { DB: D1, RECEIPTS: r2, RULES: kv, FEATURES: "" } as unknown as Env;
   db.prepare(`INSERT INTO profiles (user_id) VALUES ('u9')`).run();
@@ -140,7 +132,7 @@ async function sharedKeys() {
   console.log("\n== shared objects survive deletes (keyStillReferenced over real SQLite) ==");
   const db = new DatabaseSync(":memory:");
   for (const f of fs.readdirSync(path.join(root, "migrations")).filter((f) => f.endsWith(".sql")).sort()) db.exec(fs.readFileSync(path.join(root, "migrations", f), "utf8"));
-  const D1 = { prepare: (sql: string) => { let p: unknown[] = []; const st = { bind: (...a: unknown[]) => { p = a; return st; }, first: async () => (db.prepare(sql).get(...(p as never[])) ?? null) }; return st; } } as unknown as D1Database;
+  const D1 = new SqliteD1(db) as unknown as D1Database;
   const ins = (sql: string) => db.prepare(sql).run();
   ins(`INSERT INTO transactions (id, user_id, source, status, receipt_key, image_hash) VALUES ('orig', 'u1', 'web', 'extracted', 'u1/orig', 'h')`);
   ins(`INSERT INTO transactions (id, user_id, source, status, receipt_key, image_hash, duplicate_of) VALUES ('dup', 'u1', 'web', 'duplicate', 'u1/orig', 'h', 'orig')`);

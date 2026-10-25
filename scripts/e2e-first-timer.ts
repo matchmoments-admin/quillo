@@ -23,7 +23,7 @@
 // Run:    npx tsx scripts/e2e-first-timer.ts
 // Update: UPDATE_SNAPSHOT=1 npx tsx scripts/e2e-first-timer.ts   (re-capture the OFF baseline — only for a
 //         vetted, intended change to the flag-OFF outputs)
-import { DatabaseSync } from "node:sqlite";
+import { migratedDb } from "./lib/d1-sqlite";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -55,21 +55,7 @@ const FIXTURE = path.join(root, "scripts", "fixtures", "first-timer-off-baseline
 const STATEMENT_CSV = path.join(root, "evals", "statements", "westpac-sample.csv");
 const COLUMN_MAP = JSON.parse(fs.readFileSync(path.join(root, "evals", "statements", "westpac-sample.expected.json"), "utf8")).columnMap as ColumnMap;
 
-// ── D1 shim over node:sqlite (mirrors scripts/e2e-journey.ts) + a tiny KV (ensureTenant's init marker). ──
-class D1Stmt {
-  private params: unknown[] = [];
-  constructor(private db: DatabaseSync, private sql: string) {}
-  bind(...args: unknown[]) { this.params = args.map((a) => (a === undefined ? null : a)); return this; }
-  async all<T = unknown>() { return { results: this.db.prepare(this.sql).all(...(this.params as never[])) as T[], success: true, meta: {} }; }
-  async first<T = unknown>() { return (this.db.prepare(this.sql).get(...(this.params as never[])) as T) ?? null; }
-  async run() { const r = this.db.prepare(this.sql).run(...(this.params as never[])); return { success: true, meta: { changes: Number(r.changes ?? 0) } }; }
-  async settle() { return /^\s*(select|with)/i.test(this.sql) ? this.all() : this.run(); }
-}
-class D1 {
-  constructor(private db: DatabaseSync) {}
-  prepare(sql: string) { return new D1Stmt(this.db, sql); }
-  async batch(stmts: D1Stmt[]) { const out = []; for (const s of stmts) out.push(await s.settle()); return out; }
-}
+// ── A tiny KV (ensureTenant's init marker); D1 is the shared adapter (scripts/lib/d1-sqlite.ts). ──
 class KV {
   private m = new Map<string, string>();
   async get(k: string) { return this.m.get(k) ?? null; } // no rule-pack override ⇒ the bundled au-v1 pack
@@ -82,17 +68,16 @@ class R2 { // purgeTenant lists + deletes the tenant's objects; this tenant neve
   async delete() {}
 }
 
-const db = new DatabaseSync(":memory:");
-for (const f of fs.readdirSync(path.join(root, "migrations")).filter((f) => f.endsWith(".sql")).sort()) {
-  db.exec(fs.readFileSync(path.join(root, "migrations", f), "utf8"));
-}
+// Every migration in lexical order (the chain the drift guard validates), behind the shared D1 adapter.
+const d1 = migratedDb();
+const db = d1.sqlite;
 
 // Production's flag set (wrangler.toml) is the base, so "OFF" means exactly what prod runs today.
 const PROD_FEATURES = (/^FEATURES\s*=\s*"([^"]*)"/m.exec(fs.readFileSync(path.join(root, "wrangler.toml"), "utf8"))?.[1] ?? "")
   .split(",").map((s) => s.trim()).filter(Boolean);
 const JOURNEY_FLAGS = ["ft_journey", "situation_profile", "relevance_scan", "wages_payer", "reconcile_proposals", "mytax_worksheet", "residency_assessability"];
 const kv = new KV();
-const mkEnv = (flags: string[]) => ({ DB: new D1(db), RULES: kv, RECEIPTS: new R2(), FEATURES: flags.join(",") }) as unknown as Env;
+const mkEnv = (flags: string[]) => ({ DB: d1, RULES: kv, RECEIPTS: new R2(), FEATURES: flags.join(",") }) as unknown as Env;
 const OFF = mkEnv(PROD_FEATURES.filter((f) => !JOURNEY_FLAGS.includes(f)));
 const ON = mkEnv([...PROD_FEATURES.filter((f) => !JOURNEY_FLAGS.includes(f)), ...JOURNEY_FLAGS]);
 

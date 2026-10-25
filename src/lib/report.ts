@@ -294,9 +294,11 @@ export const propertyUndeterminedGatedExpr = (env: Env, bucketCol: string, idCol
 // transaction_attributions is counted via those (attributionTotals) instead of its raw amount — so
 // it must be EXCLUDED from the raw byBucket/byPropertyRaw/company/resolved sums to avoid double
 // counting. `on` false (or no attribution rows) ⇒ this clause is empty ⇒ byte-identical legacy path.
-// `col` is the transaction's id column for the surrounding query's alias; no extra bind.
-export const notAttributedExpr = (col: string, on: boolean) =>
-  on ? ` AND NOT EXISTS (SELECT 1 FROM transaction_attributions ta WHERE ta.transaction_id = ${col})` : "";
+// `alias` is the surrounding query's transactions alias (or the bare table name); no extra bind. The
+// probe pins ta.user_id to the outer row's tenant so it seeks idx_txn_attr_txn (user_id, transaction_id)
+// instead of scanning every tenant's attributions per line. Same rows: attributions are same-tenant.
+export const notAttributedExpr = (alias: string, on: boolean) =>
+  on ? ` AND NOT EXISTS (SELECT 1 FROM transaction_attributions ta WHERE ta.user_id = ${alias}.user_id AND ta.transaction_id = ${alias}.id)` : "";
 
 // Exclude the legacy split rows ONLY for loans the v2 model supersedes (loanInterestV2Context).
 // NULL-safe via COALESCE — `NOT (NULL = 'x')` is NULL (falsy) and would wrongly DROP every
@@ -481,7 +483,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   const propUndetermined = (bucketCol: string, idCol: string) => propertyUndeterminedGatedExpr(env, bucketCol, idCol);
 
   const useAttributions = featureOn(env, "attribution_engine");
-  const notAttributed = (col: string) => notAttributedExpr(col, useAttributions);
+  const notAttributed = (alias: string) => notAttributedExpr(alias, useAttributions);
 
   const loanCtx = await loanInterestV2Context(env, userId, startYear);
   const loanInterestByProp = loanCtx.byProp;
@@ -500,7 +502,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
             COALESCE(SUM(${amtExpr}),0) AS total_cents,
             COALESCE(SUM(gst_cents),0) AS gst_cents
        FROM transactions
-      WHERE user_id = ? AND txn_date >= ? AND txn_date <= ? AND bucket IS NOT NULL AND ${COUNTABLE}${notAttributed("transactions.id")}${excludeSplitInterest("")}
+      WHERE user_id = ? AND txn_date >= ? AND txn_date <= ? AND bucket IS NOT NULL AND ${COUNTABLE}${notAttributed("transactions")}${excludeSplitInterest("")}
       GROUP BY bucket, ato_label, deductibility, reimbursed, use_status_denied, property_undetermined ORDER BY bucket, total_cents DESC`,
   )
     .bind(userId, start, end, ...supersededLoanIds)
@@ -531,7 +533,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
             COUNT(*) AS n,
             COALESCE(SUM(${amtExprT}),0) AS total_cents
        FROM transactions t LEFT JOIN properties p ON p.id = t.property_id
-      WHERE t.user_id = ? AND t.txn_date >= ? AND t.txn_date <= ? AND t.property_id IS NOT NULL AND ${COUNTABLE.replace(/\b(status|kind|matched_txn_id|direction|currency|amount_aud_cents)\b/g, "t.$1")}${notAttributed("t.id")}${excludeSplitInterest("t.")}
+      WHERE t.user_id = ? AND t.txn_date >= ? AND t.txn_date <= ? AND t.property_id IS NOT NULL AND ${COUNTABLE.replace(/\b(status|kind|matched_txn_id|direction|currency|amount_aud_cents)\b/g, "t.$1")}${notAttributed("t")}${excludeSplitInterest("t.")}
       GROUP BY t.property_id, deductibility, reimbursed, use_status_denied, property_undetermined`,
   )
     .bind(userId, start, end, ...supersededLoanIds)
@@ -546,7 +548,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
        FROM transactions
       WHERE user_id = ? AND txn_date >= ? AND txn_date <= ?
         AND bucket IN ('property_rented','property_vacant') AND property_id IS NULL
-        AND ${COUNTABLE}${notAttributed("transactions.id")}${excludeSplitInterest("")}`,
+        AND ${COUNTABLE}${notAttributed("transactions")}${excludeSplitInterest("")}`,
   )
     .bind(userId, start, end, ...supersededLoanIds)
     .first<{ n: number; total_cents: number }>();
@@ -949,7 +951,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
         AND COALESCE(reimbursed,0) = 0
         -- Same loan_interest_v2 supersession as byBucket/byPropertyRaw: a legacy rental:interest split
         -- row replaced by an evidenced v2 figure must NOT be summed here too, or resolved double-counts it.
-        AND ${useStatusDenied("transactions.property_id")} = 0${notAttributed("transactions.id")}${excludeSplitInterest("")}`,
+        AND ${useStatusDenied("transactions.property_id")} = 0${notAttributed("transactions")}${excludeSplitInterest("")}`,
   )
     .bind(userId, start, end, ...supersededLoanIds)
     .first<{ total: number }>();

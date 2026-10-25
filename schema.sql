@@ -333,6 +333,7 @@ CREATE TABLE IF NOT EXISTS traces (
   output_json TEXT,
   created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE INDEX IF NOT EXISTS idx_traces_user_txn ON traces(user_id, txn_id); -- 0090
 
 -- ── Eval cases distilled from recurring corrections ───────────────────────────
 CREATE TABLE IF NOT EXISTS eval_cases (
@@ -637,6 +638,7 @@ CREATE TABLE IF NOT EXISTS llm_usage (
   created_at        TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_usage_user ON llm_usage(user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_usage_created ON llm_usage(created_at, cost_e4); -- 0090
 
 -- Race-free daily AI-spend rollup (backs the budget gate). scope = 'global' or a tenant id;
 -- incremented atomically via INSERT … ON CONFLICT DO UPDATE SET cents = cents + excluded.cents

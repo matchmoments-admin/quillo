@@ -82,6 +82,7 @@ import { readRulePackOverride } from "./lib/rulepack";
 import { assertBucketKeys, isBucket, isPropertyBucket, normalizeAtoLabel, DEDUCTIBILITY_STATES, WAGE_INCOME_TYPES } from "./lib/taxonomy";
 import { verdictForTxn } from "./lib/deductibility";
 import { featureOn, categoriseMode } from "./lib/features";
+import { chunkIds } from "./lib/d1-limits";
 import { runRelevanceScan, confirmWorthALook, type WorthALookConfirmInput } from "./lib/relevance-scan-run";
 
 const CONFIDENCE_THRESHOLD = 0.85;
@@ -590,14 +591,19 @@ export class TaxAgent extends Agent<Env> {
    */
   private async autoAccountantPassAfterImport(userId: string, statementIds: string[]): Promise<void> {
     if (!statementIds.length || !featureOn(this.env, "accountant_pass")) return;
-    const ph = statementIds.map(() => "?").join(",");
-    const range = await this.env.DB.prepare(
-      `SELECT MIN(txn_date) AS lo, MAX(txn_date) AS hi
-         FROM transactions WHERE user_id = ? AND statement_id IN (${ph}) AND kind = 'bank_line' AND txn_date IS NOT NULL`,
-    )
-      .bind(userId, ...statementIds)
-      .first<{ lo: string | null; hi: string | null }>();
-    if (!range?.lo || !range?.hi) return;
+    // Chunked: a bulk import can carry more statement ids than D1's 100-bind cap.
+    const range: { lo: string | null; hi: string | null } = { lo: null, hi: null };
+    for (const chunk of chunkIds(statementIds)) {
+      const r = await this.env.DB.prepare(
+        `SELECT MIN(txn_date) AS lo, MAX(txn_date) AS hi
+           FROM transactions WHERE user_id = ? AND statement_id IN (${chunk.map(() => "?").join(",")}) AND kind = 'bank_line' AND txn_date IS NOT NULL`,
+      )
+        .bind(userId, ...chunk)
+        .first<{ lo: string | null; hi: string | null }>();
+      if (r?.lo && (!range.lo || r.lo < range.lo)) range.lo = r.lo;
+      if (r?.hi && (!range.hi || r.hi > range.hi)) range.hi = r.hi;
+    }
+    if (!range.lo || !range.hi) return;
     const fyStart = (d: string) => (Number(d.slice(5, 7)) >= 7 ? Number(d.slice(0, 4)) : Number(d.slice(0, 4)) - 1);
     // Clamp the FY window so a single mis-parsed date (e.g. an OCR'd 01/01/9999) can't blow the loop into
     // thousands of full-tenant passes and hang the DO: end no later than NEXT FY, span at most 8 FYs.
@@ -2890,7 +2896,7 @@ export class TaxAgent extends Agent<Env> {
       // needs_review (that is why txnId is passed) and we degrade.
       txnId,
       onConsentRequired: async () => {
-        await this.markStatus(txnId, "blocked_consent");
+        await this.markStatus(userId, txnId, "blocked_consent");
         await this.notify(
           userId,
           "Cross-border processing consent (APP 8) is required before this receipt can be read by the US inference API. Record consent to proceed.",
@@ -7553,8 +7559,8 @@ export class TaxAgent extends Agent<Env> {
 
     try {
       const { ledgerRef } = await ledger.pushExpense(userId, expense);
-      await this.env.DB.prepare(`UPDATE transactions SET ledger_ref = ? WHERE id = ?`)
-        .bind(ledgerRef, txnId)
+      await this.env.DB.prepare(`UPDATE transactions SET ledger_ref = ? WHERE id = ? AND user_id = ?`)
+        .bind(ledgerRef, txnId, userId)
         .run();
       await this.audit(userId, "ledger_push", JSON.stringify({ txnId, ledgerRef }));
     } catch (err) {
@@ -7799,8 +7805,8 @@ export class TaxAgent extends Agent<Env> {
     ].join("\n");
   }
 
-  private async markStatus(txnId: string, status: string): Promise<void> {
-    await this.env.DB.prepare(`UPDATE transactions SET status = ? WHERE id = ?`).bind(status, txnId).run();
+  private async markStatus(userId: string, txnId: string, status: string): Promise<void> {
+    await this.env.DB.prepare(`UPDATE transactions SET status = ? WHERE id = ? AND user_id = ?`).bind(status, txnId, userId).run();
   }
 
   /**
@@ -7922,7 +7928,7 @@ export class TaxAgent extends Agent<Env> {
       }
       if (bal <= 0) {
         if (txnId) {
-          await this.markStatus(txnId, "needs_review");
+          await this.markStatus(userId, txnId, "needs_review");
           await this.notify(userId, "You're out of AI credits. Top up in Billing to keep using AI features — this was saved for review until then.", txnId);
         }
         return false;
@@ -7935,7 +7941,7 @@ export class TaxAgent extends Agent<Env> {
       const gspent = await spentTodayGlobalCents(this.env);
       if (gspent >= globalBudget) {
         if (txnId) {
-          await this.markStatus(txnId, "needs_review");
+          await this.markStatus(userId, txnId, "needs_review");
           await this.notify(userId, "AI is paused for today (the platform's daily limit was reached). Saved for review — it'll process after the daily reset.", txnId);
         }
         return false;
@@ -7961,7 +7967,7 @@ export class TaxAgent extends Agent<Env> {
       const mspent = await spentThisMonthGlobalCents(this.env);
       if (mspent >= monthlyBudget) {
         if (txnId) {
-          await this.markStatus(txnId, "needs_review");
+          await this.markStatus(userId, txnId, "needs_review");
           await this.notify(userId, "AI is paused for the rest of the month (the platform's monthly limit was reached). Saved for review — it resumes next month.", txnId);
         }
         return false;
@@ -7980,7 +7986,7 @@ export class TaxAgent extends Agent<Env> {
     const spent = await spentTodayCents(this.env, userId);
     if (spent >= budget) {
       if (txnId) {
-        await this.markStatus(txnId, "needs_review");
+        await this.markStatus(userId, txnId, "needs_review");
         await this.notify(
           userId,
           `Daily AI budget reached ($${(budget / 100).toFixed(2)}). Saved for review — it'll process after the daily reset, or raise MAX_DAILY_COST_CENTS.`,

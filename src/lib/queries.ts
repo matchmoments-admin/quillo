@@ -1168,7 +1168,7 @@ export async function listTenantsAdmin(env: Env) {
     `SELECT p.user_id, p.email, p.roles, p.created_at,
             (SELECT COUNT(*) FROM transactions t WHERE t.user_id = p.user_id) AS txn_count,
             (SELECT COALESCE(SUM(cost_e4),0)/10000.0 FROM llm_usage u WHERE u.user_id = p.user_id) AS cost_cents,
-            (SELECT MAX(created_at) FROM audit_log a WHERE a.user_id = p.user_id) AS last_activity
+            (SELECT a.created_at FROM audit_log a WHERE a.user_id = p.user_id ORDER BY a.seq DESC LIMIT 1) AS last_activity
        FROM profiles p ORDER BY p.created_at DESC LIMIT 500`,
   ).all();
   return res.results ?? [];
@@ -1200,18 +1200,22 @@ export async function referralFunnelAdmin(env: Env) {
 
 /** Cross-tenant admin: platform headline metrics. */
 export async function platformOverview(env: Env) {
-  const day = new Date().toISOString().slice(0, 10);
+  const now = new Date();
+  const day = now.toISOString().slice(0, 10);
   const month = day.slice(0, 7);
+  // Half-open created_at ranges (not substr(created_at,…) = ?) so idx_usage_created answers them.
+  const nextDay = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1)).toISOString().slice(0, 10);
+  const nextMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)).toISOString().slice(0, 7);
   const m = await env.DB.prepare(
     `SELECT
        (SELECT COUNT(*) FROM profiles) AS tenants,
        (SELECT COUNT(*) FROM profiles WHERE created_at >= datetime('now','-7 days')) AS signups_7d,
        (SELECT COUNT(*) FROM profiles WHERE created_at >= datetime('now','-30 days')) AS signups_30d,
-       (SELECT COALESCE(SUM(cost_e4),0)/10000.0 FROM llm_usage WHERE substr(created_at,1,10) = ?) AS spend_today_cents,
-       (SELECT COALESCE(SUM(cost_e4),0)/10000.0 FROM llm_usage WHERE substr(created_at,1,7) = ?) AS spend_month_cents,
+       (SELECT COALESCE(SUM(cost_e4),0)/10000.0 FROM llm_usage WHERE created_at >= ? AND created_at < ?) AS spend_today_cents,
+       (SELECT COALESCE(SUM(cost_e4),0)/10000.0 FROM llm_usage WHERE created_at >= ? AND created_at < ?) AS spend_month_cents,
        (SELECT COALESCE(SUM(cost_e4),0)/10000.0 FROM llm_usage) AS spend_all_cents`,
   )
-    .bind(day, month)
+    .bind(day, nextDay, month, nextMonth)
     .first<{ tenants: number; signups_7d: number; signups_30d: number; spend_today_cents: number; spend_month_cents: number; spend_all_cents: number }>();
   return {
     tenants: m?.tenants ?? 0,

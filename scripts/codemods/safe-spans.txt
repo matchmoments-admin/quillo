@@ -17,7 +17,8 @@ tFilter
 fyStartExpr
 rentFreeAsset
 depCols
-COUNTABLE.replace(/\b(status|kind|matched_txn_id|direction|currency|amount_aud_cents)\b/g, "t.$1")
+countable("t.")
+countableIncome("r.")
 notAttributed("transactions")
 notAttributed("t")
 notAttributedExpr("transactions", useAttributions)

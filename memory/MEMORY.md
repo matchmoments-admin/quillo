@@ -25,6 +25,10 @@ Curated cross-session memory for this repo. How it works:
 - AI spend caps (MAX_*_COST_CENTS*) are US cents; AWS bills Bedrock in AUD (≈ ×1.55). check-units pins the AUD figure in the wrangler.toml comments + CONFIG.md table to the cap values. [src: e7c6f36d-084a-49b8-af46-e75a95fd72e5]
 - Every model call goes through `aiCall` (`src/lib/ai-call.ts`): consent → budget → getLLM → audit → callback; a raw `getLLM(` in agent.ts fails check-units. New life situations are `src/lib/situations/<key>.ts` modules (ADR-0004); money combines only in `composePosition`. [src: e7c6f36d-084a-49b8-af46-e75a95fd72e5]
 
+- Tenant D1 access goes through `tenantDb(env, userId)` (ADR-0005): write `user_id = ?` in the SQL but DON'T bind the tenant — the handle splices it in and throws on unscoped SQL or a wrong arg count. Cross-tenant code uses `platformDb(env)`. A new raw `DB.prepare(` fails the ratchet (`scripts/raw-db-baseline.json`; lower it with `UPDATE_DB_BASELINE=1 npm run test:units`). [src: e7c6f36d-084a-49b8-af46-e75a95fd72e5]
+
+- Test scripts use ONE D1 adapter, `scripts/lib/d1-sqlite.ts` (`migratedDb()` / `schemaDb()`): atomic batch + D1's 100-bind cap. Don't hand-roll a shim — the old copies let a 100+ id `IN (…)` ship untested; chunk with `chunkIds` (`src/lib/d1-limits.ts`). New tables need a `src/lib/table-manifest.ts` entry (purge, retention class, dark reason). [src: e7c6f36d-084a-49b8-af46-e75a95fd72e5]
+
 ## Gotchas
 - Fiskil sandbox+prod share ONE base URL and the JWT has no env marker, so FISKIL_ENV alone can't prove data is synthetic — PS8 carve-out also keys on sandbox institution `88888` (bank-feed-core requiresAuResidency). [src: 3d49246d-fc0d-40f9-86a3-ad884ecefa78]
 - Fiskil API: end users are NOT unique per email (never retry create); `DELETE /consent/{id}` returns 204 even for unknown ids; `from`/`to` must be RFC3339 (bare dates 400); a bad `page[after]` returns 503 not 400; pin `X-Fiskil-Version: v3`. Full list: docs/bank-feed-provider-options.md §7. [src: 3d49246d-fc0d-40f9-86a3-ad884ecefa78]

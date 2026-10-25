@@ -27,6 +27,7 @@ export interface RulePackThresholds {
 // ── FY representation seam: src/lib/fy.ts (re-exported here so existing imports keep working) ──
 export { fyLabel, fyStartYearStr, parseFyStartYear, normaliseFyLabel } from "./fy";
 import { fyLabel, parseFyStartYear } from "./fy";
+import { countable } from "./ledger-filter";
 
 /**
  * Calendar bounds of an FY start year. Period maths live in jurisdiction.ts; the optional descriptor
@@ -347,7 +348,7 @@ export async function attributionTotals(
          LEFT JOIN income_activities ia ON ia.id = ta.income_activity_id
         WHERE ta.user_id = ? AND t.txn_date >= ? AND t.txn_date <= ?
           AND COALESCE(t.reimbursed,0) = 0
-          AND ${COUNTABLE.replace(/\b(status|kind|matched_txn_id|direction|currency|amount_aud_cents)\b/g, "t.$1")}
+          AND ${countable("t.")}
           -- a rent-free / off-market-renovating property's costs are never deductible (0031)
           AND NOT EXISTS (SELECT 1 FROM properties pp WHERE pp.id = ia.property_id
                             AND pp.use_status IN ('private_use_rent_free','under_renovation_not_available'))`,
@@ -434,7 +435,7 @@ export async function companyPositions(env: Env, userId: string, startYear: numb
   try {
     const companies = (await tenantDb(env, userId).prepare(`SELECT id, name, COALESCE(base_rate_entity,0) AS base_rate_entity FROM entities WHERE user_id = ? AND (kind = 'company' OR entity_type = 'company')`).bind().all<{ id: string; name: string | null; base_rate_entity: number }>()).results ?? [];
     if (!companies.length) return empty;
-    const tFilter = COUNTABLE.replace(/\b(status|kind|matched_txn_id|direction|currency|amount_aud_cents)\b/g, "t.$1");
+    const tFilter = countable("t.");
     // Per-company attributed deductions THIS FY (the loss is a per-FY flow).
     const attrRows = (await tenantDb(env, userId).prepare(
       `SELECT ta.entity_id AS entity_id, COALESCE(SUM(ta.attributed_amount_cents),0) AS ded

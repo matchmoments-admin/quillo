@@ -16,6 +16,9 @@ import { composePosition, type PositionSummands } from "./position";
 import { loadSituations, situationFields, type ReportContext } from "./situations";
 import { resolveJurisdictionForUser, currentFyStartYearFor, fyStartYearForDate, baseCurrencyOf, AU_DESCRIPTOR, type JurisdictionDescriptor } from "./jurisdiction";
 import { tenantDb } from "./tenant-db";
+import { countable, countableIncome, claimExpr, useStatusDeniedExpr, propertyUndeterminedExpr, propertyUndeterminedGatedExpr, notAttributedExpr, excludeSplitInterestExpr } from "./ledger-filter";
+// The row-filter fragments moved to ledger-filter.ts; re-exported so existing imports keep working.
+export { claimExpr, useStatusDeniedExpr, propertyUndeterminedExpr, propertyUndeterminedGatedExpr, notAttributedExpr, excludeSplitInterestExpr } from "./ledger-filter";
 
 // Tax period is jurisdiction-driven (jurisdiction.ts). The optional descriptor defaults to AU so every
 // existing caller stays byte-identical (AU = Jul 1 .. Jun 30); pass a resolved descriptor for a UK tenant.
@@ -252,63 +255,10 @@ export function positionAmountCents(
 }
 
 // ── Shared per-row SQL context ────────────────────────────────────────────────
-// These clause builders are the SINGLE source of the WHERE/SUM fragments that decide which
-// transaction rows count and for how much. buildReport AND buildAccountantSchedule (the itemised
-// accountant export) both use them, so the itemised lines can never diverge from the engine totals
-// (tie-back by construction — asserted per persona in scripts/check-personas.ts).
-
-// Mirrors positionAmountCents EXACTLY: only confirmed_deductible rows count their apportioned amount;
-// everything else (incl. likely_not rows the 0021 backfill stamped with deductible_amount_cents=0)
-// keeps gross. `p` is the table-alias prefix ("" for byBucket, "t." for the property join).
-export const claimExpr = (p: string) =>
-  `CASE WHEN ${p}deductibility = 'confirmed_deductible' AND ${p}deductible_amount_cents IS NOT NULL THEN ${p}deductible_amount_cents ELSE COALESCE(${p}amount_aud_cents, ${p}amount_cents) END`;
-
-// 0031: a property held rent-free for a relative, or off-market while renovating, earns no income
-// => its expenses are NOT deductions (s8-1), though CGT cost base still accrues. We MARK such rows
-// (a 0/1 flag) rather than removing them, so they stay visible as excluded tracked-spend and every
-// surface that lists spend agrees; only the headline classifier drops them. Static string, no extra
-// binds; only the genuinely-new use_status values deny and no existing row carries them, so the
-// position is byte-identical until a user marks a property. `col` is the txn's property_id column.
-export const useStatusDeniedExpr = (col: string) =>
-  `(CASE WHEN EXISTS (SELECT 1 FROM properties pp WHERE pp.id = ${col} AND pp.use_status IN ('private_use_rent_free','under_renovation_not_available')) THEN 1 ELSE 0 END)`;
-
-// #254 (Wave 1): a property-bucket expense (property_rented/property_vacant) that can't yet land in an
-// income-producing property earns no assessable rent, so it's not a deduction yet (deny-by-default,
-// mirroring payg 'undetermined'). It's "undetermined" when EITHER the row has no property_id (it can't
-// land in any per-property schedule) OR its property's use_status isn't an income-producing one
-// ('rented' / 'genuinely_available_for_rent') — i.e. NULL/undetermined/vacant_land/owner_occupied.
-// MARKED 0/1 (kept visible as excluded tracked-spend, like 0030/0031); only the headline + per-property
-// classifier drop it. UNLIKE useStatusDeniedExpr this MUST be flag-gated by the caller (return "0" when
-// off) because existing data DOES trigger it (the unattributed property spend that over-states the
-// position), so the change has to flip deliberately rather than the day the code ships. `bucketCol`/
-// `idCol` are the surrounding query's bucket + property_id columns (alias-prefixed as needed).
-export const propertyUndeterminedExpr = (bucketCol: string, idCol: string) =>
-  `(CASE WHEN ${bucketCol} IN ('property_rented','property_vacant') AND (${idCol} IS NULL OR NOT EXISTS (SELECT 1 FROM properties pp WHERE pp.id = ${idCol} AND pp.use_status IN ('rented','genuinely_available_for_rent'))) THEN 1 ELSE 0 END)`;
-
-// #254: the flag-GATED form — the literal "0" when the flag is off (⇒ byte-identical SQL/grouping),
-// the real marker when on. Single source of truth for the gate so report.ts and accountant-schedule.ts
-// can never disagree on the flag name or the off-value (mirrors how both share useStatusDeniedExpr).
-export const propertyUndeterminedGatedExpr = (env: Env, bucketCol: string, idCol: string) =>
-  featureOn(env, "position_excludes_property_undetermined") ? propertyUndeterminedExpr(bucketCol, idCol) : "0";
-
-// Phase B / G2: when the attribution_engine flag is on, a transaction that has explicit
-// transaction_attributions is counted via those (attributionTotals) instead of its raw amount — so
-// it must be EXCLUDED from the raw byBucket/byPropertyRaw/company/resolved sums to avoid double
-// counting. `on` false (or no attribution rows) ⇒ this clause is empty ⇒ byte-identical legacy path.
-// `alias` is the surrounding query's transactions alias (or the bare table name); no extra bind. The
-// probe pins ta.user_id to the outer row's tenant so it seeks idx_txn_attr_txn (user_id, transaction_id)
-// instead of scanning every tenant's attributions per line. Same rows: attributions are same-tenant.
-export const notAttributedExpr = (alias: string, on: boolean) =>
-  on ? ` AND NOT EXISTS (SELECT 1 FROM transaction_attributions ta WHERE ta.user_id = ${alias}.user_id AND ta.transaction_id = ${alias}.id)` : "";
-
-// Exclude the legacy split rows ONLY for loans the v2 model supersedes (loanInterestV2Context).
-// NULL-safe via COALESCE — `NOT (NULL = 'x')` is NULL (falsy) and would wrongly DROP every
-// NULL-ato_label row. No superseded loans ⇒ empty clause ⇒ byte-identical legacy path. `p` is the
-// alias; the bound `?`s are the loan ids, appended LAST in each query's bind list.
-export const excludeSplitInterestExpr = (p: string, supersededLoanIds: string[]) =>
-  supersededLoanIds.length
-    ? ` AND NOT (COALESCE(${p}ato_label,'') = 'rental:interest' AND ${p}account_id IN (${supersededLoanIds.map(() => "?").join(",")}))`
-    : "";
+// The WHERE/SUM fragments that decide which transaction rows count and for how much live in
+// ledger-filter.ts. buildReport AND buildAccountantSchedule (the itemised accountant export) both use
+// them, so the itemised lines can never diverge from the engine totals (tie-back by construction —
+// asserted per persona in scripts/check-personas.ts).
 
 // Evidence-first loan interest (flag loan_interest_v2): the loan model is the source of a loan's
 // deductible interest — resolved per property from loan_interest_summaries (the lender/statement
@@ -433,7 +383,7 @@ export async function refundNetting(
        FROM transactions r
        LEFT JOIN transactions e ON e.id = r.refund_for_txn_id AND e.user_id = r.user_id
       WHERE r.user_id = ? AND r.txn_date >= ? AND r.txn_date <= ? AND r.bucket = 'refund'
-        AND ${COUNTABLE_INCOME.replace(/\b(status|kind|matched_txn_id|direction|currency|amount_aud_cents)\b/g, "r.$1")}`,
+        AND ${countableIncome("r.")}`,
   )
     .bind(userId, start, end)
     .all<{ refund_cents: number; matched_id: string | null; e_bucket: string | null; e_deductibility: string; e_reimbursed: number; e_use_status_denied: number; e_property_undetermined: number; e_cents: number | null }>();
@@ -532,7 +482,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
             COUNT(*) AS n,
             COALESCE(SUM(${amtExprT}),0) AS total_cents
        FROM transactions t LEFT JOIN properties p ON p.id = t.property_id
-      WHERE t.user_id = ? AND t.txn_date >= ? AND t.txn_date <= ? AND t.property_id IS NOT NULL AND ${COUNTABLE.replace(/\b(status|kind|matched_txn_id|direction|currency|amount_aud_cents)\b/g, "t.$1")}${notAttributed("t")}${excludeSplitInterest("t.")}
+      WHERE t.user_id = ? AND t.txn_date >= ? AND t.txn_date <= ? AND t.property_id IS NOT NULL AND ${countable("t.")}${notAttributed("t")}${excludeSplitInterest("t.")}
       GROUP BY t.property_id, deductibility, reimbursed, use_status_denied, property_undetermined`,
   )
     .bind(userId, start, end, ...supersededLoanIds);

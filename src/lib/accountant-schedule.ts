@@ -27,6 +27,7 @@ import { diaryView as wfhDiaryView, addDaysIso as wfhAddDays, preDiarySourceLabe
 import { buildXlsx, type XlsxCell, type XlsxSheet } from "./xlsx";
 import { csvCell, neutraliseFormula } from "./csv-cell";
 import { tenantDb } from "./tenant-db";
+import { countable } from "./ledger-filter";
 
 // ── The itemised accountant deliverable (#179 + #181, EPIC #178) ─────────────
 // A persona-aware, multi-section schedule an accountant can audit: per-transaction lines with
@@ -405,7 +406,7 @@ async function scheduleCore(
     income_activity_id: string | null;
     activity_label: string | null;
   }
-  const tFilter = COUNTABLE.replace(/\b(status|kind|matched_txn_id|direction|currency|amount_aud_cents)\b/g, "t.$1");
+  const tFilter = countable("t.");
   const attrRowsP = useAttributions
     ? safeAll<AttrRow>(
         tenantDb(env, userId).prepare(

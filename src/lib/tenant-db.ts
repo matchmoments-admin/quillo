@@ -27,25 +27,39 @@ type Plan = { total: number; tenant: number[] };
 const planCache = new Map<string, Plan>();
 const PLAN_CACHE_MAX = 2000;
 
+/** Index just past the string literal, quoted identifier or comment starting at `i`, or `i` if none starts there. */
+function skipQuotedOrComment(sql: string, i: number): number {
+  const c = sql[i];
+  if (c === "'" || c === '"' || c === "`") {
+    for (let j = i + 1; j < sql.length; j++) {
+      if (sql[j] === c) {
+        if (sql[j + 1] === c) j++; // doubled quote = escaped
+        else return j + 1;
+      }
+    }
+    return sql.length;
+  }
+  if (c === "-" && sql[i + 1] === "-") {
+    const nl = sql.indexOf("\n", i);
+    return nl < 0 ? sql.length : nl;
+  }
+  if (c === "/" && sql[i + 1] === "*") {
+    const end = sql.indexOf("*/", i + 2);
+    return end < 0 ? sql.length : end + 2;
+  }
+  return i;
+}
+
 /** The anonymous `?` positions in `sql` (string literals, quoted identifiers and comments skipped). */
 export function placeholderOffsets(sql: string): number[] {
   const out: number[] = [];
   for (let i = 0; i < sql.length; i++) {
-    const c = sql[i]!;
-    if (c === "'" || c === '"' || c === "`") {
-      const q = c;
-      for (i++; i < sql.length; i++) {
-        if (sql[i] === q) {
-          if (sql[i + 1] === q) i++; // doubled quote = escaped
-          else break;
-        }
-      }
-    } else if (c === "-" && sql[i + 1] === "-") {
-      while (i < sql.length && sql[i] !== "\n") i++;
-    } else if (c === "/" && sql[i + 1] === "*") {
-      const end = sql.indexOf("*/", i + 2);
-      i = end < 0 ? sql.length : end + 1;
-    } else if (c === "?") {
+    const skip = skipQuotedOrComment(sql, i);
+    if (skip !== i) {
+      i = skip - 1;
+      continue;
+    }
+    if (sql[i] === "?") {
       if (/[0-9]/.test(sql[i + 1] ?? "")) throw new Error("tenantDb: numbered placeholders (?N) are not supported; use anonymous ?");
       out.push(i);
     }
@@ -53,16 +67,19 @@ export function placeholderOffsets(sql: string): number[] {
   return out;
 }
 
-/** The top-level comma-separated item ranges of the parenthesised tuple opening at `open`. */
+/** The top-level comma-separated item ranges of the parenthesised tuple opening at `open` (same skipping). */
 function topLevelItems(sql: string, open: number): { ranges: [number, number][]; end: number } | null {
   const ranges: [number, number][] = [];
   let depth = 0;
   let start = open + 1;
   for (let i = open; i < sql.length; i++) {
+    const skip = skipQuotedOrComment(sql, i);
+    if (skip !== i) {
+      i = skip - 1;
+      continue;
+    }
     const c = sql[i]!;
-    if (c === "'") {
-      for (i++; i < sql.length && !(sql[i] === "'" && sql[i + 1] !== "'"); i++) if (sql[i] === "'") i++;
-    } else if (c === "(") depth++;
+    if (c === "(") depth++;
     else if (c === ")") {
       depth--;
       if (depth === 0) {
@@ -77,7 +94,11 @@ function topLevelItems(sql: string, open: number): { ranges: [number, number][];
   return null;
 }
 
-const PREDICATE =/(?:\b[A-Za-z_][A-Za-z0-9_]*\.)?\buser_id\s*=\s*$/i;
+/** A VALUES item is the tenant slot only if it is exactly `?` once comments are removed. */
+const bareParam = (item: string) => item.replace(/\/\*[\s\S]*?\*\//g, "").replace(/--[^\n]*/g, "").trim() === "?";
+
+const PREDICATE = /(?:\b[A-Za-z_][A-Za-z0-9_]*\.)?\buser_id\s*=\s*$/i;
+const NEGATED = /\bNOT\s*\(?\s*(?:[A-Za-z_][A-Za-z0-9_]*\.)?user_id\s*=\s*$/i;
 const INSERT_HEAD = /^\s*INSERT\s+(?:OR\s+\w+\s+)?INTO\s+[A-Za-z_][A-Za-z0-9_]*\s*\(([^)]*)\)\s*VALUES\s*/i;
 
 /** Which placeholder indexes are the tenant. Exported for the goldens. */
@@ -87,7 +108,11 @@ export function tenantPlan(sql: string): Plan {
   const offs = placeholderOffsets(sql);
   const tenant = new Set<number>();
   offs.forEach((o, idx) => {
-    if (PREDICATE.test(sql.slice(Math.max(0, o - 64), o))) tenant.add(idx);
+    const before = sql.slice(Math.max(0, o - 64), o);
+    if (!PREDICATE.test(before)) return;
+    // `NOT user_id = ?` reads every OTHER tenant's rows: refuse it rather than count it as a scope.
+    if (NEGATED.test(before)) throw new TenantScopeError("a negated tenant predicate (NOT user_id = ?) is not a tenant scope");
+    tenant.add(idx);
   });
   const ins = INSERT_HEAD.exec(sql);
   if (ins) {
@@ -99,7 +124,7 @@ export function tenantPlan(sql: string): Plan {
         const items = topLevelItems(sql, p);
         if (!items) break;
         const slot = items.ranges[col];
-        if (slot && sql.slice(slot[0], slot[1]).trim() === "?") {
+        if (slot && bareParam(sql.slice(slot[0], slot[1]))) {
           const idx = offs.findIndex((o) => o >= slot[0] && o < slot[1]);
           if (idx >= 0) tenant.add(idx);
         }

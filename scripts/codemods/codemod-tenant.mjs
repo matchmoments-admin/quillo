@@ -7,7 +7,8 @@ const require = createRequire(path.join(repo, "package.json")); const ts = requi
 const TD = await import(path.join(repo, "src/lib/tenant-db.ts"));
 const tenantPlanSrc = (sql) => ({ ...TD.tenantPlan(sql), offsets: TD.placeholderOffsets(sql) });
 const TENANT = /^(userId|uid|u\.user_id|this\.userId|tenantId|ownerId|user\.userId|ctx\.userId|deps\.userId|opts\.userId|p\.userId|U)$/;
-// Interpolations proven to contain no `?` and no user_id predicate (see --spans output review).
+// Interpolations proven to contain no `?` placeholder (a column-to-column user_id comparison is fine: the
+// planner only fires on `user_id = ?`). Reviewed per entry; see --spans.
 const SAFE = new Set((process.env.SAFE_SPANS ?? "").split("\n").map((s) => s.trim()).filter(Boolean));
 const files = [];
 (function walk(d) { for (const f of fs.readdirSync(d, { withFileTypes: true })) { const p = path.join(d, f.name); if (f.isDirectory()) walk(p); else if (p.endsWith(".ts") && !p.endsWith("tenant-db.ts")) files.push(p); } })(path.join(repo, "src"));

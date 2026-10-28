@@ -71,6 +71,13 @@ Code: [`src/lib/fiskil.ts`](../../src/lib/fiskil.ts), [`src/lib/bank-provider.ts
 Not held: bank credentials, full account numbers, BSBs, names or contact details from the bank, payees,
 direct debits, balances history beyond what transactions carry, or any ability to initiate payments.
 
+Uploaded statements (not CDR data) follow the same identifier rule: when the statement reader names the account
+(`statement_account_detect`), only the institution, account kind, last four digits and period are kept — never the
+holder name, BSB or full account number (data-handling standard §2). With "work it out from the statement", a
+statement whose last four digits match a bank-feed account is refused by the canonical-source rule whatever bank
+name it prints, and a statement that shows no last four digits while a feed is connected is not filed at all: the
+user picks the account (`decideStatementAccount`, src/lib/statement-account.ts).
+
 ## 4. Boundary
 
 **Inside the CDE** (systems that store, process or can access CDR data):

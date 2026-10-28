@@ -32,6 +32,13 @@ as Restricted — CDR for all model calls.
   numbers, a hyphenated BSB followed by an account, and numbers after an explicit `BSB` / `ACC` / `ACCT` / `ACCOUNT` / `A/C`
   keyword. It is deliberately narrow: merchant words, amounts, dates and bare reference numbers are kept, so
   categorisation is unchanged (golden `pfts8b`) — and an unlabelled bare digit run is therefore NOT redacted.
+- **Uploaded statements: the same identifier rule as a bank feed** (flag `statement_account_detect`, owner decision
+  2026-10-28). When the statement reader names an account, it asks for and keeps only the institution, the
+  account kind, the **last four digits** and the statement period (plus a printed interest rate or interest total).
+  The tool schema has no field for the account holder's name, the BSB or the full account number, so they are
+  never asked for. A `last4` that isn't exactly four digits is dropped (golden "a full account number is never
+  kept"). The original PDF is still stored as evidence (it is the user's own record), but nothing is derived from
+  its identifiers beyond these fields.
 
 ## 3. Use
 

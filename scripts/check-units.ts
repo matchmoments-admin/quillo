@@ -2,6 +2,7 @@
 // Offline unit tests for the pure invariants that underpin statement import + async
 // categorisation. No worker runtime / D1 / Claude — these are the fast, deterministic
 // regression guards for the rules we keep re-learning. Run: npm run test:units
+import { decideStatementAccount, sameInstitution, accountTypeForKind, kindMismatch, detectedAccountName, isLiabilityKind, type AccountRow } from "../src/lib/statement-account";
 import { reconcileStatement, deriveBalances, normaliseStatementLines, liabilityArithmeticFor, isBalanceRow, isTransferLike, isLoanInterestLine, classifyMovement, movementTreatment, signedCents, lineFingerprint, type StatementLine } from "../src/lib/statements";
 import { decideSupersession, addressKey, identityOf, type OnFileIncome } from "../src/lib/income-supersession";
 import { groupKey, groupForClarify, rulePatternForStem, isClarifyLeftover, isInsuranceLikeStem, suggestionsFor, draftHoldingFromTxn } from "../src/lib/clarify";
@@ -9,7 +10,7 @@ import { resolveLoanInterest, deductibleInterestCents } from "../src/lib/loan-in
 import { scoreClaimMatches } from "../src/lib/claim-match";
 import { scanLine, scanLines, relevanceFloorCents, isScannedBucket, worthALookText, resolveConfirmLabel, ruleLabelOptions, confirmNeedsAsset, confirmNeedsShare } from "../src/lib/relevance-scan";
 import { batchStatementStatus, isStaleBatch, BATCH_MAX_AGE_MS } from "../src/lib/batch";
-import { extractSituationDraft, parseBatchMessage, mapBatchItems, type BatchItem } from "../src/extract";
+import { extractSituationDraft, extractStatement, mergeStatementAccounts, parseBatchMessage, mapBatchItems, type BatchItem } from "../src/extract";
 import type { LLM } from "../src/llm";
 import { isValidAbn, normaliseAbn } from "../web/src/lib/abn";
 import { billableCents, billableE4, billingPolicy, freeCreditGrantE4, budgetRefusalMessage, budgetRefusal, OUT_OF_CREDIT_MESSAGE, DAILY_PAUSE_MESSAGE } from "../src/lib/billing";
@@ -324,6 +325,60 @@ console.log("one notion of self (src/lib/self-person.ts)");
     .filter((f) => /`person_self_\$\{/.test(fs.readFileSync(f, "utf8")))
     .map((f) => path.relative(process.cwd(), f));
   check(`no inline \`person_self_\${...}\` outside self-person.ts (use selfPersonId/ownerPersonId): ${offenders.join(", ") || "none"}`, offenders.length === 0);
+}
+
+console.log("statement account detection (statement_account_detect)");
+{
+  // The extractor (same call) also reads the account; only the last FOUR digits are ever kept.
+  let seenTools: string[] = [];
+  const stmtLLM = (input: unknown): LLM => ({
+    client: {} as Anthropic,
+    modelId: "stub",
+    async create(params: Anthropic.MessageCreateParamsNonStreaming) {
+      seenTools = (params.tools ?? []).map((t) => JSON.stringify(t));
+      return { content: [{ type: "tool_use", id: "t1", name: "record_statement", input }] } as unknown as Anthropic.Message;
+    },
+  });
+  const base = { lines: [{ date: "2026-03-01", description: "COFFEE", amount: 4.5, direction: "debit", balance: 104.5 }], opening_balance: 100, closing_balance: 104.5, currency: "AUD" };
+  const acct = { account_kind: "credit_card", institution: " Example Bank ", last4: "5829", period_start: "2026-02-01", period_end: "2026-02-28", interest_rate_pct: 20.99, interest_charged: 0, interest_earned: null, loan_purpose: null };
+  const pdf = new ArrayBuffer(8);
+  const on = await extractStatement(stmtLLM({ ...base, ...acct }), pdf, "application/pdf", { detectAccount: true });
+  check("detect: kind, institution (trimmed), last4, period and rate are read", on.account?.kind === "credit_card" && on.account.institution === "Example Bank" && on.account.last4 === "5829" && on.account.period_end === "2026-02-28" && on.account.interest_rate_pct === 20.99);
+  check("detect: the tool asks for last4 and never for a BSB or holder name field", seenTools[0]!.includes("last4") && !/"bsb"|holder_name|account_number"/i.test(seenTools[0]!));
+  const full = await extractStatement(stmtLLM({ ...base, ...acct, last4: "032000123456" }), pdf, "application/pdf", { detectAccount: true });
+  check("detect: a full account number is never kept (only exactly four digits)", full.account?.last4 === null);
+  const bad = await extractStatement(stmtLLM({ ...base, ...acct, account_kind: "mortgage-ish", period_start: "1 Feb 2026" }), pdf, "application/pdf", { detectAccount: true });
+  check("detect: an unknown kind or a non-ISO date reads as null, not a failure", bad.account?.kind === null && bad.account.period_start === null && bad.lines.length === 1);
+  const off = await extractStatement(stmtLLM({ ...base, ...acct }), pdf, "application/pdf");
+  check("flag OFF: no account is returned and the plain tool is sent", off.account === undefined && !seenTools[0]!.includes("last4"));
+  const merged = mergeStatementAccounts([{ ...on.account!, period_end: "2026-02-14", interest_rate_pct: 19.99 }, undefined, { ...on.account!, kind: null, last4: null, period_start: null, period_end: "2026-02-28", interest_rate_pct: 20.99 }]);
+  check("chunks merge: first kind/last4/start, last end/rate", merged?.kind === "credit_card" && merged.last4 === "5829" && merged.period_start === "2026-02-01" && merged.period_end === "2026-02-28" && merged.interest_rate_pct === 20.99);
+
+  const A = (o: Partial<AccountRow>): AccountRow => ({ id: "a", institution: "Example Bank", name: "Card", last4: "5829", type: "transaction", source: "statement", ...o });
+  const det = on.account!;
+  const dec = (accts: AccountRow[], d = det) => decideStatementAccount(accts, d);
+  const id = (r: ReturnType<typeof dec>) => (r.action === "match" || r.action === "adopt" ? `${r.action}:${r.account.id}` : r.action);
+  check("match: same last4 + bank", id(dec([A({ id: "x" }), A({ id: "y", last4: "1111" })])) === "match:x");
+  check("match: another bank's account with the same last4 is not it", id(dec([A({ institution: "Other Credit Union" })])) === "create");
+  check("match: two candidates ⇒ ask", id(dec([A({ id: "x" }), A({ id: "y" })])) === "ask");
+  // Review findings (security + correctness).
+  check("feed: the same last4 on a bank-feed account matches it whatever bank name it carries (the caller then refuses: ADR-0002)",
+    id(dec([A({ id: "feed", source: "cdr_feed", institution: "Commonwealth Bank of Australia" })], { ...det, institution: "CommBank" })) === "match:feed");
+  check("feed: no last4 on the statement while a feed exists ⇒ ask, never a new account", id(dec([A({ source: "cdr_feed" })], { ...det, last4: null })) === "ask");
+  check("legacy: an older same-bank account with no last4 is adopted (no duplicate account)", id(dec([A({ id: "old", last4: null, institution: "Example Bank Choice 307" })])) === "adopt:old");
+  check("legacy: two unnumbered same-bank accounts ⇒ ask", id(dec([A({ id: "o1", last4: null }), A({ id: "o2", last4: null })])) === "ask");
+  check("no last4, one same-bank account ⇒ adopt it; with another numbered one there ⇒ ask",
+    id(dec([A({ id: "o", last4: null })], { ...det, last4: null })) === "adopt:o" && id(dec([A({ id: "o", last4: null }), A({ id: "n" })], { ...det, last4: null })) === "ask");
+  check("a first account ⇒ create", id(dec([])) === "create");
+  check("institution aliases: CommBank = Commonwealth Bank; NAB = National Australia Bank; Bank of Melbourne ≠ Bank of Queensland",
+    sameInstitution("CommBank", "Commonwealth Bank of Australia") && sameInstitution("NAB", "National Australia Bank Limited") &&
+    !sameInstitution("Bank of Melbourne", "Bank of Queensland") && sameInstitution("Westpac", "Westpac Choice 307") && !sameInstitution("The Bank", "Bank"));
+  const masked = await extractStatement(stmtLLM({ ...base, ...acct, last4: "**** **** **** 5829", institution: "Westpac BSB 032-000 Acc 12345678" }), pdf, "application/pdf", { detectAccount: true });
+  check("last4: a masked number keeps its last four; the institution keeps no digits or BSB/account words", masked.account?.last4 === "5829" && masked.account.institution === "Westpac");
+  check("kinds map to account types (offset/savings ⇒ transaction)", accountTypeForKind("credit_card") === "credit_card" && accountTypeForKind("loan") === "loan" && accountTypeForKind("offset") === "transaction" && accountTypeForKind(null) === "transaction");
+  check("kind mismatch: a card statement in a transaction account is surfaced; a match isn't", kindMismatch("transaction", det) && !kindMismatch("credit_card", det) && !kindMismatch("transaction", { ...det, kind: "savings" }));
+  check("detected account name", detectedAccountName({ institution: "Example Bank", kind: "credit_card", last4: "5829" }) === "Example Bank credit card ··5829" && detectedAccountName({ institution: null, kind: null, last4: null }) === "Bank account");
+  check("liability kinds", isLiabilityKind("credit_card") && isLiabilityKind("loan") && !isLiabilityKind("offset") && !isLiabilityKind(null));
 }
 
 // ── Security sweep #694 / #712: OAuth state is bound to the browser that started the connect ──

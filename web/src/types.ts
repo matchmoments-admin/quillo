@@ -111,6 +111,8 @@ export interface StatementParse {
   rowCount: number;
   duplicate: boolean;
   reconciliation?: Reconciliation;
+  // statement_account_detect: the account the statement was filed in, and what it says it is
+  account?: { id: string; name: string; kind: "everyday" | "savings" | "credit_card" | "loan" | "offset" | null; created: boolean; kindMismatch: boolean };
 }
 
 export interface StatementInfo {

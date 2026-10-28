@@ -381,6 +381,10 @@ function LinkRow({
 
 function StatementUpload() {
   const qc = useQueryClient();
+  const { has } = useFeatures();
+  // statement_account_detect: the statement says which account it is, so "work it out" is the default rather than
+  // the last account used (which filed one bank's statement into another's account).
+  const detect = has("statement_account_detect");
   const accounts = useQuery({ queryKey: ["accounts"], queryFn: () => api.accounts() });
   const fileRef = useRef<HTMLInputElement>(null);
   const [target, setTarget] = useState<string>("");
@@ -389,8 +393,9 @@ function StatementUpload() {
   // A parse holds the tenant's single Durable Object; one at a time, app-wide (the legacy page shares the key).
   const anyParsing = useIsMutating({ mutationKey: ["parseStatement"] }) > 0;
   const statementAccounts = (accounts.data ?? []).filter((a) => a.source === "statement" || a.source === "manual");
-  const chosen = target || statementAccounts[0]?.id || "new";
   const hasFeed = (accounts.data ?? []).some((a) => a.source === "cdr_feed");
+  // With a bank feed connected, a statement might be for the feed's account: no default, the user picks.
+  const chosen = target || (detect && !hasFeed ? "auto" : statementAccounts[0]?.id) || "new";
 
   const upload = useMutation({
     mutationKey: ["parseStatement"],
@@ -405,7 +410,9 @@ function StatementUpload() {
     },
     onMutate: () => setNote("Reading your statement…"),
     onSuccess: (p) => {
-      setNote(p.duplicate ? "This exact file was already uploaded." : "Read. Check it below, then import.");
+      const where = p.account ? (p.account.created ? ` Added a new account: ${p.account.name}.` : ` Filed in ${p.account.name}.`) : "";
+      const kind = p.account?.kindMismatch && p.account.kind ? ` It looks like a ${p.account.kind.replace("_", " ")} statement; if that account isn't set up as one, change its type in Advanced so the balances check out.` : "";
+      setNote(p.duplicate ? "This exact file was already uploaded." : `Read. Check it below, then import.${where}${kind}`);
       setBankName("");
       qc.invalidateQueries({ queryKey: ["accounts"] });
       qc.invalidateQueries({ queryKey: ["statements"] });
@@ -424,6 +431,7 @@ function StatementUpload() {
       <label className="block text-sm">
         <span className="mb-1 block font-medium text-ink">Which account is it for?</span>
         <select className={INPUT} value={chosen} onChange={(e) => setTarget(e.target.value)} disabled={upload.isPending}>
+          {detect && <option value="auto">Work it out from the statement</option>}
           {statementAccounts.map((a) => (
             <option key={a.id} value={a.id}>
               {a.name}

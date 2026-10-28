@@ -206,7 +206,7 @@ export interface TaxAgentRpc {
   applyCorrection(userId: string, txnId: string, field: string, value: string): Promise<void>;
   deleteTransaction(userId: string, txnId: string): Promise<void>;
   pushToQuickBooks(userId: string, txnId: string): Promise<{ ok: boolean; ledgerRef?: string; error?: string }>;
-  parseStatement(userId: string, accountId: string, filename: string, bytes: ArrayBuffer, format: string): Promise<{ statementId: string; columnMap: unknown; preview: unknown[]; rowCount: number; duplicate: boolean; reconciliation?: unknown }>;
+  parseStatement(userId: string, accountId: string, filename: string, bytes: ArrayBuffer, format: string): Promise<{ statementId: string; columnMap: unknown; preview: unknown[]; rowCount: number; duplicate: boolean; reconciliation?: unknown; account?: { id: string; name: string; kind: string | null; created: boolean; kindMismatch: boolean } }>;
   confirmImport(userId: string, statementId: string, columnMapOverride?: unknown, force?: boolean, quiet?: boolean): Promise<{ imported: number; skipped: number }>;
   confirmImportBulk(userId: string, opts?: { statementIds?: string[]; force?: boolean }): Promise<{ statements: number; imported: number; skipped: number; errors: { statementId: string; error: string }[] }>;
   parseCapitalImport(userId: string, filename: string, bytes: ArrayBuffer): Promise<{ importId: string; columnMap: unknown; preview: unknown; duplicate: boolean }>;

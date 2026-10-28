@@ -282,7 +282,9 @@ CREATE TABLE IF NOT EXISTS statements (
   reconciled     INTEGER,               -- 1 ok, 0 mismatch, NULL = no balances to check
   recon_diff_cents INTEGER,             -- expected - closing
   status         TEXT NOT NULL DEFAULT 'parsed',  -- parsed|previewed|imported|failed
-  created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  period_start   TEXT,                            -- 0093: statement period as printed (statement_account_detect)
+  period_end     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_stmt_user ON statements(user_id, account_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_stmt_filehash ON statements(user_id, file_hash);

@@ -27,7 +27,7 @@ import { sha256hex, sha256hexBytes } from "./lib/base64";
 import { CAPITAL_ROWS_MISSING_MESSAGE, STATEMENT_LINES_MISSING_MESSAGE, keyStillReferenced, maybeCompressImage, objectExists, putCompressed, putJson, putStatementOriginal, readStoredJson, statementFileKey } from "./lib/r2-store";
 import { getLLM, assertDataResidency, type LLM } from "./llm";
 import { aiCall, requireXborderConsent, type AiCallDeps } from "./lib/ai-call";
-import { extractReceipt, extractReceipts, extractFromText, extractColumnMap, extractCapitalColumnMap, extractStatement, extractBatch, extractSituationDraft, extractOccupationRules, extractGuide, extractAnswer, classifyDocument, extractPayslip, extractIncomeStatement, extractNoticeOfAssessment, extractAgentStatement, extractDepreciationSchedule, extractDividend, extractHealthClaim, batchParams, parseBatchMessage, mapBatchItems, ALLOWED_NAV_ROUTES, type Extracted, type ExtractedStatement, type SituationDraft, type OccupationRulesDraft, type AnswerResult } from "./extract";
+import { extractReceipt, extractReceipts, extractFromText, extractColumnMap, extractCapitalColumnMap, extractStatement, extractBatch, extractSituationDraft, extractOccupationRules, extractGuide, extractAnswer, classifyDocument, extractPayslip, extractIncomeStatement, extractNoticeOfAssessment, extractAgentStatement, extractDepreciationSchedule, extractDividend, extractHealthClaim, batchParams, parseBatchMessage, mapBatchItems, mergeStatementAccounts, ALLOWED_NAV_ROUTES, type Extracted, type ExtractedStatement, type StatementAccount, type StatementAccountKind, type SituationDraft, type OccupationRulesDraft, type AnswerResult } from "./extract";
 import { mapIncomeStatementToRows } from "./lib/income-statement";
 import { fyForDate, buildReport, useStatusDeniedExpr, propertyUndeterminedGatedExpr, resolveRulePack } from "./lib/report";
 import { runScan, type ScanResult, type ScanTxn, type ScanPatternFacts } from "./lib/scan";
@@ -50,6 +50,7 @@ import { computeFilingReadiness as computeFilingReadinessFor, loadClaimRules as 
 import { readJourney } from "./lib/journey-read";
 import { addressKey, markSuperseded, retireIncome, supersedeIncome, type OnFileIncome } from "./lib/income-supersession";
 import { selfPersonId } from "./lib/self-person";
+import { discardCreatedAccount, kindMismatch, resolveStatementAccount, type ResolvedAccount } from "./lib/statement-account";
 import { rollSchedule, balancingAdjustment, fyStartYearOf, isLowCostAsset, looksLikePersonalTransfer, assetDepreciatesForTaxpayer, depMethodConflict, resolveDiv40Life, type DepAsset } from "./lib/depreciation";
 import { matchClaimRules, suggestionText, enumerateSituationClaims, classifyClaim, uncoveredOccupations, ruleKey, type ClaimRule, type ClaimContext, type ClaimSituation } from "./lib/claimability";
 import { minimiseTenant, minimisationNotices, tidiedSummary, tombstonedFingerprints, rolledUpLineCount, forgetStatementMinimisation, type MinimiseResult, type TidiedSummary } from "./lib/minimise";
@@ -243,6 +244,17 @@ function validHash(h: string | null | undefined): string | null {
   return typeof h === "string" && /^[0-9a-f]{64}$/.test(h) ? h : null;
 }
 
+/** POST /api/statements' answer. `account` (statement_account_detect): where the statement was filed and what it says it is. */
+export type StatementParseResult = {
+  statementId: string;
+  columnMap: ColumnMap | null;
+  preview: unknown[];
+  rowCount: number;
+  duplicate: boolean;
+  reconciliation?: Reconciliation;
+  account?: { id: string; name: string; kind: StatementAccountKind | null; created: boolean; kindMismatch: boolean };
+};
+
 export class TaxAgent extends Agent<Env> {
   // ── Scheduling needs a named instance (agents SDK ≥0.5, #640 follow-up) ─────────────────────────────
   // The SDK's schedule() and alarm() read `this.name` (observability events, onStart's MCP restore), and
@@ -396,15 +408,27 @@ export class TaxAgent extends Agent<Env> {
     filename: string,
     bytes: ArrayBuffer,
     format: string,
-  ): Promise<{ statementId: string; columnMap: ColumnMap | null; preview: unknown[]; rowCount: number; duplicate: boolean; reconciliation?: Reconciliation }> {
-    const account = await tenantDb(this.env, userId).prepare(`SELECT source, type FROM accounts WHERE id = ? AND user_id = ?`)
-      .bind(accountId)
-      .first<{ source: string; type: string }>();
-    if (!account) throw new Error("account not found");
-    // ADR-0002, both directions. Previously this refused only 'qbo_feed', so a bank-feed account
-    // could still accept statement uploads and every overlapping line was counted twice.
-    await assertCanonicalSource(this.env, userId, accountId, "statement");
-    const isLiability = isLiabilityAccount(account.type); // credit card / loan: debits increase the balance owed
+  ): Promise<StatementParseResult> {
+    // statement_account_detect: "auto" = work the account out from the statement itself (resolved after the read,
+    // in parseStoredStatement, then held to the same ADR-0002 check).
+    const auto = accountId === "auto" && featureOn(this.env, "statement_account_detect");
+    let isLiability = false;
+    if (auto && format !== "pdf") {
+      // A CSV carries no account details, so "work it out" can only mean a first account; past that, picking one is
+      // the user's call (a guess is how a statement lands in the wrong account). Refused before any model call.
+      const has = await tenantDb(this.env, userId).prepare(`SELECT 1 AS x FROM accounts WHERE user_id = ? AND active = 1 LIMIT 1`).first<{ x: number }>();
+      if (has) throw new Error("A CSV doesn't say which account it's for. Choose the account above, then upload it again.");
+    }
+    if (!auto) {
+      const account = await tenantDb(this.env, userId).prepare(`SELECT source, type FROM accounts WHERE id = ? AND user_id = ?`)
+        .bind(accountId)
+        .first<{ source: string; type: string }>();
+      if (!account) throw new Error("account not found");
+      // ADR-0002, both directions. Previously this refused only 'qbo_feed', so a bank-feed account
+      // could still accept statement uploads and every overlapping line was counted twice.
+      await assertCanonicalSource(this.env, userId, accountId, "statement");
+      isLiability = isLiabilityAccount(account.type); // credit card / loan: debits increase the balance owed
+    }
 
     // APP-8 cross-border consent gate — parsing a statement sends the user's financial data to
     // the US inference API (a cross-border disclosure), so it needs recorded consent just like
@@ -418,7 +442,7 @@ export class TaxAgent extends Agent<Env> {
     // txnId is null (no row to mark yet); the API layer maps ai_budget_reached to a 429.
     const profile = await this.requireProfile(userId);
     let fileHash = "";
-    return aiCall<Awaited<ReturnType<TaxAgent["parseStatement"]>>>(this.aiDeps, {
+    return aiCall<StatementParseResult>(this.aiDeps, {
       userId, purpose: "parse_statement", profile,
       // The exact re-upload short-circuit needs no model call, so it ends here: no client, no audit.
       afterGates: async () => {
@@ -476,110 +500,154 @@ export class TaxAgent extends Agent<Env> {
     bytes: ArrayBuffer,
     format: string,
     c: { statementId: string; fileKey: string; fileHash: string; llm: LLM; provider: string; isLiability: boolean },
-  ): Promise<{ statementId: string; columnMap: ColumnMap | null; preview: unknown[]; rowCount: number; duplicate: boolean; reconciliation?: Reconciliation }> {
+  ): Promise<StatementParseResult> {
     // The parse_statement inference audit is recorded by aiCall (parseStatement) before this runs.
-    const { statementId, fileKey, fileHash, llm, provider, isLiability } = c;
+    const { statementId, fileKey, fileHash, llm, provider } = c;
+    const detect = featureOn(this.env, "statement_account_detect");
+    const auto = accountId === "auto" && detect;
+    let detected: StatementAccount | undefined;
+    // "auto": the account is resolved from the FIRST read (before any reconcile), and the balance arithmetic then
+    // follows that account's stored type, exactly as confirmImport's re-check will, so parse and import agree.
+    let isLiability = c.isLiability;
+    let resolved: ResolvedAccount | null = null;
+    const resolveOnce = async (acct: StatementAccount | undefined, closing: number | null) => {
+      if (!auto || resolved) return;
+      detected = acct;
+      resolved = await resolveStatementAccount(this.env, userId, acct, closing);
+      accountId = resolved.id;
+      isLiability = isLiabilityAccount(resolved.type);
+    };
+    try {
 
-    let lines: StatementLine[];
-    let columnMap: ColumnMap | null = null;
-    let recon: Reconciliation;
+      let lines: StatementLine[];
+      let columnMap: ColumnMap | null = null;
+      let recon: Reconciliation;
 
-    if (format === "pdf") {
-      // PDF: Claude transcribes the dated transaction table + the summary's opening/closing
-      // balances. Multi-page statements (a credit card runs ~150 lines over 8 pages) are
-      // extracted in PAGE CHUNKS up front so the per-call output never approaches max_tokens and
-      // truncates to an empty table — a single whole-PDF shot over a long statement returned
-      // nothing. The stitched result is reconciled end-to-end (liability-aware), so a dropped
-      // page breaks the balance and is flagged.
-      // Decrypt once up front (bank PDFs are encrypted) so both Claude and splitPdf see clean
-      // bytes; the original encrypted file is what we retain in R2.
-      const pdfBytes = await normalizePdf(bytes);
-      const extractChunked = async (perChunk: number) => {
-        const chunks = await splitPdf(pdfBytes, perChunk);
-        // Extract chunks CONCURRENTLY (each is an independent sub-PDF) — running them in a
-        // sequential loop made a multi-page statement do N back-to-back model calls (~90s with a
-        // retry), long enough for Cloudflare's gateway to 502 the request.
-        // BUT don't let one chunk sink the whole file: when a long statement fans out to many
-        // concurrent Haiku calls, a single chunk can transiently 429/529 (or hit a one-off bad
-        // extraction). Promise.all would abort the entire upload on that one rejection — which is
-        // exactly how a 12-page statement failed with "layout wasn't recognised". So gather with
-        // allSettled, then RETRY any failed chunk once SEQUENTIALLY (no concurrency pressure the
-        // second time, which clears transient overloads). Order is preserved for stitching; only a
-        // genuine second failure hard-fails, so we never silently drop pages.
-        const settled = await Promise.allSettled(chunks.map((c) => extractStatement(llm, c, "application/pdf", { isLiability })));
-        const exts: ExtractedStatement[] = [];
-        for (let i = 0; i < chunks.length; i++) {
-          const s = settled[i];
-          exts.push(s && s.status === "fulfilled" ? s.value : await extractStatement(llm, chunks[i]!, "application/pdf", { isLiability }));
+      if (format === "pdf") {
+        // PDF: Claude transcribes the dated transaction table + the summary's opening/closing
+        // balances. Multi-page statements (a credit card runs ~150 lines over 8 pages) are
+        // extracted in PAGE CHUNKS up front so the per-call output never approaches max_tokens and
+        // truncates to an empty table — a single whole-PDF shot over a long statement returned
+        // nothing. The stitched result is reconciled end-to-end (liability-aware), so a dropped
+        // page breaks the balance and is flagged.
+        // Decrypt once up front (bank PDFs are encrypted) so both Claude and splitPdf see clean
+        // bytes; the original encrypted file is what we retain in R2.
+        const pdfBytes = await normalizePdf(bytes);
+        const extractChunked = async (perChunk: number) => {
+          const chunks = await splitPdf(pdfBytes, perChunk);
+          // Extract chunks CONCURRENTLY (each is an independent sub-PDF) — running them in a
+          // sequential loop made a multi-page statement do N back-to-back model calls (~90s with a
+          // retry), long enough for Cloudflare's gateway to 502 the request.
+          // BUT don't let one chunk sink the whole file: when a long statement fans out to many
+          // concurrent Haiku calls, a single chunk can transiently 429/529 (or hit a one-off bad
+          // extraction). Promise.all would abort the entire upload on that one rejection — which is
+          // exactly how a 12-page statement failed with "layout wasn't recognised". So gather with
+          // allSettled, then RETRY any failed chunk once SEQUENTIALLY (no concurrency pressure the
+          // second time, which clears transient overloads). Order is preserved for stitching; only a
+          // genuine second failure hard-fails, so we never silently drop pages.
+          const opts = { isLiability: c.isLiability, detectAccount: detect };
+          const settled = await Promise.allSettled(chunks.map((c) => extractStatement(llm, c, "application/pdf", opts)));
+          const exts: ExtractedStatement[] = [];
+          for (let i = 0; i < chunks.length; i++) {
+            const s = settled[i];
+            exts.push(s && s.status === "fulfilled" ? s.value : await extractStatement(llm, chunks[i]!, "application/pdf", opts));
+          }
+          const all: StatementLine[] = [];
+          let opening: number | null = null;
+          let closing: number | null = null;
+          for (const ext of exts) {
+            all.push(...this.pdfLines(ext));
+            if (opening == null && ext.opening_cents != null) opening = ext.opening_cents; // first page that carries it
+            if (ext.closing_cents != null) closing = ext.closing_cents; // last page that carries it wins
+          }
+          return { all, opening, closing, acct: mergeStatementAccounts(exts.map((e) => e.account)) };
+        };
+        const extractWhole = async () => {
+          const ext = await extractStatement(llm, pdfBytes, "application/pdf", { isLiability: c.isLiability, detectAccount: detect });
+          return { all: this.pdfLines(ext), opening: ext.opening_cents, closing: ext.closing_cents, acct: ext.account };
+        };
+        const reconcile = (r: { all: StatementLine[]; opening: number | null; closing: number | null }) => this.reconcileExtracted(r.all, r.opening, r.closing, isLiability);
+        const pages = await pdfPageCount(pdfBytes);
+        const first = pages > 2 ? await extractChunked(3) : await extractWhole();
+        await resolveOnce(first.acct, first.closing);
+        if (!auto) detected = first.acct;
+        let a = reconcile(first);
+        if (a.recon.available && !a.recon.ok) {
+          // Didn't balance — retry with tighter chunks (re-reads pages, bounds output further).
+          const b = reconcile(await extractChunked(pages > 2 ? 2 : 3));
+          if (b.recon.ok || (b.recon.available && Math.abs(b.recon.diff_cents) < Math.abs(a.recon.diff_cents))) a = b;
         }
-        const all: StatementLine[] = [];
-        let opening: number | null = null;
-        let closing: number | null = null;
-        for (const ext of exts) {
-          all.push(...this.pdfLines(ext));
-          if (opening == null && ext.opening_cents != null) opening = ext.opening_cents; // first page that carries it
-          if (ext.closing_cents != null) closing = ext.closing_cents; // last page that carries it wins
-        }
-        return this.reconcileExtracted(all, opening, closing, isLiability);
-      };
-      const extractWhole = async () => {
-        const ext = await extractStatement(llm, pdfBytes, "application/pdf", { isLiability });
-        return this.reconcileExtracted(this.pdfLines(ext), ext.opening_cents, ext.closing_cents, isLiability);
-      };
-      const pages = await pdfPageCount(pdfBytes);
-      let a = pages > 2 ? await extractChunked(3) : await extractWhole();
-      if (a.recon.available && !a.recon.ok) {
-        // Didn't balance — retry with tighter chunks (re-reads pages, bounds output further).
-        const b = await extractChunked(pages > 2 ? 2 : 3);
-        if (b.recon.ok || (b.recon.available && Math.abs(b.recon.diff_cents) < Math.abs(a.recon.diff_cents))) a = b;
-      }
-      lines = a.ls;
-      recon = a.recon;
-    } else {
-      const rows = parseCsv(new TextDecoder().decode(bytes));
-      columnMap = await extractColumnMap(llm, rows);
-      lines = applyColumnMap(rows, columnMap);
-      if (featureOn(this.env, "statement_normalise")) {
-        const n = normaliseStatementLines(lines, null, null, isLiability, true);
-        lines = n.lines;
-        recon = n.reconciliation;
+        lines = a.ls;
+        recon = a.recon;
       } else {
-        const bal = deriveBalances(lines, isLiability);
-        recon = reconcileStatement(lines, bal?.opening_cents ?? null, bal?.closing_cents ?? null, isLiability);
+        const rows = parseCsv(new TextDecoder().decode(bytes));
+        columnMap = await extractColumnMap(llm, rows);
+        lines = applyColumnMap(rows, columnMap);
+        await resolveOnce(undefined, null); // a CSV names no account (parseStatement already refused "auto" unless it's the first)
+        if (featureOn(this.env, "statement_normalise")) {
+          const n = normaliseStatementLines(lines, null, null, isLiability, true);
+          lines = n.lines;
+          recon = n.reconciliation;
+        } else {
+          const bal = deriveBalances(lines, isLiability);
+          recon = reconcileStatement(lines, bal?.opening_cents ?? null, bal?.closing_cents ?? null, isLiability);
+        }
       }
-    }
 
-    // Zero lines means the extractor found no transaction table (unrecognised layout, scanned
-    // image with no text, wrong file). Surface that as a clear "unreadable" error rather than
-    // storing a phantom 0-row statement the user can pointlessly "confirm".
-    if (lines.length === 0) {
-      throw new Error(
-        format === "pdf"
-          ? "couldn't read any transactions from this PDF — it may be a scan/unusual layout; try a CSV export instead"
-          : "couldn't read any transactions from this CSV — check it's a transaction export (not a summary)",
-      );
-    }
+      // Zero lines means the extractor found no transaction table (unrecognised layout, scanned
+      // image with no text, wrong file). Surface that as a clear "unreadable" error rather than
+      // storing a phantom 0-row statement the user can pointlessly "confirm".
+      if (lines.length === 0) {
+        throw new Error(
+          format === "pdf"
+            ? "couldn't read any transactions from this PDF — it may be a scan/unusual layout; try a CSV export instead"
+            : "couldn't read any transactions from this CSV — check it's a transaction export (not a summary)",
+        );
+      }
 
-    // Store the normalised lines beside the raw file so confirmImport never re-extracts.
-    await putJson(this.env.RECEIPTS, `${fileKey}.lines`, lines);
-    // A concurrent failed attempt at the same file may have removed the shared original while this parse ran
-    // (parseStatement's cleanup) — put it back before a row points at it.
-    if (!(await objectExists(this.env.RECEIPTS, fileKey))) await putStatementOriginal(this.env.RECEIPTS, fileKey, bytes, format);
-    if (recon.available && !recon.ok) {
-      await this.audit(userId, "statement_recon_fail", JSON.stringify({ statementId, diff: recon.diff_cents, bad: recon.first_bad_line }));
-    }
+      // statement_account_detect: file the statement in the account it names (a CSV names none: a new account), held to
+      // the same canonical-source rule as an explicit pick. An explicit account keeps its type; a statement that says
+      // it's a different kind is surfaced, never silently retyped.
+      let account: StatementParseResult["account"];
+      const r = resolved as ResolvedAccount | null;
+      if (r) {
+        await assertCanonicalSource(this.env, userId, r.id, "statement");
+        account = { id: r.id, name: r.name, kind: r.kind, created: r.created, kindMismatch: r.kindMismatch };
+        if (r.kindMismatch) await this.audit(userId, "statement_kind_mismatch", JSON.stringify({ statementId, accountId, detected: detected?.kind }));
+      } else if (detect && detected) {
+        const a = await tenantDb(this.env, userId).prepare(`SELECT name, type FROM accounts WHERE id = ? AND user_id = ?`).bind(accountId).first<{ name: string; type: string }>();
+        if (a) account = { id: accountId, name: a.name, kind: detected.kind, created: false, kindMismatch: kindMismatch(a.type, detected) };
+      }
 
-    await tenantDb(this.env, userId).prepare(
-      `INSERT INTO statements (id, user_id, account_id, filename, file_key, file_hash, format, column_map, row_count,
-         opening_cents, closing_cents, reconciled, recon_diff_cents, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'parsed')`,
-    )
-      .bind(statementId, accountId, filename, fileKey, fileHash, format, JSON.stringify(columnMap), lines.length, recon.opening_cents, recon.closing_cents, recon.available ? (recon.ok ? 1 : 0) : null, recon.available ? recon.diff_cents : null
+      // Store the normalised lines beside the raw file so confirmImport never re-extracts.
+      await putJson(this.env.RECEIPTS, `${fileKey}.lines`, lines);
+      // A concurrent failed attempt at the same file may have removed the shared original while this parse ran
+      // (parseStatement's cleanup) — put it back before a row points at it.
+      if (!(await objectExists(this.env.RECEIPTS, fileKey))) await putStatementOriginal(this.env.RECEIPTS, fileKey, bytes, format);
+      if (recon.available && !recon.ok) {
+        await this.audit(userId, "statement_recon_fail", JSON.stringify({ statementId, diff: recon.diff_cents, bad: recon.first_bad_line }));
+      }
+
+      // statement_account_detect (0093): the printed period joins the column list only with the flag on, so a pre-0093
+      // database still accepts statements and the flag-OFF row is byte-identical.
+      await tenantDb(this.env, userId).prepare(
+        `INSERT INTO statements (id, user_id, account_id, filename, file_key, file_hash, format, column_map, row_count,
+           opening_cents, closing_cents, reconciled, recon_diff_cents, status${detect ? ", period_start, period_end" : ""})
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'parsed'${detect ? ", ?, ?" : ""})`,
       )
-      .run();
-    await this.audit(userId, "statement_parsed", JSON.stringify({ statementId, accountId, rows: lines.length, reconciled: recon.ok }));
+        .bind(statementId, accountId, filename, fileKey, fileHash, format, JSON.stringify(columnMap), lines.length, recon.opening_cents, recon.closing_cents, recon.available ? (recon.ok ? 1 : 0) : null, recon.available ? recon.diff_cents : null,
+          ...(detect ? [detected?.period_start ?? null, detected?.period_end ?? null] : []),
+        )
+        .run();
+      await this.audit(userId, "statement_parsed", JSON.stringify({ statementId, accountId, rows: lines.length, reconciled: recon.ok }));
 
-    return { statementId, columnMap, preview: lines.slice(0, 25), rowCount: lines.length, duplicate: false, reconciliation: recon };
+      return { statementId, columnMap, preview: lines.slice(0, 25), rowCount: lines.length, duplicate: false, reconciliation: recon, ...(account ? { account } : {}) };
+    } catch (e) {
+      // An account this upload created is removed again when the upload fails after it (nothing points at it yet).
+      const made = resolved as ResolvedAccount | null;
+      if (made?.created) await discardCreatedAccount(this.env, userId, made.id).catch(() => {});
+      throw e;
+    }
   }
 
   // Commit a parsed statement: re-read the raw file, parse with the (optionally corrected)

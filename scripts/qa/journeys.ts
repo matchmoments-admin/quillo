@@ -191,6 +191,14 @@ async function uploadStatement(page: Page, file: string, bankName?: string) {
   if (!(await page.getByRole("button", { name: /Choose a file/ }).isVisible().catch(() => false))) {
     await clickIfVisible(page, /^Upload a statement( instead)?$/);
   }
+  // A CSV names no account, so pick one the way a user would (statement_account_detect defaults the picker to
+  // "Work it out from the statement", which only a PDF can answer): the first existing account, else a new one —
+  // the picker's old default, so the journey's statements land where they always did.
+  const picker = page.locator("main select").first();
+  if (await picker.isVisible().catch(() => false)) {
+    const values = await picker.locator("option").evaluateAll((os) => os.map((o) => (o as HTMLOptionElement).value));
+    await picker.selectOption(values.find((v) => v !== "auto" && v !== "new") ?? "new");
+  }
   const nameBox = page.getByPlaceholder("e.g. CommBank Everyday");
   if (bankName && (await nameBox.isVisible().catch(() => false))) await nameBox.fill(bankName);
   await page.locator('input[type="file"]').first().setInputFiles(file);

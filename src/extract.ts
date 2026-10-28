@@ -145,6 +145,27 @@ export interface ExtractedStatement {
   opening_cents: number | null;
   closing_cents: number | null;
   currency: string;
+  /** statement_account_detect: what the statement says about its own account (absent when not asked for). */
+  account?: StatementAccount;
+}
+
+export type StatementAccountKind = "everyday" | "savings" | "credit_card" | "loan" | "offset";
+
+/**
+ * The account a statement belongs to, as printed on it (flag statement_account_detect). Deliberately minimal
+ * (decision c, 2026-10-28): the institution, the account kind, the LAST FOUR digits and the period. The holder's
+ * name, the BSB and the full account number are never asked for, so they are never held.
+ */
+export interface StatementAccount {
+  kind: StatementAccountKind | null;
+  institution: string | null;
+  last4: string | null;
+  period_start: string | null;
+  period_end: string | null;
+  interest_rate_pct: number | null; // the current rate printed on a loan / savings statement
+  interest_charged_cents: number | null; // printed total interest charged for the period
+  interest_earned_cents: number | null; // printed total interest earned for the period
+  loan_purpose: "investment" | "owner_occupied" | null;
 }
 
 const DIRECTION_WORDS: Record<string, "debit" | "credit"> = {
@@ -153,6 +174,18 @@ const DIRECTION_WORDS: Record<string, "debit" | "credit"> = {
 };
 
 // Dollar-denominated tool input the model fills; converted to the cents ExtractedStatement above.
+function cleanInstitution(v: unknown): string | null {
+  if (typeof v !== "string") return null;
+  const t = v
+    .replace(/\b(bsb|acc(ou)?n?t?|a\/c|acct|account\s+(no|number))\b.*$/i, "")
+    .replace(/[^A-Za-z&.'\- ]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 40)
+    .trim();
+  return t || null;
+}
+
 const StatementToolInput = z.object({
   lines: z
     .array(
@@ -179,7 +212,37 @@ const StatementToolInput = z.object({
   opening_balance: z.coerce.number().nullable().default(null),
   closing_balance: z.coerce.number().nullable().default(null),
   currency: z.string().default("AUD"),
+  // statement_account_detect only; absent from the plain tool's output, so every field defaults to null.
+  account_kind: z.enum(["everyday", "savings", "credit_card", "loan", "offset"]).nullable().catch(null).default(null),
+  // A bank NAME only: digits, BSB/account words and anything but letters and simple punctuation are stripped, so a
+  // number the model (or a crafted PDF) puts here is never stored in accounts.institution / name.
+  institution: z.preprocess((v) => cleanInstitution(v), z.string().nullable()).default(null),
+  // Four digits or nothing: masks and separators ("**** 5829", "xx5829") are removed, then exactly four digits must
+  // remain, so a full number is never kept even if the model returns one.
+  last4: z.preprocess((v) => {
+    const d = typeof v === "string" ? v.replace(/\D/g, "") : "";
+    return d.length === 4 ? d : null;
+  }, z.string().nullable()).default(null),
+  period_start: z.preprocess((v) => (typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null), z.string().nullable()).default(null),
+  period_end: z.preprocess((v) => (typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null), z.string().nullable()).default(null),
+  interest_rate_pct: z.coerce.number().nullable().catch(null).default(null),
+  interest_charged: z.coerce.number().nullable().catch(null).default(null),
+  interest_earned: z.coerce.number().nullable().catch(null).default(null),
+  loan_purpose: z.enum(["investment", "owner_occupied"]).nullable().catch(null).default(null),
 });
+
+// statement_account_detect: the same tool, also asked what the statement says about its own account.
+const ACCOUNT_PROPERTIES = {
+  account_kind: { type: ["string", "null"], enum: ["everyday", "savings", "credit_card", "loan", "offset", null], description: "The kind of account this statement is for: everyday/transaction, savings, credit_card, loan (a home or investment loan), or offset. null if unclear." },
+  institution: { type: ["string", "null"], description: "The bank or lender's name as printed (e.g. 'Westpac', 'ING'), or null." },
+  last4: { type: ["string", "null"], description: "ONLY the last FOUR digits of the account or card number (e.g. '5829'). Never the full number, never the BSB. null if not shown." },
+  period_start: { type: ["string", "null"], description: "Statement period start, ISO YYYY-MM-DD, or null." },
+  period_end: { type: ["string", "null"], description: "Statement period end, ISO YYYY-MM-DD, or null." },
+  interest_rate_pct: { type: ["number", "null"], description: "The CURRENT interest rate printed (the latest row of any rate table), as a percent (e.g. 6.4), or null." },
+  interest_charged: { type: ["number", "null"], description: "The total interest CHARGED for the statement period as printed in a summary, in DOLLARS, or null." },
+  interest_earned: { type: ["number", "null"], description: "The total interest EARNED for the statement period as printed in a summary, in DOLLARS, or null." },
+  loan_purpose: { type: ["string", "null"], enum: ["investment", "owner_occupied", null], description: "For a loan: 'investment' if the statement names it an investment loan, 'owner_occupied' if a home/owner-occupied loan, else null." },
+} as const;
 
 const STATEMENT_TOOL: Anthropic.Tool = {
   name: "record_statement",
@@ -212,12 +275,21 @@ const STATEMENT_TOOL: Anthropic.Tool = {
   },
 };
 
+const STATEMENT_ACCOUNT_TOOL: Anthropic.Tool = {
+  ...STATEMENT_TOOL,
+  input_schema: {
+    ...STATEMENT_TOOL.input_schema,
+    required: [...((STATEMENT_TOOL.input_schema.required as string[] | undefined) ?? []), ...Object.keys(ACCOUNT_PROPERTIES)],
+    properties: { ...(STATEMENT_TOOL.input_schema.properties as Record<string, unknown>), ...ACCOUNT_PROPERTIES },
+  },
+};
+
 /** Extract a full statement from a PDF (or image) via Claude document input. */
 export async function extractStatement(
   llm: LLM,
   bytes: ArrayBuffer,
   mime: string,
-  opts: { isLiability?: boolean } = {},
+  opts: { isLiability?: boolean; detectAccount?: boolean } = {},
 ): Promise<ExtractedStatement> {
   // Credit-card / loan statements need extra guidance: payments are printed with a trailing
   // minus, and they carry non-transaction tables (rewards/points, a "regular payments" summary,
@@ -232,14 +304,19 @@ export async function extractStatement(
     "- direction: \"debit\" = money out (a purchase or charge); \"credit\" = money in (a payment or refund, often printed with a trailing minus like \"2,500.00-\")." +
     liabilityNote +
     "\n- EXCLUDE everything that is not a dated money transaction: rewards/points lines and summaries, any \"regular payments\" / \"helping you identify your regular payments\" list, interest-rate summary rows, and marketing text. Only transcribe rows that have a date and a dollar amount in the transaction table.\n" +
+    (opts.detectAccount
+      ? (opts.isLiability ? "" : "\n- If this is a CREDIT-CARD or loan statement: a purchase or charge is \"debit\"; a payment or refund is \"credit\" (often printed with a trailing minus).") +
+        "\n- Also record what the statement says about its own account: its kind, the bank or lender, ONLY the last four digits of the account or card number, the statement period, and any printed current interest rate, interest charged or earned for the period, and loan purpose. Never record the account holder's name, the BSB or a full account number.\n"
+      : "") +
     "Call record_statement once.";
+  const tool = opts.detectAccount ? STATEMENT_ACCOUNT_TOOL : STATEMENT_TOOL;
   let msg: Anthropic.Message;
   try {
     msg = await llm.create({
       model: llm.modelId,
       max_tokens: 8192,
-      tools: [STATEMENT_TOOL],
-      tool_choice: { type: "tool", name: STATEMENT_TOOL.name },
+      tools: [tool],
+      tool_choice: { type: "tool", name: tool.name },
       messages: [
         {
           role: "user",
@@ -281,7 +358,41 @@ export async function extractStatement(
     opening_cents: d.opening_balance != null && Number.isFinite(d.opening_balance) ? cents(d.opening_balance) : null,
     closing_cents: d.closing_balance != null && Number.isFinite(d.closing_balance) ? cents(d.closing_balance) : null,
     currency: d.currency,
+    ...(opts.detectAccount
+      ? {
+          account: {
+            kind: d.account_kind,
+            institution: d.institution,
+            last4: d.last4,
+            period_start: d.period_start,
+            period_end: d.period_end,
+            interest_rate_pct: d.interest_rate_pct != null && Number.isFinite(d.interest_rate_pct) && d.interest_rate_pct > 0 && d.interest_rate_pct < 50 ? d.interest_rate_pct : null,
+            interest_charged_cents: d.interest_charged != null && Number.isFinite(d.interest_charged) ? Math.abs(cents(d.interest_charged)) : null,
+            interest_earned_cents: d.interest_earned != null && Number.isFinite(d.interest_earned) ? Math.abs(cents(d.interest_earned)) : null,
+            loan_purpose: d.loan_purpose,
+          },
+        }
+      : {}),
   };
+}
+
+/** One statement's account, read across its page chunks: the first page that names it, the last page's period end. */
+export function mergeStatementAccounts(parts: (StatementAccount | undefined)[]): StatementAccount | undefined {
+  const xs = parts.filter((p): p is StatementAccount => !!p);
+  if (!xs.length) return undefined;
+  const first = <K extends keyof StatementAccount>(k: K) => xs.find((x) => x[k] != null)?.[k] ?? null;
+  const last = <K extends keyof StatementAccount>(k: K) => [...xs].reverse().find((x) => x[k] != null)?.[k] ?? null;
+  return {
+    kind: first("kind"),
+    institution: first("institution"),
+    last4: first("last4"),
+    period_start: first("period_start"),
+    period_end: last("period_end"),
+    interest_rate_pct: last("interest_rate_pct"),
+    interest_charged_cents: first("interest_charged_cents"),
+    interest_earned_cents: first("interest_earned_cents"),
+    loan_purpose: first("loan_purpose"),
+  } as StatementAccount;
 }
 
 // ── Statement CSV column mapping (one cheap Claude call per file) ──────────────

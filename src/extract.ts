@@ -235,7 +235,7 @@ const StatementToolInput = z.object({
 const ACCOUNT_PROPERTIES = {
   account_kind: { type: ["string", "null"], enum: ["everyday", "savings", "credit_card", "loan", "offset", null], description: "The kind of account this statement is for: everyday/transaction, savings, credit_card, loan (a home or investment loan), or offset. null if unclear." },
   institution: { type: ["string", "null"], description: "The bank or lender's name as printed (e.g. 'Westpac', 'ING'), or null." },
-  last4: { type: ["string", "null"], description: "ONLY the last FOUR digits of the account or card number (e.g. '4321'). Never the full number, never the BSB. null if not shown." },
+  last4: { type: ["string", "null"], description: "ONLY the last FOUR digits of the account or card number, counted from the END of the whole number with spaces removed: a number printed in groups like '012 345' ends '2345' (not '0345'). Never the full number, never the BSB. null if not shown." },
   period_start: { type: ["string", "null"], description: "Statement period start, ISO YYYY-MM-DD, or null." },
   period_end: { type: ["string", "null"], description: "Statement period end, ISO YYYY-MM-DD, or null." },
   interest_rate_pct: { type: ["number", "null"], description: "The CURRENT interest rate printed (the latest row of any rate table), as a percent (e.g. 6.4), or null." },

@@ -49,6 +49,7 @@ import { minimiseTenant, tombstonedFingerprints, rolledUpLineCount, statementLed
 import { statementLineFingerprints, type StatementLine } from "../src/lib/statements";
 import { listStatements } from "../src/lib/queries";
 import { statementLinesForModel } from "../src/lib/redact";
+import { supersedeIncome, retireIncome, markSuperseded } from "../src/lib/income-supersession";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
@@ -3778,6 +3779,81 @@ async function main() {
     check("P1 pre-diary: deleting the only diary week restores 600h ($420), never NULL", rDel.work_method?.wfh_hours === 600 && rDel.work_method?.wfh_cents === 42000);
     const rOff = await buildReport(env, u, 2025);
     check("P1 pre-diary (flag OFF): the position reads only wfh_hours, so it matches the baseline", rOff.work_method?.wfh_cents === rBefore.work_method?.wfh_cents && rOff.taxable_position_cents === rBefore.taxable_position_cents);
+  }
+
+  // ── income_supersession (owner-statements E2E, 2026-10-28): a re-uploaded income statement and an annual agent
+  // summary over monthly statements must not count twice. Replays recordIncome's INSERT (a DO method) and runs the
+  // REAL supersession module + buildReport over the shared D1 adapter.
+  {
+    const SUP = { ...env, FEATURES: `${(env as { FEATURES: string }).FEATURES},income_supersession` } as unknown as Env;
+    const recordInc = (id: string, u: string, type: string, gross: number, doc: string, detail: Record<string, unknown>, property: string | null = null) =>
+      run(`INSERT INTO income (id, user_id, person_id, property_id, income_type, fy, gross_cents, amount_aud_cents, source_doc_id, detail_json) VALUES (?, ?, ?, ?, ?, '2025-26', ?, ?, ?, ?)`,
+        id, u, `person_self_${u}`, property, type, gross, gross, doc, JSON.stringify(detail));
+    const agentExpense = (id: string, u: string, cents: number, doc: string, property: string) =>
+      run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, ato_label, property_id, document_id, direction, deductibility) VALUES (?, ?, 'agent_statement', 'extracted', 'receipt', ?, ?, ?, 'property_rented', 'rental:management_fee', ?, ?, 'debit', 'likely_deductible')`,
+        id, u, cents, cents, FY_DATE, property, doc);
+    const doc = (id: string, u: string) => run(`INSERT INTO documents (id, user_id, doc_type, fy, r2_key, extracted_json) VALUES (?, ?, 'agent_rental_summary', '2025-26', ?, '{}')`, id, u, `${u}/docs/${id}`);
+
+    // Salary: the same ATO income statement uploaded twice (a reprint is different bytes, so the doc dedupe misses it).
+    const us = "psup_sal";
+    seedTenant(us, "Supersession salary");
+    const acme = { employer: "ACME PAYROLL PTY LTD", employer_abn: "11111111111", period: ["2025-07-01", "2026-06-30"] };
+    recordInc("psalA", us, "salary_payg", 9000000, "docA", acme);
+    // The agent's order: decide, write the replacing row, then retire (a failure part-way never loses salary).
+    const supS = await supersedeIncome(SUP, us, { income_type: "salary_payg", fy: "2025-26", source_doc_id: "docB", ...acme });
+    recordInc("psalB", us, "salary_payg", 9000000, "docB", acme);
+    await retireIncome(SUP, us, supS.replace, "psalB", "docB");
+    const rSal = await buildReport(SUP, us, 2025);
+    check("Supersession: a reprinted income statement leaves salary at one copy ($90,000, not double)",
+      rSal.income.by_type.find((t) => t.income_type === "salary_payg")?.gross_cents === 9000000);
+
+    // Rent, monthlies first: two monthly statements (rent + a fee each), then the annual summary covering both.
+    const prop = (u: string) => run(`INSERT INTO properties (id, user_id, label, status, use_status) VALUES (?, ?, '12A Harbour St', 'rented', 'rented')`, `${u}_p`, u);
+    const addr = "12a harbour";
+    const monthlyDetail = (s: string, e: string) => ({ period_start: s, period_end: e, address_key: addr });
+    const annualDetail = { period_start: "2025-07-01", period_end: "2026-06-30", address_key: addr };
+    const ingestMonthly = async (u: string, id: string, s: string, e: string) => {
+      const sup = await supersedeIncome(SUP, u, { income_type: "rent", fy: "2025-26", property_id: `${u}_p`, source_doc_id: id, address_key: addr, period_start: s, period_end: e });
+      if (sup.coveredBy) { await markSuperseded(SUP, u, id, sup.coveredBy.source_doc_id); return; }
+      recordInc(`${id}_i`, u, "rent", 276000, id, monthlyDetail(s, e), `${u}_p`);
+      agentExpense(`${id}_fee`, u, 15000, id, `${u}_p`);
+    };
+    const ingestAnnual = async (u: string) => {
+      const sup = await supersedeIncome(SUP, u, { income_type: "rent", fy: "2025-26", property_id: `${u}_p`, source_doc_id: "annual", address_key: addr, ...annualDetail });
+      recordInc("annual_i_" + u, u, "rent", 3312000, "annual", annualDetail, `${u}_p`);
+      agentExpense("annual_fee_" + u, u, 180000, "annual", `${u}_p`);
+      await retireIncome(SUP, u, sup.replace, "annual_i_" + u, "annual");
+    };
+    const ua = "psup_rent_a";
+    seedTenant(ua, "Supersession rent, monthlies first");
+    prop(ua);
+    for (const d of ["sep", "oct"]) doc(`${ua}_${d}`, ua);
+    doc("annual", ua);
+    await ingestMonthly(ua, `${ua}_sep`, "2025-09-01", "2025-09-30");
+    await ingestMonthly(ua, `${ua}_oct`, "2025-10-01", "2025-10-31");
+    // A rent deposit the user linked to September's row (income_dedupe): it must follow the replacement, not dangle.
+    run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, direction, matched_income_id) VALUES (?, ?, 'upload', 'categorised', 'bank_line', 276000, 276000, '2025-10-02', 'income_personal', 'credit', ?)`, `${ua}_dep`, ua, `${ua}_sep_i`);
+    await ingestAnnual(ua);
+    const dep = db.prepare(`SELECT matched_income_id AS m FROM transactions WHERE id = ?`).get(`${ua}_dep`) as { m: string };
+    check("Supersession: a bank credit linked to a replaced row is re-pointed to the replacement", dep?.m === `annual_i_${ua}`);
+    const rA = await buildReport(SUP, ua, 2025);
+    const rentA = rA.income.by_type.find((t) => t.income_type === "rent")?.gross_cents;
+    check("Supersession: annual summary after the monthlies ⇒ rent is the annual figure only ($33,120)", rentA === 3312000);
+    check("Supersession: the monthlies' agent fees are gone, the annual's stay ($1,800)", rA.per_property.find((p) => p.property_id === `${ua}_p`)?.deduction_cents === 180000);
+    const marked = db.prepare(`SELECT json_extract(extracted_json, '$.superseded_by') AS by FROM documents WHERE id = ?`).get(`${ua}_sep`) as { by: string };
+    check("Supersession: the replaced monthly stays on file as evidence, marked superseded", marked?.by === "annual");
+
+    // Reverse order: the annual first, then the monthlies ⇒ the same position.
+    const ub = "psup_rent_b";
+    seedTenant(ub, "Supersession rent, annual first");
+    prop(ub);
+    await ingestAnnual(ub);
+    for (const d of ["sep", "oct"]) doc(`${ub}_${d}`, ub);
+    await ingestMonthly(ub, `${ub}_sep`, "2025-09-01", "2025-09-30");
+    await ingestMonthly(ub, `${ub}_oct`, "2025-10-01", "2025-10-31");
+    const rB = await buildReport(SUP, ub, 2025);
+    check("Supersession: upload order doesn't matter (annual first gives the same rent and deductions)",
+      rB.income.by_type.find((t) => t.income_type === "rent")?.gross_cents === rentA && rB.taxable_position_cents === rA.taxable_position_cents);
   }
 
   console.log(`\n=== personas: ${pass} passed, ${fail} failed ===`);

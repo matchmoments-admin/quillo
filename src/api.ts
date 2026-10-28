@@ -75,6 +75,7 @@ import {
   mintKey,
   revokeKey,
   clearIncomeCgt,
+  deleteIncomeRow,
   type SituationPeriodInput,
 } from "./lib/situation-write";
 import { listSituationPeriods, normaliseFyStart } from "./lib/situation-profile";
@@ -1218,15 +1219,8 @@ export async function handleApi(
       return json({ ok: true });
     }
     if (m === "DELETE" && id) {
-      // Clear any credit linked to this income row first, or it would stay excluded from income
-      // forever with no row left to unlink it (silent under-count).
-      await tenantDb(env, uid).prepare(`UPDATE transactions SET matched_income_id = NULL WHERE user_id = ? AND matched_income_id = ?`)
-        .bind(id)
-        .run();
-      // Slice B: drop any AMMA capital-gain rows materialised from this distribution, or its gain would
-      // orphan into the position with no income row left to remove it (silent over-count).
-      await clearIncomeCgt(env, uid, id);
-      await deleteRow(env, uid, "income", id);
+      // Unlinks a credit matched to it and drops its materialised CGT rows (src/lib/situation-write.ts).
+      await deleteIncomeRow(env, uid, id);
       return json({ ok: true });
     }
   }

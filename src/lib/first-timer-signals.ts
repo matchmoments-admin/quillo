@@ -9,6 +9,7 @@
 // touches the money path: every value is a COUNT, a type list or an already-computed total used only to decide
 // whether a GENERAL-INFO nudge renders. Quillo never computes tax, rates, offsets or a deferred loss.
 
+import { selfPersonId } from "./self-person";
 import type { Env } from "../env";
 import { featureOn } from "./features";
 import { attributionTotals, fyLabel } from "./ledger-totals";
@@ -49,7 +50,7 @@ export async function salaryPayerCount(env: Env, userId: string, fy: string): Pr
   const byPerson = new Map<string, { named: Set<string>; unnamed: number }>();
   for (const r of rows) {
     // person_self_<uid> and a NULL person are the same taxpayer.
-    const person = r.person === `person_self_${userId}` ? "self" : r.person;
+    const person = r.person === selfPersonId(userId) ? "self" : r.person;
     const acc = byPerson.get(person) ?? { named: new Set<string>(), unnamed: 0 };
     let key = "";
     try {

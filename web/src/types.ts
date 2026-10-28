@@ -1129,6 +1129,7 @@ export interface DocRow {
   classification_confidence: number | null;
   needs_review: number;
   created_at: string;
+  superseded_by?: string | null; // income_supersession: a longer statement restates this one, so it no longer counts
 }
 
 // Stage A — deterministic non-spend movement clean-up

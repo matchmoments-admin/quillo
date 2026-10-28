@@ -702,7 +702,8 @@ export async function listDocuments(env: Env, userId: string, opts: { type?: str
   }
   const docs = await env.DB.prepare(
     `SELECT id, doc_type, fy, property_id, entity_id, issuer, doc_date, classification_confidence,
-            needs_review, created_at, r2_key
+            needs_review, created_at, r2_key,
+            json_extract(CASE WHEN json_valid(extracted_json) THEN extracted_json END, '$.superseded_by') AS superseded_by
        FROM documents WHERE ${where.join(" AND ")} ORDER BY created_at DESC LIMIT 500`,
   )
     .bind(...binds)

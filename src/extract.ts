@@ -221,7 +221,7 @@ const StatementToolInput = z.object({
   // discarded at once and never stored, logged or returned (decision c). Asking the model for "the last four" made
   // it mis-transcribe grouped numbers ("… 713 307" read as 7307); copying what's printed is reliable. Fewer than
   // four digits ⇒ null.
-  last4: z.preprocess((v) => {
+  account_number_as_printed: z.preprocess((v) => {
     const d = typeof v === "string" ? v.replace(/\D/g, "") : "";
     return d.length >= 4 ? d.slice(-4) : null;
   }, z.string().nullable()).default(null),
@@ -237,7 +237,7 @@ const StatementToolInput = z.object({
 const ACCOUNT_PROPERTIES = {
   account_kind: { type: ["string", "null"], enum: ["everyday", "savings", "credit_card", "loan", "offset", null], description: "The kind of account this statement is for: everyday/transaction, savings, credit_card, loan (a home or investment loan), or offset. null if unclear." },
   institution: { type: ["string", "null"], description: "The bank or lender's name as printed (e.g. 'Westpac', 'ING'), or null." },
-  last4: { type: ["string", "null"], description: "The account or card number exactly as printed on the statement, including any masking (e.g. 'xxxx xxxx xxxx 4321' or '012 345'). Quillo keeps only its last four digits. NOT the BSB. null if not shown." },
+  account_number_as_printed: { type: ["string", "null"], description: "The account or card number exactly as printed on the statement, every digit and space, including any masking (e.g. 'xxxx xxxx xxxx 4321' or '012 345'). Quillo keeps only its last four digits. NOT the BSB. null if not shown." },
   period_start: { type: ["string", "null"], description: "Statement period start, ISO YYYY-MM-DD, or null." },
   period_end: { type: ["string", "null"], description: "Statement period end, ISO YYYY-MM-DD, or null." },
   interest_rate_pct: { type: ["number", "null"], description: "The CURRENT interest rate printed (the latest row of any rate table), as a percent (e.g. 6.4), or null." },
@@ -365,7 +365,7 @@ export async function extractStatement(
           account: {
             kind: d.account_kind,
             institution: d.institution,
-            last4: d.last4,
+            last4: d.account_number_as_printed,
             period_start: d.period_start,
             period_end: d.period_end,
             interest_rate_pct: d.interest_rate_pct != null && Number.isFinite(d.interest_rate_pct) && d.interest_rate_pct > 0 && d.interest_rate_pct < 50 ? d.interest_rate_pct : null,

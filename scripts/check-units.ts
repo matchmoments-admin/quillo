@@ -341,21 +341,21 @@ console.log("statement account detection (statement_account_detect)");
     },
   });
   const base = { lines: [{ date: "2026-03-01", description: "COFFEE", amount: 4.5, direction: "debit", balance: 104.5 }], opening_balance: 100, closing_balance: 104.5, currency: "AUD" };
-  const acct = { account_kind: "credit_card", institution: " Example Bank ", last4: "4321", period_start: "2026-02-01", period_end: "2026-02-28", interest_rate_pct: 20.99, interest_charged: 0, interest_earned: null, loan_purpose: null };
+  const acct = { account_kind: "credit_card", institution: " Example Bank ", account_number_as_printed: "4321", period_start: "2026-02-01", period_end: "2026-02-28", interest_rate_pct: 20.99, interest_charged: 0, interest_earned: null, loan_purpose: null };
   const pdf = new ArrayBuffer(8);
   const on = await extractStatement(stmtLLM({ ...base, ...acct }), pdf, "application/pdf", { detectAccount: true });
   check("detect: kind, institution (trimmed), last4, period and rate are read", on.account?.kind === "credit_card" && on.account.institution === "Example Bank" && on.account.last4 === "4321" && on.account.period_end === "2026-02-28" && on.account.interest_rate_pct === 20.99);
-  check("detect: the tool has no BSB or holder-name field", seenTools[0]!.includes("last4") && !/"bsb"|holder_name/i.test(seenTools[0]!));
-  const full = await extractStatement(stmtLLM({ ...base, ...acct, last4: "032000123456" }), pdf, "application/pdf", { detectAccount: true });
+  check("detect: the tool has no BSB or holder-name field", seenTools[0]!.includes("account_number_as_printed") && !/"bsb"|holder_name/i.test(seenTools[0]!));
+  const full = await extractStatement(stmtLLM({ ...base, ...acct, account_number_as_printed: "032000123456" }), pdf, "application/pdf", { detectAccount: true });
   check("detect: a full account number is never kept — only its last four digits", full.account?.last4 === "3456" && !JSON.stringify(full).includes("032000123456"));
-  const grouped = await extractStatement(stmtLLM({ ...base, ...acct, last4: "732-053 713 307" }), pdf, "application/pdf", { detectAccount: true });
+  const grouped = await extractStatement(stmtLLM({ ...base, ...acct, account_number_as_printed: "732-053 713 307" }), pdf, "application/pdf", { detectAccount: true });
   check("detect: a number printed in groups keeps the true last four (the acceptance-run misread)", grouped.account?.last4 === "3307");
-  const short = await extractStatement(stmtLLM({ ...base, ...acct, last4: "xx307" }), pdf, "application/pdf", { detectAccount: true });
+  const short = await extractStatement(stmtLLM({ ...base, ...acct, account_number_as_printed: "xx307" }), pdf, "application/pdf", { detectAccount: true });
   check("detect: fewer than four digits ⇒ no last four", short.account?.last4 === null);
   const bad = await extractStatement(stmtLLM({ ...base, ...acct, account_kind: "mortgage-ish", period_start: "1 Feb 2026" }), pdf, "application/pdf", { detectAccount: true });
   check("detect: an unknown kind or a non-ISO date reads as null, not a failure", bad.account?.kind === null && bad.account.period_start === null && bad.lines.length === 1);
   const off = await extractStatement(stmtLLM({ ...base, ...acct }), pdf, "application/pdf");
-  check("flag OFF: no account is returned and the plain tool is sent", off.account === undefined && !seenTools[0]!.includes("last4"));
+  check("flag OFF: no account is returned and the plain tool is sent", off.account === undefined && !seenTools[0]!.includes("account_number_as_printed"));
   const merged = mergeStatementAccounts([{ ...on.account!, period_end: "2026-02-14", interest_rate_pct: 19.99 }, undefined, { ...on.account!, kind: null, last4: null, period_start: null, period_end: "2026-02-28", interest_rate_pct: 20.99 }]);
   check("chunks merge: first kind/last4/start, last end/rate", merged?.kind === "credit_card" && merged.last4 === "4321" && merged.period_start === "2026-02-01" && merged.period_end === "2026-02-28" && merged.interest_rate_pct === 20.99);
 
@@ -378,7 +378,7 @@ console.log("statement account detection (statement_account_detect)");
   check("institution aliases: CommBank = Commonwealth Bank; NAB = National Australia Bank; Bank of Melbourne ≠ Bank of Queensland",
     sameInstitution("CommBank", "Commonwealth Bank of Australia") && sameInstitution("NAB", "National Australia Bank Limited") &&
     !sameInstitution("Bank of Melbourne", "Bank of Queensland") && sameInstitution("Westpac", "Westpac Choice 909") && !sameInstitution("The Bank", "Bank"));
-  const masked = await extractStatement(stmtLLM({ ...base, ...acct, last4: "**** **** **** 4321", institution: "Westpac BSB 032-000 Acc 12345678" }), pdf, "application/pdf", { detectAccount: true });
+  const masked = await extractStatement(stmtLLM({ ...base, ...acct, account_number_as_printed: "**** **** **** 4321", institution: "Westpac BSB 032-000 Acc 12345678" }), pdf, "application/pdf", { detectAccount: true });
   check("last4: a masked number keeps its last four; the institution keeps no digits or BSB/account words", masked.account?.last4 === "4321" && masked.account.institution === "Westpac");
   check("kinds map to account types (offset/savings ⇒ transaction)", accountTypeForKind("credit_card") === "credit_card" && accountTypeForKind("loan") === "loan" && accountTypeForKind("offset") === "transaction" && accountTypeForKind(null) === "transaction");
   check("kind mismatch: a card statement in a transaction account is surfaced; a match isn't", kindMismatch("transaction", det) && !kindMismatch("credit_card", det) && !kindMismatch("transaction", { ...det, kind: "savings" }));

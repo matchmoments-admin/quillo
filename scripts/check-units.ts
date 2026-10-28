@@ -311,8 +311,9 @@ console.log("income supersession (income_supersession)");
   const partial = decideSupersession(U, { ...monthly, period_start: "2025-09-15", period_end: "2025-10-15" }, monthlies);
   check("rent: a partial overlap keeps both, for review", partial.replace.length === 0 && !partial.coveredBy && partial.overlap.length === 2);
   check("rent: no period on the incoming statement ⇒ no decision", decideSupersession(U, { ...annual, period_start: null }, monthlies).replace.length === 0);
-  check("addressKey: number + street, 12 and 12A differ, suffix/suburb ignored",
-    addressKey("12A Harbour Street, Sometown NSW 2000") === "12a harbour" && addressKey("12A HARBOUR ST") === "12a harbour" && addressKey("12 Harbour St") === "12 harbour" && addressKey("Unit 4/12 Smith St") === "4/12 smith" && addressKey("no number") === null);
+  check("addressKey: number + street + type, 12 ≠ 12A, St ≠ Rd, suburb ignored",
+    addressKey("12A Harbour Street, Sometown NSW 2000") === "12a harbour st" && addressKey("12A HARBOUR ST") === "12a harbour st" && addressKey("12 Harbour St") === "12 harbour st" &&
+    addressKey("12 Smith St, Bondi") !== addressKey("12 Smith Rd, Perth") && addressKey("Unit 4/12 Smith St") === "4/12 smith st" && addressKey("12 Harbour") === "12 harbour" && addressKey("no number") === null);
   check("identityOf reads the income-statement period pair and the rent period", identityOf({ id: "i", income_type: "salary_payg", fy: "2025-26", person_id: null, entity_id: null, property_id: null, source_doc_id: "d", detail_json: JSON.stringify({ employer: "X", period: ["2025-07-01", "2026-06-30"] }) }).period_end === "2026-06-30");
 }
 

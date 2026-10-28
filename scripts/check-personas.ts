@@ -43,7 +43,7 @@ import { profileForFy, residencyOn, residencyPeriodsForFy, situationProfileSigna
 import { runRelevanceScan, confirmWorthALook, relevanceView } from "../src/lib/relevance-scan-run";
 import { updatePerson } from "../src/lib/situation-write";
 import { verdictForTxn } from "../src/lib/deductibility";
-import { noticeSignals, listNoticed, confirmNoticed, dismissNoticed, payrollEmployerSignals, incomeAnswerRows, INCOME_STATEMENT_PROMPT } from "../src/lib/noticed-signals";
+import { noticeSignals, listNoticed, confirmNoticed, dismissNoticed, noticeRentalProperty, payrollEmployerSignals, incomeAnswerRows, INCOME_STATEMENT_PROMPT } from "../src/lib/noticed-signals";
 import { recordsView, applyRecordException } from "../src/lib/records";
 import { minimiseTenant, tombstonedFingerprints, rolledUpLineCount, statementLedgerTieOut, forgetStatementMinimisation } from "../src/lib/minimise";
 import { statementLineFingerprints, type StatementLine } from "../src/lib/statements";
@@ -3882,6 +3882,63 @@ async function main() {
     check("ingest_facts: a NOA HELP balance fills study_loan for the next FY (source 'noticed')", prof.length === 1 && prof[0]!.starts_on === "2025-07-01" && prof[0]!.source === "noticed");
     const again = await fillSituationPeriod(FACTS, u, { person_id: "person_self_pfacts", fact: "study_loan", value: "yes", source: "noticed" }, { fy: 2025, descriptor: AU_DESCRIPTOR });
     check("ingest_facts: a second NOA never rewrites the answer (fill-only)", again.skipped === true);
+  }
+
+  // ── property_from_statement (2026-10-28): a rental statement for an address that isn't a property yet ⇒ a "We
+  // noticed" card; Yes creates the property, files the statements under it and settles annual-over-monthly.
+  // Real noticeRentalProperty / confirmNoticed / buildReport; the DO's rent INSERTs are replayed. ──
+  {
+    const PROP = { ...env, FEATURES: `${(env as { FEATURES: string }).FEATURES},wages_payer,income_supersession,property_from_statement,situation_profile` } as unknown as Env;
+    const u = "pprop";
+    const count = (sql: string) => (db.prepare(sql).get() as { n: number }).n;
+    seedTenant(u, "Property from statement");
+    const addr = "12a harbour";
+    const stmt = (id: string, gross: number, fee: number, ps: string, pe: string, agent?: string) => {
+      run(`INSERT INTO documents (id, user_id, doc_type, fy, r2_key, extracted_json) VALUES (?, ?, 'agent_rental_summary', '2025-26', ?, '{}')`, id, u, `pprop/docs/${id}`);
+      run(`INSERT INTO income (id, user_id, person_id, income_type, fy, gross_cents, amount_aud_cents, source_doc_id, detail_json) VALUES (?, ?, 'person_self_pprop', 'rent', '2025-26', ?, ?, ?, ?)`,
+        `${id}_i`, u, gross, gross, id, JSON.stringify({ agent: agent ?? "Harbour Realty", period_start: ps, period_end: pe, address_key: addr }));
+      run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, ato_label, document_id, direction, deductibility) VALUES (?, ?, 'agent_statement', 'extracted', 'receipt', ?, ?, ?, 'property_rented', 'rental:management_fee', ?, 'debit', 'likely_deductible')`,
+        `${id}_fee`, u, fee, fee, pe, id);
+    };
+    stmt("pprop_sep", 276000, 15000, "2025-09-01", "2025-09-30");
+    await noticeRentalProperty(PROP, u, addr, "12A Harbour St", "2025-26");
+    stmt("pprop_annual", 3312000, 180000, "2025-07-01", "2026-06-30");
+    await noticeRentalProperty(PROP, u, addr, "12A Harbour St", "2025-26");
+    const cards = (await listNoticed(PROP, u, 2025)).filter((x) => x.kind === "rental_property");
+    check("property_from_statement: ONE card per address, its evidence updated by the second statement (2 statements, both rents)",
+      cards.length === 1 && cards[0]!.evidence.n === 2 && cards[0]!.evidence.total_cents === 276000 + 3312000 && cards[0]!.evidence.label === "12A Harbour St");
+    const before = await buildReport(PROP, u, 2025);
+    check("property_from_statement: before Yes nothing is created (rent unattributed, no property)", before.per_property.length === 0 && !count(`SELECT COUNT(*) AS n FROM properties WHERE user_id = 'pprop'`));
+    const res = await confirmNoticed(PROP, u, cards[0]!.id, {}, { now: new Date("2026-10-28T00:00:00Z"), recordCreditAsIncome: async () => null } as never);
+    const pid = res.property_id!;
+    check("property_from_statement: Yes creates a rented property and files both statements and their fees under it",
+      !!pid && res.filed?.income === 2 && res.filed.txns === 2 && count(`SELECT COUNT(*) AS n FROM documents WHERE user_id = 'pprop' AND property_id IS NOT NULL`) === 2);
+    const after = await buildReport(PROP, u, 2025);
+    const line = after.per_property.find((p) => p.property_id === pid);
+    check("property_from_statement: filed under one property, the annual summary settles over the monthly (rent $33,120, fees $1,800 — counted once)",
+      res.filed?.replaced === 1 && after.income.by_type.find((t) => t.income_type === "rent")?.gross_cents === 3312000 && line?.deduction_cents === 180000);
+
+    // Review finding: two properties whose address keys collide (different managing agents) are filed together by
+    // one Yes, but never netted — both statements stay counted, visible, nothing deleted.
+    const u2 = "pprop2";
+    seedTenant(u2, "Property key collision");
+    const stmt2 = (id: string, gross: number, ps: string, pe: string, agent: string) => {
+      run(`INSERT INTO documents (id, user_id, doc_type, fy, r2_key, extracted_json) VALUES (?, ?, 'agent_rental_summary', '2025-26', ?, '{}')`, id, u2, `pprop2/docs/${id}`);
+      run(`INSERT INTO income (id, user_id, person_id, income_type, fy, gross_cents, amount_aud_cents, source_doc_id, detail_json) VALUES (?, ?, 'person_self_pprop2', 'rent', '2025-26', ?, ?, ?, ?)`,
+        `${id}_i`, u2, gross, gross, id, JSON.stringify({ agent, period_start: ps, period_end: pe, address_key: addr }));
+    };
+    stmt2("pprop2_m", 276000, "2025-09-01", "2025-09-30", "Bondi Agency");
+    stmt2("pprop2_a", 3312000, "2025-07-01", "2026-06-30", "Perth Agency");
+    await noticeRentalProperty(PROP, u2, addr, "12A Harbour St", "2025-26");
+    run(`INSERT INTO noticed_signals (id, user_id, fy, kind, signal_key, status, evidence_json) VALUES ('pprop2_sig26', ?, '2026-27', 'rental_property', ?, 'open', '{"n":1,"total_cents":1,"first_date":null,"last_date":null,"label":"12A Harbour St"}')`, u2, addr);
+    const card2 = (await listNoticed(PROP, u2, 2025)).find((x) => x.kind === "rental_property")!;
+    const res2 = await confirmNoticed(PROP, u2, card2.id, {}, { now: new Date("2026-10-28T00:00:00Z"), recordCreditAsIncome: async () => null } as never);
+    check("property_from_statement: a key collision across different agents is never netted (nothing retired, both rents still counted)",
+      res2.filed?.replaced === 0 && (await buildReport(PROP, u2, 2025)).income.by_type.find((t) => t.income_type === "rent")?.gross_cents === 276000 + 3312000);
+    // A second card for the same address (another FY) is answered by the first Yes; it never makes a second property.
+    const sib = (db.prepare(`SELECT status, ref_id FROM noticed_signals WHERE id = 'pprop2_sig26'`).get() as { status: string; ref_id: string | null });
+    check("property_from_statement: confirming one FY's card answers the same address's other cards with the same property (no duplicate)",
+      count(`SELECT COUNT(*) AS n FROM properties WHERE user_id = 'pprop2'`) === 1 && sib.status === "confirmed" && sib.ref_id === res2.property_id);
   }
 
   console.log(`\n=== personas: ${pass} passed, ${fail} failed ===`);

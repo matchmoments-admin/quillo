@@ -174,6 +174,8 @@ export function noticedCopy(s: NoticedCardSignal): { title: string; why: string 
       return { title: `Payments from ${who}. These are usually prefilled in myTax.`, why: "Government payments such as Youth Allowance are usually taxable and prefilled in myTax. Saying yes adds a line to check on your myTax worksheet. Nothing is recorded from the bank deposits." };
     case "interest":
       return { title: `Interest from ${who}. Usually prefilled.`, why: "Bank interest is usually prefilled in myTax. Saying yes adds a line to check on your myTax worksheet. Nothing is recorded from the bank deposits." };
+    case "rental_property":
+      return { title: `A rental statement for ${who}. Add this property?`, why: "Your managing agent's statement names this address, and it isn't one of your properties yet. Saying yes adds it as a rented property you own and files the rent and expenses from its statements under it, so they appear on its own line. You can change the ownership share and how it was used in Grow › Property." };
     case "foreign":
       return { title: "Money from overseas. Is any of it income?", why: "A transfer from overseas isn't income by itself: it could be savings, a gift or pay. Saying yes notes that you have foreign income to enter. Nothing is recorded from the transfers." };
     default:

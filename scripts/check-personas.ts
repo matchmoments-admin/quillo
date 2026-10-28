@@ -49,6 +49,7 @@ import { minimiseTenant, tombstonedFingerprints, rolledUpLineCount, statementLed
 import { statementLineFingerprints, type StatementLine } from "../src/lib/statements";
 import { listStatements } from "../src/lib/queries";
 import { statementLinesForModel } from "../src/lib/redact";
+import { fillLoanFacts } from "../src/lib/statement-account";
 import { supersedeIncome, retireIncome, markSuperseded } from "../src/lib/income-supersession";
 import { incomeStatementWait } from "../src/lib/income-statement-wait";
 
@@ -3939,6 +3940,21 @@ async function main() {
     const sib = (db.prepare(`SELECT status, ref_id FROM noticed_signals WHERE id = 'pprop2_sig26'`).get() as { status: string; ref_id: string | null });
     check("property_from_statement: confirming one FY's card answers the same address's other cards with the same property (no duplicate)",
       count(`SELECT COUNT(*) AS n FROM properties WHERE user_id = 'pprop2'`) === 1 && sib.status === "confirmed" && sib.ref_id === res2.property_id);
+  }
+
+  // ── statement_account_detect: a loan's statement fills its blank balance and rate (0044 fallback inputs), never
+  // overwriting one the user typed. Real fillLoanFacts over the shared D1 adapter. ──
+  {
+    const u = "ploan";
+    seedTenant(u, "Loan facts");
+    run(`INSERT INTO accounts (id, user_id, name, type, source) VALUES ('ploan_blank', ?, 'Investment loan', 'loan', 'statement')`, u);
+    run(`INSERT INTO accounts (id, user_id, name, type, source, interest_rate_pct, balance_cents) VALUES ('ploan_typed', ?, 'Typed loan', 'loan', 'statement', 5.5, 10000000)`, u);
+    const det = { kind: "loan" as const, institution: "Example Bank", last4: "2222", period_start: null, period_end: null, interest_rate_pct: 6.4, interest_charged_cents: null, interest_earned_cents: null, loan_purpose: "investment" as const };
+    await fillLoanFacts(env, u, "ploan_blank", -15000000, det);
+    await fillLoanFacts(env, u, "ploan_typed", -15000000, det);
+    const a = db.prepare(`SELECT id, balance_cents AS b, interest_rate_pct AS r FROM accounts WHERE user_id = ? ORDER BY id`).all(u) as { id: string; b: number; r: number }[];
+    check("loan facts: a blank loan gets its printed balance (owed, positive) and current rate", a[0]!.id === "ploan_blank" && a[0]!.b === 15000000 && a[0]!.r === 6.4);
+    check("loan facts: a balance and rate the user typed are never overwritten", a[1]!.b === 10000000 && a[1]!.r === 5.5);
   }
 
   console.log(`\n=== personas: ${pass} passed, ${fail} failed ===`);

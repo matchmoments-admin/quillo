@@ -404,3 +404,44 @@ export function normaliseStatementLines(
   const pickAsset = !asLiability.ok && (asAsset.ok || Math.abs(asAsset.diff_cents) < Math.abs(asLiability.diff_cents));
   return { lines, dropped: raw.length - lines.length, liabilityArithmetic: !pickAsset, reconciliation: pickAsset ? asAsset : asLiability };
 }
+
+export interface PairableLine {
+  id: string;
+  account_id: string | null;
+  direction: string | null;
+  amount_cents: number;
+  txn_date: string | null;
+  description: string;
+}
+
+/**
+ * Own-account transfers (flag transfer_pairing): a debit on one of the tenant's accounts and a credit of the same
+ * amount on another of them, within `days`, where at least one side's description names the other account (a
+ * digit run ending in its last four digits — "Direct Dr900002222" → a loan ··2222; "DEPOSIT … DR001111" → an
+ * everyday ··1111). Both lines are then a transfer, not spend or income, whatever the categoriser said. Pure and
+ * deterministic, no model call. A line pairs at most once; when several counterparts fit, none is paired (no guess).
+ */
+export function pairOwnTransfers(lines: PairableLine[], accounts: { id: string; last4: string | null }[], days = 3): { debit: string; credit: string }[] {
+  const last4 = new Map(accounts.filter((a) => a.last4 && /^\d{4}$/.test(a.last4)).map((a) => [a.id, a.last4!]));
+  const names = (desc: string, accountId: string | null) => {
+    const l4 = accountId ? last4.get(accountId) : undefined;
+    return !!l4 && (desc.match(/\d{4,}/g) ?? []).some((run) => run.endsWith(l4));
+  };
+  const dayGap = (a: string | null, b: string | null) => (a && b ? Math.abs(Date.parse(a) - Date.parse(b)) / 86_400_000 : Infinity);
+  // Credits indexed by amount, so each debit only looks at same-amount credits (a busy tenant has thousands of lines).
+  const creditsByAmount = new Map<number, PairableLine[]>();
+  for (const l of lines) if (l.direction === "credit" && l.account_id) creditsByAmount.set(l.amount_cents, [...(creditsByAmount.get(l.amount_cents) ?? []), l]);
+  const used = new Set<string>();
+  const out: { debit: string; credit: string }[] = [];
+  for (const d of lines) {
+    if (d.direction !== "debit" || !d.account_id || used.has(d.id)) continue;
+    const fits = (creditsByAmount.get(d.amount_cents) ?? []).filter(
+      (c) => !used.has(c.id) && c.account_id !== d.account_id && c.amount_cents === d.amount_cents && dayGap(c.txn_date, d.txn_date) <= days &&
+        (names(d.description, c.account_id) || names(c.description, d.account_id)),
+    );
+    if (fits.length !== 1) continue;
+    used.add(d.id).add(fits[0]!.id);
+    out.push({ debit: d.id, credit: fits[0]!.id });
+  }
+  return out;
+}

@@ -3991,6 +3991,12 @@ export class TaxAgent extends Agent<Env> {
           if (featureOn(this.env, "noa_capture")) {
             const noa = await extractNoticeOfAssessment(llm, bytes, mime);
             await captureNoaDraft(this.env, userId, docId, noa);
+            // ingest_facts: a HELP/HECS balance on the NOA means a study loan in the next year — fill that fact
+            // (fill-only, true-only) so Get set up doesn't ask what the ATO already told us.
+            if (featureOn(this.env, "ingest_facts") && featureOn(this.env, "situation_profile") && (noa.hecs_balance_cents ?? 0) > 0) {
+              await fillSituationPeriod(this.env, userId, { person_id: selfPersonId(userId), fact: "study_loan", value: "yes", source: "noticed" }, { fy: noa.assessed_fy + 1, descriptor: await this.jurisdictionFor(userId) })
+                .catch((e) => this.audit(userId, "study_loan_fill_failed", JSON.stringify({ docId, error: (e as Error).message })));
+            }
             await this.notify(
               userId,
               `Read your ${fyLabel(noa.assessed_fy)} Notice of Assessment — open File (switch to ${fyLabel(noa.assessed_fy)}) to review the carry-overs and close the year. General information only.`,
@@ -4128,6 +4134,14 @@ export class TaxAgent extends Agent<Env> {
         superseded += removed.length;
         await this.audit(userId, "income_superseded", JSON.stringify({ employer, fy, docId, replacement: newId, replaced: removed }));
       }
+    }
+    // ingest_facts: the statement already names the employers that aren't "Tax ready" yet. Keep them on the document
+    // so the Connect wait list names each one as uploaded-but-not-ready, instead of a generic wait (never a figure).
+    if (featureOn(this.env, "ingest_facts") && mapped.skipped.length) {
+      await tenantDb(this.env, userId).prepare(
+        `UPDATE documents SET extracted_json = json_set(COALESCE(extracted_json, '{}'), '$.not_tax_ready', json(?))
+          WHERE user_id = ? AND id = ? AND json_valid(COALESCE(extracted_json, '{}'))`,
+      ).bind(JSON.stringify(mapped.skipped), docId).run();
     }
     const sup = superseded ? ` Replaced ${superseded} earlier salary ${superseded === 1 ? "entry" : "entries"}.` : "";
     const lp = lumps ? ` ${lumps} lump-sum ${lumps === 1 ? "amount" : "amounts"} captured (special treatment — confirm with a registered tax agent).` : "";

@@ -111,6 +111,7 @@ export interface FilingReadinessSignals {
   situationProfileEnabled?: boolean; // master gate for residency_unsure + study_loan_passthrough
   situationProfiles?: SituationProfile[]; // one per person for this FY
   situationPersonNames?: Record<string, string>; // person id → display name ('' for the self person)
+  situationIngestFacts?: boolean; // ingest_facts: job_answer_differs (a document contradicts the 'not working' answer)
   situationResidencyUnsureValue?: string | null; // the pack's "not sure" residency value
   situationNotWorkingPersonIds?: string[]; // people who answered "not working yet" for the FY (F13)
   // wages_payer (#577) — populated ONLY when the flag is on (payrollEmployerSignals in src/lib/noticed-signals.ts),
@@ -1012,6 +1013,13 @@ export function assessReadiness(input: {
       const lead = onlyYou(people) ? "You said you're not sure of your residency" : `You said you're not sure of the residency for ${people.join(", ")}`;
       findings.push(f("residency_unsure", "judgement", "review", "Residency is marked as not sure",
         `${lead} for part or all of this year. The ATO's residency tests decide it, and it affects which income is declared — see "Work out your residency status for tax purposes" on ato.gov.au. General information only.${DEFER}`, true, []));
+    }
+    // ingest_facts: Get set up says the taxpayer wasn't working, but an income statement or payslip is on file for
+    // the year. Point back at the answer (it decides which questions come up); never change it for them.
+    const selfNotWorking = (signals.situationNotWorkingPersonIds ?? []).some((id) => signals.situationPersonNames?.[id] === "");
+    if (signals.situationIngestFacts && selfNotWorking && (signals.salaryPayerCount ?? 0) > 0) {
+      findings.push(f("job_answer_differs", "income", "review", "Get set up says you weren't working this year",
+        "An income statement or payslip for this year is on file. If you did have a job, update Get set up so the right questions come up for it. General information only.", false, []));
     }
     // Study loan ticked (opt-in fact). The compulsory repayment is the ATO's calculation, not ours — say so
     // and give NO figure (personas-coverage M4/G5).

@@ -50,6 +50,7 @@ import { statementLineFingerprints, type StatementLine } from "../src/lib/statem
 import { listStatements } from "../src/lib/queries";
 import { statementLinesForModel } from "../src/lib/redact";
 import { supersedeIncome, retireIncome, markSuperseded } from "../src/lib/income-supersession";
+import { incomeStatementWait } from "../src/lib/income-statement-wait";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
@@ -3854,6 +3855,33 @@ async function main() {
     const rB = await buildReport(SUP, ub, 2025);
     check("Supersession: upload order doesn't matter (annual first gives the same rent and deductions)",
       rB.income.by_type.find((t) => t.income_type === "rent")?.gross_cents === rentA && rB.taxable_position_cents === rA.taxable_position_cents);
+  }
+
+  // ── ingest_facts (2026-10-28): facts a document already carries, read once. Real incomeStatementWait and
+  // fillSituationPeriod + profileForFy over the shared D1 adapter (the DO's json_set on documents is replayed). ──
+  {
+    const FACTS = { ...env, FEATURES: `${(env as { FEATURES: string }).FEATURES},ingest_facts,situation_profile` } as unknown as Env;
+    const u = "pfacts";
+    seedTenant(u, "Ingest facts");
+    // An ATO income statement uploaded while one employer was still finalising (decomposeIncomeStatement keeps it).
+    run(`INSERT INTO documents (id, user_id, doc_type, fy, r2_key, extracted_json) VALUES ('pfacts_d', ?, 'payslip', '2025-26', 'pfacts/docs/d', ?)`,
+      u, JSON.stringify({ not_tax_ready: [{ employer: "SLOW PAYROLL PTY LTD", employer_abn: null, period_end: "2026-06-30" }, { employer: "OLD JOB PTY LTD", employer_abn: null, period_end: "2025-06-30" }] }));
+    const wOn = await incomeStatementWait(FACTS, u, 2025, AU_DESCRIPTOR, auV1RulePack);
+    const slow = wOn.employers.find((e) => e.name === "SLOW PAYROLL PTY LTD");
+    check("ingest_facts: an uploaded-but-not-Tax-ready employer is named on the wait list (this FY only)", slow?.not_ready === true && !slow.covered && !wOn.employers.some((e) => e.name === "OLD JOB PTY LTD"));
+    const wOff = await incomeStatementWait(env, u, 2025, AU_DESCRIPTOR, auV1RulePack);
+    check("ingest_facts OFF: the wait list doesn't read documents (byte-identical)", wOff.employers.length === 0);
+    // Once the Tax-ready statement is recorded, the employer is covered.
+    run(`INSERT INTO income (id, user_id, person_id, income_type, fy, gross_cents, amount_aud_cents, detail_json) VALUES ('pfacts_i', ?, 'person_self_pfacts', 'salary_payg', '2025-26', 5000000, 5000000, ?)`, u, JSON.stringify({ employer: "SLOW PAYROLL PTY LTD" }));
+    const wDone = await incomeStatementWait(FACTS, u, 2025, AU_DESCRIPTOR, auV1RulePack);
+    check("ingest_facts: the recorded Tax-ready statement covers it", wDone.employers.find((e) => e.name === "SLOW PAYROLL PTY LTD")?.covered === true);
+
+    // A NOA for FY2024-25 with a HELP balance ⇒ the study_loan fact for FY2025-26 (what the DO calls; fill-only).
+    await fillSituationPeriod(FACTS, u, { person_id: "person_self_pfacts", fact: "study_loan", value: "yes", source: "noticed" }, { fy: 2025, descriptor: AU_DESCRIPTOR });
+    const prof = (await listSituationPeriods(FACTS, u)).filter((p) => p.fact === "study_loan");
+    check("ingest_facts: a NOA HELP balance fills study_loan for the next FY (source 'noticed')", prof.length === 1 && prof[0]!.starts_on === "2025-07-01" && prof[0]!.source === "noticed");
+    const again = await fillSituationPeriod(FACTS, u, { person_id: "person_self_pfacts", fact: "study_loan", value: "yes", source: "noticed" }, { fy: 2025, descriptor: AU_DESCRIPTOR });
+    check("ingest_facts: a second NOA never rewrites the answer (fill-only)", again.skipped === true);
   }
 
   console.log(`\n=== personas: ${pass} passed, ${fail} failed ===`);

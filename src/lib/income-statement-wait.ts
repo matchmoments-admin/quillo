@@ -20,6 +20,7 @@ import { FX_CONVERTED } from "./queries";
 import { payerKey } from "./first-timer-signals";
 import { employerMatches, payrollEmployerSignals } from "./noticed-signals";
 import { tenantDb } from "./tenant-db";
+import { featureOn } from "./features";
 
 export interface IncomeStatementTiming {
   /** Display: the date employers must finalise by (AU "14 July"). */
@@ -32,8 +33,9 @@ export interface IncomeStatementTiming {
 
 export interface IncomeStatementWait {
   fy: string;
-  /** One row per known employer: covered = an income statement (salary row) naming it is recorded. */
-  employers: { name: string; covered: boolean }[];
+  /** One row per known employer: covered = an income statement (salary row) naming it is recorded. not_ready
+   *  (ingest_facts) = an income statement was uploaded for this FY but said this employer wasn't "Tax ready" yet. */
+  employers: { name: string; covered: boolean; not_ready?: true }[];
   /** Salary rows recorded for the FY (personal, FX-converted). Lets the page say "added" with no named employer. */
   wage_rows: number;
   finalise_by: string;
@@ -111,16 +113,42 @@ export async function incomeStatementWait(
   const salaryEmployers = (salary.results ?? []).map((r) => {
     try { return (JSON.parse(r.detail_json ?? "{}") as { employer?: unknown }).employer; } catch { return undefined; }
   });
-  const names = [...(entities.results ?? []).map((e) => e.name), ...(payroll.payrollEmployers ?? []).map((e) => e.name)];
+  const bounds = fyBoundsFor(descriptor, startYear);
+  const notReady = featureOn(env, "ingest_facts") ? await notTaxReadyEmployers(env, userId, bounds) : [];
+  const names = [...(entities.results ?? []).map((e) => e.name), ...(payroll.payrollEmployers ?? []).map((e) => e.name), ...notReady];
   const timing = incomeStatementTiming(pack);
-  const chaseFrom = firstDayAfterFy(fyBoundsFor(descriptor, startYear).end, timing.chase_after_fy_end);
+  const chaseFrom = firstDayAfterFy(bounds.end, timing.chase_after_fy_end);
+  const employers = foldEmployers(names, salaryEmployers).map((e) =>
+    !e.covered && notReady.some((n) => employerMatches(n, e.name)) ? { ...e, not_ready: true as const } : e,
+  );
   return {
     fy,
-    employers: foldEmployers(names, salaryEmployers),
+    employers,
     wage_rows: salaryEmployers.length,
     finalise_by: timing.finalise_by,
     chase_after: timing.chase_after,
     chase_from: chaseFrom,
     chase_now: today >= chaseFrom,
   };
+}
+
+/**
+ * ingest_facts: employers an uploaded income statement named as not yet "Tax ready" for this FY (kept on the
+ * document by decomposeIncomeStatement). A statement with no period is placed by nothing, so it's left out.
+ */
+export async function notTaxReadyEmployers(env: Env, userId: string, bounds: { start: string; end: string }): Promise<string[]> {
+  const docs = await tenantDb(env, userId).prepare(
+    `SELECT json_extract(extracted_json, '$.not_tax_ready') AS nr FROM documents
+      WHERE user_id = ? AND json_valid(extracted_json) AND json_extract(extracted_json, '$.not_tax_ready') IS NOT NULL`,
+  ).bind().all<{ nr: string }>();
+  const out: string[] = [];
+  for (const d of docs.results ?? []) {
+    let list: { employer?: unknown; period_end?: unknown }[] = [];
+    try { list = JSON.parse(d.nr) as typeof list; } catch { continue; }
+    for (const e of Array.isArray(list) ? list : []) {
+      const end = typeof e.period_end === "string" ? e.period_end : null;
+      if (typeof e.employer === "string" && e.employer.trim() && end && end >= bounds.start && end <= bounds.end) out.push(e.employer.trim());
+    }
+  }
+  return out;
 }

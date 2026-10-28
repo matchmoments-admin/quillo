@@ -38,6 +38,8 @@ export interface MappedIncomeRow {
 export interface MappedIncomeStatement {
   rows: MappedIncomeRow[];          // to record (finalised employers only)
   skipped_employers: string[];      // not-"Tax ready" — surfaced to the user, NOT recorded as assessable
+  /** The same skipped employers with what identifies them (ingest_facts keeps these on the document). */
+  skipped: { employer: string; employer_abn: string | null; period_end: string | null }[];
 }
 
 // Matches the existing payslip path's CONFIDENCE_THRESHOLD (agent.ts) so behaviour is consistent.
@@ -56,10 +58,12 @@ const CONFIDENCE_THRESHOLD = 0.85;
 export function mapIncomeStatementToRows(stmt: ExtractedIncomeStatementShape): MappedIncomeStatement {
   const rows: MappedIncomeRow[] = [];
   const skipped_employers: string[] = [];
+  const skipped: MappedIncomeStatement["skipped"] = [];
 
   for (const e of stmt.employers) {
     if (!e.tax_ready) {
       skipped_employers.push(e.employer); // preliminary — never counted; the user re-uploads once finalised
+      skipped.push({ employer: e.employer, employer_abn: e.employer_abn ?? null, period_end: e.period_end ?? null });
       continue;
     }
     const meta = {
@@ -106,5 +110,5 @@ export function mapIncomeStatementToRows(stmt: ExtractedIncomeStatementShape): M
     }
   }
 
-  return { rows, skipped_employers };
+  return { rows, skipped_employers, skipped };
 }

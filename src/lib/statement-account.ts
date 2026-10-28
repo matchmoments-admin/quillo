@@ -35,7 +35,7 @@ export function kindLabel(kind: StatementAccountKind | null | undefined): string
   return kind ? KIND_LABEL[kind] : "account";
 }
 
-/** "Westpac credit card ··5829" — the name a detected account gets. */
+/** "Westpac credit card ··4321" — the name a detected account gets. */
 export function detectedAccountName(a: Pick<StatementAccount, "institution" | "kind" | "last4">): string {
   const base = [a.institution ?? "Bank", kindLabel(a.kind)].join(" ");
   return a.last4 ? `${base} ··${a.last4}` : base;
@@ -61,7 +61,7 @@ export function institutionKey(s: string | null | undefined): string {
   return key;
 }
 
-/** Two bank names agree when their first distinctive word does ("Westpac" and a typed "Westpac Choice 307"). */
+/** Two bank names agree when their first distinctive word does ("Westpac" and a typed "Westpac Choice 909"). */
 export function sameInstitution(a: string | null | undefined, b: string | null | undefined): boolean {
   const ka = institutionKey(a).split(" ")[0];
   const kb = institutionKey(b).split(" ")[0];

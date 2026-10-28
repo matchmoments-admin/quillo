@@ -217,7 +217,7 @@ const StatementToolInput = z.object({
   // A bank NAME only: digits, BSB/account words and anything but letters and simple punctuation are stripped, so a
   // number the model (or a crafted PDF) puts here is never stored in accounts.institution / name.
   institution: z.preprocess((v) => cleanInstitution(v), z.string().nullable()).default(null),
-  // Four digits or nothing: masks and separators ("**** 5829", "xx5829") are removed, then exactly four digits must
+  // Four digits or nothing: masks and separators ("**** 4321", "xx4321") are removed, then exactly four digits must
   // remain, so a full number is never kept even if the model returns one.
   last4: z.preprocess((v) => {
     const d = typeof v === "string" ? v.replace(/\D/g, "") : "";
@@ -235,7 +235,7 @@ const StatementToolInput = z.object({
 const ACCOUNT_PROPERTIES = {
   account_kind: { type: ["string", "null"], enum: ["everyday", "savings", "credit_card", "loan", "offset", null], description: "The kind of account this statement is for: everyday/transaction, savings, credit_card, loan (a home or investment loan), or offset. null if unclear." },
   institution: { type: ["string", "null"], description: "The bank or lender's name as printed (e.g. 'Westpac', 'ING'), or null." },
-  last4: { type: ["string", "null"], description: "ONLY the last FOUR digits of the account or card number (e.g. '5829'). Never the full number, never the BSB. null if not shown." },
+  last4: { type: ["string", "null"], description: "ONLY the last FOUR digits of the account or card number (e.g. '4321'). Never the full number, never the BSB. null if not shown." },
   period_start: { type: ["string", "null"], description: "Statement period start, ISO YYYY-MM-DD, or null." },
   period_end: { type: ["string", "null"], description: "Statement period end, ISO YYYY-MM-DD, or null." },
   interest_rate_pct: { type: ["number", "null"], description: "The CURRENT interest rate printed (the latest row of any rate table), as a percent (e.g. 6.4), or null." },

@@ -3765,7 +3765,7 @@ export class TaxAgent extends Agent<Env> {
   /** Best-effort property resolution from free-text hint (address/label substring match). */
   // Canonicalise an address into comparable tokens: lowercase, drop punctuation, fold common
   // street-type abbreviations (Avenue↔Ave), and drop state/country noise. This is what lets a
-  // doc's "104 Womerah Avenue, Darlinghurst, NSW 2010" match a stored "104 Womerah Ave Darlinghurst
+  // doc's "12 Harbour Street, Sometown, NSW 2000" match a stored "12 Harbour St Sometown
   // 2010" — naive substring matching missed it on "Avenue"/commas/"NSW".
   private static readonly STREET_TYPES: Record<string, string> = {
     avenue: "ave", ave: "ave", street: "st", st: "st", road: "rd", rd: "rd",

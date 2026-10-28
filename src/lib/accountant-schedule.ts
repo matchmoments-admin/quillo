@@ -1528,7 +1528,7 @@ export function scheduleToXlsx(s: AccountantSchedule): Uint8Array {
 function tabNameFor(sec: ScheduleSection): string {
   if (sec.key === "summary") return "Summary";
   if (sec.key.startsWith("property:")) {
-    // "property:104-Womerah" → "104-Womerah"; the full ATO-style title stays in A1.
+    // "property:12-Harbour" → "12-Harbour"; the full ATO-style title stays in A1.
     return sec.key.slice("property:".length) || sec.title;
   }
   return sec.title;

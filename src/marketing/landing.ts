@@ -385,8 +385,8 @@ const HTML = /* html */ `<!doctype html>
             <div class="scr-sub">Pick what applies — Quillo files the rest.</div>
             <div class="wiz-steps"><i class="on"></i><i class="on"></i><i></i><i></i></div>
             <div class="brow on"><span class="bk-sw" style="background:#3f6bd6"></span><span><div class="bk-nm">PAYG · work-related</div><div class="bk-ct">Salary &amp; wages</div></span><span class="tgl"></span></div>
-            <div class="brow on"><span class="bk-sw" style="background:#15643a"></span><span><div class="bk-nm">Rental property</div><div class="bk-ct">104 Womerah Ave</div></span><span class="tgl"></span></div>
-            <div class="brow on"><span class="bk-sw" style="background:#caa53d"></span><span><div class="bk-nm">Company</div><div class="bk-ct">Young Milton Pty Ltd</div></span><span class="tgl"></span></div>
+            <div class="brow on"><span class="bk-sw" style="background:#15643a"></span><span><div class="bk-nm">Rental property</div><div class="bk-ct">5 Adelaide Ave</div></span><span class="tgl"></span></div>
+            <div class="brow on"><span class="bk-sw" style="background:#caa53d"></span><span><div class="bk-nm">Company</div><div class="bk-ct">Sample Studio Pty Ltd</div></span><span class="tgl"></span></div>
             <div class="brow"><span class="bk-sw" style="background:#9356c4"></span><span><div class="bk-nm">Novated lease</div><div class="bk-ct">Optional</div></span><span class="tgl"></span></div>
             <div class="scr-cta">Continue →</div>
           </div>

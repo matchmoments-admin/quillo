@@ -51,7 +51,7 @@ import { readJourney } from "./lib/journey-read";
 import { rollSchedule, balancingAdjustment, fyStartYearOf, isLowCostAsset, looksLikePersonalTransfer, assetDepreciatesForTaxpayer, depMethodConflict, resolveDiv40Life, type DepAsset } from "./lib/depreciation";
 import { matchClaimRules, suggestionText, enumerateSituationClaims, classifyClaim, uncoveredOccupations, ruleKey, type ClaimRule, type ClaimContext, type ClaimSituation } from "./lib/claimability";
 import { minimiseTenant, minimisationNotices, tidiedSummary, tombstonedFingerprints, rolledUpLineCount, forgetStatementMinimisation, type MinimiseResult, type TidiedSummary } from "./lib/minimise";
-import { parseCsv, applyColumnMap, statementLineFingerprints, deriveBalances, reconcileStatement, isLiabilityAccount, fuzzyMerchant, isTransferLike, isLoanInterestLine, classifyMovement, movementTreatment, type ColumnMap, type Reconciliation, type StatementLine, type MovementClass } from "./lib/statements";
+import { parseCsv, applyColumnMap, statementLineFingerprints, deriveBalances, reconcileStatement, normaliseStatementLines, isBalanceRow, isLiabilityAccount, fuzzyMerchant, isTransferLike, isLoanInterestLine, classifyMovement, movementTreatment, type ColumnMap, type Reconciliation, type StatementLine, type MovementClass } from "./lib/statements";
 import { groupKey, groupForClarify, rulePatternForStem, draftHoldingFromTxn, isClarifyLeftover, CLARIFY_LEFTOVER_WHERE, type ClarifyRow } from "./lib/clarify";
 import { scoreClaimMatches, type ScoredTxn } from "./lib/claim-match";
 import { batchStatementStatus, isStaleBatch } from "./lib/batch";
@@ -518,12 +518,11 @@ export class TaxAgent extends Agent<Env> {
           if (opening == null && ext.opening_cents != null) opening = ext.opening_cents; // first page that carries it
           if (ext.closing_cents != null) closing = ext.closing_cents; // last page that carries it wins
         }
-        return { ls: all, recon: reconcileStatement(all, opening, closing, isLiability) };
+        return this.reconcileExtracted(all, opening, closing, isLiability);
       };
       const extractWhole = async () => {
         const ext = await extractStatement(llm, pdfBytes, "application/pdf", { isLiability });
-        const ls = this.pdfLines(ext);
-        return { ls, recon: reconcileStatement(ls, ext.opening_cents, ext.closing_cents, isLiability) };
+        return this.reconcileExtracted(this.pdfLines(ext), ext.opening_cents, ext.closing_cents, isLiability);
       };
       const pages = await pdfPageCount(pdfBytes);
       let a = pages > 2 ? await extractChunked(3) : await extractWhole();
@@ -538,8 +537,14 @@ export class TaxAgent extends Agent<Env> {
       const rows = parseCsv(new TextDecoder().decode(bytes));
       columnMap = await extractColumnMap(llm, rows);
       lines = applyColumnMap(rows, columnMap);
-      const bal = deriveBalances(lines, isLiability);
-      recon = reconcileStatement(lines, bal?.opening_cents ?? null, bal?.closing_cents ?? null, isLiability);
+      if (featureOn(this.env, "statement_normalise")) {
+        const n = normaliseStatementLines(lines, null, null, isLiability, true);
+        lines = n.lines;
+        recon = n.reconciliation;
+      } else {
+        const bal = deriveBalances(lines, isLiability);
+        recon = reconcileStatement(lines, bal?.opening_cents ?? null, bal?.closing_cents ?? null, isLiability);
+      }
     }
 
     // Zero lines means the extractor found no transaction table (unrecognised layout, scanned
@@ -641,12 +646,15 @@ export class TaxAgent extends Agent<Env> {
 
     // Use the normalised lines stored at parse time (so a PDF is never re-extracted).
     // readStoredJson decompresses a gzipped sidecar and reads a pre-compression (plain JSON) one unchanged.
-    const lines = await readStoredJson<StatementLine[]>(this.env.RECEIPTS, `${stmt.file_key}.lines`);
+    let lines = await readStoredJson<StatementLine[]>(this.env.RECEIPTS, `${stmt.file_key}.lines`);
     if (!lines) throw new Error(STATEMENT_LINES_MISSING_MESSAGE);
+    // A statement parsed before statement_normalise can still carry printed balance rows: the gate below skips
+    // them, so the import must too (flag OFF ⇒ the stored lines verbatim).
+    if (featureOn(this.env, "statement_normalise")) lines = lines.filter((l) => !isBalanceRow(l));
 
     // Reconciliation gate: refuse to import a statement that doesn't balance unless the user
     // explicitly overrides after reviewing the flagged line(s). This is the proof of completeness.
-    const recon = reconcileStatement(lines, stmt.opening_cents, stmt.closing_cents, isLiabilityAccount(stmt.account_type));
+    const recon = this.reconcileStored(lines, stmt.opening_cents, stmt.closing_cents, stmt.account_type);
     if (recon.available && !recon.ok && !force) {
       const off = `$${Math.abs(recon.diff_cents / 100).toFixed(2)}`;
       throw new Error(`Statement doesn't reconcile (off by ${off}${recon.first_bad_line != null ? `, first wrong around line ${recon.first_bad_line + 1}` : ""}). Review the lines, then import anyway to override.`);
@@ -1150,7 +1158,10 @@ export class TaxAgent extends Agent<Env> {
         }
       }
 
-      if (sidecarLines && sidecarLines.length && actual < s.row_count) {
+      // statement_normalise: confirmImport skips printed balance rows, so a statement parsed before the flag
+      // (its row_count counts them) imports that many fewer lines. Don't read that as missing lines.
+      const balanceRows = featureOn(this.env, "statement_normalise") && sidecarLines ? sidecarLines.filter((l) => isBalanceRow(l)).length : 0;
+      if (sidecarLines && sidecarLines.length && actual < s.row_count - balanceRows) {
         // Dropped lines → re-import from the sidecar with the fixed fingerprint. Purge existing lines
         // (un-matching any receipts first) but KEEP the record + sidecar, then confirmImport re-reads it.
         await tenantDb(this.env, userId).prepare(
@@ -1180,7 +1191,11 @@ export class TaxAgent extends Agent<Env> {
           fixed = true;
         }
         if (s.reconciled !== 1 && sidecarLines) {
-          const recon = reconcileStatement(sidecarLines, s.opening_cents, s.closing_cents, isLiabilityAccount(s.account_type));
+          // A sidecar that still holds balance rows predates statement_normalise and may have imported them, so
+          // re-check it the old way: filtering them here would mark the books balanced while a phantom line stays.
+          const recon = balanceRows
+            ? reconcileStatement(sidecarLines, s.opening_cents, s.closing_cents, isLiabilityAccount(s.account_type))
+            : this.reconcileStored(sidecarLines, s.opening_cents, s.closing_cents, s.account_type);
           await tenantDb(this.env, userId).prepare(`UPDATE statements SET reconciled = ?, recon_diff_cents = ? WHERE id = ? AND user_id = ?`)
             .bind(recon.available ? (recon.ok ? 1 : 0) : null, recon.available ? recon.diff_cents : null, s.id)
             .run();
@@ -1756,6 +1771,20 @@ export class TaxAgent extends Agent<Env> {
       .bind()
       .all<{ id: string; amount_aud_cents: number | null; amount_cents: number | null; txn_date: string | null; merchant: string | null; gst_cents: number | null; bucket: string | null; ato_label: string | null }>();
     for (const r of rows.results ?? []) await this.matchReceipt(userId, r);
+  }
+
+  /** Extracted PDF lines → importable lines + reconciliation (flag `statement_normalise`; OFF ⇒ the raw reconcile). */
+  private reconcileExtracted(ls: StatementLine[], opening: number | null, closing: number | null, isLiability: boolean): { ls: StatementLine[]; recon: Reconciliation } {
+    if (!featureOn(this.env, "statement_normalise")) return { ls, recon: reconcileStatement(ls, opening, closing, isLiability) };
+    const n = normaliseStatementLines(ls, opening, closing, isLiability);
+    return { ls: n.lines, recon: n.reconciliation };
+  }
+
+  /** Re-check a stored statement's lines (import gate, repair) with the convention its parse used. */
+  private reconcileStored(lines: StatementLine[], opening: number | null, closing: number | null, accountType: string | null): Reconciliation {
+    const isLiability = isLiabilityAccount(accountType);
+    if (!featureOn(this.env, "statement_normalise")) return reconcileStatement(lines, opening, closing, isLiability);
+    return normaliseStatementLines(lines, opening, closing, isLiability).reconciliation;
   }
 
   /** Map a Claude-extracted PDF statement to the shared StatementLine shape. */

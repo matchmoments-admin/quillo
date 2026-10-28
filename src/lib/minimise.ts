@@ -30,7 +30,7 @@ import { resolveRulePack } from "./report";
 import { fyLabel } from "./ledger-totals";
 import { fyBoundsFor, fyStartYearForDate, resolveJurisdictionForUser, type JurisdictionDescriptor } from "./jurisdiction";
 import { isFyLodgedForRetention, lodgementTiming, type FySignoffState } from "./lodging-year";
-import { isLiabilityAccount } from "./statements";
+import { isLiabilityAccount, liabilityArithmeticFor } from "./statements";
 import { tenantDb } from "./tenant-db";
 
 /** Days an irrelevant debit is held after it lands before it may shrink (the "~60 days" of #534). */
@@ -391,7 +391,12 @@ export async function statementLedgerTieOut(env: Env, userId: string, statementI
   if (s.opening_cents == null || s.closing_cents == null) {
     return { lines, rolled_up: rolled, expected_cents: null, closing_cents: s.closing_cents, diff_cents: null, ok: null };
   }
-  const dir = isLiabilityAccount(s.account_type) ? -1 : 1;
+  // statement_normalise: a loan that prints the amount owed as a negative number was stored with asset arithmetic,
+  // so tie it out the same way (no sign evidence ⇒ the account type, as before).
+  const liability = featureOn(env, "statement_normalise")
+    ? (liabilityArithmeticFor(isLiabilityAccount(s.account_type), [], s.closing_cents, s.opening_cents) ?? isLiabilityAccount(s.account_type))
+    : isLiabilityAccount(s.account_type);
+  const dir = liability ? -1 : 1;
   const expected = s.opening_cents + dir * (Number(live?.signed ?? 0) + rolledSigned);
   const diff = expected - s.closing_cents;
   return { lines, rolled_up: rolled, expected_cents: expected, closing_cents: s.closing_cents, diff_cents: diff, ok: Math.abs(diff) <= 1 };

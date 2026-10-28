@@ -217,11 +217,13 @@ const StatementToolInput = z.object({
   // A bank NAME only: digits, BSB/account words and anything but letters and simple punctuation are stripped, so a
   // number the model (or a crafted PDF) puts here is never stored in accounts.institution / name.
   institution: z.preprocess((v) => cleanInstitution(v), z.string().nullable()).default(null),
-  // Four digits or nothing: masks and separators ("**** 4321", "xx4321") are removed, then exactly four digits must
-  // remain, so a full number is never kept even if the model returns one.
+  // The account number AS PRINTED (often masked) is read only to take its last four digits here; the rest is
+  // discarded at once and never stored, logged or returned (decision c). Asking the model for "the last four" made
+  // it mis-transcribe grouped numbers ("… 713 307" read as 7307); copying what's printed is reliable. Fewer than
+  // four digits ⇒ null.
   last4: z.preprocess((v) => {
     const d = typeof v === "string" ? v.replace(/\D/g, "") : "";
-    return d.length === 4 ? d : null;
+    return d.length >= 4 ? d.slice(-4) : null;
   }, z.string().nullable()).default(null),
   period_start: z.preprocess((v) => (typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null), z.string().nullable()).default(null),
   period_end: z.preprocess((v) => (typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null), z.string().nullable()).default(null),
@@ -235,7 +237,7 @@ const StatementToolInput = z.object({
 const ACCOUNT_PROPERTIES = {
   account_kind: { type: ["string", "null"], enum: ["everyday", "savings", "credit_card", "loan", "offset", null], description: "The kind of account this statement is for: everyday/transaction, savings, credit_card, loan (a home or investment loan), or offset. null if unclear." },
   institution: { type: ["string", "null"], description: "The bank or lender's name as printed (e.g. 'Westpac', 'ING'), or null." },
-  last4: { type: ["string", "null"], description: "ONLY the last FOUR digits of the account or card number, counted from the END of the whole number with spaces removed: a number printed in groups like '012 345' ends '2345' (not '0345'). Never the full number, never the BSB. null if not shown." },
+  last4: { type: ["string", "null"], description: "The account or card number exactly as printed on the statement, including any masking (e.g. 'xxxx xxxx xxxx 4321' or '012 345'). Quillo keeps only its last four digits. NOT the BSB. null if not shown." },
   period_start: { type: ["string", "null"], description: "Statement period start, ISO YYYY-MM-DD, or null." },
   period_end: { type: ["string", "null"], description: "Statement period end, ISO YYYY-MM-DD, or null." },
   interest_rate_pct: { type: ["number", "null"], description: "The CURRENT interest rate printed (the latest row of any rate table), as a percent (e.g. 6.4), or null." },
@@ -306,7 +308,7 @@ export async function extractStatement(
     "\n- EXCLUDE everything that is not a dated money transaction: rewards/points lines and summaries, any \"regular payments\" / \"helping you identify your regular payments\" list, interest-rate summary rows, and marketing text. Only transcribe rows that have a date and a dollar amount in the transaction table.\n" +
     (opts.detectAccount
       ? (opts.isLiability ? "" : "\n- If this is a CREDIT-CARD or loan statement: a purchase or charge is \"debit\"; a payment or refund is \"credit\" (often printed with a trailing minus).") +
-        "\n- Also record what the statement says about its own account: its kind, the bank or lender, ONLY the last four digits of the account or card number, the statement period, and any printed current interest rate, interest charged or earned for the period, and loan purpose. Never record the account holder's name, the BSB or a full account number.\n"
+        "\n- Also record what the statement says about its own account: its kind, the bank or lender, the account or card number as printed (only its last four digits are kept), the statement period, and any printed current interest rate, interest charged or earned for the period, and loan purpose. Never record the account holder's name or the BSB.\n"
       : "") +
     "Call record_statement once.";
   const tool = opts.detectAccount ? STATEMENT_ACCOUNT_TOOL : STATEMENT_TOOL;

@@ -44,6 +44,7 @@ Legend — **engine**: backend computes it (✓ live behind flag); **UI**: a web
 | Negative-gearing rentals + Div 40/43 | ✓ | ✓ | ✓ | (live) | 6 |
 | Multi-income aggregation | ✓ | ✓ | ✓ | (live) | all |
 | Facts read once at ingest: not-yet-Tax-ready employers named on the wait list; NOA HELP balance ⇒ study loan; a payslip vs a "not working" answer | ✓ | ✓ upload | ✓ Connect wait list · Get set up · Check note | `ingest_facts` (2026-10-28) | synthetic tenant `pfacts` (FT1/P7 shape) |
+| A rental statement for an address that isn't a property yet ⇒ "add this property?" card; Yes files its statements under it and settles annual-over-monthly | ✓ | ✓ one tap (Review "We noticed") | ✓ per-property line on Reports | `property_from_statement` (2026-10-28) | synthetic tenant `pprop` (P2/P6 rental shape) |
 | Re-upload / overlapping documents count once (income-statement reprint; annual agent summary over monthlies, either order; ADR-0006) | ✓ | ✓ upload | ✓ Documents "not counted" badge | `income_supersession` (2026-10-28) | synthetic tenants `psup_*` (P1/P7 salary shape, P2/P6 rent shape) |
 | Sole-trader `business` income | ✓ | ◑ income only | ✓ | — (additive) | 4,5 |
 | Sole-trader activity + attribution | ✓ | ✓ activity-create form (Settings) + txn attribution | ◑ | `attribution_engine` (ON) | 4,5,8 |

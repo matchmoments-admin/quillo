@@ -84,6 +84,18 @@ export function NoticedConfirmed({ result }: { result: NoticedConfirmResult }) {
       </div>
     );
   }
+  if (result.kind === "rental_property") {
+    const f = result.filed;
+    return (
+      <div className="space-y-2 text-sm">
+        <p className="text-ink">
+          Added. {f ? `${f.income} statement${f.income === 1 ? "" : "s"} and ${f.txns} expense${f.txns === 1 ? "" : "s"} are now filed under it` : "Its statements are now filed under it"}
+          {f?.replaced ? `, and ${f.replaced} shorter statement${f.replaced === 1 ? " is" : "s are"} covered by a longer one, so ${f.replaced === 1 ? "it isn't" : "they aren't"} counted twice` : ""}.
+        </p>
+        <FtLink to="/grow/property">Check its ownership and use</FtLink>
+      </div>
+    );
+  }
   if (result.kind === "platform") {
     return <p className="text-sm text-ink">Done. {result.income_recorded} payout{result.income_recorded === 1 ? "" : "s"} recorded as business income, each counted once.</p>;
   }

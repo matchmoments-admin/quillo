@@ -1516,6 +1516,8 @@ export interface NoticedConfirmResult {
   offer_manual_income?: string[];
   residency_unanswered?: boolean;
   previously_recorded?: number;
+  property_id?: string; // rental_property (property_from_statement)
+  filed?: { income: number; txns: number; replaced: number };
 }
 
 // ── #575/#590 myTax self-lodge worksheet (GET /api/mytax-worksheet?fy=, flag mytax_worksheet; server

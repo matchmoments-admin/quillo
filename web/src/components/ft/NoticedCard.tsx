@@ -39,7 +39,7 @@ export function NoticedCard({
       <div className="rounded-2xl border border-line bg-card shadow-card p-4">
         <p className="text-sm font-semibold text-ink">{copy.title}</p>
         <p className="mt-1 text-sm text-muted">
-          {ev.n} deposit{ev.n === 1 ? "" : "s"} · {amount}
+          {signal.kind === "rental_property" ? `${ev.n} statement${ev.n === 1 ? "" : "s"} · ${amount} rent` : `${ev.n} deposit${ev.n === 1 ? "" : "s"} · ${amount}`}
           {span ? ` · ${span}` : ""}
         </p>
         {why && <p className="mt-2 max-w-[65ch] text-sm leading-relaxed text-muted">{copy.why}</p>}

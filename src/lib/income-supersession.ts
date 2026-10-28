@@ -33,6 +33,7 @@ export interface IncomeIdentity {
   employer?: string | null;
   employer_abn?: string | null;
   address_key?: string | null;
+  agent?: string | null; // the managing agent named on a rent statement
   period_start?: string | null;
   period_end?: string | null;
 }
@@ -52,17 +53,27 @@ export interface Supersession {
 
 const NONE: Supersession = { replace: [], coveredBy: null, overlap: [] };
 
+const STREET_TYPES: Record<string, string> = {
+  st: "st", street: "st", rd: "rd", road: "rd", ave: "ave", av: "ave", avenue: "ave", pde: "pde", parade: "pde",
+  cres: "cres", crescent: "cres", ct: "ct", court: "ct", pl: "pl", place: "pl", dr: "dr", drive: "dr", hwy: "hwy",
+  highway: "hwy", ln: "ln", lane: "ln", tce: "tce", terrace: "tce", cl: "cl", close: "cl", bvd: "bvd", blvd: "bvd",
+  boulevard: "bvd", way: "way", cct: "cct", circuit: "cct", sq: "sq", square: "sq", gr: "gr", grove: "gr", esp: "esp", esplanade: "esp",
+};
+
 /**
- * A property address reduced to "<number> <street name>" ("12A Harbour Street, Sometown" → "12a harbour"),
- * so two statements for one property agree and 12 and 12A stay different. Null when no street number is found.
+ * A property address reduced to "<number> <street name> <street type>" ("12A Harbour Street, Sometown" →
+ * "12a harbour st"), so two statements for one property agree while 12 and 12A, and Smith St and Smith Rd, stay
+ * different. The type is left off when none is printed. Null when no street number is found.
  */
 export function addressKey(hint: string | null | undefined): string | null {
   if (!hint) return null;
   const toks = hint.toLowerCase().replace(/[^a-z0-9/ ]+/g, " ").split(/\s+/).filter(Boolean);
   const i = toks.findIndex((t) => /\d/.test(t));
   if (i < 0) return null;
-  const street = toks.slice(i + 1).find((t) => /^[a-z]+$/.test(t));
-  return street ? `${toks[i]} ${street}` : null;
+  const j = toks.findIndex((t, k) => k > i && /^[a-z]+$/.test(t));
+  if (j < 0) return null;
+  const type = toks.slice(j + 1, j + 3).map((t) => STREET_TYPES[t]).find(Boolean);
+  return [toks[i], toks[j], type].filter(Boolean).join(" ");
 }
 
 const digits = (s: string | null | undefined) => (s ?? "").replace(/\D/g, "");
@@ -144,6 +155,7 @@ export function identityOf(row: IncomeRow): OnFileIncome {
     employer: str(d.employer),
     employer_abn: str(d.employer_abn),
     address_key: str(d.address_key),
+    agent: str(d.agent),
     period_start: str(d.period_start) ?? str(period[0]),
     period_end: str(d.period_end) ?? str(period[1]),
   };
@@ -204,4 +216,35 @@ export async function markSuperseded(env: Env, userId: string, docId: string, by
     )
     .bind(byDocId, docId)
     .run();
+}
+
+/**
+ * Settle one property's rent after rows were filed under it (property_from_statement: a statement's address
+ * became a property). Rows that matched only by address were held for review; now that they share a property,
+ * the same rule decides: longest period first, each row replaces the same-FY rows it covers. Returns what was
+ * retired (for the audit record).
+ */
+export async function settlePropertyRent(env: Env, userId: string, propertyId: string): Promise<RetiredIncome[]> {
+  const rows = await tenantDb(env, userId)
+    .prepare(
+      `SELECT id, income_type, fy, person_id, entity_id, property_id, source_doc_id, detail_json
+         FROM income WHERE user_id = ? AND income_type = 'rent' AND property_id = ?`,
+    )
+    .bind(propertyId)
+    .all<IncomeRow>();
+  const span = (r: OnFileIncome) => (iso(r.period_start) && iso(r.period_end) ? Date.parse(r.period_end) - Date.parse(r.period_start) : -1);
+  let live = (rows.results ?? []).map(identityOf).sort((a, b) => span(b) - span(a));
+  const retired: RetiredIncome[] = [];
+  for (const r of [...live]) {
+    if (!live.some((x) => x.id === r.id)) continue; // already replaced by a longer statement
+    // Rows filed under one property by their address alone may still be two properties whose keys collide, so
+    // settling acts only between statements with the same address AND the same managing agent; anything else
+    // stays as it is (both visible), never deleted (ADR-0006).
+    const sameSource = (x: OnFileIncome) => x.id !== r.id && !!x.address_key && x.address_key === r.address_key && norm(x.agent) === norm(r.agent) && !!norm(r.agent);
+    const d = decideSupersession(userId, r, live.filter(sameSource));
+    if (!d.replace.length) continue;
+    retired.push(...(await retireIncome(env, userId, d.replace, r.id, r.source_doc_id)));
+    live = live.filter((x) => !d.replace.some((y) => y.id === x.id));
+  }
+  return retired;
 }

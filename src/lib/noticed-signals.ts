@@ -22,7 +22,8 @@ import { fyBounds, fyLabel, parseFyStartYear } from "./ledger-totals";
 import { fyForDate, resolveRulePack } from "./report";
 import { AU_DESCRIPTOR, type JurisdictionDescriptor } from "./jurisdiction";
 import { creditSignalLists, payerStem, triageCredits, type CreditSignalLists, type SignalEvidence, type SignalKind, type TriageCredit } from "./credit-triage";
-import { addEntity, addIncomeActivity, upsertSituationPeriod } from "./situation-write";
+import { addEntity, addIncomeActivity, addProperty, upsertSituationPeriod } from "./situation-write";
+import { settlePropertyRent } from "./income-supersession";
 import { listSituationPeriods, rangesOverlap, situationFacts } from "./situation-profile";
 import { payerKey } from "./first-timer-signals";
 import { FX_CONVERTED, COUNTABLE_INCOME } from "./queries";
@@ -266,6 +267,9 @@ export interface ConfirmResult {
   residency_unanswered?: boolean;
   /** payroll: this payer's credits ALREADY recorded as personal income before #554 — undo them, or gross counts twice. */
   previously_recorded?: number;
+  /** rental_property: the property created and how many rent rows / transactions were filed under it. */
+  property_id?: string;
+  filed?: { income: number; txns: number; replaced: number };
 }
 
 const optStr = (v: unknown, max = 80): string | null => (typeof v === "string" && v.trim() ? v.trim().slice(0, max) : null);
@@ -327,6 +331,7 @@ export async function confirmNoticed(env: Env, userId: string, id: string, rawBo
  * stamped with its employer (the Clarify "My wages" answer lands here when the card was confirmed first).
  */
 async function confirmedAgain(env: Env, userId: string, s: NoticedSignal, descriptor: JurisdictionDescriptor): Promise<ConfirmResult> {
+  if (s.kind === "rental_property") return { kind: s.kind, status: "confirmed", already: true, income_recorded: 0, ...(s.ref_id ? { property_id: s.ref_id } : {}) };
   const base: ConfirmResult = { kind: s.kind, status: "confirmed", already: true, income_recorded: 0, ...(s.ref_id ? { entity_id: s.ref_id } : {}) };
   if (s.kind !== "payroll" || !s.ref_id) return base;
   const r = await stampPayer(env, userId, s.fy, s.signal_key, s.ref_id, await listsFor(env, userId, descriptor), descriptor);
@@ -418,7 +423,68 @@ async function applyConfirm(
     return { ref: periodId, out: { kind: "foreign", status: "confirmed", income_recorded: 0, period_id: periodId, residency_unanswered: residencyUnanswered, offer_manual_income: ["foreign_employment", "other"] } };
   }
 
+  if (s.kind === "rental_property") {
+    // property_from_statement: "add this property?" — create it (rented, owned by the person answering; ownership
+    // and use are editable in Grow › Property), then file every unattributed statement for this address under it.
+    const label = (s.evidence.label || "Rental property").slice(0, 120);
+    // One property per address: a card for another FY of the same address, or a retry after a failure part-way,
+    // reuses the property already made for it rather than adding a second.
+    const prior = await tenantDb(env, userId).prepare(
+      `SELECT ref_id AS id FROM noticed_signals WHERE user_id = ? AND kind = 'rental_property' AND signal_key = ? AND status = 'confirmed' AND ref_id IS NOT NULL
+        UNION ALL SELECT id FROM properties WHERE user_id = ? AND address = ? LIMIT 1`,
+    ).bind(s.signal_key, label).first<{ id: string }>();
+    const propertyId = prior?.id ?? (await addProperty(env, userId, { label, address: label, status: "rented", use_status: "rented", person_id: person.id }));
+    const filed = await fileRentalStatements(env, userId, s.signal_key, propertyId);
+    // The same address's cards for other FYs are answered by this one (its rows were just filed, whatever the FY).
+    await tenantDb(env, userId).prepare(
+      `UPDATE noticed_signals SET status = 'confirmed', decided_at = datetime('now'), ref_id = ? WHERE user_id = ? AND kind = 'rental_property' AND signal_key = ? AND status = 'open'`,
+    ).bind(propertyId, s.signal_key).run();
+    return { ref: propertyId, out: { kind: "rental_property", status: "confirmed", income_recorded: 0, property_id: propertyId, filed } };
+  }
+
   throw new NoticedError(`"${s.kind}" signals are confirmed elsewhere.`, 409);
+}
+
+/**
+ * property_from_statement: a managing agent's statement whose address matched no property ⇒ one "add this
+ * property?" signal per address and FY. The evidence is recomputed from the unattributed rent rows each time, so a
+ * second statement for the same address updates the card instead of adding one. Never creates anything itself.
+ */
+export async function noticeRentalProperty(env: Env, userId: string, addressKey: string, label: string, fy: string): Promise<void> {
+  const rows = (await tenantDb(env, userId).prepare(
+    `SELECT gross_cents, json_extract(detail_json, '$.period_start') AS ps, json_extract(detail_json, '$.period_end') AS pe
+       FROM income WHERE user_id = ? AND income_type = 'rent' AND property_id IS NULL AND fy = ?
+        AND json_valid(detail_json) AND json_extract(detail_json, '$.address_key') = ?`,
+  ).bind(fy, addressKey).all<{ gross_cents: number; ps: string | null; pe: string | null }>()).results ?? [];
+  if (!rows.length) return;
+  const dates = rows.flatMap((r) => [r.ps, r.pe]).filter((d): d is string => !!d).sort();
+  const evidence: SignalEvidence = { n: rows.length, total_cents: rows.reduce((t, r) => t + (r.gross_cents ?? 0), 0), first_date: dates[0] ?? null, last_date: dates[dates.length - 1] ?? null, label };
+  await tenantDb(env, userId).prepare(
+    `INSERT INTO noticed_signals (id, user_id, fy, kind, signal_key, status, evidence_json) VALUES (?, ?, ?, 'rental_property', ?, 'open', ?)
+     ON CONFLICT(user_id, fy, kind, signal_key) DO UPDATE SET evidence_json = excluded.evidence_json
+     WHERE noticed_signals.status = 'open' AND noticed_signals.evidence_json <> excluded.evidence_json`,
+  ).bind(crypto.randomUUID(), fy, addressKey, JSON.stringify(evidence)).run();
+}
+
+/**
+ * File every unattributed agent-statement row for an address (any FY) under a property: the rent rows and the
+ * expense lines their documents created, then settle annual-over-monthly for that property (income_supersession).
+ */
+export async function fileRentalStatements(env: Env, userId: string, addressKey: string, propertyId: string): Promise<{ income: number; txns: number; replaced: number }> {
+  const rows = (await tenantDb(env, userId).prepare(
+    `SELECT id, source_doc_id FROM income WHERE user_id = ? AND income_type = 'rent' AND property_id IS NULL
+        AND json_valid(detail_json) AND json_extract(detail_json, '$.address_key') = ?`,
+  ).bind(addressKey).all<{ id: string; source_doc_id: string | null }>()).results ?? [];
+  let txns = 0;
+  for (const r of rows) {
+    await tenantDb(env, userId).prepare(`UPDATE income SET property_id = ? WHERE user_id = ? AND id = ?`).bind(propertyId, r.id).run();
+    if (!r.source_doc_id) continue;
+    const t = await tenantDb(env, userId).prepare(`UPDATE transactions SET property_id = ? WHERE user_id = ? AND document_id = ? AND source = 'agent_statement' AND property_id IS NULL`).bind(propertyId, r.source_doc_id).run();
+    txns += t.meta?.changes ?? 0;
+    await tenantDb(env, userId).prepare(`UPDATE documents SET property_id = ? WHERE user_id = ? AND id = ? AND property_id IS NULL`).bind(propertyId, r.source_doc_id).run();
+  }
+  const replaced = featureOn(env, "income_supersession") ? (await settlePropertyRent(env, userId, propertyId)).length : 0;
+  return { income: rows.length, txns, replaced };
 }
 
 /**

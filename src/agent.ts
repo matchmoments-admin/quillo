@@ -40,7 +40,7 @@ import { cgtUnits } from "./lib/cgt";
 import { costBaseFromElements, validateCostBaseElements, withCostBaseElements, type CostBaseElements } from "./lib/capital";
 import { wantsIncomeStatementItem } from "./lib/first-timer-signals";
 import { residencyAssessabilityContext, residencyAssessabilityOn, hasNonResidentPeriod, nonResidentClaimTreatment, AU_WORK_DEDUCTIONS_CAVEAT } from "./lib/residency-assessability";
-import { noticeSignals, confirmNoticed, dismissNoticed, ensurePayrollSignal, incomeAnswerRows, STAMPED_INCOME_REFUSAL, NoticedError, type ConfirmBody, type ConfirmResult } from "./lib/noticed-signals";
+import { noticeSignals, confirmNoticed, dismissNoticed, ensurePayrollSignal, incomeAnswerRows, noticeRentalProperty, STAMPED_INCOME_REFUSAL, NoticedError, type ConfirmBody, type ConfirmResult } from "./lib/noticed-signals";
 import { creditSignalLists, payerStem, payerLabel } from "./lib/credit-triage";
 import { upsertSituationPeriod, fillSituationPeriod, deleteSituationPeriod, SituationPeriodError, type SituationPeriodInput } from "./lib/situation-write";
 import { applyCapitalColumnMap, type CapitalColumnMap, type CapitalDraftRow, type CapitalImportPreview } from "./lib/capital-import";
@@ -4161,6 +4161,13 @@ export class TaxAgent extends Agent<Env> {
     llm: LLM,
   ): Promise<void> {
     const ext = await extractAgentStatement(llm, bytes, mime);
+    // property_from_statement: the statement prints its own property address; try it when the classifier's hint
+    // matched nothing (it was read and then ignored).
+    const fromStatement = featureOn(this.env, "property_from_statement");
+    if (!propertyId && fromStatement) {
+      propertyId = await this.resolvePropertyByHint(userId, ext.property_hint);
+      if (propertyId) await tenantDb(this.env, userId).prepare(`UPDATE documents SET property_id = ? WHERE user_id = ? AND id = ? AND property_id IS NULL`).bind(propertyId, docId).run();
+    }
     const sumIncome = ext.income_lines.reduce((s, l) => s + Math.abs(l.amount_cents), 0);
     const sumExpense = ext.expense_lines.reduce((s, l) => s + Math.abs(l.amount_cents), 0);
     // Reconciliation: rent − expenses should equal the net disbursed (proof of completeness).
@@ -4177,7 +4184,7 @@ export class TaxAgent extends Agent<Env> {
     // FY, and a monthly that an annual summary already covers adds nothing (both used to count). The statement's
     // period and address are kept on the row so a later document can be compared with it.
     const supersede = featureOn(this.env, "income_supersession");
-    const address_key = supersede ? addressKey(ext.property_hint) : null;
+    const address_key = supersede || fromStatement ? addressKey(ext.property_hint) : null;
     let replacedNote = "";
     let toRetire: OnFileIncome[] = [];
     if (supersede) {
@@ -4207,7 +4214,7 @@ export class TaxAgent extends Agent<Env> {
       txn_date: ext.period_end,
       source_doc_id: docId,
       detail_json: JSON.stringify(
-        supersede
+        supersede || fromStatement
           ? { agent: ext.agent_name, lines: ext.income_lines, period_start: ext.period_start, period_end: ext.period_end, address_key }
           : { agent: ext.agent_name, lines: ext.income_lines },
       ),
@@ -4232,10 +4239,15 @@ export class TaxAgent extends Agent<Env> {
       replacedNote += ` It covers ${removed.length} shorter ${removed.length === 1 ? "statement" : "statements"} for the same property, so ${removed.length === 1 ? "that one is" : "those are"} kept as a record and no longer counted.`;
     }
 
+    // property_from_statement: no property matched ⇒ propose one from the statement's address ("We noticed"), never
+    // create it unasked (owner decision b). Its rows are filed under the property when the user says yes.
+    const proposed = !propertyId && fromStatement && !!address_key && !!ext.property_hint;
+    if (proposed) await noticeRentalProperty(this.env, userId, address_key!, ext.property_hint!.trim(), fy);
+
     await this.audit(userId, "agent_statement_decomposed", JSON.stringify({ docId, propertyId, rent: sumIncome, expenses: sumExpense, net: ext.net_disbursed_cents, reconOk }));
     await this.notify(
       userId,
-      `Agent statement processed: rent $${(sumIncome / 100).toFixed(2)}, expenses $${(sumExpense / 100).toFixed(2)}, net $${((ext.net_disbursed_cents ?? sumIncome - sumExpense) / 100).toFixed(2)}.${reconOk ? "" : " ⚠️ Didn't reconcile — review the income row."}${propertyId ? "" : " Couldn't match a property — set it in the income row."}${replacedNote}`,
+      `Agent statement processed: rent $${(sumIncome / 100).toFixed(2)}, expenses $${(sumExpense / 100).toFixed(2)}, net $${((ext.net_disbursed_cents ?? sumIncome - sumExpense) / 100).toFixed(2)}.${reconOk ? "" : " ⚠️ Didn't reconcile — review the income row."}${propertyId ? "" : proposed ? " Review has a card to add this property, so its rent and expenses sit under it." : " Couldn't match a property — set it in the income row."}${replacedNote}`,
       null,
     );
   }

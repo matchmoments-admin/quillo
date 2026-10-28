@@ -3,6 +3,7 @@
 // categorisation. No worker runtime / D1 / Claude — these are the fast, deterministic
 // regression guards for the rules we keep re-learning. Run: npm run test:units
 import { reconcileStatement, deriveBalances, normaliseStatementLines, liabilityArithmeticFor, isBalanceRow, isTransferLike, isLoanInterestLine, classifyMovement, movementTreatment, signedCents, lineFingerprint, type StatementLine } from "../src/lib/statements";
+import { decideSupersession, addressKey, identityOf, type OnFileIncome } from "../src/lib/income-supersession";
 import { groupKey, groupForClarify, rulePatternForStem, isClarifyLeftover, isInsuranceLikeStem, suggestionsFor, draftHoldingFromTxn } from "../src/lib/clarify";
 import { resolveLoanInterest, deductibleInterestCents } from "../src/lib/loan-interest";
 import { scoreClaimMatches } from "../src/lib/claim-match";
@@ -269,6 +270,60 @@ console.log("normaliseStatementLines (statement_normalise)");
   // A statement that balances under neither convention stays flagged (no silent pass).
   const broken = normaliseStatementLines(loan.slice(0, 2), 0, -15000000, true);
   check("unbalanced loan stays not-ok", broken.reconciliation.available && !broken.reconciliation.ok);
+}
+
+console.log("income supersession (income_supersession)");
+{
+  const U = "u1";
+  const sal = (id: string, o: Partial<OnFileIncome> = {}): OnFileIncome => ({ id, income_type: "salary_payg", fy: "2025-26", person_id: "person_self_u1", entity_id: null, source_doc_id: "docA", employer: "ACME PAYROLL PTY LTD", employer_abn: "11 111 111 111", ...o });
+  // The E2E bug: rows recorded by recordIncome carry person_self_<uid>; a reprint must still replace them.
+  const reprint = { income_type: "salary_payg", fy: "2025-26", source_doc_id: "docB", employer: "ACME PAYROLL PTY LTD", employer_abn: "11111111111" };
+  check("salary: a reprinted statement replaces the self-stamped row (the doubling bug)", decideSupersession(U, reprint, [sal("a")]).replace.map((r) => r.id).join() === "a");
+  check("salary: a legacy NULL-person row is the same taxpayer", decideSupersession(U, reprint, [sal("a", { person_id: null })]).replace.length === 1);
+  check("salary: a spouse's or an entity's same-employer row is never touched", decideSupersession(U, reprint, [sal("s", { person_id: "person_spouse" }), sal("e", { entity_id: "ent1" })]).replace.length === 0);
+  check("salary: two blocks in ONE statement coexist (same document)", decideSupersession(U, { ...reprint, source_doc_id: "docA" }, [sal("a")]).replace.length === 0);
+  check("salary: ABN decides when both carry one (renamed employer still matches)", decideSupersession(U, { ...reprint, employer: "Acme Payroll" }, [sal("a")]).replace.length === 1);
+  check("salary: a different ABN with the same name is a different employer", decideSupersession(U, { ...reprint, employer_abn: "22 222 222 222" }, [sal("a")]).replace.length === 0);
+  check("salary: a payslip/manual row (no ABN) matches on the name", decideSupersession(U, reprint, [sal("m", { employer_abn: null, source_doc_id: null })]).replace.length === 1);
+  check("salary: another FY is untouched", decideSupersession(U, reprint, [sal("a", { fy: "2024-25" })]).replace.length === 0);
+
+  const rent = (id: string, start: string, end: string, o: Partial<OnFileIncome> = {}): OnFileIncome => ({ id, income_type: "rent", fy: "2025-26", person_id: null, entity_id: null, property_id: "prop1", source_doc_id: `doc_${id}`, address_key: "12a harbour", period_start: start, period_end: end, ...o });
+  const annual = { income_type: "rent", fy: "2025-26", property_id: "prop1", source_doc_id: "docAnnual", address_key: "12a harbour", period_start: "2025-07-01", period_end: "2026-06-30" };
+  const monthlies = [rent("sep", "2025-09-01", "2025-09-30"), rent("oct", "2025-10-01", "2025-10-31")];
+  check("rent: an annual summary replaces the monthlies it covers", decideSupersession(U, annual, monthlies).replace.map((r) => r.id).join() === "sep,oct");
+  const monthly = { income_type: "rent", fy: "2025-26", property_id: "prop1", source_doc_id: "docSep", address_key: "12a harbour", period_start: "2025-09-01", period_end: "2025-09-30" };
+  const covered = decideSupersession(U, monthly, [rent("annual", "2025-07-01", "2026-06-30")]);
+  check("rent: a monthly after the annual is covered (records nothing)", covered.coveredBy?.id === "annual" && covered.replace.length === 0);
+  check("rent: another property's statements are untouched", decideSupersession(U, annual, [rent("x", "2025-09-01", "2025-09-30", { property_id: "prop2" })]).replace.length === 0 && decideSupersession(U, annual, [rent("x", "2025-09-01", "2025-09-30", { property_id: "prop2" })]).overlap.length === 0);
+  // Review findings: an address key can collide across properties ("12 Smith St, Bondi" / "12 Smith Rd, Perth"),
+  // so an address-only match is only ever held for review, never deleted.
+  const noProp = (o: Partial<OnFileIncome> = {}) => rent("np", "2025-09-01", "2025-09-30", { property_id: null, ...o });
+  const addrOnly = decideSupersession(U, { ...annual, property_id: null }, [noProp()]);
+  check("rent: an address-only match is held for review, never replaced", addrOnly.replace.length === 0 && !addrOnly.coveredBy && addrOnly.overlap.length === 1);
+  check("rent: a different address with no property is untouched", decideSupersession(U, { ...annual, property_id: null }, [noProp({ address_key: "12 harbour" })]).overlap.length === 0);
+  check("rent: one row with a property and one without, same address ⇒ review, not replace", decideSupersession(U, annual, [noProp()]).replace.length === 0 && decideSupersession(U, annual, [noProp()]).overlap.length === 1);
+  // A calendar-year summary (Jan–Dec 2025, FY2025-26) overlaps FY2024-25 monthlies: review, never a cross-FY delete.
+  const cal = decideSupersession(U, { ...annual, period_start: "2025-01-01", period_end: "2025-12-31" }, [rent("mar", "2025-03-01", "2025-03-31", { fy: "2024-25" })]);
+  check("rent: an overlap with another FY's statement is held for review", cal.replace.length === 0 && cal.overlap.length === 1);
+  check("rent: non-ISO dates make no decision", decideSupersession(U, { ...annual, period_start: "1 Jul 2025" }, monthlies).replace.length === 0 && decideSupersession(U, annual, [rent("bad", "Sep 2025", "2025-09-30")]).replace.length === 0);
+  check("rent: property ids decide when both rows have one", decideSupersession(U, { ...annual, property_id: "p1" }, [rent("y", "2025-09-01", "2025-09-30", { property_id: "p2" })]).replace.length === 0);
+  const partial = decideSupersession(U, { ...monthly, period_start: "2025-09-15", period_end: "2025-10-15" }, monthlies);
+  check("rent: a partial overlap keeps both, for review", partial.replace.length === 0 && !partial.coveredBy && partial.overlap.length === 2);
+  check("rent: no period on the incoming statement ⇒ no decision", decideSupersession(U, { ...annual, period_start: null }, monthlies).replace.length === 0);
+  check("addressKey: number + street, 12 and 12A differ, suffix/suburb ignored",
+    addressKey("12A Harbour Street, Sometown NSW 2000") === "12a harbour" && addressKey("12A HARBOUR ST") === "12a harbour" && addressKey("12 Harbour St") === "12 harbour" && addressKey("Unit 4/12 Smith St") === "4/12 smith" && addressKey("no number") === null);
+  check("identityOf reads the income-statement period pair and the rent period", identityOf({ id: "i", income_type: "salary_payg", fy: "2025-26", person_id: null, entity_id: null, property_id: null, source_doc_id: "d", detail_json: JSON.stringify({ employer: "X", period: ["2025-07-01", "2026-06-30"] }) }).period_end === "2026-06-30");
+}
+
+console.log("one notion of self (src/lib/self-person.ts)");
+{
+  // The salary-doubling bug was one of several inline copies of the self id drifting (NULL vs person_self_<uid>).
+  const walk = (d: string): string[] => fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(path.join(d, e.name)) : e.name.endsWith(".ts") ? [path.join(d, e.name)] : []));
+  const offenders = walk(path.join(process.cwd(), "src"))
+    .filter((f) => !f.endsWith(path.join("lib", "self-person.ts")))
+    .filter((f) => /`person_self_\$\{/.test(fs.readFileSync(f, "utf8")))
+    .map((f) => path.relative(process.cwd(), f));
+  check(`no inline \`person_self_\${...}\` outside self-person.ts (use selfPersonId/ownerPersonId): ${offenders.join(", ") || "none"}`, offenders.length === 0);
 }
 
 // ── Security sweep #694 / #712: OAuth state is bound to the browser that started the connect ──

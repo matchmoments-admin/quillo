@@ -15,6 +15,7 @@
 //  - Writes are DIFFED: a re-scan with nothing changed writes nothing.
 //  - Multi-tenant: every statement is scoped by user_id; identity comes from the caller (server-derived).
 
+import { ownerPersonId } from "./self-person";
 import type { Env } from "../env";
 import { featureOn } from "./features";
 import { fyBoundsFor, fyStartYearForDate, resolveJurisdictionForUser, type JurisdictionDescriptor } from "./jurisdiction";
@@ -224,7 +225,7 @@ export async function runRelevanceScan(env: Env, userId: string, opts: { descrip
       tenantDb(env, userId).prepare(
         `INSERT OR IGNORE INTO claim_suggestions (id, user_id, person_id, txn_id, rule_id, suggestion, claim_type, estimated_deduction_cents, status, source)
          VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 'suggested', ?)`,
-      ).bind(crypto.randomUUID(), t.person_id ?? `person_self_${userId}`, t.id, t.rule_id, worthALookText(t.rule!, label), t.rule!.claim_type, SOURCE),
+      ).bind(crypto.randomUUID(), ownerPersonId(userId, t.person_id), t.id, t.rule_id, worthALookText(t.rule!, label), t.rule!.claim_type, SOURCE),
     );
     suggested++;
   }

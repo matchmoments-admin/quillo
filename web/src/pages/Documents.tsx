@@ -123,6 +123,11 @@ export function Documents() {
                   <td className="px-4 py-2">
                     {DOC_LABEL[d.doc_type] ?? d.doc_type}
                     {d.needs_review ? <span className="ml-2 rounded-full bg-warn/10 px-2 py-0.5 text-xs text-warn">review</span> : null}
+                    {d.superseded_by ? (
+                      <span className="ml-2 rounded-full bg-line px-2 py-0.5 text-xs text-muted" title="A longer statement you uploaded covers the same dates, so this one is kept as a record and its figures aren't counted again.">
+                        kept as a record · not counted
+                      </span>
+                    ) : null}
                   </td>
                   <td className="px-4 py-2 text-muted">{d.issuer ?? "—"}</td>
                   <td className="px-4 py-2 text-muted tabular-nums">{d.doc_date ?? "—"}</td>

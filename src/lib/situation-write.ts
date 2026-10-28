@@ -1,4 +1,5 @@
 import type { Env } from "../env";
+import { selfPersonId } from "./self-person";
 import { BUCKETS } from "./taxonomy";
 import { propertyToCgtInputs } from "./cgt";
 import { fyForDate } from "./report";
@@ -30,7 +31,6 @@ const uid = () => crypto.randomUUID();
 
 // The deterministic self-person id seeded by 0006_persons.sql. New properties/entities default
 // to it so a single-person tenant never has to think about persons.
-const selfPersonId = (userId: string) => `person_self_${userId}`;
 
 /**
  * Bootstrap a brand-new tenant on first authed request: an empty profile (AU / au-v1 / no consent
@@ -383,6 +383,24 @@ export async function clearIncomeCgt(env: Env, userId: string, incomeId: string)
     if (/no such table|no such column/i.test((e as Error).message)) return;
     throw e;
   }
+}
+
+/**
+ * Remove one income row and what hangs off it: a bank credit linked to it (otherwise excluded from income forever
+ * with no row left to unlink it, ADR-0002) and its materialised CGT rows. Every income delete goes through here
+ * (the API delete, income supersession, a document delete), so none of them re-derives the cascade.
+ */
+export async function deleteIncomeRow(env: Env, userId: string, incomeId: string): Promise<void> {
+  await tenantDb(env, userId).prepare(`UPDATE transactions SET matched_income_id = NULL WHERE user_id = ? AND matched_income_id = ?`).bind(incomeId).run();
+  await clearIncomeCgt(env, userId, incomeId);
+  await deleteRow(env, userId, "income", incomeId);
+}
+
+/** Remove the transactions a document created (receipt and agent-statement lines) and any CGT parcel they evidenced. */
+export async function deleteDocumentTransactions(env: Env, userId: string, docId: string): Promise<number> {
+  const r = await tenantDb(env, userId).prepare(`DELETE FROM transactions WHERE user_id = ? AND document_id = ?`).bind(docId).run();
+  await clearOrphanedTxnCgt(env, userId);
+  return r.meta?.changes ?? 0;
 }
 
 // Map the legacy `kind` to the 0032 entity_type so a freshly-created entity isn't NULL (which would

@@ -1,4 +1,5 @@
 import type { Env } from "../env";
+import { selfPersonId } from "./self-person";
 import { getProfile, getSituation } from "./db";
 import { revokeAndDisconnect } from "./qbo-oauth";
 import { bankUpstream, cdrAudit, type BankUpstream } from "./bank-consent";
@@ -157,7 +158,7 @@ export async function purgeTenant(env: Env, userId: string, deps: { bankUpstream
     // Reseat the self person too (same id shape as ensureTenant's selfPersonId — inlined to avoid an
     // import cycle through situation-write → report). Without it the tenant had a profile but no "You",
     // and the Get set up page sat on "Your profile isn't ready yet" forever after a purge.
-    tenantDb(env, userId).prepare(`INSERT OR IGNORE INTO persons (id, user_id, display_name, role) VALUES (?, ?, 'You', 'self')`).bind(`person_self_${userId}`),
+    tenantDb(env, userId).prepare(`INSERT OR IGNORE INTO persons (id, user_id, display_name, role) VALUES (?, ?, 'You', 'self')`).bind(selfPersonId(userId)),
   ]);
   // Count only the DELETE results (exclude the trailing reseat INSERTs) so rowsDeleted stays truthful.
   const rowsDeleted = results.slice(0, deletes.length).reduce((n, r) => n + (r.meta?.changes ?? 0), 0);

@@ -15,6 +15,7 @@
 //   foreign    → the `foreign_income` situation fact; manual entry offered. A transfer is never treated as income.
 // Dismiss is terminal for that FY + kind + payer key: the scan's upsert only refreshes rows still 'open'.
 
+import { selfPersonId } from "./self-person";
 import type { Env } from "../env";
 import { featureOn } from "./features";
 import { fyBounds, fyLabel, parseFyStartYear } from "./ledger-totals";
@@ -66,8 +67,6 @@ const toSignal = (r: SignalRow): NoticedSignal => {
   try { evidence = JSON.parse(r.evidence_json) as SignalEvidence; } catch { /* malformed ⇒ empty evidence */ }
   return { id: r.id, fy: r.fy, kind: r.kind, signal_key: r.signal_key, status: r.status, evidence, ref_id: r.ref_id, created_at: r.created_at, decided_at: r.decided_at };
 };
-
-const selfPersonId = (userId: string) => `person_self_${userId}`;
 
 /**
  * The rows an income answer may record (Clarify "rental / business / personal income"): a credit stamped as pay

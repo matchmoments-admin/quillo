@@ -1,7 +1,7 @@
 import { Agent } from "agents";
 import type { Env } from "./env";
 import { getProfile, getSituation, renderSituation, type Profile, type Situation, type UserRule } from "./lib/db";
-import { addRule, addAccount, updateAccount, syncIncomeCgtFromComponents, clearIncomeCgt, syncTxnCgtHolding, clearTxnCgt, clearOrphanedTxnCgt, syncPropertyDisposalToCgt, addPerson, updatePerson, addProperty, updateProperty, addEntity, updateEntity, updateRule, deleteRow, DeleteBlockedError, addPropertyOwner, addEntityRole, addIncomeActivity, addLoanProperty, updateLoanProperty, assertOwns, assertNoBlockingChildren, assertNoBlockingChildrenExcept } from "./lib/situation-write";
+import { addRule, addAccount, updateAccount, syncIncomeCgtFromComponents, clearIncomeCgt, syncTxnCgtHolding, clearTxnCgt, clearOrphanedTxnCgt, deleteIncomeRow, deleteDocumentTransactions, syncPropertyDisposalToCgt, addPerson, updatePerson, addProperty, updateProperty, addEntity, updateEntity, updateRule, deleteRow, DeleteBlockedError, addPropertyOwner, addEntityRole, addIncomeActivity, addLoanProperty, updateLoanProperty, assertOwns, assertNoBlockingChildren, assertNoBlockingChildrenExcept } from "./lib/situation-write";
 import { lodgingFy } from "./lib/lodging-year";
 import { markFyLodged, unmarkFyLodged, listLodgedFys, type FyLodgedRow } from "./lib/fy-signoff";
 import type { DeleteBlocker } from "./lib/situation-write";
@@ -48,6 +48,8 @@ import { resolveJurisdictionForUser, currentFyStartYearFor, fyStartYearForDate, 
 import type { FilingReadiness } from "./lib/readiness";
 import { computeFilingReadiness as computeFilingReadinessFor, loadClaimRules as loadClaimRulesFor } from "./lib/filing-readiness";
 import { readJourney } from "./lib/journey-read";
+import { addressKey, markSuperseded, retireIncome, supersedeIncome, type OnFileIncome } from "./lib/income-supersession";
+import { selfPersonId } from "./lib/self-person";
 import { rollSchedule, balancingAdjustment, fyStartYearOf, isLowCostAsset, looksLikePersonalTransfer, assetDepreciatesForTaxpayer, depMethodConflict, resolveDiv40Life, type DepAsset } from "./lib/depreciation";
 import { matchClaimRules, suggestionText, enumerateSituationClaims, classifyClaim, uncoveredOccupations, ruleKey, type ClaimRule, type ClaimContext, type ClaimSituation } from "./lib/claimability";
 import { minimiseTenant, minimisationNotices, tidiedSummary, tombstonedFingerprints, rolledUpLineCount, forgetStatementMinimisation, type MinimiseResult, type TidiedSummary } from "./lib/minimise";
@@ -3129,7 +3131,7 @@ export class TaxAgent extends Agent<Env> {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?${incomeLink ? ", ?" : ""})`,
     )
       .bind(
-        id, userId, inc.person_id ?? `person_self_${userId}`, inc.entity_id ?? null, inc.property_id ?? null,
+        id, userId, inc.person_id ?? selfPersonId(userId), inc.entity_id ?? null, inc.property_id ?? null,
         inc.income_type, inc.ato_label ?? null, fy, grossCents, toAudCents(inc.net_cents),
         toAudCents(inc.withholding_cents) ?? 0, frankingCredit, toAudCents(foreignTax) ?? 0,
         currency, fx.amount_aud_cents, fx.fx_rate, inc.source_doc_id ?? null, inc.txn_date ?? null,
@@ -3143,7 +3145,7 @@ export class TaxAgent extends Agent<Env> {
     if (comps && materialiseCg) {
       // C-E: carry the income row's entity through so an entity distribution's gain is attributed to that
       // separate taxpayer rather than landing (unscoped) in the individual headline.
-      await syncIncomeCgtFromComponents(this.env, userId, id, comps, fy, inc.person_id ?? `person_self_${userId}`, inc.ato_label ?? null, inc.txn_date ?? null, inc.entity_id ?? null);
+      await syncIncomeCgtFromComponents(this.env, userId, id, comps, fy, inc.person_id ?? selfPersonId(userId), inc.ato_label ?? null, inc.txn_date ?? null, inc.entity_id ?? null);
     }
     return id;
   }
@@ -3179,7 +3181,7 @@ export class TaxAgent extends Agent<Env> {
       `INSERT INTO cgt_assets (id, user_id, person_id, asset_kind, code, label, units, acquired_date, cost_base_cents, reduced_cost_base_cents, main_residence_exempt, status${entityScope ? ", entity_id" : ""}${costBaseDetail ? ", detail_json" : ""})
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'held'${entityScope ? ", ?" : ""}${costBaseDetail ? ", ?" : ""})`,
     )
-      .bind(id, userId, a.person_id ?? `person_self_${userId}`, a.asset_kind, a.code ?? null, a.label ?? null, cgtUnits(a.units), a.acquired_date ?? null, costBaseCents, a.reduced_cost_base_cents ?? null, a.main_residence_exempt ?? 0, ...(entityScope ? [a.entity_id ?? null] : []), ...(costBaseDetail ? [detailJson] : []))
+      .bind(id, userId, a.person_id ?? selfPersonId(userId), a.asset_kind, a.code ?? null, a.label ?? null, cgtUnits(a.units), a.acquired_date ?? null, costBaseCents, a.reduced_cost_base_cents ?? null, a.main_residence_exempt ?? 0, ...(entityScope ? [a.entity_id ?? null] : []), ...(costBaseDetail ? [detailJson] : []))
       .run();
     await this.audit(userId, "cgt_asset_recorded", JSON.stringify({ id, kind: a.asset_kind, code: a.code, ...(entityScope && a.entity_id ? { entity_id: a.entity_id } : {}) }));
     return id;
@@ -3220,7 +3222,7 @@ export class TaxAgent extends Agent<Env> {
       `INSERT INTO ess_grants (id, user_id, person_id, employer_entity_id, scheme_type, grant_date, taxing_point_date, shares_or_options, units, discount_cents, market_value_cents, ownership_gt_10pct)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-      .bind(id, g.person_id ?? `person_self_${userId}`, g.employer_entity_id ?? null, g.scheme_type, g.grant_date ?? null, g.taxing_point_date ?? null, g.shares_or_options ?? null, g.units ?? null, g.discount_cents ?? 0, g.market_value_cents ?? null, g.ownership_gt_10pct ?? 0)
+      .bind(id, g.person_id ?? selfPersonId(userId), g.employer_entity_id ?? null, g.scheme_type, g.grant_date ?? null, g.taxing_point_date ?? null, g.shares_or_options ?? null, g.units ?? null, g.discount_cents ?? 0, g.market_value_cents ?? null, g.ownership_gt_10pct ?? 0)
       .run();
     await this.audit(userId, "ess_grant_recorded", JSON.stringify({ id, scheme: g.scheme_type }));
     return id;
@@ -3237,7 +3239,7 @@ export class TaxAgent extends Agent<Env> {
       `INSERT INTO vehicle_logbooks (id, user_id, person_id, asset_id, fy, start_date, end_date, business_km, total_km, running_costs_cents, business_use_pct)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-      .bind(id, lb.person_id ?? `person_self_${userId}`, lb.asset_id ?? null, fy, lb.start_date ?? null, lb.end_date ?? null, lb.business_km ?? null, lb.total_km ?? null, lb.running_costs_cents ?? 0, lb.business_use_pct ?? null)
+      .bind(id, lb.person_id ?? selfPersonId(userId), lb.asset_id ?? null, fy, lb.start_date ?? null, lb.end_date ?? null, lb.business_km ?? null, lb.total_km ?? null, lb.running_costs_cents ?? 0, lb.business_use_pct ?? null)
       .run();
     await this.audit(userId, "vehicle_logbook_recorded", JSON.stringify({ id, fy }));
     return id;
@@ -3260,7 +3262,7 @@ export class TaxAgent extends Agent<Env> {
       `INSERT INTO trust_distributions (id, user_id, trust_entity_id, fy, beneficiary_person_id, beneficiary_entity_id, share_pct, amount_cents, character, franking_credit_cents)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-      .bind(id, d.trust_entity_id, fy, d.beneficiary_person_id ?? `person_self_${userId}`, d.beneficiary_entity_id ?? null, d.share_pct ?? null, d.amount_cents ?? 0, d.character ?? "ordinary", d.franking_credit_cents ?? 0)
+      .bind(id, d.trust_entity_id, fy, d.beneficiary_person_id ?? selfPersonId(userId), d.beneficiary_entity_id ?? null, d.share_pct ?? null, d.amount_cents ?? 0, d.character ?? "ordinary", d.franking_credit_cents ?? 0)
       .run();
     await this.audit(userId, "trust_distribution_recorded", JSON.stringify({ id, trust: d.trust_entity_id, fy }));
     return id;
@@ -3279,7 +3281,7 @@ export class TaxAgent extends Agent<Env> {
       `INSERT INTO trust_distributions (id, user_id, trust_entity_id, fy, beneficiary_person_id, share_pct, amount_cents, character, franking_credit_cents, source_kind)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'partnership')`,
     )
-      .bind(id, d.partnership_entity_id, fy, d.beneficiary_person_id ?? `person_self_${userId}`, d.share_pct ?? null, d.amount_cents ?? 0, d.character ?? "ordinary", d.franking_credit_cents ?? 0)
+      .bind(id, d.partnership_entity_id, fy, d.beneficiary_person_id ?? selfPersonId(userId), d.share_pct ?? null, d.amount_cents ?? 0, d.character ?? "ordinary", d.franking_credit_cents ?? 0)
       .run();
     await this.audit(userId, "partnership_distribution_recorded", JSON.stringify({ id, partnership: d.partnership_entity_id, fy }));
     return id;
@@ -3295,7 +3297,7 @@ export class TaxAgent extends Agent<Env> {
       `INSERT INTO smsf_members (id, user_id, smsf_entity_id, person_id, phase, pension_balance_cents, accumulation_balance_cents, transfer_balance_cents)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-      .bind(id, m.smsf_entity_id, m.person_id ?? `person_self_${userId}`, m.phase ?? "accumulation", m.pension_balance_cents ?? 0, m.accumulation_balance_cents ?? 0, m.transfer_balance_cents ?? 0)
+      .bind(id, m.smsf_entity_id, m.person_id ?? selfPersonId(userId), m.phase ?? "accumulation", m.pension_balance_cents ?? 0, m.accumulation_balance_cents ?? 0, m.transfer_balance_cents ?? 0)
       .run();
     await this.audit(userId, "smsf_member_recorded", JSON.stringify({ id, smsf: m.smsf_entity_id, phase: m.phase }));
     return id;
@@ -3310,7 +3312,7 @@ export class TaxAgent extends Agent<Env> {
     await tenantDb(this.env, userId).prepare(
       `INSERT INTO super_contributions (id, user_id, person_id, fy, type, amount_cents) VALUES (?, ?, ?, ?, ?, ?)`,
     )
-      .bind(id, c.person_id ?? `person_self_${userId}`, fy, c.type ?? "concessional", c.amount_cents ?? 0)
+      .bind(id, c.person_id ?? selfPersonId(userId), fy, c.type ?? "concessional", c.amount_cents ?? 0)
       .run();
     await this.audit(userId, "super_contribution_recorded", JSON.stringify({ id, type: c.type, fy }));
     return id;
@@ -3963,17 +3965,19 @@ export class TaxAgent extends Agent<Env> {
   async deleteDocument(userId: string, docId: string): Promise<{ deleted: boolean; income_removed: number; txns_removed: number }> {
     const doc = await tenantDb(this.env, userId).prepare(`SELECT r2_key FROM documents WHERE id = ? AND user_id = ?`).bind(docId).first<{ r2_key: string | null }>();
     if (!doc) return { deleted: false, income_removed: 0, txns_removed: 0 };
-    const inc = await tenantDb(this.env, userId).prepare(`DELETE FROM income WHERE user_id = ? AND source_doc_id = ?`).bind(docId).run();
-    const txn = await tenantDb(this.env, userId).prepare(`DELETE FROM transactions WHERE user_id = ? AND document_id = ?`).bind(docId).run();
-    await clearOrphanedTxnCgt(this.env, userId); // C1: no parcel may outlive the transaction that evidenced it
+    // Each income row goes through the shared delete (unlinks a matched credit, drops its CGT rows), then the
+    // transactions the document created (C1: no parcel may outlive the transaction that evidenced it).
+    const incomeRows = await tenantDb(this.env, userId).prepare(`SELECT id FROM income WHERE user_id = ? AND source_doc_id = ?`).bind(docId).all<{ id: string }>();
+    for (const r of incomeRows.results ?? []) await deleteIncomeRow(this.env, userId, r.id);
+    const txnsRemoved = await deleteDocumentTransactions(this.env, userId, docId);
     await tenantDb(this.env, userId).prepare(`DELETE FROM documents WHERE id = ? AND user_id = ?`).bind(docId).run();
     // Keep the object if a transaction outside this document still points at it (a duplicate receipt row
     // reuses its original's object); an already-missing object deletes as a no-op.
     if (doc.r2_key && !(await keyStillReferenced(this.env.DB, userId, doc.r2_key, { includeDocuments: false }))) {
       await this.env.RECEIPTS.delete(doc.r2_key).catch(() => {});
     }
-    const income_removed = inc.meta?.changes ?? 0;
-    const txns_removed = txn.meta?.changes ?? 0;
+    const income_removed = incomeRows.results?.length ?? 0;
+    const txns_removed = txnsRemoved;
     await this.audit(userId, "document_deleted", JSON.stringify({ docId, income_removed, txns_removed }));
     return { deleted: true, income_removed, txns_removed };
   }
@@ -3984,7 +3988,8 @@ export class TaxAgent extends Agent<Env> {
    * tax-correctness: leave already inside gross, SG/RESC/RFB reference-only), plus capture-only
    * employment_lump_sum rows. The statement is AUTHORITATIVE, so a salary row SUPERSEDES prior per-period
    * payslip + hand-keyed salary rows for the same employer+FY (matched on the detail_json.employer NAME —
-   * per-period/manual rows carry no ABN — so the annual gross is never ADDED on top). Deletion is audited;
+   * per-period/manual rows carry no ABN — so the annual gross is never ADDED on top; with income_supersession
+   * the rule lives in src/lib/income-supersession.ts and matches on ABN when both rows carry one). Deletion is audited;
    * manual rows with no employer field are never matched. Not-"Tax ready" employers are surfaced, not
    * recorded. Mirrors decomposeAgentStatement (extract → map → loop recordIncome).
    */
@@ -4004,9 +4009,20 @@ export class TaxAgent extends Agent<Env> {
         unplaced.add(employer || "an employer");
         continue;
       }
+      let toRetire: OnFileIncome[] = [];
       if (row.income_type === "salary_payg") {
         salary++;
-        if (employer) {
+        if (featureOn(this.env, "income_supersession")) {
+          // One rule for every periodic income document (src/lib/income-supersession.ts): the same employer
+          // (ABN, else name), the same taxpayer (a NULL person and person_self_<uid> are both the tenant) and FY,
+          // from another document. The inline query below matched only person_id IS NULL, but recordIncome stamps
+          // person_self_<uid>, so a re-uploaded statement was added on top.
+          // Decided here, applied after the new row is written (below), so a failure never loses the salary.
+          const detail = row.detail as { employer?: string; employer_abn?: string | null };
+          toRetire = (await supersedeIncome(this.env, userId, {
+            income_type: "salary_payg", fy, source_doc_id: docId, employer: detail.employer ?? null, employer_abn: detail.employer_abn ?? null,
+          })).replace;
+        } else if (employer) {
           // Supersede prior per-period payslip + hand-keyed PERSONAL salary rows for this employer+FY, so the
           // authoritative annual gross replaces them (never adds on top). Scoped to person_id/entity_id NULL
           // (this statement records the tenant's OWN salary — never touch a spouse's or an entity's same-name
@@ -4027,7 +4043,7 @@ export class TaxAgent extends Agent<Env> {
       } else if (row.income_type === "employment_lump_sum") {
         lumps++;
       }
-      await this.recordIncome(userId, {
+      const newId = await this.recordIncome(userId, {
         income_type: row.income_type,
         ato_label: row.ato_label,
         fy,
@@ -4039,6 +4055,11 @@ export class TaxAgent extends Agent<Env> {
         detail_json: JSON.stringify(row.detail),
         needs_review: row.needs_review,
       });
+      if (toRetire.length) {
+        const removed = await retireIncome(this.env, userId, toRetire, newId, docId);
+        superseded += removed.length;
+        await this.audit(userId, "income_superseded", JSON.stringify({ employer, fy, docId, replacement: newId, replaced: removed }));
+      }
     }
     const sup = superseded ? ` Replaced ${superseded} earlier salary ${superseded === 1 ? "entry" : "entries"}.` : "";
     const lp = lumps ? ` ${lumps} lump-sum ${lumps === 1 ? "amount" : "amounts"} captured (special treatment — confirm with a registered tax agent).` : "";
@@ -4068,9 +4089,33 @@ export class TaxAgent extends Agent<Env> {
     const jur = await this.jurisdictionFor(userId);
     const baseCur = baseCurrencyOf(this.env, jur); // agent statement is in the tenant's base currency (AU ⇒ 'AUD')
     const fy = fyForDate(ext.period_end ?? ext.period_start ?? null, jur) ?? this.currentFyLabel(jur);
-    const needsReview = !reconOk || ext.confidence < CONFIDENCE_THRESHOLD ? 1 : 0;
+    let needsReview = !reconOk || ext.confidence < CONFIDENCE_THRESHOLD ? 1 : 0;
 
-    await this.recordIncome(userId, {
+    // income_supersession: an annual summary replaces the monthly statements it covers for the same property and
+    // FY, and a monthly that an annual summary already covers adds nothing (both used to count). The statement's
+    // period and address are kept on the row so a later document can be compared with it.
+    const supersede = featureOn(this.env, "income_supersession");
+    const address_key = supersede ? addressKey(ext.property_hint) : null;
+    let replacedNote = "";
+    let toRetire: OnFileIncome[] = [];
+    if (supersede) {
+      const sup = await supersedeIncome(this.env, userId, {
+        income_type: "rent", fy, property_id: propertyId, source_doc_id: docId, address_key, period_start: ext.period_start, period_end: ext.period_end,
+      });
+      if (sup.coveredBy) {
+        await markSuperseded(this.env, userId, docId, sup.coveredBy.source_doc_id);
+        await this.audit(userId, "agent_statement_covered", JSON.stringify({ docId, coveredBy: sup.coveredBy.source_doc_id, fy }));
+        await this.notify(userId, `This rental statement (${ext.period_start} to ${ext.period_end}) is already covered by a longer statement you uploaded for the same property, so it's kept as a record and not counted again.`, null);
+        return;
+      }
+      toRetire = sup.replace; // applied after this statement's rows are written (below)
+      if (sup.overlap.length) {
+        needsReview = 1;
+        replacedNote = " Its dates overlap another rental statement that may be for the same property — check the two don't count the same rent twice.";
+      }
+    }
+
+    const newIncomeId = await this.recordIncome(userId, {
       property_id: propertyId,
       income_type: "rent",
       ato_label: "13R-rent",
@@ -4079,7 +4124,11 @@ export class TaxAgent extends Agent<Env> {
       net_cents: ext.net_disbursed_cents,
       txn_date: ext.period_end,
       source_doc_id: docId,
-      detail_json: JSON.stringify({ agent: ext.agent_name, lines: ext.income_lines }),
+      detail_json: JSON.stringify(
+        supersede
+          ? { agent: ext.agent_name, lines: ext.income_lines, period_start: ext.period_start, period_end: ext.period_end, address_key }
+          : { agent: ext.agent_name, lines: ext.income_lines },
+      ),
       needs_review: needsReview,
     });
 
@@ -4095,10 +4144,16 @@ export class TaxAgent extends Agent<Env> {
         .run();
     }
 
+    if (toRetire.length) {
+      const removed = await retireIncome(this.env, userId, toRetire, newIncomeId, docId);
+      await this.audit(userId, "income_superseded", JSON.stringify({ docId, fy, replacement: newIncomeId, replaced: removed }));
+      replacedNote += ` It covers ${removed.length} shorter ${removed.length === 1 ? "statement" : "statements"} for the same property, so ${removed.length === 1 ? "that one is" : "those are"} kept as a record and no longer counted.`;
+    }
+
     await this.audit(userId, "agent_statement_decomposed", JSON.stringify({ docId, propertyId, rent: sumIncome, expenses: sumExpense, net: ext.net_disbursed_cents, reconOk }));
     await this.notify(
       userId,
-      `Agent statement processed: rent $${(sumIncome / 100).toFixed(2)}, expenses $${(sumExpense / 100).toFixed(2)}, net $${((ext.net_disbursed_cents ?? sumIncome - sumExpense) / 100).toFixed(2)}.${reconOk ? "" : " ⚠️ Didn't reconcile — review the income row."}${propertyId ? "" : " Couldn't match a property — set it in the income row."}`,
+      `Agent statement processed: rent $${(sumIncome / 100).toFixed(2)}, expenses $${(sumExpense / 100).toFixed(2)}, net $${((ext.net_disbursed_cents ?? sumIncome - sumExpense) / 100).toFixed(2)}.${reconOk ? "" : " ⚠️ Didn't reconcile — review the income row."}${propertyId ? "" : " Couldn't match a property — set it in the income row."}${replacedNote}`,
       null,
     );
   }
@@ -4144,7 +4199,7 @@ export class TaxAgent extends Agent<Env> {
          source_doc_id, status, needs_review, owned_by, reimbursed, is_car)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`,
     )
-      .bind(id, `person_self_${userId}`, a.property_id ?? null, a.entity_id ?? null, a.label, a.asset_class, a.cost_cents, a.acquired_date, effectiveLife, a.method ?? null, a.dv_rate_pct ?? 200, a.div43_rate ?? null, a.is_second_hand ? 1 : 0, a.business_use_pct ?? 100, a.source_doc_id ?? null, a.needs_review ?? 0, a.owned_by ?? "self", a.reimbursed ?? 0, a.is_car ?? 0
+      .bind(id, selfPersonId(userId), a.property_id ?? null, a.entity_id ?? null, a.label, a.asset_class, a.cost_cents, a.acquired_date, effectiveLife, a.method ?? null, a.dv_rate_pct ?? 200, a.div43_rate ?? null, a.is_second_hand ? 1 : 0, a.business_use_pct ?? 100, a.source_doc_id ?? null, a.needs_review ?? 0, a.owned_by ?? "self", a.reimbursed ?? 0, a.is_car ?? 0
       )
       .run();
     await this.audit(userId, "asset_created", JSON.stringify({ id, class: a.asset_class, cost: a.cost_cents }));
@@ -4637,7 +4692,7 @@ export class TaxAgent extends Agent<Env> {
         `INSERT INTO claim_suggestions (id, user_id, person_id, txn_id, asset_id, rule_id, suggestion, claim_type, estimated_deduction_cents)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-        .bind(crypto.randomUUID(), `person_self_${userId}`, refs.txnId ?? null, refs.assetId ?? null, r.id ?? `${r.scope_type}:${r.scope_value}`, suggestionText(r), r.claim_type, refs.estimatedDeductionCents ?? null
+        .bind(crypto.randomUUID(), selfPersonId(userId), refs.txnId ?? null, refs.assetId ?? null, r.id ?? `${r.scope_type}:${r.scope_value}`, suggestionText(r), r.claim_type, refs.estimatedDeductionCents ?? null
         )
         .run();
       n++;
@@ -4765,7 +4820,7 @@ export class TaxAgent extends Agent<Env> {
         `INSERT INTO claim_suggestions (id, user_id, person_id, rule_id, suggestion, claim_type, estimated_deduction_cents, status, source)
          VALUES (?, ?, ?, ?, ?, ?, NULL, 'suggested', 'review')`,
       )
-        .bind(crypto.randomUUID(), `person_self_${userId}`, item.rule_id, item.suggestion, item.claim_type)
+        .bind(crypto.randomUUID(), selfPersonId(userId), item.rule_id, item.suggestion, item.claim_type)
         .run();
       inserted++;
     }
@@ -5132,7 +5187,7 @@ export class TaxAgent extends Agent<Env> {
     const profile = await this.requireProfile(userId);
     const situation = await getSituation(this.env, userId, profile);
     const targetFy = normaliseFyLabel(fy) ?? this.currentFyLabel(await this.jurisdictionFor(userId));
-    const personId = `person_self_${userId}`;
+    const personId = selfPersonId(userId);
     const hasRented = situation.properties.some((p) => p.status === "rented");
     const hasVacant = situation.properties.some((p) => p.status === "vacant");
     // OWNED property only — a tenant (renting_*) has no cost base, so Div 40/43 depreciation and a QS

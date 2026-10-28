@@ -26,3 +26,11 @@ Domain and architecture terms for Quillo. One line each. Link the ADR or module 
   `assertCanonicalSource` ([ADR-0002](docs/adr-0002-canonical-sources.md)).
 - **Life situation module**: one `src/lib/situations/<key>.ts` plugged into the registry; `composePosition` is the
   only place money is combined ([ADR-0004](docs/adr-0004-life-situation-modules.md)).
+- **Primary taxpayer (self)**: the tenant's own `persons` row, `person_self_<userId>`. A row whose `person_id` is
+  NULL also belongs to them. Built and compared only in `src/lib/self-person.ts`
+  ([ADR-0006](docs/adr-0006-income-supersession.md)).
+- **Income supersession**: when a newly read document's income replaces rows on file (a reprinted income
+  statement, an annual agent summary over the monthlies) or adds nothing (a statement already covered). Weaker
+  matches are held for review, never deleted (`src/lib/income-supersession.ts`, ADR-0006).
+- **Superseded document**: a document another document restates. It is kept with its original as evidence
+  (`extracted_json.superseded_by`), shown as "not counted", and none of its figures count.

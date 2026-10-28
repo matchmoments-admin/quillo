@@ -341,21 +341,25 @@ console.log("statement account detection (statement_account_detect)");
     },
   });
   const base = { lines: [{ date: "2026-03-01", description: "COFFEE", amount: 4.5, direction: "debit", balance: 104.5 }], opening_balance: 100, closing_balance: 104.5, currency: "AUD" };
-  const acct = { account_kind: "credit_card", institution: " Example Bank ", last4: "5829", period_start: "2026-02-01", period_end: "2026-02-28", interest_rate_pct: 20.99, interest_charged: 0, interest_earned: null, loan_purpose: null };
+  const acct = { account_kind: "credit_card", institution: " Example Bank ", account_number_as_printed: "4321", period_start: "2026-02-01", period_end: "2026-02-28", interest_rate_pct: 20.99, interest_charged: 0, interest_earned: null, loan_purpose: null };
   const pdf = new ArrayBuffer(8);
   const on = await extractStatement(stmtLLM({ ...base, ...acct }), pdf, "application/pdf", { detectAccount: true });
-  check("detect: kind, institution (trimmed), last4, period and rate are read", on.account?.kind === "credit_card" && on.account.institution === "Example Bank" && on.account.last4 === "5829" && on.account.period_end === "2026-02-28" && on.account.interest_rate_pct === 20.99);
-  check("detect: the tool asks for last4 and never for a BSB or holder name field", seenTools[0]!.includes("last4") && !/"bsb"|holder_name|account_number"/i.test(seenTools[0]!));
-  const full = await extractStatement(stmtLLM({ ...base, ...acct, last4: "032000123456" }), pdf, "application/pdf", { detectAccount: true });
-  check("detect: a full account number is never kept (only exactly four digits)", full.account?.last4 === null);
+  check("detect: kind, institution (trimmed), last4, period and rate are read", on.account?.kind === "credit_card" && on.account.institution === "Example Bank" && on.account.last4 === "4321" && on.account.period_end === "2026-02-28" && on.account.interest_rate_pct === 20.99);
+  check("detect: the tool has no BSB or holder-name field", seenTools[0]!.includes("account_number_as_printed") && !/"bsb"|holder_name/i.test(seenTools[0]!));
+  const full = await extractStatement(stmtLLM({ ...base, ...acct, account_number_as_printed: "032000123456" }), pdf, "application/pdf", { detectAccount: true });
+  check("detect: a full account number is never kept — only its last four digits", full.account?.last4 === "3456" && !JSON.stringify(full).includes("032000123456"));
+  const grouped = await extractStatement(stmtLLM({ ...base, ...acct, account_number_as_printed: "732-053 713 307" }), pdf, "application/pdf", { detectAccount: true });
+  check("detect: a number printed in groups keeps the true last four (the acceptance-run misread)", grouped.account?.last4 === "3307");
+  const short = await extractStatement(stmtLLM({ ...base, ...acct, account_number_as_printed: "xx307" }), pdf, "application/pdf", { detectAccount: true });
+  check("detect: fewer than four digits ⇒ no last four", short.account?.last4 === null);
   const bad = await extractStatement(stmtLLM({ ...base, ...acct, account_kind: "mortgage-ish", period_start: "1 Feb 2026" }), pdf, "application/pdf", { detectAccount: true });
   check("detect: an unknown kind or a non-ISO date reads as null, not a failure", bad.account?.kind === null && bad.account.period_start === null && bad.lines.length === 1);
   const off = await extractStatement(stmtLLM({ ...base, ...acct }), pdf, "application/pdf");
-  check("flag OFF: no account is returned and the plain tool is sent", off.account === undefined && !seenTools[0]!.includes("last4"));
+  check("flag OFF: no account is returned and the plain tool is sent", off.account === undefined && !seenTools[0]!.includes("account_number_as_printed"));
   const merged = mergeStatementAccounts([{ ...on.account!, period_end: "2026-02-14", interest_rate_pct: 19.99 }, undefined, { ...on.account!, kind: null, last4: null, period_start: null, period_end: "2026-02-28", interest_rate_pct: 20.99 }]);
-  check("chunks merge: first kind/last4/start, last end/rate", merged?.kind === "credit_card" && merged.last4 === "5829" && merged.period_start === "2026-02-01" && merged.period_end === "2026-02-28" && merged.interest_rate_pct === 20.99);
+  check("chunks merge: first kind/last4/start, last end/rate", merged?.kind === "credit_card" && merged.last4 === "4321" && merged.period_start === "2026-02-01" && merged.period_end === "2026-02-28" && merged.interest_rate_pct === 20.99);
 
-  const A = (o: Partial<AccountRow>): AccountRow => ({ id: "a", institution: "Example Bank", name: "Card", last4: "5829", type: "transaction", source: "statement", ...o });
+  const A = (o: Partial<AccountRow>): AccountRow => ({ id: "a", institution: "Example Bank", name: "Card", last4: "4321", type: "transaction", source: "statement", ...o });
   const det = on.account!;
   const dec = (accts: AccountRow[], d = det) => decideStatementAccount(accts, d);
   const id = (r: ReturnType<typeof dec>) => (r.action === "match" || r.action === "adopt" ? `${r.action}:${r.account.id}` : r.action);
@@ -366,19 +370,19 @@ console.log("statement account detection (statement_account_detect)");
   check("feed: the same last4 on a bank-feed account matches it whatever bank name it carries (the caller then refuses: ADR-0002)",
     id(dec([A({ id: "feed", source: "cdr_feed", institution: "Commonwealth Bank of Australia" })], { ...det, institution: "CommBank" })) === "match:feed");
   check("feed: no last4 on the statement while a feed exists ⇒ ask, never a new account", id(dec([A({ source: "cdr_feed" })], { ...det, last4: null })) === "ask");
-  check("legacy: an older same-bank account with no last4 is adopted (no duplicate account)", id(dec([A({ id: "old", last4: null, institution: "Example Bank Choice 307" })])) === "adopt:old");
+  check("legacy: an older same-bank account with no last4 is adopted (no duplicate account)", id(dec([A({ id: "old", last4: null, institution: "Example Bank Choice 909" })])) === "adopt:old");
   check("legacy: two unnumbered same-bank accounts ⇒ ask", id(dec([A({ id: "o1", last4: null }), A({ id: "o2", last4: null })])) === "ask");
   check("no last4, one same-bank account ⇒ adopt it; with another numbered one there ⇒ ask",
     id(dec([A({ id: "o", last4: null })], { ...det, last4: null })) === "adopt:o" && id(dec([A({ id: "o", last4: null }), A({ id: "n" })], { ...det, last4: null })) === "ask");
   check("a first account ⇒ create", id(dec([])) === "create");
   check("institution aliases: CommBank = Commonwealth Bank; NAB = National Australia Bank; Bank of Melbourne ≠ Bank of Queensland",
     sameInstitution("CommBank", "Commonwealth Bank of Australia") && sameInstitution("NAB", "National Australia Bank Limited") &&
-    !sameInstitution("Bank of Melbourne", "Bank of Queensland") && sameInstitution("Westpac", "Westpac Choice 307") && !sameInstitution("The Bank", "Bank"));
-  const masked = await extractStatement(stmtLLM({ ...base, ...acct, last4: "**** **** **** 5829", institution: "Westpac BSB 032-000 Acc 12345678" }), pdf, "application/pdf", { detectAccount: true });
-  check("last4: a masked number keeps its last four; the institution keeps no digits or BSB/account words", masked.account?.last4 === "5829" && masked.account.institution === "Westpac");
+    !sameInstitution("Bank of Melbourne", "Bank of Queensland") && sameInstitution("Westpac", "Westpac Choice 909") && !sameInstitution("The Bank", "Bank"));
+  const masked = await extractStatement(stmtLLM({ ...base, ...acct, account_number_as_printed: "**** **** **** 4321", institution: "Westpac BSB 032-000 Acc 12345678" }), pdf, "application/pdf", { detectAccount: true });
+  check("last4: a masked number keeps its last four; the institution keeps no digits or BSB/account words", masked.account?.last4 === "4321" && masked.account.institution === "Westpac");
   check("kinds map to account types (offset/savings ⇒ transaction)", accountTypeForKind("credit_card") === "credit_card" && accountTypeForKind("loan") === "loan" && accountTypeForKind("offset") === "transaction" && accountTypeForKind(null) === "transaction");
   check("kind mismatch: a card statement in a transaction account is surfaced; a match isn't", kindMismatch("transaction", det) && !kindMismatch("credit_card", det) && !kindMismatch("transaction", { ...det, kind: "savings" }));
-  check("detected account name", detectedAccountName({ institution: "Example Bank", kind: "credit_card", last4: "5829" }) === "Example Bank credit card ··5829" && detectedAccountName({ institution: null, kind: null, last4: null }) === "Bank account");
+  check("detected account name", detectedAccountName({ institution: "Example Bank", kind: "credit_card", last4: "4321" }) === "Example Bank credit card ··4321" && detectedAccountName({ institution: null, kind: null, last4: null }) === "Bank account");
   check("liability kinds", isLiabilityKind("credit_card") && isLiabilityKind("loan") && !isLiabilityKind("offset") && !isLiabilityKind(null));
 }
 
@@ -882,9 +886,9 @@ console.log("income statement: mapIncomeStatementToRows (Total gross as printed 
     employer_abn: null, tax_ready: true, period_start: "2025-07-01", period_end: "2026-06-30", bms_id: null,
     paygw_cents: 0, leave_detail: [], lump_sums: [], allowances: [], resc_cents: 0, rfb_cents: 0, sg_cents: 0, confidence: 0.95, ...o,
   });
-  // Real sample (MCH): Total gross $37,530.20 already INCLUDES leave ($5,056.66 + $3,819.11); PAYGW $10,037; SG $4,045.33.
-  const mch = emp({ employer: "MCH CORPORATE SERVICES PTY LTD", employer_abn: "55656989954", total_gross_cents: 3753020, paygw_cents: 1003700,
-    leave_detail: [{ type: "Other paid leave", cents: 505666 }, { type: "Unused leave on termination", cents: 381911 }], sg_cents: 404533 });
+  // Sample (figures made up): Total gross $35,000 already INCLUDES leave ($5,000 + $3,500); PAYGW $9,500; SG $4,000.
+  const mch = emp({ employer: "HARBOUR SERVICES PTY LTD", employer_abn: "51824753556", total_gross_cents: 3500000, paygw_cents: 950000,
+    leave_detail: [{ type: "Other paid leave", cents: 500000 }, { type: "Unused leave on termination", cents: 350000 }], sg_cents: 400000 });
   // Second job with a genuine-redundancy Lump D (TAX-FREE) + RESC + RFB.
   const job2 = emp({ employer: "SECOND EMPLOYER PTY LTD", total_gross_cents: 5000000, paygw_cents: 1200000,
     lump_sums: [{ type: "D", cents: 2000000 }], resc_cents: 300000, rfb_cents: 150000, confidence: 0.9 });
@@ -896,15 +900,15 @@ console.log("income statement: mapIncomeStatementToRows (Total gross as printed 
   const lumps = out.rows.filter((r) => r.income_type === "employment_lump_sum");
 
   check("one salary row per FINALISED employer (2), the not-'Tax ready' one skipped", salary.length === 2 && out.skipped_employers.length === 1 && out.skipped_employers[0] === "STILL PROCESSING PTY LTD");
-  check("gross = printed Total gross — leave NEVER re-added", salary.find((r) => (r.detail as { employer: string }).employer.startsWith("MCH"))!.gross_cents === 3753020);
-  check("PAYGW → withholding on the salary row", salary.find((r) => (r.detail as { employer: string }).employer.startsWith("MCH"))!.withholding_cents === 1003700);
-  check("SG is NOT in gross (reference only in detail)", !salary.some((r) => r.gross_cents === 404533) && (salary[0]!.detail as { sg_cents: number }).sg_cents === 404533);
+  check("gross = printed Total gross — leave NEVER re-added", salary.find((r) => (r.detail as { employer: string }).employer.startsWith("HARBOUR"))!.gross_cents === 3500000);
+  check("PAYGW → withholding on the salary row", salary.find((r) => (r.detail as { employer: string }).employer.startsWith("HARBOUR"))!.withholding_cents === 950000);
+  check("SG is NOT in gross (reference only in detail)", !salary.some((r) => r.gross_cents === 400000) && (salary[0]!.detail as { sg_cents: number }).sg_cents === 400000);
   check("RESC + RFB are NOT in gross (reference only)", !salary.some((r) => r.gross_cents === 300000 || r.gross_cents === 150000));
   check("Lump D (tax-free redundancy) → employment_lump_sum, ato_label lump_sum:D, NOT salary", lumps.length === 1 && lumps[0]!.ato_label === "lump_sum:D" && lumps[0]!.gross_cents === 2000000);
   check("employment_lump_sum is NON_ASSESSABLE (excluded from the headline)", NON_ASSESSABLE_INCOME_TYPES.has("employment_lump_sum") && !NON_ASSESSABLE_INCOME_TYPES.has("salary_payg"));
   // The assessable total = salary only (leave already inside gross; lump sum + SG + RESC excluded).
   const assessable = out.rows.filter((r) => !NON_ASSESSABLE_INCOME_TYPES.has(r.income_type)).reduce((s, r) => s + r.gross_cents, 0);
-  check("assessable headline = salary only ($37,530.20 + $50,000 = $87,530.20), lump/SG/RESC excluded", assessable === 3753020 + 5000000);
+  check("assessable headline = salary only ($35,000 + $50,000 = $85,000), lump/SG/RESC excluded", assessable === 3500000 + 5000000);
   check("txn_date = period_end (partial-year safe)", salary.every((r) => r.txn_date === "2026-06-30"));
   check("a 0-gross redundancy-only block records the lump sum but NO empty salary row", (() => {
     const r2 = mapIncomeStatementToRows({ employers: [emp({ employer: "RED ONLY", total_gross_cents: 0, lump_sums: [{ type: "D", cents: 700000 }] })] });
@@ -4100,7 +4104,7 @@ console.log("currency de-anchoring (toBaseCurrency / baseCurrencyOf / currencySy
     sections: [
       { key: "summary", title: "Summary — indicative position", columns: ["Line", "Amount (AUD)"],
         rows: [["Total income (gross)", "246272.60"], ["Total deductions", "53097.01"]] },
-      { key: "property:104-Womerah Ave", title: "Property — 104 Womerah Ave (a long ATO-style title that exceeds the 31-char Excel tab limit)",
+      { key: "property:12-Harbour St", title: "Property — 12 Harbour St (a long ATO-style title that exceeds the 31-char Excel tab limit)",
         columns: ["Date", "Merchant", "Gross (AUD)", "Count"],
         rows: [["2024-07-08", "=cmd|evil", "1396.00", 3]], subtotal_cents: 139600,
         tie_back: { label: "property", report_cents: 139600, actual_cents: 139600, ok: true } },

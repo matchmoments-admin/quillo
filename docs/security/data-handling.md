@@ -35,9 +35,10 @@ as Restricted — CDR for all model calls.
 - **Uploaded statements: the same identifier rule as a bank feed** (flag `statement_account_detect`, owner decision
   2026-10-28). When the statement reader names an account, it asks for and keeps only the institution, the
   account kind, the **last four digits** and the statement period (plus a printed interest rate or interest total).
-  The tool schema has no field for the account holder's name, the BSB or the full account number, so they are
-  never asked for. A `last4` that isn't exactly four digits is dropped (golden "a full account number is never
-  kept"). The original PDF is still stored as evidence (it is the user's own record), but nothing is derived from
+  The tool schema has no field for the account holder's name or the BSB, so they are never asked for. The account
+  number is read as printed (often masked) only so its last four digits can be taken in code; the rest is discarded
+  at once and never stored, logged or returned (golden "a full account number is never kept"). Asking the model
+  for just the last four made it mis-transcribe grouped numbers. The original PDF is still stored as evidence (it is the user's own record), but nothing is derived from
   its identifiers beyond these fields.
 
 ## 3. Use

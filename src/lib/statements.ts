@@ -343,3 +343,64 @@ export function reconcileStatement(
   const ok = Math.abs(diff_cents) <= 1 && first_bad_line === null;
   return { available: true, ok, opening_cents, closing_cents, expected_cents, diff_cents, txn_count, first_bad_line };
 }
+
+// A printed balance row ("STATEMENT OPENING BALANCE", "CLOSING BALANCE", "Balance brought forward") is not a
+// transaction. The PDF extractor usually skips them but not always: a loan's closing row once came through as a
+// credit for the whole loan balance.
+const BALANCE_ROW = /^(statement\s+)?(opening|closing)\s+balance$|^balance\s+(brought|carried)\s+forward$/i;
+export function isBalanceRow(line: Pick<StatementLine, "description" | "raw_description">): boolean {
+  return BALANCE_ROW.test(line.raw_description.trim()) || BALANCE_ROW.test(line.description.trim());
+}
+
+/**
+ * Which arithmetic a statement's balances follow. Card statements print the amount owed as a positive number, so
+ * a debit raises the balance (liability arithmetic). Some loan statements print it as a negative
+ * number, so their balances move like an asset's even though the account is a liability. The printed sign is the
+ * evidence: the sign most line balances carry, else the closing (or opening) balance's sign. Returns null when a
+ * liability statement carries no sign evidence (no non-zero balance at all, or an exact tie).
+ */
+export function liabilityArithmeticFor(isLiability: boolean, lines: StatementLine[], closing_cents: number | null, opening_cents: number | null = null): boolean | null {
+  if (!isLiability) return false;
+  const bals = lines.map((l) => l.balance_cents).filter((b): b is number => b != null && b !== 0);
+  const neg = bals.filter((b) => b < 0).length;
+  if (bals.length && neg * 2 !== bals.length) return neg * 2 < bals.length;
+  const edge = closing_cents || opening_cents;
+  if (edge) return edge > 0;
+  return null;
+}
+
+export interface NormalisedStatement {
+  lines: StatementLine[];
+  dropped: number; // balance rows removed
+  liabilityArithmetic: boolean; // the sign convention the reconciliation used
+  reconciliation: Reconciliation;
+}
+
+/**
+ * The one place a statement's extracted lines become importable lines (flag `statement_normalise`): balance
+ * rows are dropped and the reconciliation runs with the convention the printed balances show. The convention is
+ * never chosen because it balances: flipping it is arithmetically the same as flipping every line's direction,
+ * so "whichever balances" would pass a statement whose debits and credits were all read backwards. Only when a
+ * liability statement carries no sign evidence are both tried (the balancing one, else the smaller diff).
+ * `derive` ⇒ opening/closing come from the line balances (CSV), with the same convention.
+ */
+export function normaliseStatementLines(
+  raw: StatementLine[],
+  opening_cents: number | null,
+  closing_cents: number | null,
+  isLiability: boolean,
+  derive = false,
+): NormalisedStatement {
+  const lines = raw.filter((l) => !isBalanceRow(l));
+  const run = (liab: boolean) => {
+    if (!derive) return reconcileStatement(lines, opening_cents, closing_cents, liab);
+    const bal = deriveBalances(lines, liab);
+    return reconcileStatement(lines, bal?.opening_cents ?? null, bal?.closing_cents ?? null, liab);
+  };
+  const evidence = liabilityArithmeticFor(isLiability, lines, closing_cents, opening_cents);
+  if (evidence != null) return { lines, dropped: raw.length - lines.length, liabilityArithmetic: evidence, reconciliation: run(evidence) };
+  const asLiability = run(true);
+  const asAsset = run(false);
+  const pickAsset = !asLiability.ok && (asAsset.ok || Math.abs(asAsset.diff_cents) < Math.abs(asLiability.diff_cents));
+  return { lines, dropped: raw.length - lines.length, liabilityArithmetic: !pickAsset, reconciliation: pickAsset ? asAsset : asLiability };
+}

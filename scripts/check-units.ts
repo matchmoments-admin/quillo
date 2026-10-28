@@ -2,7 +2,7 @@
 // Offline unit tests for the pure invariants that underpin statement import + async
 // categorisation. No worker runtime / D1 / Claude — these are the fast, deterministic
 // regression guards for the rules we keep re-learning. Run: npm run test:units
-import { reconcileStatement, deriveBalances, isTransferLike, isLoanInterestLine, classifyMovement, movementTreatment, signedCents, lineFingerprint, type StatementLine } from "../src/lib/statements";
+import { reconcileStatement, deriveBalances, normaliseStatementLines, liabilityArithmeticFor, isBalanceRow, isTransferLike, isLoanInterestLine, classifyMovement, movementTreatment, signedCents, lineFingerprint, type StatementLine } from "../src/lib/statements";
 import { groupKey, groupForClarify, rulePatternForStem, isClarifyLeftover, isInsuranceLikeStem, suggestionsFor, draftHoldingFromTxn } from "../src/lib/clarify";
 import { resolveLoanInterest, deductibleInterestCents } from "../src/lib/loan-interest";
 import { scoreClaimMatches } from "../src/lib/claim-match";
@@ -220,6 +220,55 @@ console.log("reconcileStatement");
   const dAsset = deriveBalances(ccBal, false)!;
   check("asset-math derive on a liability CSV gives the WRONG opening", dAsset.opening_cents === 1892412);
   check("...and that wrong opening fails reconcile (proves the flag is load-bearing)", !reconcileStatement(ccBal, dAsset.opening_cents, dAsset.closing_cents, true).ok);
+}
+
+console.log("normaliseStatementLines (statement_normalise)");
+{
+  // The owner-statements E2E shape (2026-10-28, figures made up): an investment loan that prints the amount owed
+  // as a NEGATIVE balance, and an extractor that kept the dated "CLOSING BALANCE" row as a credit.
+  const loan: StatementLine[] = [
+    line({ amount_cents: 15000000, direction: "debit", balance_cents: -15000000, description: "INITIAL DRAWING OF LOAN" }),
+    line({ amount_cents: 5000, direction: "debit", balance_cents: -15005000, description: "INTEREST" }),
+    line({ amount_cents: 5000, direction: "credit", balance_cents: -15000000, description: "DEPOSIT WESTPAC BANKCORP DIRECT DR000001" }),
+    line({ amount_cents: 15000000, direction: "credit", balance_cents: -15000000, description: "CLOSING BALANCE" }),
+  ];
+  check("raw: the loan fails as a liability (the bug)", !reconcileStatement(loan, 0, -15000000, true).ok);
+  const n = normaliseStatementLines(loan, 0, -15000000, true);
+  check("balance row dropped (no phantom balance-row credit)", n.dropped === 1 && n.lines.length === 3 && !n.lines.some((l) => /CLOSING/.test(l.raw_description)));
+  check("negative-printed loan reconciles with asset arithmetic", n.reconciliation.ok && !n.liabilityArithmetic);
+  // A card prints the owed amount positive: liability arithmetic stays (the CommBank golden above).
+  const cc2: StatementLine[] = [
+    line({ amount_cents: 852899, direction: "debit", balance_cents: 1039513, description: "purchases" }),
+    line({ amount_cents: 880000, direction: "credit", balance_cents: 159513, description: "payments" }),
+  ];
+  const ccN = normaliseStatementLines(cc2, 186614, 159513, true);
+  check("positive-printed card keeps liability arithmetic and reconciles", ccN.reconciliation.ok && ccN.liabilityArithmetic && ccN.dropped === 0);
+  // An everyday account is never switched, and its own balance rows go too.
+  const everyday = [
+    line({ amount_cents: 0, direction: "credit", balance_cents: 0, description: "STATEMENT OPENING BALANCE" }),
+    line({ amount_cents: 1000, direction: "credit", balance_cents: 1000, description: "SALARY" }),
+    line({ amount_cents: 1000, direction: "credit", balance_cents: 1000, description: "Closing Balance" }),
+  ];
+  const eN = normaliseStatementLines(everyday, 0, 1000, false);
+  check("everyday: both balance rows dropped, reconciles, asset arithmetic", eN.dropped === 2 && eN.reconciliation.ok && !eN.liabilityArithmetic);
+  // Only exact balance rows: a merchant line that mentions a balance is a transaction.
+  check("isBalanceRow is exact", isBalanceRow(line({ amount_cents: 1, direction: "debit", description: "Balance carried forward" })) && !isBalanceRow(line({ amount_cents: 1, direction: "debit", description: "BALANCE TRANSFER FEE" })) && !isBalanceRow(line({ amount_cents: 1, direction: "debit", description: "Closing balance adjustment fee" })));
+  // CSV (derive=true): a negative-printed loan CSV derives its opening with the detected convention.
+  const csvLoan = loan.slice(0, 3);
+  const cN = normaliseStatementLines(csvLoan, null, null, true, true);
+  check("CSV loan derives + reconciles under the detected convention", cN.reconciliation.ok && cN.reconciliation.opening_cents === 0 && cN.reconciliation.closing_cents === -15000000);
+  // Review finding: flipping the convention == flipping every direction, so a card whose debits/credits were ALL
+  // read backwards would balance under asset arithmetic. The printed (positive) balances pin liability, so it fails.
+  const flipped = cc2.map((l) => ({ ...l, direction: l.direction === "debit" ? ("credit" as const) : ("debit" as const) }));
+  const fN = normaliseStatementLines(flipped, 186614, 159513, true);
+  check("card with every direction flipped is NOT reconciled (sign evidence, no fallback)", !fN.reconciliation.ok && fN.liabilityArithmetic);
+  // No sign evidence at all (no line balances, zero opening + closing) ⇒ both tried, the balancing one wins.
+  const bare = [line({ amount_cents: 5000, direction: "debit", description: "purchase" }), line({ amount_cents: 5000, direction: "credit", description: "payment" })];
+  check("no sign evidence ⇒ both conventions tried", normaliseStatementLines(bare, 0, 0, true).reconciliation.ok);
+  check("liabilityArithmeticFor: asset is never liability; closing sign decides without line balances", liabilityArithmeticFor(false, [], 100) === false && liabilityArithmeticFor(true, [], -5) === false && liabilityArithmeticFor(true, [], 5) === true && liabilityArithmeticFor(true, [], 0, 0) === null);
+  // A statement that balances under neither convention stays flagged (no silent pass).
+  const broken = normaliseStatementLines(loan.slice(0, 2), 0, -15000000, true);
+  check("unbalanced loan stays not-ok", broken.reconciliation.available && !broken.reconciliation.ok);
 }
 
 // ── Security sweep #694 / #712: OAuth state is bound to the browser that started the connect ──

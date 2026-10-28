@@ -3,7 +3,7 @@
 // categorisation. No worker runtime / D1 / Claude — these are the fast, deterministic
 // regression guards for the rules we keep re-learning. Run: npm run test:units
 import { decideStatementAccount, sameInstitution, accountTypeForKind, kindMismatch, detectedAccountName, isLiabilityKind, type AccountRow } from "../src/lib/statement-account";
-import { reconcileStatement, deriveBalances, normaliseStatementLines, liabilityArithmeticFor, isBalanceRow, isTransferLike, isLoanInterestLine, classifyMovement, movementTreatment, signedCents, lineFingerprint, type StatementLine } from "../src/lib/statements";
+import { reconcileStatement, deriveBalances, normaliseStatementLines, liabilityArithmeticFor, isBalanceRow, isTransferLike, isLoanInterestLine, classifyMovement, movementTreatment, signedCents, lineFingerprint, pairOwnTransfers, type PairableLine, type StatementLine } from "../src/lib/statements";
 import { decideSupersession, addressKey, identityOf, type OnFileIncome } from "../src/lib/income-supersession";
 import { groupKey, groupForClarify, rulePatternForStem, isClarifyLeftover, isInsuranceLikeStem, suggestionsFor, draftHoldingFromTxn } from "../src/lib/clarify";
 import { resolveLoanInterest, deductibleInterestCents } from "../src/lib/loan-interest";
@@ -380,6 +380,31 @@ console.log("statement account detection (statement_account_detect)");
   check("kind mismatch: a card statement in a transaction account is surfaced; a match isn't", kindMismatch("transaction", det) && !kindMismatch("credit_card", det) && !kindMismatch("transaction", { ...det, kind: "savings" }));
   check("detected account name", detectedAccountName({ institution: "Example Bank", kind: "credit_card", last4: "5829" }) === "Example Bank credit card ··5829" && detectedAccountName({ institution: null, kind: null, last4: null }) === "Bank account");
   check("liability kinds", isLiabilityKind("credit_card") && isLiabilityKind("loan") && !isLiabilityKind("offset") && !isLiabilityKind(null));
+}
+
+console.log("own-account transfer pairing (transfer_pairing)");
+{
+  const accts = [{ id: "everyday", last4: "1111" }, { id: "loan", last4: "2222" }, { id: "card", last4: "3333" }, { id: "old", last4: null }];
+  const L = (id: string, account_id: string, direction: string, amount_cents: number, txn_date: string, description: string): PairableLine => ({ id, account_id, direction, amount_cents, txn_date, description });
+  // A repayment from the everyday account to the loan, each side naming the other by a number ending in its last four.
+  const lines = [
+    L("d1", "everyday", "debit", 549700, "2026-02-01", "Direct Dr900002222"),
+    L("c1", "loan", "credit", 549700, "2026-02-02", "DEPOSIT EXAMPLE BANK DIRECT DR001111"),
+    L("d2", "everyday", "debit", 400000, "2026-03-01", "mortgage"), // no number on either side ⇒ not paired
+    L("c2", "loan", "credit", 400000, "2026-03-01", "DEPOSIT"),
+    L("d3", "everyday", "debit", 9000, "2026-04-01", "Transfer to 2222"), // amount mismatch ⇒ not paired
+    L("c3", "loan", "credit", 9100, "2026-04-01", "DEPOSIT"),
+    L("d4", "everyday", "debit", 5000, "2026-05-01", "Pay card 3333"), // card paid, but 8 days later ⇒ not paired
+    L("c4", "card", "credit", 5000, "2026-05-09", "PAYMENT THANK YOU"),
+  ];
+  const pairs = pairOwnTransfers(lines, accts);
+  check("pairs a repayment named by last four, one side or both, within 3 days", pairs.length === 1 && pairs[0]!.debit === "d1" && pairs[0]!.credit === "c1");
+  check("no number, a different amount, or too far apart ⇒ no pair", !pairs.some((p) => ["d2", "d3", "d4"].includes(p.debit)));
+  const twoFits = pairOwnTransfers([L("d", "everyday", "debit", 100, "2026-02-01", "to 2222"), L("x", "loan", "credit", 100, "2026-02-01", "in"), L("y", "loan", "credit", 100, "2026-02-02", "in")], accts);
+  check("two equally good counterparts ⇒ no guess", twoFits.length === 0);
+  check("the same account on both sides, or an account with no last four, never pairs",
+    pairOwnTransfers([L("d", "everyday", "debit", 100, "2026-02-01", "to 1111"), L("c", "everyday", "credit", 100, "2026-02-01", "from 1111")], accts).length === 0 &&
+    pairOwnTransfers([L("d", "everyday", "debit", 100, "2026-02-01", "to 9999"), L("c", "old", "credit", 100, "2026-02-01", "in")], accts).length === 0);
 }
 
 // ── Security sweep #694 / #712: OAuth state is bound to the browser that started the connect ──

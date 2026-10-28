@@ -50,11 +50,11 @@ import { computeFilingReadiness as computeFilingReadinessFor, loadClaimRules as 
 import { readJourney } from "./lib/journey-read";
 import { addressKey, markSuperseded, retireIncome, supersedeIncome, type OnFileIncome } from "./lib/income-supersession";
 import { selfPersonId } from "./lib/self-person";
-import { discardCreatedAccount, kindMismatch, resolveStatementAccount, type ResolvedAccount } from "./lib/statement-account";
+import { discardCreatedAccount, fillLoanFacts, kindMismatch, resolveStatementAccount, type ResolvedAccount } from "./lib/statement-account";
 import { rollSchedule, balancingAdjustment, fyStartYearOf, isLowCostAsset, looksLikePersonalTransfer, assetDepreciatesForTaxpayer, depMethodConflict, resolveDiv40Life, type DepAsset } from "./lib/depreciation";
 import { matchClaimRules, suggestionText, enumerateSituationClaims, classifyClaim, uncoveredOccupations, ruleKey, type ClaimRule, type ClaimContext, type ClaimSituation } from "./lib/claimability";
 import { minimiseTenant, minimisationNotices, tidiedSummary, tombstonedFingerprints, rolledUpLineCount, forgetStatementMinimisation, type MinimiseResult, type TidiedSummary } from "./lib/minimise";
-import { parseCsv, applyColumnMap, statementLineFingerprints, deriveBalances, reconcileStatement, normaliseStatementLines, isBalanceRow, isLiabilityAccount, fuzzyMerchant, isTransferLike, isLoanInterestLine, classifyMovement, movementTreatment, type ColumnMap, type Reconciliation, type StatementLine, type MovementClass } from "./lib/statements";
+import { parseCsv, applyColumnMap, statementLineFingerprints, deriveBalances, reconcileStatement, normaliseStatementLines, isBalanceRow, isLiabilityAccount, fuzzyMerchant, isTransferLike, isLoanInterestLine, classifyMovement, movementTreatment, pairOwnTransfers, type PairableLine, type ColumnMap, type Reconciliation, type StatementLine, type MovementClass } from "./lib/statements";
 import { groupKey, groupForClarify, rulePatternForStem, draftHoldingFromTxn, isClarifyLeftover, CLARIFY_LEFTOVER_WHERE, type ClarifyRow } from "./lib/clarify";
 import { scoreClaimMatches, type ScoredTxn } from "./lib/claim-match";
 import { batchStatementStatus, isStaleBatch } from "./lib/batch";
@@ -618,6 +618,9 @@ export class TaxAgent extends Agent<Env> {
         const a = await tenantDb(this.env, userId).prepare(`SELECT name, type FROM accounts WHERE id = ? AND user_id = ?`).bind(accountId).first<{ name: string; type: string }>();
         if (a) account = { id: accountId, name: a.name, kind: detected.kind, created: false, kindMismatch: kindMismatch(a.type, detected) };
       }
+      // A loan's printed balance and current rate fill its blank fallback-estimate inputs (0044) — never overwrite one
+      // the user typed. (A newly created loan already got them in resolveStatementAccount.)
+      if (detect && !(resolved as ResolvedAccount | null)?.created) await fillLoanFacts(this.env, userId, accountId, recon.closing_cents, detected);
 
       // Store the normalised lines beside the raw file so confirmImport never re-extracts.
       await putJson(this.env.RECEIPTS, `${fileKey}.lines`, lines);
@@ -5977,6 +5980,29 @@ export class TaxAgent extends Agent<Env> {
    * plus a separate review list for loan lines that may carry a DEDUCTIBLE investment-loan interest
    * component — those are never offered for one-tap exclusion (B3). Read-only.
    */
+  /**
+   * transfer_pairing: the tenant's bank lines that pair as own-account transfers (pairOwnTransfers: same amount,
+   * opposite direction, two of their accounts, within 3 days, one side naming the other's last four digits).
+   * Returns id → the counterpart account's name. Flag OFF ⇒ empty.
+   */
+  private async ownTransferPairs(userId: string): Promise<Map<string, string>> {
+    const out = new Map<string, string>();
+    if (!featureOn(this.env, "transfer_pairing")) return out;
+    const accts = (await tenantDb(this.env, userId).prepare(`SELECT id, name, last4 FROM accounts WHERE user_id = ? AND active = 1`).bind().all<{ id: string; name: string; last4: string | null }>()).results ?? [];
+    if (accts.filter((a) => a.last4).length < 2) return out;
+    const rows = (await tenantDb(this.env, userId).prepare(
+      `SELECT id, account_id, direction, COALESCE(amount_aud_cents, amount_cents) AS amount_cents, txn_date, COALESCE(raw_description, merchant, '') AS description
+         FROM transactions WHERE user_id = ? AND kind = 'bank_line' AND status NOT IN ('duplicate', 'corrected') AND amount_cents IS NOT NULL`,
+    ).bind().all<PairableLine>()).results ?? [];
+    const accountOf = new Map(rows.map((r) => [r.id, r.account_id]));
+    const nameOf = new Map(accts.map((a) => [a.id, a.name]));
+    for (const p of pairOwnTransfers(rows, accts)) {
+      out.set(p.debit, nameOf.get(accountOf.get(p.credit) ?? "") ?? "another of your accounts");
+      out.set(p.credit, nameOf.get(accountOf.get(p.debit) ?? "") ?? "another of your accounts");
+    }
+    return out;
+  }
+
   async sweepMovements(userId: string): Promise<MovementSweep> {
     // Candidates: captured bank lines not already excluded/confirmed, still uncategorised or
     // low-confidence — so a row the user has confirmed (corrected / high-confidence) is never reclassified.
@@ -5991,8 +6017,26 @@ export class TaxAgent extends Agent<Env> {
       .all<{ id: string; merchant: string | null; raw_description: string | null; amount_cents: number | null; amount_aud_cents: number | null; direction: string | null; txn_date: string | null; account_id: string | null }>();
     const ignorable: MovementCandidate[] = [];
     const property_loan_review: MovementCandidate[] = [];
-    for (const r of rows.results ?? []) {
-      const v = classifyMovement(r.raw_description ?? r.merchant ?? "");
+    // transfer_pairing: a line paired with its counterpart on another of the tenant's accounts is a transfer, even
+    // when its words don't say so ("Mortgage") or say "loan" (the loan account's own statement carries the interest).
+    const paired = await this.ownTransferPairs(userId);
+    type SweepRow = NonNullable<typeof rows.results>[number];
+    let candidates: SweepRow[] = rows.results ?? [];
+    if (paired.size) {
+      // A paired line the categoriser was confident about (e.g. "income: transfer") isn't in the low-confidence set
+      // above, but it is still a transfer: read it too. A line the user corrected is never reclassified.
+      const have = new Set(candidates.map((r) => r.id));
+      const more = (await tenantDb(this.env, userId).prepare(
+        `SELECT id, merchant, raw_description, amount_cents, amount_aud_cents, direction, txn_date, account_id
+           FROM transactions WHERE user_id = ? AND kind = 'bank_line' AND status NOT IN ('ignored','duplicate','matched_receipt','corrected')`,
+      ).bind().all<SweepRow>()).results ?? [];
+      candidates = [...candidates, ...more.filter((r) => paired.has(r.id) && !have.has(r.id))];
+    }
+    for (const r of candidates) {
+      const pairedWith = paired.get(r.id);
+      const v = pairedWith
+        ? { klass: "internal_transfer" as const, autoIgnoreSafe: false, reason: `Matches a transfer of the same amount in ${pairedWith}, so it's money moving between your own accounts (not spend or income).` }
+        : classifyMovement(r.raw_description ?? r.merchant ?? "");
       const treatment = movementTreatment(v.klass, r.direction);
       if (treatment === "skip") continue;
       const cand: MovementCandidate = {
@@ -6023,6 +6067,7 @@ export class TaxAgent extends Agent<Env> {
   async applyMovementSweep(userId: string, txnIds: string[]): Promise<{ ignored: number; skipped: number }> {
     if (!Array.isArray(txnIds) || txnIds.length === 0) return { ignored: 0, skipped: 0 };
     const ids = txnIds.slice(0, 1000);
+    let paired: Map<string, string> | undefined; // transfer_pairing, read once when first needed
     let ignored = 0;
     let skipped = 0;
     const stmts: D1PreparedStatement[] = [];
@@ -6044,7 +6089,7 @@ export class TaxAgent extends Agent<Env> {
       // one-tap "ignorable" class may be excluded here. Loan lines (review) and income credits
       // (skip) are refused even if a client sends their ids (defence in depth — B3).
       const v = classifyMovement(row.raw_description ?? row.merchant ?? "");
-      if (movementTreatment(v.klass, row.direction) !== "ignorable") {
+      if (movementTreatment(v.klass, row.direction) !== "ignorable" && !(paired ??= await this.ownTransferPairs(userId)).has(txnId)) {
         skipped++;
         continue;
       }

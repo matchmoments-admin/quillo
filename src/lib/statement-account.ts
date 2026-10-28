@@ -168,3 +168,15 @@ export async function discardCreatedAccount(env: Env, userId: string, accountId:
   const used = await tenantDb(env, userId).prepare(`SELECT 1 AS x FROM statements WHERE user_id = ? AND account_id = ? LIMIT 1`).bind(accountId).first<{ x: number }>();
   if (!used) await tenantDb(env, userId).prepare(`DELETE FROM accounts WHERE user_id = ? AND id = ?`).bind(accountId).run();
 }
+
+/** A loan account's blank balance / rate filled from its statement (0044 fallback inputs). Never overwrites a value. */
+export async function fillLoanFacts(env: Env, userId: string, accountId: string, closingCents: number | null, detected: StatementAccount | undefined): Promise<void> {
+  const a = await tenantDb(env, userId)
+    .prepare(`SELECT type, balance_cents, interest_rate_pct FROM accounts WHERE id = ? AND user_id = ?`)
+    .bind(accountId)
+    .first<{ type: string; balance_cents: number | null; interest_rate_pct: number | null }>();
+  if (!a || a.type !== "loan") return;
+  const balance = a.balance_cents == null && closingCents != null ? Math.abs(closingCents) : undefined;
+  const rate = a.interest_rate_pct == null && detected?.interest_rate_pct != null ? detected.interest_rate_pct : undefined;
+  if (balance !== undefined || rate !== undefined) await updateAccount(env, userId, accountId, { balance_cents: balance, interest_rate_pct: rate });
+}

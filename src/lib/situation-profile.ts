@@ -424,6 +424,7 @@ export interface SituationProfileSignals {
   situationPersonNames?: Record<string, string>;
   situationResidencyUnsureValue?: string | null;
   situationNotWorkingPersonIds?: string[]; // answered "not working yet" for the FY (F13): the occupation is answered
+  situationIngestFacts?: boolean; // ingest_facts: say when a document contradicts the "not working" answer
 }
 
 /**
@@ -439,5 +440,6 @@ export async function situationProfileSignals(env: Env, userId: string, startYea
     situationPersonNames: Object.fromEntries(persons.map((n) => [n.id, n.role === "self" ? "" : n.display_name])),
     situationResidencyUnsureValue: situationFacts().residency?.unsure_value ?? null,
     situationNotWorkingPersonIds: notWorking,
+    ...(featureOn(env, "ingest_facts") ? { situationIngestFacts: true } : {}),
   };
 }

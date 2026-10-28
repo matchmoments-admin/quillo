@@ -890,6 +890,7 @@ console.log("income statement: mapIncomeStatementToRows (Total gross as printed 
   const prelim = emp({ employer: "STILL PROCESSING PTY LTD", tax_ready: false, total_gross_cents: 9999900 });
 
   const out = mapIncomeStatementToRows({ employers: [mch, job2, prelim] });
+  check("ingest_facts: the skipped employer keeps its name, ABN and period end", out.skipped.length === 1 && out.skipped[0]!.employer === "STILL PROCESSING PTY LTD" && out.skipped[0]!.period_end === prelim.period_end);
   const salary = out.rows.filter((r) => r.income_type === "salary_payg");
   const lumps = out.rows.filter((r) => r.income_type === "employment_lump_sum");
 
@@ -1810,6 +1811,17 @@ console.log("readiness");
     check("occupation_missing (#593): flag OFF keeps the exact 'Add it in Settings' string; ON points at Get set up (Settings while profile mode is off)",
       occOff.endsWith("Add it in Settings before you hand off.") && occJourney.endsWith("Add it in Get set up before you hand off.") &&
       occJourneyNoProfile === occOff && occJourney.replace("Get set up", "Settings") === occOff);
+  }
+
+  // ingest_facts: a document contradicts Get set up's "not working" answer ⇒ a review note pointing at Get set up.
+  {
+    const sit = mkSituation({ persons: [{ id: "self", user_id: "u", display_name: "You", role: "self", occupation: null, tax_residency: "AU" } as Situation["persons"][number]] });
+    const sig = (o: Partial<FilingReadinessSignals>) => ({ ...noSignals(), situationProfileEnabled: true, situationProfiles: [], situationPersonNames: { self: "" }, situationNotWorkingPersonIds: ["self"], salaryPayerCount: 1, ...o });
+    const has = (o: Partial<FilingReadinessSignals>) => assessReadiness({ report: mkReport(), situation: sit, claimMatches: [], signals: sig(o), generatedAt: "2026-06-03T00:00:00Z" }).findings.find((x) => x.id === "job_answer_differs");
+    const on = has({ situationIngestFacts: true });
+    check("job_answer_differs: 'not working' + an income statement on file ⇒ a review note, no figure", on?.severity === "review" && !/\$\d/.test(on.title + (on.body ?? "")));
+    check("job_answer_differs: flag OFF / no payer / someone else not working ⇒ none",
+      !has({}) && !has({ situationIngestFacts: true, salaryPayerCount: 0 }) && !has({ situationIngestFacts: true, situationPersonNames: { self: "Sam" } }));
   }
 
   // Unknown-bucket spend → BLOCKER finding + NOT ready (review Medium: the gate used to be vacuous).
@@ -6090,6 +6102,9 @@ import { latestSyncRuns } from "../src/lib/bank-sync";
   check("income statement: per employer — waiting (with 'ask your employer' after the chase date) vs added",
     w[0]!.state === "waiting" && !!w[0]!.chase?.includes("Ask Big Retail") && w[1]!.state === "added" && w[1]!.chase === null);
   check("income statement: wage rows but no named employer ⇒ 'added'", connectModel.incomeWaitItems(W({ wage_rows: 1 }))[0]!.state === "added");
+  const nr = connectModel.incomeWaitItems(W({ employers: [{ name: "Slow Payroll", covered: false, not_ready: true }] }))[0]!;
+  check("income statement (ingest_facts): an uploaded-but-not-Tax-ready employer says so, still waiting, no figure",
+    nr.state === "waiting" && nr.title.includes("not Tax ready yet") && nr.body.includes("upload it again") && !/\$\d/.test(nr.body));
 
   // Server reads against the real migrations (in-memory SQLite): latest run per LIVE connection, stale flag,
   // tenant scope; and the income-statement waiting list.

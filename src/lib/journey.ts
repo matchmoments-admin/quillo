@@ -104,6 +104,7 @@ const FINDING_STEP: Record<string, JourneyStepKey> = {
   occupation_missing: "setup",
   residency_unsure: "setup",
   study_loan_passthrough: "setup",
+  job_answer_differs: "setup",
   nothing_captured: "connect",
   income_not_recorded: "connect",
   income_needs_review: "connect",

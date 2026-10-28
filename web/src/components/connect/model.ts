@@ -195,6 +195,8 @@ export function incomeWaitItems(w: IncomeStatementWait): IncomeWaitItem[] {
   return w.employers.map((e) =>
     e.covered
       ? { key: e.name, title: `Income statement from ${e.name}: added`, body: "Quillo uses its gross pay and tax withheld.", state: "added" as const, chase: null }
-      : { key: e.name, title: `Waiting on your income statement from ${e.name}`, body: waitingBody, state: "waiting" as const, chase: chase(e.name) },
+      : e.not_ready
+        ? { key: e.name, title: `Income statement from ${e.name}: not Tax ready yet`, body: `The statement you uploaded says ${e.name} hasn't finalised it, so Quillo hasn't counted it. When myGov shows it as "Tax ready", upload it again here.`, state: "waiting" as const, chase: chase(e.name) }
+        : { key: e.name, title: `Waiting on your income statement from ${e.name}`, body: waitingBody, state: "waiting" as const, chase: chase(e.name) },
   );
 }

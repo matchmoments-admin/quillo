@@ -1382,7 +1382,7 @@ export interface BankSyncRun {
 /** #586: GET /api/income-statements?fy= (flag ft_journey) — the Connect step's waiting items. Names and dates only. */
 export interface IncomeStatementWait {
   fy: string;
-  employers: { name: string; covered: boolean }[];
+  employers: { name: string; covered: boolean; not_ready?: true }[]; // not_ready: ingest_facts
   wage_rows: number;
   finalise_by: string; // pack copy, e.g. "14 July"
   chase_after: string; // pack copy, e.g. "31 July"

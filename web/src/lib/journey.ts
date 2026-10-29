@@ -4,8 +4,7 @@ import { useActiveFy } from "./activeFy";
 import { useFeatures } from "./features";
 import { STEP_GUIDES, type StepKey } from "../content/stepGuides";
 import { JOURNEY_STEPS } from "../components/ft/model";
-import type { Journey, JourneyStepKey, JourneyStepStatus } from "../types";
-import { findingFixLinkForKind, type FixLink } from "./findingLinks";
+import type { JourneyStepKey, JourneyStepStatus } from "../types";
 
 // The first-timer journey (spec A11, #582; flag ft_journey): routes for the four steps (spec §0, #585) and the one shared
 // /api/journey query the shell (status dots) and Home read. The key is ["journey", fy]; main.tsx's
@@ -45,19 +44,4 @@ export function useJourney() {
   const { fy } = useActiveFy();
   const { has } = useFeatures();
   return useQuery({ queryKey: ["journey", fy], queryFn: () => api.journey(fy), enabled: has("ft_journey"), staleTime: 30_000 });
-}
-
-/**
- * A What's-left item's fix link, the same on Home and on a step page (`here`, null on Home): its evidence kind's
- * page when that is specific, else the step it points into. With `cleanup` (review_cleanup), a finding about bank
- * lines goes to the transaction list, whichever step it counts against. A transaction finding that points into
- * the page you're on goes to the transaction list, never back to the same page.
- */
-export function whatsLeftFixLink(w: Journey["whats_left"][number], here: JourneyStepKey | null, cleanup = false): FixLink {
-  if (w.evidence_kind && w.evidence_kind !== "transaction") return findingFixLinkForKind(w.evidence_kind, { journey: true });
-  // Income the bank shows but nothing records: its evidence is the deposits, but the fix is the income statement.
-  if (cleanup && w.id === "income_not_recorded") return { to: "/connect#income", label: "Add your income" };
-  if (cleanup && w.evidence_kind === "transaction") return { to: "/transactions?view=all", label: "Sort it out" };
-  if (w.step !== here) return { to: STEP_ROUTE[w.step], label: `Go to ${STEP_LABEL[w.step]}` };
-  return { to: "/transactions", label: "Sort it out" };
 }

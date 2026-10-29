@@ -1,5 +1,6 @@
 import { useActiveFy } from "../lib/activeFy";
-import { JOURNEY_STEP_KEYS, STATUS_LABEL, STEP_LABEL, STEP_ROUTE, useJourney, whatsLeftFixLink } from "../lib/journey";
+import { JOURNEY_STEP_KEYS, STATUS_LABEL, STEP_LABEL, STEP_ROUTE, useJourney } from "../lib/journey";
+import { whatsLeftFixLink } from "../lib/findingLinks";
 import { useFeatures } from "../lib/features";
 import { money, Term } from "../components/ui";
 import { Badge, EmptyState, FtCard, FtLink, GeneralInfoNote, GrowSuggestionCard, Skeleton, StatusGate } from "../components/ft";
@@ -98,6 +99,8 @@ function GrowSuggestions({ j }: { j: Journey }) {
   );
 }
 
+const STEPS = { route: STEP_ROUTE, label: STEP_LABEL };
+
 function WhatsLeft({ j }: { j: Journey }) {
   // review_cleanup: each item links to what fixes it (the same link Review shows), not just the step it counts
   // against: "2 transactions aren't categorised" opened Connect, which has nothing to sort them with.
@@ -120,8 +123,8 @@ function WhatsLeft({ j }: { j: Journey }) {
                 <Badge tone={w.severity === "blocker" ? "warn" : "info"}>{w.severity === "blocker" ? "To fix" : "To check"}</Badge>
                 <span className="min-w-0 flex-1 text-sm text-ink">{w.title}</span>
                 {cleanup ? (
-                  <FtLink to={whatsLeftFixLink(w, null, true).to} className="text-sm">
-                    {whatsLeftFixLink(w, null, true).label}
+                  <FtLink to={whatsLeftFixLink(w, null, true, STEPS).to} className="text-sm">
+                    {whatsLeftFixLink(w, null, true, STEPS).label}
                   </FtLink>
                 ) : (
                   <FtLink to={STEP_ROUTE[w.step]} className="text-sm">

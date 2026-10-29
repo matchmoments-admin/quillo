@@ -75,7 +75,6 @@ import { composePosition, type PositionSummands } from "../src/lib/position";
 import { reportableAmountsByEmployer, reportableAmountsTotal, EMPLOYER_NOT_STATED } from "../src/lib/reportable-amounts";
 import type Anthropic from "@anthropic-ai/sdk";
 import { personFilter } from "../src/lib/self-person";
-import { whatsLeftFixLink } from "../web/src/lib/journey";
 import { occupationLabel } from "../web/src/content/occupations";
 
 let pass = 0,
@@ -6529,7 +6528,7 @@ console.log("records step (#588)");
 }
 
 // ── #589 Check step: shared finding fix links (web/src/lib/findingLinks.ts) + Check page copy ──
-import { findingFixLink, findingFixLinkForKind } from "../web/src/lib/findingLinks";
+import { findingFixLink, findingFixLinkForKind, whatsLeftFixLink } from "../web/src/lib/findingLinks";
 console.log("#589 Check step");
 {
   // OFF (Filing page): exactly the mapping Filing.tsx always rendered.
@@ -6542,11 +6541,12 @@ console.log("#589 Check step");
     findingFixLinkForKind("income", { journey: true }).to === "/connect#income" && findingFixLinkForKind("transaction", { journey: true }).to === "/review" &&
     findingFixLinkForKind("document", { journey: true }).to === "/review#documents" && findingFixLinkForKind("property", { journey: true }).to === "/grow/property#properties");
   {
+    const WL_STEPS = { route: { setup: "/setup", connect: "/connect", review: "/review", lodge: "/lodge" }, label: { setup: "Get set up", connect: "Connect", review: "Review", lodge: "Lodge in myTax" } } as const;
     const w = (o: Partial<{ step: "setup" | "connect" | "review" | "lodge"; evidence_kind: string | null }>) =>
       ({ id: "x", kind: "finding" as const, severity: "blocker" as const, title: "t", note: "n", step: "connect" as const, evidence_kind: null, ...o });
     check("whatsLeftFixLink (beginner walkthrough): Home sends an uncategorised-lines finding to the transaction list, not Connect",
-      whatsLeftFixLink(w({ evidence_kind: "transaction" }), null, true).to === "/transactions?view=all" && whatsLeftFixLink(w({ evidence_kind: "noticed" }), null, true).to === "/review#q-noticed" &&
-      whatsLeftFixLink(w({ evidence_kind: null }), null, true).label === "Go to Connect" && whatsLeftFixLink({ ...w({ evidence_kind: "transaction" }), id: "income_not_recorded" }, null, true).to === "/connect#income" && whatsLeftFixLink(w({ step: "review", evidence_kind: "transaction" }), "review", false).to === "/transactions");
+      whatsLeftFixLink(w({ evidence_kind: "transaction" }), null, true, WL_STEPS).to === "/transactions?view=all" && whatsLeftFixLink(w({ evidence_kind: "noticed" }), null, true, WL_STEPS).to === "/review#q-noticed" &&
+      whatsLeftFixLink(w({ evidence_kind: null }), null, true, WL_STEPS).label === "Go to Connect" && whatsLeftFixLink({ ...w({ evidence_kind: "transaction" }), id: "income_not_recorded" }, null, true, WL_STEPS).to === "/connect#income" && whatsLeftFixLink(w({ step: "review", evidence_kind: "transaction" }), "review", false, WL_STEPS).to === "/transactions");
     check("occupationLabel: a typed occupation's token reads as words (never 'retail_assistant'); a listed one keeps its label",
       occupationLabel("retail_assistant") === "Retail assistant" && occupationLabel("nurse") === "Nurse" && occupationLabel("") === "");
   }

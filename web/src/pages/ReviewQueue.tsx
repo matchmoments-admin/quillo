@@ -30,8 +30,8 @@ import { FactCard, NeedsRecordCard, groupName, recordMeta } from "../components/
 import { useActiveFy } from "../lib/activeFy";
 import { useFeatures } from "../lib/features";
 import { useEducation } from "../lib/education";
-import { JOURNEY_STEP_KEYS, STEP_LABEL, STEP_ROUTE, useJourney, whatsLeftFixLink } from "../lib/journey";
-import type { FixLink } from "../lib/findingLinks";
+import { JOURNEY_STEP_KEYS, STEP_LABEL, STEP_ROUTE, useJourney } from "../lib/journey";
+import { whatsLeftFixLink, type FixLink } from "../lib/findingLinks";
 import { confirmedByLabel, groupWorthALook } from "../lib/claims";
 import {
   QUEUE_KIND_LABEL,
@@ -76,7 +76,7 @@ const cents = (r: ReconcileRow) => r.amount_aud_cents ?? r.amount_cents;
 const receiptSide = (r: ReconcileRow): MatchSide => ({ name: r.merchant ?? "Receipt", amount: money(cents(r)), date: day(r.txn_date) });
 const lineSide = (l: ReconcileRow): MatchSide => ({ name: l.raw_description ?? l.merchant ?? "Bank line", amount: money(cents(l)), date: day(l.txn_date) });
 
-const fixFor = (w: Journey["whats_left"][number], cleanup = false): FixLink => whatsLeftFixLink(w, STEP, cleanup);
+const fixFor = (w: Journey["whats_left"][number], cleanup = false): FixLink => whatsLeftFixLink(w, STEP, cleanup, { route: STEP_ROUTE, label: STEP_LABEL });
 
 type Tab = "queue" | "labels";
 

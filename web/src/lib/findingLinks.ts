@@ -1,4 +1,5 @@
 import { toJourneyHref } from "./legacyRoutes";
+import type { Journey, JourneyStepKey } from "../types";
 
 // Where a readiness finding's "fix it" link goes (spec A8: moved out of Filing.tsx so the Check step and
 // the Filing page share one mapping). Keyed on the kind of the finding's first evidence ref.
@@ -36,4 +37,25 @@ export function findingFixLinkForKind(kind: string | null | undefined, opts: { j
 /** The Filing page's form: a full readiness finding. */
 export function findingFixLink(f: { evidence_refs: { kind: string }[] }, opts: { journey?: boolean } = {}): FixLink {
   return findingFixLinkForKind(f.evidence_refs[0]?.kind, opts);
+}
+
+/**
+ * A What's-left item's fix link, the same on Home and on a step page (`here`, null on Home): its evidence kind's
+ * page when that is specific, else the step it points into. With `cleanup` (review_cleanup), a finding about bank
+ * lines goes to the transaction list, whichever step it counts against, and missing income goes to the income
+ * statement form (the deposits are its evidence, not its fix). A transaction finding that points into the page
+ * you're on goes to the transaction list, never back to the same page. `steps` is lib/journey's STEP_ROUTE and
+ * STEP_LABEL (passed in so this module stays dependency-free).
+ */
+export function whatsLeftFixLink(
+  w: Journey["whats_left"][number],
+  here: JourneyStepKey | null,
+  cleanup: boolean,
+  steps: { route: Record<JourneyStepKey, string>; label: Record<JourneyStepKey, string> },
+): FixLink {
+  if (w.evidence_kind && w.evidence_kind !== "transaction") return findingFixLinkForKind(w.evidence_kind, { journey: true });
+  if (cleanup && w.id === "income_not_recorded") return { to: "/connect#income", label: "Add your income" };
+  if (cleanup && w.evidence_kind === "transaction") return { to: "/transactions?view=all", label: "Sort it out" };
+  if (w.step !== here) return { to: steps.route[w.step], label: `Go to ${steps.label[w.step]}` };
+  return { to: "/transactions", label: "Sort it out" };
 }

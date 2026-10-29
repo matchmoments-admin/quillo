@@ -22,3 +22,11 @@ export function sameTaxpayer(
 ): boolean {
   return (a.entity_id ?? null) === (b.entity_id ?? null) && ownerPersonId(userId, a.person_id) === ownerPersonId(userId, b.person_id);
 }
+
+/**
+ * A `person_id` filter for a reader scoped to one person. Asking for the self person also matches a NULL person
+ * (legacy rows, before migration 0094 set them); any other person matches exactly.
+ */
+export function personFilter(userId: string, personId: string): { sql: string; binds: string[] } {
+  return personId === selfPersonId(userId) ? { sql: "(person_id = ? OR person_id IS NULL)", binds: [personId] } : { sql: "person_id = ?", binds: [personId] };
+}

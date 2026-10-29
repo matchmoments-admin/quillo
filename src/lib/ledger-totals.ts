@@ -28,6 +28,7 @@ export interface RulePackThresholds {
 export { fyLabel, fyStartYearStr, parseFyStartYear, normaliseFyLabel } from "./fy";
 import { fyLabel, parseFyStartYear } from "./fy";
 import { audAmount, countable, notAttributedExpr } from "./ledger-filter";
+import { personFilter } from "./self-person";
 
 /**
  * Calendar bounds of an FY start year. Period maths live in jurisdiction.ts; the optional descriptor
@@ -160,8 +161,10 @@ export async function incomeTotals(
   const where: string[] = ["user_id = ?", "fy = ?", FX_CONVERTED];
   const binds: unknown[] = [userId, fy];
   if (opts.personId) {
-    where.push("person_id = ?");
-    binds.push(opts.personId);
+    // #820: the self person also owns NULL-person rows (src/lib/self-person.ts).
+    const pf = personFilter(userId, opts.personId);
+    where.push(pf.sql);
+    binds.push(...pf.binds);
   }
   if (opts.propertyId) {
     where.push("property_id = ?");

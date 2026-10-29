@@ -16,6 +16,7 @@ import { reconcileScore, proposeMatches, RECONCILE_WINDOW_DAYS, type ReconcileCo
 import type { JurisdictionDescriptor } from "./jurisdiction";
 import { platformDb, tenantDb } from "./tenant-db";
 import { COUNTABLE, COUNTABLE_INCOME, FX_CONVERTED, audAmount, countable } from "./ledger-filter";
+import { personFilter } from "./self-person";
 // The "which rows count" predicates moved to ledger-filter.ts; re-exported so existing imports keep working.
 export { COUNTABLE, COUNTABLE_INCOME, FX_CONVERTED } from "./ledger-filter";
 
@@ -653,8 +654,10 @@ export async function listIncome(
     binds.push(opts.fy);
   }
   if (opts.personId) {
-    where.push("person_id = ?");
-    binds.push(opts.personId);
+    // #820: the self person also owns NULL-person rows (src/lib/self-person.ts).
+    const pf = personFilter(userId, opts.personId);
+    where.push(pf.sql);
+    binds.push(...pf.binds);
   }
   if (opts.propertyId) {
     where.push("property_id = ?");

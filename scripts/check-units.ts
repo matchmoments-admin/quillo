@@ -74,6 +74,7 @@ import path from "node:path";
 import { composePosition, type PositionSummands } from "../src/lib/position";
 import { reportableAmountsByEmployer, reportableAmountsTotal, EMPLOYER_NOT_STATED } from "../src/lib/reportable-amounts";
 import type Anthropic from "@anthropic-ai/sdk";
+import { personFilter } from "../src/lib/self-person";
 
 let pass = 0,
   fail = 0;
@@ -327,6 +328,11 @@ console.log("one notion of self (src/lib/self-person.ts)");
     .filter((f) => /`person_self_\$\{/.test(fs.readFileSync(f, "utf8")))
     .map((f) => path.relative(process.cwd(), f));
   check(`no inline \`person_self_\${...}\` outside self-person.ts (use selfPersonId/ownerPersonId): ${offenders.join(", ") || "none"}`, offenders.length === 0);
+  // #820: a self-scoped reader also matches NULL-person rows; anyone else matches exactly.
+  const selfF = personFilter("u1", "person_self_u1");
+  const otherF = personFilter("u1", "p_partner");
+  check("personFilter: self ⇒ (person_id = ? OR person_id IS NULL); another person ⇒ exact match",
+    selfF.sql === "(person_id = ? OR person_id IS NULL)" && selfF.binds[0] === "person_self_u1" && otherF.sql === "person_id = ?" && otherF.binds[0] === "p_partner");
 }
 
 console.log("statement account detection (statement_account_detect)");

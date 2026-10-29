@@ -392,7 +392,7 @@ console.log("statement account detection (statement_account_detect)");
 console.log("worded own-account transfers (review_cleanup)");
 {
   const accts = [{ id: "a", last4: "1111" }, { id: "b", last4: "2222" }];
-  const L = (id: string, account_id: string, direction: string, amount_cents: number, txn_date: string, description: string): PairableLine => ({ id, account_id, direction, amount_cents, txn_date, description });
+  const L = (id: string, account_id: string, direction: string, amount_cents: number, txn_date: string, description: string, uncertain = true): PairableLine => ({ id, account_id, direction, amount_cents, txn_date, description, uncertain });
   const lines = [
     L("o1", "a", "debit", 2_000_000, "2026-01-08", "Withdrawal Mobile 1234567 Tfr Example Bank"),
     L("i1", "b", "credit", 2_000_000, "2026-01-08", "Deposit Online 7654321 Tfr Example Bank"),
@@ -400,18 +400,31 @@ console.log("worded own-account transfers (review_cleanup)");
     L("i2", "b", "credit", 50_000, "2026-02-04", "Transfer in"),
     L("o3", "a", "debit", 9_900, "2026-03-01", "EFTPOS GROCER"), // no transfer word ⇒ never paired
     L("i3", "b", "credit", 9_900, "2026-03-01", "Tfr from friend"),
+    L("o4", "a", "debit", 60_000, "2026-04-01", "Tfr to J Doe"), // a confidently-read rent credit worded "transfer" ⇒ never paired
+    L("i4", "b", "credit", 60_000, "2026-04-01", "Osko transfer from tenant rent", false),
   ];
   const on = pairOwnTransfers(lines, accts, 3, { worded: true });
-  check("worded: two 'Tfr' lines of one amount on two of your accounts the same day pair; three days apart or one side not a transfer ⇒ not",
+  check("worded: two unsure 'Tfr' lines of one amount on two of your accounts the same day pair; three days apart, no transfer word, or a confident credit ⇒ not",
     on.length === 1 && on[0]!.debit === "o1" && on[0]!.credit === "i1");
   check("worded: OFF ⇒ only number-named pairs (none here)", pairOwnTransfers(lines, accts).length === 0);
+  // Number-named pairs are made first; worded ones only from what's left, so a worded candidate never blocks or takes one.
+  const both = [
+    L("w1", "a", "debit", 10_000, "2026-05-01", "Tfr Example Bank"),
+    L("n1", "a", "debit", 10_000, "2026-05-01", "Transfer to 900002222"),
+    L("c1", "b", "credit", 10_000, "2026-05-01", "Tfr in"),
+  ];
+  const p2 = pairOwnTransfers(both, accts, 3, { worded: true });
+  check("worded: a number-named pair is made first and isn't taken or blocked by a worded candidate", p2.length === 1 && p2[0]!.debit === "n1" && p2[0]!.credit === "c1");
 }
 
 console.log("loan drawdown in the clean-up sweep (review_cleanup)");
 {
-  const dd = (d: string, on = true) => classifyMovementForSweep(d, { drawdown: on });
+  const dd = (d: string, on = true, onLoan = true) => classifyMovementForSweep(d, { drawdown: on, onLoan });
+  check("drawdown: a progress drawdown (paying a builder) or a line on a non-loan account stays as classifyMovement reads it",
+    dd("PROGRESS DRAWDOWN EXAMPLE BUILDER").klass === classifyMovement("PROGRESS DRAWDOWN EXAMPLE BUILDER").klass &&
+    dd("INITIAL DRAWING OF LOAN", true, false).klass === classifyMovement("INITIAL DRAWING OF LOAN").klass);
   check("drawdown: a loan's opening advance is its own class, one-tap on the loan side, left alone as a credit",
-    dd("INITIAL DRAWING OF LOAN").klass === "loan_drawdown" && dd("Loan drawdown").klass === "loan_drawdown" &&
+    dd("INITIAL DRAWING OF LOAN").klass === "loan_drawdown" && dd("Loan funds advanced").klass === "loan_drawdown" &&
     movementTreatment("loan_drawdown", "debit") === "ignorable" && movementTreatment("loan_drawdown", "credit") === "skip");
   check("drawdown: OFF ⇒ exactly classifyMovement (a loan line held for review); repayments and interest are never drawdowns",
     dd("INITIAL DRAWING OF LOAN", false).klass === classifyMovement("INITIAL DRAWING OF LOAN").klass &&

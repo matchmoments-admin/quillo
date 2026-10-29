@@ -100,6 +100,7 @@ export function Income() {
         // income_supersession: a longer statement already on file counts this one's rent.
         setNote("Kept as a record and not counted: a longer rental statement you uploaded for the same property already covers these dates.");
         qc.invalidateQueries({ queryKey: ["income"] });
+        qc.invalidateQueries({ queryKey: ["dashboard"] });
       } else if (r.routed && recordedAs) {
         setNote(`${recordedAs} read and recorded — check the row below (switch to the statement's FY; confirm anything flagged for review). Don't add it manually too, or it will be counted twice.`);
         qc.invalidateQueries({ queryKey: ["income"] }); // any FY — the statement may land in a different year

@@ -11,6 +11,7 @@
  */
 import type { Env } from "../env";
 import type { StatementAccount, StatementAccountKind } from "../extract";
+import { featureOn } from "./features";
 import { tenantDb } from "./tenant-db";
 import { addAccount, updateAccount } from "./situation-write";
 
@@ -164,7 +165,8 @@ export async function resolveStatementAccount(env: Env, userId: string, detected
     return { id: d.account.id, name: d.account.name, type: d.account.type, kind: detected?.kind ?? null, created: false, kindMismatch: kindMismatch(d.account.type, detected) };
   }
   const type = accountTypeForKind(detected?.kind);
-  const institution = knownInstitution(rows.results ?? [], detected?.institution);
+  // review_cleanup: one bank, one name. OFF ⇒ the name as this statement printed it.
+  const institution = featureOn(env, "review_cleanup") ? knownInstitution(rows.results ?? [], detected?.institution) : detected?.institution ?? null;
   const name = detectedAccountName({ institution, kind: detected?.kind ?? null, last4: detected?.last4 ?? null });
   const id = await addAccount(env, userId, { name, institution: institution ?? undefined, last4: detected?.last4 ?? undefined, type, source: "statement" });
   if (type === "loan" && (closingCents != null || detected?.interest_rate_pct != null)) {

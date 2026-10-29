@@ -18,6 +18,8 @@ import { isLoanInterestLine } from "./statements";
 /** A gap shorter than this is a quiet week or a cycle boundary, not a missing statement. */
 export const GAP_TOLERANCE_DAYS = 7;
 
+// opening_cents: only passed for a loan, whose first statement opening on $0 means it was drawn then. A card paid in full
+// or an idle account also opens on $0, so for those it says nothing about when the account started.
 export interface StatementPeriod { start: string; end: string; opening_cents?: number | null } // ISO dates, inclusive
 export interface CoverageGap { from: string; to: string; days: number } // inclusive
 
@@ -28,8 +30,8 @@ const toIso = (ms: number) => new Date(ms).toISOString().slice(0, 10);
 /**
  * The stretches of [fyStart, fyEnd] no statement covers, in date order. Periods outside the FY are clipped;
  * overlapping periods merge. Gaps of GAP_TOLERANCE_DAYS or less are ignored. No periods at all ⇒ no gaps (the
- * account isn't in this FY; that's a different question). When the earliest statement opens on a $0 balance the
- * account started then (a new account, a new loan before its drawdown), so the FY before it is not a gap.
+ * account isn't in this FY; that's a different question). When the earliest period carries opening_cents 0 (a loan
+ * statement opening before its drawdown) the account started then, so the FY before it is not a gap.
  */
 export function coverageGaps(periods: StatementPeriod[], fyStart: string, fyEnd: string, toleranceDays = GAP_TOLERANCE_DAYS): CoverageGap[] {
   const lo = toMs(fyStart), hi = toMs(fyEnd);
@@ -61,18 +63,18 @@ export interface AccountCoverage { account_id: string; label: string; gaps: Cove
  */
 export async function statementCoverageSignals(env: Env, userId: string, fyStart: string, fyEnd: string): Promise<AccountCoverage[]> {
   const rows = (await tenantDb(env, userId).prepare(
-    `SELECT s.account_id, a.name, a.last4, s.opening_cents,
+    `SELECT s.account_id, a.name, a.last4, a.type, s.opening_cents,
             COALESCE(s.period_start, (SELECT MIN(t.txn_date) FROM transactions t WHERE t.user_id = s.user_id AND t.statement_id = s.id)) AS p_start,
             COALESCE(s.period_end,   (SELECT MAX(t.txn_date) FROM transactions t WHERE t.user_id = s.user_id AND t.statement_id = s.id)) AS p_end
        FROM statements s JOIN accounts a ON a.id = s.account_id AND a.user_id = s.user_id
       WHERE s.user_id = ? AND s.status = 'imported' AND a.source = 'statement' AND a.active = 1`,
-  ).bind().all<{ account_id: string; name: string; last4: string | null; opening_cents: number | null; p_start: string | null; p_end: string | null }>()).results ?? [];
+  ).bind().all<{ account_id: string; name: string; last4: string | null; type: string; opening_cents: number | null; p_start: string | null; p_end: string | null }>()).results ?? [];
   const byAccount = new Map<string, { label: string; periods: StatementPeriod[] }>();
   for (const r of rows) {
     if (!r.p_start || !r.p_end || r.p_end < fyStart || r.p_start > fyEnd) continue;
     const label = r.last4 && !r.name.includes(r.last4) ? `${r.name} ··${r.last4}` : r.name;
     const entry = byAccount.get(r.account_id) ?? { label, periods: [] };
-    entry.periods.push({ start: r.p_start, end: r.p_end, opening_cents: r.opening_cents });
+    entry.periods.push({ start: r.p_start, end: r.p_end, opening_cents: r.type === "loan" ? r.opening_cents : null });
     byAccount.set(r.account_id, entry);
   }
   const out: AccountCoverage[] = [];

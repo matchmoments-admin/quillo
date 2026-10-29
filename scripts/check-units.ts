@@ -6533,6 +6533,8 @@ console.log("#589 Check step");
   check("findingLinks ON: income → Connect, transactions → Review, document → Review's documents, property → Grow › Property (#593)",
     findingFixLinkForKind("income", { journey: true }).to === "/connect#income" && findingFixLinkForKind("transaction", { journey: true }).to === "/review" &&
     findingFixLinkForKind("document", { journey: true }).to === "/review#documents" && findingFixLinkForKind("property", { journey: true }).to === "/grow/property#properties");
+  check("findingLinks (rental_property_gate): a noticed-card finding opens the card on Review, journey or not",
+    findingFixLinkForKind("noticed").to === "/review#q-noticed" && findingFixLinkForKind("noticed", { journey: true }).to === "/review#q-noticed" && findingFixLinkForKind("noticed").label === "Answer the card");
   check("legacyRoutes (#587): the fallback picker /review/match is routed to the Review step", /path: "review\/match", element: <ReviewStep \/>/.test(fs.readFileSync(path.join(process.cwd(), "web/src/main.tsx"), "utf8")));
   // The Check page and its match row: tax-advice denylist (no refund wording, no figures in copy), and the
   // page never renders a refund / tax-payable field.

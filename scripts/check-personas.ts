@@ -3910,8 +3910,23 @@ async function main() {
       cards.length === 1 && cards[0]!.evidence.n === 2 && cards[0]!.evidence.total_cents === 276000 + 3312000 && cards[0]!.evidence.label === "12A Harbour St");
     const before = await buildReport(PROP, u, 2025);
     check("property_from_statement: before Yes nothing is created (rent unattributed, no property)", before.per_property.length === 0 && !count(`SELECT COUNT(*) AS n FROM properties WHERE user_id = 'pprop'`));
+    // rental_property_gate: while the card is unanswered, readiness holds a blocker that links to the card (the rent
+    // may count twice and the schedule lacks it); flag OFF ⇒ no such finding, and the money is the same either way.
+    run(`INSERT OR IGNORE INTO profiles (user_id) VALUES (?)`, u);
+    const GATE = { ...PROP, FEATURES: `${(PROP as unknown as { FEATURES: string }).FEATURES},rental_property_gate` } as unknown as Env;
+    const rdeps = { loadRulePack: async () => auV1RulePack as unknown, now: new Date("2026-10-30T00:00:00Z") };
+    const gated = await computeFilingReadiness(GATE, u, 2025, rdeps);
+    const ungated = await computeFilingReadiness(PROP, u, 2025, rdeps);
+    const gate = gated.findings.filter((x) => x.id.startsWith("rental_property_unfiled:"));
+    check("rental_property_gate: an unanswered card is ONE blocker naming the address, its 2 statements and $35,880.00 of rent, linked to the card",
+      gate.length === 1 && gate[0]!.id === `rental_property_unfiled:${addr}` && gate[0]!.severity === "blocker" && gate[0]!.evidence_refs[0]?.kind === "noticed"
+        && /12A Harbour St/.test(gate[0]!.title) && /2 rental statements/.test(gate[0]!.general_info_note) && /\$35,880\.00/.test(gate[0]!.general_info_note) && !gated.readiness_score.ready);
+    check("rental_property_gate: flag OFF ⇒ no such finding, and the position is the same either way",
+      !ungated.findings.some((x) => x.id.startsWith("rental_property_unfiled:")) && gated.position.indicative_taxable_position_cents === ungated.position.indicative_taxable_position_cents);
     const res = await confirmNoticed(PROP, u, cards[0]!.id, {}, { now: new Date("2026-10-28T00:00:00Z"), recordCreditAsIncome: async () => null } as never);
     const pid = res.property_id!;
+    check("rental_property_gate: once Yes files the statements, the blocker goes",
+      !(await computeFilingReadiness(GATE, u, 2025, rdeps)).findings.some((x) => x.id.startsWith("rental_property_unfiled:")));
     check("property_from_statement: Yes creates a rented property and files both statements and their fees under it",
       !!pid && res.filed?.income === 2 && res.filed.txns === 2 && count(`SELECT COUNT(*) AS n FROM documents WHERE user_id = 'pprop' AND property_id IS NOT NULL`) === 2);
     const after = await buildReport(PROP, u, 2025);
@@ -3940,6 +3955,18 @@ async function main() {
     const sib = (db.prepare(`SELECT status, ref_id FROM noticed_signals WHERE id = 'pprop2_sig26'`).get() as { status: string; ref_id: string | null });
     check("property_from_statement: confirming one FY's card answers the same address's other cards with the same property (no duplicate)",
       count(`SELECT COUNT(*) AS n FROM properties WHERE user_id = 'pprop2'`) === 1 && sib.status === "confirmed" && sib.ref_id === res2.property_id);
+    // rental_property_gate: a "No" answers the card too (the user says it isn't their property), so nothing blocks.
+    const u3 = "pprop3";
+    seedTenant(u3, "Rental card answered No");
+    run(`INSERT INTO profiles (user_id) VALUES (?)`, u3);
+    run(`INSERT INTO income (id, user_id, person_id, income_type, fy, gross_cents, amount_aud_cents, detail_json) VALUES ('pprop3_i', ?, 'person_self_pprop3', 'rent', '2025-26', 100000, 100000, ?)`, u3, JSON.stringify({ address_key: addr }));
+    await noticeRentalProperty(PROP, u3, addr, "12A Harbour St", "2025-26");
+    const GATE3 = { ...PROP, FEATURES: `${(PROP as unknown as { FEATURES: string }).FEATURES},rental_property_gate` } as unknown as Env;
+    const r3deps = { loadRulePack: async () => auV1RulePack as unknown, now: new Date("2026-10-30T00:00:00Z") };
+    const open3 = (await computeFilingReadiness(GATE3, u3, 2025, r3deps)).findings.filter((x) => x.id.startsWith("rental_property_unfiled:")).length;
+    await dismissNoticed(PROP, u3, (await listNoticed(PROP, u3, 2025)).find((x) => x.kind === "rental_property")!.id);
+    const after3 = (await computeFilingReadiness(GATE3, u3, 2025, r3deps)).findings.filter((x) => x.id.startsWith("rental_property_unfiled:")).length;
+    check("rental_property_gate: answering No clears the blocker (one before, none after)", open3 === 1 && after3 === 0);
   }
 
   // ── statement_account_detect: a loan's statement fills its blank balance and rate (0044 fallback inputs), never

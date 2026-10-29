@@ -15,6 +15,15 @@
         "id": "payg_unresolved",
         "severity": "review",
         "title": "2 personal/work transaction(s) need a deductibility decision"
+      },
+      {
+        "category": "completeness",
+        "defer_to_agent": false,
+        "evidence_refs": [],
+        "general_info_note": "Your statements for this account don't cover the whole year, so anything paid or received in those times isn't in your records and your totals may be lower than they should be. Upload the statements for those dates. If the account opened or closed during the year, you can leave this as it is.",
+        "id": "statement_coverage:<account>",
+        "severity": "review",
+        "title": "Everyday: no statement for 1 Jul 2025 to 1 May 2026, 8 May 2026 to 15 May 2026, 22 May 2026 to 30 Jun 2026"
       }
     ],
     "fy": "2025-26",
@@ -75,7 +84,7 @@
       "blockers": 0,
       "info": 0,
       "ready": true,
-      "review": 1
+      "review": 2
     }
   },
   "report": {

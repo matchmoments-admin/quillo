@@ -15,7 +15,7 @@ import { buildReport, useStatusDeniedExpr, propertyUndeterminedGatedExpr, deduct
 import { runScan, type ScanTxn } from "../src/lib/scan";
 import auV1RulePack from "../src/rulepacks/au-v1.json";
 import { COUNTABLE } from "../src/lib/queries";
-import { fyBounds } from "../src/lib/ledger-totals";
+import { fyBounds, incomeTotals } from "../src/lib/ledger-totals";
 import { buildAccountantSchedule, buildAccountantScheduleDetailed, buildScheduleDetail, tieBackChecks } from "../src/lib/accountant-schedule";
 import { fetchAskDigestRows, listAccounts, listIncome } from "../src/lib/queries";
 import { reconcileProposals, reconcileLinkedPairs, reconcilePairs, listClaims } from "../src/lib/queries";
@@ -3988,6 +3988,29 @@ async function main() {
       !off.findings.some((f) => /^(statement_coverage|loan_unlinked):/.test(f.id)) && on.position.indicative_taxable_position_cents === off.position.indicative_taxable_position_cents);
     run(`INSERT INTO loans_properties (id, user_id, loan_account_id, property_id, deductible_interest_pct) VALUES ('pcoverLP', ?, 'pcoverLoan', 'pcoverProp', 100)`, u);
     check("P2 loan: once the loan is linked to a property, the note goes", !(await computeFilingReadiness(ON, u, 2025, deps)).findings.some((f) => f.id.startsWith("loan_unlinked:")));
+  }
+
+  // ── #820 self person: a legacy NULL-person income row is the primary taxpayer's. Readers scoped to the self person
+  // count it, a partner's scope never does, and migration 0094 stamps it with the self id (idempotently). ──
+  {
+    const u = "pself";
+    seedTenant(u, "P1 legacy NULL-person income");
+    run(`INSERT OR IGNORE INTO persons (id, user_id, display_name, role) VALUES ('pselfPartner', ?, 'Partner', 'partner')`, u);
+    inc("pselfLegacy", u, "salary_payg", 5000000); // person_id NULL, as before the persons model
+    inc("pselfStamped", u, "salary_payg", 2000000, { person_id: "person_self_pself" });
+    inc("pselfPartnerInc", u, "salary_payg", 7000000, { person_id: "pselfPartner" });
+    const mine = await listIncome(env, u, { personId: "person_self_pself" });
+    const theirs = await listIncome(env, u, { personId: "pselfPartner" });
+    const mineTot = await incomeTotals(env, u, { startYear: 2025, personId: "person_self_pself" });
+    check("#820: the self person's income list and totals include the legacy NULL-person row ($70,000.00 = $50,000 + $20,000)",
+      mine.length === 2 && mineTot.gross_cents === 7000000);
+    check("#820: another person's scope never picks up a NULL-person row", theirs.length === 1 && (theirs[0] as { id: string }).id === "pselfPartnerInc");
+    const sql = fs.readFileSync(path.join(process.cwd(), "migrations/0094_income_self_person.sql"), "utf8");
+    db.exec(sql);
+    db.exec(sql); // apply-once guard: a re-run changes nothing
+    const after = db.prepare(`SELECT person_id FROM income WHERE id = 'pselfLegacy'`).get() as { person_id: string | null };
+    check("#820: migration 0094 stamps the legacy row with the self id, and re-running it is harmless",
+      after.person_id === "person_self_pself" && (await incomeTotals(env, u, { startYear: 2025, personId: "person_self_pself" })).gross_cents === 7000000);
   }
 
   console.log(`\n=== personas: ${pass} passed, ${fail} failed ===`);

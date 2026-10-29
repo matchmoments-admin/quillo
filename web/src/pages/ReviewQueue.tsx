@@ -30,8 +30,8 @@ import { FactCard, NeedsRecordCard, groupName, recordMeta } from "../components/
 import { useActiveFy } from "../lib/activeFy";
 import { useFeatures } from "../lib/features";
 import { useEducation } from "../lib/education";
-import { JOURNEY_STEP_KEYS, STEP_LABEL, STEP_ROUTE, useJourney } from "../lib/journey";
-import { findingFixLinkForKind, type FixLink } from "../lib/findingLinks";
+import { JOURNEY_STEP_KEYS, STEP_LABEL, STEP_ROUTE, useJourney, whatsLeftFixLink } from "../lib/journey";
+import type { FixLink } from "../lib/findingLinks";
 import { confirmedByLabel, groupWorthALook } from "../lib/claims";
 import {
   QUEUE_KIND_LABEL,
@@ -76,19 +76,7 @@ const cents = (r: ReconcileRow) => r.amount_aud_cents ?? r.amount_cents;
 const receiptSide = (r: ReconcileRow): MatchSide => ({ name: r.merchant ?? "Receipt", amount: money(cents(r)), date: day(r.txn_date) });
 const lineSide = (l: ReconcileRow): MatchSide => ({ name: l.raw_description ?? l.merchant ?? "Bank line", amount: money(cents(l)), date: day(l.txn_date) });
 
-/**
- * A finding's fix link from inside Review: its evidence kind's page when that is specific, else the step it
- * points into. A transaction finding that points here goes to the transaction list (where lines are
- * sorted), never back to this page.
- */
-function fixFor(w: Journey["whats_left"][number], cleanup = false): FixLink {
-  if (w.evidence_kind && w.evidence_kind !== "transaction") return findingFixLinkForKind(w.evidence_kind, { journey: true });
-  // review_cleanup: a finding about bank lines is sorted in the transaction list, whichever step it counts against
-  // (Connect had nothing to sort them with).
-  if (cleanup && w.evidence_kind === "transaction") return { to: "/transactions?view=all", label: "Sort it out" };
-  if (w.step !== STEP) return { to: STEP_ROUTE[w.step], label: `Go to ${STEP_LABEL[w.step]}` };
-  return { to: "/transactions", label: "Sort it out" };
-}
+const fixFor = (w: Journey["whats_left"][number], cleanup = false): FixLink => whatsLeftFixLink(w, STEP, cleanup);
 
 type Tab = "queue" | "labels";
 

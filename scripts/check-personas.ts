@@ -4013,6 +4013,13 @@ async function main() {
       loan.length === 1 && loan[0]!.id === "loan_unlinked:pcoverLoan" && /\$5,100\.00/.test(loan[0]!.general_info_note));
     check("P2 coverage + loan: flags OFF ⇒ neither note, and the position is the same either way",
       !off.findings.some((f) => /^(statement_coverage|loan_unlinked):/.test(f.id)) && on.position.indicative_taxable_position_cents === off.position.indicative_taxable_position_cents);
+    // Beginner walkthrough (ft_journey): the uncategorised-lines blocker reads in plain words, names no page the journey
+    // lacks (the Inbox), and uses real plurals; OFF keeps the old wording.
+    const J = { ...ON, FEATURES: `${(ON as unknown as { FEATURES: string }).FEATURES},ft_journey` } as unknown as Env;
+    const ub = (await computeFilingReadiness(J, u, 2025, deps)).findings.find((x) => x.id === "unknown_bucket");
+    const ubOff = off.findings.find((x) => x.id === "unknown_bucket");
+    check("beginner copy: '3 transactions aren't sorted yet', no Inbox / indicative position; OFF unchanged",
+      ub?.title === "3 transactions aren't sorted yet" && !/Inbox|indicative/.test(ub.general_info_note) && ubOff?.title === "3 transaction(s) aren't categorised yet");
     run(`INSERT INTO loans_properties (id, user_id, loan_account_id, property_id, deductible_interest_pct) VALUES ('pcoverLP', ?, 'pcoverLoan', 'pcoverProp', 100)`, u);
     check("P2 loan: once the loan is linked to a property, the note goes", !(await computeFilingReadiness(ON, u, 2025, deps)).findings.some((f) => f.id.startsWith("loan_unlinked:")));
   }

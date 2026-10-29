@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
@@ -260,6 +260,11 @@ function QueueBody() {
   const groups = useMemo(() => groupWorthALook(rel.data?.worth_a_look ?? []), [rel.data]);
   const openNoticed = noticed.data ?? [];
   const noticedShown = [...Object.values(noticedDone).map((d) => d.signal).filter((s) => !openNoticed.some((o) => o.id === s.id)), ...openNoticed];
+  // rental_property_gate: a blocker's "Answer the card" link lands here; the cards load after the page, so scroll once they're in.
+  const noticedReady = noticedShown.length > 0;
+  useEffect(() => {
+    if (hash === "#q-noticed" && noticedReady) document.getElementById("q-noticed")?.scrollIntoView({ block: "start" });
+  }, [hash, noticedReady]);
   const p = proposals.data;
   const rv = records.data;
   const recRows = openRecordRows(rv);

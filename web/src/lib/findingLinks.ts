@@ -20,11 +20,14 @@ export function findingFixLinkForKind(kind: string | null | undefined, opts: { j
     // Property records live in Settings → Properties (Income has none — #552 D3).
     case "property": link = { to: "/settings", label: "Review property records" }; break;
     case "document": link = { to: "/inbox", label: "Add evidence" }; break;
+    // rental_property_gate: the fix is answering a "We noticed" card, which lives on Review.
+    case "noticed": link = { to: "/review#q-noticed", label: "Answer the card" }; break;
     case "transaction":
     default: link = { to: "/inbox", label: "Sort it out" };
   }
   if (!opts.journey) return link;
   if (kind === "document") return { to: "/review#documents", label: link.label };
+  if (kind === "noticed") return link;
   // #593: with the journey on, property records live on Grow › Property (Settings is account-only).
   if (kind === "property") return { to: "/grow/property#properties", label: link.label };
   return { to: toJourneyHref(link.to), label: link.label };

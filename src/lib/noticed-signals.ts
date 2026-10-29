@@ -467,6 +467,30 @@ export async function noticeRentalProperty(env: Env, userId: string, addressKey:
 }
 
 /**
+ * rental_property_gate (readiness): the open "add this property?" cards for an FY whose rent is still filed under
+ * no property. Until one is answered, annual-over-monthly can't settle (ADR-0006 acts only on a known property), so
+ * the rent may count twice and the per-property schedule is missing it. A card whose rows were filed some other way
+ * drops out. Any of the three flags OFF ⇒ undefined ⇒ readiness byte-identical.
+ */
+export async function unfiledRentalSignals(
+  env: Env,
+  userId: string,
+  fy: string,
+): Promise<{ signal_key: string; label: string; n: number; rent_cents: number }[] | undefined> {
+  // wages_payer is what shows "We noticed" cards on Review; without it the card this blocker points at isn't there.
+  if (!featureOn(env, "rental_property_gate") || !featureOn(env, "property_from_statement") || !featureOn(env, "wages_payer")) return undefined;
+  const rows = (await tenantDb(env, userId).prepare(
+    `SELECT s.signal_key, json_extract(s.evidence_json, '$.label') AS label, COUNT(i.id) AS n, COALESCE(SUM(i.gross_cents),0) AS rent_cents
+       FROM noticed_signals s
+       JOIN income i ON i.user_id = s.user_id AND i.fy = s.fy AND i.income_type = 'rent' AND i.property_id IS NULL
+        AND json_valid(i.detail_json) AND json_extract(i.detail_json, '$.address_key') = s.signal_key
+      WHERE s.user_id = ? AND s.fy = ? AND s.kind = 'rental_property' AND s.status = 'open'
+      GROUP BY s.signal_key ORDER BY s.signal_key`,
+  ).bind(fy).all<{ signal_key: string; label: string | null; n: number; rent_cents: number }>()).results ?? [];
+  return rows.map((r) => ({ signal_key: r.signal_key, label: r.label ?? r.signal_key, n: r.n, rent_cents: r.rent_cents }));
+}
+
+/**
  * File every unattributed agent-statement row for an address (any FY) under a property: the rent rows and the
  * expense lines their documents created, then settle annual-over-monthly for that property (income_supersession).
  */

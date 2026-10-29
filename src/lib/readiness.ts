@@ -27,7 +27,7 @@ export type FindingSeverity = "blocker" | "review" | "info";
 export type FindingCategory = "completeness" | "evidence" | "classification" | "depreciation" | "income" | "threshold" | "judgement";
 
 export interface EvidenceRef {
-  kind: "transaction" | "income" | "asset" | "property" | "document";
+  kind: "transaction" | "income" | "asset" | "property" | "document" | "noticed";
   id?: string;
   label?: string;
   count?: number;
@@ -127,6 +127,9 @@ export interface FilingReadinessSignals {
   // so OFF ⇒ findings byte-identical. Loans whose statements charge interest this FY but which aren't linked to a
   // property, so none of that interest is in the position.
   unlinkedLoans?: { account_id: string; label: string; interest_cents: number }[];
+  // rental_property_gate — populated ONLY when the flag is on (unfiledRentalSignals in src/lib/noticed-signals.ts),
+  // so OFF ⇒ findings byte-identical. Open "add this property?" cards whose rent is still filed under no property.
+  unfiledRentals?: { signal_key: string; label: string; n: number; rent_cents: number }[];
   stampedPersonalN?: number;
   stampedPersonalCents?: number;
 }
@@ -677,6 +680,11 @@ export function assessReadiness(input: {
     findings.push(f(`loan_unlinked:${l.account_id}`, "completeness", "review", `${l.label}: interest isn't counted until you say what the loan is for`,
       `This loan's statements show ${money(l.interest_cents)} of interest this year, and none of it is in your figures because the loan isn't linked to a property. If the loan paid for a rental property, link it to that property so the interest is counted with it. If it was for your home or personal use, you can leave this.${DEFER}`, true,
       [{ kind: "property", label: l.label }]));
+  }
+  for (const r of signals.unfiledRentals ?? []) {
+    findings.push(f(`rental_property_unfiled:${r.signal_key}`, "evidence", "blocker", `Rental statements for ${r.label} aren't linked to a property yet`,
+      `${r.n === 1 ? "A rental statement" : `${r.n} rental statements`} for ${r.label} (${money(r.rent_cents)} of rent) ${r.n === 1 ? "isn't" : "aren't"} filed under a property, so ${r.n === 1 ? "it can't" : "they can't"} go on that property's rental schedule, and if a yearly summary and monthly statements overlap, the same rent may be counted twice. Answer the "add this property?" card on Review to file ${r.n === 1 ? "it" : "them"}. If you don't own this property, answer "No" on the card.`, false,
+      [{ kind: "noticed", label: r.label }]));
   }
   for (const rp of signals.rentalPropsMissingSummary) {
     findings.push(f(`rental_no_summary:${rp.property_id}`, "evidence", "review", `Rental income recorded for "${rp.label ?? rp.property_id}" but no agent summary on file`,

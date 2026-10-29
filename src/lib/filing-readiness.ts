@@ -20,7 +20,7 @@ import { capitalReadinessSignals } from "./capital-signals";
 import { firstTimerIncomeSignals } from "./first-timer-signals";
 import { mytaxWorksheetSignals } from "./mytax-worksheet";
 import { situationProfileSignals } from "./situation-profile";
-import { payrollEmployerSignals } from "./noticed-signals";
+import { payrollEmployerSignals, unfiledRentalSignals } from "./noticed-signals";
 import { statementCoverageSignals, unlinkedLoanSignals } from "./statement-coverage";
 import { featureOn } from "./features";
 import { resolveJurisdictionForUser } from "./jurisdiction";
@@ -156,6 +156,8 @@ export async function computeFilingReadiness(env: Env, userId: string, startYear
   const statementCoverage = featureOn(env, "statement_coverage") ? await statementCoverageSignals(env, userId, start, end) : undefined;
   // loan_purpose_prompt: loans charging interest this FY that no property link counts. Flag OFF ⇒ not read.
   const unlinkedLoans = featureOn(env, "loan_purpose_prompt") ? await unlinkedLoanSignals(env, userId, start, end) : undefined;
+  // rental_property_gate: open "add this property?" cards whose rent is still unfiled. Flag OFF ⇒ not read.
+  const unfiledRentals = await unfiledRentalSignals(env, userId, fy);
   // GST registration status for the turnover nudge — registered if the tenant default is set OR any
   // entity is flagged (mirrors gstTotals' registration test in ledger-totals.ts).
   const entGstReg = (await tenantDb(env, userId).prepare(`SELECT COUNT(*) AS n FROM entities WHERE user_id = ? AND COALESCE(gst_registered,0) = 1`).bind().first<{ n: number }>())?.n ?? 0;
@@ -214,6 +216,7 @@ export async function computeFilingReadiness(env: Env, userId: string, startYear
     ...payrollSignals,
     ...(statementCoverage ? { statementCoverage } : {}),
     ...(unlinkedLoans ? { unlinkedLoans } : {}),
+    ...(unfiledRentals ? { unfiledRentals } : {}),
     ...(featureOn(env, "non_cash_income") ? { nonCashIncomeEnabled: true } : {}),
     ...(integrityOn ? {
       frankingHoldingThresholdCents: integrityThresholds?.franking_holding_rule_threshold_cents ?? null,

@@ -389,7 +389,9 @@ async function journeyOff(onTotals: { position: number; deductions: number; inco
   check("OFF: no first-timer journey finding renders", !readiness.findings.some((f) => /^(income_not_recorded:|study_loan_passthrough|residency_unsure|worksheet_unlabelled)/.test(f.id)));
 
   // Ids are tenant-prefixed in both runs; strip the tenant so the baseline names the fixture, not the run.
-  const serialized = JSON.stringify(normalize({ report, readiness }), null, 2).split(u).join("<tenant>") + "\n";
+  // The fixture's account comes from addAccount (a random id); a finding keyed by it names "<account>".
+  const serialized = JSON.stringify(normalize({ report, readiness }), null, 2).split(u).join("<tenant>")
+    .replace(/((?:statement_coverage|loan_unlinked):)[0-9a-f-]{36}/g, "$1<account>") + "\n";
   if (process.env.UPDATE_SNAPSHOT) {
     fs.writeFileSync(FIXTURE, serialized);
     console.log(`  wrote OFF baseline (${serialized.length} bytes) → ${path.relative(root, FIXTURE)}`);

@@ -17,6 +17,8 @@ import { api } from "../../api";
 import { assertUploadSize } from "../../lib/upload-limits";
 import { useFeatures } from "../../lib/features";
 import { useActiveFy } from "../../lib/activeFy";
+import { STEP_LABEL, STEP_ROUTE, useJourney } from "../../lib/journey";
+import { whatsLeftFixLink } from "../../lib/findingLinks";
 import { Income } from "../../pages/Income";
 import { Accounts } from "../../pages/Accounts";
 import { Badge, ErrorState, FtButton, FtCard, FtLink, GeneralInfoNote, PreflightSteps, Skeleton, YoullNeed, cx } from "../ft";
@@ -59,6 +61,41 @@ function Section({ id, title, children }: { id?: string; title: ReactNode; child
   );
 }
 
+/**
+ * journey_beginner (#842): the sidebar marks Connect "Needs attention" when a blocker counts against it, but the page
+ * never said what. List those blockers here, each with its note and the link that fixes it.
+ */
+function StepBlockers({ cleanup }: { cleanup: boolean }) {
+  const j = useJourney().data;
+  const items = j?.whats_left.filter((w) => w.step === "connect" && w.severity === "blocker") ?? [];
+  if (!items.length) return null;
+  return (
+    <section aria-labelledby="connect-attention">
+      <FtCard className="space-y-3 border-warn/40 p-5">
+        <h2 id="connect-attention" className="font-display text-xl tracking-wide text-forest">
+          What needs your attention here
+        </h2>
+        <ul className="space-y-3">
+          {items.map((w) => {
+            const fix = whatsLeftFixLink(w, "connect", cleanup, { route: STEP_ROUTE, label: STEP_LABEL });
+            return (
+              <li key={w.id} className="space-y-1">
+                <p className="text-sm font-semibold text-ink">{w.title}</p>
+                <p className="max-w-[65ch] text-sm text-muted">{w.note}</p>
+                {fix.to !== "/transactions" && (
+                  <FtLink to={fix.to} className="text-sm">
+                    {fix.label}
+                  </FtLink>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      </FtCard>
+    </section>
+  );
+}
+
 export function ConnectPage() {
   const { has } = useFeatures();
   const [params] = useSearchParams();
@@ -77,6 +114,7 @@ export function ConnectPage() {
 
   return (
     <div className="space-y-8">
+      {has("journey_beginner") && <StepBlockers cleanup={has("review_cleanup")} />}
       <div className="space-y-3">
         {connected === "0" && (
           <div role="alert" className="rounded-2xl border border-danger/30 bg-danger-surface p-4 text-sm text-danger">
@@ -120,7 +158,8 @@ export function ConnectPage() {
           <Accounts embedded />
         </div>
       </details>
-      <GeneralInfoNote />
+      {/* journey_beginner (#842): the shell footer already says this on every journey page; one is enough. */}
+      {!has("journey_beginner") && <GeneralInfoNote />}
     </div>
   );
 }
@@ -535,6 +574,7 @@ function IncomeWaiting() {
   // A legacy /income link lands here as /connect#income: open the form it was pointing at.
   const { hash } = useLocation();
   const [adding, setAdding] = useState(hash === "#income");
+  const simpleIncome = useFeatures().has("journey_beginner");
   // Keyed under ["income", label] so every Income write (which invalidates that prefix) refreshes the card.
   const q = useQuery({ queryKey: ["income", label, "statement-wait"], queryFn: () => api.incomeStatements(fy) });
 
@@ -564,7 +604,7 @@ function IncomeWaiting() {
       </FtButton>
       {adding && (
         <div className="rounded-2xl border border-line bg-paper p-3">
-          <Income />
+          <Income simple={simpleIncome} />
         </div>
       )}
     </Section>

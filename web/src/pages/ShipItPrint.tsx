@@ -15,7 +15,7 @@ export function ShipItPrint() {
   const { fy, label } = useActiveFy();
   const ws = useQuery({ queryKey: ["mytax-worksheet", fy], queryFn: () => api.mytaxWorksheet(fy) });
   const ticks = useWorksheetTicks(fy);
-  const printedOn = new Date().toLocaleDateString();
+  const printedOn = new Date().toLocaleDateString("en-AU", { day: "numeric", month: "short", year: "numeric" });
 
   return (
     <div className="mx-auto max-w-3xl space-y-6 print:max-w-none print:space-y-4">

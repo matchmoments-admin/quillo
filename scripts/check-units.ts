@@ -6550,6 +6550,17 @@ console.log("#589 Check step");
     check("occupationLabel: a typed occupation's token reads as words (never 'retail_assistant'); a listed one keeps its label",
       occupationLabel("retail_assistant") === "Retail assistant" && occupationLabel("nurse") === "Nurse" && occupationLabel("") === "");
   }
+  {
+    // #842 (journey_beginner): each friction fix is wired behind the flag, and no date shows in the browser's locale.
+    const src = (f: string) => fs.readFileSync(path.join(process.cwd(), f), "utf8");
+    const walk = (d: string): string[] => fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(path.join(d, e.name)) : /\.tsx?$/.test(e.name) ? [path.join(d, e.name)] : []));
+    const bareDates = walk(path.join(process.cwd(), "web/src")).filter((f) => /toLocaleDateString\(\)/.test(fs.readFileSync(f, "utf8"))).map((f) => path.relative(process.cwd(), f));
+    check(`dates: no bare toLocaleDateString() in the SPA (a US browser showed "10/30/2026"): ${bareDates.join(", ") || "none"}`, bareDates.length === 0);
+    check("journey_beginner: Connect lists its blockers, setup links unanswered rows back, the worksheet holds an income place, the embedded Income is simple",
+      /has\("journey_beginner"\) && <StepBlockers/.test(src("web/src/components/connect/ConnectPage.tsx")) && /<Income simple=\{simpleIncome\}/.test(src("web/src/components/connect/ConnectPage.tsx")) &&
+      /onAnswer=\{beginner \?/.test(src("web/src/pages/AboutYou.tsx")) && /incomeWaiting=\{has\("journey_beginner"\)\}/.test(src("web/src/pages/ShipIt.tsx")) &&
+      /has\("cgt_engine"\) && !simple/.test(src("web/src/pages/Income.tsx")));
+  }
   check("findingLinks (rental_property_gate): a noticed-card finding opens the card on Review, journey or not",
     findingFixLinkForKind("noticed").to === "/review#q-noticed" && findingFixLinkForKind("noticed", { journey: true }).to === "/review#q-noticed" && findingFixLinkForKind("noticed").label === "Answer the card");
   check("legacyRoutes (#587): the fallback picker /review/match is routed to the Review step", /path: "review\/match", element: <ReviewStep \/>/.test(fs.readFileSync(path.join(process.cwd(), "web/src/main.tsx"), "utf8")));

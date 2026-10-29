@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { Badge, FtButton, FtCard, FtCheckbox, FtLink, copyValue } from "../components/ft";
 import { InfoTip, Term, money } from "../components/ui";
 import { SCREEN_TICK_LABEL } from "../content/mytaxMirror";
@@ -30,8 +30,39 @@ function tickLabel(line: MytaxWorksheetLine): string {
 
 const anchor = (key: string) => `mytax-screen-${key.replace(/[^a-z0-9]+/gi, "-")}`;
 
-export function MytaxMirror({ ws, ticks, fy }: { ws: MytaxWorksheet; ticks: Ticks; fy: number }) {
+const INCOME_WHERE = "Prepare return › Income";
+
+/**
+ * journey_beginner (#842): with no income recorded the worksheet went straight from Personalise return to the later
+ * screens, so a first-timer could copy it into myTax without noticing their pay was missing. A placeholder sits where
+ * myTax's Income screens go. It isn't a screen to tick, so it doesn't count towards "n of m done".
+ */
+function IncomeWaitingCard() {
+  return (
+    <section aria-labelledby="mytax-income-waiting-h">
+      <FtCard className="border-warn/40 p-4 sm:p-5">
+        <p className="text-xs text-muted">In myTax: {INCOME_WHERE}</p>
+        <h2 id="mytax-income-waiting-h" className="font-display text-xl tracking-wide text-forest">
+          Income: nothing recorded yet
+        </h2>
+        <p className="mt-2 max-w-[65ch] text-sm text-ink">
+          Your pay goes here. myTax fills it in from your employer's income statement once the statement says "Tax ready" in myGov. Add the income
+          statement in Quillo too, and its figures appear on this card so you can check them against myTax.
+        </p>
+        <FtLink to="/connect#income" className="mt-2 text-sm">
+          Add your income statement
+        </FtLink>
+      </FtCard>
+    </section>
+  );
+}
+
+export function MytaxMirror({ ws, ticks, fy, incomeWaiting = false }: { ws: MytaxWorksheet; ticks: Ticks; fy: number; incomeWaiting?: boolean }) {
   const screens = buildMirror(ws.sections);
+  // Where the Income screens would sit: before the first later "Prepare return" screen (or at the end).
+  const waitAt = incomeWaiting && !screens.some((x) => x.where === INCOME_WHERE)
+    ? (() => { const at = screens.findIndex((x) => x.where.startsWith("Prepare return")); return at < 0 ? screens.length : at; })()
+    : -1;
   const progress = mirrorProgress(screens, ticks.ticks, fy);
   const jump = (key: string) => {
     const el = document.getElementById(anchor(key));
@@ -62,8 +93,12 @@ export function MytaxMirror({ ws, ticks, fy }: { ws: MytaxWorksheet; ticks: Tick
         )}
       </FtCard>
       {screens.map((s, i) => (
-        <MirrorCard key={s.key} screen={s} n={i + 1} ticks={ticks} fy={fy} />
+        <Fragment key={s.key}>
+          {i === waitAt && <IncomeWaitingCard />}
+          <MirrorCard screen={s} n={i + 1} ticks={ticks} fy={fy} />
+        </Fragment>
       ))}
+      {waitAt === screens.length && <IncomeWaitingCard />}
     </div>
   );
 }

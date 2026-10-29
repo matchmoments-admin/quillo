@@ -663,7 +663,8 @@ function QueueBody() {
       )}
 
       <div className="space-y-1">
-        <GeneralInfoNote />
+        {/* journey_beginner (#842): the shell footer already says this on every journey page; one is enough. */}
+        {!has("journey_beginner") && <GeneralInfoNote />}
         {rv && <p className="max-w-[65ch] text-xs text-muted">{rv.disclaimer}</p>}
       </div>
       {drawer}

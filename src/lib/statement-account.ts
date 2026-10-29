@@ -68,6 +68,15 @@ export function sameInstitution(a: string | null | undefined, b: string | null |
   return !!ka && ka === kb;
 }
 
+/**
+ * The bank name a new account takes: the one already on the user's accounts at the same bank, so one bank reads one
+ * way ("Westpac" twice, not "Westpac" and "Westpac Banking Corporation" as two statements printed it).
+ */
+export function knownInstitution(accounts: Pick<AccountRow, "institution">[], printed: string | null | undefined): string | null {
+  if (!printed) return null;
+  return accounts.find((a) => a.institution && sameInstitution(a.institution, printed))?.institution ?? printed;
+}
+
 export interface AccountRow {
   id: string;
   institution: string | null;
@@ -155,8 +164,9 @@ export async function resolveStatementAccount(env: Env, userId: string, detected
     return { id: d.account.id, name: d.account.name, type: d.account.type, kind: detected?.kind ?? null, created: false, kindMismatch: kindMismatch(d.account.type, detected) };
   }
   const type = accountTypeForKind(detected?.kind);
-  const name = detectedAccountName({ institution: detected?.institution ?? null, kind: detected?.kind ?? null, last4: detected?.last4 ?? null });
-  const id = await addAccount(env, userId, { name, institution: detected?.institution ?? undefined, last4: detected?.last4 ?? undefined, type, source: "statement" });
+  const institution = knownInstitution(rows.results ?? [], detected?.institution);
+  const name = detectedAccountName({ institution, kind: detected?.kind ?? null, last4: detected?.last4 ?? null });
+  const id = await addAccount(env, userId, { name, institution: institution ?? undefined, last4: detected?.last4 ?? undefined, type, source: "statement" });
   if (type === "loan" && (closingCents != null || detected?.interest_rate_pct != null)) {
     await updateAccount(env, userId, id, { balance_cents: closingCents != null ? Math.abs(closingCents) : undefined, interest_rate_pct: detected?.interest_rate_pct ?? undefined });
   }

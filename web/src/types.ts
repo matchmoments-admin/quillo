@@ -1135,7 +1135,7 @@ export interface DocRow {
 }
 
 // Stage A — deterministic non-spend movement clean-up
-export type MovementClass = "internal_transfer" | "card_payment" | "loan_repayment" | "investment_deposit" | "none";
+export type MovementClass = "internal_transfer" | "card_payment" | "loan_repayment" | "investment_deposit" | "loan_drawdown" | "none";
 export interface MovementCandidate {
   id: string;
   merchant: string | null;

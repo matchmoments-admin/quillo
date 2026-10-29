@@ -177,6 +177,7 @@ export type MovementClass =
   | "card_payment" // credit-card bill payment
   | "loan_repayment" // loan/mortgage/redraw — REVIEW only (may hide deductible interest)
   | "investment_deposit" // deposit into a brokerage / micro-invest app
+  | "loan_drawdown" // the amount borrowed, debited to a loan when it starts (review_cleanup) — never spend or income
   | "none";
 
 export interface MovementVerdict {
@@ -211,6 +212,21 @@ export function classifyMovement(description: string): MovementVerdict {
   return { klass: "none", autoIgnoreSafe: false, reason: "" };
 }
 
+// The loan's opening advance as a loan statement prints it ("INITIAL DRAWING OF LOAN", "Loan drawdown", "Advance").
+const LOAN_DRAWDOWN_RE = /\b(initial\s+draw(?:ing|down)?|draw\s?-?down|loan\s+advance|advance\s+of\s+loan|loan\s+funds\s+advanced)\b/i;
+
+/**
+ * classifyMovement, plus (review_cleanup) a loan's opening drawdown as its own class instead of a "loan repayment"
+ * held for review. The borrowed amount is neither spend nor income, and it carries no interest to keep, so it is
+ * offered for one-tap exclusion like a transfer. Only the clean-up sweep reads this; every other caller keeps
+ * classifyMovement, so ingest and the clarify queue are unchanged.
+ */
+export function classifyMovementForSweep(description: string, opts: { drawdown: boolean }): MovementVerdict {
+  if (opts.drawdown && LOAN_DRAWDOWN_RE.test(description ?? ""))
+    return { klass: "loan_drawdown", autoIgnoreSafe: false, reason: "Looks like the amount borrowed when the loan started. It isn't spending or income, so it can be left out." };
+  return classifyMovement(description);
+}
+
 /** Conservative auto-ignore predicate used at ingest — byte-identical to the legacy set (card payments + keyword-internal transfers). */
 export function isTransferLike(description: string): boolean {
   return classifyMovement(description).autoIgnoreSafe;
@@ -241,6 +257,7 @@ export function isLoanInterestLine(description: string): boolean {
 export function movementTreatment(klass: MovementClass, direction: string | null | undefined): "ignorable" | "review" | "skip" {
   if (klass === "none") return "skip";
   if (klass === "loan_repayment") return "review"; // B3 — may carry deductible interest; never one-tap exclude
+  if (klass === "loan_drawdown") return direction === "debit" ? "ignorable" : "skip"; // the advance on the loan side; the proceeds landing elsewhere stay for the user
   // An investment/brokerage deposit is a CAPITAL movement — not a deduction, not income, but
   // CGT-relevant. Route BOTH directions to "skip" so it falls THROUGH the sweep into the clarify queue,
   // where the user explicitly tags it via the "capital" answer (Investment / shares) rather than having
@@ -420,8 +437,11 @@ export interface PairableLine {
  * digit run ending in its last four digits — "Direct Dr900002222" → a loan ··2222; "DEPOSIT … DR001111" → an
  * everyday ··1111). Both lines are then a transfer, not spend or income, whatever the categoriser said. Pure and
  * deterministic, no model call. A line pairs at most once; when several counterparts fit, none is paired (no guess).
+ * `worded` (review_cleanup): when neither side names the other, both saying "transfer" ("Tfr Westpac Cho" out of one
+ * account, "Deposit Online … Tfr Westpac Cho" into the other) within a day is enough, on the same one-fit rule.
  */
-export function pairOwnTransfers(lines: PairableLine[], accounts: { id: string; last4: string | null }[], days = 3): { debit: string; credit: string }[] {
+const TRANSFER_WORD_RE = /\b(tfr|transfer|xfer)\b/i;
+export function pairOwnTransfers(lines: PairableLine[], accounts: { id: string; last4: string | null }[], days = 3, opts: { worded?: boolean } = {}): { debit: string; credit: string }[] {
   const last4 = new Map(accounts.filter((a) => a.last4 && /^\d{4}$/.test(a.last4)).map((a) => [a.id, a.last4!]));
   const names = (desc: string, accountId: string | null) => {
     const l4 = accountId ? last4.get(accountId) : undefined;
@@ -437,7 +457,8 @@ export function pairOwnTransfers(lines: PairableLine[], accounts: { id: string; 
     if (d.direction !== "debit" || !d.account_id || used.has(d.id)) continue;
     const fits = (creditsByAmount.get(d.amount_cents) ?? []).filter(
       (c) => !used.has(c.id) && c.account_id !== d.account_id && c.amount_cents === d.amount_cents && dayGap(c.txn_date, d.txn_date) <= days &&
-        (names(d.description, c.account_id) || names(c.description, d.account_id)),
+        (names(d.description, c.account_id) || names(c.description, d.account_id) ||
+          (!!opts.worded && dayGap(c.txn_date, d.txn_date) <= 1 && TRANSFER_WORD_RE.test(d.description) && TRANSFER_WORD_RE.test(c.description))),
     );
     if (fits.length !== 1) continue;
     used.add(d.id).add(fits[0]!.id);

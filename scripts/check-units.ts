@@ -2,8 +2,9 @@
 // Offline unit tests for the pure invariants that underpin statement import + async
 // categorisation. No worker runtime / D1 / Claude — these are the fast, deterministic
 // regression guards for the rules we keep re-learning. Run: npm run test:units
-import { decideStatementAccount, sameInstitution, accountTypeForKind, kindMismatch, detectedAccountName, isLiabilityKind, type AccountRow } from "../src/lib/statement-account";
-import { reconcileStatement, deriveBalances, normaliseStatementLines, liabilityArithmeticFor, isBalanceRow, isTransferLike, isLoanInterestLine, classifyMovement, movementTreatment, signedCents, lineFingerprint, pairOwnTransfers, type PairableLine, type StatementLine } from "../src/lib/statements";
+import { coverageGaps } from "../src/lib/statement-coverage";
+import { decideStatementAccount, knownInstitution, sameInstitution, accountTypeForKind, kindMismatch, detectedAccountName, isLiabilityKind, type AccountRow } from "../src/lib/statement-account";
+import { reconcileStatement, deriveBalances, normaliseStatementLines, liabilityArithmeticFor, isBalanceRow, isTransferLike, isLoanInterestLine, classifyMovement, classifyMovementForSweep, movementTreatment, signedCents, lineFingerprint, pairOwnTransfers, type PairableLine, type StatementLine } from "../src/lib/statements";
 import { decideSupersession, addressKey, identityOf, type OnFileIncome } from "../src/lib/income-supersession";
 import { groupKey, groupForClarify, rulePatternForStem, isClarifyLeftover, isInsuranceLikeStem, suggestionsFor, draftHoldingFromTxn } from "../src/lib/clarify";
 import { resolveLoanInterest, deductibleInterestCents } from "../src/lib/loan-interest";
@@ -383,7 +384,38 @@ console.log("statement account detection (statement_account_detect)");
   check("kinds map to account types (offset/savings ⇒ transaction)", accountTypeForKind("credit_card") === "credit_card" && accountTypeForKind("loan") === "loan" && accountTypeForKind("offset") === "transaction" && accountTypeForKind(null) === "transaction");
   check("kind mismatch: a card statement in a transaction account is surfaced; a match isn't", kindMismatch("transaction", det) && !kindMismatch("credit_card", det) && !kindMismatch("transaction", { ...det, kind: "savings" }));
   check("detected account name", detectedAccountName({ institution: "Example Bank", kind: "credit_card", last4: "4321" }) === "Example Bank credit card ··4321" && detectedAccountName({ institution: null, kind: null, last4: null }) === "Bank account");
+  check("a new account reuses the bank name already on file for that bank; another bank keeps its own",
+    knownInstitution([{ institution: "Westpac" }], "Westpac Banking Corporation") === "Westpac" && knownInstitution([{ institution: "Westpac" }], "Example Bank") === "Example Bank" && knownInstitution([], null) === null);
   check("liability kinds", isLiabilityKind("credit_card") && isLiabilityKind("loan") && !isLiabilityKind("offset") && !isLiabilityKind(null));
+}
+
+console.log("worded own-account transfers (review_cleanup)");
+{
+  const accts = [{ id: "a", last4: "1111" }, { id: "b", last4: "2222" }];
+  const L = (id: string, account_id: string, direction: string, amount_cents: number, txn_date: string, description: string): PairableLine => ({ id, account_id, direction, amount_cents, txn_date, description });
+  const lines = [
+    L("o1", "a", "debit", 2_000_000, "2026-01-08", "Withdrawal Mobile 1234567 Tfr Example Bank"),
+    L("i1", "b", "credit", 2_000_000, "2026-01-08", "Deposit Online 7654321 Tfr Example Bank"),
+    L("o2", "a", "debit", 50_000, "2026-02-01", "Tfr to savings"), // counterpart three days later ⇒ not worded-paired
+    L("i2", "b", "credit", 50_000, "2026-02-04", "Transfer in"),
+    L("o3", "a", "debit", 9_900, "2026-03-01", "EFTPOS GROCER"), // no transfer word ⇒ never paired
+    L("i3", "b", "credit", 9_900, "2026-03-01", "Tfr from friend"),
+  ];
+  const on = pairOwnTransfers(lines, accts, 3, { worded: true });
+  check("worded: two 'Tfr' lines of one amount on two of your accounts the same day pair; three days apart or one side not a transfer ⇒ not",
+    on.length === 1 && on[0]!.debit === "o1" && on[0]!.credit === "i1");
+  check("worded: OFF ⇒ only number-named pairs (none here)", pairOwnTransfers(lines, accts).length === 0);
+}
+
+console.log("loan drawdown in the clean-up sweep (review_cleanup)");
+{
+  const dd = (d: string, on = true) => classifyMovementForSweep(d, { drawdown: on });
+  check("drawdown: a loan's opening advance is its own class, one-tap on the loan side, left alone as a credit",
+    dd("INITIAL DRAWING OF LOAN").klass === "loan_drawdown" && dd("Loan drawdown").klass === "loan_drawdown" &&
+    movementTreatment("loan_drawdown", "debit") === "ignorable" && movementTreatment("loan_drawdown", "credit") === "skip");
+  check("drawdown: OFF ⇒ exactly classifyMovement (a loan line held for review); repayments and interest are never drawdowns",
+    dd("INITIAL DRAWING OF LOAN", false).klass === classifyMovement("INITIAL DRAWING OF LOAN").klass &&
+    dd("Loan repayment").klass === "loan_repayment" && dd("INTEREST").klass === classifyMovement("INTEREST").klass);
 }
 
 console.log("own-account transfer pairing (transfer_pairing)");
@@ -1852,6 +1884,41 @@ console.log("readiness");
     check("job_answer_differs: 'not working' + an income statement on file ⇒ a review note, no figure", on?.severity === "review" && !/\$\d/.test(on.title + (on.body ?? "")));
     check("job_answer_differs: flag OFF / no payer / someone else not working ⇒ none",
       !has({}) && !has({ situationIngestFacts: true, salaryPayerCount: 0 }) && !has({ situationIngestFacts: true, situationPersonNames: { self: "Sam" } }));
+  }
+
+  // statement_coverage (#472): statements that skip part of the FY ⇒ a review note naming the account and dates.
+  {
+    const FY = ["2025-07-01", "2026-06-30"] as const;
+    const g = (p: { start: string; end: string }[]) => coverageGaps(p, FY[0], FY[1]);
+    check("coverage: a continuous run of monthly statements has no gap",
+      g([{ start: "2025-07-01", end: "2025-12-31" }, { start: "2026-01-01", end: "2026-06-30" }]).length === 0);
+    const mid = g([{ start: "2025-07-01", end: "2026-02-28" }, { start: "2026-04-01", end: "2026-06-30" }]);
+    check("coverage: a missing March is one gap, 1 to 31 Mar", mid.length === 1 && mid[0].from === "2026-03-01" && mid[0].to === "2026-03-31" && mid[0].days === 31);
+    const ends = g([{ start: "2025-09-15", end: "2026-05-14" }]);
+    check("coverage: statements starting late and ending early ⇒ a head gap and a tail gap",
+      ends.length === 2 && ends[0].from === "2025-07-01" && ends[0].to === "2025-09-14" && ends[1].from === "2026-05-15" && ends[1].to === "2026-06-30");
+    check("coverage: a quiet week (7 days or less) between statements is not a gap; 8 days is",
+      g([{ start: "2025-07-01", end: "2026-01-10" }, { start: "2026-01-18", end: "2026-06-30" }]).length === 0 &&
+      g([{ start: "2025-07-01", end: "2026-01-10" }, { start: "2026-01-19", end: "2026-06-30" }]).length === 1);
+    const opened = g([{ start: "2025-11-26", end: "2026-05-26", opening_cents: 0 }]);
+    check("coverage: a first statement opening on $0 means the account started then — only the tail is a gap",
+      opened.length === 1 && opened[0].from === "2026-05-27" && opened[0].to === "2026-06-30");
+    check("coverage: a first statement with a balance brought forward keeps its head gap; a $0 opening only counts on the earliest",
+      g([{ start: "2025-11-26", end: "2026-06-30", opening_cents: 5000 }])[0]?.from === "2025-07-01" &&
+      g([{ start: "2025-07-01", end: "2025-08-31", opening_cents: 100 }, { start: "2025-10-01", end: "2026-06-30", opening_cents: 0 }]).length === 1);
+    check("coverage: overlapping and out-of-FY periods merge and clip; none at all ⇒ no gaps",
+      g([{ start: "2025-01-01", end: "2025-10-31" }, { start: "2025-10-01", end: "2026-09-30" }]).length === 0 && g([]).length === 0);
+    const sig = (o: Partial<FilingReadinessSignals>) => noSignals(o);
+    const find = (o: Partial<FilingReadinessSignals>) => assessReadiness({ report: mkReport(), situation: mkSituation(), claimMatches: [], signals: sig(o), generatedAt: "2026-06-03T00:00:00Z" }).findings.filter((x) => x.id.startsWith("statement_coverage:"));
+    const on = find({ statementCoverage: [{ account_id: "a1", label: "Example Bank credit card ··4321", gaps: [{ from: "2025-07-01", to: "2026-02-14", days: 229 }, { from: "2026-05-15", to: "2026-05-31", days: 17 }] }] });
+    check("coverage finding: one review note per account, naming the dates, no figure",
+      on.length === 1 && on[0].severity === "review" && on[0].category === "completeness" && on[0].title === "Example Bank credit card ··4321: no statement for 1 Jul 2025 to 14 Feb 2026, 15 May 2026 to 31 May 2026" && !/\$\d/.test(on[0].title + on[0].general_info_note));
+    check("coverage finding: flag OFF (no signal) or no gaps ⇒ none", find({}).length === 0 && find({ statementCoverage: [] }).length === 0);
+    const loans = (o: Partial<FilingReadinessSignals>) => assessReadiness({ report: mkReport(), situation: mkSituation(), claimMatches: [], signals: sig(o), generatedAt: "2026-06-03T00:00:00Z" }).findings.filter((x) => x.id.startsWith("loan_unlinked:"));
+    const ln = loans({ unlinkedLoans: [{ account_id: "l1", label: "Example Bank loan ··4321", interest_cents: 1_234_500 }] });
+    check("unlinked loan: a review note naming the loan and its printed interest, deferring to an agent, linking to property",
+      ln.length === 1 && ln[0].severity === "review" && ln[0].defer_to_agent && ln[0].evidence_refs[0]?.kind === "property" && /\$12,345\.00/.test(ln[0].general_info_note));
+    check("unlinked loan: flag OFF (no signal) or none ⇒ no note", loans({}).length === 0 && loans({ unlinkedLoans: [] }).length === 0);
   }
 
   // Unknown-bucket spend → BLOCKER finding + NOT ready (review Medium: the gate used to be vacuous).

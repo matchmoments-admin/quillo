@@ -3957,6 +3957,39 @@ async function main() {
     check("loan facts: a balance and rate the user typed are never overwritten", a[1]!.b === 10000000 && a[1]!.r === 5.5);
   }
 
+  // ── P2 (statement_coverage + loan_purpose_prompt, 2026-10-30 E2E): an investor's uploads leave holes nothing named.
+  // An everyday account with statements for Jul–Feb and Apr–Jun only, and a loan whose statement charges interest but
+  // which no property link counts. Real computeFilingReadiness over the shared D1 adapter; the money is unchanged. ──
+  {
+    const u = "pcover";
+    seedTenant(u, "P2 investor — partial statements, unlinked loan");
+    run(`INSERT INTO profiles (user_id) VALUES (?)`, u);
+    inc("pcoverSal", u, "salary_payg", 9000000);
+    run(`INSERT INTO accounts (id, user_id, name, last4, type, source) VALUES ('pcoverEvd', ?, 'Example Bank everyday', '1111', 'transaction', 'statement')`, u);
+    run(`INSERT INTO accounts (id, user_id, name, last4, type, source) VALUES ('pcoverLoan', ?, 'Example Bank loan', '2222', 'loan', 'statement')`, u);
+    run(`INSERT INTO statements (id, user_id, account_id, filename, format, status, period_start, period_end) VALUES ('pcoverS1', ?, 'pcoverEvd', 'a.pdf', 'pdf', 'imported', '2025-07-01', '2026-02-28')`, u);
+    run(`INSERT INTO statements (id, user_id, account_id, filename, format, status, period_start, period_end) VALUES ('pcoverS2', ?, 'pcoverEvd', 'b.pdf', 'pdf', 'imported', '2026-04-01', '2026-06-30')`, u);
+    run(`INSERT INTO statements (id, user_id, account_id, filename, format, status, period_start, period_end) VALUES ('pcoverS3', ?, 'pcoverLoan', 'l.pdf', 'pdf', 'imported', '2025-07-01', '2026-06-30')`, u);
+    for (const [id, date, cents, desc] of [["pcoverI1", "2025-08-01", 250000, "INTEREST"], ["pcoverI2", "2025-09-01", 260000, "INTEREST"], ["pcoverD", "2025-07-02", 50000000, "INITIAL DRAWING OF LOAN"]] as const) {
+      run(`INSERT INTO transactions (id, user_id, source, status, kind, account_id, statement_id, merchant, raw_description, amount_cents, amount_aud_cents, txn_date, direction, bucket)
+           VALUES (?, ?, 'statement', 'extracted', 'bank_line', 'pcoverLoan', 'pcoverS3', ?, ?, ?, ?, ?, 'debit', 'unknown')`, id, u, desc, desc, cents, cents, date);
+    }
+    const ON = { ...env, FEATURES: `${(env as { FEATURES: string }).FEATURES},statement_coverage,loan_purpose_prompt` } as unknown as Env;
+    const deps = { loadRulePack: async () => auV1RulePack as unknown, now: new Date("2026-10-30T00:00:00Z") };
+    const on = await computeFilingReadiness(ON, u, 2025, deps);
+    const off = await computeFilingReadiness(env, u, 2025, deps);
+    const cov = on.findings.filter((f) => f.id.startsWith("statement_coverage:"));
+    const loan = on.findings.filter((f) => f.id.startsWith("loan_unlinked:"));
+    check("P2 coverage: the missing March is named on the everyday account, and only there (the loan's statement covers the year)",
+      cov.length === 1 && cov[0]!.id === "statement_coverage:pcoverEvd" && cov[0]!.title === "Example Bank everyday ··1111: no statement for 1 Mar 2026 to 31 Mar 2026");
+    check("P2 loan: the unlinked loan's $5,100.00 of statement interest is named (the drawdown isn't interest)",
+      loan.length === 1 && loan[0]!.id === "loan_unlinked:pcoverLoan" && /\$5,100\.00/.test(loan[0]!.general_info_note));
+    check("P2 coverage + loan: flags OFF ⇒ neither note, and the position is the same either way",
+      !off.findings.some((f) => /^(statement_coverage|loan_unlinked):/.test(f.id)) && on.position.indicative_taxable_position_cents === off.position.indicative_taxable_position_cents);
+    run(`INSERT INTO loans_properties (id, user_id, loan_account_id, property_id, deductible_interest_pct) VALUES ('pcoverLP', ?, 'pcoverLoan', 'pcoverProp', 100)`, u);
+    check("P2 loan: once the loan is linked to a property, the note goes", !(await computeFilingReadiness(ON, u, 2025, deps)).findings.some((f) => f.id.startsWith("loan_unlinked:")));
+  }
+
   console.log(`\n=== personas: ${pass} passed, ${fail} failed ===`);
   if (fail > 0) process.exit(1);
 }

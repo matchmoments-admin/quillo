@@ -119,6 +119,14 @@ export interface FilingReadinessSignals {
   // income statement naming each is recorded, and the stamped personal-income credits (so the generic
   // income_not_recorded doesn't ask about the same wages twice).
   payrollEmployers?: { entity_id: string; name: string; n: number; covered: boolean }[];
+  // statement_coverage (#472) — populated ONLY when the flag is on (statementCoverageSignals in
+  // src/lib/statement-coverage.ts), so OFF ⇒ findings byte-identical. Statement accounts whose uploaded
+  // statements leave part of the FY uncovered.
+  statementCoverage?: { account_id: string; label: string; gaps: { from: string; to: string; days: number }[] }[];
+  // loan_purpose_prompt — populated ONLY when the flag is on (unlinkedLoanSignals in src/lib/statement-coverage.ts),
+  // so OFF ⇒ findings byte-identical. Loans whose statements charge interest this FY but which aren't linked to a
+  // property, so none of that interest is in the position.
+  unlinkedLoans?: { account_id: string; label: string; interest_cents: number }[];
   stampedPersonalN?: number;
   stampedPersonalCents?: number;
 }
@@ -659,6 +667,17 @@ export function assessReadiness(input: {
         [{ kind: "income", label: "franking credits" }]));
     }
   }
+  for (const c of signals.statementCoverage ?? []) {
+    const ranges = c.gaps.map((g) => `${shortDate(g.from)} to ${shortDate(g.to)}`).join(", ");
+    findings.push(f(`statement_coverage:${c.account_id}`, "completeness", "review", `${c.label}: no statement for ${ranges}`,
+      `Your statements for this account don't cover the whole year, so anything paid or received in ${c.gaps.length === 1 ? "that time" : "those times"} isn't in your records and your totals may be lower than they should be. Upload the statements for those dates. If the account opened or closed during the year, you can leave this as it is.`, false,
+      [])); // no evidence ref: the fix is an upload on Connect (its completeness step), not a record to open
+  }
+  for (const l of signals.unlinkedLoans ?? []) {
+    findings.push(f(`loan_unlinked:${l.account_id}`, "completeness", "review", `${l.label}: interest isn't counted until you say what the loan is for`,
+      `This loan's statements show ${money(l.interest_cents)} of interest this year, and none of it is in your figures because the loan isn't linked to a property. If the loan paid for a rental property, link it to that property so the interest is counted with it. If it was for your home or personal use, you can leave this.${DEFER}`, true,
+      [{ kind: "property", label: l.label }]));
+  }
   for (const rp of signals.rentalPropsMissingSummary) {
     findings.push(f(`rental_no_summary:${rp.property_id}`, "evidence", "review", `Rental income recorded for "${rp.label ?? rp.property_id}" but no agent summary on file`,
       `Upload the agent's EOFY rental summary so the rent and agent-deducted expenses are substantiated and split correctly.`, false,
@@ -1084,6 +1103,13 @@ function noteTitle(r: ClaimRule): string {
   if (r.scope_type === "entity_kind") return `Entity treatment to confirm (${r.scope_value})`;
   if (r.scope_type === "occupation") return `Occupation deduction to confirm (${r.scope_value})`;
   return "Treatment to confirm";
+}
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+/** "2025-07-01" → "1 Jul 2025" (fixed, locale-free). */
+function shortDate(iso: string): string {
+  const [y, m, d] = iso.slice(0, 10).split("-").map(Number);
+  return `${d} ${MONTHS[(m ?? 1) - 1]} ${y}`;
 }
 
 function money(cents: number): string {

@@ -10,6 +10,7 @@ const KLASS_LABEL: Record<string, string> = {
   card_payment: "Card payment",
   loan_repayment: "Loan repayment",
   investment_deposit: "Investment deposit",
+  loan_drawdown: "Loan drawdown",
   none: "",
 };
 

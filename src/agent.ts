@@ -54,7 +54,7 @@ import { discardCreatedAccount, fillLoanFacts, kindMismatch, resolveStatementAcc
 import { rollSchedule, balancingAdjustment, fyStartYearOf, isLowCostAsset, looksLikePersonalTransfer, assetDepreciatesForTaxpayer, depMethodConflict, resolveDiv40Life, type DepAsset } from "./lib/depreciation";
 import { matchClaimRules, suggestionText, enumerateSituationClaims, classifyClaim, uncoveredOccupations, ruleKey, type ClaimRule, type ClaimContext, type ClaimSituation } from "./lib/claimability";
 import { minimiseTenant, minimisationNotices, tidiedSummary, tombstonedFingerprints, rolledUpLineCount, forgetStatementMinimisation, type MinimiseResult, type TidiedSummary } from "./lib/minimise";
-import { parseCsv, applyColumnMap, statementLineFingerprints, deriveBalances, reconcileStatement, normaliseStatementLines, isBalanceRow, isLiabilityAccount, fuzzyMerchant, isTransferLike, isLoanInterestLine, classifyMovement, movementTreatment, pairOwnTransfers, type PairableLine, type ColumnMap, type Reconciliation, type StatementLine, type MovementClass } from "./lib/statements";
+import { parseCsv, applyColumnMap, statementLineFingerprints, deriveBalances, reconcileStatement, normaliseStatementLines, isBalanceRow, isLiabilityAccount, fuzzyMerchant, isTransferLike, isLoanInterestLine, classifyMovement, classifyMovementForSweep, movementTreatment, pairOwnTransfers, type PairableLine, type ColumnMap, type Reconciliation, type StatementLine, type MovementClass } from "./lib/statements";
 import { groupKey, groupForClarify, rulePatternForStem, draftHoldingFromTxn, isClarifyLeftover, CLARIFY_LEFTOVER_WHERE, type ClarifyRow } from "./lib/clarify";
 import { scoreClaimMatches, type ScoredTxn } from "./lib/claim-match";
 import { batchStatementStatus, isStaleBatch } from "./lib/batch";
@@ -3851,7 +3851,7 @@ export class TaxAgent extends Agent<Env> {
    * consent gate BEFORE any model call (classification is itself a cross-border disclosure), then
    * classify and dispatch to the right typed extractor. Low-confidence is held in needs_review.
    */
-  async classifyAndRoute(userId: string, source: string, bytes: ArrayBuffer, mime: string, originalHash: string | null = null): Promise<{ docId: string; doc_type: string; routed: boolean }> {
+  async classifyAndRoute(userId: string, source: string, bytes: ArrayBuffer, mime: string, originalHash: string | null = null): Promise<{ docId: string; doc_type: string; routed: boolean; covered?: true }> {
     const docId = crypto.randomUUID();
     const r2key = `${userId}/docs/${docId}`;
     // originalHash: the SPA's hash of a photo before client-side compression (see ingest).
@@ -3882,7 +3882,7 @@ export class TaxAgent extends Agent<Env> {
 
     const profile = await this.requireProfile(userId);
     // Refused (no consent / over budget) ⇒ the stored original is filed as an unknown document for review.
-    return aiCall<{ docId: string; doc_type: string; routed: boolean }>(this.aiDeps, {
+    return aiCall<{ docId: string; doc_type: string; routed: boolean; covered?: true }>(this.aiDeps, {
       userId, purpose: "classify_document", profile,
       onConsentRequired: async () => {
         await this.fileDocument(userId, { id: docId, doc_type: "unknown", r2_key: r2key, image_hash: imageHash, needs_review: 1 });
@@ -3964,8 +3964,9 @@ export class TaxAgent extends Agent<Env> {
           return { docId, doc_type: cls.doc_type, routed: true };
         }
         case "agent_rental_summary": {
-          await this.decomposeAgentStatement(userId, docId, propertyId, bytes, mime, llm);
-          return { docId, doc_type: cls.doc_type, routed: true };
+          // covered: a longer statement already counts this one's rent (income_supersession); the upload says so.
+          const { covered } = await this.decomposeAgentStatement(userId, docId, propertyId, bytes, mime, llm);
+          return covered && featureOn(this.env, "review_cleanup") ? { docId, doc_type: cls.doc_type, routed: true, covered } : { docId, doc_type: cls.doc_type, routed: true };
         }
         case "depreciation_schedule": {
           await this.importDepreciationSchedule(userId, docId, bytes, mime);
@@ -4162,7 +4163,7 @@ export class TaxAgent extends Agent<Env> {
     bytes: ArrayBuffer,
     mime: string,
     llm: LLM,
-  ): Promise<void> {
+  ): Promise<{ covered?: true }> {
     const ext = await extractAgentStatement(llm, bytes, mime);
     // property_from_statement: the statement prints its own property address; try it when the classifier's hint
     // matched nothing (it was read and then ignored).
@@ -4198,7 +4199,7 @@ export class TaxAgent extends Agent<Env> {
         await markSuperseded(this.env, userId, docId, sup.coveredBy.source_doc_id);
         await this.audit(userId, "agent_statement_covered", JSON.stringify({ docId, coveredBy: sup.coveredBy.source_doc_id, fy }));
         await this.notify(userId, `This rental statement (${ext.period_start} to ${ext.period_end}) is already covered by a longer statement you uploaded for the same property, so it's kept as a record and not counted again.`, null);
-        return;
+        return { covered: true };
       }
       toRetire = sup.replace; // applied after this statement's rows are written (below)
       if (sup.overlap.length) {
@@ -4253,6 +4254,7 @@ export class TaxAgent extends Agent<Env> {
       `Agent statement processed: rent $${(sumIncome / 100).toFixed(2)}, expenses $${(sumExpense / 100).toFixed(2)}, net $${((ext.net_disbursed_cents ?? sumIncome - sumExpense) / 100).toFixed(2)}.${reconOk ? "" : " ⚠️ Didn't reconcile — review the income row."}${propertyId ? "" : proposed ? " Review has a card to add this property, so its rent and expenses sit under it." : " Couldn't match a property — set it in the income row."}${replacedNote}`,
       null,
     );
+    return {};
   }
 
   // ── ASSETS & DEPRECIATION (deterministic; engine in lib/depreciation.ts) ────
@@ -5991,12 +5993,13 @@ export class TaxAgent extends Agent<Env> {
     const accts = (await tenantDb(this.env, userId).prepare(`SELECT id, name, last4 FROM accounts WHERE user_id = ? AND active = 1`).bind().all<{ id: string; name: string; last4: string | null }>()).results ?? [];
     if (accts.filter((a) => a.last4).length < 2) return out;
     const rows = (await tenantDb(this.env, userId).prepare(
-      `SELECT id, account_id, direction, COALESCE(amount_aud_cents, amount_cents) AS amount_cents, txn_date, COALESCE(raw_description, merchant, '') AS description
+      `SELECT id, account_id, direction, COALESCE(amount_aud_cents, amount_cents) AS amount_cents, txn_date, COALESCE(raw_description, merchant, '') AS description,
+              CASE WHEN bucket IS NULL OR bucket = 'unknown' OR confidence IS NULL OR confidence < 0.85 THEN 1 ELSE 0 END AS uncertain
          FROM transactions WHERE user_id = ? AND kind = 'bank_line' AND status NOT IN ('duplicate', 'corrected') AND amount_cents IS NOT NULL`,
     ).bind().all<PairableLine>()).results ?? [];
     const accountOf = new Map(rows.map((r) => [r.id, r.account_id]));
     const nameOf = new Map(accts.map((a) => [a.id, a.name]));
-    for (const p of pairOwnTransfers(rows, accts)) {
+    for (const p of pairOwnTransfers(rows, accts, 3, { worded: featureOn(this.env, "review_cleanup") })) {
       out.set(p.debit, nameOf.get(accountOf.get(p.credit) ?? "") ?? "another of your accounts");
       out.set(p.credit, nameOf.get(accountOf.get(p.debit) ?? "") ?? "another of your accounts");
     }
@@ -6032,11 +6035,15 @@ export class TaxAgent extends Agent<Env> {
       ).bind().all<SweepRow>()).results ?? [];
       candidates = [...candidates, ...more.filter((r) => paired.has(r.id) && !have.has(r.id))];
     }
+    const drawdown = featureOn(this.env, "review_cleanup");
+    const loanIds = drawdown
+      ? new Set(((await tenantDb(this.env, userId).prepare(`SELECT id FROM accounts WHERE user_id = ? AND type = 'loan'`).bind().all<{ id: string }>()).results ?? []).map((a) => a.id))
+      : new Set<string>();
     for (const r of candidates) {
       const pairedWith = paired.get(r.id);
       const v = pairedWith
         ? { klass: "internal_transfer" as const, autoIgnoreSafe: false, reason: `Matches a transfer of the same amount in ${pairedWith}, so it's money moving between your own accounts (not spend or income).` }
-        : classifyMovement(r.raw_description ?? r.merchant ?? "");
+        : classifyMovementForSweep(r.raw_description ?? r.merchant ?? "", { drawdown, onLoan: !!r.account_id && loanIds.has(r.account_id) });
       const treatment = movementTreatment(v.klass, r.direction);
       if (treatment === "skip") continue;
       const cand: MovementCandidate = {
@@ -6073,10 +6080,11 @@ export class TaxAgent extends Agent<Env> {
     const stmts: D1PreparedStatement[] = [];
     for (const txnId of ids) {
       const row = await tenantDb(this.env, userId).prepare(
-        `SELECT raw_description, merchant, status, direction FROM transactions WHERE id = ? AND user_id = ?`,
+        `SELECT t.raw_description, t.merchant, t.status, t.direction, a.type AS account_type
+           FROM transactions t LEFT JOIN accounts a ON a.id = t.account_id AND a.user_id = t.user_id WHERE t.id = ? AND t.user_id = ?`,
       )
         .bind(txnId)
-        .first<{ raw_description: string | null; merchant: string | null; status: string; direction: string | null }>();
+        .first<{ raw_description: string | null; merchant: string | null; status: string; direction: string | null; account_type: string | null }>();
       if (!row) {
         skipped++;
         continue;
@@ -6088,7 +6096,7 @@ export class TaxAgent extends Agent<Env> {
       // Re-verify server-side with the SAME shared treatment rule the read path used — only the
       // one-tap "ignorable" class may be excluded here. Loan lines (review) and income credits
       // (skip) are refused even if a client sends their ids (defence in depth — B3).
-      const v = classifyMovement(row.raw_description ?? row.merchant ?? "");
+      const v = classifyMovementForSweep(row.raw_description ?? row.merchant ?? "", { drawdown: featureOn(this.env, "review_cleanup"), onLoan: row.account_type === "loan" });
       if (movementTreatment(v.klass, row.direction) !== "ignorable" && !(paired ??= await this.ownTransferPairs(userId)).has(txnId)) {
         skipped++;
         continue;

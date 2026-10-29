@@ -476,7 +476,7 @@ export const api = {
     const qs = q.toString();
     return get<{ documents: DocRow[] }>(`/api/documents${qs ? `?${qs}` : ""}`).then((r) => r.documents);
   },
-  uploadDocument: async (file: File): Promise<{ docId: string; doc_type: string; routed: boolean }> => {
+  uploadDocument: async (file: File): Promise<{ docId: string; doc_type: string; routed: boolean; covered?: true }> => {
     const fd = new FormData();
     const prepared = await prepareImageUpload(file); // photos shrink; PDFs are stored verbatim
     assertUploadSize(prepared.file.size, "document");

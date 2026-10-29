@@ -25,6 +25,7 @@ import {
 } from "../components/ft";
 import { NoticedConfirmed } from "../components/NoticedPanel";
 import { WorthALookCard } from "../components/review/WorthALookCard";
+import { MovementSweepCard } from "../components/MovementSweepCard";
 import { FactCard, NeedsRecordCard, groupName, recordMeta } from "../components/review/RecordCards";
 import { useActiveFy } from "../lib/activeFy";
 import { useFeatures } from "../lib/features";
@@ -80,8 +81,11 @@ const lineSide = (l: ReconcileRow): MatchSide => ({ name: l.raw_description ?? l
  * points into. A transaction finding that points here goes to the transaction list (where lines are
  * sorted), never back to this page.
  */
-function fixFor(w: Journey["whats_left"][number]): FixLink {
+function fixFor(w: Journey["whats_left"][number], cleanup = false): FixLink {
   if (w.evidence_kind && w.evidence_kind !== "transaction") return findingFixLinkForKind(w.evidence_kind, { journey: true });
+  // review_cleanup: a finding about bank lines is sorted in the transaction list, whichever step it counts against
+  // (Connect had nothing to sort them with).
+  if (cleanup && w.evidence_kind === "transaction") return { to: "/transactions?view=all", label: "Sort it out" };
   if (w.step !== STEP) return { to: STEP_ROUTE[w.step], label: `Go to ${STEP_LABEL[w.step]}` };
   return { to: "/transactions", label: "Sort it out" };
 }
@@ -134,6 +138,7 @@ function QueueBody() {
   const scanOn = has("relevance_scan");
   const noticedOn = has("wages_payer");
   const proposalsOn = has("reconcile_proposals");
+  const cleanupOn = has("review_cleanup");
   const summaryOn = has("deductibility_review");
   const { fy, label } = useActiveFy();
   const qc = useQueryClient();
@@ -361,11 +366,14 @@ function QueueBody() {
 
       {!loading && (
         <div className="space-y-8">
+          {/* review_cleanup: transfers between your own accounts, card payments and loan lines, cleared here rather
+              than behind All transactions › Needs review. Renders nothing when there is nothing to clean up. */}
+          {cleanupOn && <MovementSweepCard />}
           {show("fix") && (
             <section aria-labelledby="q-fix" className="space-y-2">
               <SectionTitle id="q-fix" kind="fix" count={counts.fix} />
               {blockers.map((w) => {
-                const fix = fixFor(w);
+                const fix = fixFor(w, cleanupOn);
                 return <CheckItem key={w.id} tone="warn" title={w.title} body={w.note} actions={[{ label: fix.label, onClick: () => navigate(fix.to), primary: true }]} />;
               })}
             </section>
@@ -465,7 +473,7 @@ function QueueBody() {
             <section aria-labelledby="q-check" className="space-y-2">
               <SectionTitle id="q-check" kind="check" count={counts.check} />
               {reviewFindings.map((w) => {
-                const fix = fixFor(w);
+                const fix = fixFor(w, cleanupOn);
                 return <CheckItem key={w.id} tone="info" title={w.title} body={w.note} actions={[{ label: fix.label, onClick: () => navigate(fix.to) }]} />;
               })}
             </section>

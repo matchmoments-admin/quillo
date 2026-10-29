@@ -75,5 +75,8 @@ export function normaliseOccupation(input: string): string {
 /** Token → human label for display. Unknown free-text occupations are shown exactly as stored. */
 export function occupationLabel(token: string): string {
   const hit = OCCUPATIONS.find((o) => o.token === token);
-  return hit ? hit.label : token;
+  if (hit) return hit.label;
+  // A typed occupation is stored as a token ("retail_assistant"): show it as words, never the raw token.
+  const words = token.replace(/_/g, " ").trim();
+  return words ? words[0]!.toUpperCase() + words.slice(1) : token;
 }

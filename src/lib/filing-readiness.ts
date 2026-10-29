@@ -217,6 +217,7 @@ export async function computeFilingReadiness(env: Env, userId: string, startYear
     ...(statementCoverage ? { statementCoverage } : {}),
     ...(unlinkedLoans ? { unlinkedLoans } : {}),
     ...(unfiledRentals ? { unfiledRentals } : {}),
+    ...(featureOn(env, "ft_journey") ? { journeyCopy: true } : {}),
     ...(featureOn(env, "non_cash_income") ? { nonCashIncomeEnabled: true } : {}),
     ...(integrityOn ? {
       frankingHoldingThresholdCents: integrityThresholds?.franking_holding_rule_threshold_cents ?? null,

@@ -130,6 +130,10 @@ export interface FilingReadinessSignals {
   // rental_property_gate — populated ONLY when the flag is on (unfiledRentalSignals in src/lib/noticed-signals.ts),
   // so OFF ⇒ findings byte-identical. Open "add this property?" cards whose rent is still filed under no property.
   unfiledRentals?: { signal_key: string; label: string; n: number; rent_cents: number }[];
+  // ft_journey (2026-10-30 beginner walkthrough): plain wording for two blockers a first-timer meets first. They
+  // named pages the journey doesn't have (the Inbox, the Income page) and said "indicative position". OFF ⇒ the old
+  // wording, byte-identical.
+  journeyCopy?: boolean;
   stampedPersonalN?: number;
   stampedPersonalCents?: number;
 }
@@ -492,9 +496,14 @@ export function assessReadiness(input: {
   // must drop `ready` to false — the old engine only ever emitted review/info, so a user with
   // uncategorised + undated spend was told they were ready (review Medium). Severity is now "blocker".
   if (signals.unknownBucketN > 0) {
-    findings.push(f("unknown_bucket", "completeness", "blocker", `${signals.unknownBucketN} transaction(s) aren't categorised yet`,
-      `These total ${money(signals.unknownBucketCents)} and are excluded from the indicative position until you categorise them — so the position is incomplete. Categorise them in the Inbox before relying on the numbers.`, false,
-      [{ kind: "transaction", count: signals.unknownBucketN }]));
+    const n = signals.unknownBucketN;
+    findings.push(signals.journeyCopy
+      ? f("unknown_bucket", "completeness", "blocker", `${n} transaction${n === 1 ? " isn't" : "s aren't"} sorted yet`,
+        `${n === 1 ? "It comes" : "They come"} to ${money(signals.unknownBucketCents)}. Until each one has a category it's left out of your estimate, so the estimate is incomplete. Sort ${n === 1 ? "it" : "them"} out before relying on the numbers.`, false,
+        [{ kind: "transaction", count: n }])
+      : f("unknown_bucket", "completeness", "blocker", `${signals.unknownBucketN} transaction(s) aren't categorised yet`,
+        `These total ${money(signals.unknownBucketCents)} and are excluded from the indicative position until you categorise them — so the position is incomplete. Categorise them in the Inbox before relying on the numbers.`, false,
+        [{ kind: "transaction", count: signals.unknownBucketN }]));
   }
   // Deny-by-default: payg spend we couldn't positively classify is excluded from the position until
   // the user confirms it's work-related. Surface it with a clear path so the headline isn't silently
@@ -562,7 +571,9 @@ export function assessReadiness(input: {
       const againstZero = noIncome && report.total_deductions_cents > 0 ? " — which currently shows your deductions against $0 of income" : "";
       findings.push(f("income_not_recorded", "completeness", noIncome ? "blocker" : "review",
         noIncome ? "Your bank shows income, but no income is recorded for this year" : "Your bank shows income that isn't recorded as income yet",
-        `Your bank shows ${parts} coming in this year, but there's no matching income recorded, so it isn't in your indicative position${againstZero}. Bank deposits are listed alongside the position but never counted in it: a deposit is your take-home pay, not your gross pay and the tax withheld. For wages, download your income statement from myGov (ATO online services) once your employer marks it "Tax ready" and upload it on the Income page; for other income, add it there too. General information only.`, false,
+        signals.journeyCopy
+          ? `Your bank shows ${parts} coming in this year, but no income is recorded, so it isn't in your estimate${againstZero}. Quillo never counts a bank deposit as income: your pay arrives after tax is taken out, and your return needs the full amount and the tax withheld. Those are on your income statement. When your employer marks it "Tax ready" in myGov, download it and add it on Connect, under Your income statement. Add any other income there too. General information only.`
+          : `Your bank shows ${parts} coming in this year, but there's no matching income recorded, so it isn't in your indicative position${againstZero}. Bank deposits are listed alongside the position but never counted in it: a deposit is your take-home pay, not your gross pay and the tax withheld. For wages, download your income statement from myGov (ATO online services) once your employer marks it "Tax ready" and upload it on the Income page; for other income, add it there too. General information only.`, false,
         [{ kind: "transaction", count: totalN }]));
     }
   }

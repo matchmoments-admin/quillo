@@ -71,10 +71,7 @@ if (!chromium) {
       const clerkAborted = blocked.some((b) => /clerk\.accounts\.dev\/v1\/dev_browser/.test(b));
       const fromClerk = (e: string) => clerkAborted && (/clerk\.browser\.js|clerk/i.test(e) || /status of 401/.test(e) && clientErrors.every((c) => /clerk/.test(c)));
       const flagOff = (e: string) => startOff && (/default ErrorBoundary/.test(e) || /status of 401/.test(e));
-      // Known, ticketed: Cloudflare's auto-injected Web Analytics beacon is blocked by our CSP (#747).
-      const known = errors.filter((e) => /static\.cloudflareinsights\.com/.test(e));
-      if (known.length) console.log("    ~ known #747: the CSP blocks Cloudflare's injected Web Analytics beacon");
-      const real = errors.filter((e) => !fromClerk(e) && !flagOff(e) && !known.includes(e));
+      const real = errors.filter((e) => !fromClerk(e) && !flagOff(e));
       check(`cold load ${route}: no console/page errors`, real.length === 0, real.slice(0, 3).join(" | "));
       check(`cold load ${route}: no 5xx`, fivexx.length === 0, fivexx.join(", "));
       if (blocked.length) console.log(`    · aborted ${blocked.length} non-GET request(s) the page made: ${[...new Set(blocked.map((b) => b.replace(/\?.*/, "")))].join(", ")}`);

@@ -5717,6 +5717,10 @@ console.log("credit triage (#577)");
     const withClaim = [cr("c1", "SAMPLE CO PTY LTD", 250000, "2025-08-07"), cr("c2", "SAMPLE CO PTY LTD", 250000, "2025-08-21"), cr("c3", "SAMPLE CO PTY LTD EXPENSE CLAIM", 250000, "2025-09-04")];
     check("payer_guard (#835): an insurer's staff salary and pay with one expense claim are still proposed",
       triageCredits(insurerStaff, L).some((x) => x.kind === "payroll") && triageCredits(withClaim, L).some((x) => x.kind === "payroll"));
+    // Rental walkthrough (2026-10-30): a managing agent's monthly rent remittances were offered as "A second employer?".
+    const remit = [cr("r1", "EXAMPLE REALTY RENT 12 SAMPLE ST", 209688, "2025-08-10"), cr("r2", "EXAMPLE REALTY RENT 12 SAMPLE ST", 209688, "2025-09-10"), cr("r3", "EXAMPLE REALTY RENT 12 SAMPLE ST", 209688, "2025-10-10")];
+    check("payer_guard: a managing agent's rent remittances are never proposed as an employer",
+      !triageCredits([...rows, ...remit], L).some((x) => x.kind === "payroll" && /realty/i.test(x.evidence.label)) && triageCredits([...rows, ...remit], L).some((x) => x.kind === "payroll"));
     check("payer_guard (#835): claimPayerKeys names only the claims-only payer (so its old card is withdrawn)",
       claimPayerKeys([...rows, ...fund], L).length === 1 && claimPayerKeys([...rows, ...insurerStaff, ...withClaim], L).length === 0);
   }

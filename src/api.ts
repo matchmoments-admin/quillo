@@ -82,7 +82,7 @@ import { listSituationPeriods, normaliseFyStart } from "./lib/situation-profile"
 import { lodgingFy, lodgedOnError, isoDayOf } from "./lib/lodging-year";
 import { getFyLodged, listLodgedFys } from "./lib/fy-signoff";
 import { relevanceView } from "./lib/relevance-scan-run";
-import { listNoticed, type ConfirmBody } from "./lib/noticed-signals";
+import { listNoticed, payrollLinks, type ConfirmBody } from "./lib/noticed-signals";
 import { setAttributions, getAttributions, clearAttributions } from "./lib/attribution-write";
 import { listNoaCarryovers, confirmNoaCarryover, deleteNoaCarryover } from "./lib/noa-store";
 import { buildConnectUrl, qboStatus, QBO_STATE_TTL_SECONDS } from "./lib/qbo-oauth";
@@ -851,6 +851,15 @@ export async function handleApi(
     if (m === "GET" && !id) {
       const fy = Math.trunc(Number(url.searchParams.get("fy"))) || defaultFy();
       return json({ signals: await listNoticed(env, uid, fy) });
+    }
+    // wages_relink: GET /api/noticed/links?fy= → { links }; POST /api/noticed/:id/link { employer_name } | { not_pay: true }
+    if (m === "GET" && id === "links") {
+      const fy = Math.trunc(Number(url.searchParams.get("fy"))) || defaultFy();
+      return json({ links: (await payrollLinks(env, uid, fy)) ?? [] });
+    }
+    if (m === "POST" && id && sub === "link") {
+      const r = await stub.relinkPayrollSignal(uid, id, (await req.json().catch(() => ({}))) as { employer_name?: unknown; not_pay?: unknown });
+      return r.ok ? json(r) : json({ error: r.error }, r.status);
     }
     if (m === "POST" && id && sub === "confirm") {
       const body = (await req.json().catch(() => ({}))) as ConfirmBody;

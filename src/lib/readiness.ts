@@ -511,9 +511,13 @@ export function assessReadiness(input: {
   // the user confirms it's work-related. Surface it with a clear path so the headline isn't silently
   // understated. Only meaningful (and only emitted) when the exclusion is actually in effect.
   if (excludeNonDeductible && paygUnresolvedN > 0) {
-    findings.push(f("payg_unresolved", "classification", "review", `${paygUnresolvedN} personal/work transaction(s) need a deductibility decision`,
-      `These total ${money(paygUnresolvedCents)} and are excluded from the indicative position by default until you confirm they relate to earning your income (work-related). Private spend stays excluded; mark the work-related ones in the Inbox.`, false,
-      [{ kind: "transaction", count: paygUnresolvedN }]));
+    findings.push(signals.journeyCopy
+      ? f("payg_unresolved", "classification", "review", `${paygUnresolvedN} purchase${paygUnresolvedN === 1 ? "" : "s"} might be for work`,
+        `${paygUnresolvedN === 1 ? "It comes" : "They come"} to ${money(paygUnresolvedCents)} and ${paygUnresolvedN === 1 ? "isn't" : "aren't"} in your estimate unless you say ${paygUnresolvedN === 1 ? "it was" : "they were"} for work. Everyday personal spending stays out, so only mark what you bought to earn your income.`, false,
+        [{ kind: "transaction", count: paygUnresolvedN }])
+      : f("payg_unresolved", "classification", "review", `${paygUnresolvedN} personal/work transaction(s) need a deductibility decision`,
+        `These total ${money(paygUnresolvedCents)} and are excluded from the indicative position by default until you confirm they relate to earning your income (work-related). Private spend stays excluded; mark the work-related ones in the Inbox.`, false,
+        [{ kind: "transaction", count: paygUnresolvedN }]));
   }
   if (report.undated.n > 0) {
     findings.push(f("undated_receipts", "completeness", "blocker", `${report.undated.n} receipt(s) have no usable date`,

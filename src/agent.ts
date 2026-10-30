@@ -40,7 +40,7 @@ import { cgtUnits } from "./lib/cgt";
 import { costBaseFromElements, validateCostBaseElements, withCostBaseElements, type CostBaseElements } from "./lib/capital";
 import { wantsIncomeStatementItem } from "./lib/first-timer-signals";
 import { residencyAssessabilityContext, residencyAssessabilityOn, hasNonResidentPeriod, nonResidentClaimTreatment, AU_WORK_DEDUCTIONS_CAVEAT } from "./lib/residency-assessability";
-import { noticeSignals, confirmNoticed, dismissNoticed, ensurePayrollSignal, incomeAnswerRows, noticeRentalProperty, STAMPED_INCOME_REFUSAL, NoticedError, type ConfirmBody, type ConfirmResult } from "./lib/noticed-signals";
+import { noticeSignals, confirmNoticed, dismissNoticed, relinkPayroll, ensurePayrollSignal, incomeAnswerRows, noticeRentalProperty, STAMPED_INCOME_REFUSAL, NoticedError, type ConfirmBody, type ConfirmResult } from "./lib/noticed-signals";
 import { creditSignalLists, payerStem, payerLabel } from "./lib/credit-triage";
 import { upsertSituationPeriod, fillSituationPeriod, deleteSituationPeriod, SituationPeriodError, type SituationPeriodInput } from "./lib/situation-write";
 import { applyCapitalColumnMap, type CapitalColumnMap, type CapitalDraftRow, type CapitalImportPreview } from "./lib/capital-import";
@@ -6330,6 +6330,17 @@ export class TaxAgent extends Agent<Env> {
   }
 
   /** "No" on a We-noticed card — terminal for that FY + kind + payer key (a re-import never re-opens it). */
+  async relinkPayrollSignal(userId: string, id: string, body: { employer_name?: unknown; not_pay?: unknown }): Promise<{ ok: true; action: string } | { ok: false; error: string; status: number }> {
+    try {
+      const r = await this.serialisedPeriodWrite(() => relinkPayroll(this.env, userId, id, body));
+      await this.audit(userId, "noticed_relink", JSON.stringify({ id, action: r.action }));
+      return r;
+    } catch (e) {
+      if (e instanceof NoticedError) return { ok: false, error: e.message, status: e.status };
+      throw e;
+    }
+  }
+
   async dismissNoticedSignal(userId: string, id: string): Promise<{ ok: true; status: string } | { ok: false; error: string; status: number }> {
     if (!featureOn(this.env, "wages_payer")) return { ok: false, error: "not available", status: 404 };
     try {

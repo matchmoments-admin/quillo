@@ -49,6 +49,8 @@ export interface NoticedSignal {
   ref_id: string | null;
   created_at: string;
   decided_at: string | null;
+  /** wages_link_statement (#832): payroll only — income-statement employers this FY that no employer is linked to yet. */
+  statement_choices?: string[];
 }
 
 interface SignalRow {
@@ -122,7 +124,10 @@ async function creditsBetween(env: Env, userId: string, start: string | null, en
 }
 
 async function listsFor(env: Env, userId: string, descriptor: JurisdictionDescriptor): Promise<CreditSignalLists> {
-  return creditSignalLists(await resolveRulePack(env, userId, descriptor));
+  const lists = creditSignalLists(await resolveRulePack(env, userId, descriptor));
+  // payer_guard (#835): the not-an-employer list applies only with the flag ON, so OFF triages byte-identically.
+  if (!featureOn(env, "payer_guard")) delete lists.payroll.not_employer;
+  return lists;
 }
 
 /**
@@ -217,7 +222,29 @@ export async function listNoticed(env: Env, userId: string, startYear: number): 
       ORDER BY CASE kind WHEN 'payroll' THEN 0 WHEN 'platform' THEN 1 WHEN 'government' THEN 2 WHEN 'interest' THEN 3 WHEN 'foreign' THEN 4 ELSE 5 END,
                json_extract(evidence_json, '$.total_cents') DESC, signal_key`,
   ).bind(fyLabel(startYear)).all<SignalRow>()).results ?? [];
-  return rows.map(toSignal);
+  const signals = rows.map(toSignal);
+  // wages_link_statement (#832, owner decision 2026-10-30): a bank payer's name often isn't the income statement's
+  // employer ("Example Payroll Brandco" vs "BRANDCO GROUP SERVICES"), and no rule can safely guess. So a payroll card
+  // offers the FY's income-statement employers that no employer is linked to yet; the user picks one, and the
+  // employer is named as on the statement. No fuzzy matching. OFF ⇒ the list is byte-identical.
+  if (featureOn(env, "wages_link_statement") && signals.some((s) => s.kind === "payroll")) {
+    const choices = await unlinkedStatementEmployers(env, userId, fyLabel(startYear));
+    if (choices.length) for (const s of signals) if (s.kind === "payroll" && !choices.some((c) => employerMatches(c, s.evidence.label))) s.statement_choices = choices;
+  }
+  return signals;
+}
+
+/** #832: the FY's income-statement employers that match no employment entity (so no bank payer is linked to them). */
+async function unlinkedStatementEmployers(env: Env, userId: string, fy: string): Promise<string[]> {
+  const names = ((await tenantDb(env, userId).prepare(
+    `SELECT DISTINCT json_extract(detail_json, '$.employer') AS name FROM income
+      WHERE user_id = ? AND fy = ? AND income_type = 'salary_payg' AND json_valid(detail_json) AND json_extract(detail_json, '$.employer') IS NOT NULL`,
+  ).bind(fy).all<{ name: string }>()).results ?? []).map((r) => r.name.trim()).filter(Boolean);
+  if (!names.length) return [];
+  const jobs = ((await tenantDb(env, userId).prepare(`SELECT name FROM entities WHERE user_id = ? AND kind = 'employment'`).bind().all<{ name: string | null }>()).results ?? []).map((j) => j.name);
+  const out: string[] = [];
+  for (const n of names) if (!jobs.some((j) => employerMatches(j, n)) && !out.some((o) => employerMatches(o, n))) out.push(n);
+  return out.sort();
 }
 
 async function getSignal(env: Env, userId: string, id: string): Promise<NoticedSignal> {

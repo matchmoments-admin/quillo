@@ -1388,6 +1388,13 @@ export async function handleApi(
         throw e;
       }
     }
+    if (m === "POST" && id && sub === "confirm" && featureOn(env, "asset_confirm_gate")) {
+      try {
+        return json(await stub.confirmAsset(uid, id));
+      } catch (e) {
+        return json({ error: (e as Error).message }, 404);
+      }
+    }
     if (m === "DELETE" && id) {
       await deleteRow(env, uid, "assets", id);
       return json({ ok: true });

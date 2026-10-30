@@ -183,6 +183,7 @@ export interface TaxAgentRpc {
   rollForward(userId: string, toStartYear: number): Promise<{ assets: number }>;
   reclassMisbucketedAssets(userId: string): Promise<{ removed: number; reclassed: number }>;
   disposeAsset(userId: string, assetId: string, disposedDate: string, disposalValueCents: number): Promise<{ balancing_adjustment_cents: number }>;
+  confirmAsset(userId: string, assetId: string): Promise<{ ok: true }>;
   importDepreciationSchedule(userId: string, docId: string, bytes: ArrayBuffer, mime: string): Promise<{ created: number }>;
   generateChecklist(userId: string, fy?: string): Promise<{ items: number }>;
   setWorkUseInputs(userId: string, input: { fy: number; wfh_hours: number | null; car_work_km: number | null; wfh_days_per_week?: number | null; wfh_weeks?: number | null; has_dedicated_home_office?: boolean; wfh_has_record?: boolean; wfh_weekdays?: number[] | null; wfh_leave_ranges?: { start: string; end: string; label?: string }[] | null; wfh_generate_diary?: boolean; fill_only?: boolean }): Promise<{ ok: true }>;

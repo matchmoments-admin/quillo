@@ -34,6 +34,8 @@ export interface CreditSignalLists {
     /** A credit with one of these and NO business_marker is person-to-person (PayID from a friend) — never payroll. */
     p2p_markers?: string;
     business_markers?: string;
+    /** payer_guard (#835): a payer whose credits match one of these (a health fund or insurer paying a claim) is never payroll. */
+    not_employer?: string;
   };
   /** Refunds / rebates / reversals: never a signal of any kind. */
   skip_words?: string;
@@ -232,6 +234,7 @@ export function triageCredits(
   for (const [key, rs] of byStem) {
     // min_count applies to BOTH paths: one credit with a payroll word ("PAY BACK") is not a job.
     if (rs.length < P.min_count) continue;
+    if (P.not_employer && rs.some((r) => anyPatternHits(P.not_employer!, descOf(r)))) continue;
     const cadence = detectCadence(rs.map((r) => r.txn_date).filter((d): d is string => !!d), P.cadence_days, P.cadence_tolerance_days);
     const words = rs.some((r) => anyPatternHits(P.words, descOf(r)));
     if (cadence == null && !words) continue;

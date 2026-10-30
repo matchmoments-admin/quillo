@@ -13,6 +13,8 @@ export function NoticedCard({
   onNo,
   busy,
   after,
+  choices,
+  onYesAs,
   ...status
 }: {
   signal: NoticedCardSignal;
@@ -21,8 +23,12 @@ export function NoticedCard({
   onNo: () => void;
   busy?: boolean;
   after?: ReactNode; // shown in place of the buttons once confirmed (e.g. the income-statement prompt)
+  /** wages_link_statement (#832): income-statement employers to link this pay to; Yes asks which one first. */
+  choices?: string[];
+  onYesAs?: (employerName: string | null) => void;
 } & StatusProps) {
   const [why, setWhy] = useState(false);
+  const [asking, setAsking] = useState(false);
   const copy = noticedCopy(signal);
   const ev = signal.evidence;
   const span = ev.first_date && ev.last_date && ev.first_date !== ev.last_date ? `${ev.first_date} to ${ev.last_date}` : ev.first_date ?? "";
@@ -45,9 +51,24 @@ export function NoticedCard({
         {why && <p className="mt-2 max-w-[65ch] text-sm leading-relaxed text-muted">{copy.why}</p>}
         {after ? (
           <div className="mt-3">{after}</div>
+        ) : asking && choices?.length && onYesAs ? (
+          <div className="mt-3 space-y-2" role="group" aria-label="Which income statement is this pay from?">
+            <p className="text-sm font-semibold text-ink">Which income statement is this pay from?</p>
+            <p className="max-w-[65ch] text-sm text-muted">Your bank may name your employer differently from the income statement. Pick the one this pay belongs to.</p>
+            <div className="flex flex-wrap gap-2">
+              {choices.map((c) => (
+                <FtButton key={c} onClick={() => onYesAs(c)} busy={busy}>
+                  {c}
+                </FtButton>
+              ))}
+              <FtButton variant="ghost" onClick={() => onYesAs(null)} disabled={busy}>
+                Its income statement isn't added yet
+              </FtButton>
+            </div>
+          </div>
         ) : (
           <div className="mt-3 flex flex-wrap gap-2">
-            <FtButton variant="primary" onClick={onYes} busy={busy}>
+            <FtButton variant="primary" onClick={choices?.length && onYesAs ? () => setAsking(true) : onYes} busy={busy}>
               Yes
             </FtButton>
             <FtButton onClick={onNo} disabled={busy}>

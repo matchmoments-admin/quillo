@@ -72,6 +72,9 @@ function AssetLine({ a, showCar, propLabel }: { a: AssetRow; showCar: boolean; p
   const [open, setOpen] = useState(false);
   const sched = useQuery({ queryKey: ["schedule", a.id], queryFn: () => api.assetSchedule(a.id), enabled: open });
   const del = useMutation({ mutationFn: () => api.deleteAsset(a.id), onSuccess: () => qc.invalidateQueries({ queryKey: ["assets"] }) });
+  // asset_confirm_gate (#833): an asset flagged for review is confirmed here; one made from a bank line counts once confirmed.
+  const confirmOn = useFeatures().has("asset_confirm_gate");
+  const confirm = useMutation({ mutationFn: () => api.confirmAsset(a.id), onSuccess: () => qc.invalidateQueries({ queryKey: ["assets"] }) });
   return (
     <>
       <tr className="border-t border-line">
@@ -80,7 +83,12 @@ function AssetLine({ a, showCar, propLabel }: { a: AssetRow; showCar: boolean; p
           {showCar && a.is_car ? <span className="ml-2 rounded-full bg-surface px-2 py-0.5 text-xs text-muted">Car</span> : null}
           {propLabel ? <span className="ml-2 rounded-full bg-surface px-2 py-0.5 text-xs text-muted">{propLabel}</span> : null}
           {a.is_second_hand ? <span className="ml-2 rounded-full bg-surface px-2 py-0.5 text-xs text-muted">2nd-hand</span> : null}
-          {a.needs_review ? <span className="ml-2 rounded-full bg-warn/10 px-2 py-0.5 text-xs text-warn">review</span> : null}
+          {a.needs_review ? <span className="ml-2 rounded-full bg-warn/10 px-2 py-0.5 text-xs text-warn">{confirmOn ? "not counted until you confirm it" : "review"}</span> : null}
+          {a.needs_review && confirmOn ? (
+            <button className="ml-2 text-xs font-semibold text-forest underline disabled:opacity-50" disabled={confirm.isPending} onClick={() => confirm.mutate()}>
+              {confirm.isPending ? "Confirming…" : "Confirm"}
+            </button>
+          ) : null}
         </td>
         <td className="px-4 py-2 text-muted">{CLASS_LABEL[a.asset_class] ?? a.asset_class}</td>
         <td className="px-4 py-2 text-right tabular-nums">{money(a.cost_cents)}</td>

@@ -257,6 +257,9 @@ export async function deductionTotalForProperty(
   return row?.total_cents ?? 0;
 }
 
+/** asset_confirm_gate (#833): an asset auto-created from a bank line that the user hasn't confirmed yet (alias `a`). */
+export const UNCONFIRMED_AI_ASSET = "a.needs_review = 1 AND EXISTS (SELECT 1 FROM transactions t WHERE t.asset_id = a.id AND t.user_id = a.user_id)";
+
 /** Decline-in-value (Div40 + Div43) for an FY, per property (and the grand total). */
 export async function depreciationTotals(
   env: Env,
@@ -264,6 +267,9 @@ export async function depreciationTotals(
   startYear: number,
 ): Promise<{ total_cents: number; by_property: { property_id: string | null; deduction_cents: number }[] }> {
   const fy = fyLabel(startYear);
+  // asset_confirm_gate (#833): an asset the categoriser made from a bank line counts once the user confirms it, like
+  // any other undecided spend. OFF ⇒ the query is byte-identical.
+  const unconfirmed = featureOn(env, "asset_confirm_gate") ? `\n          AND NOT (${UNCONFIRMED_AI_ASSET})` : "";
   try {
     const res = await tenantDb(env, userId).prepare(
       `SELECT a.property_id AS property_id, COALESCE(SUM(d.deduction_cents),0) AS deduction_cents
@@ -273,7 +279,7 @@ export async function depreciationTotals(
           AND COALESCE(a.owned_by,'self') <> 'employer' AND COALESCE(a.reimbursed,0) = 0
           -- 0031: plant in a rent-free / off-market-renovating property produces no deduction.
           AND NOT EXISTS (SELECT 1 FROM properties pp WHERE pp.id = a.property_id
-                            AND pp.use_status IN ('private_use_rent_free','under_renovation_not_available'))
+                            AND pp.use_status IN ('private_use_rent_free','under_renovation_not_available'))${unconfirmed}
         GROUP BY a.property_id`,
     )
       .bind(fy)

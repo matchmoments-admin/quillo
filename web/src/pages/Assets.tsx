@@ -74,7 +74,10 @@ function AssetLine({ a, showCar, propLabel }: { a: AssetRow; showCar: boolean; p
   const del = useMutation({ mutationFn: () => api.deleteAsset(a.id), onSuccess: () => qc.invalidateQueries({ queryKey: ["assets"] }) });
   // asset_confirm_gate (#833): an asset flagged for review is confirmed here; one made from a bank line counts once confirmed.
   const confirmOn = useFeatures().has("asset_confirm_gate");
-  const confirm = useMutation({ mutationFn: () => api.confirmAsset(a.id), onSuccess: () => qc.invalidateQueries({ queryKey: ["assets"] }) });
+  const confirm = useMutation({
+    mutationFn: () => api.confirmAsset(a.id),
+    onSuccess: () => { for (const k of ["assets", "readiness", "report", "journey", "dashboard"]) qc.invalidateQueries({ queryKey: [k] }); },
+  });
   return (
     <>
       <tr className="border-t border-line">

@@ -208,7 +208,7 @@ function payerOf(detailJson: string | null): string | null {
   try {
     const d = JSON.parse(detailJson) as Record<string, unknown>;
     const name = [d.employer, d.payer, d.agent].find((v): v is string => typeof v === "string" && !!v.trim());
-    const abn = [d.employer_abn, d.abn, d.payer_abn].find((v): v is string => typeof v === "string" && !!v.trim());
+    const abn = [d.employer_abn, d.payer_abn].find((v): v is string => typeof v === "string" && !!v.trim());
     return name ? (abn ? `${name.trim()} (ABN ${abn.trim()})` : name.trim()) : null;
   } catch {
     return null;
@@ -382,27 +382,30 @@ async function scheduleCore(
     owned_by: string;
     reimbursed: number;
   }
+  // asset_confirm_gate (#833): an unconfirmed asset made from a bank line is left out of the counted rows and listed as not
+  // claimed (awaiting confirmation), so the accountant can see it exists. OFF ⇒ the query is byte-identical.
+  const confirmGate = featureOn(env, "asset_confirm_gate");
   const depRowsP = detailOnly ? Promise.resolve([] as DepRow[]) : safeAll<DepRow>(
     tenantDb(env, userId).prepare(
       `SELECT ${depCols}
          FROM depreciation_schedule d JOIN assets a ON a.id = d.asset_id LEFT JOIN properties p ON p.id = a.property_id
         WHERE d.user_id = ? AND d.fy = ?
-          AND COALESCE(a.owned_by,'self') <> 'employer' AND COALESCE(a.reimbursed,0) = 0 AND NOT ${rentFreeAsset}${featureOn(env, "asset_confirm_gate") ? ` AND NOT (${UNCONFIRMED_AI_ASSET})` : ""}
+          AND COALESCE(a.owned_by,'self') <> 'employer' AND COALESCE(a.reimbursed,0) = 0 AND NOT ${rentFreeAsset}${confirmGate ? ` AND NOT (${UNCONFIRMED_AI_ASSET})` : ""}
         ORDER BY a.created_at`,
     )
       .bind(fy)
       .all<DepRow>(),
   );
-  const depDeniedP = detailOnly ? Promise.resolve([] as (DepRow & { use_status_denied: number })[]) : safeAll<DepRow & { use_status_denied: number }>(
+  const depDeniedP = detailOnly ? Promise.resolve([] as (DepRow & { use_status_denied: number; awaiting_confirm?: number })[]) : safeAll<DepRow & { use_status_denied: number; awaiting_confirm?: number }>(
     tenantDb(env, userId).prepare(
-      `SELECT ${depCols}, (CASE WHEN ${rentFreeAsset} THEN 1 ELSE 0 END) AS use_status_denied
+      `SELECT ${depCols}, (CASE WHEN ${rentFreeAsset} THEN 1 ELSE 0 END) AS use_status_denied${confirmGate ? `, (CASE WHEN ${UNCONFIRMED_AI_ASSET} THEN 1 ELSE 0 END) AS awaiting_confirm` : ""}
          FROM depreciation_schedule d JOIN assets a ON a.id = d.asset_id LEFT JOIN properties p ON p.id = a.property_id
         WHERE d.user_id = ? AND d.fy = ?
-          AND (COALESCE(a.owned_by,'self') = 'employer' OR COALESCE(a.reimbursed,0) = 1 OR ${rentFreeAsset})
+          AND (COALESCE(a.owned_by,'self') = 'employer' OR COALESCE(a.reimbursed,0) = 1 OR ${rentFreeAsset}${confirmGate ? ` OR (${UNCONFIRMED_AI_ASSET})` : ""})
         ORDER BY a.created_at`,
     )
       .bind(fy)
-      .all<DepRow & { use_status_denied: number }>(),
+      .all<DepRow & { use_status_denied: number; awaiting_confirm?: number }>(),
   );
 
   // (4) Itemised attributions — attributionTotals' query + display columns, routed by the same
@@ -1263,7 +1266,9 @@ async function scheduleCore(
   // 15. NOT CLAIMED — every excluded item, considered and excluded with its reason (#181).
   if (notClaimed.length || depDenied.length) {
     const depDeniedReason = (a: (typeof depDenied)[number]): string =>
-      a.owned_by === "employer"
+      a.awaiting_confirm
+        ? "Set up from a bank line and not confirmed yet, so not counted. If it's a work or rental purchase, confirm it on Assets."
+        : a.owned_by === "employer"
         ? "Employer-owned asset — no decline in value to you (Div 40 needs you to own and bear the cost)."
         : exclusionReason("asset", null, a.reimbursed, a.use_status_denied);
     const total = notClaimed.reduce((s, x) => s + x.row.counted_cents, 0) + depDenied.reduce((s, r) => s + r.deduction_cents, 0);

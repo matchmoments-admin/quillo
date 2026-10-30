@@ -4063,6 +4063,9 @@ async function main() {
     const on = (await buildReport(GATE, u, 2025)).depreciation_cents;
     check("#833 asset_confirm_gate: the unconfirmed AI-made asset ($33.08) is left out; the one the user added ($250) counts; OFF counts both",
       on === 25000 && off === 28308);
+    const notClaimed = (await buildAccountantSchedule(GATE, u, 2025)).sections.find((x) => x.key === "not_claimed");
+    check("#833 asset_confirm_gate: the accountant schedule lists the unconfirmed asset as not claimed, awaiting confirmation",
+      !!notClaimed && notClaimed.rows.some((r) => r.includes("Cloud server (2026-03-01)") && r.some((c) => /not confirmed yet/.test(String(c)))));
     run(`UPDATE assets SET needs_review = 0 WHERE id = 'passetAi' AND user_id = ?`, u); // what POST /api/assets/:id/confirm does
     check("#833 asset_confirm_gate: once confirmed, it counts", (await buildReport(GATE, u, 2025)).depreciation_cents === 28308);
   }
@@ -4101,6 +4104,9 @@ async function main() {
       run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, currency, txn_date, bucket, direction, raw_description, merchant) VALUES (?, ?, 'upload', 'categorised', 'bank_line', 250000, 250000, 'AUD', ?, 'income_personal', 'credit', 'EXAMPLE PAYROLL BRANDCO SALARY', 'EXAMPLE PAYROLL BRANDCO SALARY')`, id, u, date);
     }
     inc("plinkInc", u, "salary_payg", 6500000, { person_id: "person_self_plink", detail_json: JSON.stringify({ employer: "BRANDCO GROUP SERVICES PTY LTD" }) });
+    // Review: a spouse's income statement is never offered on the primary taxpayer's card.
+    run(`INSERT OR IGNORE INTO persons (id, user_id, display_name, role) VALUES ('plinkSpouse', ?, 'Partner', 'spouse')`, u);
+    inc("plinkSpouseInc", u, "salary_payg", 4000000, { person_id: "plinkSpouse", detail_json: JSON.stringify({ employer: "Sample Hospital" }) });
     await noticeSignals(ON, u);
     const cardOn = (await listNoticed(ON, u, 2025)).find((x) => x.kind === "payroll");
     const cardOff = (await listNoticed(OFF, u, 2025)).find((x) => x.kind === "payroll");
@@ -4112,6 +4118,25 @@ async function main() {
     check("#832: after picking it, the one employer's income statement counts as recorded (no 'not recorded yet', no third employer)",
       sig.payrollEmployers?.length === 1 && sig.payrollEmployers[0]!.covered === true);
     check("#832: once linked, a later card has nothing left to offer", (await listNoticed(ON, u, 2025)).every((x) => !x.statement_choices));
+  }
+
+  // ── #835 payer_guard: a "second employer?" card raised before the guard for a payer that is only health-fund claims is
+  // withdrawn on the next scan; real pay is untouched. ──
+  {
+    const u = "pguard";
+    seedTenant(u, "P1 health fund claims");
+    const ON = { ...env, FEATURES: `${(env as { FEATURES: string }).FEATURES},wages_payer,payer_guard` } as unknown as Env;
+    const OFF = { ...env, FEATURES: `${(env as { FEATURES: string }).FEATURES},wages_payer` } as unknown as Env;
+    for (const [id, d, c, t] of [["pguardH1", "EXAMPLE HEALTH FUND CLAIM", 17900, "2025-08-07"], ["pguardH2", "EXAMPLE HEALTH FUND CLAIM", 17900, "2025-08-21"],
+      ["pguardW1", "BIG RETAIL PTY LTD SALARY", 120000, "2025-08-07"], ["pguardW2", "BIG RETAIL PTY LTD SALARY", 120000, "2025-08-21"]] as const) {
+      run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, currency, txn_date, bucket, direction, raw_description, merchant) VALUES (?, ?, 'upload', 'categorised', 'bank_line', ?, ?, 'AUD', ?, 'income_personal', 'credit', ?, ?)`, id, u, c, c, t, d, d);
+    }
+    await noticeSignals(OFF, u);
+    const before = (await listNoticed(OFF, u, 2025)).filter((x) => x.kind === "payroll").length;
+    await noticeSignals(ON, u);
+    const after = (await listNoticed(ON, u, 2025)).filter((x) => x.kind === "payroll").map((x) => x.evidence.label);
+    check("#835 payer_guard: the health fund's open 'employer' card is withdrawn on the next scan; the real employer's stays",
+      before === 2 && JSON.stringify(after) === JSON.stringify(["Big Retail"]));
   }
 
   console.log(`\n=== personas: ${pass} passed, ${fail} failed ===`);

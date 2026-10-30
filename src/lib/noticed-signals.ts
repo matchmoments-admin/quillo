@@ -21,7 +21,7 @@ import { featureOn } from "./features";
 import { fyBounds, fyLabel, parseFyStartYear } from "./ledger-totals";
 import { fyForDate, resolveRulePack } from "./report";
 import { AU_DESCRIPTOR, type JurisdictionDescriptor } from "./jurisdiction";
-import { creditSignalLists, payerStem, triageCredits, type CreditSignalLists, type SignalEvidence, type SignalKind, type TriageCredit } from "./credit-triage";
+import { claimPayerKeys, creditSignalLists, payerStem, triageCredits, type CreditSignalLists, type SignalEvidence, type SignalKind, type TriageCredit } from "./credit-triage";
 import { addEntity, addIncomeActivity, addProperty, upsertSituationPeriod } from "./situation-write";
 import { settlePropertyRent } from "./income-supersession";
 import { listSituationPeriods, rangesOverlap, situationFacts } from "./situation-profile";
@@ -162,6 +162,16 @@ export async function noticeSignals(env: Env, userId: string, descriptor: Jurisd
   }
   let upserted = 0;
   for (const [fy, rs] of byFy) {
+    // payer_guard (#835): a "second employer?" card raised before the guard for a payer that is only claims is
+    // withdrawn (an open card only; a Yes the user already gave is theirs to undo).
+    const claims = claimPayerKeys(rs, lists);
+    for (let i = 0; i < claims.length; i += 80) {
+      const chunk = claims.slice(i, i + 80);
+      stmts.push(tenantDb(env, userId).prepare(
+        `UPDATE noticed_signals SET status = 'dismissed', decided_at = datetime('now')
+          WHERE user_id = ? AND fy = ? AND kind = 'payroll' AND status = 'open' AND signal_key IN (${chunk.map(() => "?").join(",")})`,
+      ).bind(fy, ...chunk));
+    }
     for (const s of triageCredits(rs, lists, employerKeys)) {
       upserted++;
       // A decided row is never touched; an open row only when its evidence actually changed.
@@ -234,14 +244,17 @@ export async function listNoticed(env: Env, userId: string, startYear: number): 
   return signals;
 }
 
-/** #832: the FY's income-statement employers that match no employment entity (so no bank payer is linked to them). */
+/** #832: the primary taxpayer's income-statement employers this FY that match none of their jobs (so no bank payer is linked to them). */
 async function unlinkedStatementEmployers(env: Env, userId: string, fy: string): Promise<string[]> {
+  const self = selfPersonId(userId);
   const names = ((await tenantDb(env, userId).prepare(
     `SELECT DISTINCT json_extract(detail_json, '$.employer') AS name FROM income
-      WHERE user_id = ? AND fy = ? AND income_type = 'salary_payg' AND json_valid(detail_json) AND json_extract(detail_json, '$.employer') IS NOT NULL`,
-  ).bind(fy).all<{ name: string }>()).results ?? []).map((r) => r.name.trim()).filter(Boolean);
+      WHERE user_id = ? AND fy = ? AND income_type = 'salary_payg' AND entity_id IS NULL AND (person_id IS NULL OR person_id = ?)
+        AND json_valid(detail_json) AND json_extract(detail_json, '$.employer') IS NOT NULL`,
+  ).bind(fy, self).all<{ name: string }>()).results ?? []).map((r) => r.name.trim()).filter(Boolean);
   if (!names.length) return [];
-  const jobs = ((await tenantDb(env, userId).prepare(`SELECT name FROM entities WHERE user_id = ? AND kind = 'employment'`).bind().all<{ name: string | null }>()).results ?? []).map((j) => j.name);
+  // The card confirms for the primary taxpayer, so only their own income statements and jobs (never a spouse's).
+  const jobs = ((await tenantDb(env, userId).prepare(`SELECT name FROM entities WHERE user_id = ? AND kind = 'employment' AND (person_id IS NULL OR person_id = ?)`).bind(self).all<{ name: string | null }>()).results ?? []).map((j) => j.name);
   const out: string[] = [];
   for (const n of names) if (!jobs.some((j) => employerMatches(j, n)) && !out.some((o) => employerMatches(o, n))) out.push(n);
   return out.sort();

@@ -169,7 +169,7 @@ CLERK_ISSUER = "https://clerk.quillo.au"
 CLERK_ALLOWED_USERS = ""
 # The founder's Clerk sub → mapped to the pilot tenant "me" (data continuity). Every OTHER
 # user gets their own isolated tenant keyed by their sub. Unset → everyone maps to "me".
-CLERK_FOUNDER_SUB = "user_3EX9q24hvBuYNz3Hk6Pg6O5FfBq"
+CLERK_FOUNDER_SUB = "user_3LPQoLOIRYDJKMfpiGhE3qeljKY"
 # Production: only tokens minted by the real app origin (runbook §5).
 CLERK_AUTHORIZED_PARTIES = "https://app.quillo.au"
 # Cloudflare Access (web UI auth). Leave UNSET for local dev (API falls back to the pilot

@@ -1,3 +1,6 @@
+import type { Env } from "../env";
+import { featureOn } from "./features";
+
 /**
  * The primary taxpayer ("self"). Every tenant has one persons row, `person_self_<userId>`, and a row whose
  * person_id is NULL also belongs to them (the convention before the persons model). This module is the one place
@@ -29,4 +32,19 @@ export function sameTaxpayer(
  */
 export function personFilter(userId: string, personId: string): { sql: string; binds: string[] } {
   return personId === selfPersonId(userId) ? { sql: "(person_id = ? OR person_id IS NULL)", binds: [personId] } : { sql: "person_id = ?", binds: [personId] };
+}
+
+/**
+ * #722: the person a report is scoped to. With `person_scoped_income` ON it is the self person, so another
+ * person's income (a spouse's salary) never reaches the user's headline; OFF it is null, the whole tenant.
+ */
+export function reportPersonId(env: Env, userId: string): string | null {
+  return featureOn(env, "person_scoped_income") ? selfPersonId(userId) : null;
+}
+
+/** An ` AND …` clause scoping an income read to `personId`; empty (no bind) for null, the whole tenant. */
+export function personClause(userId: string, personId: string | null, col = "person_id"): { sql: string; binds: string[] } {
+  if (!personId) return { sql: "", binds: [] };
+  const pf = personFilter(userId, personId);
+  return { sql: ` AND ${pf.sql.replaceAll("person_id", col)}`, binds: pf.binds };
 }

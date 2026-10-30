@@ -27,6 +27,7 @@ import { diaryView as wfhDiaryView, addDaysIso as wfhAddDays, preDiarySourceLabe
 import { buildXlsx, type XlsxCell, type XlsxSheet } from "./xlsx";
 import { csvCell, neutraliseFormula } from "./csv-cell";
 import { tenantDb } from "./tenant-db";
+import { personClause, reportPersonId } from "./self-person";
 import { audAmount, countable } from "./ledger-filter";
 
 // ── The itemised accountant deliverable (#179 + #181, EPIC #178) ─────────────
@@ -331,6 +332,8 @@ async function scheduleCore(
   // (2) Itemised income — same separate-taxpayer exclusion as incomeTotals (entity income belongs to
   // the company/SMSF section, never the personal headline).
   const entityClause = separateIds.length ? ` AND (entity_id IS NULL OR entity_id NOT IN (${separateIds.map(() => "?").join(",")}))` : "";
+  // #722 (person_scoped_income): the same person scope as the report's headline, so the itemised rows tie back.
+  const incomePerson = personClause(userId, reportPersonId(env, userId));
   const incomeRowsP = safeAll<{
     txn_date: string | null;
     person_id: string | null;
@@ -353,10 +356,10 @@ async function scheduleCore(
               COALESCE(foreign_tax_paid_cents,0) AS foreign_tax_paid_cents,
               source_doc_id, detail_json,
               (CASE WHEN ${FX_CONVERTED} THEN 0 ELSE 1 END) AS fx_unconverted
-         FROM income WHERE user_id = ? AND fy = ?${entityClause}
+         FROM income WHERE user_id = ? AND fy = ?${entityClause}${incomePerson.sql}
         ORDER BY income_type, txn_date, created_at`,
     )
-      .bind(fy, ...separateIds)
+      .bind(fy, ...separateIds, ...incomePerson.binds)
       .all(),
   );
 
@@ -587,7 +590,7 @@ async function scheduleCore(
     ? Promise.resolve(null)
     : (async () => {
         const ctx: ReportContext = {
-          env, scope: { userId, personId: null }, startYear, fy, bounds: { start, end },
+          env, scope: { userId, personId: reportPersonId(env, userId) }, startYear, fy, bounds: { start, end },
           jurisdiction, rulePack: await resolveRulePack(env, userId, jurisdiction), separateIds, currency: cur,
         };
         return { ctx, ...(await loadSituationsSettled(ctx, scheduleModules)) };

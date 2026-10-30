@@ -3783,6 +3783,35 @@ async function main() {
     check("P1 pre-diary (flag OFF): the position reads only wfh_hours, so it matches the baseline", rOff.work_method?.wfh_cents === rBefore.work_method?.wfh_cents && rOff.taxable_position_cents === rBefore.taxable_position_cents);
   }
 
+  // ── person_scoped_income (#722): P6 shape (Susan & Greg) with BOTH earning. The self has $130k salary and a legacy
+  // NULL-person $5k interest row; the spouse has $90k salary and $2k rent on the shared property, each under their own
+  // persons row. OFF ⇒ the headline sums the tenant (today's behaviour, pinned). ON ⇒ only the self's income counts.
+  {
+    const u = "pps";
+    seedTenant(u, "P6 two earners");
+    const spouse = `person_spouse_${u}`;
+    run(`INSERT INTO persons (id, user_id, display_name, role) VALUES (?, ?, 'Spouse', 'spouse')`, spouse, u);
+    run(`INSERT INTO properties (id, user_id, label, status, use_status, ownership_pct) VALUES ('ppsProp', ?, 'Rental', 'rented', 'rented', 50)`, u);
+    inc("ppsSelfSal", u, "salary_payg", 13000000, { person_id: `person_self_${u}` });
+    inc("ppsSelfInt", u, "interest", 500000); // person_id NULL ⇒ self
+    inc("ppsSelfRent", u, "rent", 2000000, { person_id: `person_self_${u}`, property_id: "ppsProp" });
+    inc("ppsSpSal", u, "salary_payg", 9000000, { person_id: spouse });
+    inc("ppsSpRent", u, "rent", 200000, { person_id: spouse, property_id: "ppsProp" });
+    const PS = { ...env, FEATURES: `${(env as { FEATURES: string }).FEATURES},person_scoped_income` } as unknown as Env;
+    const rOff = await buildReport(env, u, 2025);
+    check("Person scope OFF: the headline sums every person's income ($130k + $5k + $20k + $90k + $2k = $247k)", rOff.income.gross_cents === 24700000);
+    const rOn = await buildReport(PS, u, 2025);
+    check("Person scope ON: only the self's income ($130k + $5k NULL-person + $20k rent = $155k)", rOn.income.gross_cents === 15500000);
+    check("Person scope ON: the position drops by exactly the spouse's $92k", rOff.taxable_position_cents - rOn.taxable_position_cents === 9200000);
+    const propOn = rOn.per_property.find((p) => p.property_id === "ppsProp");
+    const propOff = rOff.per_property.find((p) => p.property_id === "ppsProp");
+    check("Person scope ON: the property's rent shows the self's $20k only (OFF shows $22k)", propOn?.income_cents === 2000000 && propOff?.income_cents === 2200000);
+    const schedOn = await buildAccountantSchedule(PS, u, 2025, { report: rOn });
+    check("Person scope ON: the accountant schedule ties back (itemised income = the scoped headline)", tieBackChecks(schedOn).every((t) => t.ok));
+    const schedOff = await buildAccountantSchedule(env, u, 2025, { report: rOff });
+    check("Person scope OFF: the accountant schedule ties back", tieBackChecks(schedOff).every((t) => t.ok));
+  }
+
   // ── income_supersession (owner-statements E2E, 2026-10-28): a re-uploaded income statement and an annual agent
   // summary over monthly statements must not count twice. Replays recordIncome's INSERT (a DO method) and runs the
   // REAL supersession module + buildReport over the shared D1 adapter.

@@ -5,6 +5,7 @@ import type { TrustTotals } from "./trust";
 import type { CgtPortfolioResult } from "./cgt";
 import type { EssAssessable } from "./ess";
 import { featureOn } from "./features";
+import { ownerPersonId, personClause, reportPersonId } from "./self-person";
 import { residencyAssessabilityContext } from "./residency-assessability";
 import { RENT_INCOME_TYPES } from "./taxonomy";
 import { resolveLoanInterest, deductibleInterestCents, type LoanInterestSource } from "./loan-interest";
@@ -602,13 +603,15 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   //
   // These reads are independent of each other, so they run concurrently (each is its own D1 round trip);
   // only the residency split and the income totals wait on what they need.
+  // #722 (person_scoped_income): ON ⇒ only the self person's income (NULL person = self); OFF ⇒ null, tenant-wide.
+  const personId = reportPersonId(env, userId);
   const incomeP = (async () => {
     const [separateIds, residencyCtx] = await Promise.all([
       separateTaxpayerEntityIds(env, userId),
       residencyAssessabilityContext(env, userId, startYear, { descriptor: jurisdiction, rulePack }),
     ]);
     const residencySplit = residencyCtx ? await residencyIncomeSplit(env, userId, startYear, residencyCtx, { excludeEntityIds: separateIds }) : null;
-    return { separateIds, residencySplit, income: await incomeTotals(env, userId, { startYear, excludeEntityIds: separateIds, residencySplit }) };
+    return { separateIds, residencySplit, income: await incomeTotals(env, userId, { startYear, excludeEntityIds: separateIds, residencySplit, ...(personId ? { personId } : {}) }) };
   })();
   // Phase B / G2: deductions that come from explicit attributions (payer≠claimant) rather than the
   // raw transaction. The attributed transactions were excluded from the raw sums above (notAttributed),
@@ -685,18 +688,20 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   const depByProp = new Map(dep.by_property.filter((d) => d.property_id).map((d) => [d.property_id as string, d.deduction_cents]));
   const rentByProp = new Map<string, number>();
   // Rental income per property (rent + foreign_rent attributed to a property this FY).
+  const rentPerson = personClause(userId, personId);
   const rentRows = await tenantDb(env, userId).prepare(
     `SELECT property_id, COALESCE(SUM(COALESCE(amount_aud_cents, gross_cents)),0) AS gross_cents
        FROM income WHERE user_id = ? AND fy = ? AND property_id IS NOT NULL
-        AND income_type IN ('rent','foreign_rent') GROUP BY property_id`,
+        AND income_type IN ('rent','foreign_rent')${rentPerson.sql} GROUP BY property_id`,
   )
-    .bind(fyLabelOf(startYear))
+    .bind(fyLabelOf(startYear), ...rentPerson.binds)
     .all<{ property_id: string; gross_cents: number }>();
   for (const r of rentRows.results ?? []) rentByProp.set(r.property_id, r.gross_cents);
   // A13: foreign rent a non-resident period left out of income is left out of that property's rent too, so the
   // per-property display never shows income the headline doesn't count. No split ⇒ no-op.
   for (const x of residencySplit?.excluded ?? []) {
     if (!x.property_id || !RENT_INCOME_TYPES.has(x.income_type) || !rentByProp.has(x.property_id)) continue;
+    if (personId && ownerPersonId(userId, x.person_id) !== personId) continue;
     const left = (rentByProp.get(x.property_id) ?? 0) - x.gross_cents;
     if (left === 0) rentByProp.delete(x.property_id);
     else rentByProp.set(x.property_id, left);
@@ -893,7 +898,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   // field is absent ⇒ byte-identical. Information-only modules (reportable amounts) never reach the
   // position; a contributing module will feed composePosition's summands, never an inline sum here.
   const situationCtx: ReportContext = {
-    env, scope: { userId, personId: null }, startYear, fy: fyLabelOf(startYear), bounds: { start, end },
+    env, scope: { userId, personId }, startYear, fy: fyLabelOf(startYear), bounds: { start, end },
     jurisdiction, rulePack, separateIds, currency: baseCurrencyOf(env, jurisdiction),
   };
   const situations = situationFields(await loadSituations(situationCtx));

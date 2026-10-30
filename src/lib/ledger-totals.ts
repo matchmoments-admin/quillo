@@ -28,7 +28,7 @@ export interface RulePackThresholds {
 export { fyLabel, fyStartYearStr, parseFyStartYear, normaliseFyLabel } from "./fy";
 import { fyLabel, parseFyStartYear } from "./fy";
 import { audAmount, countable, notAttributedExpr } from "./ledger-filter";
-import { personFilter } from "./self-person";
+import { ownerPersonId, personFilter } from "./self-person";
 
 /**
  * Calendar bounds of an FY start year. Period maths live in jurisdiction.ts; the optional descriptor
@@ -192,8 +192,8 @@ export async function incomeTotals(
   // A13 (#580): rows a non-resident period leaves out come off their type's sums (the split was loaded with the
   // same scope + FX filter). Absent/empty split ⇒ rows untouched ⇒ byte-identical. The split is tenant-wide, so a
   // person/property-scoped call only subtracts rows inside its own scope.
-  const resExcluded = (opts.residencySplit?.excluded ?? []).filter((r) => (!opts.personId || r.person_id === opts.personId) && (!opts.propertyId || r.property_id === opts.propertyId));
-  const resUndated = (opts.residencySplit?.undated ?? []).filter((r) => (!opts.personId || r.person_id === opts.personId) && (!opts.propertyId || r.property_id === opts.propertyId));
+  const resExcluded = (opts.residencySplit?.excluded ?? []).filter((r) => (!opts.personId || ownerPersonId(userId, r.person_id) === opts.personId) && (!opts.propertyId || r.property_id === opts.propertyId));
+  const resUndated = (opts.residencySplit?.undated ?? []).filter((r) => (!opts.personId || ownerPersonId(userId, r.person_id) === opts.personId) && (!opts.propertyId || r.property_id === opts.propertyId));
   const resExcludedByType = new Map<string, ExcludedIncomeRow>();
   if (resExcluded.length) {
     const byType = new Map(rows.map((r) => [r.income_type, { ...r }]));

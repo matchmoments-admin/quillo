@@ -26,3 +26,6 @@ memory/.scratch/
 # browser QA suite (scripts/qa, #699): QA-mode SPA bundle + run output
 web/dist-qa/
 .qa/
+
+# scripts/clerk-cutover.sh keeps the previous web/.env here for rollback
+web/.env.dev-backup

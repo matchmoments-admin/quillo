@@ -5,6 +5,7 @@ import { listSituationPeriods, type SituationPeriod } from "./situation-profile"
 import { lodgingFy } from "./lodging-year";
 import { listLodgedFys } from "./fy-signoff";
 import { tenantDb } from "./tenant-db";
+import { selfPersonId } from "./self-person";
 
 export interface Profile {
   user_id: string;
@@ -178,6 +179,13 @@ export async function getSituation(env: Env, userId: string, profile: Profile): 
     // the report import cycle).
     featureOn(env, "situation_profile") ? listLodgedFys(env, userId) : Promise.resolve(undefined),
   ]);
+  // Every tenant has a self person (ensureTenant seats it once, cached in KV). A tenant wiped by hand rather than
+  // through purgeTenant lost it, and Get set up then sat on "Your profile isn't ready yet" forever (2026-10-30).
+  // Reseat it here (idempotent; only runs when it's missing).
+  if (persons.results && !persons.results.some((p) => p.role === "self")) {
+    await tenantDb(env, userId).prepare(`INSERT OR IGNORE INTO persons (id, user_id, display_name, role) VALUES (?, ?, 'You', 'self')`).bind(selfPersonId(userId)).run();
+    persons.results.unshift({ id: selfPersonId(userId), user_id: userId, display_name: "You", role: "self", occupation: null, tax_residency: "AU" } as Person);
+  }
   // Resolve from the already-loaded profile (no re-read); flag OFF ⇒ AU. Calendar periods (reserved) map
   // to Jan 1 — not used this stop, the SPA treats it as a straddle start anchor.
   const jur = featureOn(env, "jurisdiction_period") ? resolveJurisdiction(profile.jurisdiction) : AU_DESCRIPTOR;

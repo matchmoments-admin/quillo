@@ -587,7 +587,7 @@ console.log("security sweep #694 (#714): enforced CSP allows inline script only 
   check("script-src: Clerk dev FAPI, Clerk prod FAPI (exact hosts) and Turnstile are allowed",
     ["'self'", "https://*.clerk.accounts.dev", "https://clerk.quillo.au", "https://clerk.app.quillo.au", "https://challenges.cloudflare.com"].every((x) => script.includes(x)));
   check("connect-src allows Clerk production bot protection (*.protect.clerk.com:8443), enforced and report-only",
-    (enf714.get("connect-src") ?? []).includes("https://*.protect.clerk.com:8443") && (ro714.get("connect-src") ?? []).includes("https://*.protect.clerk.com:8443"));
+    (enf714.get("connect-src") ?? []).includes("https://*.protect.clerk.com:*") && (ro714.get("connect-src") ?? []).includes("https://*.protect.clerk.com:*"));
   check("no directive trusts a wildcard of OUR domain (*.quillo.au), enforced or report-only",
     ![...enf714.values(), ...ro714.values()].flat().some((x) => /\*\.quillo\.au/.test(x)));
   // Whichever Clerk instance wrangler.toml's CLERK_ISSUER names (the dev instance, or clerk.quillo.au after the

@@ -171,6 +171,8 @@ function FirstRun({
   // Fixed at mount: once consent is recorded the screen stays (showing "recorded") so Back still works.
   const [screens] = useState(() => aboutScreens(!hasConsent));
   const [i, setI] = useState(0);
+  // journey_beginner (#842): an unanswered row on "Check your answers" links back to its question.
+  const beginner = useFeatures().has("journey_beginner");
   const [a, setA] = useState<AboutAnswers>(() => answersFromPeriods(situation.profile_periods ?? [], personId, bounds));
   const [occText, setOccText] = useState(() => (a.occupation && a.occupation !== "none" ? occupationLabel(a.occupation) : ""));
   const [showFullConsent, setShowFullConsent] = useState(false);
@@ -495,7 +497,14 @@ function FirstRun({
         </SituationQuestion>
       )}
 
-      {screen === "confirm" && <ConfirmSummary a={a} states={states} fy={fy} />}
+      {screen === "confirm" && (
+        <ConfirmSummary
+          a={a}
+          states={states}
+          fy={fy}
+          onAnswer={beginner ? (q) => setI(Math.max(0, screens.indexOf(q as (typeof screens)[number]))) : undefined}
+        />
+      )}
 
       {screen !== "intro" && (
         <StepFooter
@@ -520,7 +529,7 @@ function FirstRun({
   );
 }
 
-function ConfirmSummary({ a, states, fy }: { a: AboutAnswers; states: readonly { code: string; name: string }[]; fy: number }) {
+function ConfirmSummary({ a, states, fy, onAnswer }: { a: AboutAnswers; states: readonly { code: string; name: string }[]; fy: number; onAnswer?: (screen: string) => void }) {
   const residency =
     a.residency === "part_year"
       ? `${a.partYear.direction === "arrived" ? "Arrived" : "Left"} on ${fmtDay(a.partYear.date) ?? "?"}`
@@ -530,20 +539,29 @@ function ConfirmSummary({ a, states, fy }: { a: AboutAnswers; states: readonly {
   const spouse = a.spouse === "yes" ? `Yes${a.spouseFrom || a.spouseTo ? ` (${fmtDay(a.spouseFrom || null) ?? "start of year"} to ${fmtDay(a.spouseTo || null) ?? "end of year"})` : ""}` : a.spouse === "no" ? "No" : undefined;
   const ticks = TICK_CHOICES.filter((t) => a.ticks.includes(t.key)).map((t) => (t.key === "abn" ? `${t.label}: ${ABN_KIND_CHOICES.find((k) => k.key === a.abnKind)?.label}` : t.label));
   if (a.ticks.includes("study") && a.ticks.includes("study_loan")) ticks.push(STUDY_LOAN_LABEL);
-  const rows: [string, string | undefined][] = [
-    ["Residency for tax", residency],
-    ["Spouse", spouse],
-    ["State or territory", states.find((s) => s.code === a.state)?.name ?? (a.state || undefined)],
-    ["Main job", a.occupation === "none" ? "Not working yet" : a.occupation ? occupationLabel(a.occupation) : undefined],
-    ["What applies", ticks.length ? ticks.join(", ") : undefined],
+  const rows: [string, string | undefined, string][] = [
+    ["Residency for tax", residency, "residency"],
+    ["Spouse", spouse, "spouse"],
+    ["State or territory", states.find((s) => s.code === a.state)?.name ?? (a.state || undefined), "state"],
+    ["Main job", a.occupation === "none" ? "Not working yet" : a.occupation ? occupationLabel(a.occupation) : undefined, "occupation"],
+    ["What applies", ticks.length ? ticks.join(", ") : undefined, "ticks"],
   ];
   return (
     <SituationQuestion title={ABOUT_Q.confirm.title} help={ABOUT_Q.confirm.help}>
       <dl className="divide-y divide-line">
-        {rows.map(([k, v]) => (
+        {rows.map(([k, v, q]) => (
           <div key={k} className="flex flex-wrap justify-between gap-2 py-2.5 text-sm">
             <dt className="text-muted">{k}</dt>
-            <dd className="font-medium text-ink">{v ?? "Not answered"}</dd>
+            {v == null && onAnswer ? (
+              <dd className="flex items-center gap-2 font-medium text-warn">
+                Not answered
+                <FtButton variant="link" className="font-semibold" onClick={() => onAnswer(q)}>
+                  Answer this
+                </FtButton>
+              </dd>
+            ) : (
+              <dd className="font-medium text-ink">{v ?? "Not answered"}</dd>
+            )}
           </div>
         ))}
       </dl>

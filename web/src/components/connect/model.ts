@@ -153,7 +153,7 @@ export function statementView(s: Pick<StatementInfo, "status" | "reconciled" | "
   switch (s.status) {
     case "parsed":
       if (s.reconciled === 0) return { label: "Doesn't add up to the statement's balance. Check it before importing.", tone: "danger", action: "force" };
-      if (s.reconciled === 1) return { label: `Ready: ${linesLabel(rows)}, balances`, tone: "ok", action: "import" };
+      if (s.reconciled === 1) return { label: `Ready: ${linesLabel(rows)}, and the lines add up to the statement's balance`, tone: "ok", action: "import" };
       return { label: `Ready: ${linesLabel(rows)}. No running balance, so check the lines look right.`, tone: "warn", action: "import" };
     case "categorising": {
       const done = s.categorised_count ?? 0;

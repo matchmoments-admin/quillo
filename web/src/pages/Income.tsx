@@ -68,7 +68,12 @@ const TYPE_LABEL: Record<string, string> = {
   other: "Other",
 };
 
-export function Income() {
+/**
+ * `simple` (journey_beginner, #842: Connect's "Add an income statement" embeds this page): only what a first-timer
+ * needs to add income. Trading stock, capital holdings and employee share grants stay on the full page, the
+ * franking figures appear only for a dividend, and the empty state names nothing outside Connect.
+ */
+export function Income({ simple = false }: { simple?: boolean } = {}) {
   // Single source of truth for the FY: the app-wide header switcher (no second control on this page).
   const { fy: fyStart, label: fy } = useActiveFy();
   const qc = useQueryClient();
@@ -161,16 +166,16 @@ export function Income() {
         )}
       </div>
       {note && <p className="text-sm text-muted">{note}</p>}
-      {adding && <AddIncomeForm fy={fy} onDone={() => { setAdding(false); qc.invalidateQueries({ queryKey: ["income", fy] }); }} />}
+      {adding && <AddIncomeForm fy={fy} simple={simple} onDone={() => { setAdding(false); qc.invalidateQueries({ queryKey: ["income", fy] }); }} />}
 
       <div className="grid grid-cols-3 gap-3">
         <Card className="p-4"><div className="text-xs uppercase tracking-wide text-muted">Gross income</div><div className="mt-1 text-xl font-semibold tabular-nums">{money(total)}</div></Card>
         <Card className="p-4"><div className="text-xs uppercase tracking-wide text-muted">PAYG withheld <InfoTip k="payg_withholding" /></div><div className="mt-1 text-xl font-semibold tabular-nums">{money(withholding)}</div></Card>
-        <Card className="p-4"><div className="text-xs uppercase tracking-wide text-muted">Franking credits <InfoTip k="franking_credit" /></div><div className="mt-1 text-xl font-semibold tabular-nums">{money(franking)}</div></Card>
+        {(!simple || franking > 0) && <Card className="p-4"><div className="text-xs uppercase tracking-wide text-muted">Franking credits <InfoTip k="franking_credit" /></div><div className="mt-1 text-xl font-semibold tabular-nums">{money(franking)}</div></Card>}
       </div>
 
       {/* trading_stock (audit wave 4): opening/closing stock for a goods-selling sole trader. */}
-      {has("trading_stock") && <TradingStockCard fy={fy} />}
+      {has("trading_stock") && !simple && <TradingStockCard fy={fy} />}
 
       <IncomeDedupe fyStart={fyStart} />
 
@@ -219,17 +224,17 @@ export function Income() {
             <tbody>
               {tableRows.map((r) => <IncomeLine key={r.id} row={r} fy={fy} />)}
               {!tableRows.length && (
-                <tr className="border-t border-line"><td colSpan={6} className="px-4 py-6 text-muted">{typeFamily && (data ?? []).length ? "Nothing of this type recorded for this FY yet." : "No income recorded for this FY. Upload a payslip or agent statement from Documents, or add one manually."}</td></tr>
+                <tr className="border-t border-line"><td colSpan={6} className="px-4 py-6 text-muted">{typeFamily && (data ?? []).length ? "Nothing of this type recorded for this FY yet." : simple ? "No income recorded for this year yet. Upload your income statement, or add it by hand with the button above." : "No income recorded for this FY. Upload a payslip or agent statement from Documents, or add one manually."}</td></tr>
               )}
             </tbody>
           </table>
         </Card>
       )}
 
-      {has("cgt_engine") && <CapitalEquity />}
-      {has("ess_engine") && <EssGrants />}
+      {has("cgt_engine") && !simple && <CapitalEquity />}
+      {has("ess_engine") && !simple && <EssGrants />}
 
-      <p className="text-xs text-muted">General information only — not tax advice.</p>
+      {!simple && <p className="text-xs text-muted">General information only — not tax advice.</p>}
     </div>
   );
 }
@@ -335,7 +340,7 @@ const MF_FIELDS = [
 ] as const;
 type MfKey = (typeof MF_FIELDS)[number]["key"];
 
-function AddIncomeForm({ fy, onDone }: { fy: string; onDone: () => void }) {
+function AddIncomeForm({ fy, onDone, simple = false }: { fy: string; onDone: () => void; simple?: boolean }) {
   const { has } = useFeatures();
   const [type, setType] = useState<string>("salary_payg");
   const [gross, setGross] = useState("");
@@ -445,7 +450,7 @@ function AddIncomeForm({ fy, onDone }: { fy: string; onDone: () => void }) {
         {!isMf && <>
           <label className="text-sm">Gross ($)<Input className="mt-1 w-full" inputMode="decimal" value={gross} onChange={(e) => setGross(e.target.value)} /></label>
           <label className="text-sm">PAYG withheld ($)<Input className="mt-1 w-full" inputMode="decimal" value={withheld} onChange={(e) => setWithheld(e.target.value)} /></label>
-          <label className="text-sm">Franking credit ($)<Input className="mt-1 w-full" inputMode="decimal" value={franking} onChange={(e) => setFranking(e.target.value)} /></label>
+          {(!simple || type === "dividend") && <label className="text-sm">Franking credit ($)<Input className="mt-1 w-full" inputMode="decimal" value={franking} onChange={(e) => setFranking(e.target.value)} /></label>}
         </>}
       </div>
 

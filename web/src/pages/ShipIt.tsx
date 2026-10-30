@@ -168,7 +168,7 @@ export function ShipIt() {
       ) : ws.error ? (
         <ErrorState what="your myTax worksheet" error={ws.error} onRetry={() => ws.refetch()} />
       ) : ws.data ? (
-        <Worksheet ws={ws.data} ticks={ticks} progress={progress} mirror={mirrorOn} fy={fy} />
+        <Worksheet ws={ws.data} ticks={ticks} progress={progress} mirror={mirrorOn} fy={fy} incomeWaiting={has("journey_beginner")} />
       ) : null}
 
       <FtCard className="space-y-3 p-5">
@@ -190,7 +190,8 @@ export function ShipIt() {
       {!lodgedOn && <SoftSignoff fy={fy} label={label} />}
       {lodgedOn && !lodgedAt && <MarkLodged fy={fy} label={label} progress={progress} processingHint={ws.data?.header.processing_hint} />}
 
-      <GeneralInfoNote />
+      {/* journey_beginner (#842): the shell footer already says this on every journey page; one is enough. */}
+      {!has("journey_beginner") && <GeneralInfoNote />}
       {ws.data && <p className="max-w-[65ch] text-xs leading-relaxed text-muted">{ws.data.disclaimer}</p>}
     </div>
   );
@@ -231,12 +232,14 @@ function Worksheet({
   progress,
   mirror,
   fy,
+  incomeWaiting,
 }: {
   ws: MytaxWorksheet;
   ticks: ReturnType<typeof useWorksheetTicks>;
   progress: { done: number; total: number } | null;
   mirror: boolean;
   fy: number;
+  incomeWaiting: boolean;
 }) {
   if (!ws.sections.length) {
     return (
@@ -288,7 +291,7 @@ function Worksheet({
       </div>
 
       {mirror ? (
-        <MytaxMirror ws={ws} ticks={ticks} fy={fy} />
+        <MytaxMirror ws={ws} ticks={ticks} fy={fy} incomeWaiting={incomeWaiting} />
       ) : (
         ws.sections.map((s) => <WorksheetSectionCard key={s.key} section={s} ticks={ticks} />)
       )}
@@ -435,7 +438,7 @@ function AfterYouLodge({
       <div>
         <h2 className="font-display text-xl tracking-wide text-forest">After you lodge: FY {fyLabel(fy)}</h2>
         <p className="mt-1 text-sm text-muted">
-          You marked FY {fyLabel(fy)} as lodged on {isNaN(when.getTime()) ? lodgedAt : when.toLocaleDateString()}. Your own record: Quillo doesn't
+          You marked FY {fyLabel(fy)} as lodged on {isNaN(when.getTime()) ? lodgedAt : when.toLocaleDateString("en-AU", { day: "numeric", month: "short", year: "numeric" })}. Your own record: Quillo doesn't
           lodge.
         </p>
       </div>

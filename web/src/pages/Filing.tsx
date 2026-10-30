@@ -59,12 +59,12 @@ function SignOff({ fy, ready }: { fy: number; ready: boolean }) {
           {lodgedAt ? (
             <>
               <span className="font-semibold text-safe">Marked as lodged</span> — you told us you lodged this year on{" "}
-              {new Date(`${lodgedAt}T00:00:00`).toLocaleDateString()}. Your own record; Quillo doesn't lodge.
+              {new Date(`${lodgedAt}T00:00:00`).toLocaleDateString("en-AU", { day: "numeric", month: "short", year: "numeric" })}. Your own record; Quillo doesn't lodge.
             </>
           ) : (
             <>
               <span className="font-semibold text-safe">Signed off</span> — you marked this position ready to hand off on{" "}
-              {isNaN(when.getTime()) ? signoff.signed_off_at : when.toLocaleDateString()}. Your own attestation; Quillo doesn't lodge.
+              {isNaN(when.getTime()) ? signoff.signed_off_at : when.toLocaleDateString("en-AU", { day: "numeric", month: "short", year: "numeric" })}. Your own attestation; Quillo doesn't lodge.
             </>
           )}
         </div>

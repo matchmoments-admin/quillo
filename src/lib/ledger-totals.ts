@@ -28,7 +28,7 @@ export interface RulePackThresholds {
 export { fyLabel, fyStartYearStr, parseFyStartYear, normaliseFyLabel } from "./fy";
 import { fyLabel, parseFyStartYear } from "./fy";
 import { audAmount, countable, notAttributedExpr } from "./ledger-filter";
-import { ownerPersonId, personFilter } from "./self-person";
+import { incomeInPersonScope, incomePersonClause, personClause } from "./self-person";
 
 /**
  * Calendar bounds of an FY start year. Period maths live in jurisdiction.ts; the optional descriptor
@@ -161,10 +161,10 @@ export async function incomeTotals(
   const where: string[] = ["user_id = ?", "fy = ?", FX_CONVERTED];
   const binds: unknown[] = [userId, fy];
   if (opts.personId) {
-    // #820: the self person also owns NULL-person rows (src/lib/self-person.ts).
-    const pf = personFilter(userId, opts.personId);
-    where.push(pf.sql);
-    binds.push(...pf.binds);
+    // #820: the self person also owns NULL-person rows; #722: property income stays tenant-level (src/lib/self-person.ts).
+    const pc = incomePersonClause(userId, opts.personId);
+    where.push(pc.sql.replace(/^ AND /, ""));
+    binds.push(...pc.binds);
   }
   if (opts.propertyId) {
     where.push("property_id = ?");
@@ -192,8 +192,8 @@ export async function incomeTotals(
   // A13 (#580): rows a non-resident period leaves out come off their type's sums (the split was loaded with the
   // same scope + FX filter). Absent/empty split ⇒ rows untouched ⇒ byte-identical. The split is tenant-wide, so a
   // person/property-scoped call only subtracts rows inside its own scope.
-  const resExcluded = (opts.residencySplit?.excluded ?? []).filter((r) => (!opts.personId || ownerPersonId(userId, r.person_id) === opts.personId) && (!opts.propertyId || r.property_id === opts.propertyId));
-  const resUndated = (opts.residencySplit?.undated ?? []).filter((r) => (!opts.personId || ownerPersonId(userId, r.person_id) === opts.personId) && (!opts.propertyId || r.property_id === opts.propertyId));
+  const resExcluded = (opts.residencySplit?.excluded ?? []).filter((r) => incomeInPersonScope(userId, opts.personId, r) && (!opts.propertyId || r.property_id === opts.propertyId));
+  const resUndated = (opts.residencySplit?.undated ?? []).filter((r) => incomeInPersonScope(userId, opts.personId, r) && (!opts.propertyId || r.property_id === opts.propertyId));
   const resExcludedByType = new Map<string, ExcludedIncomeRow>();
   if (resExcluded.length) {
     const byType = new Map(rows.map((r) => [r.income_type, { ...r }]));
@@ -609,8 +609,8 @@ export function basPositionFrom(recorded: { n: number; output_gst_cents: number;
  * the company position (a later step), so they're excluded here. Flag-gated by trust_distributions.
  * Pre-0041 / no rows → all-zero (report byte-identical).
  */
-export async function trustTotals(env: Env, userId: string, startYear: number): Promise<TrustTotals> {
-  return distributionTotals(env, userId, startYear, "trust");
+export async function trustTotals(env: Env, userId: string, startYear: number, personId: string | null = null): Promise<TrustTotals> {
+  return distributionTotals(env, userId, startYear, "trust", personId);
 }
 
 /**
@@ -618,22 +618,24 @@ export async function trustTotals(env: Env, userId: string, startYear: number): 
  * fed to the partner's taxable_position exactly like a trust distribution. Same table, source_kind filter.
  * Flag-gated by partnership_distributions. Pre-0056 / no rows → all-zero (report byte-identical).
  */
-export async function partnershipTotals(env: Env, userId: string, startYear: number): Promise<TrustTotals> {
-  return distributionTotals(env, userId, startYear, "partnership");
+export async function partnershipTotals(env: Env, userId: string, startYear: number, personId: string | null = null): Promise<TrustTotals> {
+  return distributionTotals(env, userId, startYear, "partnership", personId);
 }
 
 /** Shared reader: sum the FY's distributions of one source_kind for the individual beneficiary. Legacy rows
  *  have source_kind 'trust' (the 0056 DEFAULT), so trustTotals is byte-identical. */
-async function distributionTotals(env: Env, userId: string, startYear: number, sourceKind: "trust" | "partnership"): Promise<TrustTotals> {
+async function distributionTotals(env: Env, userId: string, startYear: number, sourceKind: "trust" | "partnership", personId: string | null): Promise<TrustTotals> {
   const fy = fyLabel(startYear);
+  // #722: a person-scoped report counts only distributions to that beneficiary (null ⇒ every person, as before).
+  const person = personClause(userId, personId, "beneficiary_person_id");
   const zero: TrustTotals = { assessable_cents: 0, franking_credit_cents: 0, by_character: {} };
   try {
     const rows = (await tenantDb(env, userId).prepare(
       `SELECT character, amount_cents, franking_credit_cents
          FROM trust_distributions
         WHERE user_id = ? AND fy = ? AND beneficiary_person_id IS NOT NULL
-          AND COALESCE(source_kind,'trust') = ?`,
-    ).bind(fy, sourceKind).all<{ character: string; amount_cents: number; franking_credit_cents: number }>()).results ?? [];
+          AND COALESCE(source_kind,'trust') = ?${person.sql}`,
+    ).bind(fy, sourceKind, ...person.binds).all<{ character: string; amount_cents: number; franking_credit_cents: number }>()).results ?? [];
     if (!rows.length) return zero;
     // A partnership loss share flows through to the partner (Div 35 aside); a trust loss is trapped.
     // Gated so OFF keeps today's floor-at-0 for both ⇒ byte-identical.
@@ -876,13 +878,15 @@ export interface SuperDeduction {
  * pre-tax (already out of salary) and must NEVER be deducted again. Flag-gated by the caller
  * (super_deduction). No personal-deductible rows → claimed 0 (report byte-identical).
  */
-export async function superConcessionalDeduction(env: Env, userId: string, startYear: number, capCents: number): Promise<SuperDeduction> {
+export async function superConcessionalDeduction(env: Env, userId: string, startYear: number, capCents: number, personId: string | null = null): Promise<SuperDeduction> {
   const fy = fyLabel(startYear);
+  const person = personClause(userId, personId); // #722
+
   let contributed = 0;
   try {
     contributed = (await tenantDb(env, userId).prepare(
-      `SELECT COALESCE(SUM(amount_cents),0) AS c FROM super_contributions WHERE user_id = ? AND fy = ? AND type = 'personal_deductible'`,
-    ).bind(fy).first<{ c: number }>())?.c ?? 0;
+      `SELECT COALESCE(SUM(amount_cents),0) AS c FROM super_contributions WHERE user_id = ? AND fy = ? AND type = 'personal_deductible'${person.sql}`,
+    ).bind(fy, ...person.binds).first<{ c: number }>())?.c ?? 0;
   } catch (e) {
     if (!/no such table|no such column/i.test((e as Error).message)) throw e;
   }
@@ -926,15 +930,16 @@ export async function tradingStockAdjustment(env: Env, userId: string, startYear
  * classifying upfront/deferral as assessable income now and the startup concession as deferred-to-CGT.
  * Flag-gated by the caller (ess_engine). Empty / pre-0038 → all-zero (report byte-identical).
  */
-export async function essTotals(env: Env, userId: string, startYear: number, descriptor: JurisdictionDescriptor = AU_DESCRIPTOR): Promise<EssAssessable> {
+export async function essTotals(env: Env, userId: string, startYear: number, descriptor: JurisdictionDescriptor = AU_DESCRIPTOR, personId: string | null = null): Promise<EssAssessable> {
   const { start, end } = fyBounds(startYear, descriptor);
+  const person = personClause(userId, personId); // #722
   const zero: EssAssessable = { assessable_discount_cents: 0, startup_deferred_to_cgt_cents: 0, ineligible_startup_flag: false };
   try {
     const grants = (await tenantDb(env, userId).prepare(
       `SELECT scheme_type, discount_cents, ownership_gt_10pct
          FROM ess_grants
-        WHERE user_id = ? AND COALESCE(taxing_point_date, grant_date) >= ? AND COALESCE(taxing_point_date, grant_date) <= ?`,
-    ).bind(start, end).all<{ scheme_type: string; discount_cents: number; ownership_gt_10pct: number }>()).results ?? [];
+        WHERE user_id = ? AND COALESCE(taxing_point_date, grant_date) >= ? AND COALESCE(taxing_point_date, grant_date) <= ?${person.sql}`,
+    ).bind(start, end, ...person.binds).all<{ scheme_type: string; discount_cents: number; ownership_gt_10pct: number }>()).results ?? [];
     if (!grants.length) return zero;
     return essAssessable(grants.map((g) => ({ scheme_type: g.scheme_type, discount_cents: g.discount_cents, ownership_gt_10pct: g.ownership_gt_10pct === 1 })));
   } catch (e) {
@@ -950,8 +955,9 @@ export async function essTotals(env: Env, userId: string, startYear: number, des
  * pure computeNetCapitalGain. Flag-gated by the caller (cgt_engine). Empty / pre-0037 → a zero result
  * (report byte-identical to today). Net capital gain feeds TAXABLE INCOME — never tax payable.
  */
-export async function cgtTotals(env: Env, userId: string, startYear: number, rulePack: RulePackThresholds): Promise<CgtPortfolioResult> {
+export async function cgtTotals(env: Env, userId: string, startYear: number, rulePack: RulePackThresholds, personId: string | null = null): Promise<CgtPortfolioResult> {
   const fy = fyLabel(startYear);
+  const person = personClause(userId, personId, "a.person_id"); // #722: the asset's owner
   const zero: CgtPortfolioResult = { gross_capital_gains_cents: 0, capital_losses_cents: 0, discount_applied_cents: 0, net_capital_gain_cents: 0, loss_carried_forward_cents: 0 };
   try {
     const events = (await tenantDb(env, userId).prepare(
@@ -959,8 +965,8 @@ export async function cgtTotals(env: Env, userId: string, startYear: number, rul
               ev.discount_eligible AS discount_eligible, ev.event_date AS event_date,
               a.acquired_date AS acquired_date
          FROM cgt_events ev JOIN cgt_assets a ON a.id = ev.cgt_asset_id AND a.user_id = ev.user_id
-        WHERE ev.user_id = ? AND ev.fy = ? AND ${cgtPersonalScopeExpr(env)}`,
-    ).bind(fy).all<{ proceeds_cents: number; cost_base_used_cents: number; discount_eligible: number | null; event_date: string | null; acquired_date: string | null }>()).results ?? [];
+        WHERE ev.user_id = ? AND ev.fy = ? AND ${cgtPersonalScopeExpr(env)}${person.sql}`,
+    ).bind(fy, ...person.binds).all<{ proceeds_cents: number; cost_base_used_cents: number; discount_eligible: number | null; event_date: string | null; acquired_date: string | null }>()).results ?? [];
     if (!events.length) return zero;
     // Carried-forward capital losses from prior FYs (capital_loss_carryins is capture-only set-up data).
     const priorFy = startYear; // carry-ins use the prior FY *start year* (integer)

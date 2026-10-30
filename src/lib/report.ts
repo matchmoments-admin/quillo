@@ -5,7 +5,7 @@ import type { TrustTotals } from "./trust";
 import type { CgtPortfolioResult } from "./cgt";
 import type { EssAssessable } from "./ess";
 import { featureOn } from "./features";
-import { ownerPersonId, personClause, reportPersonId } from "./self-person";
+import { reportPersonId } from "./self-person";
 import { residencyAssessabilityContext } from "./residency-assessability";
 import { RENT_INCOME_TYPES } from "./taxonomy";
 import { resolveLoanInterest, deductibleInterestCents, type LoanInterestSource } from "./loan-interest";
@@ -688,20 +688,18 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   const depByProp = new Map(dep.by_property.filter((d) => d.property_id).map((d) => [d.property_id as string, d.deduction_cents]));
   const rentByProp = new Map<string, number>();
   // Rental income per property (rent + foreign_rent attributed to a property this FY).
-  const rentPerson = personClause(userId, personId);
   const rentRows = await tenantDb(env, userId).prepare(
     `SELECT property_id, COALESCE(SUM(COALESCE(amount_aud_cents, gross_cents)),0) AS gross_cents
        FROM income WHERE user_id = ? AND fy = ? AND property_id IS NOT NULL
-        AND income_type IN ('rent','foreign_rent')${rentPerson.sql} GROUP BY property_id`,
+        AND income_type IN ('rent','foreign_rent') GROUP BY property_id`,
   )
-    .bind(fyLabelOf(startYear), ...rentPerson.binds)
+    .bind(fyLabelOf(startYear))
     .all<{ property_id: string; gross_cents: number }>();
   for (const r of rentRows.results ?? []) rentByProp.set(r.property_id, r.gross_cents);
   // A13: foreign rent a non-resident period left out of income is left out of that property's rent too, so the
   // per-property display never shows income the headline doesn't count. No split ⇒ no-op.
   for (const x of residencySplit?.excluded ?? []) {
     if (!x.property_id || !RENT_INCOME_TYPES.has(x.income_type) || !rentByProp.has(x.property_id)) continue;
-    if (personId && ownerPersonId(userId, x.person_id) !== personId) continue;
     const left = (rentByProp.get(x.property_id) ?? 0) - x.gross_cents;
     if (left === 0) rentByProp.delete(x.property_id);
     else rentByProp.set(x.property_id, left);
@@ -810,26 +808,26 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   // when there are CGT events (cgtTotals returns a zero result otherwise → no field, no change).
   let capital_gains: CgtPortfolioResult | undefined;
   if (featureOn(env, "cgt_engine")) {
-    const cgt = await cgtTotals(env, userId, startYear, rulePack);
+    const cgt = await cgtTotals(env, userId, startYear, rulePack, personId);
     if (cgt.gross_capital_gains_cents > 0 || cgt.capital_losses_cents > 0) capital_gains = cgt;
   }
   // Phase #141: assessable ESS discount is employment income — add it to the position. Flag-gated; only
   // set when there are grants with an assessable or startup-deferred amount.
   let ess: EssAssessable | undefined;
   if (featureOn(env, "ess_engine")) {
-    const e = await essTotals(env, userId, startYear, jurisdiction);
+    const e = await essTotals(env, userId, startYear, jurisdiction, personId);
     if (e.assessable_discount_cents > 0 || e.startup_deferred_to_cgt_cents > 0) ess = e;
   }
   // Phase #139: assessable trust distributions to this person — employment-independent income. Flag-gated.
   let trust: TrustTotals | undefined;
   if (featureOn(env, "trust_distributions")) {
-    const t = await trustTotals(env, userId, startYear);
+    const t = await trustTotals(env, userId, startYear, personId);
     if (t.assessable_cents > 0 || t.franking_credit_cents > 0) trust = t;
   }
   // Slice E: a partner's share of partnership net income — assessable like a trust distribution. Flag-gated.
   let partnership: TrustTotals | undefined;
   if (featureOn(env, "partnership_distributions")) {
-    const p = await partnershipTotals(env, userId, startYear);
+    const p = await partnershipTotals(env, userId, startYear, personId);
     // `!== 0` (not `> 0`) so a NET LOSS is carried too — but only partnership_losses ON ever yields a
     // negative here (OFF floors partnershipTotals to ≥0), so the OFF path stays byte-identical.
     if (p.assessable_cents !== 0 || p.franking_credit_cents > 0) partnership = p;
@@ -846,7 +844,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   let super_deduction: SuperDeduction | undefined;
   if (featureOn(env, "super_deduction")) {
     const cap = (rulePack as { thresholds_by_fy?: Record<string, { super_concessional_cap_cents?: number }> }).thresholds_by_fy?.[fyLabel]?.super_concessional_cap_cents ?? Number.MAX_SAFE_INTEGER;
-    const sd = await superConcessionalDeduction(env, userId, startYear, cap);
+    const sd = await superConcessionalDeduction(env, userId, startYear, cap, personId);
     if (sd.contributed_cents > 0) super_deduction = sd;
   }
   // Audit wave 4 (trading_stock): the s 70-35 trading-stock adjustment for a goods-selling sole

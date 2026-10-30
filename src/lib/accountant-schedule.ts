@@ -27,7 +27,7 @@ import { diaryView as wfhDiaryView, addDaysIso as wfhAddDays, preDiarySourceLabe
 import { buildXlsx, type XlsxCell, type XlsxSheet } from "./xlsx";
 import { csvCell, neutraliseFormula } from "./csv-cell";
 import { tenantDb } from "./tenant-db";
-import { personClause, reportPersonId } from "./self-person";
+import { incomePersonClause, personClause, reportPersonId } from "./self-person";
 import { audAmount, countable } from "./ledger-filter";
 
 // ── The itemised accountant deliverable (#179 + #181, EPIC #178) ─────────────
@@ -333,7 +333,12 @@ async function scheduleCore(
   // the company/SMSF section, never the personal headline).
   const entityClause = separateIds.length ? ` AND (entity_id IS NULL OR entity_id NOT IN (${separateIds.map(() => "?").join(",")}))` : "";
   // #722 (person_scoped_income): the same person scope as the report's headline, so the itemised rows tie back.
-  const incomePerson = personClause(userId, reportPersonId(env, userId));
+  const schedPersonId = reportPersonId(env, userId);
+  const incomePerson = incomePersonClause(userId, schedPersonId);
+  // The same person scope for the sections that tie back to the report's CGT / ESS / trust figures.
+  const assetPerson = personClause(userId, schedPersonId, "a.person_id");
+  const essPerson = personClause(userId, schedPersonId);
+  const trustPerson = personClause(userId, schedPersonId, "td.beneficiary_person_id");
   const incomeRowsP = safeAll<{
     txn_date: string | null;
     person_id: string | null;
@@ -491,9 +496,9 @@ async function scheduleCore(
           `SELECT ev.event_date, a.code, a.label, a.asset_kind, ev.units_disposed, a.acquired_date,
                   ev.proceeds_cents, ev.cost_base_used_cents${parcelMethodOn ? ", ev.method" : ""}${costBaseDetailOn ? ", a.detail_json" : ""}
              FROM cgt_events ev JOIN cgt_assets a ON a.id = ev.cgt_asset_id AND a.user_id = ev.user_id
-            WHERE ev.user_id = ? AND ev.fy = ? AND ${cgtPersonalScopeExpr(env)} ORDER BY ev.event_date`,
+            WHERE ev.user_id = ? AND ev.fy = ? AND ${cgtPersonalScopeExpr(env)}${assetPerson.sql} ORDER BY ev.event_date`,
         )
-          .bind(fy)
+          .bind(fy, ...assetPerson.binds)
           .all(),
       )
     : Promise.resolve([]);
@@ -510,10 +515,10 @@ async function scheduleCore(
         tenantDb(env, userId).prepare(
           `SELECT scheme_type, grant_date, taxing_point_date, shares_or_options, units, discount_cents, ownership_gt_10pct
              FROM ess_grants
-            WHERE user_id = ? AND COALESCE(taxing_point_date, grant_date) >= ? AND COALESCE(taxing_point_date, grant_date) <= ?
+            WHERE user_id = ? AND COALESCE(taxing_point_date, grant_date) >= ? AND COALESCE(taxing_point_date, grant_date) <= ?${essPerson.sql}
             ORDER BY COALESCE(taxing_point_date, grant_date)`,
         )
-          .bind(start, end)
+          .bind(start, end, ...essPerson.binds)
           .all(),
       )
     : Promise.resolve([]);
@@ -522,9 +527,9 @@ async function scheduleCore(
         tenantDb(env, userId).prepare(
           `SELECT e.name AS trust_name, td.character, td.share_pct, td.amount_cents, td.franking_credit_cents
              FROM trust_distributions td LEFT JOIN entities e ON e.id = td.trust_entity_id
-            WHERE td.user_id = ? AND td.fy = ? AND td.beneficiary_person_id IS NOT NULL ORDER BY td.created_at`,
+            WHERE td.user_id = ? AND td.fy = ? AND td.beneficiary_person_id IS NOT NULL${trustPerson.sql} ORDER BY td.created_at`,
         )
-          .bind(fy)
+          .bind(fy, ...trustPerson.binds)
           .all(),
       )
     : Promise.resolve([]);
@@ -567,10 +572,10 @@ async function scheduleCore(
           `SELECT a.id AS id, a.code AS code, a.label AS label, a.asset_kind AS asset_kind,
                   a.acquired_date AS acquired_date, a.units AS units, a.cost_base_cents AS cost_base_cents
              FROM cgt_assets a
-            WHERE a.user_id = ? AND a.property_id IS NULL AND a.income_id IS NULL AND ${cgtPersonalScopeExpr(env)}
+            WHERE a.user_id = ? AND a.property_id IS NULL AND a.income_id IS NULL AND ${cgtPersonalScopeExpr(env)}${assetPerson.sql}
               AND (a.acquired_date IS NULL OR a.acquired_date <= ?)
             ORDER BY COALESCE(a.code, a.label, a.asset_kind), a.acquired_date`,
-        ).bind(end).all(),
+        ).bind(...assetPerson.binds, end).all(),
       )
     : Promise.resolve([]);
   const holdingDisposalsP = !detailOnly && positionOn

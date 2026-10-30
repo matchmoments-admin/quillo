@@ -42,9 +42,26 @@ export function reportPersonId(env: Env, userId: string): string | null {
   return featureOn(env, "person_scoped_income") ? selfPersonId(userId) : null;
 }
 
-/** An ` AND …` clause scoping an income read to `personId`; empty (no bind) for null, the whole tenant. */
+/** An ` AND …` clause scoping a read to `personId` on `col`; empty (no bind) for null, the whole tenant. */
 export function personClause(userId: string, personId: string | null, col = "person_id"): { sql: string; binds: string[] } {
   if (!personId) return { sql: "", binds: [] };
   const pf = personFilter(userId, personId);
   return { sql: ` AND ${pf.sql.replaceAll("person_id", col)}`, binds: pf.binds };
+}
+
+/**
+ * #722: the person scope for INCOME rows. A property is tenant-level (its expenses and depreciation are not split
+ * by person), so income attached to a property stays in whatever the property reports; only income with no
+ * property is scoped to the person. Without this, a joint property's rent would follow the person while its
+ * expenses did not, overstating the loss.
+ */
+export function incomePersonClause(userId: string, personId: string | null): { sql: string; binds: string[] } {
+  if (!personId) return { sql: "", binds: [] };
+  const pf = personFilter(userId, personId);
+  return { sql: ` AND (property_id IS NOT NULL OR ${pf.sql})`, binds: pf.binds };
+}
+
+/** The same rule as incomePersonClause, for a row already in memory. */
+export function incomeInPersonScope(userId: string, personId: string | null | undefined, row: { person_id: string | null; property_id: string | null }): boolean {
+  return !personId || row.property_id != null || ownerPersonId(userId, row.person_id) === personId;
 }

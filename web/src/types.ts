@@ -1652,3 +1652,11 @@ export interface SecurityDashboard {
   last_check_trigger: "manual" | "schedule" | null;
   panels: SecurityPanel[];
 }
+
+/** wages_relink: a wages card already confirmed whose employer's income statement isn't recorded. */
+export interface PayrollLink {
+  signal_id: string;
+  employer: string;
+  n: number;
+  choices: string[];
+}

@@ -600,7 +600,7 @@ function IncomeWaiting() {
         </ul>
       )}
       <FtButton className="w-full sm:w-auto" onClick={() => setAdding((v) => !v)} aria-expanded={adding}>
-        {adding ? "Done adding" : "Add an income statement or other income"}
+        {adding ? "Done adding" : simpleIncome ? "Add an income statement, rental statement or other income" : "Add an income statement or other income"}
       </FtButton>
       {adding && (
         <div className="rounded-2xl border border-line bg-paper p-3">

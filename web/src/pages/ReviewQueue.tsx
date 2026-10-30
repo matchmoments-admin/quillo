@@ -26,6 +26,7 @@ import {
 import { NoticedConfirmed } from "../components/NoticedPanel";
 import { WorthALookCard } from "../components/review/WorthALookCard";
 import { MovementSweepCard } from "../components/MovementSweepCard";
+import { PayrollLinkCard } from "../components/review/PayrollLinkCard";
 import { FactCard, NeedsRecordCard, groupName, recordMeta } from "../components/review/RecordCards";
 import { useActiveFy } from "../lib/activeFy";
 import { useFeatures } from "../lib/features";
@@ -144,6 +145,9 @@ function QueueBody() {
   const journey = useJourney();
   const rel = useQuery({ queryKey: ["relevance", fy], queryFn: () => api.relevance(fy), enabled: scanOn });
   const noticed = useQuery({ queryKey: ["noticed", fy], queryFn: () => api.noticed(fy), enabled: noticedOn });
+  // wages_relink: confirmed wages cards whose income statement still isn't recorded.
+  const relinkOn = has("wages_relink");
+  const links = useQuery({ queryKey: ["noticed-links", fy], queryFn: () => api.noticedLinks(fy), enabled: noticedOn && relinkOn });
   const proposals = useQuery({ queryKey: ["reconcile-proposals", fy], queryFn: () => api.reconcileProposals(fy), enabled: proposalsOn });
   const linked = useQuery({ queryKey: ["reconcile-linked", fy], queryFn: () => api.reconcileLinked(fy), enabled: proposalsOn });
   const records = useQuery({ queryKey: ["records", fy], queryFn: () => api.records(fy) });
@@ -373,6 +377,13 @@ function QueueBody() {
             </section>
           )}
 
+          {relinkOn && (links.data ?? []).length > 0 && showKind(f, "noticed") && (
+            <section aria-label="Wages to link to an income statement" className="space-y-2">
+              {(links.data ?? []).map((l) => (
+                <PayrollLinkCard key={l.signal_id} link={l} />
+              ))}
+            </section>
+          )}
           {noticedOn && noticedShown.length > 0 && showKind(f, "noticed") && (
             <section aria-labelledby="q-noticed" className="space-y-2">
               <SectionTitle id="q-noticed" kind="noticed" count={counts.noticed} />

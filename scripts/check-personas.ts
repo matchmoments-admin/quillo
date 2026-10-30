@@ -43,7 +43,7 @@ import { profileForFy, residencyOn, residencyPeriodsForFy, situationProfileSigna
 import { runRelevanceScan, confirmWorthALook, relevanceView } from "../src/lib/relevance-scan-run";
 import { updatePerson } from "../src/lib/situation-write";
 import { verdictForTxn } from "../src/lib/deductibility";
-import { noticeSignals, listNoticed, confirmNoticed, dismissNoticed, noticeRentalProperty, payrollEmployerSignals, incomeAnswerRows, INCOME_STATEMENT_PROMPT } from "../src/lib/noticed-signals";
+import { noticeSignals, listNoticed, confirmNoticed, dismissNoticed, payrollLinks, relinkPayroll, noticeRentalProperty, payrollEmployerSignals, incomeAnswerRows, INCOME_STATEMENT_PROMPT } from "../src/lib/noticed-signals";
 import { recordsView, applyRecordException } from "../src/lib/records";
 import { minimiseTenant, tombstonedFingerprints, rolledUpLineCount, statementLedgerTieOut, forgetStatementMinimisation } from "../src/lib/minimise";
 import { statementLineFingerprints, type StatementLine } from "../src/lib/statements";
@@ -4018,6 +4018,9 @@ async function main() {
     const J = { ...ON, FEATURES: `${(ON as unknown as { FEATURES: string }).FEATURES},ft_journey` } as unknown as Env;
     const ub = (await computeFilingReadiness(J, u, 2025, deps)).findings.find((x) => x.id === "unknown_bucket");
     const ubOff = off.findings.find((x) => x.id === "unknown_bucket");
+    const allJ = (await computeFilingReadiness(J, u, 2025, deps)).findings;
+    check("beginner copy: no journey finding names the Inbox, the Income page or 'transaction(s)'",
+      !allJ.some((x) => /Inbox|Income page|transaction\(s\)/.test(`${x.title} ${x.general_info_note}`) && x.id !== "rule"));
     check("beginner copy: '3 transactions aren't sorted yet', no Inbox / indicative position; OFF unchanged",
       ub?.title === "3 transactions aren't sorted yet" && !/Inbox|indicative/.test(ub.general_info_note) && ubOff?.title === "3 transaction(s) aren't categorised yet");
     run(`INSERT INTO loans_properties (id, user_id, loan_account_id, property_id, deductible_interest_pct) VALUES ('pcoverLP', ?, 'pcoverLoan', 'pcoverProp', 100)`, u);
@@ -4137,6 +4140,35 @@ async function main() {
     const after = (await listNoticed(ON, u, 2025)).filter((x) => x.kind === "payroll").map((x) => x.evidence.label);
     check("#835 payer_guard: the health fund's open 'employer' card is withdrawn on the next scan; the real employer's stays",
       before === 2 && JSON.stringify(after) === JSON.stringify(["Big Retail"]));
+  }
+
+  // ── wages_relink: a wages card confirmed BEFORE its income statement arrived is offered the statement afterwards; a
+  // wrong Yes (an agent's rent) can be undone. ──
+  {
+    const u = "prelink";
+    seedTenant(u, "P1 confirmed early");
+    const ON = { ...env, FEATURES: `${(env as { FEATURES: string }).FEATURES},first_timer_income,situation_profile,wages_payer,wages_relink` } as unknown as Env;
+    const credit = (id: string, d: string, c: number, t: string) =>
+      run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, currency, txn_date, bucket, direction, raw_description, merchant) VALUES (?, ?, 'upload', 'categorised', 'bank_line', ?, ?, 'AUD', ?, 'income_personal', 'credit', ?, ?)`, id, u, c, c, t, d, d);
+    for (const [i, t] of [["1", "2025-08-07"], ["2", "2025-08-21"], ["3", "2025-09-04"]] as const) credit(`prelinkW${i}`, "EXAMPLE PAYROLL BRANDCO SALARY", 250000, t);
+    for (const [i, t] of [["1", "2025-08-10"], ["2", "2025-09-10"], ["3", "2025-10-10"]] as const) credit(`prelinkR${i}`, "SAMPLE AGENCY DEPOSIT 12 SAMPLE", 210000, t);
+    await noticeSignals(ON, u);
+    const deps = { now: new Date("2026-10-30T00:00:00Z"), recordCreditAsIncome: async () => null } as never;
+    for (const c of (await listNoticed(ON, u, 2025)).filter((x) => x.kind === "payroll")) await confirmNoticed(ON, u, c.id, { occupation: "retail" }, deps); // both Yes, before any statement
+    inc("prelinkInc", u, "salary_payg", 6500000, { person_id: "person_self_prelink", detail_json: JSON.stringify({ employer: "BRANDCO GROUP SERVICES PTY LTD" }) });
+    const links = (await payrollLinks(ON, u, 2025)) ?? [];
+    check("wages_relink: both confirmed-early cards are listed, each offered the income statement that arrived later",
+      links.length === 2 && links.every((l) => JSON.stringify(l.choices) === JSON.stringify(["BRANDCO GROUP SERVICES PTY LTD"])));
+    const pay = links.find((l) => /brandco/i.test(l.employer))!;
+    const rent = links.find((l) => /agency/i.test(l.employer))!;
+    await relinkPayroll(ON, u, pay.signal_id, { employer_name: "BRANDCO GROUP SERVICES PTY LTD" });
+    await relinkPayroll(ON, u, rent.signal_id, { not_pay: true });
+    const emp = (await payrollEmployerSignals(ON, u, 2025)).payrollEmployers ?? [];
+    check("wages_relink: picking the statement covers that employer; 'This isn't pay' removes the phantom one; nothing left to link",
+      emp.length === 1 && emp[0]!.covered && ((await payrollLinks(ON, u, 2025)) ?? []).length === 0);
+    await noticeSignals(ON, u);
+    check("wages_relink: a rescan never re-stamps the deposits the user said aren't pay",
+      (db.prepare(`SELECT COUNT(*) AS n FROM transactions WHERE user_id = ? AND id LIKE 'prelinkR%' AND payer_entity_id IS NOT NULL`).get(u) as { n: number }).n === 0);
   }
 
   console.log(`\n=== personas: ${pass} passed, ${fail} failed ===`);

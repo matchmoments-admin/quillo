@@ -155,6 +155,7 @@ export interface TaxAgentRpc {
   ): Promise<{ ok: true; period?: unknown; skipped?: boolean } | { ok: false; error: string; status: number }>;
   confirmNoticedSignal(userId: string, id: string, body: import("./lib/noticed-signals").ConfirmBody | null): Promise<{ ok: true; result: import("./lib/noticed-signals").ConfirmResult } | { ok: false; error: string; status: number }>;
   dismissNoticedSignal(userId: string, id: string): Promise<{ ok: true; status: string } | { ok: false; error: string; status: number }>;
+  relinkPayrollSignal(userId: string, id: string, body: { employer_name?: unknown; not_pay?: unknown }): Promise<{ ok: true; action: string } | { ok: false; error: string; status: number }>;
   ingest(userId: string, source: string, bytes: ArrayBuffer, mime: string, bucketHint?: string | null, originalHash?: string | null): Promise<string>;
   ingestImages(userId: string, source: string, images: { bytes: ArrayBuffer; mime: string }[], bucketHint?: string | null): Promise<string>;
   ingestText(userId: string, source: string, text: string): Promise<string>;

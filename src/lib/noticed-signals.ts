@@ -638,3 +638,56 @@ export async function payrollEmployerSignals(
     stampedPersonalCents: stamped?.cents ?? 0,
   };
 }
+
+/** wages_relink: a wages card the user already said Yes to, whose employer's income statement still isn't recorded. */
+export interface PayrollLink {
+  signal_id: string;
+  employer: string;
+  n: number;
+  /** The primary taxpayer's unlinked income-statement employers (may be empty). */
+  choices: string[];
+}
+
+/**
+ * wages_relink (#845 follow-up). Two cases a Yes left behind: the card was confirmed before the income statement
+ * arrived (so it was never asked which statement it is), or the Yes was wrong (a health fund, an agent's rent). Each
+ * confirmed payroll card whose employer is still uncovered is listed, with the statement employers to pick from.
+ * Flag OFF ⇒ undefined.
+ */
+export async function payrollLinks(env: Env, userId: string, startYear: number, descriptor: JurisdictionDescriptor = AU_DESCRIPTOR): Promise<PayrollLink[] | undefined> {
+  if (!featureOn(env, "wages_relink") || !featureOn(env, "wages_payer")) return undefined;
+  const fy = fyLabel(startYear);
+  const emp = (await payrollEmployerSignals(env, userId, startYear, descriptor)).payrollEmployers ?? [];
+  const uncovered = new Map(emp.filter((e) => !e.covered).map((e) => [e.entity_id, e]));
+  if (!uncovered.size) return [];
+  const rows = (await tenantDb(env, userId).prepare(
+    `SELECT id, ref_id FROM noticed_signals WHERE user_id = ? AND fy = ? AND kind = 'payroll' AND status = 'confirmed' AND ref_id IS NOT NULL ORDER BY signal_key`,
+  ).bind(fy).all<{ id: string; ref_id: string }>()).results ?? [];
+  const choices = await unlinkedStatementEmployers(env, userId, fy);
+  return rows.filter((r) => uncovered.has(r.ref_id)).map((r) => ({ signal_id: r.id, employer: uncovered.get(r.ref_id)!.name, n: uncovered.get(r.ref_id)!.n, choices }));
+}
+
+/**
+ * wages_relink: answer a PayrollLink. `employer_name` (one of its choices) names the employer as on that income
+ * statement, so the two are one employer. `not_pay` undoes the Yes: the credits lose their employer stamp (they're
+ * bank deposits again, never income by themselves) and the card is dismissed, so a rescan never re-stamps them. The
+ * employer row stays (it may be referenced elsewhere); it no longer appears in readiness or the Tax-ready list.
+ */
+export async function relinkPayroll(env: Env, userId: string, id: string, body: { employer_name?: unknown; not_pay?: unknown }): Promise<{ ok: true; action: "linked" | "not_pay" }> {
+  if (!featureOn(env, "wages_relink") || !featureOn(env, "wages_payer")) throw new NoticedError("not available", 404);
+  const s = await getSignal(env, userId, id);
+  if (s.kind !== "payroll" || s.status !== "confirmed" || !s.ref_id) throw new NoticedError("This card can't be changed.", 409);
+  if (body.not_pay === true) {
+    await env.DB.batch([
+      tenantDb(env, userId).prepare(`UPDATE transactions SET payer_entity_id = NULL WHERE user_id = ? AND payer_entity_id = ?`).bind(s.ref_id),
+      tenantDb(env, userId).prepare(`UPDATE noticed_signals SET status = 'dismissed', decided_at = datetime('now') WHERE user_id = ? AND id = ?`).bind(id),
+    ]);
+    return { ok: true, action: "not_pay" };
+  }
+  const name = optStr(body.employer_name, 200);
+  if (!name) throw new NoticedError("Choose an income statement, or say this isn't pay.", 400);
+  const choices = await unlinkedStatementEmployers(env, userId, s.fy);
+  if (!choices.includes(name)) throw new NoticedError("That income statement isn't one to link.", 400);
+  await tenantDb(env, userId).prepare(`UPDATE entities SET name = ? WHERE user_id = ? AND id = ?`).bind(name, s.ref_id).run();
+  return { ok: true, action: "linked" };
+}

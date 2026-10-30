@@ -92,7 +92,7 @@ export function Income({ simple = false }: { simple?: boolean } = {}) {
   const [note, setNote] = useState<string | null>(null);
   const upload = useMutation({
     mutationFn: (file: File) => api.uploadDocument(file),
-    onMutate: () => setNote("Reading your income statement with Claude…"),
+    onMutate: () => setNote(simple ? "Reading your statement…" : "Reading your income statement with Claude…"),
     onSuccess: (r) => {
       // Mirror the server's classifyAndRoute (src/agent.ts): payslip, dividend_statement and
       // agent_rental_summary all write an income row when routed. Treating only "payslip" as success
@@ -106,6 +106,13 @@ export function Income({ simple = false }: { simple?: boolean } = {}) {
         setNote("Kept as a record and not counted: a longer rental statement you uploaded for the same property already covers these dates.");
         qc.invalidateQueries({ queryKey: ["income"] });
         qc.invalidateQueries({ queryKey: ["dashboard"] });
+      } else if (simple && r.routed && r.doc_type === "agent_rental_summary") {
+        // journey_beginner: say what happens next for a rental statement (its property card), in plain words.
+        setNote("Rental statement read. Next, answer \"Add this property?\" on Review so its rent and expenses are filed under the property. Don't add it by hand too, or it will be counted twice.");
+        qc.invalidateQueries({ queryKey: ["income"] });
+        qc.invalidateQueries({ queryKey: ["dashboard"] });
+        qc.invalidateQueries({ queryKey: ["transactions"] });
+        qc.invalidateQueries({ queryKey: ["noticed"] });
       } else if (r.routed && recordedAs) {
         setNote(`${recordedAs} read and recorded — check the row below (switch to the statement's FY; confirm anything flagged for review). Don't add it manually too, or it will be counted twice.`);
         qc.invalidateQueries({ queryKey: ["income"] }); // any FY — the statement may land in a different year
@@ -160,7 +167,7 @@ export function Income({ simple = false }: { simple?: boolean } = {}) {
               onChange={(e) => { const f = e.target.files?.[0]; if (f) upload.mutate(f); e.currentTarget.value = ""; }}
             />
             <Button variant="ghost" onClick={() => fileRef.current?.click()} disabled={upload.isPending}>
-              {upload.isPending ? "Reading…" : "↑ Upload income statement"}
+              {upload.isPending ? "Reading…" : simple ? "↑ Upload an income or rental statement" : "↑ Upload income statement"}
             </Button>
           </>
         )}

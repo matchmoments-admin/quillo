@@ -119,12 +119,26 @@ function Protected() {
   );
 }
 
+/**
+ * The production Clerk instance has Google enabled but no Google OAuth credentials yet, so "Continue with Google" ends
+ * on Google's "Missing required parameter: client_id" (2026-10-30, the owner's first production sign-up). Hide the
+ * Google button (and the "or" divider) until credentials are set in Clerk, then delete this. Email + password works.
+ */
+const AUTH_APPEARANCE = {
+  elements: {
+    socialButtonsBlockButton__google: { display: "none" },
+    socialButtonsIconButton__google: { display: "none" },
+    socialButtonsRoot: { display: "none" },
+    dividerRow: { display: "none" },
+  },
+};
+
 const router = createBrowserRouter([
   {
     path: "/sign-in/*",
     element: (
       <AuthScreen>
-        <SignIn routing="path" path="/sign-in" signUpUrl="/sign-up" />
+        <SignIn routing="path" path="/sign-in" signUpUrl="/sign-up" appearance={AUTH_APPEARANCE} />
       </AuthScreen>
     ),
   },
@@ -132,7 +146,7 @@ const router = createBrowserRouter([
     path: "/sign-up/*",
     element: (
       <AuthScreen>
-        <SignUp routing="path" path="/sign-up" signInUrl="/sign-in" />
+        <SignUp routing="path" path="/sign-up" signInUrl="/sign-in" appearance={AUTH_APPEARANCE} />
       </AuthScreen>
     ),
   },

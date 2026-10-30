@@ -4047,6 +4047,98 @@ async function main() {
       after.person_id === "person_self_pself" && (await incomeTotals(env, u, { startYear: 2025, personId: "person_self_pself" })).gross_cents === 7000000);
   }
 
+  // ── #833 asset_confirm_gate: an asset the categoriser made from a bank line counts once the user confirms it. A
+  // P1-shaped employee: one $33.08 cloud charge became an immediate-write-off asset; one asset the user added. ──
+  {
+    const u = "passet";
+    seedTenant(u, "P1 auto-created asset");
+    run(`INSERT INTO assets (id, user_id, label, asset_class, cost_cents, acquired_date, needs_review) VALUES ('passetAi', ?, 'Cloud server (2026-03-01)', 'immediate', 3308, '2026-03-01', 1)`, u);
+    run(`INSERT INTO assets (id, user_id, label, asset_class, cost_cents, acquired_date, needs_review) VALUES ('passetMine', ?, 'Laptop', 'immediate', 25000, '2026-02-01', 0)`, u);
+    for (const [id, a, c] of [["passetD1", "passetAi", 3308], ["passetD2", "passetMine", 25000]] as const) {
+      run(`INSERT INTO depreciation_schedule (id, user_id, asset_id, fy, opening_adjustable_value_cents, days_held, deduction_cents, closing_adjustable_value_cents, method_applied) VALUES (?, ?, ?, '2025-26', ?, 1, ?, 0, 'immediate')`, id, u, a, c, c);
+    }
+    run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, direction, asset_id, is_capital) VALUES ('passetT', ?, 'statement', 'categorised', 'bank_line', 3308, 3308, '2026-03-01', 'asset', 'debit', 'passetAi', 1)`, u);
+    const GATE = { ...env, FEATURES: `${(env as { FEATURES: string }).FEATURES},asset_confirm_gate` } as unknown as Env;
+    const off = (await buildReport(env, u, 2025)).depreciation_cents;
+    const on = (await buildReport(GATE, u, 2025)).depreciation_cents;
+    check("#833 asset_confirm_gate: the unconfirmed AI-made asset ($33.08) is left out; the one the user added ($250) counts; OFF counts both",
+      on === 25000 && off === 28308);
+    const notClaimed = (await buildAccountantSchedule(GATE, u, 2025)).sections.find((x) => x.key === "not_claimed");
+    check("#833 asset_confirm_gate: the accountant schedule lists the unconfirmed asset as not claimed, awaiting confirmation",
+      !!notClaimed && notClaimed.rows.some((r) => r.includes("Cloud server (2026-03-01)") && r.some((c) => /not confirmed yet/.test(String(c)))));
+    run(`UPDATE assets SET needs_review = 0 WHERE id = 'passetAi' AND user_id = ?`, u); // what POST /api/assets/:id/confirm does
+    check("#833 asset_confirm_gate: once confirmed, it counts", (await buildReport(GATE, u, 2025)).depreciation_cents === 28308);
+  }
+
+  // ── #834 schedule_plain_labels: two employers' salary rows carry their payer; bank credits are grouped by kind in
+  // plain words (never the categoriser's "income:<bank>-dividend"). Totals tie back either way. ──
+  {
+    const u = "pplain";
+    seedTenant(u, "P1 two employers");
+    inc("pplainA", u, "salary_payg", 3000000, { detail_json: JSON.stringify({ employer: "Example Retail Pty Ltd", employer_abn: "11 111 111 111" }) });
+    inc("pplainB", u, "salary_payg", 2000000, { detail_json: JSON.stringify({ employer: "Sample Cafe Pty Ltd" }) });
+    run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, txn_date, bucket, ato_label, direction) VALUES ('pplainC', ?, 'statement', 'categorised', 'bank_line', 150000, 150000, '2025-09-01', 'income_personal', 'income:examplebank-dividend', 'credit')`, u);
+    const PLAIN = { ...env, FEATURES: `${(env as { FEATURES: string }).FEATURES},schedule_plain_labels` } as unknown as Env;
+    const on = await buildAccountantSchedule(PLAIN, u, 2025);
+    const off = await buildAccountantSchedule(env, u, 2025);
+    const incOn = on.sections.find((x) => x.key === "income")!;
+    const payers = incOn.rows.map((r) => r[incOn.columns.indexOf("Payer")]).sort();
+    const bankOn = on.sections.find((x) => x.key === "income_bank_credits");
+    check("#834: Income (documented) names each salary's payer (with the ABN when the statement had it) and still ties back",
+      JSON.stringify(payers) === JSON.stringify(["Example Retail Pty Ltd (ABN 11 111 111 111)", "Sample Cafe Pty Ltd"]) && incOn.tie_back?.ok === true);
+    check("#834: bank credits are grouped by kind in plain words, never the categoriser's label",
+      !!bankOn && bankOn.rows.length === 1 && String(bankOn.rows[0]![0]).startsWith("Personal") && !JSON.stringify(bankOn.rows).includes("dividend") && bankOn.subtotal_cents === 150000);
+    check("#834: flag OFF ⇒ the old columns and labels", !off.sections.find((x) => x.key === "income")!.columns.includes("Payer") && JSON.stringify(off.sections.find((x) => x.key === "income_bank_credits")?.rows).includes("dividend"));
+  }
+
+  // ── #832 wages_link_statement (owner decision 2026-10-30): the bank names the payer "Example Payroll Brandco", the
+  // income statement "BRANDCO GROUP SERVICES PTY LTD". The card offers the unlinked statement employer; picking it
+  // names the employer as on the statement, so readiness counts that income statement as recorded. ──
+  {
+    const u = "plink";
+    seedTenant(u, "P1 bank payer named differently");
+    const base = "first_timer_income,situation_profile,wages_payer";
+    const ON = { ...env, FEATURES: `${(env as { FEATURES: string }).FEATURES},${base},wages_link_statement` } as unknown as Env;
+    const OFF = { ...env, FEATURES: `${(env as { FEATURES: string }).FEATURES},${base}` } as unknown as Env;
+    for (const [id, date] of [["plinkW1", "2025-08-07"], ["plinkW2", "2025-08-21"], ["plinkW3", "2025-09-04"]] as const) {
+      run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, currency, txn_date, bucket, direction, raw_description, merchant) VALUES (?, ?, 'upload', 'categorised', 'bank_line', 250000, 250000, 'AUD', ?, 'income_personal', 'credit', 'EXAMPLE PAYROLL BRANDCO SALARY', 'EXAMPLE PAYROLL BRANDCO SALARY')`, id, u, date);
+    }
+    inc("plinkInc", u, "salary_payg", 6500000, { person_id: "person_self_plink", detail_json: JSON.stringify({ employer: "BRANDCO GROUP SERVICES PTY LTD" }) });
+    // Review: a spouse's income statement is never offered on the primary taxpayer's card.
+    run(`INSERT OR IGNORE INTO persons (id, user_id, display_name, role) VALUES ('plinkSpouse', ?, 'Partner', 'spouse')`, u);
+    inc("plinkSpouseInc", u, "salary_payg", 4000000, { person_id: "plinkSpouse", detail_json: JSON.stringify({ employer: "Sample Hospital" }) });
+    await noticeSignals(ON, u);
+    const cardOn = (await listNoticed(ON, u, 2025)).find((x) => x.kind === "payroll");
+    const cardOff = (await listNoticed(OFF, u, 2025)).find((x) => x.kind === "payroll");
+    check("#832: the wages card offers the income statement no employer is linked to; OFF offers nothing",
+      JSON.stringify(cardOn?.statement_choices) === JSON.stringify(["BRANDCO GROUP SERVICES PTY LTD"]) && cardOff?.statement_choices === undefined);
+    const deps = { now: new Date("2026-10-30T00:00:00Z"), recordCreditAsIncome: async () => null } as never;
+    await confirmNoticed(ON, u, cardOn!.id, { occupation: "retail", employer_name: "BRANDCO GROUP SERVICES PTY LTD" }, deps);
+    const sig = await payrollEmployerSignals(ON, u, 2025);
+    check("#832: after picking it, the one employer's income statement counts as recorded (no 'not recorded yet', no third employer)",
+      sig.payrollEmployers?.length === 1 && sig.payrollEmployers[0]!.covered === true);
+    check("#832: once linked, a later card has nothing left to offer", (await listNoticed(ON, u, 2025)).every((x) => !x.statement_choices));
+  }
+
+  // ── #835 payer_guard: a "second employer?" card raised before the guard for a payer that is only health-fund claims is
+  // withdrawn on the next scan; real pay is untouched. ──
+  {
+    const u = "pguard";
+    seedTenant(u, "P1 health fund claims");
+    const ON = { ...env, FEATURES: `${(env as { FEATURES: string }).FEATURES},wages_payer,payer_guard` } as unknown as Env;
+    const OFF = { ...env, FEATURES: `${(env as { FEATURES: string }).FEATURES},wages_payer` } as unknown as Env;
+    for (const [id, d, c, t] of [["pguardH1", "EXAMPLE HEALTH FUND CLAIM", 17900, "2025-08-07"], ["pguardH2", "EXAMPLE HEALTH FUND CLAIM", 17900, "2025-08-21"],
+      ["pguardW1", "BIG RETAIL PTY LTD SALARY", 120000, "2025-08-07"], ["pguardW2", "BIG RETAIL PTY LTD SALARY", 120000, "2025-08-21"]] as const) {
+      run(`INSERT INTO transactions (id, user_id, source, status, kind, amount_cents, amount_aud_cents, currency, txn_date, bucket, direction, raw_description, merchant) VALUES (?, ?, 'upload', 'categorised', 'bank_line', ?, ?, 'AUD', ?, 'income_personal', 'credit', ?, ?)`, id, u, c, c, t, d, d);
+    }
+    await noticeSignals(OFF, u);
+    const before = (await listNoticed(OFF, u, 2025)).filter((x) => x.kind === "payroll").length;
+    await noticeSignals(ON, u);
+    const after = (await listNoticed(ON, u, 2025)).filter((x) => x.kind === "payroll").map((x) => x.evidence.label);
+    check("#835 payer_guard: the health fund's open 'employer' card is withdrawn on the next scan; the real employer's stays",
+      before === 2 && JSON.stringify(after) === JSON.stringify(["Big Retail"]));
+  }
+
   console.log(`\n=== personas: ${pass} passed, ${fail} failed ===`);
   if (fail > 0) process.exit(1);
 }

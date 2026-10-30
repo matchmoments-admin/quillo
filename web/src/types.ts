@@ -1500,6 +1500,8 @@ export interface NoticedSignal {
   ref_id: string | null;
   created_at: string;
   decided_at: string | null;
+  /** wages_link_statement (#832): payroll only — income-statement employers no employer is linked to yet. */
+  statement_choices?: string[];
 }
 export interface NoticedConfirmResult {
   kind: string;

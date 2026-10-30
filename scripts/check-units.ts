@@ -5676,7 +5676,7 @@ console.log("residency assessability (A13, #580)");
 }
 
 // ── #577 wages_payer: deterministic credit triage → "We noticed…" signals (src/lib/credit-triage.ts) ──
-import { triageCredits, detectCadence, withinBand, payerStem, payerLabel, creditSignalLists } from "../src/lib/credit-triage";
+import { claimPayerKeys, triageCredits, detectCadence, withinBand, payerStem, payerLabel, creditSignalLists } from "../src/lib/credit-triage";
 import { employerMatches } from "../src/lib/noticed-signals";
 import { noticedCopy } from "../web/src/components/ft/model";
 console.log("credit triage (#577)");
@@ -5704,6 +5704,22 @@ console.log("credit triage (#577)");
   check("triage: a weekly DoorDash payout is a PLATFORM signal, never payroll", sig.find((s) => s.kind === "platform")?.txn_ids.join() === "d1,d2" && sig.find((s) => s.kind === "platform")?.evidence.activity === "delivery");
   check("triage: evidence is counts/dates/total/label only — no raw description anywhere", sig.every((s) => !/SALARY|PAYOUT|YOUTH|SAVINGS|SMITH/.test(JSON.stringify(s.evidence))) && pay.evidence.total_cents === 363000 && pay.evidence.first_date === "2025-08-07" && pay.evidence.last_date === "2025-09-04");
   check("triage: a known employer makes a NEW payroll payer a second payer", triageCredits(rows, L, new Set(["someone else"])).find((s) => s.kind === "payroll")?.evidence.second_payer === true);
+  {
+    // #835 payer_guard: a health fund's claim refunds at a regular cadence are not a job.
+    const fund = [cr("h1", "EXAMPLE HEALTH FUND CLAIM PTY LTD", 17900, "2025-08-07"), cr("h2", "EXAMPLE HEALTH FUND CLAIM PTY LTD", 17900, "2025-08-21")];
+    const withGuard = triageCredits([...rows, ...fund], L).filter((s) => s.kind === "payroll").map((s) => s.signal_key);
+    const noGuard = triageCredits([...rows, ...fund], { ...L, payroll: { ...L.payroll, not_employer: undefined } }).filter((s) => s.kind === "payroll").length;
+    check("payer_guard (#835): a health fund's claim credits are never proposed as an employer; without the list they would be; real pay still is",
+      L.payroll.not_employer != null && withGuard.length === 1 && noGuard === 2);
+    // Review: an insurer is also an employer — its staff's pay (a payroll word) and a payer with one expense claim among
+    // its pay are still pay.
+    const insurerStaff = [cr("s1", "EXAMPLE HEALTH FUND SALARY", 250000, "2025-08-07"), cr("s2", "EXAMPLE HEALTH FUND SALARY", 250000, "2025-08-21")];
+    const withClaim = [cr("c1", "SAMPLE CO PTY LTD", 250000, "2025-08-07"), cr("c2", "SAMPLE CO PTY LTD", 250000, "2025-08-21"), cr("c3", "SAMPLE CO PTY LTD EXPENSE CLAIM", 250000, "2025-09-04")];
+    check("payer_guard (#835): an insurer's staff salary and pay with one expense claim are still proposed",
+      triageCredits(insurerStaff, L).some((x) => x.kind === "payroll") && triageCredits(withClaim, L).some((x) => x.kind === "payroll"));
+    check("payer_guard (#835): claimPayerKeys names only the claims-only payer (so its old card is withdrawn)",
+      claimPayerKeys([...rows, ...fund], L).length === 1 && claimPayerKeys([...rows, ...insurerStaff, ...withClaim], L).length === 0);
+  }
   check("triage: a one-off bonus outside the band stops the payroll proposal", !triageCredits([...rows.slice(0, 3), cr("w4", "BIG RETAIL PTY LTD SALARY", 900000, "2025-09-18")], L).some((s) => s.kind === "payroll"));
   check("triage: fortnightly own-account transfers are skipped (the movement step owns them)", triageCredits([cr("t1", "TRANSFER FROM SAVINGS ACCOUNT", 100000, "2025-08-01"), cr("t2", "TRANSFER FROM SAVINGS ACCOUNT", 100000, "2025-08-15")], L).length === 0);
   const norm = (xs: ReturnType<typeof triageCredits>) => JSON.stringify(xs.map((s) => ({ ...s, txn_ids: [...s.txn_ids].sort() })));

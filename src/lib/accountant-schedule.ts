@@ -14,7 +14,7 @@ import {
   type Report,
 } from "./report";
 import { classifyIncomeRow, residencyAssessabilityContext, residencyAssessabilityOn, NON_RESIDENT_FOREIGN_NOTE } from "./residency-assessability";
-import { fyLabel, fyBounds, separateTaxpayerEntityIds, cgtPersonalScopeExpr, NON_ASSESSABLE_INCOME_TYPES } from "./ledger-totals";
+import { fyLabel, fyBounds, separateTaxpayerEntityIds, cgtPersonalScopeExpr, NON_ASSESSABLE_INCOME_TYPES, UNCONFIRMED_AI_ASSET } from "./ledger-totals";
 import { resolveJurisdictionForUser } from "./jurisdiction";
 import { deductibleInterestCents } from "./loan-interest";
 import { classifyAttribution, splitAttribution } from "./attribution";
@@ -195,6 +195,26 @@ async function safeAll<T>(p: Promise<{ results?: T[] }>): Promise<T[]> {
 
 // ── The builder ───────────────────────────────────────────────────────────────
 
+/** schedule_plain_labels (#834): plain names for the income buckets a bank credit can land in. */
+const BANK_CREDIT_KIND: Record<string, string> = {
+  income_personal: "Personal (wages, government payments, transfers in)",
+  income_business: "Business takings",
+  income_property: "Rent",
+};
+
+/** schedule_plain_labels (#834): who paid an income row, from what its document recorded (employer, payer or agent, plus the ABN). */
+function payerOf(detailJson: string | null): string | null {
+  if (!detailJson) return null;
+  try {
+    const d = JSON.parse(detailJson) as Record<string, unknown>;
+    const name = [d.employer, d.payer, d.agent].find((v): v is string => typeof v === "string" && !!v.trim());
+    const abn = [d.employer_abn, d.payer_abn].find((v): v is string => typeof v === "string" && !!v.trim());
+    return name ? (abn ? `${name.trim()} (ABN ${abn.trim()})` : name.trim()) : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function buildAccountantSchedule(
   env: Env,
   userId: string,
@@ -362,27 +382,30 @@ async function scheduleCore(
     owned_by: string;
     reimbursed: number;
   }
+  // asset_confirm_gate (#833): an unconfirmed asset made from a bank line is left out of the counted rows and listed as not
+  // claimed (awaiting confirmation), so the accountant can see it exists. OFF ⇒ the query is byte-identical.
+  const confirmGate = featureOn(env, "asset_confirm_gate");
   const depRowsP = detailOnly ? Promise.resolve([] as DepRow[]) : safeAll<DepRow>(
     tenantDb(env, userId).prepare(
       `SELECT ${depCols}
          FROM depreciation_schedule d JOIN assets a ON a.id = d.asset_id LEFT JOIN properties p ON p.id = a.property_id
         WHERE d.user_id = ? AND d.fy = ?
-          AND COALESCE(a.owned_by,'self') <> 'employer' AND COALESCE(a.reimbursed,0) = 0 AND NOT ${rentFreeAsset}
+          AND COALESCE(a.owned_by,'self') <> 'employer' AND COALESCE(a.reimbursed,0) = 0 AND NOT ${rentFreeAsset}${confirmGate ? ` AND NOT (${UNCONFIRMED_AI_ASSET})` : ""}
         ORDER BY a.created_at`,
     )
       .bind(fy)
       .all<DepRow>(),
   );
-  const depDeniedP = detailOnly ? Promise.resolve([] as (DepRow & { use_status_denied: number })[]) : safeAll<DepRow & { use_status_denied: number }>(
+  const depDeniedP = detailOnly ? Promise.resolve([] as (DepRow & { use_status_denied: number; awaiting_confirm?: number })[]) : safeAll<DepRow & { use_status_denied: number; awaiting_confirm?: number }>(
     tenantDb(env, userId).prepare(
-      `SELECT ${depCols}, (CASE WHEN ${rentFreeAsset} THEN 1 ELSE 0 END) AS use_status_denied
+      `SELECT ${depCols}, (CASE WHEN ${rentFreeAsset} THEN 1 ELSE 0 END) AS use_status_denied${confirmGate ? `, (CASE WHEN ${UNCONFIRMED_AI_ASSET} THEN 1 ELSE 0 END) AS awaiting_confirm` : ""}
          FROM depreciation_schedule d JOIN assets a ON a.id = d.asset_id LEFT JOIN properties p ON p.id = a.property_id
         WHERE d.user_id = ? AND d.fy = ?
-          AND (COALESCE(a.owned_by,'self') = 'employer' OR COALESCE(a.reimbursed,0) = 1 OR ${rentFreeAsset})
+          AND (COALESCE(a.owned_by,'self') = 'employer' OR COALESCE(a.reimbursed,0) = 1 OR ${rentFreeAsset}${confirmGate ? ` OR (${UNCONFIRMED_AI_ASSET})` : ""})
         ORDER BY a.created_at`,
     )
       .bind(fy)
-      .all<DepRow & { use_status_denied: number }>(),
+      .all<DepRow & { use_status_denied: number; awaiting_confirm?: number }>(),
   );
 
   // (4) Itemised attributions — attributionTotals' query + display columns, routed by the same
@@ -770,13 +793,18 @@ async function scheduleCore(
     }
     const noDoc = assessableIncomeRows.filter((r) => !r.source_doc_id);
     if (noDoc.length) gaps.push({ section: "income", n: noDoc.length, total_cents: noDoc.reduce((s, r) => s + r.gross_cents, 0) });
+    // schedule_plain_labels (#834): a Payer column, so two employers' salary rows can be told apart. OFF ⇒ unchanged.
+    const plain = featureOn(env, "schedule_plain_labels");
     sections.push({
       key: "income",
       title: "Income (documented)",
-      columns: ["Date", "Type", "ATO label", "Property", `Gross (${cur})`, "Withholding", "Franking credit", "Foreign tax paid", "Substantiation"],
+      columns: plain
+        ? ["Date", "Type", "Payer", "ATO label", "Property", `Gross (${cur})`, "Withholding", "Franking credit", "Foreign tax paid", "Substantiation"]
+        : ["Date", "Type", "ATO label", "Property", `Gross (${cur})`, "Withholding", "Franking credit", "Foreign tax paid", "Substantiation"],
       rows: capped(assessableIncomeRows, notes).map((r) => [
         r.txn_date,
         r.income_type,
+        ...(plain ? [payerOf(r.detail_json)] : []),
         r.ato_label,
         r.property_id ? (propLabels.get(r.property_id) ?? r.property_id) : null,
         d(r.gross_cents),
@@ -792,7 +820,30 @@ async function scheduleCore(
   }
 
   // 3. Income from bank credits (informational — kept separate from documented income, see report).
-  if (report.income_by_bucket.length) {
+  // schedule_plain_labels (#834): grouped by kind in plain words, not by the categoriser's free-text labels (an
+  // accountant queried a "dividend" that was a loan repayment). OFF ⇒ unchanged.
+  if (report.income_by_bucket.length && featureOn(env, "schedule_plain_labels")) {
+    const total = report.income_by_bucket.reduce((s, r) => s + r.total_cents, 0);
+    const byKind = new Map<string, { n: number; cents: number }>();
+    for (const r of report.income_by_bucket) {
+      const k = BANK_CREDIT_KIND[r.bucket] ?? "Other money in";
+      const g = byKind.get(k) ?? { n: 0, cents: 0 };
+      g.n += r.n;
+      g.cents += r.total_cents;
+      byKind.set(k, g);
+    }
+    sections.push({
+      key: "income_bank_credits",
+      title: "Income seen as bank credits (informational — not added to the income total above)",
+      columns: ["Kind", "Count", `Total (${cur})`],
+      rows: [...byKind].map(([k, g]) => [k, g.n, d(g.cents)]),
+      subtotal_cents: total,
+      notes: [
+        "Shown separately so a salary that also arrived via a payslip is never double-counted.",
+        "Grouped by kind. A bank deposit isn't income by itself: pay arrives after tax, and a credit on a loan or card account is usually a repayment.",
+      ],
+    });
+  } else if (report.income_by_bucket.length) {
     const total = report.income_by_bucket.reduce((s, r) => s + r.total_cents, 0);
     sections.push({
       key: "income_bank_credits",
@@ -1215,7 +1266,9 @@ async function scheduleCore(
   // 15. NOT CLAIMED — every excluded item, considered and excluded with its reason (#181).
   if (notClaimed.length || depDenied.length) {
     const depDeniedReason = (a: (typeof depDenied)[number]): string =>
-      a.owned_by === "employer"
+      a.awaiting_confirm
+        ? "Set up from a bank line and not confirmed yet, so not counted. If it's a work or rental purchase, confirm it on Assets."
+        : a.owned_by === "employer"
         ? "Employer-owned asset — no decline in value to you (Div 40 needs you to own and bear the cost)."
         : exclusionReason("asset", null, a.reimbursed, a.use_status_denied);
     const total = notClaimed.reduce((s, x) => s + x.row.counted_cents, 0) + depDenied.reduce((s, r) => s + r.deduction_cents, 0);

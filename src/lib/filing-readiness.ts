@@ -218,6 +218,7 @@ export async function computeFilingReadiness(env: Env, userId: string, startYear
     ...(unlinkedLoans ? { unlinkedLoans } : {}),
     ...(unfiledRentals ? { unfiledRentals } : {}),
     ...(featureOn(env, "ft_journey") ? { journeyCopy: true } : {}),
+    ...(featureOn(env, "asset_confirm_gate") ? { assetConfirmGate: true } : {}),
     ...(featureOn(env, "non_cash_income") ? { nonCashIncomeEnabled: true } : {}),
     ...(integrityOn ? {
       frankingHoldingThresholdCents: integrityThresholds?.franking_holding_rule_threshold_cents ?? null,

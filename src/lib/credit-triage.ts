@@ -34,6 +34,8 @@ export interface CreditSignalLists {
     /** A credit with one of these and NO business_marker is person-to-person (PayID from a friend) — never payroll. */
     p2p_markers?: string;
     business_markers?: string;
+    /** payer_guard (#835): a payer whose credits match one of these (a health fund or insurer paying a claim) is never payroll. */
+    not_employer?: string;
   };
   /** Refunds / rebates / reversals: never a signal of any kind. */
   skip_words?: string;
@@ -178,6 +180,31 @@ export function withinBand(amounts: ReadonlyArray<number>, band: number): boolea
  * (any FY), so a new payroll payer is flagged as a SECOND employer. Deterministic: same input ⇒ same output,
  * ordered by kind then biggest total.
  */
+/**
+ * payer_guard (#835): a payer group that is claims, not pay. EVERY credit matches the pack's not_employer list (a
+ * health fund's "CLAIM" / "BENEFIT") and NONE carries a payroll word, so an insurer's staff salary ("BUPA ... SALARY")
+ * and a payer with one expense-claim reimbursement still read as pay. No list ⇒ never.
+ */
+function notEmployer(rs: ReadonlyArray<TriageCredit>, P: CreditSignalLists["payroll"]): boolean {
+  if (!P.not_employer || !rs.length) return false;
+  return rs.every((r) => anyPatternHits(P.not_employer!, descOf(r))) && !rs.some((r) => anyPatternHits(P.words, descOf(r)));
+}
+
+/** payer_guard (#835): the payer keys in these credits that are claims, not pay (see notEmployer). */
+export function claimPayerKeys(rows: ReadonlyArray<TriageCredit>, lists: CreditSignalLists): string[] {
+  if (!lists.payroll.not_employer) return [];
+  const byStem = new Map<string, TriageCredit[]>();
+  for (const r of rows) {
+    const k = payerStem(descOf(r), lists);
+    if (!k) continue;
+    const g = byStem.get(k);
+    if (g) g.push(r);
+    else byStem.set(k, [r]);
+  }
+  // Only groups triage could have raised as a card (min_count), so nothing else is touched.
+  return [...byStem].filter(([, rs]) => rs.length >= lists.payroll.min_count && notEmployer(rs, lists.payroll)).map(([k]) => k);
+}
+
 export function triageCredits(
   rows: ReadonlyArray<TriageCredit>,
   lists: CreditSignalLists = creditSignalLists(),
@@ -232,6 +259,7 @@ export function triageCredits(
   for (const [key, rs] of byStem) {
     // min_count applies to BOTH paths: one credit with a payroll word ("PAY BACK") is not a job.
     if (rs.length < P.min_count) continue;
+    if (notEmployer(rs, P)) continue;
     const cadence = detectCadence(rs.map((r) => r.txn_date).filter((d): d is string => !!d), P.cadence_days, P.cadence_tolerance_days);
     const words = rs.some((r) => anyPatternHits(P.words, descOf(r)));
     if (cadence == null && !words) continue;

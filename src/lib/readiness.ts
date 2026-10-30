@@ -134,6 +134,8 @@ export interface FilingReadinessSignals {
   // named pages the journey doesn't have (the Inbox, the Income page) and said "indicative position". OFF ⇒ the old
   // wording, byte-identical.
   journeyCopy?: boolean;
+  // asset_confirm_gate (#833): an auto-created asset isn't counted until confirmed, so the note says so. OFF ⇒ old note.
+  assetConfirmGate?: boolean;
   stampedPersonalN?: number;
   stampedPersonalCents?: number;
 }
@@ -650,7 +652,9 @@ export function assessReadiness(input: {
   }
   if (signals.needsReviewAssetsN > 0) {
     findings.push(f("assets_needs_review", "depreciation", "review", `${signals.needsReviewAssetsN} asset(s) flagged for review`,
-      `Some depreciating assets need confirmation (cost, date or effective life) before their decline-in-value is reliable.`, false,
+      signals.assetConfirmGate
+        ? `Some purchases were set up as depreciating assets and need you to confirm them (cost, date and type) on Assets. One made from a bank line isn't counted in your estimate until you confirm it; if it isn't something you bought for work or a rental, delete it.`
+        : `Some depreciating assets need confirmation (cost, date or effective life) before their decline-in-value is reliable.`, false,
       [{ kind: "asset", count: signals.needsReviewAssetsN }]));
   }
   if (signals.lowConfidenceN > 0) {

@@ -155,7 +155,8 @@ function QueueBody() {
   };
 
   const confirmNoticed = useMutation({
-    mutationFn: (s: NoticedSignal) => api.confirmNoticed(s.id).then((result) => ({ signal: s, result })),
+    mutationFn: (v: NoticedSignal & { employer_name?: string }) =>
+      api.confirmNoticed(v.id, v.employer_name ? { employer_name: v.employer_name } : {}).then((result) => ({ signal: v as NoticedSignal, result })),
     onSuccess: ({ signal, result }) => {
       setNoticedDone((d) => ({ ...d, [signal.id]: { signal, result } }));
       refresh(["noticed", "readiness", "income", "report", "transactions", "dashboard", "situation", "relevance"]);
@@ -382,6 +383,8 @@ function QueueBody() {
                   amount={money(s.evidence.total_cents)}
                   busy={noticedBusy === s.id}
                   onYes={() => confirmNoticed.mutate(s)}
+                  choices={s.statement_choices}
+                  onYesAs={(name) => confirmNoticed.mutate(name ? { ...s, employer_name: name } : s)}
                   onNo={() => dismissNoticed.mutate(s)}
                   after={noticedDone[s.id] ? <NoticedConfirmed result={noticedDone[s.id]!.result} /> : undefined}
                 />

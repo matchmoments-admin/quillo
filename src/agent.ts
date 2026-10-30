@@ -4604,6 +4604,14 @@ export class TaxAgent extends Agent<Env> {
   }
 
   /** Dispose of an asset: record the termination value + a balancing adjustment vs adjustable value. */
+  /** asset_confirm_gate (#833): the user confirms an asset (cost, date, class). Its decline in value then counts. */
+  async confirmAsset(userId: string, assetId: string): Promise<{ ok: true }> {
+    const r = await tenantDb(this.env, userId).prepare(`UPDATE assets SET needs_review = 0 WHERE id = ? AND user_id = ?`).bind(assetId).run();
+    if (!r.meta.changes) throw new Error("asset not found");
+    await this.audit(userId, "asset_confirmed", JSON.stringify({ assetId }));
+    return { ok: true };
+  }
+
   async disposeAsset(userId: string, assetId: string, disposedDate: string, disposalValueCents: number): Promise<{ balancing_adjustment_cents: number }> {
     // dep_method_lock: check BEFORE any state write — otherwise a conflicted asset would be marked
     // disposed and then fail the recompute below, wedging it half-disposed (stale adjustable value,

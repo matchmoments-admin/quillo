@@ -518,6 +518,7 @@ export const api = {
   disposeAsset: (id: string, disposed_date: string, disposal_value_cents: number) =>
     post<{ balancing_adjustment_cents: number }>(`/api/assets/${id}/dispose`, { disposed_date, disposal_value_cents }),
   deleteAsset: (id: string) => send<{ ok: boolean }>("DELETE", `/api/assets/${id}`),
+  confirmAsset: (id: string) => post<{ ok: true }>(`/api/assets/${id}/confirm`),
 
   // v2 — FY checklist
   checklist: (fy?: string) => get<{ checklist: ChecklistItem[] }>(`/api/checklist${fy ? `?fy=${fy}` : ""}`).then((r) => r.checklist),

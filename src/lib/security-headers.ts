@@ -55,7 +55,9 @@ function policy(scriptSrc: string, clerk: string = CLERK): string {
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
     "font-src 'self' data: https://fonts.gstatic.com",
     `img-src 'self' data: blob: https://img.clerk.com ${clerk} https://images.unsplash.com`,
-    `connect-src 'self' ${clerk} https://clerk-telemetry.com`,
+    // Clerk's production bot protection probes *.client.protect.clerk.com on port 8443; a host-source without a port
+    // matches only 443, so it needs its own entry (the smoke test caught the block on 2026-10-30, right after cutover).
+    `connect-src 'self' ${clerk} https://*.protect.clerk.com:8443 https://clerk-telemetry.com`,
     "worker-src 'self' blob:",
     `frame-src 'self' ${clerk} https://challenges.cloudflare.com https://www.google.com`,
     "form-action 'self'",

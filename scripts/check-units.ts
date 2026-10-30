@@ -588,9 +588,12 @@ console.log("security sweep #694 (#714): enforced CSP allows inline script only 
     ["'self'", "https://*.clerk.accounts.dev", "https://clerk.quillo.au", "https://clerk.app.quillo.au", "https://challenges.cloudflare.com"].every((x) => script.includes(x)));
   check("no directive trusts a wildcard of OUR domain (*.quillo.au), enforced or report-only",
     ![...enf714.values(), ...ro714.values()].flat().some((x) => /\*\.quillo\.au/.test(x)));
-  check("Report-Only probe: the Clerk dev wildcard narrowed to this instance's exact FAPI host (wrangler.toml CLERK_ISSUER)",
-    !(ro714.get("script-src") ?? []).includes("https://*.clerk.accounts.dev") && (ro714.get("script-src") ?? []).includes("https://obliging-eel-28.clerk.accounts.dev")
-      && /CLERK_ISSUER = "https:\/\/obliging-eel-28\.clerk\.accounts\.dev"/.test(fs.readFileSync("wrangler.toml", "utf8")));
+  // Whichever Clerk instance wrangler.toml's CLERK_ISSUER names (the dev instance, or clerk.quillo.au after the
+  // production cutover), the enforced and Report-Only policies both allow its exact host.
+  const issuer714 = /^CLERK_ISSUER = "([^"]+)"/m.exec(fs.readFileSync("wrangler.toml", "utf8"))?.[1] ?? "";
+  check(`Report-Only probe: the Clerk dev wildcard narrowed to exact hosts, and both policies allow wrangler.toml's CLERK_ISSUER (${issuer714})`,
+    !(ro714.get("script-src") ?? []).includes("https://*.clerk.accounts.dev") && (ro714.get("script-src") ?? []).includes(issuer714)
+      && (enf714.get("script-src") ?? []).some((x) => x === issuer714 || (x === "https://*.clerk.accounts.dev" && issuer714.endsWith(".clerk.accounts.dev"))));
   // The SPA shell must stay inline-script free, or the enforced policy blocks it (a blank app in prod).
   const shell = fs.readFileSync(path.join(process.cwd(), "web", "index.html"), "utf8");
   const scripts714 = shell.match(/<script\b[^>]*>/gi) ?? [];

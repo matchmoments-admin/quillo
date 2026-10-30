@@ -4171,6 +4171,18 @@ async function main() {
       (db.prepare(`SELECT COUNT(*) AS n FROM transactions WHERE user_id = ? AND id LIKE 'prelinkR%' AND payer_entity_id IS NOT NULL`).get(u) as { n: number }).n === 0);
   }
 
+  // ── 2026-10-30: a tenant wiped by hand lost its self person and Get set up sat on "Your profile isn't ready yet".
+  // Reading the situation reseats it. ──
+  {
+    const u = "pnoself";
+    seedTenant(u, "Tenant with no self person");
+    run(`DELETE FROM persons WHERE user_id = ?`, u);
+    const sit = await getSituation(env, u, {} as Profile);
+    const stored = (db.prepare(`SELECT COUNT(*) AS n FROM persons WHERE user_id = ? AND role = 'self' AND id = 'person_self_pnoself'`).get(u) as { n: number }).n;
+    check("self person: a tenant missing it gets it back on the next read (returned and stored, once)",
+      sit.persons[0]?.role === "self" && stored === 1 && (await getSituation(env, u, {} as Profile)).persons.filter((p) => p.role === "self").length === 1);
+  }
+
   console.log(`\n=== personas: ${pass} passed, ${fail} failed ===`);
   if (fail > 0) process.exit(1);
 }

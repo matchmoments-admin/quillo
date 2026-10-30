@@ -161,7 +161,7 @@ USD_TO_AUD_RATE = "1.55"
 # DEV_AUTH_BYPASS=1 in .dev.vars — an unset issuer alone now fails CLOSED (401) rather than
 # falling back to the pilot tenant, so a config regression can't silently disable auth
 # (ADR-0003 S1). NEVER add DEV_AUTH_BYPASS here: production must not be able to bypass.
-CLERK_ISSUER = "https://obliging-eel-28.clerk.accounts.dev"
+CLERK_ISSUER = "https://clerk.quillo.au"
 # OPTIONAL allow-list / kill-switch. Empty (the default) = OPEN self-service signup: any Clerk-
 # verified user gets their own isolated tenant. Set to a comma-separated list of subs to RE-LOCK
 # /api/* to just those users (pause signups / closed beta) — instant via config, no code change.
@@ -170,6 +170,8 @@ CLERK_ALLOWED_USERS = ""
 # The founder's Clerk sub → mapped to the pilot tenant "me" (data continuity). Every OTHER
 # user gets their own isolated tenant keyed by their sub. Unset → everyone maps to "me".
 CLERK_FOUNDER_SUB = "user_3EX9q24hvBuYNz3Hk6Pg6O5FfBq"
+# Production: only tokens minted by the real app origin (runbook §5).
+CLERK_AUTHORIZED_PARTIES = "https://app.quillo.au"
 # Cloudflare Access (web UI auth). Leave UNSET for local dev (API falls back to the pilot
 # tenant). For production set these to your Access application's values:
 # CF_ACCESS_TEAM_DOMAIN = "https://yourteam.cloudflareaccess.com"

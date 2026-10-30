@@ -3783,6 +3783,57 @@ async function main() {
     check("P1 pre-diary (flag OFF): the position reads only wfh_hours, so it matches the baseline", rOff.work_method?.wfh_cents === rBefore.work_method?.wfh_cents && rOff.taxable_position_cents === rBefore.taxable_position_cents);
   }
 
+  // ── person_scoped_income (#722): P6 shape (Susan & Greg) with BOTH earning. Self: $130k salary + a legacy
+  // NULL-person $5k interest row + a $1k trust distribution + a $10k discount-eligible gain. Spouse: $90k salary,
+  // a $4k trust distribution, a $6k personal super deduction and an $8k gain, each under their own persons row.
+  // The joint rental (property-attached rent under each person, $30k of expenses) is tenant-level either way.
+  // OFF ⇒ the headline sums the tenant (today, pinned). ON ⇒ only the self's non-property money counts.
+  {
+    const u = "pps";
+    seedTenant(u, "P6 two earners");
+    const self = `person_self_${u}`;
+    const spouse = `person_spouse_${u}`;
+    run(`INSERT INTO persons (id, user_id, display_name, role) VALUES (?, ?, 'Spouse', 'spouse')`, spouse, u);
+    run(`INSERT INTO properties (id, user_id, label, status, use_status, ownership_pct) VALUES ('ppsProp', ?, 'Rental', 'rented', 'rented', 50)`, u);
+    inc("ppsSelfSal", u, "salary_payg", 13000000, { person_id: self });
+    inc("ppsSelfInt", u, "interest", 500000); // person_id NULL ⇒ self
+    inc("ppsSelfRent", u, "rent", 2000000, { person_id: self, property_id: "ppsProp" });
+    inc("ppsSpSal", u, "salary_payg", 9000000, { person_id: spouse });
+    inc("ppsSpRent", u, "rent", 200000, { person_id: spouse, property_id: "ppsProp" });
+    exp("ppsExp", u, 3000000, "property_rented", "likely_deductible", "ppsProp");
+    run(`INSERT INTO entities (id, user_id, kind, name, entity_type) VALUES ('ppsTrust', ?, 'trust', 'Family trust', 'trust')`, u);
+    run(`INSERT INTO trust_distributions (id, user_id, trust_entity_id, fy, beneficiary_person_id, amount_cents, character, franking_credit_cents) VALUES ('ppsDistS', ?, 'ppsTrust', '2025-26', ?, 100000, 'other', 0)`, u, self);
+    run(`INSERT INTO trust_distributions (id, user_id, trust_entity_id, fy, beneficiary_person_id, amount_cents, character, franking_credit_cents) VALUES ('ppsDistP', ?, 'ppsTrust', '2025-26', ?, 400000, 'other', 0)`, u, spouse);
+    run(`INSERT INTO super_contributions (id, user_id, person_id, fy, type, amount_cents) VALUES ('ppsSuper', ?, ?, '2025-26', 'personal_deductible', 600000)`, u, spouse);
+    for (const [id, who, gain] of [["ppsCgtS", self, 1000000], ["ppsCgtP", spouse, 800000]] as const) {
+      run(`INSERT INTO cgt_assets (id, user_id, person_id, asset_kind, code, units, acquired_date, cost_base_cents) VALUES (?, ?, ?, 'shares', 'XYZ', 10, '2020-01-01', 1000000)`, id, u, who);
+      run(`INSERT INTO cgt_events (id, user_id, cgt_asset_id, fy, event_date, proceeds_cents, cost_base_used_cents, units_disposed, discount_eligible) VALUES (?, ?, ?, '2025-26', '2025-11-20', ?, 1000000, 10, 1)`, `${id}Ev`, u, id, 1000000 + gain);
+    }
+    const BASE = `${(env as { FEATURES: string }).FEATURES},super_deduction`;
+    const OFF = { ...env, FEATURES: BASE } as unknown as Env;
+    const PS = { ...env, FEATURES: `${BASE},person_scoped_income` } as unknown as Env;
+    const rOff = await buildReport(OFF, u, 2025);
+    const rOn = await buildReport(PS, u, 2025);
+    check("Person scope OFF: the headline sums every person's income ($130k + $5k + $20k + $90k + $2k = $247k)", rOff.income.gross_cents === 24700000);
+    check("Person scope ON: the self's income plus ALL the property's rent ($130k + $5k NULL-person + $22k = $157k)", rOn.income.gross_cents === 15700000);
+    check("Person scope ON: only the self's trust distribution ($1k; OFF $5k)", rOn.trust?.assessable_cents === 100000 && rOff.trust?.assessable_cents === 500000);
+    check("Person scope ON: only the self's capital gain ($10k → $5k net after the discount; OFF $9k)",
+      rOn.capital_gains?.net_capital_gain_cents === 500000 && rOff.capital_gains?.net_capital_gain_cents === 900000);
+    check("Person scope ON: the spouse's super contribution is not the self's deduction", !rOn.super_deduction && rOff.super_deduction?.claimed_cents === 600000);
+    // Spouse: $90k salary + $4k trust + $4k net gain, less their $6k super deduction ⇒ the position moves by $92k.
+    check("Person scope ON: the position moves by exactly the spouse's non-property money ($92k)", rOff.taxable_position_cents - rOn.taxable_position_cents === 9200000);
+    const propOn = rOn.per_property.find((p) => p.property_id === "ppsProp");
+    const propOff = rOff.per_property.find((p) => p.property_id === "ppsProp");
+    check("Person scope ON: the joint rental is tenant-level — $22k rent against $30k expenses, same as OFF",
+      propOn?.income_cents === 2200000 && propOn.net_cents === propOff?.net_cents);
+    const schedOn = await buildAccountantSchedule(PS, u, 2025, { report: rOn });
+    const badOn = tieBackChecks(schedOn).filter((t) => !t.ok);
+    if (badOn.length) console.log(`    tie-back failures: ${JSON.stringify(badOn).slice(0, 400)}`);
+    check("Person scope ON: the accountant schedule ties back", badOn.length === 0);
+    const schedOff = await buildAccountantSchedule(OFF, u, 2025, { report: rOff });
+    check("Person scope OFF: the accountant schedule ties back", tieBackChecks(schedOff).every((t) => t.ok));
+  }
+
   // ── income_supersession (owner-statements E2E, 2026-10-28): a re-uploaded income statement and an annual agent
   // summary over monthly statements must not count twice. Replays recordIncome's INSERT (a DO method) and runs the
   // REAL supersession module + buildReport over the shared D1 adapter.

@@ -5,6 +5,7 @@ import type { TrustTotals } from "./trust";
 import type { CgtPortfolioResult } from "./cgt";
 import type { EssAssessable } from "./ess";
 import { featureOn } from "./features";
+import { reportPersonId } from "./self-person";
 import { residencyAssessabilityContext } from "./residency-assessability";
 import { RENT_INCOME_TYPES } from "./taxonomy";
 import { resolveLoanInterest, deductibleInterestCents, type LoanInterestSource } from "./loan-interest";
@@ -602,13 +603,15 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   //
   // These reads are independent of each other, so they run concurrently (each is its own D1 round trip);
   // only the residency split and the income totals wait on what they need.
+  // #722 (person_scoped_income): ON ⇒ only the self person's income (NULL person = self); OFF ⇒ null, tenant-wide.
+  const personId = reportPersonId(env, userId);
   const incomeP = (async () => {
     const [separateIds, residencyCtx] = await Promise.all([
       separateTaxpayerEntityIds(env, userId),
       residencyAssessabilityContext(env, userId, startYear, { descriptor: jurisdiction, rulePack }),
     ]);
     const residencySplit = residencyCtx ? await residencyIncomeSplit(env, userId, startYear, residencyCtx, { excludeEntityIds: separateIds }) : null;
-    return { separateIds, residencySplit, income: await incomeTotals(env, userId, { startYear, excludeEntityIds: separateIds, residencySplit }) };
+    return { separateIds, residencySplit, income: await incomeTotals(env, userId, { startYear, excludeEntityIds: separateIds, residencySplit, ...(personId ? { personId } : {}) }) };
   })();
   // Phase B / G2: deductions that come from explicit attributions (payer≠claimant) rather than the
   // raw transaction. The attributed transactions were excluded from the raw sums above (notAttributed),
@@ -805,26 +808,26 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   // when there are CGT events (cgtTotals returns a zero result otherwise → no field, no change).
   let capital_gains: CgtPortfolioResult | undefined;
   if (featureOn(env, "cgt_engine")) {
-    const cgt = await cgtTotals(env, userId, startYear, rulePack);
+    const cgt = await cgtTotals(env, userId, startYear, rulePack, personId);
     if (cgt.gross_capital_gains_cents > 0 || cgt.capital_losses_cents > 0) capital_gains = cgt;
   }
   // Phase #141: assessable ESS discount is employment income — add it to the position. Flag-gated; only
   // set when there are grants with an assessable or startup-deferred amount.
   let ess: EssAssessable | undefined;
   if (featureOn(env, "ess_engine")) {
-    const e = await essTotals(env, userId, startYear, jurisdiction);
+    const e = await essTotals(env, userId, startYear, jurisdiction, personId);
     if (e.assessable_discount_cents > 0 || e.startup_deferred_to_cgt_cents > 0) ess = e;
   }
   // Phase #139: assessable trust distributions to this person — employment-independent income. Flag-gated.
   let trust: TrustTotals | undefined;
   if (featureOn(env, "trust_distributions")) {
-    const t = await trustTotals(env, userId, startYear);
+    const t = await trustTotals(env, userId, startYear, personId);
     if (t.assessable_cents > 0 || t.franking_credit_cents > 0) trust = t;
   }
   // Slice E: a partner's share of partnership net income — assessable like a trust distribution. Flag-gated.
   let partnership: TrustTotals | undefined;
   if (featureOn(env, "partnership_distributions")) {
-    const p = await partnershipTotals(env, userId, startYear);
+    const p = await partnershipTotals(env, userId, startYear, personId);
     // `!== 0` (not `> 0`) so a NET LOSS is carried too — but only partnership_losses ON ever yields a
     // negative here (OFF floors partnershipTotals to ≥0), so the OFF path stays byte-identical.
     if (p.assessable_cents !== 0 || p.franking_credit_cents > 0) partnership = p;
@@ -841,7 +844,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   let super_deduction: SuperDeduction | undefined;
   if (featureOn(env, "super_deduction")) {
     const cap = (rulePack as { thresholds_by_fy?: Record<string, { super_concessional_cap_cents?: number }> }).thresholds_by_fy?.[fyLabel]?.super_concessional_cap_cents ?? Number.MAX_SAFE_INTEGER;
-    const sd = await superConcessionalDeduction(env, userId, startYear, cap);
+    const sd = await superConcessionalDeduction(env, userId, startYear, cap, personId);
     if (sd.contributed_cents > 0) super_deduction = sd;
   }
   // Audit wave 4 (trading_stock): the s 70-35 trading-stock adjustment for a goods-selling sole
@@ -893,7 +896,7 @@ export async function buildReport(env: Env, userId: string, startYear: number): 
   // field is absent ⇒ byte-identical. Information-only modules (reportable amounts) never reach the
   // position; a contributing module will feed composePosition's summands, never an inline sum here.
   const situationCtx: ReportContext = {
-    env, scope: { userId, personId: null }, startYear, fy: fyLabelOf(startYear), bounds: { start, end },
+    env, scope: { userId, personId }, startYear, fy: fyLabelOf(startYear), bounds: { start, end },
     jurisdiction, rulePack, separateIds, currency: baseCurrencyOf(env, jurisdiction),
   };
   const situations = situationFields(await loadSituations(situationCtx));

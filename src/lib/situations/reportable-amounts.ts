@@ -12,6 +12,7 @@
  */
 import { reportableAmountsByEmployer, reportableAmountsTotal, type ReportableByEmployer } from "../reportable-amounts";
 import { defineSituation } from "./types";
+import { personClause } from "../self-person";
 
 export interface ReportableAmounts {
   /** One entry per employer at its MAX, in first-seen order (the pack's rows). */
@@ -39,11 +40,13 @@ export const reportableAmountsModule = defineSituation<ReportableAmounts, "repor
     // order, so the per-employer rows keep their historical first-seen order (the total is order-free).
     const { env, scope, fy, separateIds } = ctx;
     const entityClause = separateIds.length ? ` AND (entity_id IS NULL OR entity_id NOT IN (${separateIds.map(() => "?").join(",")}))` : "";
+    // #722: a person-scoped report reads only that person's employers (null personId ⇒ the whole tenant).
+    const person = personClause(scope.userId, scope.personId);
     const rows = await env.DB.prepare(
-      `SELECT detail_json FROM income WHERE user_id = ? AND fy = ? AND detail_json IS NOT NULL${entityClause}
+      `SELECT detail_json FROM income WHERE user_id = ? AND fy = ? AND detail_json IS NOT NULL${entityClause}${person.sql}
         ORDER BY income_type, txn_date, created_at`,
     )
-      .bind(scope.userId, fy, ...separateIds)
+      .bind(scope.userId, fy, ...separateIds, ...person.binds)
       .all<{ detail_json: string }>();
     const byEmployer = reportableAmountsByEmployer((rows.results ?? []).map((r) => r.detail_json));
     const total = reportableAmountsTotal(byEmployer);

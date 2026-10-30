@@ -39,6 +39,10 @@ npx wrangler d1 execute tax-agent-db --remote --json --command \
 
 Expected: `tenants=1, founder=1, clerk_subs=0, admins=1`.
 
+**2026-10-30 run:** `tenants=1, founder=1, clerk_subs=0, admins=0`. Safe to switch (no development-instance
+tenants). `admins=0` differs from the expected 1: the founder's `admin` role went with the 2026-10-25 data reset
+of tenant `me`. Re-grant it before turning on `admin_mfa_required` (step 6), or `/api/admin/*` is closed to everyone.
+
 ## 1. Create the production instance (Clerk dashboard)
 
 1. Clerk dashboard → the Quillo application → instance switcher **Development** → **Create production instance**.
@@ -111,7 +115,12 @@ enabled in development (check **User & authentication → SSO connections**):
      identity, or link the Google account to this user in the dashboard first.
    - Don't sign up through app.quillo.au after the switch before `CLERK_FOUNDER_SUB` is updated — same
      stray-tenant effect. Nothing is lost either way: fix the var and redeploy.
-2. **Branch + edit** (`security/clerk-production`):
+2. **One command does the edits below** (2026-10-30): `scripts/clerk-cutover.sh user_<new production id>`.
+   It runs the pre-check (stops if any development-instance tenant exists), confirms `clerk.quillo.au` is a
+   live production instance, then writes the three `wrangler.toml` vars and the `pk_live_…` key into
+   `web/.env` (derived from the Frontend API host; the old file is kept as `web/.env.dev-backup`). It doesn't
+   commit or deploy. Tested in a throwaway worktree on 2026-10-30 with a dummy id. The manual equivalent:
+   **Branch + edit** (`security/clerk-production`):
    - `wrangler.toml` `[vars]`:
      ```toml
      CLERK_ISSUER = "https://clerk.quillo.au"
